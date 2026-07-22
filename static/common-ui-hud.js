@@ -367,6 +367,16 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
         const toggleItem = this._createToggleItem(toggle, popup);
         popup.appendChild(toggleItem);
 
+        // Init taskhud toggle from localStorage right after creation, syncing visual
+        if (toggle.id === 'agent-taskhud') {
+            const chk = popup.querySelector(`#${avatarPrefix}-${toggle.id}`);
+            if (chk) {
+                const stored = (() => { try { return localStorage.getItem('neko-agent-taskhud-visible'); } catch (_) { return null; } })();
+                chk.checked = stored === null ? true : stored === 'true';
+                if (typeof chk._updateStyle === 'function') chk._updateStyle();
+            }
+        }
+
         // 侧边快捷入口（用户插件管理面板 / OpenClaw 接入教程）
         if ((toggle.id === 'agent-user-plugin' || toggle.id === 'agent-openclaw') && typeof this._createSidePanelContainer === 'function') {
             document.querySelectorAll(`[data-neko-sidepanel-type="${toggle.id}-actions"]`).forEach((element) => {
@@ -513,13 +523,6 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
         }
 
     });
-
-    // Init taskhud toggle from localStorage
-    const taskhudCheckbox = popup.querySelector(`#${avatarPrefix}-agent-taskhud`);
-    if (taskhudCheckbox) {
-        const stored = (() => { try { return localStorage.getItem('neko-agent-taskhud-visible'); } catch (_) { return null; } })();
-        taskhudCheckbox.checked = stored === null ? true : stored === 'true';
-    }
 };
 
 // 创建 Agent 任务 HUD（屏幕正中右侧）
