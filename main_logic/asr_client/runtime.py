@@ -40,6 +40,11 @@ from .lifecycle import (
     VoiceTurnToken,
 )
 from .provider_policy import resolve_provider_policy
+from .retry_policy import (
+    _ASR_CONNECT_RETRY_BASE_SECONDS,
+    _ASR_CONNECT_RETRY_CAP_SECONDS,
+    _SONIOX_CONNECT_MAX_ATTEMPTS,
+)
 from .transcript import (
     CoreTranscriptDispatcher,
     TranscriptEnvelope,
@@ -47,11 +52,6 @@ from .transcript import (
     VoiceTranscriptCallback,
     VoiceTranscriptEvent,
 )
-
-
-_SONIOX_CONNECT_MAX_ATTEMPTS = 3
-_ASR_CONNECT_RETRY_BASE_SECONDS = 0.25
-_ASR_CONNECT_RETRY_CAP_SECONDS = 1.0
 
 
 class AsrRuntimeMixin:
