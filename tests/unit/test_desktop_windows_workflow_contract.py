@@ -31,6 +31,24 @@ def test_cross_platform_workflow_limits_both_matrices_for_windows_only_calls() -
     assert '"artifact_name":"desktop-win-x64"' in workflow
 
 
+def test_reusable_build_honors_signing_inputs_and_distribution_wrapper() -> None:
+    workflow = CROSS_PLATFORM_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "github.event_name == 'workflow_dispatch' && inputs.skip_signing" not in workflow
+    assert "github.event_name == 'schedule' || inputs.skip_signing == 'true'" in workflow
+    assert "Build Electron app (Windows ZIP Portable directory, unsigned)" in workflow
+    assert "Build Electron app (Windows ZIP Portable directory, signed)" in workflow
+    assert "inputs.skip_signing != 'true'" in workflow
+    assert "WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}" in workflow
+    assert "WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}" in workflow
+    assert "run: npx electron-builder ${{ matrix.electron_args }} --publish never" not in workflow
+    assert (
+        "run: node scripts/build-electron-distribution.js "
+        "${{ matrix.builder_platform }} ${{ matrix.portable_arch_args }} "
+        "--publish never"
+    ) in workflow
+
+
 def test_debug_build_values_are_runtime_inputs_not_test_defaults() -> None:
     windows_workflow = WINDOWS_WORKFLOW.read_text(encoding="utf-8")
     cross_platform_workflow = CROSS_PLATFORM_WORKFLOW.read_text(encoding="utf-8")
