@@ -357,6 +357,11 @@
             }
             state.tier = normalizeTier(current.tier);
             var reply = chooseHissStretchReply(state.tier) || chooseReply(state.tier);
+            if (!reply) {
+                publishSnapshot('cat-local-chat-reply-invalidated');
+                scheduleNextReply();
+                return;
+            }
             appendItem('assistant', reply, pending.requestId);
             publishSnapshot('cat-local-chat-reply');
             scheduleNextReply();

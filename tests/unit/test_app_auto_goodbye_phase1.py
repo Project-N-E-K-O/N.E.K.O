@@ -441,11 +441,18 @@ def test_app_auto_goodbye_phase1_harness():
           home.tickAll();
           assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat3', 'demoted CAT2 should still progress to CAT3 after the normal CAT2 interval');
 
-          // Return should clear auto state and tier.
+          // The legacy click alone and the commit boundary should preserve the visual state;
+          // only completion clears the auto-goodbye cycle.
           home.win.dispatchEvent(new CustomEventLike('live2d-return-click'));
+          const afterLegacyReturnClick = home.win.nekoAutoGoodbye.getState();
+          assert(afterLegacyReturnClick.visualTier === 'cat3', 'legacy return click should not clear visual tier');
+          assert(afterLegacyReturnClick.autoGoodbyeTriggered === true, 'legacy return click should not clear auto flag');
           home.win.dispatchEvent(new CustomEventLike('neko:cat-return-commit', {{
             detail: {{ source: 'live2d-return-click', hadCatCycle: true }}
           }}));
+          const afterReturnCommit = home.win.nekoAutoGoodbye.getState();
+          assert(afterReturnCommit.visualTier === 'cat3', 'return commit should preserve visual tier until completion');
+          assert(afterReturnCommit.autoGoodbyeTriggered === true, 'return commit should preserve auto flag until completion');
           home.win.dispatchEvent(new CustomEventLike('neko:cat-return-complete', {{
             detail: {{ source: 'live2d-return-click' }}
           }}));

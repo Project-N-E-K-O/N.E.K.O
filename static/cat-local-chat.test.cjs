@@ -266,6 +266,21 @@ test('Cat Mind observation failure does not break the accepted local reply', () 
   assert.match(items[1].text, /喵/);
 });
 
+test('missing lexicon invalidates a pending reply instead of appending an empty bubble', () => {
+  const runtime = createRuntime();
+  const manager = runtime.window.nekoCatLocalChatManager;
+
+  assert.equal(manager.submit({ requestId: 'missing-lexicon', text: '还能看到吗', enteredAt: 1000 }), true);
+  delete runtime.window.nekoCatLocalChatLexicon;
+  runtime.runNextTimer();
+
+  const items = manager.getSnapshot().items;
+  assert.deepEqual(Array.from(items, item => item.role), ['user']);
+  assert.equal(items.some(item => item.text === ''), false);
+  assert.equal(runtime.pendingTimerCount(), 0);
+  assert.equal(runtime.publishedReasons.includes('cat-local-chat-reply-invalidated'), true);
+});
+
 test('cycle exit invalidates pending replies and standalone pages cannot become authoritative', () => {
   const runtime = createRuntime();
   const manager = runtime.window.nekoCatLocalChatManager;
