@@ -12,7 +12,6 @@ from main_logic.asr_client import (
     _attach_partial_callback,
     _create_asr_session_from_selection,
     _resolve_asr_selection,
-    _resolve_core_follow_selection,
 )
 from main_logic.asr_client._registry_meta import CORE_ASR_ROUTES
 from main_logic.voice_turn.contracts import SpeechActivityEvent
@@ -48,6 +47,11 @@ from .transcript import (
     VoiceTranscriptCallback,
     VoiceTranscriptEvent,
 )
+
+
+_SONIOX_CONNECT_MAX_ATTEMPTS = 3
+_ASR_CONNECT_RETRY_BASE_SECONDS = 0.25
+_ASR_CONNECT_RETRY_CAP_SECONDS = 1.0
 
 
 class AsrRuntimeMixin:
@@ -674,6 +678,10 @@ class AsrRuntimeMixin:
             )
             return
 
+        # Provider selection is immutable for this session epoch. Expose the
+        # selected provider during connect retries, then clear it only if the
+        # startup attempt ultimately fails.
+        self._asr_provider = provider
         epoch = self._asr_session_epoch
 
         def create_candidate(candidate_selection: Any) -> Any:
@@ -745,27 +753,41 @@ class AsrRuntimeMixin:
             return candidate_session
 
         asr_session = None
-        active_selection = selection
         connect_started_at = time.monotonic()
         try:
-            asr_session = create_candidate(selection)
-            try:
-                await asr_session.connect()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                if provider != "soniox" or self._asr_received_audio:
-                    raise
+            max_attempts = (
+                _SONIOX_CONNECT_MAX_ATTEMPTS if provider == "soniox" else 1
+            )
+            for attempt in range(max_attempts):
+                if epoch != self._asr_session_epoch:
+                    return
+                asr_session = create_candidate(selection)
                 try:
-                    await asr_session.close()
+                    await asr_session.connect()
+                    break
+                except asyncio.CancelledError:
+                    try:
+                        await asr_session.close()
+                    except Exception:
+                        pass
+                    asr_session = None
+                    raise
                 except Exception:
-                    pass
-                asr_session = None
-                core_selection = _resolve_core_follow_selection(core_type)
-                provider = core_selection.provider_key
-                active_selection = core_selection
-                asr_session = create_candidate(core_selection)
-                await asr_session.connect()
+                    try:
+                        await asr_session.close()
+                    except Exception:
+                        pass
+                    asr_session = None
+                    if attempt + 1 >= max_attempts:
+                        raise
+                    await asyncio.sleep(
+                        min(
+                            _ASR_CONNECT_RETRY_CAP_SECONDS,
+                            _ASR_CONNECT_RETRY_BASE_SECONDS * (2**attempt),
+                        )
+                    )
+            if asr_session is None:
+                raise RuntimeError("ASR_CONNECT_FAILED")
             if epoch != self._asr_session_epoch:
                 await asr_session.close()
                 return
@@ -773,7 +795,7 @@ class AsrRuntimeMixin:
             self._asr_last_provider_wire_audio_ms = 0
             self._asr_provider = provider
             self._asr_route_mode = "independent"
-            endpointing_mode = getattr(active_selection, "endpointing_mode", None)
+            endpointing_mode = getattr(selection, "endpointing_mode", None)
             if endpointing_mode not in {"manual", "provider"}:
                 endpointing_mode = "provider" if provider == "soniox" else "manual"
             policy = resolve_provider_policy(provider, endpointing_mode)
@@ -831,7 +853,7 @@ class AsrRuntimeMixin:
             )
             self._asr_detector = detector_ref
             self._asr_session_factory = create_candidate
-            self._asr_transport_selection = active_selection
+            self._asr_transport_selection = selection
             self._schedule_transport_warm_expiry(epoch)
             await self._send_asr_lifecycle_state(VoiceLifecycleState.LOCAL_LISTEN)
             await self._send_asr_status("ASR_INDEPENDENT_READY", provider)
@@ -849,7 +871,14 @@ class AsrRuntimeMixin:
                 self._asr_session = None
                 self._asr_provider = None
                 self._asr_route_mode = "blocked"
-                await self._send_asr_status("ASR_INDEPENDENT_FAILED", provider)
+                await self._send_asr_status(
+                    (
+                        "ASR_INDEPENDENT_PROVIDER_UNAVAILABLE"
+                        if provider == "soniox"
+                        else "ASR_INDEPENDENT_FAILED"
+                    ),
+                    provider,
+                )
 
     async def _close_independent_asr(
         self,
