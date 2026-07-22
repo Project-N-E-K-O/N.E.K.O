@@ -9,8 +9,17 @@ OFFICIAL_REPOSITORY_URL = "https://github.com/agentscope-ai/QwenPaw"
 
 def test_openclaw_guide_locales_link_to_official_repository():
     guide_paths = sorted(GUIDE_DIR.glob("openclaw_guide*.md"))
+    guide_names = {guide_path.name for guide_path in guide_paths}
+    expected_guide_names = {
+        "openclaw_guide.md",
+        "openclaw_guide.en.md",
+        "openclaw_guide.ja.md",
+        "openclaw_guide.ko.md",
+        "openclaw_guide.ru.md",
+        "openclaw_guide.zh-TW.md",
+    }
 
-    assert len(guide_paths) == 6
+    assert expected_guide_names <= guide_names
     for guide_path in guide_paths:
         assert OFFICIAL_REPOSITORY_URL in guide_path.read_text(encoding="utf-8")
 
