@@ -354,13 +354,17 @@
     function loadState(options) {
         const storage = resolveStorage(options);
         const rawState = readRawState(storage);
+        const isLegacyOnlyMigration = Object.keys(rawState).length === 0
+            && hasLegacyHomeTutorialCompletion(storage);
         const state = normalizeState(rawState, Object.assign({}, options, { storage }));
         const needsMigration = rawState.version !== state.version
             || rawState.legacyMigrationCompleted !== true
             || JSON.stringify(normalizeRoundList(rawState.completedRounds)) !== JSON.stringify(state.completedRounds)
             || JSON.stringify(normalizeRoundList(rawState.skippedRounds)) !== JSON.stringify(state.skippedRounds);
         if (needsMigration && (!options || options.persistMigration !== false)) {
-            state.updatedAt = state.updatedAt || new Date().toISOString();
+            if (!isLegacyOnlyMigration) {
+                state.updatedAt = state.updatedAt || new Date().toISOString();
+            }
             saveState(state, { storage, syncServer: false });
         }
         return state;

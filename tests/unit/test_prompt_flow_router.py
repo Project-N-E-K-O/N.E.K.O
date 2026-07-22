@@ -50,6 +50,7 @@ def prompt_flow_client(tmp_path, monkeypatch):
         yield client, config
 
 
+@pytest.mark.unit
 def test_yui_guide_handoff_token_is_backend_authoritative_and_single_use(prompt_flow_client):
     client, _config = prompt_flow_client
 
@@ -111,8 +112,6 @@ def test_yui_guide_handoff_consume_requires_expected_page(prompt_flow_client):
 
 
 @pytest.mark.unit
-
-
 def test_autostart_heartbeat_route_returns_prompt_token(prompt_flow_client):
     client, _config = prompt_flow_client
 
@@ -187,3 +186,20 @@ def test_seven_day_tutorial_put_requires_matching_revision(prompt_flow_client):
     assert stale.json()["error_code"] == "seven_day_tutorial_revision_conflict"
     assert stale.json()["revision"] == 1
     assert stale.json()["state"]["completedRounds"] == [1]
+
+
+@pytest.mark.unit
+def test_seven_day_tutorial_put_rejects_missing_local_mutation_credentials(
+    prompt_flow_client,
+):
+    client, _config = prompt_flow_client
+    client.headers.pop("Origin")
+    client.headers.pop("X-CSRF-Token")
+
+    response = client.put("/api/seven-day-tutorial/state", json={
+        "expectedRevision": 0,
+        "state": {"completedRounds": [1]},
+    })
+
+    assert response.status_code == 403
+    assert response.json()["error_code"] == "csrf_validation_failed"

@@ -52,17 +52,23 @@ def test_completed_legacy_home_tutorial_is_migrated_once(tmp_path):
 
 
 @pytest.mark.unit
-def test_legacy_never_remind_is_not_migrated_as_tutorial_completion(tmp_path):
+@pytest.mark.parametrize("suppression", (
+    {"never_remind": True},
+    {"status": "never"},
+))
+def test_legacy_never_remind_is_migrated_as_day_one_skip(tmp_path, suppression):
     manager = _ConfigManager(tmp_path)
     (tmp_path / "tutorial_prompt.json").write_text(json.dumps({
-        "never_remind": True,
+        **suppression,
         "home_tutorial_completed": False,
     }))
 
     response = get_seven_day_tutorial_state_response(config_manager=manager)
 
-    assert response["initialized"] is False
-    assert response["state"] is None
+    assert response["initialized"] is True
+    assert response["revision"] == 1
+    assert response["state"]["completedRounds"] == []
+    assert response["state"]["skippedRounds"] == [1]
 
 
 @pytest.mark.unit

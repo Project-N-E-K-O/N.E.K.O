@@ -117,6 +117,45 @@ test('existing seven-day progress wins over legacy markers during migration', ()
     assert.equal(state.firstSeenDate, '2026-07-20');
 });
 
+test('legacy-only local completion cannot overwrite initialized server progress', async () => {
+    const authoritativeStore = {
+        initialized: true,
+        revision: 3,
+        state: {
+            version: 2,
+            firstSeenDate: '2026-07-20',
+            completedRounds: [1, 2, 3],
+            skippedRounds: [],
+            legacyMigrationCompleted: true,
+            updatedAt: '2026-07-21T00:00:00.000Z',
+        },
+    };
+    const writes = [];
+    const fetch = async (url, options = {}) => {
+        if (url === stateApi.SERVER_STATE_ENDPOINT && options.method === 'PUT') {
+            writes.push(JSON.parse(options.body));
+            return applyAuthoritativePut(authoritativeStore, options);
+        }
+        if (url === stateApi.SERVER_STATE_ENDPOINT) {
+            return createJsonResponse({ ok: true, ...authoritativeStore });
+        }
+        return createJsonResponse({}, 404);
+    };
+    const storage = createMemoryStorage({
+        neko_tutorial_home_yui_v1: 'true',
+    });
+    const browserApi = loadBrowserStateApi({ storage, fetch });
+
+    const state = await browserApi.ready();
+
+    assert.deepEqual(Array.from(state.completedRounds), [1, 2, 3]);
+    assert.equal(writes.length, 0);
+    assert.deepEqual(
+        JSON.parse(storage.getItem(stateApi.STORAGE_KEY)).completedRounds,
+        [1, 2, 3]
+    );
+});
+
 test('the unified scheduler advances one round on each of the first seven calendar days', () => {
     const storage = createMemoryStorage();
     let state = stateApi.loadState({ storage, today: '2026-07-01' });

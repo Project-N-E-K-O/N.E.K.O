@@ -202,12 +202,21 @@ def _migrate_legacy_tutorial_state(config_manager=None) -> dict[str, Any] | None
     manager = config_manager or get_config_manager()
     legacy_path = Path(manager.get_config_path(LEGACY_TUTORIAL_PROMPT_STATE_FILENAME))
     legacy_state = load_state_file(legacy_path)
-    if not isinstance(legacy_state, dict) or legacy_state.get("home_tutorial_completed") is not True:
+    if not isinstance(legacy_state, dict):
+        return None
+
+    completed = legacy_state.get("home_tutorial_completed") is True
+    permanently_suppressed = (
+        legacy_state.get("never_remind") is True
+        or _clean_string(legacy_state.get("status"), limit=16).lower() == "never"
+    )
+    if not completed and not permanently_suppressed:
         return None
 
     migrated_state = normalize_seven_day_tutorial_state({
         "firstSeenDate": _legacy_first_seen_date(legacy_state),
-        "completedRounds": [1],
+        "completedRounds": [1] if completed else [],
+        "skippedRounds": [] if completed else [1],
         "updatedAt": _legacy_updated_at(legacy_state),
     })
     store = {

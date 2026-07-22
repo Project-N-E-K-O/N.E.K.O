@@ -36,6 +36,7 @@ class DummyConfig:
         return self.config_dir / filename
 
 
+@pytest.mark.unit
 def test_legacy_tutorial_state_does_not_mark_autostart_as_enabled(tmp_path):
     config = DummyConfig(tmp_path)
     legacy_state_path = config.config_dir / "autostart_prompt.json"
@@ -83,8 +84,6 @@ def test_legacy_autostart_state_is_migrated_to_dedicated_state_file(tmp_path):
 
 
 @pytest.mark.unit
-
-
 def test_autostart_prompt_uses_30_min_threshold_and_3_day_later_cooldown(tmp_path):
     config = DummyConfig(tmp_path)
 
