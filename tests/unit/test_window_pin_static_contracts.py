@@ -108,6 +108,7 @@ def test_pin_templates_version_shared_window_control_and_locale_assets():
         "templates/cookies_login.html",
         "templates/cloudsave_manager.html",
         "templates/jukebox.html",
+        "templates/openclaw_guide.html",
     ):
         source = read_text(path)
         assert "/static/i18n-i18next.js?v={{ static_asset_version" in source, path
@@ -122,6 +123,15 @@ def test_pin_templates_version_shared_window_control_and_locale_assets():
     )
     assert jukebox_route
     assert "**_static_assets_ctx()" in jukebox_route.group("body")
+
+    agent_routes = read_text("main_routers/agent_router.py")
+    openclaw_route = re.search(
+        r"async def openclaw_guide_page\(request: Request\):(?P<body>[\s\S]*?)"
+        r"(?=\n@router\.get)",
+        agent_routes,
+    )
+    assert openclaw_route
+    assert "**_static_assets_ctx()" in openclaw_route.group("body")
 
 
 def test_jukebox_has_an_explicit_pin_before_minimize_without_touching_manager():
