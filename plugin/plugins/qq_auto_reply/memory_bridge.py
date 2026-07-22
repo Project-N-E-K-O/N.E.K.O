@@ -75,8 +75,13 @@ class QQMemoryBridge:
         normalized_query = str(query or "").strip()
         if not normalized_query:
             return QQMemoryQueryResult()
+        # ``None`` means the legacy private caller omitted an authorization
+        # boundary. An explicit empty list means the caller has no authorized
+        # subject and must never fall back to that legacy corpus.
+        if subjects == []:
+            return QQMemoryQueryResult()
         request_payload: dict[str, Any] = {"query": normalized_query}
-        if subjects:
+        if subjects is not None:
             request_payload["subjects"] = subjects
         async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
             response = await client.post(

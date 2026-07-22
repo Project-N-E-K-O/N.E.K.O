@@ -557,5 +557,8 @@
   "ui.napcat.config.sticker_cooldown": "Sticker Cooldown (message count, 0=unlimited)",
   "ui.napcat.config.retro_review_max_msgs": "Max Messages for Retro Review",
   "ui.napcat.config.retro_review_max_reply": "Max Replies for Retro Review",
-  "ui.napcat.prompts.layer.format_open_platform.name": "Output Format (Open Platform)"
+  "ui.napcat.prompts.layer.format_open_platform.name": "Output Format (Open Platform)",
+  "ui.shared.config.group_memory": "Enable long-term group chat memory",
+  "ui.shared.config.group_member_memory": "Record long-term group member memory (adds extraction calls)",
+  "ui.shared.config.cross_group_context": "Allow live cross-group topic context (isolated by default)"
 }

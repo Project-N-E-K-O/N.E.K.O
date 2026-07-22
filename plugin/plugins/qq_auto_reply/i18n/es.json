@@ -557,5 +557,8 @@
   "ui.napcat.config.sticker_cooldown": "Intervalo de stickers (n.º de mensajes, 0=sin límite)",
   "ui.napcat.config.retro_review_max_msgs": "Máx. de mensajes para revisión retroactiva",
   "ui.napcat.config.retro_review_max_reply": "Máx. de respuestas para revisión retroactiva",
-  "ui.napcat.prompts.layer.format_open_platform.name": "Formato de salida (Open Platform)"
+  "ui.napcat.prompts.layer.format_open_platform.name": "Formato de salida (Open Platform)",
+  "ui.shared.config.group_memory": "Activar la memoria a largo plazo del chat grupal",
+  "ui.shared.config.group_member_memory": "Registrar la memoria a largo plazo de los miembros (añade llamadas de extracción)",
+  "ui.shared.config.cross_group_context": "Permitir contexto de temas en vivo entre grupos (aislado por defecto)"
 }

@@ -558,5 +558,8 @@
   "ui.napcat.config.retro_review_max_msgs": "回溯审核最多取多少条消息",
   "ui.napcat.config.retro_review_max_reply": "回溯审核最多补回多少条",
   "entries.reset_prompt_override.name": "重置提示词覆盖",
-  "entries.reset_prompt_override.description": "删除某个提示词层的自定义覆盖值，恢复默认。"
+  "entries.reset_prompt_override.description": "删除某个提示词层的自定义覆盖值，恢复默认。",
+  "ui.shared.config.group_memory": "启用群聊长期记忆",
+  "ui.shared.config.group_member_memory": "记录群成员长期记忆（增加提取调用）",
+  "ui.shared.config.cross_group_context": "允许跨群实时话题上下文（默认隔离）"
 }

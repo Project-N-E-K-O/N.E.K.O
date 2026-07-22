@@ -483,6 +483,23 @@ async def test_qq_group_recall_omits_phantom_member_for_empty_sender():
 
 
 @pytest.mark.asyncio
+async def test_qq_recall_with_empty_subjects_never_falls_back_to_private():
+    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
+
+    bridge = QQMemoryBridge(SimpleNamespace())
+    with patch(
+        "plugin.plugins.qq_auto_reply.memory_bridge.httpx.AsyncClient",
+    ) as client:
+        result = await bridge.query_relevant_memory(
+            "Neko", "不应读取私聊记忆", subjects=[],
+        )
+
+    assert result.text == ""
+    assert result.raw_results == []
+    client.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_qq_group_session_writes_only_scoped_history():
     from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
     from plugin.plugins.qq_auto_reply.session_memory_service import (

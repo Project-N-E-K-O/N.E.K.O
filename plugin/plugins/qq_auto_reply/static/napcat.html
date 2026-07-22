@@ -250,9 +250,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
     </div>
     <div class="card"><div class="card-title" data-i18n="ui.napcat.config.gating_title">门控配置</div>
         <div class="form-group"><label class="form-label" data-i18n="ui.napcat.config.sticker_cooldown">表情包间隔（消息数，0=不限制）</label><input class="form-input" id="cfg-sticker-cooldown" type="number" min="0" max="100" step="1"></div>
-        <div class="form-group"><label><input id="cfg-group-memory" type="checkbox"> 启用群聊长期记忆</label></div>
-        <div class="form-group"><label><input id="cfg-group-member-memory" type="checkbox"> 记录群成员长期记忆（增加提取调用）</label></div>
-        <div class="form-group"><label><input id="cfg-cross-group-context" type="checkbox"> 允许跨群实时话题上下文（默认隔离）</label></div>
+        <div class="form-group"><label><input id="cfg-group-memory" type="checkbox"> <span data-i18n="ui.shared.config.group_memory">启用群聊长期记忆</span></label></div>
+        <div class="form-group"><label><input id="cfg-group-member-memory" type="checkbox"> <span data-i18n="ui.shared.config.group_member_memory">记录群成员长期记忆（增加提取调用）</span></label></div>
+        <div class="form-group"><label><input id="cfg-cross-group-context" type="checkbox"> <span data-i18n="ui.shared.config.cross_group_context">允许跨群实时话题上下文（默认隔离）</span></label></div>
         <div id="cfg-retro-group"><div class="form-group"><label class="form-label" data-i18n="ui.napcat.config.retro_review_max_msgs">回溯审核最多取多少条消息</label><input class="form-input" id="cfg-retro-max-msgs" type="number" min="1" max="100" step="1"></div>
         <div class="form-group"><label class="form-label" data-i18n="ui.napcat.config.retro_review_max_reply">回溯审核最多补回多少条</label><input class="form-input" id="cfg-retro-max-reply" type="number" min="1" max="20" step="1"></div></div>
     </div>

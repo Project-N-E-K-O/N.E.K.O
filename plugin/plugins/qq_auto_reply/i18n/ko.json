@@ -557,5 +557,8 @@
   "ui.napcat.config.sticker_cooldown": "스티커 간격 (메시지 수, 0=제한 없음)",
   "ui.napcat.config.retro_review_max_msgs": "소급 검토 최대 메시지 수",
   "ui.napcat.config.retro_review_max_reply": "소급 검토 최대 보충 응답 수",
-  "ui.napcat.prompts.layer.format_open_platform.name": "출력 형식 (오픈 플랫폼)"
+  "ui.napcat.prompts.layer.format_open_platform.name": "출력 형식 (오픈 플랫폼)",
+  "ui.shared.config.group_memory": "그룹 채팅 장기 기억 활성화",
+  "ui.shared.config.group_member_memory": "그룹 멤버 장기 기억 기록 (추출 호출 증가)",
+  "ui.shared.config.cross_group_context": "그룹 간 실시간 주제 컨텍스트 허용 (기본값은 격리)"
 }

@@ -557,5 +557,8 @@
   "ui.napcat.config.sticker_cooldown": "スタンプ間隔（メッセージ数、0=制限なし）",
   "ui.napcat.config.retro_review_max_msgs": "遡及審査の最大取得メッセージ数",
   "ui.napcat.config.retro_review_max_reply": "遡及審査の最大補填返信数",
-  "ui.napcat.prompts.layer.format_open_platform.name": "出力形式 (オープンプラットフォーム)"
+  "ui.napcat.prompts.layer.format_open_platform.name": "出力形式 (オープンプラットフォーム)",
+  "ui.shared.config.group_memory": "グループチャットの長期記憶を有効にする",
+  "ui.shared.config.group_member_memory": "グループメンバーの長期記憶を記録する（抽出呼び出しが増加）",
+  "ui.shared.config.cross_group_context": "グループ間のリアルタイム話題コンテキストを許可する（デフォルトは分離）"
 }

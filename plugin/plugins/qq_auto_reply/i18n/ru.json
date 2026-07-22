@@ -557,5 +557,8 @@
   "ui.napcat.config.sticker_cooldown": "Интервал стикеров (кол-во сообщений, 0=без ограничений)",
   "ui.napcat.config.retro_review_max_msgs": "Макс. сообщений для ретро-проверки",
   "ui.napcat.config.retro_review_max_reply": "Макс. ответов для ретро-проверки",
-  "ui.napcat.prompts.layer.format_open_platform.name": "Формат вывода (Open Platform)"
+  "ui.napcat.prompts.layer.format_open_platform.name": "Формат вывода (Open Platform)",
+  "ui.shared.config.group_memory": "Включить долгосрочную память группового чата",
+  "ui.shared.config.group_member_memory": "Записывать долгосрочную память участников (добавляет вызовы извлечения)",
+  "ui.shared.config.cross_group_context": "Разрешить контекст тем между группами в реальном времени (по умолчанию изолировано)"
 }

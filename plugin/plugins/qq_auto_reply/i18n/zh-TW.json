@@ -557,5 +557,8 @@
   "ui.napcat.config.sticker_cooldown": "表情包間隔（訊息數，0=不限制）",
   "ui.napcat.config.retro_review_max_msgs": "回溯審核最多取多少條訊息",
   "ui.napcat.config.retro_review_max_reply": "回溯審核最多補回多少條",
-  "ui.napcat.prompts.layer.format_open_platform.name": "輸出格式 (開放平台)"
+  "ui.napcat.prompts.layer.format_open_platform.name": "輸出格式 (開放平台)",
+  "ui.shared.config.group_memory": "啟用群聊長期記憶",
+  "ui.shared.config.group_member_memory": "記錄群成員長期記憶（增加擷取呼叫）",
+  "ui.shared.config.cross_group_context": "允許跨群即時話題上下文（預設隔離）"
 }
