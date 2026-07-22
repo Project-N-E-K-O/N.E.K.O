@@ -3508,6 +3508,11 @@ class UniversalTutorialManager {
                 // Reserve the daily auto start before long narration so refreshes cannot replay it.
                 this.markAvatarFloatingGuideRoundAutoShown(round, autoReservationId);
             }
+            if (directTutorialBoot) {
+                // 自动 round 预留会改变预测结果；必须立即建立 direct-boot claim，覆盖随后
+                // 的服务端同步与胶囊 prepare 等待窗口，避免用户模型盖住教程模型。
+                this.claimDirectAvatarFloatingTutorialBoot(round, source);
+            }
             this.setAvatarFloatingGuideCurrentRound(round);
             this.snapshotAvatarFloatingModelInteractionState('avatar-floating-guide-start');
             this.isTutorialRunning = true;
@@ -3518,11 +3523,6 @@ class UniversalTutorialManager {
                 if (typeof stateApi.flush === 'function') {
                     await stateApi.flush();
                 }
-            }
-            if (directTutorialBoot) {
-                // 自动 round 已预留后，预测状态可能不再阻止用户模型初始化；必须在任何新的 await
-                // 之前建立 direct-boot claim，覆盖胶囊 prepare 等待窗口，避免用户模型盖住教程模型。
-                this.claimDirectAvatarFloatingTutorialBoot(round, source);
             }
             // prepare 已绑定当前教程生命周期；重启教程时聊天桥仍处于上一轮 closed 状态，
             // 必须先只打开本轮 PC/chat lifecycle，否则 prepare 会被当作迟到消息丢弃。

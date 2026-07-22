@@ -72,6 +72,31 @@ def test_legacy_never_remind_is_migrated_as_day_one_skip(tmp_path, suppression):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("completed, expected_completed", (
+    (False, []),
+    (True, [1]),
+))
+def test_legacy_existing_user_is_migrated_with_all_rounds_settled(
+    tmp_path,
+    completed,
+    expected_completed,
+):
+    manager = _ConfigManager(tmp_path)
+    (tmp_path / "tutorial_prompt.json").write_text(json.dumps({
+        "user_cohort": "existing",
+        "home_tutorial_completed": completed,
+    }))
+
+    response = get_seven_day_tutorial_state_response(config_manager=manager)
+
+    assert response["initialized"] is True
+    assert response["revision"] == 1
+    assert response["state"]["completedRounds"] == expected_completed
+    expected_skipped = list(range(2 if completed else 1, 8))
+    assert response["state"]["skippedRounds"] == expected_skipped
+
+
+@pytest.mark.unit
 def test_first_browser_state_becomes_authoritative_and_survives_new_origin(tmp_path):
     manager = _ConfigManager(tmp_path)
     saved = replace_seven_day_tutorial_state(

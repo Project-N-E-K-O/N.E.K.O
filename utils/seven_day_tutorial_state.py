@@ -210,13 +210,22 @@ def _migrate_legacy_tutorial_state(config_manager=None) -> dict[str, Any] | None
         legacy_state.get("never_remind") is True
         or _clean_string(legacy_state.get("status"), limit=16).lower() == "never"
     )
-    if not completed and not permanently_suppressed:
+    existing_user = (
+        _clean_string(legacy_state.get("user_cohort"), limit=32).lower()
+        == "existing"
+    )
+    if not completed and not permanently_suppressed and not existing_user:
         return None
+
+    if existing_user:
+        skipped_rounds = list(range(2 if completed else 1, ROUND_COUNT + 1))
+    else:
+        skipped_rounds = [] if completed else [1]
 
     migrated_state = normalize_seven_day_tutorial_state({
         "firstSeenDate": _legacy_first_seen_date(legacy_state),
         "completedRounds": [1] if completed else [],
-        "skippedRounds": [] if completed else [1],
+        "skippedRounds": skipped_rounds,
         "updatedAt": _legacy_updated_at(legacy_state),
     })
     store = {
