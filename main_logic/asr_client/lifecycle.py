@@ -513,6 +513,19 @@ class VoiceInputLifecycleController:
             return
         self._pending_turn.clear()
 
+    def preserve_unconfirmed_pending_audio(self) -> bool:
+        """Move a detected but unconfirmed successor into the existing pre-roll."""
+
+        if self._pending_turn_speech:
+            return False
+        payload = self._pending_turn.drain()
+        if not payload:
+            return False
+        dropped = self._pre_roll.append(payload, sample_rate_hz=16_000)
+        if dropped:
+            self.metrics.buffer_overflow_count += 1
+        return True
+
     def stop(self) -> None:
         if self._state is not VoiceLifecycleState.OFF:
             self._state = next_lifecycle_state(

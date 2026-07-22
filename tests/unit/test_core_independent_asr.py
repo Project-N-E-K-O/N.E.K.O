@@ -10,7 +10,11 @@ import pytest
 
 from main_logic.core import LLMSessionManager
 from main_logic.core.asr_runtime import AsrRuntimeMixin
-from main_logic.asr_client.detector_runtime import DetectorFeedResult, DetectorRuntime
+from main_logic.asr_client.detector_runtime import (
+    DetectorFeedResult,
+    DetectorRuntime,
+    SmartTurnReadiness,
+)
 from main_logic.asr_client.detector import (
     AsrDetectorDispatcher,
     BoundDetectorTurn,
@@ -18,10 +22,13 @@ from main_logic.asr_client.detector import (
     DetectorCandidateKey,
     DetectorIngressIdentity,
     DetectorPrewarmEvent,
+    DetectorTransportPrewarmEvent,
+    ProviderCandidateFence,
     DetectorSubmitResult,
     DetectorSubmitStatus,
 )
 from main_logic.asr_client.lifecycle import (
+    AudioDisposition,
     VoiceIngressToken,
     VoiceLifecycleConfig,
     VoiceLifecycleEvent,
@@ -109,6 +116,10 @@ class _ReadyDetector:
         self.reset = AsyncMock(side_effect=self._reset)
         self.close = AsyncMock()
         self.release_deferred_turn = AsyncMock()
+        self.seal_provider_candidate = AsyncMock(
+            return_value=ProviderCandidateFence(0, 0, 0)
+        )
+        self.complete_provider_candidate = AsyncMock(return_value=False)
         self.pin_endpointing_session = AsyncMock(return_value=True)
         self.bind_candidate = AsyncMock(side_effect=self._bind_candidate)
 
@@ -337,6 +348,121 @@ async def test_unavailable_submit_blocks_core_route() -> None:
     )
 
     assert runtime._asr_route_mode == "blocked"
+
+
+@pytest.mark.parametrize("provider", ["soniox", "openai"])
+async def test_streaming_provider_transport_prewarm_connects_without_wire_pcm(
+    provider: str,
+) -> None:
+    class Vad:
+        def load(self) -> bool:
+            return True
+
+        def close(self) -> None:
+            return None
+
+    class Gate:
+        def feed(self, _pcm16: bytes):
+            return ()
+
+        def reset(self) -> None:
+            return None
+
+    runtime = _Runtime()
+    runtime._asr_provider = provider
+    runtime._asr_route_mode = "independent"
+    runtime._asr_transport_selection = _selection(provider, "provider")
+    runtime._asr_lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy(provider, "provider"),
+        shadow_mode=False,
+    )
+    runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    detector = None
+
+    async def on_event(event) -> None:
+        accepted = runtime._asr_detector_dispatcher.submit_nowait(
+            CoreDetectorEventEnvelope(
+                event=event,
+                detector_ref=detector,
+                lifecycle_ref=runtime._asr_lifecycle,
+                session_epoch=runtime._asr_session_epoch,
+            )
+        )
+        assert accepted is True
+
+    detector = DetectorRuntime(
+        vad=Vad(),
+        gate=Gate(),
+        provider_policy=runtime._asr_lifecycle.provider_policy,
+        on_event=on_event,
+    )
+    runtime._asr_detector = detector
+    runtime._asr_runtime._restart_transport = AsyncMock()
+    runtime._asr_runtime._schedule_transport_warm_expiry = MagicMock()
+    runtime._asr_runtime._ensure_smart_turn_ready = AsyncMock(
+        side_effect=AssertionError("transport prewarm must not load SmartTurn")
+    )
+    await runtime._route_microphone_audio(
+        b"\x01\x00" * 160,
+        sample_rate_hz=16_000,
+        speech_probability=0.9,
+        rnnoise_available=True,
+    )
+    await runtime._route_microphone_audio(
+        b"\x02\x00" * 160,
+        sample_rate_hz=16_000,
+        speech_probability=0.9,
+        rnnoise_available=True,
+    )
+    await runtime._asr_detector_dispatcher.wait_idle()
+
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.PREWARMING
+    runtime._asr_runtime._restart_transport.assert_awaited_once_with()
+    runtime._asr_runtime._ensure_smart_turn_ready.assert_not_awaited()
+    assert runtime._asr_audio_dispatcher.active_turn is None
+    assert runtime._asr_audio_bytes == 0
+    assert detector.smart_turn_readiness is SmartTurnReadiness.UNLOADED
+    runtime._asr_runtime._schedule_transport_warm_expiry.assert_called_once_with(
+        runtime._asr_session_epoch,
+        ttl_ms=5_000,
+    )
+    await detector.close()
+    await runtime._asr_detector_dispatcher.close()
+
+
+async def test_provider_final_preserves_unconfirmed_successor_pcm_as_pre_roll() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    detector = runtime._asr_detector
+    assert isinstance(detector, _ReadyDetector)
+    detector.complete_provider_candidate.return_value = True
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        runtime._asr_session_epoch,
+    )
+    await runtime._handle_independent_asr_endpoint(runtime._asr_session_epoch)
+    successor_pcm = b"\x02\x00" * 160
+    assert runtime._asr_lifecycle.accept_audio(
+        successor_pcm,
+        sample_rate_hz=16_000,
+    ).disposition is AudioDisposition.BUFFER
+
+    await runtime._handle_independent_asr_final(
+        "first",
+        runtime._asr_session_epoch,
+        "openai",
+    )
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        runtime._asr_session_epoch,
+    )
+    decision = runtime._asr_lifecycle.accept_audio(
+        b"\x03\x00" * 160,
+        sample_rate_hz=16_000,
+    )
+    assert decision.disposition is AudioDisposition.FORWARD_WITH_PRE_ROLL
+    assert decision.pre_roll.startswith(successor_pcm)
 
 
 async def test_async_detector_orders_pre_roll_before_smart_turn_seal() -> None:

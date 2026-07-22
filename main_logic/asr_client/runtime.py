@@ -37,9 +37,11 @@ from .detector import (
     CoreDetectorEventEnvelope,
     DetectorActivityEvent,
     DetectorPrewarmEvent,
+    DetectorTransportPrewarmEvent,
     DetectorRuntimeEvent,
     DetectorSubmitStatus,
     DetectorTurnEvent,
+    ProviderCandidateFence,
 )
 from .detector_runtime import DetectorRuntime, SmartTurnLease
 from .lifecycle import (
@@ -184,6 +186,7 @@ class IndependentAsrRuntime:
         self._asr_pending_speech_confirmed = False
         self._asr_pending_detector_candidate = None
         self._asr_sealed_turn_token: VoiceTransportToken | None = None
+        self._asr_provider_candidate_fence: ProviderCandidateFence | None = None
         self._asr_audio_sequence = 0
         self._asr_audio_generation = 0
         self._asr_current_ingress_token: VoiceIngressToken | None = None
@@ -406,6 +409,14 @@ class IndependentAsrRuntime:
                     if event.kind == "audio_backpressure"
                     else "ASR_ENDPOINTING_FAILED"
                 ),
+            )
+            return
+        if isinstance(event, DetectorTransportPrewarmEvent):
+            await self._handle_transport_prewarm_event(
+                event,
+                detector,
+                lifecycle,
+                envelope.session_epoch,
             )
             return
         if isinstance(event, DetectorPrewarmEvent):
@@ -785,11 +796,7 @@ class IndependentAsrRuntime:
                     if policy.endpoint_authority == "smart_turn"
                     else None
                 ),
-                on_event=(
-                    on_detector_event
-                    if policy.endpoint_authority == "smart_turn"
-                    else None
-                ),
+                on_event=on_detector_event,
             )
             self._asr_detector = detector_ref
             self._asr_session_factory = create_candidate
@@ -886,6 +893,7 @@ class IndependentAsrRuntime:
         self._asr_pending_detector_candidate = None
         self._asr_audio_sequence = 0
         self._asr_sealed_turn_token = None
+        self._asr_provider_candidate_fence = None
         if asr_session is not None:
             try:
                 await asr_session.close()
@@ -1054,6 +1062,7 @@ class IndependentAsrRuntime:
                         speech_probability=speech_probability,
                         rnnoise_available=rnnoise_available,
                         rnnoise_evidence=rnnoise_evidence,
+                        ingress_token=ingress_token,
                     )
                     if not ingress_is_current():
                         return AsrSubmitResult(AsrSubmitStatus.STALE)
@@ -1372,6 +1381,7 @@ class IndependentAsrRuntime:
         self._asr_audio_dispatcher.abort()
         self._asr_reserved_final_key = None
         self._asr_sealed_turn_token = None
+        self._asr_provider_candidate_fence = None
         self._asr_turn_prepared = False
         self._asr_received_audio = False
         self._asr_pending_speech_confirmed = False
@@ -1641,6 +1651,55 @@ class IndependentAsrRuntime:
         self._activate_asr_audio_dispatcher(lifecycle, turn_token)
         await self._prepare_independent_asr_turn(epoch)
 
+    async def _handle_transport_prewarm_event(
+        self,
+        event: DetectorTransportPrewarmEvent,
+        detector: DetectorRuntime,
+        lifecycle: VoiceInputLifecycleController,
+        epoch: int,
+    ) -> None:
+        """Preconnect the selected transport without granting turn authority."""
+
+        if (
+            epoch != self._asr_session_epoch
+            or detector is not self._asr_detector
+            or lifecycle is not self._asr_lifecycle
+            or not self._ingress_token_matches(event.ingress.ingress_token)
+        ):
+            return
+        state = lifecycle.snapshot.state
+        if state is VoiceLifecycleState.DRAINING:
+            return
+        if state in {
+            VoiceLifecycleState.LOCAL_LISTEN,
+            VoiceLifecycleState.WARM_IDLE,
+            VoiceLifecycleState.DEEP_SLEEP,
+        }:
+            warm_task = self._asr_warm_expiry_task
+            if warm_task is not None:
+                warm_task.cancel()
+                self._asr_warm_expiry_task = None
+            if state is VoiceLifecycleState.WARM_IDLE:
+                lifecycle.metrics.warm_hit_count += 1
+            lifecycle.transition(VoiceLifecycleEvent.SOFT_WAKE)
+            await self._send_asr_lifecycle_state(VoiceLifecycleState.PREWARMING)
+        if lifecycle.snapshot.state is not VoiceLifecycleState.PREWARMING:
+            return
+        session = self._asr_session
+        if session is None or not getattr(session, "is_ready", True):
+            await self._restart_transport()
+        if (
+            epoch != self._asr_session_epoch
+            or detector is not self._asr_detector
+            or lifecycle is not self._asr_lifecycle
+            or lifecycle.snapshot.state is not VoiceLifecycleState.PREWARMING
+        ):
+            return
+        self._schedule_transport_warm_expiry(
+            epoch,
+            ttl_ms=lifecycle.config.idle_transport_close_ms,
+        )
+
     async def _handle_independent_asr_activity(
         self,
         event: SpeechActivityEvent,
@@ -1770,6 +1829,18 @@ class IndependentAsrRuntime:
                 )
                 return
             self._asr_reserved_final_key = final_key
+            if lifecycle.provider_policy.endpoint_authority == "provider":
+                fence = await detector.seal_provider_candidate()
+                if fence is None:
+                    self._asr_transcript_dispatcher.release(final_key)
+                    self._asr_reserved_final_key = None
+                    await self._handle_independent_asr_error(
+                        epoch,
+                        self._asr_provider or "unknown",
+                        status_code="ASR_ENDPOINTING_FAILED",
+                    )
+                    return
+                self._asr_provider_candidate_fence = fence
             lifecycle.transition(VoiceLifecycleEvent.TURN_SEALED)
             self._asr_sealed_turn_token = self._capture_transport_token(lifecycle)
             self._asr_turn_endpointed_at = time.monotonic()
@@ -1885,6 +1956,7 @@ class IndependentAsrRuntime:
         has_pending_turn = False
         envelope: TranscriptEnvelope | None = None
         accepted_turn_token: VoiceTurnToken | None = None
+        successor_present = False
         async with self._asr_final_lock:
             if epoch != self._asr_session_epoch:
                 return
@@ -1908,11 +1980,23 @@ class IndependentAsrRuntime:
                 )
             has_pending_turn = lifecycle_ref.has_pending_turn
             accepted_turn_token = sealed_token.turn
-            lifecycle_ref.transition(VoiceLifecycleEvent.PROVIDER_FINAL)
             detector_ref = self._asr_detector
+            if lifecycle_ref.provider_policy.endpoint_authority == "provider":
+                provider_fence = self._asr_provider_candidate_fence
+                if provider_fence is None or detector_ref is None:
+                    return
+                completion = await detector_ref.complete_provider_candidate(
+                    provider_fence
+                )
+                if completion is None:
+                    return
+                successor_present = completion
+                self._asr_provider_candidate_fence = None
+            lifecycle_ref.transition(VoiceLifecycleEvent.PROVIDER_FINAL)
             self._asr_turn_prepared = False
             self._asr_received_audio = False
             self._asr_sealed_turn_token = None
+            self._asr_provider_candidate_fence = None
             self._asr_turn_endpointed_at = None
             self._asr_reserved_final_key = None
             watchdog = self._asr_final_watchdog_task
@@ -1928,6 +2012,8 @@ class IndependentAsrRuntime:
             else:
                 lifecycle_ref.metrics.false_wake_count += 1
                 self._asr_transcript_dispatcher.release(final_key)
+            if successor_present and not has_pending_turn:
+                lifecycle_ref.preserve_unconfirmed_pending_audio()
             if not has_pending_turn:
                 self._schedule_transport_warm_expiry(
                     epoch,
@@ -2027,6 +2113,7 @@ class IndependentAsrRuntime:
         self._asr_accepted_final_keys.clear()
         self._asr_reserved_final_key = None
         self._asr_sealed_turn_token = None
+        self._asr_provider_candidate_fence = None
         if asr_session is not None:
             task = asyncio.create_task(self._close_asr_session(asr_session))
             self._asr_close_tasks.add(task)
