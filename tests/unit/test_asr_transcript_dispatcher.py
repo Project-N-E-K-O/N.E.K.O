@@ -11,7 +11,7 @@ from main_logic.asr_client.lifecycle import (
     VoiceTurnToken,
 )
 from main_logic.asr_client.transcript import (
-    CoreTranscriptDispatcher,
+    TranscriptDispatcher,
     TranscriptEnvelope,
 )
 
@@ -19,12 +19,12 @@ from main_logic.asr_client.transcript import (
 pytestmark = pytest.mark.asyncio
 
 
-def _envelope(turn_id: int, *, session: object | None = None) -> TranscriptEnvelope:
+def _envelope(turn_id: int) -> TranscriptEnvelope:
     token = VoiceTurnToken(
         ingress=VoiceIngressToken(1, "socket", 2, 3, 4),
         turn_id=turn_id,
     )
-    return TranscriptEnvelope(token, session or object(), "qwen", f"text-{turn_id}")
+    return TranscriptEnvelope(token, "qwen", f"text-{turn_id}")
 
 
 async def test_dispatcher_reserves_capacity_and_serializes_delivery() -> None:
@@ -36,7 +36,7 @@ async def test_dispatcher_reserves_capacity_and_serializes_delivery() -> None:
             await release_first.wait()
         delivered.append(envelope.turn_token.turn_id)
 
-    dispatcher = CoreTranscriptDispatcher(dispatch, capacity=2)
+    dispatcher = TranscriptDispatcher(dispatch, capacity=2)
     first = _envelope(1)
     second = _envelope(2)
 
@@ -60,7 +60,7 @@ async def test_dispatcher_invalidation_cancels_old_core_work() -> None:
         await blocked.wait()
 
     dispatch = AsyncMock(side_effect=wait_forever)
-    dispatcher = CoreTranscriptDispatcher(dispatch)
+    dispatcher = TranscriptDispatcher(dispatch)
     envelope = _envelope(1)
     assert dispatcher.try_reserve(envelope.final_key) is True
     dispatcher.submit(envelope)
