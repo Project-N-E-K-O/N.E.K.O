@@ -1435,14 +1435,18 @@ class IndependentAsrRuntime:
                     self.display_name,
                 )
 
-    def _schedule_transport_warm_expiry(self, epoch: int) -> None:
+    def _schedule_transport_warm_expiry(
+        self,
+        epoch: int,
+        *,
+        ttl_ms: int,
+    ) -> None:
         task = self._asr_warm_expiry_task
         if task is not None:
             task.cancel()
         lifecycle = self._asr_lifecycle
         if lifecycle is None or not self._voice_input_resource_optimization_enabled:
             return
-        ttl_ms = lifecycle.config.idle_transport_close_ms
 
         async def expire() -> None:
             try:
@@ -1450,7 +1454,7 @@ class IndependentAsrRuntime:
                 if epoch != self._asr_session_epoch:
                     return
                 current = self._asr_lifecycle
-                if current is not None:
+                if current is lifecycle:
                     if current.snapshot.state is VoiceLifecycleState.PREWARMING:
                         detector = self._asr_detector
                         lease, self._asr_smart_turn_lease = (
@@ -1621,7 +1625,10 @@ class IndependentAsrRuntime:
         ):
             return
         if event.kind != "continuous":
-            self._schedule_transport_warm_expiry(epoch)
+            self._schedule_transport_warm_expiry(
+                epoch,
+                ttl_ms=lifecycle.config.idle_transport_close_ms,
+            )
             return
         session_ref = self._asr_session
         if session_ref is None or not getattr(session_ref, "is_ready", True):
@@ -1922,7 +1929,10 @@ class IndependentAsrRuntime:
                 lifecycle_ref.metrics.false_wake_count += 1
                 self._asr_transcript_dispatcher.release(final_key)
             if not has_pending_turn:
-                self._schedule_transport_warm_expiry(epoch)
+                self._schedule_transport_warm_expiry(
+                    epoch,
+                    ttl_ms=lifecycle_ref.provider_policy.warm_transport_ms,
+                )
 
         assert lifecycle_ref is not None
         assert accepted_turn_token is not None
