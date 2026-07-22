@@ -362,6 +362,10 @@ class QQAttentionGateService:
     async def _push_group_digest(self, group_id: str) -> None:
         """焦点切换时将旧焦点群的完整会话摘要推送到 Memory Server"""
         try:
+            if not bool((getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                "group_memory_enabled", False,
+            )):
+                return
             session_key = f"group:{group_id}"
             sessions = getattr(self.plugin, "_user_sessions", {}) or {}
             s = sessions.get(session_key)
@@ -374,28 +378,16 @@ class QQAttentionGateService:
             if len(history) < 4:
                 return
             her_name = str(s.get("her_name") or "neko")
-            login_id = str(s.get("login_self_id") or "")
-            sender_id = str(s.get("sender_id") or "")
-            user_title = str(s.get("user_title") or "")
-            user_label = f"{user_title}(QQ:{sender_id})" if user_title else f"QQ{sender_id}"
-            messages = [
-                {"role": getattr(m, "role", "") if hasattr(m, "role") else m.get("role", ""),
-                 "content": str(getattr(m, "content", "") if hasattr(m, "content") else m.get("content", ""))[:200]}
-                for m in history
-                if (getattr(m, "role", "") if hasattr(m, "role") else m.get("role", "")) in ("user", "assistant")
-            ]
+            messages = self.plugin.session_memory_service.conversation_slice_to_memory_messages(
+                history, 0,
+            )[-self.plugin.session_memory_service.GROUP_HISTORY_MAX_MESSAGES:]
             if not messages:
                 return
-            await self.plugin.memory_bridge.post_memory_history(
-                "process",
+            await self.plugin.memory_bridge.post_scoped_memory_history(
                 her_name,
-                [{"role": "system", "content": (
-                    f"[QQ群聊记录] {her_name} 使用QQ插件在群 {group_id}"
-                    + (f"（账号 {login_id}）" if login_id else "")
-                    + f" 聊了以下内容：\n"
-                    + "\n".join(f"{user_label if m['role']=='user' else her_name}: {m['content']}" for m in messages)
-                )}],
-                timeout=5.0,
+                messages,
+                subject=self.plugin.memory_bridge.group_subject(group_id),
+                timeout=30.0,
             )
             self._logger.info(f"[Digest] 群 {group_id} 完整会话已推送 Memory Server ({len(messages)}条)")
         except Exception as e:

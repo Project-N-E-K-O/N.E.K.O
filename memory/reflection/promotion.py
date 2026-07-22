@@ -281,11 +281,18 @@ class PromotionMixin:
                 #     "记忆失活" case；rare（启发式 ratio ≥0.4 才命中）。
                 rid = r.get('id')
                 try:
+                    from memory.scopes import subject_from_entry
+                    promote_subject = subject_from_entry(r)
+                    promote_kwargs = (
+                        {'subject': promote_subject}
+                        if promote_subject is not None else {}
+                    )
                     code = await self._persona_manager.aadd_fact(
                         lanlan_name, r.get('text', ''),
                         entity=r.get('entity', 'relationship'),
                         source='reflection_time_driven',
                         source_id=rid,
+                        **promote_kwargs,
                     )
                 except Exception as e:
                     logger.warning(

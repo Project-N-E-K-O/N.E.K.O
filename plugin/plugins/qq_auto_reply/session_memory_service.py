@@ -6,6 +6,10 @@ from typing import Any
 
 
 class QQSessionMemoryService:
+    GROUP_HISTORY_MAX_MESSAGES = 200
+    GROUP_MEMBER_MAX_PARTICIPANTS = 8
+    GROUP_MEMBER_MAX_MESSAGES = 50
+
     def __init__(self, plugin: Any):
         self.plugin = plugin
 
@@ -83,7 +87,34 @@ class QQSessionMemoryService:
     async def post_memory_history(self, endpoint: str, her_name: str, messages: list[dict[str, Any]], timeout: float = 5.0) -> dict[str, Any]:
         return await self.plugin.memory_bridge.post_memory_history(endpoint, her_name, messages, timeout=timeout)
 
+    def record_group_member_turn(self, user_data: dict[str, Any], context: Any) -> None:
+        """Keep bounded, actor-attributed user turns for optional member memory."""
+        settings = getattr(self.plugin, "_qq_settings", {}) or {}
+        if not settings.get("group_member_memory_enabled"):
+            return
+        if not getattr(context, "is_group", False):
+            return
+        sender_id = str(getattr(context, "sender_id", "") or "").strip()
+        text = str(getattr(context, "message", "") or "").strip()
+        if not sender_id or not text:
+            return
+        buckets = user_data.setdefault("group_member_memory_messages", {})
+        if sender_id not in buckets and len(buckets) >= self.GROUP_MEMBER_MAX_PARTICIPANTS:
+            return
+        messages = buckets.setdefault(sender_id, [])
+        messages.append({
+            "role": "user",
+            "content": [{"type": "text", "text": text}],
+        })
+        if len(messages) > self.GROUP_MEMBER_MAX_MESSAGES:
+            del messages[:-self.GROUP_MEMBER_MAX_MESSAGES]
+
     async def cache_session_delta(self, session_key: str, user_data: dict[str, Any]) -> int:
+        # Busy group chats use one scoped extraction at session finalization.
+        # Feeding each group turn into the legacy /cache pipeline would both
+        # increase LLM cost and contaminate legacy-private memory.
+        if user_data.get("is_group"):
+            return 0
         session = user_data.get("session")
         her_name = user_data.get("her_name")
         if not session or not her_name:
@@ -113,20 +144,63 @@ class QQSessionMemoryService:
 
         try:
             conversation_history = getattr(session, "_conversation_history", []) or []
-            last_synced_index = int(user_data.get("last_synced_index", 0))
-            remaining_messages = self.conversation_slice_to_memory_messages(conversation_history, last_synced_index)
+            if user_data.get("is_group"):
+                group_id = str(user_data.get("group_id") or "").strip()
+                scoped_messages = self.conversation_slice_to_memory_messages(
+                    conversation_history, 0,
+                )[-self.GROUP_HISTORY_MAX_MESSAGES:]
+                if group_id and scoped_messages:
+                    result = await self.plugin.memory_bridge.post_scoped_memory_history(
+                        her_name,
+                        scoped_messages,
+                        subject=self.plugin.memory_bridge.group_subject(group_id),
+                        timeout=30.0,
+                    )
+                    if result.get("status") == "error":
+                        raise RuntimeError(result.get("message", "scoped history failed"))
+                    self.plugin.logger.info(
+                        f"[{reason}] 已为群 {group_id} 完成 scoped 记忆结算，"
+                        f"消息数: {len(scoped_messages)}"
+                    )
+                member_memory_enabled = bool(
+                    (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                        "group_member_memory_enabled", False,
+                    )
+                )
+                member_buckets = (
+                    user_data.get("group_member_memory_messages") or {}
+                    if member_memory_enabled else {}
+                )
+                for sender_id, member_messages in list(member_buckets.items()):
+                    if not group_id or not sender_id or not member_messages:
+                        continue
+                    result = await self.plugin.memory_bridge.post_scoped_memory_history(
+                        her_name,
+                        member_messages,
+                        subject=self.plugin.memory_bridge.group_participant_subject(
+                            group_id, sender_id,
+                        ),
+                        timeout=30.0,
+                    )
+                    if result.get("status") == "error":
+                        raise RuntimeError(
+                            result.get("message", "scoped participant history failed")
+                        )
+            else:
+                last_synced_index = int(user_data.get("last_synced_index", 0))
+                remaining_messages = self.conversation_slice_to_memory_messages(conversation_history, last_synced_index)
 
-            if remaining_messages:
-                result = await self.post_memory_history("process", her_name, remaining_messages, timeout=30.0)
-                if result.get("status") == "error":
-                    raise RuntimeError(result.get("message", "process failed"))
-                self.plugin.logger.info(f"[{reason}] 已为用户 {session_key} 完成正式记忆结算，消息数: {len(remaining_messages)}")
-            elif user_data.get("has_cached_memory"):
-                settled_messages = self.conversation_slice_to_memory_messages(conversation_history, 0)
-                result = await self.post_memory_history("settle", her_name, settled_messages, timeout=30.0)
-                if result.get("status") == "error":
-                    raise RuntimeError(result.get("message", "settle failed"))
-                self.plugin.logger.info(f"[{reason}] 已为用户 {session_key} 完成缓存记忆结算")
+                if remaining_messages:
+                    result = await self.post_memory_history("process", her_name, remaining_messages, timeout=30.0)
+                    if result.get("status") == "error":
+                        raise RuntimeError(result.get("message", "process failed"))
+                    self.plugin.logger.info(f"[{reason}] 已为用户 {session_key} 完成正式记忆结算，消息数: {len(remaining_messages)}")
+                elif user_data.get("has_cached_memory"):
+                    settled_messages = self.conversation_slice_to_memory_messages(conversation_history, 0)
+                    result = await self.post_memory_history("settle", her_name, settled_messages, timeout=30.0)
+                    if result.get("status") == "error":
+                        raise RuntimeError(result.get("message", "settle failed"))
+                    self.plugin.logger.info(f"[{reason}] 已为用户 {session_key} 完成缓存记忆结算")
         except Exception as e:
             self.plugin.logger.error(f"[{reason}] 用户 {session_key} 的记忆结算失败: {e}")
             return False

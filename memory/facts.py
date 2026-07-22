@@ -50,6 +50,7 @@ from config.prompts.prompts_memory import (
     get_signal_detection_prompt,
 )
 from memory.evidence import evidence_score
+from memory.scopes import MemorySubject, coerce_subject, entry_matches_subject
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.language_utils import get_global_language
 from utils.config_manager import get_config_manager
@@ -556,6 +557,7 @@ class FactStore:
         *,
         default_source: str = 'user_observation',
         semantic_dedup: bool = True,
+        subject: MemorySubject | dict | None = None,
     ) -> list[dict]:
         async with self._get_persist_alock(lanlan_name):
             return await self._apersist_new_facts_locked(
@@ -563,6 +565,7 @@ class FactStore:
                 extracted,
                 default_source=default_source,
                 semantic_dedup=semantic_dedup,
+                subject=subject,
             )
 
     async def _apersist_new_facts_locked(
@@ -570,6 +573,7 @@ class FactStore:
         *,
         default_source: str = 'user_observation',
         semantic_dedup: bool = True,
+        subject: MemorySubject | dict | None = None,
     ) -> list[dict]:
         """Dedup (SHA-256 + FTS5) + persist. importance < 5 facts are KEPT
         (RFC §3.1.3)—downstream `get_unabsorbed_facts(min_importance=5)`
@@ -593,6 +597,7 @@ class FactStore:
         """
         if default_source not in self._SOURCE_VALUES:
             default_source = self._SOURCE_DEFAULT
+        memory_subject = coerce_subject(subject)
 
         new_facts: list[dict] = []
         upgraded_count = 0
@@ -628,18 +633,20 @@ class FactStore:
             # RFC §3.1.3: **不再**在抽取入口硬丢 importance < 5。所有 fact
             # 一律落盘，消费侧按场景 min_importance= 过滤；保留完整 audit。
 
-            # Entity whitelist: RFC uses exactly these three values. Any
-            # other LLM output (common mistake: "user"→"master") gets
-            # snapped back to "master" with a debug log so the miss is
-            # visible but not alarming.
-            raw_entity = fact.get('entity', 'master')
-            if raw_entity in ('master', 'neko', 'relationship'):
-                entity = raw_entity
+            # Scoped writes own their entity: untrusted LLM output must not
+            # redirect a group/participant fact into the legacy master bucket.
+            # Legacy writes keep the original three-value whitelist unchanged.
+            if memory_subject is not None:
+                entity = memory_subject.kind
             else:
-                logger.debug(
-                    f"[FactStore] {lanlan_name}: LLM 返回非法 entity={raw_entity!r}，回退到 master"
-                )
-                entity = 'master'
+                raw_entity = fact.get('entity', 'master')
+                if raw_entity in ('master', 'neko', 'relationship'):
+                    entity = raw_entity
+                else:
+                    logger.debug(
+                        f"[FactStore] {lanlan_name}: LLM 返回非法 entity={raw_entity!r}，回退到 master"
+                    )
+                    entity = 'master'
 
             # Source resolution: LLM 显式 source 优先 + 白名单 + default fallback
             raw_source = fact.get('source')
@@ -663,6 +670,8 @@ class FactStore:
                 else None
             )
             hash_input = f"{daily_event_date}\n{text}" if daily_event_date else text
+            if memory_subject is not None:
+                hash_input = f"{memory_subject.key}\n{memory_subject.scope}\n{hash_input}"
             content_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:16]
             if content_hash in existing_hashes:
                 existing = hash_to_existing.get(content_hash)
@@ -690,11 +699,15 @@ class FactStore:
                 for fid, score in similar:
                     if score >= -5:
                         continue
+                    hit = facts_by_id.get(fid)
+                    if not entry_matches_subject(hit or {}, memory_subject):
+                        # FTS5 is still character-wide. A semantic hit only
+                        # deduplicates inside the same subject boundary.
+                        continue
                     if daily_event_date:
                         # daily 候选：命中的既存 fact 若也是 daily 且日期不同 →
                         # 跨日期重复事件，不算语义重复（同日期近似命中仍挡住，
                         # 兜 LLM 重抽输出不稳定的重试幂等）。
-                        hit = facts_by_id.get(fid)
                         hit_meta = (hit or {}).get('external_import')
                         hit_date = (
                             str(hit_meta.get('event_date'))
@@ -764,6 +777,8 @@ class FactStore:
                 'embedding_text_sha256': None,
                 'embedding_model_id': None,
             }
+            if memory_subject is not None:
+                fact_entry.update(memory_subject.as_entry_fields())
             if external_import is not None:
                 self._apply_external_import_provenance(fact_entry, external_import)
             existing_facts.append(fact_entry)
@@ -874,6 +889,9 @@ class FactStore:
                     # past the filter and re-enter Stage-2 signal
                     # detection, defeating the suppression contract.
                     'suppress': r.get('suppress'),
+                    'subject_kind': r.get('subject_kind'),
+                    'subject_id': r.get('subject_id'),
+                    'scope': r.get('scope'),
                 })
 
         if persona_manager is not None:
@@ -900,7 +918,31 @@ class FactStore:
                         'embedding_text_sha256': entry.get('embedding_text_sha256'),
                         'embedding_model_id': entry.get('embedding_model_id'),
                         'suppress': entry.get('suppress'),
+                        'subject_kind': entry.get('subject_kind'),
+                        'subject_id': entry.get('subject_id'),
+                        'scope': entry.get('scope'),
                     })
+
+        # Keep Stage-2 evidence inside the same subject boundary as the facts
+        # that triggered it. Legacy facts can only see legacy observations;
+        # scoped facts can only see explicitly matching scoped observations.
+        from memory.scopes import (
+            filter_entries_for_subjects,
+            subject_from_entry,
+        )
+        trigger_subjects = []
+        include_legacy_private = not new_facts
+        for fact in new_facts or []:
+            trigger_subject = subject_from_entry(fact)
+            if trigger_subject is None:
+                include_legacy_private = True
+            else:
+                trigger_subjects.append(trigger_subject)
+        pool = filter_entries_for_subjects(
+            pool,
+            trigger_subjects or None,
+            include_legacy_private=include_legacy_private,
+        )
 
         # P2 step 3: route through MemoryRecallReranker whenever we have
         # a query, regardless of vector service state.  The reranker
@@ -1226,7 +1268,13 @@ class FactStore:
         batch_fact_ids = [f['id'] for f in batch]
         return persisted_this_round, signals, batch_fact_ids
 
-    async def extract_facts(self, messages: list, lanlan_name: str) -> list[dict]:
+    async def extract_facts(
+        self,
+        messages: list,
+        lanlan_name: str,
+        *,
+        subject: MemorySubject | dict | None = None,
+    ) -> list[dict]:
         """Stage-1-only backward-compat entry.
 
         Kept for callers that predate the evidence mechanism
@@ -1242,7 +1290,9 @@ class FactStore:
         extracted = await self._allm_extract_facts(lanlan_name, messages)
         if not extracted:
             return []
-        return await self._apersist_new_facts(lanlan_name, extracted)
+        return await self._apersist_new_facts(
+            lanlan_name, extracted, subject=subject,
+        )
 
     # ── external import state (sidecar) ──────────────────────────────
 
@@ -1721,6 +1771,8 @@ class FactStore:
         lanlan_name: str,
         messages: list,
         known_pool: list[dict],
+        *,
+        subject: MemorySubject | dict | None = None,
     ) -> list[dict] | None:
         """AI-aware Stage-1 (path B) extraction — input is the role-tagged full
         user+ai message set; the prompt embeds ``known_pool`` (facts path A
@@ -1756,7 +1808,7 @@ class FactStore:
         if not extracted:
             return []
         return await self._apersist_new_facts(
-            lanlan_name, extracted, default_source='ai_disclosure',
+            lanlan_name, extracted, default_source='ai_disclosure', subject=subject,
         )
 
     async def _allm_extract_facts_with_known_pool(
@@ -1813,19 +1865,35 @@ class FactStore:
 
     # ── query helpers ────────────────────────────────────────────────
 
-    def get_unabsorbed_facts(self, name: str, min_importance: int = 5) -> list[dict]:
+    def get_unabsorbed_facts(
+        self,
+        name: str,
+        min_importance: int = 5,
+        *,
+        subject: MemorySubject | dict | None = None,
+    ) -> list[dict]:
         """Get facts that haven't been consumed by a reflection yet."""
         facts = self.load_facts(name)
         return [
             f for f in facts
-            if not f.get('absorbed') and f.get('importance', 0) >= min_importance
+            if not f.get('absorbed')
+            and f.get('importance', 0) >= min_importance
+            and entry_matches_subject(f, subject)
         ]
 
-    async def aget_unabsorbed_facts(self, name: str, min_importance: int = 5) -> list[dict]:
+    async def aget_unabsorbed_facts(
+        self,
+        name: str,
+        min_importance: int = 5,
+        *,
+        subject: MemorySubject | dict | None = None,
+    ) -> list[dict]:
         facts = await self.aload_facts(name)
         return [
             f for f in facts
-            if not f.get('absorbed') and f.get('importance', 0) >= min_importance
+            if not f.get('absorbed')
+            and f.get('importance', 0) >= min_importance
+            and entry_matches_subject(f, subject)
         ]
 
     def get_facts_by_entity(self, name: str, entity: str) -> list[dict]:

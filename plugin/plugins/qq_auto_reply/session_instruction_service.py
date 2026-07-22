@@ -239,6 +239,9 @@ class QQSessionInstructionService:
             her_name=her_name,
             master_name=master_name,
             context_ready_template=context_ready_template,
+            is_group=is_group,
+            group_id=group_id,
+            sender_id=sender_id,
         )
         if core_memory_text:
             sections.append(core_memory_text)
@@ -396,11 +399,27 @@ class QQSessionInstructionService:
         her_name: str,
         master_name: str,
         context_ready_template: str,
+        is_group: bool = False,
+        group_id: str | None = None,
+        sender_id: str = "",
     ) -> str:
         if not should_use_memory_context:
             return ""
+        if is_group and not group_id:
+            return ""
         try:
-            memory_context = await self.plugin.memory_bridge.fetch_bootstrap_memory(her_name)
+            if is_group:
+                memory_context = await self.plugin.memory_bridge.fetch_scoped_bootstrap_memory(
+                    her_name,
+                    subjects=[
+                        self.plugin.memory_bridge.group_subject(group_id),
+                        self.plugin.memory_bridge.group_participant_subject(
+                            group_id, sender_id,
+                        ),
+                    ],
+                )
+            else:
+                memory_context = await self.plugin.memory_bridge.fetch_bootstrap_memory(her_name)
             if not memory_context:
                 return ""
             return CORE_MEMORY_SECTION.format(
@@ -425,6 +444,10 @@ class QQSessionInstructionService:
     def _append_cross_group_section(self, sections: list[str], current_group_id: str | None, is_group: bool) -> None:
         """群聊时注入其他群的最新话题摘要（跨群共享记忆）"""
         if not is_group or not current_group_id:
+            return
+        if not bool((getattr(self.plugin, "_qq_settings", {}) or {}).get(
+            "allow_cross_group_context", False,
+        )):
             return
         sessions = getattr(self.plugin, "_user_sessions", {}) or {}
         lines: list[str] = []

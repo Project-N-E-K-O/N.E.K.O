@@ -45,6 +45,40 @@ from utils.tokenize import acount_tokens, count_tokens, tokenizer_identity
 
 class RenderingMixin:
     @staticmethod
+    def _persona_view_for_subjects(
+        persona: dict,
+        subjects=None,
+        *,
+        include_legacy_private: bool | None = None,
+    ) -> dict:
+        """Return a shallow, scope-authorized persona view for rendering."""
+        from memory.scopes import (
+            SCOPED_PERSONA_PREFIX,
+            normalize_subjects,
+            persona_subject_from_section,
+        )
+        allowed = normalize_subjects(subjects)
+        if include_legacy_private is None:
+            include_legacy_private = not allowed
+        allowed_keys = {(subject.key, subject.scope) for subject in allowed}
+        view: dict = {}
+        for section_key, section in persona.items():
+            if not isinstance(section, dict):
+                continue
+            scoped_subject = persona_subject_from_section(section_key, section)
+            if scoped_subject is None:
+                if isinstance(section_key, str) and section_key.startswith(SCOPED_PERSONA_PREFIX):
+                    # A malformed scoped section is never reclassified as
+                    # legacy-private; fail closed so corrupt metadata cannot leak.
+                    continue
+                if include_legacy_private:
+                    view[section_key] = section
+                continue
+            if (scoped_subject.key, scoped_subject.scope) in allowed_keys:
+                view[section_key] = section
+        return view
+
+    @staticmethod
     def _text_fingerprint(text: str) -> str:
         """sha256 hex digest of `text` used as the cache key. Same
         encoding as the `rewrite_text_sha256` payload in amerge_into so
@@ -298,13 +332,20 @@ class RenderingMixin:
     def _filter_reflections_for_render(
         reflections: list[dict] | None, persona: dict,
         suppressed_text_set: set[str],
+        subjects=None,
+        include_legacy_private: bool | None = None,
     ) -> list[dict]:
         """Drop reflections whose text matches a suppressed persona entry
         (existing semantic — see `_is_suppressed_text` callers below)."""
         if not reflections:
             return []
+        from memory.scopes import filter_entries_for_subjects
         out = []
-        for r in reflections:
+        for r in filter_entries_for_subjects(
+            reflections,
+            subjects,
+            include_legacy_private=include_legacy_private,
+        ):
             if not isinstance(r, dict):
                 continue
             text = r.get('text', '')
@@ -375,7 +416,17 @@ class RenderingMixin:
                 if text:
                     lines.append(f"- {text}")
             if lines:
-                header = _headers.get(entity_key, entity_key)
+                section_meta = persona.get(entity_key, {})
+                subject_kind = section_meta.get('subject_kind')
+                subject_id = section_meta.get('subject_id')
+                if subject_kind == 'group_chat':
+                    header = f"群聊记忆（{subject_id}）"
+                elif subject_kind == 'participant':
+                    header = f"成员记忆（{subject_id}）"
+                elif subject_kind == 'group_participant':
+                    header = f"群内成员记忆（{subject_id}）"
+                else:
+                    header = _headers.get(entity_key, entity_key)
                 sections.append(f"### {header}\n" + "\n".join(lines))
 
         if trimmed_pending_reflections:
@@ -459,10 +510,17 @@ class RenderingMixin:
         self, name: str, persona: dict, name_mapping: dict,
         pending_reflections: list[dict] | None,
         confirmed_reflections: list[dict] | None,
+        subjects=None,
+        include_legacy_private: bool | None = None,
     ) -> str:
         """Sync 3-phase render path. Used by `render_persona_markdown` and
         any test/migration caller that doesn't have an event loop."""
         now = datetime.now()
+        persona = self._persona_view_for_subjects(
+            persona,
+            subjects,
+            include_legacy_private=include_legacy_private,
+        )
 
         protected_entries, non_protected_by_entity = (
             self._split_persona_for_render(persona)
@@ -487,6 +545,8 @@ class RenderingMixin:
             self._filter_reflections_for_render(
                 (pending_reflections or []) + (confirmed_reflections or []),
                 persona, suppressed_text_set,
+                subjects,
+                include_legacy_private,
             ),
             REFLECTION_RENDER_MAX_TOKENS, now,
             # Reflections have no `_personas`-style in-memory view — they're
@@ -542,7 +602,9 @@ class RenderingMixin:
         return trimmed_pending, trimmed_confirmed
 
     def render_persona_markdown(self, name: str, pending_reflections: list[dict] | None = None,
-                                   confirmed_reflections: list[dict] | None = None) -> str:
+                                   confirmed_reflections: list[dict] | None = None,
+                                   *, subjects=None,
+                                   include_legacy_private: bool | None = None) -> str:
         """Render persona as markdown for LLM context injection.
 
         Suppressed entries are rendered in a separate "暂不主动提及" ("not
@@ -555,12 +617,16 @@ class RenderingMixin:
         _, _, _, _, name_mapping, _, _, _, _ = self._config_manager.get_character_data()
         return self._compose_persona_markdown(
             name, persona, name_mapping, pending_reflections, confirmed_reflections,
+            subjects, include_legacy_private,
         )
 
     async def arender_persona_markdown(
         self, name: str,
         pending_reflections: list[dict] | None = None,
         confirmed_reflections: list[dict] | None = None,
+        *,
+        subjects=None,
+        include_legacy_private: bool | None = None,
     ) -> str:
         """Async 3-phase render path. Production hot path — uses
         `acount_tokens` so the event loop doesn't stall on tiktoken IO."""
@@ -568,6 +634,11 @@ class RenderingMixin:
         persona = await self.aensure_persona(name)
         _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
         now = datetime.now()
+        persona = self._persona_view_for_subjects(
+            persona,
+            subjects,
+            include_legacy_private=include_legacy_private,
+        )
 
         protected_entries, non_protected_by_entity = (
             self._split_persona_for_render(persona)
@@ -589,6 +660,8 @@ class RenderingMixin:
             self._filter_reflections_for_render(
                 (pending_reflections or []) + (confirmed_reflections or []),
                 persona, suppressed_text_set,
+                subjects,
+                include_legacy_private,
             ),
             REFLECTION_RENDER_MAX_TOKENS, now,
             # See sync twin: reflections have no `_personas`-style

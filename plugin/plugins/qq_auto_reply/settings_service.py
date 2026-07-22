@@ -141,6 +141,14 @@ class QQSettingsService:
         retroactive_review_max_reply = kwargs.get("retroactive_review_max_reply")
         if retroactive_review_max_reply is not None:
             self.plugin._qq_settings["retroactive_review_max_reply"] = max(1, int(retroactive_review_max_reply))
+        for key in (
+            "group_memory_enabled",
+            "group_member_memory_enabled",
+            "allow_cross_group_context",
+        ):
+            value = kwargs.get(key)
+            if value is not None:
+                self.plugin._qq_settings[key] = bool(value)
         # 猫娘动态策略配置
         strategy_mode = kwargs.get("strategy_mode")
         if strategy_mode is not None:

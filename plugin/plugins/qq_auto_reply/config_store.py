@@ -121,6 +121,12 @@ class QQAutoReplyConfigStore:
             "retroactive_review_max_messages": 30,  # 回溯最多取多少条被忽略消息
             "retroactive_review_max_reply": 5,      # 回溯最多补回多少条
             "sticker_cooldown_messages": 5,          # 表情包发送间隔（群内消息数），0=不限制
+            # 群聊长期记忆显式 opt-in。成员记忆会增加按成员分桶的提取调用，
+            # 因此独立开关且默认关闭。
+            "group_memory_enabled": False,
+            "group_member_memory_enabled": False,
+            # 跨群实时话题不是长期记忆的一部分，默认严格隔离。
+            "allow_cross_group_context": False,
             # 提示词编辑器覆盖值（locale → layer_id → text）
             "prompt_overrides": {},
         }
