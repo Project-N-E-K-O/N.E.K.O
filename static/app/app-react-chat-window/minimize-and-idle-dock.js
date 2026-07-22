@@ -21,6 +21,8 @@
     var activeAnimationCleanup = null; // 当前进行中动画的清理函数
     I.pendingChatSurfaceMode = null;
     var pendingMinimizedSurfaceCommit = null;
+    var COMPACT_EXPAND_WIPE_MS = 300;
+    var COMPACT_EXPAND_TRANSITION_BUFFER_MS = 40;
 
     // ── Idle-dock: independent orchestration (Phase 4) ──────────
     // Positions the minimized ball next to CAT2/CAT3 return-ball.
@@ -1402,8 +1404,11 @@
             if (reduceCompactExpandMotion) {
                 finishCompactExpand();
             } else {
-                // React 的 neko-compact-expand-wipe 为 300ms；多留一帧余量后释放状态锁。
-                compactExpandTimer = window.setTimeout(finishCompactExpand, 340);
+                // 与 React 的 neko-compact-expand-wipe 保持同步，并多留一帧余量后释放状态锁。
+                compactExpandTimer = window.setTimeout(
+                    finishCompactExpand,
+                    COMPACT_EXPAND_WIPE_MS + COMPACT_EXPAND_TRANSITION_BUFFER_MS
+                );
                 activeAnimationCleanup = function () {
                     clearTimeout(compactExpandTimer);
                     compactExpandHandled = true;

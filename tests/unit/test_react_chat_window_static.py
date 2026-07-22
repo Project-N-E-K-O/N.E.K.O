@@ -1911,6 +1911,7 @@ def test_compact_minimize_does_not_replay_full_shell_collapse_animation():
 
 def test_web_compact_restore_does_not_replay_full_shell_expand_animation():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
 
     set_mode_block = script.split("function setChatSurfaceMode(nextMode)", 1)[1].split(
         "function cycleChatSurfaceMode()",
@@ -1935,9 +1936,20 @@ def test_web_compact_restore_does_not_replay_full_shell_expand_animation():
     assert "shell.classList.remove('is-mobile-content-capped', 'is-minimized');" in compact_restore
     assert "syncCompactSurfaceAnchor();" in compact_restore
     assert "scheduleMobileContentLayout();" in compact_restore
-    assert "setTimeout(finishCompactExpand, 340)" in compact_restore
+    assert "COMPACT_EXPAND_WIPE_MS + COMPACT_EXPAND_TRANSITION_BUFFER_MS" in compact_restore
     assert "shell.classList.add('is-expanding');" not in compact_restore
     assert "scale(" not in compact_restore
+
+    host_duration = re.search(r"var COMPACT_EXPAND_WIPE_MS = (\d+);", script)
+    css_duration = re.search(
+        r"\.compact-chat-surface-shell\.neko-compact-expanding\s*\{[^}]*"
+        r"animation:\s*neko-compact-expand-wipe\s+(\d+)ms",
+        styles,
+        re.DOTALL,
+    )
+    assert host_duration is not None
+    assert css_duration is not None
+    assert host_duration.group(1) == css_duration.group(1)
 
 
 def test_desktop_compact_layout_change_resets_anchor_only_when_base_surface_changes():
