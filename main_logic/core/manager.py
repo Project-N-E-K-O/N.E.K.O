@@ -224,6 +224,8 @@ class LLMSessionManager(
         self.goodbye_silent: bool = False
         self.goodbye_silent_reason: str = ""
         self.goodbye_silent_updated_at: float = 0.0
+        self.goodbye_silent_started_monotonic: float = 0.0
+        self.goodbye_silent_completed_duration: float | None = None
         # ── Session takeover ──────────────────────────────────────────
         # 当某个外部 controller 接管这个 session 时，本地 chat LLM 的输出
         # （text/audio delta、output transcript、response.complete、

@@ -14,7 +14,7 @@
     var MAX_SEEN_REQUESTS = 128;
     var REPLY_DELAY_MIN_MS = 320;
     var REPLY_DELAY_SPAN_MS = 480;
-    var CAT1_HISS_STRETCH_EASTER_EGG_RATE = 0.03;
+    var CAT1_HISS_STRETCH_EASTER_EGG_RATE = 0.05;
     var CAT1_HISS_STICKER_URL = buildVersionedAssetUrl(
         '/static/assets/neko-idle/thought-items/cat1-chat-angry.gif'
     );

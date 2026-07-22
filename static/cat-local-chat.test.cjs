@@ -196,8 +196,8 @@ test('CAT1 hiss easter egg starts stretch before showing its text and sticker', 
   assert.equal(runtime.observations.filter(item => item.type === 'cat_local_text_received').length, 1);
 });
 
-test('CAT1 hiss easter egg uses an exact three-percent boundary', () => {
-  const randomValues = [0, 0.03];
+test('CAT1 hiss easter egg uses an exact five-percent boundary', () => {
+  const randomValues = [0, 0.05];
   const runtime = createRuntime({}, {
     random: () => randomValues.shift() ?? 0,
     stretchStarted: true,

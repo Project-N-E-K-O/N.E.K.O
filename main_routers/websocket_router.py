@@ -77,9 +77,10 @@ def _fire_task(coro):
 def _normalize_cat_greeting_check(message: dict) -> tuple[float, str, bool, dict | None]:
     """Reduce one untrusted cat-greeting check to canonical inputs.
 
-    The front-end summary is not a second source of truth for dwell duration,
-    entry mode, or visual tier. Only its already-bounded ``episode`` enum may
-    cross this router; all other summary fields are intentionally ignored.
+    The reported duration is retained for diagnostics only; the greeting gate
+    uses the server-observed goodbye cycle. Only the summary's already-bounded
+    ``episode`` enum may cross this router; all other summary fields are
+    intentionally ignored.
     """
     payload = message if isinstance(message, dict) else {}
 
@@ -494,16 +495,26 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
 
             elif action == "cat_greeting_check":
                 # 从猫咪形态变回猫娘（请她回来）时，前端按猫咪停留时长请求一次专属问候。
-                # 与 greeting_check 对偶，但独立计时：时长由前端测量传入，不查对话 gap；
+                # 与 greeting_check 对偶，但独立计时：门槛采用服务端观测到的 goodbye 周期，
+                # 前端时长仅用于诊断且不能抬高门槛；不查对话 gap；
                 # 不发 agent intent restore（那是"首次进入会话"信号，变回不是）。
-                cat_duration, cat_tier, cat_was_auto, episode = _normalize_cat_greeting_check(message)
+                reported_duration, cat_tier, cat_was_auto, episode = _normalize_cat_greeting_check(message)
+                cat_duration = session_manager[lanlan_name].consume_goodbye_cycle_duration()
+                if cat_duration is None:
+                    logger.info(
+                        "[%s] cat_greeting_check: no completed server goodbye cycle, skipping",
+                        lanlan_name,
+                    )
+                    continue
                 raw_summary = message.get("cat_memory_summary") if isinstance(message, dict) else None
                 raw_episode = raw_summary.get("episode") if isinstance(raw_summary, dict) else None
                 logger.info(
-                    "[%s] cat_greeting_check: duration=%.0fs tier=%s was_auto=%s "
+                    "[%s] cat_greeting_check: server_duration=%.0fs reported_duration=%.0fs "
+                    "tier=%s was_auto=%s "
                     "summary_object=%s episode_object=%s episode=%s",
                     lanlan_name,
                     cat_duration,
+                    reported_duration,
                     cat_tier or "-",
                     cat_was_auto,
                     isinstance(raw_summary, dict),

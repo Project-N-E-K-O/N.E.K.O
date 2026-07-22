@@ -6,10 +6,41 @@ import math
 
 import pytest
 
+import main_logic.core.lifecycle as lifecycle_module
 import main_routers.websocket_router as websocket_router
 from fastapi import WebSocketDisconnect
 
+from main_logic.core.lifecycle import LifecycleMixin
 from main_routers.websocket_router import _normalize_cat_greeting_check
+
+
+class _GoodbyeCycleState(LifecycleMixin):
+    lanlan_name = "Test"
+    goodbye_silent = False
+    goodbye_silent_reason = ""
+    goodbye_silent_updated_at = 0.0
+    goodbye_silent_started_monotonic = 0.0
+    goodbye_silent_completed_duration = None
+
+    def _park_proactive_for_goodbye(self):
+        pass
+
+
+def test_goodbye_cycle_duration_is_server_timed_and_consumed_once(monkeypatch):
+    monotonic_values = iter((100.0, 112.0))
+    monkeypatch.setattr(lifecycle_module.time, "monotonic", lambda: next(monotonic_values))
+    state = _GoodbyeCycleState()
+
+    state.set_goodbye_silent(True, "goodbye")
+    state.set_goodbye_silent(True, "reconnect")
+    state.set_goodbye_silent(False, "return")
+
+    assert state.consume_goodbye_cycle_duration() == 12.0
+    assert state.consume_goodbye_cycle_duration() is None
+
+    never_started = _GoodbyeCycleState()
+    never_started.set_goodbye_silent(False, "reconcile")
+    assert never_started.consume_goodbye_cycle_duration() is None
 
 
 def test_cat_greeting_router_uses_canonical_top_level_values_only():
@@ -154,7 +185,18 @@ def test_cat_greeting_router_ignores_obsolete_started_marker():
     assert episode == {"kind": "activity", "highlight": "played_yarn"}
 
 
-def test_cat_greeting_router_passes_only_canonical_episode_to_manager(monkeypatch):
+@pytest.mark.parametrize(
+    ("server_duration", "expected_calls"),
+    [
+        (12.0, [(12.0, "", False, {"kind": "activity", "highlight": "ate_snack"})]),
+        (None, []),
+    ],
+)
+def test_cat_greeting_router_uses_one_server_cycle_and_canonical_episode(
+    monkeypatch,
+    server_duration,
+    expected_calls,
+):
     calls = []
     session_ids = {}
 
@@ -164,6 +206,9 @@ def test_cat_greeting_router_passes_only_canonical_episode_to_manager(monkeypatc
 
         def set_user_language(self, _value):
             pass
+
+        def consume_goodbye_cycle_duration(self):
+            return server_duration
 
         def trigger_cat_greeting(self, duration, tier, was_auto, episode=None):
             calls.append((duration, tier, was_auto, episode))
@@ -219,9 +264,4 @@ def test_cat_greeting_router_passes_only_canonical_episode_to_manager(monkeypatc
 
     asyncio.run(websocket_router.websocket_endpoint(_WebSocket(), "Test"))
 
-    assert calls == [(
-        float(7 * 24 * 3600),
-        "",
-        False,
-        {"kind": "activity", "highlight": "ate_snack"},
-    )]
+    assert calls == expected_calls

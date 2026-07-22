@@ -399,8 +399,8 @@ class GreetingMixin:
         """When transforming back from cat form to catgirl (asking her back), trigger one dedicated greeting based on "behavior (tier) × time spent as a cat".
 
         Dual of trigger_greeting, but with independent timing: it doesn't query
-        last_conversation_gap, instead using the cat-dwell duration measured and
-        passed in by the frontend (the datetime gap is "since the last
+        last_conversation_gap, instead using the server-observed cat-dwell
+        duration passed in by the websocket router (the datetime gap is "since the last
         conversation", this is "how long she stayed a cat" — two clocks that don't
         interfere). A valid episode has already passed the router enum
         allowlist and remains request-local; it becomes the factual cat-form

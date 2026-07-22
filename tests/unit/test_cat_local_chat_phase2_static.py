@@ -78,7 +78,7 @@ def test_cat1_hiss_easter_egg_reuses_the_independent_stretch_presentation():
     core_source = read(ROOT / "static" / "avatar" / "avatar-ui-buttons" / "core.js")
     index_source = read(ROOT / "templates" / "index.html")
 
-    assert "CAT1_HISS_STRETCH_EASTER_EGG_RATE = 0.03" in manager_source
+    assert "CAT1_HISS_STRETCH_EASTER_EGG_RATE = 0.05" in manager_source
     assert "window.NekoCatIdlePresentation" in manager_source
     assert "requestCat1HissStretch()" in manager_source
     assert "cat1-chat-angry.gif" in manager_source
