@@ -1039,6 +1039,33 @@ async def test_segmented_submit_mirrors_only_accepted_audio_to_speaker_shadow() 
     assert shadow.close_calls == 1
 
 
+async def test_shadow_toggle_preserves_provider_pcm_bytes_order_and_detector_results() -> None:
+    frames = [b"\x01\x00" * 160, b"\x02\x00" * 160, b"\x03\x00" * 160]
+
+    async def run(shadow):
+        gate = _Gate((SpeechActivityEvent.SPEECH_STARTED,))
+        detector = DetectorRuntime(vad=_Vad(), gate=gate, speaker_shadow=shadow)
+        results = []
+        for index, frame in enumerate(frames):
+            if index == 1:
+                gate.events = ()
+            results.append(
+                await detector.feed(
+                    frame,
+                    speech_probability=0.9,
+                    rnnoise_available=True,
+                )
+            )
+        await detector.close()
+        return gate.inputs, results
+
+    without_shadow = await run(None)
+    with_shadow = await run(_SpeakerShadowSpy())
+
+    assert without_shadow == with_shadow
+    assert with_shadow[0] == frames
+
+
 async def test_provider_shadow_finishes_at_pause_and_ignores_following_silence() -> (
     None
 ):
