@@ -4772,10 +4772,12 @@ class Live2DManager {
         }
 
         try {
+            let resetViewport = null;
             if (isMobileWidth()) {
                 this.currentModel.anchor.set(0.5, 0.1);
                 const viewportWidth = Math.max(window.innerWidth || this.pixi_app.renderer.screen.width || 1, 1);
                 const viewportHeight = Math.max(window.innerHeight || this.pixi_app.renderer.screen.height || 1, 1);
+                resetViewport = { width: viewportWidth, height: viewportHeight };
                 const scale = Math.min(
                     0.5,
                     viewportHeight * 1.3 / 4000,
@@ -4798,9 +4800,9 @@ class Live2DManager {
 
             console.log('模型位置已复位到初始状态');
 
-            // 复位后自动保存位置（viewport 基准与 applyModelSettings / _savePositionAfterInteraction 一致，使用 renderer.screen）
+            // 复位后自动保存位置；手机端沿用本次复位的 viewport，避免坐标与元数据基准不一致。
             if (this._lastLoadedModelPath) {
-                const viewport = {
+                const viewport = resetViewport || {
                     width: this.pixi_app.renderer.screen.width,
                     height: this.pixi_app.renderer.screen.height
                 };

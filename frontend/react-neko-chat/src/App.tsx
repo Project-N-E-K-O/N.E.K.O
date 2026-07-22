@@ -3322,6 +3322,7 @@ function CompactChatApp({
     if (
       prefersViewportFitFromBottomGap
       && getWheelLayoutViewportOverflow(compactInputToolWheelViewportFitVisibleSlots, { axis: 'horizontal' }) === 0
+      && viewportFitOverflow <= defaultOverflow
     ) {
       return 'viewport-fit';
     }

@@ -5123,6 +5123,38 @@ describe('App', () => {
     }
   });
 
+  it('keeps the default compact tool wheel layout when a short desktop work area clips the reversed arc vertically', () => {
+    const desktopLayout = installDesktopCompactLayout({
+      windowBounds: { x: 0, y: 0, width: 430, height: 156 },
+      workArea: { x: 0, y: 0, width: 430, height: 156 },
+    }, { width: 430, height: 156 });
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+      const fan = container.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      vi.spyOn(fan, 'getBoundingClientRect').mockReturnValue({
+        left: 100,
+        top: -60,
+        right: 332,
+        bottom: 172,
+        width: 232,
+        height: 232,
+        x: 100,
+        y: -60,
+        toJSON: () => ({}),
+      });
+
+      const actionButton = container.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+      expect(actionButton).not.toBeNull();
+      fireEvent.click(actionButton);
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-layout', 'default');
+    } finally {
+      desktopLayout.restore();
+    }
+  });
+
   it('uses viewport-fit from desktop screen bottom distance before the compact carrier expands', async () => {
     const desktopLayout = installDesktopCompactLayout({
       windowBounds: { x: 100, y: 720, width: 430, height: 56 },
