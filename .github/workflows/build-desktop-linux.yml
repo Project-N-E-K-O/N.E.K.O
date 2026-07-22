@@ -209,6 +209,16 @@ jobs:
         shell: bash
         run: uv run --no-sync python tools/voice_eval/prepare_voice_turn_assets.py
 
+      - name: Cache CAM++ speaker model
+        uses: actions/cache@v4
+        with:
+          path: data/speaker_models/*.onnx
+          key: campplus-speaker-model-${{ runner.os }}-${{ hashFiles('data/speaker_models/manifest.json') }}
+
+      - name: Prepare verified CAM++ speaker model
+        shell: bash
+        run: uv run --no-sync python tools/voice_eval/prepare_speaker_model.py
+
       # --- Warm tiktoken o200k_base cache for offline use (PR #929) ---
       # tiktoken downloads encoding blobs (~1.5 MB each) on first use into
       # TIKTOKEN_CACHE_DIR; without warming, the bundled app would either
@@ -279,6 +289,7 @@ jobs:
             NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/embedding_models=data/embedding_models"
           fi
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/vad_models=data/vad_models"
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/speaker_models=data/speaker_models"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=static=static"
           # 应用内 OpenClaw 引导文档 + 图片，由 agent_router 经 /api/agent/openclaw/guide/* 提供；
           # 是纯数据目录，--include-package 不带，漏了引导页内容/图片打包后 404。
@@ -409,6 +420,8 @@ jobs:
           fi
           uv run --no-sync python tools/voice_eval/prepare_voice_turn_assets.py \
             --asset-dir dist/Xiao8/data/vad_models --offline || missing=1
+          uv run --no-sync python tools/voice_eval/prepare_speaker_model.py \
+            --asset-dir dist/Xiao8/data/speaker_models --offline || missing=1
           [ "$missing" -eq 0 ]
 
       # --- Generic dist invariant check ---

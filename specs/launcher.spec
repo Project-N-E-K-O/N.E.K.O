@@ -65,6 +65,9 @@ embedding_assets_present = os.path.isdir(
 voice_turn_assets_present = os.path.isdir(
     os.path.join(PROJECT_ROOT, 'data', 'vad_models')
 )
+speaker_model_assets_present = os.path.isfile(
+    os.path.join(PROJECT_ROOT, 'data', 'speaker_models', 'campplus-zh-en-advanced.onnx')
+)
 
 # galgame OCR deps: bundling is the ONLY path post-refactor (in-app install
 # routes were removed). Two distinct failure modes get distinct diagnostics:
@@ -101,7 +104,7 @@ for pkg in critical_packages:
     except Exception as e:
         if pkg in embedding_runtime_packages and (
             embedding_assets_present
-            or (pkg == 'onnxruntime' and voice_turn_assets_present)
+            or (pkg == 'onnxruntime' and (voice_turn_assets_present or speaker_model_assets_present))
         ):
             raise RuntimeError(
                 f"Cannot collect {pkg!r}, but packaged model assets require it. "
@@ -178,6 +181,7 @@ add_data('data/browser_use_prompts', 'data/browser_use_prompts')
 add_data('data/tiktoken_cache', 'data/tiktoken_cache')
 add_data('data/embedding_models', 'data/embedding_models')
 add_data('data/vad_models', 'data/vad_models')
+add_data('data/speaker_models', 'data/speaker_models')
 add_data('steam_appid.txt', '.')
 
 # 添加 Steam 相关的 DLL 和库文件（源文件位于 steamworks/，打包后放在根目录）
