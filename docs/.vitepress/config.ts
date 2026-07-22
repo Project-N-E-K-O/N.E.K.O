@@ -3,9 +3,8 @@ import { readdirSync } from 'node:fs'
 import { dirname, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isNoindexRoute } from './indexing-policy.mjs'
-import { buildSeoHead, buildSeoPageData } from './seo'
+import { buildSeoHead, buildSeoPageData, SITE_ORIGIN } from './seo'
 
-const SITE_ORIGIN = 'https://project-neko.online'
 const DOCS_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const SRC_EXCLUDE = new Set([
   'README_en.md',
