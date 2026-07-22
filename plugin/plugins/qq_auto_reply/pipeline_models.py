@@ -38,6 +38,7 @@ class QQReplyRequest:
     permission_level_override: str | None = None
     force_reply: bool = False
     suppression_reason: str = ""
+    forward_sub_count: int = 0
 
 
 @dataclass(slots=True)
@@ -127,14 +128,25 @@ class QQRelayResult:
 
 
 @dataclass(slots=True)
+class QQMessageBlock:
+    """KiraAI-style 消息块：对应 LLM 输出的一个 <msg>...</msg>"""
+    text: str = ""
+    emoji: str = ""        # QQ 表情 ID（如 "277"）
+    at_user: str = ""       # @的QQ号
+    reply_to: str = ""      # 引用的消息ID
+    sticker: str = ""       # 表情包 ID
+    poke: str = ""          # 戳一戳目标 QQ
+    record: str = ""        # <record> 语音文本
+    keyboard: str = ""      # 按钮文本
+    ark: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class QQDeliveryPlan:
     target_type: str
     target_id: str
-    reply_text: str | None
+    blocks: list[QQMessageBlock] = field(default_factory=list)
     fallback_to_text_on_voice_failure: bool = True
-    reply_message_id: str = ""
-    at_user_id: str = ""
-    keyboard: str = ""
 
 
 @dataclass(slots=True)
@@ -152,12 +164,7 @@ class QQReplyOutcome:
     used_default_message: bool = False
     raw_reply_text: str | None = None
     postprocess_reason: str = ""
-    parsed_reply_message_id: str = ""
-    parsed_at_user_id: str = ""
-    parsed_poke_user: str = ""
-    parsed_sticker_id: str = ""
-    parsed_keyboard: str = ""  # 按钮文本，| 分隔
-    parsed_ark: dict[str, str] = field(default_factory=dict)  # ark 卡片属性
+    blocks: list[QQMessageBlock] = field(default_factory=list)
     relay_plan: QQRelayPlan | None = None
     relay_result: QQRelayResult | None = None
     delivery_plan: QQDeliveryPlan | None = None

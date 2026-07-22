@@ -52,7 +52,7 @@ def test_export_preview_reuses_only_shell_window_handles():
     assert "state.previewWindow = null;" in open_export
     assert "function isCurrentChatWindowHandle(win)" in script
     assert "win.document === document" in script
-    assert "window.open('', '_blank', buildExportWindowFeatures())" in open_export
+    assert "window.open('', getExportPreviewWindowName('main'), buildExportWindowFeatures())" in open_export
     assert "if (isCurrentChatWindowHandle(previewWindow))" in open_export
     assert "var returnedHref = getWindowHref(previewWindow);" in open_export
     assert "returnedHref !== 'about:blank' && !isExportPreviewShellUrl(returnedHref)" in open_export

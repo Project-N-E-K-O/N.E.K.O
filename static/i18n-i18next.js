@@ -29,8 +29,9 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 修改原因：合并社交状态/OAuth 提示、外部记忆导入文案与截图贴图更新，需要递增版本让 Docker immutable 缓存重新拉取语言包。
-    const LOCALE_VERSION = '2026-07-20-external-import-social-oauth-prompt';
+    // 修改原因：本分支新增独立窗口置顶/取消置顶文案；递增版本让 Electron、
+    // Docker 等长期缓存重新拉取包含新 key 的语言包。
+    const LOCALE_VERSION = '2026-07-22-window-pin-controls-i18n';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
