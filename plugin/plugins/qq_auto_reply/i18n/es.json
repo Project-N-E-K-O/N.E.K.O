@@ -580,7 +580,7 @@
   "ui.groupprompt.delete_failed": "Delete failed",
   "ui.shared.btn.save": "Save",
   "ui.shared.btn.delete": "Delete",
-  "ui.napcat.guide.modal_linux": "Gu?a de configuraci?n de Linux/Docker",
+  "ui.napcat.guide.modal_linux": "Guía de configuración de Linux/Docker",
   "ui.napcat.guide.step_users_fail": "No configurado",
   "ui.shared.card.group_prompts": "Indicaciones personalizadas de grupo"
 }

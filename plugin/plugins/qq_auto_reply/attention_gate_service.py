@@ -502,25 +502,31 @@ class QQAttentionGateService:
             s = sessions.get(session_key)
             if not isinstance(s, dict):
                 return
-            session = s.get("session")
-            if not session or not hasattr(session, "_conversation_history"):
-                return
-            history = getattr(session, "_conversation_history", []) or []
-            if len(history) < 4:
-                return
-            her_name = str(s.get("her_name") or "neko")
-            messages = self.plugin.session_memory_service.conversation_slice_to_memory_messages(
-                history, 0,
-            )[-self.plugin.session_memory_service.GROUP_HISTORY_MAX_MESSAGES:]
-            if not messages:
-                return
-            await self.plugin.memory_bridge.post_scoped_memory_history(
-                her_name,
-                messages,
-                subject=self.plugin.memory_bridge.group_subject(group_id),
-                timeout=30.0,
-            )
-            self._logger.info(f"[Digest] 群 {group_id} 完整会话已推送 Memory Server ({len(messages)}条)")
+            async def _push_delta() -> int:
+                session = s.get("session")
+                if not session or not hasattr(session, "_conversation_history"):
+                    return 0
+                history = getattr(session, "_conversation_history", []) or []
+                if len(history) < 4:
+                    return 0
+                start_index = max(0, int(s.get("last_group_digest_index", 0)))
+                messages = self.plugin.session_memory_service.conversation_slice_to_memory_messages(
+                    history, start_index,
+                )[-self.plugin.session_memory_service.GROUP_HISTORY_MAX_MESSAGES:]
+                if not messages:
+                    return 0
+                await self.plugin.memory_bridge.post_scoped_memory_history(
+                    str(s.get("her_name") or "neko"),
+                    messages,
+                    subject=self.plugin.memory_bridge.group_subject(group_id),
+                    timeout=30.0,
+                )
+                s["last_group_digest_index"] = len(history)
+                return len(messages)
+
+            sent_messages = await self.plugin._run_with_session_lock(session_key, _push_delta)
+            if sent_messages:
+                self._logger.info(f"[Digest] 群 {group_id} 已推送摘要到 Memory Server ({sent_messages}条)")
         except Exception as e:
             self._logger.warning(f"[Digest] 推送失败: {e}")
 

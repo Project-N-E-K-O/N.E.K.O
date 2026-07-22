@@ -580,7 +580,7 @@
   "ui.groupprompt.delete_failed": "Delete failed",
   "ui.shared.btn.save": "Save",
   "ui.shared.btn.delete": "Delete",
-  "ui.napcat.guide.modal_linux": "Linux/Docker ?? ???",
-  "ui.napcat.guide.step_users_fail": "???? ??",
-  "ui.shared.card.group_prompts": "?? ??? ?? ????"
+  "ui.napcat.guide.modal_linux": "Linux/Docker 설정 가이드",
+  "ui.napcat.guide.step_users_fail": "구성되지 않음",
+  "ui.shared.card.group_prompts": "그룹 사용자 지정 프롬프트"
 }

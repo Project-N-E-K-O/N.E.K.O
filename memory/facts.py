@@ -568,6 +568,20 @@ class FactStore:
                 subject=subject,
             )
 
+    async def apersist_scoped_facts(
+        self,
+        lanlan_name: str,
+        extracted: list[dict],
+        *,
+        subject: MemorySubject | dict,
+    ) -> list[dict]:
+        """Persist already extracted facts for an explicitly scoped adapter request."""
+        return await self._apersist_new_facts(
+            lanlan_name,
+            extracted,
+            subject=subject,
+        )
+
     async def _apersist_new_facts_locked(
         self, lanlan_name: str, extracted: list[dict],
         *,

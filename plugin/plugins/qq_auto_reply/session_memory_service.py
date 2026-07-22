@@ -146,13 +146,15 @@ class QQSessionMemoryService:
             conversation_history = getattr(session, "_conversation_history", []) or []
             if user_data.get("is_group"):
                 group_id = str(user_data.get("group_id") or "").strip()
+                last_group_digest_index = max(
+                    0, int(user_data.get("last_group_digest_index", 0)),
+                )
                 scoped_messages = self.conversation_slice_to_memory_messages(
-                    conversation_history, 0,
+                    conversation_history, last_group_digest_index,
                 )[-self.GROUP_HISTORY_MAX_MESSAGES:]
                 if (
                     group_id
                     and scoped_messages
-                    and not user_data.get("group_memory_flushed")
                 ):
                     result = await self.plugin.memory_bridge.post_scoped_memory_history(
                         her_name,
@@ -166,6 +168,7 @@ class QQSessionMemoryService:
                         f"[{reason}] 已为群 {group_id} 完成 scoped 记忆结算，"
                         f"消息数: {len(scoped_messages)}"
                     )
+                    user_data["last_group_digest_index"] = len(conversation_history)
                     user_data["group_memory_flushed"] = True
                 member_memory_enabled = bool(
                     (getattr(self.plugin, "_qq_settings", {}) or {}).get(

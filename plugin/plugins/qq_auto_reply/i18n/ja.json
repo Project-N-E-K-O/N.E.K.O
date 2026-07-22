@@ -580,7 +580,7 @@
   "ui.groupprompt.delete_failed": "Delete failed",
   "ui.shared.btn.save": "Save",
   "ui.shared.btn.delete": "Delete",
-  "ui.napcat.guide.modal_linux": "Linux/Docker ?????????",
-  "ui.napcat.guide.step_users_fail": "???",
-  "ui.shared.card.group_prompts": "??????????????"
+  "ui.napcat.guide.modal_linux": "Linux/Docker セットアップガイド",
+  "ui.napcat.guide.step_users_fail": "未設定",
+  "ui.shared.card.group_prompts": "グループのカスタムプロンプト"
 }

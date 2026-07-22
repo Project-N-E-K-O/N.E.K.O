@@ -779,7 +779,7 @@ async def append_scoped_facts(lanlan_name: str, req: ScopedFactsWriteRequest):
             "source": item.source,
         })
     subject = req.subject.to_domain()
-    created = await runtime.fact_store._apersist_new_facts(
+    created = await runtime.fact_store.apersist_scoped_facts(
         lanlan_name,
         extracted,
         subject=subject,
@@ -914,7 +914,7 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
                     time_spec=time_spec,
                     fact_store=runtime.fact_store,
                     reflection_engine=runtime.reflection_engine,
-                    subjects=subjects or None,
+                    subjects=subjects,
                 )
         # query（+ 可选 time_window）→ 语义检索；time_window 非空即"语义 +
         # 时间"联合检索（窗口内按 query 排序）。
@@ -926,7 +926,7 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
             reflection_engine=runtime.reflection_engine,
             config_manager=runtime._config_manager,
             time_window=time_window,
-            subjects=subjects or None,
+            subjects=subjects,
         )
     except Exception as exc:
         # 永不让一次召回失败把 tool call 整死——返回空 results，main_server
