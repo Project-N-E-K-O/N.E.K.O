@@ -81,6 +81,47 @@ def test_oauth_callback_rejects_bad_state(oauth_app):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "callback_path",
+    ["/oauth/callback", "/api/card-drop/oauth/callback"],
+)
+def test_oauth_callback_access_denied_returns_html_and_clears_pending(
+    oauth_app, callback_path
+):
+    client, _auth, _social, pending = oauth_app
+    start = client.post("/api/card-drop/oauth/start")
+    assert start.status_code == 200
+
+    response = client.get(
+        callback_path,
+        params={"error": "access_denied", "state": start.json()["state"]},
+    )
+
+    assert response.status_code == 400
+    assert response.headers["content-type"].startswith("text/html")
+    assert "登录已取消" in response.text
+    assert not pending.exists()
+
+
+@pytest.mark.unit
+def test_oauth_logout_reports_local_credential_clear_failure(oauth_app, monkeypatch):
+    client, _auth, _social, pending = oauth_app
+    pending.write_text("{}", encoding="utf-8")
+
+    async def no_revoke(**_kwargs):
+        return None
+
+    monkeypatch.setattr(O, "_revoke_tokens_best_effort", no_revoke)
+    monkeypatch.setattr(C, "_clear_auth", lambda: False)
+
+    response = client.post("/api/card-drop/oauth/logout")
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "local_clear_failed"}
+    assert not pending.exists()
+
+
+@pytest.mark.unit
 def test_oauth_callback_success_persists_social_session(oauth_app, monkeypatch):
     client, auth, social, pending = oauth_app
     start = client.post("/api/card-drop/oauth/start")

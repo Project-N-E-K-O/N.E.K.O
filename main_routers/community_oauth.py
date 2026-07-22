@@ -245,13 +245,15 @@ async def oauth_logout_endpoint(request: Request):
         auth_public_url=_auth_public_url(),
     )
     _unlink_pending()
-    C._clear_auth()
+    if not C._clear_auth():
+        raise HTTPException(status_code=500, detail="local_clear_failed")
     return {"ok": True}
 
 
 async def _handle_oauth_callback(
-    code: str,
-    state: str,
+    code: str | None,
+    state: str | None,
+    error: str | None = None,
 ) -> HTMLResponse:
     pending_path = _oauth_pending_path()
     pending = C._read_json_dict(pending_path) if pending_path else None
@@ -275,10 +277,32 @@ async def _handle_oauth_callback(
         )
 
     expected_state = str(pending.get("state") or "")
-    if not expected_state or not secrets.compare_digest(state, expected_state):
+    if not expected_state or not state or not secrets.compare_digest(state, expected_state):
         return _callback_html(
             "登录校验失败",
             "OAuth state 不匹配，请回到 NEKO 重试。",
+            status_code=400,
+        )
+
+    if error:
+        _unlink_pending()
+        if error == "access_denied":
+            return _callback_html(
+                "登录已取消",
+                "你已取消社区登录，可关闭此页并回到 NEKO。",
+                status_code=400,
+            )
+        return _callback_html(
+            "登录未完成",
+            "Auth 未完成授权，请回到 NEKO 重试。",
+            status_code=400,
+        )
+
+    if not code:
+        _unlink_pending()
+        return _callback_html(
+            "登录未完成",
+            "Auth 未返回授权码，请回到 NEKO 重试。",
             status_code=400,
         )
 
@@ -386,19 +410,21 @@ async def _handle_oauth_callback(
 
 @callback_router.get("/oauth/callback", response_class=HTMLResponse)
 async def oauth_callback_endpoint(
-    code: str = Query(..., min_length=1),
-    state: str = Query(..., min_length=1),
+    code: str | None = Query(None, min_length=1),
+    state: str | None = Query(None, min_length=1),
+    error: str | None = Query(None, min_length=1, max_length=100),
 ):
-    return await _handle_oauth_callback(code, state)
+    return await _handle_oauth_callback(code, state, error)
 
 
 @callback_router.get("/api/card-drop/oauth/callback", response_class=HTMLResponse)
 async def oauth_callback_alias_endpoint(
-    code: str = Query(..., min_length=1),
-    state: str = Query(..., min_length=1),
+    code: str | None = Query(None, min_length=1),
+    state: str | None = Query(None, min_length=1),
+    error: str | None = Query(None, min_length=1, max_length=100),
 ):
     """Alias kept for logger redaction parity; primary Hydra URI is ``/oauth/callback``."""
-    return await _handle_oauth_callback(code, state)
+    return await _handle_oauth_callback(code, state, error)
 
 
 async def _exchange_oauth_code(

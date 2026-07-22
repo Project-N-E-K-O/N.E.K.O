@@ -1596,7 +1596,10 @@
             micPopup.style.maxWidth = '220px';
             micPopup.style.boxSizing = 'border-box';
             micPopup.style.overflowY = 'hidden';
-            var audioInputs = cachedMicDevices || [];
+            var audioInputs = cachedMicDevices;
+            if (!audioInputs || audioInputs.length === 0 || !micPermissionGranted) {
+                audioInputs = await ensureMicrophonePermission();
+            }
             if (!isPopupAvailable()) return false;
 if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 micPopup.__nekoMicScrollbarCleanup();

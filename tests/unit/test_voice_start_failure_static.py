@@ -323,6 +323,12 @@ def test_floating_mic_popup_keeps_speaker_volume_without_microphone_devices():
     render = source[render_start:render_end]
 
     assert "var hasMicrophoneDevices = audioInputs.length > 0;" in render
+    permission_refresh = "audioInputs = await ensureMicrophonePermission();"
+    assert "if (!audioInputs || audioInputs.length === 0 || !micPermissionGranted)" in render
+    assert permission_refresh in render
+    assert render.index(permission_refresh) < render.index(
+        "var hasMicrophoneDevices = audioInputs.length > 0;"
+    )
     assert "micPopup.appendChild(noMicItem);\n                return true;" not in render
 
     layout_index = render.index("// ===== 双栏布局 =====")
