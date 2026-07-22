@@ -773,7 +773,7 @@ jobs:
       # N.E.K.O.-PC has hardenedRuntime, afterSign (notarize.js), and entitlements
       # which all require a valid signing identity; disable them all for CI builds
       - name: Disable macOS code signing
-        if: runner.os == 'macOS' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.skip_signing == 'true'))
+        if: runner.os == 'macOS' && (github.event_name == 'schedule' || inputs.skip_signing == 'true')
         working-directory: electron-app
         run: |
           node -e "
@@ -808,21 +808,31 @@ jobs:
 
       # Windows Portable is a ZIP containing the complete unpacked Electron
       # directory. Building --dir gives the updater stable file boundaries.
-      - name: Build Electron app (Windows ZIP Portable directory)
-        if: runner.os == 'Windows'
+      - name: Build Electron app (Windows ZIP Portable directory, unsigned)
+        if: runner.os == 'Windows' && (github.event_name == 'schedule' || inputs.skip_signing == 'true')
         working-directory: electron-app
         run: node scripts/build-electron-distribution.js windows --dir --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
+      - name: Build Electron app (Windows ZIP Portable directory, signed)
+        if: runner.os == 'Windows' && github.event_name != 'schedule' && inputs.skip_signing != 'true'
+        working-directory: electron-app
+        run: node scripts/build-electron-distribution.js windows --dir --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'true'
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+
       - name: Build Electron app (macOS/Linux)
         if: runner.os != 'Windows'
         working-directory: electron-app
-        run: npx electron-builder ${{ matrix.electron_args }} --publish never
+        run: node scripts/build-electron-distribution.js ${{ matrix.builder_platform }} ${{ matrix.portable_arch_args }} --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.skip_signing == 'true')) && 'false' || 'true' }}
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ (github.event_name == 'schedule' || inputs.skip_signing == 'true') && 'false' || 'true' }}
           WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
@@ -840,7 +850,7 @@ jobs:
         env:
           NEKO_PORTABLE_BUILD: '1'
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.skip_signing == 'true')) && 'false' || 'true' }}
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ (github.event_name == 'schedule' || inputs.skip_signing == 'true') && 'false' || 'true' }}
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
