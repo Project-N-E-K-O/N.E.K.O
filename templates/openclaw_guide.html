@@ -7,6 +7,7 @@
     <title>OpenClaw 接入教程 - N.E.K.O.</title>
     <script src="/static/i18n-i18next.js"></script>
     <link rel="stylesheet" href="/static/css/dark-mode.css">
+    <link rel="stylesheet" href="/static/css/window_controls.css">
     <script src="/static/theme-manager.js"></script>
     <script src="/static/js/window_controls.js"></script>
     <style>
@@ -281,6 +282,22 @@
             background: var(--guide-toolbar-btn-hover);
             border-color: rgba(11, 132, 216, 0.26);
             transform: translateY(-1px);
+        }
+
+        .guide-pin-btn {
+            width: 42px;
+            min-width: 42px;
+            padding: 0;
+        }
+
+        .guide-pin-btn[hidden] {
+            display: none;
+        }
+
+        .guide-pin-btn.is-pinned {
+            color: var(--guide-accent);
+            background: var(--guide-toolbar-btn-hover);
+            border-color: rgba(11, 132, 216, 0.36);
         }
 
         .guide-lang-dropdown {
@@ -632,6 +649,19 @@
                     <button id="themeToggleBtn" class="guide-action-btn" type="button">
                         <span id="themeToggleIcon">◐</span>
                         <span id="themeToggleText">主题切换</span>
+                    </button>
+                    <button id="pinGuideBtn"
+                            class="guide-action-btn guide-pin-btn"
+                            type="button"
+                            data-neko-window-control="pin" hidden
+                            data-i18n-title="common.pinWindow"
+                            data-i18n-aria="common.pinWindow"
+                            data-neko-pin-label="置顶窗口"
+                            data-neko-unpin-label="取消置顶"
+                            title="置顶窗口"
+                            aria-label="置顶窗口"
+                            aria-pressed="false">
+                        <span class="neko-window-pin-icon" aria-hidden="true"></span>
                     </button>
                     <button id="minimizeGuideBtn" class="guide-action-btn" type="button">
                         <span aria-hidden="true">&minus;</span>

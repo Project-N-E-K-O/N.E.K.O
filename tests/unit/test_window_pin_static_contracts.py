@@ -78,6 +78,17 @@ def test_only_requested_top_level_templates_define_pin_controls():
         'class="minimize-btn"',
     )
 
+    openclaw_guide = read_text("templates/openclaw_guide.html")
+    assert 'data-neko-window-control="pin" hidden' in openclaw_guide
+    assert 'class="neko-window-pin-icon" aria-hidden="true"' in openclaw_guide
+    assert "/static/css/window_controls.css" in openclaw_guide
+    assert "/static/js/window_controls.js" in openclaw_guide
+    assert_pin_precedes_minimize(
+        openclaw_guide,
+        "templates/openclaw_guide.html",
+        'id="minimizeGuideBtn"',
+    )
+
     for path in (
         "templates/card_maker.html",
         "templates/jukebox_manager.html",
