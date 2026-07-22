@@ -931,6 +931,7 @@
         "independentAsr": "Independent Speech Recognition",
         "independentAsrActive": "Independent ASR active: {{provider}}",
         "independentAsrFallback": "Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.",
+        "independentAsrProviderUnavailable": "{{provider}} is temporarily unavailable. Voice input has stopped for this session. It did not switch to another speech recognition service. Please start a new voice session later.",
         "independentAsrNextSession": "Enabled for the next voice session; it will not automatically switch to Omni if unavailable.",
         "independentAsrNative": "Using Omni native speech recognition"
     },

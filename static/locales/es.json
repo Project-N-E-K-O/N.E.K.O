@@ -931,6 +931,7 @@
         "independentAsr": "Reconocimiento de voz independiente",
         "independentAsrActive": "ASR independiente activo: {{provider}}",
         "independentAsrFallback": "El ASR independiente no está disponible. La entrada de voz se ha detenido para esta sesión. Revisa la configuración del ASR independiente y después inicia una nueva sesión de voz.",
+        "independentAsrProviderUnavailable": "{{provider}} no está disponible temporalmente. La entrada de voz se ha detenido para esta sesión. No se cambió a otro servicio de reconocimiento de voz. Inicia una nueva sesión de voz más tarde.",
         "independentAsrNextSession": "Se activará en la próxima sesión de voz; no cambiará automáticamente a Omni si no está disponible.",
         "independentAsrNative": "Usando el reconocimiento de voz nativo de Omni"
     },

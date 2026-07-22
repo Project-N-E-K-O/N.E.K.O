@@ -931,6 +931,7 @@
         "independentAsr": "独立语音识别",
         "independentAsrActive": "当前使用独立 ASR：{{provider}}",
         "independentAsrFallback": "独立 ASR 不可用，本次语音输入已停止。请检查独立 ASR 配置，然后重新开始语音会话。",
+        "independentAsrProviderUnavailable": "{{provider}} 暂时不可用，本次语音输入已停止。未切换到其他语音识别服务，请稍后重新开始语音会话。",
         "independentAsrNextSession": "将在下次语音会话启用；不可用时不会自动切换到 Omni。",
         "independentAsrNative": "当前使用 Omni 原生语音识别"
     },

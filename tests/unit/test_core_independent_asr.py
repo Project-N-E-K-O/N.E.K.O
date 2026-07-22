@@ -1622,21 +1622,32 @@ async def test_explicit_intl_soniox_is_selected_before_audio(monkeypatch) -> Non
     assert runtime._asr_received_audio is False
 
 
-async def test_soniox_connect_failure_falls_back_to_core_before_audio(monkeypatch) -> None:
+async def test_soniox_connect_failure_retries_same_selection_before_audio(
+    monkeypatch,
+) -> None:
     import main_logic.asr_client.runtime as runtime_module
 
     runtime = _Runtime()
     runtime.core_api_type = "gemini"
-    soniox_session = type("Soniox", (), {})()
-    soniox_session.connect = AsyncMock(side_effect=RuntimeError("provider detail"))
-    soniox_session.close = AsyncMock()
-    core_session = type("CoreAsr", (), {})()
-    core_session.connect = AsyncMock()
-    core_session.close = AsyncMock()
     soniox_selection = _selection("soniox", "provider")
-    core_selection = _selection("gemini")
     primary_resolver = MagicMock(return_value=soniox_selection)
-    core_resolver = MagicMock(return_value=core_selection)
+    forbidden_core_resolver = MagicMock(
+        side_effect=AssertionError("Soniox recovery must not resolve another provider")
+    )
+    save_settings = MagicMock(
+        side_effect=AssertionError("Provider recovery must not rewrite user settings")
+    )
+    sleep = AsyncMock()
+    sessions = []
+    for side_effect in (
+        RuntimeError("provider detail 1"),
+        RuntimeError("provider detail 2"),
+        None,
+    ):
+        session = type("Soniox", (), {})()
+        session.connect = AsyncMock(side_effect=side_effect)
+        session.close = AsyncMock()
+        sessions.append(session)
     built_selections = []
     monkeypatch.setattr(
         preferences,
@@ -1652,15 +1663,21 @@ async def test_soniox_connect_failure_falls_back_to_core_before_audio(monkeypatc
     monkeypatch.setattr(
         runtime_module,
         "_resolve_core_follow_selection",
-        core_resolver,
+        forbidden_core_resolver,
+        raising=False,
+    )
+    monkeypatch.setattr(runtime_module.asyncio, "sleep", sleep)
+    monkeypatch.setattr(
+        preferences,
+        "save_global_conversation_settings",
+        save_settings,
     )
 
     def build_candidate(_core_type, *, selection, **_kwargs):
+        assert runtime._asr_provider == "soniox"
         built_selections.append(selection)
-        if selection is soniox_selection:
-            return soniox_session
-        assert selection is core_selection
-        return core_session
+        assert selection is soniox_selection
+        return sessions[len(built_selections) - 1]
 
     monkeypatch.setattr(
         runtime_module,
@@ -1670,47 +1687,54 @@ async def test_soniox_connect_failure_falls_back_to_core_before_audio(monkeypatc
 
     await runtime._start_independent_asr_if_enabled("audio")
 
-    soniox_session.close.assert_awaited_once_with()
-    core_session.connect.assert_awaited_once_with()
+    sessions[0].close.assert_awaited_once_with()
+    sessions[1].close.assert_awaited_once_with()
+    sessions[2].close.assert_not_awaited()
+    for session in sessions:
+        session.connect.assert_awaited_once_with()
     primary_resolver.assert_called_once_with("gemini")
-    core_resolver.assert_called_once_with("gemini")
-    assert built_selections == [soniox_selection, core_selection]
-    assert runtime._asr_session is core_session
-    assert runtime._asr_provider == "gemini"
+    forbidden_core_resolver.assert_not_called()
+    save_settings.assert_not_called()
+    assert built_selections == [soniox_selection] * 3
+    assert [call.args for call in sleep.await_args_list] == [(0.25,), (0.5,)]
+    assert runtime._asr_session is sessions[2]
+    assert runtime._asr_provider == "soniox"
+    assert runtime._asr_transport_selection is soniox_selection
+    assert runtime._asr_lifecycle.provider_policy.endpoint_authority == "provider"
     assert runtime._asr_route_mode == "independent"
     assert "provider detail" not in str(runtime.send_status.await_args_list)
+    assert "ASR_INDEPENDENT_PROVIDER_UNAVAILABLE" not in str(
+        runtime.send_status.await_args_list
+    )
 
 
-async def test_soniox_startup_error_callback_does_not_invalidate_core_fallback(
+async def test_soniox_connect_retries_exhausted_blocks_without_provider_fallback(
     monkeypatch,
 ) -> None:
     import main_logic.asr_client.runtime as runtime_module
 
     runtime = _Runtime()
     runtime.core_api_type = "gemini"
-    callbacks: dict[str, dict[str, object]] = {}
-
-    soniox_session = type("Soniox", (), {})()
-    soniox_session.close = AsyncMock()
-    core_session = type("CoreAsr", (), {})()
-    core_session.connect = AsyncMock()
-    core_session.close = AsyncMock()
+    runtime.session.stream_audio = AsyncMock()
     soniox_selection = _selection("soniox", "provider")
-    core_selection = _selection("gemini")
+    forbidden_core_resolver = MagicMock(
+        side_effect=AssertionError("Soniox recovery must not resolve another provider")
+    )
+    sleep = AsyncMock()
+    sessions = []
+    for attempt in range(3):
+        session = type("Soniox", (), {})()
+        session.connect = AsyncMock(
+            side_effect=RuntimeError(f"private provider detail {attempt}")
+        )
+        session.close = AsyncMock()
+        sessions.append(session)
+    built_selections = []
 
-    def create_candidate(_core_type, *, selection, **kwargs):
-        if selection is soniox_selection:
-            callbacks["soniox"] = kwargs
-            return soniox_session
-        assert selection is core_selection
-        callbacks["core"] = kwargs
-        return core_session
-
-    async def connect_soniox() -> None:
-        await callbacks["soniox"]["on_connection_error"]("provider detail")
-        raise RuntimeError("provider detail")
-
-    soniox_session.connect = AsyncMock(side_effect=connect_soniox)
+    def create_candidate(_core_type, *, selection, **_kwargs):
+        built_selections.append(selection)
+        assert selection is soniox_selection
+        return sessions[len(built_selections) - 1]
 
     monkeypatch.setattr(
         preferences,
@@ -1725,25 +1749,42 @@ async def test_soniox_startup_error_callback_does_not_invalidate_core_fallback(
     monkeypatch.setattr(
         runtime_module,
         "_resolve_core_follow_selection",
-        MagicMock(return_value=core_selection),
+        forbidden_core_resolver,
+        raising=False,
     )
     monkeypatch.setattr(
         runtime_module,
         "_create_asr_session_from_selection",
         create_candidate,
     )
+    monkeypatch.setattr(runtime_module.asyncio, "sleep", sleep)
 
     await runtime._start_independent_asr_if_enabled("audio")
 
-    core_session.connect.assert_awaited_once_with()
-    core_session.close.assert_not_awaited()
-    assert runtime._asr_session is core_session
-    assert runtime._asr_provider == "gemini"
-    assert runtime._asr_route_mode == "independent"
-    assert runtime._asr_session_epoch == 1
+    consumed = await runtime._route_microphone_audio(
+        b"\x00\x00",
+        sample_rate_hz=16_000,
+    )
+    for session in sessions:
+        session.connect.assert_awaited_once_with()
+        session.close.assert_awaited_once_with()
+    forbidden_core_resolver.assert_not_called()
+    assert built_selections == [soniox_selection] * 3
+    assert [call.args for call in sleep.await_args_list] == [(0.25,), (0.5,)]
+    assert runtime._asr_session is None
+    assert runtime._asr_provider is None
+    assert runtime._asr_route_mode == "blocked"
+    assert consumed is True
+    runtime.session.stream_audio.assert_not_awaited()
+    statuses = [json.loads(call.args[0]) for call in runtime.send_status.await_args_list]
+    assert statuses[-1] == {
+        "code": "ASR_INDEPENDENT_PROVIDER_UNAVAILABLE",
+        "details": {"provider": "soniox"},
+    }
+    assert "private provider detail" not in str(runtime.send_status.await_args_list)
 
 
-async def test_replaced_soniox_candidate_cannot_deliver_late_callbacks(
+async def test_failed_soniox_candidate_cannot_invalidate_successful_successor(
     monkeypatch,
 ) -> None:
     import main_logic.asr_client.runtime as runtime_module
@@ -1751,27 +1792,24 @@ async def test_replaced_soniox_candidate_cannot_deliver_late_callbacks(
     runtime = _Runtime()
     runtime.core_api_type = "gemini"
     runtime.websocket = type("WebSocket", (), {"send_json": AsyncMock()})()
-    callbacks: dict[str, dict[str, object]] = {}
+    callbacks: list[dict[str, object]] = []
 
-    soniox_session = type("Soniox", (), {})()
-    soniox_session.connect = AsyncMock(side_effect=RuntimeError("provider detail"))
-    soniox_session.close = AsyncMock()
-    core_session = type("CoreAsr", (), {})()
-    core_session.connect = AsyncMock()
-    core_session.close = AsyncMock()
+    failed_session = type("Soniox", (), {})()
+    failed_session.connect = AsyncMock(side_effect=RuntimeError("provider detail"))
+    failed_session.close = AsyncMock()
+    successful_session = type("Soniox", (), {})()
+    successful_session.connect = AsyncMock()
+    successful_session.close = AsyncMock()
     soniox_selection = _selection("soniox", "provider")
-    core_selection = _selection("gemini")
+    sessions = [failed_session, successful_session]
 
     def capture_partial(session, callback) -> None:
         session.partial_callback = callback
 
     def create_candidate(_core_type, *, selection, **kwargs):
-        if selection is soniox_selection:
-            callbacks["soniox"] = kwargs
-            return soniox_session
-        assert selection is core_selection
-        callbacks["core"] = kwargs
-        return core_session
+        assert selection is soniox_selection
+        callbacks.append(kwargs)
+        return sessions[len(callbacks) - 1]
 
     monkeypatch.setattr(
         preferences,
@@ -1786,7 +1824,12 @@ async def test_replaced_soniox_candidate_cannot_deliver_late_callbacks(
     monkeypatch.setattr(
         runtime_module,
         "_resolve_core_follow_selection",
-        MagicMock(return_value=core_selection),
+        MagicMock(
+            side_effect=AssertionError(
+                "Soniox recovery must not resolve another provider"
+            )
+        ),
+        raising=False,
     )
     monkeypatch.setattr(
         runtime_module,
@@ -1794,51 +1837,28 @@ async def test_replaced_soniox_candidate_cannot_deliver_late_callbacks(
         create_candidate,
     )
     monkeypatch.setattr(runtime_module, "_attach_partial_callback", capture_partial)
+    monkeypatch.setattr(runtime_module.asyncio, "sleep", AsyncMock())
 
     await runtime._start_independent_asr_if_enabled("audio")
     adopted_epoch = runtime._asr_session_epoch
 
-    await callbacks["soniox"]["on_input_transcript"]("late soniox final")
-    await callbacks["soniox"]["on_speech_activity"](
+    await callbacks[0]["on_input_transcript"]("late soniox final")
+    await callbacks[0]["on_speech_activity"](
         SpeechActivityEvent.SPEECH_STARTED
     )
-    await soniox_session.partial_callback("late soniox preview")
-    await callbacks["soniox"]["on_connection_error"]("late soniox error")
+    await failed_session.partial_callback("late soniox preview")
+    await callbacks[0]["on_connection_error"]("late soniox error")
     await asyncio.sleep(0)
 
     runtime.handle_input_transcript.assert_not_awaited()
     runtime.session.handle_interruption.assert_not_awaited()
     runtime.handle_new_message.assert_not_awaited()
     runtime.websocket.send_json.assert_not_awaited()
-    core_session.close.assert_not_awaited()
-    assert runtime._asr_session is core_session
-    assert runtime._asr_provider == "gemini"
+    successful_session.close.assert_not_awaited()
+    assert runtime._asr_session is successful_session
+    assert runtime._asr_provider == "soniox"
     assert runtime._asr_route_mode == "independent"
     assert runtime._asr_session_epoch == adopted_epoch
-
-    runtime._asr_detector = _ReadyDetector()
-    await callbacks["core"]["on_speech_activity"](
-        SpeechActivityEvent.SPEECH_STARTED
-    )
-    await callbacks["core"]["on_turn_endpointed"]()
-    await callbacks["core"]["on_input_transcript"]("current core final")
-    await runtime._wait_asr_transcript_dispatch_idle()
-
-    runtime.handle_input_transcript.assert_awaited_once_with(
-        "current core final",
-        is_voice_source=True,
-        source="independent_asr",
-        metadata={"provider": "gemini"},
-    )
-
-    await callbacks["core"]["on_connection_error"]("current core error")
-    await asyncio.sleep(0)
-
-    assert runtime._asr_session is None
-    assert runtime._asr_provider == "gemini"
-    assert runtime._asr_route_mode == "independent"
-    assert runtime._asr_session_epoch == adopted_epoch
-    core_session.close.assert_awaited_once_with()
 
 
 async def test_selection_failure_is_reported_without_escaping_session_start(

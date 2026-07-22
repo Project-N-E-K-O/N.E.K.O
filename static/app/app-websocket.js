@@ -2200,6 +2200,15 @@
                         removeExternalAsrPreview();
                         S.independentAsrActive = false;
                         if (typeof window.showStatusToast === 'function') {
+                            if (statusCode === 'ASR_INDEPENDENT_PROVIDER_UNAVAILABLE') {
+                                window.showStatusToast(
+                                    window.t
+                                        ? window.t('microphone.independentAsrProviderUnavailable', { provider: asrProvider })
+                                        : ((asrProvider || 'ASR') + ' is temporarily unavailable. Voice input has stopped for this session. It did not switch to another speech recognition service. Please start a new voice session later.'),
+                                    5000
+                                );
+                                return;
+                            }
                             window.showStatusToast(
                                 window.t ? window.t('microphone.independentAsrFallback') : 'Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.',
                                 5000
