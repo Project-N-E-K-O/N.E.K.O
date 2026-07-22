@@ -28,9 +28,11 @@ from .detector import (
     DetectorEvent,
     DetectorIngressIdentity,
     DetectorPrewarmEvent,
+    DetectorTransportPrewarmEvent,
     DetectorSubmitResult,
     DetectorSubmitStatus,
     DetectorTurnEvent,
+    ProviderCandidateFence,
     SmartTurnCompletionFence,
 )
 from .activity_evidence import RnnoiseEvidence
@@ -935,6 +937,7 @@ class DetectorFeedResult:
     events: tuple[SpeechActivityEvent, ...]
     throttle_available: bool
     endpointing_available: bool = True
+    throttle_action: ThrottleAction | None = None
 
 
 class SmartTurnReadiness(Enum):
@@ -1031,6 +1034,7 @@ class DetectorRuntime:
         self._completion_fences: dict[
             tuple[int, int, int], SmartTurnCompletionFence
         ] = {}
+        self._provider_candidate_fence: ProviderCandidateFence | None = None
         if provider_policy is not None and provider_policy.endpoint_authority == "smart_turn":
             if on_turn_complete is None and on_event is None:
                 raise ValueError(
@@ -1482,6 +1486,7 @@ class DetectorRuntime:
         speech_probability: float | None = None,
         rnnoise_available: bool | None = None,
         rnnoise_evidence: RnnoiseEvidence | None = None,
+        ingress_token: VoiceIngressToken | None = None,
     ) -> DetectorFeedResult:
         if not isinstance(pcm16, bytes) or len(pcm16) % 2:
             raise ValueError("DetectorRuntime requires complete PCM16 bytes")
@@ -1510,12 +1515,17 @@ class DetectorRuntime:
                 rnnoise_evidence=rnnoise_evidence,
             )
             if submitted.status is DetectorSubmitStatus.SKIPPED_QUIET:
-                return DetectorFeedResult((), submitted.throttle_available)
+                return DetectorFeedResult(
+                    (),
+                    submitted.throttle_available,
+                    throttle_action=submitted.throttle_action,
+                )
             if submitted.status is not DetectorSubmitStatus.ACCEPTED:
                 return DetectorFeedResult(
                     (),
                     submitted.throttle_available,
                     endpointing_available=submitted.endpointing_available,
+                    throttle_action=submitted.throttle_action,
                 )
             await adapter.wait_idle()
             if adapter.failed:
@@ -1539,7 +1549,11 @@ class DetectorRuntime:
                 for event in events
             ):
                 self._speech_active = True
-            return DetectorFeedResult(events, adapter.throttle_available)
+            return DetectorFeedResult(
+                events,
+                adapter.throttle_available,
+                throttle_action=submitted.throttle_action,
+            )
         async with self._lock:
             if self._closed or not self._available:
                 return DetectorFeedResult((), False)
@@ -1553,7 +1567,22 @@ class DetectorRuntime:
                 allow_baseline_update=not self._speech_active,
             )
             if throttle.action is ThrottleAction.SKIP_IDLE_PCM:
-                return DetectorFeedResult((), True)
+                return DetectorFeedResult(
+                    (),
+                    True,
+                    throttle_action=throttle.action,
+                )
+            effective_ingress = ingress_token or VoiceIngressToken(
+                session_epoch=0,
+                connection_id="detector-feed-compat",
+                lease_generation=0,
+                route_generation=0,
+                audio_generation=0,
+            )
+            if self._ingress_token is None:
+                self._ingress_token = effective_ingress
+            elif self._ingress_token != effective_ingress:
+                return DetectorFeedResult((), False, endpointing_available=False)
             if not self._load_attempted:
                 self._load_attempted = True
                 try:
@@ -1561,14 +1590,39 @@ class DetectorRuntime:
                 except Exception:
                     self._available = False
                 if not self._available:
-                    return DetectorFeedResult((), False)
+                    return DetectorFeedResult(
+                        (),
+                        False,
+                        throttle_action=throttle.action,
+                    )
             # PC 48k 已经过 RNNoise：低概率环境音在尚未进入说话态时
             # 不唤醒 Silero；移动端 16k 没有该概率，仍完整运行 Silero。
             try:
                 events = tuple(await asyncio.to_thread(self._gate.feed, pcm16))
             except Exception:
                 self._available = False
-                return DetectorFeedResult((), False)
+                return DetectorFeedResult(
+                    (),
+                    False,
+                    throttle_action=throttle.action,
+                )
+            self._sequence_no += 1
+            identity = DetectorIngressIdentity(
+                ingress_token=effective_ingress,
+                detector_epoch=self._detector_epoch,
+                sequence_no=self._sequence_no,
+            )
+            candidate = DetectorCandidateKey(
+                self._detector_epoch,
+                self._candidate_generation,
+            )
+            if (
+                throttle.action is ThrottleAction.PREWARM
+                and self._on_event is not None
+                and self._policy_event_candidate != candidate
+            ):
+                self._policy_event_candidate = candidate
+                await self._on_event(DetectorTransportPrewarmEvent(identity))
             if any(
                 event
                 in {
@@ -1580,7 +1634,53 @@ class DetectorRuntime:
                 self._speech_active = True
             for event in events:
                 self._throttle_policy.observe_silero(event)
-        return DetectorFeedResult(events, True)
+        return DetectorFeedResult(
+            events,
+            True,
+            throttle_action=throttle.action,
+        )
+
+    async def seal_provider_candidate(self) -> ProviderCandidateFence | None:
+        """Seal local detector activity after the Provider declares an endpoint."""
+
+        async with self._lock:
+            if self._closed or self._semantic_adapter is not None:
+                return None
+            existing = self._provider_candidate_fence
+            if existing is not None:
+                return existing
+            fence = ProviderCandidateFence(
+                detector_epoch=self._detector_epoch,
+                candidate_generation=self._candidate_generation,
+                through_sequence_no=self._sequence_no,
+            )
+            self._provider_candidate_fence = fence
+            self._candidate_generation += 1
+            self._speech_active = False
+            self._policy_event_candidate = None
+            self._throttle_policy.reset_candidate_activity()
+            return fence
+
+    async def complete_provider_candidate(
+        self,
+        fence: ProviderCandidateFence,
+    ) -> bool | None:
+        """Consume one Provider fence and report whether successor audio exists."""
+
+        async with self._lock:
+            if (
+                self._closed
+                or fence != self._provider_candidate_fence
+                or fence.detector_epoch != self._detector_epoch
+            ):
+                return None
+            self._provider_candidate_fence = None
+            successor_present = self._sequence_no > fence.through_sequence_no
+            if not successor_present:
+                self._speech_active = False
+                self._policy_event_candidate = None
+                self._throttle_policy.reset_candidate_activity()
+            return successor_present
 
     async def submit_audio(
         self,
@@ -1790,6 +1890,7 @@ class DetectorRuntime:
             self._bound_turns.clear()
             self._deferred_completions.clear()
             self._completion_fences.clear()
+            self._provider_candidate_fence = None
             self._speech_active = False
             self._prepare_token = None
             self._prepare_epoch = None
@@ -1868,6 +1969,7 @@ class DetectorRuntime:
             self._bound_turns.clear()
             self._deferred_completions.clear()
             self._completion_fences.clear()
+            self._provider_candidate_fence = None
             watch_task, self._failure_watch_task = self._failure_watch_task, None
             if watch_task is not None:
                 watch_task.cancel()

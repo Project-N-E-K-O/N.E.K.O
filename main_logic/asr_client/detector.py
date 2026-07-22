@@ -57,6 +57,15 @@ class SmartTurnCompletionFence:
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderCandidateFence:
+    """Immutable local detector boundary sealed by a Provider endpoint."""
+
+    detector_epoch: int
+    candidate_generation: int
+    through_sequence_no: int
+
+
+@dataclass(frozen=True, slots=True)
 class BoundDetectorTurn:
     """One-time binding between a detector candidate and a logical ASR turn."""
 
@@ -87,6 +96,13 @@ class DetectorPrewarmEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class DetectorTransportPrewarmEvent:
+    """Request transport resources without binding or opening a logical turn."""
+
+    ingress: DetectorIngressIdentity
+
+
+@dataclass(frozen=True, slots=True)
 class DetectorRuntimeEvent:
     ingress: DetectorIngressIdentity
     candidate: DetectorCandidateKey | None
@@ -102,6 +118,7 @@ DetectorEvent: TypeAlias = (
     DetectorActivityEvent
     | DetectorTurnEvent
     | DetectorPrewarmEvent
+    | DetectorTransportPrewarmEvent
     | DetectorRuntimeEvent
 )
 

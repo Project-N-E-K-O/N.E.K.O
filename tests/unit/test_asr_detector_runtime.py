@@ -19,12 +19,14 @@ from main_logic.asr_client.detector import (
     DetectorCandidateKey,
     DetectorIngressIdentity,
     DetectorPrewarmEvent,
+    DetectorTransportPrewarmEvent,
     DetectorSubmitStatus,
     DetectorTurnEvent,
+    ProviderCandidateFence,
 )
 from main_logic.asr_client.lifecycle import VoiceIngressToken, VoiceTurnToken
 from main_logic.asr_client.provider_policy import AsrProviderPolicy
-from main_logic.asr_client.throttle_policy import ThrottleAction
+from main_logic.asr_client.throttle_policy import ThrottleAction, VoiceThrottlePolicy
 from main_logic.voice_turn.contracts import (
     EvaluationStatus,
     SpeechActivityEvent,
@@ -173,6 +175,17 @@ def _smart_turn_policy() -> AsrProviderPolicy:
     )
 
 
+def _provider_endpoint_policy() -> AsrProviderPolicy:
+    return AsrProviderPolicy(
+        transport="streaming",
+        endpoint_authority="provider",
+        smart_turn_required=False,
+        max_segment_ms=None,
+        warm_transport_ms=25_000,
+        replay_policy="none",
+    )
+
+
 def _ingress_token() -> VoiceIngressToken:
     return VoiceIngressToken(1, "socket", 1, 1, 1)
 
@@ -187,6 +200,7 @@ async def test_detector_loads_silero_off_loop_and_returns_activity() -> None:
     assert result == DetectorFeedResult(
         events=(SpeechActivityEvent.SPEECH_STARTED,),
         throttle_available=True,
+        throttle_action=ThrottleAction.OPEN_CANDIDATE,
     )
     assert gate.inputs == [b"\x01\x00" * 160]
     assert vad.load_threads and vad.load_threads[0] != threading.get_ident()
@@ -216,6 +230,176 @@ async def test_rnnoise_soft_gate_skips_silero_until_probable_voice() -> None:
     assert quiet.throttle_available is True
     assert gate.inputs == [b"\x02\x00"]
     assert speech.events == (SpeechActivityEvent.SPEECH_STARTED,)
+
+
+async def test_provider_feed_propagates_transport_prewarm_once() -> None:
+    emitted = []
+
+    async def on_event(event) -> None:
+        emitted.append(event)
+
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_provider_endpoint_policy(),
+        on_event=on_event,
+    )
+    evidence = RnnoiseEvidence.from_legacy_probability(0.9, available=True)
+
+    first = await detector.feed(
+        b"\x01\x00",
+        rnnoise_evidence=evidence,
+        ingress_token=_ingress_token(),
+    )
+    second = await detector.feed(
+        b"\x02\x00",
+        rnnoise_evidence=evidence,
+        ingress_token=_ingress_token(),
+    )
+
+    assert first.throttle_action is ThrottleAction.PREWARM
+    assert second.throttle_action is ThrottleAction.PREWARM
+    assert len(emitted) == 1
+    assert isinstance(emitted[0], DetectorTransportPrewarmEvent)
+    assert emitted[0].ingress.ingress_token == _ingress_token()
+    assert detector.smart_turn_readiness is SmartTurnReadiness.UNLOADED
+    await detector.close()
+
+
+async def test_provider_candidate_completion_restores_idle_throttle() -> None:
+    policy = VoiceThrottlePolicy(
+        resource_optimization_enabled=True,
+        minimum_baseline_samples=1,
+    )
+    gate = _Gate((SpeechActivityEvent.SPEECH_STARTED,))
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=gate,
+        provider_policy=_provider_endpoint_policy(),
+        throttle_policy=policy,
+    )
+    active = await detector.feed(
+        b"\x01\x00",
+        rnnoise_evidence=RnnoiseEvidence.from_legacy_probability(
+            0.9,
+            available=True,
+        ),
+        ingress_token=_ingress_token(),
+    )
+    assert active.events == (SpeechActivityEvent.SPEECH_STARTED,)
+
+    fence = await detector.seal_provider_candidate()
+    assert isinstance(fence, ProviderCandidateFence)
+    assert await detector.complete_provider_candidate(fence) is False
+    gate.events = ()
+    before = len(gate.inputs)
+    baseline_before_quiet = policy.baseline
+
+    quiet = await detector.feed(
+        b"\x02\x00",
+        rnnoise_evidence=RnnoiseEvidence.from_legacy_probability(
+            0.05,
+            available=True,
+        ),
+        ingress_token=_ingress_token(),
+    )
+
+    assert quiet.throttle_action is ThrottleAction.SKIP_IDLE_PCM
+    assert len(gate.inputs) == before
+    assert baseline_before_quiet is not None
+    assert policy.baseline is not None
+    assert policy.baseline < baseline_before_quiet
+    await detector.close()
+
+
+async def test_provider_completion_preserves_successor_prewarm() -> None:
+    emitted = []
+
+    async def on_event(event) -> None:
+        emitted.append(event)
+
+    gate = _Gate((SpeechActivityEvent.SPEECH_STARTED,))
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=gate,
+        provider_policy=_provider_endpoint_policy(),
+        on_event=on_event,
+    )
+    await detector.feed(
+        b"\x01\x00",
+        rnnoise_evidence=RnnoiseEvidence.from_legacy_probability(
+            0.9,
+            available=True,
+        ),
+        ingress_token=_ingress_token(),
+    )
+    fence = await detector.seal_provider_candidate()
+    assert fence is not None
+    emitted.clear()
+    gate.events = ()
+
+    successor = await detector.feed(
+        b"\x02\x00",
+        rnnoise_evidence=RnnoiseEvidence.from_legacy_probability(
+            0.9,
+            available=True,
+        ),
+        ingress_token=_ingress_token(),
+    )
+    assert successor.throttle_action is ThrottleAction.PREWARM
+    assert len(emitted) == 1
+
+    gate.events = (SpeechActivityEvent.SPEECH_STARTED,)
+    confirmed = await detector.feed(
+        b"\x03\x00",
+        rnnoise_evidence=RnnoiseEvidence.from_legacy_probability(
+            0.9,
+            available=True,
+        ),
+        ingress_token=_ingress_token(),
+    )
+    assert confirmed.events == (SpeechActivityEvent.SPEECH_STARTED,)
+    stale = ProviderCandidateFence(
+        fence.detector_epoch + 1,
+        fence.candidate_generation,
+        fence.through_sequence_no,
+    )
+    assert await detector.complete_provider_candidate(stale) is None
+
+    assert await detector.complete_provider_candidate(fence) is True
+    assert await detector.complete_provider_candidate(fence) is None
+    assert emitted == [emitted[0]]
+    gate.events = ()
+    before = len(gate.inputs)
+    kept_open = await detector.feed(
+        b"\x04\x00",
+        rnnoise_evidence=RnnoiseEvidence.from_legacy_probability(
+            0.05,
+            available=True,
+        ),
+        ingress_token=_ingress_token(),
+    )
+    assert kept_open.throttle_action is ThrottleAction.KEEP_CANDIDATE_OPEN
+    assert len(gate.inputs) == before + 1
+    await detector.close()
+
+
+async def test_provider_candidate_fence_stays_bounded_across_100_turns() -> None:
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_provider_endpoint_policy(),
+    )
+
+    for _ in range(100):
+        fence = await detector.seal_provider_candidate()
+        assert fence is not None
+        assert await detector.complete_provider_candidate(fence) is False
+
+    assert detector._provider_candidate_fence is None
+    assert detector._bound_turns == {}
+    assert detector._completion_fences == {}
+    await detector.close()
 
 
 async def test_rnnoise_unavailable_does_not_look_like_zero_probability() -> None:
