@@ -4,9 +4,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from utils import preferences
+import main_logic.core as core_module
 
-from main_logic.asr_client.runtime import AsrRuntimeMixin
+from main_logic.core.asr_runtime import AsrRuntimeMixin
 from main_logic.asr_client.detector_runtime import DetectorFeedResult
 from main_logic.asr_client.lifecycle import VoiceLifecycleState
 
@@ -20,6 +20,30 @@ class _Runtime(AsrRuntimeMixin):
         self.lanlan_name = "HardRoute"
         self.core_api_type = "gemini"
         self.send_status = AsyncMock()
+
+    def __getattr__(self, name: str):
+        component = self.__dict__.get("_asr_runtime")
+        if component is not None and hasattr(component, name):
+            return getattr(component, name)
+        raise AttributeError(name)
+
+    def __setattr__(self, name: str, value) -> None:
+        component = self.__dict__.get("_asr_runtime")
+        if component is not None and name in {"_asr_route_mode", "_asr_required"}:
+            object.__setattr__(self, name, value)
+            setattr(component, name, value)
+            return
+        if component is not None and (
+            name.startswith("_asr_")
+            or name
+            in {
+                "_voice_input_audio_pipeline",
+                "_voice_input_resource_optimization_enabled",
+            }
+        ):
+            setattr(component, name, value)
+            return
+        object.__setattr__(self, name, value)
 
 
 async def test_fresh_runtime_is_fail_closed_until_independent_asr_is_ready() -> None:
@@ -43,7 +67,7 @@ async def test_disabled_independent_asr_preserves_omni_native_audio(
     runtime.session = type("Omni", (), {})()
     runtime.session.stream_audio = AsyncMock()
     monkeypatch.setattr(
-        preferences,
+        core_module,
         "aload_global_conversation_settings",
         AsyncMock(return_value={"independentAsrEnabled": False}),
     )
@@ -66,7 +90,7 @@ async def test_text_session_stays_fail_closed_for_accidental_microphone_frames(
 ) -> None:
     runtime = _Runtime()
     monkeypatch.setattr(
-        preferences,
+        core_module,
         "aload_global_conversation_settings",
         AsyncMock(return_value={"independentAsrEnabled": False}),
     )
@@ -102,7 +126,7 @@ async def test_ready_independent_asr_owns_an_active_lifecycle_controller(
         {"provider_key": "gemini", "endpointing_mode": "manual"},
     )()
     monkeypatch.setattr(
-        preferences,
+        core_module,
         "aload_global_conversation_settings",
         AsyncMock(return_value={"independentAsrEnabled": True}),
     )
