@@ -28,14 +28,19 @@ on:
         options:
           - 'true'
           - 'false'
+      previous_portable_release:
+        description: 'Release tag used as the Portable delta baseline'
+        required: false
+        default: 'nightly'
 
 jobs:
   build-windows:
     uses: ./.github/workflows/build-desktop.yml
     with:
-      version: ${{ inputs.version || '0.8.4-nightly.1' }}
+      version: ${{ inputs.version || '0.8.4-nightly.2' }}
       electron_repo: ${{ inputs.electron_repo || 'xxynet/N.E.K.O.-PC' }}
       electron_ref: ${{ inputs.electron_ref || 'feat/auto-update' }}
       skip_signing: ${{ inputs.skip_signing || 'true' }}
       windows_only: true
+      previous_portable_release: ${{ inputs.previous_portable_release || 'nightly' }}
     secrets: inherit
