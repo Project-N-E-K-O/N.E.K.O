@@ -28,7 +28,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from config.prompts.prompts_sys import _loc
 from config.prompts.prompts_memory import (
@@ -711,7 +711,7 @@ class MemorySubjectRequest(BaseModel):
 
 class ScopedFactInput(BaseModel):
     text: str
-    importance: int = 5
+    importance: int = Field(default=5, ge=1, le=10)
     source: Literal["user_observation", "ai_disclosure"] = "user_observation"
 
 

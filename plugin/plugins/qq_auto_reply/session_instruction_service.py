@@ -409,14 +409,16 @@ class QQSessionInstructionService:
             return ""
         try:
             if is_group:
-                memory_context = await self.plugin.memory_bridge.fetch_scoped_bootstrap_memory(
-                    her_name,
-                    subjects=[
-                        self.plugin.memory_bridge.group_subject(group_id),
+                subjects = [self.plugin.memory_bridge.group_subject(group_id)]
+                if str(sender_id or "").strip():
+                    subjects.append(
                         self.plugin.memory_bridge.group_participant_subject(
                             group_id, sender_id,
-                        ),
-                    ],
+                        )
+                    )
+                memory_context = await self.plugin.memory_bridge.fetch_scoped_bootstrap_memory(
+                    her_name,
+                    subjects=subjects,
                 )
             else:
                 memory_context = await self.plugin.memory_bridge.fetch_bootstrap_memory(her_name)

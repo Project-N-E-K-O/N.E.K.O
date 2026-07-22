@@ -33,12 +33,13 @@ class QQReplyContextNode:
         try:
             subjects = None
             if is_group and group_id:
-                subjects = [
-                    self.plugin.memory_bridge.group_subject(group_id),
-                    self.plugin.memory_bridge.group_participant_subject(
-                        group_id, sender_id,
-                    ),
-                ]
+                subjects = [self.plugin.memory_bridge.group_subject(group_id)]
+                if str(sender_id or "").strip():
+                    subjects.append(
+                        self.plugin.memory_bridge.group_participant_subject(
+                            group_id, sender_id,
+                        )
+                    )
             recall_result = await self.plugin.memory_bridge.query_relevant_memory(
                 her_name,
                 normalized_message,

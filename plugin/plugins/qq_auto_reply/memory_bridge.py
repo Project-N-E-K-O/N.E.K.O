@@ -75,20 +75,20 @@ class QQMemoryBridge:
         normalized_query = str(query or "").strip()
         if not normalized_query:
             return QQMemoryQueryResult()
-        payload: dict[str, Any] = {"query": normalized_query}
+        request_payload: dict[str, Any] = {"query": normalized_query}
         if subjects:
-            payload["subjects"] = subjects
+            request_payload["subjects"] = subjects
         async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
             response = await client.post(
                 f"{self._base_url()}/query_memory/{her_name}",
-                json=payload,
+                json=request_payload,
             )
             response.raise_for_status()
-            payload = response.json()
-        results = payload.get("results") if isinstance(payload, dict) else None
+            response_payload = response.json()
+        results = response_payload.get("results") if isinstance(response_payload, dict) else None
         memory_items = [item for item in results if isinstance(item, dict)] if isinstance(results, list) else []
         rendered = self.render_relevant_memory(memory_items[:limit])
-        elapsed_ms = payload.get("elapsed_ms", 0.0) if isinstance(payload, dict) else 0.0
+        elapsed_ms = response_payload.get("elapsed_ms", 0.0) if isinstance(response_payload, dict) else 0.0
         try:
             normalized_elapsed = float(elapsed_ms or 0.0)
         except (TypeError, ValueError):

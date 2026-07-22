@@ -1169,13 +1169,14 @@ class FactStore:
         - ``new_facts_this_round``: facts newly extracted + persisted by this
           round's Stage-1 (for outbox and other audit purposes)
         - ``signals``: evidence signals awaiting dispatch
-        - ``batch_fact_ids``: fact ids processed by this Stage-2 round — **the
-          caller must call ``amark_signal_processed(lanlan_name, batch_fact_ids)``
-          to complete the checkpoint only after every signal has been applied
-          successfully via aapply_signal**. If the caller crashes during/after
-          dispatch, the next idle sees the signal_processed=False facts, re-runs
-          Stage-2, regenerates the signals and retries the dispatch (CodeRabbit
-          fingerprint c755101c).
+        - ``batch_fact_ids``: fact ids successfully processed by this Stage-2
+          round. A mixed-subject drain is partitioned first, so a failed subject
+          remains pending without blocking subjects that completed. The caller
+          must call ``amark_signal_processed(lanlan_name, batch_fact_ids)`` only
+          after every returned signal has been applied successfully via
+          aapply_signal. If dispatch fails, the next idle sees those facts still
+          at signal_processed=False and retries them (CodeRabbit fingerprint
+          c755101c).
 
         Failure semantics (§3.4.2, last paragraph):
         - Stage-1 failure → abort, no fact written; caller retries later
@@ -1227,46 +1228,67 @@ class FactStore:
         )
         batch = unprocessed[:EVIDENCE_DETECT_SIGNALS_MAX_NEW_FACTS]
 
-        try:
-            existing_observations = await self._aload_signal_targets(
-                lanlan_name,
-                reflection_engine=reflection_engine,
-                persona_manager=persona_manager,
-                # 用 batch 而不是仅本轮新增作为 query，向量召回更聚焦。
-                new_facts=batch,
-            )
-        except Exception as e:
-            # _aload_signal_targets 现在不再吞 reflection/persona load 异常
-            # （CodeRabbit 1f follow-up：partial pool + checkpoint 会让失败池
-            # 那部分的 signal 永久丢失）。任一 manager raise 时整轮放弃 mark，
-            # 下轮 idle 重试。
-            logger.warning(
-                f"[FactStore] {lanlan_name}: _aload_signal_targets 失败，"
-                f"跳过本轮 Stage-2 mark，下轮 idle 重试: {e}"
-            )
-            return persisted_this_round, [], []
-        if not existing_observations:
-            # 真为空（冷启动 / persona 池只有 protected）：故意**不**返回
-            # batch_fact_ids，让 caller 不 mark，下轮 idle tick 重试同一批。
-            # 代价是冷启动每轮跑一次 _aload_signal_targets（无 LLM 调用）；
-            # 收益是绝不丢 signal（CodeRabbit fingerprint e625b666）。
-            return persisted_this_round, [], []
+        # A drain can contain facts from several groups/members plus legacy
+        # private facts. Never send their union to one Stage-2 prompt: even if
+        # the observation pool is filtered to the same union, the model could
+        # pair group A's source fact with group B's target. Partition before
+        # both target recall and signal detection so every prompt has exactly
+        # one authorization boundary.
+        from memory.scopes import is_legacy_private_entry, subject_from_entry
 
-        signals = await self._allm_detect_signals(
-            lanlan_name, batch, existing_observations,
-        )
-        if signals is None:
-            # Stage-2 LLM failure: 不返回 batch_ids，caller 不 mark，下轮重试
-            return persisted_this_round, [], []
+        partitions: dict[tuple[str | None, str | None], list[dict]] = {}
+        for fact in batch:
+            subject = subject_from_entry(fact)
+            if subject is not None:
+                marker = (subject.key, subject.scope)
+            elif is_legacy_private_entry(fact):
+                marker = (None, None)
+            else:
+                logger.warning(
+                    "[FactStore] %s: Stage-2 跳过 subject 元数据损坏的 fact %r",
+                    lanlan_name,
+                    fact.get('id'),
+                )
+                continue
+            partitions.setdefault(marker, []).append(fact)
 
-        # Stage-2 成功 → 返回 batch_fact_ids 让 caller 在 dispatch 全部成功
-        # 后调 amark_signal_processed。**不**在这里立刻 mark：caller 还没有
-        # 把 signals 喂给 PersonaManager / ReflectionEngine.aapply_signal，
-        # 中途崩溃或部分失败时这批 fact 必须能下轮重跑（CodeRabbit c755101c）。
-        # 即使 signals=[]（LLM 看过认为没关联）也返回 batch_ids，caller 看到
-        # 空 signals 直接当 dispatch_ok=True 调 amark，避免下轮空跑。
-        batch_fact_ids = [f['id'] for f in batch]
-        return persisted_this_round, signals, batch_fact_ids
+        completed_signals: list[dict] = []
+        completed_fact_ids: list[str] = []
+        for subject_batch in partitions.values():
+            try:
+                existing_observations = await self._aload_signal_targets(
+                    lanlan_name,
+                    reflection_engine=reflection_engine,
+                    persona_manager=persona_manager,
+                    # 用当前 subject 分区作为 query，避免跨边界召回。
+                    new_facts=subject_batch,
+                )
+            except Exception as e:
+                # 只保留当前 subject 的 checkpoint；其他 subject 仍可继续。
+                logger.warning(
+                    f"[FactStore] {lanlan_name}: _aload_signal_targets 失败，"
+                    f"保留当前 subject 下轮 Stage-2 重试: {e}"
+                )
+                continue
+            if not existing_observations:
+                # 冷启动 / 当前 subject 无可用目标：保留这一分区下轮重试。
+                continue
+
+            signals = await self._allm_detect_signals(
+                lanlan_name, subject_batch, existing_observations,
+            )
+            if signals is None:
+                # Stage-2 LLM failure: 当前 subject 不返回 ids，下轮重试。
+                continue
+
+            completed_signals.extend(signals)
+            completed_fact_ids.extend(
+                fact['id'] for fact in subject_batch if fact.get('id')
+            )
+
+        # 只返回已完成的 subject checkpoint。caller 仍需在所有返回
+        # signals dispatch 成功后才 mark；失败分区保持 False 下轮重试。
+        return persisted_this_round, completed_signals, completed_fact_ids
 
     async def extract_facts(
         self,

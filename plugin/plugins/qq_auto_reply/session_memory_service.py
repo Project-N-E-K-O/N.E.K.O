@@ -149,7 +149,11 @@ class QQSessionMemoryService:
                 scoped_messages = self.conversation_slice_to_memory_messages(
                     conversation_history, 0,
                 )[-self.GROUP_HISTORY_MAX_MESSAGES:]
-                if group_id and scoped_messages:
+                if (
+                    group_id
+                    and scoped_messages
+                    and not user_data.get("group_memory_flushed")
+                ):
                     result = await self.plugin.memory_bridge.post_scoped_memory_history(
                         her_name,
                         scoped_messages,
@@ -162,6 +166,7 @@ class QQSessionMemoryService:
                         f"[{reason}] 已为群 {group_id} 完成 scoped 记忆结算，"
                         f"消息数: {len(scoped_messages)}"
                     )
+                    user_data["group_memory_flushed"] = True
                 member_memory_enabled = bool(
                     (getattr(self.plugin, "_qq_settings", {}) or {}).get(
                         "group_member_memory_enabled", False,
@@ -171,21 +176,39 @@ class QQSessionMemoryService:
                     user_data.get("group_member_memory_messages") or {}
                     if member_memory_enabled else {}
                 )
+                failed_member_ids: list[str] = []
                 for sender_id, member_messages in list(member_buckets.items()):
                     if not group_id or not sender_id or not member_messages:
                         continue
-                    result = await self.plugin.memory_bridge.post_scoped_memory_history(
-                        her_name,
-                        member_messages,
-                        subject=self.plugin.memory_bridge.group_participant_subject(
-                            group_id, sender_id,
-                        ),
-                        timeout=30.0,
-                    )
-                    if result.get("status") == "error":
-                        raise RuntimeError(
-                            result.get("message", "scoped participant history failed")
+                    try:
+                        result = await self.plugin.memory_bridge.post_scoped_memory_history(
+                            her_name,
+                            member_messages,
+                            subject=self.plugin.memory_bridge.group_participant_subject(
+                                group_id, sender_id,
+                            ),
+                            timeout=30.0,
                         )
+                        if result.get("status") == "error":
+                            raise RuntimeError(
+                                result.get(
+                                    "message", "scoped participant history failed",
+                                )
+                            )
+                    except Exception as exc:
+                        failed_member_ids.append(sender_id)
+                        self.plugin.logger.error(
+                            f"[{reason}] 群 {group_id} 成员 {sender_id} "
+                            f"记忆结算失败: {exc}"
+                        )
+                        continue
+                    member_buckets.pop(sender_id, None)
+                if failed_member_ids:
+                    self.plugin.logger.error(
+                        f"[{reason}] 群 {group_id} 仍有 "
+                        f"{len(failed_member_ids)} 个成员记忆待重试"
+                    )
+                    return False
             else:
                 last_synced_index = int(user_data.get("last_synced_index", 0))
                 remaining_messages = self.conversation_slice_to_memory_messages(conversation_history, last_synced_index)
