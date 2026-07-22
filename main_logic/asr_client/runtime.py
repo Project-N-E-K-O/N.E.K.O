@@ -796,7 +796,9 @@ class IndependentAsrRuntime:
             self._asr_transport_selection = selection
             lifecycle = self._asr_lifecycle
             if not self._voice_input_resource_optimization_enabled:
-                await self._restart_transport(max_attempts=1)
+                await self._restart_transport(
+                    max_attempts=policy.connect_max_attempts,
+                )
                 if (
                     epoch != self._asr_session_epoch
                     or lifecycle is not self._asr_lifecycle
@@ -1211,7 +1213,14 @@ class IndependentAsrRuntime:
     async def _connect_transport(self) -> None:
         """Connect only the independent ASR transport."""
 
-        await self._restart_transport(max_attempts=1)
+        lifecycle = self._asr_lifecycle
+        await self._restart_transport(
+            max_attempts=(
+                lifecycle.provider_policy.connect_max_attempts
+                if lifecycle is not None
+                else 1
+            )
+        )
 
     async def _restart_transport(self, *, max_attempts: int = 3) -> None:
         if max_attempts <= 0:
@@ -1232,7 +1241,19 @@ class IndependentAsrRuntime:
                 )
                 return
 
+            session_epoch = self._asr_session_epoch
+            audio_generation = self._asr_audio_generation
+            selected_provider = str(
+                getattr(selection, "provider_key", "") or ""
+            ).strip().lower()
             for attempt in range(max_attempts):
+                if (
+                    session_epoch != self._asr_session_epoch
+                    or audio_generation != self._asr_audio_generation
+                    or lifecycle is not self._asr_lifecycle
+                    or factory is not self._asr_session_factory
+                ):
+                    return
                 if lifecycle.snapshot.state is VoiceLifecycleState.BACKOFF:
                     lifecycle.transition(VoiceLifecycleEvent.RETRY)
                     lifecycle.metrics.reconnect_count += 1
@@ -1242,7 +1263,12 @@ class IndependentAsrRuntime:
                     connect_started_at = time.monotonic()
                     candidate = factory(selection)
                     await candidate.connect()
-                    if self._asr_lifecycle is not lifecycle:
+                    if (
+                        session_epoch != self._asr_session_epoch
+                        or audio_generation != self._asr_audio_generation
+                        or lifecycle is not self._asr_lifecycle
+                        or factory is not self._asr_session_factory
+                    ):
                         await candidate.close()
                         return
                     self._asr_session = candidate
@@ -1294,7 +1320,10 @@ class IndependentAsrRuntime:
                     return
                 except asyncio.CancelledError:
                     if candidate is not None:
-                        await candidate.close()
+                        try:
+                            await candidate.close()
+                        except Exception:
+                            pass
                     raise
                 except Exception:
                     if candidate is not None:
@@ -1302,15 +1331,28 @@ class IndependentAsrRuntime:
                             await candidate.close()
                         except Exception:
                             pass
+                    if (
+                        session_epoch != self._asr_session_epoch
+                        or audio_generation != self._asr_audio_generation
+                        or lifecycle is not self._asr_lifecycle
+                        or factory is not self._asr_session_factory
+                    ):
+                        return
                     if lifecycle.snapshot.state is VoiceLifecycleState.PREWARMING:
                         lifecycle.transition(VoiceLifecycleEvent.CONNECT_FAILED)
                         await self._send_asr_lifecycle_state(VoiceLifecycleState.BACKOFF)
                     if attempt + 1 < max_attempts:
-                        await asyncio.sleep(min(1.0, 0.25 * (2**attempt)))
+                        await asyncio.sleep(
+                            min(
+                                lifecycle.provider_policy.connect_retry_cap_seconds,
+                                lifecycle.provider_policy.connect_retry_base_seconds
+                                * (2**attempt),
+                            )
+                        )
                         continue
             if lifecycle.snapshot.state is VoiceLifecycleState.BACKOFF:
                 lifecycle.transition(VoiceLifecycleEvent.RETRIES_EXHAUSTED)
-            failed_provider = self._asr_provider or "unknown"
+            failed_provider = selected_provider or self._asr_provider or "unknown"
             await self._handle_independent_asr_error(
                 self._asr_session_epoch,
                 failed_provider,
