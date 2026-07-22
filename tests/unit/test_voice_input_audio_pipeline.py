@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from main_logic.asr_client.audio import VoiceInputAudioPipeline
+from main_logic.voice_turn.audio_input import VoiceInputAudioPipeline
 
 
 class _Processor:

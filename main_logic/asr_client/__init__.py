@@ -33,6 +33,7 @@ from ._registry_meta import (
     ASR_PROVIDER_REGISTRY as _ASR_PROVIDER_REGISTRY,
     CORE_ASR_ROUTES as _CORE_ASR_ROUTES,
     AsrEndpointingMode as _AsrEndpointingMode,
+    AsrProviderAvailability as _AsrProviderAvailability,
 )
 from .detector_runtime import _create_voice_turn_adapter
 from .provider_policy import resolve_provider_policy
@@ -70,6 +71,7 @@ class _AsrSelection:
     provider_key: str
     endpointing_mode: _AsrEndpointingMode
     soniox_region: Literal["us", "eu", "jp"] | None = None
+    availability: _AsrProviderAvailability = _AsrProviderAvailability.IMPLEMENTED
     _worker_fn: _AsrWorkerFn | None = field(
         default=None,
         repr=False,
@@ -192,6 +194,16 @@ def _resolve_asr_selection(
             _api_key=api_key or "",
         )
 
+    provider_meta = _ASR_PROVIDER_REGISTRY.get(route.provider_key)
+    if provider_meta is None:
+        raise RuntimeError(f"ASR_BACKEND_NOT_IMPLEMENTED: {route.provider_key}")
+    if provider_meta.availability is not _AsrProviderAvailability.IMPLEMENTED:
+        return _AsrSelection(
+            provider_key=route.provider_key,
+            endpointing_mode=route.default_endpointing_mode,
+            availability=provider_meta.availability,
+        )
+
     worker_fn, api_key, provider_key = _get_asr_worker(
         core_key,
         route.default_endpointing_mode,
@@ -199,9 +211,15 @@ def _resolve_asr_selection(
         core_config=core_config,
         require_credential=False,
     )
+    availability = (
+        _AsrProviderAvailability.IMPLEMENTED
+        if provider_key == "dummy" or bool(api_key)
+        else _AsrProviderAvailability.MISSING_CREDENTIALS
+    )
     return _AsrSelection(
         provider_key=provider_key,
         endpointing_mode=route.default_endpointing_mode,
+        availability=availability,
         _worker_fn=worker_fn,
         _api_key=api_key or "",
     )
@@ -332,6 +350,10 @@ def _create_asr_session_from_selection(
     provider_meta = _ASR_PROVIDER_REGISTRY.get(provider_key)
     if provider_meta is None:
         raise RuntimeError(f"ASR_BACKEND_NOT_IMPLEMENTED: {provider_key}")
+    if selection.availability is _AsrProviderAvailability.BLOCKED_BACKEND:
+        raise RuntimeError(f"ASR_BACKEND_BLOCKED: {core_type}")
+    if selection.availability is _AsrProviderAvailability.MISSING_CREDENTIALS:
+        raise RuntimeError(f"ASR_CREDENTIALS_MISSING: {provider_key}")
     if session_config.endpointing_mode not in provider_meta.supported_endpointing_modes:
         raise RuntimeError(
             "ASR_ENDPOINTING_NOT_SUPPORTED: "

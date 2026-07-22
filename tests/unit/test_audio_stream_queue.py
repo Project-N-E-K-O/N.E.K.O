@@ -10,7 +10,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 
 from main_logic.core import LLMSessionManager
 from main_logic.omni_realtime_client import OmniRealtimeClient
-from main_logic.asr_client.audio import ProcessedVoiceFrame
+from main_logic.voice_turn.audio_input import ProcessedVoiceFrame
 from main_logic.core.asr_runtime import (
     _AudioDurationQueue as AudioDurationQueue,
     _HotSwapAudioBuffer as HotSwapAudioBuffer,
@@ -129,16 +129,13 @@ def _authorize_core_lease(mgr: LLMSessionManager) -> None:
     mgr._voice_lease_synchronized = True
     mgr._voice_lease_owner = "core"
     mgr._voice_input_suppressed = False
-    mgr._sync_runtime_voice_lease()
 
 
 async def test_native_audio_without_asr_lifecycle_reaches_internal_processor():
     mgr = LLMSessionManager.__new__(LLMSessionManager)
     mgr._init_asr_runtime_state()
     _authorize_core_lease(mgr)
-    mgr._asr_runtime.activate_native_route()
-    mgr._asr_route_mode = "native"
-    mgr._asr_required = False
+    mgr._set_microphone_route("native")
     mgr._ensure_audio_stream_worker = lambda: None
     mgr._audio_stream_queue = AudioDurationQueue(
         capacity_us=1_000_000,
@@ -153,8 +150,7 @@ async def test_native_audio_without_asr_lifecycle_reaches_internal_processor():
     frame = await mgr._audio_stream_queue.get()
     assert frame.message is message
     assert mgr._ingress_token_matches(frame.token)
-    mgr._asr_runtime._asr_required = True
-    mgr._asr_runtime._asr_route_mode = "blocked"
+    mgr._set_microphone_route("blocked")
     assert not mgr._ingress_token_matches(frame.token)
     mgr._audio_stream_queue.task_done()
 
@@ -190,7 +186,7 @@ async def test_audio_stream_queue_clears_whole_candidate_when_full():
     mgr._audio_stream_dropped_total = 0
     mgr._last_audio_stream_backlog_log_time = 0.0
     mgr._ensure_audio_stream_worker = lambda: None
-    mgr._asr_runtime.handle_ingress_backpressure = AsyncMock()
+    mgr._asr_runtime.abort = AsyncMock()
 
     def message(seq: int) -> dict:
         return {
@@ -206,7 +202,7 @@ async def test_audio_stream_queue_clears_whole_candidate_when_full():
 
     assert mgr._audio_stream_dropped_total == 3
     assert mgr._audio_stream_queue.empty()
-    mgr._asr_runtime.handle_ingress_backpressure.assert_awaited_once()
+    mgr._asr_runtime.abort.assert_awaited_once_with("ingress_backpressure")
 
 
 async def test_active_audio_queue_overflow_aborts_turn_then_resumes_local_listen():
@@ -216,7 +212,6 @@ async def test_active_audio_queue_overflow_aborts_turn_then_resumes_local_listen
     mgr._init_asr_runtime_state()
     _authorize_core_lease(mgr)
     mgr._asr_runtime._asr_provider = "qwen"
-    mgr._asr_runtime._asr_route_mode = "independent"
     mgr._asr_runtime._asr_lifecycle = VoiceInputLifecycleController(
         provider_policy=resolve_provider_policy("qwen", "manual"),
         shadow_mode=False,
@@ -224,6 +219,7 @@ async def test_active_audio_queue_overflow_aborts_turn_then_resumes_local_listen
     mgr._asr_runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
     mgr._asr_runtime._asr_lifecycle.transition(VoiceLifecycleEvent.SOFT_WAKE)
     mgr._asr_runtime._asr_lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+    mgr._asr_runtime._asr_current_ingress_token = mgr._capture_ingress_token()
     mgr._audio_stream_queue = AudioDurationQueue(
         capacity_us=1_000_000,
         max_frames=1,
@@ -240,9 +236,11 @@ async def test_active_audio_queue_overflow_aborts_turn_then_resumes_local_listen
     await LLMSessionManager._enqueue_audio_stream_data(mgr, message)
     await LLMSessionManager._enqueue_audio_stream_data(mgr, message)
 
-    assert mgr._asr_runtime.route_mode == "independent"
-    assert mgr._asr_runtime.lifecycle is not None
-    assert mgr._asr_runtime.lifecycle.snapshot.state is VoiceLifecycleState.LOCAL_LISTEN
+    assert mgr._asr_runtime._asr_lifecycle is not None
+    assert (
+        mgr._asr_runtime._asr_lifecycle.snapshot.state
+        is VoiceLifecycleState.LOCAL_LISTEN
+    )
     assert mgr._audio_stream_queue.empty()
     assert any(
         "ASR_INGRESS_BACKPRESSURE" in call.args[0]
@@ -251,7 +249,7 @@ async def test_active_audio_queue_overflow_aborts_turn_then_resumes_local_listen
     assert mgr._omni_mic_audio_bytes == 0
 
 
-async def test_audio_worker_drops_stale_ingress_token_before_processing():
+async def test_audio_worker_leaves_runtime_generation_validation_to_submit():
     mgr = LLMSessionManager.__new__(LLMSessionManager)
     mgr._init_asr_runtime_state()
     _authorize_core_lease(mgr)
@@ -272,7 +270,7 @@ async def test_audio_worker_drops_stale_ingress_token_before_processing():
             "sample_rate_hz": 16_000,
             "data": [1] * 160,
         },
-        token=mgr._capture_ingress_token(mgr._asr_runtime.lifecycle),
+        token=mgr._capture_ingress_token(),
     )
     mgr._audio_stream_queue.put_nowait(frame)
     mgr._asr_runtime._asr_audio_generation += 1
@@ -284,8 +282,11 @@ async def test_audio_worker_drops_stale_ingress_token_before_processing():
     with pytest.raises(asyncio.CancelledError):
         await worker
 
-    mgr._process_microphone_stream_data.assert_not_awaited()
-    assert mgr._audio_stream_dropped_total == 1
+    mgr._process_microphone_stream_data.assert_awaited_once_with(
+        frame.message,
+        ingress_token=frame.token,
+    )
+    assert mgr._audio_stream_dropped_total == 0
 
 
 async def test_audio_worker_does_not_wait_for_core_session_readiness():
@@ -311,7 +312,7 @@ async def test_audio_worker_does_not_wait_for_core_session_readiness():
             "sample_rate_hz": 16_000,
             "data": [1] * 160,
         },
-        token=mgr._capture_ingress_token(mgr._asr_runtime.lifecycle),
+        token=mgr._capture_ingress_token(),
     )
     mgr._audio_stream_queue.put_nowait(frame)
 
@@ -336,7 +337,7 @@ async def test_inflight_audio_is_dropped_when_epoch_changes():
         mgr._audio_stream_epoch += 1
         return ProcessedVoiceFrame(b"\x01\x00" * 160, 16_000, 0.5, True)
 
-    mgr._asr_runtime.process_audio = AsyncMock(side_effect=advance_epoch)
+    mgr._voice_input_audio_pipeline.process = AsyncMock(side_effect=advance_epoch)
 
     await _process_microphone_message(
         mgr,
@@ -352,9 +353,7 @@ def _make_routable_audio_manager(route_result: bool):
     mgr.lanlan_name = "Test"
     mgr._init_asr_runtime_state()
     _authorize_core_lease(mgr)
-    mgr._asr_runtime.activate_native_route()
-    mgr._asr_route_mode = "native"
-    mgr._asr_required = False
+    mgr._set_microphone_route("native")
     mgr.session_ready = True
     mgr._starting_session_count = 0
     mgr.is_active = True
@@ -370,7 +369,7 @@ def _make_routable_audio_manager(route_result: bool):
     mgr.hot_swap_cache_lock = asyncio.Lock()
     mgr._route_microphone_audio = AsyncMock(return_value=route_result)
     mgr._record_omni_microphone_audio = MagicMock()
-    mgr._asr_runtime.process_audio = AsyncMock(
+    mgr._voice_input_audio_pipeline.process = AsyncMock(
         return_value=ProcessedVoiceFrame(
             pcm16=b"\x01\x00" * 160,
             sample_rate_hz=16_000,
@@ -431,7 +430,7 @@ async def test_binary_audio_sample_rate_contract_reaches_audio_pipeline():
         },
     )
 
-    mgr._asr_runtime.process_audio.assert_awaited_once_with(
+    mgr._voice_input_audio_pipeline.process.assert_awaited_once_with(
         struct.pack("<480h", *([1] * 480)),
         sample_rate_hz=16_000,
     )
@@ -453,7 +452,7 @@ async def test_blocked_route_never_sends_microphone_audio_to_omni():
 async def test_independent_audio_route_precedes_omni_websocket_checks():
     mgr = _make_routable_audio_manager(True)
     mgr.session.ws = None
-    mgr._asr_runtime.process_audio = AsyncMock(
+    mgr._voice_input_audio_pipeline.process = AsyncMock(
         return_value=ProcessedVoiceFrame(
             pcm16=b"\x02\x00" * 160,
             sample_rate_hz=16_000,
@@ -467,7 +466,7 @@ async def test_independent_audio_route_precedes_omni_websocket_checks():
         {"input_type": "audio", "data": [1] * 480},
     )
 
-    mgr._asr_runtime.process_audio.assert_awaited_once()
+    mgr._voice_input_audio_pipeline.process.assert_awaited_once()
     mgr._route_microphone_audio.assert_awaited_once_with(
         b"\x02\x00" * 160,
         sample_rate_hz=16_000,
@@ -488,7 +487,7 @@ async def test_fatal_omni_state_does_not_block_independent_asr_audio():
         {"input_type": "audio", "data": [1] * 480},
     )
 
-    mgr._asr_runtime.process_audio.assert_awaited_once()
+    mgr._voice_input_audio_pipeline.process.assert_awaited_once()
     mgr._route_microphone_audio.assert_awaited_once()
     mgr.session.stream_audio.assert_not_awaited()
     mgr._record_omni_microphone_audio.assert_not_called()
@@ -520,8 +519,7 @@ async def test_active_teardown_blocks_audio_while_independent_asr_close_waits():
     mgr = _make_routable_audio_manager(True)
     del mgr._route_microphone_audio
     mgr._init_asr_runtime_state()
-    mgr._asr_runtime._asr_route_mode = "independent"
-    mgr._asr_runtime._asr_required = True
+    mgr._set_microphone_route("independent")
     mgr._asr_runtime._asr_provider = "dummy"
     mgr.lock = asyncio.Lock()
     mgr._user_session_abandon_epoch = 0
@@ -543,8 +541,7 @@ async def test_active_teardown_blocks_audio_while_independent_asr_close_waits():
     try:
         assert mgr.is_active is True
         assert mgr.session_ready is True
-        assert mgr._asr_runtime.route_mode == "blocked"
-        assert mgr._asr_runtime.required is True
+        assert mgr._asr_route_mode == "blocked"
 
         await LLMSessionManager._process_stream_data_internal(
             mgr,
@@ -558,8 +555,7 @@ async def test_active_teardown_blocks_audio_while_independent_asr_close_waits():
         with pytest.raises(asyncio.CancelledError):
             await end_task
 
-    assert mgr._asr_runtime.route_mode == "blocked"
-    assert mgr._asr_runtime.required is True
+    assert mgr._asr_route_mode == "blocked"
 
 
 async def test_hot_swap_flush_preserves_identity_and_detector_metadata():
@@ -623,7 +619,7 @@ async def test_hot_swap_overflow_blocks_whole_candidate():
     token = _queue_token()
     mgr.is_hot_swap_imminent = True
     mgr._ingress_token_matches = MagicMock(return_value=True)
-    mgr._asr_runtime.handle_ingress_backpressure = AsyncMock()
+    mgr._asr_runtime.abort = AsyncMock()
     mgr.hot_swap_audio_cache = HotSwapAudioBuffer(capacity_ms=10)
     assert mgr.hot_swap_audio_cache.append(_hot_swap_frame(token))
 
@@ -634,7 +630,7 @@ async def test_hot_swap_overflow_blocks_whole_candidate():
     )
 
     assert not mgr.hot_swap_audio_cache
-    mgr._asr_runtime.handle_ingress_backpressure.assert_awaited_once_with(token)
+    mgr._asr_runtime.abort.assert_awaited_once_with("ingress_backpressure")
     mgr._route_microphone_audio.assert_not_awaited()
     mgr.session.stream_audio.assert_not_awaited()
     mgr._record_omni_microphone_audio.assert_not_called()
@@ -644,12 +640,12 @@ async def test_hot_swap_flush_orders_inflight_live_then_cached_audio():
     mgr = _make_routable_audio_manager(True)
     token = _queue_token()
     mgr._ingress_token_matches = MagicMock(return_value=True)
-    mgr._asr_runtime.handle_ingress_backpressure = AsyncMock()
+    mgr._asr_runtime.abort = AsyncMock()
     mgr.hot_swap_audio_cache = HotSwapAudioBuffer(capacity_ms=8_000)
     assert mgr.hot_swap_audio_cache.append(
         HotSwapAudioFrame(pcm16=b"\x10\x00" * 160, token=token)
     )
-    mgr._asr_runtime.process_audio = AsyncMock(
+    mgr._voice_input_audio_pipeline.process = AsyncMock(
         side_effect=[
             ProcessedVoiceFrame(b"\x20\x00" * 160, 16_000, 0.8, True),
             ProcessedVoiceFrame(b"\x30\x00" * 160, 16_000, 0.8, True),
@@ -689,7 +685,7 @@ async def test_hot_swap_flush_orders_inflight_live_then_cached_audio():
     await asyncio.wait_for(asyncio.gather(first, second, flush), 1)
 
     assert [pcm[:2] for pcm in routed] == [b"\x20\x00", b"\x10\x00", b"\x30\x00"]
-    mgr._asr_runtime.handle_ingress_backpressure.assert_not_awaited()
+    mgr._asr_runtime.abort.assert_not_awaited()
     mgr.session.stream_audio.assert_not_awaited()
     mgr._record_omni_microphone_audio.assert_not_called()
     assert not mgr.hot_swap_audio_cache
@@ -699,7 +695,7 @@ async def test_hot_swap_mid_batch_failure_invalidates_candidate():
     mgr = _make_routable_audio_manager(True)
     token = _queue_token()
     mgr._ingress_token_matches = MagicMock(return_value=True)
-    mgr._asr_runtime.handle_ingress_backpressure = AsyncMock()
+    mgr._asr_runtime.abort = AsyncMock()
     mgr.hot_swap_audio_cache = HotSwapAudioBuffer(capacity_ms=8_000)
     assert mgr.hot_swap_audio_cache.append(
         HotSwapAudioFrame(pcm16=b"\x10\x00" * 160, token=token)
@@ -712,7 +708,7 @@ async def test_hot_swap_mid_batch_failure_invalidates_candidate():
     await LLMSessionManager._flush_hot_swap_audio_cache(mgr)
 
     mgr._route_microphone_audio.assert_awaited_once()
-    mgr._asr_runtime.handle_ingress_backpressure.assert_awaited_once_with(token)
+    mgr._asr_runtime.abort.assert_awaited_once_with("ingress_backpressure")
     mgr.session.stream_audio.assert_not_awaited()
     mgr._record_omni_microphone_audio.assert_not_called()
     assert not mgr.hot_swap_audio_cache
@@ -723,7 +719,7 @@ async def test_hot_swap_iteration_exhaustion_invalidates_residual_audio():
     mgr = _make_routable_audio_manager(True)
     token = _queue_token()
     mgr._ingress_token_matches = MagicMock(return_value=True)
-    mgr._asr_runtime.handle_ingress_backpressure = AsyncMock()
+    mgr._asr_runtime.abort = AsyncMock()
     mgr.hot_swap_audio_cache = HotSwapAudioBuffer(capacity_ms=8_000)
     assert mgr.hot_swap_audio_cache.append(_hot_swap_frame(token))
     calls = 0
@@ -739,7 +735,7 @@ async def test_hot_swap_iteration_exhaustion_invalidates_residual_audio():
     await LLMSessionManager._flush_hot_swap_audio_cache(mgr)
 
     assert calls == 20
-    mgr._asr_runtime.handle_ingress_backpressure.assert_awaited_once_with(token)
+    mgr._asr_runtime.abort.assert_awaited_once_with("ingress_backpressure")
     mgr.session.stream_audio.assert_not_awaited()
     mgr._record_omni_microphone_audio.assert_not_called()
     assert not mgr.hot_swap_audio_cache

@@ -33,6 +33,14 @@ class SpeechActivityEvent(Enum):
     SPEECH_RESUMED = "speech_resumed"
 
 
+class AsrSubmitStatus(Enum):
+    """Outcome of submitting one already-normalized frame to independent ASR."""
+
+    ACCEPTED = "accepted"
+    STALE = "stale"
+    UNAVAILABLE = "unavailable"
+
+
 @dataclass(frozen=True, slots=True)
 class VoiceIngressToken:
     """Identity captured before one microphone frame belongs to a turn."""
@@ -98,6 +106,38 @@ class AsrFailureEvent:
     code: str
     provider: str
     session_epoch: int
+
+
+@dataclass(frozen=True, slots=True)
+class VoicePartialEvent:
+    """Display-only partial transcript emitted by independent ASR."""
+
+    text: str
+    session_epoch: int
+
+
+@dataclass(frozen=True, slots=True)
+class AsrStatusEvent:
+    """Stable Core-facing status without provider implementation details."""
+
+    code: str
+    provider: str
+
+
+@dataclass(frozen=True, slots=True)
+class AsrLifecycleNotification:
+    """Independent-ASR lifecycle state; Core remains route authority."""
+
+    state: str
+    provider: str
+    session_epoch: int
+
+
+@dataclass(frozen=True, slots=True)
+class AsrSubmitResult:
+    """Explicit submit disposition so Core never inspects runtime state."""
+
+    status: AsrSubmitStatus
 
 
 VoiceTranscriptCallback: TypeAlias = Callable[

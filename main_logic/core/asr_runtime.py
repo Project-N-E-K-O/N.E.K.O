@@ -14,8 +14,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Literal
 
-from main_logic.asr_client.audio import ProcessedVoiceFrame
-from main_logic.asr_client.lifecycle import VoiceLifecycleState
 from main_logic.asr_client.runtime import (
     AsrRuntimeCallbacks,
     AsrStartStatus,
@@ -23,10 +21,18 @@ from main_logic.asr_client.runtime import (
 )
 from main_logic.voice_turn.contracts import (
     AsrFailureEvent,
+    AsrLifecycleNotification,
+    AsrStatusEvent,
+    AsrSubmitStatus,
+    VoicePartialEvent,
     VoiceIngressToken,
     VoiceTranscriptCallback,
     VoiceTranscriptEvent,
     VoiceTurnToken,
+)
+from main_logic.voice_turn.audio_input import (
+    ProcessedVoiceFrame,
+    VoiceInputAudioPipeline,
 )
 from main_logic import core as _core_facade
 
@@ -203,7 +209,10 @@ class AsrRuntimeMixin:
         self._hot_swap_live_audio_idle.set()
         self._omni_mic_audio_bytes = 0
         self._asr_route_mode = "blocked"
-        self._asr_required = False
+        self._microphone_route_generation = 0
+        self._independent_asr_provider: str | None = None
+        self._independent_asr_route_key: str | None = None
+        self._voice_input_audio_pipeline = VoiceInputAudioPipeline()
         callbacks = AsrRuntimeCallbacks(
             display_name=lambda: str(getattr(self, "lanlan_name", "core")),
             on_prepare_turn=self._prepare_core_voice_turn,
@@ -214,36 +223,36 @@ class AsrRuntimeMixin:
             on_lifecycle=self._send_core_asr_lifecycle,
         )
         self._asr_runtime = IndependentAsrRuntime(callbacks)
-        self._sync_runtime_voice_lease()
 
     def _ensure_asr_runtime_state(self) -> None:
         if not hasattr(self, "_asr_runtime"):
             self._init_asr_runtime_state()
 
-    def _sync_runtime_voice_lease(self) -> None:
-        self._asr_runtime.sync_voice_lease(
-            connection_id=self._voice_lease_connection_id,
-            generation=self._voice_lease_generation,
-            synchronized=self._voice_lease_synchronized,
-            owner=self._voice_lease_owner,
-            hard_muted=self._voice_lease_hard_muted,
-            focus_suppressed=self._voice_lease_focus_suppressed,
-            suppressed=self._voice_input_suppressed,
-        )
+    def _set_microphone_route(
+        self,
+        mode: Literal["native", "independent", "blocked"],
+    ) -> None:
+        if mode not in {"native", "independent", "blocked"}:
+            raise ValueError("MICROPHONE_ROUTE_INVALID")
+        if mode != self._asr_route_mode:
+            self._microphone_route_generation += 1
+        self._asr_route_mode = mode
 
     def _capture_ingress_token(self, _lifecycle=None) -> VoiceIngressToken:
-        self._sync_runtime_voice_lease()
-        return self._asr_runtime.capture_ingress_token()
+        return self._asr_runtime.capture_ingress_token(
+            connection_id=self._voice_lease_connection_id,
+            lease_generation=self._voice_lease_generation,
+            route_generation=self._microphone_route_generation,
+        )
 
     def _capture_native_ingress_token(self) -> VoiceIngressToken:
-        self._sync_runtime_voice_lease()
-        return self._asr_runtime.capture_ingress_token()
+        return self._capture_ingress_token()
 
     def _ingress_token_matches(self, token: VoiceIngressToken) -> bool:
         return bool(
             token.connection_id == self._voice_lease_connection_id
             and token.lease_generation == self._voice_lease_generation
-            and self._asr_runtime.ingress_token_matches(token)
+            and token.route_generation == self._microphone_route_generation
         )
 
     def _voice_input_accepts_pcm(self) -> bool:
@@ -302,17 +311,17 @@ class AsrRuntimeMixin:
         await self._close_independent_asr(next_route_mode="blocked")
         self._omni_mic_audio_bytes = 0
         if input_mode != "audio":
-            self._asr_runtime.deactivate_audio_route()
-            self._asr_route_mode = "blocked"
-            self._asr_required = False
+            self._set_microphone_route("blocked")
             return
         core_type = str(getattr(self, "core_api_type", "") or "").strip().lower()
         try:
             settings = await _core_facade.aload_global_conversation_settings()
         except Exception:
             await self._send_core_asr_status(
-                "ASR_INDEPENDENT_FAILED",
-                core_type or "unknown",
+                AsrStatusEvent(
+                    code="ASR_INDEPENDENT_FAILED",
+                    provider=core_type or "unknown",
+                )
             )
             return
         enabled = bool(settings.get("independentAsrEnabled", False))
@@ -321,27 +330,24 @@ class AsrRuntimeMixin:
             settings.get("voiceInputResourceOptimizationEnabled", True),
         )
         if not enabled:
-            self._asr_runtime.activate_native_route()
-            self._asr_route_mode = "native"
-            self._asr_required = False
+            self._set_microphone_route("native")
             await self._send_core_asr_status(
-                "ASR_INDEPENDENT_DISABLED",
-                core_type or "unknown",
+                AsrStatusEvent(
+                    code="ASR_INDEPENDENT_DISABLED",
+                    provider=core_type or "unknown",
+                )
             )
-            self._sync_runtime_voice_lease()
             return
+        self._independent_asr_route_key = core_type
         result = await self._asr_runtime.start(
             route_key=core_type,
             resource_optimization_enabled=optimization_value is not False,
         )
+        self._independent_asr_provider = result.provider
         if result.status is AsrStartStatus.READY:
-            self._asr_route_mode = "independent"
-            self._asr_required = True
+            self._set_microphone_route("independent")
         else:
-            self._asr_runtime.block_audio_route()
-            self._asr_route_mode = "blocked"
-            self._asr_required = True
-        self._sync_runtime_voice_lease()
+            self._set_microphone_route("blocked")
 
     async def _close_independent_asr(
         self,
@@ -349,26 +355,34 @@ class AsrRuntimeMixin:
         next_route_mode: Literal["blocked"],
     ) -> None:
         del next_route_mode
-        provider = self._asr_runtime.provider
-        asr_audio_bytes = self._asr_runtime.audio_bytes
+        provider = self._independent_asr_provider
         omni_audio_bytes = self._omni_mic_audio_bytes
-        self._asr_route_mode = "blocked"
-        self._asr_required = True
+        self._set_microphone_route("blocked")
+        self._invalidate_voice_pcm_sync("independent_asr_close")
         await self._asr_runtime.close()
-        if asr_audio_bytes or omni_audio_bytes:
+        pipeline = self._voice_input_audio_pipeline
+        try:
+            await pipeline.close()
+        except Exception:
+            logger.warning(
+                "[%s] voice input audio pipeline close failed",
+                self.lanlan_name,
+            )
+        self._voice_input_audio_pipeline = VoiceInputAudioPipeline()
+        self._independent_asr_provider = None
+        self._independent_asr_route_key = None
+        if omni_audio_bytes:
             logger.info(
-                "[%s] microphone route metrics provider=%s asr_audio_bytes=%d "
-                "omni_mic_audio_bytes=%d",
+                "[%s] microphone route metrics provider=%s omni_mic_audio_bytes=%d",
                 self.lanlan_name,
                 provider or "blocked",
-                asr_audio_bytes,
                 omni_audio_bytes,
             )
 
     async def _reconcile_independent_asr_after_core_change(self) -> None:
         self._ensure_asr_runtime_state()
         core_type = str(getattr(self, "core_api_type", "") or "").strip().lower()
-        if core_type == self._asr_runtime.core_route_key:
+        if core_type == self._independent_asr_route_key:
             return
         await self._start_independent_asr_if_enabled(
             str(getattr(self, "input_mode", "audio") or "audio")
@@ -441,7 +455,7 @@ class AsrRuntimeMixin:
             except asyncio.QueueFull:
                 self._clear_audio_stream_queue("ingress_backpressure")
                 self._audio_stream_dropped_total += 1
-                await self._asr_runtime.handle_ingress_backpressure(frame.token)
+                await self._asr_runtime.abort("ingress_backpressure")
                 return
         now = time.time()
         queued_duration_us = self._audio_stream_queue.duration_us
@@ -509,7 +523,7 @@ class AsrRuntimeMixin:
                     declared_rate_hz,
                 )
                 return
-            processed_frame = await self._asr_runtime.process_audio(
+            processed_frame = await self._voice_input_audio_pipeline.process(
                 audio_bytes,
                 sample_rate_hz=source_rate_hz,
             )
@@ -541,9 +555,7 @@ class AsrRuntimeMixin:
                     live_route_reserved = True
             if cache_for_hot_swap:
                 if not accepted:
-                    await self._asr_runtime.handle_ingress_backpressure(
-                        ingress_token
-                    )
+                    await self._asr_runtime.abort("ingress_backpressure")
                 return
             try:
                 if not self._ingress_token_matches(ingress_token):
@@ -583,7 +595,7 @@ class AsrRuntimeMixin:
         route_mode = self._asr_route_mode
         if not self._voice_input_accepts_pcm():
             return True
-        if route_mode == "native" and not self._asr_required:
+        if route_mode == "native":
             stream_audio = getattr(self.session, "stream_audio", None)
             if not callable(stream_audio):
                 return True
@@ -599,19 +611,12 @@ class AsrRuntimeMixin:
                 )
             return True
         if route_mode != "independent":
-            self._asr_runtime.block_audio_route()
-            self._asr_route_mode = "blocked"
-            self._asr_required = True
-            return True
-        if self._asr_runtime.lifecycle is None:
-            self._asr_runtime.block_audio_route()
-            self._asr_route_mode = "blocked"
-            self._asr_required = True
+            self._set_microphone_route("blocked")
             return True
         token = ingress_token or self._capture_ingress_token()
         if not self._ingress_token_matches(token):
             return True
-        await self._asr_runtime.submit(
+        result = await self._asr_runtime.submit(
             ProcessedVoiceFrame(
                 pcm16=pcm16,
                 sample_rate_hz=sample_rate_hz,
@@ -620,16 +625,17 @@ class AsrRuntimeMixin:
             ),
             ingress_token=token,
         )
-        if self._asr_runtime.route_mode != "independent":
-            self._asr_route_mode = "blocked"
-            self._asr_required = True
+        if result.status is AsrSubmitStatus.UNAVAILABLE:
+            self._set_microphone_route("blocked")
+            self._clear_audio_stream_queue("independent_asr_unavailable")
+            self.hot_swap_audio_cache.clear()
         return True
 
     def _record_omni_microphone_audio(self, byte_count: int) -> None:
         byte_count = int(byte_count)
         if byte_count <= 0:
             return
-        if self._asr_required or self._asr_route_mode != "native":
+        if self._asr_route_mode != "native":
             raise RuntimeError("OMNI_MICROPHONE_ROUTE_FORBIDDEN")
         self._omni_mic_audio_bytes += byte_count
 
@@ -694,12 +700,11 @@ class AsrRuntimeMixin:
                 ):
                     damaged_tokens.append(frame.token)
             for token in damaged_tokens:
-                await self._asr_runtime.handle_ingress_backpressure(token)
+                await self._asr_runtime.abort("ingress_backpressure")
 
     def _invalidate_voice_pcm_sync(self, reason: str) -> None:
         self._clear_audio_stream_queue(reason)
         self.hot_swap_audio_cache.clear()
-        self._asr_runtime.invalidate_voice_pcm(reason)
 
     async def _apply_voice_lease_state(
         self,
@@ -729,7 +734,6 @@ class AsrRuntimeMixin:
             reasons.add("focus")
         self._voice_input_suppression_reasons = reasons
         self._voice_input_suppressed = bool(reasons)
-        self._sync_runtime_voice_lease()
         self._invalidate_voice_pcm_sync(reason)
         current = (owner, hard_muted, focus_suppressed)
         should_abort = (
@@ -738,14 +742,16 @@ class AsrRuntimeMixin:
             or previous != current
         )
         self._voice_lease_requires_abort = False
-        await self._asr_runtime.apply_voice_lease_state(
-            owner=owner,
-            hard_muted=hard_muted,
-            focus_suppressed=focus_suppressed,
-            suppressed=self._voice_input_suppressed,
-            reason=reason,
-            force_abort=should_abort,
-        )
+        if reason == "game_takeover" or (
+            owner == "game" and self._current_voice_input_consumer() is None
+        ):
+            await self._asr_runtime.suspend(reason)
+        elif reason == "game_release":
+            if should_abort:
+                await self._asr_runtime.abort(reason)
+            await self._asr_runtime.resume(reason)
+        elif should_abort:
+            await self._asr_runtime.abort(reason)
 
     async def _suspend_independent_voice_input_for_game(self) -> None:
         await self._apply_voice_lease_state(
@@ -778,7 +784,6 @@ class AsrRuntimeMixin:
         self._voice_input_suppression_reasons = {"owner_none"}
         self._voice_input_suppressed = True
         self._voice_lease_requires_abort = True
-        self._sync_runtime_voice_lease()
         self._invalidate_voice_pcm_sync("websocket_reconnect")
         return True
 
@@ -844,8 +849,7 @@ class AsrRuntimeMixin:
             hard_muted=next_hard_muted,
             focus_suppressed=next_focus_suppressed,
             reason=normalized_event,
-            force_abort=normalized_event
-            in {"hard_mute", "focus_suppress", "game_takeover"},
+            force_abort=True,
         )
         return True
 
@@ -924,48 +928,48 @@ class AsrRuntimeMixin:
             ),
         )
 
-    async def _send_core_asr_preview(self, text: str, epoch: int) -> None:
+    async def _send_core_asr_preview(self, event: VoicePartialEvent) -> None:
         websocket = getattr(self, "websocket", None)
         send_json = getattr(websocket, "send_json", None)
         if not callable(send_json):
             return
         turn_id = str(
-            getattr(self, "current_speech_id", None) or f"asr-preview-{epoch}"
+            getattr(self, "current_speech_id", None)
+            or f"asr-preview-{event.session_epoch}"
         )
         await send_json(
             {
                 "type": "user_transcript_preview",
-                "text": text,
+                "text": event.text,
                 "turn_id": turn_id,
             }
         )
 
     async def _handle_core_asr_failure(self, event: AsrFailureEvent) -> None:
         del event
-        self._asr_route_mode = "blocked"
-        self._asr_required = True
+        self._set_microphone_route("blocked")
         self._clear_audio_stream_queue("independent_asr_failure")
         self.hot_swap_audio_cache.clear()
 
-    async def _send_core_asr_status(self, code: str, provider: str) -> None:
+    async def _send_core_asr_status(self, event: AsrStatusEvent) -> None:
         await self.send_status(
-            json.dumps({"code": code, "details": {"provider": provider}})
+            json.dumps(
+                {"code": event.code, "details": {"provider": event.provider}}
+            )
         )
 
     async def _send_core_asr_lifecycle(
         self,
-        state: VoiceLifecycleState,
-        provider: str,
-        route_mode: str,
+        event: AsrLifecycleNotification,
     ) -> None:
         await self.send_status(
             json.dumps(
                 {
                     "code": "ASR_LIFECYCLE_STATE",
                     "details": {
-                        "provider": provider,
-                        "state": state.value,
-                        "route_mode": route_mode,
+                        "provider": event.provider,
+                        "state": event.state,
+                        "route_mode": self._asr_route_mode,
                     },
                 }
             )
@@ -975,4 +979,4 @@ class AsrRuntimeMixin:
         await self._asr_runtime.wait_transcript_idle()
 
     async def close_voice_input_session(self) -> None:
-        await self._asr_runtime.close_voice_input_session()
+        await self._asr_runtime.close()

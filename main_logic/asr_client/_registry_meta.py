@@ -15,6 +15,7 @@
 """Single source of truth for Core-to-ASR routing and provider metadata."""
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Literal
 
 
@@ -27,6 +28,14 @@ AsrImplementationStatus = Literal[
     "blocked_backend",
 ]
 AsrReplayPolicy = Literal["none", "preconnect_only", "provider_managed"]
+
+
+class AsrProviderAvailability(str, Enum):
+    """Provider capability exposed without parsing exception messages."""
+
+    IMPLEMENTED = "implemented"
+    BLOCKED_BACKEND = "blocked_backend"
+    MISSING_CREDENTIALS = "missing_credentials"
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +65,14 @@ class AsrProviderMeta:
     connect_max_attempts: int = 1
     connect_retry_base_seconds: float = 0.25
     connect_retry_cap_seconds: float = 1.0
+
+    @property
+    def availability(self) -> AsrProviderAvailability:
+        if self.implementation_status == "implemented":
+            return AsrProviderAvailability.IMPLEMENTED
+        if self.implementation_status == "blocked_credentials":
+            return AsrProviderAvailability.MISSING_CREDENTIALS
+        return AsrProviderAvailability.BLOCKED_BACKEND
 
     def __post_init__(self) -> None:
         if self.category == "segmented_request" and self.max_segment_ms is None:
