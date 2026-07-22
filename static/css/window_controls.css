@@ -53,9 +53,73 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: background 0.2s, transform 0.1s ease, opacity 0.2s ease;
+    transition:
+        background 0.2s ease,
+        color 0.2s ease,
+        transform 0.1s ease,
+        opacity 0.2s ease,
+        box-shadow 0.2s ease;
     flex-shrink: 0;
     -webkit-app-region: no-drag;
+}
+
+.neko-window-control-btn[hidden] {
+    display: none;
+}
+
+.neko-window-control-btn.is-pinned {
+    background: linear-gradient(145deg, rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0.18));
+    color: #fff;
+    box-shadow:
+        inset 0 0 0 1px rgba(255, 255, 255, 0.32),
+        0 3px 10px rgba(15, 79, 120, 0.16);
+}
+
+.neko-window-control-btn.is-pinned:hover {
+    background: linear-gradient(145deg, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.24));
+    box-shadow:
+        inset 0 0 0 1px rgba(255, 255, 255, 0.4),
+        0 4px 12px rgba(15, 79, 120, 0.2);
+}
+
+.neko-window-pin-icon {
+    position: relative;
+    display: block;
+    width: 17px;
+    height: 17px;
+    background-color: currentColor;
+    -webkit-mask: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%23000'%20stroke-width='1.8'%20stroke-linecap='round'%20stroke-linejoin='round'%3E%3Cpath%20d='M8%203h8l-1%206%203%204H6l3-4-1-6Z'%2F%3E%3Cpath%20d='M12%2013v8'%2F%3E%3C%2Fsvg%3E") center / contain no-repeat;
+    mask: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%23000'%20stroke-width='1.8'%20stroke-linecap='round'%20stroke-linejoin='round'%3E%3Cpath%20d='M8%203h8l-1%206%203%204H6l3-4-1-6Z'%2F%3E%3Cpath%20d='M12%2013v8'%2F%3E%3C%2Fsvg%3E") center / contain no-repeat;
+    transform: rotate(-40deg);
+    transform-origin: 50% 68%;
+    filter: drop-shadow(0 1px 1px rgba(15, 58, 82, 0.2));
+    transition:
+        transform 0.24s cubic-bezier(0.22, 1, 0.36, 1),
+        filter 0.2s ease;
+    will-change: transform;
+}
+
+@keyframes neko-window-pin-lock {
+    0% {
+        transform: rotate(-40deg) translateY(0) scale(0.96);
+    }
+    68% {
+        transform: rotate(5deg) translateY(-1px) scale(1.06);
+    }
+    100% {
+        transform: rotate(0deg) translateY(-1px) scale(1);
+    }
+}
+
+[data-neko-window-control="pin"].is-pinned .neko-window-pin-icon {
+    transform: rotate(0deg) translateY(-1px);
+    filter: drop-shadow(0 2px 2px rgba(15, 58, 82, 0.26));
+    animation: neko-window-pin-lock 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+[data-neko-window-control="pin"]:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.92);
+    outline-offset: 2px;
 }
 
 .neko-window-control-btn:hover {
@@ -76,6 +140,16 @@
     opacity: 0.45;
     transform: none;
     pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .neko-window-pin-icon {
+        transition: none;
+    }
+
+    [data-neko-window-control="pin"].is-pinned .neko-window-pin-icon {
+        animation: none;
+    }
 }
 
 .neko-window-minimize-icon {

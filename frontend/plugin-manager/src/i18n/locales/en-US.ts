@@ -20,6 +20,8 @@ export default {
     minimize: 'Minimize',
     maximize: 'Maximize',
     restore: 'Restore',
+    pinWindow: 'Pin window',
+    unpinWindow: 'Unpin window',
     toggleSelection: 'Toggle selection',
     success: 'Success',
     error: 'Error',

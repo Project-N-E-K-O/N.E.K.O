@@ -38,6 +38,7 @@ from utils.logger_config import get_module_logger
 from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 import httpx
+from .pages_router import _static_assets_ctx
 from .shared_state import get_session_manager, get_config_manager, get_templates
 from config import TOOL_SERVER_PORT, USER_PLUGIN_BASE
 from main_logic.agent_event_bus import publish_session_event
@@ -483,6 +484,7 @@ async def openclaw_guide_page(request: Request):
     templates = get_templates()
     return templates.TemplateResponse("templates/openclaw_guide.html", {
         "request": request,
+        **_static_assets_ctx(),
     })
 
 

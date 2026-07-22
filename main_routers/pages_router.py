@@ -61,6 +61,8 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/libs/driver.min.css",
     _PROJECT_ROOT / "static/libs/driver.min.js",
     _PROJECT_ROOT / "static/css/index.css",
+    _PROJECT_ROOT / "static/css/window_controls.css",
+    _PROJECT_ROOT / "static/js/window_controls.js",
     _PROJECT_ROOT / "static/tutorial/yui-guide/days/day1-home-guide.js",
     _PROJECT_ROOT / "static/tutorial/yui-guide/days/day2-screen-voice-guide.js",
     _PROJECT_ROOT / "static/tutorial/yui-guide/days/day3-interaction-guide.js",
@@ -440,7 +442,10 @@ async def get_card_maker_page(request: Request):
 async def get_jukebox_page(request: Request):
     """Standalone jukebox window page (loaded by Electron)."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/jukebox.html", {"request": request})
+    return templates.TemplateResponse("templates/jukebox.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
 
 
 @router.get("/jukebox/manager", response_class=HTMLResponse)

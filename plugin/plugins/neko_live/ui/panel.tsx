@@ -1011,30 +1011,15 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
   const unsafeSafetyStates = new Set(["paused", "tripped", "degraded"])
   const safetyCheckReady = !connectPending && !sessionInProgress && !unsafeSafetyStates.has(String(safety.status || ""))
   const canStart = roomConfigured && accountStartReady && liveSettingsReady && safetyCheckReady
-  const preparationSteps = [
-    {
-      label: t(limitedConnection && !accountReady ? "panel.console.preparation.limitedAccount" : "panel.console.preparation.login"),
-      complete: accountStartReady,
-    },
-    { label: t("panel.console.preparation.lookupRoom"), complete: roomConfigured || canConfirmLiveRoom },
-    { label: t("panel.console.preparation.confirmRoom"), complete: roomConfigured },
-    { label: t("panel.console.preparation.liveSettings"), complete: liveSettingsReady },
-    { label: t("panel.console.preparation.safety"), complete: safetyCheckReady },
-  ]
-  const preparationCompleted = preparationSteps.filter((step) => step.complete).length
-  const readinessTooltip = (
-    <span style={{ display: "grid", gap: "6px", minWidth: "220px" }}>
-      <strong>{t("panel.console.preparation.title")} · {preparationCompleted}/{preparationSteps.length}</strong>
-      {preparationSteps.map((step) => (
-        <span key={step.label} style={{ display: "flex", alignItems: "center", gap: "7px" }}>
-          <span aria-hidden="true" style={{ color: step.complete ? "var(--success)" : "var(--warning)", fontWeight: 800 }}>
-            {step.complete ? "✓" : "○"}
-          </span>
-          <span>{step.label}</span>
-        </span>
-      ))}
-    </span>
-  )
+  const readinessReason = !accountStartReady
+    ? t("panel.console.preparation.login")
+    : !roomConfigured
+      ? t(canConfirmLiveRoom ? "panel.console.preparation.confirmRoom" : "panel.console.preparation.lookupRoom")
+      : !liveSettingsReady
+        ? t("panel.console.preparation.liveSettings")
+        : !safetyCheckReady
+          ? t("panel.console.preparation.safety")
+          : ""
   const primaryStatusLabel = started
     ? t("panel.console.state.live")
     : connectPending
@@ -1146,7 +1131,7 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
   const consoleSection = (
     <div
       className="neko-live-console-layout"
-      style={{ display: "grid", gridTemplateRows: "auto", minHeight: "360px", overflow: "visible", paddingBottom: "120px", scrollPaddingBottom: "120px" }}
+      style={{ display: "grid", gridTemplateRows: "auto", minHeight: "360px", overflow: "visible" }}
     >
       <div className="neko-live-console-scroll" style={{ minHeight: 0, overflow: "visible" }}>
         <Stack>
@@ -1454,10 +1439,10 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
       <div
         className="neko-live-live-fab"
         aria-label={t("panel.console.runtimeTitle")}
-        style={{ position: "fixed", right: "20px", bottom: "20px", zIndex: 20, display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+        style={{ position: "fixed", right: "24px", bottom: "24px", zIndex: 100, display: "inline-flex", alignItems: "center", justifyContent: "center" }}
       >
         {!started && !canStart && !connectPending ? (
-          <Tooltip content={readinessTooltip} placement="top">
+          <Tooltip content={readinessReason} placement="top">
             <span tabIndex={0} style={{ display: "inline-flex" }}>
               <button
               type="button"
@@ -1481,7 +1466,29 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
               if (started) setStopConfirmOpen(true)
               else if (canStart) setStartConfirmOpen(true)
             }}
-            style={{ minWidth: "148px", minHeight: "48px", borderRadius: "999px", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "8px", boxShadow: "0 10px 28px rgba(15, 23, 42, 0.16)" }}
+            style={{
+              minWidth: "148px",
+              minHeight: "48px",
+              borderRadius: "999px",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: "8px",
+              boxShadow: "0 10px 28px rgba(15, 23, 42, 0.16)",
+              ...(!started && canStart && !simpleActionPending
+                ? {
+                    minWidth: "188px",
+                    minHeight: "56px",
+                    borderRadius: "16px",
+                    background: "rgba(103, 194, 58, 0.1)",
+                    borderColor: "rgba(103, 194, 58, 0.38)",
+                    color: "var(--success)",
+                    fontSize: "22px",
+                    fontWeight: 700,
+                    opacity: 1,
+                  }
+                : {}),
+            }}
           >
             <span aria-hidden="true" style={{ width: "8px", height: "8px", borderRadius: "999px", background: started ? "var(--danger)" : connectPending ? "var(--primary)" : "var(--success)" }} />
             {connectPending ? t("panel.console.state.connecting") : started ? t("panel.actions.disconnect") : t("panel.actions.connect")}
@@ -2259,7 +2266,8 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
     <Page className="neko-live-page" title={t("panel.title")} subtitle={t("panel.subtitle")}>
       <style>{`
         .neko-page.neko-live-page {
-          animation-fill-mode: backwards !important;
+          animation: none !important;
+          transform: none !important;
         }
       `}</style>
       {!safeState.store_enabled ? <Alert tone="warning">{t("panel.store.disabled")}</Alert> : null}
