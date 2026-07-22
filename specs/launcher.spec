@@ -1,4 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
+import json
 import sys
 import os
 import platform
@@ -65,9 +66,20 @@ embedding_assets_present = os.path.isdir(
 voice_turn_assets_present = os.path.isdir(
     os.path.join(PROJECT_ROOT, 'data', 'vad_models')
 )
-speaker_model_assets_present = os.path.isfile(
-    os.path.join(PROJECT_ROOT, 'data', 'speaker_models', 'campplus-zh-en-advanced.onnx')
-)
+speaker_model_dir = os.path.join(PROJECT_ROOT, 'data', 'speaker_models')
+speaker_model_manifest_path = os.path.join(speaker_model_dir, 'manifest.json')
+speaker_model_assets_present = False
+if os.path.isfile(speaker_model_manifest_path):
+    with open(speaker_model_manifest_path, encoding='utf-8') as manifest_file:
+        speaker_model_filename = json.load(manifest_file)['filename']
+    if (
+        not isinstance(speaker_model_filename, str)
+        or os.path.basename(speaker_model_filename) != speaker_model_filename
+    ):
+        raise RuntimeError('Invalid speaker model filename in manifest.json')
+    speaker_model_assets_present = os.path.isfile(
+        os.path.join(speaker_model_dir, speaker_model_filename)
+    )
 
 # galgame OCR deps: bundling is the ONLY path post-refactor (in-app install
 # routes were removed). Two distinct failure modes get distinct diagnostics:

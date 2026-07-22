@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import sys
 from pathlib import Path
@@ -477,7 +478,7 @@ def test_shadow_factory_is_zero_work_when_disabled_or_profile_missing(monkeypatc
     assert CampPlusSpeakerShadowFactory(enabled=True, profile=None)() is None
 
 
-def test_shadow_factory_contains_missing_or_corrupt_model(monkeypatch) -> None:
+def test_shadow_factory_contains_missing_or_corrupt_model(monkeypatch, caplog) -> None:
     import main_logic.asr_client.campplus as campplus
 
     profile = CampPlusSpeakerProfile(np.eye(192, dtype=np.float32)[0], profile_revision=1)
@@ -488,7 +489,10 @@ def test_shadow_factory_contains_missing_or_corrupt_model(monkeypatch) -> None:
     monkeypatch.setattr(campplus, "resolve_verified_campplus_asset", fail)
     factory = CampPlusSpeakerShadowFactory(enabled=True, profile=profile)
 
-    assert factory() is None
+    with caplog.at_level(logging.WARNING, logger=campplus.__name__):
+        assert factory() is None
+
+    assert "CAM++ speaker shadow factory unavailable: corrupt" in caplog.text
 
 
 def test_shadow_factory_builds_lazy_runtime_without_loading_model(monkeypatch, tmp_path) -> None:

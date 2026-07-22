@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import sys
 import time
@@ -15,6 +16,9 @@ from typing import Any, Callable, Sequence
 import numpy as np
 
 from .speaker_shadow import SpeakerShadowConfig, SpeakerShadowRuntime
+
+
+logger = logging.getLogger(__name__)
 
 
 CAMPPLUS_FILENAME = "campplus-zh-en-advanced.onnx"
@@ -720,7 +724,8 @@ class CampPlusSpeakerShadowFactory:
                 model_id=profile.model_id,
                 model_revision=profile.model_revision,
             )
-        except (CampPlusAssetError, RuntimeError, ValueError):
+        except (CampPlusAssetError, RuntimeError, ValueError) as exc:
+            logger.warning("CAM++ speaker shadow factory unavailable: %s", exc)
             return None
 
         create_backend = _CampPlusBackendFactory(
