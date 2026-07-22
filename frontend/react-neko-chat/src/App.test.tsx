@@ -5056,6 +5056,8 @@ describe('App', () => {
   });
 
   it('chooses the lower-overflow compact tool wheel layout when neither arc fully fits', () => {
+    // At 94px high, the default arc clips below the viewport and viewport-fit clips above it;
+    // viewport-fit has the smaller total overflow, so this reaches the browser-only tiebreaker.
     const originalMatchMedia = window.matchMedia;
     const originalInnerWidth = window.innerWidth;
     const originalInnerHeight = window.innerHeight;
