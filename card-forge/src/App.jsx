@@ -251,11 +251,15 @@ export default function App() {
     async function fetchActiveCharacter() {
       try {
         const res = await fetch('/card-forge/active-character')
-        if (!res.ok) return
+        if (!res.ok) {
+          setActiveCharacterName(null)
+          return
+        }
         const { name } = await res.json()
         setActiveCharacterName(name ? name : null)
       } catch {
-        // NEKO 主服务未运行时静默忽略
+        // 主服务不可达或响应无效时 fail closed，避免继续携带旧 runtime hint。
+        setActiveCharacterName(null)
       }
     }
     fetchActiveCharacter()

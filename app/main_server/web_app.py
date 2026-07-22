@@ -221,19 +221,24 @@ def _active_character_cors_headers(request: Request) -> dict[str, str] | None:
 
 @app.post("/card-forge/active-character")
 async def set_card_forge_active_character(request: Request, payload: dict):
-    """Update only fields explicitly supplied by the avatar runtime."""
+    """Apply supplied fields, dropping avatar payloads that belong to a prior name."""
     if not _card_forge_mutation_origin_allowed(request):
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
     if not isinstance(payload, dict):
         return {"ok": True}
+    if "name" in payload:
+        next_name = str(payload.get("name") or "")
+        if next_name != _card_forge_active_character.get("name", ""):
+            for avatar_field in ("dataUrl", "characterReferenceDataUrl"):
+                if avatar_field not in payload:
+                    _card_forge_active_character.pop(avatar_field, None)
+        _card_forge_active_character["name"] = next_name
     if "dataUrl" in payload:
         _card_forge_active_character["dataUrl"] = str(payload.get("dataUrl") or "")
     if "characterReferenceDataUrl" in payload:
         _card_forge_active_character["characterReferenceDataUrl"] = str(
             payload.get("characterReferenceDataUrl") or ""
         )
-    if "name" in payload:
-        _card_forge_active_character["name"] = str(payload.get("name") or "")
     return {"ok": True}
 
 

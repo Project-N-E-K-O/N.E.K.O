@@ -63,6 +63,52 @@ async def test_main_active_character_post_allows_native_and_local_origin(monkeyp
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ({"name": "Character B"}, {"name": "Character B"}),
+        (
+            {"name": "Character B", "dataUrl": "avatar-b"},
+            {"name": "Character B", "dataUrl": "avatar-b"},
+        ),
+        (
+            {"name": "Character B", "characterReferenceDataUrl": "reference-b"},
+            {"name": "Character B", "characterReferenceDataUrl": "reference-b"},
+        ),
+        (
+            {"name": "Character A"},
+            {
+                "name": "Character A",
+                "dataUrl": "avatar-a",
+                "characterReferenceDataUrl": "reference-a",
+            },
+        ),
+    ],
+)
+async def test_main_active_character_name_change_clears_only_stale_avatar_fields(
+    monkeypatch,
+    payload,
+    expected,
+):
+    from app.main_server import web_app
+
+    snapshot = {
+        "name": "Character A",
+        "dataUrl": "avatar-a",
+        "characterReferenceDataUrl": "reference-a",
+    }
+    monkeypatch.setattr(web_app, "_card_forge_active_character", snapshot)
+
+    response = await web_app.set_card_forge_active_character(
+        _main_server_request(),
+        payload,
+    )
+
+    assert response == {"ok": True}
+    assert snapshot == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "origin",
     ["https://evil.example", "https://community.example"],
 )
@@ -98,6 +144,21 @@ def test_main_active_character_read_cors_remains_social_origin_only(monkeypatch)
     assert headers is not None
     assert headers["Access-Control-Allow-Origin"] == "https://community.example"
     assert headers["Access-Control-Allow-Methods"] == "GET, OPTIONS"
+
+
+def test_forge_frontend_clears_runtime_hint_when_active_character_sync_fails():
+    source = (
+        Path(__file__).resolve().parents[2] / "card-forge" / "src" / "App.jsx"
+    ).read_text(encoding="utf-8")
+    fetch_block = source.split("async function fetchActiveCharacter() {", 1)[1].split(
+        "    fetchActiveCharacter()", 1
+    )[0]
+
+    non_ok_block = fetch_block.split("if (!res.ok) {", 1)[1].split("}", 1)[0]
+    catch_block = fetch_block.split("catch {", 1)[1].split("}", 1)[0]
+    assert "setActiveCharacterName(null)" in non_ok_block
+    assert "return" in non_ok_block
+    assert "setActiveCharacterName(null)" in catch_block
 
 
 def test_card_drop_client_id_persists_fresh_default_before_returning(
