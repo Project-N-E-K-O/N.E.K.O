@@ -16,6 +16,8 @@ from main_logic.asr_client.detector_runtime import (
 from main_logic.asr_client.activity_evidence import RnnoiseEvidence
 from main_logic.asr_client.detector import (
     DetectorActivityEvent,
+    DetectorCandidateKey,
+    DetectorIngressIdentity,
     DetectorPrewarmEvent,
     DetectorSubmitStatus,
     DetectorTurnEvent,
@@ -761,7 +763,168 @@ async def test_scoped_detector_events_bind_before_logical_complete() -> None:
     complete = events[-1]
     assert isinstance(complete, DetectorTurnEvent)
     assert complete.bound_turn.turn_token == turn_token
+    assert detector._bound_turns == {}
+    assert detector._deferred_completions == {}
+    assert await detector.bind_candidate(complete.bound_turn.candidate, turn_token) is None
     await lease.release()
+    await detector.close()
+
+
+async def test_deferred_completion_consumes_binding_when_candidate_binds_late() -> None:
+    events: list[object] = []
+
+    async def on_event(event: object) -> None:
+        events.append(event)
+
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(
+            (
+                SpeechActivityEvent.SPEECH_STARTED,
+                SpeechActivityEvent.CANDIDATE_PAUSE,
+            )
+        ),
+        provider_policy=_smart_turn_policy(),
+        coordinator=_SemanticCoordinator(),
+        on_event=on_event,
+    )
+    submitted = await detector.submit_audio(
+        b"\x01\x00" * 160,
+        ingress_token=_ingress_token(),
+        sample_rate_hz=16_000,
+        speech_probability=0.9,
+        rnnoise_available=True,
+    )
+    assert submitted.candidate is not None
+    async with asyncio.timeout(1):
+        while submitted.candidate not in detector._deferred_completions:
+            await asyncio.sleep(0)
+
+    turn_token = VoiceTurnToken(_ingress_token(), turn_id=11)
+    bound = await detector.bind_candidate(submitted.candidate, turn_token)
+
+    assert bound is not None
+    completed = [event for event in events if isinstance(event, DetectorTurnEvent)]
+    assert len(completed) == 1
+    assert completed[0].bound_turn == bound
+    assert detector._bound_turns == {}
+    assert detector._deferred_completions == {}
+    assert await detector.bind_candidate(submitted.candidate, turn_token) is None
+    await detector.close()
+
+
+async def test_bound_completion_is_idempotent_and_rejects_stale_epoch() -> None:
+    events: list[DetectorTurnEvent] = []
+
+    async def on_event(event: object) -> None:
+        if isinstance(event, DetectorTurnEvent):
+            events.append(event)
+
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_smart_turn_policy(),
+        coordinator=_SemanticCoordinator(),
+        on_event=on_event,
+    )
+    candidate = DetectorCandidateKey(detector.detector_epoch, 0)
+    turn_token = VoiceTurnToken(_ingress_token(), turn_id=12)
+    identity = DetectorIngressIdentity(
+        _ingress_token(),
+        detector.detector_epoch,
+        sequence_no=1,
+    )
+    assert await detector.bind_candidate(candidate, turn_token) is not None
+
+    assert await detector._publish_bound_completion(candidate, identity) is True
+    assert await detector._publish_bound_completion(candidate, identity) is False
+    stale = DetectorCandidateKey(detector.detector_epoch + 1, 0)
+    assert await detector.bind_candidate(stale, turn_token) is None
+
+    assert len(events) == 1
+    assert detector._bound_turns == {}
+    assert detector._deferred_completions == {}
+    await detector.close()
+
+
+async def test_completion_callback_error_does_not_retain_binding() -> None:
+    async def on_event(event: object) -> None:
+        if isinstance(event, DetectorTurnEvent):
+            raise RuntimeError("completion consumer failed")
+
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_smart_turn_policy(),
+        coordinator=_SemanticCoordinator(),
+        on_event=on_event,
+    )
+    candidate = DetectorCandidateKey(detector.detector_epoch, 0)
+    turn_token = VoiceTurnToken(_ingress_token(), turn_id=13)
+    identity = DetectorIngressIdentity(
+        _ingress_token(),
+        detector.detector_epoch,
+        sequence_no=1,
+    )
+    assert await detector.bind_candidate(candidate, turn_token) is not None
+
+    with pytest.raises(RuntimeError, match="completion consumer failed"):
+        await detector._publish_bound_completion(candidate, identity)
+
+    assert detector._bound_turns == {}
+    assert detector._deferred_completions == {}
+    await detector.close()
+
+
+async def test_completed_candidate_bindings_stay_bounded_across_100_turns() -> None:
+    completed: list[DetectorTurnEvent] = []
+    detector: DetectorRuntime
+    next_turn_id = 0
+
+    async def on_event(event: object) -> None:
+        nonlocal next_turn_id
+        if (
+            isinstance(event, DetectorActivityEvent)
+            and event.activity is SpeechActivityEvent.SPEECH_STARTED
+        ):
+            next_turn_id += 1
+            bound = await detector.bind_candidate(
+                event.candidate,
+                VoiceTurnToken(_ingress_token(), turn_id=next_turn_id),
+            )
+            assert bound is not None
+        elif isinstance(event, DetectorTurnEvent):
+            completed.append(event)
+
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(
+            (
+                SpeechActivityEvent.SPEECH_STARTED,
+                SpeechActivityEvent.CANDIDATE_PAUSE,
+            )
+        ),
+        provider_policy=_smart_turn_policy(),
+        coordinator=_SemanticCoordinator(),
+        on_event=on_event,
+    )
+
+    for turn_index in range(100):
+        await detector.submit_audio(
+            bytes((turn_index % 255 + 1, 0)) * 160,
+            ingress_token=_ingress_token(),
+            sample_rate_hz=16_000,
+            speech_probability=0.9,
+            rnnoise_available=True,
+        )
+        async with asyncio.timeout(1):
+            while len(completed) <= turn_index:
+                await asyncio.sleep(0)
+        assert detector._bound_turns == {}
+        assert detector._deferred_completions == {}
+        await detector.release_deferred_turn()
+
+    assert len(completed) == 100
     await detector.close()
 
 
