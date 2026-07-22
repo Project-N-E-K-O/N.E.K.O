@@ -73,6 +73,49 @@ async def test_logout_stops_monitor_and_clears_local_login_state():
     assert plugin._settings["sync_buf"] == ""
 
 
+async def test_logout_keeps_memory_sessions_when_settlement_fails():
+    plugin = object.__new__(WechatIntegrationPlugin)
+    plugin._settings = {"token": "secret-token"}
+    plugin._login_session = None
+    plugin._qr_expired_count = 0
+    plugin._sync_buf = ""
+    plugin._shutdown_event = asyncio.Event()
+    plugin._auth_state_lock = asyncio.Lock()
+    plugin._running = True
+    plugin._message_task = object()
+    plugin._context_tokens = {}
+    failed_session = {
+        "her_name": "neko",
+        "memory_enabled": True,
+        "history": [{"role": "user", "content": "keep me"}],
+    }
+    plugin._wechat_sessions = {
+        "failed": failed_session,
+        "settled": {
+            "her_name": "other",
+            "memory_enabled": True,
+            "history": [{"role": "user", "content": "done"}],
+        },
+        "empty": {"her_name": "empty", "memory_enabled": True, "history": []},
+    }
+    plugin.wechat_client = SimpleNamespace(token="secret-token")
+    plugin.stop_auto_reply = AsyncMock()
+    plugin._settle_memory_session = AsyncMock(side_effect=[False, True])
+
+    async def persist(settings):
+        plugin._settings = settings
+        return True
+
+    plugin._persist_config = AsyncMock(side_effect=persist)
+    plugin._build_dashboard_state = lambda: {"login": {"logged_in": False}}
+    plugin.logger = _logger()
+
+    await plugin.logout()
+
+    assert plugin._settle_memory_session.await_count == 2
+    assert plugin._wechat_sessions == {"failed": failed_session}
+
+
 async def test_logout_keeps_runtime_login_when_credential_write_fails():
     plugin = object.__new__(WechatIntegrationPlugin)
     plugin._settings = {

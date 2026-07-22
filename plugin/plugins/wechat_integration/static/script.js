@@ -6,6 +6,15 @@ function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function pluginErrorMessage(error) {
+    if (!error) return '';
+    if (typeof error === 'string') return error;
+    if (typeof error.message === 'string') return error.message;
+    if (typeof error.detail === 'string') return error.detail;
+    if (typeof error.code === 'string') return error.code;
+    return '';
+}
+
 async function callPlugin(entry, args = {}) {
     const resp = await fetch(RUNS_URL, {
         method: 'POST',
@@ -34,6 +43,9 @@ async function callPlugin(entry, args = {}) {
             let raw = item.json || {};
             while (raw && raw.data && typeof raw.data === 'object' && ('success' in raw.data || 'error' in raw.data)) {
                 raw = raw.data;
+            }
+            if (raw && raw.error) {
+                throw new Error(pluginErrorMessage(raw.error) || '插件调用失败');
             }
             return raw;
         }

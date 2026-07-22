@@ -457,25 +457,34 @@ class WechatIntegrationPlugin(NekoPluginBase):
         self._sync_buf = ""
         self._context_tokens.clear()
 
-        active_sessions = list(self._wechat_sessions.values())
-        if active_sessions:
+        settle_candidates = [
+            (user_id, session)
+            for user_id, session in self._wechat_sessions.items()
+            if session.get("memory_enabled") and session.get("history")
+        ]
+        failed_sessions = {}
+        if settle_candidates:
             results = await asyncio.gather(
                 *(
                     self._settle_memory_session(
                         str(session.get("her_name") or ""), reason="logout"
                     )
-                    for session in active_sessions
-                    if session.get("memory_enabled") and session.get("history")
+                    for _, session in settle_candidates
                 ),
                 return_exceptions=True,
             )
-            failures = sum(result is not True for result in results)
-            if failures:
+            failed_sessions = {
+                user_id: session
+                for (user_id, session), result in zip(settle_candidates, results)
+                if result is not True
+            }
+            if failed_sessions:
                 self.logger.warning(
                     "[wechat_integration] failed to settle %d active memory session(s) on logout",
-                    failures,
+                    len(failed_sessions),
                 )
         self._wechat_sessions.clear()
+        self._wechat_sessions.update(failed_sessions)
 
         self.logger.info("[wechat_integration] logged out and cleared local credentials")
         return Ok(self._build_dashboard_state())
