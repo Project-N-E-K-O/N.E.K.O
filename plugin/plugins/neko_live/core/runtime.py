@@ -10,7 +10,13 @@ from ..stores.avatar_cache import AvatarCache
 from ..stores.viewer_store import ViewerStore
 from .contracts import LiveConfig
 from .event_bus import EventBus
-from . import runtime_bili_auth, runtime_douyin_auth, runtime_modules, runtime_state
+from . import (
+    runtime_bili_auth,
+    runtime_co_stream_policy,
+    runtime_douyin_auth,
+    runtime_modules,
+    runtime_state,
+)
 from .runtime_auth_api import RuntimeAuthApiMixin
 from .runtime_config_api import RuntimeConfigApiMixin
 from .permission_gate import PermissionGate
@@ -74,6 +80,7 @@ class LiveRuntime(
         self.douyin_credential_store = runtime_douyin_auth.create_credential_store(plugin, self.audit)
         self.douyin_credential: dict[str, Any] | None = None
         runtime_state.initialize_runtime_state(self)
+        runtime_co_stream_policy.initialize_co_stream_policy(self)
         self.live_hosting_director = LiveHostingDirector(self)
         self.active_topic_selector = ActiveTopicSelector(self)
 

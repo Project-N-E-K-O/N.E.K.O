@@ -768,12 +768,6 @@ function closeWorkshopSnapshotModal(event) {
     }
 }
 
-// 加载角色卡
-function loadCharacterCard() {
-    // 这里将实现加载角色卡的逻辑
-    showMessage(window.t ? window.t('steam.characterCardLoaded') : '角色卡已加载', 'info');
-}
-
 // 存储临时上传目录路径，供上传时使用
 let currentUploadTempFolder = null;
 // 标记是否已上传成功
@@ -1138,8 +1132,6 @@ function editCharacterCardModal() {
 
 // 扫描Live2D模型
 async function scanModels(loadSequence) {
-    showMessage(window.t ? window.t('steam.scanningModels') : '正在扫描模型...', 'info');
-
     try {
         // 并行获取 Live2D、VRM、MMD 模型列表
         const [live2dResponse, vrmResponse, mmdResponse] = await Promise.all([
@@ -1312,9 +1304,6 @@ function fitLive2DPreviewModelToContainer(model) {
 // 音色相关函数（功能暂未实现）
 // 加载音色列表
 async function loadVoices() {
-    // 显示扫描开始提示
-    showMessage(window.t ? window.t('steam.scanningVoices') : '正在扫描音色...', 'info');
-
     try {
         const response = await fetch('/api/characters/voices');
         const data = await response.json();
@@ -1322,14 +1311,6 @@ async function loadVoices() {
         if (voiceSelect) {
             // 保存完整的音色数据到全局变量
             window.availableVoices = data.voices;
-
-            // 音色数据已加载，用于后续显示音色名称
-            const voiceCount = Object.keys(data.voices).length;
-
-            // 显示扫描完成提示
-            const successMessage = window.t ? window.t('steam.scanComplete', { count: voiceCount }) : `扫描完成，共找到 ${voiceCount} 个音色`;
-
-            showToast(successMessage);
         }
     } catch (error) {
         console.error('加载音色列表失败:', error);

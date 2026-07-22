@@ -2657,6 +2657,17 @@ async def proactive_chat(request: Request):
         # 重复度 / BM25 防复读判定**之前**剥：否则被泄漏标签做前缀的复读句会因前缀
         # 稀释相似度而绕过 dedup。这些标签纯脚手架，绝不该进 TTS / 历史。
         response_text = _strip_proactive_intent_label_leak(response_text)
+        if not response_text:
+            if not mgr.state.is_proactive_preempted(proactive_sid):
+                await mgr.handle_new_message()
+            else:
+                logger.info("[%s] cleaned proactive output is empty but user already took over; skip TTS cleanup", lanlan_name)
+            return await _end_proactive(JSONResponse({
+                "success": True,
+                "action": "pass",
+                "reason_code": PROACTIVE_REASON_PASS_GENERATION_EMPTY,
+                "message": "Phase 2 清理后输出为空"
+            }))
         # 不要把 proactive 原文写进 logger（会进日志文件 / 遥测）；只记元数据。
         # 完整原文通过 print 给开发者本地查看。
         logger.debug(f"[{lanlan_name}] Phase 2 流式完成 (vision={phase2_use_vision}, len={len(response_text)} chars)")
