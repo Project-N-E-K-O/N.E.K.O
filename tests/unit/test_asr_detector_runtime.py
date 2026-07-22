@@ -53,13 +53,14 @@ class _Gate:
     def __init__(self, events=()) -> None:
         self.events = tuple(events)
         self.inputs: list[bytes] = []
+        self.reset_count = 0
 
     def feed(self, pcm16: bytes):
         self.inputs.append(pcm16)
         return self.events
 
     def reset(self) -> None:
-        return None
+        self.reset_count += 1
 
 
 class _FailingVad(_Vad):
@@ -70,6 +71,11 @@ class _FailingVad(_Vad):
 class _FailingGate(_Gate):
     def feed(self, pcm16: bytes):
         raise RuntimeError("feed failed")
+
+
+class _ResetFailingGate(_Gate):
+    def reset(self) -> None:
+        raise RuntimeError("reset failed")
 
 
 class _SemanticCoordinator:
@@ -384,6 +390,197 @@ async def test_provider_completion_preserves_successor_prewarm() -> None:
     await detector.close()
 
 
+async def test_provider_successor_discard_preserves_old_fence() -> None:
+    policy = VoiceThrottlePolicy(
+        resource_optimization_enabled=True,
+        minimum_baseline_samples=1,
+    )
+    gate = _Gate((SpeechActivityEvent.SPEECH_STARTED,))
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=gate,
+        provider_policy=_provider_endpoint_policy(),
+        throttle_policy=policy,
+    )
+    await detector.feed(
+        b"\x00\x00",
+        rnnoise_evidence=RnnoiseEvidence.from_legacy_probability(
+            0.05,
+            available=True,
+        ),
+        ingress_token=_ingress_token(),
+    )
+    await detector.feed(
+        b"\x01\x00",
+        rnnoise_evidence=RnnoiseEvidence.from_legacy_probability(
+            0.9,
+            available=True,
+        ),
+        ingress_token=_ingress_token(),
+    )
+    fence = await detector.seal_provider_candidate()
+    assert fence is not None
+    await detector.feed(
+        b"\x02\x00",
+        rnnoise_evidence=RnnoiseEvidence.from_legacy_probability(
+            0.9,
+            available=True,
+        ),
+        ingress_token=_ingress_token(),
+    )
+    detector_epoch = detector._detector_epoch
+    ingress_token = detector._ingress_token
+    baseline = policy.baseline
+
+    assert await detector.discard_provider_successor(fence) is True
+
+    assert detector._provider_candidate_fence == fence
+    assert detector._provider_discarded_through_sequence_no == detector._sequence_no
+    assert detector._detector_epoch == detector_epoch
+    assert detector._ingress_token == ingress_token
+    assert detector._speech_active is False
+    assert gate.reset_count == 1
+    assert policy.baseline == baseline
+    assert await detector.complete_provider_candidate(fence) is False
+    assert detector._provider_discarded_through_sequence_no is None
+    await detector.close()
+
+
+async def test_provider_successor_after_discard_survives_old_final() -> None:
+    gate = _Gate((SpeechActivityEvent.SPEECH_STARTED,))
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=gate,
+        provider_policy=_provider_endpoint_policy(),
+    )
+    await detector.feed(
+        b"\x01\x00",
+        rnnoise_evidence=RnnoiseEvidence.from_legacy_probability(
+            0.9,
+            available=True,
+        ),
+        ingress_token=_ingress_token(),
+    )
+    fence = await detector.seal_provider_candidate()
+    assert fence is not None
+    await detector.feed(
+        b"\x02\x00",
+        rnnoise_evidence=RnnoiseEvidence.from_legacy_probability(
+            0.9,
+            available=True,
+        ),
+        ingress_token=_ingress_token(),
+    )
+    assert await detector.discard_provider_successor(fence) is True
+
+    await detector.feed(
+        b"\x03\x00",
+        rnnoise_evidence=RnnoiseEvidence.from_legacy_probability(
+            0.9,
+            available=True,
+        ),
+        ingress_token=_ingress_token(),
+    )
+
+    assert await detector.complete_provider_candidate(fence) is True
+    assert detector._speech_active is True
+    await detector.close()
+
+
+async def test_provider_successor_discard_rejects_stale_fence_without_mutation() -> None:
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_provider_endpoint_policy(),
+    )
+    fence = await detector.seal_provider_candidate()
+    assert fence is not None
+    stale = ProviderCandidateFence(
+        fence.detector_epoch + 1,
+        fence.candidate_generation,
+        fence.through_sequence_no,
+    )
+    generation = detector._candidate_generation
+
+    assert await detector.discard_provider_successor(stale) is False
+
+    assert detector._provider_candidate_fence == fence
+    assert detector._provider_discarded_through_sequence_no is None
+    assert detector._candidate_generation == generation
+    await detector.close()
+
+
+async def test_repeated_provider_successor_discard_advances_one_watermark() -> None:
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate((SpeechActivityEvent.SPEECH_STARTED,)),
+        provider_policy=_provider_endpoint_policy(),
+    )
+    fence = await detector.seal_provider_candidate()
+    assert fence is not None
+    await detector.feed(
+        b"\x01\x00",
+        rnnoise_evidence=RnnoiseEvidence.from_legacy_probability(
+            0.9,
+            available=True,
+        ),
+        ingress_token=_ingress_token(),
+    )
+    assert await detector.discard_provider_successor(fence) is True
+    first_watermark = detector._provider_discarded_through_sequence_no
+    await detector.feed(
+        b"\x02\x00",
+        rnnoise_evidence=RnnoiseEvidence.from_legacy_probability(
+            0.9,
+            available=True,
+        ),
+        ingress_token=_ingress_token(),
+    )
+
+    assert await detector.discard_provider_successor(fence) is True
+    assert first_watermark is not None
+    assert detector._provider_discarded_through_sequence_no > first_watermark
+    assert detector._provider_candidate_fence == fence
+    assert await detector.complete_provider_candidate(fence) is False
+    await detector.close()
+
+
+async def test_provider_successor_discard_propagates_gate_reset_failure() -> None:
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_ResetFailingGate(),
+        provider_policy=_provider_endpoint_policy(),
+    )
+    fence = await detector.seal_provider_candidate()
+    assert fence is not None
+
+    with pytest.raises(RuntimeError, match="reset failed"):
+        await detector.discard_provider_successor(fence)
+
+    assert detector._provider_candidate_fence == fence
+    assert detector._provider_discarded_through_sequence_no is None
+    await detector.close()
+
+
+async def test_provider_discard_watermark_clears_on_reset_and_close() -> None:
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_provider_endpoint_policy(),
+    )
+    fence = await detector.seal_provider_candidate()
+    assert fence is not None
+    assert await detector.discard_provider_successor(fence) is True
+    assert detector._provider_discarded_through_sequence_no is not None
+
+    await detector.reset()
+
+    assert detector._provider_discarded_through_sequence_no is None
+    detector._provider_discarded_through_sequence_no = 1
+    await detector.close()
+    assert detector._provider_discarded_through_sequence_no is None
+
+
 async def test_provider_candidate_fence_stays_bounded_across_100_turns() -> None:
     detector = DetectorRuntime(
         vad=_Vad(),
@@ -394,9 +591,11 @@ async def test_provider_candidate_fence_stays_bounded_across_100_turns() -> None
     for _ in range(100):
         fence = await detector.seal_provider_candidate()
         assert fence is not None
+        assert await detector.discard_provider_successor(fence) is True
         assert await detector.complete_provider_candidate(fence) is False
 
     assert detector._provider_candidate_fence is None
+    assert detector._provider_discarded_through_sequence_no is None
     assert detector._bound_turns == {}
     assert detector._completion_fences == {}
     await detector.close()

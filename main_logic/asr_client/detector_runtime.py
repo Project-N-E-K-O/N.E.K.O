@@ -1035,6 +1035,7 @@ class DetectorRuntime:
             tuple[int, int, int], SmartTurnCompletionFence
         ] = {}
         self._provider_candidate_fence: ProviderCandidateFence | None = None
+        self._provider_discarded_through_sequence_no: int | None = None
         if provider_policy is not None and provider_policy.endpoint_authority == "smart_turn":
             if on_turn_complete is None and on_event is None:
                 raise ValueError(
@@ -1655,11 +1656,34 @@ class DetectorRuntime:
                 through_sequence_no=self._sequence_no,
             )
             self._provider_candidate_fence = fence
+            self._provider_discarded_through_sequence_no = None
             self._candidate_generation += 1
             self._speech_active = False
             self._policy_event_candidate = None
             self._throttle_policy.reset_candidate_activity()
             return fence
+
+    async def discard_provider_successor(
+        self,
+        fence: ProviderCandidateFence,
+    ) -> bool:
+        """Discard only post-endpoint detector activity for a Provider turn."""
+
+        async with self._lock:
+            if (
+                self._closed
+                or self._semantic_adapter is not None
+                or fence != self._provider_candidate_fence
+                or fence.detector_epoch != self._detector_epoch
+            ):
+                return False
+            await asyncio.to_thread(self._gate.reset)
+            self._provider_discarded_through_sequence_no = self._sequence_no
+            self._candidate_generation += 1
+            self._speech_active = False
+            self._policy_event_candidate = None
+            self._throttle_policy.reset_candidate_activity()
+            return True
 
     async def complete_provider_candidate(
         self,
@@ -1675,7 +1699,13 @@ class DetectorRuntime:
             ):
                 return None
             self._provider_candidate_fence = None
-            successor_present = self._sequence_no > fence.through_sequence_no
+            successor_floor = max(
+                fence.through_sequence_no,
+                self._provider_discarded_through_sequence_no
+                or fence.through_sequence_no,
+            )
+            self._provider_discarded_through_sequence_no = None
+            successor_present = self._sequence_no > successor_floor
             if not successor_present:
                 self._speech_active = False
                 self._policy_event_candidate = None
@@ -1891,6 +1921,7 @@ class DetectorRuntime:
             self._deferred_completions.clear()
             self._completion_fences.clear()
             self._provider_candidate_fence = None
+            self._provider_discarded_through_sequence_no = None
             self._speech_active = False
             self._prepare_token = None
             self._prepare_epoch = None
@@ -1970,6 +2001,7 @@ class DetectorRuntime:
             self._deferred_completions.clear()
             self._completion_fences.clear()
             self._provider_candidate_fence = None
+            self._provider_discarded_through_sequence_no = None
             watch_task, self._failure_watch_task = self._failure_watch_task, None
             if watch_task is not None:
                 watch_task.cancel()
