@@ -40,11 +40,9 @@ from .tool_calling import ToolCallingMixin
 from .lifecycle import LifecycleMixin
 from .proactive import ProactiveMixin
 from .greeting import GreetingMixin
+from .asr_runtime import AsrRuntimeMixin
 from .streaming import StreamingMixin
 from .notify import NotifyMixin
-from main_logic.asr_client.runtime import AsrRuntimeMixin
-from main_logic.asr_client.audio import AudioDurationQueue
-from main_logic.asr_client.audio import HotSwapAudioBuffer
 
 
 # --- 一个带有定期上下文压缩+在线热切换的语音会话管理器 ---
@@ -109,20 +107,12 @@ class LLMSessionManager(
         self._speech_output_total = 0  # diagnostic: chunks actually sent to frontend playback
         self._last_speech_output_time = 0.0
         self._last_speech_output_bytes = 0
-        self._audio_stream_queue = AudioDurationQueue(
-            capacity_us=2_000_000,
-            max_frames=256,
-        )
-        self._audio_stream_worker_task: Optional[asyncio.Task] = None
-        self._audio_stream_dropped_total = 0
-        self._audio_stream_epoch = 0
         # 只在「用户/前端主动结束启动」时递增（end_session 的 not by_server +
         # reset_starting_count 路径），用于跨模式重启守卫区分"用户已放弃"与
         # "内部 cleanup / in-flight 启动失败"。不能复用 _audio_stream_epoch——
         # 它在所有 end_session cleanup（含 by_server=True 的 in-flight 失败收口）
         # 里都会涨，会把用户仍在等待的 audio 请求误判为已放弃（CodeRabbit）。
         self._user_session_abandon_epoch = 0
-        self._last_audio_stream_backlog_log_time = 0.0
         self.emoji_pattern = re.compile(r'[^\w\u4e00-\u9fff\s>][^\w\u4e00-\u9fff\s]{2,}[^\w\u4e00-\u9fff\s<]', flags=re.UNICODE)
         self.emoji_pattern2 = re.compile("["
         u"\U0001F600-\U0001F64F"  # emoticons
@@ -302,11 +292,6 @@ class LLMSessionManager(
         self._context_append_inflight_results: dict[tuple[Any, ...], asyncio.Future[ContextAppendResult]] = {}
         self._require_context_append_current_delivery = False
         self.input_cache_lock = asyncio.Lock()  # 保护输入缓存的锁
-        
-        # 热切换音频缓存机制：确保热切换期间的用户输入语音不丢失
-        self.hot_swap_audio_cache = HotSwapAudioBuffer(capacity_ms=8_000)
-        self.hot_swap_cache_lock = asyncio.Lock()  # 保护热切换音频缓存的锁
-        self.is_flushing_hot_swap_cache = False  # 是否正在推送热切换缓存（推送期间新音频继续缓存）
         
         # 用户活动时间戳：用于主动搭话检测最近是否有用户输入
         self.last_user_activity_time = None  # float timestamp or None
