@@ -258,6 +258,23 @@ class _ResponseMixin:
         await ticket.sent
         return ticket
 
+    async def prepare_external_voice_turn(self) -> None:
+        """Prepare the active Provider session for one external ASR turn."""
+
+        if not self._is_gemini:
+            arbiter = self._ensure_response_arbiter()
+            arbiter.pause_dispatch()
+            await arbiter.cancel_current()
+        await self.handle_interruption()
+
+    async def submit_external_voice_turn(self, text: str, *, turn_id: str) -> None:
+        """Submit external ASR text through the Provider-appropriate path."""
+
+        if self._is_gemini:
+            await self.create_response(text)
+            return
+        await self.submit_external_text_turn(text, turn_id=turn_id)
+
     def is_active_response(self) -> bool:
         """Return True iff the realtime session is currently producing a response.
 

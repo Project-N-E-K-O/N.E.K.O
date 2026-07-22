@@ -22,6 +22,9 @@ class AsrProviderPolicy:
     warm_transport_ms: int
     replay_policy: AsrReplayPolicy
     provider_final_timeout_ms: int = 10_000
+    connect_max_attempts: int = 1
+    connect_retry_base_seconds: float = 0.25
+    connect_retry_cap_seconds: float = 1.0
 
     def __post_init__(self) -> None:
         if self.max_segment_ms is not None and self.max_segment_ms <= 0:
@@ -32,6 +35,14 @@ class AsrProviderPolicy:
             raise ValueError("segmented ASR must require SmartTurn")
         if self.provider_final_timeout_ms <= 0:
             raise ValueError("provider_final_timeout_ms must be positive")
+        if self.connect_max_attempts <= 0:
+            raise ValueError("connect_max_attempts must be positive")
+        if self.connect_retry_base_seconds <= 0:
+            raise ValueError("connect_retry_base_seconds must be positive")
+        if self.connect_retry_cap_seconds < self.connect_retry_base_seconds:
+            raise ValueError(
+                "connect_retry_cap_seconds must cover the retry base"
+            )
 
 
 def resolve_provider_policy(
@@ -62,4 +73,7 @@ def resolve_provider_policy(
         max_segment_ms=meta.max_segment_ms if transport == "segmented" else None,
         warm_transport_ms=meta.warm_transport_ms if transport == "streaming" else 0,
         replay_policy=meta.replay_policy,
+        connect_max_attempts=meta.connect_max_attempts,
+        connect_retry_base_seconds=meta.connect_retry_base_seconds,
+        connect_retry_cap_seconds=meta.connect_retry_cap_seconds,
     )
