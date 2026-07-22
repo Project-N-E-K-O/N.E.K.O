@@ -1,11 +1,6 @@
 name: Build Desktop App (Windows Only)
 
 on:
-  push:
-    branches:
-      - 'ci/portable-update'
-    paths:
-      - '.github/workflows/build-desktop-windows.yml'
   workflow_dispatch:
     inputs:
       version:
@@ -31,16 +26,22 @@ on:
       previous_portable_release:
         description: 'Release tag used as the Portable delta baseline'
         required: false
-        default: 'nightly'
+        default: ''
+      allow_fork_build:
+        description: 'Allow this workflow to run outside the upstream repository'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   build-windows:
     uses: ./.github/workflows/build-desktop.yml
     with:
-      version: ${{ inputs.version || '0.8.4-nightly.2' }}
-      electron_repo: ${{ inputs.electron_repo || 'xxynet/N.E.K.O.-PC' }}
-      electron_ref: ${{ inputs.electron_ref || 'feat/auto-update' }}
-      skip_signing: ${{ inputs.skip_signing || 'true' }}
+      version: ${{ inputs.version }}
+      electron_repo: ${{ inputs.electron_repo }}
+      electron_ref: ${{ inputs.electron_ref }}
+      skip_signing: ${{ inputs.skip_signing }}
       windows_only: true
-      previous_portable_release: ${{ inputs.previous_portable_release || 'nightly' }}
+      previous_portable_release: ${{ inputs.previous_portable_release }}
+      allow_fork_build: ${{ inputs.allow_fork_build }}
     secrets: inherit

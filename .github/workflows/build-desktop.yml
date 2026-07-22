@@ -33,6 +33,11 @@ on:
         required: false
         default: ''
         type: string
+      allow_fork_build:
+        description: 'Allow this workflow to run outside the upstream repository'
+        required: false
+        default: false
+        type: boolean
   push:
     tags:
       - 'v*'
@@ -64,6 +69,11 @@ on:
         description: 'Release tag used as the Portable delta baseline'
         required: false
         default: ''
+      allow_fork_build:
+        description: 'Allow this workflow to run outside the upstream repository'
+        required: false
+        default: false
+        type: boolean
 
 env:
   PYTHON_VERSION: '3.11'
@@ -80,7 +90,7 @@ jobs:
   # Step 0: Calculate version
   # ──────────────────────────────────────────────
   version:
-    if: github.repository == 'Project-N-E-K-O/N.E.K.O' || github.repository == 'xxynet/N.E.K.O'
+    if: github.repository == 'Project-N-E-K-O/N.E.K.O' || inputs.allow_fork_build
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.calc.outputs.VERSION }}
@@ -108,7 +118,7 @@ jobs:
   # Step 1: Build Python backend with Nuitka
   # ──────────────────────────────────────────────
   build-python:
-    if: github.repository == 'Project-N-E-K-O/N.E.K.O' || github.repository == 'xxynet/N.E.K.O'
+    if: github.repository == 'Project-N-E-K-O/N.E.K.O' || inputs.allow_fork_build
     needs: version
     strategy:
       fail-fast: false
@@ -681,7 +691,7 @@ jobs:
   # Step 2: Build Electron desktop app
   # ──────────────────────────────────────────────
   build-electron:
-    if: github.repository == 'Project-N-E-K-O/N.E.K.O' || github.repository == 'xxynet/N.E.K.O'
+    if: github.repository == 'Project-N-E-K-O/N.E.K.O' || inputs.allow_fork_build
     needs: [version, build-python]
     strategy:
       fail-fast: false
@@ -694,7 +704,7 @@ jobs:
       - name: Checkout Electron frontend
         uses: actions/checkout@v4
         with:
-          repository: ${{ inputs.electron_repo || format('{0}/N.E.K.O.-PC', github.repository_owner) }}
+          repository: ${{ inputs.electron_repo || 'Project-N-E-K-O/N.E.K.O.-PC' }}
           ref: ${{ inputs.electron_ref || 'main' }}
           token: ${{ secrets.ELECTRON_REPO_TOKEN || secrets.GITHUB_TOKEN }}
           path: electron-app
@@ -964,7 +974,7 @@ jobs:
   # Step 3: Publish Nightly Release
   # ──────────────────────────────────────────────
   nightly:
-    if: (github.repository == 'Project-N-E-K-O/N.E.K.O' || github.repository == 'xxynet/N.E.K.O') && github.event_name != 'push' && always() && !cancelled() && needs.build-python.result == 'success' && needs.build-electron.result != 'failure'
+    if: (github.repository == 'Project-N-E-K-O/N.E.K.O' || inputs.allow_fork_build) && github.event_name != 'push' && always() && !cancelled() && needs.build-python.result == 'success' && needs.build-electron.result != 'failure'
     needs: [version, build-python, build-electron]
     runs-on: ubuntu-latest
     permissions:
@@ -1071,7 +1081,7 @@ jobs:
   # Stable tags publish every self-managed Portable update channel. If a release was
   # created manually first, upload --clobber updates its assets in place.
   publish-stable-portable:
-    if: (github.repository == 'Project-N-E-K-O/N.E.K.O' || github.repository == 'xxynet/N.E.K.O') && startsWith(github.ref, 'refs/tags/v') && needs.build-electron.result == 'success'
+    if: (github.repository == 'Project-N-E-K-O/N.E.K.O' || inputs.allow_fork_build) && startsWith(github.ref, 'refs/tags/v') && needs.build-electron.result == 'success'
     needs: [version, build-electron]
     runs-on: ubuntu-latest
     permissions:
