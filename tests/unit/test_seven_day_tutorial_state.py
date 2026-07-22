@@ -56,7 +56,7 @@ def test_completed_legacy_home_tutorial_is_migrated_once(tmp_path):
     {"never_remind": True},
     {"status": "never"},
 ))
-def test_legacy_never_remind_is_migrated_as_day_one_skip(tmp_path, suppression):
+def test_legacy_never_remind_is_migrated_with_all_rounds_settled(tmp_path, suppression):
     manager = _ConfigManager(tmp_path)
     (tmp_path / "tutorial_prompt.json").write_text(json.dumps({
         **suppression,
@@ -68,7 +68,7 @@ def test_legacy_never_remind_is_migrated_as_day_one_skip(tmp_path, suppression):
     assert response["initialized"] is True
     assert response["revision"] == 1
     assert response["state"]["completedRounds"] == []
-    assert response["state"]["skippedRounds"] == [1]
+    assert response["state"]["skippedRounds"] == list(range(1, 8))
 
 
 @pytest.mark.unit

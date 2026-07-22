@@ -217,7 +217,7 @@ def _migrate_legacy_tutorial_state(config_manager=None) -> dict[str, Any] | None
     if not completed and not permanently_suppressed and not existing_user:
         return None
 
-    if existing_user:
+    if existing_user or permanently_suppressed:
         skipped_rounds = list(range(2 if completed else 1, ROUND_COUNT + 1))
     else:
         skipped_rounds = [] if completed else [1]

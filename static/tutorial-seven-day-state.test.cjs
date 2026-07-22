@@ -472,6 +472,88 @@ test('a mutation made during the initial server write is not overwritten', async
     assert.deepEqual(Array.from(browserApi.loadState().completedRounds), [1]);
 });
 
+test('revision conflicts preserve settled rounds from concurrent windows', async () => {
+    const authoritativeStore = {
+        initialized: true,
+        revision: 1,
+        state: {
+            version: 2,
+            firstSeenDate: '2026-07-01',
+            completedRounds: [],
+            skippedRounds: [],
+            legacyMigrationCompleted: true,
+            updatedAt: '2026-07-01T00:00:00.000Z',
+            resetHistory: [],
+        },
+    };
+    const fetch = async (url, options = {}) => {
+        if (url === stateApi.SERVER_STATE_ENDPOINT && options.method === 'PUT') {
+            return applyAuthoritativePut(authoritativeStore, options);
+        }
+        if (url === stateApi.SERVER_STATE_ENDPOINT) {
+            return createJsonResponse({ ok: true, ...authoritativeStore });
+        }
+        if (url === '/api/config/page_config') {
+            return createJsonResponse({ autostart_csrf_token: 'test-token' });
+        }
+        return createJsonResponse({}, 404);
+    };
+    const firstApi = loadBrowserStateApi({ storage: createMemoryStorage(), fetch });
+    const secondApi = loadBrowserStateApi({ storage: createMemoryStorage(), fetch });
+    await Promise.all([firstApi.ready(), secondApi.ready()]);
+
+    firstApi.markRoundOutcome(1, 'complete');
+    await firstApi.flush();
+    await new Promise(resolve => setTimeout(resolve, 2));
+    secondApi.markRoundOutcome(2, 'skip');
+    await secondApi.flush();
+
+    assert.deepEqual(Array.from(authoritativeStore.state.completedRounds), [1]);
+    assert.deepEqual(Array.from(authoritativeStore.state.skippedRounds), [2]);
+});
+
+test('conflict merging preserves an unseen server reset and unrelated local progress', async () => {
+    const authoritativeStore = {
+        initialized: true,
+        revision: 1,
+        state: {
+            version: 2,
+            firstSeenDate: '2026-07-01',
+            completedRounds: [1],
+            skippedRounds: [],
+            legacyMigrationCompleted: true,
+            updatedAt: '2026-07-01T00:00:00.000Z',
+            resetHistory: [],
+        },
+    };
+    const fetch = async (url, options = {}) => {
+        if (url === stateApi.SERVER_STATE_ENDPOINT && options.method === 'PUT') {
+            return applyAuthoritativePut(authoritativeStore, options);
+        }
+        if (url === stateApi.SERVER_STATE_ENDPOINT) {
+            return createJsonResponse({ ok: true, ...authoritativeStore });
+        }
+        if (url === '/api/config/page_config') {
+            return createJsonResponse({ autostart_csrf_token: 'test-token' });
+        }
+        return createJsonResponse({}, 404);
+    };
+    const staleApi = loadBrowserStateApi({ storage: createMemoryStorage(), fetch });
+    const resetApi = loadBrowserStateApi({ storage: createMemoryStorage(), fetch });
+    await Promise.all([staleApi.ready(), resetApi.ready()]);
+
+    resetApi.resetRound(1, { source: 'concurrent-reset' });
+    await resetApi.flush();
+    await new Promise(resolve => setTimeout(resolve, 2));
+    staleApi.markRoundOutcome(2, 'skip');
+    await staleApi.flush();
+
+    assert.deepEqual(Array.from(authoritativeStore.state.completedRounds), []);
+    assert.deepEqual(Array.from(authoritativeStore.state.skippedRounds), [2]);
+    assert.equal(authoritativeStore.state.manualResetRound, 1);
+    assert.equal(authoritativeStore.state.resetHistory.at(-1).day, 1);
+});
+
 test('flush retries a failed authoritative write and reports permanent failure', async () => {
     const storage = createMemoryStorage();
     let putAttempts = 0;

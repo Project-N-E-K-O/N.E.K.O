@@ -246,6 +246,90 @@
         return getStateUpdatedAtMs(right) > getStateUpdatedAtMs(left) ? right : left;
     }
 
+    function getResetHistoryEntryKey(entry) {
+        if (!entry || typeof entry !== 'object') {
+            return '';
+        }
+        const day = entry.day === 'all' ? 'all' : normalizeRound(entry.day);
+        const resetAt = typeof entry.resetAt === 'string' ? entry.resetAt.trim() : '';
+        if (!day || !resetAt) {
+            return '';
+        }
+        const source = typeof entry.source === 'string' ? entry.source : '';
+        return JSON.stringify([day, source, resetAt]);
+    }
+
+    function getUnseenResetRounds(sourceHistory, knownHistory) {
+        const knownKeys = new Set(
+            (Array.isArray(knownHistory) ? knownHistory : [])
+                .map(getResetHistoryEntryKey)
+                .filter(Boolean)
+        );
+        const resetRounds = new Set();
+        (Array.isArray(sourceHistory) ? sourceHistory : []).forEach((entry) => {
+            const key = getResetHistoryEntryKey(entry);
+            if (!key || knownKeys.has(key)) {
+                return;
+            }
+            if (entry.day === 'all') {
+                for (let round = 1; round <= ROUND_COUNT; round += 1) {
+                    resetRounds.add(round);
+                }
+                return;
+            }
+            const round = normalizeRound(entry.day);
+            if (round) {
+                resetRounds.add(round);
+            }
+        });
+        return resetRounds;
+    }
+
+    function mergeResetHistory(left, right) {
+        const entriesByKey = new Map();
+        [left, right].forEach((history) => {
+            (Array.isArray(history) ? history : []).forEach((entry) => {
+                const key = getResetHistoryEntryKey(entry);
+                if (key) {
+                    entriesByKey.set(key, entry);
+                }
+            });
+        });
+        return Array.from(entriesByKey.values())
+            .sort((leftEntry, rightEntry) => (
+                Date.parse(leftEntry.resetAt || '') - Date.parse(rightEntry.resetAt || '')
+            ))
+            .slice(-RESET_HISTORY_LIMIT);
+    }
+
+    function mergeConflictState(localState, serverState) {
+        const serverOnlyResetRounds = getUnseenResetRounds(
+            serverState.resetHistory,
+            localState.resetHistory
+        );
+        const localOnlyResetRounds = getUnseenResetRounds(
+            localState.resetHistory,
+            serverState.resetHistory
+        );
+        const completedRounds = normalizeRoundList(
+            localState.completedRounds.filter(round => !serverOnlyResetRounds.has(round))
+                .concat(serverState.completedRounds.filter(round => !localOnlyResetRounds.has(round)))
+        );
+        const skippedRounds = normalizeRoundList(
+            localState.skippedRounds.filter(round => !serverOnlyResetRounds.has(round))
+                .concat(serverState.skippedRounds.filter(round => !localOnlyResetRounds.has(round)))
+        ).filter(round => !completedRounds.includes(round));
+        const baseState = serverOnlyResetRounds.size > 0 ? serverState : localState;
+        return normalizeState(Object.assign({}, baseState, {
+            completedRounds,
+            skippedRounds,
+            resetHistory: mergeResetHistory(localState.resetHistory, serverState.resetHistory),
+        }), {
+            storage: null,
+            today: baseState.firstSeenDate,
+        });
+    }
+
     function normalizeServerPayloadState(payload, fallbackState) {
         const rawState = payload && payload.state ? payload.state : fallbackState;
         return normalizeState(rawState, {
@@ -299,7 +383,7 @@
                 if (getStateUpdatedAtMs(newestLocalState) <= getStateUpdatedAtMs(serverState)) {
                     return serverState;
                 }
-                snapshot = newestLocalState;
+                snapshot = mergeConflictState(newestLocalState, serverState);
             }
         }
         throw new Error('seven-day tutorial state conflict retry limit reached');
