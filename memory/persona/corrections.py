@@ -346,7 +346,9 @@ class CorrectionsMixin:
                         else:
                             # Legacy str entry — no metadata to preserve;
                             # migrate to dict form and seed the chain.
-                            new_entry = self._normalize_entry(merged_text)
+                            new_entry = self._normalize_entry_for_section(
+                                persona, entity, merged_text,
+                            )
                             new_entry['version_history'] = [history_entry]
                             section_facts[j] = new_entry
                         break
@@ -355,7 +357,9 @@ class CorrectionsMixin:
                     e for e in section_facts
                     if (e.get('text', '') if isinstance(e, dict) else str(e)) != old_text
                 ]
-                section_facts.append(self._normalize_entry(new_text))
+                section_facts.append(self._normalize_entry_for_section(
+                    persona, entity, new_text,
+                ))
             elif action == 'keep_old':
                 pass
             else:  # keep_both
@@ -364,7 +368,9 @@ class CorrectionsMixin:
                     for e in section_facts
                 }
                 if new_text not in existing_texts:
-                    section_facts.append(self._normalize_entry(new_text))
+                    section_facts.append(self._normalize_entry_for_section(
+                        persona, entity, new_text,
+                    ))
 
             resolved += 1
 

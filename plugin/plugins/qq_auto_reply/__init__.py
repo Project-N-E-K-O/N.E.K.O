@@ -783,7 +783,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         return Ok({"stickers": items, "total": len(items)})
 
     @ui.action(id="save_settings", label=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), refresh_context=True)
-    @plugin_entry(id="save_settings", name=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), description=tr("entries.save_settings.description", default="保存 QQ 插件当前的 OneBot 地址、Token、NapCat 路径、回复概率和 backlog 标签等设置。"), input_schema={"type": "object", "properties": {"onebot_url": {"type": "string"}, "token": {"type": "string"}, "napcat_directory": {"type": "string"}, "show_napcat_window": {"type": "boolean"}, "reply_mode": {"type": "string", "enum": ["text", "voice", "both"]}, "show_onboarding": {"type": "boolean"}, "guide_step_napcat_done": {"type": "boolean"}, "guide_step_config_done": {"type": "boolean"}, "guide_step_runtime_done": {"type": "boolean"}, "normal_relay_probability": {"type": "number"}, "truth_reply_probability": {"type": "number"}, "backlog_labels": {"type": "array", "items": {"type": "object"}}, "strategy_mode": {"type": "string", "enum": ["neko_dynamic", "neko_scene"]}, "qq_connection_mode": {"type": "string", "enum": ["napcat", "open_platform"]}, "qq_open_app_id": {"type": "string"}, "qq_open_client_secret": {"type": "string"}, "sticker_cooldown_messages": {"type": "integer"}, "retroactive_review_max_messages": {"type": "integer"}, "retroactive_review_max_reply": {"type": "integer"}}, "additionalProperties": False})
+    @plugin_entry(id="save_settings", name=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), description=tr("entries.save_settings.description", default="保存 QQ 插件当前的 OneBot 地址、Token、NapCat 路径、回复概率和 backlog 标签等设置。"), input_schema={"type": "object", "properties": {"onebot_url": {"type": "string"}, "token": {"type": "string"}, "napcat_directory": {"type": "string"}, "show_napcat_window": {"type": "boolean"}, "reply_mode": {"type": "string", "enum": ["text", "voice", "both"]}, "show_onboarding": {"type": "boolean"}, "guide_step_napcat_done": {"type": "boolean"}, "guide_step_config_done": {"type": "boolean"}, "guide_step_runtime_done": {"type": "boolean"}, "normal_relay_probability": {"type": "number"}, "truth_reply_probability": {"type": "number"}, "backlog_labels": {"type": "array", "items": {"type": "object"}}, "strategy_mode": {"type": "string", "enum": ["neko_dynamic", "neko_scene"]}, "qq_connection_mode": {"type": "string", "enum": ["napcat", "open_platform"]}, "qq_open_app_id": {"type": "string"}, "qq_open_client_secret": {"type": "string"}, "sticker_cooldown_messages": {"type": "integer"}, "retroactive_review_max_messages": {"type": "integer"}, "retroactive_review_max_reply": {"type": "integer"}, "group_memory_enabled": {"type": "boolean"}, "group_member_memory_enabled": {"type": "boolean"}, "allow_cross_group_context": {"type": "boolean"}}, "additionalProperties": False})
     async def save_settings(
         self,
         onebot_url: Optional[str] = None,
@@ -801,6 +801,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         sticker_cooldown_messages: Optional[int] = None,
         retroactive_review_max_messages: Optional[int] = None,
         retroactive_review_max_reply: Optional[int] = None,
+        group_memory_enabled: Optional[bool] = None,
+        group_member_memory_enabled: Optional[bool] = None,
+        allow_cross_group_context: Optional[bool] = None,
         strategy_mode: Optional[str] = None,
         qq_connection_mode: Optional[str] = None,
         qq_open_app_id: Optional[str] = None,
@@ -823,6 +826,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             sticker_cooldown_messages=sticker_cooldown_messages,
             retroactive_review_max_messages=retroactive_review_max_messages,
             retroactive_review_max_reply=retroactive_review_max_reply,
+            group_memory_enabled=group_memory_enabled,
+            group_member_memory_enabled=group_member_memory_enabled,
+            allow_cross_group_context=allow_cross_group_context,
             strategy_mode=strategy_mode,
             qq_connection_mode=qq_connection_mode,
             qq_open_app_id=qq_open_app_id,

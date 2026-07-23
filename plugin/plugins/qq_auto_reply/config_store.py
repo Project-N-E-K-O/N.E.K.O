@@ -128,6 +128,12 @@ class QQAutoReplyConfigStore:
             "fatigue_session_per_reply": 5.0,        # 每条回复增加的会话疲劳
             "fatigue_awake_idle_timeout": 10.0,      # 苏醒后空闲多久回睡眠（秒）
             "proactive_silence_seconds": 300,         # 焦点群沉默多久后主动发言（秒），0=禁用
+            # 群聊长期记忆显式 opt-in。成员记忆会增加按成员分桶的提取调用，
+            # 因此独立开关且默认关闭。
+            "group_memory_enabled": False,
+            "group_member_memory_enabled": False,
+            # 跨群实时话题不是长期记忆的一部分，默认严格隔离。
+            "allow_cross_group_context": False,
             # 提示词编辑器覆盖值（locale → layer_id → text）
             "prompt_overrides": {},
             # 按群自定义提示词（group_id → 提示词文本）

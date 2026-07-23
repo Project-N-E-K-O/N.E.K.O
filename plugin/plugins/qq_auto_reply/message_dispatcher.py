@@ -331,6 +331,11 @@ class QQMessageDispatcher:
                 mentions_other_user=mentions_other_user,
                 message_timestamp=message_timestamp,
             )
+        group_memory_enabled = bool(
+            (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                "group_memory_enabled", False,
+            )
+        )
         request = QQReplyRequest(
             message_text=message_text,
             sender_id=sender_id,
@@ -352,6 +357,8 @@ class QQMessageDispatcher:
             fallback_to_text_on_voice_failure=True,
             suppression_reason=suppression_reason,
             force_reply=force_reply,
+            use_memory_context=group_memory_enabled,
+            persist_memory=group_memory_enabled,
         )
         outcome = await self.plugin.reply_pipeline.run(request)
         # 回复后即时标 reviewed，统一 backlog 管道

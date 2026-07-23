@@ -302,12 +302,20 @@ async def _periodic_reflection_synthesis_loop():
         for name in catgirl_names:
             try:
                 results = await runtime.reflection_engine.synthesize_reflections(name)
+                # Cost-bounded scoped pass: at most one ready group/member
+                # subject per maintenance tick. Legacy-private synthesis above
+                # keeps its original behaviour and cadence.
+                scoped_synth = getattr(
+                    runtime.reflection_engine, 'synthesize_scoped_reflections', None,
+                )
+                if callable(scoped_synth):
+                    results += await scoped_synth(name, max_subjects=1)
                 if results:
                     logger.info(
-                        f"[ReflectionSynth] {name}: 合成 {len(results)} 条新 pending reflection"
+                        f"[ReflectionSynth] {name}: 合成 {len(results)} 条新 reflection"
+                        "（legacy=pending / scoped=confirmed）"
                     )
             except Exception as e:
                 # 单角色合成失败不阻塞其他角色 / 下轮重试
                 logger.warning(f"[ReflectionSynth] {name} 合成异常: {e}")
         await asyncio.sleep(interval)
-

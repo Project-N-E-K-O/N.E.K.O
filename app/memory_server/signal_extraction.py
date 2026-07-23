@@ -469,10 +469,17 @@ async def _run_path_b(name: str, state: dict) -> None:
     # ValueError 把整个 B 跑挂、下次 trigger 又同样脏值同样挂，path B 对该
     # 角色永久哑火（Codex P2 round-1 on PR #1408）。
     from memory.facts import safe_importance
+    from memory.scopes import is_legacy_private_entry
 
     known_pool: list[dict] = []
     for f in all_facts:
         if not isinstance(f, dict):
+            continue
+        # Path B 是私聊 AI-aware 抽取：known pool 只能含 legacy 私聊
+        # facts。scoped（群/成员）fact 混进来会把群内容渲进私聊 Stage-1
+        # prompt（跨边界泄漏），且在繁忙群把 top-N 名额挤满、抑制私聊
+        # fact 抽取。
+        if not is_legacy_private_entry(f):
             continue
         created_at_raw = f.get('created_at') or ''
         try:

@@ -506,17 +506,24 @@ class PromotionMergeMixin:
         # suboptimal merge decision, not correctness.
         persona_view = await self._persona_manager.aget_persona(lanlan_name)
         target_entity = R.get('entity')
+        from memory.scopes import entry_matches_subject, subject_from_entry
+        memory_subject = subject_from_entry(R)
+        target_section = (
+            memory_subject.persona_section_key
+            if memory_subject is not None else target_entity
+        )
         same_entity_persona: list[tuple[str, dict]] = []
-        if target_entity and isinstance(persona_view, dict):
-            section = persona_view.get(target_entity)
+        if target_section and isinstance(persona_view, dict):
+            section = persona_view.get(target_section)
             if isinstance(section, dict):
                 for e in section.get('facts', []):
                     if isinstance(e, dict) and not e.get('protected'):
-                        same_entity_persona.append((target_entity, e))
+                        same_entity_persona.append((target_section, e))
         all_reflections = await self._aload_reflections_full(lanlan_name)
         same_entity_reflections = [
             r for r in all_reflections
             if r.get('entity') == target_entity
+            and entry_matches_subject(r, memory_subject)
             and r.get('status') in ('confirmed', 'promoted')
             and r.get('id') != R.get('id')
         ]
@@ -576,10 +583,17 @@ class PromotionMergeMixin:
             R = current2
 
         if action == 'promote_fresh':
+            from memory.scopes import subject_from_entry
+            promote_subject = subject_from_entry(R)
+            promote_kwargs = (
+                {'subject': promote_subject}
+                if promote_subject is not None else {}
+            )
             result = await self._persona_manager.aadd_fact(
                 lanlan_name, R.get('text', ''),
                 entity=target_entity or 'master',
                 source='reflection', source_id=R['id'],
+                **promote_kwargs,
             )
             if result == self._persona_manager.FACT_ADDED:
                 await self._arecord_state_change(

@@ -496,6 +496,8 @@ async def hybrid_recall(
     reflection_engine,
     config_manager,
     time_window: tuple | None = None,
+    subjects=None,
+    include_legacy_private: bool | None = None,
 ) -> dict[str, Any]:
     """End-to-end hybrid recall — the function the ``/query_memory``
     HTTP endpoint should call.
@@ -561,6 +563,21 @@ async def hybrid_recall(
     refl_tagged = _tag_tier(active_reflections, 'reflection')
     arch_tagged = _tag_tier(archive_facts or [], 'fact_archive')
 
+    # Security boundary: scope filtering happens before any BM25/cosine/RRF
+    # scoring. A group caller never searches the private/global corpus and then
+    # hides results afterwards. With no subjects, missing scope keeps the legacy
+    # private behaviour; explicit subjects exclude legacy rows by default.
+    from memory.scopes import filter_entries_for_subjects
+    facts_tagged = filter_entries_for_subjects(
+        facts_tagged, subjects, include_legacy_private=include_legacy_private,
+    )
+    refl_tagged = filter_entries_for_subjects(
+        refl_tagged, subjects, include_legacy_private=include_legacy_private,
+    )
+    arch_tagged = filter_entries_for_subjects(
+        arch_tagged, subjects, include_legacy_private=include_legacy_private,
+    )
+
     # "语义 + 时间"联合检索：给了 time_window 就先把候选池按事件时间窗口
     # 硬过滤，只让落在该区间的条目进入后续 BM25 / cosine 打分。
     if time_window is not None:
@@ -614,6 +631,9 @@ async def hybrid_recall(
             "text": d.get('text') or '',
             "tier": d.get('_tier') or 'unknown',
             "entity": d.get('entity'),
+            "subject_kind": d.get('subject_kind'),
+            "subject_id": d.get('subject_id'),
+            "scope": d.get('scope') or 'legacy_private',
             "score": round(d.get('_rrf_score', 0.0), 6),
             # created_at = 记忆写盘时间；event_start/end_at = 事件真正发生
             # 的时间锚点（schema v2，由 event_when_raw 解算）。两者可能差很
@@ -669,6 +689,8 @@ async def recall_by_time(
     time_spec: str,
     fact_store,
     reflection_engine,
+    subjects=None,
+    include_legacy_private: bool | None = None,
 ) -> dict[str, Any]:
     """Time-based recall — return the few entries (facts + reflections mixed)
     whose event time is **closest to the ``time_spec`` window**.
@@ -717,6 +739,10 @@ async def recall_by_time(
         + _tag_tier(active_reflections or [], 'reflection')
         + _tag_tier(archive_facts or [], 'fact_archive')
     )
+    from memory.scopes import filter_entries_for_subjects
+    pool_raw = filter_entries_for_subjects(
+        pool_raw, subjects, include_legacy_private=include_legacy_private,
+    )
     from memory.recall import MemoryRecallReranker
     pool = MemoryRecallReranker._hard_filter(pool_raw)
 
@@ -751,6 +777,9 @@ async def recall_by_time(
             "text": d.get('text') or '',
             "tier": d.get('_tier') or 'unknown',
             "entity": d.get('entity'),
+            "subject_kind": d.get('subject_kind'),
+            "subject_id": d.get('subject_id'),
+            "scope": d.get('scope') or 'legacy_private',
             "score": None,  # 时间路径无语义打分
             "created_at": d.get('created_at'),
             "event_start_at": d.get('event_start_at'),

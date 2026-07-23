@@ -168,7 +168,9 @@ class FactsMixin:
                 return self.FACT_QUEUED_CORRECTION, old_text
         return None, None
 
-    def _build_fact_entry(self, text: str, source: str, source_id: str | None) -> dict:
+    def _build_fact_entry(
+        self, text: str, source: str, source_id: str | None, *, subject=None,
+    ) -> dict:
         entry = self._normalize_entry(text)
         if source == 'reflection' and source_id:
             entry['id'] = f"prom_{source_id}"
@@ -176,10 +178,13 @@ class FactsMixin:
             entry['id'] = f"manual_{datetime.now().strftime('%Y%m%d%H%M%S')}_{hashlib.sha256(text.encode()).hexdigest()[:8]}"
         entry['source'] = source
         entry['source_id'] = source_id
+        if subject is not None:
+            entry.update(subject.as_entry_fields())
         return entry
 
     def add_fact(self, name: str, text: str, entity: str = 'master',
-                 source: str = 'manual', source_id: str | None = None) -> str:
+                 source: str = 'manual', source_id: str | None = None,
+                 subject=None) -> str:
         """Add a confirmed fact to persona. Checks for contradictions first.
 
         Args:
@@ -191,23 +196,36 @@ class FactsMixin:
             FACT_REJECTED_CARD    — contradicts character_card, permanently blocked
             FACT_QUEUED_CORRECTION — contradicts existing non-card fact, queued for LLM review
         """
+        from memory.scopes import coerce_subject
+        memory_subject = coerce_subject(subject)
+        if memory_subject is not None:
+            entity = memory_subject.kind
         persona = self.ensure_persona(name)
-        section_facts = self._get_section_facts(persona, entity)
+        section_facts = self._get_section_facts(
+            persona, entity, subject=memory_subject,
+        )
         stop_names = self._get_entity_stop_names(name)
 
         code, old_text = self._evaluate_fact_contradiction(name, text, section_facts, stop_names)
         if code == self.FACT_REJECTED_CARD:
             return self.FACT_REJECTED_CARD
         if code == self.FACT_QUEUED_CORRECTION:
-            self._queue_correction(name, old_text, text, entity)
+            correction_entity = (
+                memory_subject.persona_section_key
+                if memory_subject is not None else entity
+            )
+            self._queue_correction(name, old_text, text, correction_entity)
             return self.FACT_QUEUED_CORRECTION
 
-        section_facts.append(self._build_fact_entry(text, source, source_id))
+        section_facts.append(self._build_fact_entry(
+            text, source, source_id, subject=memory_subject,
+        ))
         self.save_persona(name, persona)
         return self.FACT_ADDED
 
     async def aadd_fact(self, name: str, text: str, entity: str = 'master',
-                        source: str = 'manual', source_id: str | None = None) -> str:
+                        source: str = 'manual', source_id: str | None = None,
+                        subject=None) -> str:
         """P2.a.2: character-level asyncio.Lock serializes add_fact /
         resolve_corrections / record_mentions, preventing persona.json write races.
 
@@ -215,19 +233,33 @@ class FactsMixin:
         its standalone lock is an asyncio.Lock (reentrant? no — asyncio.Lock is
         not reentrant) → so inside the lock we call the **unlocked** version of
         _aqueue_correction."""
+        from memory.scopes import coerce_subject
+        memory_subject = coerce_subject(subject)
+        if memory_subject is not None:
+            entity = memory_subject.kind
         async with self._get_alock(name):
             persona = await self._aensure_persona_locked(name)
-            section_facts = self._get_section_facts(persona, entity)
+            section_facts = self._get_section_facts(
+                persona, entity, subject=memory_subject,
+            )
             stop_names = await self._aget_entity_stop_names(name)
 
             code, old_text = self._evaluate_fact_contradiction(name, text, section_facts, stop_names)
             if code == self.FACT_REJECTED_CARD:
                 return self.FACT_REJECTED_CARD
             if code == self.FACT_QUEUED_CORRECTION:
-                await self._aqueue_correction_locked(name, old_text, text, entity)
+                correction_entity = (
+                    memory_subject.persona_section_key
+                    if memory_subject is not None else entity
+                )
+                await self._aqueue_correction_locked(
+                    name, old_text, text, correction_entity,
+                )
                 return self.FACT_QUEUED_CORRECTION
 
-            section_facts.append(self._build_fact_entry(text, source, source_id))
+            section_facts.append(self._build_fact_entry(
+                text, source, source_id, subject=memory_subject,
+            ))
             await self.asave_persona(name, persona)
             return self.FACT_ADDED
 
@@ -797,8 +829,25 @@ class FactsMixin:
             )
             return True
 
-    def _get_section_facts(self, persona: dict, entity: str) -> list:
+    def _get_section_facts(self, persona: dict, entity: str, *, subject=None) -> list:
+        if subject is not None:
+            section = persona.setdefault(subject.persona_section_key, {})
+            section.update(subject.as_entry_fields())
+            section.setdefault('entity', subject.kind)
+            return section.setdefault('facts', [])
         return persona.setdefault(entity, {}).setdefault('facts', [])
+
+    def _normalize_entry_for_section(
+        self, persona: dict, section_key: str, value,
+    ) -> dict:
+        """Normalize a persona fact and inherit its scoped section metadata."""
+        entry = self._normalize_entry(value)
+        from memory.scopes import persona_subject_from_section
+        section = persona.get(section_key, {})
+        subject = persona_subject_from_section(section_key, section)
+        if subject is not None:
+            entry.update(subject.as_entry_fields())
+        return entry
 
     def _get_entity_stop_names(self, lanlan_name: str | None = None) -> list[str]:
         """Return master + lanlan names + their nicknames (``昵称``) — used to strip

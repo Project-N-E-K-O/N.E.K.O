@@ -2870,6 +2870,48 @@ def get_persona_fusion_entity_label(entity: str, lang: str = "zh") -> str:
     table = PERSONA_FUSION_ENTITY_LABEL.get(entity, PERSONA_FUSION_ENTITY_LABEL["master"])
     return _loc(table, lang)
 
+
+# 群聊 scope 化 persona 渲染的 section 标题（memory/persona/rendering.py）。
+# {subject_id} 注入平台前缀的会话/成员标识（如 "qq:12345"）。
+SCOPED_PERSONA_SECTION_HEADER = {
+    "group_chat": {
+        "zh": "群聊记忆（{subject_id}）",
+        "en": "Group chat memory ({subject_id})",
+        "ja": "グループチャットの記憶（{subject_id}）",
+        "ko": "그룹 채팅 기억 ({subject_id})",
+        "ru": "Память группового чата ({subject_id})",
+        "es": "Memoria del chat grupal ({subject_id})",
+        "pt": "Memória do chat em grupo ({subject_id})",
+    },
+    "participant": {
+        "zh": "成员记忆（{subject_id}）",
+        "en": "Participant memory ({subject_id})",
+        "ja": "メンバーの記憶（{subject_id}）",
+        "ko": "멤버 기억 ({subject_id})",
+        "ru": "Память об участнике ({subject_id})",
+        "es": "Memoria del participante ({subject_id})",
+        "pt": "Memória do participante ({subject_id})",
+    },
+    "group_participant": {
+        "zh": "群内成员记忆（{subject_id}）",
+        "en": "Group member memory ({subject_id})",
+        "ja": "グループメンバーの記憶（{subject_id}）",
+        "ko": "그룹 멤버 기억 ({subject_id})",
+        "ru": "Память об участнике группы ({subject_id})",
+        "es": "Memoria del miembro del grupo ({subject_id})",
+        "pt": "Memória do membro do grupo ({subject_id})",
+    },
+}
+
+
+def get_scoped_persona_section_header(
+    subject_kind: str, subject_id: str, lang: str = "zh",
+) -> str:
+    table = SCOPED_PERSONA_SECTION_HEADER.get(subject_kind)
+    if table is None:
+        return subject_id
+    return _loc(table, lang).format(subject_id=subject_id)
+
 # ---------- persona_correction_prompt → i18n dict ----------
 
 PERSONA_CORRECTION_PROMPT = {

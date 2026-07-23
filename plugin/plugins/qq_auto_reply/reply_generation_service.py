@@ -188,6 +188,9 @@ class QQReplyGenerationService:
     ) -> None:
         if user_data.get("memory_enabled"):
             try:
+                self.plugin.session_memory_service.record_group_member_turn(
+                    user_data, context,
+                )
                 count = await self.plugin._cache_session_delta(session_key, user_data)
                 if count:
                     self.plugin.logger.info(f"[管理员] 成功同步 {count} 条消息到 Memory Server (会话: {session_key})")

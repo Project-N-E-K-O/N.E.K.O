@@ -19,6 +19,9 @@ class QQReplyContextNode:
         message: str,
         should_use_memory_context: bool,
         attachments: list[dict[str, Any]] | None,
+        is_group: bool = False,
+        group_id: str | None = None,
+        sender_id: str = "",
     ) -> str:
         if not should_use_memory_context:
             return ""
@@ -27,8 +30,27 @@ class QQReplyContextNode:
         normalized_message = str(message or "").strip()
         if not normalized_message:
             return ""
+        if is_group and not group_id:
+            # Fail-closed（与 session_instruction_service._build_core_memory_
+            # section 对齐）：畸形群事件缺 group_id 时不能让 subjects 退化成
+            # None——bridge 侧 None 的语义是「legacy 私聊调用方」，会把主人的
+            # 私聊记忆召回进群回复。
+            return ""
         try:
-            recall_result = await self.plugin.memory_bridge.query_relevant_memory(her_name, normalized_message)
+            subjects = None
+            if is_group and group_id:
+                subjects = [self.plugin.memory_bridge.group_subject(group_id)]
+                if str(sender_id or "").strip():
+                    subjects.append(
+                        self.plugin.memory_bridge.group_participant_subject(
+                            group_id, sender_id,
+                        )
+                    )
+            recall_result = await self.plugin.memory_bridge.query_relevant_memory(
+                her_name,
+                normalized_message,
+                subjects=subjects,
+            )
             if not recall_result.text:
                 return ""
             self.plugin.logger.info(
@@ -177,6 +199,9 @@ class QQReplyContextNode:
             message=message,
             should_use_memory_context=should_use_memory_context,
             attachments=attachments,
+            is_group=is_group,
+            group_id=group_id,
+            sender_id=sender_id,
         )
         recalled_memory_used = bool(recalled_memory_text)
         traces.append(

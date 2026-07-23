@@ -23,11 +23,12 @@ import asyncio
 import json
 import re
 from datetime import datetime, timedelta
+from typing import Literal
 from uuid import uuid4
 
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from config.prompts.prompts_sys import _loc
 from config.prompts.prompts_memory import (
@@ -693,6 +694,41 @@ async def get_memory(query: str, lanlan_name: str):
     )
 
 
+class MemorySubjectRequest(BaseModel):
+    subject_kind: Literal["group_chat", "participant", "group_participant"]
+    subject_id: str
+    scope: str | None = None
+
+    def to_domain(self):
+        from memory.scopes import MemoryScopeError, MemorySubject
+        try:
+            return MemorySubject.create(
+                self.subject_kind, self.subject_id, scope=self.scope,
+            )
+        except MemoryScopeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+class ScopedFactInput(BaseModel):
+    text: str
+    importance: int = Field(default=5, ge=1, le=10)
+    source: Literal["user_observation", "ai_disclosure"] = "user_observation"
+
+
+class ScopedFactsWriteRequest(BaseModel):
+    subject: MemorySubjectRequest
+    facts: list[ScopedFactInput]
+
+
+class ScopedHistoryRequest(BaseModel):
+    input_history: str
+    subject: MemorySubjectRequest
+
+
+class ScopedContextRequest(BaseModel):
+    subjects: list[MemorySubjectRequest]
+
+
 class QueryMemoryRequest(BaseModel):
     # query / time 都可选，至少给一个有效值即可（time-only 是新支持的用法）。
     # 两者都空时不报错，hybrid_recall 对空 query 短路返回空 results，调用方
@@ -705,6 +741,121 @@ class QueryMemoryRequest(BaseModel):
     # （整点小时 / 单日 / 整月 / 整年 / 区间）。不填或解析失败则走常规全量
     # 语义检索。
     time: str | None = None
+    # Explicit read boundary for group-chat callers. Omitting the field keeps
+    # the pre-upgrade legacy-private behaviour. Supplying one or more subjects
+    # excludes every unscoped legacy row; there is intentionally no request
+    # flag that lets a plugin turn legacy-private into a wildcard corpus.
+    # An explicit empty list is a caller contract bug and is rejected 422 at
+    # the endpoint (fail-closed) — it must never fall back to legacy private.
+    subjects: list[MemorySubjectRequest] | None = None
+
+
+@app.post("/internal/memory/{lanlan_name}/scoped_facts")
+async def append_scoped_facts(lanlan_name: str, req: ScopedFactsWriteRequest):
+    """Append already-extracted facts to one explicit group/member subject.
+
+    This is the low-cost group-chat write path: adapters submit a small batch of
+    stable facts instead of forcing the full private-chat post-turn pipeline on
+    every busy group message. The memory core owns subject stamping, exact and
+    semantic deduplication, and persistence.
+    """
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    if runtime.fact_store is None:
+        raise HTTPException(
+            status_code=503,
+            detail="memory_server not fully initialized (limited mode or startup incomplete)",
+        )
+    if not req.facts or len(req.facts) > 32:
+        raise HTTPException(status_code=422, detail="facts must contain 1..32 items")
+    extracted: list[dict] = []
+    for item in req.facts:
+        text = item.text.strip()
+        if not text or len(text) > 2000:
+            raise HTTPException(
+                status_code=422,
+                detail="each fact text must contain 1..2000 characters",
+            )
+        extracted.append({
+            "text": text,
+            "importance": item.importance,
+            "source": item.source,
+        })
+    subject = req.subject.to_domain()
+    created = await runtime.fact_store.apersist_scoped_facts(
+        lanlan_name,
+        extracted,
+        subject=subject,
+    )
+    return {
+        "status": "stored",
+        "subject": subject.as_entry_fields(),
+        "created": len(created),
+        "fact_ids": [fact.get("id") for fact in created if fact.get("id")],
+    }
+
+
+@app.post("/internal/memory/{lanlan_name}/scoped_history")
+async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
+    """Extract scoped facts from a bounded group-chat digest/history batch."""
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    if runtime.fact_store is None:
+        raise HTTPException(
+            status_code=503,
+            detail="memory_server not fully initialized (limited mode or startup incomplete)",
+        )
+    try:
+        input_history = convert_to_messages(json.loads(req.input_history))
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="invalid input_history") from exc
+    if not input_history or len(input_history) > 200:
+        raise HTTPException(
+            status_code=422,
+            detail="input_history must contain 1..200 messages",
+        )
+    subject = req.subject.to_domain()
+    created = await runtime.fact_store.extract_facts(
+        input_history,
+        lanlan_name,
+        subject=subject,
+    )
+    return {
+        "status": "processed",
+        "subject": subject.as_entry_fields(),
+        "created": len(created),
+        "fact_ids": [fact.get("id") for fact in created if fact.get("id")],
+    }
+
+
+@app.post("/internal/memory/{lanlan_name}/scoped_context")
+async def get_scoped_context(lanlan_name: str, req: ScopedContextRequest):
+    """Render only explicitly authorized persona/reflection subjects."""
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    if runtime.persona_manager is None or runtime.reflection_engine is None:
+        raise HTTPException(
+            status_code=503,
+            detail="memory_server not fully initialized (limited mode or startup incomplete)",
+        )
+    if not req.subjects or len(req.subjects) > 8:
+        raise HTTPException(status_code=422, detail="subjects must contain 1..8 items")
+    subjects = [subject.to_domain() for subject in req.subjects]
+    pending_reflections = await runtime.reflection_engine.aget_pending_reflections(
+        lanlan_name,
+        subjects=subjects,
+        include_legacy_private=False,
+    )
+    confirmed_reflections = await runtime.reflection_engine.aget_confirmed_reflections(
+        lanlan_name,
+        subjects=subjects,
+        include_legacy_private=False,
+    )
+    rendered = await runtime.persona_manager.arender_persona_markdown(
+        lanlan_name,
+        pending_reflections,
+        confirmed_reflections,
+        subjects=subjects,
+        include_legacy_private=False,
+    )
+    return PlainTextResponse(rendered)
 
 
 @app.post("/query_memory/{lanlan_name}")
@@ -743,6 +894,17 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
         )
     time_spec = (req.time or "").strip()
     query_text = (req.query or "").strip()
+    # Fail-closed on an explicit empty subjects list (mirror scoped_context):
+    # a group-chat caller that has no authorized subject must get zero rows,
+    # never the legacy-private corpus. Omitting the field (None) keeps the
+    # pre-upgrade legacy behaviour — downstream filter_entries_for_subjects
+    # treats () and None alike, so the distinction must be enforced here.
+    if req.subjects is not None and not (1 <= len(req.subjects) <= 8):
+        raise HTTPException(
+            status_code=422,
+            detail="subjects must be omitted (legacy private) or contain 1..8 items",
+        )
+    subjects = [subject.to_domain() for subject in (req.subjects or [])]
     try:
         # Import 移进 try：若 memory.hybrid_recall 自身 import 失败（循环
         # import / 依赖缺失），仍然走下面的兜底返回空 results，避免端点
@@ -764,6 +926,7 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
                     time_spec=time_spec,
                     fact_store=runtime.fact_store,
                     reflection_engine=runtime.reflection_engine,
+                    subjects=subjects,
                 )
         # query（+ 可选 time_window）→ 语义检索；time_window 非空即"语义 +
         # 时间"联合检索（窗口内按 query 排序）。
@@ -775,6 +938,7 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
             reflection_engine=runtime.reflection_engine,
             config_manager=runtime._config_manager,
             time_window=time_window,
+            subjects=subjects,
         )
     except Exception as exc:
         # 永不让一次召回失败把 tool call 整死——返回空 results，main_server

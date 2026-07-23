@@ -24,27 +24,76 @@ class QQMemoryBridge:
 
         return f"http://127.0.0.1:{MEMORY_SERVER_PORT}"
 
+    @staticmethod
+    def group_subject(group_id: object) -> dict[str, str]:
+        return {
+            "subject_kind": "group_chat",
+            "subject_id": f"qq:{str(group_id or '').strip()}",
+        }
+
+    @staticmethod
+    def group_participant_subject(group_id: object, sender_id: object) -> dict[str, str]:
+        return {
+            "subject_kind": "group_participant",
+            "subject_id": (
+                f"qq:{str(group_id or '').strip()}:{str(sender_id or '').strip()}"
+            ),
+        }
+
     async def fetch_bootstrap_memory(self, her_name: str, *, timeout: float = 5.0) -> str:
         async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
             response = await client.get(f"{self._base_url()}/new_dialog/{her_name}")
             response.raise_for_status()
             return response.text.strip()
 
-    async def query_relevant_memory(self, her_name: str, query: str, *, timeout: float = 5.0, limit: int = 5) -> QQMemoryQueryResult:
+    async def fetch_scoped_bootstrap_memory(
+        self,
+        her_name: str,
+        *,
+        subjects: list[dict[str, str]],
+        timeout: float = 5.0,
+    ) -> str:
+        if not subjects:
+            return ""
+        async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
+            response = await client.post(
+                f"{self._base_url()}/internal/memory/{her_name}/scoped_context",
+                json={"subjects": subjects},
+            )
+            response.raise_for_status()
+            return response.text.strip()
+
+    async def query_relevant_memory(
+        self,
+        her_name: str,
+        query: str,
+        *,
+        timeout: float = 5.0,
+        limit: int = 5,
+        subjects: list[dict[str, str]] | None = None,
+    ) -> QQMemoryQueryResult:
         normalized_query = str(query or "").strip()
         if not normalized_query:
             return QQMemoryQueryResult()
+        # ``None`` means the legacy private caller omitted an authorization
+        # boundary. An explicit empty list means the caller has no authorized
+        # subject and must never fall back to that legacy corpus.
+        if subjects == []:
+            return QQMemoryQueryResult()
+        request_payload: dict[str, Any] = {"query": normalized_query}
+        if subjects is not None:
+            request_payload["subjects"] = subjects
         async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
             response = await client.post(
                 f"{self._base_url()}/query_memory/{her_name}",
-                json={"query": normalized_query},
+                json=request_payload,
             )
             response.raise_for_status()
-            payload = response.json()
-        results = payload.get("results") if isinstance(payload, dict) else None
+            response_payload = response.json()
+        results = response_payload.get("results") if isinstance(response_payload, dict) else None
         memory_items = [item for item in results if isinstance(item, dict)] if isinstance(results, list) else []
         rendered = self.render_relevant_memory(memory_items[:limit])
-        elapsed_ms = payload.get("elapsed_ms", 0.0) if isinstance(payload, dict) else 0.0
+        elapsed_ms = response_payload.get("elapsed_ms", 0.0) if isinstance(response_payload, dict) else 0.0
         try:
             normalized_elapsed = float(elapsed_ms or 0.0)
         except (TypeError, ValueError):
@@ -79,6 +128,25 @@ class QQMemoryBridge:
             response = await client.post(
                 f"{self._base_url()}/{endpoint}/{her_name}",
                 json={"input_history": json.dumps(messages, ensure_ascii=False)},
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def post_scoped_memory_history(
+        self,
+        her_name: str,
+        messages: list[dict[str, Any]],
+        *,
+        subject: dict[str, str],
+        timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
+            response = await client.post(
+                f"{self._base_url()}/internal/memory/{her_name}/scoped_history",
+                json={
+                    "input_history": json.dumps(messages, ensure_ascii=False),
+                    "subject": subject,
+                },
             )
             response.raise_for_status()
             return response.json()

@@ -50,6 +50,7 @@ from config.prompts.prompts_memory import (
     get_signal_detection_prompt,
 )
 from memory.evidence import evidence_score
+from memory.scopes import MemorySubject, coerce_subject, entry_matches_subject
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.language_utils import get_global_language
 from utils.config_manager import get_config_manager
@@ -556,6 +557,7 @@ class FactStore:
         *,
         default_source: str = 'user_observation',
         semantic_dedup: bool = True,
+        subject: MemorySubject | dict | None = None,
     ) -> list[dict]:
         async with self._get_persist_alock(lanlan_name):
             return await self._apersist_new_facts_locked(
@@ -563,13 +565,29 @@ class FactStore:
                 extracted,
                 default_source=default_source,
                 semantic_dedup=semantic_dedup,
+                subject=subject,
             )
+
+    async def apersist_scoped_facts(
+        self,
+        lanlan_name: str,
+        extracted: list[dict],
+        *,
+        subject: MemorySubject | dict,
+    ) -> list[dict]:
+        """Persist already extracted facts for an explicitly scoped adapter request."""
+        return await self._apersist_new_facts(
+            lanlan_name,
+            extracted,
+            subject=subject,
+        )
 
     async def _apersist_new_facts_locked(
         self, lanlan_name: str, extracted: list[dict],
         *,
         default_source: str = 'user_observation',
         semantic_dedup: bool = True,
+        subject: MemorySubject | dict | None = None,
     ) -> list[dict]:
         """Dedup (SHA-256 + FTS5) + persist. importance < 5 facts are KEPT
         (RFC §3.1.3)—downstream `get_unabsorbed_facts(min_importance=5)`
@@ -593,6 +611,7 @@ class FactStore:
         """
         if default_source not in self._SOURCE_VALUES:
             default_source = self._SOURCE_DEFAULT
+        memory_subject = coerce_subject(subject)
 
         new_facts: list[dict] = []
         upgraded_count = 0
@@ -628,18 +647,20 @@ class FactStore:
             # RFC §3.1.3: **不再**在抽取入口硬丢 importance < 5。所有 fact
             # 一律落盘，消费侧按场景 min_importance= 过滤；保留完整 audit。
 
-            # Entity whitelist: RFC uses exactly these three values. Any
-            # other LLM output (common mistake: "user"→"master") gets
-            # snapped back to "master" with a debug log so the miss is
-            # visible but not alarming.
-            raw_entity = fact.get('entity', 'master')
-            if raw_entity in ('master', 'neko', 'relationship'):
-                entity = raw_entity
+            # Scoped writes own their entity: untrusted LLM output must not
+            # redirect a group/participant fact into the legacy master bucket.
+            # Legacy writes keep the original three-value whitelist unchanged.
+            if memory_subject is not None:
+                entity = memory_subject.kind
             else:
-                logger.debug(
-                    f"[FactStore] {lanlan_name}: LLM 返回非法 entity={raw_entity!r}，回退到 master"
-                )
-                entity = 'master'
+                raw_entity = fact.get('entity', 'master')
+                if raw_entity in ('master', 'neko', 'relationship'):
+                    entity = raw_entity
+                else:
+                    logger.debug(
+                        f"[FactStore] {lanlan_name}: LLM 返回非法 entity={raw_entity!r}，回退到 master"
+                    )
+                    entity = 'master'
 
             # Source resolution: LLM 显式 source 优先 + 白名单 + default fallback
             raw_source = fact.get('source')
@@ -663,6 +684,8 @@ class FactStore:
                 else None
             )
             hash_input = f"{daily_event_date}\n{text}" if daily_event_date else text
+            if memory_subject is not None:
+                hash_input = f"{memory_subject.key}\n{memory_subject.scope}\n{hash_input}"
             content_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:16]
             if content_hash in existing_hashes:
                 existing = hash_to_existing.get(content_hash)
@@ -672,9 +695,11 @@ class FactStore:
                     and source == 'user_observation'
                 ):
                     # Path A 用 user msg 印证了之前 path B 写过的 ai_disclosure fact
-                    # → 升级 source + 重新进 Stage-2 evidence loop
+                    # → 升级 source + 重新进 Stage-2 evidence loop。
+                    # scoped fact 例外：简化管线不进 Stage-2，升级 source 但
+                    # 保持 signal_processed=True。
                     existing['source'] = 'user_observation'
-                    existing['signal_processed'] = False
+                    existing['signal_processed'] = memory_subject is not None
                     # 若这条印证来自外部导入，补上 external_import provenance——否则
                     # SHA 命中直接 continue 会漏掉标签（external_import 语义会把
                     # signal_processed 置回 True，不进 Stage-2）(Codex P2)。
@@ -685,16 +710,30 @@ class FactStore:
 
             # Stage 2: FTS5 semantic dedup (lightweight, no LLM)
             if semantic_dedup and self._time_indexed is not None:
-                similar = await self._time_indexed.asearch_facts(lanlan_name, text, 3)
+                # FTS5 is still character-wide, so fetch a wider window and
+                # keep the historical "top-3 candidates" semantics *inside*
+                # the subject boundary: cross-subject rows neither count as
+                # duplicates nor consume the 3-candidate budget (a busy
+                # group would otherwise crowd legacy candidates out of a
+                # top-3 fetch and let legacy near-duplicates slip through).
+                similar = await self._time_indexed.asearch_facts(
+                    lanlan_name, text, 10,
+                )
                 is_dup = False
+                same_subject_seen = 0
                 for fid, score in similar:
+                    hit = facts_by_id.get(fid)
+                    if not entry_matches_subject(hit or {}, memory_subject):
+                        continue
+                    same_subject_seen += 1
+                    if same_subject_seen > 3:
+                        break
                     if score >= -5:
                         continue
                     if daily_event_date:
                         # daily 候选：命中的既存 fact 若也是 daily 且日期不同 →
                         # 跨日期重复事件，不算语义重复（同日期近似命中仍挡住，
                         # 兜 LLM 重抽输出不稳定的重试幂等）。
-                        hit = facts_by_id.get(fid)
                         hit_meta = (hit or {}).get('external_import')
                         hit_date = (
                             str(hit_meta.get('event_date'))
@@ -752,7 +791,14 @@ class FactStore:
                 # ⚠️ source='ai_disclosure' fact：写盘时直接置 True，让 Stage-2
                 # 永不取它。配合 aextract_facts_and_detect_signals 内部的
                 # source filter 做双重防御，防漏。
-                'signal_processed': (source == 'ai_disclosure'),
+                # ⚠️ scoped（群/成员）fact 同样置 True：群记忆走简化管线
+                # （facts → 定期合成 confirmed reflection → time-driven 晋升），
+                # 不参与 Stage-2 evidence。scoped 分区没有 user-confirm 通道，
+                # 其观察池冷启动恒空，进队列只会永久占用 batch 名额，把 legacy
+                # 私聊主链路饿死。
+                'signal_processed': (
+                    source == 'ai_disclosure' or memory_subject is not None
+                ),
                 # Vector-embedding cache (memory-enhancements P2 — see
                 # memory/embeddings.py). Written as None so /process
                 # returns immediately without blocking on embedding;
@@ -764,6 +810,8 @@ class FactStore:
                 'embedding_text_sha256': None,
                 'embedding_model_id': None,
             }
+            if memory_subject is not None:
+                fact_entry.update(memory_subject.as_entry_fields())
             if external_import is not None:
                 self._apply_external_import_provenance(fact_entry, external_import)
             existing_facts.append(fact_entry)
@@ -874,6 +922,9 @@ class FactStore:
                     # past the filter and re-enter Stage-2 signal
                     # detection, defeating the suppression contract.
                     'suppress': r.get('suppress'),
+                    'subject_kind': r.get('subject_kind'),
+                    'subject_id': r.get('subject_id'),
+                    'scope': r.get('scope'),
                 })
 
         if persona_manager is not None:
@@ -900,7 +951,31 @@ class FactStore:
                         'embedding_text_sha256': entry.get('embedding_text_sha256'),
                         'embedding_model_id': entry.get('embedding_model_id'),
                         'suppress': entry.get('suppress'),
+                        'subject_kind': entry.get('subject_kind'),
+                        'subject_id': entry.get('subject_id'),
+                        'scope': entry.get('scope'),
                     })
+
+        # Keep Stage-2 evidence inside the same subject boundary as the facts
+        # that triggered it. Legacy facts can only see legacy observations;
+        # scoped facts can only see explicitly matching scoped observations.
+        from memory.scopes import (
+            filter_entries_for_subjects,
+            subject_from_entry,
+        )
+        trigger_subjects = []
+        include_legacy_private = not new_facts
+        for fact in new_facts or []:
+            trigger_subject = subject_from_entry(fact)
+            if trigger_subject is None:
+                include_legacy_private = True
+            else:
+                trigger_subjects.append(trigger_subject)
+        pool = filter_entries_for_subjects(
+            pool,
+            trigger_subjects or None,
+            include_legacy_private=include_legacy_private,
+        )
 
         # P2 step 3: route through MemoryRecallReranker whenever we have
         # a query, regardless of vector service state.  The reranker
@@ -1127,13 +1202,16 @@ class FactStore:
         - ``new_facts_this_round``: facts newly extracted + persisted by this
           round's Stage-1 (for outbox and other audit purposes)
         - ``signals``: evidence signals awaiting dispatch
-        - ``batch_fact_ids``: fact ids processed by this Stage-2 round — **the
-          caller must call ``amark_signal_processed(lanlan_name, batch_fact_ids)``
-          to complete the checkpoint only after every signal has been applied
-          successfully via aapply_signal**. If the caller crashes during/after
-          dispatch, the next idle sees the signal_processed=False facts, re-runs
-          Stage-2, regenerates the signals and retries the dispatch (CodeRabbit
-          fingerprint c755101c).
+        - ``batch_fact_ids``: fact ids successfully processed by this Stage-2
+          round. The drain queue only ever carries legacy-private facts —
+          scoped (group/member) facts take the simplified pipeline and are
+          written with ``signal_processed=True``; any stray non-legacy row is
+          defensively dequeued before batching. The caller
+          must call ``amark_signal_processed(lanlan_name, batch_fact_ids)`` only
+          after every returned signal has been applied successfully via
+          aapply_signal. If dispatch fails, the next idle sees those facts still
+          at signal_processed=False and retries them (CodeRabbit fingerprint
+          c755101c).
 
         Failure semantics (§3.4.2, last paragraph):
         - Stage-1 failure → abort, no fact written; caller retries later
@@ -1172,6 +1250,29 @@ class FactStore:
             if not f.get('signal_processed', True)
             and f.get('source', self._SOURCE_DEFAULT) != 'ai_disclosure'
         ]
+
+        # Stage-2 evidence 只属于 legacy 私聊管线。scoped（群/成员）fact 走
+        # 简化管线，写盘时就 signal_processed=True 不会出现在这里；万一出现
+        # （subject 元数据损坏、旧版本代码写入的滞留数据），直接标记出队——
+        # 这类 fact 没有对应的 evidence 观察池，留在队列里会永久占用 batch
+        # 名额，把 legacy 主链路饿死（每 tick 空转还烧额外 LLM 调用）。
+        from memory.scopes import is_legacy_private_entry
+
+        stray = [f for f in unprocessed if not is_legacy_private_entry(f)]
+        if stray:
+            # 无条件把非 legacy 行滤出批次——包括没有 id、无法标记的行：
+            # 它们绝不能混进纯 legacy 的 Stage-2 prompt（跨边界泄漏）。
+            unprocessed = [
+                f for f in unprocessed if is_legacy_private_entry(f)
+            ]
+            stray_ids = [f['id'] for f in stray if f.get('id')]
+            logger.info(
+                "[FactStore] %s: Stage-2 出队 %d 条非 legacy fact"
+                "（scoped 走简化管线 / subject 损坏防御；无 id 仅过滤不标记 %d 条）",
+                lanlan_name, len(stray), len(stray) - len(stray_ids),
+            )
+            if stray_ids:
+                await self.amark_signal_processed(lanlan_name, stray_ids)
         if not unprocessed:
             return persisted_this_round, [], []
 
@@ -1185,48 +1286,47 @@ class FactStore:
         )
         batch = unprocessed[:EVIDENCE_DETECT_SIGNALS_MAX_NEW_FACTS]
 
+        # 此时 batch 只含 legacy 私聊 facts（scoped 已在上面防御性出队），
+        # 保持与分区机制引入前一致的单批次 Stage-2。_aload_signal_targets
+        # 内部的 scope 过滤会把观察池收敛到 legacy（defense in depth：即使
+        # 未来有 scoped 观察写入 reflections/persona，也不会漏进这里）。
         try:
             existing_observations = await self._aload_signal_targets(
                 lanlan_name,
                 reflection_engine=reflection_engine,
                 persona_manager=persona_manager,
-                # 用 batch 而不是仅本轮新增作为 query，向量召回更聚焦。
                 new_facts=batch,
             )
         except Exception as e:
-            # _aload_signal_targets 现在不再吞 reflection/persona load 异常
-            # （CodeRabbit 1f follow-up：partial pool + checkpoint 会让失败池
-            # 那部分的 signal 永久丢失）。任一 manager raise 时整轮放弃 mark，
-            # 下轮 idle 重试。
             logger.warning(
                 f"[FactStore] {lanlan_name}: _aload_signal_targets 失败，"
-                f"跳过本轮 Stage-2 mark，下轮 idle 重试: {e}"
+                f"跳过本轮 Stage-2（batch 保持未处理下轮重试）: {e}"
             )
             return persisted_this_round, [], []
         if not existing_observations:
-            # 真为空（冷启动 / persona 池只有 protected）：故意**不**返回
-            # batch_fact_ids，让 caller 不 mark，下轮 idle tick 重试同一批。
-            # 代价是冷启动每轮跑一次 _aload_signal_targets（无 LLM 调用）；
-            # 收益是绝不丢 signal（CodeRabbit fingerprint e625b666）。
+            # 冷启动：还没有任何 confirmed reflection / persona 观察目标。
+            # 不 mark，下轮重试（与引入 scope 之前的语义一致）。
             return persisted_this_round, [], []
 
         signals = await self._allm_detect_signals(
             lanlan_name, batch, existing_observations,
         )
         if signals is None:
-            # Stage-2 LLM failure: 不返回 batch_ids，caller 不 mark，下轮重试
+            # Stage-2 LLM failure: 不返回 ids，caller 不 mark，下轮重试同批。
             return persisted_this_round, [], []
 
-        # Stage-2 成功 → 返回 batch_fact_ids 让 caller 在 dispatch 全部成功
-        # 后调 amark_signal_processed。**不**在这里立刻 mark：caller 还没有
-        # 把 signals 喂给 PersonaManager / ReflectionEngine.aapply_signal，
-        # 中途崩溃或部分失败时这批 fact 必须能下轮重跑（CodeRabbit c755101c）。
-        # 即使 signals=[]（LLM 看过认为没关联）也返回 batch_ids，caller 看到
-        # 空 signals 直接当 dispatch_ok=True 调 amark，避免下轮空跑。
-        batch_fact_ids = [f['id'] for f in batch]
-        return persisted_this_round, signals, batch_fact_ids
+        # caller 仍需在所有返回 signals dispatch 成功后才 mark。
+        return persisted_this_round, signals, [
+            fact['id'] for fact in batch if fact.get('id')
+        ]
 
-    async def extract_facts(self, messages: list, lanlan_name: str) -> list[dict]:
+    async def extract_facts(
+        self,
+        messages: list,
+        lanlan_name: str,
+        *,
+        subject: MemorySubject | dict | None = None,
+    ) -> list[dict]:
         """Stage-1-only backward-compat entry.
 
         Kept for callers that predate the evidence mechanism
@@ -1242,7 +1342,9 @@ class FactStore:
         extracted = await self._allm_extract_facts(lanlan_name, messages)
         if not extracted:
             return []
-        return await self._apersist_new_facts(lanlan_name, extracted)
+        return await self._apersist_new_facts(
+            lanlan_name, extracted, subject=subject,
+        )
 
     # ── external import state (sidecar) ──────────────────────────────
 
@@ -1721,6 +1823,8 @@ class FactStore:
         lanlan_name: str,
         messages: list,
         known_pool: list[dict],
+        *,
+        subject: MemorySubject | dict | None = None,
     ) -> list[dict] | None:
         """AI-aware Stage-1 (path B) extraction — input is the role-tagged full
         user+ai message set; the prompt embeds ``known_pool`` (facts path A
@@ -1756,7 +1860,7 @@ class FactStore:
         if not extracted:
             return []
         return await self._apersist_new_facts(
-            lanlan_name, extracted, default_source='ai_disclosure',
+            lanlan_name, extracted, default_source='ai_disclosure', subject=subject,
         )
 
     async def _allm_extract_facts_with_known_pool(
@@ -1813,19 +1917,35 @@ class FactStore:
 
     # ── query helpers ────────────────────────────────────────────────
 
-    def get_unabsorbed_facts(self, name: str, min_importance: int = 5) -> list[dict]:
+    def get_unabsorbed_facts(
+        self,
+        name: str,
+        min_importance: int = 5,
+        *,
+        subject: MemorySubject | dict | None = None,
+    ) -> list[dict]:
         """Get facts that haven't been consumed by a reflection yet."""
         facts = self.load_facts(name)
         return [
             f for f in facts
-            if not f.get('absorbed') and f.get('importance', 0) >= min_importance
+            if not f.get('absorbed')
+            and f.get('importance', 0) >= min_importance
+            and entry_matches_subject(f, subject)
         ]
 
-    async def aget_unabsorbed_facts(self, name: str, min_importance: int = 5) -> list[dict]:
+    async def aget_unabsorbed_facts(
+        self,
+        name: str,
+        min_importance: int = 5,
+        *,
+        subject: MemorySubject | dict | None = None,
+    ) -> list[dict]:
         facts = await self.aload_facts(name)
         return [
             f for f in facts
-            if not f.get('absorbed') and f.get('importance', 0) >= min_importance
+            if not f.get('absorbed')
+            and f.get('importance', 0) >= min_importance
+            and entry_matches_subject(f, subject)
         ]
 
     def get_facts_by_entity(self, name: str, entity: str) -> list[dict]:
