@@ -177,7 +177,6 @@ class ConfigManager(
     # HTTP 探测的失败重试账本：开机自启动时网络栈常常还没就绪，首次探测必超时。
     _ip_check_attempts = 0
     _ip_check_last_attempt_monotonic = None
-    _geo_ip_only_logged = False
 
 
 # 全局配置管理器实例

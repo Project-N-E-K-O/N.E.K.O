@@ -16,8 +16,9 @@
 """Region gate (_check_non_mainland) regression tests.
 
 Covers the fix for "overseas users who only auto-start N.E.K.O. (not Steam)
-are pinned to the mainland route": Steam is a veto, not a required yes vote,
-and the HTTP probe retries instead of giving up after one cold-boot timeout.
+are pinned to the mainland route": the IP probe decides whenever it has an
+answer and Steam is only a fallback, and the probe retries instead of giving
+up after one cold-boot timeout.
 """
 import os
 import sys
@@ -43,7 +44,6 @@ def reset_geo_caches(monkeypatch):
         ('_ip_check_cache', None),
         ('_steam_check_cache', None),
         ('_geo_indeterminate_logged', False),
-        ('_geo_ip_only_logged', False),
         ('_ip_check_attempts', 0),
         ('_ip_check_last_attempt_monotonic', None),
     ):
@@ -60,7 +60,7 @@ def _probe(ip, steam):
 
 
 # ---------------------------------------------------------------------------
-# Steam as veto, not as a required yes vote
+# IP decides; Steam is only the fallback
 # ---------------------------------------------------------------------------
 
 @pytest.mark.unit
@@ -68,22 +68,16 @@ def test_steam_silent_overseas_ip_routes_overseas():
     """Main case: overseas users on a non-Steam build, or who never launched the
     Steam client, are no longer pinned to the mainland route."""
     assert _probe(ip=True, steam=None)._check_non_mainland() is True
+    assert ConfigManager._region_cache is True
 
 
 @pytest.mark.unit
-def test_steam_silent_result_is_not_cached():
-    """The IP-only verdict must not be cached, so a late Steam can still overturn it."""
-    assert _probe(ip=True, steam=None)._check_non_mainland() is True
-    assert ConfigManager._region_cache is None
-    # 同一进程内 Steam 随后发声说大陆 → 立刻否决回国内线路
-    assert _probe(ip=True, steam=False)._check_non_mainland() is False
-    assert ConfigManager._region_cache is False
-
-
-@pytest.mark.unit
-def test_steam_veto_beats_overseas_ip():
-    """A proxy can make the IP look non-CN; Steam saying CN still wins."""
-    assert _probe(ip=True, steam=False)._check_non_mainland() is False
+@pytest.mark.parametrize('steam', [True, False, None])
+def test_ip_outranks_steam(steam):
+    """The probe bypasses proxies, so it geolocates better than Steam's exit IP."""
+    assert _probe(ip=True, steam=steam)._check_non_mainland() is True
+    ConfigManager._region_cache = None
+    assert _probe(ip=False, steam=steam)._check_non_mainland() is False
 
 
 @pytest.mark.unit
@@ -93,9 +87,10 @@ def test_mainland_ip_routes_mainland():
 
 
 @pytest.mark.unit
-def test_dual_pass_is_cached():
-    assert _probe(ip=True, steam=True)._check_non_mainland() is True
-    assert ConfigManager._region_cache is True
+@pytest.mark.parametrize('steam, expected', [(True, True), (False, False)])
+def test_steam_breaks_the_tie_when_ip_is_silent(steam, expected):
+    assert _probe(ip=None, steam=steam)._check_non_mainland() is expected
+    assert ConfigManager._region_cache is expected
 
 
 @pytest.mark.unit
@@ -104,13 +99,6 @@ def test_both_indeterminate_defaults_mainland_without_caching():
     assert ConfigManager._region_cache is None
     # 网络稍后就绪 → 无需重启即可翻成海外
     assert _probe(ip=True, steam=None)._check_non_mainland() is True
-
-
-@pytest.mark.unit
-def test_steam_only_yes_without_ip_stays_mainland():
-    """Steam alone is not accepted while the IP probe has no verdict: unchanged behaviour."""
-    assert _probe(ip=None, steam=True)._check_non_mainland() is False
-    assert ConfigManager._region_cache is None
 
 
 # ---------------------------------------------------------------------------

@@ -104,7 +104,10 @@ class CoreConfigMixin:
 
     @staticmethod
     def _check_steam_non_mainland():
-        """Steam-based IP country check via Steamworks SDK."""
+        """Steam-based IP country check via Steamworks SDK.
+
+        Fallback source only — see _check_non_mainland for why the HTTP probe outranks it.
+        """
         # Late-bound: class-level shared state (single owner) lives on the
         # assembled ConfigManager; resolve it through the package facade.
         from utils.config_manager import ConfigManager
@@ -130,21 +133,26 @@ class CoreConfigMixin:
         return None
 
     def _check_non_mainland(self) -> bool:
-        """Region check over HTTP IP geo plus Steam geo.
+        """Region check: HTTP IP geo first, Steam geo only as a fallback.
 
-        Steam holds a veto, not a required vote: ``Utils.GetIPCountry()`` is
-        authoritative when it answers (it is not fooled by a proxy), but it stays
-        silent forever on non-Steam builds and on Steam builds started without the
-        Steam client running — most users only auto-start N.E.K.O., not Steam.
-        Requiring it as a second yes vote permanently pinned those overseas users
-        to the mainland route.
+        This used to require both to say non-mainland. Steamworks stays silent
+        forever on non-Steam builds and on Steam builds started without the Steam
+        client running — most users only auto-start N.E.K.O., not Steam — so that
+        second yes vote never arrived and pinned those overseas users to the
+        mainland route.
+
+        IP now decides whenever it has an answer, because it is the more accurate
+        of the two: the probe disables proxies explicitly, so a user behind a plain
+        system HTTP proxy still geolocates to their real country, while
+        ``Utils.GetIPCountry()`` reports whatever exit IP Steam's servers saw — the
+        proxy's. Steam only breaks the tie when the probe has no answer at all.
         """
         # Late-bound: class-level shared state (single owner) lives on the
         # assembled ConfigManager; resolve it through the package facade.
         from utils.config_manager import ConfigManager
 
         # 调试开关：config.GEOIP_FORCE_NON_MAINLAND 非 None 时直接返回它，绕过真实检测。
-        # 生产保持 None（走下方双判）。改 config/__init__.py 那个常量即可，不动这里。
+        # 生产保持 None（走下方判定）。改 config/__init__.py 那个常量即可，不动这里。
         if GEOIP_FORCE_NON_MAINLAND is not None:
             print(
                 f"[GeoIP] override active: forcing non-mainland={GEOIP_FORCE_NON_MAINLAND} "
@@ -159,27 +167,19 @@ class CoreConfigMixin:
         ip_result = self._check_ip_non_mainland_http()
         steam_result = self._check_steam_non_mainland()
 
-        if ip_result is False or steam_result is False:
-            ConfigManager._region_cache = False
+        if ip_result is not None:
+            ConfigManager._region_cache = ip_result
             ConfigManager._geo_indeterminate_logged = False
-            print(f"[GeoIP] Dual check FAIL: mainland (IP={ip_result}, Steam={steam_result})", file=sys.stderr)
-            return False
+            print(f"[GeoIP] IP decides: non_mainland={ip_result} (Steam={steam_result})", file=sys.stderr)
+            return ip_result
 
-        if ip_result is True and steam_result is True:
-            ConfigManager._region_cache = True
+        if steam_result is not None:
+            # IP 探测无结论时才轮到 Steam。它反映的是 Steam 服务端看到的出口 IP，
+            # 挂代理时同样会跟着代理走，所以只当兜底票，不当权威票。
+            ConfigManager._region_cache = steam_result
             ConfigManager._geo_indeterminate_logged = False
-            print(f"[GeoIP] Dual check PASS: non-mainland (IP={ip_result}, Steam={steam_result})", file=sys.stderr)
-            return True
-
-        if ip_result is True:
-            # Steam 沉默，IP 单判为海外。刻意**不写** _region_cache：Steam 可能只是
-            # 还没起来（用户先开机自启动、后手动开 Steam），它一旦发声就该重新裁决，
-            # 包括把挂全局代理的大陆用户否决回国内线路。两个子判定各自有缓存，重算很便宜。
-            ConfigManager._geo_indeterminate_logged = False
-            if not ConfigManager._geo_ip_only_logged:
-                ConfigManager._geo_ip_only_logged = True
-                print("[GeoIP] IP-only PASS: non-mainland (Steam silent, revocable)", file=sys.stderr)
-            return True
+            print(f"[GeoIP] Steam fallback decides: non_mainland={steam_result} (IP unavailable)", file=sys.stderr)
+            return steam_result
 
         # No verdict from either source (ip-api.com unreachable AND Steam not yet
         # initialised).  Do NOT write to _region_cache: either may become definitive
@@ -189,7 +189,7 @@ class CoreConfigMixin:
         # next invocation until at least one source becomes definitive.
         if not ConfigManager._geo_indeterminate_logged:
             ConfigManager._geo_indeterminate_logged = True
-            print(f"[GeoIP] Dual check indeterminate (IP={ip_result}, Steam={steam_result}), transient mainland default", file=sys.stderr)
+            print("[GeoIP] Both sources indeterminate, transient mainland default", file=sys.stderr)
         return False
 
     # Livestream 派生只接管 free 路这三个已知端点，避免劫持其他 lanlan.tech 路径
