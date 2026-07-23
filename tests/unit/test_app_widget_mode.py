@@ -9,6 +9,7 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_WIDGET_MODE_PATH = PROJECT_ROOT / "static" / "app" / "app-widget-mode.js"
+AVATAR_UI_POPUP_PATH = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-popup.js"
 INDEX_TEMPLATE_PATH = PROJECT_ROOT / "templates" / "index.html"
 CHAT_TEMPLATE_PATH = PROJECT_ROOT / "templates" / "chat.html"
 
@@ -179,10 +180,65 @@ def test_widget_mode_status_keys_are_removed_from_all_web_locales() -> None:
         assert "disabledNotice" in widget_mode
 
 
+def test_widget_mode_uses_approved_localized_names_and_fallbacks() -> None:
+    expected_names = {
+        "en": "Widget Mode Beta",
+        "ja": "エッジのぞき Beta",
+        "ko": "가장자리 내다보기 Beta",
+        "zh-CN": "贴边探身 Beta",
+        "zh-TW": "貼邊探身 Beta",
+        "ru": "Выглядывание из-за края Beta",
+        "pt": "Espiar pela borda Beta",
+        "es": "Asomarse por el borde Beta",
+    }
+    legacy_names = {
+        "en": "Edge Dock Mode",
+        "ja": "エッジドックモード",
+        "ko": "가장자리 도킹 모드",
+        "zh-CN": "挂边模式",
+        "zh-TW": "掛邊模式",
+        "ru": "Режим крепления к краю",
+        "pt": "Modo de encaixe na borda",
+        "es": "Modo de acoplamiento al borde",
+    }
+
+    for locale, expected_name in expected_names.items():
+        payload = json.loads(
+            (PROJECT_ROOT / "static" / "locales" / f"{locale}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        name_root = expected_name.removesuffix(" Beta")
+        widget_mode = payload["settings"]["widgetMode"]
+        toggles = payload["settings"]["toggles"]
+        visible_copy = json.dumps(
+            {
+                "widgetMode": widget_mode,
+                "label": toggles["widgetMode"],
+                "tooltip": toggles["widgetModeTooltip"],
+            },
+            ensure_ascii=False,
+        )
+
+        assert toggles["widgetMode"] == expected_name
+        assert name_root in toggles["widgetModeTooltip"]
+        assert name_root in widget_mode["enabledNotice"]
+        assert name_root in widget_mode["disabledNotice"]
+        assert name_root in widget_mode["toggleFailed"]
+        assert legacy_names[locale] not in visible_copy
+
+    app_source = APP_WIDGET_MODE_PATH.read_text(encoding="utf-8")
+    avatar_source = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
+    assert "贴边探身 Beta 已开启。" in app_source
+    assert "贴边探身 Beta 已关闭。" in app_source
+    assert "贴边探身 Beta 切换失败，请稍后重试。" in app_source
+    assert "贴边探身 Beta" in avatar_source
+    assert "挂边模式 Beta" not in app_source
+    assert "挂边模式 Beta" not in avatar_source
+
+
 def test_widget_mode_toggle_mutation_stays_serialized_by_settings_ui() -> None:
-    source = (PROJECT_ROOT / "static" / "avatar" / "avatar-ui-popup.js").read_text(
-        encoding="utf-8"
-    )
+    source = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
 
     assert "function queueWidgetModeMutation(operation)" in source
     assert "return queueWidgetModeMutation(function ()" in source
