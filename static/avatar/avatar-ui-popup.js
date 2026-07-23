@@ -382,11 +382,22 @@ function finalizePopupClosedState(popup) {
     popup._hideTimeoutId = null;
 }
 
+function translateWidgetModeText(key, fallback) {
+    let text = fallback;
+    try {
+        if (typeof window.t === 'function') {
+            text = window.t(key, { defaultValue: fallback });
+        }
+    } catch (_) {}
+    return text && text !== key ? text : fallback;
+}
+
 function showWidgetModeMutationFailure(error) {
     console.warn('[WidgetMode] settings mutation failed:', error);
-    const message = window.t
-        ? window.t('settings.widgetMode.toggleFailed')
-        : '贴边探身 Beta 切换失败，请稍后重试。';
+    const message = translateWidgetModeText(
+        'settings.widgetMode.toggleFailed',
+        '贴边探身 Beta 切换失败，请稍后重试。'
+    );
     if (typeof window.showStatusToast === 'function') {
         window.showStatusToast(message, 3000);
     }
@@ -409,7 +420,7 @@ function createAdvancedSettingsSidePanel(manager, prefix, popup) {
     });
     const widgetModeItem = manager._createSettingsToggleItem({
         id: 'widget-mode',
-        label: window.t ? window.t('settings.toggles.widgetMode') : '贴边探身 Beta',
+        label: translateWidgetModeText('settings.toggles.widgetMode', '贴边探身 Beta'),
         labelKey: 'settings.toggles.widgetMode',
         tooltipKey: 'settings.toggles.widgetModeTooltip',
         alwaysTinted: true

@@ -55,6 +55,7 @@ def test_widget_mode_browser_client_syncs_minimal_state_and_event() -> None:
             for (const callback of listeners.get(event.type) || []) callback(event);
           }},
           showStatusToast(message) {{ notices.push(message); }},
+          t(key) {{ return key; }},
           nekoLocalMutationSecurity: {{
             peekCachedToken() {{ return 'csrf-token'; }},
           }},
@@ -123,7 +124,9 @@ def test_widget_mode_browser_client_syncs_minimal_state_and_event() -> None:
               || !stateEvents.some((state) => state.enabled === true)) {{
             throw new Error('state event did not cover both states');
           }}
-          if (notices.length !== 1) throw new Error('toggle notice missing');
+          if (notices.length !== 1 || notices[0] !== '贴边探身 Beta 已开启。') {{
+            throw new Error('toggle notice did not use the local fallback');
+          }}
           console.log('Widget Mode minimal browser client passed');
         }})().catch((error) => {{
           console.error(error && error.stack ? error.stack : error);
@@ -222,9 +225,9 @@ def test_widget_mode_uses_approved_localized_names_and_fallbacks() -> None:
 
         assert toggles["widgetMode"] == expected_name
         assert name_root in toggles["widgetModeTooltip"]
-        assert name_root in widget_mode["enabledNotice"]
-        assert name_root in widget_mode["disabledNotice"]
-        assert name_root in widget_mode["toggleFailed"]
+        assert expected_name in widget_mode["enabledNotice"]
+        assert expected_name in widget_mode["disabledNotice"]
+        assert expected_name in widget_mode["toggleFailed"]
         assert legacy_names[locale] not in visible_copy
 
     app_source = APP_WIDGET_MODE_PATH.read_text(encoding="utf-8")
@@ -233,8 +236,10 @@ def test_widget_mode_uses_approved_localized_names_and_fallbacks() -> None:
     assert "贴边探身 Beta 已关闭。" in app_source
     assert "贴边探身 Beta 切换失败，请稍后重试。" in app_source
     assert "贴边探身 Beta" in avatar_source
-    assert "挂边模式 Beta" not in app_source
-    assert "挂边模式 Beta" not in avatar_source
+    assert "function translateWidgetModeText(key, fallback)" in avatar_source
+    assert "window.t(key, { defaultValue: fallback })" in avatar_source
+    assert "挂边模式" not in app_source
+    assert "挂边模式" not in avatar_source
 
 
 def test_widget_mode_toggle_mutation_stays_serialized_by_settings_ui() -> None:

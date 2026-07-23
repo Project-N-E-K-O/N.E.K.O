@@ -19,8 +19,9 @@
                 text = window.t(key, Object.assign({ defaultValue: fallback }, params || {}));
             }
         } catch (_) {}
-        if (!params) return text || fallback;
-        return String(text || fallback).replace(/\{(\w+)\}/g, function (_, name) {
+        if (!text || text === key) text = fallback;
+        if (!params) return text;
+        return String(text).replace(/\{(\w+)\}/g, function (_, name) {
             return Object.prototype.hasOwnProperty.call(params, name) ? params[name] : _;
         });
     }
