@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Awaitable, Callable, Hashable
 from dataclasses import dataclass
-from typing import Literal, Protocol, TypeAlias
+from typing import Protocol, TypeAlias
 
 
 class SpeakerShadowBackend(Protocol):
@@ -16,15 +16,6 @@ class SpeakerShadowBackend(Protocol):
     def score(self, pcm16: bytes, sample_rate_hz: int) -> float: ...
 
     def close(self) -> None: ...
-
-
-@dataclass(frozen=True, slots=True)
-class SpeakerShadowCandidateKey:
-    """Identity private to observation-only speaker verification."""
-
-    detector_epoch: int
-    shadow_generation: int
-    scope: Literal["provider_pause", "smart_turn_turn"]
 
 
 @dataclass(frozen=True, slots=True)

@@ -16,7 +16,6 @@ from weakref import WeakSet
 from .contracts import (
     SpeakerObservationCallback,
     SpeakerShadowBackend,
-    SpeakerShadowCandidateKey,
     SpeakerShadowConfig,
     SpeakerShadowObservation,
     SpeakerVerifierRuntime,

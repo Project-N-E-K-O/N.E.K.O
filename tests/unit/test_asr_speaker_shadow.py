@@ -7,12 +7,12 @@ import time
 import pytest
 
 from main_logic.asr_client.detector_runtime import DetectorRuntime
-from main_logic.asr_client.speaker_shadow import (
-    SpeakerShadowCandidateKey,
+from main_logic.asr_client.speaker_shadow import SpeakerShadowCandidateKey
+from main_logic.voice_identity.contracts import (
     SpeakerShadowConfig,
     SpeakerShadowObservation,
-    SpeakerShadowRuntime,
 )
+from main_logic.voice_identity.runtime import SpeakerShadowRuntime
 
 
 class _Backend:

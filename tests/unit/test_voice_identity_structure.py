@@ -59,10 +59,11 @@ def test_asr_adapter_imports_contracts_but_not_model_or_profile() -> None:
 
 
 def test_provider_workers_do_not_import_voice_identity() -> None:
-    provider_root = REPO_ROOT / "main_logic" / "asr_client"
-    for path in provider_root.rglob("*.py"):
-        if "provider" not in path.parts and "providers" not in path.parts:
-            continue
+    workers_root = REPO_ROOT / "main_logic" / "asr_client" / "workers"
+    paths = sorted(workers_root.rglob("*.py"))
+    assert paths, "ASR worker dependency scan matched no Python files"
+
+    for path in paths:
         assert not {
             name
             for name in _imports(path)
@@ -123,9 +124,26 @@ def test_campplus_has_one_model_specific_onnx_session_creation() -> None:
     assert owners == [VOICE_IDENTITY_ROOT / "campplus.py"]
 
 
-def test_legacy_asr_campplus_module_is_only_a_compatibility_facade() -> None:
+def test_asr_client_has_no_legacy_campplus_facade() -> None:
     facade = REPO_ROOT / "main_logic" / "asr_client" / "campplus.py"
-    assert _imports(facade) == {"main_logic.voice_identity.campplus"}
+    assert not facade.exists()
+
+
+def test_asr_speaker_shadow_owns_only_candidate_identity() -> None:
+    adapter = REPO_ROOT / "main_logic" / "asr_client" / "speaker_shadow.py"
+    tree = ast.parse(adapter.read_bytes(), filename=str(adapter))
+    classes = [
+        node.name
+        for node in tree.body
+        if isinstance(node, ast.ClassDef)
+    ]
+
+    assert classes == ["SpeakerShadowCandidateKey"]
+    assert not {
+        name
+        for name in _imports(adapter)
+        if name.startswith("main_logic.voice_identity")
+    }
 
 
 def test_core_tests_use_formal_observer_port() -> None:

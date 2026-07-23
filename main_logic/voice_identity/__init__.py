@@ -2,7 +2,6 @@
 
 from .contracts import (
     SpeakerObservationCallback,
-    SpeakerShadowCandidateKey,
     SpeakerShadowConfig,
     SpeakerShadowObservation,
     SpeakerVerifierFactory,
@@ -26,7 +25,6 @@ def create_voice_identity_session(
 __all__ = [
     "SpeakerProfile",
     "SpeakerObservationCallback",
-    "SpeakerShadowCandidateKey",
     "SpeakerShadowConfig",
     "SpeakerShadowObservation",
     "SpeakerVerifierFactory",

@@ -39,10 +39,9 @@ from main_logic.asr_client.lifecycle import (
 )
 from main_logic.asr_client.lifecycle import VoiceInputLifecycleController
 from main_logic.asr_client.provider_policy import resolve_provider_policy
-from main_logic.asr_client.speaker_shadow import (
+from main_logic.voice_identity.contracts import (
     SpeakerShadowConfig,
     SpeakerShadowObservation,
-    SpeakerShadowRuntime,
 )
 from main_logic.asr_client.throttle_policy import ThrottleAction
 from main_logic.voice_turn.audio_input import VoiceInputAudioPipeline
@@ -55,7 +54,7 @@ from main_logic.voice_turn.contracts import (
 from main_logic.voice_turn.contracts import EvaluationStatus, TurnDecision
 from main_logic.voice_turn.coordinator import CoordinatorState
 from main_logic.voice_identity.profile import SpeakerProfile
-from main_logic.voice_identity.runtime import VoiceIdentitySession
+from main_logic.voice_identity.runtime import SpeakerShadowRuntime, VoiceIdentitySession
 from main_logic.voice_input import BuiltinVoiceInputConsumer
 from main_logic.voice_input.consumers import game as game_consumer_module
 import main_logic.core as core_module

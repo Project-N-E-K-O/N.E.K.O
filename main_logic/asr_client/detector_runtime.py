@@ -38,10 +38,8 @@ from .detector import (
 from .activity_evidence import RnnoiseEvidence
 from .lifecycle import VoiceIngressToken, VoiceTurnToken
 from .provider_policy import AsrProviderPolicy
-from main_logic.voice_identity.contracts import (
-    SpeakerShadowCandidateKey,
-    SpeakerVerifierRuntime,
-)
+from main_logic.voice_identity.contracts import SpeakerVerifierRuntime
+from .speaker_shadow import SpeakerShadowCandidateKey
 from .throttle_policy import (
     ThrottleAction,
     ThrottleShadowMetrics,
