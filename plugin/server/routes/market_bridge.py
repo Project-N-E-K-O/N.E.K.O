@@ -1516,7 +1516,10 @@ async def _fetch_current_market_user(token_data: dict[str, Any]) -> dict[str, An
     cached = _fresh_cached_market_user(token_data)
     if cached is not None:
         return cached
-    return await _fetch_market_user(token_data.get("access_token"))
+    return await _fetch_market_user(
+        token_data.get("access_token"),
+        reject_unauthorized=True,
+    )
 
 
 def _optional_text(value: Any) -> str | None:
@@ -1588,7 +1591,11 @@ def _build_account_summary(
     )
 
 
-async def _fetch_market_user(access_token: Any) -> dict[str, Any] | None:
+async def _fetch_market_user(
+    access_token: Any,
+    *,
+    reject_unauthorized: bool = False,
+) -> dict[str, Any] | None:
     if not isinstance(access_token, str) or not access_token:
         return None
     try:
@@ -1597,6 +1604,8 @@ async def _fetch_market_user(access_token: Any) -> dict[str, Any] | None:
                 f"{MARKET_API_URL.rstrip('/')}/api/v1/auth/me",
                 headers={"Authorization": f"Bearer {access_token}"},
             )
+            if reject_unauthorized and res.status_code in {401, 403}:
+                raise _OAuthAccessTokenRejected
             if res.status_code != 200:
                 return None
             data = res.json()
