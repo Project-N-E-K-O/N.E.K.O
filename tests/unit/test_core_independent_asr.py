@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import inspect
 import json
 import time
@@ -37,7 +38,13 @@ from main_logic.asr_client.lifecycle import (
 )
 from main_logic.asr_client.lifecycle import VoiceInputLifecycleController
 from main_logic.asr_client.provider_policy import resolve_provider_policy
+from main_logic.asr_client.speaker_shadow import (
+    SpeakerShadowConfig,
+    SpeakerShadowObservation,
+    SpeakerShadowRuntime,
+)
 from main_logic.asr_client.throttle_policy import ThrottleAction
+from main_logic.voice_turn.audio_input import VoiceInputAudioPipeline
 from main_logic.voice_turn.contracts import (
     AsrSubmitResult,
     AsrSubmitStatus,
@@ -586,6 +593,251 @@ async def test_async_detector_orders_pre_roll_before_smart_turn_seal() -> None:
     asr.signal_user_activity_end.assert_awaited_once()
     assert runtime._omni_mic_audio_bytes == 0
     await detector.close()
+
+
+async def test_fixed_processed_frames_preserve_full_route_with_shadow_abba() -> None:
+    class Processor:
+        speech_probability = 0.9
+        rnnoise_available = True
+        rnnoise_frame_count = 1
+        rnnoise_probability_peak = 0.9
+        rnnoise_probability_mean = 0.9
+        rnnoise_probability_last = 0.9
+        rnnoise_probability_ema = 0.9
+
+        def __init__(self) -> None:
+            self.process_count = 0
+
+        def process_chunk(self, _pcm16: bytes) -> bytes:
+            self.process_count += 1
+            return b"\x01\x00" * 160
+
+        def close(self) -> None:
+            return None
+
+    processor = Processor()
+    pipeline = VoiceInputAudioPipeline(processor_factory=lambda: processor)
+    processed_frames = (
+        await pipeline.process(b"\x01\x00" * 480, sample_rate_hz=48_000),
+    )
+    await pipeline.close()
+    assert processor.process_count == 1
+
+    class Vad:
+        def load(self) -> bool:
+            return True
+
+        def close(self) -> None:
+            return None
+
+    class Gate:
+        def feed(self, _pcm16: bytes):
+            return (
+                SpeechActivityEvent.SPEECH_STARTED,
+                SpeechActivityEvent.CANDIDATE_PAUSE,
+            )
+
+        def reset(self) -> None:
+            return None
+
+    class Coordinator:
+        state = CoordinatorState.IDLE
+
+        def push_audio(self, _pcm16: bytes) -> None:
+            return None
+
+        async def on_activity_event(self, event) -> None:
+            self.state = (
+                CoordinatorState.PAUSE_CANDIDATE
+                if event is SpeechActivityEvent.CANDIDATE_PAUSE
+                else CoordinatorState.SPEECH_ACTIVE
+            )
+
+        async def evaluate_buffered(self):
+            return SimpleNamespace(
+                status=EvaluationStatus.OK,
+                decision=TurnDecision.COMPLETE,
+            )
+
+        async def prepare_predictor(self) -> bool:
+            return True
+
+        async def reset(self) -> None:
+            self.state = CoordinatorState.IDLE
+
+        async def close(self) -> None:
+            self.state = CoordinatorState.CLOSED
+
+        async def unload_predictor(self) -> None:
+            return None
+
+    class Backend:
+        def load(self) -> bool:
+            return True
+
+        def score(self, pcm16: bytes, sample_rate_hz: int) -> float:
+            assert pcm16 == processed_frames[0].pcm16
+            assert sample_rate_hz == processed_frames[0].sample_rate_hz
+            return 0.75
+
+        def close(self) -> None:
+            return None
+
+    async def run(*, shadow_enabled: bool) -> dict[str, object]:
+        runtime = _Runtime()
+        wire_chunks: list[bytes] = []
+
+        async def stream_audio(
+            pcm16: bytes,
+            *,
+            sample_rate_hz: int,
+        ) -> None:
+            assert sample_rate_hz == 16_000
+            wire_chunks.append(bytes(pcm16))
+
+        asr = type("Asr", (), {})()
+        asr.is_ready = True
+        asr.stream_audio = AsyncMock(side_effect=stream_audio)
+        asr.signal_user_activity_end = AsyncMock()
+        asr.close = AsyncMock()
+        runtime._asr_session = asr
+        runtime._asr_provider = "qwen"
+        runtime._asr_route_mode = "independent"
+        lifecycle = VoiceInputLifecycleController(
+            provider_policy=resolve_provider_policy("qwen", "manual"),
+            shadow_mode=False,
+        )
+        lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+        runtime._asr_lifecycle = lifecycle
+        observations: list[SpeakerShadowObservation] = []
+        shadow = (
+            SpeakerShadowRuntime(
+                backend_factory=Backend,
+                config=SpeakerShadowConfig(
+                    enabled=True,
+                    minimum_audio_ms=10,
+                    maximum_audio_ms=40,
+                    idle_unload_seconds=60,
+                ),
+                on_observation=observations.append,
+            )
+            if shadow_enabled
+            else None
+        )
+        detector: DetectorRuntime
+
+        async def on_event(event) -> None:
+            assert runtime._asr_detector_dispatcher.submit_nowait(
+                CoreDetectorEventEnvelope(
+                    event=event,
+                    detector_ref=detector,
+                    lifecycle_ref=lifecycle,
+                    session_epoch=runtime._asr_session_epoch,
+                )
+            )
+
+        detector = DetectorRuntime(
+            vad=Vad(),
+            gate=Gate(),
+            provider_policy=resolve_provider_policy("qwen", "manual"),
+            coordinator=Coordinator(),
+            speaker_shadow=shadow,
+            on_event=on_event,
+        )
+        runtime._asr_detector = detector
+
+        for frame in processed_frames:
+            assert await runtime._route_microphone_audio(
+                frame.pcm16,
+                sample_rate_hz=frame.sample_rate_hz,
+                speech_probability=frame.speech_probability,
+                rnnoise_available=frame.rnnoise_available,
+            )
+        for _ in range(200):
+            if asr.signal_user_activity_end.await_count:
+                break
+            await asyncio.sleep(0.001)
+        await runtime._asr_detector_dispatcher.wait_idle()
+        await runtime._asr_audio_dispatcher.wait_idle()
+        if shadow is not None:
+            await shadow.wait_idle()
+        assert asr.signal_user_activity_end.await_count == 1
+
+        await runtime._handle_independent_asr_final(
+            "local-final",
+            runtime._asr_session_epoch,
+            "qwen",
+        )
+        await runtime._wait_asr_transcript_dispatch_idle()
+        continuous_pcm = b"".join(wire_chunks)
+        lifecycle_history = tuple(
+            payload["details"]["state"]
+            for call in runtime.send_status.await_args_list
+            if (
+                (payload := json.loads(call.args[0])).get("code")
+                == "ASR_LIFECYCLE_STATE"
+            )
+        )
+        detector_state = (
+            detector.detector_epoch,
+            detector.candidate_open,
+            detector._candidate_generation,
+            len(detector._completion_fences),
+            detector.smart_turn_readiness.value,
+        )
+        pending_state = (
+            runtime._asr_detector_dispatcher._queue.qsize(),
+            runtime._asr_audio_dispatcher._queue.qsize(),
+            runtime._asr_transcript_dispatcher._queue.qsize(),
+            len(runtime._asr_transcript_dispatcher._reservations),
+            lifecycle.pre_roll_bytes,
+            0
+            if shadow is None
+            else shadow.snapshot()["buffered_candidate_count"],
+            0 if shadow is None else shadow.snapshot()["buffered_audio_bytes"],
+        )
+        result = {
+            "provider_pcm": continuous_pcm,
+            "provider_sha256": hashlib.sha256(continuous_pcm).hexdigest(),
+            "provider_seals": asr.signal_user_activity_end.await_count,
+            "lifecycle_history": lifecycle_history,
+            "provider_final_count": runtime.handle_input_transcript.await_count,
+            "lifecycle_state": lifecycle.snapshot.state.value,
+            "detector_state": detector_state,
+            "pending_state": pending_state,
+            "similarities": tuple(item.similarity for item in observations),
+        }
+
+        await runtime._asr_runtime.close()
+        assert runtime._asr_runtime._asr_detector is None
+        assert runtime._asr_runtime._asr_close_tasks == set()
+        assert runtime._asr_runtime._asr_detector_dispatcher._worker is None
+        assert runtime._asr_runtime._asr_audio_dispatcher._worker is None
+        assert runtime._asr_runtime._asr_transcript_dispatcher._worker is None
+        return result
+
+    baseline_first = await run(shadow_enabled=False)
+    shadow_first = await run(shadow_enabled=True)
+    shadow_second = await run(shadow_enabled=True)
+    baseline_second = await run(shadow_enabled=False)
+
+    isolation_keys = (
+        "provider_pcm",
+        "provider_sha256",
+        "provider_seals",
+        "lifecycle_history",
+        "provider_final_count",
+        "lifecycle_state",
+        "detector_state",
+        "pending_state",
+    )
+    expected = {key: baseline_first[key] for key in isolation_keys}
+    for result in (shadow_first, shadow_second, baseline_second):
+        assert {key: result[key] for key in isolation_keys} == expected
+    assert shadow_first["similarities"] == pytest.approx((0.75,))
+    assert shadow_second["similarities"] == pytest.approx((0.75,))
+    assert baseline_first["similarities"] == ()
+    assert baseline_second["similarities"] == ()
 
 
 @pytest.mark.parametrize(
