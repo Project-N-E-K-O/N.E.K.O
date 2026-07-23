@@ -189,6 +189,22 @@ class QQReplyPipelineRunner:
             source in ('buffer_delayed', 'rapid_fire_flush', 'proactive_speech', 'retroactive_review')
             or request.is_at_bot or request.force_reply
         )
+        # 情绪/标记：内部状态，先于缓冲/冷却/交付更新
+        if outcome:
+            if outcome.feeling:
+                group = delivery_plan.target_id if delivery_plan.target_type == "group" else ""
+                if group and self.plugin.attention_service:
+                    self.plugin.attention_service.set_emotion(group, outcome.feeling)
+            if outcome.forward_mark and request and request.is_group:
+                mk = f"group:{str(request.group_id or '').strip()}"
+                sessions = getattr(self.plugin, "_user_sessions", {}) or {}
+                s = sessions.get(mk)
+                if isinstance(s, dict):
+                    ses = s.get("session")
+                    if ses and hasattr(ses, "_conversation_history"):
+                        s["_forward_mark"] = len(getattr(ses, "_conversation_history", []) or [])
+                        self.plugin._emit_log("DEBUG", f"[Mark] 转发起点已标记 group={request.group_id} pos={s['_forward_mark']}")
+
         if not skip_buffer and self.plugin.reply_buffer_service and request and delivery_plan and delivery_plan.blocks:
             first_text = delivery_plan.blocks[0].text if delivery_plan.blocks else ""
             has_content = any(
@@ -230,12 +246,6 @@ class QQReplyPipelineRunner:
                 return QQDeliveryResult(delivered=False, target_type=delivery_plan.target_type, target_id=delivery_plan.target_id, reply_text=None)
             self.plugin._last_group_reply_at[delivery_plan.target_id] = now_ts
 
-        # 情绪状态更新（LLM 输出的 <feeling> 标签）
-        if outcome and outcome.feeling:
-            group = delivery_plan.target_id if delivery_plan.target_type == "group" else ""
-            if group and self.plugin.attention_service:
-                self.plugin.attention_service.set_emotion(group, outcome.feeling)
-
         # Emoji reaction on the incoming message
         emoji_id = (outcome.emoji_reaction_id if outcome else "") or ""
         current_msg_id = (request.current_message_id if request else "") or ""
@@ -245,17 +255,6 @@ class QQReplyPipelineRunner:
                 self.plugin._emit_log("INFO", f"[Emoji] reaction: msg={current_msg_id} emoji={emoji_id}")
             except Exception as e:
                 self.plugin._emit_log("WARN", f"[Emoji] reaction failed: {e}")
-
-        # <mark/> 标记转发起点——记录当前会话历史位置
-        if outcome and outcome.forward_mark and request and request.is_group:
-            session_key = f"group:{str(request.group_id or '').strip()}"
-            sessions = getattr(self.plugin, "_user_sessions", {}) or {}
-            s = sessions.get(session_key)
-            if isinstance(s, dict):
-                session = s.get("session")
-                if session and hasattr(session, "_conversation_history"):
-                    s["_forward_mark"] = len(getattr(session, "_conversation_history", []) or [])
-                    self.plugin._emit_log("DEBUG", f"[Mark] 转发起点已标记 group={request.group_id} pos={s['_forward_mark']}")
 
         # Forward message: to="QQ号" → 私聊转发；to="群号" 或留空 → 群内转发
         fw = (outcome.forward_content if outcome else "") or ""
