@@ -127,6 +127,13 @@ const COMPACT_INPUT_TOOL_WHEEL_DETENT_BREAK_RATIO = 1.16;
 const COMPACT_TOOL_WHEEL_DRAG_ANGLE_STEP_DEG = 30.82;
 const COMPACT_INPUT_TOOL_FAN_ORIGIN_CLOSE_SIZE = 48;
 const COMPACT_INPUT_TOOL_FAN_INTERACTIVE_DELAY_MS = 220;
+const compactInputToolWheelVisibleSlots = [
+  { angleDeg: 107.35, scale: 0.86 },
+  { angleDeg: 75.82, scale: 0.98 },
+  { angleDeg: 45, scale: 1.04 },
+  { angleDeg: 14.18, scale: 0.98 },
+  { angleDeg: -17.35, scale: 0.86 },
+] as const;
 const COMPACT_SURFACE_RESIZE_MIN_WIDTH = 430;
 const COMPACT_SURFACE_RESIZE_MAX_WIDTH = 720;
 const COMPACT_SURFACE_RESIZE_VIEWPORT_GUTTER = 32;
@@ -2393,12 +2400,14 @@ export default function FullChatSurface({
 
   const getCompactToolWheelTabIndex = (toolIndex: number): number => {
     const slot = getCompactToolWheelSlot(toolIndex);
-    return compactInputToolFanOpen && slot !== null && Math.abs(slot) <= 1 ? 0 : -1;
+    return compactInputToolFanOpen && slot !== null && Math.abs(slot) <= 2 ? 0 : -1;
   };
 
   const isCompactToolWheelActionable = (toolIndex: number): boolean => {
     const slot = getCompactToolWheelSlot(toolIndex);
-    return compactInputToolFanOpen && slot !== null && Math.abs(slot) <= 1;
+    // Keep the legacy/full surface behavior symmetric with CompactChatApp:
+    // all five visible slots are actions; only hidden slots are disabled.
+    return compactInputToolFanOpen && slot !== null && Math.abs(slot) <= 2;
   };
 
   const getCompactToolWheelAriaHidden = (toolIndex: number): 'true' | 'false' => {
@@ -2422,6 +2431,67 @@ export default function FullChatSurface({
     '--compact-tool-wheel-drag-angle': `${compactInputToolWheelDragAngle}deg`,
     '--compact-tool-wheel-drag-counter-angle': `${-compactInputToolWheelDragAngle}deg`,
   } as CSSProperties;
+
+  const forwardCompactToolWheelBackgroundClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (event.defaultPrevented || event.button !== 0 || compactInputToolFanActionsDisabled) return;
+    const eventTarget = event.target instanceof Element ? event.target : null;
+    if (eventTarget?.closest('.compact-input-tool-item')) return;
+
+    const fanElement = compactInputToolFanRef.current;
+    const fanRect = fanElement?.getBoundingClientRect();
+    if (!fanElement || !fanRect) return;
+    const fanStyle = window.getComputedStyle ? window.getComputedStyle(fanElement) : null;
+    const readFanPixelVar = (name: string, fallback: number) => {
+      const rawValue = fanStyle?.getPropertyValue(name).trim() || '';
+      const parsedValue = Number.parseFloat(rawValue);
+      return Number.isFinite(parsedValue) ? parsedValue : fallback;
+    };
+    const centerX = fanRect.left + readFanPixelVar('--compact-tool-wheel-center-x', COMPACT_INPUT_TOOL_WHEEL_CENTER_X);
+    const centerY = fanRect.top + readFanPixelVar('--compact-tool-wheel-center-y', COMPACT_INPUT_TOOL_WHEEL_CENTER_Y);
+    const orbitRadius = readFanPixelVar('--compact-tool-wheel-orbit-radius', 80);
+    const buttonSize = readFanPixelVar('--compact-tool-button-size', 38);
+    const dragAngleRad = compactInputToolWheelDragAngle * (Math.PI / 180);
+    let matchedToolIndex: number | null = null;
+    let matchedDistanceSquared = Number.POSITIVE_INFINITY;
+
+    for (let toolIndex = 0; toolIndex < COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT; toolIndex += 1) {
+      const slot = getCompactToolWheelSlot(toolIndex);
+      if (slot === null || Math.abs(slot) > 2 || isCompactToolWheelActionDisabled(toolIndex)) continue;
+      const slotVisual = compactInputToolWheelVisibleSlots[slot + 2];
+      if (!slotVisual) continue;
+      const angleRad = (slotVisual.angleDeg * (Math.PI / 180)) + dragAngleRad;
+      const itemCenterX = centerX + (Math.cos(angleRad) * orbitRadius);
+      const itemCenterY = centerY + (Math.sin(angleRad) * orbitRadius);
+      const hitRadius = (buttonSize * slotVisual.scale) / 2;
+      const dx = event.clientX - itemCenterX;
+      const dy = event.clientY - itemCenterY;
+      const distanceSquared = (dx * dx) + (dy * dy);
+      if (distanceSquared <= hitRadius * hitRadius && distanceSquared < matchedDistanceSquared) {
+        matchedToolIndex = toolIndex;
+        matchedDistanceSquared = distanceSquared;
+      }
+    }
+
+    if (matchedToolIndex === null) return;
+    const slot = getCompactToolWheelSlot(matchedToolIndex);
+    if (slot === null) return;
+    const item = fanElement.querySelector<HTMLElement>(
+      `.compact-input-tool-item[data-compact-tool-wheel-slot="${slot}"]`,
+    );
+    const actionButton = item instanceof HTMLButtonElement
+      ? item
+      : item?.querySelector<HTMLButtonElement>(':scope > button:not(:disabled)');
+    if (!actionButton || actionButton.disabled) return;
+    actionButton.dispatchEvent(new window.MouseEvent('click', {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      screenX: event.screenX,
+      screenY: event.screenY,
+    }));
+  };
 
   const compactInputToolFanNode = isCompactSurface && effectiveCompactChatState === 'input' ? (
     <div
@@ -2451,7 +2521,9 @@ export default function FullChatSurface({
         ) {
           event.preventDefault();
           event.stopPropagation();
+          return;
         }
+        forwardCompactToolWheelBackgroundClick(event);
       }}
       onPointerDownCapture={(event) => {
         if (event.pointerType === 'mouse' && event.button !== 0) return;

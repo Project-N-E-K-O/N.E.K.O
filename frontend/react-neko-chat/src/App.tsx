@@ -4852,12 +4852,15 @@ function CompactChatApp({
 
   const getCompactToolWheelTabIndex = (toolIndex: number): number => {
     const slot = getCompactToolWheelSlot(toolIndex);
-    return compactInputToolFanOpen && slot !== null && Math.abs(slot) <= 1 ? 0 : -1;
+    return compactInputToolFanOpen && slot !== null && Math.abs(slot) <= 2 ? 0 : -1;
   };
 
   const isCompactToolWheelActionable = (toolIndex: number): boolean => {
     const slot = getCompactToolWheelSlot(toolIndex);
-    return compactInputToolFanOpen && slot !== null && Math.abs(slot) <= 1;
+    // Every rendered wheel button is a real action. Treating the faded edge
+    // slots as visual-only makes their pixels fall through to the drag layer,
+    // which looks like an Electron/Niri hit-region failure to users.
+    return compactInputToolFanOpen && slot !== null && Math.abs(slot) <= 2;
   };
 
   const getCompactToolWheelAriaHidden = (toolIndex: number): 'true' | 'false' => {
@@ -4972,7 +4975,10 @@ function CompactChatApp({
         compactInputToolWheelVisualIndex,
         COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT,
       );
-      if (slot === null || Math.abs(slot) > 1) continue;
+      // Hover feedback follows the same contract as pointer/keyboard actions:
+      // all five rendered slots are real buttons. Keeping the old ±1 filter
+      // here would make the restored edge buttons clickable but visually inert.
+      if (slot === null || Math.abs(slot) > 2) continue;
       const slotVisual = visibleSlots[slot + 2];
       if (!slotVisual) continue;
       const angleRad = (slotVisual.angleDeg * (Math.PI / 180)) + dragAngleRad;
@@ -5002,6 +5008,44 @@ function CompactChatApp({
   useLayoutEffect(() => {
     syncCompactInputToolWheelPointerHover();
   }, [syncCompactInputToolWheelPointerHover]);
+
+  const forwardCompactToolWheelBackgroundClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (event.defaultPrevented || event.button !== 0) return;
+    const eventTarget = event.target instanceof Element ? event.target : null;
+    if (eventTarget?.closest('.compact-input-tool-item')) return;
+
+    // Chromium can occasionally paint the compositor-animated wheel item at
+    // its new transform while hit-testing the old transform. In that case the
+    // real pointer event reaches the fan background even though the pointer is
+    // visibly over a button. Resolve the same geometry used by hover feedback
+    // and forward only an exact visible-button hit. A real wheel rotation still
+    // wins because onClickCapture suppresses this click before it reaches here.
+    syncCompactInputToolWheelPointerHover({
+      clientX: event.clientX,
+      clientY: event.clientY,
+    });
+    const toolIndex = compactInputToolWheelHoveredIndexRef.current;
+    if (toolIndex === null || isCompactToolWheelActionDisabled(toolIndex)) return;
+    const slot = getCompactToolWheelSlot(toolIndex);
+    if (slot === null || Math.abs(slot) > 2) return;
+
+    const item = compactInputToolFanRef.current?.querySelector<HTMLElement>(
+      `.compact-input-tool-item[data-compact-tool-wheel-slot="${slot}"]`,
+    );
+    const actionButton = item instanceof HTMLButtonElement
+      ? item
+      : item?.querySelector<HTMLButtonElement>(':scope > button:not(:disabled)');
+    if (!actionButton || actionButton.disabled) return;
+    actionButton.dispatchEvent(new window.MouseEvent('click', {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      screenX: event.screenX,
+      screenY: event.screenY,
+    }));
+  };
 
   const getCompactToolWheelPointerHoveredValue = (toolIndex: number): 'true' | 'false' => (
     compactInputToolWheelHoveredIndex === toolIndex
@@ -5147,7 +5191,9 @@ function CompactChatApp({
         ) {
           event.preventDefault();
           event.stopPropagation();
+          return;
         }
+        forwardCompactToolWheelBackgroundClick(event);
       }}
       onPointerDownCapture={(event) => {
         if (event.pointerType === 'mouse' && event.button !== 0) return;
