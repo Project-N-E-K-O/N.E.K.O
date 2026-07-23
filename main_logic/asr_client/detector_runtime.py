@@ -54,6 +54,7 @@ logger = logging.getLogger(__name__)
 
 _Identity: TypeAlias = tuple[int, int, int]
 _FallbackReason: TypeAlias = Literal["semantic_incomplete", "semantic_degraded"]
+_SPEAKER_VERIFIER_REPLACEMENT_CLOSE_SECONDS = 1.0
 
 logger = logging.getLogger(__name__)
 
@@ -2077,9 +2078,19 @@ class DetectorRuntime:
     def speaker_shadow_metrics(self) -> dict[str, int]:
         """Return observation-only metrics without exposing routing controls."""
 
-        if self._speaker_shadow is None:
-            return {}
-        return self._speaker_shadow.snapshot()
+        snapshot = (
+            {}
+            if self._speaker_shadow is None
+            else self._speaker_shadow.snapshot()
+        )
+        replacement_failures = getattr(
+            self,
+            "_speaker_shadow_replacement_failure_count",
+            0,
+        )
+        if replacement_failures:
+            snapshot["replacement_failure_count"] = replacement_failures
+        return snapshot
 
     async def replace_speaker_verifier(
         self,
@@ -2087,20 +2098,68 @@ class DetectorRuntime:
     ) -> bool:
         """Swap only the observation adapter; never alter endpoint authority."""
 
-        async with self._lock:
-            if self._closed:
-                accepted = False
-                previous = None
-            else:
-                accepted = True
-                previous, self._speaker_shadow = self._speaker_shadow, verifier
-                self._reset_speaker_shadow_identity()
-        if not accepted:
-            if verifier is not None:
-                await verifier.close()
+        replace_lock = getattr(self, "_speaker_shadow_replace_lock", None)
+        if replace_lock is None:
+            replace_lock = asyncio.Lock()
+            self._speaker_shadow_replace_lock = replace_lock
+        async with replace_lock:
+            async with self._lock:
+                if self._closed:
+                    accepted = False
+                    previous = None
+                else:
+                    accepted = True
+                    previous, self._speaker_shadow = self._speaker_shadow, None
+                    self._reset_speaker_shadow_identity()
+            if not accepted:
+                if verifier is not None:
+                    await self._close_speaker_verifier_fully(verifier)
+                return False
+            if (
+                previous is not None
+                and previous is not verifier
+                and not await self._close_speaker_verifier_fully(previous)
+            ):
+                self._speaker_shadow_replacement_failure_count = (
+                    getattr(
+                        self,
+                        "_speaker_shadow_replacement_failure_count",
+                        0,
+                    )
+                    + 1
+                )
+                if verifier is not None:
+                    await self._close_speaker_verifier_fully(verifier)
+                return False
+            async with self._lock:
+                if self._closed:
+                    accepted = False
+                else:
+                    self._speaker_shadow = verifier
+                    accepted = True
+            if not accepted and verifier is not None:
+                await self._close_speaker_verifier_fully(verifier)
+            return accepted
+
+    async def _close_speaker_verifier_fully(
+        self,
+        verifier: SpeakerVerifierRuntime,
+    ) -> bool:
+        async def close_and_wait() -> None:
+            await verifier.close()
+            wait_closed = getattr(verifier, "wait_closed", None)
+            if callable(wait_closed):
+                await wait_closed()
+
+        try:
+            await asyncio.wait_for(
+                close_and_wait(),
+                timeout=_SPEAKER_VERIFIER_REPLACEMENT_CLOSE_SECONDS,
+            )
+        except asyncio.TimeoutError:
             return False
-        if previous is not None and previous is not verifier:
-            await previous.close()
+        except Exception:
+            return False
         return True
 
     def _submit_speaker_shadow(
