@@ -8,10 +8,10 @@ delivery concerns. Provider sessions and endpointing remain encapsulated by
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import struct
 import time
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -20,7 +20,16 @@ from main_logic.asr_client.runtime import (
     AsrStartStatus,
     IndependentAsrRuntime,
 )
-from main_logic.asr_client.speaker_shadow import SpeakerShadowRuntime
+from main_logic.voice_identity import (
+    SpeakerObservationCallback,
+    SpeakerProfile,
+    VoiceIdentitySession,
+    create_voice_identity_session,
+)
+from main_logic.voice_identity.contracts import (
+    SpeakerShadowObservation,
+    SpeakerVerifierFactory,
+)
 from main_logic.voice_turn.contracts import (
     AsrFailureEvent,
     AsrLifecycleNotification,
@@ -207,8 +216,10 @@ class AsrRuntimeMixin:
         self._microphone_route_generation = 0
         self._independent_asr_provider: str | None = None
         self._independent_asr_route_key: str | None = None
-        self._speaker_shadow_factory: (
-            Callable[[], SpeakerShadowRuntime | None] | None
+        self._speaker_shadow_factory: SpeakerVerifierFactory | None = None
+        self._voice_identity_session: VoiceIdentitySession | None = None
+        self._speaker_shadow_observation_callback: (
+            SpeakerObservationCallback | None
         ) = None
         self._voice_input_audio_pipeline = VoiceInputAudioPipeline()
         self._voice_input_registry = VoiceInputRegistry()
@@ -256,6 +267,40 @@ class AsrRuntimeMixin:
     def _ensure_asr_runtime_state(self) -> None:
         if not hasattr(self, "_asr_runtime"):
             self._init_asr_runtime_state()
+
+    async def set_active_speaker_profile(
+        self,
+        profile: SpeakerProfile | None,
+    ) -> None:
+        """Explicitly enable, replace, or disable the in-memory speaker profile."""
+
+        self._ensure_asr_runtime_state()
+        session = self._voice_identity_session
+        if session is None and profile is not None:
+            session = create_voice_identity_session(
+                on_observation=self._receive_speaker_shadow_observation,
+            )
+            self._voice_identity_session = session
+        if session is not None:
+            await session.set_profile(profile)
+        factory = (
+            session.create_runtime
+            if session is not None and profile is not None
+            else None
+        )
+        self._speaker_shadow_factory = factory
+        await self._asr_runtime.set_speaker_verifier_factory(factory)
+
+    async def _receive_speaker_shadow_observation(
+        self,
+        observation: SpeakerShadowObservation,
+    ) -> None:
+        callback = self._speaker_shadow_observation_callback
+        if callback is None:
+            return
+        result = callback(observation)
+        if inspect.isawaitable(result):
+            await result
 
     def _set_microphone_route(
         self,
@@ -988,3 +1033,7 @@ class AsrRuntimeMixin:
     async def close_voice_input_session(self) -> None:
         await self._voice_input_registry.close()
         await self._asr_runtime.close()
+        session, self._voice_identity_session = self._voice_identity_session, None
+        self._speaker_shadow_factory = None
+        if session is not None:
+            await session.close()

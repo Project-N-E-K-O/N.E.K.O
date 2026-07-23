@@ -7,6 +7,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import numpy as np
 import pytest
 
 from main_logic.core import LLMSessionManager
@@ -53,6 +54,8 @@ from main_logic.voice_turn.contracts import (
 )
 from main_logic.voice_turn.contracts import EvaluationStatus, TurnDecision
 from main_logic.voice_turn.coordinator import CoordinatorState
+from main_logic.voice_identity.profile import SpeakerProfile
+from main_logic.voice_identity.runtime import VoiceIdentitySession
 from main_logic.voice_input import BuiltinVoiceInputConsumer
 from main_logic.voice_input.consumers import game as game_consumer_module
 import main_logic.core as core_module
@@ -123,6 +126,170 @@ async def test_speaker_shadow_factory_is_private_default_off_and_fail_open() -> 
         side_effect=RuntimeError("missing model")
     )
     assert await runtime._create_speaker_shadow() is None
+
+
+async def test_active_speaker_profile_uses_formal_core_composition_entry() -> None:
+    runtime = _Runtime()
+    profile = SpeakerProfile(
+        np.eye(4, dtype=np.float32)[0],
+        profile_revision=1,
+        model_id="test-model",
+        model_revision="v1",
+        embedding_dimension=4,
+    )
+    identity_session = type("IdentitySession", (), {})()
+    identity_session.set_profile = AsyncMock()
+    identity_session.create_runtime = MagicMock()
+    identity_session.close = AsyncMock()
+    runtime._voice_identity_session = identity_session
+    runtime._asr_runtime.set_speaker_verifier_factory = AsyncMock()
+
+    await runtime.set_active_speaker_profile(profile)
+
+    identity_session.set_profile.assert_awaited_once_with(profile)
+    assert runtime._speaker_shadow_factory == identity_session.create_runtime
+    runtime._asr_runtime.set_speaker_verifier_factory.assert_awaited_once_with(
+        identity_session.create_runtime
+    )
+
+    await runtime.set_active_speaker_profile(None)
+
+    identity_session.set_profile.assert_awaited_with(None)
+    assert runtime._speaker_shadow_factory is None
+    runtime._asr_runtime.set_speaker_verifier_factory.assert_awaited_with(None)
+
+
+async def test_formal_profile_entry_reaches_detector_and_emits_observation(
+    monkeypatch,
+) -> None:
+    import main_logic.asr_client.runtime as runtime_module
+    import main_logic.core.asr_runtime as core_asr_module
+
+    observations: list[SpeakerShadowObservation] = []
+    runtime = _Runtime()
+    runtime.core_api_type = "qwen"
+    runtime._speaker_shadow_observation_callback = observations.append
+
+    class _Backend:
+        def load(self) -> bool:
+            return True
+
+        def score(self, pcm16: bytes, sample_rate_hz: int) -> float:
+            assert len(pcm16) >= 48_000
+            assert sample_rate_hz == 16_000
+            return 0.82
+
+        def close(self) -> None:
+            return None
+
+    def build_runtime(_profile, callback):
+        return SpeakerShadowRuntime(
+            backend_factory=_Backend,
+            config=SpeakerShadowConfig(enabled=True),
+            on_observation=callback,
+        )
+
+    identity_session = VoiceIdentitySession(
+        runtime_builder=build_runtime,
+        on_observation=runtime._receive_speaker_shadow_observation,
+    )
+    create_session = MagicMock(return_value=identity_session)
+    monkeypatch.setattr(
+        core_asr_module,
+        "create_voice_identity_session",
+        create_session,
+    )
+    profile = SpeakerProfile(
+        np.eye(4, dtype=np.float32)[0],
+        profile_revision=1,
+        model_id="test-model",
+        model_revision="v1",
+        embedding_dimension=4,
+    )
+    await runtime.set_active_speaker_profile(profile)
+
+    class _Vad:
+        def load(self) -> bool:
+            return True
+
+        def close(self) -> None:
+            return None
+
+    class _Gate:
+        def __init__(self) -> None:
+            self.events = (SpeechActivityEvent.SPEECH_STARTED,)
+
+        def feed(self, _pcm16: bytes):
+            events, self.events = self.events, ()
+            return events
+
+        def reset(self) -> None:
+            return None
+
+    gate = _Gate()
+    detectors: list[DetectorRuntime] = []
+
+    def create_detector(**kwargs):
+        detector = DetectorRuntime(vad=_Vad(), gate=gate, **kwargs)
+        detectors.append(detector)
+        return detector
+
+    asr = type("Asr", (), {"is_ready": True})()
+    asr.connect = AsyncMock()
+    asr.close = AsyncMock()
+    asr.stream_audio = AsyncMock()
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(
+            return_value={
+                "independentAsrEnabled": True,
+                "voice_input_resource_optimization_enabled": False,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=_selection("qwen", "provider")),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_create_asr_session_from_selection",
+        MagicMock(return_value=asr),
+    )
+    monkeypatch.setattr(runtime_module, "DetectorRuntime", create_detector)
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    assert create_session.call_count == 1
+    assert len(detectors) == 1
+    detector = detectors[0]
+    frame = b"\x01\x00" * 1_600
+    for _ in range(15):
+        await detector.feed(
+            frame,
+            speech_probability=0.9,
+            rnnoise_available=True,
+        )
+    gate.events = (SpeechActivityEvent.CANDIDATE_PAUSE,)
+    await detector.feed(
+        frame,
+        speech_probability=0.1,
+        rnnoise_available=True,
+    )
+    shadow = detector._speaker_shadow
+    assert isinstance(shadow, SpeakerShadowRuntime)
+    await shadow.wait_idle()
+
+    assert len(observations) == 1
+    assert observations[0].similarity == pytest.approx(0.82)
+    assert observations[0].audio_ms == 1_500
+    assert asr.stream_audio.await_count == 0
+
+    await runtime.set_active_speaker_profile(None)
+    assert detector._speaker_shadow is None
+    await runtime.close_voice_input_session()
 
 
 class _TestSmartTurnLease:
