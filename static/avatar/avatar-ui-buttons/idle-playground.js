@@ -109,6 +109,7 @@ function _acquireNekoIdleCat1PlaygroundDropLifecycle(button, entryDetail) {
     _setNekoIdleCat1QuestionMarkKeyboardTarget(null);
     _cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });
     _cancelNekoIdleCat1EatAction(button, { restoreArt: false });
+    _cancelNekoIdleCat1StretchAction(button, { restoreArt: false });
     _cancelNekoIdleCat1PlayAction(button, { restoreArt: false });
     _finishNekoIdleReturnDragAction(button, { restoreArt: false });
     _stopNekoIdleCat1AmbientSound();
