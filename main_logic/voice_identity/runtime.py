@@ -251,6 +251,15 @@ class SpeakerShadowRuntime:
         except asyncio.TimeoutError:
             self._metrics.shutdown_timeout_count += 1
 
+    async def wait_closed(self) -> None:
+        """Wait for detached cleanup without changing close() latency semantics."""
+
+        if not self._closed:
+            await self.close()
+        cleanup = self._cleanup_task
+        if cleanup is not None:
+            await asyncio.shield(cleanup)
+
     def _ensure_worker(self) -> None:
         if self._worker_task is None or self._worker_task.done():
             self._worker_task = asyncio.create_task(
@@ -547,6 +556,7 @@ RuntimeBuilder = Callable[
     [SpeakerProfile, SpeakerObservationCallback | None],
     SpeakerVerifierRuntime | None,
 ]
+ProfileValidator = Callable[[SpeakerProfile], None]
 
 
 class VoiceIdentitySession:
@@ -557,14 +567,22 @@ class VoiceIdentitySession:
         *,
         runtime_builder: RuntimeBuilder,
         on_observation: SpeakerObservationCallback | None = None,
+        profile_validator: ProfileValidator | None = None,
+        runtime_close_timeout_seconds: float = 1.0,
     ) -> None:
+        if runtime_close_timeout_seconds <= 0:
+            raise ValueError("runtime_close_timeout_seconds must be positive")
         self._runtime_builder = runtime_builder
         self._on_observation = on_observation
+        self._profile_validator = profile_validator
+        self._runtime_close_timeout_seconds = float(runtime_close_timeout_seconds)
         self._profile: SpeakerProfile | None = None
         self._last_profile_revision = -1
         self._runtimes: WeakSet[SpeakerVerifierRuntime] = WeakSet()
+        self._profile_update_lock = asyncio.Lock()
         self._lock = Lock()
         self._closed = False
+        self._activation_blocked = False
 
     @property
     def profile_revision(self) -> int | None:
@@ -576,43 +594,66 @@ class VoiceIdentitySession:
             )
 
     async def set_profile(self, profile: SpeakerProfile | None) -> None:
-        profile_snapshot: SpeakerProfile | None = None
-        if profile is not None:
-            profile_snapshot = SpeakerProfile(
-                profile.reference_embedding,
-                profile_revision=profile.profile_revision,
-                model_id=profile.model_id,
-                model_revision=profile.model_revision,
-                embedding_dimension=profile.embedding_dimension,
+        async with self._profile_update_lock:
+            profile_snapshot: SpeakerProfile | None = None
+            if profile is not None:
+                profile_snapshot = SpeakerProfile(
+                    profile.reference_embedding,
+                    profile_revision=profile.profile_revision,
+                    model_id=profile.model_id,
+                    model_revision=profile.model_revision,
+                    embedding_dimension=profile.embedding_dimension,
+                )
+                validator = self._profile_validator
+                if validator is not None:
+                    try:
+                        validator(profile_snapshot)
+                    except Exception:
+                        profile_snapshot.close()
+                        raise
+            with self._lock:
+                if self._closed:
+                    if profile_snapshot is not None:
+                        profile_snapshot.close()
+                    raise RuntimeError("voice identity session is closed")
+                if self._activation_blocked and profile_snapshot is not None:
+                    profile_snapshot.close()
+                    raise RuntimeError("voice identity activation is disabled")
+                if (
+                    profile_snapshot is not None
+                    and profile_snapshot.profile_revision
+                    <= self._last_profile_revision
+                ):
+                    profile_snapshot.close()
+                    raise ValueError("speaker profile revision must advance")
+                previous_profile, self._profile = self._profile, None
+                runtimes = tuple(self._runtimes)
+                self._runtimes.clear()
+            if previous_profile is not None:
+                previous_profile.close()
+            closed = await asyncio.gather(
+                *(self._close_runtime_fully(runtime) for runtime in runtimes),
+                return_exceptions=False,
             )
-        with self._lock:
-            if self._closed:
+            if not all(closed):
+                with self._lock:
+                    self._activation_blocked = True
                 if profile_snapshot is not None:
                     profile_snapshot.close()
-                raise RuntimeError("voice identity session is closed")
-            if (
-                profile_snapshot is not None
-                and profile_snapshot.profile_revision <= self._last_profile_revision
-            ):
-                profile_snapshot.close()
-                raise ValueError("speaker profile revision must advance")
-            previous_profile, self._profile = self._profile, profile_snapshot
-            if profile_snapshot is not None:
-                self._last_profile_revision = profile_snapshot.profile_revision
-            runtimes = tuple(self._runtimes)
-            self._runtimes.clear()
-        if previous_profile is not None:
-            previous_profile.close()
-        if runtimes:
-            await asyncio.gather(
-                *(runtime.close() for runtime in runtimes),
-                return_exceptions=True,
-            )
+                raise RuntimeError("voice identity runtime did not close")
+            with self._lock:
+                if self._closed:
+                    if profile_snapshot is not None:
+                        profile_snapshot.close()
+                    raise RuntimeError("voice identity session is closed")
+                self._profile = profile_snapshot
+                if profile_snapshot is not None:
+                    self._last_profile_revision = profile_snapshot.profile_revision
 
     def create_runtime(self) -> SpeakerVerifierRuntime | None:
         with self._lock:
             profile = self._profile
-            if self._closed or profile is None:
+            if self._closed or self._activation_blocked or profile is None:
                 return None
             revision = profile.profile_revision
             profile_snapshot = SpeakerProfile(
@@ -649,17 +690,39 @@ class VoiceIdentitySession:
             return runtime
 
     async def close(self) -> None:
-        with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-            profile, self._profile = self._profile, None
-            runtimes = tuple(self._runtimes)
-            self._runtimes.clear()
-        if profile is not None:
-            profile.close()
-        if runtimes:
-            await asyncio.gather(
-                *(runtime.close() for runtime in runtimes),
-                return_exceptions=True,
+        async with self._profile_update_lock:
+            with self._lock:
+                if self._closed:
+                    return
+                self._closed = True
+                profile, self._profile = self._profile, None
+                runtimes = tuple(self._runtimes)
+                self._runtimes.clear()
+            if profile is not None:
+                profile.close()
+            if runtimes:
+                await asyncio.gather(
+                    *(self._close_runtime_fully(runtime) for runtime in runtimes),
+                    return_exceptions=True,
+                )
+
+    async def _close_runtime_fully(
+        self,
+        runtime: SpeakerVerifierRuntime,
+    ) -> bool:
+        async def close_and_wait() -> None:
+            await runtime.close()
+            wait_closed = getattr(runtime, "wait_closed", None)
+            if callable(wait_closed):
+                await wait_closed()
+
+        try:
+            await asyncio.wait_for(
+                close_and_wait(),
+                timeout=self._runtime_close_timeout_seconds,
             )
+        except asyncio.TimeoutError:
+            return False
+        except Exception:
+            return False
+        return True

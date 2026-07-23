@@ -271,7 +271,7 @@ class AsrRuntimeMixin:
     async def set_active_speaker_profile(
         self,
         profile: SpeakerProfile | None,
-    ) -> None:
+    ) -> int | None:
         """Explicitly enable, replace, or disable the in-memory speaker profile."""
 
         self._ensure_asr_runtime_state()
@@ -290,6 +290,18 @@ class AsrRuntimeMixin:
         )
         self._speaker_shadow_factory = factory
         await self._asr_runtime.set_speaker_verifier_factory(factory)
+        return None if profile is None else profile.profile_revision
+
+    def set_speaker_identity_observer(
+        self,
+        callback: SpeakerObservationCallback | None,
+    ) -> None:
+        """Register an observation-only sink with no audio execution authority."""
+
+        if callback is not None and not callable(callback):
+            raise TypeError("speaker identity observer must be callable")
+        self._ensure_asr_runtime_state()
+        self._speaker_shadow_observation_callback = callback
 
     async def _receive_speaker_shadow_observation(
         self,
@@ -298,9 +310,14 @@ class AsrRuntimeMixin:
         callback = self._speaker_shadow_observation_callback
         if callback is None:
             return
-        result = callback(observation)
-        if inspect.isawaitable(result):
-            await result
+        try:
+            result = callback(observation)
+            if inspect.isawaitable(result):
+                await result
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            return
 
     def _set_microphone_route(
         self,
@@ -1035,5 +1052,6 @@ class AsrRuntimeMixin:
         await self._asr_runtime.close()
         session, self._voice_identity_session = self._voice_identity_session, None
         self._speaker_shadow_factory = None
+        self._speaker_shadow_observation_callback = None
         if session is not None:
             await session.close()

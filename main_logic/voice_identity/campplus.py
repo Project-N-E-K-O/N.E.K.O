@@ -720,16 +720,26 @@ def create_campplus_voice_identity_session(
 ) -> VoiceIdentitySession:
     """Create a lazy, in-memory CAM++ session without loading the model."""
 
+    def validate_profile(profile: SpeakerProfile) -> None:
+        if profile.model_id != CAMPPLUS_MODEL_ID:
+            raise ValueError("speaker profile model_id does not match CAM++")
+        if profile.model_revision != CAMPPLUS_MODEL_REVISION:
+            raise ValueError("speaker profile model_revision does not match CAM++")
+        if profile.embedding_dimension != CAMPPLUS_EMBEDDING_DIM:
+            raise ValueError("speaker profile dimension does not match CAM++")
+        embedding = profile.reference_embedding
+        if (
+            embedding.shape != (CAMPPLUS_EMBEDDING_DIM,)
+            or not np.isfinite(embedding).all()
+            or not np.isclose(np.linalg.norm(embedding), 1.0, atol=1e-6)
+        ):
+            raise ValueError("speaker profile embedding is not normalized CAM++ output")
+
     def build_runtime(
         profile: SpeakerProfile,
         callback: SpeakerObservationCallback | None,
     ) -> SpeakerShadowRuntime | None:
-        if (
-            profile.model_id != CAMPPLUS_MODEL_ID
-            or profile.model_revision != CAMPPLUS_MODEL_REVISION
-            or profile.embedding_dimension != CAMPPLUS_EMBEDDING_DIM
-        ):
-            return None
+        validate_profile(profile)
         campplus_profile = CampPlusSpeakerProfile(
             profile.reference_embedding,
             profile_revision=profile.profile_revision,
@@ -751,4 +761,5 @@ def create_campplus_voice_identity_session(
     return VoiceIdentitySession(
         runtime_builder=build_runtime,
         on_observation=on_observation,
+        profile_validator=validate_profile,
     )
