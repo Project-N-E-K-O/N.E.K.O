@@ -114,7 +114,9 @@ async def get_steam_language():
             try:
                 from utils.config_manager import ConfigManager
                 ConfigManager._steam_check_cache = not is_mainland_china
-                ConfigManager._region_cache = None  # reset combined cache for recomputation
+                # 清合并缓存触发重算。注意 Steam 只是兜底票：重算时如果 IP 探测
+                # 已有结论，仍按 IP 走，这次回写只在 IP 始终无结论时才决定线路。
+                ConfigManager._region_cache = None
             except Exception:
                 pass
         except Exception as geo_error:
