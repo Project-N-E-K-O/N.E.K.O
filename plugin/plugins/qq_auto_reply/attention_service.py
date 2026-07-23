@@ -26,18 +26,21 @@ _DIMENSION_ORDER = ("urgency", "interest", "momentum", "intimacy")
 
 # ── 情绪 → 注意力倍率偏移 ──
 _EMOTION_MULTIPLIER: dict[str, float] = {
-    "arguing": 0.4,      # 上头，持续关注
-    "proud": 0.3,        # 赢了想炫耀
-    "annoyed": 0.2,      # 不爽但还在意
-    "playful": 0.15,     # 玩得开心
-    "curious": 0.1,      # 感兴趣
+    "arguing": 1.2,      # 上头死磕，注意力翻倍
+    "proud": 0.8,        # 赢了要炫耀，猛拉注意力
+    "annoyed": 0.5,      # 不爽，比正常更专注
+    "playful": 0.3,      # 玩闹中，微微挂住
+    "curious": 0.2,      # 被勾起兴趣
     "calm": 0.0,         # 正常
-    "sad": -0.1,         # 难过不太想聊
-    "embarrassed": -0.2, # 不好意思想溜
-    "sulking": -0.3,     # 吵不过降温
+    "sad": -0.4,         # 难过，不太想说话
+    "embarrassed": -0.6, # 尴尬想溜
+    "sulking": -0.9,     # 赌气——基本清零，主动让出焦点
 }
+# 强情绪直接触发焦点切换
+_EMOTION_FORCE_FOCUS = {"arguing", "proud"}     # 立刻抢焦点
+_EMOTION_DROP_FOCUS = {"sulking", "embarrassed"} # 立刻让出焦点
 _EMOTION_DECAY_ORDER = ["arguing", "annoyed", "playful", "curious", "calm", "sad", "embarrassed", "sulking"]
-_EMOTION_DECAY_SECONDS = 30  # 30秒无新情绪则降温一级
+_EMOTION_DECAY_SECONDS = 30
 
 
 @dataclass(slots=True)
@@ -681,7 +684,10 @@ class QQAttentionService:
             self.plugin._emit_log("INFO", f"[Attention] 唤醒 boost: 群{normalized_group_id} score={state.attention_score:.1f}")
 
     def set_emotion(self, group_id: str, emotion: str) -> None:
-        """LLM 回复中的 <feeling> 标签更新情绪状态。"""
+        """LLM 回复中的 <feeling> 标签更新情绪状态。
+
+        强情绪直接触发焦点切换：arguing/proud 抢焦点，sulking/embarrassed 让焦点。
+        """
         normalized_group_id = str(group_id or "").strip()
         if not normalized_group_id:
             return
@@ -690,6 +696,28 @@ class QQAttentionService:
         state = self._load_state(normalized_group_id)
         state.emotion = emotion
         state.emotion_updated_at = self._current_time()
+
+        if emotion in _EMOTION_FORCE_FOCUS:
+            # 抢焦点：清除冷却，标记 focus，大幅 boost
+            state.focus_cooldown_until = 0
+            state.last_focus_at = self._current_time()
+            state.focus_acquired_at = self._current_time()
+            state.last_focus_reason = f"emotion:{emotion}"
+            if state.attention_score < 5.0:
+                state.urgency = max(state.urgency, 0.6)
+                state.interest = max(state.interest, 0.5)
+                state.recompute_score()
+            self.plugin._emit_log("INFO", f"[Emotion] 群{normalized_group_id} 抢焦点: {emotion} score={state.attention_score:.1f}")
+        elif emotion in _EMOTION_DROP_FOCUS:
+            # 让焦点：降到 4（低于焦点阈值但还能感知），冷却防止立即抢回
+            if state.attention_score > 4.0:
+                state.attention_score = 4.0
+                state.urgency = min(state.urgency, 0.3)
+                state.interest = min(state.interest, 0.3)
+            state.focus_cooldown_until = self._current_time() + self._focus_cooldown_seconds()
+            state.focus_lock_until = 0
+            self.plugin._emit_log("INFO", f"[Emotion] 群{normalized_group_id} 让焦点: {emotion} score={state.attention_score:.1f}")
+
         self._write_state(state)
         self.plugin._emit_log("INFO", f"[Emotion] 群{normalized_group_id} 情绪: {emotion}")
 

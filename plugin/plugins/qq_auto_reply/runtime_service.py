@@ -18,6 +18,7 @@ class QQRuntimeService:
             "onebot_connected": bool(self.plugin.qq_client and self.plugin.qq_client.is_connected()),
             "napcat_managed": self.plugin._manages_napcat_process,
             "napcat_running": bool(self.plugin._napcat_process and self.plugin._napcat_process.returncode is None),
+            "onebot_connected": bool(self.plugin.qq_client and self.plugin.qq_client.is_connected()),
             "napcat_pid": int(self.plugin._napcat_process.pid) if self.plugin._napcat_process and self.plugin._napcat_process.returncode is None and self.plugin._napcat_process.pid else None,
             "qrcode_url": f"/plugin/{self.plugin.plugin_id}/ui/cache/qrcode.png" if qrcode_path.is_file() else "",
             "show_napcat_window": bool((self.plugin._qq_settings or {}).get("show_napcat_window", True)),

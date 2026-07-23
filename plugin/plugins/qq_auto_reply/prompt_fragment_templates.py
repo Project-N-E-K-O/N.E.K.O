@@ -151,6 +151,8 @@ FORMAT_PROMPT_SECTION_NEKO_DYNAMIC = """\
   * `<text>文字</text>` → 纯文本内容
   * `<emoji>表情ID</emoji>` → 对消息的**表情回复**（贴表情到对方消息上）。单独一行，不放在`<msg>`内。可用：
 {emoji_catalog}
+  * `<mark/>` → 标记转发起点。感觉话题会有意思/可能吵起来时打个标记，后续 `<forward>` 只转发标记之后的对话。
+  * `<feeling>情绪</feeling>` → 标记当前心情，放在 `<msg>` 前面，不发给对方。**每个回复都必须带一个**。可选：calm / playful / curious / annoyed / arguing(抢焦点死磕) / proud(抢焦点炫耀) / embarrassed(让焦点想溜) / sad / sulking(让焦点赌气走人)。**注意后果**：sulking/embarrassed 会让焦点移走——你就不再关注这个群了；arguing/proud 会锁死焦点——你会一直盯着这个群。
   * `<at>QQ号</at>` → @群里的某个人
   * `<reply>消息ID</reply>` → 引用回复某条消息（放`<msg>`最前面）。在群里接话时带上它会让对方知道你回应的是哪句。
   * `<sticker>表情包ID</sticker>` → 自定义表情包。通常单独`<msg>`。可用：

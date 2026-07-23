@@ -78,7 +78,11 @@ class QQDashboardService:
                 "sticker_cooldown_messages": int(settings.get("sticker_cooldown_messages", 5) or 5),
             },
             "guide": {
-                "step_napcat_done": bool(settings.get("guide_step_napcat_done", False)) or bool(runtime["napcat_managed"] and runtime["napcat_running"]),
+                "step_napcat_done": (
+                    bool(settings.get("guide_step_napcat_done", False))
+                    or bool(runtime["napcat_managed"] and runtime["napcat_running"])
+                    or bool(runtime.get("onebot_connected"))
+                ),
                 "step_service_done": _calc_service_done(settings),
                 "step_contacts_done": bool(self.plugin.permission_mgr and self.plugin.permission_mgr.list_users()),
                 "step_auto_reply_done": bool(settings.get("guide_step_runtime_done", False)) and self.plugin._running,

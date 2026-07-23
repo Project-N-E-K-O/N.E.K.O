@@ -191,7 +191,8 @@ class QQReplyBufferService:
         has_bot_reply = any(s == "__bot__" for s, _ in entries)
 
         if not has_bot_reply:
-            # LLM 还没生成完 → 等 1 秒重试，最多 30 次（30 秒），避免慢模型丢回复
+            # LLM 还没生成完 → 等 1 秒重试，最多 30 次（30 秒）
+            # 不递增 task_gen——gate cancel 才能对上号取消掉
             retries = getattr(pending, "_no_reply_retries", 0) + 1
             pending._no_reply_retries = retries
             if retries > 30:
@@ -199,7 +200,7 @@ class QQReplyBufferService:
                 self._pending.pop(session_key, None)
                 return
             pending.wait_until = time.time() + 1.0
-            pending._new_task(self._flush(session_key, pending))
+            pending.task = asyncio.create_task(self._flush(session_key, pending))
             return
 
         # pop 再交付——交付期间新消息进来会建新桶，不会污染当前桶

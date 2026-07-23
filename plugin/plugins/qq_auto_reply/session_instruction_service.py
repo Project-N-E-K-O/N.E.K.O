@@ -501,7 +501,7 @@ class QQSessionInstructionService:
         state = attention.get_state(str(group_id))
         emo = getattr(state, "emotion", "calm") or "calm"
         if emo != "calm":
-            sections.append(f"[内部状态] 你现在的情绪: {emo}。保持人设自然流露，不要直接说出情绪名。")
+            sections.append(f"[内部状态] 你现在的情绪: {emo}。用 <feeling>情绪</feeling> 更新状态（不发给对方），人设自然流露不要直接对用户说\"我很生气\"之类的话。")
 
     def _append_fatigue_section(self, sections: list[str], sender_id: str, is_group: bool, group_id: Optional[str]) -> None:
         """注入疲劳/苏醒状态提示词。私聊不注入。"""

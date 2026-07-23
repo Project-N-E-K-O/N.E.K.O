@@ -225,6 +225,8 @@ class QQReplyPostprocessNode:
         feeling = ""
         forward_content = ""
         forward_target = ""
+        forward_count = 0
+        mark_flag = False
         blocks: list[QQMessageBlock] = []
 
         if strategy_mode == "neko_dynamic" and reply_text:
@@ -235,17 +237,22 @@ class QQReplyPostprocessNode:
                 emoji_reaction_id = em.group(1).strip()
                 reply_text = reply_text[:em.start()] + reply_text[em.end():]
                 reply_text = reply_text.strip()
+            # extract <mark/> (forward bookmark, marks argument start)
+            mark_flag = bool(re.search(r"<mark\s*/>", reply_text, re.IGNORECASE))
+            if mark_flag:
+                reply_text = re.sub(r"<mark\s*/>", "", reply_text).strip()
             # extract <feeling>emotion</feeling> (mood tag, outside <msg>)
             fm = re.search(r"<feeling>(\w+)</feeling>", reply_text, re.IGNORECASE)
             if fm:
                 feeling = fm.group(1).strip().lower()
                 reply_text = reply_text[:fm.start()] + reply_text[fm.end():]
                 reply_text = reply_text.strip()
-            # extract <forward to="群号">content</forward>
-            fw = re.search(r"<forward(\s+to\s*=\s*\"(\d+)\")?\s*>(.*?)</forward>", reply_text, re.DOTALL | re.IGNORECASE)
+            # extract <forward to="群号" count="30">content</forward>
+            fw = re.search(r"<forward(\s+to\s*=\s*\"(\d+)\")?(\s+count\s*=\s*\"(\d+)\")?\s*>(.*?)</forward>", reply_text, re.DOTALL | re.IGNORECASE)
             if fw:
-                forward_content = fw.group(3).strip() if fw.group(3) else ""
+                forward_content = fw.group(5).strip() if fw.group(5) else ""
                 forward_target = fw.group(2) or ""
+                forward_count = int(fw.group(4)) if fw.group(4) else 0
                 reply_text = reply_text[:fw.start()] + reply_text[fw.end():]
                 reply_text = reply_text.strip()
             blocks = self._parse_blocks(reply_text)
@@ -260,6 +267,22 @@ class QQReplyPostprocessNode:
             first_text = blocks[0].text if blocks else ""
             reply_text = first_text or reply_text
 
+        # 日志：LLM 使用的标签
+        if strategy_mode == "neko_dynamic":
+            tags = []
+            if emoji_reaction_id: tags.append(f"emoji={emoji_reaction_id}")
+            if feeling: tags.append(f"feeling={feeling}")
+            if forward_content: tags.append("forward")
+            for b in (blocks or []):
+                if b.reply_to: tags.append(f"reply={b.reply_to}")
+                if b.at_user: tags.append(f"at={b.at_user}")
+                if b.sticker: tags.append(f"sticker={b.sticker}")
+                if b.poke: tags.append(f"poke={b.poke}")
+                if b.record: tags.append("record")
+                if b.keyboard: tags.append("keyboard")
+                if b.ark: tags.append("ark")
+            if tags:
+                self.plugin._emit_log("INFO", f"[Tags] {' | '.join(tags)}")
         if blocks or reply_text:
             return QQReplyOutcome(
                 action="reply",
@@ -271,6 +294,8 @@ class QQReplyPostprocessNode:
                 emoji_reaction_id=emoji_reaction_id,
                 forward_content=forward_content,
                 forward_target=forward_target,
+                forward_count=forward_count,
+                forward_mark=mark_flag,
             )
         if context.ephemeral_session:
             return QQReplyOutcome(
@@ -282,6 +307,8 @@ class QQReplyPostprocessNode:
                 emoji_reaction_id=emoji_reaction_id,
                 forward_content=forward_content,
                 forward_target=forward_target,
+                forward_count=forward_count,
+                forward_mark=mark_flag,
             )
         strategy_mode = getattr(self.plugin, "_strategy_mode", "neko_dynamic")
         is_forced = getattr(context, "force_reply", False) or context.permission_level == "admin"
@@ -295,6 +322,8 @@ class QQReplyPostprocessNode:
                 emoji_reaction_id=emoji_reaction_id,
                 forward_content=forward_content,
                 forward_target=forward_target,
+                forward_count=forward_count,
+                forward_mark=mark_flag,
             )
         return QQReplyOutcome(
             action="reply",

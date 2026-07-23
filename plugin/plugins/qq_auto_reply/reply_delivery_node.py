@@ -141,12 +141,13 @@ class QQReplyDeliveryNode:
         except Exception:
             self.plugin.logger.warning("语音发送失败", exc_info=True)
             if plan.fallback_to_text_on_voice_failure and block.record:
-                text = block.record
-                self.plugin._emit_log("INFO", f"[Delivery] 语音失败，fallback 文本: {text[:40]}")
+                self.plugin._emit_log("INFO", f"[Delivery] 语音失败，fallback 文本: {block.record[:40]}")
+                segs = self._build_segments(block)
+                segs.append({"type": "text", "data": {"text": block.record}})
                 if plan.target_type == "group":
-                    await self.plugin.qq_client.send_group_message_segments(plan.target_id, self._build_segments(block))
+                    await self.plugin.qq_client.send_group_message_segments(plan.target_id, segs)
                 else:
-                    await self.plugin.qq_client.send_private_message_segments(plan.target_id, self._build_segments(block))
+                    await self.plugin.qq_client.send_private_message_segments(plan.target_id, segs)
 
     async def _send_rps(self, plan): seg = {"type":"rps","data":{}}; (await self.plugin.qq_client.send_group_message_segments(plan.target_id,[seg]) if plan.target_type=="group" else await self.plugin.qq_client.send_private_message_segments(plan.target_id,[seg]))
     async def _send_dice(self, plan): seg = {"type":"dice","data":{}}; (await self.plugin.qq_client.send_group_message_segments(plan.target_id,[seg]) if plan.target_type=="group" else await self.plugin.qq_client.send_private_message_segments(plan.target_id,[seg]))

@@ -246,19 +246,36 @@ class QQReplyPipelineRunner:
             except Exception as e:
                 self.plugin._emit_log("WARN", f"[Emoji] reaction failed: {e}")
 
-        # Forward message (cross-group if to="群号")
+        # <mark/> 标记转发起点——记录当前会话历史位置
+        if outcome and outcome.forward_mark and request and request.is_group:
+            session_key = f"group:{str(request.group_id or '').strip()}"
+            sessions = getattr(self.plugin, "_user_sessions", {}) or {}
+            s = sessions.get(session_key)
+            if isinstance(s, dict):
+                session = s.get("session")
+                if session and hasattr(session, "_conversation_history"):
+                    s["_forward_mark"] = len(getattr(session, "_conversation_history", []) or [])
+                    self.plugin._emit_log("DEBUG", f"[Mark] 转发起点已标记 group={request.group_id} pos={s['_forward_mark']}")
+
+        # Forward message: to="QQ号" → 私聊转发；to="群号" 或留空 → 群内转发
         fw = (outcome.forward_content if outcome else "") or ""
         fw_target = (outcome.forward_target if outcome else "") or ""
         if fw and self.plugin.qq_client and self.plugin.qq_client.needs_attention:
-            fw_nodes = self._build_forward_nodes(fw)
+            # LLM 正文当引言，后拼接原文转发
+            intro_nodes = self._build_forward_nodes(fw)
+            count = outcome.forward_count if outcome and outcome.forward_count else 20
+            history_nodes = self._build_history_forward_nodes(request, count)
+            fw_nodes = intro_nodes + history_nodes
             if fw_nodes:
                 try:
-                    target_group = fw_target or (str(request.group_id or "") if request and request.is_group else "")
-                    if target_group:
-                        await self.plugin.qq_client.send_group_forward_msg(target_group, fw_nodes)
-                        self.plugin._emit_log("INFO", f"[Forward] →群{target_group}: {len(fw_nodes)}条")
-                    else:
-                        await self.plugin.qq_client.send_private_forward_msg(request.sender_id if request else "", fw_nodes)
+                    if fw_target:
+                        await self.plugin.qq_client.send_private_forward_msg(fw_target, fw_nodes)
+                        self.plugin._emit_log("INFO", f"[Forward] →私聊{fw_target}: {len(fw_nodes)}条(含{len(history_nodes)}条原文)")
+                    elif request and request.is_group:
+                        await self.plugin.qq_client.send_group_forward_msg(str(request.group_id or ""), fw_nodes)
+                        self.plugin._emit_log("INFO", f"[Forward] →群{request.group_id}: {len(fw_nodes)}条")
+                    elif request:
+                        await self.plugin.qq_client.send_private_forward_msg(request.sender_id or "", fw_nodes)
                         self.plugin._emit_log("INFO", f"[Forward] →私聊: {len(fw_nodes)}条")
                 except Exception as e:
                     self.plugin._emit_log("WARN", f"[Forward] failed: {e}")
@@ -274,9 +291,38 @@ class QQReplyPipelineRunner:
             if not line: continue
             m = re.match(r"\[?([^\]]*?)\]?\s*:\s*(.*)", line)
             if m: name, content = m.group(1).strip(), m.group(2).strip()
-            else: name, content = "系统", line
+            else: name, content = "猫娘", line
             if content:
-                nodes.append({"type":"node","data":{"name":name or "系统","uin":"0","content":content}})
+                nodes.append({"type":"node","data":{"name":name or "猫娘","uin":"0","content":content}})
+        return nodes
+
+    def _build_history_forward_nodes(self, request: QQReplyRequest, count: int = 20) -> list[dict[str, Any]]:
+        """从会话历史中取标记位之后的消息作为转发原文。无标记则取最近 N 条。"""
+        nodes: list[dict[str, Any]] = []
+        if not request or not request.is_group:
+            return nodes
+        session_key = f"group:{str(request.group_id or '').strip()}"
+        sessions = getattr(self.plugin, "_user_sessions", {}) or {}
+        s = sessions.get(session_key)
+        if not isinstance(s, dict):
+            return nodes
+        session = s.get("session")
+        if not session or not hasattr(session, "_conversation_history"):
+            return nodes
+        history = getattr(session, "_conversation_history", []) or []
+        if not history:
+            return nodes
+        # 有标记 → 从标记位开始取；无标记 → 取最近 N 条
+        mark = s.get("_forward_mark", 0)
+        start = max(0, mark) if mark else max(0, len(history) - count)
+        # 转发后清除标记
+        s["_forward_mark"] = 0
+        for msg in history[start:]:
+            role = getattr(msg, "role", "") if hasattr(msg, "role") else msg.get("role", "")
+            content = getattr(msg, "content", "") if hasattr(msg, "content") else msg.get("content", "")
+            if role in ("user", "assistant") and content:
+                name = "猫娘" if role == "assistant" else (request.user_nickname or "群友")
+                nodes.append({"type": "node", "data": {"name": name, "uin": "0", "content": str(content)[:500]}})
         return nodes
 
     def _resolve_sticker_path(self, sticker_id: str) -> str:
