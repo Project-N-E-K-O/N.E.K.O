@@ -84,7 +84,10 @@ export function createCompactToolWheelForwardedClick(
   };
   try {
     return new eventView.MouseEvent('click', eventInit);
-  } catch {
+  } catch (error) {
+    if (!(error instanceof TypeError) || !/view/i.test(error.message)) {
+      throw error;
+    }
     // JSDOM 27 rejects its own Window proxy after converting MouseEventInit.
     // Browsers take the faithful view-bearing path above.
     const { view: _view, ...fallbackInit } = eventInit;
