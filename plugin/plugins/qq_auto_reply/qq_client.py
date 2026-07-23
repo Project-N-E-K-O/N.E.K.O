@@ -985,9 +985,13 @@ class QQClient(QQConnectionBase):
         if self.logger:
             self.logger.debug(f"Sent segmented private message to {user_id}")
 
-    async def send_private_record(self, user_id: str, file_uri: str):
+    async def send_private_record(self, user_id: str, file_uri: str, *, reply_message_id: str = ""):
         """发送私聊语音"""
-        await self.send_private_message_segments(user_id, [{"type": "record", "data": {"file": str(file_uri or "")}}])
+        segments: list[Dict[str, Any]] = []
+        if str(reply_message_id or "").strip():
+            segments.append({"type": "reply", "data": {"id": str(reply_message_id)}})
+        segments.append({"type": "record", "data": {"file": str(file_uri or "")}})
+        await self.send_private_message_segments(user_id, segments)
 
     async def send_group_record(self, group_id: str, file_uri: str, *, reply_message_id: str = "", at_user_id: str = ""):
         """发送群聊语音"""

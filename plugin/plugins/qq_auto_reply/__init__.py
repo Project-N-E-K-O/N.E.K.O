@@ -347,12 +347,13 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     async def _synthesize_reply_voice_file(self, text: str) -> tuple[str, str]:
         return await self.voice_reply_service.synthesize_reply_voice_file(text)
 
-    async def _deliver_private_reply(self, target_qq: str, text: str, *, voice_text: str = "", fallback_to_text_on_voice_failure: bool) -> None:
+    async def _deliver_private_reply(self, target_qq: str, text: str, *, voice_text: str = "", fallback_to_text_on_voice_failure: bool, reply_message_id: str = "") -> None:
         await self.voice_reply_service.deliver_private_reply(
             target_qq,
             text,
             voice_text=voice_text,
             fallback_to_text_on_voice_failure=fallback_to_text_on_voice_failure,
+            reply_message_id=reply_message_id,
         )
 
     async def _deliver_group_reply(self, group_id: str, text: str, *, reply_message_id: str = "", at_user_id: str = "", keyboard: str = "", voice_text: str = "", fallback_to_text_on_voice_failure: bool) -> None:

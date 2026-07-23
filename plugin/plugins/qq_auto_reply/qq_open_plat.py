@@ -329,11 +329,13 @@ class QQOpenPlatformConnection(QQConnectionBase):
             group_id, [{"type": "text", "data": {"text": message}}],
         )
 
-    async def send_private_record(self, user_id: str, file_uri: str) -> None:
+    async def send_private_record(self, user_id: str, file_uri: str, *, reply_message_id: str = "") -> None:
         """发送私聊语音 — 开放平台不支持，降级为文本"""
-        await self.send_private_message_segments(
-            user_id, [{"type": "text", "data": {"text": "[语音消息]"}}],
-        )
+        segments: list[dict[str, Any]] = []
+        if str(reply_message_id or "").strip():
+            segments.append({"type": "reply", "data": {"id": str(reply_message_id)}})
+        segments.append({"type": "text", "data": {"text": "[语音消息]"}})
+        await self.send_private_message_segments(user_id, segments)
 
     async def send_private_message_segments(
         self, user_id: str, segments: list[dict[str, Any]], *, record_sent: bool = True

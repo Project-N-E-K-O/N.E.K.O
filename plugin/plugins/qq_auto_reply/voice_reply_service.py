@@ -314,7 +314,7 @@ class QQVoiceReplyService:
         await asyncio.to_thread(output_path.write_bytes, audio_bytes)
         return output_path.resolve().as_uri(), mime_type
 
-    async def deliver_private_reply(self, target_qq: str, text: str, *, voice_text: str = "", fallback_to_text_on_voice_failure: bool) -> None:
+    async def deliver_private_reply(self, target_qq: str, text: str, *, voice_text: str = "", fallback_to_text_on_voice_failure: bool, reply_message_id: str = "") -> None:
         normalized_text = self.plugin._validate_outbound_message(text)
         mode = self.plugin._get_reply_mode()
         if mode == "text":
@@ -329,7 +329,7 @@ class QQVoiceReplyService:
                     await self.plugin.qq_client.send_message(target_qq, normalized_text)
                 try:
                     file_uri, _ = await self.synthesize_reply_voice_file(voice_content)
-                    await self.plugin.qq_client.send_private_record(target_qq, file_uri)
+                    await self.plugin.qq_client.send_private_record(target_qq, file_uri, reply_message_id=reply_message_id)
                     return
                 except Exception:
                     self.plugin.logger.warning("QQ both-语音私聊发送失败，已保留文本", exc_info=True)
@@ -341,9 +341,9 @@ class QQVoiceReplyService:
         try:
             file_uri, _ = await self.synthesize_reply_voice_file(normalized_text)
             if mode == "voice":
-                await self.plugin.qq_client.send_private_record(target_qq, file_uri)
+                await self.plugin.qq_client.send_private_record(target_qq, file_uri, reply_message_id=reply_message_id)
                 return
-            await self.plugin.qq_client.send_private_record(target_qq, file_uri)
+            await self.plugin.qq_client.send_private_record(target_qq, file_uri, reply_message_id=reply_message_id)
         except Exception:
             if mode == "voice" and fallback_to_text_on_voice_failure:
                 self.plugin.logger.warning("QQ 纯语音私聊发送失败，回退文本", exc_info=True)

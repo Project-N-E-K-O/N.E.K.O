@@ -69,6 +69,8 @@ class QQGroupAttentionState:
     # ── 情绪 ──
     emotion: str = "calm"              # calm/playful/curious/annoyed/arguing/proud/embarrassed/sad/sulking
     emotion_updated_at: int = 0
+    emotion_display: str = "calm"      # 前端展示用标签，衰减比 logic emotion 慢（to_dict 传出去）
+    emotion_display_until: int = 0
     focus_lock_until: int = 0
     focus_cooldown_until: int = 0
     last_focus_reason: str = ""
@@ -137,6 +139,7 @@ class QQGroupAttentionState:
             "last_focus_at": int(self.last_focus_at),
             "focus_acquired_at": int(self.focus_acquired_at),
             "emotion": str(self.emotion or "calm"),
+            "emotion_display": str(self.emotion_display or "calm"),
         }
 
     @classmethod
@@ -169,6 +172,8 @@ class QQGroupAttentionState:
             focus_acquired_at=int(data.get("focus_acquired_at") or 0),
             emotion=str(data.get("emotion") or "calm"),
             emotion_updated_at=int(data.get("emotion_updated_at") or 0),
+            emotion_display=str(data.get("emotion_display") or "calm"),
+            emotion_display_until=int(data.get("emotion_display_until") or 0),
         )
         # 从旧数据迁移：如果没有维度数据但有关键词加分，给 urgency 初值
         if float(st.urgency) <= 0 and float(st.interest) <= 0 and float(st.momentum) <= 0 and float(st.intimacy) <= 0:
@@ -696,6 +701,9 @@ class QQAttentionService:
         state = self._load_state(normalized_group_id)
         state.emotion = emotion
         state.emotion_updated_at = self._current_time()
+        # emotion_display 供前端展示，停留 120s 比逻辑衰减更久
+        state.emotion_display = emotion
+        state.emotion_display_until = self._current_time() + 120
 
         if emotion in _EMOTION_FORCE_FOCUS:
             # 抢焦点：清除冷却，标记 focus，大幅 boost
@@ -709,9 +717,13 @@ class QQAttentionService:
                 state.recompute_score()
             self.plugin._emit_log("INFO", f"[Emotion] 群{normalized_group_id} 抢焦点: {emotion} score={state.attention_score:.1f}")
         elif emotion in _EMOTION_DROP_FOCUS:
-            # 让焦点：降到 4（低于焦点阈值但还能感知），冷却防止立即抢回
-            if state.attention_score > 4.0:
-                state.attention_score = 4.0
+            # 让焦点 + 降分（sulking 直接压到最低阈值）
+            if emotion == "sulking":
+                floor = self._minimum_threshold()
+            else:
+                floor = 4.0
+            if state.attention_score > floor:
+                state.attention_score = floor
                 state.urgency = min(state.urgency, 0.3)
                 state.interest = min(state.interest, 0.3)
             state.focus_cooldown_until = self._current_time() + self._focus_cooldown_seconds()
@@ -733,12 +745,21 @@ class QQAttentionService:
         if idx < 0:
             state.emotion = "calm"
         elif state.emotion in ("arguing", "annoyed", "playful", "curious"):
-            # 正向情绪 → calm
-            state.emotion = "calm" if idx + 1 >= order.index("calm") else order[idx + 1]
+            # 正向情绪 → 沿链向 calm 右移
+            if idx + 1 >= order.index("calm"):
+                state.emotion = "calm"
+            else:
+                state.emotion = order[idx + 1]
         else:
-            # 负向情绪 → calm
-            state.emotion = "calm"
+            # 负向情绪 → 沿链向 calm 左移
+            calm_idx = order.index("calm")
+            if idx - 1 <= calm_idx:
+                state.emotion = "calm"
+            else:
+                state.emotion = order[idx - 1]
         state.emotion_updated_at = now
+        # display 标签跟随衰减链同步，但不重置倒计时（倒计时由 set_emotion 一次性设定）
+        state.emotion_display = state.emotion
 
     def get_last_focus_at(self, group_id: str) -> int:
         normalized_group_id = str(group_id or "").strip()
@@ -839,14 +860,16 @@ class QQAttentionService:
         old_focus_id = self._get_top_group_id()
         fatigue_svc = getattr(self.plugin, "fatigue_service", None)
         for group_id in self._normalized_groups():
+            state = self._load_state(group_id)
+            # emotion_display 到期 → 重置为 calm
+            if now > state.emotion_display_until and state.emotion_display != "calm":
+                state.emotion_display = "calm"
             # 睡眠中的群不参与注意力竞争
             if fatigue_svc and fatigue_svc.check_sleeping(f"group:{group_id}"):
-                state = self._load_state(group_id)
                 state.attention_score = 0.0
                 self._write_state(state)
                 continue
             fatigue = float(fatigue_svc.calculate_fatigue(f"group:{group_id}") or 0.0) if fatigue_svc else 0.0
-            state = self._load_state(group_id)
             state = self._apply_decay(state, now, is_focus=(group_id == old_focus_id), fatigue=fatigue)
             self._decay_emotion(state, now)
             self._write_state(state)

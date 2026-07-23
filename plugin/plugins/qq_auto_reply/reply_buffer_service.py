@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import Counter
 from typing import Any
 
 import random as _random
@@ -14,23 +15,31 @@ _DELAY_MU = 9.0
 _DELAY_SIGMA = 1.8
 _MAX_BUFFER_COUNT = 17
 
+# n-gram 话题抽取的静态停用词基础表，运行时会额外并入 backlog_labels 中配置的关键词
+_STOP_WORDS: set[str] = {
+    "这个", "那个", "什么", "怎么", "为什么", "是不是", "有没有",
+    "我觉得", "就是说", "然后", "所以", "但是", "不过", "其实",
+    "哈哈哈", "确实", "是的", "对的", "嗯嗯", "好的", "可以",
+    "啊", "吧", "呢", "吗", "哦", "嗯", "哈",
+}
+
 
 def _random_delay() -> float:
     return max(0.0, _random.gauss(_DELAY_MU, _DELAY_SIGMA))
 
 
 class PendingReply:
-    __slots__ = ("entries", "wait_until", "task", "sender_id", "is_group", "group_id", "task_gen", "_cached_blocks", "_no_reply_retries")
+    __slots__ = ("entries", "wait_until", "task", "sender_id", "is_group", "group_id", "task_gen", "bot_blocks", "_no_reply_retries")
 
     def __init__(self, sender_id: str, is_group: bool, group_id: str):
-        self.entries: list[tuple[str, str]] = []  # [(sender_id, message_text), ...]; bot 回复用 "__bot__"
+        self.entries: list[tuple[str, str]] = []  # [(sender_id, message_text), ...]
         self.wait_until = 0.0
         self.task: asyncio.Task | None = None
         self.task_gen: int = 0
         self.sender_id = sender_id
         self.is_group = is_group
         self.group_id = group_id
-        self._cached_blocks: list = []  # bot 回复的消息块，单条时直接交付
+        self.bot_blocks: list | None = None  # None = pipeline 未完成；有值 = 回复就绪
 
     def _new_task(self, coro) -> asyncio.Task:
         self.task_gen += 1
@@ -43,14 +52,16 @@ class QQReplyBufferService:
         self.plugin = plugin
         self._pending: dict[str, PendingReply] = {}
 
+    # ------------------------------------------------------------------
+    # 公共接口
+    # ------------------------------------------------------------------
+
     def store_reply(self, session_key: str, reply_text: str, blocks: list) -> bool:
         """pipeline 生成的回复存入缓冲桶，等计时器到期再发。返回 True 表示已存储。"""
         existing = self._pending.get(session_key)
         if existing is None:
             return False
-        # 把 bot 回复当一条 "[bot]" 记录存进 entries，同时存 blocks 供单条时直接交付
-        existing.entries.insert(0, ("__bot__", reply_text))
-        existing._cached_blocks = blocks
+        existing.bot_blocks = blocks
         self.plugin._emit_log("DEBUG", f"[Buffer] 存储回复 key={session_key} reply={reply_text[:30]}")
         return True
 
@@ -73,13 +84,14 @@ class QQReplyBufferService:
         if existing and (existing.task is None or not existing.task.done()):
             # 话题偏离检测：新消息和桶内已有消息是否同一话题
             if len(existing.entries) >= 2 and await self._topic_shift(existing, message_text):
-                self.plugin._emit_log("INFO", f"[Buffer] 话题偏离 key={session_key} → 先交付旧桶，新消息另开: {message_text[:30]}")
+                old_topic = self._bucket_topic(existing.entries)
+                self.plugin._emit_log("INFO", f"[Buffer] 话题偏离 key={session_key} topic=「{old_topic}」→ 先交付旧桶，新消息: {message_text[:30]}")
                 if existing.task:
                     existing.task.cancel()
                     existing.task_gen += 1  # 旧任务 gen 不匹配，取消分支不会 pop
                 # 立即交付旧桶（不等计时器），然后新消息开新桶
                 existing.wait_until = 0
-                await self._flush(session_key, existing)
+                await self._flush(session_key, existing, abandon_on_no_reply=True)
                 pending = PendingReply(sender_id, is_group, group_id)
                 pending.entries.append((sender_id, message_text))
                 delay = _random_delay()
@@ -112,6 +124,41 @@ class QQReplyBufferService:
         self.plugin._emit_log("DEBUG", f"[Buffer] 新建 key={session_key} delay={delay:.1f}s")
         return False
 
+    # ------------------------------------------------------------------
+    # 话题抽取
+    # ------------------------------------------------------------------
+
+    def _bucket_topic(self, entries: list[tuple[str, str]]) -> str:
+        """从桶内消息抽取高频 2-4 字短语作为话题标签。
+
+        停用词 = 静态通用词 + 用户配置的 backlog_labels 关键词。
+        关键词被配置本身就说明它在对话中高频出现，作为话题标签缺乏区分度。
+        """
+        stop: set[str] = set(_STOP_WORDS)
+        try:
+            for label in (self.plugin._qq_settings or {}).get("backlog_labels") or []:
+                for kw in label.get("keywords") or []:
+                    kw = str(kw).strip()
+                    if kw:
+                        stop.add(kw)
+        except Exception:
+            pass
+
+        grams: Counter[str] = Counter()
+        for _sid, text in entries[-5:]:
+            for n in (2, 3, 4):
+                for i in range(len(text) - n + 1):
+                    gram = text[i:i + n]
+                    if gram not in stop:
+                        grams[gram] += 1
+        if not grams:
+            return ""
+        return grams.most_common(1)[0][0]
+
+    # ------------------------------------------------------------------
+    # 话题偏移检测
+    # ------------------------------------------------------------------
+
     async def _topic_shift(self, existing: PendingReply, new_text: str) -> bool:
         """判断新消息是否和桶内已有消息话题不一致。返回 True 表示需要分桶。"""
         # 快速路径：消息数太少不检测；或新消息很短（大概率不是话题转换）
@@ -120,11 +167,18 @@ class QQReplyBufferService:
         if len(new_text) <= 3:
             return False
         # 提取桶内用户消息
-        buf_texts = [t for s, t in existing.entries[-5:] if s != "__bot__"][:200]
+        buf_texts = [t for _sid, t in existing.entries[-5:]][:200]
         if not buf_texts:
             return False
         # 快速预判：新消息和桶内消息有明显重叠 → 省掉 LLM 调用
         if any(new_text.startswith(t) or t.startswith(new_text) for t in buf_texts):
+            return False
+
+        old_topic = self._bucket_topic(existing.entries)
+        new_topic = self._bucket_topic([("", new_text)])
+
+        # n-gram 话题词直接命中 → 同一话题，跳过 LLM
+        if old_topic and new_topic and (old_topic in new_topic or new_topic in old_topic):
             return False
 
         from utils.config_manager import get_config_manager
@@ -133,10 +187,11 @@ class QQReplyBufferService:
         model = str(cfg.get("model", ""))
         api_key = str(cfg.get("api_key", ""))
         if not base_url or not model:
-            return self._topic_shift_heuristic(buf_texts, new_text)
+            return self._topic_shift_heuristic(buf_texts, new_text, old_topic, new_topic)
 
         prompt = (
             "判断新消息是否和已有消息属于同一话题。只回答\"是\"或\"否\"。\n\n"
+            f"已有话题：{old_topic or '（未知）'}\n"
             f"已有消息：\n" + "\n".join(f"- {t[:100]}" for t in buf_texts) +
             f"\n\n新消息：{new_text[:100]}"
         )
@@ -150,15 +205,22 @@ class QQReplyBufferService:
             )
             resp = await asyncio.wait_for(llm.ainvoke([{"role": "user", "content": prompt}]), timeout=5.0)
             answer = str(getattr(resp, "content", "") or "").strip()
-            return "否" in answer
+            is_shift = "否" in answer
+            if is_shift:
+                self.plugin._emit_log("INFO", f"[Buffer] LLM 判定话题偏离 old=「{old_topic}」new=「{new_topic}」")
+            return is_shift
         except Exception:
             pass
 
         # LLM 失败 → 启发式规则兜底
-        return self._topic_shift_heuristic(buf_texts, new_text)
+        result = self._topic_shift_heuristic(buf_texts, new_text, old_topic, new_topic)
+        if result:
+            self.plugin._emit_log("INFO", f"[Buffer] 启发式判定话题偏离 old=「{old_topic}」new=「{new_topic}」")
+        return result
 
     @staticmethod
-    def _topic_shift_heuristic(buf_texts: list[str], new_text: str) -> bool:
+    def _topic_shift_heuristic(buf_texts: list[str], new_text: str,
+                               old_topic: str = "", new_topic: str = "") -> bool:
         """规则兜底：新消息和桶内消息明显不同时返回 True。"""
         avg_len = sum(len(t) for t in buf_texts) / max(len(buf_texts), 1)
         # 桶内全是短消息（≤4字），新消息是完整句子 → 话题偏移
@@ -172,7 +234,11 @@ class QQReplyBufferService:
             return True
         return False
 
-    async def _flush(self, session_key: str, pending: PendingReply) -> None:
+    # ------------------------------------------------------------------
+    # 交付
+    # ------------------------------------------------------------------
+
+    async def _flush(self, session_key: str, pending: PendingReply, *, abandon_on_no_reply: bool = False) -> None:
         delay = max(0.0, pending.wait_until - time.time())
         gen = pending.task_gen
         self.plugin._emit_log("DEBUG", f"[Buffer] 等待中 key={session_key} gen={gen} delay={delay:.1f}s count={len(pending.entries)}")
@@ -186,11 +252,16 @@ class QQReplyBufferService:
         if self._pending.get(session_key) is not pending:
             return
 
-        entries = pending.entries
-        user_entries = [(s, t) for s, t in entries if s != "__bot__"]
-        has_bot_reply = any(s == "__bot__" for s, _ in entries)
+        user_entries = pending.entries
+        has_bot_reply = pending.bot_blocks is not None
 
         if not has_bot_reply:
+            if abandon_on_no_reply:
+                # 话题偏移时放弃旧桶：避免 _flush 的 retry task 与 self._pending[session_key]
+                # 被覆盖为新桶后发生竞争，导致旧 pipeline 回复被 store_reply 误路由到新桶。
+                self._pending.pop(session_key, None)
+                self.plugin._emit_log("INFO", f"[Buffer] key={session_key} 话题偏移且无 bot 回复，放弃旧桶")
+                return
             # LLM 还没生成完 → 等 1 秒重试，最多 30 次（30 秒）
             # 不递增 task_gen——gate cancel 才能对上号取消掉
             retries = getattr(pending, "_no_reply_retries", 0) + 1
@@ -209,7 +280,7 @@ class QQReplyBufferService:
         if len(user_entries) == 1:
             # 只有首条用户消息 + bot 回复：直接交付 bot 回复
             from .pipeline_models import QQMessageBlock, QQDeliveryPlan
-            blocks = pending._cached_blocks if pending._cached_blocks else [QQMessageBlock(text=entries[0][1])]
+            blocks = pending.bot_blocks if pending.bot_blocks else [QQMessageBlock(text=user_entries[0][1])]
             plan = QQDeliveryPlan(
                 target_type="group" if pending.is_group else "private",
                 target_id=pending.group_id if pending.is_group else pending.sender_id,

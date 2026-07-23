@@ -92,7 +92,7 @@ class QQReplyDeliveryNode:
                     fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure,
                 )
             else:
-                await self.plugin._deliver_private_reply(plan.target_id, voice_text, fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure)
+                await self.plugin._deliver_private_reply(plan.target_id, voice_text, fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure, reply_message_id=block.reply_to or "")
         elif plan.target_type == "group":
             await self.plugin.qq_client.send_group_message_segments(plan.target_id, segs, keyboard=block.keyboard)
         else:
@@ -136,7 +136,7 @@ class QQReplyDeliveryNode:
                     at_user_id=block.at_user or "",
                 )
             else:
-                await self.plugin.qq_client.send_private_record(plan.target_id, file_uri)
+                await self.plugin.qq_client.send_private_record(plan.target_id, file_uri, reply_message_id=block.reply_to or "")
             self.plugin._emit_log("DEBUG", f"[Delivery] 语音已发送")
         except Exception:
             self.plugin.logger.warning("语音发送失败", exc_info=True)
