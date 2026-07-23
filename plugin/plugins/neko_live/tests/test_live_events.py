@@ -1248,6 +1248,20 @@ async def test_cooldown_window_picks_highest_score():
     )
 
 
+async def test_cooldown_window_prefers_explicit_viewer_hook_over_long_plain_text():
+    ctx = _FakeCtx(remaining=5.0)
+    hub = await _make_hub(ctx)
+
+    hub.submit(_danmaku("1", text="这是一条很长但只是陈述的普通弹幕" * 8))
+    hub.submit(_danmaku("2", text="猫猫觉得这个要怎么选？"))
+
+    await _drain(hub)
+
+    assert [payload["uid"] for payload in ctx.payloads] == ["2"]
+    selected = next(r for r in ctx.audit.records if r["op"] == "live_event_selected")
+    assert selected["detail"]["selected"]["score"] > 120
+
+
 async def test_cooldown_window_bounds_candidate_summaries_without_losing_best():
     ctx = _FakeCtx(remaining=5.0, queue_limit=3)
     hub = await _make_hub(ctx)

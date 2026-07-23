@@ -99,6 +99,7 @@ REPLY_WORTHY_TEXT_MARKERS = (
     "晚上好",
 )
 REPLY_WORTHY_TEXT_WORDS = {"hello", "hi"}
+REPLY_WORTHY_SELECTION_BONUS = 120.0
 
 
 class _SessionBoundProviderEvent:
@@ -723,6 +724,7 @@ class LiveEventsModule(BaseModule):
         if not uid or uid == "0":
             return  # 事实缓存允许匿名消息；既有锐评链路仍要求稳定 uid。
         score = self._safe_score(event)
+        selection_score = score + _reply_value_bonus(text)
         if self._is_co_stream():
             self._last_decision_at = self._now()
             self._last_selected_type = "danmaku.passive_context"
@@ -745,7 +747,7 @@ class LiveEventsModule(BaseModule):
                 self._roast(
                     event,
                     count=1,
-                    candidates=[self._candidate_summary(event, score, 1)],
+                    candidates=[self._candidate_summary(event, selection_score, 1)],
                     winner_order=1,
                     recent_chat_seq=recent_chat_seq,
                 )
@@ -754,11 +756,11 @@ class LiveEventsModule(BaseModule):
         # 冷却期：缓冲择优，只保留当前分最高者（O(1) 内存，无需保留整批）。
         order = self._buffered_count + 1
         self._remember_candidate_summary(
-            self._candidate_summary(event, score, order)
+            self._candidate_summary(event, selection_score, order)
         )
-        if self._best is None or score > self._best_score:
+        if self._best is None or selection_score > self._best_score:
             self._best = event
-            self._best_score = score
+            self._best_score = selection_score
             self._best_order = order
             self._best_recent_chat_seq = recent_chat_seq
         self._buffered_count += 1
@@ -1265,3 +1267,9 @@ def _looks_reply_worthy_text(text: str) -> bool:
     if stripped in REPLY_WORTHY_TEXT_WORDS:
         return True
     return any(marker in lowered for marker in REPLY_WORTHY_TEXT_MARKERS)
+
+
+def _reply_value_bonus(text: str) -> float:
+    """Prefer explicit questions/hooks inside a cooldown window without another model call."""
+
+    return REPLY_WORTHY_SELECTION_BONUS if _looks_reply_worthy_text(text) else 0.0
