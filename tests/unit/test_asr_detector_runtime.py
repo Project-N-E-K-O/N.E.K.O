@@ -1039,6 +1039,39 @@ async def test_segmented_submit_mirrors_only_accepted_audio_to_speaker_shadow() 
     assert shadow.close_calls == 1
 
 
+async def test_replace_speaker_verifier_invalidates_candidate_without_endpoint_change() -> (
+    None
+):
+    previous = _SpeakerShadowSpy()
+    replacement = _SpeakerShadowSpy()
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate((SpeechActivityEvent.SPEECH_STARTED,)),
+        provider_policy=_provider_endpoint_policy(),
+        speaker_shadow=previous,
+    )
+
+    await detector.feed(
+        b"\x01\x00" * 160,
+        speech_probability=0.9,
+        rnnoise_available=True,
+    )
+    generation = detector._speaker_shadow_generation
+    candidate_generation = detector._candidate_generation
+
+    assert await detector.replace_speaker_verifier(replacement) is True
+
+    assert previous.close_calls == 1
+    assert detector._speaker_shadow is replacement
+    assert detector._speaker_shadow_candidate is None
+    assert detector._speaker_shadow_generation == generation + 1
+    assert detector._candidate_generation == candidate_generation
+    assert detector._semantic_adapter is None
+
+    await detector.close()
+    assert replacement.close_calls == 1
+
+
 async def test_shadow_toggle_preserves_provider_pcm_bytes_order_and_detector_results() -> None:
     frames = [b"\x01\x00" * 160, b"\x02\x00" * 160, b"\x03\x00" * 160]
 

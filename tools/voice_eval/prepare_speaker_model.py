@@ -17,7 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from main_logic.asr_client.campplus import (  # noqa: E402
+from main_logic.voice_identity.campplus import (  # noqa: E402
     CampPlusAssetError,
     load_campplus_manifest,
     verify_campplus_asset,

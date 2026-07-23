@@ -38,7 +38,10 @@ from .detector import (
 from .activity_evidence import RnnoiseEvidence
 from .lifecycle import VoiceIngressToken, VoiceTurnToken
 from .provider_policy import AsrProviderPolicy
-from .speaker_shadow import SpeakerShadowCandidateKey, SpeakerShadowRuntime
+from main_logic.voice_identity.contracts import (
+    SpeakerShadowCandidateKey,
+    SpeakerVerifierRuntime,
+)
 from .throttle_policy import (
     ThrottleAction,
     ThrottleShadowMetrics,
@@ -981,7 +984,7 @@ class DetectorRuntime:
         provider_policy: AsrProviderPolicy | None = None,
         coordinator: TurnCoordinator | None = None,
         throttle_policy: VoiceThrottlePolicy | None = None,
-        speaker_shadow: SpeakerShadowRuntime | None = None,
+        speaker_shadow: SpeakerVerifierRuntime | None = None,
         on_turn_complete: Callable[[], Awaitable[None]] | None = None,
         on_endpointing_failure: Callable[[], Awaitable[None]] | None = None,
         on_event: Callable[[DetectorEvent], Awaitable[None]] | None = None,
@@ -2077,6 +2080,28 @@ class DetectorRuntime:
         if self._speaker_shadow is None:
             return {}
         return self._speaker_shadow.snapshot()
+
+    async def replace_speaker_verifier(
+        self,
+        verifier: SpeakerVerifierRuntime | None,
+    ) -> bool:
+        """Swap only the observation adapter; never alter endpoint authority."""
+
+        async with self._lock:
+            if self._closed:
+                accepted = False
+                previous = None
+            else:
+                accepted = True
+                previous, self._speaker_shadow = self._speaker_shadow, verifier
+                self._reset_speaker_shadow_identity()
+        if not accepted:
+            if verifier is not None:
+                await verifier.close()
+            return False
+        if previous is not None and previous is not verifier:
+            await previous.close()
+        return True
 
     def _submit_speaker_shadow(
         self,

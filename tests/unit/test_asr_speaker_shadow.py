@@ -319,7 +319,7 @@ async def test_load_and_callback_failures_stay_inside_shadow_metrics() -> None:
 
 
 async def test_backend_load_retries_after_exponential_backoff(monkeypatch) -> None:
-    from main_logic.asr_client import speaker_shadow as speaker_shadow_module
+    from main_logic.voice_identity import runtime as speaker_shadow_module
 
     now = [100.0]
     monkeypatch.setattr(speaker_shadow_module.time, "monotonic", lambda: now[0])
@@ -358,7 +358,7 @@ async def test_backend_load_retries_after_exponential_backoff(monkeypatch) -> No
 async def test_reset_clears_load_backoff_without_unloading_warm_backend(
     monkeypatch,
 ) -> None:
-    from main_logic.asr_client import speaker_shadow as speaker_shadow_module
+    from main_logic.voice_identity import runtime as speaker_shadow_module
 
     monkeypatch.setattr(speaker_shadow_module.time, "monotonic", lambda: 100.0)
     unavailable = _Backend(load_ok=False)

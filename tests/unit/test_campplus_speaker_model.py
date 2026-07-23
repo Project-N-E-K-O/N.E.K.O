@@ -12,7 +12,7 @@ import kaldi_native_fbank as knf
 import numpy as np
 import pytest
 
-from main_logic.asr_client.campplus import (
+from main_logic.voice_identity.campplus import (
     CAMPPLUS_FILENAME,
     CAMPPLUS_MODEL_ID,
     CAMPPLUS_MODEL_REVISION,
@@ -28,7 +28,7 @@ from main_logic.asr_client.campplus import (
     compute_campplus_features,
     load_campplus_manifest,
 )
-from main_logic.asr_client.speaker_shadow import SpeakerShadowRuntime
+from main_logic.voice_identity.runtime import SpeakerShadowRuntime
 from tools.voice_eval.prepare_speaker_model import prepare_speaker_model
 
 
@@ -79,7 +79,7 @@ def _write_asset_dir(directory: Path, model_bytes: bytes = b"reviewed model") ->
 
 
 def _patch_expected_asset(monkeypatch, model_bytes: bytes) -> None:
-    import main_logic.asr_client.campplus as campplus
+    import main_logic.voice_identity.campplus as campplus
 
     monkeypatch.setattr(campplus, "CAMPPLUS_SIZE_BYTES", len(model_bytes))
     monkeypatch.setattr(
@@ -468,7 +468,7 @@ def test_backend_scores_cosine_copies_reference_and_closes() -> None:
 
 
 def test_shadow_factory_is_zero_work_when_disabled_or_profile_missing(monkeypatch) -> None:
-    import main_logic.asr_client.campplus as campplus
+    import main_logic.voice_identity.campplus as campplus
 
     validate = pytest.fail
     monkeypatch.setattr(campplus, "resolve_verified_campplus_asset", validate)
@@ -479,7 +479,7 @@ def test_shadow_factory_is_zero_work_when_disabled_or_profile_missing(monkeypatc
 
 
 def test_shadow_factory_contains_missing_or_corrupt_model(monkeypatch, caplog) -> None:
-    import main_logic.asr_client.campplus as campplus
+    import main_logic.voice_identity.campplus as campplus
 
     profile = CampPlusSpeakerProfile(np.eye(192, dtype=np.float32)[0], profile_revision=1)
 
@@ -496,7 +496,7 @@ def test_shadow_factory_contains_missing_or_corrupt_model(monkeypatch, caplog) -
 
 
 def test_shadow_factory_builds_lazy_runtime_without_loading_model(monkeypatch, tmp_path) -> None:
-    import main_logic.asr_client.campplus as campplus
+    import main_logic.voice_identity.campplus as campplus
 
     profile = CampPlusSpeakerProfile(np.eye(192, dtype=np.float32)[0], profile_revision=4)
     verified = tmp_path / CAMPPLUS_FILENAME
@@ -531,7 +531,7 @@ def test_shadow_factory_builds_lazy_runtime_without_loading_model(monkeypatch, t
 async def test_shadow_runtime_close_overwrites_private_profile_copy(
     monkeypatch, tmp_path
 ) -> None:
-    import main_logic.asr_client.campplus as campplus
+    import main_logic.voice_identity.campplus as campplus
 
     profile = CampPlusSpeakerProfile(np.eye(192, dtype=np.float32)[0], profile_revision=5)
     monkeypatch.setattr(

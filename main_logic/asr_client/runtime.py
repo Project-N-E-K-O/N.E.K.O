@@ -55,7 +55,10 @@ from .lifecycle import (
     VoiceTransportToken,
 )
 from .provider_policy import resolve_provider_policy
-from .speaker_shadow import SpeakerShadowRuntime
+from main_logic.voice_identity.contracts import (
+    SpeakerVerifierFactory,
+    SpeakerVerifierRuntime,
+)
 from .transcript import (
     TranscriptDispatcher,
     TranscriptEnvelope,
@@ -179,9 +182,7 @@ class IndependentAsrRuntime:
         self._asr_detector: DetectorRuntime | None = None
         self._asr_smart_turn_lease: SmartTurnLease | None = None
         self._asr_session_factory = None
-        self._speaker_shadow_factory: (
-            Callable[[], SpeakerShadowRuntime | None] | None
-        ) = None
+        self._speaker_shadow_factory: SpeakerVerifierFactory | None = None
         self._asr_transport_selection = None
         self._asr_transport_task: asyncio.Task[None] | None = None
         self._asr_transport_lock = asyncio.Lock()
@@ -701,7 +702,7 @@ class IndependentAsrRuntime:
             self._asr_provider or "unknown",
         )
 
-    async def _create_speaker_shadow(self) -> SpeakerShadowRuntime | None:
+    async def _create_speaker_shadow(self) -> SpeakerVerifierRuntime | None:
         """Build the private observation runtime without risking ASR startup."""
 
         factory = self._speaker_shadow_factory
@@ -718,12 +719,29 @@ class IndependentAsrRuntime:
             )
             return None
 
+    async def set_speaker_verifier_factory(
+        self,
+        factory: SpeakerVerifierFactory | None,
+    ) -> None:
+        """Apply an explicit profile factory to the current Detector, if any."""
+
+        self._speaker_shadow_factory = factory
+        detector = self._asr_detector
+        if detector is None:
+            return
+        verifier = await self._create_speaker_shadow()
+        if detector is not self._asr_detector:
+            if verifier is not None:
+                await verifier.close()
+            return
+        await detector.replace_speaker_verifier(verifier)
+
     async def start(
         self,
         *,
         route_key: str,
         resource_optimization_enabled: bool,
-        speaker_shadow_factory: Callable[[], SpeakerShadowRuntime | None] | None = None,
+        speaker_shadow_factory: SpeakerVerifierFactory | None = None,
     ) -> AsrStartResult:
         """Resolve and start one independent-ASR route."""
 
