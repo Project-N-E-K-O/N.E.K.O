@@ -20,6 +20,8 @@ const buyerGuideLocales = [
   { directory: 'ja/guide', locale: 'ja' },
 ]
 const steamUrlPattern = /https:\/\/store\.steampowered\.com\/app\/4099310\/__NEKO\/\?[^\s'"`)]+/g
+const publishedSteamUrlPattern =
+  /https:\/\/store\.steampowered\.com\/app\/4099310(?:\/[^\s'"`)>]*)?(?:[?#][^\s'"`)>]*)?(?=[\s'"`)>]|$)/g
 
 function markdownFiles(directory) {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -28,6 +30,20 @@ function markdownFiles(directory) {
     return entry.isFile() && entry.name.endsWith('.md') ? [target] : []
   })
 }
+
+test('published Steam link matcher covers canonical and bare app URLs', () => {
+  const canonical =
+    'https://store.steampowered.com/app/4099310/__NEKO/?utm_source=docs'
+  const bare =
+    'https://store.steampowered.com/app/4099310?utm_source=docs'
+  const otherApp =
+    'https://store.steampowered.com/app/40993100?utm_source=docs'
+
+  assert.deepEqual(
+    [canonical, bare, otherApp].join('\n').match(publishedSteamUrlPattern),
+    [canonical, bare],
+  )
+})
 
 test('every localized home-page Steam CTA carries attributable UTM tags', () => {
   for (const { file, locale } of homePages) {
@@ -78,9 +94,7 @@ test('every Steam store link in published Markdown carries attribution', () => {
 
   for (const file of markdownFiles(docsRoot)) {
     const source = readFileSync(file, 'utf8')
-    const links = source.match(
-      /https:\/\/store\.steampowered\.com\/app\/4099310\/__NEKO\/[^\s'"`)>]*/g,
-    ) ?? []
+    const links = source.match(publishedSteamUrlPattern) ?? []
 
     for (const link of links) {
       checkedLinks += 1
