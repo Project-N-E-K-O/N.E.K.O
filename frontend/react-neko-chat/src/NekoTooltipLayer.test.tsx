@@ -20,10 +20,13 @@ describe('NekoTooltipLayer', () => {
     expect(button).not.toHaveAttribute('title');
 
     act(() => button.focus());
-    expect(screen.getByRole('tooltip')).toHaveTextContent('打开历史记录');
+    const tooltip = screen.getByRole('tooltip');
+    expect(tooltip).toHaveTextContent('打开历史记录');
+    expect(button).toHaveAttribute('aria-describedby', tooltip.id);
 
     act(() => button.blur());
     expect(screen.queryByRole('tooltip')).toBeNull();
+    expect(button).not.toHaveAttribute('aria-describedby');
   });
 
   it('uses a short delay for pointer hover and closes when the pointer leaves', () => {
@@ -138,5 +141,14 @@ describe('NekoTooltipLayer', () => {
     expect(wheelRule).toContain('border-radius: 9px');
     expect(wheelRule).toContain('backdrop-filter: blur(16px)');
     expect(wheelRule).not.toContain('border-radius: 0');
+  });
+
+  it('hides pointer focus chrome while preserving a custom keyboard focus indicator', () => {
+    expect(chatStyles).toMatch(
+      /\.compact-chat-minimize-ball:focus:not\(:focus-visible\)\s*\{[\s\S]*?outline: none;[\s\S]*?box-shadow: none;/,
+    );
+    expect(chatStyles).toMatch(
+      /\.compact-chat-minimize-ball:focus-visible\s*\{[\s\S]*?outline: 2px solid[\s\S]*?box-shadow: inset 0 0 0 3px/,
+    );
   });
 });

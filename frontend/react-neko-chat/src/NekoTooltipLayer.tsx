@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 const POINTER_OPEN_DELAY_MS = 320;
@@ -62,6 +62,7 @@ function isInsideAnchor(anchor: HTMLElement, target: EventTarget | null): boolea
 }
 
 export default function NekoTooltipLayer() {
+  const tooltipId = useId();
   const [target, setTarget] = useState<TooltipTarget | null>(null);
   const [layout, setLayout] = useState<TooltipLayout>({
     left: -9999,
@@ -193,6 +194,27 @@ export default function NekoTooltipLayer() {
 
   useEffect(() => {
     if (!target) return;
+    const anchor = target.anchor;
+    const describedBy = new Set(
+      (anchor.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean),
+    );
+    describedBy.add(tooltipId);
+    anchor.setAttribute('aria-describedby', Array.from(describedBy).join(' '));
+
+    return () => {
+      const remainingIds = (anchor.getAttribute('aria-describedby') ?? '')
+        .split(/\s+/)
+        .filter(id => id && id !== tooltipId);
+      if (remainingIds.length > 0) {
+        anchor.setAttribute('aria-describedby', remainingIds.join(' '));
+      } else {
+        anchor.removeAttribute('aria-describedby');
+      }
+    };
+  }, [target, tooltipId]);
+
+  useEffect(() => {
+    if (!target) return;
     let movementFrame = 0;
     const hideForViewportChange = () => hideTooltip(target.anchor);
     const watchAnchorMovement = () => {
@@ -221,6 +243,7 @@ export default function NekoTooltipLayer() {
 
   return createPortal(
     <div
+      id={tooltipId}
       ref={tooltipRef}
       className="neko-chat-tooltip"
       role="tooltip"

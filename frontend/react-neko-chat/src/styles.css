@@ -2661,10 +2661,15 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   touch-action: none;
 }
 
-.compact-chat-minimize-ball:focus,
-.compact-chat-minimize-ball:focus-visible {
+.compact-chat-minimize-ball:focus:not(:focus-visible) {
   outline: none;
   box-shadow: none;
+}
+
+.compact-chat-minimize-ball:focus-visible {
+  outline: 2px solid rgba(248, 253, 255, 0.94);
+  outline-offset: -3px;
+  box-shadow: inset 0 0 0 3px rgba(36, 151, 217, 0.58);
 }
 
 .compact-chat-minimize-ball:active {
