@@ -20,7 +20,7 @@ def _random_delay() -> float:
 
 
 class PendingReply:
-    __slots__ = ("entries", "wait_until", "task", "sender_id", "is_group", "group_id", "task_gen", "_cached_blocks")
+    __slots__ = ("entries", "wait_until", "task", "sender_id", "is_group", "group_id", "task_gen", "_cached_blocks", "_no_reply_retries")
 
     def __init__(self, sender_id: str, is_group: bool, group_id: str):
         self.entries: list[tuple[str, str]] = []  # [(sender_id, message_text), ...]; bot 回复用 "__bot__"

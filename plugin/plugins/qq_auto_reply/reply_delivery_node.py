@@ -130,7 +130,11 @@ class QQReplyDeliveryNode:
             file_uri, _ = await self.plugin.voice_reply_service.synthesize_reply_voice_file(block.record)
             self.plugin._emit_log("DEBUG", f"[Delivery] 语音合成完成: uri={file_uri[:60] if file_uri else 'empty'}")
             if plan.target_type == "group":
-                await self.plugin.qq_client.send_group_record(plan.target_id, file_uri)
+                await self.plugin.qq_client.send_group_record(
+                    plan.target_id, file_uri,
+                    reply_message_id=block.reply_to or "",
+                    at_user_id=block.at_user or "",
+                )
             else:
                 await self.plugin.qq_client.send_private_record(plan.target_id, file_uri)
             self.plugin._emit_log("DEBUG", f"[Delivery] 语音已发送")
@@ -140,9 +144,9 @@ class QQReplyDeliveryNode:
                 text = block.record
                 self.plugin._emit_log("INFO", f"[Delivery] 语音失败，fallback 文本: {text[:40]}")
                 if plan.target_type == "group":
-                    await self.plugin.qq_client.send_group_message(plan.target_id, text)
+                    await self.plugin.qq_client.send_group_message_segments(plan.target_id, self._build_segments(block))
                 else:
-                    await self.plugin.qq_client.send_message(plan.target_id, text)
+                    await self.plugin.qq_client.send_private_message_segments(plan.target_id, self._build_segments(block))
 
     async def _send_rps(self, plan): seg = {"type":"rps","data":{}}; (await self.plugin.qq_client.send_group_message_segments(plan.target_id,[seg]) if plan.target_type=="group" else await self.plugin.qq_client.send_private_message_segments(plan.target_id,[seg]))
     async def _send_dice(self, plan): seg = {"type":"dice","data":{}}; (await self.plugin.qq_client.send_group_message_segments(plan.target_id,[seg]) if plan.target_type=="group" else await self.plugin.qq_client.send_private_message_segments(plan.target_id,[seg]))

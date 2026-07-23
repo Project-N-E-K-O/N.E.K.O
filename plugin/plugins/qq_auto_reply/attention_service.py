@@ -328,7 +328,7 @@ class QQAttentionService:
 
         # 该群正在睡眠中 → 不累计注意力（逐群判定，不影响其他群）
         fatigue = getattr(self.plugin, "fatigue_service", None)
-        if fatigue and fatigue.is_sleeping(f"group:{group_id}"):
+        if fatigue and fatigue.check_sleeping(f"group:{group_id}"):
             return self.get_snapshot()
 
         focus_group_id = self.get_focus_group_id()
@@ -408,12 +408,13 @@ class QQAttentionService:
     async def update_on_reply(self, group_id: str, *, reply_message_id: str = "", at_user_id: str = "") -> dict[str, Any]:
         if not self._enabled():
             return self.get_snapshot()
-        # 该群正在睡眠中 → 不更新注意力（逐群判定）
-        fatigue = getattr(self.plugin, "fatigue_service", None)
-        if fatigue and fatigue.is_sleeping(f"group:{group_id}"):
-            return self.get_snapshot()
         normalized_group_id = str(group_id or "").strip()
         if not normalized_group_id:
+            return self.get_snapshot()
+        # 该群正在睡眠中 → 不更新注意力（逐群判定）
+        fatigue = getattr(self.plugin, "fatigue_service", None)
+        if fatigue and fatigue.check_sleeping(f"group:{normalized_group_id}"):
+            return self.get_snapshot()
             return self.get_snapshot()
         focus_group_id = self.get_focus_group_id()
         now = self._current_time()
@@ -437,11 +438,12 @@ class QQAttentionService:
     async def update_on_message_count(self, group_id: str, *, message_count: int = 1) -> dict[str, Any]:
         if not self._enabled():
             return self.get_snapshot()
-        fatigue = getattr(self.plugin, "fatigue_service", None)
-        if fatigue and fatigue.is_sleeping(f"group:{group_id}"):
-            return self.get_snapshot()
         normalized_group_id = str(group_id or "").strip()
         if not normalized_group_id:
+            return self.get_snapshot()
+        fatigue = getattr(self.plugin, "fatigue_service", None)
+        if fatigue and fatigue.check_sleeping(f"group:{normalized_group_id}"):
+            return self.get_snapshot()
             return self.get_snapshot()
         focus_group_id = self.get_focus_group_id()
         now = self._current_time()
@@ -510,8 +512,16 @@ class QQAttentionService:
 
     def _get_top_group_id(self) -> str:
         states = [self._load_state(gid) for gid in self._normalized_groups()]
-        states = self._sort_states(states)
-        return states[0].group_id if states else ""
+        # 睡眠群不参与焦点竞争
+        awake = [s for s in states if not self._is_group_sleeping(s.group_id)]
+        awake = self._sort_states(awake)
+        return awake[0].group_id if awake else ""
+
+    def _is_group_sleeping(self, group_id: str) -> bool:
+        fatigue = getattr(self.plugin, "fatigue_service", None)
+        if fatigue:
+            return fatigue.check_sleeping(f"group:{group_id}")
+        return False
 
     # ── Snapshot ──
 
@@ -527,11 +537,13 @@ class QQAttentionService:
         }
 
     def get_snapshot(self) -> dict[str, Any]:
-        states: list[QQGroupAttentionState] = [self._load_state(gid) for gid in self._normalized_groups()]
-        states = self._sort_states(states)
-        if not states:
+        all_states: list[QQGroupAttentionState] = [self._load_state(gid) for gid in self._normalized_groups()]
+        sorted_all = self._sort_states(all_states)
+        if not sorted_all:
             return self._default_snapshot()
-        focus = states[0]
+        # 焦点从非睡眠群中选（睡眠群不参与竞争，但保留在 groups 展示中）
+        awake = [s for s in sorted_all if not self._is_group_sleeping(s.group_id)]
+        focus = awake[0] if awake else sorted_all[0]
         return {
             "enabled": self._enabled(),
             "focus_group_id": focus.group_id,
@@ -539,7 +551,7 @@ class QQAttentionService:
             "focus_reason": focus.last_focus_reason,
             "dominant_dimension": focus.dominant_dimension(),
             "dimensions": focus.dimension_dict(),
-            "groups": [state.to_dict() for state in states],
+            "groups": [state.to_dict() for state in sorted_all],
         }
 
     # ── 多维度上下文注入（供 LLM prompt 使用）──

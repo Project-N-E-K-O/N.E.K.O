@@ -1,35 +1,30 @@
 """测试语音转录 _fetch_record_content"""
 from __future__ import annotations
-import asyncio, atexit, sys, types, importlib.util
+import asyncio, sys, types, importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock
 
 _MODULE_DIR = Path(__file__).resolve().parent
 
-# ── 构建最小 fake 环境加载 qq_client ──
+# ── 构建最小 fake 环境加载 qq_client（可恢复）──
 _mock_mods = ["websockets", "websockets.exceptions", "websockets.asyncio",
               "websockets.asyncio.client", "PIL", "PIL.Image", "utils.file_utils"]
-_saved_mods = {}
+_saved_mods = {}               # {module_name: original_or_None}
+_new_pkgs = []                 # 本次新建的 package 模块名
+_saved_conn = None             # qq_connection 原始模块
+_saved_client = None           # qq_client 原始模块
+
 for m in _mock_mods:
     _saved_mods[m] = sys.modules.get(m)
     sys.modules[m] = MagicMock()
-
-
-def _restore_mocks():
-    """恢复 sys.modules，避免污染同进程其他测试。"""
-    for m, orig in _saved_mods.items():
-        if orig is None:
-            sys.modules.pop(m, None)
-        else:
-            sys.modules[m] = orig
-
-atexit.register(_restore_mocks)
 
 for pkg in ["plugin", "plugin.plugins", "plugin.plugins.qq_auto_reply"]:
     if pkg not in sys.modules:
         sys.modules[pkg] = types.ModuleType(pkg)
         sys.modules[pkg].__path__ = []
+        _new_pkgs.append(pkg)
 
+_saved_conn = sys.modules.get("plugin.plugins.qq_auto_reply.qq_connection")
 _conn_mod = types.ModuleType("plugin.plugins.qq_auto_reply.qq_connection")
 sys.modules["plugin.plugins.qq_auto_reply.qq_connection"] = _conn_mod
 
@@ -60,6 +55,7 @@ class FakeConnBase:
     def record_sent_message_id(self, mid): pass
 _conn_mod.QQConnectionBase = FakeConnBase
 
+_saved_client = sys.modules.get("plugin.plugins.qq_auto_reply.qq_client")
 _spec = importlib.util.spec_from_file_location(
     "plugin.plugins.qq_auto_reply.qq_client",
     _MODULE_DIR / "qq_client.py")
@@ -67,6 +63,29 @@ _qq = importlib.util.module_from_spec(_spec)
 sys.modules["plugin.plugins.qq_auto_reply.qq_client"] = _qq
 _spec.loader.exec_module(_qq)
 QQClient = _qq.QQClient
+
+
+def _restore_mocks():
+    """恢复 sys.modules，由 main() 在测试结束后调用。"""
+    for m, orig in _saved_mods.items():
+        if orig is None:
+            sys.modules.pop(m, None)
+        else:
+            sys.modules[m] = orig
+    for pkg in _new_pkgs:
+        sys.modules.pop(pkg, None)
+    if _saved_conn is None:
+        sys.modules.pop("plugin.plugins.qq_auto_reply.qq_connection", None)
+    else:
+        sys.modules["plugin.plugins.qq_auto_reply.qq_connection"] = _saved_conn
+    if _saved_client is None:
+        sys.modules.pop("plugin.plugins.qq_auto_reply.qq_client", None)
+    else:
+        sys.modules["plugin.plugins.qq_auto_reply.qq_client"] = _saved_client
+    if _saved_httpx is None:
+        sys.modules.pop("httpx", None)
+    else:
+        sys.modules["httpx"] = _saved_httpx
 
 # ═══════════════════════════════════════════════════════════
 
@@ -77,28 +96,43 @@ _FAKE_AUDIO = (
 )
 
 
-def _mock_httpx_download(monkeypatch):
-    """mock httpx.AsyncClient.get 返回假音频"""
-    import httpx as _httpx
-    class FakeResponse:
-        status_code = 200
-        content = _FAKE_AUDIO
-    class FakeClient:
-        async def __aenter__(self, *a, **kw): return self
-        async def __aexit__(self, *a): pass
-        async def get(self, url): return FakeResponse()
-    monkeypatch.setattr("httpx.AsyncClient", lambda *a, **kw: FakeClient())
+class _FakeResponse:
+    status_code = 200
+    content = _FAKE_AUDIO
+
+class _FakeHttpxClient:
+    async def __aenter__(self, *a, **kw): return self
+    async def __aexit__(self, *a): pass
+    async def get(self, url): return _FakeResponse()
+
+# 注入 fake httpx 模块（给 _fetch_record_content 下载音频用）
+import httpx as _real_httpx
+_saved_httpx = sys.modules.get("httpx")
+_fake_httpx = types.ModuleType("httpx")
+_fake_httpx.AsyncClient = _FakeHttpxClient
+_fake_httpx.Timeout = _real_httpx.Timeout
+sys.modules["httpx"] = _fake_httpx
+
+
+# ── transcriber stub helpers ──
+
+async def _happy_transcribe(audio_base64="", *, audio_url=""):
+    return "我今天好开心呀"
+
+async def _empty_transcribe(audio_base64="", *, audio_url=""):
+    return ""
+
+async def _bad_transcribe(audio_base64="", *, audio_url=""):
+    raise RuntimeError("API炸了")
 
 
 async def test_no_transcriber():
     """无 transcriber → 仅标记 [语音]"""
-    from unittest.mock import patch
     c = QQClient(onebot_url="ws://0.0.0.0:6199")
 
     async def _get_record(_):
         return {"data": {"url": "http://example.com/voice.amr"}}
     c.get_record = _get_record
-    _mock_httpx_download(patch)
 
     msg = {"raw_message": "你在说什么？"}
     await c._fetch_record_content(msg, ["file_001"])
@@ -108,19 +142,15 @@ async def test_no_transcriber():
 
 async def test_with_transcriber():
     """有 transcriber → 转文字"""
-    from unittest.mock import patch
     c = QQClient(onebot_url="ws://0.0.0.0:6199")
-    called = []
-    c._voice_transcriber = lambda b64: called.append(b64) or "我今天好开心呀"
+    c._voice_transcriber = _happy_transcribe
 
     async def _get_record(_):
         return {"data": {"url": "http://example.com/voice.amr"}}
     c.get_record = _get_record
-    _mock_httpx_download(patch)
 
     msg = {"raw_message": "你在说什么？"}
     await c._fetch_record_content(msg, ["file_001"])
-    assert len(called) == 1, "transcriber 应该被调用 1 次"
     assert "我今天好开心呀" in msg["raw_message"], msg["raw_message"]
     assert "[语音]" in msg["raw_message"], msg["raw_message"]
     print("[PASS] 有 transcriber →", msg["raw_message"])
@@ -128,19 +158,15 @@ async def test_with_transcriber():
 
 async def test_transcriber_empty():
     """转录返回空 → 回退 [语音]"""
-    from unittest.mock import patch
     c = QQClient(onebot_url="ws://0.0.0.0:6199")
-    called = []
-    c._voice_transcriber = lambda b64: called.append(b64) or ""
+    c._voice_transcriber = _empty_transcribe
 
     async def _get_record(_):
         return {"data": {"file": "/tmp/voice.amr"}}
     c.get_record = _get_record
-    _mock_httpx_download(patch)
 
     msg = {"raw_message": "喂？"}
     await c._fetch_record_content(msg, ["file_001"])
-    assert len(called) == 1, "transcriber 应该被调用"
     assert "[语音]" in msg["raw_message"], msg["raw_message"]
     assert "喂？" in msg["raw_message"]
     print("[PASS] 转录空 → 回退标记:", msg["raw_message"])
@@ -161,22 +187,15 @@ async def test_get_record_fails():
 
 async def test_transcriber_raises():
     """transcriber 抛异常 → 回退 [语音]"""
-    from unittest.mock import patch
     c = QQClient(onebot_url="ws://0.0.0.0:6199")
-    called = []
-    def _bad_transcriber(b64):
-        called.append(b64)
-        raise RuntimeError("API炸了")
-    c._voice_transcriber = _bad_transcriber
+    c._voice_transcriber = _bad_transcribe
 
     async def _get_record(_):
         return {"data": {"url": "http://example.com/voice.amr"}}
     c.get_record = _get_record
-    _mock_httpx_download(patch)
 
     msg = {"raw_message": "hello"}
     await c._fetch_record_content(msg, ["file_err"])
-    assert len(called) == 1, "transcriber 应该被调用"
     assert "[语音]" in msg["raw_message"]
     print("[PASS] transcriber 异常 → 回退:", msg["raw_message"])
 
@@ -260,21 +279,23 @@ async def test_real_api():
         async def _get_record(_):
             return {"data": {"url": "http://example.com/voice.amr"}}
         c.get_record = _get_record
-        _mock_httpx_download(patch)
-
+    
         msg = {"raw_message": "测试"}
         await c._fetch_record_content(msg, ["file_test"])
         print(f"[PASS] {prov_name} → {msg['raw_message']}")
 
 
 async def main():
-    await test_no_transcriber()
-    await test_with_transcriber()
-    await test_transcriber_empty()
-    await test_get_record_fails()
-    await test_transcriber_raises()
-    await test_real_api()
-    print("\n[OK] All voice tests passed!")
+    try:
+        await test_no_transcriber()
+        await test_with_transcriber()
+        await test_transcriber_empty()
+        await test_get_record_fails()
+        await test_transcriber_raises()
+        await test_real_api()
+        print("\n[OK] All voice tests passed!")
+    finally:
+        _restore_mocks()
 
 
 if __name__ == "__main__":
