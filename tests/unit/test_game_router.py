@@ -4069,6 +4069,7 @@ async def test_route_external_text_uses_no_memory_input_type_when_game_memory_di
 @pytest.mark.asyncio
 async def test_route_external_audio_activates_game_stt_gate(monkeypatch):
     mgr = _FakeGameRouteManager()
+    mgr._suspend_independent_voice_input_for_game = AsyncMock()
     _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
     state = gr_runtime._activate_game_route("soccer", "match_1", "Lan")
 
@@ -4091,6 +4092,7 @@ async def test_route_external_audio_activates_game_stt_gate(monkeypatch):
     assert state["game_input_activation_log"][0]["source"] == "external_voice_hijacked_by_game"
     assert state["game_input_activation_log"][0]["mode"] == "voice"
     assert state["game_input_activation_log"][0]["detail"] == {}
+    mgr._suspend_independent_voice_input_for_game.assert_not_awaited()
 
 
 @pytest.mark.unit
