@@ -74,6 +74,7 @@ export default function NekoTooltipLayer() {
   const openTimerRef = useRef<number | null>(null);
   const pendingAnchorRef = useRef<HTMLElement | null>(null);
   const anchorRectRef = useRef<AnchorRectSnapshot | null>(null);
+  const pointerInteractionRef = useRef(false);
 
   const clearOpenTimer = useCallback(() => {
     if (openTimerRef.current !== null) {
@@ -125,10 +126,10 @@ export default function NekoTooltipLayer() {
     const hasBottomSpace = viewportHeight - anchorRect.bottom
       >= tooltipRect.height + TARGET_GAP_PX + VIEWPORT_EDGE_GAP_PX;
     const placement: TooltipPlacement = preferredPlacement === 'top'
-      ? 'top'
-      : preferredPlacement === 'bottom' || (!hasTopSpace && hasBottomSpace)
-        ? 'bottom'
-        : 'top';
+      ? hasTopSpace || !hasBottomSpace ? 'top' : 'bottom'
+      : preferredPlacement === 'bottom'
+        ? hasBottomSpace || !hasTopSpace ? 'bottom' : 'top'
+        : !hasTopSpace && hasBottomSpace ? 'bottom' : 'top';
     const unclampedLeft = anchorRect.left + (anchorRect.width - tooltipRect.width) / 2;
     const maxLeft = Math.max(VIEWPORT_EDGE_GAP_PX, viewportWidth - tooltipRect.width - VIEWPORT_EDGE_GAP_PX);
     const left = Math.min(Math.max(unclampedLeft, VIEWPORT_EDGE_GAP_PX), maxLeft);
@@ -154,6 +155,7 @@ export default function NekoTooltipLayer() {
       hideTooltip(anchor);
     };
     const handleFocusIn = (event: FocusEvent) => {
+      if (pointerInteractionRef.current) return;
       const anchor = findTooltipAnchor(event.target);
       if (anchor) showTooltip(anchor, 0);
     };
@@ -162,7 +164,13 @@ export default function NekoTooltipLayer() {
       if (!anchor || isInsideAnchor(anchor, event.relatedTarget)) return;
       hideTooltip(anchor);
     };
-    const handlePointerDown = () => hideTooltip();
+    const handlePointerDown = () => {
+      pointerInteractionRef.current = true;
+      hideTooltip();
+    };
+    const handlePointerEnd = () => {
+      pointerInteractionRef.current = false;
+    };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') hideTooltip();
     };
@@ -172,6 +180,8 @@ export default function NekoTooltipLayer() {
     document.addEventListener('focusin', handleFocusIn);
     document.addEventListener('focusout', handleFocusOut);
     document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('pointerup', handlePointerEnd);
+    document.addEventListener('pointercancel', handlePointerEnd);
     document.addEventListener('keydown', handleKeyDown);
 
     return () => {
@@ -181,6 +191,8 @@ export default function NekoTooltipLayer() {
       document.removeEventListener('focusin', handleFocusIn);
       document.removeEventListener('focusout', handleFocusOut);
       document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('pointerup', handlePointerEnd);
+      document.removeEventListener('pointercancel', handlePointerEnd);
       document.removeEventListener('keydown', handleKeyDown);
     };
   }, [clearOpenTimer, hideTooltip, showTooltip]);

@@ -2,7 +2,7 @@
 
 @font-face {
   font-family: "Neko Chat Hand";
-  src: url("/assets/Yozai-Medium.ttf") format("truetype");
+  src: url("/static/react/neko-chat/assets/Yozai-Medium.ttf") format("truetype");
   font-style: normal;
   font-weight: 500;
   font-display: swap;
@@ -2623,7 +2623,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
     var(--compact-chat-surface-edge-bottom)
     var(--compact-chat-surface-edge-left);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.035);
+  background-color: rgba(255, 255, 255, 0.035);
   box-shadow: var(--compact-chat-surface-shadow);
   backdrop-filter: blur(36px) saturate(0.9) contrast(0.78) brightness(1.08);
   -webkit-backdrop-filter: blur(36px) saturate(0.9) contrast(0.78) brightness(1.08);

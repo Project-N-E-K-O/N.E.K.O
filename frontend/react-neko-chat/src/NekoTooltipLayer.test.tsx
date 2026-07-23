@@ -64,7 +64,20 @@ describe('NekoTooltipLayer', () => {
       </>,
     );
 
-    act(() => screen.getByRole('button', { name: '最小化' }).focus());
+    const button = screen.getByRole('button', { name: '最小化' });
+    vi.spyOn(button, 'getBoundingClientRect').mockImplementation(() => ({
+      x: 20,
+      y: 100,
+      left: 20,
+      top: 100,
+      right: 66,
+      bottom: 146,
+      width: 46,
+      height: 46,
+      toJSON: () => ({}),
+    }));
+
+    act(() => button.focus());
     expect(screen.getByRole('tooltip')).toHaveAttribute('data-variant', 'compact-tool');
     expect(screen.getByRole('tooltip')).toHaveAttribute('data-placement', 'top');
     expect(chatStyles).toMatch(
@@ -85,6 +98,53 @@ describe('NekoTooltipLayer', () => {
 
     fireEvent.scroll(window);
     expect(screen.queryByRole('tooltip')).toBeNull();
+  });
+
+  it('does not reopen a dismissed tooltip when pointer focus follows pointerdown', () => {
+    render(
+      <>
+        <button type="button" data-neko-tooltip="最小化聊天框">最小化</button>
+        <NekoTooltipLayer />
+      </>,
+    );
+
+    const button = screen.getByRole('button', { name: '最小化' });
+    fireEvent.pointerDown(button);
+    act(() => button.focus());
+    fireEvent.pointerUp(button);
+
+    expect(screen.queryByRole('tooltip')).toBeNull();
+  });
+
+  it('flips a preferred top tooltip below when the viewport has no top space', () => {
+    render(
+      <>
+        <button
+          type="button"
+          data-neko-tooltip="最小化聊天框"
+          data-neko-tooltip-placement="top"
+        >
+          最小化
+        </button>
+        <NekoTooltipLayer />
+      </>,
+    );
+
+    const button = screen.getByRole('button', { name: '最小化' });
+    vi.spyOn(button, 'getBoundingClientRect').mockImplementation(() => ({
+      x: 20,
+      y: 4,
+      left: 20,
+      top: 4,
+      right: 66,
+      bottom: 50,
+      width: 46,
+      height: 46,
+      toJSON: () => ({}),
+    }));
+
+    act(() => button.focus());
+    expect(screen.getByRole('tooltip')).toHaveAttribute('data-placement', 'bottom');
   });
 
   it('dismisses a visible tooltip when its anchor changes position', () => {

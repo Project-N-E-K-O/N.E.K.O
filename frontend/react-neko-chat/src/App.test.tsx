@@ -6751,7 +6751,7 @@ describe('App', () => {
 
   it('uses the bundled Yozai font for conversation content while controls keep the UI font', () => {
     expect(compactChatStyles).toMatch(
-      /@font-face\s*\{[\s\S]*?font-family:\s*"Neko Chat Hand";[\s\S]*?url\("\/assets\/Yozai-Medium\.ttf"\)/,
+      /@font-face\s*\{[\s\S]*?font-family:\s*"Neko Chat Hand";[\s\S]*?url\("\/static\/react\/neko-chat\/assets\/Yozai-Medium\.ttf"\)/,
     );
     expect(compactChatStyles).toContain('--neko-ui-font: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;');
     expect(compactChatStyles).toContain('--neko-chat-content-font: "Neko Chat Hand", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;');
@@ -6788,7 +6788,7 @@ describe('App', () => {
 
   it('frosts the backdrop without increasing the compact surface opacity', () => {
     expect(compactChatStyles).toMatch(
-      /\.compact-chat-surface-frame\s*\{[\s\S]*?background: rgba\(255, 255, 255, 0\.035\);[\s\S]*?backdrop-filter: blur\(36px\) saturate\(0\.9\) contrast\(0\.78\) brightness\(1\.08\);/,
+      /\.compact-chat-surface-frame\s*\{[\s\S]*?background-clip: padding-box;[\s\S]*?background-color: rgba\(255, 255, 255, 0\.035\);[\s\S]*?backdrop-filter: blur\(36px\) saturate\(0\.9\) contrast\(0\.78\) brightness\(1\.08\);/,
     );
     expect(compactChatStyles).toContain(
       'linear-gradient(180deg, rgba(255, 255, 255, 0.34), rgba(242, 249, 255, 0.19) 46%, rgba(219, 238, 253, 0.24))',
