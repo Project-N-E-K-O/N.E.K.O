@@ -100,6 +100,20 @@ class QQReplyPipelineRunner:
                 },
             )
         )
+        # 汇总日志：完整回复链条
+        stages = []
+        for t in outcome.traces:
+            if t.stage == "decision":
+                stages.append(f"决策={t.status}" + (f"({t.metadata.get('suppression_reason')})" if t.metadata.get("suppression_reason") else ""))
+            elif t.stage == "model":
+                stages.append(f"模型={t.status}" + (f"(fallback={t.metadata.get('fallback_reason')})" if t.metadata.get("fallback_reason") else ""))
+            elif t.stage == "postprocess":
+                stages.append(f"后处理={t.status}")
+            elif t.stage == "delivery":
+                stages.append(f"交付={t.status}")
+        scope = f"群{request.group_id}" if request.is_group else f"私聊{request.sender_id}"
+        reply_preview = (outcome.reply_text or "")[:50]
+        self.plugin._emit_log("INFO", f"[链路] {scope} | {' → '.join(stages)} | 回复={reply_preview}")
         return outcome
 
     def _run_decision(self, request: QQReplyRequest) -> QQReplyDecision:
@@ -154,6 +168,9 @@ class QQReplyPipelineRunner:
             group_scene_mode=request.group_scene_mode,
             current_message_id=request.current_message_id,
             force_reply=request.force_reply,
+            is_at_bot=request.is_at_bot,
+            mentions_all=request.mentions_all,
+            reply_context=request.reply_context,
         )
 
     async def _run_model(self, context: QQReplyContext) -> QQModelResult:
@@ -165,119 +182,102 @@ class QQReplyPipelineRunner:
     def _build_delivery_plan(self, request: QQReplyRequest, outcome: QQReplyOutcome):
         return self.plugin.reply_postprocess_node.build_delivery_plan(request, outcome)
 
-    async def _send_ark(self, request: QQReplyRequest, outcome: QQReplyOutcome) -> bool:
-        """发送 Ark 卡片消息"""
-        ark = outcome.parsed_ark
-        title = ark.get("title", "")
-        desc = ark.get("desc", "")
-        pic = ark.get("pic", "")
-        btn = ark.get("btn", "")
-        url = ark.get("url", "")
-        body_text = ark.get("_body", "")
-
-        # 构建 ark payload
-        ark_obj: dict[str, Any] = {"msg_type": 10}
-        if title:
-            ark_obj["ark"] = {
-                "template_id": 37,
-                "kv": [
-                    {"key": "#PROMPT#", "value": body_text or title},
-                    {"key": "#TITLE#", "value": title},
-                    {"key": "#DESC#", "value": desc or body_text},
-                ]
-            }
-            if pic:
-                ark_obj["ark"]["kv"].append({"key": "#IMGPATH#", "value": pic})
-        else:
-            ark_obj["ark"] = {
-                "template_id": 23,
-                "kv": [
-                    {"key": "#TITLE#", "value": body_text or "卡片"},
-                    {"key": "#DESC#", "value": desc},
-                ]
-            }
-            if pic:
-                ark_obj["ark"]["kv"].append({"key": "#IMG#", "value": pic})
-
-        if btn:
-            ark_obj["ark"]["kv"].append({"key": "#SUBTITLE#", "value": btn})
-        if url:
-            ark_obj["ark"]["kv"].append({"key": "#URL#", "value": url})
-
-        from .qq_open_plat import QQOpenPlatformConnection
-        if not isinstance(self.plugin.qq_client, QQOpenPlatformConnection):
-            # NapCat / OneBot 不支持 Ark 卡片，降级为文本发送
-            fallback = body_text or title or desc or ""
-            if fallback:
-                await self.plugin._deliver_group_reply(
-                    str(request.group_id or ""),
-                    fallback,
-                    reply_message_id="",
-                    at_user_id="",
-                    fallback_to_text_on_voice_failure=True,
-                )
-                return True
-            return False
-        try:
-            await self.plugin.qq_client._ensure_token()
-            r = await self.plugin.qq_client._http.post(
-                f"{self.plugin.qq_client._API_BASE}/v2/groups/{request.group_id}/messages",
-                json=ark_obj,
-                headers=self.plugin.qq_client._auth_headers(),
-            )
-            data = r.json()
-            return bool(data.get("id"))
-        except Exception as e:
-            self.plugin.logger.warning(f"[Ark] 发送失败: {e}")
-            return False
-
     async def _run_delivery(self, delivery_plan, request: QQReplyRequest = None, outcome: QQReplyOutcome = None) -> QQDeliveryResult | None:
         # 缓冲内部调用的请求（buffer_delayed/rapid_fire_flush/proactive_speech）不再次走缓冲
-        skip_buffer = request and getattr(request, 'source_kind', '') in ('buffer_delayed', 'rapid_fire_flush', 'proactive_speech')
+        source = getattr(request, 'source_kind', '') if request else ''
+        skip_buffer = request and (
+            source in ('buffer_delayed', 'rapid_fire_flush', 'proactive_speech', 'retroactive_review')
+            or request.is_at_bot or request.force_reply
+        )
         if not skip_buffer and self.plugin.reply_buffer_service and request and delivery_plan and delivery_plan.blocks:
-            # 从 LLM 原始输出提取 <wait> 标签（在 _parse_blocks 之前已保存）
-            raw = (outcome.raw_reply_text if outcome else "") or ""
-            clean, wait_sec = QQReplyBufferService.extract_wait_seconds(raw)
-            # 默认等待加随机抖动（±40%），避免每次都一样
-            if wait_sec == QQReplyBufferService.DEFAULT_WAIT_SECONDS:
-                import random
-                wait_sec = max(1.5, wait_sec * random.uniform(0.6, 1.4))
-            # 私聊默认等更久（对方在讲故事/连续输出）
             first_text = delivery_plan.blocks[0].text if delivery_plan.blocks else ""
-            # 检查是否有实际内容（text/record/sticker/poke/emoji 任一非空即有效）
             has_content = any(
-                b.text or b.record or b.sticker or b.poke or b.emoji
+                b.text or b.record or b.sticker or b.poke
+                or b.rps or b.dice
+                or (b.contact_type and b.contact_id)
+                or b.music_type
+                or b.mface_id
+                or b.file_path
+                or b.json_data
+                or b.keyboard
+                or b.ark
                 for b in (delivery_plan.blocks or [])
             )
-            # clean 可能含 <msg></msg>，去标签后再判空
-            clean_stripped = re.sub(r"<[^>]+>", "", clean).strip() if clean else ""
-            if not has_content and not clean_stripped:
-                # LLM 决定不回复（<msg></msg>），跳过缓冲
+            if not has_content:
                 from .pipeline_models import QQDeliveryResult
                 return QQDeliveryResult(delivered=False, target_type=delivery_plan.target_type, target_id=delivery_plan.target_id, reply_text=None)
-            session_key = self.plugin._build_session_key(
-                sender_id=request.sender_id,
-                is_group=request.is_group,
-                group_id=request.group_id,
-            )
-            self.plugin._emit_log("DEBUG", f"[Buffer] 调度延迟回复: key={session_key} wait={wait_sec:.1f}s text={first_text[:30]}")
-            # 转发消息的子条数计入缓冲
-            fwd_count = int(getattr(request, 'forward_sub_count', 0) or 0)
-            await self.plugin.reply_buffer_service.schedule_reply(
-                session_key=session_key,
-                reply_text=first_text or clean or "",
-                raw_text=clean or first_text or "",
-                blocks=delivery_plan.blocks,
-                wait_seconds=wait_sec,
-                sender_id=request.sender_id,
-                is_group=request.is_group,
-                group_id=request.group_id or "",
-                extra_count=fwd_count,
-            )
-            from .pipeline_models import QQDeliveryResult
-            return QQDeliveryResult(delivered=True, target_type=delivery_plan.target_type, target_id=delivery_plan.target_id, reply_text=first_text)
+            buf_sid = request.group_id if request.is_group else request.sender_id
+            session_key = self.plugin._build_session_key(sender_id=buf_sid, is_group=request.is_group, group_id=request.group_id)
+            if self.plugin.reply_buffer_service.store_reply(session_key, first_text or "", delivery_plan.blocks):
+                self.plugin._emit_log("DEBUG", f"[Buffer] 回复已缓存 key={session_key} text={first_text[:30]}")
+                from .pipeline_models import QQDeliveryResult
+                return QQDeliveryResult(delivered=True, target_type=delivery_plan.target_type, target_id=delivery_plan.target_id, reply_text=first_text)
+
+        # 不走缓冲 → 直接交付
+        reason = "skip" if skip_buffer else ("group" if request and request.is_group else "no_buffer_svc")
+        self.plugin._emit_log("DEBUG", f"[Delivery] 直接发送 source={source} reason={reason}")
+
+        # 群聊冷却：同一群非强制消息至少间隔 5 秒
+        is_force = request and (request.is_at_bot or request.force_reply)
+        is_skip_cool = source in ('retroactive_review', 'proactive_speech', 'buffer_delayed', 'rapid_fire_flush')
+        if delivery_plan.target_type == "group" and not is_force and not is_skip_cool:
+            now_ts = __import__("time").time()
+            if not hasattr(self.plugin, "_last_group_reply_at"):
+                self.plugin._last_group_reply_at: dict[str, float] = {}
+            last = self.plugin._last_group_reply_at.get(delivery_plan.target_id, 0)
+            if now_ts - last < 5.0:
+                self.plugin._emit_log("DEBUG", f"[Cooldown] 群{delivery_plan.target_id} 冷却中 ({now_ts - last:.1f}s)，跳过")
+                return QQDeliveryResult(delivered=False, target_type=delivery_plan.target_type, target_id=delivery_plan.target_id, reply_text=None)
+            self.plugin._last_group_reply_at[delivery_plan.target_id] = now_ts
+
+        # 情绪状态更新（LLM 输出的 <feeling> 标签）
+        if outcome and outcome.feeling:
+            group = delivery_plan.target_id if delivery_plan.target_type == "group" else ""
+            if group and self.plugin.attention_service:
+                self.plugin.attention_service.set_emotion(group, outcome.feeling)
+
+        # Emoji reaction on the incoming message
+        emoji_id = (outcome.emoji_reaction_id if outcome else "") or ""
+        current_msg_id = (request.current_message_id if request else "") or ""
+        if emoji_id and current_msg_id and self.plugin.qq_client and self.plugin.qq_client.needs_attention:
+            try:
+                await self.plugin.qq_client.set_msg_emoji_like(current_msg_id, emoji_id)
+                self.plugin._emit_log("INFO", f"[Emoji] reaction: msg={current_msg_id} emoji={emoji_id}")
+            except Exception as e:
+                self.plugin._emit_log("WARN", f"[Emoji] reaction failed: {e}")
+
+        # Forward message (cross-group if to="群号")
+        fw = (outcome.forward_content if outcome else "") or ""
+        fw_target = (outcome.forward_target if outcome else "") or ""
+        if fw and self.plugin.qq_client and self.plugin.qq_client.needs_attention:
+            fw_nodes = self._build_forward_nodes(fw)
+            if fw_nodes:
+                try:
+                    target_group = fw_target or (str(request.group_id or "") if request and request.is_group else "")
+                    if target_group:
+                        await self.plugin.qq_client.send_group_forward_msg(target_group, fw_nodes)
+                        self.plugin._emit_log("INFO", f"[Forward] →群{target_group}: {len(fw_nodes)}条")
+                    else:
+                        await self.plugin.qq_client.send_private_forward_msg(request.sender_id if request else "", fw_nodes)
+                        self.plugin._emit_log("INFO", f"[Forward] →私聊: {len(fw_nodes)}条")
+                except Exception as e:
+                    self.plugin._emit_log("WARN", f"[Forward] failed: {e}")
 
         return await self.plugin.reply_delivery_node.deliver(delivery_plan)
+
+    @staticmethod
+    def _build_forward_nodes(forward_content: str) -> list[dict[str, Any]]:
+        import re
+        nodes = []
+        for line in forward_content.strip().split("\n"):
+            line = line.strip()
+            if not line: continue
+            m = re.match(r"\[?([^\]]*?)\]?\s*:\s*(.*)", line)
+            if m: name, content = m.group(1).strip(), m.group(2).strip()
+            else: name, content = "系统", line
+            if content:
+                nodes.append({"type":"node","data":{"name":name or "系统","uin":"0","content":content}})
+        return nodes
 
     def _resolve_sticker_path(self, sticker_id: str) -> str:
         """解析表情包 ID 到文件路径。"""

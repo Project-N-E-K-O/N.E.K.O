@@ -64,14 +64,20 @@ class QQPromptBuilder:
         group_id: str | None,
         message: str,
         current_message_id: str = "",
+        is_at_bot: bool = False,
+        mentions_all: bool = False,
+        reply_context: str = "",
     ) -> str:
+        ctx = f"{reply_context}\n---\n" if reply_context else ""
         if is_group and not group_facing:
-            return self.plugin._build_group_turn_message(
+            return ctx + self.plugin._build_group_turn_message(
                 group_scene_mode=group_scene_mode,
                 user_title=user_title,
                 sender_id=sender_id,
                 group_id=group_id,
                 message=message,
                 current_message_id=current_message_id,
+                is_at_bot=is_at_bot,
+                mentions_all=mentions_all,
             )
-        return message
+        return ctx + message

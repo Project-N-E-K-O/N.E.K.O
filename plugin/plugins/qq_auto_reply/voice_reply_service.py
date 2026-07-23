@@ -69,7 +69,7 @@ class QQVoiceReplyService:
             if not base_url or (not base_url.startswith("ws://") and not base_url.startswith("wss://")):
                 return None
 
-            voice_id = await self.get_current_voice_id() or "default"
+            voice_id = await self.get_current_voice_id() or "中文女"
             voice_name = str(tts_config.get("voice_name") or voice_id)
 
             import websockets, json as _json, io, wave

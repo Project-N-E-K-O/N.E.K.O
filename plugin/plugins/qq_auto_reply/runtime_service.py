@@ -23,7 +23,34 @@ class QQRuntimeService:
             "show_napcat_window": bool((self.plugin._qq_settings or {}).get("show_napcat_window", True)),
             "startup_error": str(self.plugin._startup_error or "") or None,
             "attention": attention_snapshot,
+            "fatigue": self._build_fatigue_snapshot(),
             "recent_pipeline_traces": self.get_recent_pipeline_traces(),
+        }
+
+    def _build_fatigue_snapshot(self) -> dict[str, Any]:
+        fatigue = getattr(self.plugin, "fatigue_service", None)
+        if not fatigue: return {"available": False}
+        import datetime as _dt
+        now = _dt.datetime.now()
+        sleeping_now = fatigue._sleep_start_at > 0
+        return {
+            "available": True,
+            "total_fatigue": round(fatigue.calculate_fatigue("__global__"), 1),
+            "circadian": round(fatigue._circadian_fatigue(), 1),
+            "global_load": round(fatigue._global_load_fatigue(), 1),
+            "sleeping_groups": len([k for k, v in fatigue._sleeping.items() if v]),
+            "awake_groups": len([k for k, v in fatigue._sleeping.items() if not v]),
+            "sleep_debt": round(fatigue._sleep_debt_fatigue(), 1),
+            "total_sleep_24h_h": round(fatigue._total_sleep_24h(min_duration=600) / 3600, 1),
+            "bedtime": f"{int(fatigue._bedtime_hour):02d}:{int((fatigue._bedtime_hour % 1) * 60):02d}",
+            "wake_time": f"{int(fatigue._wake_hour):02d}:{int((fatigue._wake_hour % 1) * 60):02d}",
+            "sleep_duration_h": round(fatigue._sleep_duration, 1),
+            "woken_early": fatigue._woken_early,
+            "sleeping_now": sleeping_now,
+            "sleep_started_at": _dt.datetime.fromtimestamp(fatigue._sleep_start_at).strftime("%H:%M") if sleeping_now else "",
+            "last_sleep_start": _dt.datetime.fromtimestamp(fatigue._last_sleep_start).strftime("%H:%M") if fatigue._last_sleep_start > 0 else "",
+            "last_sleep_end": _dt.datetime.fromtimestamp(fatigue._last_sleep_end).strftime("%H:%M") if fatigue._last_sleep_end > 0 else "",
+            "time": now.strftime("%Y-%m-%d %H:%M") + " 星期" + "一二三四五六日"[now.weekday()],
         }
 
     def record_pipeline_outcome(self, *, source: str, request: Any, outcome: Any) -> None:

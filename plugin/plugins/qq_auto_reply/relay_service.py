@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import random
 import time
 from typing import Any
 
@@ -34,8 +33,6 @@ class QQRelayService:
 
     async def execute_relay_plan(self, relay_plan: QQRelayPlan | None) -> bool:
         if not relay_plan:
-            return False
-        if random.random() >= relay_plan.relay_probability:
             return False
         self.plugin._relay_backlog_items = ([{
             "id": f"{relay_plan.source_type}:{relay_plan.source_id}:{relay_plan.sender_id}:{int(time.time() * 1000)}",

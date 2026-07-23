@@ -5,6 +5,13 @@ from typing import Any, Optional
 from plugin.sdk.plugin import Err, Ok, SdkError
 
 
+def _calc_service_done(settings: dict[str, Any]) -> bool:
+    mode = str(settings.get("qq_connection_mode", "napcat") or "napcat").strip()
+    if mode == "open_platform":
+        return bool(settings.get("qq_open_app_id")) and bool(settings.get("qq_open_client_secret"))
+    return bool(settings.get("onebot_url")) and bool(settings.get("token"))
+
+
 class QQDashboardService:
     def __init__(self, plugin: Any):
         self.plugin = plugin
@@ -64,6 +71,7 @@ class QQDashboardService:
                 "truth_reply_probability": float(self.plugin._truth_reply_probability),
                 "backlog_labels": list(settings.get("backlog_labels") or []),
                 "strategy_mode": self.plugin.config_store._normalize_strategy_mode(settings.get("strategy_mode")),
+                "proactive_topics": list(settings.get("proactive_topics") or []),
                 "enable_group_attention": bool(settings.get("enable_group_attention", True)),
                 "retroactive_review_max_messages": int(settings.get("retroactive_review_max_messages", 30) or 30),
                 "retroactive_review_max_reply": int(settings.get("retroactive_review_max_reply", 5) or 5),
@@ -71,7 +79,7 @@ class QQDashboardService:
             },
             "guide": {
                 "step_napcat_done": bool(settings.get("guide_step_napcat_done", False)) or bool(runtime["napcat_managed"] and runtime["napcat_running"]),
-                "step_service_done": bool(settings.get("onebot_url")) and bool(settings.get("token")),
+                "step_service_done": _calc_service_done(settings),
                 "step_contacts_done": bool(self.plugin.permission_mgr and self.plugin.permission_mgr.list_users()),
                 "step_auto_reply_done": bool(settings.get("guide_step_runtime_done", False)) and self.plugin._running,
             },
@@ -281,7 +289,20 @@ class QQDashboardService:
         if not self.plugin.group_permission_mgr:
             return Err(SdkError(f"NOT_INITIALIZED: {self.plugin.i18n.t('errors.group_permission_manager_not_initialized', default='群聊权限管理器未初始化')}"))
         self.plugin.group_permission_mgr.remove_group(group_id)
-        await self.plugin.backlog_store.remove_group_placeholder(group_id)
+        # 强制清理 backlog 中的群数据（含未审阅消息）
+        await self.plugin.backlog_store.remove_group_placeholder(group_id, force=True)
+        # 清理 attention 缓存
+        if self.plugin.attention_service:
+            self.plugin.attention_service._cache.pop(str(group_id), None)
+        # 清理会话和疲劳状态
+        session_key = f"group:{group_id}"
+        if self.plugin.session_runtime_service:
+            await self.plugin.session_runtime_service.discard_session(session_key, reason="group_removed")
+        if self.plugin.fatigue_service:
+            self.plugin.fatigue_service._sleeping.pop(session_key, None)
+            self.plugin.fatigue_service._last_active.pop(session_key, None)
+            self.plugin.fatigue_service._session_fatigue_values.pop(session_key, None)
+            self.plugin.fatigue_service._wake_penalty.pop(session_key, None)
         success = await self.plugin.settings_service.persist_business_config()
         payload = await self.build_dashboard_state()
         payload["persisted"] = success

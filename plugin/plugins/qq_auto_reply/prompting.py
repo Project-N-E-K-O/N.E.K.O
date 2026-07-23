@@ -75,6 +75,9 @@ class QQAutoReplyPromptingMixin:
         group_id: str | None,
         message: str,
         current_message_id: str = "",
+        is_at_bot: bool = False,
+        mentions_all: bool = False,
+        reply_context: str = "",
     ) -> str:
         return self.prompt_builder.build_prompt_message(
             is_group=is_group,
@@ -85,6 +88,9 @@ class QQAutoReplyPromptingMixin:
             group_id=group_id,
             message=message,
             current_message_id=current_message_id,
+            is_at_bot=is_at_bot,
+            mentions_all=mentions_all,
+            reply_context=reply_context,
         )
 
     @staticmethod
@@ -212,34 +218,26 @@ class QQAutoReplyPromptingMixin:
         return queued
 
     @staticmethod
-    def _build_group_turn_message(*, group_scene_mode: str, user_title: str, sender_id: str, group_id: str | None, message: str, current_message_id: str = "") -> str:
-        normalized_mode = str(group_scene_mode or "shared_context").strip() or "shared_context"
+    def _build_group_turn_message(*, group_scene_mode: str, user_title: str, sender_id: str, group_id: str | None, message: str, current_message_id: str = "", is_at_bot: bool = False, is_reply_to_bot: bool = False, mentions_all: bool = False) -> str:
         msg_id_line = f"当前消息ID: {current_message_id}\n" if current_message_id else ""
-        if normalized_mode == "group_collective":
-            return (
-                f"[QQ 群公开发言]\n"
-                f"当前群号: {str(group_id or '').strip()}\n"
-                f"当前讨论内容:\n{message}\n"
-                f"请把这次回复视为面向整个群体的公开发言，而不是只对某一个人说话。"
-            )
-        if normalized_mode == "directed_user":
-            return (
-                f"[QQ 群定向回应]\n"
-                f"{msg_id_line}"
-                f"当前发言人: {user_title}\n"
-                f"当前发言人QQ: {sender_id}\n"
-                f"当前群号: {str(group_id or '').strip()}\n"
-                f"消息内容:\n{message}\n"
-                f"请把这次回复视为对当前发言人的自然回应。"
-            )
+        # 构建上下文提示
+        hints = []
+        if is_at_bot:
+            hints.append("这条消息直接@了你，对方在对你说话")
+        elif is_reply_to_bot:
+            hints.append("这条消息回复了你之前的发言")
+        elif mentions_all:
+            hints.append("这是@全体成员的消息")
+        if hints:
+            hint_text = " | ".join(hints) + "。"
+        else:
+            hint_text = "群里有人在聊天。如果你想接话，可以用 `<reply>` 标明你在回复哪条消息。"
         return (
-            f"[QQ 群共享上下文]\n"
             f"{msg_id_line}"
-            f"当前发言人: {user_title}\n"
-            f"当前发言人QQ: {sender_id}\n"
-            f"当前群号: {str(group_id or '').strip()}\n"
-            f"消息内容:\n{message}\n"
-            f"请结合群里的共享话题自然接话，但不要把回复写成明显点名当前发言人的一对一回应。"
+            f"发言人: {user_title}（QQ: {sender_id}）\n"
+            f"群号: {str(group_id or '').strip()}\n"
+            f"{hint_text}\n"
+            f"消息:\n{message}"
         )
 
     async def _build_qq_session_instructions(

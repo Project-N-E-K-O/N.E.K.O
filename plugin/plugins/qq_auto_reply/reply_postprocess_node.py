@@ -15,7 +15,7 @@ class QQReplyPostprocessNode:
         """KiraAI-style `<msg>` 块解析器。将 LLM 输出解析为消息块列表。
 
         支持格式:
-          <msg><text>文字</text><emoji>277</emoji></msg>
+          <msg><text>文字</text></msg>
           <msg><sticker>5</sticker></msg>
           <msg><poke>123456</poke></msg>
           <msg><record>语音文本</record></msg>
@@ -53,11 +53,6 @@ class QQReplyPostprocessNode:
             if text_el is not None and text_el.text:
                 block.text = text_el.text.strip()
 
-            # <emoji>
-            emoji_el = msg_el.find("emoji")
-            if emoji_el is not None and emoji_el.text:
-                block.emoji = emoji_el.text.strip()
-
             # <at>
             at_el = msg_el.find("at")
             if at_el is not None and at_el.text:
@@ -88,6 +83,37 @@ class QQReplyPostprocessNode:
             if kb_el is not None and kb_el.text:
                 block.keyboard = kb_el.text.strip()
 
+            # <rps> / <dice>
+            if msg_el.find("rps") is not None: block.rps = True
+            if msg_el.find("dice") is not None: block.dice = True
+            # <contact type="qq|group">ID</contact>
+            contact_el = msg_el.find("contact")
+            if contact_el is not None:
+                block.contact_type = (contact_el.get("type") or contact_el.text or "").strip()
+                block.contact_id = (contact_el.text or "").strip()
+            # <music type="qq|163...">ID</music>
+            music_el = msg_el.find("music")
+            if music_el is not None:
+                block.music_type = (music_el.get("type") or "").strip()
+                block.music_id = (music_el.text or "").strip()
+                for attr, field in [("url","music_url"),("audio","music_audio"),("title","music_title"),("singer","music_singer"),("image","music_image")]:
+                    v = (music_el.get(attr) or "").strip()
+                    if v: setattr(block, field, v)
+            # <mface id="..." pkg="..." key="..." />
+            mface_el = msg_el.find("mface")
+            if mface_el is not None:
+                block.mface_id = (mface_el.get("id") or mface_el.text or "").strip()
+                block.mface_pkg = (mface_el.get("pkg") or "").strip()
+                block.mface_key = (mface_el.get("key") or "").strip()
+            # <file name="...">path</file>
+            file_el = msg_el.find("file")
+            if file_el is not None:
+                block.file_name = (file_el.get("name") or "").strip()
+                block.file_path = (file_el.text or "").strip()
+            # <json>data</json>
+            json_el = msg_el.find("json")
+            if json_el is not None and json_el.text: block.json_data = json_el.text.strip()
+
             # <ark> with attrs
             ark_el = msg_el.find("ark")
             if ark_el is not None:
@@ -98,8 +124,10 @@ class QQReplyPostprocessNode:
 
             # 如果没有任何子元素但有直接文本（裸 <msg>text</msg>）
             if not any([
-                block.text, block.emoji, block.at_user, block.reply_to,
+                block.text, block.at_user, block.reply_to,
                 block.sticker, block.poke, block.record, block.keyboard, block.ark,
+                block.rps, block.dice, block.contact_id, block.music_id, block.music_type,
+                block.mface_id, block.file_path, block.json_data,
             ]) and msg_el.text:
                 block.text = msg_el.text.strip()
 
@@ -193,15 +221,33 @@ class QQReplyPostprocessNode:
             self.plugin._emit_log("INFO", f"[Sanitize] {len(raw_reply_text)}字被清除: {raw_reply_text[:100]}")
 
         strategy_mode = getattr(self.plugin, "_strategy_mode", "neko_dynamic")
+        emoji_reaction_id = ""
+        feeling = ""
+        forward_content = ""
+        forward_target = ""
         blocks: list[QQMessageBlock] = []
 
         if strategy_mode == "neko_dynamic" and reply_text:
-            # 先提取 <wait> 标签（XML 解析会忽略它），保存到 raw_reply_text 供 buffer 读取
             import re
-            wm = re.search(r"<wait>(\d+(?:\.\d+)?)</wait>", reply_text, re.IGNORECASE)
-            if wm:
-                # 保留 raw_reply_text 中的 <wait> 标签（不清理），让 buffer 能读到
-                pass  # raw_reply_text 未被 sanitize 处理，保留原始标签
+            # extract <emoji>ID</emoji> (standalone reaction tag, outside <msg>)
+            em = re.search(r"<emoji>(\d+)</emoji>", reply_text, re.IGNORECASE)
+            if em:
+                emoji_reaction_id = em.group(1).strip()
+                reply_text = reply_text[:em.start()] + reply_text[em.end():]
+                reply_text = reply_text.strip()
+            # extract <feeling>emotion</feeling> (mood tag, outside <msg>)
+            fm = re.search(r"<feeling>(\w+)</feeling>", reply_text, re.IGNORECASE)
+            if fm:
+                feeling = fm.group(1).strip().lower()
+                reply_text = reply_text[:fm.start()] + reply_text[fm.end():]
+                reply_text = reply_text.strip()
+            # extract <forward to="群号">content</forward>
+            fw = re.search(r"<forward(\s+to\s*=\s*\"(\d+)\")?\s*>(.*?)</forward>", reply_text, re.DOTALL | re.IGNORECASE)
+            if fw:
+                forward_content = fw.group(3).strip() if fw.group(3) else ""
+                forward_target = fw.group(2) or ""
+                reply_text = reply_text[:fw.start()] + reply_text[fw.end():]
+                reply_text = reply_text.strip()
             blocks = self._parse_blocks(reply_text)
             # 如果解析失败（只得到一个纯文本块且原文字含 XML 标签），尝试 LLM 修复
             if len(blocks) == 1 and blocks[0].text and ("<msg>" in reply_text or "</msg>" in reply_text):
@@ -221,6 +267,10 @@ class QQReplyPostprocessNode:
                 raw_reply_text=raw_reply_text,
                 postprocess_reason="reply_xml" if strategy_mode == "neko_dynamic" else "reply",
                 blocks=blocks,
+                feeling=feeling,
+                emoji_reaction_id=emoji_reaction_id,
+                forward_content=forward_content,
+                forward_target=forward_target,
             )
         if context.ephemeral_session:
             return QQReplyOutcome(
@@ -228,6 +278,10 @@ class QQReplyPostprocessNode:
                 reply_text=None,
                 raw_reply_text=raw_reply_text,
                 postprocess_reason="empty",
+                feeling=feeling,
+                emoji_reaction_id=emoji_reaction_id,
+                forward_content=forward_content,
+                forward_target=forward_target,
             )
         strategy_mode = getattr(self.plugin, "_strategy_mode", "neko_dynamic")
         is_forced = getattr(context, "force_reply", False) or context.permission_level == "admin"
@@ -237,6 +291,10 @@ class QQReplyPostprocessNode:
                 reply_text=None,
                 raw_reply_text=raw_reply_text,
                 postprocess_reason="llm_skip",
+                feeling=feeling,
+                emoji_reaction_id=emoji_reaction_id,
+                forward_content=forward_content,
+                forward_target=forward_target,
             )
         return QQReplyOutcome(
             action="reply",
@@ -244,12 +302,15 @@ class QQReplyPostprocessNode:
             used_default_message=True,
             raw_reply_text=raw_reply_text,
             postprocess_reason="default",
+            feeling=feeling,
+            emoji_reaction_id=emoji_reaction_id,
+            forward_content=forward_content,
+            forward_target=forward_target,
         )
 
     def build_delivery_plan(self, request: Any, outcome: QQReplyOutcome) -> QQDeliveryPlan | None:
         if not outcome.blocks and not outcome.reply_text:
             return None
-        # 如果没有 blocks（旧格式回退），用 reply_text 构造一个块
         blocks = outcome.blocks if outcome.blocks else [QQMessageBlock(text=outcome.reply_text or "")]
         if request.is_group:
             return QQDeliveryPlan(

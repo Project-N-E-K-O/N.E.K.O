@@ -88,7 +88,6 @@ class QQSessionRuntimeService:
             while True:
                 await asyncio.sleep(self.plugin.SESSION_SWEEP_INTERVAL_SECONDS)
                 await self.plugin._flush_idle_memory_sessions()
-                if getattr(self.plugin, "attention_service", None):
-                    await self.plugin.attention_service.decay_all()
+                # 注意力衰减由 attention_service._decay_loop(5s) 独立驱动，此处不重复
         except asyncio.CancelledError:
             raise

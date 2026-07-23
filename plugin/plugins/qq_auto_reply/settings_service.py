@@ -83,7 +83,10 @@ class QQSettingsService:
         normal_relay_probability = kwargs.get("normal_relay_probability")
         truth_reply_probability = kwargs.get("truth_reply_probability")
         backlog_labels = kwargs.get("backlog_labels")
+        proactive_topics = kwargs.get("proactive_topics")
 
+        if proactive_topics is not None and isinstance(proactive_topics, list):
+            self.plugin._qq_settings["proactive_topics"] = [str(t) for t in proactive_topics if str(t).strip()]
         if onebot_url is not None:
             self.plugin._qq_settings["onebot_url"] = str(onebot_url or "").strip()
             self.plugin._emit_log("INFO", f"反向 WS 监听地址已更新: {self.plugin._qq_settings['onebot_url'] or '(空)'}")
@@ -131,9 +134,6 @@ class QQSettingsService:
             self.plugin._truth_reply_probability = value
         if backlog_labels is not None:
             self.plugin._qq_settings["backlog_labels"] = self.plugin.config_store.normalize_backlog_labels(backlog_labels)
-        proactive_silence_seconds = kwargs.get("proactive_silence_seconds")
-        if proactive_silence_seconds is not None:
-            self.plugin._qq_settings["proactive_silence_seconds"] = max(0, int(proactive_silence_seconds))
         sticker_cooldown_messages = kwargs.get("sticker_cooldown_messages")
         if sticker_cooldown_messages is not None:
             self.plugin._qq_settings["sticker_cooldown_messages"] = max(0, int(sticker_cooldown_messages))

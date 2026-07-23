@@ -243,7 +243,7 @@ class QQBacklogStore:
             await atomic_write_json_async(self._path, state)
             return state
 
-    async def remove_group_placeholder(self, group_id: str) -> dict[str, Any]:
+    async def remove_group_placeholder(self, group_id: str, *, force: bool = False) -> dict[str, Any]:
         async with self._lock:
             state = await self.load()
             groups = state["groups"]
@@ -254,7 +254,8 @@ class QQBacklogStore:
             if not isinstance(group, dict):
                 return state
             keys = list(group.get("conversation_keys") or [])
-            if keys:
+            # 有待审阅消息且非强制删除 → 保护性跳过
+            if keys and not force:
                 return state
             groups.pop(normalized_group_id, None)
             state["groups"] = groups

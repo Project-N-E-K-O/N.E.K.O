@@ -82,11 +82,24 @@ class QQMessageDispatcher:
             return "mention_other_user"
         if not self._looks_like_human_followup(message_text):
             return ""
-        recent_messages = await self.plugin.backlog_store.get_recent_group_messages(
-            group_id,
-            limit=4,
-            exclude_message_id=current_message_id,
-        )
+        # 通过 API 获取最近消息（替代已删除的 backlog_store.get_recent_group_messages）
+        recent_messages: list[dict] = []
+        qq = self.plugin.qq_client
+        if qq and qq.needs_attention:
+            try:
+                data = await qq.get_group_msg_history(group_id, count=4)
+                msgs = data.get("messages") or []
+                if isinstance(msgs, list):
+                    for m in msgs:
+                        if not isinstance(m, dict): continue
+                        if str(m.get("message_id") or "") == str(current_message_id or ""): continue
+                        recent_messages.append({
+                            "sender_id": str((m.get("sender") or {}).get("user_id") or m.get("user_id") or ""),
+                            "is_at_bot": False,
+                            "timestamp": int(m.get("time") or 0),
+                        })
+            except Exception:
+                pass
         for recent in reversed(recent_messages):
             recent_sender_id = str(recent.get("sender_id") or "").strip()
             if not recent_sender_id or recent_sender_id == sender_id:
@@ -191,22 +204,39 @@ class QQMessageDispatcher:
         if raw_content and QQFeedbackClassifier.is_blacklisted(raw_content, label_defs):
             self.plugin._emit_log("INFO", f"黑名单过滤: text={raw_content[:40]}")
             return
+
+        # 后台拉取引用/转发/语音内容（在独立 handler task 中 await，避免 WS handler 死锁）
+        if self.plugin.qq_client and self.plugin.qq_client.needs_attention:
+            reply_ids = message.get("_pending_reply_ids")
+            if isinstance(reply_ids, list) and reply_ids:
+                await self.plugin.qq_client._fetch_reply_content(message, reply_ids)
+                message.pop("_pending_reply_ids", None)
+            forward_ids = message.get("_pending_forward_ids")
+            if isinstance(forward_ids, list) and forward_ids:
+                await self.plugin.qq_client._fetch_forward_content(message, forward_ids)
+                message.pop("_pending_forward_ids", None)
+            record_files = message.get("_pending_record_files")
+            if isinstance(record_files, list) and record_files:
+                await self.plugin.qq_client._fetch_record_content(message, record_files)
+                message.pop("_pending_record_files", None)
+
         await self.plugin._record_backlog_message(message)
         if str(message.get("message_type") or "").strip() == "group" and getattr(self.plugin, "attention_service", None):
             if self.plugin.qq_client and self.plugin.qq_client.needs_attention:
                 # neko_dynamic 下由 attention_gate_service.evaluate() 统一更新注意力，此处跳过避免双倍计数
                 if self.plugin._strategy_mode != "neko_dynamic":
                     await self.plugin.attention_service.update_on_message(message)
-        self.plugin._emit_log("INFO", f"收到消息: type={message.get('message_type')} from={message.get('user_id')} text={str(message.get('content',''))[:40]}")
+        gid = str(message.get('group_id') or '').strip()
+        scope = f"群{gid}" if gid else "私聊"
+        self.plugin._emit_log("INFO", f"收到消息: {scope} from={message.get('user_id')} text={str(message.get('content',''))[:40]}")
         # ── 疲劳全局消息计数（睡眠判断已移入 attention_gate_service）──
         if getattr(self.plugin, "fatigue_service", None):
             self.plugin.fatigue_service.record_incoming_message()
         message_type = message.get("message_type")
         sender_id = str(message.get("user_id") or "").strip()
-        message_text = self.plugin._sanitize_message_text(
-            message.get("content", ""),
-            is_reply_to_bot=bool(message.get("is_reply_to_bot")),
-        )
+        message_text = self.plugin._sanitize_message_text(message.get("content", ""))
+        # 引用上下文：仅注入 LLM prompt，不混入 message_text 以防污染会话历史
+        reply_context = str(message.get("_reply_context", "") or "").strip()
         attachments = list(message.get("attachments") or [])
         user_nickname = message.get("user_nickname")
         if message_type == "private":
@@ -215,7 +245,7 @@ class QQMessageDispatcher:
                 self.plugin._user_sessions[session_key]["last_activity_at"] = __import__("time").time()
             fwd_count = int(message.get("_forward_sub_count", 0) or 0) if isinstance(message, dict) else 0
             current_message_id = str(message.get("message_id") or message.get("msg_id") or "").strip()
-            await self.handle_private_message(sender_id, message_text, attachments=attachments, user_nickname=user_nickname, forward_sub_count=fwd_count, current_message_id=current_message_id)
+            await self.handle_private_message(sender_id, message_text, attachments=attachments, user_nickname=user_nickname, forward_sub_count=fwd_count, current_message_id=current_message_id, reply_context=reply_context)
         elif message_type == "group":
             group_id = str(message.get("group_id") or "").strip()
             is_at_bot = message.get("is_at_bot", False)
@@ -247,10 +277,12 @@ class QQMessageDispatcher:
                 mentions_all=mentions_all,
                 message_timestamp=message_timestamp,
                 forward_sub_count=fwd_count,
+                reply_context=reply_context,
             )
-            await self.plugin._maybe_notify_backlog_summary(group_id=group_id)
+            # TODO: 后续接入记忆，暂时关闭 backlog 推送
+            # await self.plugin._maybe_notify_backlog_summary(group_id=group_id)
 
-    async def handle_private_message(self, sender_id: str, message_text: str, attachments: Optional[list[dict[str, Any]]] = None, user_nickname: Optional[str] = None, forward_sub_count: int = 0, current_message_id: str = ""):
+    async def handle_private_message(self, sender_id: str, message_text: str, attachments: Optional[list[dict[str, Any]]] = None, user_nickname: Optional[str] = None, forward_sub_count: int = 0, current_message_id: str = "", reply_context: str = ""):
         # 开放平台：第一个私聊用户自动成为管理员，之后可在前端配置
         if self.plugin.qq_client and not self.plugin.qq_client.needs_attention:
             if self.plugin.permission_mgr and not self.plugin.permission_mgr.list_users():
@@ -262,7 +294,9 @@ class QQMessageDispatcher:
         # LLM 生成前预缓冲：如果已有等待中的回复，跳过 pipeline
         if getattr(self.plugin, "reply_buffer_service", None):
             session_key = self.plugin._build_session_key(sender_id=sender_id, is_group=False)
-            if self.plugin.reply_buffer_service.pre_buffer(session_key, message_text, sender_id, False, ""):
+            buf_text = f"[引用: {reply_context}] {message_text}" if reply_context else message_text
+            if await self.plugin.reply_buffer_service.buffer(session_key, buf_text, sender_id, False, ""):
+                self.plugin._emit_log("INFO", f"私聊缓冲拦截: from={sender_id} text={message_text[:30]} → 跳过pipeline")
                 return
         self.plugin._emit_log("INFO", f"私聊 pipeline 开始: from={sender_id} text={message_text[:40]}")
         request = QQReplyRequest(
@@ -274,6 +308,8 @@ class QQMessageDispatcher:
             fallback_to_text_on_voice_failure=True,
             source_kind="incoming_private",
             forward_sub_count=forward_sub_count,
+            current_message_id=current_message_id,
+            reply_context=reply_context,
         )
         outcome = await self.plugin.reply_pipeline.run(request)
         if outcome.action == "reply" and outcome.reply_text and current_message_id:
@@ -296,14 +332,23 @@ class QQMessageDispatcher:
         mentions_all: bool = False,
         message_timestamp: int = 0,
         forward_sub_count: int = 0,
+        reply_context: str = "",
     ):
         strategy_mode = getattr(self.plugin, "_strategy_mode", "neko_dynamic")
+        # 群聊预缓冲：同群所有用户的快速消息共用缓冲桶，合并为一条回复
+        if not is_at_bot and getattr(self.plugin, "reply_buffer_service", None):
+            gkey = self.plugin._build_session_key(sender_id=group_id, is_group=True, group_id=group_id)
+            buf_text = f"[引用: {reply_context}] {message_text}" if reply_context else message_text
+            if await self.plugin.reply_buffer_service.buffer(gkey, buf_text, sender_id, True, group_id):
+                self.plugin._emit_log("INFO", f"群聊缓冲拦截: group={group_id} from={sender_id} text={message_text[:30]} → 跳过pipeline")
+                return
         force_reply = False
         if strategy_mode == "neko_dynamic" and hasattr(self.plugin, "attention_gate_service") and self.plugin.attention_gate_service is not None:
             gate_decision = await self.plugin.attention_gate_service.evaluate(
                 group_id=group_id,
                 sender_id=sender_id,
                 is_at_bot=is_at_bot,
+                mentions_all=mentions_all,
                 message_text=message_text,
                 message_id=current_message_id,
                 quoted_message_id=quoted_message_id,
@@ -314,23 +359,28 @@ class QQMessageDispatcher:
                 self.plugin.logger.info(
                     f"[AttentionGate] 群 {group_id} 消息被忽略 (sender={sender_id}, reason={gate_decision.reason})"
                 )
+                # 取消缓冲——被忽略的消息不需要等
+                if not is_at_bot and getattr(self.plugin, "reply_buffer_service", None):
+                    gkey = self.plugin._build_session_key(sender_id=group_id, is_group=True, group_id=group_id)
+                    p = self.plugin.reply_buffer_service._pending.get(gkey)
+                    if p and p.task and not p.task.done():
+                        p.task.cancel()
+                        self.plugin._emit_log("DEBUG", f"[Buffer] gate忽略，取消缓冲 key={gkey}")
                 return
             force_reply = gate_decision.force_reply
 
-        group_scene_mode = "directed_user" if is_at_bot else "shared_context"
-        # 猫娘动态模式下跳过插话抑制检测（由注意力门控替代）
+        # neko_scene 专用：场景模式 + 插话抑制 + reply 注入
+        group_scene_mode = ""
         suppression_reason = ""
-        if strategy_mode != "neko_dynamic":
+        if strategy_mode == "neko_scene":
+            group_scene_mode = "directed_user" if is_at_bot else "shared_context"
             suppression_reason = await self._detect_group_interjection_suppression(
-                group_id=group_id,
-                sender_id=sender_id,
-                message_text=message_text,
-                is_at_bot=is_at_bot,
-                current_message_id=current_message_id,
-                quoted_message_id=quoted_message_id,
-                mentions_other_user=mentions_other_user,
+                group_id=group_id, sender_id=sender_id, message_text=message_text,
+                is_at_bot=is_at_bot, current_message_id=current_message_id,
+                quoted_message_id=quoted_message_id, mentions_other_user=mentions_other_user,
                 message_timestamp=message_timestamp,
             )
+
         request = QQReplyRequest(
             message_text=message_text,
             sender_id=sender_id,
@@ -341,40 +391,35 @@ class QQMessageDispatcher:
             is_at_bot=is_at_bot,
             source_kind="incoming_group",
             forward_sub_count=forward_sub_count,
-            group_scene_mode=group_scene_mode,
             current_message_id=current_message_id,
             quoted_message_id=quoted_message_id,
             mentioned_user_ids=list(mentioned_user_ids or []),
             mentions_other_user=mentions_other_user,
             mentions_all=mentions_all,
-            reply_message_id=current_message_id if (strategy_mode != "neko_dynamic" and group_scene_mode == "directed_user") else "",
-            at_user_id=sender_id if (strategy_mode != "neko_dynamic" and group_scene_mode == "directed_user") else "",
+            group_scene_mode=group_scene_mode,
+            reply_message_id=current_message_id if (strategy_mode == "neko_scene" and group_scene_mode == "directed_user") else "",
+            at_user_id=sender_id if (strategy_mode == "neko_scene" and group_scene_mode == "directed_user") else "",
             fallback_to_text_on_voice_failure=True,
             suppression_reason=suppression_reason,
             force_reply=force_reply,
+            reply_context=reply_context,
         )
         outcome = await self.plugin.reply_pipeline.run(request)
-        # 回复后即时标 reviewed，统一 backlog 管道
-        if outcome.action == "reply" and outcome.reply_text and current_message_id:
-            if hasattr(self.plugin, "backlog_service") and self.plugin.backlog_service:
-                await self.plugin.backlog_store.mark_message_reviewed(current_message_id)
 
-        # 焦点群/近焦点群：输出 LLM 自行判断的结果
-        if strategy_mode == "neko_dynamic" and not is_at_bot:
+        # 焦点群/近焦点群：LLM 自行判断的结果
+        if not is_at_bot:
             if outcome.action == "reply" and outcome.reply_text:
                 self.plugin._emit_log("INFO", f"[LLM自判] 决定回复: {outcome.reply_text[:40]}")
             else:
                 self.plugin._emit_log("INFO", "[LLM自判] 决定不回复")
 
-        # neko_dynamic + NapCat: 回复后消耗注意力
-        if strategy_mode == "neko_dynamic" and outcome.action == "reply" and outcome.reply_text:
+        # 回复后消耗注意力
+        if outcome.action == "reply" and outcome.reply_text:
             if self.plugin.qq_client and self.plugin.qq_client.needs_attention:
                 if hasattr(self.plugin, "attention_gate_service") and self.plugin.attention_gate_service:
                     await self.plugin.attention_gate_service.on_reply_sent(group_id)
-
-        # neko_scene: 原有 attention 更新逻辑
-        if strategy_mode != "neko_dynamic":
-            if getattr(self.plugin, "attention_service", None) and outcome.action == "reply" and outcome.reply_text:
+            # neko_scene: 更新 attention_service
+            if strategy_mode == "neko_scene" and getattr(self.plugin, "attention_service", None):
                 await self.plugin.attention_service.update_on_reply(
                     group_id,
                     reply_message_id=str(request.reply_message_id or request.current_message_id or ""),
@@ -383,7 +428,7 @@ class QQMessageDispatcher:
 
         self.plugin.runtime_service.record_pipeline_outcome(source=request.source_kind, request=request, outcome=outcome)
 
-        # neko_dynamic: 检查焦点切换，触发回溯补回
+        # 焦点切换 → 回溯补回
         if strategy_mode == "neko_dynamic" and hasattr(self.plugin, "attention_gate_service"):
             shift = await self.plugin.attention_gate_service.check_focus_shift()
             if shift and shift.new_focus_group:
