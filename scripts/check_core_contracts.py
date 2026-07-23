@@ -869,6 +869,7 @@ def run(root: Path) -> list[Violation]:
                 "resume",
                 "abort",
                 "wait_transcript_idle",
+                "set_speaker_verifier_factory",
                 "start",
                 "submit",
             }

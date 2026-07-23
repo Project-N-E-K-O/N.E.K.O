@@ -3419,7 +3419,7 @@ async def test_route_restart_defers_verifier_until_old_cleanup_finishes(
     assert old_verifier.close_calls == 1
 
     await runtime.close_voice_input_session()
-    await runtime._asr_runtime.wait_speaker_verifier_cleanup()
+    await runtime._asr_runtime._wait_speaker_verifier_cleanup()
     assert new_verifier.close_calls == 1
 
 
@@ -3471,7 +3471,7 @@ async def test_route_restart_keeps_identity_detached_after_cleanup_failure(
     await runtime._start_independent_asr_if_enabled("audio")
     await runtime._start_independent_asr_if_enabled("audio")
     await asyncio.wait_for(old_verifier.close_started.wait(), 1)
-    await runtime._asr_runtime.wait_speaker_verifier_cleanup()
+    await runtime._asr_runtime._wait_speaker_verifier_cleanup()
 
     assert runtime._asr_route_mode == "independent"
     assert runtime._asr_detector is not None
@@ -3534,7 +3534,7 @@ async def test_route_restart_bounds_stalled_verifier_cleanup(monkeypatch) -> Non
     await runtime._start_independent_asr_if_enabled("audio")
     await asyncio.wait_for(old_verifier.close_started.wait(), 1)
     await asyncio.wait_for(
-        runtime._asr_runtime.wait_speaker_verifier_cleanup(),
+        runtime._asr_runtime._wait_speaker_verifier_cleanup(),
         1,
     )
 

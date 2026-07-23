@@ -809,7 +809,7 @@ class IndependentAsrRuntime:
                 return False
             return await detector.replace_speaker_verifier(verifier)
 
-    async def wait_speaker_verifier_cleanup(self) -> None:
+    async def _wait_speaker_verifier_cleanup(self) -> None:
         """Join detached verifier cleanup in tests and final controlled shutdown."""
 
         self._ensure_speaker_verifier_lifecycle_state()
