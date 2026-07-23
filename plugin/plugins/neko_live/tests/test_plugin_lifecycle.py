@@ -7,6 +7,47 @@ from plugin.plugins.neko_live.core import runtime as runtime_module
 
 
 @pytest.mark.asyncio
+async def test_twitch_authorize_action_logs_config_and_public_result_without_client_id():
+    class Logger:
+        def __init__(self) -> None:
+            self.lines: list[str] = []
+
+        def info(self, message: str) -> None:
+            self.lines.append(message)
+
+        def error(self, message: str) -> None:
+            self.lines.append(message)
+
+    class Runtime:
+        async def update_config(self, updates: dict[str, str]) -> None:
+            assert updates == {"twitch_client_id": "clientid123"}
+
+        async def twitch_device_authorization_start(self) -> dict[str, object]:
+            return {
+                "platform": "twitch",
+                "started": True,
+                "pending": True,
+                "user_code": "ABCD-EFGH",
+                "verification_uri": "https://www.twitch.tv/activate",
+            }
+
+    logger = Logger()
+    plugin = NekoLivePlugin(SimpleNamespace(logger=logger))
+    plugin.runtime = Runtime()
+
+    result = await plugin.twitch_device_authorization_start(client_id="clientid123")
+
+    lines = "\n".join(logger.lines)
+    assert result.is_ok() is True
+    assert "stage=entry_start client_id_len=11" in lines
+    assert "stage=config_saved" in lines
+    assert "stage=entry_result started=True pending=True user_code_present=True verification_uri_present=True" in lines
+    assert "clientid123" not in lines
+    assert "ABCD-EFGH" not in lines
+    assert "https://www.twitch.tv/activate" not in lines
+
+
+@pytest.mark.asyncio
 async def test_startup_syncs_live_instructions_instead_of_unconditional_inject(monkeypatch):
     calls: list[tuple[str, bool | None]] = []
 

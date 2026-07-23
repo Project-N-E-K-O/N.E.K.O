@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,6 +19,25 @@ from plugin.server.application.plugins.ui_query_service import (
     _PLUGIN_NOT_RUNNING_MESSAGES,
     PluginUiQueryService,
 )
+
+
+def test_resolve_hosted_entry_timeout_uses_registered_entry_metadata(monkeypatch) -> None:
+    handler = SimpleNamespace(
+        meta=SimpleNamespace(
+            event_type="plugin_entry",
+            id="authorize",
+            timeout=25.0,
+            extra={},
+            metadata={},
+        )
+    )
+    monkeypatch.setattr(
+        state,
+        "get_event_handlers_snapshot_cached",
+        lambda **_kwargs: {"demo.authorize": handler},
+    )
+
+    assert ui_query_module._resolve_hosted_entry_timeout("demo", "authorize") == 25.0
 
 
 def test_static_ui_config_infers_from_config_path_when_missing(tmp_path) -> None:
@@ -928,6 +949,14 @@ def test_surface_source_rejects_circular_relative_dependencies(tmp_path, sources
 
 
 def test_call_surface_action_preserves_plugin_entry_error(monkeypatch, tmp_path) -> None:
+    caller_thread = threading.get_ident()
+    resolver_threads: list[int] = []
+
+    def resolve_timeout(*_args) -> float:
+        resolver_threads.append(threading.get_ident())
+        return 10.0
+
+    monkeypatch.setattr(ui_query_module, "_resolve_hosted_entry_timeout", resolve_timeout)
     plugin_dir = tmp_path / "demo_plugin"
     plugin_dir.mkdir()
     config_path = plugin_dir / "plugin.toml"
@@ -959,8 +988,9 @@ def test_call_surface_action_preserves_plugin_entry_error(monkeypatch, tmp_path)
                 ],
             }
 
-        async def trigger(self, entry_id: str, args: dict[str, object]) -> object:
+        async def trigger(self, entry_id: str, args: dict[str, object], timeout: float | None = None) -> object:
             assert entry_id == "add_server"
+            assert timeout == 10.0
             raise PluginExecutionError("demo", entry_id, "Failed to save server config: access denied")
 
     plugins_backup = dict(state.plugins)
@@ -997,6 +1027,7 @@ def test_call_surface_action_preserves_plugin_entry_error(monkeypatch, tmp_path)
             state.plugin_hosts.update(hosts_backup)
 
     assert exc_info.value.code == "PLUGIN_UI_ACTION_FAILED"
+    assert resolver_threads and resolver_threads[0] != caller_thread
     assert exc_info.value.message == "Failed to save server config: access denied"
 
 

@@ -90,6 +90,7 @@ class CredentialStore:
     # ── 同步实现（在 to_thread 里跑） ──────────────────────────
 
     def _save_sync(self, payload: dict) -> bool:
+        temp_path: Path | None = None
         try:
             cred = {key: str(payload.get(key) or "") for key in self.fields}
             fernet = self._get_fernet()

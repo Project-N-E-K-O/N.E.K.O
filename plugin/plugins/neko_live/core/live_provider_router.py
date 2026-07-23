@@ -12,6 +12,12 @@ from typing import Any
 from .contracts import LiveRoomStatus, ViewerIdentity, normalize_live_platform, parse_room_id
 from ..modules.douyin_live_ingest.room_ref import parse_douyin_room_ref
 
+try:
+    from ..modules.twitch_live_ingest.room_ref import parse_twitch_room_ref
+except ImportError:
+    def parse_twitch_room_ref(value: Any) -> Any:
+        return type("ParsedTwitchRoomRef", (), {"ok": False, "room_ref": "", "message": "unsupported"})()
+
 
 class LiveProviderRouter:
     """Route live input calls to the selected platform provider."""
@@ -29,6 +35,9 @@ class LiveProviderRouter:
         raw_room_ref = getattr(self.runtime.config, "live_room_ref", "")
         if self.platform == "douyin":
             parsed = parse_douyin_room_ref(raw_room_ref)
+            return parsed.room_ref if parsed.ok else ""
+        if self.platform == "twitch":
+            parsed = parse_twitch_room_ref(raw_room_ref)
             return parsed.room_ref if parsed.ok else ""
         room_ref = _safe_public_room_ref(raw_room_ref)
         if self.platform != "bilibili":
@@ -65,6 +74,8 @@ class LiveProviderRouter:
             return getattr(self.runtime, "bili_live_ingest", None)
         if normalized == "douyin":
             return getattr(self.runtime, "douyin_live_ingest", None)
+        if normalized == "twitch":
+            return getattr(self.runtime, "twitch_live_ingest", None)
         return None
 
     def _identity(self) -> Any | None:
@@ -72,6 +83,8 @@ class LiveProviderRouter:
             return getattr(self.runtime, "bili_identity", None)
         if self.platform == "douyin":
             return getattr(self.runtime, "douyin_identity", None)
+        if self.platform == "twitch":
+            return getattr(self.runtime, "twitch_identity", None)
         return None
 
     def is_listening(self) -> bool:
@@ -206,6 +219,15 @@ def normalize_room_ref_for_platform(platform: Any, value: Any) -> dict[str, Any]
         return {
             "ok": parsed.ok,
             "platform": "douyin",
+            "room_ref": parsed.room_ref,
+            "room_id": 0,
+            "message": parsed.message,
+        }
+    if normalized_platform == "twitch":
+        parsed = parse_twitch_room_ref(value)
+        return {
+            "ok": parsed.ok,
+            "platform": "twitch",
             "room_ref": parsed.room_ref,
             "room_id": 0,
             "message": parsed.message,
