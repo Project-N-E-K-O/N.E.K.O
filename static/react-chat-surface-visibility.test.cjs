@@ -72,6 +72,17 @@ test('full chat uses complete height only through the explicit visibility operat
     assert.equal(shell.style.transform, 'none');
 });
 
+test('full chat returns false without rewriting a position that already fits', () => {
+    const { context, shell } = createContext({
+        mode: 'full',
+        viewportHeight: 600,
+        shellRect: { top: 100 }
+    });
+
+    assert.equal(context.I.ensureChatSurfaceVisible(), false);
+    assert.deepEqual(shell.style, {});
+});
+
 test('dragged compact chat reapplies its mode-specific clamped target without persistence', () => {
     const { context, getCompactApplication } = createContext({
         mode: 'compact',
@@ -87,4 +98,16 @@ test('dragged compact chat reapplies its mode-specific clamped target without pe
     assert.equal(application.height, 96);
     assert.equal(application.options.persist, false);
     assert.match(apiSource, /ensureChatSurfaceVisible: I\.ensureChatSurfaceVisible/);
+});
+
+test('compact chat returns false when its clamped target already matches the current rect', () => {
+    const compactRect = { left: 100, top: 180, width: 430, height: 96 };
+    const { context, getCompactApplication } = createContext({
+        mode: 'compact',
+        currentCompactRect: compactRect,
+        compactTarget: { ...compactRect }
+    });
+
+    assert.equal(context.I.ensureChatSurfaceVisible(), false);
+    assert.equal(getCompactApplication(), null);
 });
