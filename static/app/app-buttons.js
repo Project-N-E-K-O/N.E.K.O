@@ -1165,21 +1165,30 @@
                     tap_soft: Object.freeze(['rapid', 'burst'])
                 }),
                 acceptsTouchZone: false,
-                booleanField: null
+                booleanField: null,
+                roundChoice: false
             }),
             fist: Object.freeze({
                 actions: Object.freeze({
                     poke: Object.freeze(['normal', 'rapid'])
                 }),
                 acceptsTouchZone: true,
-                booleanField: Object.freeze({ input: 'rewardDrop', output: 'reward_drop' })
+                booleanField: Object.freeze({ input: 'rewardDrop', output: 'reward_drop' }),
+                roundChoice: false
             }),
             hammer: Object.freeze({
                 actions: Object.freeze({
                     bonk: Object.freeze(['normal', 'rapid', 'burst', 'easter_egg'])
                 }),
                 acceptsTouchZone: true,
-                booleanField: Object.freeze({ input: 'easterEgg', output: 'easter_egg' })
+                booleanField: Object.freeze({ input: 'easterEgg', output: 'easter_egg' }),
+                roundChoice: false
+            }),
+            rps: Object.freeze({
+                actions: Object.freeze({}),
+                acceptsTouchZone: false,
+                booleanField: null,
+                roundChoice: true
             })
         })
     });
@@ -1525,6 +1534,22 @@
         return null;
     }
 
+    function resolveAvatarInteractionRoundResult(userGesture, avatarGesture) {
+        var gestures = ['rock', 'scissors', 'paper'];
+        if (userGesture === avatarGesture && gestures.indexOf(userGesture) !== -1) return 'draw';
+        if ((userGesture === 'rock' && avatarGesture === 'scissors')
+                || (userGesture === 'scissors' && avatarGesture === 'paper')
+                || (userGesture === 'paper' && avatarGesture === 'rock')) {
+            return 'user_win';
+        }
+        if ((avatarGesture === 'rock' && userGesture === 'scissors')
+                || (avatarGesture === 'scissors' && userGesture === 'paper')
+                || (avatarGesture === 'paper' && userGesture === 'rock')) {
+            return 'avatar_win';
+        }
+        return '';
+    }
+
     function normalizeAvatarInteractionPayload(payload) {
         if (!payload || typeof payload !== 'object') {
             console.warn('[AvatarInteraction] ignored invalid payload:', payload);
@@ -1534,9 +1559,8 @@
         var toolId = String(payload.tool_id || payload.toolId || '').trim().toLowerCase();
         var actionId = String(payload.action_id || payload.actionId || '').trim().toLowerCase();
         var toolContract = AVATAR_INTERACTION_CONTRACT.tools[toolId];
-        var allowedIntensities = toolContract && toolContract.actions[actionId];
-        if (!allowedIntensities) {
-            console.warn('[AvatarInteraction] ignored unsupported tool/action:', toolId, actionId);
+        if (!toolContract) {
+            console.warn('[AvatarInteraction] ignored unsupported tool:', toolId);
             return null;
         }
 
@@ -1562,7 +1586,6 @@
             action: 'avatar_interaction',
             interaction_id: interactionId,
             tool_id: toolId,
-            action_id: actionId,
             target: 'avatar',
             timestamp: timestamp
         };
@@ -1584,6 +1607,50 @@
                 };
             }
         }
+
+        if (toolContract.roundChoice) {
+            var allowedRoundFields = [
+                'interaction_id', 'interactionId', 'tool_id', 'toolId', 'target',
+                'pointer', 'timestamp', 'text_context', 'textContext',
+                'user_gesture', 'userGesture', 'avatar_gesture', 'avatarGesture',
+                'round_result', 'roundResult'
+            ];
+            if (Object.keys(payload).some(function (field) {
+                return allowedRoundFields.indexOf(field) === -1;
+            })) {
+                console.warn('[AvatarInteraction] ignored undeclared round choice facts');
+                return null;
+            }
+            var userGesture = String(getAvatarInteractionPayloadValue(
+                payload, 'user_gesture', 'userGesture', ''
+            ) || '').trim().toLowerCase();
+            var avatarGesture = String(getAvatarInteractionPayloadValue(
+                payload, 'avatar_gesture', 'avatarGesture', ''
+            ) || '').trim().toLowerCase();
+            var roundResult = String(getAvatarInteractionPayloadValue(
+                payload, 'round_result', 'roundResult', ''
+            ) || '').trim().toLowerCase();
+            var expectedResult = resolveAvatarInteractionRoundResult(userGesture, avatarGesture);
+            if (!expectedResult || roundResult !== expectedResult) {
+                console.warn('[AvatarInteraction] ignored invalid round choice facts');
+                return null;
+            }
+            normalized.user_gesture = userGesture;
+            normalized.avatar_gesture = avatarGesture;
+            normalized.round_result = roundResult;
+            var roundTextContext = sanitizeAvatarInteractionTextContext(getAvatarInteractionPayloadValue(
+                payload, 'text_context', 'textContext', ''
+            ));
+            if (roundTextContext) normalized.text_context = roundTextContext;
+            return normalized;
+        }
+
+        var allowedIntensities = toolContract.actions[actionId];
+        if (!allowedIntensities) {
+            console.warn('[AvatarInteraction] ignored unsupported tool/action:', toolId, actionId);
+            return null;
+        }
+        normalized.action_id = actionId;
 
         var rawTouchZone = getAvatarInteractionPayloadValue(
             payload, 'touch_zone', 'touchZone', null
@@ -3707,7 +3774,6 @@
             }
         });
 
-        // 图片文件拖到聊天框时按「导入图片」处理，避免浏览器默认打开本地文件。
         document.addEventListener('dragover', function (e) {
             if (!shouldHandleChatFileDrop(e)) return;
             e.preventDefault();
@@ -3717,7 +3783,7 @@
             }
         }, true);
 
-        document.addEventListener('drop', function (e) {
+        document.addEventListener('drop', async function (e) {
             if (!shouldHandleChatFileDrop(e)) return;
             e.preventDefault();
             e.stopPropagation();
@@ -3726,7 +3792,37 @@
                 return;
             }
             var files = getFilesFromDataTransfer(e.dataTransfer);
-            mod.importImageFilesToPendingList(files, { logPrefix: '[拖放图片]' });
+            var imageFiles = [];
+            var otherFiles = [];
+            files.forEach(function (f) {
+                if (f instanceof File && isLikelyImageFile(f)) {
+                    imageFiles.push(f);
+                } else {
+                    otherFiles.push(f);
+                }
+            });
+            if (imageFiles.length > 0) {
+                mod.importImageFilesToPendingList(imageFiles, { logPrefix: '[拖放图片]' });
+            }
+            if (otherFiles.length > 0) {
+                try {
+                    var parser = window.NekoAvatarDropParser;
+                    if (parser && typeof parser.parseFiles === 'function') {
+                        var result = await parser.parseFiles(otherFiles);
+                        var accepted = result && Array.isArray(result.accepted) ? result.accepted : [];
+                        var rejected = result && Array.isArray(result.rejected) ? result.rejected : [];
+                        if (accepted.length > 0 || rejected.length > 0) {
+                            await mod.sendAvatarDropPayload({
+                                items: accepted,
+                                targetType: 'chat',
+                                rejected: rejected
+                            });
+                        }
+                    }
+                } catch (error) {
+                    console.warn('[ChatDrop] non-image file parse failed:', error && error.message ? error.message : error);
+                }
+            }
         }, true);
 
         mod.ensureImportImageInput();

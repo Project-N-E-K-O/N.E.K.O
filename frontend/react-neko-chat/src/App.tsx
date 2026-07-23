@@ -55,7 +55,7 @@ import {
   type ChoicePromptSource,
 } from './message-schema';
 import {
-  AVAILABLE_AVATAR_TOOLS,
+  AVAILABLE_COMPACT_AVATAR_TOOLS,
   DEFAULT_ACTIVE_AVATAR_TOOL_IDS,
   persistActiveAvatarToolIds,
   readPersistedActiveAvatarToolIds,
@@ -767,7 +767,7 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
 
 type ToolIconItem = AvatarToolItem;
 
-const toolIconItems = AVAILABLE_AVATAR_TOOLS;
+const toolIconItems = AVAILABLE_COMPACT_AVATAR_TOOLS;
 
 function getToolItemLabel(item: ToolIconItem): string {
   return i18n(item.labelKey, item.labelFallback);
@@ -857,6 +857,7 @@ function CompactChatApp({
   title = i18n('chat.title', 'N.E.K.O Chat'),
   iconSrc = '/static/icons/chat_icon.png',
   messages = defaultMessages,
+  assistantName = '',
   inputPlaceholder = i18n('chat.textInputPlaceholder', 'Type a message...'),
   sendButtonLabel = i18n('chat.send', 'Send'),
   chatWindowAriaLabel = i18n('chat.reactWindowAriaLabel', 'Neko chat window'),
@@ -1080,6 +1081,7 @@ function CompactChatApp({
     onInteraction: onAvatarInteraction,
     onStateChange: onAvatarToolStateChange,
     getToolLabel: getToolItemLabel,
+    avatarName: assistantName,
     onDeactivate: () => setToolMenuOpen(false),
   });
   const activeAvatarToolId = avatarToolRuntime.activeToolId;
@@ -5478,9 +5480,7 @@ function CompactChatApp({
                   onComposerRemoveAttachment?.(attachment.id);
                 }
               }}
-            >
-              <span className="composer-attachment-remove-icon" aria-hidden="true" />
-            </button>
+            />
           </figure>
         ))}
       </div>

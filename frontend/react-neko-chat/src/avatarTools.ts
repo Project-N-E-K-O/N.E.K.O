@@ -44,6 +44,7 @@ export type AvatarToolItem = {
 export const ACTIVE_AVATAR_TOOLS_STORAGE_KEY = 'neko.reactChatWindow.activeAvatarTools';
 export const MAX_ACTIVE_AVATAR_TOOLS = 3;
 export const DEFAULT_ACTIVE_AVATAR_TOOL_IDS: AvatarToolId[] = ['lollipop', 'fist', 'hammer'];
+const FULL_AVATAR_TOOL_IDS = new Set<AvatarToolId>(['lollipop', 'fist', 'hammer']);
 
 function projectAvatarToolDefinitionToItem(definition: AvatarToolDefinition): AvatarToolItem {
   const { primary, secondary, tertiary } = definition.visual.variants;
@@ -102,10 +103,15 @@ function projectAvatarToolDefinitionToItem(definition: AvatarToolDefinition): Av
   };
 }
 
-export const AVAILABLE_AVATAR_TOOLS: AvatarToolItem[] =
+const REGISTERED_AVATAR_TOOLS: AvatarToolItem[] =
   AVATAR_TOOL_DEFINITIONS.map(projectAvatarToolDefinitionToItem);
 
-const AVAILABLE_AVATAR_TOOL_IDS = new Set<AvatarToolId>(AVAILABLE_AVATAR_TOOLS.map(item => item.id));
+export const AVAILABLE_COMPACT_AVATAR_TOOLS: AvatarToolItem[] = REGISTERED_AVATAR_TOOLS;
+export const AVAILABLE_FULL_AVATAR_TOOLS: AvatarToolItem[] = REGISTERED_AVATAR_TOOLS.filter(
+  item => FULL_AVATAR_TOOL_IDS.has(item.id),
+);
+
+const AVAILABLE_AVATAR_TOOL_IDS = new Set<AvatarToolId>(REGISTERED_AVATAR_TOOLS.map(item => item.id));
 
 export function isAvatarToolId(value: unknown): value is AvatarToolId {
   return typeof value === 'string' && AVAILABLE_AVATAR_TOOL_IDS.has(value as AvatarToolId);

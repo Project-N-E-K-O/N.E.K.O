@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict
+from itertools import zip_longest
 import httpx
 from utils.cookies_login import load_cookies_from_file
 from utils.external_http_client import get_external_http_client
@@ -39,6 +40,7 @@ from .platform_helpers import (
     build_xhh_request_params,
 )
 from .youtube_feed import fetch_youtube_home_feed
+from .twitch_feed import fetch_twitch_live_streams
 
 
 XHH_API_BASE = "https://api.xiaoheihe.cn"
@@ -756,7 +758,7 @@ async def fetch_video_content(limit: int = 10) -> Dict[str, Any]:
     Fetch video content based on the user's region
     
     Chinese region: Bilibili homepage videos
-    non-Chinese region: YouTube Home Feed
+    non-Chinese region: followed Twitch live streams and YouTube recommendations in parallel
     
     Args:
         limit: maximum amount of content
@@ -764,14 +766,49 @@ async def fetch_video_content(limit: int = 10) -> Dict[str, Any]:
     Returns:
         Dict with success status and video content
     """
-    return await _fetch_content_by_region(
-        china_fetch_func=fetch_bilibili_trending,
-        non_china_fetch_func=fetch_youtube_home_feed,
-        limit=limit,
-        content_key='video',
-        china_log_msg="检测到中文区域，获取B站视频内容",
-        non_china_log_msg="检测到非中文区域，获取 YouTube 首页 Feed"
+    if is_china_region():
+        return await _fetch_content_by_region(
+            china_fetch_func=fetch_bilibili_trending,
+            non_china_fetch_func=fetch_youtube_home_feed,
+            limit=limit,
+            content_key='video',
+            china_log_msg="检测到中文区域，获取B站视频内容",
+            non_china_log_msg="检测到非中文区域，获取 YouTube 首页 Feed",
+        )
+
+    logger.info("检测到非中文区域，并行获取 Twitch 直播与 YouTube 视频")
+    twitch_result, youtube_result = await asyncio.gather(
+        fetch_twitch_live_streams(limit),
+        fetch_youtube_home_feed(limit),
+        return_exceptions=True,
     )
+    if isinstance(twitch_result, Exception):
+        logger.warning(f"Twitch 直播获取失败: {twitch_result}")
+        twitch_result = {"success": False, "source": "twitch", "videos": [], "error": str(twitch_result)}
+    if isinstance(youtube_result, Exception):
+        logger.warning(f"YouTube 视频获取失败: {youtube_result}")
+        youtube_result = {"success": False, "source": "youtube", "videos": [], "error": str(youtube_result)}
+
+    twitch_videos = list(twitch_result.get("videos") or []) if twitch_result.get("success") else []
+    youtube_videos = list(youtube_result.get("videos") or []) if youtube_result.get("success") else []
+    merged_videos = [
+        item
+        for pair in zip_longest(twitch_videos, youtube_videos)
+        for item in pair
+        if item is not None
+    ]
+    success = bool(twitch_result.get("success") or youtube_result.get("success"))
+    response = {
+        "success": success,
+        "region": "non-china",
+        "video": {"success": success, "source": "mixed", "videos": merged_videos},
+        "twitch": twitch_result,
+        "youtube": youtube_result,
+    }
+    if not success:
+        errors = [str(item.get("error")) for item in (twitch_result, youtube_result) if item.get("error")]
+        response["error"] = "; ".join(errors) if errors else "Twitch 与 YouTube 获取失败（无错误详情）"
+    return response
 
 async def fetch_news_content(limit: int = 10) -> Dict[str, Any]:
     """
@@ -1459,6 +1496,28 @@ def _format_youtube_videos(videos: List[Dict], limit: int = 5) -> List[str]:
     output_lines.append("")
     return output_lines
 
+
+def _format_twitch_live_streams(streams: List[Dict], limit: int = 5) -> List[str]:
+    """Format followed Twitch live streams as lightweight conversation material.
+
+    The English header and viewer unit are intentional: this is structured LLM
+    context rather than user-interface copy. Keep them aligned with the fixture
+    in ``test_twitch_feed.py``.
+    """
+    output_lines = ["[Followed Twitch live streams]"]
+    for index, stream in enumerate(streams[:limit], 1):
+        title = stream.get("title", "")
+        if title:
+            output_lines.append(f"{index}. {title}")
+            details = [detail for detail in (stream.get("author", ""), stream.get("game_name", "")) if detail]
+            viewers = stream.get("viewer_count", "")
+            if viewers:
+                details.append(f"{viewers} viewers")
+            if details:
+                output_lines.append(f"   {' | '.join(details)}")
+    output_lines.append("")
+    return output_lines
+
 def _format_reddit_posts(posts: List[Dict], limit: int = 5) -> List[str]:
     """Format the Reddit post list"""
     output_lines = ["【Reddit Hot Posts】"]
@@ -1553,7 +1612,7 @@ def format_video_content(video_content: Dict[str, Any]) -> str:
     
     Formats automatically by region:
     - Chinese region: Bilibili video content
-    - non-Chinese region: YouTube Home Feed
+    - non-Chinese region: followed Twitch live streams and YouTube recommendations
     
     Args:
         video_content: result returned by fetch_video_content
@@ -1572,10 +1631,19 @@ def format_video_content(video_content: Dict[str, Any]) -> str:
         return "暂时无法获取视频推荐内容"
     else:
         if video_data.get('success'):
-            videos = video_data.get('videos', [])
-            output_lines = _format_youtube_videos(videos)
+            if video_data.get("source") == "mixed":
+                output_lines = []
+                twitch_data = video_content.get("twitch", {})
+                youtube_data = video_content.get("youtube", {})
+                if twitch_data.get("success"):
+                    output_lines.extend(_format_twitch_live_streams(twitch_data.get("videos", [])))
+                if youtube_data.get("success"):
+                    output_lines.extend(_format_youtube_videos(youtube_data.get("videos", [])))
+            else:
+                videos = video_data.get('videos', [])
+                output_lines = _format_twitch_live_streams(videos) if video_data.get("source") == "twitch" else _format_youtube_videos(videos)
             return "\n".join(output_lines)
-        return "Unable to fetch YouTube recommendations at the moment"
+        return "Unable to fetch Twitch or YouTube recommendations at the moment"
 
 def format_news_content(news_content: Dict[str, Any]) -> str:
     """

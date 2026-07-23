@@ -1262,6 +1262,45 @@ _ACTIVITY_ENUM_COMMON_WORDS = frozenset({
 })
 
 
+_ACTIVITY_RENDERED_COMMON_LABELS_BY_LANG: dict[str, frozenset[str]] = {
+    # Short/common rendered activity labels and plain section headings are more
+    # likely to be natural reply openers than safe-to-drop scaffolding. Known
+    # observed CJK source-prefix leaks such as ``聊天中/`` are handled by the
+    # explicit source-prefix allowlist in proactive_parsing.py.
+    "zh": frozenset({
+        "离开", "刚回来", "游戏中", "聊天中", "空闲", "切换状态中",
+        "评估", "叙述", "开放话题", "口吻",
+    }),
+    "en": frozenset({
+        "scores", "narrative", "open threads", "tone",
+    }),
+    "ja": frozenset({
+        "離席", "ゲーム中", "チャット中", "アイドル",
+        "評価", "叙述", "保留話題", "口調",
+    }),
+    "ko": frozenset({
+        "자리 비움", "게임 중", "채팅 중", "유휴",
+        "평가", "서술", "보류 화제", "말투",
+    }),
+    "es": frozenset({
+        "ausente", "jugando", "chateando", "inactivo", "privado",
+        "puntuaciones", "narrativa", "hilos abiertos", "tono",
+    }),
+    "pt": frozenset({
+        "ausente", "jogando", "conversando", "ocioso", "privado",
+        "pontuações", "narrativa", "tópicos abertos", "tom",
+    }),
+    "ru": frozenset({
+        "отсутствует", "играет", "переписка", "простой",
+        "оценки", "описание", "открытые нити", "тон",
+    }),
+}
+
+
+def _is_activity_rendered_common_label(lang: str, label: str) -> bool:
+    return label.casefold() in _ACTIVITY_RENDERED_COMMON_LABELS_BY_LANG.get(lang, frozenset())
+
+
 @lru_cache(maxsize=1)
 def get_proactive_intent_leak_labels() -> frozenset[str]:
     """All internal guidance labels that must never reach spoken output.
@@ -1301,23 +1340,50 @@ def get_proactive_intent_leak_labels() -> frozenset[str]:
         if label:
             labels.add(label)
 
-    # Activity state / propensity enum literals + their English labels.
-    # The activity-state section historically rendered the bare English enum
-    # keys (state line / scores line), and weak models echo them as the reply's
-    # first line. Deny every enum key + English label EXCEPT the ordinary single
-    # words in ``_ACTIVITY_ENUM_COMMON_WORDS`` (see its docstring): denying a
-    # bare "idle" / "open" would let ``_strip`` scrub a legit reply opening with
-    # the word, while multi-token forms (focused_work, "focused work") never
-    # occur as natural speech and are safe to strip. English only on purpose:
-    # the leak is always the English literal.
+    # Activity state / propensity enum literals + rendered state labels.
+    # The activity-state section may render localized labels ("聊天中",
+    # "未收尾话题", etc.), and weak models can echo them as reply headings.
+    # Exclude ordinary rendered words per locale where the label is more likely
+    # to be natural speech than a safe-to-drop heading.
     for state_key, en_label in ACTIVITY_STATE_LABELS['en'].items():
         if state_key not in _ACTIVITY_ENUM_COMMON_WORDS:
             labels.add(state_key)
-        if en_label not in _ACTIVITY_ENUM_COMMON_WORDS:
+        if (
+            en_label not in _ACTIVITY_ENUM_COMMON_WORDS
+            and not _is_activity_rendered_common_label('en', en_label)
+        ):
             labels.add(en_label)
+    for lang, per_lang in ACTIVITY_STATE_LABELS.items():
+        for label in per_lang.values():
+            label = (label or '').strip()
+            if (
+                label
+                and label.casefold() not in _ACTIVITY_ENUM_COMMON_WORDS
+                and not _is_activity_rendered_common_label(lang, label)
+            ):
+                labels.add(label)
     for prop_key in ACTIVITY_PROPENSITY_DIRECTIVES['en']:
         if prop_key not in _ACTIVITY_ENUM_COMMON_WORDS:
             labels.add(prop_key)
+
+    for lang, per_lang in ACTIVITY_STATE_SECTION_LABELS.items():
+        for key in (
+            'unfinished_thread_fmt',
+            'activity_scores_label',
+            'activity_guess_label',
+            'open_threads_label',
+            'tone_label',
+        ):
+            label = (per_lang.get(key) or '').strip()
+            if not label:
+                continue
+            if key.endswith('_fmt'):
+                _add_before_colon(label)
+            elif (
+                label.casefold() not in _ACTIVITY_ENUM_COMMON_WORDS
+                and not _is_activity_rendered_common_label(lang, label)
+            ):
+                labels.add(label)
 
     return frozenset(label.casefold() for label in labels if label)
 

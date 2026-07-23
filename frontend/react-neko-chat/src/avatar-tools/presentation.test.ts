@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AVAILABLE_AVATAR_TOOLS } from '../avatarTools';
+import { AVAILABLE_COMPACT_AVATAR_TOOLS } from '../avatarTools';
 import {
   AVATAR_TOOL_DEFINITIONS,
   FIST_REWARD_DROP_EFFECT_RECIPE,
@@ -10,12 +10,16 @@ import {
   type FixedParticleEffectRecipe,
 } from './catalog';
 import {
+  clampAvatarToolHeadGestureAnchor,
+  clampAvatarToolRoundRevealAnchor,
   createAvatarToolDisposer,
   createAvatarToolEffectExecution,
   createAvatarToolVariantState,
   deriveAvatarToolPresentation,
   getAvatarToolOverlayTransform,
   getAvatarToolOverlayTransformFromDefinition,
+  getAvatarToolRoundResultLabel,
+  getAvatarToolRoundResultLabels,
   playAvatarToolSound,
   prewarmAvatarToolSounds,
   resolveAvatarToolVisualPresentation,
@@ -290,6 +294,7 @@ describe('avatar tool presentation', () => {
       lollipop: 'primary',
       fist: 'primary',
       hammer: 'primary',
+      rps: 'primary',
     });
   });
 
@@ -386,9 +391,50 @@ describe('avatar tool presentation', () => {
 });
 
 describe('avatar tool visual runtime geometry', () => {
+  it('keeps the head gesture above its anchor and inside the viewport', () => {
+    const anchor = { x: -20, y: 0, coordinateSpace: 'viewport-css-pixel' as const };
+    expect(clampAvatarToolHeadGestureAnchor(anchor, 80, 80, 300, 200)).toEqual({
+      x: 48,
+      y: 112,
+      coordinateSpace: 'viewport-css-pixel',
+    });
+    expect(clampAvatarToolHeadGestureAnchor(
+      { ...anchor, x: 400, y: 400 },
+      80,
+      80,
+      300,
+      200,
+    )).toEqual({
+      x: 252,
+      y: 192,
+      coordinateSpace: 'viewport-css-pixel',
+    });
+  });
+
+  it('keeps the complete round reveal in view and never invents an avatar name', () => {
+    const anchor = { x: -20, y: 0, coordinateSpace: 'viewport-css-pixel' as const };
+    expect(clampAvatarToolRoundRevealAnchor(anchor, 80, 80, 54, 62, 300, 200)).toEqual({
+      x: 106,
+      y: 76,
+      coordinateSpace: 'viewport-css-pixel',
+    });
+    expect(getAvatarToolRoundResultLabel('user_win', '')).toBe('You win');
+    expect(getAvatarToolRoundResultLabel('draw', '')).toBe('Draw');
+    expect(getAvatarToolRoundResultLabel('avatar_win', '')).toBe('');
+    expect(getAvatarToolRoundResultLabels(' Yui ')).toEqual({
+      user_win: 'You win',
+      avatar_win: 'Yui wins',
+      draw: 'Draw',
+    });
+    expect(getAvatarToolRoundResultLabels('')).toEqual({
+      user_win: 'You win',
+      draw: 'Draw',
+    });
+  });
+
   it('preserves the current pointer and in-range anchors for every tool', () => {
     const pointer = { x: 100, y: 100 };
-    const transforms = Object.fromEntries(AVAILABLE_AVATAR_TOOLS.map(item => [item.id, {
+    const transforms = Object.fromEntries(AVAILABLE_COMPACT_AVATAR_TOOLS.map(item => [item.id, {
       pointer: getAvatarToolOverlayTransform(item, true, pointer),
       inRange: getAvatarToolOverlayTransform(item, false, pointer),
     }]));
@@ -405,6 +451,10 @@ describe('avatar tool visual runtime geometry', () => {
       hammer: {
         pointer: 'translate3d(74px, 71.92px, 0)',
         inRange: 'translate3d(50px, 46px, 0)',
+      },
+      rps: {
+        pointer: 'translate3d(75.2px, 75.2px, 0)',
+        inRange: 'translate3d(60px, 60px, 0)',
       },
     });
   });

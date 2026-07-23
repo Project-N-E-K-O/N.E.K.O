@@ -55,8 +55,8 @@ class BiliDMClient:
         if self._running:
             return
 
-        if not self._credential.sessdata:
-            raise RuntimeError("B站 Cookie (SESSDATA) 未配置，请在 plugin.toml 中填写")
+        if not self._credential.sessdata or not self._credential.bili_jct:
+            raise RuntimeError("B站 Cookie（SESSDATA 和 bili_jct）未完整配置，请在插件前端面板中填写")
 
         try:
             self._session = Session(self._credential, debug=False)

@@ -200,13 +200,24 @@ class GreetingMixin:
             self._pending_turn_meta = None
 
         if accepted:
-            logger.info(
-                "[%s] handle_avatar_interaction: delivered interaction_id=%s tool=%s action=%s",
-                self.lanlan_name,
-                interaction_id,
-                raw["tool_id"],
-                raw["action_id"],
-            )
+            if "action_id" in raw:
+                logger.info(
+                    "[%s] handle_avatar_interaction: delivered interaction_id=%s tool=%s action=%s",
+                    self.lanlan_name,
+                    interaction_id,
+                    raw["tool_id"],
+                    raw["action_id"],
+                )
+            else:
+                logger.info(
+                    "[%s] handle_avatar_interaction: delivered interaction_id=%s tool=%s round=%s/%s result=%s",
+                    self.lanlan_name,
+                    interaction_id,
+                    raw["tool_id"],
+                    raw["user_gesture"],
+                    raw["avatar_gesture"],
+                    raw["round_result"],
+                )
             return {"accepted": True, "interaction_id": interaction_id}
 
         logger.debug(

@@ -1124,15 +1124,11 @@ transition: all 0.3s ease-in-out;
     box-shadow: 0 1px 4px rgba(238, 90, 36, 0.2);
 }
 
-.clear-custom-api-icon {
-    font-size: 1em;
-}
-
 .model-config-container {
     margin-bottom: 16px;
-    border: 1px solid #e0e0e0;
-    border-radius: 24px;
-    overflow: hidden;
+    border: 0;
+    border-radius: 0;
+    overflow: visible;
     transition: all 0.3s ease-in-out;
 }
 
@@ -1143,8 +1139,10 @@ transition: all 0.3s ease-in-out;
     width: 100%;
     padding: 12px 20px;
     background: linear-gradient(135deg, #40C5F1 0%, #22b3ff 100%);
-    border: 0;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+    border: 1px solid rgba(34, 179, 255, 0.35);
+    border-radius: 999px;
+    overflow: hidden;
+    box-sizing: border-box;
     cursor: pointer;
     font: inherit;
     text-align: left;
@@ -1187,25 +1185,28 @@ font-size: 0.9rem;
 .model-content {
 max-height: 0;
 overflow: hidden;
-transition: max-height 0.3s ease-in-out;
+transition: max-height 0.3s ease-in-out, margin-top 0.3s ease-in-out;
 }
 
 .model-content.expanded {
     max-height: 2000px;
+    margin-top: 8px;
+    border: 1px solid #e0e0e0;
+    border-radius: 24px;
 }
 
 .nested-model-config-container {
     margin: 10px 12px;
-    border: 1px solid #d6edf8;
-    border-radius: 8px;
-    overflow: hidden;
-    background: rgba(64, 197, 241, 0.04);
+    border: 0;
+    border-radius: 0;
+    overflow: visible;
+    background: transparent;
 }
 
 .nested-model-header {
     padding: 10px 14px;
     background: rgba(64, 197, 241, 0.14);
-    border-bottom: 1px solid rgba(64, 197, 241, 0.16);
+    border-color: #d6edf8;
 }
 
 .nested-model-header .model-title {
@@ -1224,6 +1225,9 @@ transition: max-height 0.3s ease-in-out;
 
 .nested-model-content.expanded {
     max-height: 800px;
+    border-color: #d6edf8;
+    border-radius: 18px;
+    background: rgba(64, 197, 241, 0.04);
 }
 
 .model-content .field-row {
@@ -1911,12 +1915,35 @@ font-size: 0.8em;
 
 .connectivity-summary-light {
     display: inline-block;
+    position: relative;
     width: 10px;
     height: 10px;
+    flex: 0 0 auto;
+    padding: 0;
+    border: 0;
     border-radius: 50%;
     background-color: #CCCCCC;
-    transition: background-color 0.3s ease, box-shadow 0.3s ease;
-    cursor: default;
+    appearance: none;
+    transition: background-color 0.3s ease, box-shadow 0.3s ease, outline-color 0.2s ease;
+    cursor: pointer;
+}
+
+.connectivity-summary-light::after {
+    content: '';
+    position: absolute;
+    inset: -3px;
+    border-radius: 50%;
+    cursor: pointer;
+}
+
+.connectivity-summary-light:hover {
+    outline: 2px solid rgba(64, 197, 241, 0.45);
+    outline-offset: 2px;
+}
+
+.connectivity-summary-light:focus-visible {
+    outline: 2px solid #40C5F1;
+    outline-offset: 3px;
 }
 
 /* Reuse the same color states for summary lights */

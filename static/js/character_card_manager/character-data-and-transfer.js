@@ -374,13 +374,6 @@ async function loadCharacterCards() {
     // 渲染卡片/列表视图
     renderCharaCardsView();
 
-    // 显示刷新成功消息
-    if (window.characterCards && window.characterCards.length > 0) {
-        showMessage(window.t ? window.t('steam.characterCardsRefreshed', { count: window.characterCards.length }) : `已刷新角色卡列表，共 ${window.characterCards.length} 个角色卡`, 'success');
-    } else {
-        showMessage(window.t ? window.t('steam.characterCardsRefreshedEmpty') : '已刷新角色卡列表，暂无角色卡', 'info');
-    }
-
     // 同步加载我的档案和已隐藏猫娘列表
     loadMasterProfile();
     renderHiddenCatgirls();
@@ -982,7 +975,11 @@ async function handleImportCharacterCard(event) {
     }
 
     const loadingText = window.t ? window.t('character.importingCard') : '正在导入角色卡...';
-    showMessage(loadingText, 'info');
+    // 导入和解包大角色卡可能超过普通 toast 的展示时长。提示随整个导入流程常驻，
+    // 但仍是非模态浮层，不阻塞用户操作页面中的其他功能。
+    const importNotice = showMessage(loadingText, 'importing', 0);
+    // 先让浏览器绘制提示，再开始可能占用主线程的旧版 PNG 标记扫描。
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 
     try {
         const arrayBuffer = await file.arrayBuffer();
@@ -1033,21 +1030,19 @@ async function handleImportCharacterCard(event) {
             const errorData = await response.json().catch(() => ({ error: '导入失败' }));
             throw new Error(errorData.error || `HTTP ${response.status}`);
         }
-        const result = await response.json();
-
-        const successText = window.t ? window.t('character.importCardSuccess', { name: result.character_name }) : `角色卡 "${result.character_name}" 导入成功`;
-        showMessage(successText, 'success');
-
         // 刷新角色卡列表（含 sidecar / 卡面 / 视图重新渲染）
         if (typeof loadCharacterCards === 'function') {
             await loadCharacterCards();
         } else if (typeof loadCharacterData === 'function') {
             await loadCharacterData();
         }
+
+        importNotice.dismiss();
     } catch (error) {
+        importNotice.dismiss();
         console.error('导入角色卡失败:', error);
         const errorText = window.t ? window.t('character.importCardFailed', { error: error.message }) : `导入角色卡失败: ${error.message}`;
-        showMessage(errorText, 'error');
+        showMessage(errorText, 'import-error');
     }
 }
 
