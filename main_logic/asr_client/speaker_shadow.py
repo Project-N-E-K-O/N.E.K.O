@@ -149,7 +149,7 @@ class _CandidateBuffer:
 @dataclass(frozen=True, slots=True)
 class _FinalizedCandidate:
     finish_seen: bool
-    dropped: bool
+    terminal_reason: Literal["sufficient", "insufficient", "dropped"]
 
 
 ObservationCallback = Callable[[SpeakerShadowObservation], Awaitable[None] | None]
@@ -368,7 +368,7 @@ class SpeakerShadowRuntime:
                 self._mark_finalized(
                     dropped_candidate,
                     finish_seen=False,
-                    dropped=True,
+                    terminal_reason="dropped",
                 )
                 self._metrics.dropped_candidate_count += 1
                 self._metrics.dropped_audio_ms += dropped_buffer.audio_ms
@@ -389,7 +389,11 @@ class SpeakerShadowRuntime:
         pcm16 = bytes(buffer.pcm16)
         audio_ms = buffer.audio_ms
         self._buffers.pop(frame.candidate, None)
-        self._mark_finalized(frame.candidate, finish_seen=False)
+        self._mark_finalized(
+            frame.candidate,
+            finish_seen=False,
+            terminal_reason="sufficient",
+        )
         backend = await self._ensure_backend()
         if backend is None:
             return
@@ -463,23 +467,31 @@ class SpeakerShadowRuntime:
         finalized = self._finalized.get(marker.candidate)
         if finalized is not None and finalized.finish_seen:
             return
-        was_dropped = finalized.dropped if finalized is not None else False
         buffer = self._buffers.pop(marker.candidate, None)
+        previous_reason = (
+            finalized.terminal_reason if finalized is not None else None
+        )
+        if previous_reason is not None:
+            terminal_reason = previous_reason
+        elif dropped:
+            terminal_reason = "dropped"
+        elif buffer is None or buffer.audio_ms < self._config.minimum_audio_ms:
+            terminal_reason = "insufficient"
+        else:
+            terminal_reason = "sufficient"
         self._mark_finalized(
             marker.candidate,
             finish_seen=True,
-            dropped=was_dropped or dropped,
+            terminal_reason=terminal_reason,
         )
         self._metrics.finished_candidate_count += 1
-        if dropped:
-            if not was_dropped:
+        if terminal_reason == "dropped":
+            if previous_reason != "dropped":
                 self._metrics.dropped_candidate_count += 1
             if buffer is not None:
                 self._metrics.dropped_audio_ms += buffer.audio_ms
             return
-        if not was_dropped and (
-            buffer is None or buffer.audio_ms < self._config.minimum_audio_ms
-        ):
+        if terminal_reason == "insufficient":
             self._metrics.insufficient_candidate_count += 1
 
     def _mark_finalized(
@@ -487,14 +499,16 @@ class SpeakerShadowRuntime:
         candidate: Hashable,
         *,
         finish_seen: bool,
-        dropped: bool = False,
+        terminal_reason: Literal["sufficient", "insufficient", "dropped"],
     ) -> None:
         previous = self._finalized.pop(candidate, None)
         self._finalized[candidate] = _FinalizedCandidate(
             finish_seen=(
                 finish_seen or (previous.finish_seen if previous is not None else False)
             ),
-            dropped=dropped or (previous.dropped if previous is not None else False),
+            terminal_reason=(
+                previous.terminal_reason if previous is not None else terminal_reason
+            ),
         )
         while len(self._finalized) > self._config.finalized_candidate_capacity:
             self._finalized.popitem(last=False)
