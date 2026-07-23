@@ -57,6 +57,12 @@ _lock = asyncio.Lock()
 
 # 防止 fire-and-forget 任务被 Python 3.11+ GC 回收
 _ws_bg_tasks: set = set()
+# A character can have more than one WebSocket at a time (for example the
+# main page and /chat_full).  Each one sends its own greeting_check, so the
+# router must coalesce the *scheduled* greeting before the core state machine
+# is reached.  The state machine only protects an in-progress delivery; by
+# then two tasks may already have independently completed their gap checks.
+_greeting_tasks: dict[str, asyncio.Task] = {}
 _SESSION_INPUT_TYPES = frozenset({"audio", "screen", "camera", "text", "avatar_drop_image", "user_image"})
 _TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})
 _ORDERED_STREAM_INPUT_TYPES = frozenset({"audio", "avatar_drop_image", "user_image"})
@@ -72,6 +78,39 @@ def _fire_task(coro):
     _ws_bg_tasks.add(task)
     task.add_done_callback(_ws_bg_tasks.discard)
     return task
+
+
+def _schedule_greeting_task(lanlan_name: str, kind: str, coro_factory) -> bool:
+    """Start at most one greeting-like task per character at a time.
+
+    All greeting sources share this gate: ordinary reconnect/switch greetings,
+    first-appearance greetings, and cat-return greetings.  Passing a factory
+    rather than a ready coroutine is important: a coalesced request must not
+    construct an unawaited coroutine merely to discard it.
+    """
+    existing = _greeting_tasks.get(lanlan_name)
+    if existing is not None and not existing.done():
+        logger.info(
+            "[%s] %s greeting request coalesced: another greeting task is in flight",
+            lanlan_name,
+            kind,
+        )
+        return False
+
+    task = _fire_task(coro_factory())
+    # Unit-test task shims can intentionally return None after closing the
+    # coroutine.  Production _fire_task always returns asyncio.Task.
+    if task is None:
+        return True
+
+    _greeting_tasks[lanlan_name] = task
+
+    def _clear_if_current(completed_task):
+        if _greeting_tasks.get(lanlan_name) is completed_task:
+            _greeting_tasks.pop(lanlan_name, None)
+
+    task.add_done_callback(_clear_if_current)
+    return True
 
 
 def _normalize_cat_greeting_check(message: dict) -> tuple[float, str, bool, dict | None, bool]:
@@ -491,10 +530,18 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 if new_session:
                     if await has_new_character_greeting_pending(_config_manager, lanlan_name):
                         logger.info(f"[{lanlan_name}] greeting_check: is_switch={is_switch} since_disconnect={since_disconnect:.1f}s reason={greeting_reason or '-'} → new character greeting")
-                        _fire_task(session_manager[lanlan_name].trigger_new_character_greeting())
+                        _schedule_greeting_task(
+                            lanlan_name,
+                            "new-character",
+                            session_manager[lanlan_name].trigger_new_character_greeting,
+                        )
                     else:
                         logger.info(f"[{lanlan_name}] greeting_check: is_switch={is_switch} since_disconnect={since_disconnect:.1f}s reason={greeting_reason or '-'} → triggering")
-                        _fire_task(session_manager[lanlan_name].trigger_greeting())
+                        _schedule_greeting_task(
+                            lanlan_name,
+                            "ordinary",
+                            session_manager[lanlan_name].trigger_greeting,
+                        )
                 else:
                     logger.info(f"[{lanlan_name}] greeting_check: since_disconnect={since_disconnect:.1f}s ≤15s reason={greeting_reason or '-'} → skip (refresh/reconnect)")
 
@@ -517,13 +564,17 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     episode or "-",
                     has_started_autonomous_action,
                 )
-                _fire_task(session_manager[lanlan_name].trigger_cat_greeting(
-                    cat_duration,
-                    cat_tier,
-                    cat_was_auto,
-                    episode=episode,
-                    has_started_autonomous_action=has_started_autonomous_action,
-                ))
+                _schedule_greeting_task(
+                    lanlan_name,
+                    "cat-return",
+                    lambda: session_manager[lanlan_name].trigger_cat_greeting(
+                        cat_duration,
+                        cat_tier,
+                        cat_was_auto,
+                        episode=episode,
+                        has_started_autonomous_action=has_started_autonomous_action,
+                    ),
+                )
 
             elif action == "ping":
                 # 心跳保活消息，回复pong

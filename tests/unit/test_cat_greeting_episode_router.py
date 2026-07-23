@@ -174,6 +174,41 @@ def test_cat_greeting_router_accepts_only_literal_true_started_delivery_gate(raw
     assert episode == {"kind": "activity", "highlight": "played_yarn"}
 
 
+def test_greeting_task_scheduler_coalesces_all_greeting_sources():
+    async def scenario():
+        websocket_router._greeting_tasks.clear()
+        started = []
+        release = asyncio.Event()
+
+        async def greeting(kind):
+            started.append(kind)
+            await release.wait()
+
+        try:
+            assert websocket_router._schedule_greeting_task(
+                "Test", "ordinary", lambda: greeting("ordinary"),
+            ) is True
+            # Different greeting sources must use the same per-character gate.
+            assert websocket_router._schedule_greeting_task(
+                "Test", "cat-return", lambda: greeting("cat-return"),
+            ) is False
+
+            await asyncio.sleep(0)
+            assert started == ["ordinary"]
+
+            release.set()
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            assert "Test" not in websocket_router._greeting_tasks
+        finally:
+            release.set()
+            for task in list(websocket_router._greeting_tasks.values()):
+                task.cancel()
+            websocket_router._greeting_tasks.clear()
+
+    asyncio.run(scenario())
+
+
 def test_cat_greeting_router_passes_only_canonical_episode_to_manager(monkeypatch):
     calls = []
     session_ids = {}
