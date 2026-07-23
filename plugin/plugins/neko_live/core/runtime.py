@@ -16,6 +16,7 @@ from . import (
     runtime_douyin_auth,
     runtime_modules,
     runtime_state,
+    runtime_twitch_auth,
 )
 from .runtime_auth_api import RuntimeAuthApiMixin
 from .runtime_config_api import RuntimeConfigApiMixin
@@ -79,6 +80,10 @@ class LiveRuntime(
         # Douyin v1 uses manual cookie import only; no browser automation or auto-login.
         self.douyin_credential_store = runtime_douyin_auth.create_credential_store(plugin, self.audit)
         self.douyin_credential: dict[str, Any] | None = None
+        # Twitch uses official Device Code Flow; device codes remain in-memory.
+        self.twitch_credential_store = runtime_twitch_auth.create_credential_store(plugin, self.audit)
+        self.twitch_credential: dict[str, Any] | None = None
+        self.twitch_auth = runtime_twitch_auth.create_auth_service(self)
         runtime_state.initialize_runtime_state(self)
         runtime_co_stream_policy.initialize_co_stream_policy(self)
         self.live_hosting_director = LiveHostingDirector(self)
@@ -92,6 +97,7 @@ class LiveRuntime(
         await self.viewer_store.prune_expired_profiles()
         await self.reload_credential()
         await self.reload_douyin_credential()
+        await self.reload_twitch_credential()
         await self.registry.setup_all(self)
         self._start_idle_hosting_loop()
         self.audit.record("runtime_start", "neko_live runtime ready")

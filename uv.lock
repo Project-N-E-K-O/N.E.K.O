@@ -657,8 +657,8 @@ name = "dxcam"
 version = "0.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "comtypes", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
-    { name = "numpy", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "comtypes" },
+    { name = "numpy" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/de/b7/b3d3e3fa42f347ac4b37fd639634935b4eefff1d5d61bdf72a6d8b906919/dxcam-0.3.0.tar.gz", hash = "sha256:d524da45adf70e044865e7d4e9098e655d6734951781155dda50c1292e20d8bd", size = 48742, upload-time = "2026-03-12T02:52:17.298Z" }
 wheels = [
@@ -1150,7 +1150,7 @@ name = "jinxed"
 version = "1.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "ansicon", marker = "sys_platform == 'win32'" },
+    { name = "ansicon" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/20/d0/59b2b80e7a52d255f9e0ad040d2e826342d05580c4b1d7d7747cfb8db731/jinxed-1.3.0.tar.gz", hash = "sha256:1593124b18a41b7a3da3b078471442e51dbad3d77b4d4f2b0c26ab6f7d660dbf", size = 80981, upload-time = "2024-07-31T22:39:18.854Z" }
 wheels = [
@@ -1274,7 +1274,7 @@ name = "macholib"
 version = "1.16.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "altgraph", marker = "sys_platform == 'darwin'" },
+    { name = "altgraph" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/10/2f/97589876ea967487978071c9042518d28b958d87b17dceb7cdc1d881f963/macholib-1.16.4.tar.gz", hash = "sha256:f408c93ab2e995cd2c46e34fe328b130404be143469e41bc366c807448979362", size = 59427, upload-time = "2025-11-22T08:28:38.373Z" }
 wheels = [
@@ -1490,6 +1490,7 @@ dependencies = [
     { name = "tomli-w" },
     { name = "tornado" },
     { name = "translatepy" },
+    { name = "twitchio" },
     { name = "uvicorn" },
     { name = "websocket-client" },
     { name = "websockets" },
@@ -1564,6 +1565,7 @@ requires-dist = [
     { name = "tomli-w", specifier = ">=1.2.0" },
     { name = "tornado", specifier = ">=6.5.4" },
     { name = "translatepy" },
+    { name = "twitchio", specifier = "==3.2.2" },
     { name = "uvicorn" },
     { name = "websocket-client", specifier = "~=1.8.0" },
     { name = "websockets", specifier = "~=15.0.1" },
@@ -4622,7 +4624,7 @@ name = "python-xlib"
 version = "0.33"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "six", marker = "sys_platform != 'darwin'" },
+    { name = "six" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/86/f5/8c0653e5bb54e0cbdfe27bf32d41f27bc4e12faa8742778c17f2a71be2c0/python-xlib-0.33.tar.gz", hash = "sha256:55af7906a2c75ce6cb280a584776080602444f75815a7aff4d287bb2d7018b32", size = 269068, upload-time = "2022-12-25T18:53:00.824Z" }
 wheels = [
@@ -4693,10 +4695,10 @@ name = "pywinauto"
 version = "0.6.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "comtypes", marker = "sys_platform == 'win32'" },
-    { name = "python-xlib", marker = "platform_machine != 'aarch64' and sys_platform == 'linux'" },
-    { name = "pywin32", marker = "sys_platform == 'win32'" },
-    { name = "six", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "comtypes" },
+    { name = "python-xlib", marker = "python_version < '0'" },
+    { name = "pywin32" },
+    { name = "six" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/2c/85/cc65e3b64e7473cc86c07f0b5c415d509402c03ef19dadc39c583835eb5f/pywinauto-0.6.9.tar.gz", hash = "sha256:94d710bfa796df245250f952ffa65d97233d9807bcd42e052b71b81af469b6de", size = 434734, upload-time = "2025-01-06T11:30:01.801Z" }
 wheels = [
@@ -5338,6 +5340,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/88/3d/ac1d26815f57373af98338d74b9f79bb7f87c599ea5a26027622ac8b9d13/translatepy-2.3.tar.gz", hash = "sha256:712313b0a8b8ff9b857f59469f5c3692a132c2e5637b6e939640d616085060b5", size = 770751, upload-time = "2022-03-26T15:27:01.003Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d3/74/7ced01dd85947f3a5f997322e4c269df8dc565f08f36c1660517cc95abd7/translatepy-2.3-py3-none-any.whl", hash = "sha256:a7faed206d3f15dbc6c5a90ba5439d5741763e7843b71ea8f001c686f9297457", size = 814438, upload-time = "2022-03-26T15:26:57.787Z" },
+]
+
+[[package]]
+name = "twitchio"
+version = "3.2.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d1/94/4226b2428f47bc4dde7c8efc6d4ff51b593d95a753b1df418d69153d8943/twitchio-3.2.2.tar.gz", hash = "sha256:44908f4581dcb85d106248bd5cbcccbd7cbbe6f0bea013085eb632f158d8c0c1", size = 248665, upload-time = "2026-04-14T05:46:16.764Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/44/50/2439df5d9169b82b07a4e72ae0815ec31838b56b9e8eddaf372429dadfcd/twitchio-3.2.2-py3-none-any.whl", hash = "sha256:a842fdd7dd9bd03e4d887f9490d42c616d58f9833bcf4ba6b187f77d4148ba7c", size = 320584, upload-time = "2026-04-14T05:46:15.12Z" },
 ]
 
 [[package]]

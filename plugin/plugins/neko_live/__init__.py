@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from plugin.sdk.plugin import Err, NekoPluginBase, Ok, SdkError, lifecycle, neko_plugin, plugin_entry, tr, ui
@@ -116,6 +117,7 @@ class NekoLivePlugin(NekoPluginBase):
                 "live_platform": {"type": "string"},
                 "live_room_ref": {"type": "string"},
                 "live_room_id": {"type": "integer"},
+                "twitch_client_id": {"type": "string"},
                 "live_enabled": {"type": "boolean"},
                 "avatar_roast_enabled": {"type": "boolean"},
                 "avatar_analysis_enabled": {"type": "boolean"},
@@ -377,6 +379,115 @@ class NekoLivePlugin(NekoPluginBase):
     async def douyin_cookie_delete(self, **_):
         try:
             return Ok(await self._runtime().douyin_cookie_delete())
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @ui.action(id="twitch_device_authorization_start", label=tr("actions.twitch_device_authorization_start.label", default="授权 Twitch"), group="auth", order=90, refresh_context=True)
+    @plugin_entry(
+        id="twitch_device_authorization_start",
+        name=tr("entries.twitch_device_authorization_start.name", default="开始 Twitch 设备授权"),
+        description=tr("entries.twitch_device_authorization_start.description", default="使用 Client ID 启动 Twitch Device Code Flow；不需要 Client Secret。"),
+        timeout=25.0,
+        input_schema={
+            "type": "object",
+            "properties": {"client_id": {"type": "string", "description": "Twitch Developer Client ID"}},
+            "required": ["client_id"],
+        },
+    )
+    async def twitch_device_authorization_start(self, client_id="", **_):
+        started_at = time.perf_counter()
+        logger = self.logger
+        if logger is not None:
+            logger.info(
+                "[Twitch OAuth] stage=entry_start "
+                f"client_id_len={len(client_id.strip()) if isinstance(client_id, str) else 0}"
+            )
+        try:
+            await self._runtime().update_config({"twitch_client_id": client_id})
+            if logger is not None:
+                logger.info(
+                    "[Twitch OAuth] stage=config_saved "
+                    f"elapsed_ms={max(0, int((time.perf_counter() - started_at) * 1000))}"
+                )
+            result = await self._runtime().twitch_device_authorization_start()
+            if logger is not None:
+                logger.info(
+                    "[Twitch OAuth] stage=entry_result "
+                    f"started={result.get('started') is True} pending={result.get('pending') is True} "
+                    f"user_code_present={bool(result.get('user_code'))} "
+                    f"verification_uri_present={bool(result.get('verification_uri'))} "
+                    f"message={str(result.get('message') or '')} "
+                    f"elapsed_ms={max(0, int((time.perf_counter() - started_at) * 1000))}"
+                )
+            return Ok(result)
+        except Exception as exc:
+            if logger is not None:
+                logger.error(
+                    "[Twitch OAuth] stage=entry_error "
+                    f"error_type={type(exc).__name__} "
+                    f"elapsed_ms={max(0, int((time.perf_counter() - started_at) * 1000))}"
+                )
+            return Err(SdkError(str(exc)))
+
+    @ui.action(id="twitch_device_authorization_check", label=tr("actions.twitch_device_authorization_check.label", default="检查 Twitch 授权"), group="auth", order=100, refresh_context=True)
+    @plugin_entry(
+        id="twitch_device_authorization_check",
+        name=tr("entries.twitch_device_authorization_check.name", default="检查 Twitch 设备授权"),
+        description=tr("entries.twitch_device_authorization_check.description", default="执行一次定时 Device Code Flow 检查；成功后加密保存 token。"),
+        timeout=40.0,
+    )
+    async def twitch_device_authorization_check(self, **_):
+        try:
+            return Ok(await self._runtime().twitch_device_authorization_check())
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @ui.action(id="twitch_device_authorization_cancel", label=tr("actions.twitch_device_authorization_cancel.label", default="取消 Twitch 授权"), group="auth", order=105, refresh_context=True)
+    @plugin_entry(
+        id="twitch_device_authorization_cancel",
+        name=tr("entries.twitch_device_authorization_cancel.name", default="取消 Twitch 设备授权"),
+        description=tr("entries.twitch_device_authorization_cancel.description", default="停止当前 Device Code Flow 并清除临时授权会话。"),
+    )
+    async def twitch_device_authorization_cancel(self, **_):
+        try:
+            return Ok(await self._runtime().twitch_device_authorization_cancel())
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @ui.action(id="twitch_login_status", label=tr("actions.twitch_login_status.label", default="Twitch 授权状态"), group="auth", order=110, refresh_context=True)
+    @plugin_entry(
+        id="twitch_login_status",
+        name=tr("entries.twitch_login_status.name", default="查询 Twitch 授权状态"),
+        description=tr("entries.twitch_login_status.description", default="读取本地加密凭据的公开账号状态，不回传 token。"),
+    )
+    async def twitch_login_status(self, **_):
+        try:
+            return Ok(await self._runtime().twitch_login_status())
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @ui.action(id="twitch_credential_validate", label=tr("actions.twitch_credential_validate.label", default="校验 Twitch 授权"), group="auth", order=120, refresh_context=True)
+    @plugin_entry(
+        id="twitch_credential_validate",
+        name=tr("entries.twitch_credential_validate.name", default="校验 Twitch 授权"),
+        description=tr("entries.twitch_credential_validate.description", default="向 Twitch 校验 token，并在需要时原子刷新加密凭据。"),
+        timeout=55.0,
+    )
+    async def twitch_credential_validate(self, **_):
+        try:
+            return Ok(await self._runtime().twitch_credential_validate())
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @ui.action(id="twitch_logout", label=tr("actions.twitch_logout.label", default="退出 Twitch 授权"), group="auth", order=130, refresh_context=True)
+    @plugin_entry(
+        id="twitch_logout",
+        name=tr("entries.twitch_logout.name", default="删除 Twitch 授权"),
+        description=tr("entries.twitch_logout.description", default="删除本地加密保存的 Twitch token 和密钥。"),
+    )
+    async def twitch_logout(self, **_):
+        try:
+            return Ok(await self._runtime().twitch_logout())
         except Exception as exc:
             return Err(SdkError(str(exc)))
 

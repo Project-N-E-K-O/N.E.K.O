@@ -53,6 +53,7 @@ __pycache__/
 .idea/
 .cursor/
 .pytest_cache/
+/.pytest_tmp*/
 .DS_Store
 .codex
 .venv

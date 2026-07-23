@@ -226,6 +226,37 @@ async def _resolve_connection_auth_mode(
     platform: str,
     allow_accountless: bool,
 ) -> str:
+    if platform == "twitch":
+        if allow_accountless:
+            raise ValueError("accountless fallback is only supported for Bilibili")
+        try:
+            candidate = await runtime.twitch_credential_validate()
+            status = candidate if isinstance(candidate, dict) else {}
+        except Exception as exc:
+            status = {
+                "logged_in": False,
+                "message": f"twitch account status could not be verified: {type(exc).__name__}",
+            }
+        if status.get("logged_in") is True:
+            return "authenticated"
+        stop_error = ""
+        if runtime.live_provider.is_listening():
+            try:
+                await runtime._stop_live_listener(mark_disabled=True)
+            except Exception as exc:
+                stop_error = type(exc).__name__
+                runtime._accepting_live_events = False
+        runtime.config.live_enabled = False
+        runtime.live_connection_state = "auth_required"
+        runtime.live_connection_auth_mode = "unknown"
+        runtime.safety_guard.set_connected(False)
+        runtime.audit.record(
+            "live_connection_auth_required",
+            "Twitch authorization required before connecting",
+            level="warning",
+            detail={"platform": "twitch", "listener_stop_error": stop_error},
+        )
+        raise ValueError("Twitch authorization is required; authorize the account and try again")
     if platform != "bilibili":
         if allow_accountless:
             raise ValueError("accountless fallback is only supported for Bilibili")

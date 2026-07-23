@@ -10,6 +10,7 @@ from plugin.core.state import state
 from plugin._types.exceptions import PluginExecutionError
 from plugin._types.models import PluginUiSurface, PluginUiWarning
 from plugin.logging_config import get_logger
+from plugin.settings import PLUGIN_EXECUTION_TIMEOUT
 from plugin.core.ui_manifest import (
     default_permissions,
     normalize_warnings,
@@ -17,6 +18,7 @@ from plugin.core.ui_manifest import (
     resolve_surface_entry_path,
     static_surface_url,
 )
+from plugin.sdk.shared.core.entry_runtime import resolve_entry_timeout
 from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.sdk.shared.i18n import load_plugin_i18n_from_meta, resolve_i18n_refs
@@ -52,6 +54,33 @@ _PLUGIN_NOT_RUNNING_MESSAGES = {
     "pt": "O plugin não está em execução. Inicie o plugin antes de usar esta ação.",
     "ru": "Плагин не запущен. Сначала запустите плагин, затем повторите действие.",
 }
+
+
+def _resolve_hosted_entry_timeout(plugin_id: str, entry_id: str) -> float | None:
+    resolved_timeout: float | None = PLUGIN_EXECUTION_TIMEOUT
+    try:
+        handlers = state.get_event_handlers_snapshot_cached(timeout=1.0)
+        prefix_dot = f"{plugin_id}."
+        prefix_colon = f"{plugin_id}:plugin_entry:"
+        for event_key, handler in handlers.items():
+            if not isinstance(event_key, str):
+                continue
+            if not (event_key.startswith(prefix_dot) or event_key.startswith(prefix_colon)):
+                continue
+            meta = getattr(handler, "meta", None)
+            if getattr(meta, "event_type", None) != "plugin_entry":
+                continue
+            if getattr(meta, "id", None) != entry_id:
+                continue
+            return resolve_entry_timeout(meta, resolved_timeout)
+    except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError):
+        logger.debug(
+            "failed to resolve hosted UI entry timeout: plugin_id={}, entry_id={}",
+            plugin_id,
+            entry_id,
+            exc_info=True,
+        )
+    return resolved_timeout
 
 
 def _normalize_mapping(raw: Mapping[object, object], *, context: str) -> dict[str, object]:
@@ -1642,7 +1671,11 @@ class PluginUiQueryService:
                 )
 
             try:
-                result = await host.trigger(resolved_action_id, dict(args or {}))
+                result = await host.trigger(
+                    resolved_action_id,
+                    dict(args or {}),
+                    timeout=_resolve_hosted_entry_timeout(plugin_id, resolved_action_id),
+                )
             except PluginExecutionError as exc:
                 message = exc.error if isinstance(exc.error, str) and exc.error else str(exc)
                 logger.warning(

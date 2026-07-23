@@ -27,5 +27,11 @@ def dashboard_actions() -> list[dict[str, str]]:
         "douyin_cookie_status",
         "douyin_cookie_validate",
         "douyin_cookie_delete",
+        "twitch_device_authorization_start",
+        "twitch_device_authorization_check",
+        "twitch_device_authorization_cancel",
+        "twitch_login_status",
+        "twitch_credential_validate",
+        "twitch_logout",
     ]
     return [{"id": action_id, "entry_id": action_id} for action_id in action_ids]

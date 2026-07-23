@@ -53,6 +53,7 @@ _SUPPORT_EVIDENCE = {
     "bilibili_typed_command",
     "douyin_bridge_typed_event",
     "manual_live_simulation",
+    "twitch_eventsub_typed_event",
 }
 _SUPPORT_COIN_TYPES = {"gold", "silver"}
 

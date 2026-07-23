@@ -12,6 +12,7 @@
 
 - B 站直播间登录、查询、确认、连接和弹幕接入；
 - 实验性抖音只读 bridge 接入；
+- Twitch 首阶段只读接入，包含 Device Code 授权、Helix 频道查询和 EventSub 聊天/支持事件；
 - 新观众锐评、后续弹幕接话；
 - Gift / SC / Guard 可信支持事件的短句致谢；
 - 暖场、冷场陪播和主动营业；
@@ -66,6 +67,8 @@ Live Provider / Developer Sandbox
 
 抖音 v1 只消费本地 bridge 清洗后的只读事件；不在插件内恢复 protobuf 直连、JS 签名、自动登录或浏览器自动化。详细边界见 [douyin_live_ingest](modules/douyin_live_ingest.md)。
 
+Twitch 首阶段使用用户自备 Client ID 的 Device Code Flow，授权账号与目标频道分离；只接收聊天和聊天中可见的支持事件，不提供平台写能力。凭据、去重、安全投影与降级边界见 [twitch_live_ingest](modules/twitch_live_ingest.md)。
+
 ### 2.4 Provider-neutral update
 
 `modules/live_events/provider_event.py` 是共享的 provider-neutral 适配层：typed provider events 和 already-sanitized dict events are both accepted，room-topic prompt examples must use those helpers，不能重新读取 provider raw payload。
@@ -99,8 +102,8 @@ bridge connection plan 只接受通过校验的公开 bridge URL，禁止携带 
 
 | 子系统 | 主要职责 |
 |---|---|
-| `bili_live_ingest` / `douyin_live_ingest` | 平台连接、解析、清洗和事件发布 |
-| `bili_identity` / `douyin_identity` | 从已清洗字段构造安全观众身份 |
+| `bili_live_ingest` / `douyin_live_ingest` / `twitch_live_ingest` | 平台连接、解析、清洗和事件发布 |
+| `bili_identity` / `douyin_identity` / `twitch_identity` | 从已清洗字段构造安全观众身份 |
 | `live_events` | 候选窗口、价值选择、低质与重复过滤 |
 | `avatar_roast` / `danmaku_response` | 首次出场与后续弹幕请求构造 |
 | `live_support_events` | 可信支持事件去重、连击、优先调度与短句致谢 |

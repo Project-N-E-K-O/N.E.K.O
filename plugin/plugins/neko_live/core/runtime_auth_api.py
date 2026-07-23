@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import runtime_bili_auth, runtime_douyin_auth
+from . import runtime_bili_auth, runtime_douyin_auth, runtime_twitch_auth
 
 
 class RuntimeAuthApiMixin:
@@ -47,3 +47,31 @@ class RuntimeAuthApiMixin:
     async def douyin_cookie_delete(self) -> dict[str, Any]:
         """Delete local encrypted Douyin cookie and clear the cache."""
         return await runtime_douyin_auth.delete_cookie(self)
+
+    async def reload_twitch_credential(self) -> None:
+        """Reload cached Twitch OAuth tokens from encrypted local storage."""
+        await runtime_twitch_auth.reload_credential(self)
+
+    async def twitch_device_authorization_start(self) -> dict[str, Any]:
+        """Start Twitch Device Code Flow and return only the public user code."""
+        return await runtime_twitch_auth.start_device_authorization(self)
+
+    async def twitch_device_authorization_check(self) -> dict[str, Any]:
+        """Perform one scheduled Device Code Flow token check."""
+        return await runtime_twitch_auth.check_device_authorization(self)
+
+    async def twitch_device_authorization_cancel(self) -> dict[str, Any]:
+        """Cancel the active Twitch Device Code Flow session."""
+        return await runtime_twitch_auth.cancel_device_authorization(self)
+
+    async def twitch_login_status(self) -> dict[str, Any]:
+        """Return local Twitch credential metadata without tokens."""
+        return await runtime_twitch_auth.credential_status(self)
+
+    async def twitch_credential_validate(self) -> dict[str, Any]:
+        """Validate and, when necessary, refresh the cached Twitch token."""
+        return await runtime_twitch_auth.validate_credential(self)
+
+    async def twitch_logout(self) -> dict[str, Any]:
+        """Delete encrypted Twitch credentials and clear the cache."""
+        return await runtime_twitch_auth.logout(self)
