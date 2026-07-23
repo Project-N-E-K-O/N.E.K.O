@@ -1628,6 +1628,18 @@
             return null;
         };
 
+        const taskhudCheckbox = getEl(['live2d-agent-taskhud', 'vrm-agent-taskhud', 'mmd-agent-taskhud', 'pngtuber-agent-taskhud']);
+        let taskhudOn = true;
+        try { taskhudOn = localStorage.getItem('neko-agent-taskhud-visible') !== 'false'; } catch (_) {}
+        if (taskhudCheckbox) {
+            taskhudOn = taskhudCheckbox.checked;
+            try { localStorage.setItem('neko-agent-taskhud-visible', taskhudOn ? 'true' : 'false'); } catch (_) {}
+        }
+        if (!taskhudOn) {
+            window.stopAgentTaskPolling();
+            return;
+        }
+
         const masterCheckbox = getEl(['live2d-agent-master', 'vrm-agent-master', 'mmd-agent-master', 'pngtuber-agent-master']);
         const keyboardCheckbox = getEl(['live2d-agent-keyboard', 'vrm-agent-keyboard', 'mmd-agent-keyboard', 'pngtuber-agent-keyboard']);
         const browserCheckbox = getEl(['live2d-agent-browser', 'vrm-agent-browser', 'mmd-agent-browser', 'pngtuber-agent-browser']);
@@ -1710,6 +1722,7 @@
             const keyboardCheckbox = getEl(['live2d-agent-keyboard', 'vrm-agent-keyboard', 'mmd-agent-keyboard', 'pngtuber-agent-keyboard']);
             const browserCheckbox = getEl(['live2d-agent-browser', 'vrm-agent-browser', 'mmd-agent-browser', 'pngtuber-agent-browser']);
             const userPluginCheckbox = getEl(['live2d-agent-user-plugin', 'vrm-agent-user-plugin', 'mmd-agent-user-plugin', 'pngtuber-agent-user-plugin']);
+            const taskhudCheckbox = getEl(['live2d-agent-taskhud', 'vrm-agent-taskhud', 'mmd-agent-taskhud', 'pngtuber-agent-taskhud']);
             const openclawCheckbox = getEl(['live2d-agent-openclaw', 'vrm-agent-openclaw', 'mmd-agent-openclaw', 'pngtuber-agent-openclaw']);
             const openfangCheckbox = getEl(['live2d-agent-openfang', 'vrm-agent-openfang', 'mmd-agent-openfang', 'pngtuber-agent-openfang']);
 
@@ -1725,6 +1738,10 @@
             if (userPluginCheckbox) {
                 userPluginCheckbox.removeEventListener('change', checkAndToggleTaskHUD);
                 userPluginCheckbox.addEventListener('change', checkAndToggleTaskHUD);
+            }
+            if (taskhudCheckbox) {
+                taskhudCheckbox.removeEventListener('change', checkAndToggleTaskHUD);
+                taskhudCheckbox.addEventListener('change', checkAndToggleTaskHUD);
             }
             if (openclawCheckbox) {
                 openclawCheckbox.removeEventListener('change', checkAndToggleTaskHUD);

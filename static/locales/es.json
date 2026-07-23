@@ -2681,6 +2681,7 @@
             "proactiveMiniGameInviteChat": "Invitaciones a minijuegos",
             "proactiveMiniGameInviteChatTooltip": "Invitarte a un minijuego cuando se cumplan las condiciones",
             "agentMaster": "Interruptor maestro NekoClaw",
+            "showTaskHud": "Mostrar HUD de tareas",
             "keyboardControl": "Control de teclado/ratón",
             "userPlugin": "Complemento de usuario",
             "pluginConfigPage": "configuración",

@@ -320,6 +320,13 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
             initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
         },
         {
+            id: 'agent-taskhud',
+            label: window.t ? window.t('settings.toggles.showTaskHud') : '显示猫爪任务HUD',
+            labelKey: 'settings.toggles.showTaskHud',
+            initialDisabled: false,
+            initialTitle: window.t ? window.t('settings.toggles.showTaskHud') : '显示猫爪任务HUD'
+        },
+        {
             id: 'agent-keyboard',
             label: window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制',
             labelKey: 'settings.toggles.keyboardControl',
@@ -359,6 +366,16 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
     agentToggles.forEach(toggle => {
         const toggleItem = this._createToggleItem(toggle, popup);
         popup.appendChild(toggleItem);
+
+        // Init taskhud toggle from localStorage right after creation, syncing visual
+        if (toggle.id === 'agent-taskhud') {
+            const chk = popup.querySelector(`#${avatarPrefix}-${toggle.id}`);
+            if (chk) {
+                const stored = (() => { try { return localStorage.getItem('neko-agent-taskhud-visible'); } catch (_) { return null; } })();
+                chk.checked = stored === null ? true : stored === 'true';
+                if (typeof chk._updateStyle === 'function') chk._updateStyle();
+            }
+        }
 
         // 侧边快捷入口（用户插件管理面板 / OpenClaw 接入教程）
         if ((toggle.id === 'agent-user-plugin' || toggle.id === 'agent-openclaw') && typeof this._createSidePanelContainer === 'function') {
