@@ -119,6 +119,8 @@ async def mini_game_invite_respond(request: Request):
     try:
         mgr = get_session_manager().get(lanlan_name)
         if mgr is not None:
+            # Button caller opens the game from the HTTP response. This WS only
+            # dismisses prompts; game_url/game_type here would open it twice.
             await _push_mini_game_invite_resolved(
                 mgr,
                 session_id=session_id,
