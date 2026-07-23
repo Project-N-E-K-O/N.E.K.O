@@ -149,7 +149,7 @@
         }
     }
 
-    I.clampPosition = function clampPosition(left, top) {
+    I.clampPosition = function clampPosition(left, top, options) {
         var shell = I.getShell();
         if (!shell) {
             return { left: left, top: top };
@@ -158,13 +158,57 @@
         var rect = shell.getBoundingClientRect();
         var width = rect.width || 960;
         var headerHeight = 52;
+        var visibleHeight = options && options.fullHeight === true
+            ? (rect.height || headerHeight)
+            : headerHeight;
         var maxLeft = Math.max(0, window.innerWidth - width);
-        var maxTop = Math.max(0, window.innerHeight - headerHeight);
+        var maxTop = Math.max(0, window.innerHeight - visibleHeight);
 
         return {
             left: Math.max(0, Math.min(maxLeft, left)),
             top: Math.max(0, Math.min(maxTop, top))
         };
+    }
+
+    I.ensureChatSurfaceVisible = function ensureChatSurfaceVisible() {
+        var mode = I.getCurrentChatSurfaceMode();
+        if (mode === 'compact' && !I.minimized) {
+            var currentCompactRect = I.getCurrentCompactSurfaceRect();
+            var compactTarget = I.getCompactSurfaceTarget();
+            if (!currentCompactRect || !compactTarget) return false;
+
+            var compactHeight = compactTarget.height || I.COMPACT_SURFACE_DEFAULT_HEIGHT;
+            var compactChanged = Math.abs(compactTarget.left - currentCompactRect.left) >= 0.5
+                || Math.abs(compactTarget.top - currentCompactRect.top) >= 0.5
+                || Math.abs(compactTarget.width - currentCompactRect.width) >= 0.5
+                || Math.abs(compactHeight - currentCompactRect.height) >= 0.5;
+            if (!compactChanged) return false;
+
+            return !!I.applyCompactSurfaceRect(
+                compactTarget.left,
+                compactTarget.top,
+                compactTarget.width,
+                compactHeight,
+                { persist: false }
+            );
+        }
+
+        if (mode !== 'full' || I.minimized) return false;
+        var shell = I.getShell();
+        if (!shell) return false;
+
+        var rect = shell.getBoundingClientRect();
+        if (!(rect.width > 0) || !(rect.height > 0)) return false;
+
+        var clamped = I.clampPosition(rect.left, rect.top, { fullHeight: true });
+        if (Math.abs(clamped.left - rect.left) < 0.5 && Math.abs(clamped.top - rect.top) < 0.5) {
+            return false;
+        }
+
+        shell.style.left = clamped.left + 'px';
+        shell.style.top = clamped.top + 'px';
+        shell.style.transform = 'none';
+        return true;
     }
 
     I.applyPosition = function applyPosition(left, top) {
