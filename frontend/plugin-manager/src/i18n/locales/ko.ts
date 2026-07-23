@@ -63,6 +63,7 @@ export default {
     loginFailed: '인증 로그인을 완료하지 못했습니다. 잠시 후 다시 시도해 주세요',
     loginPending: '인증 로그인에 시간이 조금 걸리고 있습니다. 다시 시작해 주세요',
     logoutSuccess: '이 기기에서 인증 로그아웃을 완료했습니다',
+    logoutFailed: '로그아웃하지 못했습니다. 다시 시도해 주세요',
     accountSummary: '계정 정보',
     accountSummaryLoading: '계정 정보를 업데이트하는 중…',
     accountMemberDays: '{days}일째 회원',

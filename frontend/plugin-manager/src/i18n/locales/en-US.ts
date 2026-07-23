@@ -63,6 +63,7 @@ export default {
     loginFailed: 'The authorization login was not completed. Please try again later.',
     loginPending: 'The authorization login is taking a little too long. Please start it again.',
     logoutSuccess: "You've signed out of the authorization login on this device",
+    logoutFailed: 'Failed to sign out. Please try again.',
     accountSummary: 'Account details',
     accountSummaryLoading: 'Refreshing account details…',
     accountMemberDays: 'Member for {days} days',

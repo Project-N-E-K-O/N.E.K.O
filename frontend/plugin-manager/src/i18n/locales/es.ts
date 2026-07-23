@@ -63,6 +63,7 @@ export default {
     loginFailed: 'No se completó el inicio de sesión autorizado. Inténtalo de nuevo más tarde.',
     loginPending: 'El inicio de sesión autorizado está tardando un poco. Inícialo de nuevo.',
     logoutSuccess: 'Has cerrado el inicio de sesión autorizado en este dispositivo',
+    logoutFailed: 'No se pudo cerrar la sesión. Inténtalo de nuevo.',
     accountSummary: 'Detalles de la cuenta',
     accountSummaryLoading: 'Actualizando los detalles de la cuenta…',
     accountMemberDays: 'Miembro desde hace {days} días',

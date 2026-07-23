@@ -63,6 +63,7 @@ export default {
     loginFailed: '認証ログインを完了できませんでした。時間をおいてもう一度お試しください',
     loginPending: '認証ログインに少し時間がかかっています。もう一度開始してください',
     logoutSuccess: 'この端末で認証ログインからサインアウトしました',
+    logoutFailed: 'サインアウトに失敗しました。もう一度お試しください',
     accountSummary: 'アカウント情報',
     accountSummaryLoading: 'アカウント情報を更新中…',
     accountMemberDays: '登録から {days} 日',

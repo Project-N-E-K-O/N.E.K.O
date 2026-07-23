@@ -63,6 +63,7 @@ export default {
     loginFailed: 'Não foi possível concluir o login autorizado. Tente novamente mais tarde.',
     loginPending: 'O login autorizado está demorando um pouco. Inicie novamente.',
     logoutSuccess: 'Você saiu do login autorizado neste dispositivo',
+    logoutFailed: 'Não foi possível sair. Tente novamente.',
     accountSummary: 'Detalhes da conta',
     accountSummaryLoading: 'Atualizando os detalhes da conta…',
     accountMemberDays: 'Membro há {days} dias',

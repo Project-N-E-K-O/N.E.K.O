@@ -266,6 +266,7 @@ def bridge_e2e_env(
             "service": plugin_cli_pkg,
         }
     finally:
+        market_bridge_module._clear_account_summary_cache()
         loop.run_until_complete(client.aclose())
         set_global_manager(None)
 
@@ -905,6 +906,7 @@ async def test_oauth_account_summary_aggregates_safe_fields_and_caches(
         },
         "expires_at": pytest.approx(time.time() + 3600, abs=5),
     }
+    assert second.json() == body
     serialized = json.dumps(body)
     assert "private@example.test" not in serialized
     assert "private-subject" not in serialized

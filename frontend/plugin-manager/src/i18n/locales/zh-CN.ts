@@ -63,6 +63,7 @@ export default {
     loginFailed: '授权登录没有完成，请稍后再试',
     loginPending: '授权登录等待时间有点久，请重新发起登录',
     logoutSuccess: '已在本机退出授权登录',
+    logoutFailed: '退出失败，请稍后重试',
     accountSummary: '账户信息',
     accountSummaryLoading: '正在更新账户信息…',
     accountMemberDays: '加入 {days} 天',

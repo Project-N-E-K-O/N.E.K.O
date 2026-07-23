@@ -63,6 +63,7 @@ export default {
     loginFailed: '授權登入尚未完成，請稍後再試',
     loginPending: '授權登入等待時間有點久，請重新發起登入',
     logoutSuccess: '已在本機退出授權登入',
+    logoutFailed: '退出失敗，請稍後再試',
     accountSummary: '帳戶資訊',
     accountSummaryLoading: '正在更新帳戶資訊…',
     accountMemberDays: '已加入 {days} 天',

@@ -458,9 +458,19 @@ async function confirmMarketLogout() {
       t('common.logoutConfirmTitle'),
       { confirmButtonText: t('common.confirm'), cancelButtonText: t('common.cancel'), type: 'warning' },
     )
+  } catch (error) {
+    const action = typeof error === 'object' && error !== null && 'action' in error
+      ? (error as { action?: unknown }).action
+      : error
+    if (action === 'cancel' || action === 'close') return
+    ElMessage.error(error instanceof Error ? error.message : t('market.logoutFailed'))
+    return
+  }
+
+  try {
     await logoutMarketAccount()
-  } catch {
-    // User cancelled the confirmation dialog.
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : t('market.logoutFailed'))
   }
 }
 
