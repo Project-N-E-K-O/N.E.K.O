@@ -79,7 +79,23 @@ class Arbiter:
             survivors.append(c)
 
         preempt = [c for c in survivors if c.preempt_eligible]
-        normal = [c for c in survivors if not c.preempt_eligible]
+        terminal = [c for c in survivors if c.event_id == "battle_end"]
+        normal = [c for c in survivors if not c.preempt_eligible and c.event_id != "battle_end"]
+
+        # 战局结束是一次性终态，不占用紧急抢占语义，但也不能在短暂的终局窗口内
+        # 因普通播报限流而延迟到 OUT_OF_BATTLE 后被门控丢弃。
+        if terminal:
+            chosen = _top(terminal)
+            self._fire(chosen, now, critical=False)
+            self._window_best = None
+            self._kill_window = None
+            self._kill_window_first_at = 0.0
+            self._kill_window_started_at = 0.0
+            chain.append(_rec(chosen, "spoken", "terminal_lifecycle"))
+            for c in survivors:
+                if c is not chosen:
+                    chain.append(_rec(c, "dropped", "lost_to_terminal_lifecycle"))
+            return chosen, chain
 
         # [3]/[4] 抢占通道
         if preempt:

@@ -19,7 +19,9 @@ from .proximity import ProximityDetector
 from .radio import RadioCommandDetector
 from .situation import AirSituationDetector, GroundTargetDetector
 
-_END_STATUSES = frozenset({"win", "won", "victory", "fail", "failed", "lost", "defeat", "left", "ended", "finished"})
+_END_STATUSES = frozenset(
+    {"win", "won", "victory", "success", "fail", "failed", "lost", "defeat", "left", "ended", "finished"}
+)
 
 
 def _alive(s: BattleState) -> bool:
@@ -38,6 +40,7 @@ class SpawnDetector(DiscreteDetector):
                     "vehicle_type": cur.vehicle_type,
                     "domain": cur.domain,
                     "domain_label": cur.domain_label,
+                    "respawn": bool(prev.dead),
                 },
                 ts=cur.timestamp or 0.0,
                 level="warning",
@@ -70,17 +73,19 @@ class DeathDetector(DiscreteDetector):
     def __init__(self) -> None:
         self._last_seen_id: int = -1
         self._emitted_ids: set[int] = set()
+        self._dead_edge_emitted = False
 
     def detect(self, prev: BattleState, cur: BattleState) -> BattleEvent | None:
+        if not cur.dead:
+            self._dead_edge_emitted = False
         feed = _feed_items(cur)
         ids = _feed_ids(feed)
-        if not ids:
-            return None
-        max_id = max(ids)
-        if max_id < self._last_seen_id:
-            self._last_seen_id = -1
-            self._emitted_ids.clear()
-        self._last_seen_id = max(self._last_seen_id, max_id)
+        if ids:
+            max_id = max(ids)
+            if max_id < self._last_seen_id:
+                self._last_seen_id = -1
+                self._emitted_ids.clear()
+            self._last_seen_id = max(self._last_seen_id, max_id)
 
         newest: dict[str, Any] | None = None
         for item in feed:
@@ -93,42 +98,102 @@ class DeathDetector(DiscreteDetector):
             if item.get("is_my_death") is True:
                 if newest is None or eid > int(newest.get("id")):
                     newest = item
-        if newest is None:
-            return None
-        for item in feed:
-            try:
-                eid = int(item.get("id"))
-            except (TypeError, ValueError):
-                continue
-            if item.get("is_my_death") is True:
-                self._emitted_ids.add(eid)
+        if newest is not None:
+            for item in feed:
+                try:
+                    eid = int(item.get("id"))
+                except (TypeError, ValueError):
+                    continue
+                if item.get("is_my_death") is True:
+                    self._emitted_ids.add(eid)
+            if self._dead_edge_emitted and cur.dead:
+                return None
+            self._dead_edge_emitted = True
+            return BattleEvent(
+                "you_died",
+                payload={
+                    "killer_name": newest.get("killer"),
+                    "killer_vehicle": newest.get("killer_vehicle"),
+                    "cause": newest.get("action") or "unknown",
+                    "domain": cur.domain,
+                },
+                ts=cur.timestamp or 0.0,
+                level="critical",
+            )
 
-        return BattleEvent(
-            "you_died",
-            payload={
-                "killer_name": newest.get("killer"),
-                "killer_vehicle": newest.get("killer_vehicle"),
-                "cause": newest.get("action") or "unknown",
-                "domain": cur.domain,
-            },
-            ts=cur.timestamp or 0.0,
-            level="critical",
-        )
+        # HUD 在部分陆战模式不提供本人死亡事件；数据层的 ground_crew 仅在
+        # crew_total>=2 且 crew_current<=1 时产生，可以安全作为一次通用阵亡边沿。
+        if (
+            cur.dead
+            and not prev.dead
+            and cur.dead_source == "ground_crew"
+            and not self._dead_edge_emitted
+        ):
+            self._dead_edge_emitted = True
+            return BattleEvent(
+                "you_died",
+                payload={"cause": "ground_crew", "domain": cur.domain},
+                ts=cur.timestamp or 0.0,
+                level="critical",
+            )
+        return None
 
 
 class BattleEndDetector(DiscreteDetector):
     id = "battle_end"
 
+    def __init__(self) -> None:
+        self._battle_seen = False
+        self._emitted = False
+        self._last_combat: dict[str, Any] = {}
+        self._last_domain = "unknown"
+        self._last_status: str | None = None
+
     def _ended(self, s: BattleState) -> bool:
         return (s.mission_status or "").lower() in _END_STATUSES
 
     def detect(self, prev: BattleState, cur: BattleState) -> BattleEvent | None:
-        if self._ended(cur) and not self._ended(prev):
-            payload: dict[str, Any] = {"result": cur.mission_status, "domain": cur.domain}
-            my = cur.combat.get("my") if isinstance(cur.combat, dict) else None
-            if isinstance(my, dict):
-                payload["result"] = f"{cur.mission_status}, K{my.get('kills', 0)}/D{my.get('deaths', 0)}"
+        if cur.in_battle:
+            if not self._battle_seen:
+                self._emitted = False
+                self._last_combat = {}
+                self._last_domain = "unknown"
+                self._last_status = None
+            self._battle_seen = True
+            if isinstance(cur.combat, dict) and cur.combat:
+                self._last_combat = cur.combat
+            if cur.domain not in {"", "unknown", "menu"}:
+                self._last_domain = cur.domain
+            if cur.mission_status:
+                self._last_status = cur.mission_status
+
+        terminal_status = self._ended(cur) and not self._emitted
+        confirmed_exit = (
+            self._battle_seen
+            and not self._emitted
+            and cur.connected
+            and cur.conn_state == "not_in_battle"
+            and not cur.in_battle
+        )
+        if terminal_status or confirmed_exit:
+            result = cur.mission_status if terminal_status else (
+                self._last_status if self._last_status and self._last_status.lower() in _END_STATUSES else "left"
+            )
+            combat = cur.combat if isinstance(cur.combat, dict) and cur.combat else self._last_combat
+            domain = cur.domain if cur.domain not in {"", "unknown", "menu"} else self._last_domain
+            payload: dict[str, Any] = {"result": result, "domain": domain}
+            my = combat.get("my") if isinstance(combat, dict) else None
+            # HUD 事件全空时 KillTracker 会给手动身份返回占位 K0/D0；这并不代表
+            # 战绩可靠，不能在终局台词里把缺数据说成零战绩。
+            if isinstance(my, dict) and int(combat.get("total_events") or 0) > 0:
+                payload["result"] = f"{result}, K{my.get('kills', 0)}/D{my.get('deaths', 0)}"
+            self._emitted = True
+            if confirmed_exit:
+                self._battle_seen = False
             return BattleEvent("battle_end", payload=payload, ts=cur.timestamp or 0.0, level="warning")
+
+        if self._emitted and cur.connected and not cur.in_battle:
+            self._battle_seen = False
         return None
 
 

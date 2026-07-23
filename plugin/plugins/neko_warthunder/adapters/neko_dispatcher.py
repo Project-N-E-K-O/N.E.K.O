@@ -28,7 +28,7 @@ HOST_REPLY_STYLE = "short_line"
 HOST_QUIET_WINDOW_POLICY = "suppress_non_urgent_during_user_input"
 V2_LIVE_EVIDENCE_GATED_EVENTS = frozenset({"enemy_on_six", "tailing_risk", "ground_target_nearby"})
 FREE_TEXT_DRY_RUN_ONLY_EVENTS = frozenset({"free_text_activity"})
-BACKPRESSURE_BYPASS_EVENTS = frozenset({"you_died", "you_killed"})
+BACKPRESSURE_BYPASS_EVENTS = frozenset({"you_died", "you_killed", "battle_end"})
 URGENT_REPLACE_EVENTS = frozenset({"you_died", "stall_risk", "high_aoa", "over_g", "low_alt_danger", "overspeed"})
 FLEX_STYLE_EVENTS = frozenset(
     {
@@ -122,7 +122,7 @@ EVENT_MAX_AGE_OVERRIDES_SECONDS: dict[str, float] = {
     # should not be replayed as old news.
     "you_killed": 30.0,
     "you_died": 8.0,
-    "battle_end": 8.0,
+    "battle_end": 30.0,
 }
 COPILOT_ROLE_BOUNDARY = (
     "边界：只提醒陪伴；不接管、不编锁定/开火/战果/损伤。"
@@ -145,7 +145,7 @@ _INTENT: dict[str, str] = {
     "ground_ammo_low": "陆战一级弹药偏少，提醒 {MASTER_NAME} 后续装填会慢，短促说一句规划节奏",
     "ground_target_nearby": "报任务目标点接近，提醒 {MASTER_NAME} 看方位",
     "enemy_nearby": "报附近接触，提醒 {MASTER_NAME} 保持观察",
-    "air_threat_nearby": "报空中威胁方位，提醒 {MASTER_NAME} 抬头确认",
+    "air_threat_nearby": "报可信的水平钟点方位，提醒 {MASTER_NAME} 确认空中威胁；没有高度差数据，不提供垂直方向指令",
     "enemy_on_six": "报后方威胁，提醒 {MASTER_NAME} 别让对面贴住",
     "tailing_risk": "报后方持续贴近，提醒 {MASTER_NAME} 立刻改出",
     "free_text_activity": "提醒 {MASTER_NAME} 检测到战场文字来源，只做安全泛化提示，不复读原文",
@@ -183,7 +183,7 @@ def _output_event_max_age_seconds(plugin: Any, event: BattleEvent | None = None)
     override = EVENT_MAX_AGE_OVERRIDES_SECONDS.get(event.event_id)
     if override is None:
         return configured
-    if event.event_id == "you_killed":
+    if event.event_id in {"you_killed", "battle_end"}:
         return max(configured, override)
     return min(configured, override)
 
@@ -260,7 +260,7 @@ def _quiet_window_bypass(plugin: Any, event: BattleEvent) -> bool:
         return False
     if mode == "allow_interrupt":
         return True
-    if event.event_id == "you_died":
+    if event.event_id in {"you_died", "battle_end"}:
         return True
     return event.level == "critical" and event.event_id in URGENT_REPLACE_EVENTS
 
@@ -558,7 +558,7 @@ def _recommended_reply_line(event: BattleEvent) -> str:
         clock = p.get("clock")
         if isinstance(clock, int) and 1 <= clock <= 12:
             return _short_line(f"{clock}点钟有敌机。")
-        return "附近有敌机，抬头。"
+        return "附近有空中威胁，注意观察。"
     return ""
 
 
@@ -1212,6 +1212,8 @@ class NekoDispatcher:
 
     def _is_backpressured(self, event: BattleEvent, now: float) -> bool:
         if event.event_id in BACKPRESSURE_BYPASS_EVENTS or event.level == "critical":
+            return False
+        if event.event_id == "spawn" and event.payload.get("respawn") is True:
             return False
         guard = _output_backpressure_seconds(self.plugin)
         if guard <= 0 or self._last_push_at is None:
