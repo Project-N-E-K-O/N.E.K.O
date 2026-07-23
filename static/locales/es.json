@@ -2645,9 +2645,9 @@
             "visionInterval": "Intervalo de percepción"
         },
         "widgetMode": {
-            "enabledNotice": "Modo de acoplamiento al borde Beta está activado.",
-            "disabledNotice": "Modo de acoplamiento al borde Beta está desactivado. Live2D vuelve al ajuste normal en los bordes.",
-            "toggleFailed": "No se pudo cambiar Modo de acoplamiento al borde Beta. Inténtalo de nuevo más tarde."
+            "enabledNotice": "Asomarse por el borde Beta está activado.",
+            "disabledNotice": "Asomarse por el borde Beta está desactivado. Live2D vuelve al ajuste normal en los bordes.",
+            "toggleFailed": "No se pudo cambiar Asomarse por el borde Beta. Inténtalo de nuevo más tarde."
         },
         "toggles": {
             "allowInterrupt": "Permitir interrupción",
@@ -2655,8 +2655,8 @@
             "avatarReactionBubble": "Burbuja de expresión",
             "focusCognition": "Modo concentración",
             "focusCognitionTooltip": "Cuando está activado, se concentra y piensa más a fondo cuando te abres o preguntas algo complejo; desactivado desactiva la concentración por completo.",
-            "widgetMode": "Modo de acoplamiento al borde Beta",
-            "widgetModeTooltip": "Activa manualmente el modo de acoplamiento para que Live2D pueda asomarse desde seis anclajes del borde.",
+            "widgetMode": "Asomarse por el borde Beta",
+            "widgetModeTooltip": "Activa manualmente Asomarse por el borde para que Live2D pueda asomarse desde seis anclajes del borde.",
             "slopFilter": "Expresión natural",
             "slopFilterTooltip": "Reduce las expresiones repetitivas y estereotipadas de las respuestas anteriores para que se exprese con más naturalidad.",
             "autoCat": "Modo gato automático",

@@ -2645,9 +2645,9 @@
             "visionInterval": "인지 간격"
         },
         "widgetMode": {
-            "enabledNotice": "가장자리 도킹 모드 Beta가 켜졌습니다.",
-            "disabledNotice": "가장자리 도킹 모드 Beta가 꺼졌습니다. Live2D는 일반 가장자리 스냅을 사용합니다.",
-            "toggleFailed": "가장자리 도킹 모드 Beta를 전환하지 못했습니다. 잠시 후 다시 시도하세요."
+            "enabledNotice": "가장자리 내다보기 Beta가 켜졌습니다.",
+            "disabledNotice": "가장자리 내다보기 Beta가 꺼졌습니다. Live2D는 일반 가장자리 스냅을 사용합니다.",
+            "toggleFailed": "가장자리 내다보기 Beta를 전환하지 못했습니다. 잠시 후 다시 시도하세요."
         },
         "toggles": {
             "allowInterrupt": "인터럽트 허용",
@@ -2655,8 +2655,8 @@
             "avatarReactionBubble": "표정 말풍선",
             "focusCognition": "집중 모드",
             "focusCognitionTooltip": "켜면 당신이 마음을 털어놓거나 복잡한 주제일 때 더 집중해 깊이 생각합니다. 끄면 집중 모드에 들어가지 않습니다.",
-            "widgetMode": "가장자리 도킹 모드 Beta",
-            "widgetModeTooltip": "가장자리 도킹 모드를 수동으로 켜면 Live2D가 화면 가장자리의 6개 앵커에서 내다볼 수 있습니다.",
+            "widgetMode": "가장자리 내다보기 Beta",
+            "widgetModeTooltip": "가장자리 내다보기를 수동으로 켜면 Live2D가 화면 가장자리의 6개 앵커에서 내다볼 수 있습니다.",
             "slopFilter": "자연스러운 표현",
             "slopFilterTooltip": "이전 답변에서 반복되거나 틀에 박힌 표현을 줄여 더 자연스럽게 말하도록 합니다.",
             "autoCat": "자동 고양이 전환",

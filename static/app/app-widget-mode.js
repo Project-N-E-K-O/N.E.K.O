@@ -19,8 +19,9 @@
                 text = window.t(key, Object.assign({ defaultValue: fallback }, params || {}));
             }
         } catch (_) {}
-        if (!params) return text || fallback;
-        return String(text || fallback).replace(/\{(\w+)\}/g, function (_, name) {
+        if (!text || text === key) text = fallback;
+        if (!params) return text;
+        return String(text).replace(/\{(\w+)\}/g, function (_, name) {
             return Object.prototype.hasOwnProperty.call(params, name) ? params[name] : _;
         });
     }
@@ -122,12 +123,12 @@
             if (!data || data.success !== true) throw new Error('invalid response');
             applyBackendState(data.state);
             showNotice(next
-                ? t('settings.widgetMode.enabledNotice', '挂边模式 Beta 已开启。')
-                : t('settings.widgetMode.disabledNotice', '挂边模式 Beta 已关闭。'));
+                ? t('settings.widgetMode.enabledNotice', '贴边探身 Beta 已开启。')
+                : t('settings.widgetMode.disabledNotice', '贴边探身 Beta 已关闭。'));
             return true;
         } catch (error) {
             console.warn('[WidgetMode] toggle failed:', error);
-            showNotice(t('settings.widgetMode.toggleFailed', '挂边模式 Beta 切换失败，请稍后重试。'));
+            showNotice(t('settings.widgetMode.toggleFailed', '贴边探身 Beta 切换失败，请稍后重试。'));
             await refreshState();
             return false;
         }
