@@ -6,7 +6,7 @@ seoSchemaType: WebPage
 
 # 分析统计与 Cookie 说明
 
-最后更新：2026 年 7 月 21 日。
+最后更新：2026 年 7 月 23 日。
 
 本说明适用于 `project-neko.online` 上的 Project N.E.K.O. 文档站。
 
@@ -16,7 +16,7 @@ seoSchemaType: WebPage
 
 ## 同意分析统计后
 
-网站会使用 Measurement ID `G-N4QZK4PHE3` 加载 Google Analytics 4，并发送页面浏览事件，以便了解哪些文档更有帮助以及访问者如何找到文档站。
+网站会使用 Measurement ID `G-N4QZK4PHE3` 加载 Google Analytics 4，并发送页面浏览事件，以便了解哪些文档更有帮助以及访问者如何找到文档站。当访客点击前往 N.E.K.O. Steam 页面的链接时，网站还会发送 `steam_cta_click` 事件，其中包含目标网址、链接文字、CTA 位置、当前页面网址和页面标题。
 
 Google Analytics 可能处理页面网址和标题、来源页面、浏览器与设备信息及大致地理位置等信息。本站配置会关闭广告存储、广告用户数据、广告个性化、Google Signals 和广告个性化信号。
 

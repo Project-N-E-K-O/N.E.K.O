@@ -5,6 +5,7 @@ import LocaleSwitch from './LocaleSwitch.vue'
 import {
   createRoutePageViewTracker,
   enableGoogleAnalytics,
+  installSteamCtaClickTracking,
 } from './analytics-consent.mjs'
 import './custom.css'
 
@@ -18,6 +19,7 @@ export default {
   enhanceApp({ router }) {
     if (typeof window === 'undefined') return
 
+    installSteamCtaClickTracking()
     const trackRoutePageView = createRoutePageViewTracker({
       skipFirst: enableGoogleAnalytics(),
     })
