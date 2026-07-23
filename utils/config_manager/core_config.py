@@ -41,11 +41,19 @@ from ._shared import _as_bool, logger
 class CoreConfigMixin:
     """Core config snapshot, geo checks and model API resolution."""
 
-    # HTTP 地理探测的有限重试：开机自启动时本程序常常跑在网络栈就绪之前，第一次
+    # HTTP 地理探测的失败退避：开机自启动时本程序常常跑在网络栈就绪之前，第一次
     # 探测必定超时。Steam 缺席的机器上 IP 是唯一判据（见 _check_non_mainland），
-    # 一次失败就永久放弃会把整台机器锁死在国内线路。
-    _IP_CHECK_MAX_ATTEMPTS = 3
-    _IP_CHECK_RETRY_INTERVAL_S = 30.0
+    # 永久放弃会把整台机器锁死在国内线路，而网络可能几十分钟后才好（用户开机后
+    # 才连 WiFi），所以不设次数上限，只按失败次数指数退避到 _IP_CHECK_RETRY_MAX_S。
+    _IP_CHECK_RETRY_BASE_S = 30.0
+    _IP_CHECK_RETRY_MAX_S = 600.0
+
+    @classmethod
+    def _ip_check_backoff_s(cls, failures: int) -> float:
+        """Seconds to wait before the next probe after `failures` consecutive failures."""
+        if failures <= 0:
+            return 0.0
+        return min(cls._IP_CHECK_RETRY_BASE_S * (2 ** (failures - 1)), cls._IP_CHECK_RETRY_MAX_S)
 
     async def aget_core_config(self):
         """Async wrapper for get_core_config: internally open()+json.load() reads core_config.json;
@@ -63,17 +71,21 @@ class CoreConfigMixin:
 
         cache = ConfigManager._ip_check_cache
         if cache is not None:
-            # True/False → deterministic result; sentinel → retries exhausted, skip
-            return None if cache is ConfigManager._GEO_INDETERMINATE else cache
+            return cache
 
-        # 失败后按 _IP_CHECK_RETRY_INTERVAL_S 退避，避免 get_core_config 的高频
-        # 调用把 3 秒超时叠成卡顿。
-        last = ConfigManager._ip_check_last_attempt_monotonic
+        # 退避账本的 check-and-set 必须原子：aget_core_config 把本函数丢进
+        # asyncio.to_thread，并发调用同时穿过门会在一次网络未就绪的爆发里把退避
+        # 烧光。网络 IO 留在锁外，抢不到本轮探测权的线程直接按「暂无结论」返回。
         now = time.monotonic()
-        if last is not None and (now - last) < ConfigManager._IP_CHECK_RETRY_INTERVAL_S:
-            return None
-        ConfigManager._ip_check_last_attempt_monotonic = now
-        ConfigManager._ip_check_attempts += 1
+        with ConfigManager._geo_probe_lock:
+            if ConfigManager._ip_check_cache is not None:
+                return ConfigManager._ip_check_cache
+            last = ConfigManager._ip_check_last_attempt_monotonic
+            failures = ConfigManager._ip_check_attempts
+            if last is not None and (now - last) < ConfigManager._ip_check_backoff_s(failures):
+                return None
+            ConfigManager._ip_check_last_attempt_monotonic = now
+            ConfigManager._ip_check_attempts = failures + 1
 
         try:
             import urllib.request
@@ -93,13 +105,13 @@ class CoreConfigMixin:
                 return result
         except Exception as e:
             print(f"[GeoIP] HTTP IP check failed: {e}", file=sys.stderr)
-        # 重试用尽才写哨兵永久放弃；之前的失败留给下一次调用重试。
-        if ConfigManager._ip_check_attempts >= ConfigManager._IP_CHECK_MAX_ATTEMPTS:
-            print(
-                f"[GeoIP] HTTP IP check giving up after {ConfigManager._ip_check_attempts} attempts",
-                file=sys.stderr,
-            )
-            ConfigManager._ip_check_cache = ConfigManager._GEO_INDETERMINATE
+        # 刻意不写永久放弃标记：网络可能在几十分钟后才就绪，退避到 10 分钟一次的
+        # 探测成本可以忽略，而永久放弃会把 Steam 缺席的海外用户锁死在国内线路。
+        print(
+            f"[GeoIP] HTTP IP check will retry in "
+            f"{ConfigManager._ip_check_backoff_s(ConfigManager._ip_check_attempts):.0f}s",
+            file=sys.stderr,
+        )
         return None
 
     @staticmethod
@@ -176,9 +188,17 @@ class CoreConfigMixin:
         if steam_result is not None:
             # IP 探测无结论时才轮到 Steam。它反映的是 Steam 服务端看到的出口 IP，
             # 挂代理时同样会跟着代理走，所以只当兜底票，不当权威票。
-            ConfigManager._region_cache = steam_result
-            ConfigManager._geo_indeterminate_logged = False
-            print(f"[GeoIP] Steam fallback decides: non_mainland={steam_result} (IP unavailable)", file=sys.stderr)
+            #
+            # 刻意**不写** _region_cache：冷启动首探超时的那一刻 Steam 往往已经
+            # 有票，落定它就等于把这一票变成永久裁决，IP 的退避重试再也没机会
+            # 接管——恰恰在两者会分歧的代理场景下钉死错误线路。
+            if not ConfigManager._geo_steam_fallback_logged:
+                ConfigManager._geo_steam_fallback_logged = True
+                print(
+                    f"[GeoIP] Steam fallback: non_mainland={steam_result} "
+                    "(IP has no verdict yet, still retrying)",
+                    file=sys.stderr,
+                )
             return steam_result
 
         # No verdict from either source (ip-api.com unreachable AND Steam not yet

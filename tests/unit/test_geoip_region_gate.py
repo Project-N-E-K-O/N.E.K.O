@@ -22,6 +22,8 @@ up after one cold-boot timeout.
 """
 import os
 import sys
+import threading
+import time as real_time
 from types import SimpleNamespace
 
 import pytest
@@ -44,6 +46,7 @@ def reset_geo_caches(monkeypatch):
         ('_ip_check_cache', None),
         ('_steam_check_cache', None),
         ('_geo_indeterminate_logged', False),
+        ('_geo_steam_fallback_logged', False),
         ('_ip_check_attempts', 0),
         ('_ip_check_last_attempt_monotonic', None),
     ):
@@ -90,7 +93,17 @@ def test_mainland_ip_routes_mainland():
 @pytest.mark.parametrize('steam, expected', [(True, True), (False, False)])
 def test_steam_breaks_the_tie_when_ip_is_silent(steam, expected):
     assert _probe(ip=None, steam=steam)._check_non_mainland() is expected
-    assert ConfigManager._region_cache is expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('steam', [True, False])
+def test_steam_fallback_never_latches(steam):
+    """Latching Steam during the cold-boot window would freeze out the IP retries."""
+    assert _probe(ip=None, steam=steam)._check_non_mainland() is steam
+    assert ConfigManager._region_cache is None
+    # IP 退避重试拿到结论后立刻接管，即使方向与 Steam 相反
+    assert _probe(ip=not steam, steam=steam)._check_non_mainland() is (not steam)
+    assert ConfigManager._region_cache is (not steam)
 
 
 @pytest.mark.unit
@@ -152,29 +165,73 @@ def test_ip_probe_retries_after_cold_boot_failure(monkeypatch):
     calls = _patch_probe(monkeypatch, [OSError('network unreachable'), 'US'])
 
     assert ConfigManager._check_ip_non_mainland_http() is None
-    assert ConfigManager._ip_check_cache is None, '首次失败不得写永久哨兵'
+    assert ConfigManager._ip_check_cache is None, '失败不得写死结论'
 
     # 退避窗口内不重复付超时
     assert ConfigManager._check_ip_non_mainland_http() is None
     assert calls['n'] == 1
 
-    clock.now += ConfigManager._IP_CHECK_RETRY_INTERVAL_S + 1
+    clock.now += ConfigManager._IP_CHECK_RETRY_BASE_S + 1
     assert ConfigManager._check_ip_non_mainland_http() is True
     assert ConfigManager._ip_check_cache is True
 
 
 @pytest.mark.unit
-def test_ip_probe_gives_up_after_max_attempts(monkeypatch):
+def test_ip_probe_backs_off_exponentially_and_never_gives_up(monkeypatch):
+    """Connectivity may only arrive tens of minutes in; the probe must still be alive."""
+    clock = _FakeClock()
+    monkeypatch.setattr(core_config_mod, 'time', SimpleNamespace(monotonic=clock))
+    calls = _patch_probe(monkeypatch, [OSError('down')] * 7 + ['JP'])
+
+    expected = [30.0, 60.0, 120.0, 240.0, 480.0, 600.0, 600.0]
+    for i, wait in enumerate(expected, start=1):
+        assert ConfigManager._check_ip_non_mainland_http() is None
+        assert calls['n'] == i
+        assert ConfigManager._ip_check_backoff_s(i) == wait
+        # 退避未到不发请求，到点才发下一次
+        clock.now += wait - 1
+        assert ConfigManager._check_ip_non_mainland_http() is None
+        assert calls['n'] == i
+        clock.now += 2
+
+    # 网络终于就绪：探测仍然活着，没有永久放弃
+    clock.now += ConfigManager._IP_CHECK_RETRY_MAX_S + 1
+    assert ConfigManager._check_ip_non_mainland_http() is True
+
+
+@pytest.mark.unit
+def test_concurrent_probes_do_not_burn_the_backoff(monkeypatch):
+    """aget_core_config offloads to threads; a burst must not spend several attempts at once.
+
+    The backoff lookup is slowed down so the check-and-set window is wide enough for
+    threads to actually interleave — without it the critical section is short enough
+    that the GIL hides an unsynchronized ledger and this test passes either way.
+    """
     clock = _FakeClock()
     monkeypatch.setattr(core_config_mod, 'time', SimpleNamespace(monotonic=clock))
     calls = _patch_probe(monkeypatch, [OSError('down')])
 
-    for _ in range(ConfigManager._IP_CHECK_MAX_ATTEMPTS):
-        assert ConfigManager._check_ip_non_mainland_http() is None
-        clock.now += ConfigManager._IP_CHECK_RETRY_INTERVAL_S + 1
+    def _slow_backoff(failures):
+        real_time.sleep(0.02)
+        return 30.0
 
-    assert calls['n'] == ConfigManager._IP_CHECK_MAX_ATTEMPTS
-    assert ConfigManager._ip_check_cache is ConfigManager._GEO_INDETERMINATE
-    # 哨兵落定后不再发起网络请求
-    assert ConfigManager._check_ip_non_mainland_http() is None
-    assert calls['n'] == ConfigManager._IP_CHECK_MAX_ATTEMPTS
+    monkeypatch.setattr(ConfigManager, '_ip_check_backoff_s', staticmethod(_slow_backoff))
+    # 退避窗口刚好到期：8 个 worker 同时醒来抢这一次探测配额
+    monkeypatch.setattr(ConfigManager, '_ip_check_last_attempt_monotonic', 0.0)
+    monkeypatch.setattr(ConfigManager, '_ip_check_attempts', 1)
+    clock.now = 10_000.0
+
+    start = threading.Barrier(8)
+
+    def _run():
+        start.wait()
+        ConfigManager._check_ip_non_mainland_http()
+
+    threads = [threading.Thread(target=_run) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert calls['n'] == 1, '并发爆发只应消耗一次探测配额'
+    assert ConfigManager._ip_check_attempts == 2

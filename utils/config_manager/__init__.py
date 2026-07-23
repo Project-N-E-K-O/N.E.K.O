@@ -170,13 +170,15 @@ class ConfigManager(
     # _GEO_INDETERMINATE = tried but got no usable answer → do not retry)
     _ip_check_cache = None
     _steam_check_cache = None
-    # Sentinel stored in _ip_check_cache once the HTTP probe has exhausted its
-    # retries, so we stop paying the timeout for the rest of the process.
-    _GEO_INDETERMINATE = object()
     _geo_indeterminate_logged = False
-    # HTTP 探测的失败重试账本：开机自启动时网络栈常常还没就绪，首次探测必超时。
+    _geo_steam_fallback_logged = False
+    # HTTP 探测的失败退避账本：开机自启动时网络栈常常还没就绪，首次探测必超时。
+    # 探测永不永久放弃（网络可能几十分钟后才好），只按失败次数指数退避。
+    # 账本的 check-and-set 由 _geo_probe_lock 保护：aget_core_config 会把探测
+    # 丢进 asyncio.to_thread，并发调用同时穿过门会在一次爆发里把退避烧光。
     _ip_check_attempts = 0
     _ip_check_last_attempt_monotonic = None
+    _geo_probe_lock = threading.Lock()
 
 
 # 全局配置管理器实例
