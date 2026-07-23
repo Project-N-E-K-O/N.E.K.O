@@ -192,6 +192,7 @@ def test_reflection_synthesis_loop_registered_in_background_tasks():
     应该跑完整 server startup。
     """
     import inspect
+
     from app import memory_server
 
     src = inspect.getsource(memory_server.ensure_memory_server_runtime_initialized)
@@ -213,9 +214,10 @@ def test_proactive_chat_handler_no_longer_posts_reflect():
     """
     import inspect
     import re
-    import main_routers.system_router as system_router
 
-    src = inspect.getsource(system_router.proactive_chat)
+    from main_logic.proactive_chat import service as proactive_service
+
+    src = inspect.getsource(proactive_service.handle_proactive_chat)
     # 精确匹配 "POST 到 /reflect 端点" 这件事——而不是单纯出现 "/reflect/" 字面，
     # 因为说明 backend 已经迁走的注释里允许有路径名（历史 trace）。
     # 任何能形成 HTTP POST 到 /reflect 的代码会包含 .post(...reflect...)。
@@ -245,10 +247,11 @@ def test_proactive_pass_chat_responses_carry_reason_code():
     ``reason_code``.
     """
     import main_routers.system_router as system_router
+    from main_logic.proactive_chat import service as proactive_service
 
     missing = []
     for fn in (
-        system_router.proactive_chat,
+        proactive_service.handle_proactive_chat,
         system_router._maybe_deliver_mini_game_invite,
     ):
         for line, action_values in _missing_reason_code_action_dicts(fn):
@@ -346,24 +349,27 @@ def test_proactive_reason_codes_have_stage_mapping():
 @pytest.mark.unit
 def test_proactive_phase2_abort_reasons_stay_specific():
     import inspect
-    import main_routers.system_router as system_router
 
-    src = inspect.getsource(system_router.proactive_chat)
+    from main_logic.proactive_chat import generation
+
+    src = inspect.getsource(generation._generate_phase2_stream)
     assert "abort_reason_code" in src
     assert "PROACTIVE_REASON_DELIVERY_PREEMPTED" in src
     assert "PROACTIVE_REASON_PASS_MODEL_PASS" in src
-    assert "final_abort_reason_code = abort_reason_code or PROACTIVE_REASON_PASS_GENERATION_EMPTY" in src
+    assert "final_reason = abort_reason_code or PROACTIVE_REASON_PASS_GENERATION_EMPTY" in src
 
 
 @pytest.mark.unit
 def test_end_proactive_rewrites_body_after_reason_stage_fallback():
     import inspect
-    import main_routers.system_router as system_router
 
-    src = inspect.getsource(system_router.proactive_chat)
-    assert "body = _ensure_proactive_reason_code(body)" in src
-    assert "body.setdefault('next_schedule_fixed_mode', _next_schedule_fixed_mode)" in src
-    assert "if 'next_schedule_fixed_mode' in body:\n                return resp" not in src
+    from main_logic.proactive_chat.service import ProactiveLifecycle
+
+    src = inspect.getsource(ProactiveLifecycle.finalize)
+    assert "body = _ensure_proactive_reason_code(dict(result.body))" in src
+    assert 'body.setdefault(' in src
+    assert '"next_schedule_fixed_mode"' in src
+    assert "return result" not in src
 
 
 @pytest.mark.unit
@@ -383,9 +389,10 @@ def test_proactive_chat_concurrent_rejection_returns_http_409():
     只钉静态保证。
     """
     import inspect
-    import main_routers.system_router as system_router
 
-    src = inspect.getsource(system_router.proactive_chat)
+    from main_logic.proactive_chat import service as proactive_service
+
+    src = inspect.getsource(proactive_service.handle_proactive_chat)
 
     # try_start_proactive 失败那一段必须有 status_code=409
     assert "try_start_proactive" in src, (
@@ -393,9 +400,15 @@ def test_proactive_chat_concurrent_rejection_returns_http_409():
         "原子 check+claim）；refactor 改成无锁 can_start_proactive 双查会重新"
         "引入 PR #1015 修过的双进 PHASE1 race"
     )
-    # 拒绝路径必须 409 + success=False（前端契约）
-    assert "status_code=409" in src, (
+    # 拒绝路径必须继续使用领域决策给出的 409 + success=False（前端契约）。
+    assert "status_code=entry_result.status_code" in src
+    from main_logic.proactive_chat.decisions import _decide_busy_entry_guard
+
+    result = _decide_busy_entry_guard(False, state_snapshot={"phase": "PHASE1"})
+    assert result is not None
+    assert result.status_code == 409, (
         "proactive_chat 并发拒绝时必须 HTTP 409 —— 前端 "
         "app-proactive.js triggerProactiveChat 据此跳过 backoff++。若改成 "
         "200/500 等其他 status，前端会把 server 忙误算成 attempt 消耗"
     )
+    assert result.body["success"] is False
