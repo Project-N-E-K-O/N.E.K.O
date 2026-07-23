@@ -505,7 +505,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         await self.napcat_service.stop_health_check()
         await self._stop_auto_reply_runtime(stop_napcat=True)
         await self._flush_all_memory_sessions(reason="shutdown")
-        await self.fatigue_service.save_state()
+        if self.fatigue_service:
+            await self.fatigue_service.save_state()
         if self.attention_gate_service:
             await self.attention_gate_service.shutdown()
         if self._group_digest_task and not self._group_digest_task.done():

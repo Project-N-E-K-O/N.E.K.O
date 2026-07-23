@@ -218,14 +218,12 @@ class QQAutoReplyPromptingMixin:
         return queued
 
     @staticmethod
-    def _build_group_turn_message(*, group_scene_mode: str, user_title: str, sender_id: str, group_id: str | None, message: str, current_message_id: str = "", is_at_bot: bool = False, is_reply_to_bot: bool = False, mentions_all: bool = False) -> str:
+    def _build_group_turn_message(*, group_scene_mode: str, user_title: str, sender_id: str, group_id: str | None, message: str, current_message_id: str = "", is_at_bot: bool = False, mentions_all: bool = False) -> str:
         msg_id_line = f"当前消息ID: {current_message_id}\n" if current_message_id else ""
         # 构建上下文提示
         hints = []
         if is_at_bot:
             hints.append("这条消息直接@了你，对方在对你说话")
-        elif is_reply_to_bot:
-            hints.append("这条消息回复了你之前的发言")
         elif mentions_all:
             hints.append("这是@全体成员的消息")
         if hints:

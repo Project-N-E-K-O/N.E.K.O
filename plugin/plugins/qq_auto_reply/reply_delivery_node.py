@@ -85,7 +85,12 @@ class QQReplyDeliveryNode:
             if block.keyboard:
                 voice_text += f"\n[选项] {block.keyboard}"
             if plan.target_type == "group":
-                await self.plugin._deliver_group_reply(plan.target_id, voice_text, fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure)
+                await self.plugin._deliver_group_reply(
+                    plan.target_id, voice_text,
+                    reply_message_id=block.reply_to or "",
+                    at_user_id=block.at_user or "",
+                    fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure,
+                )
             else:
                 await self.plugin._deliver_private_reply(plan.target_id, voice_text, fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure)
         elif plan.target_type == "group":

@@ -463,8 +463,8 @@ class QQClient(QQConnectionBase):
             raw = str(message.get("raw_message") or "").strip()
             expanded = "\n".join(forward_texts)
             message["raw_message"] = f"{raw}\n{expanded}" if raw else expanded
-            if not message.get("content"):
-                message["content"] = message["raw_message"]
+            content = str(message.get("content") or "").strip()
+            message["content"] = f"{content}\n{expanded}" if content else message["raw_message"]
             prev = message.get("_forward_sub_count", 0)
             message["_forward_sub_count"] = prev + len(forward_texts)
 
@@ -641,8 +641,7 @@ class QQClient(QQConnectionBase):
                 if transcript:
                     raw = str(message.get("raw_message") or "").strip()
                     message["raw_message"] = f"[语音] {transcript} {raw}".strip()
-                    if not message.get("content"):
-                        message["content"] = message["raw_message"]
+                    message["content"] = message["raw_message"]
                     self._emit_log("INFO", f"[Voice] 语音转文字完成: {transcript[:40]}")
                     continue
                 # 回退：仅标记 [语音]
@@ -650,8 +649,7 @@ class QQClient(QQConnectionBase):
                 marker = "[语音]"
                 if marker not in raw:
                     message["raw_message"] = f"{marker} {raw}".strip() if raw else marker
-                    if not message.get("content"):
-                        message["content"] = message["raw_message"]
+                    message["content"] = message["raw_message"]
             except Exception:
                 if self.logger:
                     self.logger.exception(f"Failed to fetch record {file_id}")

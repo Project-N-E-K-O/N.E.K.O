@@ -1,6 +1,6 @@
 """测试语音转录 _fetch_record_content"""
 from __future__ import annotations
-import asyncio, sys, types, importlib.util
+import asyncio, atexit, sys, types, importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -9,8 +9,21 @@ _MODULE_DIR = Path(__file__).resolve().parent
 # ── 构建最小 fake 环境加载 qq_client ──
 _mock_mods = ["websockets", "websockets.exceptions", "websockets.asyncio",
               "websockets.asyncio.client", "PIL", "PIL.Image", "utils.file_utils"]
+_saved_mods = {}
 for m in _mock_mods:
+    _saved_mods[m] = sys.modules.get(m)
     sys.modules[m] = MagicMock()
+
+
+def _restore_mocks():
+    """恢复 sys.modules，避免污染同进程其他测试。"""
+    for m, orig in _saved_mods.items():
+        if orig is None:
+            sys.modules.pop(m, None)
+        else:
+            sys.modules[m] = orig
+
+atexit.register(_restore_mocks)
 
 for pkg in ["plugin", "plugin.plugins", "plugin.plugins.qq_auto_reply"]:
     if pkg not in sys.modules:
@@ -57,13 +70,35 @@ QQClient = _qq.QQClient
 
 # ═══════════════════════════════════════════════════════════
 
+# 假音频字节，10ms 静默 AMR
+_FAKE_AUDIO = (
+    b"#!AMR\n\x1c\x04\x00\x00\x1c\x04\x00\x00\x04\x00\x00\x00\x00\x00\x00\x00"
+    b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+)
+
+
+def _mock_httpx_download(monkeypatch):
+    """mock httpx.AsyncClient.get 返回假音频"""
+    import httpx as _httpx
+    class FakeResponse:
+        status_code = 200
+        content = _FAKE_AUDIO
+    class FakeClient:
+        async def __aenter__(self, *a, **kw): return self
+        async def __aexit__(self, *a): pass
+        async def get(self, url): return FakeResponse()
+    monkeypatch.setattr("httpx.AsyncClient", lambda *a, **kw: FakeClient())
+
+
 async def test_no_transcriber():
     """无 transcriber → 仅标记 [语音]"""
+    from unittest.mock import patch
     c = QQClient(onebot_url="ws://0.0.0.0:6199")
 
     async def _get_record(_):
-        return {"data": {"base64": "AAAA"}}
+        return {"data": {"url": "http://example.com/voice.amr"}}
     c.get_record = _get_record
+    _mock_httpx_download(patch)
 
     msg = {"raw_message": "你在说什么？"}
     await c._fetch_record_content(msg, ["file_001"])
@@ -73,15 +108,19 @@ async def test_no_transcriber():
 
 async def test_with_transcriber():
     """有 transcriber → 转文字"""
+    from unittest.mock import patch
     c = QQClient(onebot_url="ws://0.0.0.0:6199")
-    c._voice_transcriber = lambda b64: asyncio.sleep(0, "我今天好开心呀") or "我今天好开心呀"
+    called = []
+    c._voice_transcriber = lambda b64: called.append(b64) or "我今天好开心呀"
 
     async def _get_record(_):
-        return {"data": {"base64": "AAAA"}}
+        return {"data": {"url": "http://example.com/voice.amr"}}
     c.get_record = _get_record
+    _mock_httpx_download(patch)
 
     msg = {"raw_message": "你在说什么？"}
     await c._fetch_record_content(msg, ["file_001"])
+    assert len(called) == 1, "transcriber 应该被调用 1 次"
     assert "我今天好开心呀" in msg["raw_message"], msg["raw_message"]
     assert "[语音]" in msg["raw_message"], msg["raw_message"]
     print("[PASS] 有 transcriber →", msg["raw_message"])
@@ -89,15 +128,19 @@ async def test_with_transcriber():
 
 async def test_transcriber_empty():
     """转录返回空 → 回退 [语音]"""
+    from unittest.mock import patch
     c = QQClient(onebot_url="ws://0.0.0.0:6199")
-    c._voice_transcriber = lambda b64: asyncio.sleep(0, "") or ""
+    called = []
+    c._voice_transcriber = lambda b64: called.append(b64) or ""
 
     async def _get_record(_):
-        return {"data": {"base64": "AAAA"}}
+        return {"data": {"file": "/tmp/voice.amr"}}
     c.get_record = _get_record
+    _mock_httpx_download(patch)
 
     msg = {"raw_message": "喂？"}
     await c._fetch_record_content(msg, ["file_001"])
+    assert len(called) == 1, "transcriber 应该被调用"
     assert "[语音]" in msg["raw_message"], msg["raw_message"]
     assert "喂？" in msg["raw_message"]
     print("[PASS] 转录空 → 回退标记:", msg["raw_message"])
@@ -112,22 +155,28 @@ async def test_get_record_fails():
     c.get_record = _get_record
 
     msg = {"raw_message": "听得见吗？"}
-    # 不应抛异常
     await c._fetch_record_content(msg, ["file_bad"])
     print("[PASS] get_record 失败 → 优雅降级")
 
 
 async def test_transcriber_raises():
     """transcriber 抛异常 → 回退 [语音]"""
+    from unittest.mock import patch
     c = QQClient(onebot_url="ws://0.0.0.0:6199")
-    c._voice_transcriber = lambda b64: (_ for _ in ()).throw(RuntimeError("API炸了"))
+    called = []
+    def _bad_transcriber(b64):
+        called.append(b64)
+        raise RuntimeError("API炸了")
+    c._voice_transcriber = _bad_transcriber
 
     async def _get_record(_):
-        return {"data": {"base64": "BBBB"}}
+        return {"data": {"url": "http://example.com/voice.amr"}}
     c.get_record = _get_record
+    _mock_httpx_download(patch)
 
     msg = {"raw_message": "hello"}
     await c._fetch_record_content(msg, ["file_err"])
+    assert len(called) == 1, "transcriber 应该被调用"
     assert "[语音]" in msg["raw_message"]
     print("[PASS] transcriber 异常 → 回退:", msg["raw_message"])
 
@@ -158,27 +207,18 @@ def _get_transcribe_config():
 
 
 async def test_real_api():
-    """用本体 core_config 的 ASR key 测试各 provider"""
+    """用本体 core_config 的 ASR key + 合成音频测试各 provider。
+    不使用真实语音文件，避免隐私泄漏。"""
     providers = _get_transcribe_config()
     if not providers:
         print("  跳过真实API测试（未配置 ASSIST_API_KEY_*）")
         return
 
-    import base64 as b64, glob, os as _os
-    test_b64 = ""
-    for base in [r"D:\qq\temp\Tencent Files\3281414178\nt_qq\nt_data\Ptt",
-                 r"D:\qq\temp\Tencent Files"]:
-        pattern = _os.path.join(base, "**", "*.amr")
-        for f in sorted(glob.glob(pattern, recursive=True), key=_os.path.getmtime, reverse=True)[:5]:
-            try:
-                with open(f, "rb") as fh:
-                    test_b64 = b64.b64encode(fh.read()).decode()
-                print(f"  音频: {_os.path.basename(f)} ({len(test_b64)} chars)")
-                break
-            except Exception: continue
-        if test_b64: break
-    if not test_b64:
-        test_b64 = b64.b64encode(b"#!AMR\n\x00\x00\x00\x00").decode()
+    from unittest.mock import patch
+    import base64 as b64
+
+    # 合成最小 AMR 头，避免涉及真实用户语音
+    test_b64 = b64.b64encode(b"#!AMR\n\x00\x00\x00\x00").decode()
 
     for prov_name, key, url in providers:
         def _make_transcriber(pn, k, u):
@@ -218,8 +258,9 @@ async def test_real_api():
         c._voice_transcriber = _make_transcriber(prov_name, key, url)
 
         async def _get_record(_):
-            return {"data": {"base64": test_b64}}
+            return {"data": {"url": "http://example.com/voice.amr"}}
         c.get_record = _get_record
+        _mock_httpx_download(patch)
 
         msg = {"raw_message": "测试"}
         await c._fetch_record_content(msg, ["file_test"])

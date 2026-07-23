@@ -101,7 +101,7 @@ class QQNapcatService:
         if task and not task.done():
             task.cancel()
             try: await task
-            except Exception: pass
+            except (Exception, asyncio.CancelledError): pass
 
     def clear_startup_error(self) -> None:
         self.plugin._startup_error = None
@@ -219,6 +219,7 @@ class QQNapcatService:
                 )
             self.plugin._manages_napcat_process = True
             self.clear_startup_error()
+            await self.start_health_check()  # NapCat 启动后自动开始健康监测
             pid = self.plugin._napcat_process.pid
             self.plugin.logger.info(
                 f"Started NapCat: {launcher} (pid={pid}, show_window={show_window})"

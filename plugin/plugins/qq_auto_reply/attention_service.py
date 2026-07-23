@@ -326,9 +326,9 @@ class QQAttentionService:
         if not group_id:
             return self.get_snapshot()
 
-        # 睡眠中不累计注意力，所有群保持低分 → 自然进入全局休眠
+        # 该群正在睡眠中 → 不累计注意力（逐群判定，不影响其他群）
         fatigue = getattr(self.plugin, "fatigue_service", None)
-        if fatigue and fatigue._sleep_start_at > 0:
+        if fatigue and fatigue.is_sleeping(f"group:{group_id}"):
             return self.get_snapshot()
 
         focus_group_id = self.get_focus_group_id()
@@ -408,9 +408,9 @@ class QQAttentionService:
     async def update_on_reply(self, group_id: str, *, reply_message_id: str = "", at_user_id: str = "") -> dict[str, Any]:
         if not self._enabled():
             return self.get_snapshot()
-        # 睡眠中不更新注意力
+        # 该群正在睡眠中 → 不更新注意力（逐群判定）
         fatigue = getattr(self.plugin, "fatigue_service", None)
-        if fatigue and fatigue._sleep_start_at > 0:
+        if fatigue and fatigue.is_sleeping(f"group:{group_id}"):
             return self.get_snapshot()
         normalized_group_id = str(group_id or "").strip()
         if not normalized_group_id:
@@ -438,7 +438,7 @@ class QQAttentionService:
         if not self._enabled():
             return self.get_snapshot()
         fatigue = getattr(self.plugin, "fatigue_service", None)
-        if fatigue and fatigue._sleep_start_at > 0:
+        if fatigue and fatigue.is_sleeping(f"group:{group_id}"):
             return self.get_snapshot()
         normalized_group_id = str(group_id or "").strip()
         if not normalized_group_id:

@@ -76,7 +76,9 @@ class QQReplyBufferService:
                 self.plugin._emit_log("INFO", f"[Buffer] 话题偏离 key={session_key} → 先交付旧桶，新消息另开: {message_text[:30]}")
                 if existing.task:
                     existing.task.cancel()
-                # 同步交付旧桶（不等计时器），然后新消息开新桶
+                    existing.task_gen += 1  # 旧任务 gen 不匹配，取消分支不会 pop
+                # 立即交付旧桶（不等计时器），然后新消息开新桶
+                existing.wait_until = 0
                 await self._flush(session_key, existing)
                 pending = PendingReply(sender_id, is_group, group_id)
                 pending.entries.append((sender_id, message_text))
@@ -184,16 +186,24 @@ class QQReplyBufferService:
         if self._pending.get(session_key) is not pending:
             return
 
-        # 先 pop 再交付——交付期间新消息进来会建新桶，不会污染当前桶
-        self._pending.pop(session_key, None)
-
         entries = pending.entries
         user_entries = [(s, t) for s, t in entries if s != "__bot__"]
         has_bot_reply = any(s == "__bot__" for s, _ in entries)
 
         if not has_bot_reply:
-            self.plugin._emit_log("WARN", f"[Buffer] key={session_key} 无 bot 回复，跳过交付")
+            # LLM 还没生成完 → 等 1 秒重试，最多 30 次（30 秒），避免慢模型丢回复
+            retries = getattr(pending, "_no_reply_retries", 0) + 1
+            pending._no_reply_retries = retries
+            if retries > 30:
+                self.plugin._emit_log("WARN", f"[Buffer] key={session_key} 等待回复超时，跳过交付")
+                self._pending.pop(session_key, None)
+                return
+            pending.wait_until = time.time() + 1.0
+            pending._new_task(self._flush(session_key, pending))
             return
+
+        # pop 再交付——交付期间新消息进来会建新桶，不会污染当前桶
+        self._pending.pop(session_key, None)
 
         if len(user_entries) == 1:
             # 只有首条用户消息 + bot 回复：直接交付 bot 回复
