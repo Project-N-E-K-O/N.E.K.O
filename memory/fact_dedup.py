@@ -286,14 +286,38 @@ class FactDedupResolver:
         a paraphrase into an absorbed fact would resurrect it from the
         archive path, which is worse than the duplicate.
         """  # noqa: DOCSTRING_CJK
+        from memory.scopes import is_legacy_private_entry, subject_from_entry
+
+        def _bucket_key(f: dict) -> tuple | None:
+            """Entity + subject boundary; None → excluded from dedup.
+
+            Scoped facts all share entity == subject.kind (e.g. every
+            group's facts have entity='group_chat'), so entity alone
+            would merge/replace rows ACROSS groups/members. The subject
+            (key, scope) pair keeps dedup inside one boundary; legacy
+            rows keep their pre-scope behaviour. Corrupt subject rows
+            are excluded from every read path, so pairing against them
+            would resurrect invisible data — skip them entirely.
+            """
+            subject = subject_from_entry(f)
+            entity = f.get('entity') or 'master'
+            if subject is not None:
+                return (entity, subject.key, subject.scope)
+            if is_legacy_private_entry(f):
+                return (entity, None, None)
+            return None
+
         results: list[dict] = []
-        # Pre-bucket by entity so the inner loop only walks relevant rows.
-        by_entity: dict[str, list[dict]] = {}
+        # Pre-bucket by entity + subject so the inner loop only walks
+        # rows inside the same dedup boundary.
+        by_entity: dict[tuple, list[dict]] = {}
         for f in facts:
             if not isinstance(f, dict):
                 continue
-            entity = f.get('entity') or 'master'
-            by_entity.setdefault(entity, []).append(f)
+            bucket = _bucket_key(f)
+            if bucket is None:
+                continue
+            by_entity.setdefault(bucket, []).append(f)
 
         for f in facts:
             if not isinstance(f, dict):
@@ -316,6 +340,9 @@ class FactDedupResolver:
                 # skip; the worker will retry on its next sweep once
                 # the vector triple is filled.
                 continue
+            bucket = _bucket_key(f)
+            if bucket is None:
+                continue
             entity = f.get('entity') or 'master'
             ctext = f.get('text', '')
             collected = 0
@@ -323,7 +350,7 @@ class FactDedupResolver:
             # strongest pair first; the per_fact_limit cap then keeps
             # the queue interpretable when N rows are all near.
             scored: list[tuple[float, dict]] = []
-            for sib in by_entity.get(entity, ()):
+            for sib in by_entity.get(bucket, ()):
                 sid = sib.get('id')
                 if not sid or sid == cid:
                     continue

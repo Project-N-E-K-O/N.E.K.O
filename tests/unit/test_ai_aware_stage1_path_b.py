@@ -287,6 +287,7 @@ async def test_apersist_writes_source_field_default_user_observation():
     fs._locks = {}
     import threading
     fs._locks_guard = threading.Lock()
+    fs._persist_alocks = {}
     fs.aload_facts = AsyncMock(return_value=[])
     fs.asave_facts = AsyncMock(return_value=None)
 
@@ -317,6 +318,7 @@ async def test_apersist_writes_source_ai_disclosure_with_signal_processed_true()
     fs._locks = {}
     import threading
     fs._locks_guard = threading.Lock()
+    fs._persist_alocks = {}
     fs.asave_facts = AsyncMock(return_value=None)
 
     extracted = [
@@ -348,6 +350,7 @@ async def test_apersist_llm_source_field_overrides_default():
     fs._locks = {}
     import threading
     fs._locks_guard = threading.Lock()
+    fs._persist_alocks = {}
     fs.asave_facts = AsyncMock(return_value=None)
 
     # LLM 输出 source='user_observation'，但 caller 传 default='ai_disclosure'
@@ -381,6 +384,7 @@ async def test_apersist_monotonic_source_upgrade_ai_to_user():
     fs._locks = {}
     import threading
     fs._locks_guard = threading.Lock()
+    fs._persist_alocks = {}
 
     text = '博士喜欢三文鱼'
     content_hash = hashlib.sha256(text.encode()).hexdigest()[:16]
@@ -429,6 +433,8 @@ async def test_apersist_monotonic_source_upgrade_within_same_batch():
     fs._locks = {}
     import threading
     fs._locks['悠怡'] = threading.RLock()
+    fs._locks_guard = threading.Lock()
+    fs._persist_alocks = {}
     fs.asave_facts = AsyncMock()
 
     # 模拟单次 Stage-1 payload 包含同 text 两条：先 ai_disclosure 后 user_observation
@@ -476,6 +482,7 @@ async def test_apersist_no_downgrade_user_to_ai():
     fs._locks = {}
     import threading
     fs._locks_guard = threading.Lock()
+    fs._persist_alocks = {}
 
     text = '博士喜欢三文鱼'
     content_hash = hashlib.sha256(text.encode()).hexdigest()[:16]
@@ -518,6 +525,7 @@ async def test_stage2_filters_out_ai_disclosure_facts():
     fs._locks = {}
     import threading
     fs._locks_guard = threading.Lock()
+    fs._persist_alocks = {}
 
     # 模拟 facts.json 三条 fact：一条 user_observation 未处理（应入 Stage-2 池），
     # 一条 ai_disclosure 未处理（**不该**入池，即使 signal_processed=False bug），

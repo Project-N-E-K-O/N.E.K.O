@@ -30,6 +30,12 @@ class QQReplyContextNode:
         normalized_message = str(message or "").strip()
         if not normalized_message:
             return ""
+        if is_group and not group_id:
+            # Fail-closed（与 session_instruction_service._build_core_memory_
+            # section 对齐）：畸形群事件缺 group_id 时不能让 subjects 退化成
+            # None——bridge 侧 None 的语义是「legacy 私聊调用方」，会把主人的
+            # 私聊记忆召回进群回复。
+            return ""
         try:
             subjects = None
             if is_group and group_id:

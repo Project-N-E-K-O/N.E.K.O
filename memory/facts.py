@@ -695,9 +695,11 @@ class FactStore:
                     and source == 'user_observation'
                 ):
                     # Path A 用 user msg 印证了之前 path B 写过的 ai_disclosure fact
-                    # → 升级 source + 重新进 Stage-2 evidence loop
+                    # → 升级 source + 重新进 Stage-2 evidence loop。
+                    # scoped fact 例外：简化管线不进 Stage-2，升级 source 但
+                    # 保持 signal_processed=True。
                     existing['source'] = 'user_observation'
-                    existing['signal_processed'] = False
+                    existing['signal_processed'] = memory_subject is not None
                     # 若这条印证来自外部导入，补上 external_import provenance——否则
                     # SHA 命中直接 continue 会漏掉标签（external_import 语义会把
                     # signal_processed 置回 True，不进 Stage-2）(Codex P2)。
@@ -708,15 +710,25 @@ class FactStore:
 
             # Stage 2: FTS5 semantic dedup (lightweight, no LLM)
             if semantic_dedup and self._time_indexed is not None:
-                similar = await self._time_indexed.asearch_facts(lanlan_name, text, 3)
+                # FTS5 is still character-wide, so fetch a wider window and
+                # keep the historical "top-3 candidates" semantics *inside*
+                # the subject boundary: cross-subject rows neither count as
+                # duplicates nor consume the 3-candidate budget (a busy
+                # group would otherwise crowd legacy candidates out of a
+                # top-3 fetch and let legacy near-duplicates slip through).
+                similar = await self._time_indexed.asearch_facts(
+                    lanlan_name, text, 10,
+                )
                 is_dup = False
+                same_subject_seen = 0
                 for fid, score in similar:
-                    if score >= -5:
-                        continue
                     hit = facts_by_id.get(fid)
                     if not entry_matches_subject(hit or {}, memory_subject):
-                        # FTS5 is still character-wide. A semantic hit only
-                        # deduplicates inside the same subject boundary.
+                        continue
+                    same_subject_seen += 1
+                    if same_subject_seen > 3:
+                        break
+                    if score >= -5:
                         continue
                     if daily_event_date:
                         # daily 候选：命中的既存 fact 若也是 daily 且日期不同 →
@@ -779,7 +791,14 @@ class FactStore:
                 # ⚠️ source='ai_disclosure' fact：写盘时直接置 True，让 Stage-2
                 # 永不取它。配合 aextract_facts_and_detect_signals 内部的
                 # source filter 做双重防御，防漏。
-                'signal_processed': (source == 'ai_disclosure'),
+                # ⚠️ scoped（群/成员）fact 同样置 True：群记忆走简化管线
+                # （facts → 定期合成 confirmed reflection → time-driven 晋升），
+                # 不参与 Stage-2 evidence。scoped 分区没有 user-confirm 通道，
+                # 其观察池冷启动恒空，进队列只会永久占用 batch 名额，把 legacy
+                # 私聊主链路饿死。
+                'signal_processed': (
+                    source == 'ai_disclosure' or memory_subject is not None
+                ),
                 # Vector-embedding cache (memory-enhancements P2 — see
                 # memory/embeddings.py). Written as None so /process
                 # returns immediately without blocking on embedding;
@@ -1184,8 +1203,10 @@ class FactStore:
           round's Stage-1 (for outbox and other audit purposes)
         - ``signals``: evidence signals awaiting dispatch
         - ``batch_fact_ids``: fact ids successfully processed by this Stage-2
-          round. A mixed-subject drain is partitioned first, so a failed subject
-          remains pending without blocking subjects that completed. The caller
+          round. The drain queue only ever carries legacy-private facts —
+          scoped (group/member) facts take the simplified pipeline and are
+          written with ``signal_processed=True``; any stray non-legacy row is
+          defensively dequeued before batching. The caller
           must call ``amark_signal_processed(lanlan_name, batch_fact_ids)`` only
           after every returned signal has been applied successfully via
           aapply_signal. If dispatch fails, the next idle sees those facts still
@@ -1229,6 +1250,29 @@ class FactStore:
             if not f.get('signal_processed', True)
             and f.get('source', self._SOURCE_DEFAULT) != 'ai_disclosure'
         ]
+
+        # Stage-2 evidence 只属于 legacy 私聊管线。scoped（群/成员）fact 走
+        # 简化管线，写盘时就 signal_processed=True 不会出现在这里；万一出现
+        # （subject 元数据损坏、旧版本代码写入的滞留数据），直接标记出队——
+        # 这类 fact 没有对应的 evidence 观察池，留在队列里会永久占用 batch
+        # 名额，把 legacy 主链路饿死（每 tick 空转还烧额外 LLM 调用）。
+        from memory.scopes import is_legacy_private_entry
+
+        stray = [f for f in unprocessed if not is_legacy_private_entry(f)]
+        if stray:
+            # 无条件把非 legacy 行滤出批次——包括没有 id、无法标记的行：
+            # 它们绝不能混进纯 legacy 的 Stage-2 prompt（跨边界泄漏）。
+            unprocessed = [
+                f for f in unprocessed if is_legacy_private_entry(f)
+            ]
+            stray_ids = [f['id'] for f in stray if f.get('id')]
+            logger.info(
+                "[FactStore] %s: Stage-2 出队 %d 条非 legacy fact"
+                "（scoped 走简化管线 / subject 损坏防御；无 id 仅过滤不标记 %d 条）",
+                lanlan_name, len(stray), len(stray) - len(stray_ids),
+            )
+            if stray_ids:
+                await self.amark_signal_processed(lanlan_name, stray_ids)
         if not unprocessed:
             return persisted_this_round, [], []
 
@@ -1242,67 +1286,39 @@ class FactStore:
         )
         batch = unprocessed[:EVIDENCE_DETECT_SIGNALS_MAX_NEW_FACTS]
 
-        # A drain can contain facts from several groups/members plus legacy
-        # private facts. Never send their union to one Stage-2 prompt: even if
-        # the observation pool is filtered to the same union, the model could
-        # pair group A's source fact with group B's target. Partition before
-        # both target recall and signal detection so every prompt has exactly
-        # one authorization boundary.
-        from memory.scopes import is_legacy_private_entry, subject_from_entry
-
-        partitions: dict[tuple[str | None, str | None], list[dict]] = {}
-        for fact in batch:
-            subject = subject_from_entry(fact)
-            if subject is not None:
-                marker = (subject.key, subject.scope)
-            elif is_legacy_private_entry(fact):
-                marker = (None, None)
-            else:
-                logger.warning(
-                    "[FactStore] %s: Stage-2 跳过 subject 元数据损坏的 fact %r",
-                    lanlan_name,
-                    fact.get('id'),
-                )
-                continue
-            partitions.setdefault(marker, []).append(fact)
-
-        completed_signals: list[dict] = []
-        completed_fact_ids: list[str] = []
-        for subject_batch in partitions.values():
-            try:
-                existing_observations = await self._aload_signal_targets(
-                    lanlan_name,
-                    reflection_engine=reflection_engine,
-                    persona_manager=persona_manager,
-                    # 用当前 subject 分区作为 query，避免跨边界召回。
-                    new_facts=subject_batch,
-                )
-            except Exception as e:
-                # 只保留当前 subject 的 checkpoint；其他 subject 仍可继续。
-                logger.warning(
-                    f"[FactStore] {lanlan_name}: _aload_signal_targets 失败，"
-                    f"保留当前 subject 下轮 Stage-2 重试: {e}"
-                )
-                continue
-            if not existing_observations:
-                # 冷启动 / 当前 subject 无可用目标：保留这一分区下轮重试。
-                continue
-
-            signals = await self._allm_detect_signals(
-                lanlan_name, subject_batch, existing_observations,
+        # 此时 batch 只含 legacy 私聊 facts（scoped 已在上面防御性出队），
+        # 保持与分区机制引入前一致的单批次 Stage-2。_aload_signal_targets
+        # 内部的 scope 过滤会把观察池收敛到 legacy（defense in depth：即使
+        # 未来有 scoped 观察写入 reflections/persona，也不会漏进这里）。
+        try:
+            existing_observations = await self._aload_signal_targets(
+                lanlan_name,
+                reflection_engine=reflection_engine,
+                persona_manager=persona_manager,
+                new_facts=batch,
             )
-            if signals is None:
-                # Stage-2 LLM failure: 当前 subject 不返回 ids，下轮重试。
-                continue
-
-            completed_signals.extend(signals)
-            completed_fact_ids.extend(
-                fact['id'] for fact in subject_batch if fact.get('id')
+        except Exception as e:
+            logger.warning(
+                f"[FactStore] {lanlan_name}: _aload_signal_targets 失败，"
+                f"跳过本轮 Stage-2（batch 保持未处理下轮重试）: {e}"
             )
+            return persisted_this_round, [], []
+        if not existing_observations:
+            # 冷启动：还没有任何 confirmed reflection / persona 观察目标。
+            # 不 mark，下轮重试（与引入 scope 之前的语义一致）。
+            return persisted_this_round, [], []
 
-        # 只返回已完成的 subject checkpoint。caller 仍需在所有返回
-        # signals dispatch 成功后才 mark；失败分区保持 False 下轮重试。
-        return persisted_this_round, completed_signals, completed_fact_ids
+        signals = await self._allm_detect_signals(
+            lanlan_name, batch, existing_observations,
+        )
+        if signals is None:
+            # Stage-2 LLM failure: 不返回 ids，caller 不 mark，下轮重试同批。
+            return persisted_this_round, [], []
+
+        # caller 仍需在所有返回 signals dispatch 成功后才 mark。
+        return persisted_this_round, signals, [
+            fact['id'] for fact in batch if fact.get('id')
+        ]
 
     async def extract_facts(
         self,

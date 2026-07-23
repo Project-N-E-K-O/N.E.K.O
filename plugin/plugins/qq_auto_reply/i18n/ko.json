@@ -559,7 +559,7 @@
   "ui.napcat.config.retro_review_max_reply": "소급 검토 최대 보충 응답 수",
   "ui.napcat.prompts.layer.format_open_platform.name": "Output Format (Open Platform)",
   "ui.shared.config.group_memory": "그룹 채팅 장기 기억 활성화",
-  "ui.shared.config.group_member_memory": "그룹 멤버 장기 기억 기록 (추출 호출 증가)",
+  "ui.shared.config.group_member_memory": "그룹 멤버 장기 기억 기록 (그룹 채팅 장기 기억을 먼저 활성화해야 함; 추출 호출 증가)",
   "ui.shared.config.cross_group_context": "그룹 간 실시간 주제 컨텍스트 허용 (기본값은 격리)",
   "prompts.group.kira_unified": "## Group Chat Reply Guidelines\nIn group chats, you don't need to reply to every message. Decide based on:\n- **Should reply**: Someone @mentions you, talks to you directly, asks you a question, mentions a topic related to you\n- **Can reply**: Topics you're interested in or skilled at, where you have unique insight to contribute\n- **Should NOT reply**: Private chats between group members, topics you can't add value to, questions already answered\n- If no reply needed, just output empty content\n- Don't be a bot that chimes in at every word — be like a sensible group member\n- **Proactive speaking**: If this is your current focus group, you can initiate new topics — share a thought, ask an interesting question, or talk about something you recently \"experienced\". Don't wait for someone to @ you. But have restraint — don't monologue or spam.",
   "prompts.group.shared_session": "## Scene: Group Shared Context\nYou are in a shared group conversation context. Reference the ongoing discussion naturally.",

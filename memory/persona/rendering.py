@@ -419,12 +419,16 @@ class RenderingMixin:
                 section_meta = persona.get(entity_key, {})
                 subject_kind = section_meta.get('subject_kind')
                 subject_id = section_meta.get('subject_id')
-                if subject_kind == 'group_chat':
-                    header = f"群聊记忆（{subject_id}）"
-                elif subject_kind == 'participant':
-                    header = f"成员记忆（{subject_id}）"
-                elif subject_kind == 'group_participant':
-                    header = f"群内成员记忆（{subject_id}）"
+                if subject_kind in (
+                    'group_chat', 'participant', 'group_participant',
+                ):
+                    from config.prompts.prompts_memory import (
+                        get_scoped_persona_section_header,
+                    )
+                    from utils.language_utils import get_global_language
+                    header = get_scoped_persona_section_header(
+                        subject_kind, subject_id, get_global_language(),
+                    )
                 else:
                     header = _headers.get(entity_key, entity_key)
                 sections.append(f"### {header}\n" + "\n".join(lines))

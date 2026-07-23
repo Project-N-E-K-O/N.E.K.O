@@ -559,7 +559,7 @@
   "ui.napcat.config.retro_review_max_reply": "Max Replies for Retro Review",
   "ui.napcat.prompts.layer.format_open_platform.name": "Output Format (Open Platform)",
   "ui.shared.config.group_memory": "Enable long-term group chat memory",
-  "ui.shared.config.group_member_memory": "Record long-term group member memory (adds extraction calls)",
+  "ui.shared.config.group_member_memory": "Record long-term group member memory (requires group chat memory; adds extraction calls)",
   "ui.shared.config.cross_group_context": "Allow live cross-group topic context (isolated by default)",
   "prompts.group.kira_unified": "## Group Chat Reply Guidelines\nIn group chats, you don't need to reply to every message. Decide based on:\n- **Should reply**: Someone @mentions you, talks to you directly, asks you a question, mentions a topic related to you\n- **Can reply**: Topics you're interested in or skilled at, where you have unique insight to contribute\n- **Should NOT reply**: Private chats between group members, topics you can't add value to, questions already answered\n- If no reply needed, just output empty content\n- Don't be a bot that chimes in at every word — be like a sensible group member\n- **Proactive speaking**: If this is your current focus group, you can initiate new topics — share a thought, ask an interesting question, or talk about something you recently \"experienced\". Don't wait for someone to @ you. But have restraint — don't monologue or spam.",
   "ui.napcat.config.proactive_silence": "Proactive silence threshold (sec, 0=off)",

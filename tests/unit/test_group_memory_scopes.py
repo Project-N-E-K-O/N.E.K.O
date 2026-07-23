@@ -38,7 +38,7 @@ class _FakeTimeIndexed:
         self.hits: list[tuple[str, float]] = []
 
     async def asearch_facts(self, lanlan_name, text, limit):
-        return list(self.hits)
+        return list(self.hits)[:limit]
 
     async def aindex_fact(self, lanlan_name, fact_id, text):
         return None
@@ -178,31 +178,58 @@ async def test_unabsorbed_facts_are_partitioned_by_subject():
 
 
 @pytest.mark.asyncio
-async def test_stage2_partitions_mixed_subjects_before_signal_detection():
+async def test_stage2_dequeues_scoped_strays_and_keeps_legacy_batch():
+    """Stage-2 evidence belongs to the legacy-private pipeline only. Scoped
+    facts are written with signal_processed=True and never enqueue; any
+    stray row (older builds / corrupt subject metadata) must be defensively
+    dequeued — otherwise high-importance, old-created_at strays would
+    permanently occupy top-N batch slots and starve the private chain."""
     harness = _PersistHarness()
     group_a = MemorySubject.group_chat("qq", "100")
-    group_b = MemorySubject.group_chat("qq", "200")
     harness._mem = [
         {
-            "id": "a",
+            "id": "stray-scoped",
             "text": "A 群事实",
-            "importance": 7,
-            "created_at": "2026-07-22T00:00:00",
+            "importance": 9,
+            "created_at": "2026-07-01T00:00:00",
             "source": "user_observation",
             "signal_processed": False,
             **group_a.as_entry_fields(),
         },
         {
-            "id": "b",
-            "text": "B 群事实",
-            "importance": 7,
-            "created_at": "2026-07-22T00:00:01",
+            "id": "stray-corrupt",
+            "text": "subject 元数据损坏",
+            "importance": 9,
+            "created_at": "2026-07-01T00:00:01",
             "source": "user_observation",
             "signal_processed": False,
-            **group_b.as_entry_fields(),
+            "subject_kind": "group_chat",
+        },
+        {
+            # 没有 id 的 stray：标记不了，但绝不能混进 legacy 批次。
+            "text": "无 id 的群事实",
+            "importance": 9,
+            "created_at": "2026-07-01T00:00:02",
+            "source": "user_observation",
+            "signal_processed": False,
+            **group_a.as_entry_fields(),
+        },
+        {
+            "id": "legacy",
+            "text": "私聊事实",
+            "importance": 5,
+            "created_at": "2026-07-22T00:00:00",
+            "source": "user_observation",
+            "signal_processed": False,
         },
     ]
     harness._allm_extract_facts = AsyncMock(return_value=[])
+    marked: list[str] = []
+
+    async def _record_mark(name, fact_ids):
+        marked.extend(fact_ids)
+
+    harness.amark_signal_processed = _record_mark
     harness._aload_signal_targets = AsyncMock(
         return_value=[{"id": "reflection.target"}],
     )
@@ -213,23 +240,56 @@ async def test_stage2_partitions_mixed_subjects_before_signal_detection():
     )
 
     assert signals == []
-    assert batch_ids == ["a", "b"]
-    target_batches = [
-        call.kwargs["new_facts"]
-        for call in harness._aload_signal_targets.await_args_list
-    ]
-    signal_batches = [
-        call.args[1]
-        for call in harness._allm_detect_signals.await_args_list
-    ]
-    assert [[effective_scope(fact) for fact in batch] for batch in target_batches] == [
-        [group_a.scope],
-        [group_b.scope],
-    ]
-    assert [[effective_scope(fact) for fact in batch] for batch in signal_batches] == [
-        [group_a.scope],
-        [group_b.scope],
-    ]
+    assert sorted(marked) == ["stray-corrupt", "stray-scoped"]
+    assert batch_ids == ["legacy"]
+    for call in harness._aload_signal_targets.await_args_list:
+        assert [fact["id"] for fact in call.kwargs["new_facts"]] == ["legacy"]
+    for call in harness._allm_detect_signals.await_args_list:
+        assert [fact["id"] for fact in call.args[1]] == ["legacy"]
+
+
+@pytest.mark.asyncio
+async def test_scoped_fact_writes_skip_stage2_queue():
+    """Simplified group pipeline: scoped facts persist with
+    signal_processed=True; legacy user_observation stays False and enters
+    Stage-2 normally."""
+    harness = _PersistHarness()
+    group = MemorySubject.group_chat("qq", "100")
+
+    scoped = await harness._apersist_new_facts(
+        "Neko", [_fact("群事实")], subject=group, semantic_dedup=False,
+    )
+    legacy = await harness._apersist_new_facts(
+        "Neko", [_fact("私聊事实")], semantic_dedup=False,
+    )
+
+    assert scoped[0]["signal_processed"] is True
+    assert legacy[0]["signal_processed"] is False
+
+
+@pytest.mark.asyncio
+async def test_scoped_sha_upgrade_does_not_reenter_stage2():
+    """Monotonic ai_disclosure→user_observation upgrade on SHA hit: legacy
+    resets signal_processed=False to re-enter Stage-2; scoped upgrades the
+    source but keeps signal_processed=True."""
+    harness = _PersistHarness()
+    group = MemorySubject.group_chat("qq", "100")
+
+    first = await harness._apersist_new_facts(
+        "Neko",
+        [{**_fact("群友说周五开黑"), "source": "ai_disclosure"}],
+        subject=group, semantic_dedup=False,
+    )
+    assert first[0]["signal_processed"] is True
+
+    upgraded = await harness._apersist_new_facts(
+        "Neko",
+        [{**_fact("群友说周五开黑"), "source": "user_observation"}],
+        subject=group, semantic_dedup=False,
+    )
+    assert upgraded == []
+    assert harness._mem[0]["source"] == "user_observation"
+    assert harness._mem[0]["signal_processed"] is True
 
 
 @pytest.mark.asyncio
@@ -704,3 +764,446 @@ def test_scoped_fact_importance_is_bounded():
         ScopedFactInput(text="too low", importance=0)
     with pytest.raises(ValidationError):
         ScopedFactInput(text="too high", importance=11)
+
+
+@pytest.mark.asyncio
+async def test_query_memory_route_rejects_explicit_empty_subjects():
+    """Server-side fail-closed: an explicit subjects=[] is a caller contract
+    bug and must 422 — never collapse into None and fall back to the
+    legacy-private corpus (mirrors scoped_context)."""
+    from fastapi import HTTPException
+
+    from app.memory_server import routes as memory_routes
+    from app.memory_server.routes import QueryMemoryRequest
+
+    with patch.object(memory_routes.runtime, "fact_store", MagicMock()), \
+         patch.object(memory_routes.runtime, "reflection_engine", MagicMock()):
+        with pytest.raises(HTTPException) as excinfo:
+            await memory_routes.query_memory(
+                "Neko", QueryMemoryRequest(query="hello", subjects=[]),
+            )
+        assert excinfo.value.status_code == 422
+
+        too_many = [
+            {"subject_kind": "group_chat", "subject_id": f"qq:{index}"}
+            for index in range(9)
+        ]
+        with pytest.raises(HTTPException) as excinfo:
+            await memory_routes.query_memory(
+                "Neko", QueryMemoryRequest(query="hello", subjects=too_many),
+            )
+        assert excinfo.value.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_scoped_synthesis_rotates_between_subjects():
+    """Rotation cursor: a dead-letter / failing bucket must not monopolize
+    the single per-tick slot. Consecutive calls serve different subjects,
+    and a failed attempt (empty return) still advances the cursor."""
+    group_a = MemorySubject.group_chat("qq", "100")
+    group_b = MemorySubject.group_chat("qq", "200")
+    facts = []
+    for index in range(5):
+        facts.append({
+            "id": f"a{index}", "text": "a", "importance": 7,
+            "created_at": f"2026-07-20T00:00:0{index}",
+            **group_a.as_entry_fields(),
+        })
+        facts.append({
+            "id": f"b{index}", "text": "b", "importance": 7,
+            "created_at": f"2026-07-21T00:00:0{index}",
+            **group_b.as_entry_fields(),
+        })
+    harness = _ScopedSynthesisHarness(facts)
+    # 模拟 group_a 合成失败（dead-letter：返回空）——它仍不能霸占名额。
+    original = harness.synthesize_reflections
+
+    async def _flaky(lanlan_name, *, subject=None):
+        await original(lanlan_name, subject=subject)
+        return []
+
+    harness.synthesize_reflections = _flaky
+
+    await harness.synthesize_scoped_reflections("Neko", max_subjects=1)
+    await harness.synthesize_scoped_reflections("Neko", max_subjects=1)
+    await harness.synthesize_scoped_reflections("Neko", max_subjects=1)
+    assert harness.seen == [group_a, group_b, group_a]
+
+
+@pytest.mark.asyncio
+async def test_stage2_observation_pool_respects_subject_boundary():
+    """Real _aload_signal_targets (no mock): a scoped trigger batch may only
+    see same-subject observation targets and a legacy batch only legacy
+    ones — the safety boundary the code comments promise needs a direct
+    test (removing the filter previously turned no test red)."""
+    import threading
+
+    group_a = MemorySubject.group_chat("qq", "100")
+    group_b = MemorySubject.group_chat("qq", "200")
+
+    fs = FactStore.__new__(FactStore)
+    fs._config_manager = MagicMock()
+    fs._time_indexed = None
+    fs._facts = {}
+    fs._locks = {}
+    fs._locks_guard = threading.Lock()
+    fs._persist_alocks = {}
+
+    reflection_engine = SimpleNamespace(
+        _aload_reflections_full=AsyncMock(return_value=[
+            {"id": "r-legacy", "status": "confirmed", "text": "legacy refl",
+             "entity": "master"},
+            {"id": "r-a", "status": "confirmed", "text": "group a refl",
+             "entity": "group_chat", **group_a.as_entry_fields()},
+            {"id": "r-b", "status": "confirmed", "text": "group b refl",
+             "entity": "group_chat", **group_b.as_entry_fields()},
+        ]),
+    )
+    persona_manager = SimpleNamespace(
+        aensure_persona=AsyncMock(return_value={
+            "master": {"facts": [{"id": "p-legacy", "text": "legacy persona"}]},
+            group_a.persona_section_key: {
+                **group_a.as_entry_fields(),
+                "facts": [{
+                    "id": "p-a", "text": "group a persona",
+                    **group_a.as_entry_fields(),
+                }],
+            },
+        }),
+    )
+
+    scoped_batch = [{
+        "id": "fa", "text": "群事实", "importance": 7,
+        **group_a.as_entry_fields(),
+    }]
+    legacy_batch = [{"id": "fl", "text": "私聊事实", "importance": 7}]
+
+    scoped_pool = await fs._aload_signal_targets(
+        "Neko", reflection_engine=reflection_engine,
+        persona_manager=persona_manager, new_facts=scoped_batch,
+    )
+    legacy_pool = await fs._aload_signal_targets(
+        "Neko", reflection_engine=reflection_engine,
+        persona_manager=persona_manager, new_facts=legacy_batch,
+    )
+
+    assert {obs["raw_id"] for obs in scoped_pool} <= {"r-a", "p-a"}
+    assert {obs["raw_id"] for obs in scoped_pool} == {"r-a", "p-a"}
+    assert {obs["raw_id"] for obs in legacy_pool} == {"r-legacy", "p-legacy"}
+
+
+def test_persona_view_fails_closed_on_corrupt_scoped_section():
+    """A persona section with the @subject/ prefix but corrupt metadata must
+    fail closed both ways: never reclassified into the legacy view and
+    never served to any scoped view."""
+    group = MemorySubject.group_chat("qq", "100")
+    corrupt_key = f"@subject/{group.key}"
+    persona = {
+        "master": {"facts": [{"text": "private"}]},
+        corrupt_key: {
+            # 缺 subject_id/scope → persona_subject_from_section 返 None
+            "subject_kind": "group_chat",
+            "facts": [{"text": "must not leak"}],
+        },
+    }
+
+    legacy_view = RenderingMixin._persona_view_for_subjects(persona)
+    scoped_view = RenderingMixin._persona_view_for_subjects(persona, [group])
+    assert list(legacy_view) == ["master"]
+    assert scoped_view == {}
+
+
+def test_fact_vector_dedup_pairs_stay_inside_subject_boundary():
+    """Vector-dedup candidate bucketing must carry the subject boundary:
+    facts from different groups never pair even with identical embeddings
+    (merge/replace would delete data across groups); corrupt-subject rows
+    never participate at all."""
+    from memory.fact_dedup import FactDedupResolver
+
+    group_a = MemorySubject.group_chat("qq", "100")
+    group_b = MemorySubject.group_chat("qq", "200")
+    vec = [1.0, 0.0, 0.0]
+
+    def _row(fact_id, extra):
+        return {
+            "id": fact_id, "text": f"text {fact_id}", "entity": "group_chat",
+            "embedding": vec, "embedding_model_id": "m1", **extra,
+        }
+
+    cross_group = FactDedupResolver.detect_candidates([
+        _row("a1", group_a.as_entry_fields()),
+        _row("b1", group_b.as_entry_fields()),
+    ])
+    assert cross_group == []
+
+    same_group = FactDedupResolver.detect_candidates([
+        _row("a1", group_a.as_entry_fields()),
+        _row("a2", group_a.as_entry_fields()),
+    ])
+    assert {pair["candidate_id"] for pair in same_group} == {"a1", "a2"}
+
+    with_corrupt = FactDedupResolver.detect_candidates([
+        _row("a1", group_a.as_entry_fields()),
+        _row("bad", {"subject_kind": "group_chat"}),
+    ])
+    assert with_corrupt == []
+
+
+def _build_scope_mock_cm(tmpdir: str):
+    cm = MagicMock()
+    cm.memory_dir = tmpdir
+    cm.aget_character_data = AsyncMock(return_value=(
+        "主人", "Neko", {}, {}, {"human": "主人", "system": "SYS"},
+        {}, {}, {}, {},
+    ))
+    cm.get_character_data = MagicMock(return_value=(
+        "主人", "Neko", {}, {}, {"human": "主人", "system": "SYS"},
+        {}, {}, {}, {},
+    ))
+    cm.get_model_api_config = MagicMock(return_value={
+        "model": "fake-model", "base_url": "http://fake", "api_key": "sk-fake",
+    })
+    return cm
+
+
+@pytest.mark.asyncio
+async def test_scoped_synthesis_creates_confirmed_reflection(tmp_path):
+    """Simplified group pipeline: scoped reflection synthesis lands directly
+    as confirmed (scoped subjects have no Stage-2 signals and no surfacing
+    confirmation channel, so pending would be a permanent dead end)."""
+    import json
+    import os
+
+    mock_cm = _build_scope_mock_cm(str(tmp_path))
+    group = MemorySubject.group_chat("qq", "100")
+    char_dir = os.path.join(str(tmp_path), "Neko")
+    os.makedirs(char_dir, exist_ok=True)
+    facts = [
+        {
+            # importance 5（ScopedFactInput 默认档）——importance 种子为 0，
+            # 钉住「直出 confirmed 必须带最小正 rein，过 score>0 渲染门」。
+            "id": f"g{index}", "text": f"群事实 {index}",
+            "entity": "group_chat", "importance": 5, "absorbed": False,
+            **group.as_entry_fields(),
+        }
+        for index in range(6)
+    ]
+    with open(os.path.join(char_dir, "facts.json"), "w", encoding="utf-8") as f:
+        json.dump(facts, f, ensure_ascii=False)
+
+    with patch("memory.reflection.manager.get_config_manager", return_value=mock_cm), \
+         patch("memory.facts.get_config_manager", return_value=mock_cm):
+        from memory.persona import PersonaManager
+        from memory.reflection import ReflectionEngine
+
+        fs = FactStore()
+        fs._config_manager = mock_cm
+        pm = PersonaManager()
+        pm._config_manager = mock_cm
+        engine = ReflectionEngine(fs, pm)
+        engine._config_manager = mock_cm
+
+        async def _fake_ainvoke(self, prompt):
+            resp = MagicMock()
+            resp.content = (
+                '{"reflection": "这个群固定周五晚上开黑", "entity": "group_chat"}'
+            )
+            return resp
+
+        async def _fake_aclose(self):
+            return None
+
+        class _FakeLLM:
+            def __init__(self, *a, **kw):
+                pass
+            ainvoke = _fake_ainvoke
+            aclose = _fake_aclose
+
+        with patch("utils.llm_client.create_chat_llm", _FakeLLM), \
+             patch(
+                 "config.prompts.prompts_memory.get_reflection_prompt",
+                 lambda lang: "{FACTS}|{LANLAN_NAME}|{MASTER_NAME}",
+             ), \
+             patch("utils.language_utils.get_global_language", return_value="zh"):
+            created = await engine.synthesize_reflections("Neko", subject=group)
+
+        confirmed_visible = await engine.aget_confirmed_reflections(
+            "Neko", subjects=[group], include_legacy_private=False,
+        )
+
+    assert len(created) == 1
+    assert created[0]["status"] == "confirmed"
+    assert created[0]["auto_confirmed"] is True
+    assert created[0]["scope"] == group.scope
+    assert created[0]["subject_kind"] == "group_chat"
+    # score>0 渲染门：即便源 facts 全是默认档 importance，直出 confirmed
+    # 的 scoped 反思也必须立即对 /scoped_context 可见。
+    assert float(created[0]["reinforcement"]) > 0.0
+    assert [r["id"] for r in confirmed_visible] == [created[0]["id"]]
+
+
+@pytest.mark.asyncio
+async def test_scoped_reflections_use_time_driven_lifecycle(tmp_path):
+    """Powerful mode: both score-driven passes skip scoped entries; the
+    time-driven scoped pass at the tail of aauto_promote_stale advances
+    them by age (pending→confirmed→promoted into the scoped persona) while
+    legacy entries keep their score-driven behaviour."""
+    import json
+    import os
+    from datetime import datetime, timedelta
+
+    mock_cm = _build_scope_mock_cm(str(tmp_path))
+    group = MemorySubject.group_chat("qq", "100")
+    now = datetime.now()
+    char_dir = os.path.join(str(tmp_path), "Neko")
+    os.makedirs(char_dir, exist_ok=True)
+    reflections = [
+        {
+            "id": "ref_legacy", "text": "主人喜欢咖啡", "entity": "master",
+            "status": "pending", "created_at": now.isoformat(),
+            "reinforcement": 1.5, "rein_last_signal_at": now.isoformat(),
+            "source_fact_ids": ["f1"],
+        },
+        {
+            # 历史遗留的 scoped pending（新代码合成直出 confirmed，但旧构建
+            # 可能写过 pending）——高分也不许走 score-driven，只按年龄确认。
+            "id": "ref_scoped_pending", "text": "这个群周五开黑",
+            "entity": "group_chat", "status": "pending",
+            "created_at": (now - timedelta(days=8)).isoformat(),
+            "reinforcement": 5.0, "rein_last_signal_at": now.isoformat(),
+            "source_fact_ids": ["g1"], **group.as_entry_fields(),
+        },
+        {
+            # 高分也不许走 score-driven 促升（_apromote_with_merge 是 LLM
+            # 路径）；只能被 time-driven Pass 2 按年龄零成本合入 persona。
+            "id": "ref_scoped_confirmed", "text": "群主是老王",
+            "entity": "group_chat", "status": "confirmed",
+            "created_at": (now - timedelta(days=20)).isoformat(),
+            "confirmed_at": (now - timedelta(days=8)).isoformat(),
+            "reinforcement": 5.0, "rein_last_signal_at": now.isoformat(),
+            "source_fact_ids": ["g2"], **group.as_entry_fields(),
+        },
+    ]
+    with open(
+        os.path.join(char_dir, "reflections.json"), "w", encoding="utf-8",
+    ) as f:
+        json.dump(reflections, f, ensure_ascii=False)
+
+    with patch("memory.reflection.manager.get_config_manager", return_value=mock_cm), \
+         patch("memory.facts.get_config_manager", return_value=mock_cm):
+        from memory.persona import PersonaManager
+        from memory.reflection import ReflectionEngine
+
+        fs = FactStore()
+        fs._config_manager = mock_cm
+        pm = PersonaManager()
+        pm._config_manager = mock_cm
+        engine = ReflectionEngine(fs, pm)
+        engine._config_manager = mock_cm
+        engine._apromote_with_merge = AsyncMock(
+            side_effect=AssertionError("scoped 不许进 score-driven merge LLM"),
+        )
+
+        await engine.aauto_promote_stale("Neko")
+
+        engine._apromote_with_merge.assert_not_awaited()
+        status_by_id = {
+            r.get("id"): r for r in await engine._aload_reflections_full("Neko")
+        }
+        persona = await pm.aensure_persona("Neko")
+
+    assert status_by_id["ref_legacy"]["status"] == "confirmed"
+    assert not status_by_id["ref_legacy"].get("auto_confirmed")
+    assert status_by_id["ref_scoped_pending"]["status"] == "confirmed"
+    assert status_by_id["ref_scoped_pending"].get("auto_confirmed") is True
+    assert status_by_id["ref_scoped_confirmed"]["status"] == "promoted"
+    scoped_section = persona.get(group.persona_section_key)
+    assert scoped_section is not None
+    assert any(
+        entry.get("text") == "群主是老王"
+        for entry in scoped_section.get("facts", [])
+    )
+
+
+@pytest.mark.asyncio
+async def test_mode_switch_reset_skips_scoped_confirmed(tmp_path):
+    """The strong→weak migration resets legacy confirmed_at so old entries
+    don't bulk-promote, but scoped reflections run the time-driven clock in
+    BOTH modes — resetting them would let a mode toggle postpone scoped
+    promotion indefinitely."""
+    import json
+    import os
+    from datetime import datetime, timedelta
+
+    mock_cm = _build_scope_mock_cm(str(tmp_path))
+    group = MemorySubject.group_chat("qq", "100")
+    now = datetime.now()
+    old_confirmed_at = (now - timedelta(days=6)).isoformat()
+    char_dir = os.path.join(str(tmp_path), "Neko")
+    os.makedirs(char_dir, exist_ok=True)
+    reflections = [
+        {
+            "id": "ref_legacy", "text": "legacy", "entity": "master",
+            "status": "confirmed", "created_at": old_confirmed_at,
+            "confirmed_at": old_confirmed_at, "source_fact_ids": ["f1"],
+        },
+        {
+            "id": "ref_scoped", "text": "scoped", "entity": "group_chat",
+            "status": "confirmed", "created_at": old_confirmed_at,
+            "confirmed_at": old_confirmed_at, "source_fact_ids": ["g1"],
+            **group.as_entry_fields(),
+        },
+    ]
+    with open(
+        os.path.join(char_dir, "reflections.json"), "w", encoding="utf-8",
+    ) as f:
+        json.dump(reflections, f, ensure_ascii=False)
+
+    with patch("memory.reflection.manager.get_config_manager", return_value=mock_cm), \
+         patch("memory.facts.get_config_manager", return_value=mock_cm):
+        from memory.persona import PersonaManager
+        from memory.reflection import ReflectionEngine
+
+        fs = FactStore()
+        fs._config_manager = mock_cm
+        pm = PersonaManager()
+        pm._config_manager = mock_cm
+        engine = ReflectionEngine(fs, pm)
+        engine._config_manager = mock_cm
+
+        count = await engine.areset_confirmed_at_to_now("Neko")
+        by_id = {
+            r.get("id"): r for r in await engine._aload_reflections_full("Neko")
+        }
+
+    assert count == 1
+    assert by_id["ref_legacy"]["confirmed_at"] != old_confirmed_at
+    assert by_id["ref_scoped"]["confirmed_at"] == old_confirmed_at
+
+
+@pytest.mark.asyncio
+async def test_fts_dedup_window_not_crowded_by_scoped_rows():
+    """The legacy semantic-dedup 3-candidate window counts per subject: when
+    a busy group's scoped rows fill the raw top-3, a legacy near-duplicate
+    must still be deduplicated by the legacy hit sitting in 4th place."""
+    index = _FakeTimeIndexed()
+    harness = _PersistHarness(index)
+    group = MemorySubject.group_chat("qq", "100")
+
+    for offset in range(3):
+        await harness._apersist_new_facts(
+            "Neko", [_fact(f"群里聊周五开黑 {offset}")],
+            subject=group, semantic_dedup=False,
+        )
+    legacy_first = await harness._apersist_new_facts(
+        "Neko", [_fact("主人周五晚上八点想开黑")], semantic_dedup=False,
+    )
+    scoped_ids = [fact["id"] for fact in harness._mem[:3]]
+    index.hits = [(fid, -10.0) for fid in scoped_ids] + [
+        (legacy_first[0]["id"], -10.0),
+    ]
+
+    duplicate = await harness._apersist_new_facts(
+        "Neko", [_fact("主人周五晚八点要开黑")], semantic_dedup=True,
+    )
+    assert duplicate == []

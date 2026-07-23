@@ -312,7 +312,8 @@ async def _periodic_reflection_synthesis_loop():
                     results += await scoped_synth(name, max_subjects=1)
                 if results:
                     logger.info(
-                        f"[ReflectionSynth] {name}: 合成 {len(results)} 条新 pending reflection"
+                        f"[ReflectionSynth] {name}: 合成 {len(results)} 条新 reflection"
+                        "（legacy=pending / scoped=confirmed）"
                     )
             except Exception as e:
                 # 单角色合成失败不阻塞其他角色 / 下轮重试

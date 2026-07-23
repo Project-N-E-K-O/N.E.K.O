@@ -88,11 +88,33 @@ class SynthesisMixin:
             bucket for bucket in grouped.values()
             if len(bucket['facts']) >= MIN_FACTS_FOR_REFLECTION
         ]
-        ready.sort(key=lambda bucket: min(
-            str(fact.get('created_at') or '') for fact in bucket['facts']
+        if not ready:
+            return []
+        # 轮转游标（进程内即可，重启从头轮）：从上次服务过的 subject 之后
+        # 继续，无论本次成功与否都推进。oldest-first 的问题是一个 dead-letter
+        # / 反复失败的 bucket 会每 tick 占住唯一名额，把其他 subject 饿死；
+        # 失败退避（synthesize_reflections 内部 backoff）只省 LLM 调用，
+        # 不让出名额。
+        ready.sort(key=lambda bucket: (
+            bucket['subject'].key, bucket['subject'].scope,
         ))
+        cursors = getattr(self, '_scoped_synth_cursor', None)
+        if cursors is None:
+            cursors = {}
+            self._scoped_synth_cursor = cursors
+        last_served = cursors.get(lanlan_name)
+        start = 0
+        if last_served is not None:
+            for i, bucket in enumerate(ready):
+                if (bucket['subject'].key, bucket['subject'].scope) > last_served:
+                    start = i
+                    break
         created: list[dict] = []
-        for bucket in ready[:max_subjects]:
+        for offset in range(min(max_subjects, len(ready))):
+            bucket = ready[(start + offset) % len(ready)]
+            cursors[lanlan_name] = (
+                bucket['subject'].key, bucket['subject'].scope,
+            )
             created.extend(await self.synthesize_reflections(
                 lanlan_name, subject=bucket['subject'],
             ))
@@ -365,6 +387,24 @@ class SynthesisMixin:
         })
         if memory_subject is not None:
             reflection.update(memory_subject.as_entry_fields())
+            # 简化群记忆管线：scoped reflection 不走 evidence 确认。群/成员
+            # subject 没有 user-confirm（surfacing 默认 legacy-only）也没有
+            # Stage-2 信号（scoped facts 写盘即 signal_processed=True），
+            # pending 态对它们是永久死路。合成本身（≥MIN_FACTS_FOR_REFLECTION
+            # 条事实聚合）就是质量闸，直接落 confirmed；后续生命周期走零 LLM
+            # 成本的 time-driven 尾程（aauto_promote_time_driven 的 scoped
+            # pass：按年龄 confirmed→promoted 合入 scoped persona）。
+            reflection['status'] = 'confirmed'
+            reflection['confirmed_at'] = now_iso
+            reflection['auto_confirmed'] = True
+            # confirmed 渲染门（_filter_active_confirmed）要求 evidence_score
+            # 严格 > 0，而 scoped 永远没有 evidence 信号来抬分：importance≤6
+            # 的批次 importance 种子为 0.0，会让这条反思在 time-driven 晋升
+            # 进 persona 之前对群上下文（/scoped_context）完全隐身。给最小
+            # 正种子保证 confirmed 即可见（指数衰减不会归零）。
+            if float(reflection.get('reinforcement') or 0.0) <= 0.0:
+                reflection['reinforcement'] = 0.1
+                reflection['rein_last_signal_at'] = now_iso
 
         # ── LOCK 仅护住 re-load + dedup append + save ──
         async with self._get_alock(lanlan_name):

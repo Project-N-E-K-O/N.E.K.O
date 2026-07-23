@@ -745,6 +745,8 @@ class QueryMemoryRequest(BaseModel):
     # the pre-upgrade legacy-private behaviour. Supplying one or more subjects
     # excludes every unscoped legacy row; there is intentionally no request
     # flag that lets a plugin turn legacy-private into a wildcard corpus.
+    # An explicit empty list is a caller contract bug and is rejected 422 at
+    # the endpoint (fail-closed) — it must never fall back to legacy private.
     subjects: list[MemorySubjectRequest] | None = None
 
 
@@ -892,6 +894,16 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
         )
     time_spec = (req.time or "").strip()
     query_text = (req.query or "").strip()
+    # Fail-closed on an explicit empty subjects list (mirror scoped_context):
+    # a group-chat caller that has no authorized subject must get zero rows,
+    # never the legacy-private corpus. Omitting the field (None) keeps the
+    # pre-upgrade legacy behaviour — downstream filter_entries_for_subjects
+    # treats () and None alike, so the distinction must be enforced here.
+    if req.subjects is not None and not (1 <= len(req.subjects) <= 8):
+        raise HTTPException(
+            status_code=422,
+            detail="subjects must be omitted (legacy private) or contain 1..8 items",
+        )
     subjects = [subject.to_domain() for subject in (req.subjects or [])]
     try:
         # Import 移进 try：若 memory.hybrid_recall 自身 import 失败（循环

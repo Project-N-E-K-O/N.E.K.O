@@ -112,6 +112,12 @@ class PromotionMixin:
         # round-trip — RFC §3.3.3 outer-async-inner-sync chain breaks down
         # if we hold across the LLM await.
         await self._aauto_promote_score_driven(lanlan_name)
+        # 简化群记忆管线：scoped reflection 不产生 evidence 信号，score-driven
+        # 两个 pass 都跳过它们；其生命周期（含历史遗留的 scoped pending）由
+        # 零 LLM 成本的 time-driven pass 按年龄推进。挂在这里让四个既有
+        # caller（evidence_loops / post_turn / routes / signal_extraction）
+        # 不需要感知模式差异。
+        await self.aauto_promote_time_driven(lanlan_name, scoped_only=True)
         return transitions
 
     async def _aauto_promote_score_driven(self, lanlan_name: str) -> int:
@@ -131,11 +137,17 @@ class PromotionMixin:
         # slightly stale view (any concurrent state change will just mean
         # we attempt promote on a no-longer-confirmed reflection, which
         # the inner lock + status recheck will catch).
+        from memory.scopes import subject_from_entry
+
         reflections = await self._aload_reflections_full(lanlan_name)
         now = datetime.now()
         attempts = 0
         for r in reflections:
             if r.get('status') != 'confirmed':
+                continue
+            if subject_from_entry(r) is not None:
+                # scoped reflection 走 time-driven 简化生命周期，不参与
+                # score-driven 晋升（它们没有 evidence 信号来源）。
                 continue
             if evidence_score(r, now) < EVIDENCE_PROMOTED_THRESHOLD:
                 continue
@@ -163,6 +175,8 @@ class PromotionMixin:
         this loop reads the updated view to decide promotions). The caller
         is responsible for that ordering — see memory_server background loops.
         """
+        from memory.scopes import subject_from_entry
+
         reflections = await self._aload_reflections_full(lanlan_name)
         now = datetime.now()
         transitions = 0
@@ -170,6 +184,10 @@ class PromotionMixin:
 
         for r in reflections:
             if r.get('status') != 'pending':
+                continue
+            if subject_from_entry(r) is not None:
+                # scoped pending（正常不该存在——scoped 合成直出 confirmed；
+                # 兜历史遗留）由 time-driven scoped pass 按年龄确认。
                 continue
             if evidence_score(r, now) < EVIDENCE_CONFIRMED_THRESHOLD:
                 continue
@@ -197,8 +215,11 @@ class PromotionMixin:
                 )
         return transitions
 
-    async def aauto_promote_time_driven(self, lanlan_name: str) -> int:
-        """Time-driven fallback for the "strong memory OFF" mode.
+    async def aauto_promote_time_driven(
+        self, lanlan_name: str, *, scoped_only: bool = False,
+    ) -> int:
+        """Time-driven lifecycle: the "strong memory OFF" fallback, and the
+        one-and-only lifecycle for scoped (group/member) reflections.
 
         Zero LLM cost. Mimics pre-RFC behavior, advancing the lifecycle purely
         by reflection age:
@@ -211,14 +232,19 @@ class PromotionMixin:
 
         Returns: total number of pending→confirmed + confirmed→promoted transitions.
 
-        Mutually exclusive with ``aauto_promote_stale`` — the caller picks one
-        based on the strong-memory switch. This method never reads
+        ``scoped_only=True`` restricts both passes to scoped reflections —
+        used by ``aauto_promote_stale`` (strong-memory mode) so scoped entries
+        advance by age while legacy entries stay score-driven. With
+        ``scoped_only=False`` (weak-memory caller) every reflection advances
+        by age, which already covers scoped entries. This method never reads
         evidence_score; missing/zero evidence fields have no effect.
         """
         from config import (
             WEAK_MEMORY_AUTO_CONFIRM_DAYS,
             WEAK_MEMORY_AUTO_PROMOTE_DAYS,
         )
+
+        from memory.scopes import subject_from_entry
 
         from memory.persona import PersonaManager
         async with self._get_alock(lanlan_name):
@@ -232,6 +258,8 @@ class PromotionMixin:
             # Pass 1: pending → confirmed by created_at age
             for r in reflections:
                 if r.get('status') != 'pending':
+                    continue
+                if scoped_only and subject_from_entry(r) is None:
                     continue
                 created_iso = r.get('created_at')
                 if not created_iso:
@@ -261,6 +289,8 @@ class PromotionMixin:
             for r in reflections:
                 if r.get('status') != 'confirmed':
                     continue
+                if scoped_only and subject_from_entry(r) is None:
+                    continue
                 confirmed_iso = r.get('confirmed_at')
                 if not confirmed_iso:
                     continue
@@ -281,7 +311,6 @@ class PromotionMixin:
                 #     "记忆失活" case；rare（启发式 ratio ≥0.4 才命中）。
                 rid = r.get('id')
                 try:
-                    from memory.scopes import subject_from_entry
                     promote_subject = subject_from_entry(r)
                     promote_kwargs = (
                         {'subject': promote_subject}
@@ -585,15 +614,27 @@ class PromotionMixin:
         Avoids the jarring experience of "user enabled it for a while, turned
         it off, and old confirmed entries immediately hit the 14-day mark and
         promote in bulk". Returns the number of affected entries.
+
+        Scoped reflections are exempt: their time-driven clock runs in both
+        modes (see ``aauto_promote_time_driven``), so the on→off rationale
+        does not apply to them.
         """
+        from memory.scopes import subject_from_entry
+
         async with self._get_alock(lanlan_name):
             reflections = await self._aload_reflections_full(lanlan_name)
             now_iso = datetime.now().isoformat()
             count = 0
             for r in reflections:
-                if r.get('status') == 'confirmed':
-                    r['confirmed_at'] = now_iso
-                    count += 1
+                if r.get('status') != 'confirmed':
+                    continue
+                if subject_from_entry(r) is not None:
+                    # scoped reflection 与强弱模式无关、恒走 time-driven：
+                    # 切换开关前它的晋升时钟本来就在跑，重置属于误伤
+                    # （反复切换可无限推迟 scoped 晋升）。
+                    continue
+                r['confirmed_at'] = now_iso
+                count += 1
             if count:
                 active = [
                     r for r in reflections

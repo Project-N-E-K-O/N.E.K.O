@@ -559,7 +559,7 @@
   "entries.reset_prompt_override.name": "重置提示词覆盖",
   "entries.reset_prompt_override.description": "删除某个提示词层的自定义覆盖值，恢复默认。",
   "ui.shared.config.group_memory": "启用群聊长期记忆",
-  "ui.shared.config.group_member_memory": "记录群成员长期记忆（增加提取调用）",
+  "ui.shared.config.group_member_memory": "记录群成员长期记忆（需先启用群聊长期记忆；增加提取调用）",
   "ui.shared.config.cross_group_context": "允许跨群实时话题上下文（默认隔离）",
   "prompts.group.kira_unified": "## 群聊回复意愿（Group Chat Reply Guidelines）\n在群聊中，你不需要对每条消息都回复。请根据以下原则自主判断是否参与：\n- **应该回复**：有人 @你、直接跟你说话、问你问题、提到与你相关的话题\n- **可以回复**：群里聊到你感兴趣或擅长的话题，你有独特见解可以贡献\n- **不要回复**：群友之间的私聊、你无法提供有价值信息的话题、已经有人回答了的问题\n- 如果你判断不需要回复，直接输出空内容即可\n- 不要做一个\"有人说话就接嘴\"的机器人，要像一个有分寸的群友\n\t- **主动说话**：如果这是你当前关注的焦点群，可以主动发起新话题——分享一个想法、提一个有趣的问题、聊聊你最近\"经历\"的事。不需要等别人@你才开口。但也要有分寸，不要自言自语刷屏。",
   "ui.napcat.config.proactive_silence": "主动发言沉默阈值（秒，0=禁用）",
