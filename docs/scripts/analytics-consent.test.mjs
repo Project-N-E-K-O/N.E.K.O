@@ -138,7 +138,12 @@ test('granting consent queues consent before measurement and loads one tag', asy
   )
 
   const commands = fixture.windowObject.dataLayer
-  assert.deepEqual(commands.slice(0, 5).map((command) => command.slice(0, 2)), [
+  assert.equal(Array.isArray(commands[0]), false)
+  assert.equal(Object.prototype.toString.call(commands[0]), '[object Arguments]')
+  const queuedCommands = commands.slice(0, 5).map(
+    (command) => Array.from(command).slice(0, 2),
+  )
+  assert.deepEqual(queuedCommands, [
     ['consent', 'default'],
     ['consent', 'update'],
     ['js', commands[2][1]],
@@ -201,7 +206,7 @@ test('a cross-tab denial immediately disables active analytics', async () => {
   assert.equal(analytics.trackAnalyticsPageView('/plugins/', fixture), false)
   assert.equal(fixture.reloadCount(), 1)
   assert.deepEqual(
-    fixture.windowObject.dataLayer.at(-1).slice(0, 2),
+    Array.from(fixture.windowObject.dataLayer.at(-1)).slice(0, 2),
     ['consent', 'update'],
   )
   assert.equal(
@@ -223,7 +228,7 @@ test('revoking active analytics stores denial and reloads without a second tag',
   assert.equal(fixture.reloadCount(), 1)
   assert.equal(fixture.elements.size, 1)
   assert.deepEqual(
-    fixture.windowObject.dataLayer.at(-1).slice(0, 2),
+    Array.from(fixture.windowObject.dataLayer.at(-1)).slice(0, 2),
     ['consent', 'update'],
   )
   assert.equal(
