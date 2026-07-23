@@ -82,3 +82,55 @@ def test_campplus_backend_has_one_owner() -> None:
             definitions.append(path)
 
     assert definitions == [VOICE_IDENTITY_ROOT / "campplus.py"]
+
+
+def test_voice_identity_dependency_graph_is_acyclic() -> None:
+    modules = {path.stem: path for path in VOICE_IDENTITY_ROOT.glob("*.py")}
+    dependencies: dict[str, set[str]] = {name: set() for name in modules}
+    for name, path in modules.items():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.ImportFrom)
+                and node.level == 1
+                and node.module in modules
+            ):
+                dependencies[name].add(node.module)
+
+    visited: set[str] = set()
+    active: set[str] = set()
+
+    def visit(name: str) -> None:
+        assert name not in active, f"voice_identity import cycle at {name}"
+        if name in visited:
+            return
+        active.add(name)
+        for dependency in dependencies[name]:
+            visit(dependency)
+        active.remove(name)
+        visited.add(name)
+
+    for module_name in dependencies:
+        visit(module_name)
+
+
+def test_campplus_has_one_model_specific_onnx_session_creation() -> None:
+    owners = []
+    for path in VOICE_IDENTITY_ROOT.glob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        owners.extend([path] * source.count("InferenceSession("))
+
+    assert owners == [VOICE_IDENTITY_ROOT / "campplus.py"]
+
+
+def test_legacy_asr_campplus_module_is_only_a_compatibility_facade() -> None:
+    facade = REPO_ROOT / "main_logic" / "asr_client" / "campplus.py"
+    assert _imports(facade) == {"main_logic.voice_identity.campplus"}
+
+
+def test_core_tests_use_formal_observer_port() -> None:
+    source = (
+        REPO_ROOT / "tests" / "unit" / "test_core_independent_asr.py"
+    ).read_text(encoding="utf-8")
+
+    assert "runtime._speaker_shadow_observation_callback =" not in source
