@@ -354,7 +354,15 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     raise WebSocketDisconnect(ws_event.get("code", 1000))
                 binary_payload = ws_event.get("bytes")
                 if binary_payload is not None:
-                    message = _decode_binary_audio_frame(binary_payload)
+                    try:
+                        message = _decode_binary_audio_frame(binary_payload)
+                    except ValueError as exc:
+                        logger.warning(
+                            "[%s] dropping malformed binary audio frame: %s",
+                            lanlan_name,
+                            exc,
+                        )
+                        continue
                 else:
                     data = ws_event.get("text")
                     if not isinstance(data, str):
