@@ -170,10 +170,14 @@ class ConfigManager(
     # _GEO_INDETERMINATE = tried but got no usable answer → do not retry)
     _ip_check_cache = None
     _steam_check_cache = None
-    # Sentinel stored in _ip_check_cache when the HTTP probe fails, so we never
-    # re-attempt it (and never pay the timeout again) within the same process.
+    # Sentinel stored in _ip_check_cache once the HTTP probe has exhausted its
+    # retries, so we stop paying the timeout for the rest of the process.
     _GEO_INDETERMINATE = object()
     _geo_indeterminate_logged = False
+    # HTTP 探测的失败重试账本：开机自启动时网络栈常常还没就绪，首次探测必超时。
+    _ip_check_attempts = 0
+    _ip_check_last_attempt_monotonic = None
+    _geo_ip_only_logged = False
 
 
 # 全局配置管理器实例

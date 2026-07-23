@@ -27,6 +27,7 @@ import asyncio
 import json
 import math
 import sys
+import time
 from copy import deepcopy
 from urllib.parse import urlparse, urlunparse
 
@@ -39,6 +40,12 @@ from ._shared import _as_bool, logger
 
 class CoreConfigMixin:
     """Core config snapshot, geo checks and model API resolution."""
+
+    # HTTP 地理探测的有限重试：开机自启动时本程序常常跑在网络栈就绪之前，第一次
+    # 探测必定超时。Steam 缺席的机器上 IP 是唯一判据（见 _check_non_mainland），
+    # 一次失败就永久放弃会把整台机器锁死在国内线路。
+    _IP_CHECK_MAX_ATTEMPTS = 3
+    _IP_CHECK_RETRY_INTERVAL_S = 30.0
 
     async def aget_core_config(self):
         """Async wrapper for get_core_config: internally open()+json.load() reads core_config.json;
@@ -56,8 +63,18 @@ class CoreConfigMixin:
 
         cache = ConfigManager._ip_check_cache
         if cache is not None:
-            # True/False → deterministic result; sentinel → tried-and-failed, skip retry
+            # True/False → deterministic result; sentinel → retries exhausted, skip
             return None if cache is ConfigManager._GEO_INDETERMINATE else cache
+
+        # 失败后按 _IP_CHECK_RETRY_INTERVAL_S 退避，避免 get_core_config 的高频
+        # 调用把 3 秒超时叠成卡顿。
+        last = ConfigManager._ip_check_last_attempt_monotonic
+        now = time.monotonic()
+        if last is not None and (now - last) < ConfigManager._IP_CHECK_RETRY_INTERVAL_S:
+            return None
+        ConfigManager._ip_check_last_attempt_monotonic = now
+        ConfigManager._ip_check_attempts += 1
+
         try:
             import urllib.request
             req = urllib.request.Request(
@@ -76,8 +93,13 @@ class CoreConfigMixin:
                 return result
         except Exception as e:
             print(f"[GeoIP] HTTP IP check failed: {e}", file=sys.stderr)
-        # Mark as attempted-but-indeterminate so the network probe is never retried.
-        ConfigManager._ip_check_cache = ConfigManager._GEO_INDETERMINATE
+        # 重试用尽才写哨兵永久放弃；之前的失败留给下一次调用重试。
+        if ConfigManager._ip_check_attempts >= ConfigManager._IP_CHECK_MAX_ATTEMPTS:
+            print(
+                f"[GeoIP] HTTP IP check giving up after {ConfigManager._ip_check_attempts} attempts",
+                file=sys.stderr,
+            )
+            ConfigManager._ip_check_cache = ConfigManager._GEO_INDETERMINATE
         return None
 
     @staticmethod
@@ -108,7 +130,15 @@ class CoreConfigMixin:
         return None
 
     def _check_non_mainland(self) -> bool:
-        """Dual validation: both HTTP IP geo AND Steam geo must indicate non-mainland."""
+        """Region check over HTTP IP geo plus Steam geo.
+
+        Steam holds a veto, not a required vote: ``Utils.GetIPCountry()`` is
+        authoritative when it answers (it is not fooled by a proxy), but it stays
+        silent forever on non-Steam builds and on Steam builds started without the
+        Steam client running — most users only auto-start N.E.K.O., not Steam.
+        Requiring it as a second yes vote permanently pinned those overseas users
+        to the mainland route.
+        """
         # Late-bound: class-level shared state (single owner) lives on the
         # assembled ConfigManager; resolve it through the package facade.
         from utils.config_manager import ConfigManager
@@ -129,21 +159,32 @@ class CoreConfigMixin:
         ip_result = self._check_ip_non_mainland_http()
         steam_result = self._check_steam_non_mainland()
 
-        if ip_result is True and steam_result is True:
-            ConfigManager._region_cache = True
-            ConfigManager._geo_indeterminate_logged = False
-            print(f"[GeoIP] Dual check PASS: non-mainland (IP={ip_result}, Steam={steam_result})", file=sys.stderr)
-            return True
-
         if ip_result is False or steam_result is False:
             ConfigManager._region_cache = False
             ConfigManager._geo_indeterminate_logged = False
             print(f"[GeoIP] Dual check FAIL: mainland (IP={ip_result}, Steam={steam_result})", file=sys.stderr)
             return False
 
-        # Both sources simultaneously indeterminate (e.g. ip-api.com blocked AND Steam not
-        # yet initialised).  Do NOT write to _region_cache: Steam may initialise shortly
-        # after this call, and caching False here would permanently suppress re-evaluation.
+        if ip_result is True and steam_result is True:
+            ConfigManager._region_cache = True
+            ConfigManager._geo_indeterminate_logged = False
+            print(f"[GeoIP] Dual check PASS: non-mainland (IP={ip_result}, Steam={steam_result})", file=sys.stderr)
+            return True
+
+        if ip_result is True:
+            # Steam 沉默，IP 单判为海外。刻意**不写** _region_cache：Steam 可能只是
+            # 还没起来（用户先开机自启动、后手动开 Steam），它一旦发声就该重新裁决，
+            # 包括把挂全局代理的大陆用户否决回国内线路。两个子判定各自有缓存，重算很便宜。
+            ConfigManager._geo_indeterminate_logged = False
+            if not ConfigManager._geo_ip_only_logged:
+                ConfigManager._geo_ip_only_logged = True
+                print("[GeoIP] IP-only PASS: non-mainland (Steam silent, revocable)", file=sys.stderr)
+            return True
+
+        # No verdict from either source (ip-api.com unreachable AND Steam not yet
+        # initialised).  Do NOT write to _region_cache: either may become definitive
+        # shortly after this call, and caching False here would permanently suppress
+        # re-evaluation.
         # Callers that iterate get_core_config() will simply retry the geo check on the
         # next invocation until at least one source becomes definitive.
         if not ConfigManager._geo_indeterminate_logged:
