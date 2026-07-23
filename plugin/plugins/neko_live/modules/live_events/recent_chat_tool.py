@@ -13,24 +13,6 @@ TOOL_NAME = "get_recent_live_chat"
 TOOL_PARAMETERS = {
     "type": "object",
     "properties": {
-        "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 3,
-            "default": 1,
-            "description": (
-                "按最新到更早返回本场最后几条弹幕；1=最后一条，2 可回答上上条，最多 3 条。"
-            ),
-        },
-        "position": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 3,
-            "description": (
-                "可选的精确位置：1=最新一条，2=前一条，3=前两条。"
-                "设置后只返回该位置的一条，避免模型自行数列表。"
-            ),
-        },
         "query": {
             "type": "string",
             "maxLength": 80,
@@ -66,9 +48,9 @@ def set_recent_chat_tool_enabled(plugin: Any, enabled: bool) -> bool:
         name=TOOL_NAME,
         description=(
             "读取 NEKO Live 当前场次实际收到的近期弹幕。"
-            "用户询问刚刚、最新或谁说了什么时必须无 query 调用；"
-            "询问最新一条时设置 position=1，前一条设置 position=2，前两条设置 position=3；"
-            "插件只返回目标位置，不能自行从列表数。"
+            "不带 query 时返回最多三条近期记录，严格按最新到较早排列；"
+            "允许存在正常直播延迟，由你结合用户问题、相对时间和直播语境自然选择、复述或概括，"
+            "不要把记录称为候选 1/2/3，也不要捏造列表之外的弹幕。"
             "普通直播对话仅当一个具体当前话题确实会因观众近期发言而更自然时，才可带 query 调用一次。"
             "相关模式只返回一条低压、未回复、未使用的匹配弹幕；没有结果时不得猜测或反复调用。"
         ),
@@ -82,19 +64,12 @@ def set_recent_chat_tool_enabled(plugin: Any, enabled: bool) -> bool:
 
 def recent_chat_tool_result(
     plugin: Any,
-    limit: Any = 1,
     query: Any = "",
-    position: Any = None,
 ) -> dict[str, Any]:
     runtime = getattr(plugin, "runtime", None)
     if runtime is None or not bool(getattr(runtime, "_accepting_live_events", False)):
         return {"available": False, "status": "not_live", "entries": []}
-    clean_limit = _clean_limit(limit)
-    clean_position = _clean_position(position)
     clean_query = clean_relevance_query(public_text(query, max_length=80))
-    invalid_position = (
-        not clean_query and position is not None and clean_position is None
-    )
     live_events = getattr(runtime, "live_events", None)
     if clean_query:
         snapshot = getattr(live_events, "relevant_chat_snapshot", None)
@@ -104,14 +79,7 @@ def recent_chat_tool_result(
         mode = "relevant"
     else:
         snapshot = getattr(live_events, "recent_chat_snapshot", None)
-        read_limit = clean_position or clean_limit
-        entries = (
-            snapshot(limit=read_limit)
-            if callable(snapshot) and not invalid_position
-            else []
-        )
-        if clean_position:
-            entries = entries[clean_position - 1 : clean_position]
+        entries = snapshot(limit=3) if callable(snapshot) else []
         mode = (
             "session_tail"
             if any(
@@ -140,40 +108,11 @@ def recent_chat_tool_result(
         "status": (
             "ok"
             if entries
-            else (
-                "no_match"
-                if clean_query
-                else "invalid_position"
-                if invalid_position
-                else "position_unavailable"
-                if clean_position
-                else "empty"
-            )
+            else ("no_match" if clean_query else "empty")
         ),
         "mode": mode,
         "platform": platform,
         "room_ref": room_ref,
         "entries": entries,
     }
-    if clean_position and not clean_query:
-        result["position"] = clean_position
     return result
-
-
-def _clean_limit(value: Any) -> int:
-    if isinstance(value, bool):
-        return 1
-    try:
-        return min(3, max(1, int(value)))
-    except (TypeError, ValueError):
-        return 1
-
-
-def _clean_position(value: Any) -> int | None:
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        position = int(value)
-    except (TypeError, ValueError):
-        return None
-    return position if 1 <= position <= 3 else None

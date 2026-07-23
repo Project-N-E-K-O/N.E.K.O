@@ -84,6 +84,7 @@ async def handle_live_payload(runtime: Any, payload: dict[str, Any]) -> Interact
     signal_event_type = _signal_event_type(event)
     ensure_trace_id(event)
     remember_live_danmaku_seen(runtime, event)
+    observe_live_danmaku(runtime, event)
     record_timeline(
         runtime,
         event,
@@ -92,6 +93,23 @@ async def handle_live_payload(runtime: Any, payload: dict[str, Any]) -> Interact
         route=signal_event_type or event.source,
     )
     return await runtime.pipeline.handle_event(event)
+
+
+def observe_live_danmaku(runtime: Any, event: ViewerEvent) -> int:
+    """Mirror developer/live-entry danmaku into the production context store."""
+
+    observer = getattr(getattr(runtime, "live_events", None), "observe_danmaku", None)
+    if not callable(observer):
+        return 0
+    try:
+        return max(0, int(observer(event) or 0))
+    except Exception as exc:
+        runtime.audit.record(
+            "live_danmaku_observe_failed",
+            f"live danmaku observation failed: {type(exc).__name__}",
+            level="warning",
+        )
+        return 0
 
 
 def remember_live_danmaku_seen(runtime: Any, event: ViewerEvent) -> None:

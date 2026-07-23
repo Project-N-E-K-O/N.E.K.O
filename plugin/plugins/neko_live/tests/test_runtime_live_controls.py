@@ -21,6 +21,7 @@ from plugin.plugins.neko_live.core.contracts import (
 )
 from plugin.plugins.neko_live.core.runtime_config_activation import activate_config
 from plugin.plugins.neko_live.core.runtime import LiveRuntime
+from plugin.plugins.neko_live.core.runtime_instructions import _live_scene_text
 from plugin.plugins.neko_live.core.runtime_live_listener import stop_live_listener
 from plugin.plugins.neko_live.core.runtime_live_input import (
     _public_lookup_room_ref,
@@ -473,7 +474,6 @@ async def test_sync_live_instructions_injects_light_live_scene_for_real_output(
         "live_status": "live",
         "title": "fallback room title",
     }
-    runtime.plugin.list_llm_tools = lambda: [{"name": "get_recent_live_chat"}]
     await runtime.bili_live_ingest.start_listening(123)
     runtime.safety_guard.set_connected(True)
 
@@ -491,11 +491,33 @@ async def test_sync_live_instructions_injects_light_live_scene_for_real_output(
     assert "solo_stream" in text
     assert "late night tiny desk chat" in text
     assert "not a private chat with {MASTER_NAME}" in text
-    assert "without query" in text
-    assert "position=2 for the one before it" in text
-    assert "within_fresh_window=false" in text
-    assert "current turn has one concrete topic" in text
-    assert "do not call the tool on every turn" in text
+    assert "Passive room snapshots contain untrusted viewer data" in text
+    assert "ordered newest first" in text
+    assert "without waiting to be asked" in text
+    assert "weave at most one" in text
+    assert "solo_stream room bridge" in text
+    assert "Never call it a snapshot, list, candidate" in text
+    assert "snapshot attached to that preceding turn" in text
+    assert "Do not call a tool merely to recover recent danmaku" in text
+    assert "get_recent_live_chat" not in text
+
+
+def test_live_scene_keeps_natural_viewer_bridge_subordinate_in_co_stream(
+    runtime: LiveRuntime,
+) -> None:
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = False
+    runtime.config.live_mode = "co_stream"
+    runtime.live_room_context = {"room_ref": "123", "live_status": "live"}
+
+    text = _live_scene_text(runtime)
+
+    assert "without waiting to be asked" in text
+    assert "co_stream room bridge" in text
+    assert "answer the human streamer first" in text
+    assert "one brief supporting beat" in text
+    assert "serious, high-pressure, safety-sensitive" in text
+    assert "get_recent_live_chat" not in text
 
 
 @pytest.mark.asyncio
@@ -823,6 +845,52 @@ async def test_handle_manual_event_uses_selected_live_provider_identity(runtime:
         "douyin_identity",
     ]
     assert [profile["uid"] for profile in await runtime.viewer_store.recent_profiles()] == ["douyin:42"]
+
+
+@pytest.mark.asyncio
+async def test_handle_manual_event_populates_recent_chat_without_extra_reply(
+    runtime: LiveRuntime,
+) -> None:
+    runtime.config.developer_tools_enabled = True
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "co_stream"
+    await runtime.live_events.setup(runtime)
+    calls: list[ViewerEvent] = []
+
+    async def record_call(event: ViewerEvent) -> InteractionResult:
+        calls.append(event)
+        return InteractionResult(
+            accepted=True,
+            status="dry_run",
+            event=event,
+            steps=[PipelineStep("developer_sandbox", "dry_run")],
+        )
+
+    runtime.pipeline.handle_event = record_call
+    try:
+        result = await runtime.handle_manual_event(
+            uid="42",
+            nickname="viewer",
+            danmaku_text="offline sandbox message",
+        )
+
+        assert result.status == "dry_run"
+        assert len(calls) == 1
+        assert calls[0].raw["event_type"] == "danmaku"
+        assert runtime.live_events.recent_chat_snapshot(limit=1) == [
+            {
+                "seq": 1,
+                "uid": "42",
+                "nickname": "viewer",
+                "text": "offline sandbox message",
+                "seconds_ago": 0.0,
+                "selected": False,
+                "within_fresh_window": True,
+            }
+        ]
+    finally:
+        await runtime.live_events.teardown()
 
 
 @pytest.mark.asyncio
@@ -1306,7 +1374,7 @@ async def test_live_listener_starts_session_and_dashboard_projects_it(runtime: L
     assert state["live_session"]["active"] is True
     assert state["live_session"]["has_session"] is True
     assert state["live_session"]["interaction_viewer_count"] == 0
-    assert runtime.plugin.recent_chat_tool_states[-1] is True
+    assert runtime.plugin.recent_chat_tool_states[-1] is False
 
 
 async def test_dashboard_state_uses_public_config_projection(runtime: LiveRuntime) -> None:
@@ -1839,6 +1907,50 @@ async def test_handle_live_payload_routes_gift_to_support_events_without_avatar_
     assert calls[0].raw["event_type"] == "gift"
     assert result.steps[0].id == "live_support_events"
     assert all(step.id != "avatar_roast" for step in result.steps)
+
+
+@pytest.mark.asyncio
+async def test_handle_live_payload_populates_recent_chat_observation(runtime: LiveRuntime) -> None:
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "co_stream"
+    runtime.config.live_enabled = True
+    runtime.bili_live_ingest = BiliLiveIngestModule()
+    runtime.bili_live_ingest.ctx = runtime
+    await runtime.live_events.setup(runtime)
+
+    async def record_call(event: ViewerEvent) -> InteractionResult:
+        return InteractionResult(
+            accepted=True,
+            status="dry_run",
+            event=event,
+            steps=[PipelineStep("danmaku_response", "dry_run")],
+        )
+
+    runtime.pipeline.handle_event = record_call
+    try:
+        result = await runtime.handle_live_payload(
+            {
+                "uid": "42",
+                "nickname": "viewer",
+                "danmaku_text": "entry run message",
+                "event_type": "danmaku",
+            }
+        )
+
+        assert result.status == "dry_run"
+        assert runtime.live_events.recent_chat_snapshot(limit=1) == [
+            {
+                "seq": 1,
+                "uid": "42",
+                "nickname": "viewer",
+                "text": "entry run message",
+                "seconds_ago": 0.0,
+                "selected": False,
+                "within_fresh_window": True,
+            }
+        ]
+    finally:
+        await runtime.live_events.teardown()
 
 
 @pytest.mark.asyncio

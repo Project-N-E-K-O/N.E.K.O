@@ -424,6 +424,52 @@ class NekoDispatcher:
             result_name="developer_instructions_restored",
         )
 
+    async def push_ambient_room_context(
+        self,
+        text: str,
+        *,
+        session_key: str,
+        expired: bool = False,
+    ) -> str:
+        """Queue one replaceable, invisible passive live-room snapshot."""
+
+        target_lanlan = resolve_plugin_target_lanlan(self.plugin)
+        clean_session_key = "".join(
+            char for char in str(session_key or "default")[:80]
+            if char.isalnum() or char in "_.:-"
+        ) or "default"
+        target_key = "".join(
+            char for char in str(target_lanlan or "default")[:48]
+            if char.isalnum() or char in "_.:-"
+        ) or "default"
+        coalesce_key = (
+            f"neko_live:ambient_room:{target_key}:{clean_session_key}"
+        )
+        metadata: dict[str, Any] = {
+            "description": "NEKO Live passive room context",
+            "context_type": "neko_live_ambient_room",
+            "delivery_intent": "passive_context",
+            "ambient_expired": bool(expired),
+        }
+        if target_lanlan:
+            metadata["target_lanlan"] = target_lanlan
+        result = self.plugin.push_message(
+            source="neko_live",
+            visibility=[],
+            ai_behavior="read",
+            parts=[{"type": "text", "text": text}],
+            metadata=metadata,
+            priority=2,
+            coalesce_key=coalesce_key,
+            target_lanlan=target_lanlan or None,
+        )
+        if asyncio.iscoroutine(result):
+            await result
+        return (
+            f"ambient_context_queued(target={target_lanlan or 'default'}, "
+            f"expired={str(bool(expired)).lower()})"
+        )
+
     async def push_developer_announcement(self, text: str) -> str:
         target_lanlan = resolve_plugin_target_lanlan(self.plugin)
         metadata = {"plugin": "neko_live", "developer_mode": True}

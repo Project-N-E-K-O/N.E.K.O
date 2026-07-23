@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .contracts import InteractionResult, ViewerEvent, ViewerProfile
+from .runtime_live_input import observe_live_danmaku
 
 
 async def handle_sandbox_target(runtime: Any, **kwargs: Any) -> InteractionResult:
@@ -73,6 +74,7 @@ async def handle_manual_event(runtime: Any, **kwargs: Any) -> InteractionResult:
         target_lanlan=str(kwargs.get("target_lanlan") or kwargs.get("lanlan_name") or "").strip(),
         source="manual_live_simulation",
         live_mode=runtime.config.live_mode,
-        raw=dict(kwargs),
+        raw={**dict(kwargs), "event_type": "danmaku"},
     )
+    observe_live_danmaku(runtime, event)
     return await runtime.pipeline.handle_event(event)

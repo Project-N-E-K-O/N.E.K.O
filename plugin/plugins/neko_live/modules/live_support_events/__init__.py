@@ -33,7 +33,11 @@ from ..live_events.provider_event import (
     event_uid,
     is_signal_only,
 )
-from .scheduler import SupportEventScheduler
+from .scheduler import (
+    SupportEventScheduler,
+    SupportPriority,
+    classify_support_priority,
+)
 
 
 class LiveSupportEventsModule(BaseModule):
@@ -132,6 +136,51 @@ class LiveSupportEventsModule(BaseModule):
             reason=f"support {self._last_event_type}",
             route=self.id,
         )
+        live_events = getattr(self.ctx, "live_events", None)
+        remember_passive = getattr(live_events, "remember_support_context", None)
+        co_stream = str(getattr(self.ctx.config, "live_mode", "")) == "co_stream"
+        if co_stream and callable(remember_passive):
+            scheduler_priority = classify_support_priority(payload)
+            tier = self._tier(
+                str(payload.get("event_type") or "gift"),
+                total_coin=safe_int(
+                    payload.get("gift_value", payload.get("gift_total_coin")),
+                    default=0,
+                ),
+                guard_level=safe_int(payload.get("guard_level"), default=0),
+            )
+            if (
+                str(payload.get("event_type") or "").lower() == "gift"
+                and scheduler_priority is SupportPriority.LIGHT
+            ):
+                tier = "light"
+            should_attempt_active = scheduler_priority in {
+                SupportPriority.HIGH,
+                SupportPriority.MILESTONE,
+            }
+            active_requested = bool(
+                should_attempt_active
+                and self._scheduler is not None
+                and self._scheduler.submit(payload)
+            )
+            remembered = bool(
+                remember_passive(
+                    payload,
+                    tier=tier,
+                    active_attempt_requested=active_requested,
+                )
+            )
+            self.ctx.audit.record(
+                "support.co_stream_strategy",
+                "co-stream support routed through bounded passive context",
+                detail={
+                    "event_type": self._last_event_type,
+                    "tier": tier,
+                    "passive_context_remembered": remembered,
+                    "active_attempt_requested": active_requested,
+                },
+            )
+            return
         if self._scheduler is not None:
             self._scheduler.submit(payload)
 

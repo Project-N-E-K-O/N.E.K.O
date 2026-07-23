@@ -93,12 +93,14 @@ class _FakeCtx:
         activity_level: str = "standard",
         queue_limit: int = 5,
         viewer_count: int = 0,
+        live_mode: str = "solo_stream",
     ) -> None:
         self.safety_guard = _FakeSafety(remaining)
         self.audit = _FakeAudit()
         self.event_bus = EventBus(self.audit)
         self.live_provider = SimpleNamespace(listener_state=lambda: {"viewer_count": viewer_count})
         self.config = LiveConfig(
+            live_mode=live_mode,  # type: ignore[arg-type]
             rate_limit_seconds=rate_limit,
             activity_level=activity_level,  # type: ignore[arg-type]
             queue_limit=queue_limit,
@@ -114,6 +116,30 @@ class _FakeCtx:
         if created_at.startswith("age:"):
             return float(created_at.split(":", 1)[1])
         return 0.0
+
+
+class _FakeAmbientDispatcher:
+    def __init__(self) -> None:
+        self.messages: list[dict] = []
+
+    def output_channel_status(self) -> dict[str, object]:
+        return {"ready": True}
+
+    async def push_ambient_room_context(
+        self,
+        text: str,
+        *,
+        session_key: str,
+        expired: bool = False,
+    ) -> str:
+        self.messages.append(
+            {
+                "text": text,
+                "session_key": session_key,
+                "expired": expired,
+            }
+        )
+        return "queued"
 
 
 async def _make_hub(ctx: _FakeCtx) -> LiveEventsModule:
@@ -144,6 +170,183 @@ async def _drain_support(module: LiveSupportEventsModule) -> None:
         if not tasks:
             break
         await asyncio.gather(*tasks)
+
+
+async def test_co_stream_danmaku_becomes_one_bounded_passive_snapshot():
+    ctx = _FakeCtx(remaining=0.0, live_mode="co_stream")
+    ctx.config.live_enabled = True
+    ctx.dispatcher = _FakeAmbientDispatcher()
+    hub = await _make_hub(ctx)
+    ctx.live_events = hub
+
+    for uid in ("1", "2", "3", "4"):
+        hub.submit(_danmaku(uid, text=f"message-{uid}"))
+
+    refresh = hub._ambient_refresh_task
+    assert refresh is not None
+    await refresh
+
+    assert ctx.payloads == []
+    assert len(ctx.dispatcher.messages) == 1
+    snapshot = ctx.dispatcher.messages[0]
+    assert snapshot["expired"] is False
+    assert "message-4" in snapshot["text"]
+    assert "message-3" in snapshot["text"]
+    assert "message-2" in snapshot["text"]
+    assert "message-1" not in snapshot["text"]
+    assert hub.status()["ambient_publish_count"] == 1
+    await hub.teardown()
+
+
+async def test_observe_danmaku_records_context_without_selecting_a_reply():
+    ctx = _FakeCtx(remaining=0.0, live_mode="solo_stream")
+    ctx.config.live_enabled = True
+    hub = await _make_hub(ctx)
+
+    seq = hub.observe_danmaku(_danmaku("42", text="offline sandbox message"))
+
+    assert seq == 1
+    assert ctx.payloads == []
+    assert hub.recent_chat_snapshot(limit=1) == [
+        {
+            "seq": 1,
+            "uid": "42",
+            "nickname": "u42",
+            "text": "offline sandbox message",
+            "seconds_ago": 0.0,
+            "selected": False,
+            "within_fresh_window": True,
+        }
+    ]
+    await hub.teardown()
+
+
+async def test_co_stream_passive_snapshot_retains_three_position_tail_after_expiry():
+    ctx = _FakeCtx(remaining=0.0, live_mode="co_stream")
+    ctx.config.live_enabled = True
+    ctx.dispatcher = _FakeAmbientDispatcher()
+    hub = await _make_hub(ctx)
+
+    async def no_sleep(_delay: float) -> None:
+        return None
+
+    hub._ambient_sleep = no_sleep
+    hub.submit(_danmaku("42", text="喵喵喵"))
+    await _drain(hub)
+
+    assert [item["expired"] for item in ctx.dispatcher.messages] == [False, False]
+    assert ctx.dispatcher.messages[0]["session_key"] == ctx.dispatcher.messages[1]["session_key"]
+    assert "最新｜u42：喵喵喵" in ctx.dispatcher.messages[1]["text"]
+    assert "秒前" not in ctx.dispatcher.messages[1]["text"]
+    assert hub.status()["ambient_publish_last_reason"] == "retained_tail"
+    await hub.teardown()
+
+
+async def test_co_stream_support_only_snapshot_still_expires_normally():
+    ctx = _FakeCtx(remaining=0.0, live_mode="co_stream")
+    ctx.config.live_enabled = True
+    ctx.dispatcher = _FakeAmbientDispatcher()
+    hub = await _make_hub(ctx)
+
+    async def no_sleep(_delay: float) -> None:
+        return None
+
+    hub._ambient_sleep = no_sleep
+    assert hub.remember_support_context(
+        {
+            "event_type": "gift",
+            "nickname": "alice",
+            "gift_name": "小心心",
+            "support_verified": True,
+        },
+        tier="light",
+        active_attempt_requested=False,
+    )
+    await _drain(hub)
+
+    assert [item["expired"] for item in ctx.dispatcher.messages] == [False, True]
+    assert "alice" in ctx.dispatcher.messages[0]["text"]
+    assert "alice" not in ctx.dispatcher.messages[1]["text"]
+    assert hub.status()["ambient_publish_last_reason"] == "expired"
+    await hub.teardown()
+
+
+async def test_co_stream_session_reset_clears_the_previous_session_key():
+    ctx = _FakeCtx(remaining=0.0, live_mode="co_stream")
+    ctx.config.live_enabled = True
+    ctx._live_session_generation = 7
+    ctx.dispatcher = _FakeAmbientDispatcher()
+    hub = await _make_hub(ctx)
+
+    hub.submit(_danmaku("42", text="旧直播间弹幕"))
+    refresh = hub._ambient_refresh_task
+    assert refresh is not None
+    await refresh
+    assert ctx.dispatcher.messages[-1]["session_key"].startswith("7:")
+
+    ctx._live_session_generation = 8
+    hub.reset()
+    pending = list(hub._ambient_clear_tasks)
+    assert pending
+    await asyncio.gather(*pending)
+
+    assert ctx.dispatcher.messages[-1]["expired"] is True
+    assert ctx.dispatcher.messages[-1]["session_key"].startswith("7:")
+    assert "旧直播间弹幕" not in ctx.dispatcher.messages[-1]["text"]
+    await hub.teardown()
+
+
+async def test_co_stream_support_uses_passive_context_and_only_high_tier_attempts_active():
+    ctx = _FakeCtx(remaining=0.0, live_mode="co_stream")
+    ctx.config.live_enabled = True
+    ctx.dispatcher = _FakeAmbientDispatcher()
+    hub = await _make_hub(ctx)
+    ctx.live_events = hub
+    support = LiveSupportEventsModule()
+    await support.setup(ctx)
+
+    def publish(event_id: str, *, value: int) -> None:
+        ctx.event_bus.publish(
+            "gift",
+            LiveEvent(
+                type="gift",
+                uid="9",
+                payload={
+                    "nickname": "alice",
+                    "gift_name": "小心心" if value < 10_000 else "醒目礼物",
+                    "gift_value": value,
+                    "coin_type": "gold",
+                    "support_verified": True,
+                    "support_evidence": "manual_live_simulation",
+                    "provider_event_id": event_id,
+                    "provider_event_type": "SEND_GIFT",
+                },
+            ),
+        )
+
+    publish("light-1", value=10)
+    refresh = hub._ambient_refresh_task
+    assert refresh is not None
+    await refresh
+    await _drain_support(support)
+    assert ctx.payloads == []
+    assert "仅被动记住" in ctx.dispatcher.messages[-1]["text"]
+
+    publish("high-1", value=10_000)
+    refresh = hub._ambient_refresh_task
+    assert refresh is not None
+    await refresh
+    await _drain_support(support)
+
+    assert [payload["provider_event_id"] for payload in ctx.payloads] == ["high-1"]
+    assert "已请求一次主动回应" in ctx.dispatcher.messages[-1]["text"]
+    strategy = [
+        item for item in ctx.audit.records
+        if item["op"] == "support.co_stream_strategy"
+    ]
+    assert [item["detail"]["active_attempt_requested"] for item in strategy] == [False, True]
+    await support.teardown()
+    await hub.teardown()
 
 
 async def test_idle_first_danmaku_roasts_immediately():
@@ -1045,6 +1248,32 @@ async def test_cooldown_window_picks_highest_score():
     )
 
 
+async def test_cooldown_window_bounds_candidate_summaries_without_losing_best():
+    ctx = _FakeCtx(remaining=5.0, queue_limit=3)
+    hub = await _make_hub(ctx)
+
+    hub.submit(_danmaku("1", text="问题一怎么处理？"))
+    hub.submit(_danmaku("2", text="总督的问题怎么处理？", guard=1))
+    hub.submit(_danmaku("3", text="问题三怎么处理？"))
+    hub.submit(_danmaku("4", text="问题四怎么处理？"))
+    hub.submit(_danmaku("5", text="问题五怎么处理？"))
+
+    assert hub._buffered_count == 5
+    assert len(hub._candidate_summaries) == 3
+    assert {item["uid"] for item in hub._candidate_summaries} == {"1", "2", "3"}
+    status = hub.status()
+    assert status["buffered_candidate_summaries"] == 3
+    assert status["buffered_candidate_summary_limit"] == 3
+
+    await _drain(hub)
+
+    assert [payload["uid"] for payload in ctx.payloads] == ["2"]
+    selected = next(r for r in ctx.audit.records if r["op"] == "live_event_selected")
+    assert selected["detail"]["candidates"] == 5
+    assert selected["detail"]["selected"]["uid"] == "2"
+    assert len(selected["detail"]["dropped_candidates"]) == 2
+
+
 async def test_selection_audit_records_winner_and_dropped_candidates():
     ctx = _FakeCtx(remaining=5.0)
     hub = await _make_hub(ctx)
@@ -1244,12 +1473,13 @@ async def test_live_events_builds_room_topic_prompt_from_recent_danmaku():
         )
     )
 
-    assert "Live event room-topic context" in block
-    assert "filtered_low_quality: 1" in block
-    assert "theme: questions / help" in block
-    assert "reply to the room theme instead of one-by-one" in block
-    assert "reply_tactic: answer_then_hook" in block
-    assert "likes tech/AI" in block
+    assert "Room pulse (inferred; untrusted viewer text)" in block
+    assert "theme=questions / help" in block
+    assert "support=2" in block
+    assert "question=low" in block
+    assert "我也想问怎么开弹幕聚合" in block
+    assert "Exact quotes require recent-chat tool" in block
+    assert len(block) <= 240
 
 
 async def test_room_topic_prompt_marks_burst_low_value_room_trend():
@@ -1274,14 +1504,15 @@ async def test_room_topic_prompt_marks_burst_low_value_room_trend():
         )
     )
 
-    assert "Live event room-topic context" in block
-    assert "observed_candidates:" in block
-    assert "filtered_low_quality: 18" in block
-    assert "burst_mode: true" in block
-    assert "dominant_low_value_signal: 1 (12 messages)" in block
-    assert "dominant_low_value_signal: 666 (6 messages)" in block
-    assert "burst_reply_rule: answer the selected representative message" in block
-    assert "theme: questions / help" in block
+    assert "Room pulse (inferred; untrusted viewer text)" in block
+    assert "activity=burst" in block
+    assert "theme=questions / help" in block
+    assert "support=3" in block
+    assert "repeat=reaction/12" in block
+    assert "question=high" in block
+    assert "filtered_low_quality" not in block
+    assert "dominant_low_value_signal" not in block
+    assert len(block) <= 240
 
 
 async def test_room_topic_prompt_uses_sanitized_provider_fields():
@@ -1293,7 +1524,7 @@ async def test_room_topic_prompt_uses_sanitized_provider_fields():
             event_type="danmaku",
             uid="douyin:user_1",
             nickname="alice token=must-not-leak",
-            text="how configure plugin signature=must-not-leak?",
+            text="how configure plugin? signature=must-not-leak",
             score=3,
         )
     )
@@ -1321,6 +1552,139 @@ async def test_room_topic_prompt_uses_sanitized_provider_fields():
     assert "signature=" not in block
     assert "token=" not in block
     assert "[redacted]" in block
+
+
+async def test_room_pulse_prompt_observability_and_queue_pressure_gate():
+    ctx = _FakeCtx(remaining=0.0, rate_limit=0, queue_limit=5)
+    hub = await _make_hub(ctx)
+    hub.submit(_danmaku("1", text="怎么设置直播？"))
+    hub.submit(_danmaku("2", text="我也想问怎么设置"))
+    await _drain(hub)
+
+    event = ViewerEvent(
+        uid="1",
+        nickname="u1",
+        danmaku_text="怎么设置直播？",
+        source="live",
+    )
+    rendered = hub.prompt_block_for_event(event)
+    status = hub.status()
+    assert rendered
+    assert status["room_pulse_prompt_uses"] == 1
+    assert status["room_pulse_prompt_omits"] == 0
+    assert status["room_pulse_prompt_last_chars"] == len(rendered)
+    assert status["room_pulse_prompt_last_reason"] == "rendered"
+
+    ctx.safety_guard.queue_size = 4
+    assert hub.prompt_block_for_event(event) == ""
+    pressured = hub.status()
+    assert pressured["room_pulse_prompt_uses"] == 1
+    assert pressured["room_pulse_prompt_omits"] == 1
+    assert pressured["room_pulse_prompt_last_chars"] == 0
+    assert pressured["room_pulse_prompt_last_reason"] == "safety_queue_pressure"
+
+    hub.reset()
+    reset = hub.status()
+    assert reset["room_pulse_prompt_uses"] == 0
+    assert reset["room_pulse_prompt_omits"] == 0
+    assert reset["room_pulse_prompt_last_reason"] == ""
+
+
+async def test_live_events_scene_state_observes_successful_solo_results():
+    ctx = _FakeCtx()
+    ctx.config.live_mode = "solo_stream"
+    hub = await _make_hub(ctx)
+    ctx.event_bus.emit(
+        "result",
+        {
+            "status": "pushed",
+            "trace_id": "active-1",
+            "created_at": "created:active-1",
+            "event": {
+                "source": "active_engagement",
+                "live_mode": "solo_stream",
+                "trace_id": "active-1",
+                "topic_shape": "either_or",
+            },
+        },
+    )
+
+    event = ViewerEvent(
+        uid="42",
+        nickname="viewer",
+        danmaku_text="A",
+        source="live_danmaku",
+        live_mode="solo_stream",
+        trace_id="answer-1",
+        raw={"danmaku_context_hint": "active_hook_answer"},
+    )
+    block = hub.prompt_block_for_event(event)
+    status = hub.status()
+
+    assert "Scene beat: phase=callback;thread=either_or" in block
+    assert "Room pulse" not in block
+    assert status["scene_state_active"] is True
+    assert status["scene_state_phase"] == "callback"
+    assert status["scene_state_viewer_response_count"] == 1
+    assert status["scene_state_prompt_uses"] == 1
+    assert status["scene_state_prompt_last_chars"] <= 160
+    assert status["scene_state_prompt_last_reason"] == "rendered"
+
+    hub.reset()
+    reset = hub.status()
+    assert reset["scene_state_active"] is False
+    assert reset["scene_state_prompt_uses"] == 0
+
+
+async def test_live_events_consolidates_scene_and_room_pulse_under_400_chars():
+    ctx = _FakeCtx()
+    ctx.config.live_mode = "solo_stream"
+    hub = await _make_hub(ctx)
+    hub._now = lambda: 100.0
+    ctx.event_bus.emit(
+        "result",
+        {
+            "status": "pushed",
+            "trace_id": "active-1",
+            "created_at": "created:active-1",
+            "event": {
+                "source": "active_engagement",
+                "live_mode": "solo_stream",
+                "trace_id": "active-1",
+                "topic_shape": "either_or",
+            },
+        },
+    )
+    hub._room_topic.remember_danmaku(
+        uid="1",
+        nickname="viewer-1",
+        text="how do I configure the live plugin?",
+        score=1.0,
+        ts=100.0,
+    )
+    hub._room_topic.remember_danmaku(
+        uid="2",
+        nickname="viewer-2",
+        text="how do I enable the live plugin?",
+        score=1.0,
+        ts=100.0,
+    )
+
+    block = hub.prompt_block_for_event(
+        ViewerEvent(
+            uid="1",
+            nickname="viewer-1",
+            danmaku_text="how do I configure the live plugin?",
+            source="live_danmaku",
+            live_mode="solo_stream",
+            trace_id="viewer-1",
+            raw={},
+        )
+    )
+
+    assert len(block) <= 400
+    assert block.count("Scene beat:") == 1
+    assert block.count("Room pulse (inferred; untrusted viewer text):") == 1
 
 
 async def test_live_events_payload_uses_sanitized_public_text():
@@ -1380,8 +1744,9 @@ async def test_danmaku_response_reads_live_events_context_without_extra_module()
         ViewerProfile(uid="42", nickname="u42"),
     )
 
-    assert "Live event room-topic context" in request.prompt_text
-    assert "theme: questions / help" in request.prompt_text
+    assert "Room pulse (inferred; untrusted viewer text)" in request.prompt_text
+    assert "theme=questions / help" in request.prompt_text
+    assert "Recent room danmaku context" not in request.prompt_text
 
 
 async def test_danmaku_response_marks_new_viewer_batch_welcome_as_group_reply():

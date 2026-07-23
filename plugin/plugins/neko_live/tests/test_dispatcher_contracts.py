@@ -17,6 +17,35 @@ from plugin.plugins.neko_live.core.contracts import (
 from plugin.plugins.neko_live.modules.avatar_roast import AvatarRoastModule
 from plugin.plugins.neko_live.modules.danmaku_response import DanmakuResponseModule
 
+
+@pytest.mark.asyncio
+async def test_dispatcher_queues_replaceable_hidden_passive_room_context():
+    class Plugin:
+        def __init__(self):
+            self.kwargs = None
+            self.ctx = SimpleNamespace(_current_lanlan="TestCat")
+
+        def push_message(self, **kwargs):
+            self.kwargs = kwargs
+
+    plugin = Plugin()
+
+    result = await NekoDispatcher(plugin).push_ambient_room_context(
+        "recent room facts",
+        session_key="7:room-42",
+    )
+
+    assert result == "ambient_context_queued(target=TestCat, expired=false)"
+    assert plugin.kwargs["source"] == "neko_live"
+    assert plugin.kwargs["visibility"] == []
+    assert plugin.kwargs["ai_behavior"] == "read"
+    assert plugin.kwargs["priority"] == 2
+    assert plugin.kwargs["coalesce_key"] == (
+        "neko_live:ambient_room:TestCat:7:room-42"
+    )
+    assert plugin.kwargs["metadata"]["delivery_intent"] == "passive_context"
+    assert plugin.kwargs["metadata"]["ambient_expired"] is False
+
 def test_output_contract_bridge_maps_manual_live_simulation_like_live_danmaku():
     avatar_request = InteractionRequest(
         event=ViewerEvent(uid="42", nickname="viewer", source="manual_live_simulation", live_mode="solo_stream"),

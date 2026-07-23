@@ -339,6 +339,54 @@ Selection is not a FIFO queue. It should explain the Selection Decision Chain fo
 
 Selection may also intentionally skip a low-value danmaku before pipeline after updating room-topic context. This is plugin-owned live behavior, not host/core output suppression. `selection.low_value_danmaku` covers low-information danmaku such as bare reactions or repeated digits; `selection.quiet_low_priority` covers additional plain low-priority danmaku when `activity_level=quiet`. Module status may expose `reply_selection_policy` as a read-only derived policy for Dashboard / Monitor debugging; it must not be treated as a separate user-facing config knob.
 
+`live_events.status()` also exposes read-only `RoomPulse v0` diagnostics derived lazily from the existing 45-second / 80-candidate room-topic window. These fields are aggregate status facts, not Event Outcomes, speaking permissions, scheduling inputs, or a second selection path:
+
+- `room_pulse_version`: projection contract version; currently `0`.
+- `room_pulse_candidate_count` and `room_pulse_unique_viewer_count`: bounded retained-message and distinct stable-viewer counts.
+- `room_pulse_low_value_ratio`: low-value candidate count divided by candidate count, rounded to three decimals.
+- `room_pulse_question_pressure` / `room_pulse_reaction_pressure`: `none`, `low`, or `high`, based on distinct-viewer support; corresponding `*_support` fields expose the bounded count.
+- `room_pulse_activity_band`: `quiet` for zero or one candidate in the newest 10 seconds, `steady` for two through four, and `burst` for five or more.
+- `room_pulse_dominant_theme_key` and `room_pulse_dominant_theme_support`: the existing top theme and distinct-viewer support. Data-derived `topic:*` keys are collapsed to `other_topic` before status exposure.
+- `room_pulse_repeated_signal_kind` and `room_pulse_repeated_signal_support`: empty when no cross-viewer repetition exists, otherwise `reaction` or `content` plus distinct-viewer support. The repeated text itself is never projected.
+
+RoomPulse adds no raw payload, nickname, UID, query, or representative danmaku text to status or audit. Its aggregate projection creates no timer, queue, persistence, network request, model call, or output route. Session reset clears its source window.
+
+The co-stream passive-context validation path exposes only bounded lifecycle counters and stable reasons; it never exposes the rendered snapshot, nickname, viewer text, support message, provider event id, or target role:
+
+- `ambient_support_count` / `ambient_support_capacity`: current verified support tail size and its fixed limit of two.
+- `ambient_support_retention_seconds`: local verified-support retention, currently 90 seconds.
+- `ambient_support_delivery_id_count`: bounded provider-id dedupe count; ids themselves are never exposed.
+- `ambient_publish_count`: non-expired passive snapshots queued in the current session.
+- `ambient_expiry_count`: timer-driven expiry replacements queued in the current session.
+- `ambient_publish_suppressed_count`: snapshot/expiry attempts omitted by live, session, Safety Guard, output-channel, empty-context, or failure gates.
+- `ambient_publish_last_reason`: latest stable gate/result reason such as `queued`, `expired`, `live_disabled`, `dry_run`, `not_accepting_live_events`, `dispatcher_unavailable`, `output_channel_unavailable`, `empty`, or a bounded failure type.
+
+These fields are diagnostics, not proof that the model consumed the context or that an active support acknowledgement was audible. Plugin `push_message` confirms only that the dispatch request was queued. Session-reset clearing uses the previous session's coalescing key and does not copy viewer text into audit.
+
+The compact prompt renderer reuses the same source window only for an already scheduled response. It creates no timer, queue, persistence, network request, model call, or output route. The block is capped at 240 characters and is never copied into status or audit. `live_events.status()` exposes only resettable operational counters and stable reason metadata:
+
+- `room_pulse_prompt_uses`: number of non-empty prompt projections since the current module/session reset.
+- `room_pulse_prompt_omits`: number of empty projections since reset.
+- `room_pulse_prompt_last_chars`: character count of the latest projection, always `0..240`.
+- `room_pulse_prompt_last_reason`: one of `rendered`, `no_candidates`, `weak_evidence`, `context_unavailable`, `character_budget`, `inactive`, `safety_not_running`, or `safety_queue_pressure`.
+
+These are diagnostics, not Event Outcomes or speaking permissions. They must never include the rendered block or its representative example.
+
+`live_events.status()` also exposes bounded solo `SceneState v0` diagnostics. SceneState reads the existing privacy-safe `result` event but advances only for `status=pushed`; it never copies output, viewer text, topic title, hook, UID, or nickname:
+
+- `scene_state_version`: projection contract version; currently `0`.
+- `scene_state_active`: true only for an unexpired solo scene in an actionable phase.
+- `scene_state_phase`: `setup`, `develop`, `viewer_choice`, `callback`, or `close` while active; otherwise `idle`.
+- `scene_state_thread_key`: an allowlisted interaction shape such as `either_or`, `tiny_choice`, or `soft_observation`; empty when unavailable or inactive.
+- `scene_state_viewer_turn_count`: successful viewer-response turns in the current scene, bounded to three.
+- `scene_state_viewer_response_count`: explicit active-hook answers observed in the current scene.
+- `scene_state_transition_count` / `scene_state_expired_count`: resettable lifecycle counters.
+- `scene_state_prompt_uses` / `scene_state_prompt_omits`: rendered and empty scene projections since reset.
+- `scene_state_prompt_last_chars`: latest SceneState projection length, always `0..160`.
+- `scene_state_prompt_last_reason`: `rendered`, `inactive_mode`, `unsupported_event`, `no_scene`, `character_budget`, or the upstream `inactive` / `safety_not_running` / `safety_queue_pressure` suppression reason.
+
+SceneState is not an Event Outcome, transcript store, scheduler, or co-stream permission. RoomPulse plus SceneState prompt material is consolidated under 400 characters and remains on the existing selected-output path.
+
 Expected outcomes: `selected`, `dropped`, `skipped`, `failed`.
 
 ### Pipeline

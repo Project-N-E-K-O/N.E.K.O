@@ -1,7 +1,9 @@
 [plugin]
 id = "neko_live"
 name = "NEKO Live"
-previous_ids = ["neko_roast"]
+previous_ids = [
+    "neko_roast",
+]
 description = "NEKO 的直播互动中心：连接支持的平台直播互动，承载弹幕、观众档案与锐评流程。"
 short_description = "NEKO 的直播互动中心。"
 keywords = [

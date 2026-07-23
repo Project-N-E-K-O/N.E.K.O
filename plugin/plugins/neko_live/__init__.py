@@ -108,18 +108,14 @@ class NekoLivePlugin(NekoPluginBase):
 
     async def _get_recent_live_chat_tool(
         self,
-        limit: Any = 1,
         query: Any = "",
-        position: Any = None,
         **_,
     ) -> dict[str, Any]:
         from .modules.live_events.recent_chat_tool import recent_chat_tool_result
 
         return recent_chat_tool_result(
             self,
-            limit=limit,
             query=query,
-            position=position,
         )
     @ui.context(id="dashboard", title=tr("panel.title", default="NEKO Live"))
     async def get_dashboard_ui_context(self) -> dict[str, Any]:

@@ -24,6 +24,7 @@
 - [Pipeline Split](pipeline-split.md)：已完成的 pipeline 兼容拆分说明；记录 facade 与 helper 模块之间必须持续保持的契约。
 - [输出契约与弹幕回复模块](modules/output_contract.md)：普通弹幕分类、提示词、回复质量、长度整形和 dispatcher 输出边界。
 - [直播主持流程](modules/live_hosting.md)：暖场、冷场、主动营业的选择、门禁、去重和 pipeline 边界。
+- [直播间上下文与导播落地计划](modules/live_room_context.md)：近期弹幕事实、RoomPulse、SceneState、联播被动上下文与双模式发言权的分层边界和分 Slice 落地顺序。
 - [主动话题材料](modules/active_topic_materials.md)：话题 family、profile、pack、轮换 shape 的归属、契约和降级边界。
 - [主动营业内容目录](modules/active_content_catalogs.md)：静态 fallback 话题目录、公共访问器以及 host 目录未落地时的降级边界。
 - [AI/IDE 开发规则](../AGENTS.md)：面向 IDE agent、自动化 reviewer 和贡献者的硬性维护规则。
@@ -31,6 +32,7 @@
 ## 模块文档
 
 - [live_events](modules/live_events.md)：直播事件窗口择优、冷却期候选选择、弹幕低质过滤、主题凝练、回复技巧提示和运行期观众偏好提示。
+- [live_room_context](modules/live_room_context.md)：在 `live_events` 既有有界窗口上实现 RoomPulse v0、240 字符紧凑投影、独播 SceneState v0 与纯插件联播被动上下文，并记录可靠 host-turn 导播的后续边界。
 - [live_support_events](modules/live_support_events.md)：Gift / SC / Guard 被选中后的短句致谢 handler，复用 pipeline / safety guard / dispatcher。
 - [douyin_live_ingest](modules/douyin_live_ingest.md)：抖音只读 live provider、公开投影脱敏、内置托管 douyinLive bridge、事件归一化、bridge-only 可替换后端边界，以及未纳入 v1 的自动登录/签名边界。
 - [宿主内容目录](modules/host_content_catalogs.md)：静态 idle-hosting beat、数据回退与共享素材接口。

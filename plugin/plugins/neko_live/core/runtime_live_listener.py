@@ -9,12 +9,14 @@ from .runtime_live_input import remember_live_room_context
 from .runtime_live_session import begin_live_session, invalidate_live_session
 
 
-def _sync_recent_chat_tool(runtime: Any, enabled: bool) -> None:
+def _disable_recent_chat_tool(runtime: Any) -> None:
+    """Keep recent chat out of the model tool loop during live sessions."""
+
     sync = getattr(getattr(runtime, "plugin", None), "_set_recent_chat_tool_enabled", None)
     if not callable(sync):
         return
     try:
-        sync(bool(enabled))
+        sync(False)
     except Exception as exc:
         runtime.audit.record(
             "recent_chat_tool_sync_failed",
@@ -49,7 +51,7 @@ async def reconcile_live_listener_after_config(
     if not room_changed and not disabled:
         return
     runtime._accepting_live_events = False
-    _sync_recent_chat_tool(runtime, False)
+    _disable_recent_chat_tool(runtime)
     invalidate_live_session(runtime)
     try:
         await _stop_captured_provider(old_provider or runtime.live_provider)
@@ -127,6 +129,10 @@ async def reconcile_live_listener_after_config(
 
 async def start_live_listener(runtime: Any, room_ref: Any) -> bool:
     runtime._accepting_live_events = False
+    # Tool calls can hold the realtime voice turn open after the plugin has
+    # already returned. Passive next-turn snapshots provide the same facts
+    # without entering that recovery path, so also remove any stale tool here.
+    _disable_recent_chat_tool(runtime)
     try:
         started = await runtime.live_provider.start_listening(room_ref)
     except Exception as exc:
@@ -145,13 +151,12 @@ async def start_live_listener(runtime: Any, room_ref: Any) -> bool:
     runtime.config.live_enabled = bool(started)
     runtime.safety_guard.set_connected(started)
     runtime._accepting_live_events = bool(started)
-    _sync_recent_chat_tool(runtime, started)
     return started
 
 
 async def stop_live_listener(runtime: Any, *, mark_disabled: bool = True) -> None:
     runtime._accepting_live_events = False
-    _sync_recent_chat_tool(runtime, False)
+    _disable_recent_chat_tool(runtime)
     invalidate_live_session(runtime)
     try:
         await runtime.live_provider.stop_listening()

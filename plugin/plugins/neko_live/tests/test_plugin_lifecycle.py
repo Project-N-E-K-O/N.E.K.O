@@ -115,9 +115,7 @@ def test_recent_chat_tool_registration_is_role_scoped_and_live_only(monkeypatch)
     assert registered[0]["name"] == "get_recent_live_chat"
     assert registered[0]["role"] == "测试猫猫"
     assert registered[0]["timeout"] == 5.0
-    assert "query" in registered[0]["parameters"]["properties"]
-    assert registered[0]["parameters"]["properties"]["limit"]["maximum"] == 3
-    assert registered[0]["parameters"]["properties"]["position"]["maximum"] == 3
+    assert set(registered[0]["parameters"]["properties"]) == {"query"}
     assert plugin._set_recent_chat_tool_enabled(True) is True
     assert len(registered) == 1
     assert plugin._set_recent_chat_tool_enabled(False) is True
@@ -148,7 +146,7 @@ async def test_recent_chat_tool_returns_only_current_live_session_snapshot():
         ),
     )
 
-    result = await plugin._get_recent_live_chat_tool(limit=99)
+    result = await plugin._get_recent_live_chat_tool()
 
     assert result["available"] is True
     assert result["status"] == "ok"
@@ -166,7 +164,7 @@ async def test_recent_chat_tool_returns_only_current_live_session_snapshot():
 
 
 @pytest.mark.asyncio
-async def test_recent_chat_tool_selects_requested_position_in_backend():
+async def test_recent_chat_tool_returns_three_newest_without_numbered_positions():
     plugin = NekoLivePlugin(SimpleNamespace(logger=None))
     calls: list[int] = []
     rows = [
@@ -188,24 +186,16 @@ async def test_recent_chat_tool_selects_requested_position_in_backend():
         ),
     )
 
-    result = await plugin._get_recent_live_chat_tool(limit=1, position=2)
+    result = await plugin._get_recent_live_chat_tool()
 
-    assert calls == [2]
-    assert result["position"] == 2
+    assert calls == [3]
     assert result["mode"] == "session_tail"
-    assert result["entries"] == [rows[1]]
+    assert result["entries"] == rows
+    assert "position" not in result
 
-    rows.pop()
-    result = await plugin._get_recent_live_chat_tool(position=3)
-    assert result["available"] is False
-    assert result["status"] == "position_unavailable"
-    assert result["position"] == 3
-    assert result["entries"] == []
-
-    result = await plugin._get_recent_live_chat_tool(position=99)
-    assert result["status"] == "invalid_position"
-    assert result["entries"] == []
-    assert calls == [2, 3]
+    result = await plugin._get_recent_live_chat_tool(limit=1, position=2)
+    assert calls == [3, 3]
+    assert result["entries"] == rows
 
 
 @pytest.mark.asyncio

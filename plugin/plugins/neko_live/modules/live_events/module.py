@@ -31,6 +31,7 @@ from .._base import BaseModule
 from ...core.active_hook_answers import is_active_hook_answer_event
 from ...core.contracts import ViewerEvent
 from ...core.runtime_timeline import record_payload_timeline
+from .ambient_context import AmbientRoomContext
 from .provider_event import (
     event_avatar_url,
     event_guard_level,
@@ -49,6 +50,7 @@ from .provider_event import (
 )
 from .recent_chat import RecentChatBuffer
 from .room_topic import RoomTopicContext
+from .scene_state import SceneState
 
 
 LOW_REPLY_VALUE_SCORE_BYPASS = 1000.0
@@ -61,6 +63,9 @@ NEW_VIEWER_BATCH_WELCOME_COOLDOWN_SECONDS = 90.0
 AMBIENT_CHAT_RETENTION_SECONDS = 120.0
 AMBIENT_CHAT_BURST_WINDOW_SECONDS = 10.0
 AMBIENT_CHAT_BURST_LIMIT = 4
+AMBIENT_READ_DEBOUNCE_SECONDS = 1.0
+AMBIENT_READ_EXPIRY_SECONDS = 45.0
+AMBIENT_READ_CHAT_LIMIT = 3
 SINGLE_CHAR_REPLY_VIEWER_COUNT_LIMIT = 200
 _SINGLE_CHAR_REACTION_TOKENS = {
     "哈",
@@ -145,6 +150,19 @@ class LiveEventsModule(BaseModule):
         self._unsubscribes: list[Any] = []
         self._room_topic = RoomTopicContext(now=lambda: self._now())
         self._recent_chat = RecentChatBuffer(now=lambda: self._now())
+        self._ambient_context = AmbientRoomContext(now=lambda: self._now())
+        self._scene_state = SceneState(now=lambda: self._now())
+        self._ambient_sleep = asyncio.sleep
+        self._ambient_refresh_task: asyncio.Task[Any] | None = None
+        self._ambient_refresh_requested_revision = 0
+        self._ambient_expiry_task: asyncio.Task[Any] | None = None
+        self._ambient_clear_tasks: set[asyncio.Task[Any]] = set()
+        self._ambient_active_session_key = ""
+        self._ambient_revision = 0
+        self._ambient_publish_count = 0
+        self._ambient_expiry_count = 0
+        self._ambient_publish_suppressed_count = 0
+        self._ambient_publish_last_reason = ""
         self._ambient_chat_suppressed_reason = ""
         self._recent_chat_query_requests = 0
         self._recent_chat_query_hits = 0
@@ -155,6 +173,10 @@ class LiveEventsModule(BaseModule):
         self._ambient_chat_candidate_hits = 0
         self._ambient_chat_used_count = 0
         self._ambient_chat_suppressed_count = 0
+        self._room_pulse_prompt_uses = 0
+        self._room_pulse_prompt_omits = 0
+        self._room_pulse_prompt_last_chars = 0
+        self._room_pulse_prompt_last_reason = ""
 
     async def setup(self, ctx: Any) -> None:
         """注册到 ``EventBus`` 的高价值互动事件。中枢负责同一冷却窗口内的择优；其它
@@ -164,6 +186,9 @@ class LiveEventsModule(BaseModule):
         if bus is not None:
             for event_type in ("danmaku",):
                 self._unsubscribes.append(bus.subscribe(event_type, self._on_bus_event, owner=self.id))
+            self._unsubscribes.append(
+                bus.subscribe("result", self._on_result, owner=self.id)
+            )
 
     def _on_bus_event(self, event: Any) -> None:
         """EventBus 订阅回调：解包信封取富模型，复用既有窗口择优 ``submit()``（签名不变）。"""
@@ -178,6 +203,11 @@ class LiveEventsModule(BaseModule):
         else:
             self.submit(event)
 
+    def _on_result(self, result: Any) -> None:
+        """Observe privacy-safe successful results without owning the result path."""
+
+        self._scene_state.observe_result(result)
+
     async def teardown(self) -> None:
         for unsubscribe in self._unsubscribes:
             if callable(unsubscribe):
@@ -190,6 +220,12 @@ class LiveEventsModule(BaseModule):
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
         self._tasks.clear()
+        clear_tasks = [
+            task for task in list(self._ambient_clear_tasks) if not task.done()
+        ]
+        if clear_tasks:
+            await asyncio.gather(*clear_tasks, return_exceptions=True)
+        self._ambient_clear_tasks.clear()
         await super().teardown()
 
     def _clear_window(self) -> None:
@@ -213,6 +249,7 @@ class LiveEventsModule(BaseModule):
 
     def reset(self) -> None:
         """清空缓冲并取消待触发的窗口。断开直播间时调用，避免迟到的择优在断开后误投。"""
+        self._schedule_ambient_context_clear()
         flush_task = self._flush_task
         if flush_task is not None and not flush_task.done():
             flush_task.cancel()
@@ -229,6 +266,17 @@ class LiveEventsModule(BaseModule):
         self._last_new_viewer_batch_welcome_at = 0.0
         self._room_topic.reset()
         self._recent_chat.reset()
+        self._ambient_context.reset()
+        self._scene_state.reset()
+        self._ambient_refresh_task = None
+        self._ambient_refresh_requested_revision = 0
+        self._ambient_expiry_task = None
+        self._ambient_active_session_key = ""
+        self._ambient_revision = 0
+        self._ambient_publish_count = 0
+        self._ambient_expiry_count = 0
+        self._ambient_publish_suppressed_count = 0
+        self._ambient_publish_last_reason = ""
         self._ambient_chat_suppressed_reason = ""
         self._recent_chat_query_requests = 0
         self._recent_chat_query_hits = 0
@@ -239,11 +287,17 @@ class LiveEventsModule(BaseModule):
         self._ambient_chat_candidate_hits = 0
         self._ambient_chat_used_count = 0
         self._ambient_chat_suppressed_count = 0
+        self._room_pulse_prompt_uses = 0
+        self._room_pulse_prompt_omits = 0
+        self._room_pulse_prompt_last_chars = 0
+        self._room_pulse_prompt_last_reason = ""
 
     def status(self) -> dict[str, Any]:
         status = {
             "enabled": self.enabled,
             "buffered": self._buffered_count,
+            "buffered_candidate_summaries": len(self._candidate_summaries),
+            "buffered_candidate_summary_limit": self._candidate_summary_limit(),
             "window_open": self._flush_task is not None,
             "last_decision_at": self._last_decision_at,
             "last_selected_type": self._last_selected_type,
@@ -256,6 +310,13 @@ class LiveEventsModule(BaseModule):
         }
         status.update(self._room_topic.status())
         status.update(self._recent_chat.status())
+        status.update(self._ambient_context.status())
+        config = getattr(self.ctx, "config", None) if self.ctx is not None else None
+        status.update(
+            self._scene_state.status(
+                live_mode=str(getattr(config, "live_mode", "") or "")
+            )
+        )
         status["ambient_chat_suppressed_reason"] = self._ambient_chat_suppressed_reason
         status.update(
             {
@@ -270,6 +331,16 @@ class LiveEventsModule(BaseModule):
                 "ambient_chat_candidate_hits": self._ambient_chat_candidate_hits,
                 "ambient_chat_used_count": self._ambient_chat_used_count,
                 "ambient_chat_suppressed_count": self._ambient_chat_suppressed_count,
+                "room_pulse_prompt_uses": self._room_pulse_prompt_uses,
+                "room_pulse_prompt_omits": self._room_pulse_prompt_omits,
+                "room_pulse_prompt_last_chars": self._room_pulse_prompt_last_chars,
+                "room_pulse_prompt_last_reason": self._room_pulse_prompt_last_reason,
+                "ambient_publish_count": self._ambient_publish_count,
+                "ambient_expiry_count": self._ambient_expiry_count,
+                "ambient_publish_suppressed_count": (
+                    self._ambient_publish_suppressed_count
+                ),
+                "ambient_publish_last_reason": self._ambient_publish_last_reason,
             }
         )
         return status
@@ -370,6 +441,260 @@ class LiveEventsModule(BaseModule):
             return "danmaku_burst"
         return ""
 
+    def remember_support_context(
+        self,
+        payload: dict[str, Any],
+        *,
+        tier: str,
+        active_attempt_requested: bool,
+    ) -> bool:
+        """Remember one provider-verified support fact for a later natural turn."""
+
+        if (
+            not self.enabled
+            or self.ctx is None
+            or not self._is_co_stream()
+            or payload.get("support_verified") is not True
+        ):
+            return False
+        remembered = self._ambient_context.remember_support(
+            payload,
+            tier=tier,
+            active_attempt_requested=active_attempt_requested,
+        )
+        if remembered:
+            self._schedule_ambient_context_refresh()
+        return remembered
+
+    def _is_co_stream(self) -> bool:
+        if self.ctx is None:
+            return False
+        return str(getattr(self.ctx.config, "live_mode", "")) == "co_stream"
+
+    def _schedule_ambient_context_refresh(self) -> None:
+        if not self._is_co_stream():
+            return
+        self._ambient_refresh_requested_revision += 1
+        self._cancel_ambient_expiry_task()
+        task = self._ambient_refresh_task
+        if task is not None and not task.done():
+            return
+        task = self._spawn(self._publish_ambient_context_after_delay())
+        self._ambient_refresh_task = task
+
+        def _clear(done_task: asyncio.Task[Any]) -> None:
+            if self._ambient_refresh_task is done_task:
+                self._ambient_refresh_task = None
+
+        task.add_done_callback(_clear)
+
+    async def _publish_ambient_context_after_delay(self) -> None:
+        try:
+            await self._ambient_sleep(AMBIENT_READ_DEBOUNCE_SECONDS)
+            while True:
+                requested_revision = self._ambient_refresh_requested_revision
+                self._cancel_ambient_expiry_task()
+                await self._publish_ambient_context()
+                if requested_revision == self._ambient_refresh_requested_revision:
+                    break
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._record_ambient_publish_suppression(
+                f"publish_failed.{type(exc).__name__}"
+            )
+
+    def _cancel_ambient_expiry_task(self) -> None:
+        expiry_task = self._ambient_expiry_task
+        if expiry_task is not None and not expiry_task.done():
+            expiry_task.cancel()
+        self._ambient_expiry_task = None
+
+    async def _publish_ambient_context(self) -> bool:
+        reason = self._ambient_context_suppression_reason()
+        if reason:
+            self._record_ambient_publish_suppression(reason)
+            return False
+        # The three-position session tail is the authoritative answer for
+        # "latest / previous / the one before that".  Unlike the wider
+        # relevance store it survives the freshness timer and is replaced
+        # only when a new danmaku arrives or the live session resets.
+        rows = self._recent_chat.session_tail_snapshot(
+            limit=AMBIENT_READ_CHAT_LIMIT,
+        )
+        text = self._ambient_context.build_snapshot(rows)
+        if not text:
+            self._record_ambient_publish_suppression("empty")
+            return False
+        dispatcher = getattr(self.ctx, "dispatcher", None)
+        push = getattr(dispatcher, "push_ambient_room_context", None)
+        self._ambient_revision += 1
+        revision = self._ambient_revision
+        session_key = self._ambient_session_key()
+        await push(
+            text,
+            session_key=session_key,
+            expired=False,
+        )
+        self._ambient_active_session_key = session_key
+        self._ambient_publish_count += 1
+        self._ambient_publish_last_reason = "queued"
+        expiry_task = self._spawn(self._expire_ambient_context(revision))
+        self._ambient_expiry_task = expiry_task
+
+        def _clear(done_task: asyncio.Task[Any]) -> None:
+            if self._ambient_expiry_task is done_task:
+                self._ambient_expiry_task = None
+
+        expiry_task.add_done_callback(_clear)
+        return True
+
+    async def _expire_ambient_context(self, revision: int) -> None:
+        try:
+            await self._ambient_sleep(AMBIENT_READ_EXPIRY_SECONDS)
+            if revision != self._ambient_revision:
+                return
+            reason = self._ambient_context_suppression_reason()
+            if reason:
+                self._record_ambient_publish_suppression(
+                    f"expiry.{reason}"
+                )
+                return
+            dispatcher = getattr(self.ctx, "dispatcher", None)
+            push = getattr(dispatcher, "push_ambient_room_context", None)
+            retained_rows = self._recent_chat.session_tail_snapshot(
+                limit=AMBIENT_READ_CHAT_LIMIT,
+            )
+            retained_text = self._ambient_context.build_snapshot(
+                retained_rows,
+                include_support=False,
+            )
+            if retained_text:
+                # Drop volatile support facts after the normal freshness
+                # window, but keep the tiny positional tail for the whole
+                # live session.  It is bounded and contains no moving age
+                # label, so retaining it cannot turn "0 seconds ago" into a
+                # stale fact later in the stream.
+                await push(
+                    retained_text,
+                    session_key=self._ambient_active_session_key
+                    or self._ambient_session_key(),
+                    expired=False,
+                )
+                self._ambient_publish_count += 1
+                self._ambient_publish_last_reason = "retained_tail"
+                return
+            await push(
+                self._ambient_context.expiry_marker(),
+                session_key=self._ambient_active_session_key
+                or self._ambient_session_key(),
+                expired=True,
+            )
+            self._ambient_active_session_key = ""
+            self._ambient_expiry_count += 1
+            self._ambient_publish_last_reason = "expired"
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._record_ambient_publish_suppression(
+                f"expiry_failed.{type(exc).__name__}"
+            )
+
+    def _ambient_context_suppression_reason(self) -> str:
+        if not self.enabled or self.ctx is None:
+            return "inactive"
+        if not self._is_co_stream():
+            return "not_co_stream"
+        config = self.ctx.config
+        if not bool(getattr(config, "live_enabled", False)):
+            return "live_disabled"
+        if bool(getattr(config, "dry_run", False)):
+            return "dry_run"
+        if hasattr(self.ctx, "_accepting_live_events") and not bool(
+            getattr(self.ctx, "_accepting_live_events", False)
+        ):
+            return "not_accepting_live_events"
+        guard = getattr(self.ctx, "safety_guard", None)
+        status = getattr(guard, "status", None)
+        if callable(status):
+            try:
+                safety_status = str(status() or "")
+            except Exception:
+                safety_status = ""
+            if safety_status and safety_status != "running":
+                return f"safety_{safety_status}"
+        dispatcher = getattr(self.ctx, "dispatcher", None)
+        push = getattr(dispatcher, "push_ambient_room_context", None)
+        if not callable(push):
+            return "dispatcher_unavailable"
+        channel_status = getattr(dispatcher, "output_channel_status", None)
+        if callable(channel_status):
+            try:
+                output = channel_status()
+            except Exception:
+                return "output_channel_unavailable"
+            if isinstance(output, dict) and not bool(output.get("ready", False)):
+                return str(output.get("reason") or "output_channel_unavailable")
+        return ""
+
+    def _ambient_session_key(self) -> str:
+        if self.ctx is None:
+            return "default"
+        generation = int(
+            getattr(self.ctx, "_live_session_generation", 0) or 0
+        )
+        room = str(
+            getattr(self.ctx.config, "live_room_ref", "")
+            or getattr(self.ctx.config, "live_room_id", 0)
+            or "room"
+        )[:48]
+        return f"{generation}:{room}"
+
+    def _schedule_ambient_context_clear(self) -> None:
+        session_key = self._ambient_active_session_key
+        if not session_key or self.ctx is None:
+            return
+        dispatcher = getattr(self.ctx, "dispatcher", None)
+        push = getattr(dispatcher, "push_ambient_room_context", None)
+        if not callable(push):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._ambient_active_session_key = ""
+        task = loop.create_task(
+            self._clear_ambient_context(push, session_key=session_key)
+        )
+        self._ambient_clear_tasks.add(task)
+        task.add_done_callback(self._ambient_clear_tasks.discard)
+
+    async def _clear_ambient_context(
+        self,
+        push: Any,
+        *,
+        session_key: str,
+    ) -> None:
+        try:
+            await push(
+                self._ambient_context.expiry_marker(),
+                session_key=session_key,
+                expired=True,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if self.ctx is not None:
+                self.ctx.audit.record(
+                    "ambient_context_clear_failed",
+                    type(exc).__name__,
+                    level="warning",
+                )
+
+    def _record_ambient_publish_suppression(self, reason: str) -> None:
+        self._ambient_publish_suppressed_count += 1
+        self._ambient_publish_last_reason = str(reason or "unknown")[:64]
+
     def submit(self, event: Any) -> None:
         """富模型直播事件入口（由 live provider 事件或 EventBus 回调驱动）。"""
         if not self.enabled or self.ctx is None:
@@ -391,40 +716,19 @@ class LiveEventsModule(BaseModule):
                 )
             )
             return
+        recent_chat_seq = self.observe_danmaku(event)
+        if recent_chat_seq <= 0:
+            return
         text = event_text(event)
-        if not text:
-            return  # 无文本，无从锐评
-        nickname = event_nickname(event)
-        observed_at = self._now()
-        if not self._recent_chat_event_is_current(event):
-            return
-        provider_event_id = event_provider_event_id(event)
-        recent_chat_seq = self._remember_recent_chat(
-            uid=uid,
-            nickname=nickname,
-            text=text,
-            observed_at=observed_at,
-            provider_event_id=provider_event_id,
-        )
-        if provider_event_id and recent_chat_seq <= 0:
-            self._recent_chat_duplicate_delivery_count += 1
-            return
         if not uid or uid == "0":
             return  # 事实缓存允许匿名消息；既有锐评链路仍要求稳定 uid。
-        self._remember_recent_viewer(uid)
         score = self._safe_score(event)
-        provider_ts = getattr(event, "ts", 0.0)
-        try:
-            topic_ts = float(provider_ts or observed_at)
-        except (TypeError, ValueError):
-            topic_ts = observed_at
-        self._room_topic.remember_danmaku(
-            uid=uid,
-            nickname=nickname,
-            text=text,
-            score=score,
-            ts=topic_ts,
-        )
+        if self._is_co_stream():
+            self._last_decision_at = self._now()
+            self._last_selected_type = "danmaku.passive_context"
+            self._last_candidate_count = 1
+            self._last_skip_reason = "co_stream.passive_context"
+            return
         skip_reason = self._reply_skip_reason(event, text=text, score=score)
         if skip_reason:
             self._record_reply_skip(
@@ -449,7 +753,9 @@ class LiveEventsModule(BaseModule):
             return
         # 冷却期：缓冲择优，只保留当前分最高者（O(1) 内存，无需保留整批）。
         order = self._buffered_count + 1
-        self._candidate_summaries.append(self._candidate_summary(event, score, order))
+        self._remember_candidate_summary(
+            self._candidate_summary(event, score, order)
+        )
         if self._best is None or score > self._best_score:
             self._best = event
             self._best_score = score
@@ -458,6 +764,56 @@ class LiveEventsModule(BaseModule):
         self._buffered_count += 1
         if self._flush_task is None:
             self._track_flush_task(self._spawn(self._flush_after(remaining)))
+
+    def observe_danmaku(self, event: Any) -> int:
+        """Record one danmaku without selecting or dispatching a reply.
+
+        Provider callbacks and developer simulation both use this observation
+        path so the recent-chat tail, room topic and passive-context refresh
+        cannot drift apart.  Reply selection remains owned by :meth:`submit`.
+        """
+
+        if not self.enabled or self.ctx is None:
+            return 0
+        if not is_routable(event) or is_signal_only(event):
+            return 0
+        text = event_text(event)
+        if not text or not self._recent_chat_event_is_current(event):
+            return 0
+        uid = event_uid(event)
+        nickname = event_nickname(event)
+        observed_at = self._now()
+        provider_event_id = event_provider_event_id(event)
+        recent_chat_seq = self._remember_recent_chat(
+            uid=uid,
+            nickname=nickname,
+            text=text,
+            observed_at=observed_at,
+            provider_event_id=provider_event_id,
+        )
+        if provider_event_id and recent_chat_seq <= 0:
+            self._recent_chat_duplicate_delivery_count += 1
+            return 0
+        if recent_chat_seq <= 0:
+            return 0
+        self._schedule_ambient_context_refresh()
+        if not uid or uid == "0":
+            return recent_chat_seq
+        self._remember_recent_viewer(uid)
+        score = self._safe_score(event)
+        provider_ts = getattr(event, "ts", 0.0)
+        try:
+            topic_ts = float(provider_ts or observed_at)
+        except (TypeError, ValueError):
+            topic_ts = observed_at
+        self._room_topic.remember_danmaku(
+            uid=uid,
+            nickname=nickname,
+            text=text,
+            score=score,
+            ts=topic_ts,
+        )
+        return recent_chat_seq
 
     def _cooldown_remaining(self) -> float:
         """到下一次允许投递还剩多少秒：取安全门限流冷却与中枢本地冷却的较大值。"""
@@ -514,6 +870,23 @@ class LiveEventsModule(BaseModule):
         except (TypeError, ValueError):
             limit = 0
         return max(LIVE_REPLY_QUEUE_LIMIT_FLOOR, limit)
+
+    def _candidate_summary_limit(self) -> int:
+        return self._reply_queue_limit()
+
+    def _remember_candidate_summary(self, summary: dict[str, Any]) -> None:
+        """Keep only the highest-ranked privacy-safe window summaries."""
+
+        candidates = [*self._candidate_summaries, summary]
+        candidates.sort(
+            key=lambda item: (
+                -float(item.get("score") or 0.0),
+                int(item.get("order") or 0),
+            )
+        )
+        retained = candidates[: self._candidate_summary_limit()]
+        retained.sort(key=lambda item: int(item.get("order") or 0))
+        self._candidate_summaries = retained
 
     def _reply_queue_full(self) -> bool:
         return self._buffered_count + self._recent_live_reply_count() >= self._reply_queue_limit()
@@ -734,15 +1107,45 @@ class LiveEventsModule(BaseModule):
         return payload
 
     def prompt_block_for_event(self, event: Any) -> str:
-        """Build advisory room-topic context for prompt modules.
+        """Build compact advisory room context for an already-scheduled turn.
 
         This is intentionally owned by live_events: the same module that sees
         the danmaku stream also filters low-value messages and summarizes the
         current room topic. It does not route output or persist viewer data.
         """
-        if not self.enabled:
+        suppression_reason = self._room_pulse_prompt_suppression_reason()
+        if suppression_reason:
+            self._record_room_pulse_prompt("", suppression_reason)
+            self._scene_state.suppress_prompt(suppression_reason)
             return ""
-        return self._room_topic.prompt_block_for_event(event)
+        projection = self._room_topic.prompt_projection_for_event(event)
+        self._record_room_pulse_prompt(projection.text, projection.reason)
+        scene = self._scene_state.prompt_for_event(event)
+        return "".join(part for part in (scene.text, projection.text) if part)
+
+    def _room_pulse_prompt_suppression_reason(self) -> str:
+        if not self.enabled or self.ctx is None:
+            return "inactive"
+        guard = getattr(self.ctx, "safety_guard", None)
+        status = getattr(guard, "status", None)
+        if callable(status):
+            try:
+                safety_status = str(status() or "")
+            except Exception:
+                safety_status = ""
+            if safety_status and safety_status != "running":
+                return "safety_not_running"
+        if self._safety_queue_near_limit():
+            return "safety_queue_pressure"
+        return ""
+
+    def _record_room_pulse_prompt(self, text: str, reason: str) -> None:
+        self._room_pulse_prompt_last_chars = min(len(text), 240)
+        self._room_pulse_prompt_last_reason = str(reason or "unknown")[:48]
+        if text:
+            self._room_pulse_prompt_uses += 1
+        else:
+            self._room_pulse_prompt_omits += 1
 
     def _spawn(self, coro: Any) -> "asyncio.Task[Any]":
         task = asyncio.create_task(coro)

@@ -47,6 +47,7 @@ class DanmakuResponseModule(BaseModule):
         recent_context = recent_context_block(self.ctx)
         viewer_context = viewer_session_context_block(self.ctx, identity.uid)
         meme_context = meme_knowledge_context_block(event.danmaku_text or "", room_context)
+        live_context = live_events_context_block(self.ctx, event)
         return InteractionRequest(
             event=event,
             identity=identity,
@@ -60,8 +61,8 @@ class DanmakuResponseModule(BaseModule):
                 recent_context,
                 viewer_context,
                 viewer_preference_context_block(self.ctx, profile),
-                room_context,
-                live_events_context_block(self.ctx, event),
+                "" if live_context else room_context,
+                live_context,
                 meme_context,
             ),
             live_mode=event.live_mode,

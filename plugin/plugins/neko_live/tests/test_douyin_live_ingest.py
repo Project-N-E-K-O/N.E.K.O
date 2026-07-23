@@ -91,7 +91,10 @@ class _LiveEventsCtx:
         self.audit = _Audit()
         self.event_bus = EventBus(self.audit)
         self.safety_guard = _Safety()
-        self.config = LiveConfig(rate_limit_seconds=0)
+        self.config = LiveConfig(
+            live_mode="solo_stream",
+            rate_limit_seconds=0,
+        )
         self.payloads: list[dict] = []
 
     async def handle_live_payload(self, payload: dict):
