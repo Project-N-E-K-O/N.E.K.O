@@ -67,7 +67,9 @@ def project_chat_notification(notification: Any, *, room_ref: Any, ts: float | N
     detail = getattr(notification, notice_type, None)
     if not parsed.ok or notice_type not in _SUPPORTED_NOTIFICATION_TYPES or detail is None:
         return None
-    if notice_type == "sub_gift" and _text(getattr(detail, "community_gift_id", None), 80):
+    if notice_type == "sub_gift" and _has_community_gift_id(
+        getattr(detail, "community_gift_id", None)
+    ):
         return None
 
     event_id = _text(getattr(notification, "id", None), 80)
@@ -145,7 +147,7 @@ def chat_notification_skip_reason(notification: Any, *, room_ref: Any) -> str:
     if notice_type not in _SUPPORTED_NOTIFICATION_TYPES:
         return "ingest.ignored_twitch_notification"
     if notice_type == "sub_gift" and detail is not None:
-        if _text(getattr(detail, "community_gift_id", None), 80):
+        if _has_community_gift_id(getattr(detail, "community_gift_id", None)):
             return "ingest.ignored_twitch_notification"
     return "ingest.invalid_twitch_projection"
 
@@ -166,6 +168,12 @@ def _text(value: Any, limit: int) -> str:
 
 def _positive_int(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and 0 < value <= 10_000_000 else 0
+
+
+def _has_community_gift_id(value: Any) -> bool:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return 0 < value <= 9_223_372_036_854_775_807
+    return bool(_text(value, 80))
 
 
 def _subscription_tier(value: Any) -> str:

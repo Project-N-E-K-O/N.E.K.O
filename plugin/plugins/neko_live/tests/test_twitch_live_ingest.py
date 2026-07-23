@@ -259,15 +259,22 @@ def test_chat_notification_ignores_community_gift_child_and_non_support_notice()
     projector = getattr(twitch_projection, "project_chat_notification", None)
     assert callable(projector)
     chatter = SimpleNamespace(id="202", name="gifter", display_name="Gifter")
-    community_child = SimpleNamespace(
-        id="notice-child-1",
-        notice_type="sub_gift",
-        anonymous=False,
-        chatter=chatter,
-        text="",
-        system_message="Gifter gifted a subscription.",
-        sub_gift=SimpleNamespace(tier="1000", months=1, community_gift_id="community-1"),
-    )
+    community_children = [
+        SimpleNamespace(
+            id=f"notice-child-{index}",
+            notice_type="sub_gift",
+            anonymous=False,
+            chatter=chatter,
+            text="",
+            system_message="Gifter gifted a subscription.",
+            sub_gift=SimpleNamespace(
+                tier="1000",
+                months=1,
+                community_gift_id=community_gift_id,
+            ),
+        )
+        for index, community_gift_id in enumerate(("community-1", 12345), start=1)
+    ]
     raid = SimpleNamespace(
         id="notice-raid-1",
         notice_type="raid",
@@ -277,7 +284,10 @@ def test_chat_notification_ignores_community_gift_child_and_non_support_notice()
         system_message="Incoming raid.",
     )
 
-    assert projector(community_child, room_ref="target_channel") is None
+    assert all(
+        projector(community_child, room_ref="target_channel") is None
+        for community_child in community_children
+    )
     assert projector(raid, room_ref="target_channel") is None
 
 
