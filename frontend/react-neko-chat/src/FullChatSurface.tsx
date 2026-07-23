@@ -37,6 +37,10 @@ import {
   useCompactToolWheelAudioPreload,
 } from './compactToolWheelAudio';
 import {
+  createCompactToolWheelForwardedClick,
+  resolveCompactToolWheelPointerHit,
+} from './compactToolWheelGeometry';
+import {
   type ChatMessage,
   type MessageAction,
   type ChatWindowSchemaProps,
@@ -2438,40 +2442,19 @@ export default function FullChatSurface({
     if (eventTarget?.closest('.compact-input-tool-item')) return;
 
     const fanElement = compactInputToolFanRef.current;
-    const fanRect = fanElement?.getBoundingClientRect();
-    if (!fanElement || !fanRect) return;
-    const fanStyle = window.getComputedStyle ? window.getComputedStyle(fanElement) : null;
-    const readFanPixelVar = (name: string, fallback: number) => {
-      const rawValue = fanStyle?.getPropertyValue(name).trim() || '';
-      const parsedValue = Number.parseFloat(rawValue);
-      return Number.isFinite(parsedValue) ? parsedValue : fallback;
-    };
-    const centerX = fanRect.left + readFanPixelVar('--compact-tool-wheel-center-x', COMPACT_INPUT_TOOL_WHEEL_CENTER_X);
-    const centerY = fanRect.top + readFanPixelVar('--compact-tool-wheel-center-y', COMPACT_INPUT_TOOL_WHEEL_CENTER_Y);
-    const orbitRadius = readFanPixelVar('--compact-tool-wheel-orbit-radius', 80);
-    const buttonSize = readFanPixelVar('--compact-tool-button-size', 38);
-    const dragAngleRad = compactInputToolWheelDragAngle * (Math.PI / 180);
-    let matchedToolIndex: number | null = null;
-    let matchedDistanceSquared = Number.POSITIVE_INFINITY;
-
-    for (let toolIndex = 0; toolIndex < COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT; toolIndex += 1) {
-      const slot = getCompactToolWheelSlot(toolIndex);
-      if (slot === null || Math.abs(slot) > 2 || isCompactToolWheelActionDisabled(toolIndex)) continue;
-      const slotVisual = compactInputToolWheelVisibleSlots[slot + 2];
-      if (!slotVisual) continue;
-      const angleRad = (slotVisual.angleDeg * (Math.PI / 180)) + dragAngleRad;
-      const itemCenterX = centerX + (Math.cos(angleRad) * orbitRadius);
-      const itemCenterY = centerY + (Math.sin(angleRad) * orbitRadius);
-      const hitRadius = (buttonSize * slotVisual.scale) / 2;
-      const dx = event.clientX - itemCenterX;
-      const dy = event.clientY - itemCenterY;
-      const distanceSquared = (dx * dx) + (dy * dy);
-      if (distanceSquared <= hitRadius * hitRadius && distanceSquared < matchedDistanceSquared) {
-        matchedToolIndex = toolIndex;
-        matchedDistanceSquared = distanceSquared;
-      }
-    }
-
+    if (!fanElement) return;
+    const matchedToolIndex = resolveCompactToolWheelPointerHit({
+      fanElement,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      itemCount: COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT,
+      dragAngleDeg: compactInputToolWheelDragAngle,
+      visibleSlots: compactInputToolWheelVisibleSlots,
+      centerFallbackX: COMPACT_INPUT_TOOL_WHEEL_CENTER_X,
+      centerFallbackY: COMPACT_INPUT_TOOL_WHEEL_CENTER_Y,
+      getSlot: getCompactToolWheelSlot,
+      isToolDisabled: isCompactToolWheelActionDisabled,
+    });
     if (matchedToolIndex === null) return;
     const slot = getCompactToolWheelSlot(matchedToolIndex);
     if (slot === null) return;
@@ -2482,10 +2465,7 @@ export default function FullChatSurface({
       ? item
       : item?.querySelector<HTMLButtonElement>(':scope > button:not(:disabled)');
     if (!actionButton || actionButton.disabled) return;
-    actionButton.dispatchEvent(new window.MouseEvent('click', {
-      bubbles: true,
-      cancelable: true,
-      button: 0,
+    actionButton.dispatchEvent(createCompactToolWheelForwardedClick(actionButton, {
       clientX: event.clientX,
       clientY: event.clientY,
       screenX: event.screenX,
