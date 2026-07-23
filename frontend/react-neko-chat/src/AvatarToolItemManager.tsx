@@ -693,7 +693,7 @@ export default function AvatarToolItemManager({
           type="button"
           ref={closeButtonRef}
           aria-label={i18n('chat.avatarToolManagerClose', 'Close')}
-          title={i18n('chat.avatarToolManagerClose', 'Close')}
+          data-neko-tooltip={i18n('chat.avatarToolManagerClose', 'Close')}
           onClick={onCancel}
         >
           <img src="/static/icons/close_button.png" alt="" aria-hidden="true" />
@@ -741,7 +741,7 @@ export default function AvatarToolItemManager({
                       className="avatar-tool-manager-remove"
                       type="button"
                       aria-label={`${i18n('chat.avatarToolRemove', 'Remove')} ${label}`}
-                      title={`${i18n('chat.avatarToolRemove', 'Remove')} ${label}`}
+                      data-neko-tooltip={`${i18n('chat.avatarToolRemove', 'Remove')} ${label}`}
                       onClick={() => handleRemoveSlot(index)}
                     >
                       {i18n('chat.avatarToolRemove', 'Remove')}

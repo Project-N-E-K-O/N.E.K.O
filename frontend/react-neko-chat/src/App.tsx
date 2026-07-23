@@ -15,6 +15,7 @@ import { createPortal } from 'react-dom';
 import AvatarToolItemManager, { type AvatarToolManagerAnchorRect } from './AvatarToolItemManager';
 import AvatarToolQuickbar from './AvatarToolQuickbar';
 import FullChatSurface from './FullChatSurface';
+import NekoTooltipLayer from './NekoTooltipLayer';
 import AvatarToolVisuals from './avatar-tools/presentation';
 import { useAvatarToolRuntime } from './avatar-tools/runtime';
 import {
@@ -847,10 +848,14 @@ function getCompactHistoryScrollUnderCompactToolWheel(
  * same shared runtime.
  */
 export default function ChatWindowRoot(props: ChatWindowProps) {
-  if (props.chatSurfaceMode === 'full') {
-    return <FullChatSurface {...props} />;
-  }
-  return <CompactChatApp {...props} />;
+  return (
+    <>
+      {props.chatSurfaceMode === 'full'
+        ? <FullChatSurface {...props} />
+        : <CompactChatApp {...props} />}
+      <NekoTooltipLayer />
+    </>
+  );
 }
 
 function CompactChatApp({
@@ -5061,7 +5066,9 @@ function CompactChatApp({
       type="button"
       className="compact-chat-minimize-ball"
       aria-label={i18n('chat.reactWindowMinimize', 'Minimize')}
-      title={i18n('chat.reactWindowMinimize', 'Minimize')}
+      data-neko-tooltip={i18n('chat.reactWindowMinimize', 'Minimize')}
+      data-neko-tooltip-variant="compact-tool"
+      data-neko-tooltip-placement="top"
       data-compact-no-drag="true"
       data-compact-hit-region="true"
       data-compact-hit-region-id="input:minimize"
@@ -5404,7 +5411,7 @@ function CompactChatApp({
             className="composer-tool-clear-btn"
             type="button"
             aria-label={clearAvatarToolAriaLabel}
-            title={clearAvatarToolAriaLabel}
+            data-neko-tooltip={clearAvatarToolAriaLabel}
             disabled={compactAvatarToolActionsDisabled}
             tabIndex={getCompactToolWheelTabIndex(1)}
             onClick={(event) => {
@@ -5690,7 +5697,7 @@ function CompactChatApp({
       type="button"
       aria-label={compactExportHistoryToggleLabel}
       aria-expanded={compactExportHistoryOpen}
-      title={compactExportHistoryToggleLabel}
+      data-neko-tooltip={compactExportHistoryToggleLabel}
       disabled={composerDisabled}
       data-compact-geometry-owner="surface"
       data-compact-geometry-item="historyHandle"
@@ -5747,7 +5754,7 @@ function CompactChatApp({
             data-compact-hit-region-id="meme:close"
             data-compact-hit-region-kind="meme-close"
             aria-label={closeMemeButtonAriaLabel}
-            title={closeMemeButtonAriaLabel}
+            data-neko-tooltip={closeMemeButtonAriaLabel}
             onClick={(event) => {
               event.stopPropagation();
               setDismissedMemeId(compactMemeOverlay.id);
@@ -5833,7 +5840,7 @@ function CompactChatApp({
           className="chat-surface-focus-indicator"
           role="status"
           aria-live="polite"
-          title={i18n('chat.focusIndicator', '凝神中')}
+          data-neko-tooltip={i18n('chat.focusIndicator', '凝神中')}
         >
           <span className="chat-surface-focus-indicator-label">
             {i18n('chat.focusIndicator', '凝神中')}

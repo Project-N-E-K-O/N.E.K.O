@@ -1,8 +1,18 @@
 @import 'katex/dist/katex.min.css';
 
+@font-face {
+  font-family: "Neko Chat Hand";
+  src: url("/assets/Yozai-Medium.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+}
+
 :root {
+  --neko-ui-font: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --neko-chat-content-font: "Neko Chat Hand", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   color: #1f2329;
-  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: var(--neko-ui-font);
   line-height: 1.5;
   font-weight: 400;
   font-synthesis: none;
@@ -60,10 +70,18 @@ svg {
 .app-shell {
   width: 100%;
   height: 100%;
+  font-family: var(--neko-ui-font);
   /* Positioned containing block for absolutely-placed overlays anchored to the
      surface (e.g. .chat-focus-overlay). The compact variant already sets this;
      declaring it on the base keeps the full surface consistent. */
   position: relative;
+}
+
+/* Portaled controls cannot inherit from the chat shell. Keep them on the UI
+   typeface instead of the conversational typeface used by message content. */
+.composer-choice-layer,
+.avatar-tool-manager-dialog {
+  font-family: var(--neko-ui-font);
 }
 
 .avatar-tool-visual-overlay {
@@ -734,7 +752,8 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
 .app-shell.chat-surface-mode-compact[data-focus-glow="true"] .compact-chat-surface-frame {
   box-shadow:
     0 0 0 1px rgba(150, 190, 255, calc(0.3 + 0.5 * var(--focus-glow, 0))),
-    0 0 calc(6px + 22px * var(--focus-glow, 0)) calc(1px + 4px * var(--focus-glow, 0)) rgba(120, 170, 255, calc(0.25 + 0.55 * var(--focus-glow, 0)));
+    0 0 calc(6px + 22px * var(--focus-glow, 0)) calc(1px + 4px * var(--focus-glow, 0)) rgba(120, 170, 255, calc(0.25 + 0.55 * var(--focus-glow, 0))),
+    var(--compact-chat-surface-shadow);
 }
 .app-shell.chat-surface-mode-compact[data-focus-breathing="true"] .compact-chat-surface-frame {
   animation: focus-glow-breathe-compact 3.4s ease-in-out infinite;
@@ -743,12 +762,14 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   0%, 100% {
     box-shadow:
       0 0 0 1px rgba(150, 190, 255, calc(0.35 * var(--focus-glow, 0.6))),
-      0 0 calc(8px * var(--focus-glow, 0.6)) 1px rgba(120, 170, 255, calc(0.4 * var(--focus-glow, 0.6)));
+      0 0 calc(8px * var(--focus-glow, 0.6)) 1px rgba(120, 170, 255, calc(0.4 * var(--focus-glow, 0.6))),
+      var(--compact-chat-surface-shadow);
   }
   50% {
     box-shadow:
       0 0 0 2px rgba(150, 190, 255, calc(0.9 * var(--focus-glow, 0.6))),
-      0 0 calc(30px * var(--focus-glow, 0.6)) calc(6px * var(--focus-glow, 0.6)) rgba(120, 170, 255, calc(0.85 * var(--focus-glow, 0.6)));
+      0 0 calc(30px * var(--focus-glow, 0.6)) calc(6px * var(--focus-glow, 0.6)) rgba(120, 170, 255, calc(0.85 * var(--focus-glow, 0.6))),
+      var(--compact-chat-surface-shadow);
   }
 }
 
@@ -1175,6 +1196,15 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
 
 .message-block-text {
   white-space: pre-wrap;
+}
+
+.message-block-text,
+.message-block-markdown,
+.composer-input,
+.compact-chat-capsule-text {
+  font-family: var(--neko-chat-content-font);
+  font-weight: 500;
+  font-synthesis: weight;
 }
 
 .message-block-markdown {
@@ -2552,13 +2582,29 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
     + var(--compact-chat-minimize-ball-gap)
   );
   --compact-chat-surface-bg:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.7), rgba(247, 251, 255, 0.6) 58%, rgba(232, 243, 255, 0.54));
-  --compact-chat-surface-edge: rgba(255, 255, 255, 0.5);
-  --compact-chat-surface-glow: rgba(255, 255, 255, 0.22);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.34), rgba(242, 249, 255, 0.19) 46%, rgba(219, 238, 253, 0.24));
+  --compact-chat-surface-edge-top: rgba(255, 255, 255, 0.7);
+  --compact-chat-surface-edge-right: rgba(255, 255, 255, 0.15);
+  --compact-chat-surface-edge-bottom: rgba(255, 255, 255, 0.06);
+  --compact-chat-surface-edge-left: rgba(255, 255, 255, 0.35);
+  --compact-chat-surface-glow: rgba(255, 255, 255, 0.2);
+  --compact-chat-surface-shadow:
+    0 8px 20px rgba(12, 20, 34, 0.16),
+    0 2px 7px rgba(49, 104, 154, 0.08),
+    inset 0 2px 4px rgba(255, 255, 255, 0.34),
+    inset 0 -1px 2px rgba(68, 126, 176, 0.08);
+  --compact-chat-highlight-top: rgba(255, 255, 255, 0.46);
+  --compact-chat-highlight-bottom: rgba(255, 255, 255, 0.08);
+  --compact-chat-highlight-left: rgba(255, 255, 255, 0.14);
+  --compact-chat-highlight-right: rgba(255, 255, 255, 0.06);
+  --compact-chat-refraction-blue: rgba(100, 180, 255, 0.18);
+  --compact-chat-refraction-violet: rgba(180, 140, 255, 0.12);
+  --compact-chat-refraction-rose: rgba(240, 150, 200, 0.09);
   position: relative;
   overflow: hidden;
   isolation: isolate;
-  clip-path: inset(0 round 999px);
+  /* border-radius + overflow clip the inner refraction layers; a clip-path here
+     would also cut off the exterior shadow and Focus halo. */
   background-clip: padding-box;
   display: flex;
   align-items: center;
@@ -2569,14 +2615,18 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   max-height: 54px;
   box-sizing: border-box;
   padding: 0 20px 0 var(--compact-chat-minimize-ball-slot);
-  border: 1px solid var(--compact-chat-surface-edge);
+  border-style: solid;
+  border-width: 2px 1px 1px 1px;
+  border-color:
+    var(--compact-chat-surface-edge-top)
+    var(--compact-chat-surface-edge-right)
+    var(--compact-chat-surface-edge-bottom)
+    var(--compact-chat-surface-edge-left);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
-  box-shadow:
-    0 0 0 1px rgba(208, 233, 255, 0.14),
-    0 6px 18px rgba(42, 89, 132, 0.05);
-  backdrop-filter: blur(18px) saturate(1.22) brightness(1.08);
-  -webkit-backdrop-filter: blur(18px) saturate(1.22) brightness(1.08);
+  background: rgba(255, 255, 255, 0.035);
+  box-shadow: var(--compact-chat-surface-shadow);
+  backdrop-filter: blur(36px) saturate(0.9) contrast(0.78) brightness(1.08);
+  -webkit-backdrop-filter: blur(36px) saturate(0.9) contrast(0.78) brightness(1.08);
 }
 
 .compact-chat-surface-frame[data-compact-chat-state="input"] {
@@ -2602,8 +2652,19 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   overflow: hidden;
   contain: paint;
   background: transparent;
+  appearance: none;
+  -webkit-appearance: none;
+  outline: none;
+  box-shadow: none;
+  -webkit-tap-highlight-color: transparent;
   cursor: grab;
   touch-action: none;
+}
+
+.compact-chat-minimize-ball:focus,
+.compact-chat-minimize-ball:focus-visible {
+  outline: none;
+  box-shadow: none;
 }
 
 .compact-chat-minimize-ball:active {
@@ -2655,14 +2716,45 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 .compact-chat-surface-frame::after {
   content: "";
   position: absolute;
-  inset: 1px;
+  inset: 0;
   z-index: 1;
   border-radius: inherit;
-  background:
-    linear-gradient(180deg, var(--compact-chat-surface-glow), transparent 42%);
+  background-image:
+    linear-gradient(180deg, var(--compact-chat-surface-glow) 0%, rgba(255, 255, 255, 0.05) 16%, transparent 40%, transparent 82%, rgba(115, 181, 229, 0.05) 100%),
+    radial-gradient(ellipse at 14% 4%, var(--compact-chat-refraction-blue) 0%, transparent 34%),
+    radial-gradient(ellipse at 62% 100%, var(--compact-chat-refraction-violet) 0%, transparent 36%),
+    radial-gradient(ellipse at 92% 12%, var(--compact-chat-refraction-rose) 0%, transparent 30%);
+  background-position: 0 0, 0% 0%, 55% 100%, 100% 10%;
+  background-repeat: no-repeat;
+  background-size: 100% 100%, 180% 220%, 190% 220%, 180% 200%;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+    inset 0 2px 6px var(--compact-chat-highlight-top),
+    inset 0 -1px 3px var(--compact-chat-highlight-bottom),
+    inset 2px 0 4px var(--compact-chat-highlight-left),
+    inset -2px 0 4px var(--compact-chat-highlight-right);
+  animation: compact-chat-liquid-edge 20s ease-in-out infinite;
   pointer-events: none;
+}
+
+@keyframes compact-chat-liquid-edge {
+  0%,
+  100% {
+    background-position: 0 0, 0% 0%, 55% 100%, 100% 10%;
+  }
+
+  33% {
+    background-position: 0 0, 58% 18%, 8% 48%, 42% 88%;
+  }
+
+  66% {
+    background-position: 0 0, 92% 72%, 86% 12%, 4% 34%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .compact-chat-surface-frame::after {
+    animation: none;
+  }
 }
 
 .compact-chat-surface-frame > * {
@@ -2822,6 +2914,8 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   );
   --compact-export-history-viewport-gutter: 24px;
   --compact-export-history-width-ratio: 1;
+  --compact-export-history-shadow-gutter-right: 32px;
+  --compact-export-history-shadow-gutter-left: 12px;
   --compact-export-history-max-inline-size: calc(100vw - var(--compact-export-history-viewport-gutter));
   --compact-export-history-inline-size: min(
     calc(var(--compact-export-surface-width) * var(--compact-export-history-width-ratio)),
@@ -2919,7 +3013,10 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
      下沿只到气泡实体底以下~16px(此处 alpha≈3/255≈1.2%,再往下不可察)；清晰可见段(alpha≥8)仅~9px、
      可感知段(alpha≥5)~13px,均落在 16px 内。压到 16 让气泡实体底更贴输入框(实体底到输入框由~28px→~18px)、
      同时可见阴影完整不裁。再小(如12)会切到可感知段,不取。 */
-  padding: 4px 24px 16px 6px;
+  /* 横向阴影缓冲不能依赖 scroll box 自身的 padding：overflow-y:auto 会让
+     Chromium 同时建立横向裁剪边界。横向 gutter 放到 scroll-content，
+     这里只保留必须计入 scrollHeight 的上下 padding。 */
+  padding: 4px 0 16px;
   scrollbar-width: none;
   pointer-events: none;
   -webkit-app-region: no-drag;
@@ -2931,6 +3028,9 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   display: flex;
   flex-direction: column;
   gap: 0;
+  width: 100%;
+  padding-right: var(--compact-export-history-shadow-gutter-right);
+  padding-left: var(--compact-export-history-shadow-gutter-left);
   /* 稳态：撑到 scroll 盒高度，配合 first-child margin-top:auto 让内容底部对齐、内容少时不产生可滚空白。 */
   min-height: 100%;
   overflow-anchor: none;
@@ -3665,6 +3765,17 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   -webkit-mask-size: 300% 100%; mask-size: 300% 100%;
   -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
 }
+
+/* The animated mask promotes the backdrop-filter layer during reveal. Chromium
+   can briefly rasterize that promoted layer as a square texture, so enforce a
+   pill clip only while the wipe is active. The class is removed after the wipe,
+   restoring the unclipped exterior shadow and Focus halo in steady state. */
+.compact-chat-surface-shell.neko-compact-collapsing > .compact-chat-surface-frame,
+.compact-chat-surface-shell.neko-compact-expanding > .compact-chat-surface-frame {
+  -webkit-clip-path: inset(0 round 999px);
+  clip-path: inset(0 round 999px);
+}
+
 .compact-chat-surface-shell.neko-compact-collapsing {
   animation: neko-compact-collapse-wipe 280ms ease forwards;
 }
@@ -3965,7 +4076,10 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   overflow: hidden;
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.34);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.34);
+  box-shadow:
+    inset 0 0 0 1px rgba(159, 202, 238, 0.36),
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 5px 12px rgba(22, 48, 84, 0.06);
 }
 
 .compact-export-preview-stage.is-fallback {
@@ -4132,8 +4246,12 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   border: 0;
   background: transparent;
   color: #2f526b;
+  caret-color: #167fbd;
   font-weight: 500;
   line-height: 22px;
+  text-shadow:
+    0 1px 1px rgba(255, 255, 255, 0.94),
+    0 0 4px rgba(255, 255, 255, 0.72);
   overflow-y: auto;
 }
 
@@ -4141,6 +4259,9 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   font-size: 1em;
   line-height: 22px;
   color: rgba(70, 96, 122, 0.66);
+  text-shadow:
+    0 1px 1px rgba(255, 255, 255, 0.88),
+    0 0 4px rgba(255, 255, 255, 0.58);
 }
 
 .compact-chat-surface-shell[data-compact-chat-state="input"] .composer-bottom-bar {
@@ -4458,31 +4579,115 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   background: var(--compact-tool-button-hover-fill);
 }
 
+.neko-chat-tooltip {
+  position: fixed;
+  z-index: 2147483600;
+  box-sizing: border-box;
+  max-width: min(240px, calc(100vw - 16px));
+  padding: 6px 9px;
+  border: 1px solid rgba(137, 196, 234, 0.52);
+  border-radius: 10px;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.97), rgba(232, 246, 255, 0.96)),
+    rgba(241, 249, 255, 0.96);
+  color: rgba(43, 72, 96, 0.96);
+  font-family: var(--neko-ui-font);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: 0.01em;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  user-select: none;
+  opacity: 0;
+  transform: translateY(2px) scale(0.98);
+  transform-origin: 50% 100%;
+  box-shadow:
+    0 9px 24px rgba(20, 76, 116, 0.15),
+    0 2px 7px rgba(20, 76, 116, 0.09),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  -webkit-backdrop-filter: blur(16px) saturate(1.08);
+  backdrop-filter: blur(16px) saturate(1.08);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.neko-chat-tooltip[data-placement="bottom"] {
+  transform: translateY(-2px) scale(0.98);
+  transform-origin: 50% 0;
+}
+
+.neko-chat-tooltip[data-variant="compact-tool"] {
+  max-width: 124px;
+  padding: 5px 8px;
+  border-radius: 9px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.neko-chat-tooltip[data-ready="true"] {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.neko-chat-tooltip::after {
+  position: absolute;
+  left: 50%;
+  bottom: -4px;
+  width: 7px;
+  height: 7px;
+  content: "";
+  background: rgba(239, 248, 255, 0.98);
+  border-right: 1px solid rgba(137, 196, 234, 0.48);
+  border-bottom: 1px solid rgba(137, 196, 234, 0.48);
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.neko-chat-tooltip[data-placement="bottom"]::after {
+  top: -4px;
+  bottom: auto;
+  border: 0;
+  border-top: 1px solid rgba(137, 196, 234, 0.48);
+  border-left: 1px solid rgba(137, 196, 234, 0.48);
+}
+
+.neko-chat-tooltip[data-variant="compact-tool"]::after {
+  content: none;
+}
+
 .compact-input-tool-fan .compact-input-tool-tooltip {
   position: absolute;
   left: calc(100% + 5px);
   top: calc(100% - 6px);
   z-index: 4;
-  max-width: 104px;
-  padding: 2px 5px;
-  border: 1px solid #6b7280;
-  border-radius: 0;
-  background: #ffffff;
-  color: #111827;
-  font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
+  max-width: 124px;
+  padding: 5px 8px;
+  border: 1px solid rgba(137, 196, 234, 0.52);
+  border-radius: 9px;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.97), rgba(232, 246, 255, 0.96)),
+    rgba(241, 249, 255, 0.96);
+  color: rgba(43, 72, 96, 0.96);
+  font-family: var(--neko-ui-font);
   font-size: 12px;
-  font-weight: 400;
-  line-height: 1.35;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: 0.01em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   opacity: 0;
   pointer-events: none;
   user-select: none;
-  transform: translate(0, -1px);
-  transition: opacity 0.08s ease, transform 0.08s ease;
+  transform: translate(-2px, 1px) scale(0.98);
+  transition: opacity 0.12s ease, transform 0.12s ease;
   transform-origin: 0 0;
-  box-shadow: none;
+  box-shadow:
+    0 9px 24px rgba(20, 76, 116, 0.15),
+    0 2px 7px rgba(20, 76, 116, 0.09),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  -webkit-backdrop-filter: blur(16px) saturate(1.08);
+  backdrop-filter: blur(16px) saturate(1.08);
 }
 
 .compact-input-tool-fan button.compact-input-tool-item:not(:disabled):focus-within,
@@ -6089,13 +6294,24 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 [data-theme="dark"] .compact-chat-surface-frame {
   --compact-chat-surface-bg:
     linear-gradient(180deg, rgba(31, 48, 66, 0.72), rgba(15, 29, 46, 0.68) 58%, rgba(8, 17, 30, 0.62));
-  --compact-chat-surface-edge: rgba(177, 216, 255, 0.28);
-  --compact-chat-surface-glow: rgba(176, 219, 255, 0.08);
+  --compact-chat-surface-edge-top: rgba(196, 228, 255, 0.44);
+  --compact-chat-surface-edge-right: rgba(156, 207, 249, 0.13);
+  --compact-chat-surface-edge-bottom: rgba(132, 189, 232, 0.07);
+  --compact-chat-surface-edge-left: rgba(177, 216, 255, 0.24);
+  --compact-chat-surface-glow: rgba(176, 219, 255, 0.1);
+  --compact-chat-surface-shadow:
+    0 8px 20px rgba(0, 0, 0, 0.28),
+    0 2px 7px rgba(0, 0, 0, 0.16),
+    inset 0 2px 4px rgba(225, 242, 255, 0.12),
+    inset 0 -1px 2px rgba(0, 0, 0, 0.18);
+  --compact-chat-highlight-top: rgba(225, 242, 255, 0.18);
+  --compact-chat-highlight-bottom: rgba(177, 216, 255, 0.05);
+  --compact-chat-highlight-left: rgba(177, 216, 255, 0.09);
+  --compact-chat-highlight-right: rgba(177, 216, 255, 0.04);
+  --compact-chat-refraction-blue: rgba(90, 174, 255, 0.16);
+  --compact-chat-refraction-violet: rgba(170, 125, 255, 0.11);
+  --compact-chat-refraction-rose: rgba(235, 120, 190, 0.07);
   background: rgba(12, 22, 35, 0.1);
-  box-shadow:
-    0 0 0 1px rgba(132, 184, 236, 0.14),
-    0 6px 18px rgba(0, 0, 0, 0.16);
-  border-color: var(--compact-chat-surface-edge);
 }
 
 [data-theme="dark"] .compact-chat-surface-shell[data-compact-chat-state="input"],
@@ -6112,10 +6328,13 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 [data-theme="dark"] .compact-chat-surface-frame[data-compact-chat-state="input"] .composer-input {
   color: #e9f4ff;
+  caret-color: #74d7ff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.42);
 }
 
 [data-theme="dark"] .compact-chat-surface-frame[data-compact-chat-state="input"] .composer-input::placeholder {
   color: rgba(202, 222, 244, 0.66);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.34);
 }
 
 [data-theme="dark"] .compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] .send-button-circle {
@@ -6144,10 +6363,22 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   background: transparent;
 }
 
+[data-theme="dark"] .neko-chat-tooltip,
 [data-theme="dark"] .compact-input-tool-fan .compact-input-tool-tooltip {
-  border-color: #8b949e;
-  background: #202124;
-  color: #f3f4f6;
+  border-color: rgba(166, 214, 246, 0.38);
+  background:
+    linear-gradient(145deg, rgba(31, 47, 65, 0.94), rgba(13, 24, 37, 0.96)),
+    rgba(15, 27, 41, 0.94);
+  color: rgba(244, 250, 255, 0.98);
+  box-shadow:
+    0 9px 24px rgba(7, 18, 31, 0.24),
+    0 2px 7px rgba(7, 18, 31, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+
+[data-theme="dark"] .neko-chat-tooltip::after {
+  background: rgba(20, 34, 49, 0.98);
+  border-color: rgba(166, 214, 246, 0.34);
 }
 
 [data-theme="dark"] .compact-input-tool-fan .avatar-tool-quickbar {
@@ -6390,7 +6621,10 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 [data-theme="dark"] .compact-export-preview-stage {
-  box-shadow: inset 0 0 0 1px rgba(116, 187, 255, 0.14);
+  box-shadow:
+    inset 0 0 0 1px rgba(116, 187, 255, 0.24),
+    inset 0 1px 0 rgba(218, 240, 255, 0.12),
+    0 5px 12px rgba(0, 0, 0, 0.14);
 }
 
 [data-theme="dark"] .compact-export-preview-chip.is-active {
@@ -6435,6 +6669,10 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   }
 
   .compact-input-tool-fan .compact-input-tool-tooltip {
+    transition: none !important;
+  }
+
+  .neko-chat-tooltip {
     transition: none !important;
   }
 
