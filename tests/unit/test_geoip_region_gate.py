@@ -200,6 +200,15 @@ def test_ip_probe_backs_off_exponentially_and_never_gives_up(monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize('failures', [0, 1, 2, 33, 1025, 10 ** 6])
+def test_backoff_stays_finite_for_any_failure_count(failures):
+    """A machine offline for days keeps accumulating failures; 2 ** huge would raise."""
+    wait = ConfigManager._ip_check_backoff_s(failures)
+    assert isinstance(wait, float)
+    assert 0.0 <= wait <= ConfigManager._IP_CHECK_RETRY_MAX_S
+
+
+@pytest.mark.unit
 def test_concurrent_probes_do_not_burn_the_backoff(monkeypatch):
     """aget_core_config offloads to threads; a burst must not spend several attempts at once.
 

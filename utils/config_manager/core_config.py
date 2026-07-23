@@ -48,12 +48,18 @@ class CoreConfigMixin:
     _IP_CHECK_RETRY_BASE_S = 30.0
     _IP_CHECK_RETRY_MAX_S = 600.0
 
+    # 指数先于乘法封顶：探测不设次数上限，一台长期离线的机器攒够失败次数后
+    # float * (2 ** 巨大整数) 会直接抛 OverflowError，而不是溢出成 inf。
+    # 2**_IP_CHECK_MAX_EXPONENT 乘上 base 已远超 _IP_CHECK_RETRY_MAX_S，封在这里无损。
+    _IP_CHECK_MAX_EXPONENT = 32
+
     @classmethod
     def _ip_check_backoff_s(cls, failures: int) -> float:
         """Seconds to wait before the next probe after `failures` consecutive failures."""
         if failures <= 0:
             return 0.0
-        return min(cls._IP_CHECK_RETRY_BASE_S * (2 ** (failures - 1)), cls._IP_CHECK_RETRY_MAX_S)
+        exponent = min(failures - 1, cls._IP_CHECK_MAX_EXPONENT)
+        return min(cls._IP_CHECK_RETRY_BASE_S * (2 ** exponent), cls._IP_CHECK_RETRY_MAX_S)
 
     async def aget_core_config(self):
         """Async wrapper for get_core_config: internally open()+json.load() reads core_config.json;
