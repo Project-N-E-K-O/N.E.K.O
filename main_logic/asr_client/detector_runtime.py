@@ -2141,6 +2141,22 @@ class DetectorRuntime:
                 await self._close_speaker_verifier_fully(verifier)
             return accepted
 
+    async def detach_speaker_verifier(
+        self,
+    ) -> SpeakerVerifierRuntime | None:
+        """Transfer verifier cleanup ownership without delaying Detector close."""
+
+        replace_lock = getattr(self, "_speaker_shadow_replace_lock", None)
+        if replace_lock is None:
+            replace_lock = asyncio.Lock()
+            self._speaker_shadow_replace_lock = replace_lock
+        async with replace_lock:
+            async with self._lock:
+                previous, self._speaker_shadow = self._speaker_shadow, None
+                if previous is not None:
+                    self._reset_speaker_shadow_identity()
+                return previous
+
     async def _close_speaker_verifier_fully(
         self,
         verifier: SpeakerVerifierRuntime,

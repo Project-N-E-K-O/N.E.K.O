@@ -1147,6 +1147,35 @@ async def test_replace_speaker_verifier_timeout_stays_disabled_and_fail_open(
     await detector.close()
 
 
+async def test_detach_speaker_verifier_transfers_cleanup_ownership() -> None:
+    previous = _ControlledCloseShadow()
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate((SpeechActivityEvent.SPEECH_STARTED,)),
+        provider_policy=_provider_endpoint_policy(),
+        speaker_shadow=previous,
+    )
+    await detector.feed(
+        b"\x01\x00" * 160,
+        speech_probability=0.9,
+        rnnoise_available=True,
+    )
+    generation = detector._speaker_shadow_generation
+    candidate_generation = detector._candidate_generation
+
+    detached = await detector.detach_speaker_verifier()
+
+    assert detached is previous
+    assert detector._speaker_shadow is None
+    assert detector._speaker_shadow_candidate is None
+    assert detector._speaker_shadow_generation == generation + 1
+    assert detector._candidate_generation == candidate_generation
+    assert previous.close_calls == 0
+
+    await detector.close()
+    assert previous.close_calls == 0
+
+
 async def test_detector_close_during_verifier_replacement_never_installs_new() -> None:
     previous = _ControlledCloseShadow()
     replacement = _SpeakerShadowSpy()

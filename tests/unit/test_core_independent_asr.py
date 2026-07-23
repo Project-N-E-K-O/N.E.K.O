@@ -3344,6 +3344,210 @@ async def test_core_speaker_shadow_factory_failure_keeps_asr_available(
     runtime._speaker_shadow_factory.assert_called_once_with()
 
 
+async def test_route_restart_defers_verifier_until_old_cleanup_finishes(
+    monkeypatch,
+) -> None:
+    import main_logic.asr_client.runtime as runtime_module
+
+    class _Verifier:
+        def __init__(self, *, block_close: bool) -> None:
+            self.close_started = asyncio.Event()
+            self.close_release = asyncio.Event()
+            self.close_calls = 0
+            if not block_close:
+                self.close_release.set()
+
+        def submit(self, _pcm16: bytes, *, sample_rate_hz: int, candidate) -> bool:
+            return bool(sample_rate_hz and candidate is not None)
+
+        def finish_candidate(self, _candidate) -> bool:
+            return True
+
+        async def reset(self) -> None:
+            return None
+
+        async def close(self) -> None:
+            self.close_calls += 1
+            self.close_started.set()
+
+        async def wait_closed(self) -> None:
+            await self.close_release.wait()
+
+        def snapshot(self) -> dict[str, int]:
+            return {}
+
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    old_verifier = _Verifier(block_close=True)
+    new_verifier = _Verifier(block_close=False)
+    verifier_factory = MagicMock(side_effect=(old_verifier, new_verifier))
+    runtime._speaker_shadow_factory = verifier_factory
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=_selection("gemini")),
+    )
+
+    await runtime._start_independent_asr_if_enabled("audio")
+    first_detector = runtime._asr_detector
+    assert first_detector._speaker_shadow is old_verifier
+
+    restart = asyncio.create_task(
+        runtime._start_independent_asr_if_enabled("audio")
+    )
+    await asyncio.wait_for(old_verifier.close_started.wait(), 1)
+    await asyncio.wait_for(restart, 1)
+
+    second_detector = runtime._asr_detector
+    assert second_detector is not first_detector
+    assert second_detector._speaker_shadow is None
+    assert runtime._asr_route_mode == "independent"
+    assert verifier_factory.call_count == 1
+
+    old_verifier.close_release.set()
+    async with asyncio.timeout(1):
+        while second_detector._speaker_shadow is None:
+            await asyncio.sleep(0)
+
+    assert second_detector._speaker_shadow is new_verifier
+    assert verifier_factory.call_count == 2
+    assert old_verifier.close_calls == 1
+
+    await runtime.close_voice_input_session()
+    await runtime._asr_runtime.wait_speaker_verifier_cleanup()
+    assert new_verifier.close_calls == 1
+
+
+async def test_route_restart_keeps_identity_detached_after_cleanup_failure(
+    monkeypatch,
+) -> None:
+    import main_logic.asr_client.runtime as runtime_module
+
+    class _Verifier:
+        def __init__(self) -> None:
+            self.close_started = asyncio.Event()
+            self.close_calls = 0
+
+        def submit(self, _pcm16: bytes, *, sample_rate_hz: int, candidate) -> bool:
+            return bool(sample_rate_hz and candidate is not None)
+
+        def finish_candidate(self, _candidate) -> bool:
+            return True
+
+        async def reset(self) -> None:
+            return None
+
+        async def close(self) -> None:
+            self.close_calls += 1
+            self.close_started.set()
+
+        async def wait_closed(self) -> None:
+            raise RuntimeError("cleanup failed")
+
+        def snapshot(self) -> dict[str, int]:
+            return {}
+
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    old_verifier = _Verifier()
+    verifier_factory = MagicMock(return_value=old_verifier)
+    runtime._speaker_shadow_factory = verifier_factory
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=_selection("gemini")),
+    )
+
+    await runtime._start_independent_asr_if_enabled("audio")
+    await runtime._start_independent_asr_if_enabled("audio")
+    await asyncio.wait_for(old_verifier.close_started.wait(), 1)
+    await runtime._asr_runtime.wait_speaker_verifier_cleanup()
+
+    assert runtime._asr_route_mode == "independent"
+    assert runtime._asr_detector is not None
+    assert runtime._asr_detector._speaker_shadow is None
+    assert runtime._asr_runtime._speaker_verifier_cleanup_failed is True
+    assert verifier_factory.call_count == 1
+
+    await runtime.close_voice_input_session()
+
+
+async def test_route_restart_bounds_stalled_verifier_cleanup(monkeypatch) -> None:
+    import main_logic.asr_client.runtime as runtime_module
+
+    class _Verifier:
+        def __init__(self) -> None:
+            self.close_started = asyncio.Event()
+            self.close_calls = 0
+
+        def submit(self, _pcm16: bytes, *, sample_rate_hz: int, candidate) -> bool:
+            return bool(sample_rate_hz and candidate is not None)
+
+        def finish_candidate(self, _candidate) -> bool:
+            return True
+
+        async def reset(self) -> None:
+            return None
+
+        async def close(self) -> None:
+            self.close_calls += 1
+            self.close_started.set()
+
+        async def wait_closed(self) -> None:
+            await asyncio.Event().wait()
+
+        def snapshot(self) -> dict[str, int]:
+            return {}
+
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    old_verifier = _Verifier()
+    verifier_factory = MagicMock(return_value=old_verifier)
+    runtime._speaker_shadow_factory = verifier_factory
+    monkeypatch.setattr(
+        runtime_module,
+        "_SPEAKER_VERIFIER_CLEANUP_TIMEOUT_SECONDS",
+        0.01,
+    )
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=_selection("gemini")),
+    )
+
+    await runtime._start_independent_asr_if_enabled("audio")
+    await runtime._start_independent_asr_if_enabled("audio")
+    await asyncio.wait_for(old_verifier.close_started.wait(), 1)
+    await asyncio.wait_for(
+        runtime._asr_runtime.wait_speaker_verifier_cleanup(),
+        1,
+    )
+
+    assert runtime._asr_route_mode == "independent"
+    assert runtime._asr_detector is not None
+    assert runtime._asr_detector._speaker_shadow is None
+    assert runtime._asr_runtime._speaker_verifier_cleanup_tasks == set()
+    assert runtime._asr_runtime._speaker_verifier_cleanup_failed is True
+    assert verifier_factory.call_count == 1
+
+    await runtime.close_voice_input_session()
+
+
 async def test_missing_setting_defaults_to_independent_asr_enabled(monkeypatch) -> None:
     import main_logic.asr_client.runtime as runtime_module
 
