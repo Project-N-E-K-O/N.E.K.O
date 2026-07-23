@@ -283,10 +283,8 @@ class TwitchLiveIngestModule(BaseModule):
                 message=_safe_error(exc),
             )
         finally:
-            try:
+            with suppress(Exception):
                 await client.close()
-            except Exception:
-                pass
 
     async def _on_message(self, message: Any, generation: int) -> None:
         if not self._owns_target(generation):
