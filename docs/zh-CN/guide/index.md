@@ -4,6 +4,17 @@ Project N.E.K.O. 是包含形象渲染、实时/文本交互、持久记忆、Ag
 
 主要边界包括 `app/` 的 Python 3.11 服务、`main_logic/` 与 `memory/`、`brain/`、Jinja/static + 共享 React 聊天、Vue plugin manager、N.E.K.O.-PC Electron shell，以及 `docker/`。
 
+## 使用前评估 N.E.K.O
+
+| 买家问题 | 说明页 |
+| --- | --- |
+| 应用是否免费，AI 服务还可能产生哪些费用？ | [费用与 Provider](./cost-and-providers) |
+| 能否完全离线运行？ | [本地与离线边界](./local-and-offline) |
+| 对话和记忆可能发送到哪里？ | [技术数据流与隐私控制](./data-and-privacy) |
+| 应该选择哪个安装渠道？ | [Steam、GitHub Releases 或源码](./install-options) |
+
+## 开发入口
+
 | 目标 | 页面 |
 | --- | --- |
 | 检查工具 | [前置条件](./prerequisites) |

@@ -64,16 +64,25 @@ function guideSidebar(lang: 'en' | 'zh-CN' | 'ja') {
       group: 'Getting Started',
       intro: 'Introduction', prereq: 'Prerequisites', dev: 'Development Setup',
       quick: 'Quick Start', struct: 'Project Structure', linux: 'Linux Desktop Runtime',
+      buyerGroup: 'Evaluate N.E.K.O.',
+      cost: 'Cost & Providers', offline: 'Local & Offline',
+      privacy: 'Data & Privacy', install: 'Install Options',
     },
     'zh-CN': {
       group: '快速上手',
       intro: '简介', prereq: '前置条件', dev: '开发环境搭建',
       quick: '快速开始', struct: '项目结构', linux: 'Linux 桌面运行时',
+      buyerGroup: '使用前评估',
+      cost: '费用与 Provider', offline: '本地与离线',
+      privacy: '数据与隐私', install: '安装渠道',
     },
     ja: {
       group: 'はじめに',
       intro: 'はじめに', prereq: '前提条件', dev: '開発環境の構築',
       quick: 'クイックスタート', struct: 'プロジェクト構造', linux: 'Linux デスクトップランタイム',
+      buyerGroup: '利用前ガイド',
+      cost: '料金と Provider', offline: 'ローカルとオフライン',
+      privacy: 'データとプライバシー', install: '導入方法',
     },
   }[lang]
   const p = lang === 'en' ? '' : `/${lang}`
@@ -88,6 +97,15 @@ function guideSidebar(lang: 'en' | 'zh-CN' | 'ja') {
         { text: t.quick, link: `${p}/guide/quick-start` },
         ...linuxDesktopItems,
         { text: t.struct, link: `${p}/guide/project-structure` },
+      ],
+    },
+    {
+      text: t.buyerGroup,
+      items: [
+        { text: t.cost, link: `${p}/guide/cost-and-providers` },
+        { text: t.offline, link: `${p}/guide/local-and-offline` },
+        { text: t.privacy, link: `${p}/guide/data-and-privacy` },
+        { text: t.install, link: `${p}/guide/install-options` },
       ],
     },
   ]

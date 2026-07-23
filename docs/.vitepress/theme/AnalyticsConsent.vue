@@ -15,7 +15,7 @@ type ConsentLocale = 'en' | 'zh-CN' | 'ja'
 const messages = {
   en: {
     title: 'Help us improve the docs',
-    body: 'With your permission, we use Google Analytics to understand which documentation pages are useful. Google Analytics is not loaded until you accept, and advertising storage remains disabled.',
+    body: 'With your permission, we use Google Analytics to understand which documentation pages are useful and when visitors choose the Steam link. Google Analytics is not loaded until you accept, and advertising storage remains disabled.',
     accept: 'Accept analytics',
     reject: 'Reject',
     settings: 'Analytics settings',
@@ -27,7 +27,7 @@ const messages = {
   },
   'zh-CN': {
     title: '帮助我们改进文档',
-    body: '经你同意后，我们会使用 Google Analytics 了解哪些文档页面更有帮助。你接受前不会加载 Google Analytics，广告存储始终保持关闭。',
+    body: '经你同意后，我们会使用 Google Analytics 了解哪些文档页面更有帮助，以及访客何时选择前往 Steam。你接受前不会加载 Google Analytics，广告存储始终保持关闭。',
     accept: '同意分析统计',
     reject: '拒绝',
     settings: '分析统计设置',
@@ -39,7 +39,7 @@ const messages = {
   },
   ja: {
     title: 'ドキュメント改善へのご協力',
-    body: '許可いただいた場合に限り、役立つページを把握するため Google Analytics を使用します。同意するまで Google Analytics は読み込まれず、広告用ストレージは常に無効です。',
+    body: '許可いただいた場合に限り、役立つページと Steam リンクが選択された回数を把握するため Google Analytics を使用します。同意するまで Google Analytics は読み込まれず、広告用ストレージは常に無効です。',
     accept: 'アクセス解析を許可',
     reject: '拒否',
     settings: 'アクセス解析の設定',

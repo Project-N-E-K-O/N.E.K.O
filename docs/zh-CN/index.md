@@ -17,7 +17,7 @@ hero:
       link: /zh-CN/guide/
     - theme: brand
       text: Steam 上获取
-      link: https://store.steampowered.com/app/4099310/__NEKO/
+      link: 'https://store.steampowered.com/app/4099310/__NEKO/?utm_source=project-neko.online&utm_medium=referral&utm_campaign=docs_home&utm_content=hero_zh_cn'
     - theme: alt
       text: API 参考
       link: /zh-CN/api/
@@ -29,7 +29,7 @@ features:
   - icon: 🎮
     title: Steam 创意工坊与社区
     details: 已上架 Steam，创意工坊支持分享角色卡、受支持的 Avatar 资源、预览图与可选参考语音。
-    link: https://store.steampowered.com/app/4099310/__NEKO/
+    link: 'https://store.steampowered.com/app/4099310/__NEKO/?utm_source=project-neko.online&utm_medium=referral&utm_campaign=docs_home&utm_content=feature_zh_cn'
     linkText: 在 Steam 上查看
   - icon: 🎙️
     title: 全模态对话
