@@ -5019,6 +5019,80 @@ describe('App', () => {
     }
   });
 
+  it('uses viewport-fit compact tool wheel layout in a wide browser viewport when the original arc would clip', () => {
+    const originalMatchMedia = window.matchMedia;
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+    mockMobileMatchMedia(false);
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1280 });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 720 });
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+      const fan = container.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      vi.spyOn(fan, 'getBoundingClientRect').mockReturnValue({
+        left: 884,
+        top: 544,
+        right: 1116,
+        bottom: 776,
+        width: 232,
+        height: 232,
+        x: 884,
+        y: 544,
+        toJSON: () => ({}),
+      });
+
+      const actionButton = container.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+      expect(actionButton).not.toBeNull();
+      fireEvent.click(actionButton);
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-layout', 'viewport-fit');
+    } finally {
+      window.matchMedia = originalMatchMedia;
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight });
+    }
+  });
+
+  it('chooses the lower-overflow compact tool wheel layout when neither arc fully fits', () => {
+    // At 94px high, the default arc clips below the viewport and viewport-fit clips above it;
+    // viewport-fit has the smaller total overflow, so this reaches the browser-only tiebreaker.
+    const originalMatchMedia = window.matchMedia;
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+    mockMobileMatchMedia(true);
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 532 });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 94 });
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+      const fan = container.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      vi.spyOn(fan, 'getBoundingClientRect').mockReturnValue({
+        left: 302,
+        top: -65,
+        right: 534,
+        bottom: 167,
+        width: 232,
+        height: 232,
+        x: 302,
+        y: -65,
+        toJSON: () => ({}),
+      });
+
+      const actionButton = container.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+      expect(actionButton).not.toBeNull();
+      fireEvent.click(actionButton);
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-layout', 'viewport-fit');
+    } finally {
+      window.matchMedia = originalMatchMedia;
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight });
+    }
+  });
+
   it('uses viewport-fit compact tool wheel layout on desktop when the surface is near the taskbar', () => {
     const desktopLayout = installDesktopCompactLayout({
       windowBounds: { x: 0, y: 470, width: 700, height: 330 },
@@ -5046,6 +5120,38 @@ describe('App', () => {
 
       expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
       expect(fan).toHaveAttribute('data-compact-tool-wheel-layout', 'viewport-fit');
+    } finally {
+      desktopLayout.restore();
+    }
+  });
+
+  it('keeps the default compact tool wheel layout when a short desktop work area clips the reversed arc vertically', () => {
+    const desktopLayout = installDesktopCompactLayout({
+      windowBounds: { x: 0, y: 0, width: 430, height: 156 },
+      workArea: { x: 0, y: 0, width: 430, height: 156 },
+    }, { width: 430, height: 156 });
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+      const fan = container.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      vi.spyOn(fan, 'getBoundingClientRect').mockReturnValue({
+        left: 100,
+        top: -60,
+        right: 332,
+        bottom: 172,
+        width: 232,
+        height: 232,
+        x: 100,
+        y: -60,
+        toJSON: () => ({}),
+      });
+
+      const actionButton = container.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+      expect(actionButton).not.toBeNull();
+      fireEvent.click(actionButton);
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-layout', 'default');
     } finally {
       desktopLayout.restore();
     }
@@ -6641,6 +6747,32 @@ describe('App', () => {
     expect(compactChatStyles).toMatch(
       /\[data-compact-tool-wheel-layout="viewport-fit"\]\s+\.compact-input-tool-item\[data-compact-tool-wheel-slot="hidden"[\s\S]*?transition: none;/s,
     );
+  });
+
+  it('uses the same visual slot stacking hierarchy for both compact tool wheel layouts', () => {
+    expect(compactChatStyles).toMatch(
+      /data-compact-input-tool-fan-open="true"\]\s+\.compact-input-tool-item\[data-compact-tool-wheel-slot="-2"\],[\s\S]*?data-compact-tool-wheel-slot="2"\]\s*\{\s*z-index:\s*1;/s,
+    );
+    expect(compactChatStyles).toMatch(
+      /data-compact-input-tool-fan-open="true"\]\s+\.compact-input-tool-item\[data-compact-tool-wheel-slot="-1"\],[\s\S]*?data-compact-tool-wheel-slot="1"\]\s*\{\s*z-index:\s*2;/s,
+    );
+    expect(compactChatStyles).toMatch(
+      /data-compact-input-tool-fan-open="true"\]\s+\.compact-input-tool-item\[data-compact-tool-wheel-slot="0"\]\s*\{\s*z-index:\s*3;/s,
+    );
+  });
+
+  it('uses dark theme tokens for active compact tool wheel buttons', () => {
+    const darkToolButtonSelector = '[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-item {';
+    const ruleStart = compactChatStyles.indexOf(darkToolButtonSelector);
+    const ruleEnd = compactChatStyles.indexOf('}', ruleStart);
+    const darkToolButtonRule = ruleStart >= 0 && ruleEnd > ruleStart
+      ? compactChatStyles.slice(ruleStart, ruleEnd + 1)
+      : '';
+
+    expect(darkToolButtonRule).toContain('--compact-tool-button-active-fill:');
+    expect(darkToolButtonRule).toContain('rgba(17, 34, 51, 0.98)');
+    expect(darkToolButtonRule).toContain('--compact-tool-button-active-shadow:');
+    expect(darkToolButtonRule).not.toContain('rgba(255, 255, 255, 0.98)');
   });
 
   it('shows compact tool wheel tooltips from pointer hover or keyboard-visible focus only', () => {

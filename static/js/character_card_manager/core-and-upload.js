@@ -1771,6 +1771,24 @@ async function removeWorkshopReferenceAudio(contentFolder) {
     return data;
 }
 
+function openPublishedWorkshopItem(webUrl) {
+    if (window.electronShell && typeof window.electronShell.openExternal === 'function') {
+        Promise.resolve(window.electronShell.openExternal(webUrl))
+            .then(result => {
+                if (result && result.success === false) {
+                    console.error('无法使用系统默认浏览器打开创意工坊页面:', result.error || 'Unknown error');
+                }
+            })
+            .catch(error => {
+                console.error('无法使用系统默认浏览器打开创意工坊页面:', error);
+            });
+        return;
+    }
+
+    // 普通网页环境没有 Electron 桥，交给当前浏览器打开新标签页。
+    window.open(webUrl, '_blank', 'noopener,noreferrer');
+}
+
 // 上传物品功能
 function uploadItem() {
     // 检查是否为默认模型
@@ -1915,21 +1933,13 @@ function uploadItem() {
                         cleanupTempFolder(currentUploadTempFolder, true);
                     }
 
-                    // 使用Steam overlay打开物品页面
+                    // 上传完成后使用系统默认浏览器打开创意工坊物品页面。
                     try {
                         const published_id = data.published_file_id;
-                        const overlayUrl = `steam://url/CommunityFilePage/${published_id}`;
                         const webUrl = `https://steamcommunity.com/sharedfiles/filedetails/?id=${published_id}`;
-
-                        // 检查是否支持Steam overlay
-                        if (window.steam && typeof window.steam.ActivateGameOverlayToWebPage === 'function') {
-                            window.steam.ActivateGameOverlayToWebPage(overlayUrl);
-                        } else {
-                            // Electron / 嵌入浏览器环境下直接打开 steam:// 可能导致窗口异常，回退到网页链接
-                            window.open(webUrl, '_blank', 'noopener');
-                        }
+                        openPublishedWorkshopItem(webUrl);
                     } catch (e) {
-                        console.error('无法打开Steam overlay:', e);
+                        console.error('无法打开创意工坊页面:', e);
                     }
 
                     // 延迟关闭modal并跳转到角色卡页面

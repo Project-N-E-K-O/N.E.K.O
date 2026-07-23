@@ -121,7 +121,7 @@ async def push_activity_signal(request: Request):
 
     * Unified ``_validate_local_mutation_request`` guard (issue #1479
       Step 2): same Origin + ``X-CSRF-Token`` contract every other
-      browser-facing mutation endpoint uses (tutorial-prompt,
+      browser-facing mutation endpoint uses (seven-day-tutorial,
       screenshot, autostart-prompt, …). Replaces PR #1477's interim
       Origin-only gate. Same-origin Electron renderers and browser
       tabs send ``X-CSRF-Token`` via

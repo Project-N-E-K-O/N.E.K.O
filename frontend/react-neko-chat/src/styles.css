@@ -4641,6 +4641,20 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   opacity: 0;
 }
 
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"],
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
+  z-index: 1;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-1"],
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="1"] {
+  z-index: 2;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="0"] {
+  z-index: 3;
+}
+
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] {
   opacity: 1;
   transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(107.35deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(-107.35deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.86);
@@ -6115,6 +6129,14 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   --compact-tool-button-shadow:
     0 8px 18px rgba(5, 12, 24, 0.36),
     inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  --compact-tool-button-active-fill:
+    radial-gradient(circle at 30% 25%, rgba(92, 196, 255, 0.3) 0%, rgba(36, 68, 96, 0.96) 44%, rgba(17, 34, 51, 0.98) 100%);
+  --compact-tool-button-active-shadow:
+    0 0 0 2px rgba(92, 196, 255, 0.42),
+    0 10px 22px rgba(0, 0, 0, 0.34),
+    0 4px 12px rgba(14, 83, 128, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 -10px 18px rgba(6, 19, 32, 0.24);
 }
 
 [data-theme="dark"] .compact-input-tool-fan .compact-input-tool-item[data-compact-tool-pointer-hovered="true"],

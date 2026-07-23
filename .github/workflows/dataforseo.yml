@@ -131,5 +131,6 @@ jobs:
         with:
           name: dataforseo-report-${{ github.run_id }}
           path: docs/.seo-reports/*.json
-          if-no-files-found: ignore
+          if-no-files-found: error
+          include-hidden-files: true
           retention-days: 14
