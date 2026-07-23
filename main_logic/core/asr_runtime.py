@@ -11,6 +11,7 @@ import asyncio
 import json
 import struct
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -19,6 +20,7 @@ from main_logic.asr_client.runtime import (
     AsrStartStatus,
     IndependentAsrRuntime,
 )
+from main_logic.asr_client.speaker_shadow import SpeakerShadowRuntime
 from main_logic.voice_turn.contracts import (
     AsrFailureEvent,
     AsrLifecycleNotification,
@@ -205,6 +207,9 @@ class AsrRuntimeMixin:
         self._microphone_route_generation = 0
         self._independent_asr_provider: str | None = None
         self._independent_asr_route_key: str | None = None
+        self._speaker_shadow_factory: (
+            Callable[[], SpeakerShadowRuntime | None] | None
+        ) = None
         self._voice_input_audio_pipeline = VoiceInputAudioPipeline()
         self._voice_input_registry = VoiceInputRegistry()
         self._core_chat_voice_input_registration = (
@@ -325,6 +330,7 @@ class AsrRuntimeMixin:
         result = await self._asr_runtime.start(
             route_key=core_type,
             resource_optimization_enabled=optimization_value is not False,
+            speaker_shadow_factory=self._speaker_shadow_factory,
         )
         self._independent_asr_provider = result.provider
         if result.status is AsrStartStatus.READY:

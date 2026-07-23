@@ -2552,7 +2552,7 @@ async def test_start_uses_current_core_route_only_after_provider_ready(
     factory = MagicMock(return_value=asr)
     speaker_shadow = object()
     speaker_shadow_factory = MagicMock(return_value=speaker_shadow)
-    runtime._asr_runtime._speaker_shadow_factory = speaker_shadow_factory
+    runtime._speaker_shadow_factory = speaker_shadow_factory
     monkeypatch.setattr(
         core_module,
         "aload_global_conversation_settings",
@@ -2582,6 +2582,43 @@ async def test_start_uses_current_core_route_only_after_provider_ready(
     speaker_shadow_factory.assert_called_once_with()
     assert factory.call_args.args == ("gemini",)
     assert factory.call_args.kwargs["selection"].provider_key == "gemini"
+
+
+async def test_core_speaker_shadow_factory_failure_keeps_asr_available(
+    monkeypatch,
+) -> None:
+    import main_logic.asr_client.runtime as runtime_module
+
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    asr = type("Asr", (), {})()
+    asr.connect = AsyncMock()
+    asr.close = AsyncMock()
+    runtime._speaker_shadow_factory = MagicMock(
+        side_effect=RuntimeError("missing model")
+    )
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=_selection("gemini")),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_create_asr_session_from_selection",
+        MagicMock(return_value=asr),
+    )
+
+    await runtime._start_independent_asr_if_enabled("audio")
+    await runtime._restart_transport(max_attempts=1)
+
+    assert runtime._asr_route_mode == "independent"
+    assert runtime._asr_detector._speaker_shadow is None
+    runtime._speaker_shadow_factory.assert_called_once_with()
 
 
 async def test_missing_setting_defaults_to_independent_asr_enabled(monkeypatch) -> None:
