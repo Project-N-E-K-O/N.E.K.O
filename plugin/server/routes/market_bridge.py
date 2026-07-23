@@ -893,10 +893,35 @@ async def market_oauth_account_summary(
             return MarketOAuthAccountSummaryResponse.model_validate(cached)
 
         access_token = token_data.get("access_token")
-        auth_user, market_user = await asyncio.gather(
-            _fetch_auth_userinfo(access_token),
-            _fetch_current_market_user(token_data),
-        )
+        try:
+            auth_user, market_user = await asyncio.gather(
+                _fetch_auth_userinfo(access_token),
+                _fetch_current_market_user(token_data),
+            )
+        except _OAuthAccessTokenRejected:
+            token_data = await _ensure_valid_oauth_token(
+                force_refresh=True,
+                rejected_access_token=(
+                    access_token if isinstance(access_token, str) else None
+                ),
+            )
+            if not token_data:
+                _clear_account_summary_cache()
+                return _unauthenticated_account_summary()
+
+            access_token = token_data.get("access_token")
+            try:
+                auth_user, market_user = await asyncio.gather(
+                    _fetch_auth_userinfo(access_token),
+                    _fetch_current_market_user(token_data),
+                )
+            except _OAuthAccessTokenRejected:
+                logger.info("Refreshed Auth access token was rejected by userinfo")
+                _unlink_if_exists(_OAUTH_TOKEN_FILE)
+                _clear_account_summary_cache()
+                return _unauthenticated_account_summary()
+
+            cache_key = _account_summary_cache_key(token_data)
         summary = _build_account_summary(token_data, auth_user, market_user)
         _store_account_summary(cache_key, summary)
         return summary
@@ -1178,7 +1203,11 @@ def _extract_subject(user: dict[str, Any] | None) -> str | None:
     return None
 
 
-async def _ensure_valid_oauth_token() -> dict[str, Any] | None:
+async def _ensure_valid_oauth_token(
+    *,
+    force_refresh: bool = False,
+    rejected_access_token: str | None = None,
+) -> dict[str, Any] | None:
     token_data = _read_json_file(_OAUTH_TOKEN_FILE)
     if not token_data or not token_data.get("access_token"):
         return None
@@ -1186,7 +1215,12 @@ async def _ensure_valid_oauth_token() -> dict[str, Any] | None:
         logger.info("Skip saved Auth token: auth_url/client_id provenance mismatch")
         _unlink_if_exists(_OAUTH_TOKEN_FILE)
         return None
-    if not _market_token_expires_soon(token_data):
+    if (
+        rejected_access_token is not None
+        and token_data.get("access_token") != rejected_access_token
+    ):
+        return token_data
+    if not force_refresh and not _market_token_expires_soon(token_data):
         return token_data
     if not token_data.get("refresh_token"):
         logger.info("Saved Auth token is expired and has no refresh token")
@@ -1199,7 +1233,12 @@ async def _ensure_valid_oauth_token() -> dict[str, Any] | None:
             return None
         if not _oauth_token_provenance_matches(current):
             return None
-        if not _market_token_expires_soon(current):
+        if (
+            rejected_access_token is not None
+            and current.get("access_token") != rejected_access_token
+        ):
+            return current
+        if not force_refresh and not _market_token_expires_soon(current):
             return current
         if not current.get("refresh_token"):
             _unlink_if_exists(_OAUTH_TOKEN_FILE)
@@ -1212,6 +1251,8 @@ async def _ensure_valid_oauth_token() -> dict[str, Any] | None:
             if exc.status_code == 401:
                 _unlink_if_exists(_OAUTH_TOKEN_FILE)
                 return None
+            if force_refresh:
+                raise
             if not _market_token_is_expired(current):
                 return current
             return None
@@ -1447,6 +1488,10 @@ def _clear_account_summary_cache() -> None:
     _ACCOUNT_SUMMARY_CACHE = None
 
 
+class _OAuthAccessTokenRejected(Exception):
+    """Auth userinfo rejected a token that may need an early refresh."""
+
+
 async def _fetch_auth_userinfo(access_token: Any) -> dict[str, Any] | None:
     if not isinstance(access_token, str) or not access_token:
         return None
@@ -1456,6 +1501,8 @@ async def _fetch_auth_userinfo(access_token: Any) -> dict[str, Any] | None:
                 f"{NEKO_AUTH_URL.rstrip('/')}/userinfo",
                 headers={"Authorization": f"Bearer {access_token}"},
             )
+            if res.status_code in {401, 403}:
+                raise _OAuthAccessTokenRejected
             if res.status_code != 200:
                 return None
             data = res.json()
