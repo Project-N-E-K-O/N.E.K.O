@@ -53,10 +53,6 @@ class CoreConfigMixin:
     # 2**_IP_CHECK_MAX_EXPONENT 乘上 base 已远超 _IP_CHECK_RETRY_MAX_S，封在这里无损。
     _IP_CHECK_MAX_EXPONENT = 32
 
-    # 连续失败到这个次数（退避已爬到 _IP_CHECK_RETRY_MAX_S 封顶，约 15 分钟）后，
-    # 视为 IP 探测长期不可用，允许 Steam 的兜底票落定。见 _check_non_mainland。
-    _IP_CHECK_SETTLE_AFTER_FAILURES = 6
-
     @classmethod
     def _ip_check_backoff_s(cls, failures: int) -> float:
         """Seconds to wait before the next probe after `failures` consecutive failures."""
@@ -199,23 +195,15 @@ class CoreConfigMixin:
             # IP 探测无结论时才轮到 Steam。它反映的是 Steam 服务端看到的出口 IP，
             # 挂代理时同样会跟着代理走，所以只当兜底票，不当权威票。
             #
-            # 冷启动首探超时的那一刻 Steam 往往已经有票，此时落定它就等于把这一票
-            # 变成永久裁决，IP 的退避重试再也没机会接管——恰恰在两者会分歧的代理
-            # 场景下钉死错误线路。所以短期内只当临时答案，不写 _region_cache。
-            #
-            # 但退避爬到封顶（连续失败 _IP_CHECK_SETTLE_AFTER_FAILURES 次，约 15
-            # 分钟）之后就该落定：探测长期不可用时不落定意味着每个封顶周期都要再付
-            # 一次 3 秒超时，而 get_core_config 有同步调用点。落定是安全的——IP 唯一
-            # 强于 Steam 的场景（只设系统 HTTP 代理的大陆用户）里探测本就能直连成功，
-            # 不会走到这里。
-            if ConfigManager._ip_check_attempts >= ConfigManager._IP_CHECK_SETTLE_AFTER_FAILURES:
-                ConfigManager._region_cache = steam_result
-                print(
-                    f"[GeoIP] Steam fallback settles: non_mainland={steam_result} "
-                    f"(IP probe failed {ConfigManager._ip_check_attempts}x, giving it up)",
-                    file=sys.stderr,
-                )
-                return steam_result
+            # 刻意**永不写** _region_cache，无论 IP 失败多少次：
+            #  - 冷启动首探超时那一刻 Steam 往往已经有票，落定它等于把这一票变成
+            #    永久裁决，IP 的退避重试再也没机会接管；
+            #  - 「失败够多次就落定」也不行：_ip_check_attempts 在网络 IO 之前递增，
+            #    某次探测尚在飞行中时并发调用就会看到阈值达标并落定 Steam，随后那次
+            #    探测的成功结论写进 _ip_check_cache 也永远不会被采纳；
+            #  - 且探测长期失败不代表 Steam 就对——Steam 走海外代理而直连 GeoIP 暂时
+            #    不可用时两者会分歧，网络恢复后必须让 IP 接管。
+            # 代价是探测持续失败时每个封顶退避周期再付一次超时，这是有意的取舍。
             if not ConfigManager._geo_steam_fallback_logged:
                 ConfigManager._geo_steam_fallback_logged = True
                 print(

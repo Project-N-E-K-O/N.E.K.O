@@ -97,8 +97,8 @@ def test_steam_breaks_the_tie_when_ip_is_silent(steam, expected):
 
 @pytest.mark.unit
 @pytest.mark.parametrize('steam', [True, False])
-def test_steam_fallback_does_not_latch_during_cold_boot(steam):
-    """Latching Steam during the cold-boot window would freeze out the IP retries."""
+def test_steam_fallback_never_latches(steam):
+    """Latching Steam would freeze out the IP retries — at any failure count."""
     assert _probe(ip=None, steam=steam)._check_non_mainland() is steam
     assert ConfigManager._region_cache is None
     # IP 退避重试拿到结论后立刻接管，即使方向与 Steam 相反
@@ -107,22 +107,16 @@ def test_steam_fallback_does_not_latch_during_cold_boot(steam):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize('steam', [True, False])
-def test_steam_fallback_settles_once_the_probe_is_hopeless(monkeypatch, steam):
-    """A permanently unreachable probe must not keep costing a 3s timeout every cycle."""
-    monkeypatch.setattr(
-        ConfigManager, '_ip_check_attempts', ConfigManager._IP_CHECK_SETTLE_AFTER_FAILURES,
-    )
-    assert _probe(ip=None, steam=steam)._check_non_mainland() is steam
-    assert ConfigManager._region_cache is steam
-
-
-@pytest.mark.unit
-def test_steam_fallback_settle_threshold_is_at_the_backoff_ceiling():
-    """The settle point should be where backoff has stopped growing, not earlier."""
-    n = ConfigManager._IP_CHECK_SETTLE_AFTER_FAILURES
-    assert ConfigManager._ip_check_backoff_s(n) == ConfigManager._IP_CHECK_RETRY_MAX_S
-    assert ConfigManager._ip_check_backoff_s(n - 1) < ConfigManager._IP_CHECK_RETRY_MAX_S
+@pytest.mark.parametrize('failures', [1, 6, 7, 100])
+def test_steam_fallback_never_latches_however_long_the_probe_has_failed(monkeypatch, failures):
+    """No failure count may promote the fallback: connectivity can still recover, and
+    _ip_check_attempts counts probes *started*, so a threshold would fire mid-flight."""
+    monkeypatch.setattr(ConfigManager, '_ip_check_attempts', failures)
+    assert _probe(ip=None, steam=True)._check_non_mainland() is True
+    assert ConfigManager._region_cache is None
+    # 那次「飞行中」的探测最终成功时，它的结论仍然能接管
+    assert _probe(ip=False, steam=True)._check_non_mainland() is False
+    assert ConfigManager._region_cache is False
 
 
 @pytest.mark.unit
