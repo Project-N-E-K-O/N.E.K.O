@@ -31,11 +31,16 @@ from main_logic.proactive_chat.state import (  # noqa: F401
     _half_life_for,
     _source_hash,
     _source_history,
-    _source_history_loaded,
     _source_history_lock,
     _source_skip_probability,
 )
 from ..shared_state import get_config_manager as _get_legacy_config_manager
+
+
+def __getattr__(name: str):
+    if name == "_source_history_loaded":
+        return _state._source_history_loaded
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _legacy_memory_dir():

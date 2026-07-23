@@ -29,7 +29,6 @@ from main_logic.proactive_chat.state import (  # noqa: F401
     _proactive_chat_totals,
     _invite_ever_delivered,
     _proactive_chat_totals_lock,
-    _proactive_chat_totals_loaded,
     _RECENT_CHAT_MAX_AGE_SECONDS,
     _PROACTIVE_SIMILARITY_THRESHOLD,
     _format_recent_proactive_chats,
@@ -48,6 +47,12 @@ from main_logic.proactive_chat.state import (  # noqa: F401
     _is_similar_to_recent_proactive_chat,
 )
 from ..shared_state import get_config_manager as _get_legacy_config_manager
+
+
+def __getattr__(name: str):
+    if name == "_proactive_chat_totals_loaded":
+        return _state._proactive_chat_totals_loaded
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _legacy_memory_dir():

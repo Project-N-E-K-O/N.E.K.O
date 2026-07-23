@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from main_logic.proactive_chat import state
+from main_routers import system_router
 from main_routers.system_router import proactive_history, proactive_sources
 
 
@@ -15,18 +16,22 @@ from main_routers.system_router import proactive_history, proactive_sources
 def _restore_state_globals():
     source_history = dict(state._source_history)
     source_loaded = state._source_history_loaded
+    source_loaded_path = state._source_history_loaded_path
     totals = dict(state._proactive_chat_totals)
     ever_delivered = dict(state._invite_ever_delivered)
     totals_loaded = state._proactive_chat_totals_loaded
+    totals_loaded_path = state._proactive_chat_totals_loaded_path
     yield
     state._source_history.clear()
     state._source_history.update(source_history)
     state._source_history_loaded = source_loaded
+    state._source_history_loaded_path = source_loaded_path
     state._proactive_chat_totals.clear()
     state._proactive_chat_totals.update(totals)
     state._invite_ever_delivered.clear()
     state._invite_ever_delivered.update(ever_delivered)
     state._proactive_chat_totals_loaded = totals_loaded
+    state._proactive_chat_totals_loaded_path = totals_loaded_path
 
 
 def test_explicit_memory_dir_overrides_singleton_fallback(monkeypatch, tmp_path) -> None:
@@ -169,3 +174,74 @@ def test_legacy_facades_share_canonical_mutable_state() -> None:
         proactive_history._proactive_chat_totals_lock
         is state._proactive_chat_totals_lock
     )
+
+
+def test_legacy_facades_read_live_loaded_flags() -> None:
+    state._source_history_loaded = False
+    state._proactive_chat_totals_loaded = False
+    assert proactive_sources._source_history_loaded is False
+    assert proactive_history._proactive_chat_totals_loaded is False
+    assert system_router._source_history_loaded is False
+    assert system_router._proactive_chat_totals_loaded is False
+
+    state._source_history_loaded = True
+    state._proactive_chat_totals_loaded = True
+    assert proactive_sources._source_history_loaded is True
+    assert proactive_history._proactive_chat_totals_loaded is True
+    assert system_router._source_history_loaded is True
+    assert system_router._proactive_chat_totals_loaded is True
+
+
+@pytest.mark.asyncio
+async def test_source_history_reloads_when_memory_root_changes(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    root_a = tmp_path / "a"
+    root_b = tmp_path / "b"
+
+    def read_json(path):
+        return {
+            "entries": {
+                path.parent.name: {
+                    "ts": state.time.time(),
+                    "kind": "web",
+                }
+            }
+        }
+
+    monkeypatch.setattr(state, "read_json", read_json)
+    state._source_history_loaded = False
+    state._source_history_loaded_path = None
+
+    await state._ensure_source_history_loaded(memory_dir=root_a)
+    assert set(state._source_history) == {"a"}
+    await state._ensure_source_history_loaded(memory_dir=root_b)
+    assert set(state._source_history) == {"b"}
+
+
+@pytest.mark.asyncio
+async def test_totals_reload_when_memory_root_changes(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    root_a = tmp_path / "a"
+    root_b = tmp_path / "b"
+
+    def read_json(path):
+        total = 1 if path.parent == root_a else 2
+        return {
+            "totals": {"Yui": total},
+            "ever_delivered": {path.parent.name: True},
+        }
+
+    monkeypatch.setattr(state, "read_json", read_json)
+    state._proactive_chat_totals_loaded = False
+    state._proactive_chat_totals_loaded_path = None
+
+    await state._ensure_proactive_chat_totals_loaded(memory_dir=root_a)
+    assert state._proactive_chat_totals == {"Yui": 1}
+    assert state._invite_ever_delivered == {"a": True}
+    await state._ensure_proactive_chat_totals_loaded(memory_dir=root_b)
+    assert state._proactive_chat_totals == {"Yui": 2}
+    assert state._invite_ever_delivered == {"b": True}

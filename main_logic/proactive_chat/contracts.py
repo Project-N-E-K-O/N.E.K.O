@@ -168,11 +168,8 @@ def _proactive_response_body(
     if action is not None:
         body["action"] = action
     body.update(extra)
-    body["reason_code"] = reason_code
     if not body.get("stage"):
         body["stage"] = _proactive_stage_for_reason(reason_code)
-    if action is not None:
-        body["action"] = action
     return body
 
 

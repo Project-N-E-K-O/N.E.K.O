@@ -51,6 +51,7 @@ _SOURCE_HISTORY_SCHEMA_VERSION = 1
 _source_history: dict[str, dict[str, Any]] = {}
 _source_history_lock = asyncio.Lock()
 _source_history_loaded = False
+_source_history_loaded_path: Path | None = None
 
 
 def _resolve_memory_dir(memory_dir: str | Path | None) -> Path:
@@ -100,13 +101,14 @@ async def _ensure_source_history_loaded(
     *, memory_dir: str | Path | None = None
 ) -> None:
     """Load source history once without blocking the event loop."""
-    global _source_history_loaded
-    if _source_history_loaded:
+    global _source_history_loaded, _source_history_loaded_path
+    path = _source_history_path(memory_dir=memory_dir)
+    if _source_history_loaded and _source_history_loaded_path == path:
         return
     async with _source_history_lock:
-        if _source_history_loaded:
+        if _source_history_loaded and _source_history_loaded_path == path:
             return
-        path = _source_history_path(memory_dir=memory_dir)
+        _source_history.clear()
         try:
             data = await asyncio.to_thread(read_json, path)
             entries = data.get('entries') if isinstance(data, dict) else None
@@ -132,6 +134,7 @@ async def _ensure_source_history_loaded(
                 exc,
             )
         _source_history_loaded = True
+        _source_history_loaded_path = path
 
 
 async def _record_source_used(
@@ -229,6 +232,7 @@ _proactive_chat_totals_lock = asyncio.Lock()
 
 
 _proactive_chat_totals_loaded = False
+_proactive_chat_totals_loaded_path: Path | None = None
 
 
 _RECENT_CHAT_MAX_AGE_SECONDS = 3600  # 1小时内的搭话记录
@@ -349,7 +353,7 @@ def _record_proactive_chat(lanlan_name: str, message: str, channel: str = ''):
     args:
     - lanlan_name: model name
     - message: chat content
-    - channel: source channel (optional, default 'vision')
+    - channel: source channel (optional, default '')
     """
     if lanlan_name not in _proactive_chat_history:
         _proactive_chat_history[lanlan_name] = deque(maxlen=PROACTIVE_CHAT_HISTORY_MAX)
@@ -447,13 +451,21 @@ async def _ensure_proactive_chat_totals_loaded(
     "force-first re-deliver once" for existing users (at most once, because
     ever_delivered is set True and persisted immediately after delivery); this is
     a one-off v1→v2 migration cost and needs no dedicated migration script."""
-    global _proactive_chat_totals_loaded
-    if _proactive_chat_totals_loaded:
+    global _proactive_chat_totals_loaded, _proactive_chat_totals_loaded_path
+    path = _proactive_chat_totals_path(memory_dir=memory_dir)
+    if (
+        _proactive_chat_totals_loaded
+        and _proactive_chat_totals_loaded_path == path
+    ):
         return
     async with _proactive_chat_totals_lock:
-        if _proactive_chat_totals_loaded:
+        if (
+            _proactive_chat_totals_loaded
+            and _proactive_chat_totals_loaded_path == path
+        ):
             return
-        path = _proactive_chat_totals_path(memory_dir=memory_dir)
+        _proactive_chat_totals.clear()
+        _invite_ever_delivered.clear()
         try:
             data = await asyncio.to_thread(read_json, path)
             totals = data.get('totals') if isinstance(data, dict) else None
@@ -473,6 +485,7 @@ async def _ensure_proactive_chat_totals_loaded(
         except Exception as exc:
             logger.warning("proactive_chat_totals load failed: %s", exc)
         _proactive_chat_totals_loaded = True
+        _proactive_chat_totals_loaded_path = path
 
 
 def _get_proactive_chat_total(lanlan_name: str) -> int:
