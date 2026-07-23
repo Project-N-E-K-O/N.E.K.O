@@ -11,7 +11,7 @@ import asyncio
 import json
 import struct
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
 
 from main_logic.asr_client.runtime import (
@@ -26,7 +26,6 @@ from main_logic.voice_turn.contracts import (
     AsrSubmitStatus,
     VoicePartialEvent,
     VoiceIngressToken,
-    VoiceTranscriptCallback,
     VoiceTranscriptEvent,
     VoiceTurnToken,
 )
@@ -35,15 +34,17 @@ from main_logic.voice_turn.audio_input import (
     VoiceInputAudioPipeline,
 )
 from main_logic import core as _core_facade
+from main_logic.voice_input import (
+    BuiltinVoiceInputConsumer,
+    VoiceInputConsumerCapabilities,
+    VoiceInputRegistry,
+)
+from main_logic.voice_input.consumers import (
+    CoreChatVoiceInputConsumer,
+    GameVoiceInputConsumer,
+)
 
 from ._shared import logger
-
-
-@dataclass(frozen=True, slots=True)
-class VoiceInputConsumerBinding:
-    owner: Literal["game"]
-    on_final: VoiceTranscriptCallback
-    identity: object = field(default_factory=object, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,9 +73,7 @@ class _QueuedMicFrame:
             source_rate_hz = int(declared_rate_hz)
         else:
             raise ValueError("MIC_SAMPLE_RATE_UNSUPPORTED")
-        duration_us = (
-            len(samples) * 1_000_000 + source_rate_hz - 1
-        ) // source_rate_hz
+        duration_us = (len(samples) * 1_000_000 + source_rate_hz - 1) // source_rate_hz
         return cls(
             message=message,
             duration_us=duration_us,
@@ -93,9 +92,7 @@ class _AudioDurationQueue:
         self.capacity_us = capacity_us
         self.maxsize = max_frames
         self._duration_us = 0
-        self._queue: asyncio.Queue[_QueuedMicFrame] = asyncio.Queue(
-            maxsize=max_frames
-        )
+        self._queue: asyncio.Queue[_QueuedMicFrame] = asyncio.Queue(maxsize=max_frames)
 
     @property
     def duration_us(self) -> int:
@@ -189,10 +186,6 @@ class AsrRuntimeMixin:
         self._voice_lease_requires_abort = False
         self._voice_input_suppressed = True
         self._voice_input_suppression_reasons: set[str] = {"owner_none"}
-        self._voice_input_consumer_bindings: dict[
-            str,
-            VoiceInputConsumerBinding,
-        ] = {}
         self._audio_stream_queue = _AudioDurationQueue(
             capacity_us=2_000_000,
             max_frames=256,
@@ -213,6 +206,37 @@ class AsrRuntimeMixin:
         self._independent_asr_provider: str | None = None
         self._independent_asr_route_key: str | None = None
         self._voice_input_audio_pipeline = VoiceInputAudioPipeline()
+        self._voice_input_registry = VoiceInputRegistry()
+        self._core_chat_voice_input_registration = (
+            self._voice_input_registry.register_builtin(
+                BuiltinVoiceInputConsumer.CORE_CHAT,
+                CoreChatVoiceInputConsumer(
+                    on_prepare=self._prepare_core_chat_voice_turn,
+                    on_partial_event=self._send_core_chat_asr_preview,
+                    on_final_event=self._dispatch_core_chat_asr_transcript,
+                    on_cancelled_event=self._cancel_core_chat_voice_turn,
+                ),
+                capabilities=VoiceInputConsumerCapabilities(
+                    accepts_partial=True,
+                    accepts_final=True,
+                ),
+            )
+        )
+        self._game_voice_input_registration = (
+            self._voice_input_registry.register_builtin(
+                BuiltinVoiceInputConsumer.GAME,
+                GameVoiceInputConsumer(
+                    lanlan_name=lambda: str(getattr(self, "lanlan_name", "core")),
+                ),
+                capabilities=VoiceInputConsumerCapabilities(
+                    accepts_partial=False,
+                    accepts_final=True,
+                ),
+            )
+        )
+        self._voice_input_registry.activate(
+            self._core_chat_voice_input_registration.handle
+        )
         callbacks = AsrRuntimeCallbacks(
             display_name=lambda: str(getattr(self, "lanlan_name", "core")),
             on_prepare_turn=self._prepare_core_voice_turn,
@@ -256,55 +280,14 @@ class AsrRuntimeMixin:
         )
 
     def _voice_input_accepts_pcm(self) -> bool:
-        owner_has_target = self._voice_lease_owner == "core" or (
-            self._voice_lease_owner == "game"
-            and self._voice_input_consumer_bindings.get("game") is not None
-        )
         return bool(
             self._voice_lease_synchronized
-            and owner_has_target
+            and self._voice_lease_owner in {"core", "game"}
+            and self._voice_input_registry.active_accepts_input
             and not self._voice_lease_hard_muted
             and not self._voice_lease_focus_suppressed
             and not self._voice_input_suppressed
         )
-
-    def bind_voice_input_consumer(
-        self,
-        owner: str,
-        on_final: VoiceTranscriptCallback,
-    ) -> VoiceInputConsumerBinding:
-        self._ensure_asr_runtime_state()
-        normalized_owner = str(owner or "").strip().lower()
-        if normalized_owner != "game":
-            raise ValueError("VOICE_INPUT_CONSUMER_OWNER_UNSUPPORTED")
-        if not callable(on_final):
-            raise TypeError("VOICE_INPUT_CONSUMER_CALLBACK_REQUIRED")
-        if self._voice_lease_owner == normalized_owner:
-            raise RuntimeError("VOICE_INPUT_CONSUMER_BIND_BEFORE_TAKEOVER")
-        if normalized_owner in self._voice_input_consumer_bindings:
-            raise RuntimeError("VOICE_INPUT_CONSUMER_ALREADY_BOUND")
-        binding = VoiceInputConsumerBinding(owner="game", on_final=on_final)
-        self._voice_input_consumer_bindings[normalized_owner] = binding
-        return binding
-
-    def unbind_voice_input_consumer(
-        self,
-        binding: VoiceInputConsumerBinding,
-    ) -> bool:
-        self._ensure_asr_runtime_state()
-        if not isinstance(binding, VoiceInputConsumerBinding):
-            return False
-        if self._voice_lease_owner == binding.owner:
-            raise RuntimeError("VOICE_INPUT_CONSUMER_RELEASE_LEASE_FIRST")
-        if self._voice_input_consumer_bindings.get(binding.owner) is not binding:
-            return False
-        del self._voice_input_consumer_bindings[binding.owner]
-        return True
-
-    def _current_voice_input_consumer(self) -> VoiceInputConsumerBinding | None:
-        if self._voice_lease_owner != "game":
-            return None
-        return self._voice_input_consumer_bindings.get("game")
 
     async def _start_independent_asr_if_enabled(self, input_mode: str) -> None:
         self._ensure_asr_runtime_state()
@@ -408,8 +391,7 @@ class AsrRuntimeMixin:
         if dropped:
             self._audio_stream_dropped_total += dropped
             logger.info(
-                "[%s] audio stream queue cleared reason=%s dropped=%d "
-                "total_dropped=%d",
+                "[%s] audio stream queue cleared reason=%s dropped=%d total_dropped=%d",
                 self.lanlan_name,
                 reason,
                 dropped,
@@ -703,6 +685,7 @@ class AsrRuntimeMixin:
                 await self._asr_runtime.abort("ingress_backpressure")
 
     def _invalidate_voice_pcm_sync(self, reason: str) -> None:
+        self._voice_input_registry.invalidate_utterance(reason)
         self._clear_audio_stream_queue(reason)
         self.hot_swap_audio_cache.clear()
 
@@ -723,10 +706,20 @@ class AsrRuntimeMixin:
         self._voice_lease_owner = owner
         self._voice_lease_hard_muted = hard_muted
         self._voice_lease_focus_suppressed = focus_suppressed
+        previous_owner = previous[0]
+        if owner != previous_owner:
+            if owner == "game":
+                self._voice_input_registry.activate(
+                    self._game_voice_input_registration.handle
+                )
+            elif owner == "core":
+                self._voice_input_registry.activate(
+                    self._core_chat_voice_input_registration.handle
+                )
         reasons: set[str] = set()
         if owner == "none":
             reasons.add("owner_none")
-        elif owner == "game" and self._current_voice_input_consumer() is None:
+        elif owner == "game" and not self._voice_input_registry.active_accepts_input:
             reasons.add("game")
         if hard_muted:
             reasons.add("hard_mute")
@@ -737,14 +730,10 @@ class AsrRuntimeMixin:
         self._invalidate_voice_pcm_sync(reason)
         current = (owner, hard_muted, focus_suppressed)
         should_abort = (
-            force_abort
-            or self._voice_lease_requires_abort
-            or previous != current
+            force_abort or self._voice_lease_requires_abort or previous != current
         )
         self._voice_lease_requires_abort = False
-        if reason == "game_takeover" or (
-            owner == "game" and self._current_voice_input_consumer() is None
-        ):
+        if owner == "game" and not self._voice_input_registry.active_accepts_input:
             await self._asr_runtime.suspend(reason)
         elif reason == "game_release":
             if should_abort:
@@ -856,8 +845,13 @@ class AsrRuntimeMixin:
     async def _prepare_core_voice_turn(self, token: VoiceTurnToken) -> bool:
         if not self._ingress_token_matches(token.ingress):
             return False
-        if self._voice_lease_owner == "game":
-            return self._current_voice_input_consumer() is not None
+        if not self._voice_input_registry.begin_utterance(token):
+            return False
+        return await self._voice_input_registry.prepare_utterance()
+
+    async def _prepare_core_chat_voice_turn(self, token: VoiceTurnToken) -> bool:
+        if not self._ingress_token_matches(token.ingress):
+            return False
         session_ref = self.session
         prepare = getattr(session_ref, "prepare_external_voice_turn", None)
         try:
@@ -900,13 +894,14 @@ class AsrRuntimeMixin:
         token = event.turn_token.ingress
         if not self._ingress_token_matches(token):
             return
-        binding = self._current_voice_input_consumer()
-        if binding is not None:
-            if self._voice_input_consumer_bindings.get(binding.owner) is not binding:
-                return
-            await binding.on_final(event)
-            return
-        if self._voice_lease_owner != "core":
+        await self._voice_input_registry.dispatch_final(event)
+
+    async def _dispatch_core_chat_asr_transcript(
+        self,
+        event: VoiceTranscriptEvent,
+    ) -> None:
+        token = event.turn_token.ingress
+        if not self._ingress_token_matches(token):
             return
         session_ref = self.session
         accepted = await self.handle_input_transcript(
@@ -923,12 +918,13 @@ class AsrRuntimeMixin:
             return
         await self._submit_core_voice_turn(
             event.text,
-            turn_id=(
-                f"asr-{token.session_epoch}-{event.turn_token.turn_id}"
-            ),
+            turn_id=(f"asr-{token.session_epoch}-{event.turn_token.turn_id}"),
         )
 
     async def _send_core_asr_preview(self, event: VoicePartialEvent) -> None:
+        await self._voice_input_registry.dispatch_partial(event)
+
+    async def _send_core_chat_asr_preview(self, event: VoicePartialEvent) -> None:
         websocket = getattr(self, "websocket", None)
         send_json = getattr(websocket, "send_json", None)
         if not callable(send_json):
@@ -945,6 +941,13 @@ class AsrRuntimeMixin:
             }
         )
 
+    async def _cancel_core_chat_voice_turn(
+        self,
+        token: VoiceTurnToken,
+        reason: str,
+    ) -> None:
+        del token, reason
+
     async def _handle_core_asr_failure(self, event: AsrFailureEvent) -> None:
         del event
         self._set_microphone_route("blocked")
@@ -953,9 +956,7 @@ class AsrRuntimeMixin:
 
     async def _send_core_asr_status(self, event: AsrStatusEvent) -> None:
         await self.send_status(
-            json.dumps(
-                {"code": event.code, "details": {"provider": event.provider}}
-            )
+            json.dumps({"code": event.code, "details": {"provider": event.provider}})
         )
 
     async def _send_core_asr_lifecycle(
@@ -979,4 +980,5 @@ class AsrRuntimeMixin:
         await self._asr_runtime.wait_transcript_idle()
 
     async def close_voice_input_session(self) -> None:
+        await self._voice_input_registry.close()
         await self._asr_runtime.close()

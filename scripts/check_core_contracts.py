@@ -108,7 +108,6 @@ OWNER_SUBMODULES = {
 }
 MIXIN_SUPPORT_CLASSES = {
     "asr_runtime": {
-        "VoiceInputConsumerBinding",
         "_QueuedMicFrame",
         "_AudioDurationQueue",
         "_HotSwapAudioFrame",
