@@ -84,11 +84,14 @@ _OAUTH_REDIRECT_PATH = "/market/oauth/callback"
 _OAUTH_SESSION_TTL_SECONDS = 5 * 60
 _OAUTH_EXPIRE_SKEW_SECONDS = 60
 _MARKET_USER_STATUS_TTL_SECONDS = 60
+_ACCOUNT_SUMMARY_TTL_SECONDS = 30
 _NEKO_STATE_DIR = Path.home() / ".neko"
 _OAUTH_PENDING_FILE = _NEKO_STATE_DIR / "market_oauth_pending.json"
 _OAUTH_CALLBACK_FILE = _NEKO_STATE_DIR / "oauth_callback.json"
 _OAUTH_TOKEN_FILE = _NEKO_STATE_DIR / "market_auth.json"
 _OAUTH_REFRESH_LOCK = asyncio.Lock()
+_ACCOUNT_SUMMARY_LOCK = asyncio.Lock()
+_ACCOUNT_SUMMARY_CACHE: dict[str, Any] | None = None
 
 # 下载限制
 _DOWNLOAD_MAX_BYTES = 200 * 1024 * 1024  # 200 MB
@@ -409,6 +412,41 @@ class MarketOAuthCompleteResponse(BaseModel):
 
 class MarketOAuthLogoutResponse(BaseModel):
     message: str
+
+
+class MarketOAuthAccountSource(BaseModel):
+    """A deliberately small availability projection for one account source."""
+
+    status: Literal["ready", "unavailable"]
+
+
+class MarketOAuthAccountProfile(BaseModel):
+    display_name: str | None = None
+    username: str | None = None
+    avatar_url: str | None = None
+    login_method: str | None = None
+
+
+class MarketOAuthAccountMarket(BaseModel):
+    member_days: int | None = None
+    published_plugins: int | None = None
+    installed_plugins: int | None = None
+    total_downloads: int | None = None
+
+
+class MarketOAuthAccountSummaryResponse(BaseModel):
+    """Safe desktop-facing account summary.
+
+    This intentionally excludes bearer tokens, OAuth subjects, email and
+    permissions.  Community profile data is server-to-server only and must
+    never make the desktop client a bearer of a Market service token.
+    """
+
+    authenticated: bool
+    profile: MarketOAuthAccountProfile | None = None
+    market: MarketOAuthAccountMarket | None = None
+    sources: dict[str, MarketOAuthAccountSource]
+    expires_at: float | None = None
 
 
 # ─── 端点 ──────────────────────────────────────────────────────────
@@ -825,6 +863,45 @@ async def market_oauth_status(
     )
 
 
+@router.get("/oauth/account-summary", response_model=MarketOAuthAccountSummaryResponse)
+async def market_oauth_account_summary(
+    token: str | None = Query(
+        None,
+        description="(legacy) Bridge token; prefer Authorization: Bearer header",
+    ),
+    authorization: str | None = Header(None),
+):
+    """Return the local desktop's safe, short-lived account projection.
+
+    The bridge owns OAuth refresh and all remote calls.  The UI only receives
+    a display projection, never a reusable Auth or Market credential.
+    """
+
+    _verify_token(token, authorization=authorization)
+    token_data = await _ensure_valid_oauth_token()
+    if not token_data:
+        return _unauthenticated_account_summary()
+
+    cache_key = _account_summary_cache_key(token_data)
+    cached = _fresh_account_summary(cache_key)
+    if cached is not None:
+        return MarketOAuthAccountSummaryResponse.model_validate(cached)
+
+    async with _ACCOUNT_SUMMARY_LOCK:
+        cached = _fresh_account_summary(cache_key)
+        if cached is not None:
+            return MarketOAuthAccountSummaryResponse.model_validate(cached)
+
+        access_token = token_data.get("access_token")
+        auth_user, market_user = await asyncio.gather(
+            _fetch_auth_userinfo(access_token),
+            _fetch_current_market_user(token_data),
+        )
+        summary = _build_account_summary(token_data, auth_user, market_user)
+        _store_account_summary(cache_key, summary)
+        return summary
+
+
 @router.post("/oauth/complete", response_model=MarketOAuthCompleteResponse)
 async def market_oauth_complete(
     token: str | None = Query(
@@ -897,6 +974,7 @@ async def market_oauth_complete(
         "updated_at": now,
     }
     _write_private_json(_OAUTH_TOKEN_FILE, stored)
+    _clear_account_summary_cache()
     _clear_oauth_session()
 
     return MarketOAuthCompleteResponse(
@@ -920,6 +998,7 @@ async def market_oauth_logout(
     token_data = _read_json_file(_OAUTH_TOKEN_FILE)
     if token_data:
         await _revoke_oauth_token_best_effort(token_data)
+    _clear_account_summary_cache()
     _unlink_if_exists(_OAUTH_TOKEN_FILE)
     _unlink_if_exists(_OAUTH_PENDING_FILE)
     _unlink_if_exists(_OAUTH_CALLBACK_FILE)
@@ -1320,6 +1399,146 @@ async def _revoke_oauth_token_best_effort(token_data: dict[str, Any]) -> None:
                 )
             except httpx.HTTPError as exc:
                 logger.debug("Auth token revoke failed for {}: {}", token_type_hint, exc)
+
+
+def _unauthenticated_account_summary() -> MarketOAuthAccountSummaryResponse:
+    return MarketOAuthAccountSummaryResponse(
+        authenticated=False,
+        sources={
+            "auth": MarketOAuthAccountSource(status="unavailable"),
+            "market": MarketOAuthAccountSource(status="unavailable"),
+            # Community profile lookup requires a server-only Market token.
+            "community": MarketOAuthAccountSource(status="unavailable"),
+        },
+    )
+
+
+def _account_summary_cache_key(token_data: dict[str, Any]) -> tuple[str, int]:
+    return (
+        str(token_data.get("subject") or ""),
+        int(token_data.get("refresh_generation") or 0),
+    )
+
+
+def _fresh_account_summary(cache_key: tuple[str, int]) -> dict[str, Any] | None:
+    cached = _ACCOUNT_SUMMARY_CACHE
+    if not cached or cached.get("key") != cache_key:
+        return None
+    if float(cached.get("expires_at") or 0) <= time.time():
+        return None
+    payload = cached.get("payload")
+    return payload if isinstance(payload, dict) else None
+
+
+def _store_account_summary(
+    cache_key: tuple[str, int],
+    summary: MarketOAuthAccountSummaryResponse,
+) -> None:
+    global _ACCOUNT_SUMMARY_CACHE
+    _ACCOUNT_SUMMARY_CACHE = {
+        "key": cache_key,
+        "expires_at": time.time() + _ACCOUNT_SUMMARY_TTL_SECONDS,
+        "payload": summary.model_dump(mode="json"),
+    }
+
+
+def _clear_account_summary_cache() -> None:
+    global _ACCOUNT_SUMMARY_CACHE
+    _ACCOUNT_SUMMARY_CACHE = None
+
+
+async def _fetch_auth_userinfo(access_token: Any) -> dict[str, Any] | None:
+    if not isinstance(access_token, str) or not access_token:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+            res = await client.get(
+                f"{NEKO_AUTH_URL.rstrip('/')}/userinfo",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            if res.status_code != 200:
+                return None
+            data = res.json()
+    except httpx.HTTPError as exc:
+        logger.warning("Failed to fetch Auth userinfo for local Market summary: {}", exc)
+        return None
+    return data if isinstance(data, dict) else None
+
+
+async def _fetch_current_market_user(token_data: dict[str, Any]) -> dict[str, Any] | None:
+    cached = _fresh_cached_market_user(token_data)
+    if cached is not None:
+        return cached
+    return await _fetch_market_user(token_data.get("access_token"))
+
+
+def _optional_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _optional_nonnegative_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number >= 0 else None
+
+
+def _build_account_summary(
+    token_data: dict[str, Any],
+    auth_user: dict[str, Any] | None,
+    market_user: dict[str, Any] | None,
+) -> MarketOAuthAccountSummaryResponse:
+    auth_user = auth_user or {}
+    market_user = market_user or {}
+    account_summary = market_user.get("account_summary")
+    if not isinstance(account_summary, dict):
+        account_summary = {}
+
+    # Market may later project a Community profile server-to-server.  The
+    # desktop only reads that already-sanitized projection and never calls
+    # Community or receives its privileged service credential.
+    profile = MarketOAuthAccountProfile(
+        display_name=(
+            _optional_text(market_user.get("display_name"))
+            or _optional_text(auth_user.get("name"))
+        ),
+        username=(
+            _optional_text(auth_user.get("preferred_username"))
+            or _optional_text(market_user.get("username"))
+        ),
+        avatar_url=(
+            _optional_text(market_user.get("avatar_url"))
+            or _optional_text(auth_user.get("picture"))
+        ),
+        login_method=_optional_text(auth_user.get("login_method_kind")),
+    )
+    market = MarketOAuthAccountMarket(
+        member_days=_optional_nonnegative_int(account_summary.get("member_days")),
+        published_plugins=_optional_nonnegative_int(account_summary.get("published_plugins")),
+        installed_plugins=_optional_nonnegative_int(account_summary.get("installed_plugins")),
+        total_downloads=_optional_nonnegative_int(account_summary.get("total_downloads")),
+    )
+    return MarketOAuthAccountSummaryResponse(
+        authenticated=True,
+        profile=profile,
+        market=market,
+        sources={
+            "auth": MarketOAuthAccountSource(
+                status="ready" if auth_user else "unavailable"
+            ),
+            "market": MarketOAuthAccountSource(
+                status="ready" if market_user else "unavailable"
+            ),
+            "community": MarketOAuthAccountSource(status="unavailable"),
+        },
+        expires_at=token_data.get("expires_at"),
+    )
 
 
 async def _fetch_market_user(access_token: Any) -> dict[str, Any] | None:

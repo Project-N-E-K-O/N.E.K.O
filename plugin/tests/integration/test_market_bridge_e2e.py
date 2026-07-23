@@ -811,6 +811,107 @@ async def test_oauth_status_uses_fresh_cached_market_user(
 
 
 @pytest.mark.asyncio
+async def test_oauth_account_summary_aggregates_safe_fields_and_caches(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The desktop receives a display projection, never raw OAuth identity data."""
+
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    monkeypatch.setattr(market_bridge_module, "NEKO_AUTH_URL", "https://auth.test")
+    monkeypatch.setattr(market_bridge_module, "MARKET_API_URL", "https://market.test")
+    market_bridge_module._clear_account_summary_cache()
+
+    token_file: Path = bridge_e2e_env["oauth_token_file"]
+    token_file.write_text(
+        json.dumps(
+            {
+                "access_token": "local-access-token",
+                "refresh_token": "must-not-leak",
+                "expires_at": time.time() + 3600,
+                "auth_url": "https://auth.test",
+                "issuer": "https://auth.test/",
+                "subject": "test-subject",
+                "client_id": "neko-desktop",
+                "scope": "openid email profile offline",
+                "refresh_generation": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = {"auth": 0, "market": 0}
+
+    async def fetch_auth(_: Any) -> dict[str, Any]:
+        calls["auth"] += 1
+        return {
+            "name": "Neko User",
+            "preferred_username": "neko-user",
+            "picture": "https://cdn.test/avatar.png",
+            "email": "private@example.test",
+            "sub": "private-subject",
+            "login_method_kind": "google",
+        }
+
+    async def fetch_market(_: dict[str, Any]) -> dict[str, Any]:
+        calls["market"] += 1
+        return {
+            "username": "market-name",
+            "account_summary": {
+                "member_days": 12,
+                "published_plugins": 2,
+                "installed_plugins": 5,
+                "total_downloads": 20,
+            },
+            "permissions": ["private"],
+        }
+
+    monkeypatch.setattr(market_bridge_module, "_fetch_auth_userinfo", fetch_auth)
+    monkeypatch.setattr(market_bridge_module, "_fetch_current_market_user", fetch_market)
+
+    client: AsyncClient = bridge_e2e_env["client"]
+    token: str = bridge_e2e_env["token"]
+    first = await client.get(
+        "/market/oauth/account-summary",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    second = await client.get(
+        "/market/oauth/account-summary",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert calls == {"auth": 1, "market": 1}
+    body = first.json()
+    assert body == {
+        "authenticated": True,
+        "profile": {
+            "display_name": "Neko User",
+            "username": "neko-user",
+            "avatar_url": "https://cdn.test/avatar.png",
+            "login_method": "google",
+        },
+        "market": {
+            "member_days": 12,
+            "published_plugins": 2,
+            "installed_plugins": 5,
+            "total_downloads": 20,
+        },
+        "sources": {
+            "auth": {"status": "ready"},
+            "market": {"status": "ready"},
+            "community": {"status": "unavailable"},
+        },
+        "expires_at": pytest.approx(time.time() + 3600, abs=5),
+    }
+    serialized = json.dumps(body)
+    assert "private@example.test" not in serialized
+    assert "private-subject" not in serialized
+    assert "must-not-leak" not in serialized
+
+
+@pytest.mark.asyncio
 async def test_oauth_status_refreshes_stale_cached_market_user(
     bridge_e2e_env: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
