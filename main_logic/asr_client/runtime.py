@@ -723,9 +723,11 @@ class IndependentAsrRuntime:
         *,
         route_key: str,
         resource_optimization_enabled: bool,
+        speaker_shadow_factory: Callable[[], SpeakerShadowRuntime | None] | None = None,
     ) -> AsrStartResult:
         """Resolve and start one independent-ASR route."""
 
+        self._speaker_shadow_factory = speaker_shadow_factory
         await self._close_independent_asr()
         self._asr_audio_bytes = 0
         self._voice_input_resource_optimization_enabled = bool(
