@@ -4908,7 +4908,7 @@ describe('App', () => {
     expect(fan?.querySelectorAll('.compact-input-tool-item[data-compact-tool-wheel-slot="-2"], .compact-input-tool-item[data-compact-tool-wheel-slot="-1"], .compact-input-tool-item[data-compact-tool-wheel-slot="0"], .compact-input-tool-item[data-compact-tool-wheel-slot="1"], .compact-input-tool-item[data-compact-tool-wheel-slot="2"]')).toHaveLength(5);
     expect(fan?.querySelectorAll('.compact-input-tool-item[data-compact-tool-wheel-slot="hidden-forward"]')).toHaveLength(1);
     expect(fan?.querySelectorAll('.compact-input-tool-item[data-compact-tool-wheel-slot="hidden-backward"]')).toHaveLength(1);
-    expect(fan?.querySelectorAll('[tabindex="0"]')).toHaveLength(3);
+    expect(fan?.querySelectorAll('[tabindex="0"]')).toHaveLength(5);
     expect(container.querySelectorAll('.send-button-circle')).toHaveLength(1);
   });
 
@@ -6126,7 +6126,7 @@ describe('App', () => {
     }
   });
 
-  it('keeps faded compact tool edge buttons visible but not confirmable', async () => {
+  it('keeps every visible compact tool button keyboard and pointer actionable', async () => {
     vi.useFakeTimers();
     const onExportConversationClick = vi.fn();
     const onGalgameModeToggle = vi.fn();
@@ -6159,9 +6159,9 @@ describe('App', () => {
       const galgameButton = fan.querySelector('.compact-input-tool-item-galgame') as HTMLButtonElement;
 
       expect(exportButton).toHaveAttribute('data-compact-tool-wheel-slot', '-2');
-      expect(exportButton).toHaveAttribute('tabindex', '-1');
+      expect(exportButton).toHaveAttribute('tabindex', '0');
       expect(exportButton).toHaveAttribute('aria-hidden', 'false');
-      expect(exportButton).toBeDisabled();
+      expect(exportButton).not.toBeDisabled();
       expect(galgameButton).toHaveAttribute('data-compact-tool-wheel-slot', '-1');
       expect(galgameButton).toHaveAttribute('tabindex', '0');
       expect(galgameButton).toHaveAttribute('aria-hidden', 'false');
@@ -6172,15 +6172,15 @@ describe('App', () => {
 
       expect(container.querySelector('.compact-export-history-controls')).toBeNull();
       fireEvent.click(exportButton, { clientX: 140, clientY: 140 });
+      expect(exportButton).toHaveAttribute('aria-pressed', 'true');
+      expect(container.querySelector('.compact-export-history-controls')).not.toBeNull();
       expect(onExportConversationClick).not.toHaveBeenCalled();
-      expect(container.querySelector('.compact-export-history-controls')).toBeNull();
-      expect(exportButton).toHaveAttribute('aria-pressed', 'false');
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('rotates compact input tools by pointer dragging while keeping only center and adjacent buttons active', () => {
+  it('rotates compact input tools by pointer dragging while keeping all visible buttons active', () => {
     render(
       <App
         chatSurfaceMode="compact"
@@ -6201,9 +6201,9 @@ describe('App', () => {
 
       const nextCenter = fan.querySelector('[data-compact-tool-wheel-slot="0"]');
       expect(nextCenter).toHaveClass('compact-input-tool-item-avatar');
-      expect(fan.querySelectorAll('[tabindex="0"]')).toHaveLength(3);
-      expect(fan.querySelectorAll('[data-compact-tool-wheel-slot="-2"][tabindex="-1"]')).toHaveLength(1);
-      expect(fan.querySelectorAll('[data-compact-tool-wheel-slot="2"][tabindex="-1"]')).toHaveLength(1);
+      expect(fan.querySelectorAll('[tabindex="0"]')).toHaveLength(5);
+      expect(fan.querySelectorAll('[data-compact-tool-wheel-slot="-2"][tabindex="0"]')).toHaveLength(1);
+      expect(fan.querySelectorAll('[data-compact-tool-wheel-slot="2"][tabindex="0"]')).toHaveLength(1);
     } finally {
       fanRectSpy.mockRestore();
     }
@@ -6786,7 +6786,7 @@ describe('App', () => {
     expect(compactChatStyles).not.toMatch(/:focus-within\s*>\s*\.compact-input-tool-tooltip/);
   });
 
-  it('retargets compact tool hover to the visual button under the pointer after wheel rotation', async () => {
+  it('retargets every visible compact tool hover to the visual button under the pointer', async () => {
     render(
       <App
         chatSurfaceMode="compact"
@@ -6798,10 +6798,23 @@ describe('App', () => {
     const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
     const fanRectSpy = mockCompactToolFanRect(fan);
     // The default wheel's slot 0 sits at 45deg on the 80px orbit, initially the screenshot tool.
+    const pointerAtEdgeSlot = compactToolWheelPoint(107.35 * (Math.PI / 180), 80);
     const pointerAtSelectedSlot = compactToolWheelPoint(45 * (Math.PI / 180), 80);
     const pointerAtPreviousSlot = compactToolWheelPoint(75.82 * (Math.PI / 180), 80);
 
     try {
+      fireEvent.pointerMove(fan, {
+        pointerId: 81,
+        ...pointerAtEdgeSlot,
+        buttons: 0,
+        pointerType: 'mouse',
+      });
+
+      const exportButton = fan.querySelector('.compact-input-tool-item-export');
+      expect(exportButton).toHaveAttribute('data-compact-tool-wheel-slot', '-2');
+      expect(exportButton).toHaveAttribute('data-compact-tool-pointer-hovered', 'true');
+      expect(fan.style.getPropertyValue('--compact-tool-wheel-selection-angle')).toBe('107.35deg');
+
       fireEvent.pointerMove(fan, {
         pointerId: 81,
         ...pointerAtSelectedSlot,
@@ -6836,6 +6849,76 @@ describe('App', () => {
       expect(avatarButton).toHaveAttribute('data-compact-tool-pointer-hovered', 'true');
       expect(avatarButton).toHaveAttribute('data-compact-tool-wheel-slot', '0');
       expect(fan.style.getPropertyValue('--compact-tool-wheel-selection-angle')).toBe('45deg');
+    } finally {
+      fanRectSpy.mockRestore();
+    }
+  });
+
+  it('forwards a compact wheel background hit to the visible action at the same geometry', async () => {
+    const onTranslateToggle = vi.fn();
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        onTranslateToggle={onTranslateToggle}
+      />,
+    );
+
+    await openCompactInputTools();
+    const fan = document.body.querySelector<HTMLDivElement>('.compact-input-tool-fan')!;
+    const hitRegion = fan.querySelector<HTMLDivElement>('.compact-input-tool-fan-hit-region')!;
+    const fanRectSpy = mockCompactToolFanRect(fan);
+    // Initial tool index 0 makes translate (index 2) the faded but actionable
+    // slot +2. Dispatch at the fan background to model Chromium returning the
+    // old compositor hit target while painting the button at this position.
+    const pointerAtTranslate = compactToolWheelPoint(-17.35 * (Math.PI / 180), 80);
+
+    try {
+      expect(fan.querySelector('.compact-input-tool-item-translate')).toHaveAttribute(
+        'data-compact-tool-wheel-slot',
+        '2',
+      );
+      fireEvent.pointerMove(hitRegion, {
+        pointerId: 91,
+        buttons: 0,
+        pointerType: 'mouse',
+        ...pointerAtTranslate,
+      });
+      expect(fan.querySelector('.compact-input-tool-item-translate')).toHaveAttribute(
+        'data-compact-tool-pointer-hovered',
+        'true',
+      );
+      fireEvent.pointerDown(hitRegion, {
+        pointerId: 91,
+        button: 0,
+        buttons: 1,
+        pointerType: 'mouse',
+        ...pointerAtTranslate,
+      });
+      fireEvent.pointerUp(hitRegion, {
+        pointerId: 91,
+        button: 0,
+        buttons: 0,
+        pointerType: 'mouse',
+        ...pointerAtTranslate,
+      });
+      fireEvent.click(hitRegion, {
+        button: 0,
+        ...pointerAtTranslate,
+      });
+      expect(fan.querySelector('.compact-input-tool-item-translate')).toHaveAttribute(
+        'data-compact-tool-pointer-hovered',
+        'true',
+      );
+      expect(onTranslateToggle).toHaveBeenCalledTimes(1);
+
+      // The delegation is geometric, not a blanket fan-background click.
+      fireEvent.click(hitRegion, {
+        button: 0,
+        clientX: 116,
+        clientY: 116,
+      });
+      expect(onTranslateToggle).toHaveBeenCalledTimes(1);
     } finally {
       fanRectSpy.mockRestore();
     }
@@ -9175,7 +9258,7 @@ describe('App', () => {
     expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
   });
 
-  it('disables avatar sub-actions when the avatar wheel slot is not actionable', async () => {
+  it('disables avatar sub-actions only after the avatar wheel slot is hidden', async () => {
     const { container } = renderInputApp();
 
     await openCompactInputTools();
@@ -9191,8 +9274,9 @@ describe('App', () => {
     fireEvent.wheel(fan, { deltaY: 80 });
     fireEvent.wheel(fan, { deltaY: 80 });
     fireEvent.wheel(fan, { deltaY: 80 });
+    fireEvent.wheel(fan, { deltaY: 80 });
 
-    expect(fan.querySelector('.compact-input-tool-item-avatar')).toHaveAttribute('data-compact-tool-wheel-slot', '-2');
+    expect(fan.querySelector('.compact-input-tool-item-avatar')).toHaveAttribute('data-compact-tool-wheel-slot', 'hidden-backward');
     expect(lollipopButton).toBeDisabled();
     expect(editButton).toBeDisabled();
   });

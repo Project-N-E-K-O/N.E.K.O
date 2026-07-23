@@ -29,6 +29,10 @@ import {
   resetCompactToolWheelDetentAudioForTests,
   useCompactToolWheelAudioPreload,
 } from './compactToolWheelAudio';
+import {
+  createCompactToolWheelForwardedClick,
+  resolveCompactToolWheelPointerHit,
+} from './compactToolWheelGeometry';
 import { useFocusGlow } from './useFocusGlow';
 import { useGuideChatButtonLock } from './useGuideChatButtonLock';
 import CompactExportHistoryPanel, {
@@ -4852,12 +4856,15 @@ function CompactChatApp({
 
   const getCompactToolWheelTabIndex = (toolIndex: number): number => {
     const slot = getCompactToolWheelSlot(toolIndex);
-    return compactInputToolFanOpen && slot !== null && Math.abs(slot) <= 1 ? 0 : -1;
+    return compactInputToolFanOpen && slot !== null && Math.abs(slot) <= 2 ? 0 : -1;
   };
 
   const isCompactToolWheelActionable = (toolIndex: number): boolean => {
     const slot = getCompactToolWheelSlot(toolIndex);
-    return compactInputToolFanOpen && slot !== null && Math.abs(slot) <= 1;
+    // Every rendered wheel button is a real action. Treating the faded edge
+    // slots as visual-only makes their pixels fall through to the drag layer,
+    // which looks like an Electron/Niri hit-region failure to users.
+    return compactInputToolFanOpen && slot !== null && Math.abs(slot) <= 2;
   };
 
   const getCompactToolWheelAriaHidden = (toolIndex: number): 'true' | 'false' => {
@@ -4942,53 +4949,24 @@ function CompactChatApp({
       return;
     }
 
-    const fanElement = compactInputToolFanRef.current;
-    const fanRect = fanElement?.getBoundingClientRect();
-    if (!fanElement || !fanRect) {
-      setCompactInputToolWheelHoveredIndexState(null);
-      return;
-    }
-
-    const fanStyle = window.getComputedStyle ? window.getComputedStyle(fanElement) : null;
-    const readFanPixelVar = (name: string, fallback: number) => {
-      const rawValue = fanStyle?.getPropertyValue(name).trim() || '';
-      const parsedValue = Number.parseFloat(rawValue);
-      return Number.isFinite(parsedValue) ? parsedValue : fallback;
-    };
-    const centerX = fanRect.left + readFanPixelVar('--compact-tool-wheel-center-x', COMPACT_INPUT_TOOL_WHEEL_CENTER_X);
-    const centerY = fanRect.top + readFanPixelVar('--compact-tool-wheel-center-y', COMPACT_INPUT_TOOL_WHEEL_CENTER_Y);
-    const orbitRadius = readFanPixelVar('--compact-tool-wheel-orbit-radius', 80);
-    const buttonSize = readFanPixelVar('--compact-tool-button-size', 38);
     const visibleSlots = compactInputToolWheelLayout === 'viewport-fit'
       ? compactInputToolWheelViewportFitVisibleSlots
       : compactInputToolWheelDefaultVisibleSlots;
-    const dragAngleRad = compactInputToolWheelDragAngle * (Math.PI / 180);
-    let hoveredIndex: number | null = null;
-    let hoveredDistanceSquared = Number.POSITIVE_INFINITY;
-
-    for (let toolIndex = 0; toolIndex < COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT; toolIndex += 1) {
-      const slot = getCompactToolWheelSlotForIndex(
+    setCompactInputToolWheelHoveredIndexState(resolveCompactToolWheelPointerHit({
+      fanElement: compactInputToolFanRef.current,
+      clientX: pointer.clientX,
+      clientY: pointer.clientY,
+      itemCount: COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT,
+      dragAngleDeg: compactInputToolWheelDragAngle,
+      visibleSlots,
+      centerFallbackX: COMPACT_INPUT_TOOL_WHEEL_CENTER_X,
+      centerFallbackY: COMPACT_INPUT_TOOL_WHEEL_CENTER_Y,
+      getSlot: toolIndex => getCompactToolWheelSlotForIndex(
         toolIndex,
         compactInputToolWheelVisualIndex,
         COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT,
-      );
-      if (slot === null || Math.abs(slot) > 1) continue;
-      const slotVisual = visibleSlots[slot + 2];
-      if (!slotVisual) continue;
-      const angleRad = (slotVisual.angleDeg * (Math.PI / 180)) + dragAngleRad;
-      const itemCenterX = centerX + (Math.cos(angleRad) * orbitRadius);
-      const itemCenterY = centerY + (Math.sin(angleRad) * orbitRadius);
-      const hitRadius = (buttonSize * slotVisual.scale) / 2;
-      const dx = pointer.clientX - itemCenterX;
-      const dy = pointer.clientY - itemCenterY;
-      const distanceSquared = (dx * dx) + (dy * dy);
-      if (distanceSquared <= hitRadius * hitRadius && distanceSquared < hoveredDistanceSquared) {
-        hoveredIndex = toolIndex;
-        hoveredDistanceSquared = distanceSquared;
-      }
-    }
-
-    setCompactInputToolWheelHoveredIndexState(hoveredIndex);
+      ),
+    }));
   }, [
     compactInputToolFanActionsDisabled,
     compactInputToolFanInteractive,
@@ -5002,6 +4980,41 @@ function CompactChatApp({
   useLayoutEffect(() => {
     syncCompactInputToolWheelPointerHover();
   }, [syncCompactInputToolWheelPointerHover]);
+
+  const forwardCompactToolWheelBackgroundClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (event.defaultPrevented || event.button !== 0) return;
+    const eventTarget = event.target instanceof Element ? event.target : null;
+    if (eventTarget?.closest('.compact-input-tool-item')) return;
+
+    // Chromium can occasionally paint the compositor-animated wheel item at
+    // its new transform while hit-testing the old transform. In that case the
+    // real pointer event reaches the fan background even though the pointer is
+    // visibly over a button. Resolve the same geometry used by hover feedback
+    // and forward only an exact visible-button hit. A real wheel rotation still
+    // wins because onClickCapture suppresses this click before it reaches here.
+    syncCompactInputToolWheelPointerHover({
+      clientX: event.clientX,
+      clientY: event.clientY,
+    });
+    const toolIndex = compactInputToolWheelHoveredIndexRef.current;
+    if (toolIndex === null || isCompactToolWheelActionDisabled(toolIndex)) return;
+    const slot = getCompactToolWheelSlot(toolIndex);
+    if (slot === null || Math.abs(slot) > 2) return;
+
+    const item = compactInputToolFanRef.current?.querySelector<HTMLElement>(
+      `.compact-input-tool-item[data-compact-tool-wheel-slot="${slot}"]`,
+    );
+    const actionButton = item instanceof HTMLButtonElement
+      ? item
+      : item?.querySelector<HTMLButtonElement>(':scope > button:not(:disabled)');
+    if (!actionButton || actionButton.disabled) return;
+    actionButton.dispatchEvent(createCompactToolWheelForwardedClick(actionButton, {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      screenX: event.screenX,
+      screenY: event.screenY,
+    }));
+  };
 
   const getCompactToolWheelPointerHoveredValue = (toolIndex: number): 'true' | 'false' => (
     compactInputToolWheelHoveredIndex === toolIndex
@@ -5147,7 +5160,9 @@ function CompactChatApp({
         ) {
           event.preventDefault();
           event.stopPropagation();
+          return;
         }
+        forwardCompactToolWheelBackgroundClick(event);
       }}
       onPointerDownCapture={(event) => {
         if (event.pointerType === 'mouse' && event.button !== 0) return;
