@@ -242,6 +242,7 @@ async def test_duplicate_finish_and_late_pcm_do_not_duplicate_observation() -> N
     assert len(observations) == 1
     assert metrics["evaluated_candidate_count"] == 1
     assert metrics["finished_candidate_count"] == 1
+    assert metrics["insufficient_candidate_count"] == 0
     await runtime.close()
 
 
@@ -464,6 +465,7 @@ async def test_scored_candidate_releases_pcm_and_rejects_late_frames() -> None:
     metrics = runtime.snapshot()
     assert len(backend.score_calls) == 1
     assert metrics["inference_failure_count"] == 1
+    assert metrics["insufficient_candidate_count"] == 0
     assert metrics["buffered_candidate_count"] == 0
     assert metrics["buffered_audio_bytes"] == 0
     await runtime.close()
@@ -493,6 +495,7 @@ async def test_candidate_storage_stays_bounded_across_ten_thousand_finishes() ->
     assert metrics["buffered_audio_bytes"] == 0
     assert metrics["finalized_tombstone_count"] <= 1_024
     assert metrics["finished_candidate_count"] == 10_000
+    assert metrics["insufficient_candidate_count"] == 0
     await runtime.close()
 
 
