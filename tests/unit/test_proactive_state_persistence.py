@@ -229,7 +229,12 @@ async def test_totals_reload_when_memory_root_changes(
     root_b = tmp_path / "b"
 
     def read_json(path):
-        total = 1 if path.parent == root_a else 2
+        if path.parent == root_a:
+            total = 1
+        elif path.parent == root_b:
+            total = 2
+        else:
+            raise AssertionError(f"unexpected totals path: {path}")
         return {
             "totals": {"Yui": total},
             "ever_delivered": {path.parent.name: True},
