@@ -15,9 +15,9 @@ import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
-from main_routers.system_router import proactive_history as sr
-from main_routers.system_router import proactive_sources as sr_sources
-from main_routers.system_router import proactive_parsing as sr_parsing
+from main_logic.proactive_chat import state as sr
+from main_logic.proactive_chat import decisions as sr_sources
+from main_logic.proactive_chat import contracts as sr_parsing
 
 
 LL = "测试娘"
