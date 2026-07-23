@@ -669,8 +669,10 @@ def test_solo_host_prompts_do_not_address_unseen_human_operator():
     assert "must perform all hosting actions herself" in active_prompt
     assert "Never tell or ask an unseen streamer, operator, or current viewer" in warmup_prompt
     assert "Never tell or ask an unseen streamer, operator, or current viewer" in active_prompt
-    assert "greet viewers, warm up the room, carry chat, or provide content" in warmup_prompt
-    assert "greet viewers, warm up the room, carry chat, or provide content" in active_prompt
+    assert warmup_prompt.count("Never tell or ask an unseen streamer, operator, or current viewer") == 1
+    assert active_prompt.count("Never tell or ask an unseen streamer, operator, or current viewer") == 1
+    assert "greet the room, warm up the stream, carry the chat, provide topics, or help NEKO host" in warmup_prompt
+    assert "greet the room, warm up the stream, carry the chat, provide topics, or help NEKO host" in active_prompt
     assert "live_room_status: offline" not in warmup_prompt
     assert "live_room_status: offline" not in active_prompt
 
@@ -1974,6 +1976,7 @@ def test_active_engagement_prompt_is_one_light_solo_topic():
     assert "Prefer one tiny observation over a plan, segment, or open-ended topic survey." in request.prompt_text
     assert "Every active engagement line may give viewers one concrete non-numeric danmaku cue" in request.prompt_text
     assert "Use the provided viewer reply path as the only reply cue; do not add a second question." in request.prompt_text
+    assert request.prompt_text.count("Use the provided viewer reply path") == 1
     assert "Use the provided fun axis as the line's purpose; do not drift into generic hosting." in request.prompt_text
     assert "A/B choice by words, one-word answer, tiny stance, or playful yes/no-with-a-side" in request.prompt_text
     assert "Do not use generic Chinese host lines equivalent to" in request.prompt_text

@@ -495,6 +495,14 @@ async def test_sync_live_instructions_injects_light_live_scene_for_real_output(
     assert "ordered newest first" in text
     assert "without waiting to be asked" in text
     assert "weave at most one" in text
+    assert "Ordinary-turn default: ignore room snapshots" in text
+    assert "Being newest, broadly topical, or merely amusing is not enough" in text
+    assert "already has a clear normal reply" in text
+    assert "as a natural supporting aside rather than a chat report" in text
+    assert "Attribution is allowed only when the human explicitly asks" in text
+    assert "Never narrate looking at a chat wall" in text
+    assert "Answer only the viewer or position the human asked for" in text
+    assert "never substitute another viewer, position, old message" in text
     assert "solo_stream room bridge" in text
     assert "Never call it a snapshot, list, candidate" in text
     assert "snapshot attached to that preceding turn" in text
@@ -516,6 +524,8 @@ def test_live_scene_keeps_natural_viewer_bridge_subordinate_in_co_stream(
     assert "co_stream room bridge" in text
     assert "answer the human streamer first" in text
     assert "one brief supporting beat" in text
+    assert "directly repeats a concrete subject or action" in text
+    assert "never introduce it with 'new danmaku says'" in text
     assert "serious, high-pressure, safety-sensitive" in text
     assert "get_recent_live_chat" not in text
 

@@ -881,6 +881,39 @@ danmaku_core on_event(cmd, 富模型)
 - 发布与降级：`host_pause_fill` 默认 `off`，投影固定 `enforced=false`，当前不存在任何可触发输出的 action 或模块。删除新增配置键和投影即可完整回滚，不需要迁移数据。
 - 验证与可观测：必须覆盖配置归一化/持久化、能力目录唯一性、主程序话轮信号只读不消费、未知话轮保守降级、公开投影隐私边界、`solo_stream` passthrough，以及手动 action / 输出模块 / UI 入口不存在，并运行插件全量测试与 CLI check。
 
+### 延期能力：主播明确暂离后的临时主持
+
+状态：**仅记录需求，当前未实现，也不得在测试或 UI 中宣称可用。**
+
+该能力与 `host_pause_fill` 不同：`host_pause_fill` 只判断一个普通停顿是否适合补位；临时主持必须由主播本人通过主程序文字输入或语音转写明确交棒，例如“我离开一会儿，你先陪观众”。观众弹幕、平台事件、房间标题、模型猜测和静默时长都不能建立、续期或结束交棒状态。当前插件只能接收直播平台事件，没有可信的主播输入事件，因此只改插件无法可靠实现。
+
+推荐的未来链路：
+
+1. 主程序或 SDK 发布经过身份绑定的主播输入意图事件，只传递 `target_lanlan`、`intent=host_away|host_return`、输入通道、事件时间和一次性事件 ID；插件不申请麦克风、不读取原始音频，也不把完整转写写入日志、audit 或持久化存储。
+2. 独立 `host_handoff` 模块消费该事件，维护仅限当前直播会话的内存状态：`co_stream → temporary_hosting → co_stream`。断开直播间、关闭插件、切换角色、直播结束或显式回归都必须清理状态。
+3. 主播原本的对话轮负责自然确认交接，不额外发起一个会打断语音的主动回复。进入临时主持后，复用现有 `idle_hosting`、`active_engagement`、弹幕响应、Support Events、Selection、Pipeline、Safety Guard 和 Dispatcher；不得复制一套独播调度器，也不得绕过播放门和用户抢占保护。
+4. 主播回归必须由可信主播输入显式确认；在信号缺失、来源不可靠、目标猫娘不匹配或状态过期时保守退回人猫同播，不继续自动主持。
+
+数据边界：默认只需当前会话内的布尔状态、开始时间、目标猫娘、来源枚举和一次性事件 ID；不保存原始语音、完整转写、观众弹幕副本或长期“主播离场记录”。运行态仅投影有界状态与 reason code，不能展示原句。
+
+验证要求：
+
+- 主播文字和语音转写都能建立同一状态，且文字、连续语音行为一致；
+- 观众弹幕伪造“主播走了 / 回来了”不会改变状态；
+- 交棒发生在猫娘说话、TTS 播放或主播继续说话期间时不会插话、重复开场或卡住语音输入；
+- 主播回归、断连、停播、插件关闭、角色切换和过期清理均恢复 `co_stream`；
+- Gift / SC / Guard 与普通弹幕继续走现有竞争和安全链路，临时主持不会绕过冷却或抢占；
+- 覆盖目标猫娘绑定、重复事件幂等、乱序 away/return、重连和失败降级，并通过插件全量测试、CLI check 与真实语音链路验收。
+
+#### 实现前 Decision Points
+
+- **宿主接口与架构成本**：维护者需在“通用主播输入意图事件”与“模型工具调用”之间选择。推荐前者；工具调用有额外模型不确定性，并有再次触发语音卡顿的风险。不得给 NEKO Live 写主程序特判。
+- **意图识别与 token 成本**：确认由主程序已有模型结果提供结构化意图，还是采用本地有限规则。推荐复用已有理解结果或零额外调用的保守规则；未经批准不得新增后台 LLM 调用。
+- **超时与状态预算**：确认临时主持最长时长、是否允许主播续期、进程重启后是否一律失效。推荐仅内存、重启失效、到期保守恢复，不新增持久化和后台轮询；具体时长需产品确认。
+- **调度与打断策略**：确认进入临时主持后何时允许第一次主动开口。推荐只在主播当前轮和 TTS 完成后复用既有播放门，不即时插入第二个主动回复。
+- **发布与回滚**：新能力必须默认关闭并有独立开关；关闭或删除 `host_handoff` 模块后回到现有人猫同播行为，不迁移现有配置和数据。
+- **可观测性**：新增稳定的进入、退出、过期、来源拒绝和目标不匹配 reason code；只记录枚举与时间，不记录原始主播话语。
+
 ## 输出边界
 
 任何需要让猫猫回应的功能都必须通过 `NekoDispatcher`。不要在模块里直接调用 `plugin.push_message()`。
@@ -967,6 +1000,8 @@ Live Feel Pack v1.9 进一步把“不要复读”从单模块扩展成跨模块
 普通弹幕回应也要参与同一套已用素材记账：`recent_interaction_context()` 会从真实播出的 NEKO 文本中提取 `spent_output_family`，用于标记“小鱼干奖励 / 弹幕接话 / 主播力自测 / 暗号回调”等已经用过的旧梗。该字段会进入 `recent_results[*].spent_output_family`，历史 monitor 设计（当前切片未分发脚本） 会输出 `latest_spent_output_family` 与 `recent_spent_output_family_*`，方便直播现场确认“旧梗 family 是否正在重复”；当最近真实输出至少 3 次且同一 spent-output family 占比过高时，`alerts` 会出现 `spent_output_family_bias`。dispatcher / dry_run / queued placeholder 摘要不能产生 `spent_output_family`，避免测试摘要被误当猫猫已经播出的旧梗；monitor 统计 `spent_output_family` 时也只按真实 `pushed` 输出计数，不把 dry_run 当成观众已经听过的内容。prompt 侧必须把 `spent_output_family` 和 `topic_family` / `host_beat_family` 一样视为 forbidden material，避免只避开原句却继续复用同一类包袱。`idle_hosting` / `active_engagement` 的素材选择也会优先避开最近真实输出已经用过的 spent-output family；如果候选全部命中，才逐步放宽到现有 key / title / family fallback，避免直播被防复读规则卡死。英文 family token 必须按完整词或明确短语命中，不能因为 `explain` / `catch` / `presentation` 这类子串误判成 plan / chat / reward。
 
 `spent_output_family_bias` 的占比按带有 spent-output family 的 recent result 条数计算，而不是按逗号分隔后的标签总数计算；例如一条输出同时标记 `reward,audience_prompt` 时，不能让多标签本身稀释 `reward` 的重复占比。
+
+2026-07-23 提示词瘦身：`warmup_hosting` 与 `active_engagement` 删除了语义重复的独播主持权约束，`active_engagement` 同时合并了重复的单一观众接话入口约束。保留后的规则仍覆盖“猫猫独立主持、不把主持动作推给隐藏主播或观众、只提供一个非数字弹幕接话点”，不新增模型调用、状态、后台任务或宿主改动。
 
 Live Feel Pack v1.10 把这条规则沉淀为插件侧复盘口径：即使模型没有逐字复读，只要真实输出命中了同一类高信号直播包袱，例如小鱼干 / 奖励、特别企划、主播力自测、一个字 / 一个词 / 暗号回调、安静冷场，或在二选一、房间氛围、桌面场景、轻吐槽、小挑战等内容族上又和近期输出有明显短片段重叠，也应视为换皮复读。下一场直播如果仍觉得猫猫“说法变了但意思又绕回来了”，优先看 `log_reply_repeat`、`topic_family_bias` 和 `host_beat_family_bias`；`log_reply_suppressed` 只作为旧测试或外部实验日志线索。
 

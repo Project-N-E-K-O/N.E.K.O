@@ -42,7 +42,9 @@ def test_neko_live_executable_sources_do_not_restore_legacy_identity() -> None:
             continue
         source = path.read_text(encoding="utf-8")
         if path.name == "plugin.toml":
-            source = source.replace('previous_ids = ["neko_roast"]', "")
+            manifest = tomllib.loads(source)
+            manifest["plugin"].pop("previous_ids", None)
+            source = repr(manifest)
         if "neko_roast" in source or any(marker in source for marker in forbidden_markers):
             violations.append(path.relative_to(plugin_dir).as_posix())
 

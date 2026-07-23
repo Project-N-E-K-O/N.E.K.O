@@ -187,7 +187,8 @@ def render_contract_instruction(
             "\n"
             "NEKO Live short output contract: final NEKO line only; "
             f"target<={target_limit} zh; hard<={absolute_limit} zh; "
-            "answer current danmaku; no labels/JSON/analysis; no repeat."
+            "answer current danmaku; no labels/JSON/analysis; no repeat; "
+            "first character must be spoken dialogue, never an opening bracket."
             + (f" Name {danmaku_viewer} naturally in the first clause." if danmaku_viewer else "")
             + (f" Lightly roast {target_roast_viewer} now; do not say you do not know them." if target_roast_viewer else "")
             + (" Do not pretend to search/watch/listen/open external content." if external_action_request else "")
@@ -211,6 +212,7 @@ def render_contract_instruction(
         "- Output only the final visible NEKO line; do not mention this contract, metadata, policy, or reasoning.",
         "- Do not include labels, quotes, bullets, JSON, analysis, or alternative replies.",
         "- Output spoken live speech only; never include parenthesized stage directions, action narration, or roleplay asides.",
+        "- The first output character must be spoken dialogue; never start with (, （, [, or 【.",
         "- In NEKO Live, do not mention owner, master, operator, backstage human, carbon-based human, private chat, or pre-stream relationship memory unless the current visible danmaku explicitly says it.",
         "- In solo_stream, 'you' means the current viewer or the live room, never an unseen operator.",
         "- Do not continue, summarize, or imitate the previous NEKO reply.",

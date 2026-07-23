@@ -12,6 +12,30 @@ def test_live_reply_policy_is_plugin_owned():
     assert "main_logic" not in source
 
 
+def test_live_reply_contract_forbids_opening_stage_direction_in_full_and_compact_forms():
+    host_metadata = live_reply_policy.build_reply_metadata(
+        uid="__neko_warmup__",
+        live_mode="solo_stream",
+        response_module_hint="warmup_hosting",
+    )
+    compact_metadata = live_reply_policy.build_reply_metadata(
+        uid="42",
+        live_mode="solo_stream",
+        response_module_hint="danmaku_response",
+    )
+    compact_metadata["danmaku_profile"] = "short_line"
+
+    host_contract = live_reply_policy.render_contract_instruction(
+        [{"metadata": host_metadata}]
+    )
+    compact_contract = live_reply_policy.render_contract_instruction(
+        [{"metadata": compact_metadata}]
+    )
+
+    assert "never start with (, （, [, or 【" in host_contract
+    assert "first character must be spoken dialogue, never an opening bracket" in compact_contract
+
+
 def test_live_reply_policy_builds_structured_reply_metadata():
     metadata = live_reply_policy.build_reply_metadata(
         uid="42",
