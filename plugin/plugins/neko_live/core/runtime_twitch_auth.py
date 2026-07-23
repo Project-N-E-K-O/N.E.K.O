@@ -93,6 +93,12 @@ async def cancel_device_authorization(runtime: Any) -> dict[str, Any]:
 
 
 async def credential_status(runtime: Any) -> dict[str, Any]:
+    """Return credential state without trusting cached identity metadata.
+
+    Encrypted credentials loaded after startup remain ``unverified`` until Twitch
+    validates them for the configured Client ID. Cached account labels and scopes
+    stay private until that online validation succeeds.
+    """
     auth = getattr(runtime, "twitch_auth", None)
     pending = auth.device_authorization_status(_client_id(runtime)) if auth is not None else None
     if pending is not None:
@@ -160,7 +166,3 @@ def _credential_present(data: Any) -> bool:
         and isinstance(data.get("refresh_token"), str)
         and bool(data["refresh_token"].strip())
     )
-
-
-def _public_text(value: Any, limit: int) -> str:
-    return " ".join(value.split()).strip()[:limit] if isinstance(value, str) else ""

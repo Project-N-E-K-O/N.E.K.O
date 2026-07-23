@@ -813,7 +813,7 @@
   "entries.twitch_device_authorization_cancel.name": "Отменить авторизацию устройства Twitch",
   "entries.twitch_device_authorization_cancel.description": "Останавливает активный Device Code Flow и очищает временный сеанс.",
   "entries.twitch_login_status.name": "Получить статус авторизации Twitch",
-  "entries.twitch_login_status.description": "Читает открытые данные аккаунта из зашифрованных учётных данных без возврата токенов.",
+  "entries.twitch_login_status.description": "Сообщает о наличии локальных учётных данных; данные аккаунта возвращаются только после онлайн-проверки, токены не возвращаются.",
   "entries.twitch_credential_validate.name": "Проверить авторизацию Twitch",
   "entries.twitch_credential_validate.description": "Проверяет токен и атомарно обновляет зашифрованные данные при необходимости.",
   "entries.twitch_logout.name": "Удалить авторизацию Twitch",

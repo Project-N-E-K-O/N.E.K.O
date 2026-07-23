@@ -122,6 +122,8 @@ async def test_twitch_router_normalizes_channel_and_selects_provider_and_identit
 
     assert runtime.twitch_live_ingest.started == ["other_channel"]
     assert runtime.twitch_live_ingest.lookups == ["other_channel"]
+    assert status.ok is True
+    assert status.title == "other_channel"
     assert identity.uid == "twitch:42"
     assert router.identity_step_id() == "twitch_identity"
 

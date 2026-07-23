@@ -189,6 +189,53 @@ async def test_local_twitch_credential_is_unverified_until_validated() -> None:
 
 
 @pytest.mark.asyncio
+async def test_device_authorization_start_serializes_with_cancel() -> None:
+    request_started = asyncio.Event()
+    release_request = asyncio.Event()
+
+    async def request_json(*_args: Any, **_kwargs: Any) -> tuple[int, dict[str, Any]]:
+        request_started.set()
+        await release_request.wait()
+        return (
+            200,
+            {
+                "device_code": "secret-device-code",
+                "user_code": "ABCD-EFGH",
+                "verification_uri": "https://www.twitch.tv/activate",
+                "expires_in": 900,
+                "interval": 5,
+            },
+        )
+
+    store = _Store()
+
+    async def reload() -> None:
+        return None
+
+    service = TwitchAuthService(
+        credential_provider=store.load,
+        credential_saver=store.save,
+        credential_reloader=reload,
+        request_json=request_json,
+        clock=lambda: 1_700_000_000.0,
+    )
+
+    start_task = asyncio.create_task(service.start_device_authorization("clientid123"))
+    await asyncio.wait_for(request_started.wait(), timeout=1)
+    cancel_task = asyncio.create_task(service.cancel_device_authorization("clientid123"))
+    await asyncio.sleep(0)
+
+    assert cancel_task.done() is False
+
+    release_request.set()
+    started, cancelled = await asyncio.gather(start_task, cancel_task)
+
+    assert started["started"] is True
+    assert cancelled["cancelled"] is True
+    assert service.device_authorization_status("clientid123") is None
+
+
+@pytest.mark.asyncio
 async def test_device_authorization_retries_one_transient_proxy_connection_failure() -> None:
     store = _Store()
     logger = _Logger()

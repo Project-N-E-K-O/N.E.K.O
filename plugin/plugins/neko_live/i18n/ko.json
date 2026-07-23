@@ -813,7 +813,7 @@
   "entries.twitch_device_authorization_cancel.name": "Twitch 기기 인증 취소",
   "entries.twitch_device_authorization_cancel.description": "진행 중인 Device Code Flow를 중지하고 임시 인증 세션을 지웁니다.",
   "entries.twitch_login_status.name": "Twitch 인증 상태 조회",
-  "entries.twitch_login_status.description": "token을 반환하지 않고 암호화된 자격 증명의 공개 계정 상태를 읽습니다.",
+  "entries.twitch_login_status.description": "로컬 자격 증명의 존재 여부를 반환합니다. 계정 정보는 온라인 검증 후에만 반환하며 token은 반환하지 않습니다.",
   "entries.twitch_credential_validate.name": "Twitch 인증 검증",
   "entries.twitch_credential_validate.description": "Twitch token을 검증하고 필요 시 암호화 자격 증명을 갱신합니다.",
   "entries.twitch_logout.name": "Twitch 인증 삭제",

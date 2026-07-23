@@ -9,6 +9,9 @@ from ...core.contracts import LiveEvent
 from .room_ref import parse_twitch_room_ref
 
 
+_SUPPORTED_NOTIFICATION_TYPES = {"sub", "resub", "sub_gift", "community_sub_gift"}
+
+
 def project_chat_message(message: Any, *, room_ref: Any, ts: float | None = None) -> LiveEvent | None:
     parsed = parse_twitch_room_ref(room_ref)
     chatter = getattr(message, "chatter", None)
@@ -62,7 +65,7 @@ def project_chat_notification(notification: Any, *, room_ref: Any, ts: float | N
     parsed = parse_twitch_room_ref(room_ref)
     notice_type = _text(getattr(notification, "notice_type", None), 48).lower()
     detail = getattr(notification, notice_type, None)
-    if not parsed.ok or notice_type not in {"sub", "resub", "sub_gift", "community_sub_gift"} or detail is None:
+    if not parsed.ok or notice_type not in _SUPPORTED_NOTIFICATION_TYPES or detail is None:
         return None
     if notice_type == "sub_gift" and _text(getattr(detail, "community_gift_id", None), 80):
         return None
@@ -131,6 +134,20 @@ def project_chat_notification(notification: Any, *, room_ref: Any, ts: float | N
         ts=float(ts) if isinstance(ts, (int, float)) and not isinstance(ts, bool) else time.time(),
         raw=None,
     )
+
+
+def chat_notification_skip_reason(notification: Any, *, room_ref: Any) -> str:
+    """Classify a rejected notification without retaining provider payload data."""
+    if not parse_twitch_room_ref(room_ref).ok:
+        return "ingest.invalid_twitch_projection"
+    notice_type = _text(getattr(notification, "notice_type", None), 48).lower()
+    detail = getattr(notification, notice_type, None)
+    if notice_type not in _SUPPORTED_NOTIFICATION_TYPES:
+        return "ingest.ignored_twitch_notification"
+    if notice_type == "sub_gift" and detail is not None:
+        if _text(getattr(detail, "community_gift_id", None), 80):
+            return "ingest.ignored_twitch_notification"
+    return "ingest.invalid_twitch_projection"
 
 
 def _numeric_id(value: Any) -> str:

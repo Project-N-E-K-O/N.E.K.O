@@ -458,7 +458,7 @@ class NekoLivePlugin(NekoPluginBase):
     @plugin_entry(
         id="twitch_login_status",
         name=tr("entries.twitch_login_status.name", default="查询 Twitch 授权状态"),
-        description=tr("entries.twitch_login_status.description", default="读取本地加密凭据的公开账号状态，不回传 token。"),
+        description=tr("entries.twitch_login_status.description", default="读取本地凭据存在状态；账号信息仅在联网校验成功后回传，始终不回传 token。"),
     )
     async def twitch_login_status(self, **_):
         try:

@@ -813,7 +813,7 @@
   "entries.twitch_device_authorization_cancel.name": "Cancelar autorización de dispositivo de Twitch",
   "entries.twitch_device_authorization_cancel.description": "Detiene el Device Code Flow activo y borra su sesión temporal.",
   "entries.twitch_login_status.name": "Consultar autorización de Twitch",
-  "entries.twitch_login_status.description": "Lee metadatos públicos de credenciales cifradas sin devolver tokens.",
+  "entries.twitch_login_status.description": "Indica si existen credenciales locales; solo devuelve datos de la cuenta tras validarlos en línea y nunca devuelve tokens.",
   "entries.twitch_credential_validate.name": "Validar autorización de Twitch",
   "entries.twitch_credential_validate.description": "Valida el token y actualiza atómicamente las credenciales cifradas cuando sea necesario.",
   "entries.twitch_logout.name": "Eliminar autorización de Twitch",

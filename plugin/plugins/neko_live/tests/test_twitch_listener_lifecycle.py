@@ -218,6 +218,7 @@ def _context(module: TwitchLiveIngestModule, store: _Store) -> SimpleNamespace:
         live_audience_session=_AudienceSession(),
         live_events=_Resettable(),
         live_support_events=_Resettable(),
+        runtime_timeline=[],
     )
     restore_calls: list[bool] = []
 
@@ -362,11 +363,45 @@ async def test_listener_projects_messages_and_drops_stale_generation_after_stop(
     assert event.session_generation == 7
     assert event.raw is None
     assert module.listener_state()["state"] == "receiving"
+    assert [(item["stage"], item["status"], item["reason"]) for item in ctx.runtime_timeline] == [
+        ("ingest", "received", "accepted"),
+        ("event_bus", "published", "accepted"),
+    ]
 
     await module.stop_listening()
     await emit(message)
 
     assert len(ctx.event_bus.events) == 1
+
+
+@pytest.mark.asyncio
+async def test_stop_listening_finishes_cleanup_before_propagating_cancellation() -> None:
+    close_finished = asyncio.Event()
+
+    class _NonClosingClient(_Client):
+        async def close(self, **_kwargs: Any) -> None:
+            close_finished.set()
+
+    module = TwitchLiveIngestModule(client_factory=_NonClosingClient)
+    module.ctx = _context(module, _Store())
+    assert await module.start_listening("target_channel") is True
+    runner = module._client_task
+    supervisor = module._client_supervisor_task
+
+    stop_task = asyncio.create_task(module.stop_listening())
+    await asyncio.wait_for(close_finished.wait(), timeout=1)
+    await asyncio.sleep(0)
+    stop_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await stop_task
+
+    assert runner is not None and runner.cancelled()
+    assert supervisor is not None and supervisor.done()
+    assert module._client is None
+    assert module._client_task is None
+    assert module._client_supervisor_task is None
+    assert module.listener_state()["state"] == "disconnected"
 
 
 @pytest.mark.asyncio
@@ -401,11 +436,44 @@ async def test_listener_projects_chat_notifications_to_gift_bus_events() -> None
     assert event.payload["provider_event_type"] == "TWITCH_SUB"
     assert event.session_generation == 7
     assert module.listener_state()["state"] == "receiving"
+    assert [(item["stage"], item["status"], item["reason"]) for item in ctx.runtime_timeline] == [
+        ("ingest", "received", "support.gift"),
+        ("event_bus", "published", "support.gift"),
+    ]
 
     await module.stop_listening()
     await emit(notice)
 
     assert len(ctx.event_bus.events) == 1
+
+
+@pytest.mark.asyncio
+async def test_listener_records_safe_reasons_for_pre_projection_drops() -> None:
+    clients: list[_Client] = []
+
+    def factory(**callbacks: Any) -> _Client:
+        client = _Client(**callbacks)
+        clients.append(client)
+        return client
+
+    module = TwitchLiveIngestModule(client_factory=factory)
+    ctx = _context(module, _Store())
+    module.ctx = ctx
+    await module.start_listening("target_channel")
+
+    await clients[0].callbacks["on_message"](
+        SimpleNamespace(id="invalid-message", text="", chatter=None)
+    )
+    await clients[0].callbacks["on_chat_notification"](
+        SimpleNamespace(id="raid-1", notice_type="raid", raid=SimpleNamespace())
+    )
+
+    assert ctx.event_bus.events == []
+    assert [(item["status"], item["reason"], item["uid"]) for item in ctx.runtime_timeline] == [
+        ("dropped", "ingest.invalid_twitch_projection", ""),
+        ("dropped", "ingest.ignored_twitch_notification", ""),
+    ]
+    await module.stop_listening()
 
 
 @pytest.mark.asyncio
@@ -466,6 +534,10 @@ async def test_failed_rotated_token_save_stops_listener() -> None:
     assert module.is_listening() is False
     assert module.listener_state()["state"] == "auth_required"
     assert module.listener_state()["last_error"] == "twitch refreshed credential could not be saved"
+    assert module._client is None
+    assert module._client_task is None
+    assert module._client_supervisor_task is None
+    assert clients[0].closed.is_set()
     assert ctx.config.live_enabled is False
     assert ctx.live_connection_state == "auth_required"
     assert ctx._live_listener_started_at == 0.0

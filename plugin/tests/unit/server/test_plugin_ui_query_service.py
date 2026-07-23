@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -948,7 +949,14 @@ def test_surface_source_rejects_circular_relative_dependencies(tmp_path, sources
 
 
 def test_call_surface_action_preserves_plugin_entry_error(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(ui_query_module, "_resolve_hosted_entry_timeout", lambda *_args: 10.0)
+    caller_thread = threading.get_ident()
+    resolver_threads: list[int] = []
+
+    def resolve_timeout(*_args) -> float:
+        resolver_threads.append(threading.get_ident())
+        return 10.0
+
+    monkeypatch.setattr(ui_query_module, "_resolve_hosted_entry_timeout", resolve_timeout)
     plugin_dir = tmp_path / "demo_plugin"
     plugin_dir.mkdir()
     config_path = plugin_dir / "plugin.toml"
@@ -1019,6 +1027,7 @@ def test_call_surface_action_preserves_plugin_entry_error(monkeypatch, tmp_path)
             state.plugin_hosts.update(hosts_backup)
 
     assert exc_info.value.code == "PLUGIN_UI_ACTION_FAILED"
+    assert resolver_threads and resolver_threads[0] != caller_thread
     assert exc_info.value.message == "Failed to save server config: access denied"
 
 

@@ -65,7 +65,7 @@ class RuntimeAuthApiMixin:
         return await runtime_twitch_auth.cancel_device_authorization(self)
 
     async def twitch_login_status(self) -> dict[str, Any]:
-        """Return local Twitch credential metadata without tokens."""
+        """Return credential presence; expose account metadata only after validation."""
         return await runtime_twitch_auth.credential_status(self)
 
     async def twitch_credential_validate(self) -> dict[str, Any]:

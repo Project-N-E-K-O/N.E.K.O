@@ -64,6 +64,10 @@ class TwitchAuthService:
         self._device_authorization_lock = asyncio.Lock()
 
     async def start_device_authorization(self, client_id: Any) -> dict[str, Any]:
+        async with self._device_authorization_lock:
+            return await self._start_device_authorization_locked(client_id)
+
+    async def _start_device_authorization_locked(self, client_id: Any) -> dict[str, Any]:
         normalized_client_id = _client_id(client_id)
         if not normalized_client_id:
             self._device_session = None
@@ -139,11 +143,9 @@ class TwitchAuthService:
     async def cancel_device_authorization(self, client_id: Any) -> dict[str, Any]:
         """Cancel the active Device Flow session without exposing its secrets."""
         normalized_client_id = _client_id(client_id)
-        requested_session = self._device_session
-        if requested_session is None or normalized_client_id != requested_session.client_id:
-            return _cancelled_status(cancelled=False)
         async with self._device_authorization_lock:
-            if self._device_session is requested_session:
+            requested_session = self._device_session
+            if requested_session is not None and normalized_client_id == requested_session.client_id:
                 self._device_session = None
                 return _cancelled_status(cancelled=True)
             credential = await self._credential_provider()

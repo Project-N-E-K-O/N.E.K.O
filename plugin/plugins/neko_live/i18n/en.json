@@ -813,7 +813,7 @@
   "entries.twitch_device_authorization_cancel.name": "Cancel Twitch device authorization",
   "entries.twitch_device_authorization_cancel.description": "Stop the active Device Code Flow and clear its temporary authorization session.",
   "entries.twitch_login_status.name": "Get Twitch authorization status",
-  "entries.twitch_login_status.description": "Read public account metadata from local encrypted credentials without returning tokens.",
+  "entries.twitch_login_status.description": "Report local credential presence; return account metadata only after online validation, never tokens.",
   "entries.twitch_credential_validate.name": "Validate Twitch authorization",
   "entries.twitch_credential_validate.description": "Validate the Twitch token and atomically refresh encrypted credentials when needed.",
   "entries.twitch_logout.name": "Remove Twitch authorization",

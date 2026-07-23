@@ -813,7 +813,7 @@
   "entries.twitch_device_authorization_cancel.name": "取消 Twitch 裝置授權",
   "entries.twitch_device_authorization_cancel.description": "停止目前的 Device Code Flow 並清除暫時授權工作階段。",
   "entries.twitch_login_status.name": "查詢 Twitch 授權狀態",
-  "entries.twitch_login_status.description": "讀取本機加密憑據的公開帳號狀態，不傳回 token。",
+  "entries.twitch_login_status.description": "讀取本機憑據存在狀態；帳號資訊僅在線上驗證成功後傳回，且始終不傳回 token。",
   "entries.twitch_credential_validate.name": "驗證 Twitch 授權",
   "entries.twitch_credential_validate.description": "向 Twitch 驗證 token，並在需要時原子更新加密憑據。",
   "entries.twitch_logout.name": "刪除 Twitch 授權",

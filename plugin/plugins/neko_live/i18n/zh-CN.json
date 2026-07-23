@@ -813,7 +813,7 @@
   "entries.twitch_device_authorization_cancel.name": "取消 Twitch 设备授权",
   "entries.twitch_device_authorization_cancel.description": "停止当前 Device Code Flow 并清除临时授权会话。",
   "entries.twitch_login_status.name": "查询 Twitch 授权状态",
-  "entries.twitch_login_status.description": "读取本地加密凭据的公开账号状态，不回传 token。",
+  "entries.twitch_login_status.description": "读取本地凭据存在状态；账号信息仅在联网校验成功后回传，始终不回传 token。",
   "entries.twitch_credential_validate.name": "校验 Twitch 授权",
   "entries.twitch_credential_validate.description": "向 Twitch 校验 token，并在需要时原子刷新加密凭据。",
   "entries.twitch_logout.name": "删除 Twitch 授权",

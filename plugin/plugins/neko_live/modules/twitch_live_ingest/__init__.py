@@ -4,15 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import time
+from contextlib import suppress
+from types import SimpleNamespace
 from typing import Any
 
 from twitchio import eventsub
 
 from ...core.contracts import LiveRoomStatus, ViewerEvent
 from ...core.runtime_live_listener import handle_unexpected_live_listener_stop
+from ...core.runtime_timeline import record_timeline
 from .._base import BaseModule
 from .helix import lookup_channel_status
-from .projection import project_chat_message, project_chat_notification
+from .projection import (
+    chat_notification_skip_reason,
+    project_chat_message,
+    project_chat_notification,
+)
 from .room_ref import parse_twitch_room_ref
 from .twitch_client import create_twitch_client
 
@@ -132,6 +139,7 @@ class TwitchLiveIngestModule(BaseModule):
             await self._stop_locked(clear_error=True)
 
     async def _stop_locked(self, *, clear_error: bool) -> None:
+        caller_cancelled = False
         self._stop_requested = True
         self._generation += 1
         self._listening = False
@@ -143,12 +151,20 @@ class TwitchLiveIngestModule(BaseModule):
         if client is not None:
             try:
                 await client.close()
+            except asyncio.CancelledError:
+                caller_cancelled = True
             except Exception:
-                pass
+                pass  # Client close is best-effort; task cleanup must continue.
         if task is not None and task is not asyncio.current_task():
             try:
                 await asyncio.wait_for(task, timeout=5)
-            except (asyncio.CancelledError, TimeoutError, Exception):
+            except asyncio.CancelledError:
+                if not task.done():
+                    task.cancel()
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    caller_cancelled = True
+            except Exception:
                 if not task.done():
                     task.cancel()
         if supervisor is not None and supervisor is not asyncio.current_task():
@@ -156,10 +172,14 @@ class TwitchLiveIngestModule(BaseModule):
             try:
                 await supervisor
             except asyncio.CancelledError:
-                pass
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    caller_cancelled = True
         self._state = "disconnected"
         if clear_error:
             self._last_error = ""
+        if caller_cancelled:
+            raise asyncio.CancelledError()
 
     async def _supervise_client_task(
         self,
@@ -191,10 +211,8 @@ class TwitchLiveIngestModule(BaseModule):
             self._client_supervisor_task = None
             self._state = "disconnected"
             self._last_error = failure
-            try:
+            with suppress(Exception):
                 await client.close()
-            except Exception:
-                pass
             await self._sync_unexpected_disconnect(failure)
 
     async def _sync_unexpected_disconnect(
@@ -274,12 +292,20 @@ class TwitchLiveIngestModule(BaseModule):
         if not self._owns_target(generation):
             return
         event = project_chat_message(message, room_ref=self._room_ref)
+        if event is None:
+            self._record_ingest_drop("ingest.invalid_twitch_projection")
+            return
         self._publish_event(event)
 
     async def _on_chat_notification(self, notification: Any, generation: int) -> None:
         if not self._owns_target(generation):
             return
         event = project_chat_notification(notification, room_ref=self._room_ref)
+        if event is None:
+            self._record_ingest_drop(
+                chat_notification_skip_reason(notification, room_ref=self._room_ref)
+            )
+            return
         self._publish_event(event)
 
     def _publish_event(self, event: Any) -> None:
@@ -289,19 +315,54 @@ class TwitchLiveIngestModule(BaseModule):
         bus = getattr(self.ctx, "event_bus", None)
         if bus is None:
             return
+        reason = f"support.{event.type}" if event.type == "gift" else "accepted"
+        record_timeline(
+            self.ctx,
+            event,
+            stage="ingest",
+            status="received",
+            reason=reason,
+            route=self.id,
+        )
         bus.publish(event.type, event)
+        record_timeline(
+            self.ctx,
+            event,
+            stage="event_bus",
+            status="published",
+            reason=reason,
+            route=self.id,
+        )
         self._last_event_at = event.ts
         self._state = "receiving"
+
+    def _record_ingest_drop(self, reason: str) -> None:
+        if self.ctx is None:
+            return
+        record_timeline(
+            self.ctx,
+            SimpleNamespace(uid="", source="live"),
+            stage="ingest",
+            status="dropped",
+            reason=reason,
+            route=self.id,
+        )
 
     async def _on_token_refreshed(self, payload: Any, generation: int) -> None:
         if generation != self._generation or self._stop_requested:
             return
-        await self._save_refreshed_token(payload, stop_on_failure=True)
+        await self._save_refreshed_token(payload, stop_on_failure=True, generation=generation)
 
     async def _on_temporary_token_refreshed(self, payload: Any) -> None:
         await self._save_refreshed_token(payload, stop_on_failure=False)
 
-    async def _save_refreshed_token(self, payload: Any, *, stop_on_failure: bool) -> None:
+    async def _save_refreshed_token(
+        self,
+        payload: Any,
+        *,
+        stop_on_failure: bool,
+        generation: int | None = None,
+    ) -> None:
         current = self._credential()
         user_id = _safe_numeric_id(getattr(payload, "user_id", None))
         access_token = _safe_secret(getattr(payload, "token", None))
@@ -326,23 +387,22 @@ class TwitchLiveIngestModule(BaseModule):
             if callable(reloader):
                 await reloader()
             return
-        self._last_error = "twitch refreshed credential could not be saved"
+        save_error = "twitch refreshed credential could not be saved"
         if stop_on_failure:
-            self._stop_requested = True
-            self._generation += 1
-            self._listening = False
-            self._state = "auth_required"
-            client = self._client
-            self._client = None
-            if client is not None:
-                try:
-                    await client.close()
-                except Exception:
-                    pass
-            await self._sync_unexpected_disconnect(
-                self._last_error,
-                connection_state="auth_required",
-            )
+            async with self._lifecycle_lock:
+                if generation is not None and (
+                    generation != self._generation or self._stop_requested
+                ):
+                    return
+                self._last_error = save_error
+                await self._stop_locked(clear_error=False)
+                self._state = "auth_required"
+                await self._sync_unexpected_disconnect(
+                    self._last_error,
+                    connection_state="auth_required",
+                )
+        else:
+            self._last_error = save_error
 
     def _credential(self) -> dict[str, Any]:
         candidate = getattr(self.ctx, "twitch_credential", None) if self.ctx is not None else None

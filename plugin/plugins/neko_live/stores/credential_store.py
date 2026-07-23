@@ -119,12 +119,6 @@ class CredentialStore:
             return True
         except Exception:
             return False
-        finally:
-            if temp_path is not None:
-                try:
-                    temp_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
 
     def _load_sync(self) -> dict | None:
         try:

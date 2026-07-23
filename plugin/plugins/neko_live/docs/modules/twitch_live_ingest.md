@@ -45,6 +45,37 @@ the shared EventBus and support scheduler; the TwitchIO object and raw EventSub
 payload are never retained. Selected events continue through the normal
 pipeline, safety guard, and dispatcher before NEKO speaks.
 
+## Runtime observability
+
+The provider records only bounded, in-memory Timeline facts; it does not copy a
+TwitchIO object or raw EventSub payload into Timeline, audit, recent results, or
+the dashboard.
+
+| Input path | Runtime Timeline | Event outcome / Skip Reason |
+|---|---|---|
+| Valid ordinary chat | `ingest: received` -> `event_bus: published` -> `live_events.select` | The selected payload enters the shared pipeline. Policy skips use the existing `selection.*` reasons. |
+| Verified Cheer or visible subscription | `ingest: received` -> `event_bus: published` -> `live_support_events.receive` | The bounded support scheduler emits the existing `support.<type>` outcome or its stable scheduler skip reason. |
+| Malformed chat or supported notice that cannot be safely normalized | `ingest: dropped` | `ingest.invalid_twitch_projection`; no `LiveEvent` is published. |
+| Unsupported notice, or a child gift notice suppressed after its community aggregate | `ingest: dropped` | `ingest.ignored_twitch_notification`; no `LiveEvent` is published. |
+
+Once a payload reaches `ctx.handle_live_payload(...)`, `safety_guard.before_event`,
+`safety_guard.before_output`, `dispatcher.push`, and `result.record` remain the
+visible shared stages. Their final outcome is one of the normal `ok`, `dry_run`,
+`skipped`, `blocked`, or `failed` results. Pre-projection drops stop at `ingest`
+and therefore do not manufacture a Dispatcher outcome.
+
+The dashboard derives connection state, last accepted event time, Timeline, and
+recent outcomes only from runtime/audit facts. It never projects provider raw
+payload. The two Twitch ingest skip records contain a new trace ID, stage,
+status, stable reason, and route only; they contain no UID, message text,
+nickname, token, URL, or notification object.
+
+### Decision points
+
+| Decision | Cost and budget | Alternatives and tradeoff | Selected option | Rollout, rollback, and checks |
+|---|---|---|---|---|
+| Explain provider-boundary drops | One bounded in-memory Timeline append per rejected projection; no new timer, queue, request, dependency, storage, audit write, or raw-data retention. Valid events add the existing `ingest` and `event_bus` boundary facts. | Keeping drops invisible has zero append cost but cannot explain expected non-output. Per-event audit or persistent logging improves history but adds I/O and privacy exposure. | Reuse the existing bounded runtime Timeline with two allowlisted reasons and empty UID. | Enabled with the Twitch listener. Roll back by removing the provider record calls and reason codes. Projection/lifecycle tests assert stage, reason, and empty UID; the plugin test suite covers bounded Timeline behavior. |
+
 ## Permission and cost decision
 
 The approved low-permission design keeps the existing `user:read:chat` scope.

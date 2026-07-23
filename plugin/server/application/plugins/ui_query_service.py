@@ -1671,10 +1671,15 @@ class PluginUiQueryService:
                 )
 
             try:
+                entry_timeout = await asyncio.to_thread(
+                    _resolve_hosted_entry_timeout,
+                    plugin_id,
+                    resolved_action_id,
+                )
                 result = await host.trigger(
                     resolved_action_id,
                     dict(args or {}),
-                    timeout=_resolve_hosted_entry_timeout(plugin_id, resolved_action_id),
+                    timeout=entry_timeout,
                 )
             except PluginExecutionError as exc:
                 message = exc.error if isinstance(exc.error, str) and exc.error else str(exc)

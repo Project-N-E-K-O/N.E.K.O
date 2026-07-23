@@ -813,7 +813,7 @@
   "entries.twitch_device_authorization_cancel.name": "Twitch デバイス認証をキャンセル",
   "entries.twitch_device_authorization_cancel.description": "進行中の Device Code Flow を停止し、一時認証セッションを消去します。",
   "entries.twitch_login_status.name": "Twitch 認証状態を取得",
-  "entries.twitch_login_status.description": "token を返さず、暗号化済み認証情報の公開アカウント状態を読み取ります。",
+  "entries.twitch_login_status.description": "ローカル認証情報の有無を返します。アカウント情報はオンライン検証後にのみ返し、token は返しません。",
   "entries.twitch_credential_validate.name": "Twitch 認証を検証",
   "entries.twitch_credential_validate.description": "Twitch token を検証し、必要に応じて暗号化認証情報を更新します。",
   "entries.twitch_logout.name": "Twitch 認証を削除",
