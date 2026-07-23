@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
-from main_logic.asr_client.activity_evidence import RnnoiseEvidence
+from .activity_evidence import RnnoiseEvidence
 from utils.audio_processor import AudioProcessor
 
 
