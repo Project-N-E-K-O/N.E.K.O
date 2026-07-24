@@ -124,15 +124,68 @@
     align-items: center;
     justify-content: center;
     font-size: 18px;
+    color: rgba(255, 255, 255, 0.96);
     flex-shrink: 0;
     box-shadow: 0 2px 6px rgba(0,0,0,0.3);
 }
 
-.music-bar-cover img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    border-radius: 8px;
+.music-bar-equalizer {
+    height: 17px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    gap: 3px;
+}
+
+.music-bar-equalizer-bar {
+    width: 3px;
+    height: 8px;
+    border-radius: 999px;
+    background: currentColor;
+    transform-origin: center bottom;
+}
+
+.music-bar-equalizer-bar:nth-child(2) {
+    height: 16px;
+}
+
+.music-bar-equalizer-bar:nth-child(3) {
+    height: 11px;
+}
+
+.music-player-bar.is-playing .music-bar-equalizer-bar,
+.music-player-bar.is-loading .music-bar-equalizer-bar {
+    animation: musicBarEqualizer 0.78s ease-in-out infinite alternate;
+}
+
+.music-player-bar.is-playing .music-bar-equalizer-bar:nth-child(2),
+.music-player-bar.is-loading .music-bar-equalizer-bar:nth-child(2) {
+    animation-delay: -0.31s;
+}
+
+.music-player-bar.is-playing .music-bar-equalizer-bar:nth-child(3),
+.music-player-bar.is-loading .music-bar-equalizer-bar:nth-child(3) {
+    animation-delay: -0.53s;
+}
+
+.music-player-bar.is-loading .music-bar-equalizer-bar {
+    animation-duration: 1.05s;
+    opacity: 0.72;
+}
+
+.music-player-bar.is-error .music-bar-equalizer-bar {
+    opacity: 0.42;
+}
+
+@keyframes musicBarEqualizer {
+    from { transform: scaleY(0.38); }
+    to { transform: scaleY(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .music-player-bar .music-bar-equalizer-bar {
+        animation: none !important;
+    }
 }
 
 .music-bar-info {

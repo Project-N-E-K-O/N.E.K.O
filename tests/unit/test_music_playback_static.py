@@ -4,12 +4,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 MUSIC_UI_PATH = ROOT / "static" / "jukebox" / "music_ui.js"
+MUSIC_UI_CSS_PATH = ROOT / "static" / "css" / "music_ui.css"
 PROACTIVE_UI_PATH = ROOT / "static" / "app" / "app-proactive.js"
 APP_CHAT_PATH = ROOT / "static" / "app" / "app-chat.js"
 LOCALES_DIR = ROOT / "static" / "locales"
 MUSIC_ROUTER_PATH = ROOT / "main_routers" / "music_router.py"
 MUSIC_CRAWLERS_PATH = ROOT / "utils" / "music_crawlers.py"
 DEFAULT_MUSIC_COVER_PATH = ROOT / "static" / "assets" / "music" / "music-cover-placeholder.png"
+PAGES_ROUTER_PATH = ROOT / "main_routers" / "pages_router.py"
+MUSIC_PLAYER_TEMPLATES = (ROOT / "templates" / "index.html", ROOT / "templates" / "chat.html")
 
 
 def test_music_dispatch_waits_for_media_and_reports_real_failure():
@@ -63,17 +66,34 @@ def test_proactive_music_only_retries_permanent_candidate_failures():
 
 def test_missing_music_cover_stays_out_of_data_and_uses_frontend_placeholder():
     player_source = MUSIC_UI_PATH.read_text(encoding="utf-8")
+    player_style = MUSIC_UI_CSS_PATH.read_text(encoding="utf-8")
     crawler_source = MUSIC_CRAWLERS_PATH.read_text(encoding="utf-8")
 
     assert "'cover': cover or ''" in crawler_source
     assert "dummyimage.com" not in crawler_source
     assert "defaultCoverPath: '/static/assets/music/music-cover-placeholder.png'" in player_source
     assert "const getMusicCoverUrl = (cover) =>" in player_source
-    assert "applyMusicCover(coverImg, trackInfo.cover)" in player_source
     assert "thumbnailUrl: displayCoverUrl" in player_source
+    assert "applyMusicCover" not in player_source
+    assert player_source.count('class="music-bar-equalizer"') == 2
+    assert player_source.count('class="music-bar-equalizer-bar"') == 6
+    assert ".music-player-bar.is-playing .music-bar-equalizer-bar" in player_style
+    assert "@keyframes musicBarEqualizer" in player_style
     assert "music-bar-fallback" not in player_source
     assert "dummyimage.com" not in player_source
     assert DEFAULT_MUSIC_COVER_PATH.stat().st_size > 0
+
+
+def test_music_player_assets_are_versioned_with_the_page():
+    pages_source = PAGES_ROUTER_PATH.read_text(encoding="utf-8")
+
+    assert '_PROJECT_ROOT / "static/jukebox/music_ui.js"' in pages_source
+    assert '_PROJECT_ROOT / "static/css/music_ui.css"' in pages_source
+    assert '_PROJECT_ROOT / "static/assets/music/music-cover-placeholder.png"' in pages_source
+    for template_path in MUSIC_PLAYER_TEMPLATES:
+        template_source = template_path.read_text(encoding="utf-8")
+        assert '/static/css/music_ui.css?v={{ static_asset_version }}' in template_source
+        assert '/static/jukebox/music_ui.js?v={{ static_asset_version }}' in template_source
 
 
 def test_all_locales_define_music_player_labels_and_failures():

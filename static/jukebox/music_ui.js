@@ -88,6 +88,12 @@
         }
     };
 
+    const setMusicBarVisualState = (musicBar, state) => {
+        if (!musicBar) return;
+        musicBar.classList.remove('is-playing', 'is-paused', 'is-loading', 'is-error');
+        musicBar.classList.add(`is-${state}`);
+    };
+
     // --- CSS 注入（独立于 APlayer 库加载，follower 镜像 bar 也需要） ---
     const injectCSS = (path) => new Promise((res) => {
         if (!path) return res();
@@ -1152,8 +1158,12 @@
             musicBar.style.setProperty('--dynamic-secondary-color', MUSIC_CONFIG.secondaryColor);
 
             musicBar.innerHTML = `
-                <div class="music-bar-cover">
-                    <img alt="">
+                <div class="music-bar-cover" aria-hidden="true">
+                    <span class="music-bar-equalizer">
+                        <span class="music-bar-equalizer-bar"></span>
+                        <span class="music-bar-equalizer-bar"></span>
+                        <span class="music-bar-equalizer-bar"></span>
+                    </span>
                 </div>
                 <div class="music-bar-info">
                     <div class="music-bar-title-wrap">
@@ -1190,14 +1200,12 @@
             if (!mountMusicBar(musicBar)) return false;
         }
 
-        // 切歌 / 首次：刷新标题 + 歌手 + 封面
+        // 切歌 / 首次：刷新标题与歌手
         const trackSig = (track.url || '') + '|' + (track.name || '') + '|' + (track.artist || '');
         if (firstRender || trackSig !== mirrorBarTrackSig) {
             setMusicBarTitle(musicBar, track.name || '');
             const artistEl = musicBar.querySelector('.music-bar-artist');
             if (artistEl) artistEl.textContent = track.artist || musicT('music.unknownArtist', 'Unknown Artist');
-            const coverImg = musicBar.querySelector('img');
-            applyMusicCover(coverImg, track.cover);
             mirrorBarTrackSig = trackSig;
         }
 
@@ -1227,6 +1235,10 @@
             apBtn.setAttribute('title', tText);
             apBtn.setAttribute('aria-label', tText);
         }
+        setMusicBarVisualState(
+            musicBar,
+            state.loadError ? 'error' : (state.initial ? 'loading' : (state.paused ? 'paused' : 'playing'))
+        );
 
         // 音量 UI
         if (typeof state.volume === 'number') {
@@ -1711,19 +1723,6 @@
             : MUSIC_CONFIG.assets.defaultCoverPath
     );
 
-    const applyMusicCover = (image, cover) => {
-        if (!image) return;
-        image.onerror = function () {
-            if (this.src.endsWith(MUSIC_CONFIG.assets.defaultCoverPath)) {
-                this.onerror = null;
-                return;
-            }
-            this.src = MUSIC_CONFIG.assets.defaultCoverPath;
-        };
-        image.src = getMusicCoverUrl(cover);
-        image.style.display = 'block';
-    };
-
     const toBackendMusicProxyUrl = (url) => {
         if (!url || typeof url !== 'string' || url.startsWith('/api/')) return url;
         try {
@@ -2153,8 +2152,12 @@
             musicBar.style.setProperty('--dynamic-secondary-color', MUSIC_CONFIG.secondaryColor);
 
             musicBar.innerHTML = `
-                <div class="music-bar-cover">
-                    <img alt="">
+                <div class="music-bar-cover" aria-hidden="true">
+                    <span class="music-bar-equalizer">
+                        <span class="music-bar-equalizer-bar"></span>
+                        <span class="music-bar-equalizer-bar"></span>
+                        <span class="music-bar-equalizer-bar"></span>
+                    </span>
                 </div>
                 <div class="music-bar-info">
                     <div class="music-bar-title-wrap">
@@ -2196,7 +2199,7 @@
         const previousTrackForCard = currentPlayingTrack;
         const previousCardId = musicCardMessageId;
 
-        // --- 2. 原地更新 UI 文本/封面 (始终执行) ---
+        // --- 2. 原地更新 UI 文本与音乐状态图标 (始终执行) ---
         const playbackIdForRequest = createMusicPlaybackId(trackInfo, currentToken);
         currentMusicPlaybackId = playbackIdForRequest;
         currentMusicOwnerStartedAt = Date.now();
@@ -2206,9 +2209,7 @@
         emitBarInitialState(trackInfo);
         setMusicBarTitle(musicBar, trackInfo.name || '');
         musicBar.querySelector('.music-bar-artist').textContent = trackInfo.artist || musicT('music.unknownArtist', 'Unknown Artist');
-
-        const coverImg = musicBar.querySelector('img');
-        applyMusicCover(coverImg, trackInfo.cover);
+        setMusicBarVisualState(musicBar, 'loading');
 
         const progressFill = musicBar.querySelector('.music-bar-progress-fill');
         const timeCurrent = musicBar.querySelector('.music-bar-time-current');
@@ -2284,6 +2285,7 @@
                 apBtn.textContent = icon;
                 apBtn.setAttribute('title', tText);
                 apBtn.setAttribute('aria-label', tText);
+                setMusicBarVisualState(musicBar, isPlaying ? 'playing' : 'paused');
             };
 
             let needsInit = isFirstRender || !localPlayer;
@@ -2387,6 +2389,7 @@
 
                         showErrorToast('music.playError', errorDetail);
                         updatePlayBtnState(false);
+                        setMusicBarVisualState(musicBar, 'error');
 
                         if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
                         autoDestroyTimer = setTimeout(() => {
@@ -2668,6 +2671,7 @@
                     localPlayer.list.switch(0);
                 }
                 updatePlayBtnState(false);
+                setMusicBarVisualState(musicBar, 'loading');
             }
 
             // 【核心修复】同步更新实例的最新 Token，确保复用模式下事件回调中的 Token 校验依然有效
@@ -2703,6 +2707,7 @@
                 } else if (mediaResult.reason === 'load_timeout') {
                     showErrorToast('music.loadTimeout', 'Music loading timed out');
                 }
+                setMusicBarVisualState(musicBar, 'error');
                 updateMusicCard('error', currentPlayingTrack);
                 emitBarState();
                 return musicPlayResult(
@@ -2711,7 +2716,10 @@
                     isPermanentCandidateFailure(mediaResult.reason)
                 );
             }
-            if (!shouldAutoPlay) updateMusicCard('paused', currentPlayingTrack);
+            if (!shouldAutoPlay) {
+                setMusicBarVisualState(musicBar, 'paused');
+                updateMusicCard('paused', currentPlayingTrack);
+            }
             return musicPlayResult(true, mediaResult.reason);
         } catch (err) {
             if (currentToken !== latestMusicRequestToken) return musicPlayResult(false, 'superseded');
