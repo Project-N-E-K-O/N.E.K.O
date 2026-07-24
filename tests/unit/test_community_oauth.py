@@ -5,6 +5,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import threading
+import time
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -222,6 +224,58 @@ def test_oauth_callback_success_persists_social_session(oauth_app, monkeypatch):
     assert saved_auth["client_id"] == "neko-servers-desktop-dev"
     assert saved_auth["local_user_id"] == USER_ID
     assert saved_auth["bind"]["bound"] is True
+
+
+@pytest.mark.unit
+async def test_oauth_callback_offloads_credential_writes(tmp_path, monkeypatch):
+    pending = tmp_path / "community_oauth_pending.json"
+    pending.write_text(
+        json.dumps(
+            {
+                "state": "expected-state",
+                "code_verifier": "verifier",
+                "redirect_uri": "http://127.0.0.1:48911/oauth/callback",
+                "client_id": "neko-servers-desktop-dev",
+                "auth_public_url": "https://auth.example",
+                "expires_at": time.time() + 60,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(O, "_oauth_pending_path", lambda: pending)
+    monkeypatch.setattr(C, "_social_base_url", lambda: "https://community.example")
+
+    async def fake_exchange(**_kwargs):
+        return {"access_token": "access", "refresh_token": "refresh"}
+
+    async def fake_bootstrap(_social_base, _access_token):
+        return {"user": {"id": USER_ID}}
+
+    async def fake_bind(_social_base, _access_token):
+        return {"bound": True, "error": None}
+
+    worker_threads = []
+
+    def save_auth(_payload):
+        worker_threads.append(threading.get_ident())
+        return True
+
+    def save_social(*_args, **_kwargs):
+        worker_threads.append(threading.get_ident())
+        return True
+
+    monkeypatch.setattr(O, "_exchange_oauth_code", fake_exchange)
+    monkeypatch.setattr(O, "_bootstrap_session", fake_bootstrap)
+    monkeypatch.setattr(O, "_oauth_guest_bind", fake_bind)
+    monkeypatch.setattr(C, "_save_auth", save_auth)
+    monkeypatch.setattr(C, "_save_social_session", save_social)
+
+    event_loop_thread = threading.get_ident()
+    response = await O._handle_oauth_callback("auth-code", "expected-state")
+
+    assert response.status_code == 200
+    assert len(worker_threads) == 2
+    assert all(thread_id != event_loop_thread for thread_id in worker_threads)
 
 
 @pytest.mark.unit

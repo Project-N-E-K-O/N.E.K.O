@@ -7,6 +7,7 @@ Owns PKCE for ``neko-servers-desktop-{env}`` with loopback callback
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import html
@@ -383,8 +384,9 @@ async def _handle_oauth_callback(
         },
         "bind": bind,
     }
-    auth_saved = C._save_auth(auth_payload)
-    social_saved = C._save_social_session(
+    auth_saved = await asyncio.to_thread(C._save_auth, auth_payload)
+    social_saved = await asyncio.to_thread(
+        C._save_social_session,
         social_base,
         access_token,
         refresh_token,
