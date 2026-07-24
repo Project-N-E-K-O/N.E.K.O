@@ -27,13 +27,13 @@ class Arbiter:
         self._kill_window: BattleEvent | None = None
         self._kill_window_first_at: float = 0.0
         self._kill_window_started_at: float = 0.0
+        self._kill_window_waiting_for_death: bool = False
+        self._kill_window_dead_since: float = 0.0
 
     def reset(self) -> None:
         self._last_fired.clear()
         self._window_best = None
-        self._kill_window = None
-        self._kill_window_first_at = 0.0
-        self._kill_window_started_at = 0.0
+        self._clear_kill_window()
 
     def decide(self, candidates: list[BattleEvent], scenario: str, now: float) -> tuple[BattleEvent | None, list[dict[str, Any]]]:
         chain: list[dict[str, Any]] = []
@@ -45,6 +45,17 @@ class Arbiter:
 
         # [1] Scenario 门控 + [2] cooldown 去重
         kill_coalesce_window = self.safety.config.kill_coalesce_window_seconds
+        if self._kill_window is not None and scenario == DEAD:
+            self._mark_kill_waiting_for_death(now)
+        if self._kill_window_waiting_for_death:
+            if scenario != DEAD:
+                chain.append(_rec(self._kill_window, "dropped", "stale_kill_after_dead_state_exit"))
+                self._clear_kill_window()
+            elif now - self._kill_window_dead_since > _death_trade_grace_seconds(kill_coalesce_window):
+                chain.append(
+                    _rec(self._kill_window, "dropped", "stale_kill_after_dead_timeout")
+                )
+                self._clear_kill_window()
         survivors: list[BattleEvent] = []
         for c in candidates:
             if not broadcast_category_enabled(self.safety.config, c.event_id, c.category, c.level):
@@ -60,6 +71,7 @@ class Arbiter:
                         chain.append(_rec(c, "spoken", "trade_kill_after_death"))
                         return trade_kill, chain
                     self._buffer_kill(c, now)
+                    self._mark_kill_waiting_for_death(now)
                     chain.append(_rec(c, "buffered", "kill_deferred_dead"))
                     continue
                 if c.event_id == "you_killed" and scenario == CRITICAL_RISK and kill_coalesce_window > 0:
@@ -79,23 +91,7 @@ class Arbiter:
             survivors.append(c)
 
         preempt = [c for c in survivors if c.preempt_eligible]
-        terminal = [c for c in survivors if c.event_id == "battle_end"]
-        normal = [c for c in survivors if not c.preempt_eligible and c.event_id != "battle_end"]
-
-        # 战局结束是一次性终态，不占用紧急抢占语义，但也不能在短暂的终局窗口内
-        # 因普通播报限流而延迟到 OUT_OF_BATTLE 后被门控丢弃。
-        if terminal:
-            chosen = _top(terminal)
-            self._fire(chosen, now, critical=False)
-            self._window_best = None
-            self._kill_window = None
-            self._kill_window_first_at = 0.0
-            self._kill_window_started_at = 0.0
-            chain.append(_rec(chosen, "spoken", "terminal_lifecycle"))
-            for c in survivors:
-                if c is not chosen:
-                    chain.append(_rec(c, "dropped", "lost_to_terminal_lifecycle"))
-            return chosen, chain
+        normal = [c for c in survivors if not c.preempt_eligible]
 
         # [3]/[4] 抢占通道
         if preempt:
@@ -112,15 +108,11 @@ class Arbiter:
                 if trade_kill is not None:
                     self._fire(trade_kill, now, critical=False)
                     chain.append(_rec(self._kill_window, "spoken", "trade_kill_preempt"))
-                    self._kill_window = None
-                    self._kill_window_first_at = 0.0
-                    self._kill_window_started_at = 0.0
+                    self._clear_kill_window()
                     return trade_kill, chain
                 if self._kill_window is not None:
                     chain.append(_rec(self._kill_window, "dropped", "lost_to_preempt"))
-                    self._kill_window = None
-                    self._kill_window_first_at = 0.0
-                    self._kill_window_started_at = 0.0
+                    self._clear_kill_window()
                 chain.append(_rec(best, "spoken", "preempt"))
                 for c in survivors:
                     if c is not best:
@@ -161,22 +153,19 @@ class Arbiter:
         ):
             chosen = self._kill_window
             if not broadcast_category_enabled(self.safety.config, chosen.event_id, chosen.category, chosen.level):
-                self._kill_window = None
-                self._kill_window_first_at = 0.0
-                self._kill_window_started_at = 0.0
+                self._clear_kill_window()
                 chain.append(_rec(chosen, "dropped", "broadcast_category_disabled_on_flush"))
                 return None, chain
             allowed, gate_reason = _event_allowed(chosen, scenario)
             if not allowed:
                 if chosen.event_id == "you_killed" and scenario == DEAD:
+                    self._mark_kill_waiting_for_death(now)
                     chain.append(_rec(chosen, "buffered", "scenario_gated_deferred(DEAD)"))
                     return None, chain
                 if chosen.event_id == "you_killed" and scenario == CRITICAL_RISK:
                     chain.append(_rec(chosen, "buffered", "scenario_gated_deferred(CRITICAL_RISK)"))
                     return None, chain
-                self._kill_window = None
-                self._kill_window_first_at = 0.0
-                self._kill_window_started_at = 0.0
+                self._clear_kill_window()
                 chain.append(_rec(chosen, "dropped", gate_reason.replace("scenario_gated", "scenario_gated_on_flush", 1)))
                 return None, chain
             if (
@@ -187,9 +176,7 @@ class Arbiter:
             ):
                 chain.append(_rec(chosen, "buffered", "scenario_gated_deferred(COMBAT_STRESS)"))
                 return None, chain
-            self._kill_window = None
-            self._kill_window_first_at = 0.0
-            self._kill_window_started_at = 0.0
+            self._clear_kill_window()
             self._fire(chosen, now, critical=False)
             chain.append(_rec(chosen, "spoken", "kill_coalesced"))
             return chosen, chain
@@ -230,6 +217,8 @@ class Arbiter:
             )
             self._kill_window_first_at = now
             self._kill_window_started_at = now
+            self._kill_window_waiting_for_death = False
+            self._kill_window_dead_since = 0.0
             return
 
         payload = dict(self._kill_window.payload)
@@ -248,6 +237,19 @@ class Arbiter:
             level=self._kill_window.level,
         )
         self._kill_window_started_at = now
+
+    def _mark_kill_waiting_for_death(self, now: float) -> None:
+        if self._kill_window is None or self._kill_window_waiting_for_death:
+            return
+        self._kill_window_waiting_for_death = True
+        self._kill_window_dead_since = now
+
+    def _clear_kill_window(self) -> None:
+        self._kill_window = None
+        self._kill_window_first_at = 0.0
+        self._kill_window_started_at = 0.0
+        self._kill_window_waiting_for_death = False
+        self._kill_window_dead_since = 0.0
 
 
 def _rank(e: BattleEvent) -> tuple[int, int, float]:
@@ -277,8 +279,12 @@ def _trade_kill_event(kill_event: BattleEvent, death_event: BattleEvent, now: fl
 
 def _recent_death_preempt(last_fired: dict[str, tuple[float, str]], now: float, window_seconds: float) -> bool:
     last_at, _last_level = last_fired.get("you_died", (-1e9, ""))
-    grace = max(window_seconds * 2.0, 4.0)
+    grace = _death_trade_grace_seconds(window_seconds)
     return now - last_at <= grace
+
+
+def _death_trade_grace_seconds(window_seconds: float) -> float:
+    return max(window_seconds * 2.0, 4.0)
 
 
 def _kill_coalesce_max_hold_seconds(window_seconds: float) -> float:

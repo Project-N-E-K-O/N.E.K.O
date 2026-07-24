@@ -1,4 +1,4 @@
-"""安全门 / 限流时钟（D-B4 + neko_live safety_guard 同款，去掉队列细节，加 critical 抢占冷却）。
+"""安全门 / 限流时钟（D-B4 + neko_roast safety_guard 同款，去掉队列细节，加 critical 抢占冷却）。
 
 职责：持有"全局限流时钟 / 抢占冷却 / 手动急停 / 连续失败自动急停 / dry_run"等状态；
 仲裁(arbiter)调用它判定与记录。它不决定"说哪条"（那是 arbiter）。
@@ -70,6 +70,14 @@ class SafetyGuard:
         self._last_output_at = cur
         if critical:
             self._last_critical_at = cur
+
+    def output_clock_checkpoint(self) -> tuple[float, float]:
+        """Capture output clocks before a two-stage arbiter/dispatcher attempt."""
+        return self._last_output_at, self._last_critical_at
+
+    def restore_output_clock(self, checkpoint: tuple[float, float]) -> None:
+        """Roll back clocks when the dispatcher declines the selected event."""
+        self._last_output_at, self._last_critical_at = checkpoint
 
     # --- 失败 / 自动急停 ---
     def record_failure(self, now: float | None = None) -> None:

@@ -30,7 +30,7 @@ class ProximityDetector(DiscreteDetector):
         self._tail_window_seconds = max(1.0, float(tail_window_seconds))
         self._tail_confirm_events = max(2, int(tail_confirm_events))
         self._tail_distance_m = max(100.0, float(tail_distance_m))
-        self._tail_hits: list[tuple[float, int, int]] = []
+        self._tail_hits: list[tuple[float, int, int | None]] = []
 
     def reset(self) -> None:
         self._last_id = -1
@@ -90,7 +90,6 @@ class ProximityDetector(DiscreteDetector):
         ]
         if (
             eid is None
-            or track_id is None
             or distance is None
             or distance > self._tail_distance_m
         ):

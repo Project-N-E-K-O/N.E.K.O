@@ -115,8 +115,8 @@ _PROBE_FAILURE_GRACE_SEC = 5.0
 # 于是持续刷失速/低高度/乘员损失等假警；观战他人时地图“自身”坐标还会漂到被观战者身上，
 # 令态势(敌距/方位/接近)失真。故一旦判定玩家阵亡待命，就抑制告警 + 标记态势不可靠。
 # 进入：combat.my.deaths 增加（解析到 is_my_death 新事件）。
-# 退出：必须先看到载具“静止/残骸化”(_dead_inert_seen)，再恢复运动或满员——以此区分
-#       “死亡俯冲(高速但已死)”与“重生起飞/行驶”。死亡俯冲时 inert 尚未出现，不会误退出。
+# 退出：必须先看到载具“静止/残骸化”(_dead_inert_seen)，再恢复运动；陆战满员恢复还要求
+#       阵亡后曾见过减员帧。以此区分“死亡俯冲/旧满员帧”与“重生起飞/行驶”。
 _DEAD_INERT_IAS_KMH = 40.0    # 视为静止(残骸)的 IAS 上限
 _DEAD_INERT_SPEED_MS = 3.0    # 视为静止(残骸)的地面速度上限
 _DEAD_ALIVE_IAS_KMH = 150.0   # 视为重新升空的 IAS 下限
@@ -216,6 +216,7 @@ class TelemetryService:
         self._dead = False
         self._dead_since: float | None = None
         self._dead_inert_seen = False               # 死后是否已见载具静止(残骸/观战冻结)
+        self._dead_crew_depleted_seen = False       # 死后是否已见陆战乘员未满（满员恢复的前置边沿）
         self._dead_source: str | None = None         # hud_event / ground_crew
         self._last_deaths = 0                        # 上次见到的 combat.my.deaths（检测增量=新阵亡）
 
@@ -357,6 +358,7 @@ class TelemetryService:
                 self._dead = False
                 self._dead_since = None
                 self._dead_inert_seen = False
+                self._dead_crew_depleted_seen = False
                 self._dead_source = None
                 self._last_deaths = 0
             # 回放检测（仅战局内；锁定式，命中后保持到离开战局）
@@ -554,9 +556,9 @@ class TelemetryService:
 
         进入：combat.my.deaths 较上次增加（解析到本人新阵亡）；或陆战中可信的乘员
               数降至 1（crew_total>=2 且 crew_current<=1，载具已无法继续作战）。
-        退出：先见载具静止/残骸化（_dead_inert_seen），再满足以下任一“复活”信号：
+        退出：在更早的帧先见载具静止/残骸化（_dead_inert_seen），再满足以下任一“复活”信号：
               - 恢复运动（空中 IAS>阈值 / 地面速度>阈值）= 重生起飞/行驶；
-              - 乘员恢复满员（地面坦克 crew_total>=2 且 crew_current>=crew_total）= 新车。
+              - 阵亡后曾见陆战乘员未满，随后恢复满员 = 新车。
         “先静止再活跃”的两段式可正确区分“死亡俯冲(高速但已死)”与“重生”，避免在
         坠落途中误判复活而提前解除抑制。
 
@@ -576,14 +578,18 @@ class TelemetryService:
             and crew_total >= 2
             and crew <= 1
         )
+        entered_dead = False
         if not self._dead and (deaths > self._last_deaths or ground_crew_knockout):
             self._dead = True
             self._dead_since = now
             self._dead_inert_seen = False
+            self._dead_crew_depleted_seen = False
             self._dead_source = "hud_event" if deaths > self._last_deaths else "ground_crew"
+            entered_dead = True
         self._last_deaths = deaths
         if not self._dead:
             return False
+        inert_seen_before = self._dead_inert_seen
         ias = processed.get("ias_kmh") if isinstance(processed, dict) else None
         gspeed = getattr(ind, "speed", None)
         inert = ((ias is None or ias < _DEAD_INERT_IAS_KMH)
@@ -594,9 +600,24 @@ class TelemetryService:
                   or (gspeed is not None and abs(gspeed) > _DEAD_ALIVE_SPEED_MS))
         crew_full = (crew is not None and crew_total is not None
                      and crew_total >= 2 and crew >= crew_total)
-        if self._dead_inert_seen and (moving or crew_full):
+        if (
+            army in {"tank", "ground"}
+            and crew is not None
+            and crew_total is not None
+            and crew_total >= 2
+            and crew < crew_total
+        ):
+            self._dead_crew_depleted_seen = True
+        crew_recovered = (
+            army in {"tank", "ground"}
+            and self._dead_crew_depleted_seen
+            and crew_full
+        )
+        if not entered_dead and inert_seen_before and (moving or crew_recovered):
             self._dead = False
             self._dead_since = None
+            self._dead_inert_seen = False
+            self._dead_crew_depleted_seen = False
             self._dead_source = None
             self._life_index = max(1, self._life_index or 1) + 1
             return True
@@ -633,6 +654,7 @@ class TelemetryService:
         self._dead = False
         self._dead_since = None
         self._dead_inert_seen = False
+        self._dead_crew_depleted_seen = False
         self._dead_source = None
         self._last_deaths = 0
         self._battle_id = None
@@ -648,6 +670,7 @@ class TelemetryService:
             print(f"[mapimg] 保存地图失败：{exc!r}", file=sys.stderr)
 
     # -- 线程安全读取 ------------------------------------------------------
+
 
     def get_snapshot(self) -> dict[str, Any]:
         with self._lock:

@@ -75,6 +75,11 @@ class DeathDetector(DiscreteDetector):
         self._emitted_ids: set[int] = set()
         self._dead_edge_emitted = False
 
+    def reset(self) -> None:
+        self._last_seen_id = -1
+        self._emitted_ids.clear()
+        self._dead_edge_emitted = False
+
     def detect(self, prev: BattleState, cur: BattleState) -> BattleEvent | None:
         if not cur.dead:
             self._dead_edge_emitted = False
@@ -142,58 +147,16 @@ class DeathDetector(DiscreteDetector):
 class BattleEndDetector(DiscreteDetector):
     id = "battle_end"
 
-    def __init__(self) -> None:
-        self._battle_seen = False
-        self._emitted = False
-        self._last_combat: dict[str, Any] = {}
-        self._last_domain = "unknown"
-        self._last_status: str | None = None
-
     def _ended(self, s: BattleState) -> bool:
         return (s.mission_status or "").lower() in _END_STATUSES
 
     def detect(self, prev: BattleState, cur: BattleState) -> BattleEvent | None:
-        if cur.in_battle:
-            if not self._battle_seen:
-                self._emitted = False
-                self._last_combat = {}
-                self._last_domain = "unknown"
-                self._last_status = None
-            self._battle_seen = True
-            if isinstance(cur.combat, dict) and cur.combat:
-                self._last_combat = cur.combat
-            if cur.domain not in {"", "unknown", "menu"}:
-                self._last_domain = cur.domain
-            if cur.mission_status:
-                self._last_status = cur.mission_status
-
-        terminal_status = self._ended(cur) and not self._emitted
-        confirmed_exit = (
-            self._battle_seen
-            and not self._emitted
-            and cur.connected
-            and cur.conn_state == "not_in_battle"
-            and not cur.in_battle
-        )
-        if terminal_status or confirmed_exit:
-            result = cur.mission_status if terminal_status else (
-                self._last_status if self._last_status and self._last_status.lower() in _END_STATUSES else "left"
-            )
-            combat = cur.combat if isinstance(cur.combat, dict) and cur.combat else self._last_combat
-            domain = cur.domain if cur.domain not in {"", "unknown", "menu"} else self._last_domain
-            payload: dict[str, Any] = {"result": result, "domain": domain}
-            my = combat.get("my") if isinstance(combat, dict) else None
-            # HUD 事件全空时 KillTracker 会给手动身份返回占位 K0/D0；这并不代表
-            # 战绩可靠，不能在终局台词里把缺数据说成零战绩。
-            if isinstance(my, dict) and int(combat.get("total_events") or 0) > 0:
-                payload["result"] = f"{result}, K{my.get('kills', 0)}/D{my.get('deaths', 0)}"
-            self._emitted = True
-            if confirmed_exit:
-                self._battle_seen = False
+        if self._ended(cur) and not self._ended(prev):
+            payload: dict[str, Any] = {"result": cur.mission_status, "domain": cur.domain}
+            my = cur.combat.get("my") if isinstance(cur.combat, dict) else None
+            if isinstance(my, dict):
+                payload["result"] = f"{cur.mission_status}, K{my.get('kills', 0)}/D{my.get('deaths', 0)}"
             return BattleEvent("battle_end", payload=payload, ts=cur.timestamp or 0.0, level="warning")
-
-        if self._emitted and cur.connected and not cur.in_battle:
-            self._battle_seen = False
         return None
 
 
@@ -206,6 +169,10 @@ class KillDetector(DiscreteDetector):
         self.player_name = (player_name or "").strip()
         self._last_seen_id: int = -1
         self._emitted_ids: set[int] = set()
+
+    def reset(self) -> None:
+        self._last_seen_id = -1
+        self._emitted_ids.clear()
 
     def detect(self, prev: BattleState, cur: BattleState) -> BattleEvent | None:
         feed = _feed_items(cur)

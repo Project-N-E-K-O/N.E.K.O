@@ -63,7 +63,7 @@ def _running_ground_state(timestamp: float = 1.0) -> BattleState:
     )
 
 
-def test_success_and_confirmed_exit_each_emit_one_battle_end() -> None:
+def test_terminal_mission_status_emits_once_and_plain_exit_does_not_invent_result() -> None:
     detector = BattleEndDetector()
     running = _running_ground_state()
     assert detector.detect(BattleState(), running) is None
@@ -88,9 +88,7 @@ def test_success_and_confirmed_exit_each_emit_one_battle_end() -> None:
     )
     assert detector.detect(menu_after_success, new_running) is None
     new_menu = BattleState(connected=True, conn_state="not_in_battle", timestamp=5.0)
-    event = detector.detect(new_running, new_menu)
-    assert event is not None
-    assert event.payload == {"result": "left", "domain": "air"}
+    assert detector.detect(new_running, new_menu) is None
 
     fallback = BattleEndDetector()
     assert fallback.detect(BattleState(), running) is None
@@ -102,9 +100,7 @@ def test_success_and_confirmed_exit_each_emit_one_battle_end() -> None:
         domain="menu",
         timestamp=3.0,
     )
-    event = fallback.detect(offline, menu)
-    assert event is not None
-    assert event.payload == {"result": "left, K2/D1", "domain": "ground"}
+    assert fallback.detect(offline, menu) is None
 
 
 def test_ground_crew_dead_edge_emits_once_and_late_hud_does_not_duplicate() -> None:
@@ -134,7 +130,7 @@ def test_ground_crew_dead_edge_emits_once_and_late_hud_does_not_duplicate() -> N
     assert detector.detect(dead, dead_with_feed) is None
 
 
-def test_battle_end_bypasses_transient_output_suppression_without_preempting() -> None:
+def test_battle_end_uses_normal_output_suppression_without_preempting() -> None:
     config = WtConfig(
         dry_run=False,
         global_rate_limit_seconds=12,
@@ -147,8 +143,8 @@ def test_battle_end_bypasses_transient_output_suppression_without_preempting() -
     safety.mark_output(critical=False, now=99.0)
     event = BattleEvent("battle_end", ts=100.0)
     chosen, chain = Arbiter(safety).decide([event], BATTLE_ENDED, 100.0)
-    assert chosen is event
-    assert chain[0]["reason"] == "terminal_lifecycle"
+    assert chosen is None
+    assert chain[-1]["reason"] == "rate_limited(11.0s)"
 
     plugin = SimpleNamespace(
         cfg=config,
@@ -159,9 +155,12 @@ def test_battle_end_bypasses_transient_output_suppression_without_preempting() -
     dispatcher = NekoDispatcher(plugin, clock=lambda: 100.0)
     dispatcher._last_push_at = 99.0
     dispatcher._last_push_priority = 10
-    assert _quiet_window_suppression(plugin, event, 100.0) is None
-    assert not dispatcher._is_backpressured(event, 100.0)
-    assert _output_event_max_age_seconds(plugin, event) == 30.0
+    assert _quiet_window_suppression(plugin, event, 100.0) == (
+        "user_chat_quiet_window",
+        59.0,
+    )
+    assert dispatcher._is_backpressured(event, 100.0)
+    assert _output_event_max_age_seconds(plugin, event) == 8.0
     assert not _host_interrupt_pending(event)
 
 
