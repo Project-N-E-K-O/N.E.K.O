@@ -1,0 +1,68 @@
+pkgname=n.e.k.o-bin
+pkgver=0.8.3
+pkgrel=1
+provides=('n.e.k.o')
+conflicts=('n.e.k.o')
+pkgdesc="N.E.K.O., a digital life that yearns to understand, connect, and grow with us."
+arch=('x86_64')
+url="https://github.com/Project-N-E-K-O/N.E.K.O"
+license=('Apache-2.0')
+depends=('gtk3','nss','libxtst','libsecret','xdg-utils')
+makedepends=()
+source=("$pkgname-$pkgver.tar.gz::https://github.com/Project-N-E-K-O/N.E.K.O/releases/download/v$pkgver/N.E.K.O_$pkgver_linux.tar.gz")
+sha256sums=('769b99970c13248129fd625c22e65b442fa6829ced2599347a8c7242a0fb6257')
+
+package() {
+  cd "$srcdir"
+  local _srcdir="N.E.K.O_$pkgver_linux"
+  cd "$_srcdir"
+
+  # 1. 将所有内容（二进制+资源）安装到 /usr/lib/neko
+  mkdir -p "$pkgdir/usr/lib/neko"
+  cp -r -p . "$pkgdir/usr/lib/neko/"
+
+  # 2. 给二进制文件添加可执行权限
+  chmod +x "$pkgdir/usr/lib/neko/n.e.k.o"
+
+  # 3. 创建启动脚本（命令执行层面的别名）并解决相对路径问题
+  mkdir -p "$pkgdir/usr/bin"
+
+  # 主脚本：用户输入 n.e.k.o 时执行
+  cat > "$pkgdir/usr/bin/n.e.k.o" << 'EOF'
+#!/bin/sh
+cd /usr/lib/neko
+exec ./n.e.k.o "$@"
+EOF
+  chmod +x "$pkgdir/usr/bin/n.e.k.o"
+
+  # 4. 创建 .desktop 菜单项
+  mkdir -p "$pkgdir/usr/share/applications"
+  cat > "$pkgdir/usr/share/applications/$pkgname.desktop" << EOF
+[Desktop Entry]
+Type=Application
+Name=Project N.E.K.O
+Comment=N.E.K.O., a digital life that yearns to understand, connect, and grow with us.
+Exec=n.e.k.o
+Icon=neko-bin
+Categories=Utility;
+# 分类暂时分到 Utility，后面再看
+Terminal=false
+StartupNotify=true
+EOF
+
+  # 5. 自动提取资源中的图标并安装到 pixmaps
+  #    优先查找常见图标文件名（支持 png/svg/ico）
+  ICON_FILE="resources/icon.png"
+
+  if [ -f "$ICON_FILE" ]; then
+    # 根据文件扩展名决定目标名称
+    EXT="${ICON_FILE##*.}"
+    install -Dm644 "$ICON_FILE" "$pkgdir/usr/share/pixmaps/neko-bin.${EXT}"
+  else
+    # 如果没找到特定名称，随便找一张图片作为图标（如第一张 png）
+    FALLBACK_ICON=$(find "$pkgdir/usr/lib/neko" -type f -iname "*.png" -print -quit)
+    if [ -n "$FALLBACK_ICON" ]; then
+      install -Dm644 "$FALLBACK_ICON" "$pkgdir/usr/share/pixmaps/neko-bin.png"
+    fi
+  fi
+}
