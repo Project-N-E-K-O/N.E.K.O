@@ -147,7 +147,7 @@ class _ResponseMixin:
         item_event_id = f"event_user_item_{uuid.uuid4().hex}"
         response_event_id = f"event_user_response_{uuid.uuid4().hex}"
         item_id = f"item_neko_{uuid.uuid4().hex}"
-        expected_item_id = None if getattr(self, "_is_qwen", False) else item_id
+        expected_item_id = item_id
         # 通过 conversation.item.create 添加用户消息，再触发响应。两步都
         # 进入全局仲裁器，直到 response.done 才释放下一次 create 的资格。
         item_event = {
@@ -208,7 +208,7 @@ class _ResponseMixin:
 
         event_suffix = uuid.uuid4().hex
         item_id = f"item_neko_{uuid.uuid4().hex}"
-        expected_item_id = None if getattr(self, "_is_qwen", False) else item_id
+        expected_item_id = item_id
         item_event = {
             "type": "conversation.item.create",
             "event_id": f"event_asr_item_{event_suffix}",
@@ -377,7 +377,7 @@ class _ResponseMixin:
         item_event_id = f"event_inject_item_{uuid.uuid4().hex}"
         create_event_id = f"event_inject_resp_{uuid.uuid4().hex}"
         item_id = f"item_neko_{uuid.uuid4().hex}"
-        expected_item_id = None if getattr(self, "_is_qwen", False) else item_id
+        expected_item_id = item_id
         if on_rejected is not None:
             _fired = False
 

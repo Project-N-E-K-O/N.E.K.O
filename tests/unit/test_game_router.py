@@ -4449,6 +4449,40 @@ async def test_heartbeat_timeout_finalize_archives_and_closes_session(monkeypatc
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_finalize_continues_when_voice_input_resume_fails(monkeypatch):
+    mgr = _FakeGameRouteManager()
+    mgr._resume_independent_voice_input_after_game = AsyncMock(
+        side_effect=RuntimeError("resume failed")
+    )
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
+    _gr_patch_all(
+        monkeypatch,
+        "_submit_game_archive_to_memory",
+        AsyncMock(return_value={"ok": True, "status": "cached"}),
+    )
+    state = gr_runtime._activate_game_route("soccer", "match_1", "Lan")
+    _set_soccer_game_memory_policy(state, enabled=True)
+    _mark_game_started(state)
+
+    result = await gr_runtime._finalize_game_route_state(
+        state,
+        reason="route_end",
+        close_game_session=False,
+    )
+
+    assert result["archive_memory"] == {"ok": True, "status": "cached"}
+    assert result["realtime_restore"] == {
+        "attempted": True,
+        "ok": False,
+        "reason": "voice_input_resume_failed",
+    }
+    status = json.loads(mgr.statuses[-1])
+    assert status["code"] == "GAME_ROUTE_ENDED"
+    assert status["details"]["realtime_restore"] == result["realtime_restore"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_heartbeat_timeout_ignores_recent_activity_and_finalizes(monkeypatch):
     _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
     now = gr_runtime.time.time()

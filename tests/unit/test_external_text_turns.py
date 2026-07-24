@@ -42,6 +42,39 @@ async def test_receive_loop_dispatches_non_created_events_after_stale_filter():
 
 
 @pytest.mark.asyncio
+async def test_barge_in_cancelled_response_done_releases_response_lane():
+    response_done = AsyncMock()
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="gpt-4o-realtime-preview",
+        api_type="openai",
+        on_response_done=response_done,
+    )
+    socket = AsyncMock()
+    client.ws = socket
+    socket.__aiter__.return_value = [
+        json.dumps({"type": "response.created", "response": {"id": "resp-1"}}),
+        json.dumps({"type": "input_audio_buffer.speech_started"}),
+        json.dumps(
+            {
+                "type": "response.done",
+                "response": {"id": "resp-1", "status": "cancelled"},
+            }
+        ),
+    ]
+
+    await client.handle_messages()
+
+    response_done.assert_awaited_once()
+    await client._response_arbiter.wait_until_idle(timeout=0.2)
+    assert any(
+        json.loads(call.args[0]).get("type") == "response.cancel"
+        for call in socket.send.call_args_list
+    )
+
+
+@pytest.mark.asyncio
 async def test_response_arbiter_holds_lane_until_response_done():
     sent = []
     arbiter = None

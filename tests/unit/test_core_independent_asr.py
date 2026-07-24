@@ -26,7 +26,13 @@ from main_logic.voice_turn.contracts import (
 )
 from main_logic.voice_turn.contracts import EvaluationStatus, TurnDecision
 from main_logic.voice_turn.coordinator import CoordinatorState
-from main_logic.asr_client.detector import CoreDetectorEventEnvelope
+from main_logic.asr_client.detector import (
+    CoreDetectorEventEnvelope,
+    DetectorIngressIdentity,
+    DetectorSubmitResult,
+    DetectorSubmitStatus,
+)
+import main_logic.core.asr_runtime as core_asr_runtime_module
 import main_logic.core as core_module
 from utils import preferences
 
@@ -117,6 +123,36 @@ class _FailedSmartTurnDetector(_ReadyDetector):
 
     def endpointing_ready(self, token) -> bool:
         return False
+
+
+class _QueuedSmartTurnDetector(_ReadyDetector):
+    def __init__(self) -> None:
+        super().__init__()
+        self.queued_audio_ms = 0
+        self.smart_turn_evaluation_ms = 0
+        self.smart_turn_stale_result_count = 0
+        self.smart_turn_coalesced_evaluation_count = 0
+        self.force_speech_started = AsyncMock(return_value=True)
+        self._sequence_no = 0
+
+    async def submit_audio(
+        self,
+        _pcm16: bytes,
+        *,
+        ingress_token,
+        **_kwargs,
+    ) -> DetectorSubmitResult:
+        self._sequence_no += 1
+        return DetectorSubmitResult(
+            status=DetectorSubmitStatus.ACCEPTED,
+            throttle_available=False,
+            endpointing_available=True,
+            identity=DetectorIngressIdentity(
+                ingress_token=ingress_token,
+                detector_epoch=1,
+                sequence_no=self._sequence_no,
+            ),
+        )
 
 
 def _selection(provider_key: str, endpointing_mode: str = "manual"):
@@ -820,6 +856,73 @@ async def test_optimization_disabled_continuously_uploads_with_smart_turn() -> N
         runtime._capture_turn_token(runtime._asr_lifecycle)
     )
     assert runtime._omni_mic_audio_bytes == 0
+
+
+async def test_smart_turn_fail_open_advances_lifecycle_before_current_frame() -> None:
+    runtime = _Runtime()
+    runtime._voice_input_resource_optimization_enabled = False
+    asr = type("Asr", (), {"is_ready": True, "stream_audio": AsyncMock()})()
+    runtime._asr_session = asr
+    runtime._asr_provider = "glm"
+    runtime._asr_route_mode = "independent"
+    runtime._asr_lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("glm", "manual"),
+        shadow_mode=False,
+        resource_optimization_enabled=False,
+    )
+    runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    detector = _QueuedSmartTurnDetector()
+    runtime._asr_detector = detector
+
+    await runtime._route_microphone_audio(
+        b"\x01\x00" * 160,
+        sample_rate_hz=16_000,
+        rnnoise_available=False,
+    )
+    await runtime._asr_audio_dispatcher.wait_idle()
+
+    detector.force_speech_started.assert_awaited_once()
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+    asr.stream_audio.assert_awaited_once()
+    assert runtime._asr_route_mode == "independent"
+
+
+async def test_native_connection_close_is_latched_and_not_retried() -> None:
+    runtime = _Runtime()
+    runtime._set_microphone_route("native")
+    runtime.session_closed_by_server = False
+    runtime.last_audio_send_error_time = 0.0
+    runtime.audio_error_log_interval = 2.0
+    runtime.session.stream_audio = AsyncMock(
+        side_effect=AttributeError("connection already closed")
+    )
+
+    assert await runtime._route_microphone_audio(
+        b"\x01\x00", sample_rate_hz=16_000
+    ) is True
+    assert await runtime._route_microphone_audio(
+        b"\x01\x00", sample_rate_hz=16_000
+    ) is True
+
+    assert runtime.session_closed_by_server is True
+    runtime.session.stream_audio.assert_awaited_once()
+
+
+async def test_native_audio_failure_log_is_rate_limited(monkeypatch) -> None:
+    runtime = _Runtime()
+    runtime._set_microphone_route("native")
+    runtime.session_closed_by_server = False
+    runtime.last_audio_send_error_time = 0.0
+    runtime.audio_error_log_interval = 2.0
+    runtime.session.stream_audio = AsyncMock(side_effect=RuntimeError("send failed"))
+    log_error = MagicMock()
+    monkeypatch.setattr(core_asr_runtime_module.logger, "error", log_error)
+
+    await runtime._route_microphone_audio(b"\x01\x00", sample_rate_hz=16_000)
+    await runtime._route_microphone_audio(b"\x01\x00", sample_rate_hz=16_000)
+
+    assert runtime.session.stream_audio.await_count == 2
+    log_error.assert_called_once()
 
 
 @pytest.mark.parametrize("provider", ["qwen", "openai"])

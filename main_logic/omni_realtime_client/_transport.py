@@ -803,7 +803,9 @@ class _TransportMixin:
             await self.cancel_response()
 
         self._is_responding = False
-        self._current_response_id = None
+        # Keep the cancelled response identity until its terminal event arrives.
+        # Clearing it here makes the stale-event filter drop that response.done,
+        # leaving the arbiter busy until a later response happens to complete.
         self._current_item_id = None
         # 清空转录buffer和重置标志，防止打断后的错位
         self._output_transcript_buffer = ""

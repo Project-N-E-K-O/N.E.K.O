@@ -14,6 +14,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Literal
 
+from websockets import exceptions as web_exceptions
+
 from main_logic.asr_client.runtime import (
     AsrRuntimeCallbacks,
     AsrStartStatus,
@@ -354,6 +356,7 @@ class AsrRuntimeMixin:
         *,
         next_route_mode: Literal["blocked"],
     ) -> None:
+        self._ensure_asr_runtime_state()
         del next_route_mode
         provider = self._independent_asr_provider
         omni_audio_bytes = self._omni_mic_audio_bytes
@@ -596,6 +599,8 @@ class AsrRuntimeMixin:
         if not self._voice_input_accepts_pcm():
             return True
         if route_mode == "native":
+            if getattr(self, "session_closed_by_server", False):
+                return True
             stream_audio = getattr(self.session, "stream_audio", None)
             if not callable(stream_audio):
                 return True
@@ -604,11 +609,36 @@ class AsrRuntimeMixin:
                 self._record_omni_microphone_audio(len(pcm16))
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                logger.error(
-                    "[%s] Omni native microphone routing failed",
-                    self.lanlan_name,
-                )
+            except web_exceptions.ConnectionClosedOK:
+                self.session_closed_by_server = True
+            except (web_exceptions.ConnectionClosed, AttributeError) as exc:
+                self.session_closed_by_server = True
+                now = time.monotonic()
+                if (
+                    now - getattr(self, "last_audio_send_error_time", 0.0)
+                    > getattr(self, "audio_error_log_interval", 2.0)
+                ):
+                    logger.warning(
+                        "[%s] Omni native microphone connection closed: %s",
+                        self.lanlan_name,
+                        exc,
+                    )
+                    self.last_audio_send_error_time = now
+            except Exception as exc:
+                message = str(exc).lower()
+                if "no close frame" in message or "connection closed" in message:
+                    self.session_closed_by_server = True
+                now = time.monotonic()
+                if (
+                    now - getattr(self, "last_audio_send_error_time", 0.0)
+                    > getattr(self, "audio_error_log_interval", 2.0)
+                ):
+                    logger.error(
+                        "[%s] Omni native microphone routing failed: %s",
+                        self.lanlan_name,
+                        exc,
+                    )
+                    self.last_audio_send_error_time = now
             return True
         if route_mode != "independent":
             self._set_microphone_route("blocked")

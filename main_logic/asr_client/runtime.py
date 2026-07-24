@@ -1030,7 +1030,21 @@ class IndependentAsrRuntime:
                             VoiceLifecycleState.DEEP_SLEEP,
                         }
                     ):
-                        await detector.force_speech_started(submitted.identity)
+                        forced = await detector.force_speech_started(
+                            submitted.identity
+                        )
+                        if forced:
+                            # The detector callback is queued through the
+                            # session-owned dispatcher. Advance the lifecycle
+                            # synchronously for this frame so fail-open upload
+                            # cannot observe LOCAL_LISTEN and tear down the
+                            # session before that queued event runs.
+                            await self._handle_independent_asr_activity(
+                                SpeechActivityEvent.SPEECH_STARTED,
+                                self._asr_session_epoch,
+                            )
+                            if not ingress_is_current():
+                                return AsrSubmitResult(AsrSubmitStatus.STALE)
                 else:
                     detector_result = await detector.feed(
                         pcm16,

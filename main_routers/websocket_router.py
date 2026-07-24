@@ -332,7 +332,9 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
     # 注意：这里设置后，即使cleanup()被调用，websocket也会在start_session时重新设置
     mgr = session_manager[lanlan_name]
     mgr.websocket = websocket
-    mgr._begin_voice_input_connection(str(this_session_id))
+    begin_voice_input = getattr(mgr, "_begin_voice_input_connection", None)
+    if callable(begin_voice_input):
+        begin_voice_input(str(this_session_id))
     logger.info(f"✅ 已设置 {lanlan_name} 的WebSocket连接")
 
     if mgr.pending_agent_callbacks:

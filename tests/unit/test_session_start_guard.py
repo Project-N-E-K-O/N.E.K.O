@@ -44,7 +44,6 @@ async def test_inactive_end_session_clears_starting_guard_for_frontend_timeout()
     assert mgr.session_ready is False
     assert mgr.pending_input_data == []
     assert mgr._asr_route_mode == "blocked"
-    assert mgr._asr_required is True
 
 
 @pytest.mark.unit

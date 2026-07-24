@@ -976,7 +976,14 @@ async def _finalize_game_route_state_inner(
         None,
     )
     if callable(resume_voice):
-        await resume_voice()
+        realtime_restore["attempted"] = True
+        try:
+            await resume_voice()
+            realtime_restore["reason"] = "voice_input_resumed"
+        except Exception as exc:
+            realtime_restore["ok"] = False
+            realtime_restore["reason"] = "voice_input_resume_failed"
+            logger.warning("⚠️ 游戏路由退出时恢复语音输入失败: %s", exc)
     if mgr and hasattr(mgr, "send_status"):
         try:
             await mgr.send_status(json.dumps({
