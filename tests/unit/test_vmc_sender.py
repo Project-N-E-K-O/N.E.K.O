@@ -218,6 +218,31 @@ async def test_disable_zeroes_active_expressions_and_reports_unavailable():
 
 
 @pytest.mark.unit
+def test_disconnected_publisher_terminal_state_is_generation_guarded():
+    sender, client = _enabled_sender()
+    sender.set_publisher_generation(7)
+    sender.send_frame(
+        {
+            "expressions": [{"name": "happy", "value": 0.8}],
+        },
+        publisher_generation=7,
+    )
+
+    assert sender.send_terminal_state(publisher_generation=6) is False
+    assert sender._active_expression_names == {"Joy"}
+    assert sender.send_terminal_state(publisher_generation=7) is True
+
+    assert client.messages[-3:] == [
+        ("/VMC/Ext/Blend/Val", ["Joy", 0.0]),
+        ("/VMC/Ext/Blend/Apply", []),
+        ("/VMC/Ext/OK", [0]),
+    ]
+    assert sender.enabled is True
+    assert client.closed is False
+    assert sender._active_expression_names == set()
+
+
+@pytest.mark.unit
 def test_sender_token_bucket_preserves_average_rate_under_jitter(monkeypatch):
     sender, client = _enabled_sender()
     sender._min_interval = 1 / 60
@@ -350,19 +375,38 @@ class _FakeSender:
     def __init__(self) -> None:
         self.frames: list[dict[str, object]] = []
         self.frame_received = threading.Event()
+        self.terminal_sent = threading.Event()
         self.t_pose_generation = 0
         self.t_pose_duration_sec = 2.0
         self.force_values: list[bool] = []
+        self.publisher_generation = 0
+        self.terminal_generations: list[int] = []
 
     async def ensure_config_loaded(self) -> None:
         return None
+
+    def set_publisher_generation(self, generation: int) -> None:
+        self.publisher_generation = generation
+
+    def send_terminal_state(self, *, publisher_generation: int) -> bool:
+        if publisher_generation != self.publisher_generation:
+            return False
+        self.terminal_generations.append(publisher_generation)
+        self.terminal_sent.set()
+        return True
 
     def send_frame(
         self,
         payload: dict[str, object],
         *,
         force: bool = False,
+        publisher_generation: int | None = None,
     ) -> bool:
+        if (
+            publisher_generation is not None
+            and publisher_generation != self.publisher_generation
+        ):
+            return False
         self.frames.append(payload)
         self.force_values.append(force)
         self.frame_received.set()
@@ -439,10 +483,57 @@ async def test_frame_worker_survives_unexpected_sender_exception():
     ]
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_frame_worker_cancellation_drains_in_flight_thread():
+    class BlockingSender:
+        def __init__(self) -> None:
+            self.started = threading.Event()
+            self.allow_finish = threading.Event()
+            self.finished = threading.Event()
+
+        def send_frame(self, payload, *, force=False):
+            self.started.set()
+            assert self.allow_finish.wait(timeout=1.0)
+            self.finished.set()
+            return True
+
+    class NoopWebSocket:
+        async def send_json(self, message):
+            return None
+
+    queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    sender = BlockingSender()
+    worker = asyncio.create_task(
+        vmc_router._vmc_frame_worker(queue, sender, NoopWebSocket())
+    )
+    await queue.put(
+        {
+            "payload": {"frame": 1},
+            "force": False,
+            "require_ack": False,
+            "sequence": 1,
+            "completion": None,
+        }
+    )
+    assert await asyncio.to_thread(sender.started.wait, 1.0)
+
+    worker.cancel()
+    await asyncio.sleep(0.02)
+    assert worker.done() is False
+
+    sender.allow_finish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await worker
+    assert sender.finished.is_set()
+
+
 @pytest.fixture
 def vmc_client(monkeypatch):
     sender = _FakeSender()
     monkeypatch.setattr(vmc_router, "_active_vmc_publisher", None)
+    monkeypatch.setattr(vmc_router, "_publisher_generation", 0)
+    monkeypatch.setattr(vmc_router, "_pending_terminal_task", None)
     monkeypatch.setattr(vmc_router, "AUTOSTART_CSRF_TOKEN", "vmc-test-token")
     monkeypatch.setattr(
         system_router_shared,
@@ -477,8 +568,61 @@ def test_dedicated_websocket_authenticates_and_forwards_frames(vmc_client):
 
 
 @pytest.mark.unit
-def test_release_frame_bypasses_throttle_and_is_acknowledged(vmc_client):
+def test_disconnected_publisher_sends_terminal_state_after_grace(
+    vmc_client,
+    monkeypatch,
+):
     client, sender = vmc_client
+    monkeypatch.setattr(
+        vmc_router,
+        "_PUBLISHER_DISCONNECT_GRACE_SECONDS",
+        0.05,
+    )
+
+    with client.websocket_connect(
+        "/api/vmc/ws",
+        headers={"Origin": "http://testserver"},
+    ) as websocket:
+        websocket.send_json({"type": "auth", "csrf_token": "vmc-test-token"})
+        assert websocket.receive_json() == {"type": "ready"}
+
+    assert sender.terminal_sent.wait(timeout=1.0)
+    assert sender.terminal_generations == [1]
+
+
+@pytest.mark.unit
+def test_reconnect_during_grace_cancels_terminal_state(vmc_client, monkeypatch):
+    client, sender = vmc_client
+    monkeypatch.setattr(
+        vmc_router,
+        "_PUBLISHER_DISCONNECT_GRACE_SECONDS",
+        0.1,
+    )
+    headers = {"Origin": "http://testserver"}
+    auth = {"type": "auth", "csrf_token": "vmc-test-token"}
+
+    with client.websocket_connect("/api/vmc/ws", headers=headers) as primary:
+        primary.send_json(auth)
+        assert primary.receive_json() == {"type": "ready"}
+
+    with client.websocket_connect("/api/vmc/ws", headers=headers) as successor:
+        successor.send_json(auth)
+        assert successor.receive_json() == {"type": "ready"}
+        time.sleep(0.2)
+        assert sender.terminal_generations == []
+
+
+@pytest.mark.unit
+def test_release_frame_bypasses_throttle_and_is_acknowledged(
+    vmc_client,
+    monkeypatch,
+):
+    client, sender = vmc_client
+    monkeypatch.setattr(
+        vmc_router,
+        "_PUBLISHER_DISCONNECT_GRACE_SECONDS",
+        0.05,
+    )
     with client.websocket_connect(
         "/api/vmc/ws",
         headers={"Origin": "http://testserver"},
@@ -489,7 +633,11 @@ def test_release_frame_bypasses_throttle_and_is_acknowledged(vmc_client):
             {
                 "type": "release",
                 "sequence": 7,
-                "payload": {"bones": [], "expressions": []},
+                "payload": {
+                    "bones": [],
+                    "expressions": [],
+                    "source_released": True,
+                },
             }
         )
         assert websocket.receive_json() == {
@@ -497,8 +645,66 @@ def test_release_frame_bypasses_throttle_and_is_acknowledged(vmc_client):
             "sequence": 7,
             "sent": True,
         }
-    assert sender.frames == [{"bones": [], "expressions": []}]
+    time.sleep(0.1)
+    assert sender.frames == [
+        {
+            "bones": [],
+            "expressions": [],
+            "source_released": True,
+        }
+    ]
     assert sender.force_values == [True]
+    assert sender.terminal_generations == []
+
+
+@pytest.mark.unit
+def test_normal_frame_after_release_restores_disconnect_cleanup(
+    vmc_client,
+    monkeypatch,
+):
+    client, sender = vmc_client
+    monkeypatch.setattr(
+        vmc_router,
+        "_PUBLISHER_DISCONNECT_GRACE_SECONDS",
+        0.05,
+    )
+    with client.websocket_connect(
+        "/api/vmc/ws",
+        headers={"Origin": "http://testserver"},
+    ) as websocket:
+        websocket.send_json({"type": "auth", "csrf_token": "vmc-test-token"})
+        assert websocket.receive_json() == {"type": "ready"}
+        websocket.send_json(
+            {
+                "type": "release",
+                "sequence": 1,
+                "payload": {
+                    "expressions": [],
+                    "source_released": True,
+                },
+            }
+        )
+        assert websocket.receive_json() == {
+            "type": "frame_ack",
+            "sequence": 1,
+            "sent": True,
+        }
+        websocket.send_json(
+            {
+                "type": "frame",
+                "sequence": 2,
+                "require_ack": True,
+                "payload": {"expressions": [{"name": "happy", "value": 1}]},
+            }
+        )
+        assert websocket.receive_json() == {
+            "type": "frame_ack",
+            "sequence": 2,
+            "sent": True,
+        }
+
+    assert sender.terminal_sent.wait(timeout=1.0)
+    assert sender.terminal_generations == [1]
 
 
 @pytest.mark.unit
@@ -508,11 +714,20 @@ def test_release_is_ordered_after_an_in_flight_frame(vmc_client):
     allow_normal_to_finish = threading.Event()
     original_send_frame = sender.send_frame
 
-    def ordered_send_frame(payload, *, force=False):
+    def ordered_send_frame(
+        payload,
+        *,
+        force=False,
+        publisher_generation=None,
+    ):
         if not force:
             normal_started.set()
             assert allow_normal_to_finish.wait(timeout=1.0)
-        return original_send_frame(payload, force=force)
+        return original_send_frame(
+            payload,
+            force=force,
+            publisher_generation=publisher_generation,
+        )
 
     sender.send_frame = ordered_send_frame
     with client.websocket_connect(

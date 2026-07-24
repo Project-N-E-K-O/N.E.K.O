@@ -43,6 +43,8 @@ The webpage's display position, scale, and rotation are not used as the VMC root
 
 When output is disabled, the destination changes, or the active VRM is released, N.E.K.O. sends zero values for active expressions followed by `/VMC/Ext/OK 0`. Model-release frames are acknowledged before the browser closes its dedicated socket.
 
+An unexpected browser publisher disconnect has a 2-second grace period. A replacement publisher that authenticates during that window continues without a terminal transition; otherwise the backend clears active expressions and sends `/VMC/Ext/OK 0`.
+
 ## REST control plane
 
 Mutation routes require N.E.K.O.'s same-origin CSRF headers. First-party code should call `window.vrmVmcSender` instead of constructing those headers manually.
@@ -77,7 +79,7 @@ All JSON fields are optional:
 }
 ```
 
-`host` accepts an ASCII hostname or IPv4 address, `port` must be `1..65535`, and `send_rate_hz` must be `1..120`.
+`host` accepts an ASCII hostname or IPv4 address, `port` must be an integer from `1..65535`, and `send_rate_hz` must be an integer from `1..120`.
 
 ### `POST /api/vmc/disable`
 
@@ -128,6 +130,6 @@ Close codes:
 
 - **No motion:** confirm that VMC is enabled and a VRM, not Live2D/MMD/PNGTuber, is active.
 - **No receiver data:** verify the destination host/port, receiver listen port, and local firewall.
-- **About 48 Hz on a 144 Hz display:** update both `vrm-manager.js` and `vrm-vmc-sender.js`; current builds use cumulative scheduling and average approximately the configured rate.
+- **Unexpected send rate:** while the full-rate render loop is active, cumulative scheduling averages approximately the configured rate. A VRM that is otherwise idle is intentionally capped at about 30 Hz until animation or interaction resumes.
 - **Publisher busy:** close the other N.E.K.O. page or wait for its 10-second lease timeout.
 - **Sampling error:** sampling is suspended to protect rendering and retried after a later backend status poll.

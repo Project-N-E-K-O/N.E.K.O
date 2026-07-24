@@ -36,6 +36,8 @@ backend は Three.js の右手座標を Unity/VMC 座標へ変換し、`/VMC/Ext
 
 無効化、送信先変更、VRM release の際は active expression を 0 にしてから `/VMC/Ext/OK 0` を送信します。release frame の ACK 後に専用 socket を閉じます。
 
+browser publisher の予期しない切断には 2 秒の grace period があります。その間に replacement publisher が authentication を完了すれば terminal transition なしで継続し、再接続されなければ backend が active expression を 0 にして `/VMC/Ext/OK 0` を送信します。
+
 ## REST control plane
 
 mutation route には same-origin CSRF header が必要です。first-party code では security header を手動作成せず `window.vrmVmcSender` を使用してください。
@@ -56,7 +58,7 @@ mutation route には same-origin CSRF header が必要です。first-party code
 }
 ```
 
-`host` は ASCII hostname または IPv4、`port` は `1..65535`、`send_rate_hz` は `1..120` です。
+`host` は ASCII hostname または IPv4、`port` は `1..65535` の整数、`send_rate_hz` は `1..120` の整数です。
 
 ### `POST /api/vmc/disable`
 
@@ -90,5 +92,6 @@ process-wide publisher は 1 つだけです。server は最新の pending norma
 - main server port `48911` を信頼できない LAN や Internet に公開しないでください。
 - receiver が同じ PC にある場合は `127.0.0.1` を使用します。
 - motion が届かない場合は、VRM が active か、送信先 port と receiver の listen port が一致するか、firewall を確認します。
+- full-rate rendering 中は cumulative scheduling により設定 rate に近い平均値になります。active animation や interaction がない VRM は意図的に約 30 Hz へ throttle され、activity の再開後に rate が戻ります。
 - 開発環境では `uv sync` で locked `python-osc` dependency を導入します。
 - sampling error 時は render を保護するため送信を一時停止し、後続の backend status poll 後に再試行します。

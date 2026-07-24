@@ -35,32 +35,86 @@ logger = get_module_logger(__name__, "Main")
 _MAX_WS_MESSAGE_BYTES = 256 * 1024
 _WS_AUTH_TIMEOUT_SECONDS = 5.0
 _WS_PUBLISHER_IDLE_TIMEOUT_SECONDS = 10.0
+_PUBLISHER_DISCONNECT_GRACE_SECONDS = 2.0
 _PUBLISHER_BUSY_CLOSE_CODE = 4429
 _active_vmc_publisher: WebSocket | None = None
 _active_vmc_publisher_guard = threading.Lock()
+_publisher_generation = 0
+_pending_terminal_task: asyncio.Task[None] | None = None
 
 
-def _claim_active_vmc_publisher(websocket: WebSocket) -> bool:
+def _claim_active_vmc_publisher(websocket: WebSocket) -> int | None:
     """Atomically grant the single process-wide VMC publishing lease."""
-    global _active_vmc_publisher
+    global _active_vmc_publisher, _publisher_generation
     with _active_vmc_publisher_guard:
         if _active_vmc_publisher is not None:
-            return False
+            return None
+        _publisher_generation += 1
         _active_vmc_publisher = websocket
-        return True
+        return _publisher_generation
 
 
-def _release_active_vmc_publisher(websocket: WebSocket) -> None:
+def _release_active_vmc_publisher(websocket: WebSocket) -> bool:
     global _active_vmc_publisher
     with _active_vmc_publisher_guard:
         if _active_vmc_publisher is websocket:
             _active_vmc_publisher = None
+            return True
+        return False
+
+
+def _cancel_pending_terminal_task() -> None:
+    global _pending_terminal_task
+    task = _pending_terminal_task
+    _pending_terminal_task = None
+    if task is not None and not task.done():
+        task.cancel()
+
+
+async def _send_terminal_after_disconnect(
+    sender: Any,
+    publisher_generation: int,
+) -> None:
+    """Retire a publisher only if no authenticated successor takes over."""
+    global _pending_terminal_task
+    try:
+        await asyncio.sleep(_PUBLISHER_DISCONNECT_GRACE_SECONDS)
+        with _active_vmc_publisher_guard:
+            if (
+                _active_vmc_publisher is not None
+                or publisher_generation != _publisher_generation
+            ):
+                return
+        await asyncio.to_thread(
+            sender.send_terminal_state,
+            publisher_generation=publisher_generation,
+        )
+    except asyncio.CancelledError:
+        return
+    except Exception as exc:
+        logger.warning("Failed to send delayed VMC terminal state: %s", exc)
+    finally:
+        current_task = asyncio.current_task()
+        if _pending_terminal_task is current_task:
+            _pending_terminal_task = None
+
+
+def _schedule_terminal_after_disconnect(
+    sender: Any,
+    publisher_generation: int,
+) -> None:
+    global _pending_terminal_task
+    _cancel_pending_terminal_task()
+    _pending_terminal_task = asyncio.create_task(
+        _send_terminal_after_disconnect(sender, publisher_generation)
+    )
 
 
 async def _vmc_frame_worker(
     queue: asyncio.Queue[dict[str, Any]],
     sender: Any,
     websocket: WebSocket,
+    publisher_generation: int | None = None,
 ) -> None:
     """Send frames serially, keeping only the newest pending normal frame."""
     while True:
@@ -68,11 +122,37 @@ async def _vmc_frame_worker(
         sent = False
         try:
             try:
-                sent = await asyncio.to_thread(
-                    sender.send_frame,
-                    item["payload"],
-                    force=item["force"],
-                )
+                if publisher_generation is None:
+                    send_task = asyncio.create_task(
+                        asyncio.to_thread(
+                            sender.send_frame,
+                            item["payload"],
+                            force=item["force"],
+                        )
+                    )
+                else:
+                    send_task = asyncio.create_task(
+                        asyncio.to_thread(
+                            sender.send_frame,
+                            item["payload"],
+                            force=item["force"],
+                            publisher_generation=publisher_generation,
+                        )
+                    )
+                try:
+                    sent = await asyncio.shield(send_task)
+                except asyncio.CancelledError:
+                    # Cancelling an asyncio.to_thread await does not stop its
+                    # underlying thread. Drain it before the worker exits so a
+                    # delayed terminal state cannot be overtaken by this frame.
+                    try:
+                        sent = await send_task
+                    except Exception as exc:
+                        logger.warning(
+                            "Unexpected VMC frame worker error during shutdown: %s",
+                            exc,
+                        )
+                    raise
             except Exception as exc:
                 # A faulty frame or an unexpected sender implementation must
                 # not permanently strand the bounded queue without a worker.
@@ -344,6 +424,9 @@ async def vmc_websocket(websocket: WebSocket):
     await websocket.accept()
     frame_worker: asyncio.Task[None] | None = None
     publisher_claimed = False
+    publisher_generation: int | None = None
+    publisher_terminal_sent = False
+    sender: Any = None
     try:
         raw_auth = await asyncio.wait_for(
             websocket.receive_text(),
@@ -360,7 +443,8 @@ async def vmc_websocket(websocket: WebSocket):
             await websocket.close(code=4403, reason="authentication failed")
             return
 
-        if not _claim_active_vmc_publisher(websocket):
+        publisher_generation = _claim_active_vmc_publisher(websocket)
+        if publisher_generation is None:
             await websocket.close(
                 code=_PUBLISHER_BUSY_CLOSE_CODE,
                 reason="another VMC publisher is active",
@@ -369,10 +453,17 @@ async def vmc_websocket(websocket: WebSocket):
         publisher_claimed = True
 
         sender = get_vmc_sender()
+        sender.set_publisher_generation(publisher_generation)
+        _cancel_pending_terminal_task()
         await sender.ensure_config_loaded()
         frame_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=1)
         frame_worker = asyncio.create_task(
-            _vmc_frame_worker(frame_queue, sender, websocket)
+            _vmc_frame_worker(
+                frame_queue,
+                sender,
+                websocket,
+                publisher_generation,
+            )
         )
         await websocket.send_json({"type": "ready"})
         loop = asyncio.get_running_loop()
@@ -434,9 +525,15 @@ async def vmc_websocket(websocket: WebSocket):
                         "completion": release_completion,
                     }
                 )
-                await release_completion
+                release_sent = await release_completion
+                if release_sent and payload.get("source_released") is True:
+                    publisher_terminal_sent = True
                 continue
 
+            # A valid normal frame after a source-release starts a new active
+            # source on the same socket. Its later disconnect needs a fresh
+            # terminal state even if the previous source ended cleanly.
+            publisher_terminal_sent = False
             require_ack = message.get("require_ack") is True
             # At 60 Hz, never let UDP work hold up WebSocket reads. Keep one
             # in-flight frame and at most one newest pending frame.
@@ -482,4 +579,14 @@ async def vmc_websocket(websocket: WebSocket):
             except asyncio.CancelledError:
                 pass
         if publisher_claimed:
-            _release_active_vmc_publisher(websocket)
+            released = _release_active_vmc_publisher(websocket)
+            if (
+                released
+                and not publisher_terminal_sent
+                and sender is not None
+                and publisher_generation is not None
+            ):
+                _schedule_terminal_after_disconnect(
+                    sender,
+                    publisher_generation,
+                )

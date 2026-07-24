@@ -100,12 +100,14 @@ class VmcSender:
         self._lock = asyncio.Lock()
         self._config_load_lock = asyncio.Lock()
         self._send_lock = threading.Lock()
+        self._publisher_generation_lock = threading.Lock()
         self._t_pose_lock = threading.Lock()
         self._config_loaded = False
         self._t_pose_requested = False
         self._t_pose_duration_sec = 2.0
         self._t_pose_generation = 0
         self._active_expression_names: set[str] = set()
+        self._publisher_generation = 0
 
     @property
     def enabled(self) -> bool:
@@ -314,6 +316,27 @@ class VmcSender:
             self._active_expression_names.clear()
             self._close_client_locked()
 
+    def set_publisher_generation(self, generation: int) -> None:
+        """Bind subsequent frames to the currently authenticated publisher."""
+        with self._publisher_generation_lock:
+            self._publisher_generation = generation
+
+    def _is_current_publisher(self, generation: int) -> bool:
+        with self._publisher_generation_lock:
+            return generation == self._publisher_generation
+
+    def send_terminal_state(self, *, publisher_generation: int) -> bool:
+        """Retire a disconnected publisher without disabling the UDP sender."""
+        with self._send_lock:
+            if not self._is_current_publisher(publisher_generation):
+                return False
+            if self._client is None:
+                self._active_expression_names.clear()
+                return False
+            self._send_terminal_state_to_client(self._client)
+            self._active_expression_names.clear()
+            return True
+
     def _close_client_locked(self) -> None:
         if self._client is None:
             return
@@ -351,6 +374,7 @@ class VmcSender:
         payload: dict[str, Any],
         *,
         force: bool = False,
+        publisher_generation: int | None = None,
     ) -> bool:
         """Validate and synchronously send one browser-sampled frame.
 
@@ -359,6 +383,11 @@ class VmcSender:
         Returns whether the frame passed the sender throttle.
         """
         with self._send_lock:
+            if (
+                publisher_generation is not None
+                and not self._is_current_publisher(publisher_generation)
+            ):
+                return False
             return self._send_frame_locked(payload, force=force)
 
     def _send_frame_locked(
