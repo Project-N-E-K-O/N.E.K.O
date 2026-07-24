@@ -79,7 +79,7 @@ def test_custom_model_headers_own_their_capsule_shape(mock_page: Page, running_s
     styles = mock_page.evaluate("""
         () => {
             document.getElementById('custom-api-options').style.display = 'block';
-            document.getElementById('custom-api-container').style.display = 'block';
+            document.getElementById('custom-api-container').style.display = 'grid';
             const container = document.querySelector('.model-config-container');
             const header = container.querySelector(':scope > .model-header');
 
@@ -122,10 +122,247 @@ def test_custom_model_headers_own_their_capsule_shape(mock_page: Page, running_s
     """)
 
     assert expanded_styles == {
-        "borderWidth": "1px",
+        "borderWidth": "3px",
         "borderRadius": "24px",
         "marginTop": "8px",
     }
+
+
+@pytest.mark.frontend
+def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
+    mock_page: Page, running_server: str
+):
+    """Every desktop card uses the same two-column grid while expanded content uses full width."""
+    mock_page.set_viewport_size({"width": 1280, "height": 1000})
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=10000)
+    mock_page.evaluate("""() => {
+        const enableCustomApi = document.getElementById('enableCustomApi');
+        enableCustomApi.checked = true;
+        enableCustomApi.dispatchEvent(new Event('change', { bubbles: true }));
+        document.getElementById('custom-api-options').style.display = 'block';
+    }""")
+
+    desktop = mock_page.evaluate("""() => {
+        const grid = document.getElementById('custom-api-container');
+        const cards = Array.from(grid.querySelectorAll(':scope > .model-config-container'));
+        const rect = element => {
+            const box = element.getBoundingClientRect();
+            return {
+                left: Math.round(box.left),
+                top: Math.round(box.top),
+                width: Math.round(box.width),
+            };
+        };
+
+        return {
+            display: getComputedStyle(grid).display,
+            columns: getComputedStyle(grid).gridTemplateColumns.split(' ').length,
+            grid: rect(grid),
+            conversation: rect(cards[0]),
+            summary: rect(cards[1]),
+            game: rect(cards[2]),
+            correction: rect(cards[3]),
+            emotion: rect(cards[4]),
+            vision: rect(cards[5]),
+        };
+    }""")
+
+    assert desktop["display"] == "grid"
+    assert desktop["columns"] == 2
+    assert desktop["conversation"]["top"] == desktop["summary"]["top"]
+    assert desktop["conversation"]["left"] < desktop["summary"]["left"]
+    assert abs(desktop["conversation"]["width"] - desktop["summary"]["width"]) <= 1
+    assert desktop["game"]["top"] == desktop["correction"]["top"]
+    assert desktop["game"]["left"] < desktop["correction"]["left"]
+    assert abs(desktop["game"]["width"] - desktop["correction"]["width"]) <= 1
+    assert desktop["emotion"]["top"] == desktop["vision"]["top"]
+
+    mock_page.evaluate("toggleModelConfig('conversation')")
+    mock_page.wait_for_timeout(350)
+
+    expanded = mock_page.evaluate("""() => {
+        const grid = document.getElementById('custom-api-container').getBoundingClientRect();
+        const content = document.getElementById('conversation-model-content');
+        const card = content.closest('.model-config-container').getBoundingClientRect();
+        const summary = document.getElementById('summary-model-content')
+            .closest('.model-config-container').getBoundingClientRect();
+        const contentRect = content.getBoundingClientRect();
+        const header = content.previousElementSibling;
+        const summaryHeader = document.getElementById('summary-model-content').previousElementSibling;
+        const gameHeader = document.getElementById('game-model-content').previousElementSibling;
+        const headerStyle = getComputedStyle(header);
+        return {
+            cardWidth: Math.round(card.width),
+            gridWidth: Math.round(grid.width),
+            contentLeft: Math.round(contentRect.left),
+            contentWidth: Math.round(contentRect.width),
+            gridLeft: Math.round(grid.left),
+            cardTop: Math.round(card.top),
+            summaryTop: Math.round(summary.top),
+            labelCount: content.querySelectorAll(':scope > .model-content-label').length,
+            headerExpanded: header?.getAttribute('aria-expanded'),
+            headerShadow: headerStyle.boxShadow,
+            headerOpacity: headerStyle.opacity,
+            headerTransform: headerStyle.transform,
+            headerBackground: headerStyle.backgroundImage,
+            summaryOpacity: getComputedStyle(summaryHeader).opacity,
+            gameOpacity: getComputedStyle(gameHeader).opacity,
+            contentBorderTopWidth: getComputedStyle(content).borderTopWidth,
+            contentBorderTopColor: getComputedStyle(content).borderTopColor,
+        };
+    }""")
+
+    assert abs(expanded["cardWidth"] - desktop["conversation"]["width"]) <= 1
+    assert abs(expanded["contentWidth"] - expanded["gridWidth"]) <= 1
+    assert abs(expanded["contentLeft"] - expanded["gridLeft"]) <= 1
+    assert expanded["cardTop"] == expanded["summaryTop"]
+    assert expanded["labelCount"] == 0
+    assert expanded["headerExpanded"] == "true"
+    assert expanded["headerShadow"] != "none"
+    assert expanded["headerOpacity"] == "1"
+    assert expanded["headerTransform"] != "none"
+    assert "linear-gradient" in expanded["headerBackground"]
+    assert float(expanded["summaryOpacity"]) < 1
+    assert expanded["gameOpacity"] == "1"
+    assert expanded["contentBorderTopWidth"] == "3px"
+    assert expanded["contentBorderTopColor"] == "rgb(64, 197, 241)"
+
+    mock_page.evaluate("""() => {
+        toggleModelConfig('conversation');
+        toggleModelConfig('summary');
+    }""")
+    mock_page.wait_for_timeout(650)
+
+    right_expanded = mock_page.evaluate("""() => {
+        const grid = document.getElementById('custom-api-container').getBoundingClientRect();
+        const content = document.getElementById('summary-model-content').getBoundingClientRect();
+        return {
+            gridLeft: Math.round(grid.left),
+            gridWidth: Math.round(grid.width),
+            contentLeft: Math.round(content.left),
+            contentWidth: Math.round(content.width),
+        };
+    }""")
+
+    assert abs(right_expanded["contentLeft"] - right_expanded["gridLeft"]) <= 1
+    assert abs(right_expanded["contentWidth"] - right_expanded["gridWidth"]) <= 1
+
+    mock_page.evaluate("toggleModelConfig('conversation')")
+    mock_page.wait_for_timeout(350)
+    paired_expansion = mock_page.evaluate("""() => {
+        const left = document.getElementById('conversation-model-content').getBoundingClientRect();
+        const right = document.getElementById('summary-model-content').getBoundingClientRect();
+        return {
+            leftWidth: Math.round(left.width),
+            leftRight: Math.round(left.right),
+            rightLeft: Math.round(right.left),
+            rightWidth: Math.round(right.width),
+        };
+    }""")
+
+    assert abs(paired_expansion["leftWidth"] - desktop["conversation"]["width"]) <= 1
+    assert abs(paired_expansion["rightWidth"] - desktop["summary"]["width"]) <= 1
+    assert paired_expansion["leftRight"] < paired_expansion["rightLeft"]
+
+    mock_page.evaluate("toggleModelConfig('conversation')")
+    mock_page.wait_for_timeout(80)
+    collapsing_pair = mock_page.evaluate("""() => {
+        const left = document.getElementById('conversation-model-content');
+        const right = document.getElementById('summary-model-content');
+        const leftRect = left.getBoundingClientRect();
+        const rightRect = right.getBoundingClientRect();
+        return {
+            leftHeight: Math.round(leftRect.height),
+            leftRight: Math.round(leftRect.right),
+            rightLeft: Math.round(rightRect.left),
+            isCollapsing: left.classList.contains('is-collapsing'),
+            rightWidth: Math.round(rightRect.width),
+        };
+    }""")
+
+    assert collapsing_pair["leftHeight"] > 0
+    assert collapsing_pair["isCollapsing"] is True
+    assert collapsing_pair["leftRight"] < collapsing_pair["rightLeft"]
+    assert abs(collapsing_pair["rightWidth"] - desktop["summary"]["width"]) <= 1
+
+    mock_page.wait_for_timeout(600)
+    settled_pair = mock_page.evaluate("""() => {
+        const grid = document.getElementById('custom-api-container').getBoundingClientRect();
+        const left = document.getElementById('conversation-model-content');
+        const right = document.getElementById('summary-model-content');
+        const rightRect = right.getBoundingClientRect();
+        return {
+            gridLeft: Math.round(grid.left),
+            gridWidth: Math.round(grid.width),
+            leftHeight: Math.round(left.getBoundingClientRect().height),
+            isCollapsing: left.classList.contains('is-collapsing'),
+            isReflowing: right.classList.contains('is-reflowing'),
+            rightLeft: Math.round(rightRect.left),
+            rightWidth: Math.round(rightRect.width),
+        };
+    }""")
+
+    assert settled_pair["leftHeight"] == 0
+    assert settled_pair["isCollapsing"] is False
+    assert settled_pair["isReflowing"] is False
+    assert abs(settled_pair["rightLeft"] - settled_pair["gridLeft"]) <= 1
+    assert abs(settled_pair["rightWidth"] - settled_pair["gridWidth"]) <= 1
+
+    mock_page.set_viewport_size({"width": 760, "height": 1000})
+    mobile = mock_page.evaluate("""() => {
+        const grid = document.getElementById('custom-api-container');
+        const cards = Array.from(grid.querySelectorAll(':scope > .model-config-container'));
+        const first = cards[0].getBoundingClientRect();
+        const second = cards[1].getBoundingClientRect();
+        return {
+            columns: getComputedStyle(grid).gridTemplateColumns.split(' ').length,
+            gridWidth: Math.round(grid.getBoundingClientRect().width),
+            firstWidth: Math.round(first.width),
+            firstTop: Math.round(first.top),
+            secondTop: Math.round(second.top),
+        };
+    }""")
+
+    assert mobile["columns"] == 1
+    assert abs(mobile["firstWidth"] - mobile["gridWidth"]) <= 1
+    assert mobile["secondTop"] > mobile["firstTop"]
+
+
+@pytest.mark.frontend
+def test_nested_game_headers_skip_top_level_active_highlight(
+    mock_page: Page, running_server: str
+):
+    """Nested mini-game panels should not inherit the top-level selected treatment."""
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=10000)
+    mock_page.evaluate("""() => {
+        const enableCustomApi = document.getElementById('enableCustomApi');
+        enableCustomApi.checked = true;
+        enableCustomApi.dispatchEvent(new Event('change', { bubbles: true }));
+        document.getElementById('custom-api-options').style.display = 'block';
+        toggleModelConfig('game');
+        toggleModelConfig('game-main');
+    }""")
+    mock_page.wait_for_timeout(350)
+
+    styles = mock_page.evaluate("""() => {
+        const topLevel = document.getElementById('game-model-content').previousElementSibling;
+        const nested = document.getElementById('game-main-model-content').previousElementSibling;
+        const topLevelStyle = getComputedStyle(topLevel);
+        const nestedStyle = getComputedStyle(nested);
+        return {
+            topLevelShadow: topLevelStyle.boxShadow,
+            nestedShadow: nestedStyle.boxShadow,
+            nestedTransform: nestedStyle.transform,
+        };
+    }""")
+
+    assert styles["topLevelShadow"] != "none"
+    assert styles["nestedShadow"] == "none"
+    assert styles["nestedTransform"] == "none"
 
 
 @pytest.mark.frontend
@@ -192,6 +429,47 @@ def test_key_book_shortcut_centers_and_selects_provider_input(
         "selectionStart": 0,
         "selectionEnd": len("sk-qwen-shortcut-test"),
     }
+
+
+@pytest.mark.frontend
+def test_realtime_key_book_shortcut_stays_in_api_key_row(
+    mock_page: Page, running_server: str
+):
+    """Realtime's key-book shortcut should share the light/input flex row."""
+    mock_page.set_viewport_size({"width": 1280, "height": 1000})
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=10000)
+    mock_page.evaluate("""() => {
+        const enableCustomApi = document.getElementById('enableCustomApi');
+        enableCustomApi.checked = true;
+        enableCustomApi.dispatchEvent(new Event('change', { bubbles: true }));
+        document.getElementById('custom-api-options').style.display = 'block';
+        toggleModelConfig('omni');
+    }""")
+    mock_page.wait_for_timeout(350)
+
+    state = mock_page.evaluate("""() => {
+        const input = document.getElementById('omniModelApiKey');
+        const row = input.parentElement;
+        const shortcut = document.querySelector(
+            '#omni-model-content .key-book-shortcut'
+        );
+        const inputBox = input.getBoundingClientRect();
+        const shortcutBox = shortcut.getBoundingClientRect();
+
+        return {
+            rowClass: row.className,
+            shortcutSharesRow: shortcut.parentElement === row,
+            inputCenter: Math.round(inputBox.top + inputBox.height / 2),
+            shortcutCenter: Math.round(shortcutBox.top + shortcutBox.height / 2),
+        };
+    }""")
+
+    assert state["rowClass"] == "connectivity-input-row"
+    assert state["shortcutSharesRow"] is True
+    assert abs(state["inputCenter"] - state["shortcutCenter"]) <= 1
 
 
 @pytest.mark.frontend

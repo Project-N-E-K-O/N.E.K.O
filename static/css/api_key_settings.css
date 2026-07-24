@@ -1088,13 +1088,21 @@ padding-left: 4px;
 
 /* 自定义API折叠样式 */
 .custom-api-container {
-transition: all 0.3s ease-in-out;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 18px;
+    row-gap: 14px;
+    align-items: start;
+    transition: all 0.3s ease-in-out;
 }
 
 /* 清空自定义API按钮 */
 .clear-custom-api-wrapper {
-    margin-bottom: 16px;
-    text-align: right;
+    grid-column: 2;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    min-width: 0;
+    margin: 0;
 }
 
 .clear-custom-api-btn {
@@ -1125,11 +1133,67 @@ transition: all 0.3s ease-in-out;
 }
 
 .model-config-container {
-    margin-bottom: 16px;
+    min-width: 0;
+    margin-bottom: 0;
     border: 0;
     border-radius: 0;
     overflow: visible;
     transition: all 0.3s ease-in-out;
+}
+
+@media (min-width: 801px) {
+    .custom-api-container
+        > .model-config-container
+        > .model-content.expanded {
+        width: calc(200% + 18px);
+    }
+
+    .custom-api-container
+        > .model-config-container:has(> #summary-model-content, > #correction-model-content, > #vision-model-content, > #omni-model-content)
+        > .model-content.expanded {
+        margin-left: calc(-100% - 18px);
+    }
+
+    .custom-api-container:has(#conversation-model-content:is(.expanded, .is-collapsing)):has(#summary-model-content:is(.expanded, .is-collapsing))
+        :is(#conversation-model-content, #summary-model-content):is(.expanded, .is-collapsing),
+    .custom-api-container:has(#game-model-content:is(.expanded, .is-collapsing)):has(#correction-model-content:is(.expanded, .is-collapsing))
+        :is(#game-model-content, #correction-model-content):is(.expanded, .is-collapsing),
+    .custom-api-container:has(#emotion-model-content:is(.expanded, .is-collapsing)):has(#vision-model-content:is(.expanded, .is-collapsing))
+        :is(#emotion-model-content, #vision-model-content):is(.expanded, .is-collapsing),
+    .custom-api-container:has(#agent-model-content:is(.expanded, .is-collapsing)):has(#omni-model-content:is(.expanded, .is-collapsing))
+        :is(#agent-model-content, #omni-model-content):is(.expanded, .is-collapsing) {
+        width: 100%;
+        margin-left: 0;
+    }
+
+    .custom-api-container:has(#conversation-model-content.expanded)
+        > .model-config-container:has(> #summary-model-content)
+        > .model-header[aria-expanded="false"],
+    .custom-api-container:has(#summary-model-content.expanded)
+        > .model-config-container:has(> #conversation-model-content)
+        > .model-header[aria-expanded="false"],
+    .custom-api-container:has(#game-model-content.expanded)
+        > .model-config-container:has(> #correction-model-content)
+        > .model-header[aria-expanded="false"],
+    .custom-api-container:has(#correction-model-content.expanded)
+        > .model-config-container:has(> #game-model-content)
+        > .model-header[aria-expanded="false"],
+    .custom-api-container:has(#emotion-model-content.expanded)
+        > .model-config-container:has(> #vision-model-content)
+        > .model-header[aria-expanded="false"],
+    .custom-api-container:has(#vision-model-content.expanded)
+        > .model-config-container:has(> #emotion-model-content)
+        > .model-header[aria-expanded="false"],
+    .custom-api-container:has(#agent-model-content.expanded)
+        > .model-config-container:has(> #omni-model-content)
+        > .model-header[aria-expanded="false"],
+    .custom-api-container:has(#omni-model-content.expanded)
+        > .model-config-container:has(> #agent-model-content)
+        > .model-header[aria-expanded="false"] {
+        opacity: 0.62;
+        filter: saturate(0.55);
+    }
+
 }
 
 .model-header {
@@ -1161,6 +1225,25 @@ transform: translateY(1px) scale(0.98);
 box-shadow: 0 1px 3px rgba(64, 197, 241, 0.2);
 }
 
+.custom-api-container
+    > .model-config-container
+    > .model-header[aria-expanded="true"] {
+    opacity: 1;
+    background: linear-gradient(135deg, #4bd0f7 0%, #13adfa 100%);
+    transform: translateY(-2px) scale(1.006);
+    box-shadow:
+        inset 0 0 0 2px rgba(255, 255, 255, 0.9),
+        0 0 16px rgba(64, 197, 241, 0.3),
+        0 8px 18px rgba(16, 131, 193, 0.3);
+}
+
+.custom-api-container
+    > .model-config-container
+    > .model-header[aria-expanded="true"]:hover {
+    opacity: 1;
+    transform: translateY(-2px) scale(1.006);
+}
+
 .model-title {
 display: flex;
 align-items: center;
@@ -1185,13 +1268,23 @@ font-size: 0.9rem;
 .model-content {
 max-height: 0;
 overflow: hidden;
+box-sizing: border-box;
 transition: max-height 0.3s ease-in-out, margin-top 0.3s ease-in-out;
+}
+
+.model-content.is-reflowing {
+    transition:
+        max-height 0.3s ease-in-out,
+        margin-top 0.3s ease-in-out,
+        width 0.24s ease-in-out,
+        margin-left 0.24s ease-in-out;
 }
 
 .model-content.expanded {
     max-height: 2000px;
     margin-top: 8px;
-    border: 1px solid #e0e0e0;
+    border: 1px solid #d5eaf4;
+    border-top: 3px solid #40c5f1;
     border-radius: 24px;
 }
 
@@ -1684,6 +1777,21 @@ padding: 0;
 margin: 0;
 }
 
+.custom-api-container {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 12px;
+}
+
+.custom-api-container > .clear-custom-api-wrapper,
+.custom-api-container > .connectivity-test-btn-wrapper,
+.custom-api-container > .model-config-container {
+    grid-column: 1;
+}
+
+.clear-custom-api-wrapper {
+    justify-content: flex-start;
+}
+
 .container-content {
     padding: 18px 18px 120px;
 }
@@ -1755,9 +1863,17 @@ font-size: 0.8em;
     max-width: 600px;
 }
 
+.model-content .connectivity-input-row {
+    margin-top: 8px;
+}
+
 .connectivity-input-row input {
     flex: 1;
     min-width: 0;
+}
+
+.model-content .connectivity-input-row input {
+    margin-top: 0;
 }
 
 /* Connected - Green */
@@ -1842,6 +1958,14 @@ font-size: 0.8em;
     transition: all 0.2s ease;
     user-select: none;
     margin-bottom: 12px;
+}
+
+.connectivity-test-btn-wrapper {
+    grid-column: 1;
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    margin: 0;
 }
 
 .connectivity-test-btn:hover:not(:disabled) {
