@@ -54,6 +54,11 @@ class CoreConfigMixin:
     # 2**_IP_CHECK_MAX_EXPONENT 乘上 base 已远超 _IP_CHECK_RETRY_MAX_S，封在这里无损。
     _IP_CHECK_MAX_EXPONENT = 32
 
+    # 探测线程超过这个时长仍未结束就当作卡死（getaddrinfo 不受 socket 超时约束），
+    # 允许另起一个顶替，否则一个卡死的线程会永久挡住退避重试。取值须明显大于
+    # 探测自身的 3s socket 超时，避免把只是慢的正常探测误判成卡死。
+    _IP_PROBE_STALE_AFTER_S = 30.0
+
     @classmethod
     def _ip_check_backoff_s(cls, failures: int) -> float:
         """Seconds to wait before the next probe after `failures` consecutive failures."""
@@ -133,10 +138,14 @@ class CoreConfigMixin:
         if ConfigManager._region_cache is not None or ConfigManager._ip_check_cache is not None:
             return True
 
-        # 没有在飞的探测时先发起一次：上一次探测失败、退避又已到期的话，这里不发
-        # 就只能眼睁睁用兜底线路开一整场，而下一次 get_core_config 发起的探测赶不上
-        # 本场的线路定死。发起本身不阻塞（后台线程），退避未到期时它自己会拒绝。
-        self._check_ip_non_mainland_http()
+        # 读一次配置来补发到期的探测：上一次失败、退避又已到期时这里不发，就只能
+        # 用兜底线路开一整场，而随后 get_core_config 发起的那次赶不上本场线路定死。
+        #
+        # 刻意走 aget_core_config 而不是直接戳 _check_ip_non_mainland_http：URL 改写
+        # 内部只对 lanlan.tech 免费路由做区域判定，这就是「该不该探测」的天然门。
+        # 直接戳会让自配 API / livestream 用户也把 IP 发给 ip-api.com——他们的线路
+        # 根本不经过区域改写，那次请求纯属白白暴露。
+        await self.aget_core_config()
         if ConfigManager._ip_check_cache is not None:
             return True
         thread = ConfigManager._ip_probe_thread
@@ -192,8 +201,19 @@ class CoreConfigMixin:
         with ConfigManager._geo_probe_lock:
             if ConfigManager._ip_check_cache is not None:
                 return ConfigManager._ip_check_cache
-            if ConfigManager._ip_probe_thread is not None and ConfigManager._ip_probe_thread.is_alive():
-                return None
+            in_flight = ConfigManager._ip_probe_thread
+            if in_flight is not None and in_flight.is_alive():
+                # 用「是否还活着」当唯一判据会留一个死锁：getaddrinfo 不受 socket
+                # 超时约束，DNS 卡住的线程可以活得任意久，而它活着就永远挡住新探测
+                # ——指数退避再也不会跑，网络恢复了也回不来。超龄的当作已失效，另起
+                # 一个（旧线程是 daemon，最终返回时若写入结论同样有效）。
+                started = ConfigManager._ip_probe_started_monotonic
+                if started is None or (now - started) < ConfigManager._IP_PROBE_STALE_AFTER_S:
+                    return None
+                print(
+                    f"[GeoIP] previous probe stuck for {now - started:.0f}s, starting a replacement",
+                    file=sys.stderr,
+                )
             last = ConfigManager._ip_check_last_attempt_monotonic
             failures = ConfigManager._ip_check_attempts
             if last is not None and (now - last) < ConfigManager._ip_check_backoff_s(failures):
@@ -207,6 +227,7 @@ class CoreConfigMixin:
                 daemon=True,
             )
             ConfigManager._ip_probe_thread = thread
+            ConfigManager._ip_probe_started_monotonic = now
             thread.start()
 
         return None

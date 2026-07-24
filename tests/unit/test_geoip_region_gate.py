@@ -71,6 +71,7 @@ def reset_geo_caches(monkeypatch):
         ('_ip_check_attempts', 0),
         ('_ip_check_last_attempt_monotonic', None),
         ('_ip_probe_thread', None),
+        ('_ip_probe_started_monotonic', None),
     ):
         monkeypatch.setattr(ConfigManager, name, value)
     yield
@@ -425,6 +426,12 @@ def test_session_start_kicks_a_due_probe_instead_of_giving_up(monkeypatch):
     clock.now += ConfigManager._IP_CHECK_RETRY_BASE_S + 1
 
     probe = _Probe()
+    # aensure 靠 aget_core_config 补发探测——免费路由门就在那里面。这里模拟一个
+    # 免费路由用户：读配置会触发区域判定，进而发起探测。
+    async def _free_route_config():
+        probe._check_non_mainland()
+        return {}
+    probe.aget_core_config = _free_route_config
     assert asyncio.run(probe.aensure_region_resolved(timeout=5)) is True
     assert calls['n'] == 2, '会话开始时应当补发一次探测'
     assert ConfigManager._ip_check_cache is True
@@ -596,3 +603,100 @@ def test_every_session_preparation_path_settles_the_region():
 
     assert checked, '未找到任何会话准备路径，断言失效'
     assert not missing, f'这些路径会冻结会话线路却未先落定区域判定: {missing}'
+
+
+@pytest.mark.unit
+def test_session_time_resolution_keeps_the_free_route_privacy_gate(monkeypatch):
+    """Only free-route users may reach ip-api.com.
+
+    ``aensure_region_resolved`` must kick a due probe through ``aget_core_config``,
+    never by poking the probe directly: URL rewriting only consults the region for
+    ``lanlan.tech`` routes, so that read is the natural gate. Poking directly would
+    hand the public IP of custom-endpoint and livestream users to a third party
+    whose verdict their route never uses.
+    """
+    fired = []
+
+    class _Spy:
+        def open(self, req, timeout=None):
+            fired.append(1)
+            raise OSError('should not fire')
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, 'build_opener', lambda *a, **kw: _Spy())
+
+    probe = _Probe()
+    # 自配 API 用户：配置里没有 lanlan.tech，读配置不触发区域判定
+    probe.aget_core_config = _async_return({'CORE_URL': 'https://api.openai.com/v1'})
+
+    assert asyncio.run(probe.aensure_region_resolved(timeout=0.1)) is False
+    assert not fired, '自配 API 用户不应向第三方地理服务暴露 IP'
+
+
+@pytest.mark.unit
+def test_stuck_probe_is_replaced_instead_of_blocking_forever(monkeypatch):
+    """A DNS-wedged thread must not veto every future probe.
+
+    ``getaddrinfo`` ignores the socket timeout, so a probe can stay alive for an
+    unbounded time. Gating new probes purely on ``is_alive()`` would let one wedged
+    thread cancel the exponential retry for the rest of the process — connectivity
+    could come back and the route would never recover.
+    """
+    clock = _FakeClock()
+    monkeypatch.setattr(core_config_mod, 'time', SimpleNamespace(monotonic=clock))
+
+    release = threading.Event()
+    started = []
+
+    class _WedgedThenOk:
+        def open(self, req, timeout=None):
+            started.append(1)
+            if len(started) == 1:
+                release.wait(10)          # 第一个探测卡在 DNS 上
+                raise OSError('unwedged')
+            return _JsonResp('{"countryCode": "US"}')
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, 'build_opener', lambda *a, **kw: _WedgedThenOk())
+
+    stuck = None
+    try:
+        assert ConfigManager._check_ip_non_mainland_http() is None
+        stuck = ConfigManager._ip_probe_thread
+        assert stuck.is_alive()
+
+        # 还没超龄：不顶替
+        clock.now += ConfigManager._IP_PROBE_STALE_AFTER_S - 1
+        assert ConfigManager._check_ip_non_mainland_http() is None
+        assert ConfigManager._ip_probe_thread is stuck
+        assert len(started) == 1
+
+        # 超龄：另起一个，卡死的那个不再有否决权
+        clock.now += 2
+        _probe_once()
+        assert ConfigManager._ip_probe_thread is not stuck
+        assert ConfigManager._ip_check_cache is True
+    finally:
+        release.set()
+        if stuck is not None:
+            stuck.join(10)
+
+
+@pytest.mark.unit
+def test_game_session_pool_settles_the_region():
+    """The game pool caches an OmniOfflineClient with its base_url — same freeze."""
+    import ast
+    import pathlib
+
+    source = (pathlib.Path(__file__).resolve().parents[2]
+              / 'main_routers' / 'game_router' / 'session_pool.py')
+    tree = ast.parse(source.read_text(encoding='utf-8'))
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == '_get_or_create_session':
+            calls = {getattr(c.func, 'attr', None) for c in ast.walk(node) if isinstance(c, ast.Call)}
+            assert 'aensure_region_resolved' in calls, \
+                '游戏会话池会缓存 base_url，必须先落定区域判定'
+            break
+    else:
+        pytest.fail('未找到 _get_or_create_session，断言失效')
