@@ -400,6 +400,36 @@ def test_session_start_does_not_wait_when_no_probe_is_running():
 
 
 @pytest.mark.unit
+def test_session_start_logs_when_the_wait_expires(monkeypatch, caplog):
+    """Waiting forever is not an option, so the give-up must at least be diagnosable.
+
+    Without this line, "an overseas user is occasionally slow for a whole session"
+    leaves no trace in the logs at all.
+    """
+    release = threading.Event()
+
+    class _HangingOpener:
+        def open(self, req, timeout=None):
+            release.wait(5)
+            raise OSError('timed out')
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, 'build_opener', lambda *a, **kw: _HangingOpener())
+
+    probe = _Probe()
+    ConfigManager._check_ip_non_mainland_http()
+    try:
+        with caplog.at_level('WARNING'):
+            assert asyncio.run(probe.aensure_region_resolved(timeout=0.1)) is False
+        assert any('GeoIP' in r.message for r in caplog.records), '放弃等待必须留下日志'
+    finally:
+        release.set()
+        thread = ConfigManager._ip_probe_thread
+        if thread is not None:
+            thread.join(5)
+
+
+@pytest.mark.unit
 def test_probe_thread_is_daemon(monkeypatch):
     """A probe hung on a 3s connect must never hold up process exit."""
     _patch_probe(monkeypatch, [OSError('down')])

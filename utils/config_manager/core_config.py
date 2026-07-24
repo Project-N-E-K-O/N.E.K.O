@@ -135,7 +135,16 @@ class CoreConfigMixin:
         thread = ConfigManager._ip_probe_thread
         if thread is None or not thread.is_alive():
             return False
-        return await asyncio.to_thread(self.join_ip_probe, timeout)
+        resolved = await asyncio.to_thread(self.join_ip_probe, timeout)
+        if not resolved:
+            # 等满仍无结论：这一场会话会用大陆兜底线路，且中途不会改。无限等不是
+            # 选项（会话会挂死），所以这里只把失败态记下来，让现场可诊断——否则
+            # 「海外用户偶尔一整场很慢」在日志里没有任何痕迹。
+            logger.warning(
+                "[GeoIP] 区域判定在会话开始前仍未落地（等待 %.1fs），本场会话按大陆线路启动",
+                timeout,
+            )
+        return resolved
 
     async def awarmup_region_check(self, timeout: float = 5.0) -> bool:
         """Resolve the region before the server starts accepting sessions.
