@@ -25,11 +25,11 @@ def test_music_dispatch_waits_for_media_and_reports_real_failure():
     assert "window.sendMusicMessage = async function" in source
     assert "return result.ok === true" in source
     assert "canTryNextCandidate" in source
-    assert "isPermanentCandidateFailure(mediaResult.reason)" in source
-    permanent_failures = source.split("const isPermanentCandidateFailure", 1)[1].split("].includes(reason);", 1)[0]
-    assert "'media_error'" in permanent_failures
-    assert "'track_too_long'" in permanent_failures
-    assert "'load_timeout'" not in permanent_failures
+    assert "canTryNextMusicCandidate(mediaResult.reason)" in source
+    retryable_failures = source.split("const canTryNextMusicCandidate", 1)[1].split("].includes(reason);", 1)[0]
+    assert "'media_error'" in retryable_failures
+    assert "'track_too_long'" in retryable_failures
+    assert "'load_timeout'" in retryable_failures
     assert "musicPlayResult(false, 'unsupported_stream', true)" in source
     assert "musicPlayResult(false, 'unsafe_url', true)" in source
     assert "MAX_RECOMMENDED_TRACK_DURATION_SECONDS = 10 * 60" in source
@@ -50,7 +50,7 @@ def test_music_dispatch_waits_for_media_and_reports_real_failure():
     assert "trackInfo.url.includes('music.163.com')" not in source
 
 
-def test_proactive_music_only_retries_permanent_candidate_failures():
+def test_proactive_music_only_retries_candidate_specific_failures():
     source = PROACTIVE_UI_PATH.read_text(encoding="utf-8")
 
     assert "for (var musicIndex = 0; musicIndex < musicLinks.length; musicIndex++)" in source
@@ -58,7 +58,7 @@ def test_proactive_music_only_retries_permanent_candidate_failures():
     assert "if (dispatchResult.ok === true)" in source
     assert "if (dispatchResult.canTryNextCandidate !== true)" in source
     assert "音乐派发因非候选错误停止" in source
-    assert "音乐候选存在永久错误，尝试下一条" in source
+    assert "音乐候选不可用，尝试下一条" in source
     assert "musicLinks = normalizedLinks.filter" in source
     assert "name: musicLink.title || '未知曲目'" not in source
     assert "artist: musicLink.artist || '未知艺术家'" not in source

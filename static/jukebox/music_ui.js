@@ -1758,11 +1758,13 @@
         canTryNextCandidate: canTryNextCandidate === true
     });
 
-    const isPermanentCandidateFailure = (reason) => [
+    // Candidate-local failures may fall back; the backend supplies at most three candidates.
+    const canTryNextMusicCandidate = (reason) => [
         'invalid_track',
         'unsafe_url',
         'unsupported_stream',
         'track_too_long',
+        'load_timeout',
         'media_error'
     ].includes(reason);
 
@@ -2713,7 +2715,7 @@
                 return musicPlayResult(
                     false,
                     mediaResult.reason,
-                    isPermanentCandidateFailure(mediaResult.reason)
+                    canTryNextMusicCandidate(mediaResult.reason)
                 );
             }
             if (!shouldAutoPlay) {

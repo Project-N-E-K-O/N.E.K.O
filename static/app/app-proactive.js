@@ -1388,8 +1388,8 @@
 
                     var dispatchedTrackUrl = null;
 
-                    // 如果模式包含音乐信号，按顺序尝试音轨；候选资源自身的
-                    // 永久错误才回退，超时或播放器状态错误会结束本轮推荐。
+                    // 如果模式包含音乐信号，按顺序尝试音轨；候选 URL 或媒体自身
+                    // 的错误（包括加载超时）才回退，播放器/调度错误结束本轮推荐。
                     if ((result.source_mode === 'music' || result.source_mode === 'both') && result.source_links && Array.isArray(result.source_links)) {
                         var normalizedLinks = result.source_links.filter(Boolean);
                         var musicLinks = normalizedLinks.filter(function (link) {
@@ -1450,7 +1450,7 @@
                                         console.warn('[ProactiveChat] 音乐派发因非候选错误停止:', dispatchResult.reason, musicLink.url);
                                         break;
                                     }
-                                    console.warn('[ProactiveChat] 音乐候选存在永久错误，尝试下一条:', dispatchResult.reason, musicLink.url);
+                                    console.warn('[ProactiveChat] 音乐候选不可用，尝试下一条:', dispatchResult.reason, musicLink.url);
                                 }
                             }
                         }
