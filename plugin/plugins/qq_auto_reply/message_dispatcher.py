@@ -229,6 +229,10 @@ class QQMessageDispatcher:
         gid = str(message.get('group_id') or '').strip()
         scope = f"群{gid}" if gid else "私聊"
         self.plugin._emit_log("INFO", f"收到消息: {scope} from={message.get('user_id')} text={str(message.get('content',''))[:40]}")
+        # ── 禁言检查：bot 在该群被禁言 → 只记录不入 pipeline ──
+        if gid and self.plugin.qq_client and self.plugin.qq_client.is_group_muted(gid):
+            self.plugin._emit_log("INFO", f"[Mute] 群{gid} 禁言中，跳过消息处理")
+            return
         # ── 疲劳全局消息计数（睡眠判断已移入 attention_gate_service）──
         if getattr(self.plugin, "fatigue_service", None):
             self.plugin.fatigue_service.record_incoming_message()
@@ -249,6 +253,7 @@ class QQMessageDispatcher:
         elif message_type == "group":
             group_id = str(message.get("group_id") or "").strip()
             is_at_bot = message.get("is_at_bot", False)
+            is_reply_to_bot = message.get("is_reply_to_bot", False)
             current_message_id = str(message.get("message_id") or message.get("msg_id") or "").strip()
             quoted_message_id = str(message.get("quoted_message_id") or "").strip()
             mentioned_user_ids = [
@@ -278,6 +283,7 @@ class QQMessageDispatcher:
                 message_timestamp=message_timestamp,
                 forward_sub_count=fwd_count,
                 reply_context=reply_context,
+                is_reply_to_bot=is_reply_to_bot,
             )
             # TODO: 后续接入记忆，暂时关闭 backlog 推送
             # await self.plugin._maybe_notify_backlog_summary(group_id=group_id)
@@ -338,11 +344,14 @@ class QQMessageDispatcher:
         message_timestamp: int = 0,
         forward_sub_count: int = 0,
         reply_context: str = "",
+        is_reply_to_bot: bool = False,
     ):
         strategy_mode = getattr(self.plugin, "_strategy_mode", "neko_dynamic")
         # 群聊预缓冲：同群所有用户的快速消息共用缓冲桶，合并为一条回复
+        # 纯 @（非回复）才跳过缓冲；回复+@ 也走缓冲
+        _skip_buffer = is_at_bot and not is_reply_to_bot
         buffer_bucket_id = 0
-        if not is_at_bot and getattr(self.plugin, "reply_buffer_service", None):
+        if not _skip_buffer and getattr(self.plugin, "reply_buffer_service", None):
             gkey = self.plugin._build_session_key(sender_id=group_id, is_group=True, group_id=group_id)
             buf_text = f"[引用: {reply_context}] {message_text}" if reply_context else message_text
             if await self.plugin.reply_buffer_service.buffer(gkey, buf_text, sender_id, True, group_id):
@@ -368,8 +377,8 @@ class QQMessageDispatcher:
                 self.plugin.logger.info(
                     f"[AttentionGate] 群 {group_id} 消息被忽略 (sender={sender_id}, reason={gate_decision.reason})"
                 )
-                # 取消缓冲——被忽略的消息不需要等
-                if not is_at_bot and getattr(self.plugin, "reply_buffer_service", None):
+                # 取消缓冲——被忽略的消息不需要等（纯 @ 无缓冲可取消）
+                if not _skip_buffer and getattr(self.plugin, "reply_buffer_service", None):
                     gkey = self.plugin._build_session_key(sender_id=group_id, is_group=True, group_id=group_id)
                     p = self.plugin.reply_buffer_service._pending.get(gkey)
                     if p and p.task and not p.task.done():

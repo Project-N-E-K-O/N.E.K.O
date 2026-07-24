@@ -427,8 +427,38 @@ class QQAttentionGateService:
                     llm.ainvoke([{"role": "user", "content": prompt}]),
                     timeout=10.0,
                 )
-                raw = str(getattr(resp, "content", "") or "").strip()
-            except Exception:
+                raw_content = getattr(resp, "content", None)
+                raw_metadata = getattr(resp, "response_metadata", {}) or {}
+                finish_reason = raw_metadata.get("finish_reason", "")
+                raw = str(raw_content or "").strip()
+                # ainvoke 返回空内容时，尝试 ainvoke_raw 提取 reasoning_content（thinking 模型兼容）
+                if not raw:
+                    try:
+                        raw_resp = await asyncio.wait_for(
+                            llm.ainvoke_raw([{"role": "user", "content": prompt}]),
+                            timeout=10.0,
+                        )
+                        choice = raw_resp.choices[0] if raw_resp.choices else None
+                        if choice and hasattr(choice, "message") and choice.message:
+                            reasoning = getattr(choice.message, "reasoning_content", None)
+                            if reasoning:
+                                raw = str(reasoning or "").strip()
+                                self._logger.info(
+                                    f"[RetroReview] 从 reasoning_content 提取到内容 "
+                                    f"({len(raw)} chars)"
+                                )
+                    except Exception:
+                        pass
+                if not raw:
+                    self._logger.warning(
+                        f"[RetroReview] LLM 返回空内容: content={raw_content!r}, "
+                        f"finish_reason={finish_reason}, metadata_keys={list(raw_metadata.keys())}"
+                    )
+            except asyncio.TimeoutError:
+                self._logger.warning("[RetroReview] LLM 挑选超时 (10s)")
+                raw = ""
+            except Exception as exc:
+                self._logger.warning(f"[RetroReview] LLM 挑选调用异常: {type(exc).__name__}: {exc}")
                 raw = ""
 
             if raw:

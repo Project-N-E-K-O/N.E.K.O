@@ -53,6 +53,7 @@ class QQClient(QQConnectionBase):
         self._pending_actions: Dict[str, asyncio.Future] = {}
         self._closing = False
         self._sent_message_ids: Dict[str, float] = {}  # message_id → sent_at timestamp
+        self._group_muted: Dict[str, float] = {}    # group_id → muted_until (0=not muted, >0=muted until this timestamp)
         self._self_id: str = ""
         self._self_nickname: str = ""
 
@@ -83,6 +84,47 @@ class QQClient(QQConnectionBase):
         if self._connected_clients and self._self_id:
             return {"status": "online", "self_id": self._self_id, "nickname": self._self_nickname or None}
         return {"status": "offline", "self_id": None, "nickname": None}
+
+    def is_group_muted(self, group_id: str) -> bool:
+        """检查 bot 是否在该群被禁言（含全体禁言）。"""
+        gid = str(group_id or "").strip()
+        if not gid:
+            return False
+        until = self._group_muted.get(gid, 0)
+        if until and until > 0:
+            import time
+            if time.time() < until:
+                return True
+            # 禁言已过期，清理
+            del self._group_muted[gid]
+        return False
+
+    def _handle_group_ban_notice(self, notice: dict[str, Any]) -> None:
+        """处理禁言通知：记录 bot 被禁言/解除禁言的状态。"""
+        import time
+        gid = str(notice.get("group_id") or "").strip()
+        if not gid:
+            return
+        sub_type = str(notice.get("sub_type") or "").strip()  # "ban" / "lift_ban"
+        user_id = str(notice.get("user_id") or "").strip()
+        duration = int(notice.get("duration") or 0)  # 秒, ban时有效
+
+        # 全体禁言 (user_id=0) 或 自己被禁言
+        is_whole_group = (user_id == "0")
+        is_self = bool(self._self_id and user_id == str(self._self_id))
+
+        if not is_whole_group and not is_self:
+            return  # 别人被禁言，不关我们的事
+
+        if sub_type == "ban":
+            until = time.time() + max(duration, 1) if duration > 0 else float("inf")
+            self._group_muted[gid] = until
+            who = "全体" if is_whole_group else "自己"
+            self._emit_log("INFO", f"[Mute] {who}被禁言: group={gid} duration={duration}s")
+        elif sub_type == "lift_ban":
+            self._group_muted.pop(gid, None)
+            who = "全体" if is_whole_group else "自己"
+            self._emit_log("INFO", f"[Mute] {who}解除禁言: group={gid}")
 
     @staticmethod
     def _looks_like_path(value: str) -> bool:
@@ -343,24 +385,36 @@ class QQClient(QQConnectionBase):
     # ── 消息处理 ──────────────────────────────────────────────
 
     def _transcribe_record_segments(self, message: Dict[str, Any]) -> list[str]:
-        """提取语音段信息，返回需要异步获取的 file_id 列表。"""
+        """提取语音段信息，返回需要异步获取的 file_id 列表。支持数组、CQ码字符串、raw_message。"""
+        import re
         segments = message.get("message")
-        if not isinstance(segments, list):
-            self._emit_log("DEBUG", f"[Voice] segments不是list: {type(segments)}")
-            return []
         record_files: list[str] = []
-        for seg in segments:
-            if not isinstance(seg, dict):
-                continue
-            self._emit_log("DEBUG", f"[Voice] segment type={seg.get('type')}")
-            if seg.get("type") == "record":
-                f = str(seg.get("data", {}).get("file") or "").strip()
+        # 格式1: OneBot 数组段
+        if isinstance(segments, list):
+            for seg in segments:
+                if not isinstance(seg, dict):
+                    continue
+                if seg.get("type") == "record":
+                    f = str(seg.get("data", {}).get("file") or "").strip()
+                    if f:
+                        record_files.append(f)
+        # 格式2: CQ 码字符串 (message 字段)
+        if isinstance(segments, str):
+            for m in re.finditer(r'\[CQ:record,\s*file=([^,\]]+)', segments):
+                f = m.group(1).strip()
                 if f:
                     record_files.append(f)
-        if record_files and self.logger:
-            self.logger.info(f"检测到 {len(record_files)} 条语音 (file_id={record_files})")
+        # 格式3: raw_message 字符串 (部分 OneBot 私聊实现)
+        raw_msg = message.get("raw_message")
+        if isinstance(raw_msg, str) and not record_files:
+            for m in re.finditer(r'\[CQ:record,\s*file=([^,\]]+)', raw_msg):
+                f = m.group(1).strip()
+                if f:
+                    record_files.append(f)
+        if record_files:
+            self._emit_log("DEBUG", f"[Voice] 检测到 {len(record_files)} 条语音 (file_id={record_files})")
         else:
-            self._emit_log("DEBUG", f"[Voice] 未检测到语音段, segments_count={len(segments)}")
+            self._emit_log("DEBUG", f"[Voice] 未检测到语音段, msg_type={message.get('message_type')} segments_type={type(segments).__name__} segments={str(segments)[:100]}")
         return record_files
 
     @staticmethod
@@ -704,6 +758,9 @@ class QQClient(QQConnectionBase):
                 pass
             if self.logger:
                 self.logger.info(f"Queued poke notice: group {message.get('group_id')}, target {message.get('target_id')}, user {message.get('user_id')}")
+        elif message.get("post_type") == "notice" and message.get("notice_type") == "group_ban":
+            # 群禁言通知：bot 自己被禁言/解禁 或 全体禁言/解禁
+            self._handle_group_ban_notice(message)
 
     async def receive_message(self, timeout: float = 1.0) -> Optional[Dict[str, Any]]:
         """接收一条消息，返回标准化格式"""
@@ -785,8 +842,10 @@ class QQClient(QQConnectionBase):
                 result["is_at_bot"] = (
                     interaction_context["mentions_bot"]
                     or interaction_context["mentions_all"]
-                    or is_reply_to_bot
                 )
+                # is_reply_to_bot 单独存，不合入 is_at_bot：
+                #   - 回复猫娘不应跳过缓冲（只有直接@才跳过）
+                #   - Attention Gate 通过 is_direct_at 区分 @ 和回复
                 result["is_reply_to_bot"] = is_reply_to_bot
 
             return result

@@ -356,7 +356,7 @@ class QQReplyBufferService:
             combined = "\n".join(lines)
             from .pipeline_models import QQReplyRequest
             request = QQReplyRequest(
-                message_text=f"[系统] 下面是你和群友的对话，请自然接话总结回复（不要复述，用一两句话）：\n{combined}",
+                message_text=f"[系统] 下面是你和群友的对话，如果你觉得需要接话就自然回复（不要复述，用一两句话）；如果没必要回可以不回，不回复是正常的。\n{combined}",
                 sender_id=pending.sender_id or "0",
                 is_group=pending.is_group,
                 group_id=pending.group_id if pending.is_group else None,

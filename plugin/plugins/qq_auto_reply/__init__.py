@@ -217,15 +217,20 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             # ── 本地 STT（tts_custom base_url 推导）──
             if audio_bytes:
                 try:
+                    amr_detected = audio_bytes and (audio_bytes[:6] == b"#!AMR\n" or audio_bytes[:9].startswith(b"#!AMR-W"))
+                    stt_filename = "voice.amr" if amr_detected else "voice.mp3"
+                    stt_mime = "audio/amr" if amr_detected else "audio/mp3"
                     tts_config = get_config_manager().get_model_api_config("tts_custom")
                     local_base = str(tts_config.get("base_url") or "").strip()
-                    if local_base and (local_base.startswith("ws://") or local_base.startswith("wss://")):
+                    _is_ws = local_base.startswith("ws://") or local_base.startswith("wss://")
+                    _is_http = local_base.startswith("http://") or local_base.startswith("https://")
+                    if local_base and (_is_ws or _is_http):
                         http_base = local_base.replace("ws://", "http://").replace("wss://", "https://")
                         local_stt_url = http_base.rstrip("/") + "/v1/audio/transcriptions"
                         async with httpx.AsyncClient(timeout=30.0, proxy=None, trust_env=False) as client:
                             resp = await client.post(
                                 local_stt_url,
-                                files={"file": ("voice.mp3", audio_bytes, "audio/mp3")},
+                                files={"file": (stt_filename, audio_bytes, stt_mime)},
                                 data={"model": "whisper-1", "language": "zh"},
                             )
                             if resp.status_code == 200:
@@ -244,32 +249,124 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                     resp = await client.post(
                         "https://api.openai.com/v1/audio/transcriptions",
                         headers={"Authorization": f"Bearer {openai_key}"},
-                        files={"file": ("voice.mp3", audio_bytes, "audio/mp3")},
+                        files={"file": (stt_filename, audio_bytes, stt_mime)},
                         data={"model": "whisper-1", "language": "zh"},
                     )
                     if resp.status_code == 200:
                         return str(resp.json().get("text", "") or "").strip()
                     self._emit_log("DEBUG", f"[Voice] OpenAI转录: {resp.status_code}")
 
-            # ── Qwen DashScope (SenseVoice) ──
+            # ── Qwen DashScope (SenseVoice) 异步模式 ──
+            # 注意：同步 API 返回 403（账号不支持），使用异步 API + data: URI
+            import json as _json
             qwen_key = str(core_config.get("ASSIST_API_KEY_QWEN") or "").strip()
-            if qwen_key and audio_url:
-                async with httpx.AsyncClient(timeout=30.0, proxy=None, trust_env=False) as client:
-                    resp = await client.post(
+            amr_detected = audio_bytes and (audio_bytes[:6] == b"#!AMR\n" or audio_bytes[:9].startswith(b"#!AMR-W"))
+            if amr_detected:
+                self._emit_log("DEBUG", f"[Voice] 检测到AMR: magic={audio_bytes[:9]!r}")
+            if qwen_key and audio_bytes:
+                self._emit_log("DEBUG", f"[Voice] Qwen异步转录: {len(audio_bytes)} bytes")
+                ext = "amr" if amr_detected else "mp3"
+                mime = "audio/amr-wb" if (amr_detected and audio_bytes[:9].startswith(b"#!AMR-W")) else ("audio/amr" if amr_detected else "audio/mpeg")
+                data_uri = f"data:{mime};base64,{b64.b64encode(audio_bytes).decode()}"
+                async with httpx.AsyncClient(timeout=90.0, proxy=None, trust_env=False) as client:
+                    submit_resp = await client.post(
                         "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription",
-                        headers={"Authorization": f"Bearer {qwen_key}"},
+                        headers={
+                            "Authorization": f"Bearer {qwen_key}",
+                            "X-DashScope-Async": "enable",
+                        },
                         json={
                             "model": "sensevoice-v1",
-                            "input": {"file_urls": [audio_url]},
+                            "input": {"file_urls": [data_uri]},
                         },
                     )
-                    if resp.status_code == 200:
-                        result = resp.json()
-                        text = ""
-                        for r in (result.get("output") or {}).get("results") or []:
-                            text += str(r.get("transcript", "") or r.get("text", "") or "")
-                        return text.strip() if text.strip() else ""
-                    self._emit_log("DEBUG", f"[Voice] Qwen转录: {resp.status_code} {resp.text[:200]}")
+                    if submit_resp.status_code != 200:
+                        try:
+                            err = submit_resp.json()
+                            self._emit_log("DEBUG", f"[Voice] Qwen异步提交失败: {submit_resp.status_code} code={err.get('code','?')} msg={err.get('message','?')}")
+                        except Exception:
+                            self._emit_log("DEBUG", f"[Voice] Qwen异步提交失败: {submit_resp.status_code} {submit_resp.text[:200]}")
+                    else:
+                        submit_result = submit_resp.json()
+                        task_id = str(submit_result.get("output", {}).get("task_id") or "")
+                        if task_id:
+                            for _ in range(60):
+                                await asyncio.sleep(1.0)
+                                poll_resp = await client.get(
+                                    f"https://dashscope.aliyuncs.com/api/v1/tasks/{task_id}",
+                                    headers={"Authorization": f"Bearer {qwen_key}"},
+                                )
+                                if poll_resp.status_code != 200:
+                                    continue
+                                poll_result = poll_resp.json()
+                                task_status = str(poll_result.get("output", {}).get("task_status") or "")
+                                if task_status == "SUCCEEDED":
+                                    text = ""
+                                    output = poll_result.get("output") or {}
+                                    results = output.get("results") or []
+                                    for r in results:
+                                        # 方式1: 直接嵌入 transcripts（少数 API 版本）
+                                        transcripts = r.get("transcripts") or []
+                                        # 方式2: transcription_url → 下载获取实际转录结果
+                                        trans_url = r.get("transcription_url") or ""
+                                        if not transcripts and trans_url:
+                                            try:
+                                                async with httpx.AsyncClient(timeout=15.0, proxy=None, trust_env=False) as dl:
+                                                    dl_resp = await dl.get(trans_url)
+                                                if dl_resp.status_code == 200:
+                                                    trans_data = dl_resp.json()
+                                                    transcripts = trans_data.get("transcripts") or []
+                                                    props = trans_data.get("properties") or {}
+                                                    if props:
+                                                        dur = props.get("original_duration_in_milliseconds", 0)
+                                                        fmt = props.get("audio_format", "?")
+                                                        sr = props.get("original_sampling_rate", 0)
+                                                        self._emit_log("DEBUG", f"[Voice] Qwen音频属性: {fmt} {sr}Hz {dur}ms")
+                                                else:
+                                                    self._emit_log("DEBUG", f"[Voice] Qwen下载转录失败: status={dl_resp.status_code}")
+                                            except Exception as e:
+                                                self._emit_log("DEBUG", f"[Voice] Qwen下载转录异常: {type(e).__name__}: {e}")
+                                        if not transcripts:
+                                            # 方式1: results[].transcripts 直接嵌入(少数 API 版本)
+                                            transcripts = r.get("transcripts") or []
+                                            if transcripts:
+                                                # 尝试 content JSON 格式
+                                                for t in transcripts:
+                                                    content_raw = t.get("content", "")
+                                                    if isinstance(content_raw, str) and content_raw.strip():
+                                                        try:
+                                                            content_obj = _json.loads(content_raw)
+                                                            text += str(content_obj.get("text", "") or "").strip()
+                                                        except Exception:
+                                                            text += content_raw.strip()
+                                                    elif isinstance(content_raw, dict):
+                                                        text += str(content_raw.get("text", "") or "").strip()
+                                        if transcripts:
+                                            # 方式3: transcripts[].text 直接就是文字(下载的 JSON 格式), 需清洗标签
+                                            import re as _re
+                                            for t in transcripts:
+                                                raw_text = str(t.get("text", "") or "").strip()
+                                                if raw_text:
+                                                    # 清洗 <|Speech|>...</|Speech|> 等标签
+                                                    cleaned = _re.sub(r'<\|/?\w+\|>', '', raw_text).strip()
+                                                    text += cleaned
+                                        else:
+                                            # 同步 API 兼容
+                                            text += str(r.get("transcript", "") or r.get("text", "") or "").strip()
+                                    result_text = text.strip()
+                                    if result_text:
+                                        self._emit_log("INFO", f"[Voice] Qwen转录完成: {result_text[:80]}")
+                                    else:
+                                        self._emit_log("DEBUG", f"[Voice] Qwen转录成功但无文字, full_output={_json.dumps(output, ensure_ascii=False)[:2000]}")
+                                    return result_text
+                                elif task_status in ("FAILED", "ERROR"):
+                                    err_output = poll_result.get("output") or {}
+                                    self._emit_log("DEBUG", f"[Voice] Qwen异步任务失败: {task_status} code={err_output.get('code','?')} msg={err_output.get('message','?')}")
+                                    break
+                            else:
+                                self._emit_log("DEBUG", f"[Voice] Qwen异步任务超时: task_id={task_id}")
+                        else:
+                            self._emit_log("DEBUG", f"[Voice] Qwen异步提交无task_id: {submit_resp.text[:200]}")
 
             return ""
         except Exception:
