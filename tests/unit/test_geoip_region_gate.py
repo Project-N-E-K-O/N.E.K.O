@@ -400,11 +400,34 @@ def test_session_start_region_wait_is_free_when_already_resolved(monkeypatch):
 
 @pytest.mark.unit
 def test_session_start_does_not_wait_when_no_probe_is_running():
-    """Nothing in flight means nothing to wait for — never stall the session."""
+    """Nothing in flight and nothing due means nothing to wait for."""
     probe = _Probe()
+    # 实例属性覆盖：aensure_region_resolved 走的是 self._check_...，打在
+    # ConfigManager 上对 _Probe 无效（会穿透去打真实网络）
+    probe._check_ip_non_mainland_http = lambda: None
     started = real_time.monotonic()
     assert asyncio.run(probe.aensure_region_resolved(timeout=5)) is False
     assert real_time.monotonic() - started < 0.2
+
+
+@pytest.mark.unit
+def test_session_start_kicks_a_due_probe_instead_of_giving_up(monkeypatch):
+    """Backoff expired with no probe in flight: start one rather than open a whole
+    session on the fallback route. The probe get_core_config would start moments
+    later cannot catch this session — its route is already frozen."""
+    clock = _FakeClock()
+    monkeypatch.setattr(core_config_mod, 'time', SimpleNamespace(monotonic=clock))
+    calls = _patch_probe(monkeypatch, [OSError('cold boot'), 'JP'])
+
+    # 启动阶段那次探测失败，退避随后到期
+    _probe_once()
+    assert ConfigManager._ip_check_cache is None
+    clock.now += ConfigManager._IP_CHECK_RETRY_BASE_S + 1
+
+    probe = _Probe()
+    assert asyncio.run(probe.aensure_region_resolved(timeout=5)) is True
+    assert calls['n'] == 2, '会话开始时应当补发一次探测'
+    assert ConfigManager._ip_check_cache is True
 
 
 @pytest.mark.unit
@@ -503,3 +526,73 @@ def test_concurrent_probes_do_not_burn_the_backoff(monkeypatch):
 
     assert calls['n'] == 1, '并发爆发只应消耗一次探测配额'
     assert ConfigManager._ip_check_attempts == 2
+
+
+# ---------------------------------------------------------------------------
+# Steam country write-back (/api/config/steam_language)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+@pytest.mark.parametrize('country, expect_cache', [
+    ('US', True),
+    ('CN', False),
+    ('', None),      # 拿不到国家码 = 暂时不知道，不是"海外"
+    (None, None),
+])
+def test_steam_country_writeback_only_on_real_data(monkeypatch, country, expect_cache):
+    """An empty GetIPCountry() means "no answer yet", never "overseas".
+
+    Steam reports an empty country while it is still connecting; writing
+    ``not is_mainland_china`` unconditionally turns that blank into a positive
+    non-mainland verdict and pushes the route overseas on no evidence.
+    """
+    from main_routers.config_router import language as lang_mod
+
+    monkeypatch.setattr(
+        lang_mod, 'ensure_steamworks',
+        lambda: SimpleNamespace(
+            Apps=SimpleNamespace(GetCurrentGameLanguage=lambda: 'english'),
+            Utils=SimpleNamespace(GetIPCountry=lambda: country),
+        ),
+    )
+    monkeypatch.setattr(lang_mod, 'aload_ui_language_override', _async_return(None))
+    monkeypatch.setattr(lang_mod.get_steam_language, '_logged', True, raising=False)
+
+    result = asyncio.run(lang_mod.get_steam_language())
+
+    assert result['success'] is True
+    assert ConfigManager._steam_check_cache is expect_cache
+
+
+# ---------------------------------------------------------------------------
+# Structural: every session-preparation path must settle the region first
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_every_session_preparation_path_settles_the_region():
+    """A session freezes its base URL, so each path that builds one must settle first.
+
+    Structural rather than behavioural on purpose: the risk is a *third* preparation
+    path being added later and silently skipping the settle step, which no
+    behavioural test of the existing two would notice.
+    """
+    import ast
+    import pathlib
+
+    source = pathlib.Path(__file__).resolve().parents[2] / 'main_logic' / 'core' / 'lifecycle.py'
+    tree = ast.parse(source.read_text(encoding='utf-8'))
+
+    missing = []
+    checked = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        calls = {getattr(c.func, 'attr', None) for c in ast.walk(node) if isinstance(c, ast.Call)}
+        if 'aget_core_config' not in calls:
+            continue
+        checked.append(node.name)
+        if 'aensure_region_resolved' not in calls:
+            missing.append(f'{node.name} (line {node.lineno})')
+
+    assert checked, '未找到任何会话准备路径，断言失效'
+    assert not missing, f'这些路径会冻结会话线路却未先落定区域判定: {missing}'

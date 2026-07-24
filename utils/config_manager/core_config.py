@@ -132,6 +132,13 @@ class CoreConfigMixin:
 
         if ConfigManager._region_cache is not None or ConfigManager._ip_check_cache is not None:
             return True
+
+        # 没有在飞的探测时先发起一次：上一次探测失败、退避又已到期的话，这里不发
+        # 就只能眼睁睁用兜底线路开一整场，而下一次 get_core_config 发起的探测赶不上
+        # 本场的线路定死。发起本身不阻塞（后台线程），退避未到期时它自己会拒绝。
+        self._check_ip_non_mainland_http()
+        if ConfigManager._ip_check_cache is not None:
+            return True
         thread = ConfigManager._ip_probe_thread
         if thread is None or not thread.is_alive():
             return False
