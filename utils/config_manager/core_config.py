@@ -27,6 +27,7 @@ import asyncio
 import json
 import math
 import sys
+import threading
 import time
 from copy import deepcopy
 from urllib.parse import urlparse, urlunparse
@@ -69,29 +70,9 @@ class CoreConfigMixin:
     # --- Core config helpers ---
 
     @staticmethod
-    def _check_ip_non_mainland_http():
-        """Independent IP geolocation via China-fast HTTP API (ip-api.com over HTTP)."""
-        # Late-bound: class-level shared state (single owner) lives on the
-        # assembled ConfigManager; resolve it through the package facade.
+    def _run_ip_probe():
+        """Body of the IP geolocation probe. Always runs on a dedicated thread."""
         from utils.config_manager import ConfigManager
-
-        cache = ConfigManager._ip_check_cache
-        if cache is not None:
-            return cache
-
-        # 退避账本的 check-and-set 必须原子：aget_core_config 把本函数丢进
-        # asyncio.to_thread，并发调用同时穿过门会在一次网络未就绪的爆发里把退避
-        # 烧光。网络 IO 留在锁外，抢不到本轮探测权的线程直接按「暂无结论」返回。
-        now = time.monotonic()
-        with ConfigManager._geo_probe_lock:
-            if ConfigManager._ip_check_cache is not None:
-                return ConfigManager._ip_check_cache
-            last = ConfigManager._ip_check_last_attempt_monotonic
-            failures = ConfigManager._ip_check_attempts
-            if last is not None and (now - last) < ConfigManager._ip_check_backoff_s(failures):
-                return None
-            ConfigManager._ip_check_last_attempt_monotonic = now
-            ConfigManager._ip_check_attempts = failures + 1
 
         try:
             import urllib.request
@@ -108,7 +89,7 @@ class CoreConfigMixin:
                 result = country != "CN"
                 ConfigManager._ip_check_cache = result
                 print(f"[GeoIP] HTTP IP check: country={country}, non_mainland={result}", file=sys.stderr)
-                return result
+                return
         except Exception as e:
             print(f"[GeoIP] HTTP IP check failed: {e}", file=sys.stderr)
         # 刻意不写永久放弃标记：网络可能在几十分钟后才就绪，退避到 10 分钟一次的
@@ -118,6 +99,53 @@ class CoreConfigMixin:
             f"{ConfigManager._ip_check_backoff_s(ConfigManager._ip_check_attempts):.0f}s",
             file=sys.stderr,
         )
+
+    @staticmethod
+    def _check_ip_non_mainland_http():
+        """Non-blocking read of the IP geolocation verdict (ip-api.com over HTTP).
+
+        Never performs network IO on the caller's thread. When a probe is due this
+        kicks one off in the background and reports "no verdict yet"; the answer is
+        picked up by whichever call comes after it lands.
+
+        Blocking here is not an option: ``get_core_config`` fans out to ~40 sync
+        callers that sit inside ``async def`` (``get_model_api_config`` in
+        ``_start_session_prepare_runtime`` among them), so a 3s connect timeout
+        freezes the shared event loop — every WebSocket handshake and heartbeat
+        across all three subsystems stalls with it, which reads to users as
+        "cannot connect".
+        """
+        # Late-bound: class-level shared state (single owner) lives on the
+        # assembled ConfigManager; resolve it through the package facade.
+        from utils.config_manager import ConfigManager
+
+        cache = ConfigManager._ip_check_cache
+        if cache is not None:
+            return cache
+
+        # 退避账本的 check-and-set 必须原子：并发调用同时穿过门会在一次网络未就绪的
+        # 爆发里把退避烧光，也会同时起多个探测线程。
+        now = time.monotonic()
+        with ConfigManager._geo_probe_lock:
+            if ConfigManager._ip_check_cache is not None:
+                return ConfigManager._ip_check_cache
+            if ConfigManager._ip_probe_thread is not None and ConfigManager._ip_probe_thread.is_alive():
+                return None
+            last = ConfigManager._ip_check_last_attempt_monotonic
+            failures = ConfigManager._ip_check_attempts
+            if last is not None and (now - last) < ConfigManager._ip_check_backoff_s(failures):
+                return None
+            ConfigManager._ip_check_last_attempt_monotonic = now
+            ConfigManager._ip_check_attempts = failures + 1
+            # daemon：探测永远不该拖住进程退出（最坏挂在 3s 连接超时上）。
+            thread = threading.Thread(
+                target=ConfigManager._run_ip_probe,
+                name="geoip-probe",
+                daemon=True,
+            )
+            ConfigManager._ip_probe_thread = thread
+            thread.start()
+
         return None
 
     @staticmethod

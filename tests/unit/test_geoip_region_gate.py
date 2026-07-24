@@ -49,6 +49,7 @@ def reset_geo_caches(monkeypatch):
         ('_geo_steam_fallback_logged', False),
         ('_ip_check_attempts', 0),
         ('_ip_check_last_attempt_monotonic', None),
+        ('_ip_probe_thread', None),
     ):
         monkeypatch.setattr(ConfigManager, name, value)
     yield
@@ -170,6 +171,24 @@ def _patch_probe(monkeypatch, responses):
     return calls
 
 
+def _probe_once(expect_started=True):
+    """Kick the probe and wait for the background thread, so the test sees its result.
+
+    The probe never runs on the caller's thread (that would freeze the event loop),
+    so every assertion about its outcome has to join it first.
+    """
+    before = ConfigManager._ip_probe_thread
+    result = ConfigManager._check_ip_non_mainland_http()
+    thread = ConfigManager._ip_probe_thread
+    if expect_started:
+        assert thread is not None and thread is not before, '本次调用应当发起一次探测'
+        thread.join(5)
+        assert not thread.is_alive(), '探测线程未在超时内结束'
+    else:
+        assert thread is before, '本次调用不应发起新探测'
+    return result
+
+
 @pytest.mark.unit
 def test_ip_probe_retries_after_cold_boot_failure(monkeypatch):
     """A cold-boot timeout is retried once the network stack is up."""
@@ -177,16 +196,18 @@ def test_ip_probe_retries_after_cold_boot_failure(monkeypatch):
     monkeypatch.setattr(core_config_mod, 'time', SimpleNamespace(monotonic=clock))
     calls = _patch_probe(monkeypatch, [OSError('network unreachable'), 'US'])
 
-    assert ConfigManager._check_ip_non_mainland_http() is None
+    assert _probe_once() is None
     assert ConfigManager._ip_check_cache is None, '失败不得写死结论'
 
-    # 退避窗口内不重复付超时
-    assert ConfigManager._check_ip_non_mainland_http() is None
+    # 退避窗口内不重复发起探测
+    assert _probe_once(expect_started=False) is None
     assert calls['n'] == 1
 
     clock.now += ConfigManager._IP_CHECK_RETRY_BASE_S + 1
-    assert ConfigManager._check_ip_non_mainland_http() is True
+    _probe_once()
     assert ConfigManager._ip_check_cache is True
+    # 结论落地后，之后的调用直接命中缓存，不再发探测
+    assert _probe_once(expect_started=False) is True
 
 
 @pytest.mark.unit
@@ -198,18 +219,61 @@ def test_ip_probe_backs_off_exponentially_and_never_gives_up(monkeypatch):
 
     expected = [30.0, 60.0, 120.0, 240.0, 480.0, 600.0, 600.0]
     for i, wait in enumerate(expected, start=1):
-        assert ConfigManager._check_ip_non_mainland_http() is None
+        assert _probe_once() is None
         assert calls['n'] == i
         assert ConfigManager._ip_check_backoff_s(i) == wait
         # 退避未到不发请求，到点才发下一次
         clock.now += wait - 1
-        assert ConfigManager._check_ip_non_mainland_http() is None
+        assert _probe_once(expect_started=False) is None
         assert calls['n'] == i
         clock.now += 2
 
     # 网络终于就绪：探测仍然活着，没有永久放弃
     clock.now += ConfigManager._IP_CHECK_RETRY_MAX_S + 1
-    assert ConfigManager._check_ip_non_mainland_http() is True
+    _probe_once()
+    assert ConfigManager._ip_check_cache is True
+
+
+@pytest.mark.unit
+def test_probe_never_blocks_the_caller(monkeypatch):
+    """The probe must never do network IO on the caller's thread.
+
+    ``get_core_config`` fans out to ~40 sync callers living inside ``async def``
+    (``get_model_api_config`` in ``_start_session_prepare_runtime`` among them), so a
+    3s connect timeout here freezes the shared event loop and stalls every WebSocket
+    handshake in the process.
+    """
+    release = threading.Event()
+
+    class _HangingOpener:
+        def open(self, req, timeout=None):
+            release.wait(5)
+            raise OSError('timed out')
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, 'build_opener', lambda *a, **kw: _HangingOpener())
+
+    try:
+        started = real_time.monotonic()
+        assert ConfigManager._check_ip_non_mainland_http() is None
+        elapsed = real_time.monotonic() - started
+        assert elapsed < 0.5, f'调用方被阻塞 {elapsed:.2f}s，探测没有真正后台化'
+        assert ConfigManager._ip_probe_thread.is_alive(), '探测应当仍在后台跑'
+    finally:
+        release.set()
+        thread = ConfigManager._ip_probe_thread
+        if thread is not None:
+            thread.join(5)
+
+
+@pytest.mark.unit
+def test_probe_thread_is_daemon(monkeypatch):
+    """A probe hung on a 3s connect must never hold up process exit."""
+    _patch_probe(monkeypatch, [OSError('down')])
+    ConfigManager._check_ip_non_mainland_http()
+    thread = ConfigManager._ip_probe_thread
+    assert thread is not None and thread.daemon
+    thread.join(5)
 
 
 @pytest.mark.unit

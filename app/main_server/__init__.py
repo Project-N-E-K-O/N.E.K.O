@@ -995,6 +995,12 @@ async def on_startup():
             release_storage_startup_barrier=release_storage_startup_barrier,
         )
         set_steamworks_initializer(ensure_steamworks_initialized)
+        # GeoIP 预热：探测本身是后台线程、这里立即返回，只是把它尽早发起，
+        # 让区域判定在第一个会话开始之前就落地（否则首个会话会用大陆兜底线路）。
+        try:
+            _config_manager._check_ip_non_mainland_http()
+        except Exception:
+            logger.debug("[GeoIP] 预热失败，留给后续调用重试", exc_info=True)
         # asyncio 的慢回调告警只在 loop debug 模式下输出。默认关闭，
         # 需要排查事件循环停顿时设 NEKO_DEBUG_ASYNC=1 启用（会略微增加每 callback 开销）。
         if os.environ.get("NEKO_DEBUG_ASYNC") == "1":

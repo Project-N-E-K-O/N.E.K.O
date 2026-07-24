@@ -179,6 +179,9 @@ class ConfigManager(
     _ip_check_attempts = 0
     _ip_check_last_attempt_monotonic = None
     _geo_probe_lock = threading.Lock()
+    # 在飞的探测线程；探测**永远**在后台跑，调用方从不等网络（见
+    # CoreConfigMixin._check_ip_non_mainland_http 的 docstring）。
+    _ip_probe_thread = None
 
 
 # 全局配置管理器实例
