@@ -2253,7 +2253,7 @@ function toggleCustomApi(skipAutoFill) {
     const customApiContainer = document.getElementById('custom-api-container');
     if (customApiContainer) {
         if (isCustomEnabled) {
-            customApiContainer.style.display = 'block';
+            customApiContainer.style.display = 'grid';
             // 展开所有模型配置
             const modelContainers = document.querySelectorAll('.model-config-container');
             modelContainers.forEach(container => {
@@ -3157,6 +3157,37 @@ function positionTooltip(iconElement, tooltipElement) {
     tooltipElement.style.setProperty('--arrow-left', arrowLeft + 'px');
 }
 
+const MODEL_CONFIG_ROW_PAIRS = Object.freeze({
+    conversation: 'summary',
+    summary: 'conversation',
+    game: 'correction',
+    correction: 'game',
+    emotion: 'vision',
+    vision: 'emotion',
+    agent: 'omni',
+    omni: 'agent',
+});
+
+function finishModelConfigCollapse(content, pairedContent, transitionId) {
+    if (content.dataset.collapseTransitionId !== transitionId) return;
+
+    delete content.dataset.collapseTransitionId;
+    const expandedPair = pairedContent?.classList.contains('expanded') ? pairedContent : null;
+    if (expandedPair) {
+        expandedPair.classList.add('is-reflowing');
+        expandedPair.getBoundingClientRect();
+    }
+
+    content.classList.remove('is-collapsing');
+    content.style.removeProperty('max-height');
+
+    if (expandedPair) {
+        window.setTimeout(() => {
+            expandedPair.classList.remove('is-reflowing');
+        }, 260);
+    }
+}
+
 // 二级折叠功能：切换模型配置的展开/折叠状态
 function toggleModelConfig(modelType) {
     const content = document.getElementById(`${modelType}-model-content`);
@@ -3169,11 +3200,41 @@ function toggleModelConfig(modelType) {
     if (!icon) return;
 
     if (content.classList.contains('expanded')) {
+        const pairedType = MODEL_CONFIG_ROW_PAIRS[modelType];
+        const pairedContent = pairedType
+            ? document.getElementById(`${pairedType}-model-content`)
+            : null;
+        const transitionId = `${Date.now()}-${Math.random()}`;
+
+        content.dataset.collapseTransitionId = transitionId;
+        content.classList.add('is-collapsing');
+        content.style.maxHeight = `${content.scrollHeight}px`;
+        content.getBoundingClientRect();
         content.classList.remove('expanded');
         icon.style.transform = 'rotate(0deg)';
         header.setAttribute('aria-expanded', 'false');
         content.setAttribute('aria-hidden', 'true');
+
+        window.requestAnimationFrame(() => {
+            if (content.dataset.collapseTransitionId === transitionId) {
+                content.style.maxHeight = '0px';
+            }
+        });
+
+        const handleTransitionEnd = event => {
+            if (event.target !== content || event.propertyName !== 'max-height') return;
+            content.removeEventListener('transitionend', handleTransitionEnd);
+            finishModelConfigCollapse(content, pairedContent, transitionId);
+        };
+        content.addEventListener('transitionend', handleTransitionEnd);
+        window.setTimeout(() => {
+            content.removeEventListener('transitionend', handleTransitionEnd);
+            finishModelConfigCollapse(content, pairedContent, transitionId);
+        }, 360);
     } else {
+        delete content.dataset.collapseTransitionId;
+        content.classList.remove('is-collapsing');
+        content.style.removeProperty('max-height');
         content.classList.add('expanded');
         icon.style.transform = 'rotate(180deg)';
         header.setAttribute('aria-expanded', 'true');
@@ -3194,7 +3255,7 @@ function navigateToCustomModelConfig(modelType) {
 
     const customApiContainer = document.getElementById('custom-api-container');
     if (customApiContainer && getComputedStyle(customApiContainer).display === 'none') {
-        customApiContainer.style.display = 'block';
+        customApiContainer.style.display = 'grid';
     }
 
     let expandedConfig = false;
@@ -3372,11 +3433,23 @@ function createIndicatorLight(inputElement, context) {
 
     // 将灯和 input 包在一个水平 flex 容器中，确保同行对齐
     if (inputElement && inputElement.parentNode) {
+        const fieldRow = inputElement.closest('.field-row');
         const wrapper = document.createElement('div');
         wrapper.className = 'connectivity-input-row';
         inputElement.parentNode.insertBefore(wrapper, inputElement);
         wrapper.appendChild(light);
         wrapper.appendChild(inputElement);
+
+        // 服务商配置可能先于连通性组件初始化。此时“前往管理簿”已经被
+        // 插入 field-row，需要一并移入横向容器，避免它留在输入框下一行。
+        const keyBookShortcut = fieldRow
+            ? Array.from(fieldRow.querySelectorAll('.key-book-shortcut')).find(
+                link => !link.dataset.sourceInputId || link.dataset.sourceInputId === inputElement.id
+            )
+            : null;
+        if (keyBookShortcut) {
+            wrapper.appendChild(keyBookShortcut);
+        }
     }
 
     return light;
@@ -4475,8 +4548,6 @@ function initConnectivityLights() {
         const btnWrapper = document.createElement('div');
         btnWrapper.className = 'connectivity-test-btn-wrapper';
         btnWrapper.style.display = 'flex';
-        btnWrapper.style.alignItems = 'center';
-        btnWrapper.style.marginBottom = '12px';
 
         // Move button into wrapper (replace its position)
         testButton.style.marginBottom = '0';
