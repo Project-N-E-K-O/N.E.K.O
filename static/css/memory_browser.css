@@ -2053,10 +2053,10 @@ html.neko-window-maximized .chat-item + .chat-item::before {
     display: none;
 }
 
-.external-memory-import-status.is-working { color: #3caed4; }
-.external-memory-import-status.is-success { color: #2b9f67; }
-.external-memory-import-status.is-warning { color: #bf7b1d; }
-.external-memory-import-status.is-error { color: #d94c4c; }
+.external-memory-import-status.is-working { color: var(--memory-accent-foreground); }
+.external-memory-import-status.is-success { color: var(--memory-success); }
+.external-memory-import-status.is-warning { color: var(--memory-warning); }
+.external-memory-import-status.is-error { color: var(--memory-danger); }
 
 /* 滚动条样式 */
 #memory-chat-edit::-webkit-scrollbar {
