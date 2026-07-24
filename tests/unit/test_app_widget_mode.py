@@ -155,6 +155,26 @@ def test_widget_mode_browser_client_has_no_lifecycle_or_polling_protocol() -> No
         assert forbidden not in source
 
 
+def test_widget_mode_modules_do_not_consume_activity_tracker_or_game_mode() -> None:
+    sources = {
+        "runtime": (PROJECT_ROOT / "main_logic" / "widget_mode_runtime.py").read_text(
+            encoding="utf-8"
+        ),
+        "router": (PROJECT_ROOT / "main_routers" / "widget_mode_router.py").read_text(
+            encoding="utf-8"
+        ),
+        "client": APP_WIDGET_MODE_PATH.read_text(encoding="utf-8"),
+    }
+
+    for source in sources.values():
+        lowered = source.lower()
+        assert "activity_tracker" not in lowered
+        assert "activity tracker" not in lowered
+        assert "activity-signal" not in lowered
+        assert "game_mode" not in lowered
+        assert "game-mode" not in lowered
+
+
 def test_app_widget_mode_is_home_only_and_versioned() -> None:
     from main_routers import pages_router
 

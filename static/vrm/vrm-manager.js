@@ -270,9 +270,10 @@ class VRMManager {
             }
             // 同步鼠标跟踪启用状态
             const storedMouseTrackingEnabled = window.mouseTrackingEnabled !== false;
-            const isEnabled = window.nekoYuiGuideFaceForwardLock === true
-                ? false
-                : storedMouseTrackingEnabled;
+            const resourceProtected = this._gameModeResourcePhase && this._gameModeResourcePhase !== 'idle';
+            const isEnabled = storedMouseTrackingEnabled
+                && !resourceProtected
+                && window.nekoYuiGuideFaceForwardLock !== true;
             console.log(`[VRM] 鼠标跟踪检查: window.mouseTrackingEnabled=${window.mouseTrackingEnabled}, isEnabled=${isEnabled}`);
             if (this._cursorFollow.isEnabled() !== isEnabled) {
                 this._cursorFollow.setEnabled(isEnabled);
@@ -815,7 +816,10 @@ class VRMManager {
 
             // 帧率限制：根据 targetFrameRate 跳帧（0 = 不限帧，跟随 VSync）
             const now = performance.now();
-            const targetFps = typeof window.targetFrameRate === 'number' ? window.targetFrameRate : 60;
+            const configuredFps = typeof window.targetFrameRate === 'number' ? window.targetFrameRate : 60;
+            const targetFps = this._gameModeResourcePhase && this._gameModeResourcePhase !== 'idle'
+                ? (configuredFps === 0 ? 15 : Math.min(15, configuredFps))
+                : configuredFps;
             if (targetFps > 0) {
                 const frameInterval = 1000 / targetFps;
                 if (now - this._lastRenderTime < frameInterval * 0.9) return;
@@ -1165,6 +1169,72 @@ class VRMManager {
             this.startAnimateLoop();
             console.log('[VRM Manager] 渲染循环已恢复');
         }
+    }
+
+    setGameModeResourceProtection(phase) {
+        const next = phase === 'deep_sleep' ? 'deep_sleep'
+            : (phase === 'soft_protected' ? 'soft_protected' : 'idle');
+        const wasProtected = this._gameModeResourcePhase && this._gameModeResourcePhase !== 'idle';
+        if (!wasProtected && next !== 'idle') {
+            this._gameModeResourceCursorFollowEnabled = this._cursorFollow
+                && typeof this._cursorFollow.isEnabled === 'function'
+                ? this._cursorFollow.isEnabled()
+                : null;
+            this._gameModeResourceMouseTrackingEnabled = window.mouseTrackingEnabled !== false;
+        }
+        this._gameModeResourcePhase = next;
+        if (next !== 'idle') {
+            if (this._cursorFollow && typeof this._cursorFollow.setEnabled === 'function') {
+                this._cursorFollow.setEnabled(false);
+            }
+            if (this._mouseMoveHandler) {
+                document.removeEventListener('mousemove', this._mouseMoveHandler);
+                this._gameModeResourceFallbackMouseDetached = true;
+            }
+        } else {
+            if (this._cursorFollow && typeof this._cursorFollow.setEnabled === 'function'
+                && this._gameModeResourceCursorFollowEnabled !== null) {
+                const currentMouseTrackingEnabled = window.mouseTrackingEnabled !== false;
+                const mouseTrackingChanged = this._gameModeResourceMouseTrackingEnabled !== null
+                    && currentMouseTrackingEnabled !== this._gameModeResourceMouseTrackingEnabled;
+                const restoreCursorFollow = mouseTrackingChanged
+                    ? currentMouseTrackingEnabled && window.nekoYuiGuideFaceForwardLock !== true
+                    : this._gameModeResourceCursorFollowEnabled === true;
+                this._cursorFollow.setEnabled(restoreCursorFollow);
+            }
+            if (this._gameModeResourceFallbackMouseDetached && this._mouseMoveHandler) {
+                document.addEventListener('mousemove', this._mouseMoveHandler, { passive: true });
+            }
+            this._gameModeResourceCursorFollowEnabled = null;
+            this._gameModeResourceMouseTrackingEnabled = null;
+            this._gameModeResourceFallbackMouseDetached = false;
+        }
+        if (next === 'deep_sleep' && this._animationFrameId) {
+            this._gameModeResourcePausedRendering = true;
+            this.pauseRendering();
+        } else if (next !== 'deep_sleep' && this._gameModeResourcePausedRendering) {
+            this._gameModeResourcePausedRendering = false;
+            this.resumeRendering();
+        }
+    }
+
+    translateModelByScreenPixels(deltaX, deltaY) {
+        const scene = this.currentModel && (this.currentModel.vrm?.scene || this.currentModel.scene);
+        const camera = this.camera;
+        const canvas = this.renderer && this.renderer.domElement;
+        if (!scene || !camera || !canvas || !window.THREE) return false;
+        const rect = canvas.getBoundingClientRect();
+        const dx = Number(deltaX);
+        const dy = Number(deltaY);
+        if (!rect.width || !rect.height || !Number.isFinite(dx) || !Number.isFinite(dy)) return false;
+        const distance = Math.max(0.001, camera.position.distanceTo(scene.position));
+        const worldHeight = 2 * Math.tan((camera.fov * Math.PI / 180) / 2) * distance;
+        const worldWidth = worldHeight * (camera.aspect || (rect.width / rect.height));
+        const right = new window.THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+        const up = new window.THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+        scene.position.add(right.multiplyScalar(dx * worldWidth / rect.width));
+        scene.position.add(up.multiplyScalar(-dy * worldHeight / rect.height));
+        return true;
     }
 
     async loadModel(modelUrl, options = {}) {
@@ -1853,7 +1923,10 @@ class VRMManager {
     setMouseTrackingEnabled(enabled) {
         this._mouseTrackingEnabled = enabled;
         window.mouseTrackingEnabled = enabled;
-        const effectiveEnabled = enabled && window.nekoYuiGuideFaceForwardLock !== true;
+        const resourceProtected = this._gameModeResourcePhase && this._gameModeResourcePhase !== 'idle';
+        const effectiveEnabled = enabled
+            && !resourceProtected
+            && window.nekoYuiGuideFaceForwardLock !== true;
 
         if (this._cursorFollow) {
             this._cursorFollow.setEnabled(effectiveEnabled);
@@ -1865,6 +1938,9 @@ class VRMManager {
      * @returns {boolean}
      */
     isMouseTrackingEnabled() {
+        if (this._gameModeResourcePhase && this._gameModeResourcePhase !== 'idle') {
+            return false;
+        }
         if (window.nekoYuiGuideFaceForwardLock === true) {
             return false;
         }

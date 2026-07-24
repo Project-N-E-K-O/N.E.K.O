@@ -404,6 +404,11 @@
             return;
         }
         // 确认切换到不同角色后，清空上一任的搜歌任务
+        try {
+            window.dispatchEvent(new CustomEvent('neko:character-switch-start', {
+                detail: { timestamp: Date.now() }
+            }));
+        } catch (_) {}
         window.invalidatePendingMusicSearch();
         S.isSwitchingCatgirl = true;
         _switchOldSocket = S.socket;

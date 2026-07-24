@@ -2649,6 +2649,19 @@
             "disabledNotice": "エッジドックモード Beta を無効にしました。Live2D は通常の端スナップに戻ります。",
             "toggleFailed": "エッジドックモード Beta を切り替えられませんでした。しばらくしてから再試行してください。"
         },
+        "gameModeBeta": {
+    "enabledNotice": "ゲーム中のリソース保護を有効にしました。Live2D を画面端へドラッグするサイドモードは引き続き利用できます。",
+            "disabledNotice": "ゲーム中のリソース保護を無効にしました。",
+            "toggleFailed": "ゲーム中のリソース保護を切り替えられませんでした。しばらくしてから再試行してください。",
+            "statusOn": "オン",
+            "statusOff": "オフ",
+    "statusOnly": "{status}",
+    "resourceProtectionOnGame": "ゲーム検出時にモデルの実行負荷を下げる",
+            "compactPetWindow": "Windows ペットの透明ウィンドウを一時的に縮小する",
+    "exitResourceProtection": "今回のリソース保護を終了",
+    "privacyNote": "Activity Tracker の正確なゲーム判定のみを使用します。スクリーンショット、画面ピクセルの読み取り、追加のテレメトリは行いません。",
+    "details": "詳細"
+        },
         "toggles": {
             "allowInterrupt": "割り込み許可",
             "mergeMessages": "メッセージ結合",
@@ -2659,6 +2672,8 @@
             "widgetModeTooltip": "エッジドックモードを手動で有効にすると、Live2D が画面端の 6 つのアンカーから覗けます。",
             "slopFilter": "自然な表現",
             "slopFilterTooltip": "過去の返答にある繰り返しや型にはまった言い回しを減らし、より自然に話せるようにします。",
+            "gameModeBeta": "ゲームリソース保護 Beta",
+            "gameModeBetaTooltip": "ゲームを正確に検出したとき、モデルの実行リソースを抑え、Windows のペットウィンドウを一時的に縮小できます。モデルを自動変更せず、サイドモードは独立して利用できます。",
             "autoCat": "自動ねこ化",
             "autoCatTooltip": "しばらく操作がないと自動的に子猫になります",
             "catAudio": "猫の効果音",

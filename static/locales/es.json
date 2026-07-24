@@ -2649,6 +2649,19 @@
             "disabledNotice": "Modo de acoplamiento al borde Beta está desactivado. Live2D vuelve al ajuste normal en los bordes.",
             "toggleFailed": "No se pudo cambiar Modo de acoplamiento al borde Beta. Inténtalo de nuevo más tarde."
         },
+        "gameModeBeta": {
+    "enabledNotice": "La protección de recursos durante juegos está activada. El modo lateral sigue disponible al arrastrar Live2D a un borde de la pantalla.",
+            "disabledNotice": "La protección de recursos durante juegos está desactivada.",
+            "toggleFailed": "No se pudo cambiar la protección de recursos durante juegos. Inténtalo de nuevo más tarde.",
+            "statusOn": "Activado",
+            "statusOff": "Desactivado",
+    "statusOnly": "{status}",
+    "resourceProtectionOnGame": "Reducir el uso del modelo al detectar un juego",
+            "compactPetWindow": "Reducir temporalmente la ventana de mascota en Windows",
+    "exitResourceProtection": "Salir de esta sesión de protección",
+    "privacyNote": "Solo usa el resultado de juego exacto de Activity Tracker. No captura pantallas, no lee píxeles ni añade telemetría.",
+    "details": "Detalles"
+        },
         "toggles": {
             "allowInterrupt": "Permitir interrupción",
             "mergeMessages": "Fusionar mensajes",
@@ -2659,6 +2672,8 @@
             "widgetModeTooltip": "Activa manualmente el modo de acoplamiento para que Live2D pueda asomarse desde seis anclajes del borde.",
             "slopFilter": "Expresión natural",
             "slopFilterTooltip": "Reduce las expresiones repetitivas y estereotipadas de las respuestas anteriores para que se exprese con más naturalidad.",
+            "gameModeBeta": "Protección de recursos en juegos Beta",
+            "gameModeBetaTooltip": "Al detectar un juego exacto, reduce el uso de recursos del modelo y puede compactar temporalmente la ventana de la mascota en Windows. Nunca cambia el modelo automáticamente y el modo lateral sigue siendo independiente.",
             "autoCat": "Modo gato automático",
             "autoCatTooltip": "Se convierte en gatito automáticamente tras un rato de inactividad",
             "catAudio": "Sonidos de gato",

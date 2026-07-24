@@ -5,6 +5,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LIVE2D_INTERACTION_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-interaction.js"
 LIVE2D_CORE_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-core.js"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
+GAME_MODE_RESOURCE_RUNTIME_PATH = (
+    PROJECT_ROOT / "static" / "app" / "app-game-mode-resource-runtime.js"
+)
 
 
 def _source(path: Path) -> str:
@@ -242,3 +245,27 @@ def test_live2d_widget_mode_edge_peek_uses_event_signal_without_polling():
     assert "visibleBounds" in edge_peek_source
     assert "setInterval" not in edge_peek_source
     assert "MutationObserver" not in edge_peek_source
+
+
+def test_game_mode_does_not_own_a_second_live2d_edge_peek_state_machine():
+    production_sources = {
+        "interaction": _source(LIVE2D_INTERACTION_PATH),
+        "core": _source(LIVE2D_CORE_PATH),
+        "css": _source(INDEX_CSS_PATH),
+        "resource_runtime": _source(GAME_MODE_RESOURCE_RUNTIME_PATH),
+    }
+    combined = "\n".join(production_sources.values())
+
+    for forbidden in (
+        "GameMode" "EdgePeek",
+        "_live2DGameMode" "EdgePeekState",
+        "nekoLive2DGameMode" "EdgePeek",
+        "neko:live2d-game-mode-edge-" "peek-changed",
+        "neko-live2d-game-mode-edge-" "peek",
+    ):
+        assert forbidden not in combined
+
+    assert "window.nekoGameModeBeta.isEnabled()" not in production_sources["interaction"]
+    assert "window.addEventListener('neko:live2d-peek-changed'" in production_sources[
+        "resource_runtime"
+    ]

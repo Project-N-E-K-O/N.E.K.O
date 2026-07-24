@@ -2649,6 +2649,19 @@
             "disabledNotice": "掛邊模式 Beta 已關閉。Live2D 將恢復一般邊緣吸附行為。",
             "toggleFailed": "掛邊模式 Beta 切換失敗，請稍後重試。"
         },
+        "gameModeBeta": {
+    "enabledNotice": "遊戲資源保護已開啟；拖動 Live2D 到螢幕邊緣仍可使用 Side Mode。",
+            "disabledNotice": "遊戲資源保護已關閉。",
+            "toggleFailed": "遊戲資源保護切換失敗，請稍後重試。",
+            "statusOn": "開啟",
+            "statusOff": "關閉",
+    "statusOnly": "{status}",
+    "resourceProtectionOnGame": "偵測到遊戲時降低模型執行資源",
+            "compactPetWindow": "Windows 桌寵暫時縮小透明視窗",
+    "exitResourceProtection": "退出本次資源保護",
+    "privacyNote": "只使用 Activity Tracker 的精確遊戲識別結果；不截圖、不讀取螢幕像素，也不會新增遙測。",
+    "details": "詳情"
+        },
         "toggles": {
             "allowInterrupt": "允許打斷",
             "mergeMessages": "合併消息",
@@ -2659,6 +2672,8 @@
             "widgetModeTooltip": "手動開啟掛邊模式後，Live2D 可從左右與四角共六個螢幕邊緣錨點探身。",
             "slopFilter": "自然表達",
             "slopFilterTooltip": "減少歷史回覆中重複、套路化的說法，讓她表達得更自然。",
+            "gameModeBeta": "遊戲資源保護 Beta",
+            "gameModeBetaTooltip": "精確識別到遊戲時降低模型執行資源，並可暫時縮小 Windows 桌寵透明視窗；不會自動改變模型，Side Mode 仍可獨立使用。",
             "autoCat": "自動變貓",
             "autoCatTooltip": "一段時間無互動後自動變成小貓",
             "catAudio": "貓貓音效",

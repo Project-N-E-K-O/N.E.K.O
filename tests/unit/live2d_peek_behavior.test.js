@@ -10,6 +10,7 @@ const corePath = path.join(projectRoot, 'static', 'live2d', 'live2d-core.js');
 
 function createHarness({
     widgetModeEnabled = true,
+    gameModeEnabled = false,
     innerWidth = 1000,
     innerHeight = 800,
     platform = '',
@@ -50,6 +51,9 @@ function createHarness({
             } : null,
             nekoWidgetMode: {
                 isEnabled: () => widgetModeEnabled
+            },
+            nekoGameModeBeta: {
+                isEnabled: () => gameModeEnabled
             },
             addEventListener(type, handler) {
                 const handlers = listeners.get(type) || [];
@@ -600,17 +604,47 @@ test('drag-style clear exits peek without restoring position but restores transf
 });
 
 test('edge peek only triggers while Widget Mode is enabled', async () => {
-    const harness = createHarness({ widgetModeEnabled: false });
+    for (const combination of [
+        { gameModeEnabled: false, widgetModeEnabled: false, expected: false },
+        { gameModeEnabled: true, widgetModeEnabled: false, expected: false },
+        { gameModeEnabled: false, widgetModeEnabled: true, expected: true },
+        { gameModeEnabled: true, widgetModeEnabled: true, expected: true },
+    ]) {
+        const harness = createHarness(combination);
+        const manager = new harness.Live2DManager();
+        const model = createModel({ x: 0, y: 120 });
+        const enterPromise = manager._tryApplyLive2DPeek(model);
+        if (combination.expected) flushNextFrame(harness);
+        const entered = await enterPromise;
+
+        assert.equal(entered, combination.expected);
+        assert.equal(manager.isLive2DPeekActive(), combination.expected);
+        assert.equal(Object.hasOwn(manager, '_live2DGameMode' + 'EdgePeekState'), false);
+        if (!combination.expected) {
+            assert.equal(harness.rafQueue.length, 0);
+            assert.equal(model.x, 0);
+            assert.equal(model.y, 120);
+        }
+    }
+});
+
+test('Game Mode state changes do not clear an active Widget Mode edge peek', async () => {
+    const harness = createHarness({ widgetModeEnabled: true, gameModeEnabled: true });
     const manager = new harness.Live2DManager();
+    harness.window.live2dManager = manager;
     const model = createModel({ x: 0, y: 120 });
 
-    const entered = await manager._tryApplyLive2DPeek(model);
+    const enterPromise = manager._tryApplyLive2DPeek(model);
+    flushNextFrame(harness);
+    assert.equal(await enterPromise, true);
 
-    assert.equal(entered, false);
-    assert.equal(manager.isLive2DPeekActive(), false);
-    assert.equal(harness.rafQueue.length, 0);
-    assert.equal(model.x, 0);
-    assert.equal(model.y, 120);
+    harness.window.dispatchEvent({
+        type: 'neko:game-mode-beta-state',
+        detail: { enabled: false, active: false }
+    });
+
+    assert.equal(manager.isLive2DPeekActive(), true);
+    assert.equal(model.x, -390);
 });
 
 test('Widget Mode disabled event restores active edge peek to its base position', async () => {

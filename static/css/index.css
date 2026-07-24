@@ -4362,3 +4362,10 @@ body.chat-export-modal-open {
         flex: 1;
     }
 }
+/* Game resource deep phase: visual-only animations stop; chat/audio/activity remain online. */
+body.neko-game-resource-deep #live2d-container *,
+body.neko-game-resource-deep #vrm-container *,
+body.neko-game-resource-deep #mmd-container *,
+body.neko-game-resource-deep #pngtuber-container * {
+    animation-play-state: paused !important;
+}

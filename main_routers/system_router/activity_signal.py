@@ -314,6 +314,29 @@ async def push_activity_signal(request: Request):
             status_code=500,
         )
 
+    try:
+        # Activity Tracker remains the sole owner of app/game
+        # classification. Game Mode receives only the final exact-game
+        # boolean, never titles, process names, canonical game names, or
+        # the tracker's GPU-fallback gaming state.
+        from main_logic.game_mode_resource_protection import protector as game_mode_protector
+
+        activity_snapshot = tracker.get_snapshot_sync(now=now)
+        observation = activity_snapshot.active_window
+        semantic_valid = bool(activity_snapshot.os_signals_available and observation is not None)
+        exact_game = bool(
+            observation is not None
+            and observation.category == "gaming"
+            and observation.subcategory == "game"
+        )
+        await game_mode_protector.ingest_game_snapshot(
+            exact_game=exact_game,
+            valid=semantic_valid,
+            observed_at=now,
+        )
+    except Exception:
+        logger.debug("Game Mode semantic classification failed", exc_info=True)
+
     _ACTIVITY_SIGNAL_THROTTLE[lanlan_name] = now
     # Bound the dict: in practice lanlan_names are 1-3, but if an
     # attacker sprays unique names we trim oldest. Sorted ascending by

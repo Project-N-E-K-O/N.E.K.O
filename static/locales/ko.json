@@ -2649,6 +2649,19 @@
             "disabledNotice": "가장자리 도킹 모드 Beta가 꺼졌습니다. Live2D는 일반 가장자리 스냅을 사용합니다.",
             "toggleFailed": "가장자리 도킹 모드 Beta를 전환하지 못했습니다. 잠시 후 다시 시도하세요."
         },
+        "gameModeBeta": {
+    "enabledNotice": "게임 리소스 보호가 켜졌습니다. Live2D를 화면 가장자리로 끄는 사이드 모드는 계속 사용할 수 있습니다.",
+            "disabledNotice": "게임 리소스 보호가 꺼졌습니다.",
+            "toggleFailed": "게임 리소스 보호를 전환하지 못했습니다. 잠시 후 다시 시도하세요.",
+            "statusOn": "켜짐",
+            "statusOff": "꺼짐",
+    "statusOnly": "{status}",
+    "resourceProtectionOnGame": "게임 감지 시 모델 실행 리소스 절감",
+            "compactPetWindow": "Windows 데스크톱 펫 창을 일시적으로 축소",
+    "exitResourceProtection": "이번 리소스 보호 종료",
+    "privacyNote": "Activity Tracker의 정확한 게임 판정만 사용합니다. 스크린샷을 찍거나 화면 픽셀을 읽거나 추가 원격 측정을 하지 않습니다.",
+    "details": "세부 정보"
+        },
         "toggles": {
             "allowInterrupt": "인터럽트 허용",
             "mergeMessages": "메시지 병합",
@@ -2659,6 +2672,8 @@
             "widgetModeTooltip": "가장자리 도킹 모드를 수동으로 켜면 Live2D가 화면 가장자리의 6개 앵커에서 내다볼 수 있습니다.",
             "slopFilter": "자연스러운 표현",
             "slopFilterTooltip": "이전 답변에서 반복되거나 틀에 박힌 표현을 줄여 더 자연스럽게 말하도록 합니다.",
+            "gameModeBeta": "게임 리소스 보호 Beta",
+            "gameModeBetaTooltip": "게임을 정확히 감지하면 모델 실행 리소스를 줄이고 Windows 펫 창을 일시적으로 축소할 수 있습니다. 모델을 자동으로 바꾸지 않으며 사이드 모드는 독립적으로 유지됩니다.",
             "autoCat": "자동 고양이 전환",
             "autoCatTooltip": "일정 시간 활동이 없으면 자동으로 새끼 고양이가 됩니다",
             "catAudio": "고양이 효과음",

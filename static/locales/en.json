@@ -2649,6 +2649,19 @@
             "disabledNotice": "Edge Dock Mode Beta is off. Live2D uses normal edge snapping.",
             "toggleFailed": "Failed to switch Edge Dock Mode Beta. Please try again later."
         },
+        "gameModeBeta": {
+    "enabledNotice": "Game resource protection is on. Side Mode remains available by dragging Live2D to a screen edge.",
+            "disabledNotice": "Game resource protection is off.",
+            "toggleFailed": "Failed to switch game resource protection. Please try again later.",
+            "statusOn": "On",
+            "statusOff": "Off",
+    "statusOnly": "{status}",
+    "resourceProtectionOnGame": "Reduce model runtime usage when a game is detected",
+            "compactPetWindow": "Temporarily compact the Windows pet window",
+    "exitResourceProtection": "Exit this resource-protection session",
+    "privacyNote": "Uses only Activity Tracker's exact-game result. It does not capture screenshots, read screen pixels, or add telemetry.",
+    "details": "Details"
+        },
         "toggles": {
             "allowInterrupt": "Allow Interrupt",
             "mergeMessages": "Merge Messages",
@@ -2659,6 +2672,8 @@
             "widgetModeTooltip": "Manually enable Edge Dock Mode to let Live2D peek from six screen-edge anchors.",
             "slopFilter": "Natural Expression",
             "slopFilterTooltip": "Reduces repetitive, formulaic wording in past replies so she expresses herself more naturally.",
+            "gameModeBeta": "Game Resource Protection Beta",
+            "gameModeBetaTooltip": "When an exact game is detected, reduce model runtime resource usage and optionally compact the Windows pet window. The model is never changed automatically, and Side Mode remains independent.",
             "autoCat": "Auto Cat Mode",
             "autoCatTooltip": "Turn into a kitten automatically after a while of inactivity",
             "catAudio": "Cat Audio",

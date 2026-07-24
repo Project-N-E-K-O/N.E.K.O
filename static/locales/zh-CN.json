@@ -2649,6 +2649,19 @@
             "disabledNotice": "挂边模式 Beta 已关闭。Live2D 将恢复普通边缘吸附行为。",
             "toggleFailed": "挂边模式 Beta 切换失败，请稍后重试。"
         },
+        "gameModeBeta": {
+    "enabledNotice": "游戏资源保护已开启；拖动 Live2D 到屏幕边缘仍可使用 Side Mode。",
+            "disabledNotice": "游戏资源保护已关闭。",
+            "toggleFailed": "游戏资源保护切换失败，请稍后重试。",
+            "statusOn": "开启",
+            "statusOff": "关闭",
+    "statusOnly": "{status}",
+    "resourceProtectionOnGame": "检测到游戏时降低模型运行资源",
+            "compactPetWindow": "Windows 桌宠临时缩小透明窗口",
+    "exitResourceProtection": "退出本次资源保护",
+    "privacyNote": "只使用 Activity Tracker 的精确游戏识别结果；不截图、不读取屏幕像素，也不会上传遥测。",
+    "details": "详情"
+        },
         "toggles": {
             "allowInterrupt": "允许打断",
             "mergeMessages": "合并消息",
@@ -2659,6 +2672,8 @@
             "widgetModeTooltip": "手动开启挂边模式后，Live2D 可从左右和四角共六个屏幕边缘锚点探身。",
             "slopFilter": "自然表达",
             "slopFilterTooltip": "减少历史回复中重复、套路化的说法，让她表达得更自然。",
+            "gameModeBeta": "游戏资源保护 Beta",
+            "gameModeBetaTooltip": "精确识别到游戏时降低模型运行资源，并可临时缩小 Windows 桌宠透明窗口；不会自动改变模型，Side Mode 仍可独立使用。",
             "autoCat": "自动变猫",
             "autoCatTooltip": "一段时间无互动后自动变成小猫",
             "catAudio": "猫猫音效",
