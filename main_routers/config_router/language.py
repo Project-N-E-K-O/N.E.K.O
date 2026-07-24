@@ -122,7 +122,9 @@ async def get_steam_language():
                     # 已有结论，仍按 IP 走，这次回写只在 IP 始终无结论时才决定线路。
                     ConfigManager._region_cache = None
                 except Exception:
-                    pass
+                    # 回写只是给区域判定提供一票兜底信号，失败不该影响本接口的主职
+                    # 责（返回 Steam 语言）。IP 探测仍会按自己的节奏得出结论。
+                    logger.debug("[GeoIP] Steam 区域回写失败，忽略", exc_info=True)
         except Exception as geo_error:
             get_steam_language._logged = False
             logger.warning(f"[GeoIP] 获取用户 IP 地区失败: {geo_error}，默认为非大陆用户")
