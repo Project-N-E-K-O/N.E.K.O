@@ -112,4 +112,3 @@ async def test_bad_wav_returns_a_result_without_stopping_valid_file(
     assert results[0].error_type == "ValueError"
     assert results[1].ok is True
     assert results[1].transcript == "valid"
-
