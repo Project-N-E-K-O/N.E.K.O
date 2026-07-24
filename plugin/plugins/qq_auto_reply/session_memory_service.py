@@ -111,25 +111,9 @@ class QQSessionMemoryService:
             self.plugin._user_sessions.pop(session_key, None)
             return False
 
-        try:
-            conversation_history = getattr(session, "_conversation_history", []) or []
-            last_synced_index = int(user_data.get("last_synced_index", 0))
-            remaining_messages = self.conversation_slice_to_memory_messages(conversation_history, last_synced_index)
-
-            if remaining_messages:
-                result = await self.post_memory_history("process", her_name, remaining_messages, timeout=30.0)
-                if result.get("status") == "error":
-                    raise RuntimeError(result.get("message", "process failed"))
-                self.plugin.logger.info(f"[{reason}] 已为用户 {session_key} 完成正式记忆结算，消息数: {len(remaining_messages)}")
-            elif user_data.get("has_cached_memory"):
-                settled_messages = self.conversation_slice_to_memory_messages(conversation_history, 0)
-                result = await self.post_memory_history("settle", her_name, settled_messages, timeout=30.0)
-                if result.get("status") == "error":
-                    raise RuntimeError(result.get("message", "settle failed"))
-                self.plugin.logger.info(f"[{reason}] 已为用户 {session_key} 完成缓存记忆结算")
-        except Exception as e:
-            self.plugin.logger.error(f"[{reason}] 用户 {session_key} 的记忆结算失败: {e}")
-            return False
+        # TODO: 记忆处理/归档后续接入本体记忆系统，当前暂不推送到 Memory Server
+        count = len(getattr(session, "_conversation_history", []) or [])
+        self.plugin.logger.info(f"[{reason}] 会话关闭 key={session_key} 消息数={count} (记忆归档已禁用)")
 
         self.plugin._user_sessions.pop(session_key, None)
         try:

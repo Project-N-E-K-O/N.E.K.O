@@ -131,7 +131,7 @@ class QQReplyBufferService:
                 existing.wait_until = time.time() + delay
                 existing._new_task(self._flush(session_key, existing))
                 self.plugin._emit_log("DEBUG", f"[Buffer] 追加 key={session_key} count={len(existing.entries)} delay={delay:.1f}s")
-            return False  # 不跳过 pipeline：猫娘可以对单条消息立即回复
+            return True   # 跳过 pipeline，桶汇总时会统一生成总结
 
         # 首条消息：创建缓冲桶，起计时器
         pending = PendingReply(sender_id, is_group, group_id)

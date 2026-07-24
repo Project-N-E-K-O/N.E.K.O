@@ -443,8 +443,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     async def _get_current_voice_id(self) -> str:
         return await self.voice_reply_service.get_current_voice_id()
 
-    async def _synthesize_reply_voice_audio(self, text: str) -> tuple[bytes, str]:
-        return await self.voice_reply_service.synthesize_reply_voice_audio(text)
+    async def _synthesize_reply_voice_audio(self, text: str, *, voice_id: str = "") -> tuple[bytes, str]:
+        return await self.voice_reply_service.synthesize_reply_voice_audio(text, voice_id=voice_id)
 
     async def _synthesize_reply_voice_file(self, text: str) -> tuple[str, str]:
         return await self.voice_reply_service.synthesize_reply_voice_file(text)

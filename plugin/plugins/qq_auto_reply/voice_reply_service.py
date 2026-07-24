@@ -109,7 +109,7 @@ class QQVoiceReplyService:
             self.plugin.logger.warning(f"本地TTS失败: {e}")
             return None
 
-    async def synthesize_reply_voice_audio(self, text: str) -> tuple[bytes, str]:
+    async def synthesize_reply_voice_audio(self, text: str, *, voice_id: str = "") -> tuple[bytes, str]:
         normalized_text = str(text or "").strip()
         if not normalized_text:
             raise RuntimeError("语音合成文本不能为空")
@@ -126,7 +126,8 @@ class QQVoiceReplyService:
                 return local_result
 
             voices = config_manager.get_voices_for_current_api()
-            voice_id = await self.get_current_voice_id()
+            if not voice_id:
+                voice_id = await self.get_current_voice_id()
             if not voice_id:
                 active_native = get_active_realtime_native_provider_for_ui(config_manager)
                 if active_native:
@@ -315,7 +316,7 @@ class QQVoiceReplyService:
         if not voice_id:
             raise RuntimeError("未配置 voice_id 且无可用默认音色，无法发送语音")
         await self.cleanup_voice_output_dir()
-        audio_bytes, mime_type = await self.synthesize_reply_voice_audio(normalized_text)
+        audio_bytes, mime_type = await self.synthesize_reply_voice_audio(normalized_text, voice_id=voice_id)
         if not audio_bytes:
             raise RuntimeError("语音合成未返回音频数据")
         voice_dir = self.get_voice_output_dir()
