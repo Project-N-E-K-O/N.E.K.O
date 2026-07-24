@@ -11,13 +11,12 @@ lower-level `RealtimeAsrSession` is not a supported product voice-input path.
 ## Endpoint authority
 
 - Streaming ASR uses the provider's native endpoint as the logical-turn
-  authority. This includes Qwen `server_vad`, Soniox `<end>`, and the provider
-  endpoint modes implemented by Grok and Step.
+  authority. This includes Qwen and OpenAI `server_vad`, Soniox `<end>`, and
+  the provider endpoint modes implemented by Grok and Step.
 - Segmented ASR uses Smart Turn to seal one logical turn before the session
   commits one or more bounded physical requests. GLM and Gemini use this path.
-- OpenAI's current `gpt-realtime-whisper` worker requires manual commits and
-  does not support provider turn detection, so its production route remains
-  blocked instead of being converted into a Smart Turn streaming route.
+- OpenAI uses provider `server_vad`, rejects client-side manual commits, and
+  does not load N.E.K.O SmartTurn.
 - RNNoise and Silero may suppress idle uploads and wake a streaming transport,
   but neither decides the logical end of a provider-endpointed turn.
 - Provider buffer commit, hard timeout, maximum turn duration, and manual
