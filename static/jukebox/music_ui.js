@@ -15,7 +15,8 @@
         assets: {
             cssPath: '/static/libs/APlayer.min.css',
             jsPath: '/static/libs/APlayer.min.js',
-            uiCssPath: '/static/css/music_ui.css'
+            uiCssPath: '/static/css/music_ui.css',
+            defaultCoverPath: '/static/assets/music/music-cover-placeholder.png'
         },
         themeColors: ['#667eea', '#764ba2', '#f093fb', '#f5576c', '#4facfe', '#00f2fe', '#a8edea', '#fed6e3'],
         primaryColor: '#667eea',
@@ -42,10 +43,13 @@
             'bcbits.com', 'soundcloud.com', 'sndcdn.com',
             'playback.media-streaming.soundcloud.cloud', 'api.soundcloud.com',
             'itunes.apple.com', 'audio-ssl.itunes.apple.com',
-            'dummyimage.com', 'music.163.com',
+            'music.163.com',
             'hdslb.com', 'bilivideo.com'
         ]
     };
+    // Only domains advertised by the backend may use the local music proxy.
+    // Frontend-only plugin allowlist entries have not passed server-side SSRF checks.
+    const backendProxyDomains = new Set(MUSIC_CONFIG.allowlist);
     const MAX_RECOMMENDED_TRACK_DURATION_SECONDS = 10 * 60;
     const MUSIC_MEDIA_LOAD_TIMEOUT_MS = 10000;
 
@@ -82,6 +86,12 @@
             closeButton.setAttribute('title', closeText);
             closeButton.setAttribute('aria-label', closeText);
         }
+    };
+
+    const setMusicBarVisualState = (musicBar, state) => {
+        if (!musicBar) return;
+        musicBar.classList.remove('is-playing', 'is-paused', 'is-loading', 'is-error');
+        musicBar.classList.add(`is-${state}`);
     };
 
     // --- CSS 注入（独立于 APlayer 库加载，follower 镜像 bar 也需要） ---
@@ -1124,7 +1134,6 @@
         mirrorBarLastState = state;
 
         const track = state.track || {};
-        const hasCover = track.cover && track.cover.length > 0 && isSafeUrl(track.cover);
 
         let musicBar = document.getElementById(MUSIC_CONFIG.dom.barId);
         const firstRender = !musicBar;
@@ -1149,9 +1158,12 @@
             musicBar.style.setProperty('--dynamic-secondary-color', MUSIC_CONFIG.secondaryColor);
 
             musicBar.innerHTML = `
-                <div class="music-bar-cover">
-                    <img>
-                    <span class="music-bar-fallback">🎵</span>
+                <div class="music-bar-cover" aria-hidden="true">
+                    <span class="music-bar-equalizer">
+                        <span class="music-bar-equalizer-bar"></span>
+                        <span class="music-bar-equalizer-bar"></span>
+                        <span class="music-bar-equalizer-bar"></span>
+                    </span>
                 </div>
                 <div class="music-bar-info">
                     <div class="music-bar-title-wrap">
@@ -1188,28 +1200,12 @@
             if (!mountMusicBar(musicBar)) return false;
         }
 
-        // 切歌 / 首次：刷新标题 + 歌手 + 封面
+        // 切歌 / 首次：刷新标题与歌手
         const trackSig = (track.url || '') + '|' + (track.name || '') + '|' + (track.artist || '');
         if (firstRender || trackSig !== mirrorBarTrackSig) {
             setMusicBarTitle(musicBar, track.name || '');
             const artistEl = musicBar.querySelector('.music-bar-artist');
             if (artistEl) artistEl.textContent = track.artist || musicT('music.unknownArtist', 'Unknown Artist');
-            const coverImg = musicBar.querySelector('img');
-            const fallbackIcon = musicBar.querySelector('.music-bar-fallback');
-            if (coverImg && fallbackIcon) {
-                if (hasCover) {
-                    coverImg.src = track.cover;
-                    coverImg.style.display = 'block';
-                    fallbackIcon.style.display = 'none';
-                    coverImg.onerror = function () {
-                        this.style.display = 'none';
-                        fallbackIcon.style.display = 'flex';
-                    };
-                } else {
-                    coverImg.style.display = 'none';
-                    fallbackIcon.style.display = 'flex';
-                }
-            }
             mirrorBarTrackSig = trackSig;
         }
 
@@ -1239,6 +1235,10 @@
             apBtn.setAttribute('title', tText);
             apBtn.setAttribute('aria-label', tText);
         }
+        setMusicBarVisualState(
+            musicBar,
+            state.loadError ? 'error' : (state.initial ? 'loading' : (state.paused ? 'paused' : 'playing'))
+        );
 
         // 音量 UI
         if (typeof state.volume === 'number') {
@@ -1523,7 +1523,7 @@
                 title: track?.name || musicT('music.unknownTrack', 'Unknown Track'),
                 description: track?.artist || musicT('music.unknownArtist', 'Unknown Artist'),
                 siteName: prefix + ' ' + text,
-                thumbnailUrl: track?.cover || undefined
+                thumbnailUrl: getMusicCoverUrl(track?.cover)
             }]
         });
 
@@ -1717,6 +1717,28 @@
         } catch { return false; }
     };
 
+    const getMusicCoverUrl = (cover) => (
+        cover && typeof cover === 'string' && isSafeUrl(cover)
+            ? cover
+            : MUSIC_CONFIG.assets.defaultCoverPath
+    );
+
+    const toBackendMusicProxyUrl = (url) => {
+        if (!url || typeof url !== 'string' || url.startsWith('/api/')) return url;
+        try {
+            const parsed = new URL(url);
+            if (!['http:', 'https:'].includes(parsed.protocol)) return url;
+            const hostname = parsed.hostname;
+            const proxyAllowed = Array.from(backendProxyDomains)
+                .some(domain => hostname === domain || hostname.endsWith('.' + domain));
+            return proxyAllowed
+                ? `/api/music/proxy?url=${encodeURIComponent(url)}`
+                : url;
+        } catch (_) {
+            return url;
+        }
+    };
+
     const isUnsupportedMusicStream = (url) => {
         try {
             return new URL(url, window.location.origin).pathname.toLowerCase().endsWith('.m3u8');
@@ -1729,6 +1751,20 @@
         try { return new URL(url, window.location.origin).href; }
         catch (_) { return String(url || ''); }
     };
+
+    const musicPlayResult = (ok, reason = '', canTryNextCandidate = false) => ({
+        ok: ok === true,
+        reason: reason,
+        canTryNextCandidate: canTryNextCandidate === true
+    });
+
+    const isPermanentCandidateFailure = (reason) => [
+        'invalid_track',
+        'unsafe_url',
+        'unsupported_stream',
+        'track_too_long',
+        'media_error'
+    ].includes(reason);
 
     const waitForMusicMediaReady = (player, token, expectedUrl, enforceRecommendationLimit) => new Promise((resolve) => {
         const audio = player && player.audio;
@@ -2061,7 +2097,7 @@
     };
 
     const executePlayCore = async (trackInfo, currentToken, shouldAutoPlay = true, playbackOptions = {}) => {
-        if (currentToken !== latestMusicRequestToken) return false;
+        if (currentToken !== latestMusicRequestToken) return musicPlayResult(false, 'superseded');
 
         // 清除可能的自动销毁与 DOM 移除定时器
         if (autoDestroyTimer) {
@@ -2095,7 +2131,7 @@
             setMirrorBarLeader(null);
         }
 
-        const hasCover = trackInfo.cover && trackInfo.cover.length > 0 && isSafeUrl(trackInfo.cover);
+        const displayCoverUrl = getMusicCoverUrl(trackInfo.cover);
         let musicBar = document.getElementById(MUSIC_CONFIG.dom.barId);
         let isFirstRender = !musicBar;
 
@@ -2103,7 +2139,7 @@
         if (isFirstRender) {
             // 优先使用紧凑历史目标，其次 React composer 挂载点，最后回退旧 chat-container。
             const mountTarget = getPreferredMusicMountTarget({ allowInactiveOwner: true }).mountTarget;
-            if (!mountTarget) return;
+            if (!mountTarget) return musicPlayResult(false, 'player_error');
 
             musicBar = document.createElement('div');
             musicBar.id = MUSIC_CONFIG.dom.barId;
@@ -2116,9 +2152,12 @@
             musicBar.style.setProperty('--dynamic-secondary-color', MUSIC_CONFIG.secondaryColor);
 
             musicBar.innerHTML = `
-                <div class="music-bar-cover">
-                    <img>
-                    <span class="music-bar-fallback">🎵</span>
+                <div class="music-bar-cover" aria-hidden="true">
+                    <span class="music-bar-equalizer">
+                        <span class="music-bar-equalizer-bar"></span>
+                        <span class="music-bar-equalizer-bar"></span>
+                        <span class="music-bar-equalizer-bar"></span>
+                    </span>
                 </div>
                 <div class="music-bar-info">
                     <div class="music-bar-title-wrap">
@@ -2160,7 +2199,7 @@
         const previousTrackForCard = currentPlayingTrack;
         const previousCardId = musicCardMessageId;
 
-        // --- 2. 原地更新 UI 文本/封面 (始终执行) ---
+        // --- 2. 原地更新 UI 文本与音乐状态图标 (始终执行) ---
         const playbackIdForRequest = createMusicPlaybackId(trackInfo, currentToken);
         currentMusicPlaybackId = playbackIdForRequest;
         currentMusicOwnerStartedAt = Date.now();
@@ -2170,21 +2209,7 @@
         emitBarInitialState(trackInfo);
         setMusicBarTitle(musicBar, trackInfo.name || '');
         musicBar.querySelector('.music-bar-artist').textContent = trackInfo.artist || musicT('music.unknownArtist', 'Unknown Artist');
-
-        const coverImg = musicBar.querySelector('img');
-        const fallbackIcon = musicBar.querySelector('.music-bar-fallback');
-        if (hasCover && coverImg) {
-            coverImg.src = trackInfo.cover;
-            coverImg.style.display = 'block';
-            fallbackIcon.style.display = 'none';
-            coverImg.onerror = function () {
-                this.style.display = 'none';
-                fallbackIcon.style.display = 'flex';
-            };
-        } else {
-            coverImg.style.display = 'none';
-            fallbackIcon.style.display = 'flex';
-        }
+        setMusicBarVisualState(musicBar, 'loading');
 
         const progressFill = musicBar.querySelector('.music-bar-progress-fill');
         const timeCurrent = musicBar.querySelector('.music-bar-time-current');
@@ -2208,7 +2233,7 @@
                                 title: (previousTrackForCard && previousTrackForCard.name) || musicT('music.unknownTrack', 'Unknown Track'),
                                 description: (previousTrackForCard && previousTrackForCard.artist) || musicT('music.unknownArtist', 'Unknown Artist'),
                                 siteName: '✅ ' + musicT('music.ended', 'Ended'),
-                                thumbnailUrl: (previousTrackForCard && previousTrackForCard.cover) || undefined
+                                thumbnailUrl: getMusicCoverUrl(previousTrackForCard && previousTrackForCard.cover)
                             }]
                         });
                     } catch (_) { /* ignore */ }
@@ -2242,7 +2267,7 @@
                         title: trackInfo.name || musicT('music.unknownTrack', 'Unknown Track'),
                         description: trackInfo.artist || musicT('music.unknownArtist', 'Unknown Artist'),
                         siteName: '⏳ ' + musicT('music.loading', 'Loading'),
-                        thumbnailUrl: hasCover ? trackInfo.cover : undefined
+                        thumbnailUrl: displayCoverUrl
                     }],
                     status: 'sent'
                 });
@@ -2260,6 +2285,7 @@
                 apBtn.textContent = icon;
                 apBtn.setAttribute('title', tText);
                 apBtn.setAttribute('aria-label', tText);
+                setMusicBarVisualState(musicBar, isPlaying ? 'playing' : 'paused');
             };
 
             let needsInit = isFirstRender || !localPlayer;
@@ -2275,7 +2301,7 @@
                     autoplay: shouldAutoPlay,
                     mutex: true, volume: MUSIC_CONFIG.defaultVolume,
                     listFolded: true, order: 'normal',
-                    audio: [{ name: trackInfo.name, artist: trackInfo.artist, url: trackInfo.url, cover: hasCover ? trackInfo.cover : '' }]
+                    audio: [{ name: trackInfo.name, artist: trackInfo.artist, url: trackInfo.url, cover: displayCoverUrl }]
                 };
 
                 let aplayerInstance = null;
@@ -2292,7 +2318,7 @@
                     // state，得主动广播 destroyed 把占位 bar 摘掉，不然 follower
                     // 会卡在一条假 bar 直到被下一次 state 盖掉。
                     broadcastBarDestroyed(false, playbackIdForRequest);
-                    return false;
+                    return musicPlayResult(false, 'superseded');
                 }
 
                 localPlayer = aplayerInstance;
@@ -2363,6 +2389,7 @@
 
                         showErrorToast('music.playError', errorDetail);
                         updatePlayBtnState(false);
+                        setMusicBarVisualState(musicBar, 'error');
 
                         if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
                         autoDestroyTimer = setTimeout(() => {
@@ -2640,10 +2667,11 @@
                 localPlayer._loadError = false;
                 if (localPlayer.list) {
                     localPlayer.list.clear();
-                    localPlayer.list.add([{ name: trackInfo.name, artist: trackInfo.artist, url: trackInfo.url, cover: hasCover ? trackInfo.cover : '' }]);
+                    localPlayer.list.add([{ name: trackInfo.name, artist: trackInfo.artist, url: trackInfo.url, cover: displayCoverUrl }]);
                     localPlayer.list.switch(0);
                 }
                 updatePlayBtnState(false);
+                setMusicBarVisualState(musicBar, 'loading');
             }
 
             // 【核心修复】同步更新实例的最新 Token，确保复用模式下事件回调中的 Token 校验依然有效
@@ -2671,7 +2699,7 @@
             }
 
             const mediaResult = await mediaReadyPromise;
-            if (currentToken !== latestMusicRequestToken) return false;
+            if (currentToken !== latestMusicRequestToken) return musicPlayResult(false, 'superseded');
             if (!mediaResult.ok) {
                 localPlayer._loadError = true;
                 if (mediaResult.reason === 'track_too_long') {
@@ -2679,21 +2707,29 @@
                 } else if (mediaResult.reason === 'load_timeout') {
                     showErrorToast('music.loadTimeout', 'Music loading timed out');
                 }
+                setMusicBarVisualState(musicBar, 'error');
                 updateMusicCard('error', currentPlayingTrack);
                 emitBarState();
-                return false;
+                return musicPlayResult(
+                    false,
+                    mediaResult.reason,
+                    isPermanentCandidateFailure(mediaResult.reason)
+                );
             }
-            if (!shouldAutoPlay) updateMusicCard('paused', currentPlayingTrack);
-            return true;
+            if (!shouldAutoPlay) {
+                setMusicBarVisualState(musicBar, 'paused');
+                updateMusicCard('paused', currentPlayingTrack);
+            }
+            return musicPlayResult(true, mediaResult.reason);
         } catch (err) {
-            if (currentToken !== latestMusicRequestToken) return false;
+            if (currentToken !== latestMusicRequestToken) return musicPlayResult(false, 'superseded');
             console.error('[Music UI] 播放器处理异常:', err);
             if (isFirstRender && musicBar) removeMusicBarWithoutRelocation(musicBar);
             // 回滚：前面已经发过 emitBarInitialState，但 APlayer 没建起来，
             // 后续事件不会广播，follower 会卡着占位 bar，这里补一条 destroyed
             broadcastBarDestroyed(false, playbackIdForRequest);
             showErrorToast('music.playError', 'Music playback failed to load');
-            return false;
+            return musicPlayResult(false, 'player_error');
         }
     };
 
@@ -2702,8 +2738,8 @@
      * 向播放器发送播放请求 [Async Ready]
      * 如果 URL 暂时不在白名单中，会等待最多 500ms 以响应并行的插件注册
      */
-    window.sendMusicMessage = async function (trackInfo, shouldAutoPlay = true, playbackOptions = {}) {
-        if (!trackInfo) return false;
+    window.sendMusicMessageDetailed = async function (trackInfo, shouldAutoPlay = true, playbackOptions = {}) {
+        if (!trackInfo) return musicPlayResult(false, 'invalid_track', true);
 
         // 进入 dispatch 流水线就立即 +1 —— 让并发的 dispatchMusicPlay
         // 能在 isMusicPlaying() 还未变成 true 的"加载中"窗口里也识别到占用。
@@ -2731,30 +2767,6 @@
             } catch (e) {
                 console.warn('[Music UI] URL sanitization failed:', e);
             }
-        }
-
-        // --- 网易云音乐代理：如果检测到网易云外链，替换为后端代理接口 ---
-        // 统一使用 /api/music/proxy 路由
-        if (trackInfo.url && trackInfo.url.includes('music.163.com') && !trackInfo.url.startsWith('/api/music/proxy')) {
-            const originalUrl = trackInfo.url;
-            const encodedUrl = encodeURIComponent(trackInfo.url);
-            trackInfo.url = `/api/music/proxy?url=${encodedUrl}`;
-            console.log('[Music UI] 网易云URL已代理:', originalUrl, '->', trackInfo.url);
-        }
-
-        const now = Date.now();
-        // 5秒去重逻辑
-        if (lastPlayedMusicUrl === trackInfo.url && (now - lastMusicPlayTime) < 5000 && isPlayerInDOM()) {
-            const duplicatePlayer = getMusicPlayerInstance();
-            if (!duplicatePlayer || !duplicatePlayer._loadError) {
-                console.log('[Music UI] 5秒内相同音乐且已在播放中，跳过播发请求:', trackInfo.name);
-                releasePending();
-                return true;
-            }
-        }
-
-        if (isSameTrack(trackInfo) && !isPlayerInDOM()) {
-            currentPlayingTrack = null;
         }
 
         // 竞态保护：如果 URL 不在白名单，原地等待 500ms 看看是否会有插件注册进来
@@ -2786,7 +2798,7 @@
             console.warn('[Music UI] 不支持直接播放 HLS 音频流:', trackInfo.url);
             showErrorToast('music.playError', 'This audio stream is not supported');
             releasePending();
-            return false;
+            return musicPlayResult(false, 'unsupported_stream', true);
         }
 
         if (!trackInfo.url || !isSafeUrl(trackInfo.url)) {
@@ -2797,7 +2809,28 @@
                 window.showStatusToast(msg, 5000);
             }
             releasePending();
-            return false;
+            return musicPlayResult(false, 'unsafe_url', true);
+        }
+
+        const originalUrl = trackInfo.url;
+        trackInfo.url = toBackendMusicProxyUrl(originalUrl);
+        if (trackInfo.url !== originalUrl) {
+            console.log('[Music UI] 音频 URL 已转为本地代理:', originalUrl, '->', trackInfo.url);
+        }
+
+        const now = Date.now();
+        // 5秒去重逻辑
+        if (lastPlayedMusicUrl === trackInfo.url && (now - lastMusicPlayTime) < 5000 && isPlayerInDOM()) {
+            const duplicatePlayer = getMusicPlayerInstance();
+            if (!duplicatePlayer || !duplicatePlayer._loadError) {
+                console.log('[Music UI] 5秒内相同音乐且已在播放中，跳过播发请求:', trackInfo.name);
+                releasePending();
+                return musicPlayResult(true, 'duplicate');
+            }
+        }
+
+        if (isSameTrack(trackInfo) && !isPlayerInDOM()) {
+            currentPlayingTrack = null;
         }
 
         lastPlayedMusicUrl = trackInfo.url;
@@ -2816,7 +2849,7 @@
                     showNowPlayingToast(trackInfo.name);
                 }
                 releasePending();
-                return true;
+                return musicPlayResult(true, 'already_playing');
             }
         }
 
@@ -2824,12 +2857,12 @@
 
         try {
             await loadAPlayerLibrary();
-            const accepted = await executePlay(trackInfo, currentToken, shouldAutoPlay, playbackOptions);
-            if (!accepted && currentToken === latestMusicRequestToken) {
+            const result = await executePlay(trackInfo, currentToken, shouldAutoPlay, playbackOptions);
+            if (!result.ok && currentToken === latestMusicRequestToken) {
                 destroyMusicPlayer(true, false, true);
             }
-            if (accepted && shouldAutoPlay) showNowPlayingToast(trackInfo.name);
-            return accepted === true;
+            if (result.ok && shouldAutoPlay) showNowPlayingToast(trackInfo.name);
+            return result;
         } catch (err) {
             // 库加载失败同样需要校验 token，防止关闭后弹出报错
             if (currentToken === latestMusicRequestToken) {
@@ -2838,11 +2871,19 @@
             } else {
                 console.log('[Music UI] 库加载失败，但请求已取消，忽略报错');
             }
-            return false;
+            return musicPlayResult(
+                false,
+                currentToken === latestMusicRequestToken ? 'player_error' : 'superseded'
+            );
         } finally {
             // 每次调用独立释放：不用 token 判断，本次引用计数 -1 就好。
             releasePending();
         }
+    };
+
+    window.sendMusicMessage = async function (trackInfo, shouldAutoPlay = true, playbackOptions = {}) {
+        const result = await window.sendMusicMessageDetailed(trackInfo, shouldAutoPlay, playbackOptions);
+        return result.ok === true;
     };
     // 全局解锁函数
     const unlockAudio = () => {
@@ -2897,6 +2938,7 @@
             if (response.ok) {
                 const data = await response.json();
                 if (data.success && data.domains) {
+                    data.domains.forEach(domain => backendProxyDomains.add(domain));
                     const newDomains = data.domains.filter(d => !MUSIC_CONFIG.allowlist.includes(d));
                     if (newDomains.length > 0) {
                         MUSIC_CONFIG.allowlist.push(...newDomains);

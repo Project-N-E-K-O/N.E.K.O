@@ -1388,8 +1388,8 @@
 
                     var dispatchedTrackUrl = null;
 
-                    // 如果模式包含音乐信号，按顺序尝试音轨；只有媒体实际加载成功
-                    // 才停止回退，避免第一条坏链路让整次推荐静默失败。
+                    // 如果模式包含音乐信号，按顺序尝试音轨；候选资源自身的
+                    // 永久错误才回退，超时或播放器状态错误会结束本轮推荐。
                     if ((result.source_mode === 'music' || result.source_mode === 'both') && result.source_links && Array.isArray(result.source_links)) {
                         var normalizedLinks = result.source_links.filter(Boolean);
                         var musicLinks = normalizedLinks.filter(function (link) {
@@ -1430,15 +1430,27 @@
                                         cover: musicLink.cover
                                     };
                                     console.log('[ProactiveChat] 尝试音乐候选 ' + (musicIndex + 1) + '/' + musicLinks.length + ':', track);
-                                    var dispatchResult = await window.dispatchMusicPlay(track, { source: 'proactive' });
+                                    var dispatchResult;
+                                    if (typeof window.dispatchMusicPlayDetailed === 'function') {
+                                        dispatchResult = await window.dispatchMusicPlayDetailed(track, { source: 'proactive' });
+                                    } else {
+                                        var legacyAccepted = await window.dispatchMusicPlay(track, { source: 'proactive' });
+                                        dispatchResult = {
+                                            ok: legacyAccepted === true,
+                                            reason: legacyAccepted === true ? '' : 'player_error',
+                                            canTryNextCandidate: false
+                                        };
+                                    }
 
-                                    // dispatchMusicPlay 会等待播放器接口就绪并返回最终布尔结果；
-                                    // 仅在媒体明确加载成功时标记，false 才继续下一候选。
-                                    if (dispatchResult === true) {
+                                    if (dispatchResult.ok === true) {
                                         dispatchedTrackUrl = musicLink.url;
                                         break;
                                     }
-                                    console.warn('[ProactiveChat] 音乐候选加载失败，尝试下一条:', musicLink.url);
+                                    if (dispatchResult.canTryNextCandidate !== true) {
+                                        console.warn('[ProactiveChat] 音乐派发因非候选错误停止:', dispatchResult.reason, musicLink.url);
+                                        break;
+                                    }
+                                    console.warn('[ProactiveChat] 音乐候选存在永久错误，尝试下一条:', dispatchResult.reason, musicLink.url);
                                 }
                             }
                         }

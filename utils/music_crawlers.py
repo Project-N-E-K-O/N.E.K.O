@@ -137,7 +137,7 @@ MUSIC_SOURCE_DOMAINS = {
     # Bandcamp
     'bandcamp.com', 'bcbits.com',
     # 通用图片
-    'dummyimage.com', 'i.imgur.com',
+    'i.imgur.com',
     # B站 (部分音乐)
     'hdslb.com', 'bilivideo.com',
     'gg.spriteapp.cn', 'mmusic.spriteapp.cn',
@@ -366,7 +366,8 @@ class BaseMusicCrawler:
             'name': name,
             'artist': artist,
             'url': url,
-            'cover': cover or f'https://dummyimage.com/150x150/44b7fe/fff&text={self.platform_name}',
+            # 缺失封面保持为空；视觉占位属于前端状态，不写进音乐数据。
+            'cover': cover or '',
             'theme': '#44b7fe'  # 统一使用蓝色主题
         }
         if duration_seconds is not None:
