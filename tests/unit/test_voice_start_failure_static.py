@@ -351,6 +351,11 @@ def test_floating_mic_popup_exposes_screen_share_start_and_stop_action():
     assert "window.stopScreenSharing" in screen_panel
     assert "window.t('buttons.stopShare')" in screen_panel
     assert "panelBody.appendChild(shareToggleButton);" in screen_panel
+    voice_guard = "if (!window.isRecording) {"
+    start_call = "await window.startScreenSharing();"
+    assert voice_guard in screen_panel
+    assert "window.t('app.screenShareRequiresVoice')" in screen_panel
+    assert screen_panel.index(voice_guard) < screen_panel.index(start_call)
 
 
 def test_mic_device_subwindow_retries_permission_when_device_cache_is_empty():

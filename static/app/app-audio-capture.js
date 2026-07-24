@@ -2250,6 +2250,15 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                         if (active && typeof window.stopScreenSharing === 'function') {
                             await window.stopScreenSharing();
                         } else if (!active && typeof window.startScreenSharing === 'function') {
+                            if (!window.isRecording) {
+                                if (typeof window.showStatusToast === 'function') {
+                                    window.showStatusToast(
+                                        window.t ? window.t('app.screenShareRequiresVoice') : '屏幕分享仅用于音视频通话',
+                                        3000
+                                    );
+                                }
+                                return;
+                            }
                             await window.startScreenSharing();
                         }
                     } finally {
