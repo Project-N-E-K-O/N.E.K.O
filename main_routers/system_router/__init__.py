@@ -80,17 +80,12 @@ from .status import (  # noqa: F401
     ack_pending_notices,
 )
 from .prompt_flows import (  # noqa: F401
-    get_tutorial_prompt_state,
-    post_tutorial_prompt_heartbeat,
-    post_tutorial_prompt_shown,
-    post_tutorial_prompt_decision,
-    post_tutorial_prompt_reset,
+    get_seven_day_tutorial_state,
+    put_seven_day_tutorial_state,
     get_autostart_prompt_state,
     post_autostart_prompt_heartbeat,
     post_autostart_prompt_shown,
     post_autostart_prompt_decision,
-    post_tutorial_started,
-    post_tutorial_completed,
 )
 from .changelog_survey import (  # noqa: F401
     get_changelog,

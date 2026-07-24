@@ -93,6 +93,7 @@ Object.assign(AvatarButtonMixin.methods, {
                 e.stopPropagation();
                 _clearNekoIdleCat1QuestionMark(returnBtn);
                 _cancelNekoIdleCat1EatAction(returnBtn, { restoreArt: false });
+                _cancelNekoIdleCat1StretchAction(returnBtn, { restoreArt: false });
                 _cancelNekoIdleCat1PlayAction(returnBtn, { restoreArt: false });
                 _finishNekoIdleReturnDragAction(returnBtn, { restoreArt: false });
                 _cancelNekoIdleCat1Journey(returnBtn);

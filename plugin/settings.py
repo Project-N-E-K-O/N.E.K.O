@@ -281,12 +281,12 @@ NEKO_SERVERS_DESKTOP_CLIENT_ID = (
 )
 
 # 插件市场 API URL。配置后插件管理面板会显示"插件市场"入口。
-# Env: NEKO_MARKET_API_URL, default="http://market.project-neko.cn"
+# Env: NEKO_MARKET_API_URL, default="https://market.project-neko.cn"
 # 兼容旧 Env: NEKO_MARKET_URL；本地开发可用环境变量覆盖。
 MARKET_API_URL = _validate_http_url(
     os.getenv(
         "NEKO_MARKET_API_URL",
-        os.getenv("NEKO_MARKET_URL", "http://market.project-neko.cn"),
+        os.getenv("NEKO_MARKET_URL", "https://market.project-neko.cn"),
     ),
     name="NEKO_MARKET_API_URL",
     allow_empty=True,
@@ -316,8 +316,8 @@ else:
 # Env: NEKO_MARKET_ORIGINS, default=Project N.E.K.O Market public origins
 # 此配置会影响 CORS 安全策略，仅应配置受信任的 Market 前端域名。
 _default_market_origins = (
-    "http://market.project-neko.cn,"
-    "http://marketplace.project-neko.cn"
+    "https://market.project-neko.cn,"
+    "https://marketplace.project-neko.cn"
 )
 MARKET_ORIGINS = [
     _validate_market_origin(o)

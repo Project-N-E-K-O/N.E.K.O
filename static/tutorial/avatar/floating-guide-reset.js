@@ -1,85 +1,27 @@
 (function () {
     'use strict';
 
-    const STORAGE_KEY = 'neko_avatar_floating_guide_v1';
+    const STATE_API = window.NekoSevenDayTutorialState || null;
+    if (!STATE_API) {
+        console.error('[AvatarFloatingGuideReset] seven-day tutorial state is unavailable');
+        return;
+    }
+    const STORAGE_KEY = STATE_API.STORAGE_KEY;
     const ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1';
     const ICEBREAKER_RESET_EVENT = 'neko:new-user-icebreaker-reset';
     const RESET_EVENT = 'neko:avatar-floating-guide-reset';
     const RESET_BROADCAST_KEY = 'neko_avatar_floating_guide_reset_event';
-    const HOME_TUTORIAL_KEYS = ['neko_tutorial_home_yui_v1'];
-    const HOME_MANUAL_INTENT_KEY = 'neko_tutorial_home_yui_v1_manual_intent';
-    const ROUND_COUNT = 7;
-    const RESET_HISTORY_LIMIT = 20;
-
-    function getTodayLocalDate() {
-        const now = new Date();
-        const year = now.getFullYear();
-        const month = String(now.getMonth() + 1).padStart(2, '0');
-        const day = String(now.getDate()).padStart(2, '0');
-        return `${year}-${month}-${day}`;
-    }
 
     function normalizeRound(day) {
-        const round = Number(day);
-        if (!Number.isInteger(round) || round < 1 || round > ROUND_COUNT) {
+        const round = STATE_API.normalizeRound(day);
+        if (!round) {
             throw new Error(`Invalid tutorial day: ${day}`);
         }
         return round;
     }
 
-    function normalizeRoundList(value) {
-        if (!Array.isArray(value)) return [];
-
-        return Array.from(new Set(
-            value
-                .map(item => Number(item))
-                .filter(item => Number.isInteger(item) && item >= 1 && item <= ROUND_COUNT)
-        )).sort((left, right) => left - right);
-    }
-
-    function normalizeOptionalRound(value) {
-        const round = Number(value);
-        return Number.isInteger(round) && round >= 1 && round <= ROUND_COUNT ? round : null;
-    }
-
-    function omitRound(value, round) {
-        return normalizeRoundList(value).filter(item => item !== round);
-    }
-
     function loadGuideState() {
-        let parsed = {};
-        try {
-            const raw = localStorage.getItem(STORAGE_KEY);
-            parsed = raw ? JSON.parse(raw) : {};
-        } catch (error) {
-            console.warn('[AvatarFloatingGuideReset] 状态读取失败，使用空状态:', error);
-            parsed = {};
-        }
-
-        return {
-            version: 1,
-            firstSeenDate: parsed.firstSeenDate || getTodayLocalDate(),
-            completedRounds: normalizeRoundList(parsed.completedRounds),
-            skippedRounds: normalizeRoundList(parsed.skippedRounds),
-            currentRound: normalizeOptionalRound(parsed.currentRound),
-            pendingRound: normalizeOptionalRound(parsed.pendingRound),
-            manualResetRound: normalizeOptionalRound(parsed.manualResetRound),
-            lastAutoShownRound: normalizeOptionalRound(parsed.lastAutoShownRound),
-            lastAutoShownDate: parsed.lastAutoShownDate || '',
-            lastEndState: parsed.lastEndState && typeof parsed.lastEndState === 'object' ? parsed.lastEndState : null,
-            updatedAt: parsed.updatedAt || null,
-            resetHistory: Array.isArray(parsed.resetHistory) ? parsed.resetHistory.slice(-RESET_HISTORY_LIMIT) : [],
-        };
-    }
-
-    function saveGuideState(state) {
-        try {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-            return true;
-        } catch (error) {
-            console.warn('[AvatarFloatingGuideReset] Failed to persist guide state:', error);
-            return false;
-        }
+        return STATE_API.loadState();
     }
 
     function resetIcebreakerDay(day) {
@@ -141,69 +83,21 @@
 
     function resetGuideRoundState(day, options = {}) {
         const round = normalizeRound(day);
-        const resetAt = new Date().toISOString();
         const source = options.source || 'home_reset_button';
-        const state = loadGuideState();
 
         resetIcebreakerDay(round);
-        state.completedRounds = omitRound(state.completedRounds, round);
-        state.skippedRounds = omitRound(state.skippedRounds, round);
-        if (state.currentRound === round) {
-            state.currentRound = null;
-        }
-        if (state.lastAutoShownRound === round) {
-            state.lastAutoShownRound = null;
-            state.lastAutoShownDate = '';
-        }
-        if (state.lastEndState && state.lastEndState.day === round) {
-            state.lastEndState = null;
-        }
-        state.pendingRound = round;
-        state.manualResetRound = round;
-        state.updatedAt = resetAt;
-        state.resetHistory = state.resetHistory.concat([{ day: round, source, resetAt }]).slice(-RESET_HISTORY_LIMIT);
-
-        if (!saveGuideState(state)) {
-            return null;
-        }
-        dispatchGuideResetEvent({ day: round, source, resetAt, state });
+        const state = STATE_API.resetRound(round, { source });
+        dispatchGuideResetEvent({ day: round, source, resetAt: state.updatedAt, state });
         return state;
     }
 
     function resetAllGuideRoundState(options = {}) {
-        const resetAt = new Date().toISOString();
         const source = options.source || 'all_tutorial_reset';
-        const state = loadGuideState();
 
         resetAllIcebreakerDays();
-        state.firstSeenDate = getTodayLocalDate();
-        state.completedRounds = [];
-        state.skippedRounds = [];
-        state.currentRound = null;
-        state.pendingRound = 1;
-        state.manualResetRound = 1;
-        state.lastAutoShownRound = null;
-        state.lastAutoShownDate = '';
-        state.lastEndState = null;
-        state.updatedAt = resetAt;
-        state.resetHistory = state.resetHistory.concat([{ day: 'all', source, resetAt }]).slice(-RESET_HISTORY_LIMIT);
-
-        if (!saveGuideState(state)) {
-            return null;
-        }
-        dispatchGuideResetEvent({ day: 'all', source, resetAt, state });
+        const state = STATE_API.resetAll({ source });
+        dispatchGuideResetEvent({ day: 'all', source, resetAt: state.updatedAt, state });
         return state;
-    }
-
-    function clearHomeTutorialPromptResetState(day) {
-        const round = normalizeRound(day);
-        if (round === 1) {
-            HOME_TUTORIAL_KEYS.forEach(key => localStorage.removeItem(key));
-            localStorage.setItem(HOME_MANUAL_INTENT_KEY, 'true');
-        } else {
-            HOME_TUTORIAL_KEYS.forEach(key => localStorage.setItem(key, 'true'));
-            localStorage.removeItem(HOME_MANUAL_INTENT_KEY);
-        }
     }
 
     function getTutorialAvatarManager() {
@@ -275,7 +169,9 @@
             state = resetGuideRoundState(round, options);
         }
 
-        clearHomeTutorialPromptResetState(round);
+        if (typeof STATE_API.flush === 'function') {
+            await STATE_API.flush();
+        }
 
         showResetToast(round);
         return state;
@@ -283,7 +179,9 @@
 
     async function resetAllAvatarFloatingGuideDays(options = {}) {
         const state = resetAllGuideRoundState(options);
-        clearHomeTutorialPromptResetState(1);
+        if (typeof STATE_API.flush === 'function') {
+            await STATE_API.flush();
+        }
         return state;
     }
 

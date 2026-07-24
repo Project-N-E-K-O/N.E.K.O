@@ -8,6 +8,8 @@
   "scripts": {
     "dev": "vitepress dev",
     "build": "vitepress build",
+    "check:seo": "node scripts/check-seo-output.mjs",
+    "build:check": "npm run build && npm run check:seo",
     "preview": "vitepress preview",
     "seo:dataforseo": "node scripts/dataforseo/cli.mjs",
     "indexnow": "node scripts/submit-indexnow.mjs",

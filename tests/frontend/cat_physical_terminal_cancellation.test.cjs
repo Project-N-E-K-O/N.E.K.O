@@ -128,14 +128,13 @@ test('compact-top-edge completion forwards the completed walk activity facts', (
   const profile = {
     idleSubstate: 'idle',
     tier: 'cat1',
-    settle: { resetFacingAfterMs: 800 },
     assets: { idle: () => 'idle.gif' }
   };
   const state = {
     profile,
     target: { left: 6, top: 8 },
     targetKind: 'compact-top-edge',
-    settleToken: 4,
+    compactTopEdgeSettleToken: 4,
     substate: 'walking',
     actionSettled: false,
     compactTopEdgeRearmRequired: true
@@ -151,12 +150,13 @@ test('compact-top-edge completion forwards the completed walk activity facts', (
     _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW: profile,
     _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE: 'compact-top-edge',
     _NEKO_IDLE_TIER_CAT1: 'cat1',
+    _NEKO_IDLE_RETURN_TRANSITION_MS: 800,
     _NEKO_CAT_IDLE_OBSERVATION_TYPES: { CAT1_COMPACT_TOP_EDGE_DONE: 'cat1_compact_top_edge_done' },
     _getNekoIdleCat1Journey: () => state,
     _getNekoIdleChatCompactSurfaceRect: () => ({ left: 0, top: 0, width: 100, height: 20 }),
     _cancelNekoIdleCat1Frame: () => {},
     _dispatchNekoIdleCat1MotionInputRegionState: () => {},
-    _cancelNekoIdleReturnSubactionSettleTimer: () => {},
+    _invalidateNekoIdleCat1CompactTopEdgeSettle: () => {},
     _cancelNekoIdleReturnPendingWalk: () => {},
     _cancelNekoIdleCat1PairMove: () => {},
     _resetNekoIdleCat1WalkSpeed: () => {},
@@ -173,7 +173,7 @@ test('compact-top-edge completion forwards the completed walk activity facts', (
   vm.runInContext(sourceBetween(
     journeyPath,
     'function _finishNekoIdleCat1CompactTopEdgeWalk',
-    'function _settleNekoIdleReturnSubactionToIdle'
+    'function _pickNekoIdleWeightedDelayMs'
   ), context);
 
   context._beginNekoIdleCat1WalkActivity(state, { left: 0, top: 0 });
@@ -207,7 +207,7 @@ test('journey cancellation settles a travelled path once and clears zero-distanc
     _dispatchNekoCatIdleObservationSource: (type, detail) => observations.push({ type, detail }),
     _cancelNekoIdleCat1Frame: () => {},
     _cancelNekoIdleCat1SyncFrame: () => {},
-    _cancelNekoIdleReturnSubactionSettleTimer: () => {},
+    _invalidateNekoIdleCat1CompactTopEdgeSettle: () => {},
     _cancelNekoIdleReturnPendingWalk: () => {},
     _disconnectNekoIdleCat1Observer: () => {},
     _clearNekoIdleCat1WalkApproachSide: () => {},

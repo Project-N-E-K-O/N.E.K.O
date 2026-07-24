@@ -374,6 +374,10 @@ window.startPageConfigLoad = function startPageConfigLoad() {
                 && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
                 await window.__nekoStorageLocationStartupBarrier;
             }
+            if (window.__nekoSevenDayTutorialStateReady
+                && typeof window.__nekoSevenDayTutorialStateReady.then === 'function') {
+                await window.__nekoSevenDayTutorialStateReady;
+            }
 
             if (window.__NEKO_MULTI_WINDOW__ && isReservedPagePath(window.location.pathname)) {
                 return resolvePageConfig(await startMultiWindowPageConfigLoad());

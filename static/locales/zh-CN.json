@@ -77,15 +77,6 @@
             "decline": "不用，继续"
         }
     },
-    "tutorialPrompt": {
-        "title": "要不要开始主页新手引导？",
-        "message": "我可以带你快速认识主页上的核心入口，用最短路径上手 N.E.K.O。",
-        "note": "整个过程随时都可以跳过，也可以之后再从记忆浏览里重新打开。",
-        "startNow": "开始引导",
-        "later": "稍后再说",
-        "never": "不再提示",
-        "startFailed": "暂时无法开始新手引导，请稍后再试"
-    },
     "characterProfile": {
         "gender": "性别",
         "age": "年龄",

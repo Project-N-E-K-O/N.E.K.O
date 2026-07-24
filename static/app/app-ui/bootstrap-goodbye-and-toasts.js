@@ -40,6 +40,14 @@ I.mod = window.appUi;
     I.NEKO_GOODBYE_IDLE_APPEARANCE_BALL = 'ball';
     I.NEKO_GOODBYE_IDLE_APPEARANCE_ATTR = 'data-neko-goodbye-idle-appearance';
     I.NEKO_GOODBYE_IDLE_BALL_ASSET = '/static/icons/expand_icon_off_ball.png';
+    I.publishCatLocalActive = function publishCatLocalActive(active, detail = {}) {
+        window.dispatchEvent(new CustomEvent('neko:cat-local-active-change', {
+            detail: Object.assign({}, detail, {
+                active: active === true,
+                timestamp: Number(detail.timestamp) || Date.now()
+            })
+        }));
+    };
     I.normalizeNekoGoodbyeIdleAppearance = function normalizeNekoGoodbyeIdleAppearance(mode) {
         return mode === I.NEKO_GOODBYE_IDLE_APPEARANCE_BALL
             ? I.NEKO_GOODBYE_IDLE_APPEARANCE_BALL

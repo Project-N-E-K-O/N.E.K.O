@@ -22,6 +22,9 @@
     var _voiceConfigSwitchWaiters = [];
     var _pendingVoiceChatComposerHiddenByLanlan = {};
     var VOICE_CHAT_COMPOSER_PENDING_STALE_MS = 30000;
+    var _pendingGoodbyeChatComposerHiddenByLanlan = {};
+    var GOODBYE_CHAT_COMPOSER_PENDING_STALE_MS = 30000;
+    var _lastGoodbyeChatComposerHiddenStateTimestamp = 0;
 
     I.getCurrentLanlanName = function getCurrentLanlanName() {
         try {
@@ -170,7 +173,28 @@
         );
     }
 
-    I.applyGoodbyeChatComposerHidden = function applyGoodbyeChatComposerHidden(hidden, reason) {
+    function normalizeCatLocalChatSnapshot(data) {
+        var source = data && typeof data === 'object' ? data : {};
+        return {
+            active: source.cat_active === true,
+            tier: typeof source.cat_tier === 'string' ? source.cat_tier : 'none',
+            enteredAt: Number.isFinite(Number(source.cat_entered_at)) ? Number(source.cat_entered_at) : 0,
+            items: Array.isArray(source.cat_items) ? source.cat_items : [],
+            updatedAt: Number.isFinite(Number(source.timestamp)) ? Number(source.timestamp) : 0
+        };
+    }
+
+    function readCatLocalChatSnapshot() {
+        var manager = window.nekoCatLocalChatManager;
+        if (manager && typeof manager.getSnapshot === 'function') {
+            try {
+                return manager.getSnapshot();
+            } catch (_) {}
+        }
+        return { active: false, tier: 'none', enteredAt: 0, items: [] };
+    }
+
+    I.applyGoodbyeChatComposerHidden = function applyGoodbyeChatComposerHidden(hidden, reason, payload) {
         hidden = !!hidden;
         var detail = {
             hidden: hidden,
@@ -187,6 +211,13 @@
                 }));
             } catch (_) {}
         }
+        var catSnapshot = normalizeCatLocalChatSnapshot(payload);
+        window.__nekoCatLocalChatState = catSnapshot;
+        try {
+            window.dispatchEvent(new CustomEvent('neko:cat-local-chat-state', {
+                detail: catSnapshot
+            }));
+        } catch (_) {}
     }
 
     I.getGoodbyeChatComposerHiddenElectronBridge = function getGoodbyeChatComposerHiddenElectronBridge() {
@@ -231,11 +262,52 @@
         return !!currentName && data.lanlan_name === currentName;
     }
 
+    function rememberPendingGoodbyeChatComposerHiddenMessage(data) {
+        if (!data || !data.lanlan_name) return false;
+        var lanlanName = String(data.lanlan_name);
+        var timestamp = Number(data.timestamp);
+        if (!Number.isFinite(timestamp)) timestamp = Date.now();
+        Object.keys(_pendingGoodbyeChatComposerHiddenByLanlan).forEach(function (name) {
+            var pending = _pendingGoodbyeChatComposerHiddenByLanlan[name];
+            var pendingTimestamp = Number(pending && pending.timestamp);
+            if (!Number.isFinite(pendingTimestamp)
+                || timestamp - pendingTimestamp > GOODBYE_CHAT_COMPOSER_PENDING_STALE_MS) {
+                delete _pendingGoodbyeChatComposerHiddenByLanlan[name];
+            }
+        });
+        var previous = _pendingGoodbyeChatComposerHiddenByLanlan[lanlanName];
+        if (!previous || timestamp >= Number(previous.timestamp || 0)) {
+            _pendingGoodbyeChatComposerHiddenByLanlan[lanlanName] = Object.assign({}, data, {
+                timestamp: timestamp
+            });
+        }
+        return true;
+    }
+
+    I.consumePendingGoodbyeChatComposerHiddenMessage = function consumePendingGoodbyeChatComposerHiddenMessage(lanlanName) {
+        var currentName = lanlanName || I.getCurrentLanlanName();
+        if (!currentName) return false;
+        var data = _pendingGoodbyeChatComposerHiddenByLanlan[currentName];
+        if (!data) return false;
+        delete _pendingGoodbyeChatComposerHiddenByLanlan[currentName];
+        var timestamp = Number(data.timestamp);
+        if (Number.isFinite(timestamp)
+            && Date.now() - timestamp > GOODBYE_CHAT_COMPOSER_PENDING_STALE_MS) {
+            return false;
+        }
+        I.applyGoodbyeChatComposerHidden(!!data.hidden, data.reason || 'config-injected', data);
+        return true;
+    };
+
     I.handleGoodbyeChatComposerHiddenMessage = function handleGoodbyeChatComposerHiddenMessage(data, via) {
         if (!data || !data.action) return false;
         if (data.action === 'goodbye_chat_composer_hidden') {
+            if (data.lanlan_name && !I.getCurrentLanlanName()) {
+                rememberPendingGoodbyeChatComposerHiddenMessage(data);
+                return true;
+            }
             if (!isGoodbyeChatComposerHiddenMessageForCurrentLanlan(data)) return true;
-            I.applyGoodbyeChatComposerHidden(!!data.hidden, data.reason || via || 'broadcast');
+            I.applyGoodbyeChatComposerHidden(!!data.hidden, data.reason || via || 'broadcast', data);
             return true;
         }
         if (data.action === 'request_goodbye_chat_composer_hidden') {
@@ -244,22 +316,79 @@
             I.postGoodbyeChatComposerHiddenState(undefined, 'request-goodbye-chat-composer-hidden');
             return true;
         }
+        if (data.action === 'cat_local_text_submit') {
+            if (I.isStandaloneChatPage()) return true;
+            if (!isGoodbyeChatComposerHiddenMessageForCurrentLanlan(data)) return true;
+            try {
+                window.dispatchEvent(new CustomEvent('neko:cat-local-chat-submit-request', {
+                    detail: {
+                        text: typeof data.text === 'string' ? data.text : '',
+                        requestId: typeof data.request_id === 'string' ? data.request_id : '',
+                        enteredAt: Number(data.cat_entered_at)
+                    }
+                }));
+            } catch (_) {}
+            return true;
+        }
         return false;
+    }
+
+    I.postCatLocalTextSubmit = function postCatLocalTextSubmit(payload) {
+        var detail = payload && typeof payload === 'object' ? payload : {};
+        var text = typeof detail.text === 'string' ? detail.text.trim() : '';
+        var requestId = typeof detail.requestId === 'string' ? detail.requestId.trim() : '';
+        var lanlanName = I.getCurrentLanlanName();
+        if (!text || !requestId || !lanlanName) return false;
+        var message = {
+            action: 'cat_local_text_submit',
+            text: text,
+            request_id: requestId,
+            cat_entered_at: Number(detail.enteredAt) || 0,
+            lanlan_name: lanlanName,
+            timestamp: Date.now()
+        };
+        if (!I.isStandaloneChatPage()) {
+            try {
+                window.dispatchEvent(new CustomEvent('neko:cat-local-chat-submit-request', {
+                    detail: {
+                        text: text,
+                        requestId: requestId,
+                        enteredAt: message.cat_entered_at
+                    }
+                }));
+                return true;
+            } catch (_) {
+                return false;
+            }
+        }
+        postGoodbyeChatComposerHiddenPayload(message);
+        return true;
     }
 
     I.postGoodbyeChatComposerHiddenState = function postGoodbyeChatComposerHiddenState(hidden, reason) {
         var lanlanName = I.getCurrentLanlanName();
         var nextHidden = hidden === undefined ? readGoodbyeChatComposerHidden() : !!hidden;
         var nextReason = reason || (nextHidden ? 'goodbye' : 'return');
-        I.applyGoodbyeChatComposerHidden(nextHidden, nextReason);
-        if (!lanlanName) return;
-        postGoodbyeChatComposerHiddenPayload({
+        var catSnapshot = readCatLocalChatSnapshot();
+        var stateTimestamp = Math.max(
+            Date.now(),
+            _lastGoodbyeChatComposerHiddenStateTimestamp + 1
+        );
+        _lastGoodbyeChatComposerHiddenStateTimestamp = stateTimestamp;
+        var statePayload = {
             action: 'goodbye_chat_composer_hidden',
             hidden: nextHidden,
             reason: nextReason,
             lanlan_name: lanlanName,
-            timestamp: Date.now()
-        });
+            cat_active: catSnapshot.active === true,
+            cat_tier: catSnapshot.active === true ? catSnapshot.tier : 'none',
+            cat_entered_at: catSnapshot.active === true ? Number(catSnapshot.enteredAt) || 0 : 0,
+            cat_items: catSnapshot.active === true && Array.isArray(catSnapshot.items) ? catSnapshot.items : [],
+            timestamp: stateTimestamp
+        };
+        I.applyGoodbyeChatComposerHidden(nextHidden, nextReason, statePayload);
+        if (!lanlanName) return;
+        postGoodbyeChatComposerHiddenPayload(statePayload);
     }
 
     function pruneVoiceConfigSwitchOps(now) {

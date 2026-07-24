@@ -3206,7 +3206,7 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     app_ui_source = read_js_parts(PROJECT_ROOT / "static" / "app" / "app-ui")
 
     assert "_NEKO_IDLE_CAT1_SUBSTATE_WALKING = 'walking-to-chat'" in source
-    assert "_NEKO_IDLE_CAT1_SUBSTATE_STRETCH = 'stretch-near-chat'" in source
+    assert "_NEKO_IDLE_CAT1_SUBSTATE_STRETCH" not in source
     assert '_NEKO_IDLE_CAT1_CHAT_GAP_PX = 24' in source
     assert '_NEKO_IDLE_CAT1_MINIMIZED_RIGHT_TO_LEFT_APPROACH_PX = 0' in source
     assert 'function _getNekoIdleCat1MinimizedSideApproachOffsetPx(facingRight, chatRect)' in source
@@ -3353,9 +3353,10 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert 'state.substate === profile.idleSubstate && !state.actionSettled' in source
     assert 'state.actionSettled = true' in source
     assert 'state.substate === profile.walkingSubstate && target.distance > profile.target.exitDistancePx' in source
-    assert '_scheduleNekoIdleReturnSubactionSettle' in source
-    assert '_settleNekoIdleReturnSubactionToIdle' in source
-    assert 'durationMs - elapsedMs) + profile.settle.finalHoldMs' in source
+    assert 'function _playNekoIdleCat1StretchAction(button, options = {})' in source
+    assert '_scheduleNekoIdleReturnSubactionSettle' not in source
+    assert '_settleNekoIdleReturnSubactionToIdle' not in source
+    assert '_NEKO_IDLE_CAT1_STRETCH_FINAL_HOLD_MS' in source
     assert 'containerObserver' in source
     assert "attributeFilter: ['style', 'data-dragging']" in source
     assert '_scheduleNekoIdleCat1JourneySyncForContainer' in source

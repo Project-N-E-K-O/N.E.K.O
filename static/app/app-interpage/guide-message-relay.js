@@ -111,6 +111,10 @@
                         I.handleGoodbyeChatComposerHiddenMessage(event.data, 'broadcast-request');
                         break;
                     }
+                    case 'cat_local_text_submit': {
+                        I.handleGoodbyeChatComposerHiddenMessage(event.data, 'broadcast-submit');
+                        break;
+                    }
                     case 'idle_activity': {
                         var idleCurrentName = I.getCurrentLanlanName();
                         if (event.data.lanlan_name && (!idleCurrentName || event.data.lanlan_name !== idleCurrentName)) break;

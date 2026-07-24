@@ -14,12 +14,33 @@ interface MarketAuthStatus {
   market_web_url?: string
 }
 
+export interface MarketAccountSummary {
+  authenticated: boolean
+  profile?: {
+    display_name?: string | null
+    username?: string | null
+    avatar_url?: string | null
+    login_method?: string | null
+  } | null
+  market?: {
+    member_days?: number | null
+    published_plugins?: number | null
+    installed_plugins?: number | null
+    total_downloads?: number | null
+  } | null
+  sources: Record<string, { status: 'ready' | 'unavailable' }>
+  expires_at?: number | null
+}
+
 export function useMarketAuth() {
   const { t } = useI18n()
   const marketAuth = ref<MarketAuthStatus>({ authenticated: false })
+  const marketAccountSummary = ref<MarketAccountSummary | null>(null)
+  const marketAccountSummaryBusy = ref(false)
   const marketAuthBusy = ref(false)
   const bridgeToken = ref(localStorage.getItem('neko_bridge_token') || '')
   let marketAuthPollTimer: number | null = null
+  let accountSummaryGeneration = 0
   // Sticky stop flag for the recursive setTimeout poll loop. Read by
   // ``tick`` and ``schedule`` inside ``startMarketAuthPolling`` so a
   // pending timer that fires after ``stopMarketAuthPolling`` exits early.
@@ -101,6 +122,46 @@ export function useMarketAuth() {
     }
   }
 
+  async function loadMarketAccountSummary(): Promise<void> {
+    const generation = ++accountSummaryGeneration
+    if (!marketAuth.value.authenticated) {
+      marketAccountSummary.value = null
+      marketAccountSummaryBusy.value = false
+      return
+    }
+    const token = await ensureBridgeToken()
+    if (generation !== accountSummaryGeneration || !marketAuth.value.authenticated) return
+    if (!token) {
+      marketAccountSummaryBusy.value = false
+      return
+    }
+    marketAccountSummaryBusy.value = true
+    try {
+      const res = await authedFetch('/market/oauth/account-summary')
+      if (!res.ok) return
+      const summary = await res.json() as MarketAccountSummary
+      if (generation !== accountSummaryGeneration || !marketAuth.value.authenticated) return
+      if (!summary.authenticated) {
+        marketAuth.value = { authenticated: false }
+        marketAccountSummary.value = null
+        return
+      }
+      marketAccountSummary.value = summary
+    } catch {
+      // The small account card is progressive enhancement. Keep the known
+      // login status when one source is temporarily unavailable.
+    } finally {
+      if (generation === accountSummaryGeneration) {
+        marketAccountSummaryBusy.value = false
+      }
+    }
+  }
+
+  function invalidateAccountSummaryRequests(): void {
+    accountSummaryGeneration += 1
+    marketAccountSummaryBusy.value = false
+  }
+
   function stopMarketAuthPolling(): void {
     pollingStopped = true
     if (marketAuthPollTimer !== null) {
@@ -175,6 +236,7 @@ export function useMarketAuth() {
           stopMarketAuthPolling()
           marketAuthBusy.value = false
           await loadMarketAuthStatus()
+          await loadMarketAccountSummary()
           ElMessage.success(t('market.loginSuccess'))
           return
         }
@@ -237,27 +299,46 @@ export function useMarketAuth() {
   }
 
   async function logoutMarketAccount(): Promise<void> {
-    const token = await ensureBridgeToken()
-    if (!token) return
+    invalidateAccountSummaryRequests()
     marketAuthBusy.value = true
     try {
-      await authedFetch('/market/oauth/logout', {
+      const token = await ensureBridgeToken()
+      if (!token) throw new Error(t('market.pairRequired'))
+      const res = await authedFetch('/market/oauth/logout', {
         method: 'POST',
       })
+      if (!res.ok) {
+        let detail = ''
+        try {
+          const body = await res.json() as { detail?: unknown; message?: unknown }
+          const candidate = body.detail ?? body.message
+          if (typeof candidate === 'string') detail = candidate.trim()
+        } catch {
+          // Fall back to a localized message when the response is not JSON.
+        }
+        throw new Error(detail || t('market.logoutFailed'))
+      }
       marketAuth.value = { authenticated: false }
+      marketAccountSummary.value = null
       ElMessage.success(t('market.logoutSuccess'))
     } finally {
       marketAuthBusy.value = false
     }
   }
 
-  onBeforeUnmount(stopMarketAuthPolling)
+  onBeforeUnmount(() => {
+    stopMarketAuthPolling()
+    invalidateAccountSummaryRequests()
+  })
 
   return {
     marketAuth,
+    marketAccountSummary,
+    marketAccountSummaryBusy,
     marketAuthBusy,
     marketAuthDisplayName,
     loadMarketAuthStatus,
+    loadMarketAccountSummary,
     logoutMarketAccount,
     startMarketLogin,
     stopMarketAuthPolling,
