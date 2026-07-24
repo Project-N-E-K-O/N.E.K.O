@@ -66,9 +66,11 @@ class QQReplyBufferService:
     def store_reply(self, session_key: str, reply_text: str, blocks: list, *, expected_bucket_id: int = 0) -> bool:
         """pipeline 生成的回复存入缓冲桶，等计时器到期再发。返回 True 表示已存储。
 
-        expected_bucket_id: 触发本次 pipeline 的桶 ID。若与当前 _pending/_detached 中的桶不一致
-        （说明旧桶已被替换），则拒绝写入，防止旧 pipeline 结果污染新桶。"""
-        existing = self._pending.get(session_key) or self._detached.get(session_key)
+        expected_bucket_id: 触发本次 pipeline 的桶 ID。同时查 _pending 和 _detached，
+        优先匹配 bucket_id 一致的桶，防止旧 pipeline 结果污染新桶。"""
+        existing = self._pending.get(session_key)
+        if existing is None or (expected_bucket_id and existing.bucket_id != expected_bucket_id):
+            existing = self._detached.get(session_key)
         if existing is None:
             return False
         if expected_bucket_id and existing.bucket_id != expected_bucket_id:
