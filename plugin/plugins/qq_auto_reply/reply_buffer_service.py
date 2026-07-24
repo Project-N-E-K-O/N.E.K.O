@@ -304,10 +304,11 @@ class QQReplyBufferService:
 
         if not has_bot_reply:
             if abandon_on_no_reply:
-                # 话题偏移：旧桶移入 _detached 等 pipeline 回复，再从 _pending 摘除
+                # 话题偏移：旧桶移入 _detached 并起 detached flush，pipeli
                 self._detached[self._detached_key(session_key, pending.bucket_id)] = pending
                 self._pending.pop(session_key, None)
-                self.plugin._emit_log("INFO", f"[Buffer] key={session_key} 话题偏移，旧桶移入 _detached 等 pipeline 回复")
+                pending._new_task(self._flush_detached(session_key, pending))
+                self.plugin._emit_log("INFO", f"[Buffer] key={session_key} 话题偏移，旧桶移入 _detached，等 pipeline 回复后交付")
                 return
             # 多条消息（≥2）→ 首条 pipeline 回复会被 summary 覆盖，无需等待
             if len(user_entries) > 1:
