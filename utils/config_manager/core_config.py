@@ -101,6 +101,32 @@ class CoreConfigMixin:
         )
 
     @staticmethod
+    def join_ip_probe(timeout: float = 5.0) -> bool:
+        """Block until the in-flight GeoIP probe finishes. Returns whether a verdict landed.
+
+        Only for startup, and only from a worker thread (see ``awarmup_region_check``):
+        request paths must never wait on the probe. Waiting once before the server
+        accepts sessions is what keeps the first session off the transient mainland
+        fallback — the route is frozen into each session at start_session time.
+        """
+        from utils.config_manager import ConfigManager
+
+        thread = ConfigManager._ip_probe_thread
+        if thread is not None:
+            thread.join(timeout)
+        return ConfigManager._ip_check_cache is not None
+
+    async def awarmup_region_check(self, timeout: float = 5.0) -> bool:
+        """Resolve the region before the server starts accepting sessions.
+
+        Reads the config (which kicks the probe only on the free ``lanlan.tech``
+        route, so users on their own API keys never hand their IP to a third-party
+        geolocation service), then waits for that probe off the event loop.
+        """
+        await self.aget_core_config()
+        return await asyncio.to_thread(self.join_ip_probe, timeout)
+
+    @staticmethod
     def _check_ip_non_mainland_http():
         """Non-blocking read of the IP geolocation verdict (ip-api.com over HTTP).
 

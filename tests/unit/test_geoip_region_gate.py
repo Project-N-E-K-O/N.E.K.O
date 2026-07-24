@@ -20,6 +20,7 @@ are pinned to the mainland route": the IP probe decides whenever it has an
 answer and Steam is only a fallback, and the probe retries instead of giving
 up after one cold-boot timeout.
 """
+import asyncio
 import os
 import sys
 import threading
@@ -36,6 +37,26 @@ from utils.config_manager import core_config as core_config_mod  # noqa: E402
 
 class _Probe(core_config_mod.CoreConfigMixin):
     """Bare mixin carrier: _check_non_mainland only needs the two sub-checks."""
+
+
+def _async_return(value):
+    async def _coro(*a, **kw):
+        return value
+    return _coro
+
+
+class _JsonResp:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return self._payload.encode()
 
 
 @pytest.fixture(autouse=True)
@@ -264,6 +285,75 @@ def test_probe_never_blocks_the_caller(monkeypatch):
         thread = ConfigManager._ip_probe_thread
         if thread is not None:
             thread.join(5)
+
+
+@pytest.mark.unit
+def test_startup_warmup_waits_for_the_verdict(monkeypatch):
+    """The first session must not be pinned to the transient mainland fallback.
+
+    A session freezes its route at start_session time, so the verdict has to land
+    before the server accepts sessions. Startup is the one place allowed to wait —
+    and it waits off the event loop.
+    """
+    # 探测必须"还在飞"，否则等不等都拿得到结论，用例会退化成假绿
+    class _SlowOpener:
+        def open(self, req, timeout=None):
+            real_time.sleep(0.3)
+            return _JsonResp('{"countryCode": "US"}')
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, 'build_opener', lambda *a, **kw: _SlowOpener())
+
+    probe = _Probe()
+    probe.aget_core_config = _async_return(None)
+
+    # 探测由 aget_core_config 触发；这里直接触发以隔离 warmup 的等待语义
+    ConfigManager._check_ip_non_mainland_http()
+    assert ConfigManager._ip_check_cache is None, '前置条件：预热开始时结论尚未落地'
+
+    assert asyncio.run(probe.awarmup_region_check(timeout=5)) is True
+    assert ConfigManager._ip_check_cache is True
+
+
+@pytest.mark.unit
+def test_startup_warmup_does_not_block_the_event_loop(monkeypatch):
+    """Waiting is allowed at startup, but never on the loop itself."""
+    release = threading.Event()
+
+    class _HangingOpener:
+        def open(self, req, timeout=None):
+            release.wait(5)
+            raise OSError('timed out')
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, 'build_opener', lambda *a, **kw: _HangingOpener())
+
+    probe = _Probe()
+    probe.aget_core_config = _async_return(None)
+    ConfigManager._check_ip_non_mainland_http()
+
+    async def _run():
+        gaps = []
+        stop = asyncio.Event()
+
+        async def _beat():
+            last = real_time.monotonic()
+            while not stop.is_set():
+                await asyncio.sleep(0.02)
+                now = real_time.monotonic()
+                gaps.append(now - last)
+                last = now
+
+        beat = asyncio.create_task(_beat())
+        await asyncio.sleep(0.1)
+        release.set()
+        await probe.awarmup_region_check(timeout=5)
+        stop.set()
+        await beat
+        return max(gaps)
+
+    worst = asyncio.run(_run())
+    assert worst < 0.5, f'预热期间事件循环被占用 {worst:.2f}s'
 
 
 @pytest.mark.unit
