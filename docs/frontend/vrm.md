@@ -48,6 +48,20 @@ The server stores per-model maps under `static/vrm/configs/`. `vrm-expression.js
 
 `window.LanLan1.setEmotion(name)` delegates to `window.vrmManager.expression.setMood(name)` when VRM is active. Non-neutral moods return to neutral after the runtime delay.
 
+## VMC motion output
+
+`vrm-vmc-sender.js` can sample the active VRM after animation, look-at, spring-bone, and expression updates, then publish the resulting humanoid pose through the dedicated `/api/vmc/ws` channel. The backend converts coordinates and sends OSC/UDP to a VMC-compatible receiver.
+
+Output is disabled by default. From the main page, enable the default local destination with:
+
+```js
+await window.vrmVmcSender.enable('127.0.0.1', 39539, 60)
+```
+
+The VMC root is independent of `vrm.scene`, so desktop layout transforms are never exported. Model switching and disposal retire old expressions with acknowledged zero-value frames. Disabling or releasing the source ends with `/VMC/Ext/OK 0`.
+
+See [VMC output](/api/rest/vmc) for receiver setup, controls, security boundaries, close codes, and troubleshooting.
+
 ## Runtime safeguards
 
 The current renderer clamps frame delta after long stalls, reduces imported spring-bone collider radii, and scales MToon outline width through the lighting configuration. These are internal compatibility safeguards, not model-format requirements; do not pre-edit uploaded VRM files to reproduce them.
