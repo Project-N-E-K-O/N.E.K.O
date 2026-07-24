@@ -407,12 +407,25 @@ async def test_music_proxy_rejects_declared_oversize_before_streaming(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_music_proxy_rejects_redirect_outside_allowlist(monkeypatch):
+async def test_music_proxy_rejects_plain_http_initial_url():
+    request = Request({"type": "http", "method": "GET", "path": "/api/music/proxy", "headers": []})
+
+    response = await music_router.proxy_music("http://freemusicarchive.org/song.mp3", request)
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "redirect_url",
+    ["https://example.invalid/song.mp3", "http://freemusicarchive.org/song.mp3"],
+)
+async def test_music_proxy_rejects_unsafe_redirect(monkeypatch, redirect_url):
     client_closed = False
 
     class RedirectResponse:
         status_code = 302
-        headers = {"location": "https://example.invalid/song.mp3"}
+        headers = {"location": redirect_url}
 
         async def aclose(self):
             return None

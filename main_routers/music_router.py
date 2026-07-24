@@ -179,7 +179,7 @@ def _is_playable_audio_content_type(content_type: str) -> bool:
 def _is_allowed_music_url(url: str) -> bool:
     parsed = urlparse(url)
     hostname = (parsed.hostname or '').lower()
-    return parsed.scheme in ('http', 'https') and any(
+    return parsed.scheme == 'https' and any(
         hostname == domain or hostname.endswith('.' + domain)
         for domain in MUSIC_SOURCE_DOMAINS
     )
@@ -254,7 +254,7 @@ async def proxy_music(url: str, request: Request):
 
         # FastAPI already decoded the query parameter; preserve signed URL escapes.
         upstream_url = url
-        if not upstream_url.startswith(('http://', 'https://')):
+        if urlparse(upstream_url).scheme != 'https':
             return JSONResponse(content={"success": False, "error": "无效的URL"}, status_code=400)
 
         parsed = urlparse(upstream_url)
