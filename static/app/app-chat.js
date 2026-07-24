@@ -507,7 +507,23 @@
      * @param {Object} trackInfo
      * @param {Object} options 
      */
-    window.dispatchMusicPlay = async function (trackInfo, options) {
+    function musicDispatchResult(ok, reason, canTryNextCandidate) {
+        return {
+            ok: ok === true,
+            reason: reason || '',
+            canTryNextCandidate: canTryNextCandidate === true
+        };
+    }
+
+    async function sendMusicDetailed(trackInfo, options) {
+        if (typeof window.sendMusicMessageDetailed === 'function') {
+            return window.sendMusicMessageDetailed(trackInfo, true, options);
+        }
+        var accepted = await window.sendMusicMessage(trackInfo, true, options);
+        return musicDispatchResult(accepted === true, accepted === true ? '' : 'player_error', false);
+    }
+
+    window.dispatchMusicPlayDetailed = async function (trackInfo, options) {
         options = options || {};
 
         // 拦截逻辑：如果是主动搭话触发的切歌，且本地正在放歌 / 加载中 /
@@ -526,24 +542,30 @@
             var rateLimited = typeof window.isMusicRecommendRateLimited === 'function' && window.isMusicRecommendRateLimited();
             if (localPlaying || localPending || remoteActive || rateLimited) {
                 console.log('[MusicDispatch] 拦截来自主动搭话的切歌请求 (playing=' + localPlaying + ', pending=' + localPending + ', remote=' + remoteActive + ', rateLimited=' + rateLimited + ')');
-                return false;
+                return musicDispatchResult(false, 'busy', false);
             }
         }
 
         if (!trackInfo || !trackInfo.url) {
             console.warn('[MusicDispatch] 无效的音乐信息，跳过播放');
-            return false;
+            return musicDispatchResult(false, 'invalid_track', true);
         }
 
         var currentDispatchId = ++_musicDispatchId;
 
         if (window.sendMusicMessage) {
-            var accepted = await window.sendMusicMessage(trackInfo, true, options);
+            var result;
+            try {
+                result = await sendMusicDetailed(trackInfo, options);
+            } catch (error) {
+                console.error('[MusicDispatch] playback failed:', error);
+                result = musicDispatchResult(false, 'player_error', false);
+            }
             // proactive 来源成功派发后打上限流时间戳，阻止接下来 18s 内的再次 proactive 推荐
-            if (accepted && options.source === 'proactive' && typeof window.markProactiveMusicRecommended === 'function') {
+            if (result.ok === true && options.source === 'proactive' && typeof window.markProactiveMusicRecommended === 'function') {
                 window.markProactiveMusicRecommended();
             }
-            return accepted; // 返回布尔值表示是否成功派发
+            return result;
         } else {
             console.warn('[MusicDispatch] sendMusicMessage \u5C1A\u672A\u5C31\u7EEA\uFF0C\u542F\u52A8\u7B49\u5F85 (ID: ' + currentDispatchId + ')...');
 
@@ -559,11 +581,11 @@
                     window.removeEventListener('music-ui-ready', retryPlay);
                 };
 
-                var finish = function (accepted) {
+                var finish = function (result) {
                     if (settled) return;
                     settled = true;
                     cleanup();
-                    resolve(accepted === true);
+                    resolve(result);
                 };
 
                 var retryPlay = async function () {
@@ -571,7 +593,7 @@
                     // 门闩校验：只允许最新的 dispatch 请求执行
                     if (currentDispatchId !== _musicDispatchId) {
                         console.log('[MusicDispatch] \u653E\u5F03\u8FC7\u65F6\u7684\u64AD\u653E\u8BF7\u6C42 (ID: ' + currentDispatchId + ')');
-                        finish(false);
+                        finish(musicDispatchResult(false, 'superseded', false));
                         return;
                     }
 
@@ -580,22 +602,29 @@
                     cleanup();
                     console.log('[MusicDispatch] \u63A5\u53E3\u5DF2\u5C31\u7EEA\uFF0C\u8865\u53D1\u64AD\u653E\u8BF7\u6C42 (ID: ' + currentDispatchId + ')');
                     try {
-                        var accepted = await window.sendMusicMessage(trackInfo, true, options);
-                        if (accepted && options.source === 'proactive' && typeof window.markProactiveMusicRecommended === 'function') {
+                        var result = await sendMusicDetailed(trackInfo, options);
+                        if (result.ok === true && options.source === 'proactive' && typeof window.markProactiveMusicRecommended === 'function') {
                             window.markProactiveMusicRecommended();
                         }
-                        finish(accepted);
+                        finish(result);
                     } catch (error) {
                         console.error('[MusicDispatch] queued playback failed:', error);
-                        finish(false);
+                        finish(musicDispatchResult(false, 'player_error', false));
                     }
                 };
 
                 pollTimer = setInterval(retryPlay, 500);
-                timeoutTimer = setTimeout(function () { finish(false); }, 5000);
+                timeoutTimer = setTimeout(function () {
+                    finish(musicDispatchResult(false, 'ui_not_ready', false));
+                }, 5000);
                 window.addEventListener('music-ui-ready', retryPlay, { once: true });
             });
         }
+    };
+
+    window.dispatchMusicPlay = async function (trackInfo, options) {
+        var result = await window.dispatchMusicPlayDetailed(trackInfo, options);
+        return result.ok === true;
     };
 
     // ======================== 音乐指令解析 ========================
