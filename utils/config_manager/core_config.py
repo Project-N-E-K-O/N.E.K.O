@@ -16,12 +16,38 @@
 """Core config mixin.
 
 get_core_config / get_model_api_config snapshot assembly, geo (mainland vs
-non-mainland) dual checks, free-route URL adjustment and the agent/voice
+non-mainland) region resolution, free-route URL adjustment and the agent/voice
 free-tier predicates.
 
 The geo caches themselves are class attributes on the assembled
 ``ConfigManager`` (single owner); methods below resolve them late through
 the package facade.
+
+Region-resolution invariants
+----------------------------
+These five constrain each other, and a change that satisfies one can quietly
+break another — during the work that introduced them, two were broken exactly
+that way (a "kick a due probe" fix bypassed #2; an ``is_alive()`` guard
+disabled #4). Check a change against all five, not just the one it targets.
+
+1. The probe never does network IO on the caller's thread. ``get_core_config``
+   fans out to ~40 sync callers living inside ``async def``, so a blocking
+   probe freezes the shared event loop and stalls every WebSocket handshake in
+   the process. Waiting is allowed only at startup and only offloaded.
+2. The probe is started only for the free ``lanlan.tech`` route. Users on their
+   own API keys never have their public IP handed to a third-party geolocation
+   service. Reading the config is the natural gate (URL rewriting consults the
+   region only for that host) — go through it rather than re-deriving
+   eligibility at each call site, or the checks will drift apart.
+3. ``_region_cache`` is written only from the IP verdict. Steam is a fallback
+   vote that must never latch, at any failure count: it counts probes started,
+   not finished, so any threshold can fire while one is still in flight.
+4. The probe never gives up permanently — including when a thread wedges in
+   ``getaddrinfo`` (not covered by the socket timeout). Liveness alone must not
+   gate new probes, or one wedged thread cancels the retry schedule forever.
+5. Every path that freezes a base URL into a session settles the region first
+   (main session, hot-swap prepare, game session pool). Tests assert this
+   structurally, because the real risk is a *new* path added later.
 """
 import asyncio
 import json
