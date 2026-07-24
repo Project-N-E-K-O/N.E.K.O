@@ -58,6 +58,9 @@ class QQReplyContextNode:
         group_scene_mode: str = "",
         current_message_id: str = "",
         force_reply: bool = False,
+        is_at_bot: bool = False,
+        mentions_all: bool = False,
+        reply_context: str = "",
     ) -> QQReplyContext:
         traces: list[QQPipelineStageTrace] = []
         config_manager = get_config_manager()
@@ -211,6 +214,9 @@ class QQReplyContextNode:
             group_id=group_id,
             message=message,
             current_message_id=current_message_id,
+            is_at_bot=is_at_bot,
+            mentions_all=mentions_all,
+            reply_context=reply_context,
         )
         traces.append(
             QQPipelineStageTrace(
@@ -225,7 +231,9 @@ class QQReplyContextNode:
             )
         )
 
-        self.plugin._emit_log("INFO", f"[UserMsg] (system {len(system_prompt)}字) {prompt_message[:200]}")
+        self_id = getattr(self.plugin.qq_client, "_self_id", "") or ""
+        scope = f"群{group_id}" if is_group else f"私聊"
+        self.plugin._emit_log("INFO", f"[UserMsg] bot={self_id} {scope} sender={sender_id} (system {len(system_prompt)}字) {prompt_message[:200]}")
 
         return QQReplyContext(
             message=message,

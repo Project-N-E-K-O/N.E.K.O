@@ -52,8 +52,9 @@ class QQNapcatService:
             return launch_target
         root = launch_target
         candidates = [
-            root / "launcher-user.bat",
-            root / "launcher.bat",
+            root / "launcher-user.bat", root / "launcher.bat",
+            root / "launcher-user.sh", root / "launcher.sh",
+            root / "napcat", root / "napcat.sh",
         ]
         for candidate in candidates:
             if candidate.is_file():
@@ -66,6 +67,41 @@ class QQNapcatService:
         if configured:
             return f"NapCat 启动器不存在: {launch_target}，需要指向 launcher-user.bat、launcher.bat 或其所在目录"
         return f"NapCat 启动器不存在: {launch_target}，请先配置 napcat_directory 或确认内置 NapCat.Shell 完整"
+
+    async def start_health_check(self, interval_seconds: float = 30.0) -> None:
+        """后台守护：NapCat 进程死了自动重启。"""
+        import asyncio as _asyncio
+        async def _loop():
+            await _asyncio.sleep(10)
+            while True:
+                try:
+                    await _asyncio.sleep(interval_seconds)
+                except _asyncio.CancelledError:
+                    break
+                if not self.plugin._manages_napcat_process:
+                    continue
+                p = self.plugin._napcat_process
+                if p and p.returncode is None:
+                    continue  # 进程还活着
+                self.plugin._emit_log("WARN", "NapCat 进程已退出，尝试重启...")
+                try:
+                    await self.ensure_napcat_started()
+                    ready = await self.wait_for_onebot_ready()
+                    if ready:
+                        await self.sync_napcat_qrcode_into_static()
+                        self.plugin._emit_log("INFO", "NapCat 已自动重启成功")
+                    else:
+                        self.plugin._emit_log("WARN", "NapCat 已重启但 OneBot 尚未就绪")
+                except Exception as e:
+                    self.plugin._emit_log("ERROR", f"NapCat 自动重启失败: {e}")
+        self._health_task = _asyncio.create_task(_loop())
+
+    async def stop_health_check(self) -> None:
+        task = getattr(self, "_health_task", None)
+        if task and not task.done():
+            task.cancel()
+            try: await task
+            except (Exception, asyncio.CancelledError): pass
 
     def clear_startup_error(self) -> None:
         self.plugin._startup_error = None
@@ -154,21 +190,36 @@ class QQNapcatService:
             self._set_startup_error(self._build_missing_launcher_error())
             return
         try:
-            show_window = bool(self.plugin._qq_settings.get("show_napcat_window", True))
-            creationflags = 0
-            if show_window:
-                creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010)
+            import platform as _platform, os as _os
+            is_windows = _platform.system() == "Windows"
+            show_window = False
+            if is_windows:
+                show_window = bool(self.plugin._qq_settings.get("show_napcat_window", True))
+                creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010) if show_window else getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+                self.plugin._napcat_process = await asyncio.create_subprocess_exec(
+                    "cmd.exe", "/c", str(launcher),
+                    cwd=str(launcher.parent),
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                    creationflags=creationflags,
+                )
             else:
-                creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
-            self.plugin._napcat_process = await asyncio.create_subprocess_exec(
-                "cmd.exe", "/c", str(launcher),
-                cwd=str(launcher.parent),
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-                creationflags=creationflags,
-            )
+                # Linux/macOS: 直接执行，launcher 应为可执行脚本
+                launcher_path = str(launcher)
+                if launcher_path.endswith(".bat"):
+                    launcher_path = launcher_path[:-4] + ".sh"
+                if not _os.access(launcher_path, _os.X_OK):
+                    try: _os.chmod(launcher_path, 0o755)
+                    except Exception: pass
+                self.plugin._napcat_process = await asyncio.create_subprocess_exec(
+                    launcher_path,
+                    cwd=str(launcher.parent),
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
             self.plugin._manages_napcat_process = True
             self.clear_startup_error()
+            await self.start_health_check()  # NapCat 启动后自动开始健康监测
             pid = self.plugin._napcat_process.pid
             self.plugin.logger.info(
                 f"Started NapCat: {launcher} (pid={pid}, show_window={show_window})"
@@ -194,13 +245,31 @@ class QQNapcatService:
             return
         pid = process.pid
         try:
-            # 使用 /T 递归杀进程树，确保 NapCat 本体和 cmd 包装一起结束
-            kill_proc = await asyncio.create_subprocess_exec(
-                "taskkill", "/PID", str(pid), "/T", "/F",
-                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
-            )
-            await kill_proc.wait()
-            self.plugin._emit_log("INFO", f"NapCat 进程树已终止 PID={pid}")
+            import platform as _platform
+            if _platform.system() == "Windows":
+                kill_proc = await asyncio.create_subprocess_exec(
+                    "taskkill", "/PID", str(pid), "/T", "/F",
+                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+                )
+                try:
+                    import time as _time
+                    deadline = _time.time() + 5.0
+                    while kill_proc.returncode is None and _time.time() < deadline:
+                        await asyncio.sleep(0.1)
+                except Exception:
+                    pass
+            else:
+                try: process.terminate()
+                except Exception: pass
+                try:
+                    import time as _time
+                    deadline = _time.time() + 5.0
+                    while process.returncode is None and _time.time() < deadline:
+                        await asyncio.sleep(0.1)
+                except Exception:
+                    try: process.kill()
+                    except Exception: pass
+            self.plugin._emit_log("INFO", f"NapCat 进程已终止 PID={pid}")
         except Exception as e:
             self.plugin.logger.warning(f"Failed to kill NapCat process tree (PID={pid}): {e}")
             try:
@@ -208,6 +277,9 @@ class QQNapcatService:
             except ProcessLookupError:
                 pass
         try:
-            await asyncio.wait_for(process.wait(), timeout=3.0)
-        except asyncio.TimeoutError:
+            import time as _time
+            deadline = _time.time() + 3.0
+            while process.returncode is None and _time.time() < deadline:
+                await asyncio.sleep(0.1)
+        except Exception:
             pass

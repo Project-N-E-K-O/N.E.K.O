@@ -1,7 +1,7 @@
 [plugin]
 name = "QQ集成"
-description = "通过 OneBot 反向 WebSocket（NapCat/LLOneBot）或 QQ 官方机器人 API 接入 QQ，支持多群注意力竞争、疲劳系统、动态回复缓冲、多模态输出、提示词编辑、戳一戳、表情包等功能。"
-short_description = "完整 QQ 机器人集成：NapCat/开放平台双通道、注意力管理、多模态交互"
+description = "通过 NapCat（OneBot 反向 WebSocket）或 QQ 官方开放平台接入，回复引用链解析、语音/表情包/戳一戳等多模态输出。"
+short_description = "NapCat/开放平台双通道、注意力门控、缓冲合并、回溯补回、多模态交互"
 keywords = ["qq", "onebot", "napcat", "qq-open-platform", "auto-reply", "chat", "attention", "fatigue", "sticker", "poke", "voice", "buffer", "reverse-websocket"]
 passive = true
 version = "0.7.0"
@@ -28,7 +28,7 @@ enabled = true
 
 [[plugin.ui.panel]]
 id = "main"
-title = "Hello QQ"
+title = "QQ 集成"
 entry = "static/index.html"
 context = "qq_auto_reply"
 permissions = ["state:read", "action:call"]

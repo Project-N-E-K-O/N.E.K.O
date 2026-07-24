@@ -83,7 +83,10 @@ class QQSettingsService:
         normal_relay_probability = kwargs.get("normal_relay_probability")
         truth_reply_probability = kwargs.get("truth_reply_probability")
         backlog_labels = kwargs.get("backlog_labels")
+        proactive_topics = kwargs.get("proactive_topics")
 
+        if proactive_topics is not None and isinstance(proactive_topics, list):
+            self.plugin._qq_settings["proactive_topics"] = [str(t) for t in proactive_topics if str(t).strip()]
         if onebot_url is not None:
             self.plugin._qq_settings["onebot_url"] = str(onebot_url or "").strip()
             self.plugin._emit_log("INFO", f"反向 WS 监听地址已更新: {self.plugin._qq_settings['onebot_url'] or '(空)'}")
@@ -91,6 +94,13 @@ class QQSettingsService:
             self.plugin._qq_settings["token"] = str(token or "")
             masked = self.plugin._mask_token(self.plugin._qq_settings["token"])
             self.plugin._emit_log("INFO", f"Token 已更新: {masked}{' (空)' if not self.plugin._qq_settings['token'] else ''}")
+        local_stt_url = kwargs.get("local_stt_url")
+        if local_stt_url is not None:
+            self.plugin._qq_settings["local_stt_url"] = str(local_stt_url or "").strip()
+            self.plugin._emit_log("INFO", f"本地STT地址已更新: {self.plugin._qq_settings['local_stt_url'] or '(空)'}")
+        locale_val = kwargs.get("locale")
+        if locale_val is not None:
+            self.plugin._qq_settings["locale"] = str(locale_val or "").strip()
         qq_connection_mode = kwargs.get("qq_connection_mode")
         qq_open_app_id = kwargs.get("qq_open_app_id")
         qq_open_client_secret = kwargs.get("qq_open_client_secret")
@@ -131,20 +141,58 @@ class QQSettingsService:
             self.plugin._truth_reply_probability = value
         if backlog_labels is not None:
             self.plugin._qq_settings["backlog_labels"] = self.plugin.config_store.normalize_backlog_labels(backlog_labels)
-        proactive_silence_seconds = kwargs.get("proactive_silence_seconds")
-        if proactive_silence_seconds is not None:
-            self.plugin._qq_settings["proactive_silence_seconds"] = max(0, int(proactive_silence_seconds))
         sticker_cooldown_messages = kwargs.get("sticker_cooldown_messages")
         if sticker_cooldown_messages is not None:
             self.plugin._qq_settings["sticker_cooldown_messages"] = max(0, int(sticker_cooldown_messages))
             self.plugin._sticker_cooldown_messages = max(0, int(sticker_cooldown_messages))
+        # 回复缓冲参数（群聊 + 私聊独立覆盖）
+        for key in ("buffer_enabled",):
+            val = kwargs.get(key)
+            if val is not None:
+                self.plugin._qq_settings[key] = bool(val)
+        for prefix in ("buffer_", "buffer_private_"):
+            for suffix, default in (("delay_mean", 9.0), ("delay_sigma", 1.8)):
+                key = f"{prefix}{suffix}"
+                val = kwargs.get(key)
+                if val is not None:
+                    self.plugin._qq_settings[key] = max(0.1, float(val))
+            key = f"{prefix}max_count"
+            val = kwargs.get(key)
+            if val is not None:
+                self.plugin._qq_settings[key] = max(2, int(val))
         retroactive_review_max_messages = kwargs.get("retroactive_review_max_messages")
         if retroactive_review_max_messages is not None:
             self.plugin._qq_settings["retroactive_review_max_messages"] = max(1, int(retroactive_review_max_messages))
         retroactive_review_max_reply = kwargs.get("retroactive_review_max_reply")
         if retroactive_review_max_reply is not None:
             self.plugin._qq_settings["retroactive_review_max_reply"] = max(1, int(retroactive_review_max_reply))
-        # 猫娘动态策略配置
+        # ── 注意力参数 ──
+        enable_group_attention = kwargs.get("enable_group_attention")
+        if enable_group_attention is not None:
+            self.plugin._qq_settings["enable_group_attention"] = bool(enable_group_attention)
+        for key in (
+            "group_attention_decay_per_second",
+            "group_attention_message_recovery",
+            "group_attention_reply_penalty",
+            "group_attention_keyword_boost_scale",
+            "group_attention_max_score",
+            "group_attention_focus_threshold",
+            "group_attention_min_threshold",
+            "group_attention_message_gain",
+        ):
+            val = kwargs.get(key)
+            if val is not None:
+                self.plugin._qq_settings[key] = max(0.001, float(val))
+        for key in (
+            "group_attention_focus_lock_seconds",
+            "group_attention_focus_rise_seconds",
+            "group_attention_focus_cooldown_seconds",
+            "icebreaker_cold_threshold",
+        ):
+            val = kwargs.get(key)
+            if val is not None:
+                self.plugin._qq_settings[key] = max(1, int(val))
+        # ── 猫娘动态策略配置 ──
         strategy_mode = kwargs.get("strategy_mode")
         if strategy_mode is not None:
             self.plugin._qq_settings["strategy_mode"] = self.plugin.config_store._normalize_strategy_mode(strategy_mode)

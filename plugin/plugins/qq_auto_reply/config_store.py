@@ -102,6 +102,7 @@ class QQAutoReplyConfigStore:
             "group_attention_reply_penalty": 1.3,
             "group_attention_keyword_boost_scale": 2.5,
             "group_attention_focus_lock_seconds": 120,
+            "group_attention_focus_rise_seconds": 30,
             "group_attention_max_score": 10.0,
             "group_attention_focus_threshold": 4.0,
             "group_attention_min_threshold": 1.0,
@@ -114,20 +115,38 @@ class QQAutoReplyConfigStore:
             # === 猫娘动态注意力策略 ===
             "strategy_mode": "neko_dynamic",     # "neko_dynamic" | "neko_scene" — 主策略 / 退级策略
             "enable_group_attention": True,      # neko_dynamic 模式下强制启用多群注意力
+            "proactive_topics": [
+                "群聊安静了一阵，你可以分享最近遇到的一件有意思的事，或者吐槽一下日常。注意自然随意。",
+                "群聊冷场了，你可以问大家一个有趣的问题来活跃气氛。不要问'吃了吗'这种，问点有讨论度的。",
+                "群里好久没人说话了，你可以聊聊最近的热点或者分享一个冷知识。注意不要像播报新闻。",
+                "群聊安静了，你可以发起一个轻松的投票式话题，比如'你们觉得...'或者'有没有人也是...'",
+                "现在是活跃气氛的好时机，你可以分享一下当下的心情或者正在做的事情。像真人闲聊一样。",
+                "群聊沉寂了，你可以讲一个简短有趣的小故事或者段子，但不要刻意搞笑。",
+            ],
             "neko_dynamic_idle_timeout_seconds": 10.0,  # 已废弃（注意力系统下不再使用）
             "neko_dynamic_waking_users": [],            # 已废弃（改用 attention + backlog_labels）
             "neko_dynamic_waking_keywords": [],         # 已废弃（改用 backlog_labels keywords）
             # 回溯补回参数
             "retroactive_review_max_messages": 30,  # 回溯最多取多少条被忽略消息
             "retroactive_review_max_reply": 5,      # 回溯最多补回多少条
+            "local_stt_url": "",                     # 本地 STT (whisper) 服务地址，如 http://127.0.0.1:8000/v1/audio/transcriptions
+            "locale": "",                            # 前端界面语言，空=跟随宿主
             "sticker_cooldown_messages": 5,          # 表情包发送间隔（群内消息数），0=不限制
+            # 回复缓冲参数（群聊）
+            "buffer_enabled": True,                  # 是否启用回复缓冲
+            "buffer_delay_mean": 4.0,                # 缓冲延迟均值（秒）
+            "buffer_delay_sigma": 0.8,               # 缓冲延迟标准差（秒）
+            "buffer_max_count": 17,                  # 缓冲桶最大消息数，达到后立即交付
+            # 回复缓冲参数（私聊，未配置时回退到群聊默认）
+            "buffer_private_delay_mean": None,
+            "buffer_private_delay_sigma": None,
+            "buffer_private_max_count": None,
             # 疲劳系统参数（KiraAI-style 动态行为约束）
             "fatigue_enabled": True,
             "fatigue_circadian_peak_hour": 15,       # 昼夜节律峰值时间（24小时制）
             "fatigue_circadian_low_hour": 3,         # 昼夜节律低谷时间
             "fatigue_session_per_reply": 5.0,        # 每条回复增加的会话疲劳
             "fatigue_awake_idle_timeout": 10.0,      # 苏醒后空闲多久回睡眠（秒）
-            "proactive_silence_seconds": 300,         # 焦点群沉默多久后主动发言（秒），0=禁用
             # 提示词编辑器覆盖值（locale → layer_id → text）
             "prompt_overrides": {},
             # 按群自定义提示词（group_id → 提示词文本）
@@ -149,7 +168,7 @@ class QQAutoReplyConfigStore:
         merged["trusted_groups"] = payload.get("trusted_groups") if isinstance(payload.get("trusted_groups"), list) else []
         merged["backlog_labels"] = self.normalize_backlog_labels(payload.get("backlog_labels"))
         reply_mode = self.normalize_reply_mode(payload.get("reply_mode"))
-        if reply_mode != "text" or "reply_mode" in payload:
+        if reply_mode != "text" or ("reply_mode" in payload and payload.get("reply_mode") != "text"):
             merged["reply_mode"] = reply_mode
         elif payload.get("audio_reply_enabled") is True:
             merged["reply_mode"] = "voice"

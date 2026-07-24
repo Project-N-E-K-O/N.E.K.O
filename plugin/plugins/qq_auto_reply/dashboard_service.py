@@ -5,6 +5,13 @@ from typing import Any, Optional
 from plugin.sdk.plugin import Err, Ok, SdkError
 
 
+def _calc_service_done(settings: dict[str, Any]) -> bool:
+    mode = str(settings.get("qq_connection_mode", "napcat") or "napcat").strip()
+    if mode == "open_platform":
+        return bool(settings.get("qq_open_app_id")) and bool(settings.get("qq_open_client_secret"))
+    return bool(settings.get("onebot_url")) and bool(settings.get("token"))
+
+
 class QQDashboardService:
     def __init__(self, plugin: Any):
         self.plugin = plugin
@@ -64,14 +71,19 @@ class QQDashboardService:
                 "truth_reply_probability": float(self.plugin._truth_reply_probability),
                 "backlog_labels": list(settings.get("backlog_labels") or []),
                 "strategy_mode": self.plugin.config_store._normalize_strategy_mode(settings.get("strategy_mode")),
+                "proactive_topics": list(settings.get("proactive_topics") or []),
                 "enable_group_attention": bool(settings.get("enable_group_attention", True)),
                 "retroactive_review_max_messages": int(settings.get("retroactive_review_max_messages", 30) or 30),
                 "retroactive_review_max_reply": int(settings.get("retroactive_review_max_reply", 5) or 5),
                 "sticker_cooldown_messages": int(settings.get("sticker_cooldown_messages", 5) or 5),
             },
             "guide": {
-                "step_napcat_done": bool(settings.get("guide_step_napcat_done", False)) or bool(runtime["napcat_managed"] and runtime["napcat_running"]),
-                "step_service_done": bool(settings.get("onebot_url")) and bool(settings.get("token")),
+                "step_napcat_done": (
+                    bool(settings.get("guide_step_napcat_done", False))
+                    or bool(runtime["napcat_managed"] and runtime["napcat_running"])
+                    or bool(runtime.get("onebot_connected"))
+                ),
+                "step_service_done": _calc_service_done(settings),
                 "step_contacts_done": bool(self.plugin.permission_mgr and self.plugin.permission_mgr.list_users()),
                 "step_auto_reply_done": bool(settings.get("guide_step_runtime_done", False)) and self.plugin._running,
             },
@@ -168,6 +180,28 @@ class QQDashboardService:
         qq_connection_mode: Optional[str] = None,
         qq_open_app_id: Optional[str] = None,
         qq_open_client_secret: Optional[str] = None,
+        enable_group_attention: Optional[bool] = None,
+        group_attention_decay_per_second: Optional[float] = None,
+        group_attention_message_recovery: Optional[float] = None,
+        group_attention_reply_penalty: Optional[float] = None,
+        group_attention_keyword_boost_scale: Optional[float] = None,
+        group_attention_focus_lock_seconds: Optional[int] = None,
+        group_attention_focus_rise_seconds: Optional[int] = None,
+        group_attention_focus_cooldown_seconds: Optional[int] = None,
+        group_attention_max_score: Optional[float] = None,
+        group_attention_focus_threshold: Optional[float] = None,
+        group_attention_min_threshold: Optional[float] = None,
+        group_attention_message_gain: Optional[float] = None,
+        icebreaker_cold_threshold: Optional[int] = None,
+        local_stt_url: Optional[str] = None,
+        locale: Optional[str] = None,
+        buffer_enabled: Optional[bool] = None,
+        buffer_delay_mean: Optional[float] = None,
+        buffer_delay_sigma: Optional[float] = None,
+        buffer_max_count: Optional[int] = None,
+        buffer_private_delay_mean: Optional[float] = None,
+        buffer_private_delay_sigma: Optional[float] = None,
+        buffer_private_max_count: Optional[int] = None,
     ):
         try:
             result = await self.plugin.settings_service.save_settings(
@@ -190,6 +224,28 @@ class QQDashboardService:
                 qq_connection_mode=qq_connection_mode,
                 qq_open_app_id=qq_open_app_id,
                 qq_open_client_secret=qq_open_client_secret,
+                enable_group_attention=enable_group_attention,
+                group_attention_decay_per_second=group_attention_decay_per_second,
+                group_attention_message_recovery=group_attention_message_recovery,
+                group_attention_reply_penalty=group_attention_reply_penalty,
+                group_attention_keyword_boost_scale=group_attention_keyword_boost_scale,
+                group_attention_focus_lock_seconds=group_attention_focus_lock_seconds,
+                group_attention_focus_rise_seconds=group_attention_focus_rise_seconds,
+                group_attention_focus_cooldown_seconds=group_attention_focus_cooldown_seconds,
+                group_attention_max_score=group_attention_max_score,
+                group_attention_focus_threshold=group_attention_focus_threshold,
+                group_attention_min_threshold=group_attention_min_threshold,
+                group_attention_message_gain=group_attention_message_gain,
+                icebreaker_cold_threshold=icebreaker_cold_threshold,
+                local_stt_url=local_stt_url,
+                locale=locale,
+                buffer_enabled=buffer_enabled,
+                buffer_delay_mean=buffer_delay_mean,
+                buffer_delay_sigma=buffer_delay_sigma,
+                buffer_max_count=buffer_max_count,
+                buffer_private_delay_mean=buffer_private_delay_mean,
+                buffer_private_delay_sigma=buffer_private_delay_sigma,
+                buffer_private_max_count=buffer_private_max_count,
             )
         except ValueError as exc:
             message = str(exc)
@@ -281,7 +337,20 @@ class QQDashboardService:
         if not self.plugin.group_permission_mgr:
             return Err(SdkError(f"NOT_INITIALIZED: {self.plugin.i18n.t('errors.group_permission_manager_not_initialized', default='群聊权限管理器未初始化')}"))
         self.plugin.group_permission_mgr.remove_group(group_id)
-        await self.plugin.backlog_store.remove_group_placeholder(group_id)
+        # 强制清理 backlog 中的群数据（含未审阅消息）
+        await self.plugin.backlog_store.remove_group_placeholder(group_id, force=True)
+        # 清理 attention 缓存
+        if self.plugin.attention_service:
+            self.plugin.attention_service._cache.pop(str(group_id), None)
+        # 清理会话和疲劳状态
+        session_key = f"group:{group_id}"
+        if self.plugin.session_runtime_service:
+            await self.plugin.session_runtime_service.discard_session(session_key, reason="group_removed")
+        if self.plugin.fatigue_service:
+            self.plugin.fatigue_service._sleeping.pop(session_key, None)
+            self.plugin.fatigue_service._last_active.pop(session_key, None)
+            self.plugin.fatigue_service._session_fatigue_values.pop(session_key, None)
+            self.plugin.fatigue_service._wake_penalty.pop(session_key, None)
         success = await self.plugin.settings_service.persist_business_config()
         payload = await self.build_dashboard_state()
         payload["persisted"] = success

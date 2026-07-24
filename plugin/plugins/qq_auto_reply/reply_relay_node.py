@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from typing import Any
 
 from .pipeline_models import QQRelayPlan, QQRelayResult
@@ -21,7 +22,7 @@ class QQReplyRelayNode:
         if not self.plugin.qq_client or not self.plugin._admin_qq or sender_id == self.plugin._admin_qq:
             return None
         effective_probability = self.plugin._normal_relay_probability if relay_probability is None else float(relay_probability)
-        if effective_probability <= 0.0:
+        if effective_probability <= 0.0 or random.random() >= effective_probability:
             return None
         sanitized_message = self.plugin._sanitize_message_text(message_text)
         if source_type == "group":

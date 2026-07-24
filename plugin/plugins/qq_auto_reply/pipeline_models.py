@@ -39,6 +39,8 @@ class QQReplyRequest:
     force_reply: bool = False
     suppression_reason: str = ""
     forward_sub_count: int = 0
+    reply_context: str = ""     # _fetch_reply_content 产生的引用上下文，仅注入 LLM 不存历史
+    buffer_bucket_id: int = 0   # 触发 pipeline 的缓冲桶 ID，store_reply 用于校验桶未被替换
 
 
 @dataclass(slots=True)
@@ -139,6 +141,16 @@ class QQMessageBlock:
     record: str = ""        # <record> 语音文本
     keyboard: str = ""      # 按钮文本
     ark: dict[str, str] = field(default_factory=dict)
+    rps: bool = False        # 猜拳
+    dice: bool = False       # 骰子
+    contact_type: str = ""   # 推荐类型 qq/group
+    contact_id: str = ""     # 推荐目标
+    music_type: str = ""     # qq/163/kugou/custom
+    music_id: str = ""
+    music_url: str = ""; music_audio: str = ""; music_title: str = ""; music_singer: str = ""; music_image: str = ""
+    mface_id: str = ""; mface_pkg: str = ""; mface_key: str = ""
+    file_name: str = ""; file_path: str = ""
+    json_data: str = ""
 
 
 @dataclass(slots=True)
@@ -165,6 +177,12 @@ class QQReplyOutcome:
     raw_reply_text: str | None = None
     postprocess_reason: str = ""
     blocks: list[QQMessageBlock] = field(default_factory=list)
+    emoji_reaction_id: str = ""
+    feeling: str = ""                 # <feeling> 标签提取的情绪
+    forward_content: str = ""
+    forward_target: str = ""
+    forward_count: int = 0              # <forward count="N">，0=默认20条
+    forward_mark: bool = False          # <mark/> 标记转发起点
     relay_plan: QQRelayPlan | None = None
     relay_result: QQRelayResult | None = None
     delivery_plan: QQDeliveryPlan | None = None

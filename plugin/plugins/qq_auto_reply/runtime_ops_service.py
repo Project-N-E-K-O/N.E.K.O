@@ -33,10 +33,17 @@ class QQRuntimeOpsService:
             if self.plugin.attention_service and self.plugin.qq_client.needs_attention:
                 await self.plugin.attention_service.start_decay_loop()
             self.plugin._emit_log("INFO", "已连接，启动消息处理循环")
-            if self.plugin.attention_gate_service:
-                await self.plugin.attention_gate_service.start_proactive_loop()
             self.plugin._startup_error = None
             self.plugin._running = True
+            # 启动 = 猫娘醒来，记录睡眠段
+            if self.plugin.fatigue_service and self.plugin.fatigue_service._sleep_start_at > 0:
+                import time as _time
+                slept = _time.time() - self.plugin.fatigue_service._sleep_start_at
+                if slept > 60:
+                    self.plugin.fatigue_service._record_sleep_segment(slept, started_at=self.plugin.fatigue_service._sleep_start_at)
+                    self.plugin._emit_log("INFO", f"猫娘醒了，睡了{slept/3600:.1f}h")
+                self.plugin.fatigue_service._sleep_start_at = 0
+                self.plugin.fatigue_service._woken_early = False
             self.plugin._message_task = asyncio.create_task(self.plugin._process_messages())
             return Ok({"status": "started"})
         except Exception as e:
@@ -58,10 +65,13 @@ class QQRuntimeOpsService:
 
     async def stop_runtime(self, *, stop_napcat: bool):
         self.plugin._running = False
+        # 停止 = 猫娘去睡觉
+        if self.plugin.fatigue_service:
+            self.plugin.fatigue_service._record_sleep_start()
+            await self.plugin.fatigue_service.save_state()
+            self.plugin._emit_log("INFO", "猫娘去睡了")
         if self.plugin.attention_service:
             await self.plugin.attention_service.stop_decay_loop()
-        if self.plugin.attention_gate_service:
-            await self.plugin.attention_gate_service.stop_proactive_loop()
         if self.plugin._message_task:
             self.plugin._message_task.cancel()
             try:

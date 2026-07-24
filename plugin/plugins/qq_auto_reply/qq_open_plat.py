@@ -329,28 +329,60 @@ class QQOpenPlatformConnection(QQConnectionBase):
             group_id, [{"type": "text", "data": {"text": message}}],
         )
 
-    async def send_private_record(self, user_id: str, file_uri: str) -> None:
+    async def send_private_record(self, user_id: str, file_uri: str, *, reply_message_id: str = "") -> None:
         """发送私聊语音 — 开放平台不支持，降级为文本"""
-        await self.send_private_message_segments(
-            user_id, [{"type": "text", "data": {"text": "[语音消息]"}}],
-        )
+        segments: list[dict[str, Any]] = []
+        if str(reply_message_id or "").strip():
+            segments.append({"type": "reply", "data": {"id": str(reply_message_id)}})
+        segments.append({"type": "text", "data": {"text": "[语音消息]"}})
+        await self.send_private_message_segments(user_id, segments)
 
     async def send_private_message_segments(
-        self, user_id: str, segments: list[dict[str, Any]]
+        self, user_id: str, segments: list[dict[str, Any]], *, record_sent: bool = True
     ) -> Optional[str]:
+        """将 OneBot segments 转换为 QQ 开放平台私聊格式并发送。
+
+        QQ 开放平台私聊仅支持纯文本 + 图片，其他类型降级为文本占位。
+        """
         content_parts: list[str] = []
         image_url = ""
+
         for seg in segments:
+            seg_type = str(seg.get("type") or "").strip()
             data = seg.get("data") or {}
-            if seg.get("type") == "text":
+            if seg_type == "text":
                 content_parts.append(str(data.get("text") or ""))
-            elif seg.get("type") == "image":
+            elif seg_type == "image":
                 image_url = str(data.get("file") or "")
+            elif seg_type == "reply":
+                content_parts.append("[回复]")
+            elif seg_type == "at":
+                at_qq = str(data.get("qq") or "")
+                content_parts.append(f"[@{at_qq}]" if at_qq else "[@某人]")
+            elif seg_type == "face":
+                content_parts.append(f"[表情{data.get('id','')}]")
+            elif seg_type == "record":
+                content_parts.append("[语音]")
+            elif seg_type == "rps":
+                content_parts.append("[猜拳]")
+            elif seg_type == "dice":
+                content_parts.append("[骰子]")
+            elif seg_type == "contact":
+                content_parts.append("[推荐联系人]")
+            elif seg_type == "music":
+                content_parts.append("[音乐分享]")
+            elif seg_type == "mface":
+                content_parts.append("[动画表情]")
+            elif seg_type == "file":
+                content_parts.append(f"[文件 {data.get('name', '')}]")
+            elif seg_type == "json":
+                content_parts.append("[卡片消息]")
+            else:
+                pass  # 忽略未知类型
 
         content = "".join(content_parts).strip()
         if not content and not image_url:
             return None
-        # 私聊图片需要先上传获取 file_info，当前仅支持文本；纯图片降级为文本占位
         if image_url and not content:
             content = "[图片]"
 
@@ -362,7 +394,10 @@ class QQOpenPlatformConnection(QQConnectionBase):
                 headers=self._auth_headers(),
             )
             data = resp.json()
-            return str(data.get("id") or "") or None
+            msg_id = str(data.get("id") or "")
+            if msg_id and record_sent:
+                self.record_sent_message_id(msg_id)
+            return msg_id if msg_id else None
         except Exception as e:
             if self.logger:
                 self.logger.warning(f"[QQOpenPlatform] 发送私聊失败: {e}")
@@ -457,6 +492,8 @@ class QQOpenPlatformConnection(QQConnectionBase):
         }
 
     async def _refresh_token(self) -> None:
+        if self._http is None:
+            raise RuntimeError("QQ 开放平台未连接，请先调用 connect()")
         try:
             resp = await self._http.post(self._TOKEN_URL, json={
                 "appId": self._app_id,
@@ -621,3 +658,136 @@ class QQOpenPlatformConnection(QQConnectionBase):
                     att_type = "image" if content_type.startswith("image/") else "file"
                     attachments.append({"type": att_type, "url": url})
         return attachments
+
+    # ==========================================
+    # Stub API methods (QQ 开放平台不支持)
+    # ==========================================
+
+    # Message operations
+    async def set_msg_emoji_like(self, **kw) -> dict: return {}
+    async def delete_msg(self, **kw) -> dict: return {}
+    async def get_msg(self, **kw) -> dict: return {}
+    async def get_forward_msg(self, **kw) -> dict: return {}
+    async def send_like(self, **kw) -> dict: return {}
+    async def mark_msg_as_read(self, **kw) -> dict: return {}
+    async def mark_private_msg_as_read(self, **kw) -> dict: return {}
+    async def mark_group_msg_as_read(self, **kw) -> dict: return {}
+    async def _mark_all_as_read(self, **kw) -> dict: return {}
+    async def send_group_forward_msg(self, **kw) -> dict: return {}
+    async def send_private_forward_msg(self, **kw) -> dict: return {}
+    async def send_forward_msg(self, **kw) -> dict: return {}
+    async def forward_friend_single_msg(self, **kw) -> dict: return {}
+    async def forward_group_single_msg(self, **kw) -> dict: return {}
+    async def get_friend_msg_history(self, **kw) -> dict: return {}
+    async def get_group_msg_history(self, **kw) -> dict: return {}
+
+    # Friend operations
+    async def set_friend_add_request(self, **kw) -> dict: return {}
+    async def delete_friend(self, **kw) -> dict: return {}
+    async def get_friends_with_category(self, **kw) -> dict: return {}
+    async def friend_poke(self, **kw) -> dict: return {}
+    async def get_profile_like(self, **kw) -> dict: return {}
+
+    # Group operations
+    async def set_group_kick(self, **kw) -> dict: return {}
+    async def set_group_ban(self, **kw) -> dict: return {}
+    async def set_group_whole_ban(self, **kw) -> dict: return {}
+    async def set_group_admin(self, **kw) -> dict: return {}
+    async def set_group_card(self, **kw) -> dict: return {}
+    async def set_group_name(self, **kw) -> dict: return {}
+    async def set_group_leave(self, **kw) -> dict: return {}
+    async def set_group_special_title(self, **kw) -> dict: return {}
+    async def set_group_add_request(self, **kw) -> dict: return {}
+    async def set_group_sign(self, **kw) -> dict: return {}
+    async def send_group_sign(self, **kw) -> dict: return {}
+    async def set_group_portrait(self, **kw) -> dict: return {}
+    async def get_group_at_all_remain(self, **kw) -> dict: return {}
+    async def get_group_ignore_add_request(self, **kw) -> dict: return {}
+    async def get_group_system_msg(self, **kw) -> dict: return {}
+    async def _send_group_notice(self, **kw) -> dict: return {}
+    async def _get_group_notice(self, **kw) -> dict: return {}
+    async def _del_group_notice(self, **kw) -> dict: return {}
+    async def group_poke(self, **kw) -> dict: return {}
+    async def send_group_ai_record(self, **kw) -> dict: return {}
+
+    # Group file operations
+    async def upload_group_file(self, **kw) -> dict: return {}
+    async def delete_group_file(self, **kw) -> dict: return {}
+    async def create_group_file_folder(self, **kw) -> dict: return {}
+    async def delete_group_folder(self, **kw) -> dict: return {}
+    async def get_group_file_system_info(self, **kw) -> dict: return {}
+    async def get_group_root_files(self, **kw) -> dict: return {}
+    async def get_group_files_by_folder(self, **kw) -> dict: return {}
+    async def get_group_file_url(self, **kw) -> dict: return {}
+
+    # Info queries
+    async def get_stranger_info(self, **kw) -> dict: return {}
+    async def get_group_info(self, **kw) -> dict: return {}
+    async def get_group_member_info(self, **kw) -> dict: return {}
+    async def get_group_member_list(self, **kw) -> list: return []
+    async def get_group_honor_info(self, **kw) -> dict: return {}
+    async def get_group_shut_list(self, **kw) -> list: return []
+    async def get_group_info_ex(self, **kw) -> dict: return {}
+    async def get_essence_msg_list(self, **kw) -> dict: return {}
+    async def set_essence_msg(self, **kw) -> dict: return {}
+    async def delete_essence_msg(self, **kw) -> dict: return {}
+
+    # Credentials / cookies
+    async def get_cookies(self, **kw) -> dict: return {}
+    async def get_csrf_token(self, **kw) -> dict: return {}
+    async def get_credentials(self, **kw) -> dict: return {}
+
+    # Image / file
+    async def get_image(self, **kw) -> dict: return {}
+    async def upload_private_file(self, **kw) -> dict: return {}
+    async def download_file(self, **kw) -> dict: return {}
+    async def get_file(self, **kw) -> dict: return {}
+
+    # Status
+    async def can_send_image(self) -> bool: return True
+    async def can_send_record(self) -> bool: return False
+    async def get_status(self) -> dict: return {"online": self._ws is not None}
+    async def get_version_info(self, **kw) -> dict: return {}
+    async def get_online_clients(self, **kw) -> dict: return {}
+    async def get_robot_uin_range(self, **kw) -> dict: return {}
+
+    # Profile
+    async def clean_cache(self, **kw) -> dict: return {}
+    async def set_qq_profile(self, **kw) -> dict: return {}
+    async def set_qq_avatar(self, **kw) -> dict: return {}
+    async def set_self_longnick(self, **kw) -> dict: return {}
+    async def set_online_status(self, **kw) -> dict: return {}
+
+    # Input / typing
+    async def set_input_status(self, **kw) -> dict: return {}
+    async def get_recent_contact(self, **kw) -> dict: return {}
+
+    # OCR / util
+    async def ocr_image(self, **kw) -> dict: return {}
+    async def check_url_safely(self, **kw) -> dict: return {}
+    async def translate_en2zh(self, **kw) -> dict: return {}
+    async def fetch_custom_face(self, **kw) -> dict: return {}
+    async def fetch_emoji_like(self, **kw) -> dict: return {}
+
+    # Collection
+    async def create_collection(self, **kw) -> dict: return {}
+    async def get_collection_list(self, **kw) -> dict: return {}
+
+    # Model show
+    async def _get_model_show(self, **kw) -> dict: return {}
+    async def _set_model_show(self, **kw) -> dict: return {}
+
+    # Ark
+    async def ArkSharePeer(self, **kw) -> dict: return {}
+    async def ArkShareGroup(self, **kw) -> dict: return {}
+    async def handle_quick_operation(self, **kw) -> dict: return {}
+    async def get_mini_app_ark(self, **kw) -> dict: return {}
+
+    # NC
+    async def nc_get_packet_status(self, **kw) -> dict: return {}
+    async def nc_get_user_status(self, **kw) -> dict: return {}
+    async def nc_get_rkey(self, **kw) -> dict: return {}
+
+    # AI record
+    async def get_ai_record(self, **kw) -> dict: return {}
+    async def get_ai_characters(self, **kw) -> dict: return {}

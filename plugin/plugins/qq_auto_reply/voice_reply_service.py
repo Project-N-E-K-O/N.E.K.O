@@ -69,7 +69,7 @@ class QQVoiceReplyService:
             if not base_url or (not base_url.startswith("ws://") and not base_url.startswith("wss://")):
                 return None
 
-            voice_id = await self.get_current_voice_id() or "default"
+            voice_id = await self.get_current_voice_id() or "中文女"
             voice_name = str(tts_config.get("voice_name") or voice_id)
 
             import websockets, json as _json, io, wave
@@ -109,7 +109,7 @@ class QQVoiceReplyService:
             self.plugin.logger.warning(f"本地TTS失败: {e}")
             return None
 
-    async def synthesize_reply_voice_audio(self, text: str) -> tuple[bytes, str]:
+    async def synthesize_reply_voice_audio(self, text: str, *, voice_id: str = "") -> tuple[bytes, str]:
         normalized_text = str(text or "").strip()
         if not normalized_text:
             raise RuntimeError("语音合成文本不能为空")
@@ -126,7 +126,8 @@ class QQVoiceReplyService:
                 return local_result
 
             voices = config_manager.get_voices_for_current_api()
-            voice_id = await self.get_current_voice_id()
+            if not voice_id:
+                voice_id = await self.get_current_voice_id()
             if not voice_id:
                 active_native = get_active_realtime_native_provider_for_ui(config_manager)
                 if active_native:
@@ -271,7 +272,12 @@ class QQVoiceReplyService:
             except Exception:
                 tts_api_config = {}
             if not voice_id:
-                raise RuntimeError("未配置 voice_id 且无实时语音 provider，无法合成语音")
+                free_voices = get_free_voices() or {}
+                if free_voices:
+                    voice_id = next(iter(free_voices.values()), "")
+                    self.plugin.logger.info(f"未配置 voice_id，使用默认云音色: {voice_id}")
+            if not voice_id:
+                raise RuntimeError("未配置 voice_id 且无可用默认音色，无法合成语音")
             preview_base_url = cosyvoice_base_url or tts_api_config.get("base_url", "")
             from utils.api_config_loader import get_cosyvoice_clone_model
             clone_model = (voice_data or {}).get("clone_model") or get_cosyvoice_clone_model(provider)
@@ -302,9 +308,15 @@ class QQVoiceReplyService:
             raise RuntimeError("语音合成文本不能为空")
         voice_id = await self.get_current_voice_id()
         if not voice_id:
-            raise RuntimeError("当前猫娘未配置 voice_id，无法发送语音")
+            # 回退：取免费语音列表的第一个
+            free_voices = get_free_voices() or {}
+            if free_voices:
+                voice_id = next(iter(free_voices.values()), "")
+                self.plugin.logger.info(f"未配置 voice_id，使用默认音色: {voice_id}")
+        if not voice_id:
+            raise RuntimeError("未配置 voice_id 且无可用默认音色，无法发送语音")
         await self.cleanup_voice_output_dir()
-        audio_bytes, mime_type = await self.synthesize_reply_voice_audio(normalized_text)
+        audio_bytes, mime_type = await self.synthesize_reply_voice_audio(normalized_text, voice_id=voice_id)
         if not audio_bytes:
             raise RuntimeError("语音合成未返回音频数据")
         voice_dir = self.get_voice_output_dir()
@@ -314,7 +326,7 @@ class QQVoiceReplyService:
         await asyncio.to_thread(output_path.write_bytes, audio_bytes)
         return output_path.resolve().as_uri(), mime_type
 
-    async def deliver_private_reply(self, target_qq: str, text: str, *, voice_text: str = "", fallback_to_text_on_voice_failure: bool) -> None:
+    async def deliver_private_reply(self, target_qq: str, text: str, *, voice_text: str = "", fallback_to_text_on_voice_failure: bool, reply_message_id: str = "") -> None:
         normalized_text = self.plugin._validate_outbound_message(text)
         mode = self.plugin._get_reply_mode()
         if mode == "text":
@@ -329,7 +341,7 @@ class QQVoiceReplyService:
                     await self.plugin.qq_client.send_message(target_qq, normalized_text)
                 try:
                     file_uri, _ = await self.synthesize_reply_voice_file(voice_content)
-                    await self.plugin.qq_client.send_private_record(target_qq, file_uri)
+                    await self.plugin.qq_client.send_private_record(target_qq, file_uri, reply_message_id=reply_message_id)
                     return
                 except Exception:
                     self.plugin.logger.warning("QQ both-语音私聊发送失败，已保留文本", exc_info=True)
@@ -341,9 +353,9 @@ class QQVoiceReplyService:
         try:
             file_uri, _ = await self.synthesize_reply_voice_file(normalized_text)
             if mode == "voice":
-                await self.plugin.qq_client.send_private_record(target_qq, file_uri)
+                await self.plugin.qq_client.send_private_record(target_qq, file_uri, reply_message_id=reply_message_id)
                 return
-            await self.plugin.qq_client.send_private_record(target_qq, file_uri)
+            await self.plugin.qq_client.send_private_record(target_qq, file_uri, reply_message_id=reply_message_id)
         except Exception:
             if mode == "voice" and fallback_to_text_on_voice_failure:
                 self.plugin.logger.warning("QQ 纯语音私聊发送失败，回退文本", exc_info=True)

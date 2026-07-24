@@ -223,3 +223,4 @@ tests/testbench/docs/dev_note.txt
 # Plugin runtime and local live-screen artifacts
 /plugin/plugins/*/plugin.toml.lock
 /.codex-live-screen.png
+plugin/plugins/qq_auto_reply/tests/test_reply_buffer_regressions.py

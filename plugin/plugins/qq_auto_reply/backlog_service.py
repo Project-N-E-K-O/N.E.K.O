@@ -38,10 +38,7 @@ class QQBacklogService:
         sender_id = str(message.get("user_id") or "").strip()
         if not sender_id:
             return
-        message_text = self.plugin._sanitize_message_text(
-            str(message.get("content") or "").strip(),
-            is_reply_to_bot=bool(message.get("is_reply_to_bot")),
-        )
+        message_text = self.plugin._sanitize_message_text(str(message.get("content") or "").strip())
         if not message_text:
             return
         sender_name = str(message.get("user_nickname") or sender_id).strip() or sender_id

@@ -1,379 +1,315 @@
 """
-LLM 驱动的回复缓冲与发送延迟
-
-消息到达 → LLM 生成回复 + 等待时间 → 异步等待 → 发送
-等待期间新消息到达 → LLM 决定合并/替换/丢弃 → 重置计时
-
-LLM 通过 <wait>N</wait> 标签指定等待秒数（默认 0，立即发送）。
+缓冲：消息到达 → 等待正态分布随机间隔 → 单条直接发 / 多条合并发
 """
 
 from __future__ import annotations
 
 import asyncio
-import random
 import time
-from typing import Any, Optional
+from collections import Counter
+from typing import Any
+
+import random as _random
+
+# n-gram 话题抽取的静态停用词基础表，运行时会额外并入 backlog_labels 中配置的关键词
+_STOP_WORDS: set[str] = {
+    "这个", "那个", "什么", "怎么", "为什么", "是不是", "有没有",
+    "我觉得", "就是说", "然后", "所以", "但是", "不过", "其实",
+    "哈哈哈", "确实", "是的", "对的", "嗯嗯", "好的", "可以",
+    "啊", "吧", "呢", "吗", "哦", "嗯", "哈",
+}
 
 
 class PendingReply:
-    """待发送的回复（缓冲模式：收消息时不合成，等暂停后统一生成回复）"""
-    __slots__ = ("buffered_texts", "wait_until", "task", "topic_hint", "message_count",
-                 "sender_id", "is_group", "group_id", "_acked", "first_blocks")
+    __slots__ = ("entries", "wait_until", "task", "sender_id", "is_group", "group_id", "task_gen", "bot_blocks", "_no_reply_retries", "bucket_id")
 
-    def __init__(self, first_text: str, wait_seconds: float, sender_id: str, is_group: bool, group_id: str):
-        self.buffered_texts: list[str] = [first_text]  # 缓冲的消息文本
-        self.wait_until = time.time() + wait_seconds
-        self.task: Optional[asyncio.Task] = None
-        self.topic_hint: str = ""
-        self.message_count: int = 1
+    def __init__(self, sender_id: str, is_group: bool, group_id: str):
+        self.entries: list[tuple[str, str]] = []  # [(sender_id, message_text), ...]
+        self.wait_until = 0.0
+        self.task: asyncio.Task | None = None
+        self.task_gen: int = 0
         self.sender_id = sender_id
         self.is_group = is_group
         self.group_id = group_id
-        self._acked = False
-        self.first_blocks: list = []
+        self.bucket_id: int = 0  # 单调递增的身份标识
+
+    def _new_task(self, coro) -> asyncio.Task:
+        self.task_gen += 1
+        self.task = asyncio.create_task(coro)
+        return self.task
 
 
 class QQReplyBufferService:
-    """LLM 驱动的异步回复缓冲"""
-
-    DEFAULT_WAIT_SECONDS = 3.0      # 群聊默认等待 3 秒
-    DEFAULT_WAIT_PRIVATE = 6.0      # 私聊默认等待 6 秒（对方往往在连续输出）
-    MAX_WAIT_SECONDS = 10.0         # 最多等 10 秒
-
     def __init__(self, plugin: Any):
         self.plugin = plugin
-        self._pending: dict[str, PendingReply] = {}  # session_key → PendingReply
+        self._pending: dict[str, PendingReply] = {}
+        # 复合键 "session_key:bucket_id" —— 同一会话可同时存在多个 detached 桶
+        self._detached: dict[str, PendingReply] = {}
+        self._bucket_id_seq: int = 0
 
-    # ── 提取 LLM 指定的等待时间 ──
+    def _cfg(self, key: str, default, is_group: bool):
+        s = self.plugin._qq_settings or {}
+        # 私聊用 buffer_private_* 前缀，未配置时回退到群聊默认
+        if not is_group:
+            val = s.get(f"buffer_private_{key}")
+            if val is not None:
+                return val
+        return s.get(f"buffer_{key}", default)
 
-    @classmethod
-    def extract_wait_seconds(cls, raw_text: str) -> tuple[str, float]:
-        """从 LLM 输出中提取 <wait>N</wait> 标签，返回 (清理后文本, 等待秒数)。"""
-        import re
-        match = re.search(r"<wait>(\d+(?:\.\d+)?)</wait>", raw_text, re.IGNORECASE)
-        if match:
-            try:
-                secs = float(match.group(1))
-                secs = max(0.0, min(cls.MAX_WAIT_SECONDS, secs))
-                clean = re.sub(r"<wait>\d+(?:\.\d+)?</wait>", "", raw_text, count=1, flags=re.IGNORECASE)
-                return clean.strip(), secs
-            except ValueError:
-                pass
-        return raw_text, cls.DEFAULT_WAIT_SECONDS
+    def _enabled(self, is_group: bool) -> bool:
+        return bool(self._cfg("enabled", True, is_group))
 
-    # ── 话题摘要 ──
+    def _delay_params(self, is_group: bool) -> tuple[float, float]:
+        mu = max(1.0, float(self._cfg("delay_mean", 9.0, is_group) or 9.0))
+        sigma = max(0.1, float(self._cfg("delay_sigma", 1.8, is_group) or 1.8))
+        return mu, sigma
+
+    def _max_count(self, is_group: bool) -> int:
+        return max(2, int(self._cfg("max_count", 17, is_group) or 17))
+
+    def _random_delay(self, is_group: bool) -> float:
+        mu, sigma = self._delay_params(is_group)
+        return max(0.0, _random.gauss(mu, sigma))
+
+    def _next_bucket_id(self) -> int:
+        self._bucket_id_seq += 1
+        return self._bucket_id_seq
 
     @staticmethod
-    def _topic_hint(text: str) -> str:
-        """从文本中提取简短话题摘要（前 30 字）。"""
-        t = str(text or "").strip()
-        return t[:30] if t else ""
+    def _detached_key(session_key: str, bucket_id: int) -> str:
+        return f"{session_key}:{bucket_id}"
+
+    # ------------------------------------------------------------------
+    # 公共接口
+    # ------------------------------------------------------------------
+
+    def store_reply(self, session_key: str, reply_text: str, blocks: list, *, expected_bucket_id: int = 0) -> bool:
+        """已废弃：单条消息回复由 pipeline 直接交付，桶只负责汇总。始终返回 False 让 pipeline 走直接发送。"""
+        return False
 
     def has_pending(self, session_key: str) -> bool:
-        """检查是否有等待中的缓冲（含 LLM 生成中未完成的）。"""
         p = self._pending.get(session_key)
-        return p is not None and (p.task is None or not p.task.done())
+        if p is not None and (p.task is None or not p.task.done()):
+            return True
+        prefix = f"{session_key}:"
+        return any(
+            (v.task is None or not v.task.done())
+            for k, v in self._detached.items() if k.startswith(prefix)
+        )
 
-    def pre_buffer(self, session_key: str, message_text: str, sender_id: str, is_group: bool, group_id: str) -> bool:
-        """消息到达时调用（LLM 生成前）：创建/追加缓冲，返回 True 表示跳过 pipeline。"""
-        now = time.time()
+    def get_state(self) -> dict[str, Any]:
+        count = len(self._pending) + len(self._detached)
+        entries = []
+        for k, p in self._pending.items():
+            entries.append({"session_key": k, "count": len(p.entries), "wait_until": p.wait_until})
+        for k, p in self._detached.items():
+            # k is "session_key:bucket_id", strip the :bucket_id suffix for display
+            display_key = k.rsplit(":", 1)[0]
+            entries.append({"session_key": display_key, "count": len(p.entries), "wait_until": p.wait_until})
+        return {"pending": entries, "count": count}
+
+    async def buffer(self, session_key: str, message_text: str, sender_id: str, is_group: bool, group_id: str) -> bool:
+        """消息到达时调用。返回 True 表示跳过 pipeline，返回 False 表示需要走 pipeline。
+        启用时所有消息都入桶，定时汇总一条回复，不产生重复。"""
+        if not self._enabled(is_group):
+            return False
+        max_count = self._max_count(is_group)
         existing = self._pending.get(session_key)
-
         if existing and (existing.task is None or not existing.task.done()):
-            # 已有缓冲 → 追加
+            # 桶已存在：取消旧计时，追加消息，重启新计时
             if existing.task:
                 existing.task.cancel()
-            existing.buffered_texts.append(message_text)
-            existing.message_count += 1
-            n = existing.message_count
-            if n <= 2:       extra = random.uniform(6.0, 10.0)
-            elif n <= 4:     extra = random.uniform(10.0, 16.0)
-            elif n <= 7:     extra = random.uniform(13.0, 19.0)
-            elif n <= 16:    extra = random.uniform(6.0, 11.0)
-            else:            extra = 0.0
-            existing.wait_until = now + extra
-            existing.task = asyncio.create_task(self._deliver_after_wait(session_key, existing))
-            self.plugin._emit_log("DEBUG", f"[Buffer] 预缓冲追加（共{n}条），等待 {extra:.1f}s，跳过 LLM 生成")
-            return True
-
-        # 无缓冲 → 创建新缓冲，等 pipeline 完成后 schedule_reply 会填充回复
-        pending = PendingReply(
-            first_text=message_text,
-            wait_seconds=6.0,
-            sender_id=sender_id,
-            is_group=is_group,
-            group_id=group_id,
-        )
-        pending.task = None  # 尚未启动等待（等 schedule_reply 来启动）
-        self._pending[session_key] = pending
-        return False  # 首次消息，走 pipeline
-
-    def get_state(self) -> dict:
-        """返回当前缓冲状态（供前端展示）。"""
-        now = time.time()
-        items = []
-        for key, p in self._pending.items():
-            remaining = max(0.0, p.wait_until - now)
-            items.append({
-                "session": key,
-                "messages": p.message_count,
-                "wait_remaining": round(remaining, 1),
-                "is_group": p.is_group,
-            })
-        return {"pending": items, "count": len(items)}
-
-    # ── 调度回复 ──
-
-    async def schedule_reply(
-        self,
-        session_key: str,
-        reply_text: str,
-        raw_text: str,
-        blocks: list,
-        wait_seconds: float,
-        sender_id: str,
-        is_group: bool,
-        group_id: str = "",
-        extra_count: int = 0,
-    ) -> None:
-        """缓冲一条消息。如果已有等待中的缓冲，追加消息并重置等待计时。"""
-        # 存入缓冲前去除 XML 标签（raw_text 可能含 <msg><text> 等）
-        import re
-        clean_text = re.sub(r"<[^>]+>", "", str(reply_text or raw_text or "")).strip()
-        if not clean_text:
-            clean_text = str(reply_text or raw_text or "").strip()
-        existing = self._pending.get(session_key)
-
-        if existing and existing.task and not existing.task.done():
-            # 已有缓冲 → 追加消息，转发子条数计入
-            existing.task.cancel()
-            existing.buffered_texts.append(clean_text)
-            existing.first_blocks = blocks  # 保留原始 blocks（sticker/poke/record 等）
-            existing.message_count += 1 + max(0, extra_count)
-            # 动态等待：6~20s 正态分布，中间最长（峰值 ~16s），两头短
-            n = existing.message_count
-            if n <= 2:
-                extra = random.uniform(6.0, 10.0)
-            elif n <= 4:
-                extra = random.uniform(10.0, 16.0)
-            elif n <= 7:
-                extra = random.uniform(13.0, 19.0)
-            elif n <= 16:
-                extra = random.uniform(6.0, 11.0)
-            else:
-                extra = 0.0
-            existing.wait_until = time.time() + extra
-            self.plugin._emit_log("DEBUG", f"缓冲追加（共{n}条），等待 {extra:.1f}s")
-
-            # 10-16 条 → 走 pipeline 发简短确认
-            if 10 <= n < 17 and not getattr(existing, "_acked", False):
-                existing._acked = True
-                try:
-                    from .pipeline_models import QQReplyRequest
-                    combined = "\n".join(f"[{i+1}] {t[:100]}" for i, t in enumerate(existing.buffered_texts[-5:]))
-                    request = QQReplyRequest(
-                        message_text=f"[系统] 对方连续发了多条消息，你需要发一句简短的话表示\"我在听\"吗？如果需要，只回复那句话（不超过10个字，要自然，符合人设）；如果不需要，回复空内容。以下是最近内容：\n{combined}",
-                        sender_id=existing.sender_id or "0",
-                        is_group=existing.is_group,
-                        group_id=existing.group_id if existing.is_group else None,
-                        is_at_bot=True,
-                        source_kind="rapid_fire_flush",
-                        fallback_to_text_on_voice_failure=True,
-                    )
-                    await self.plugin.reply_pipeline.run(request)
-                except Exception as e:
-                    self.plugin._emit_log("WARN", f"[Buffer] 简短确认失败: {e}")
-
-            # 17+ 条 → 走 pipeline 强制总结 + 清空缓冲
-            if n >= 17:
-                existing.task.cancel()
+            existing.entries.append((sender_id, message_text))
+            if len(existing.entries) >= max_count:
+                existing.wait_until = 0
                 self._pending.pop(session_key, None)
-                try:
-                    from .pipeline_models import QQReplyRequest
-                    combined = "\n".join(f"[{i+1}] {t[:150]}" for i, t in enumerate(existing.buffered_texts))
-                    request = QQReplyRequest(
-                        message_text=f"[系统] 对方连续发了以下消息，请用一两句话自然总结回复：\n{combined}",
-                        sender_id=existing.sender_id or "0",
-                        is_group=existing.is_group,
-                        group_id=existing.group_id if existing.is_group else None,
-                        is_at_bot=True,
-                        source_kind="rapid_fire_flush",
-                        fallback_to_text_on_voice_failure=True,
-                    )
-                    await self.plugin.reply_pipeline.run(request)
-                except Exception as e:
-                    self.plugin._emit_log("WARN", f"[Buffer] 强制总结失败: {e}")
-                return
-        else:
-            # 新缓冲：pre_buffer 可能已创建了占位 pending
-            existing = self._pending.get(session_key)
-            if existing and existing.task is None:
-                # pre_buffer 占位 → 填充回复文本，启动等待
-                existing.buffered_texts[0] = clean_text  # 替换占位文本为 LLM 回复
-                existing.wait_until = time.time() + wait_seconds
-                existing.sender_id = sender_id
-                existing.is_group = is_group
-                existing.group_id = group_id
-                existing.first_blocks = blocks
-                existing.topic_hint = self._topic_hint(raw_text or reply_text)
+                self._detached[self._detached_key(session_key, existing.bucket_id)] = existing
+                existing._new_task(self._flush_detached(session_key, existing))
+                self.plugin._emit_log("INFO", f"[Buffer] 达到上限 key={session_key} count={len(existing.entries)} → 立即交付")
             else:
-                # 完全新缓冲
-                existing = PendingReply(
-                    first_text=clean_text,
-                    wait_seconds=wait_seconds,
-                    sender_id=sender_id,
-                    is_group=is_group,
-                    group_id=group_id,
-                )
-                existing.first_blocks = blocks
-                existing.message_count += max(0, extra_count)
-                existing.topic_hint = self._topic_hint(raw_text or reply_text)
-                self._pending[session_key] = existing
+                delay = self._random_delay(is_group)
+                existing.wait_until = time.time() + delay
+                existing._new_task(self._flush(session_key, existing))
+                self.plugin._emit_log("DEBUG", f"[Buffer] 追加 key={session_key} count={len(existing.entries)} delay={delay:.1f}s")
+            return True   # 跳过 pipeline，统一等汇总
 
-        # 启动等待任务
-        existing.sender_id = sender_id  # 更新（可能变化）
-        existing.is_group = is_group
-        existing.group_id = group_id
-        existing.task = asyncio.create_task(self._deliver_after_wait(session_key, existing))
+        # 首条消息：创建缓冲桶，起计时器。不触发独立 pipeline
+        pending = PendingReply(sender_id, is_group, group_id)
+        pending.bucket_id = self._next_bucket_id()
+        pending.entries.append((sender_id, message_text))
+        delay = self._random_delay(is_group)
+        pending.wait_until = time.time() + delay
+        pending.task = pending._new_task(self._flush(session_key, pending))
+        self._pending[session_key] = pending
+        self.plugin._emit_log("DEBUG", f"[Buffer] 新建 key={session_key} bucket_id={pending.bucket_id} delay={delay:.1f}s")
+        return True   # 跳过 pipeline，统一等汇总
 
-    async def _deliver_after_wait(self, session_key: str, pending: PendingReply) -> None:
-        """等待暂停后，汇总缓冲消息让 LLM 生成最终回复并发送。"""
-        now = time.time()
-        delay = max(0.0, pending.wait_until - now)
+    # ------------------------------------------------------------------
+    # 话题抽取
+    # ------------------------------------------------------------------
+
+    def _bucket_topic(self, entries: list[tuple[str, str]]) -> str:
+        """从桶内消息抽取高频 2-4 字短语作为话题标签。
+
+        停用词 = 静态通用词 + 用户配置的 backlog_labels 关键词。
+        关键词被配置本身就说明它在对话中高频出现，作为话题标签缺乏区分度。
+        """
+        stop: set[str] = set(_STOP_WORDS)
+        try:
+            for label in (self.plugin._qq_settings or {}).get("backlog_labels") or []:
+                for kw in label.get("keywords") or []:
+                    kw = str(kw).strip()
+                    if kw:
+                        stop.add(kw)
+        except Exception:
+            pass
+
+        grams: Counter[str] = Counter()
+        for _sid, text in entries[-5:]:
+            for n in (2, 3, 4):
+                for i in range(len(text) - n + 1):
+                    gram = text[i:i + n]
+                    if gram not in stop:
+                        grams[gram] += 1
+        if not grams:
+            return ""
+        return grams.most_common(1)[0][0]
+
+    # ------------------------------------------------------------------
+    # 话题偏移检测
+    # ------------------------------------------------------------------
+
+    async def _topic_shift(self, existing: PendingReply, new_text: str) -> bool:
+        """判断新消息是否和桶内已有消息话题不一致。返回 True 表示需要分桶。"""
+        # 快速路径：消息数太少不检测；或新消息很短（大概率不是话题转换）
+        if len(existing.entries) < 2:
+            return False
+        if len(new_text) <= 3:
+            return False
+        # 提取桶内用户消息
+        buf_texts = [t for _sid, t in existing.entries[-5:]][:200]
+        if not buf_texts:
+            return False
+        # 快速预判：新消息和桶内消息有明显重叠 → 省掉 LLM 调用
+        if any(new_text.startswith(t) or t.startswith(new_text) for t in buf_texts):
+            return False
+
+        old_topic = self._bucket_topic(existing.entries)
+        new_topic = self._bucket_topic([("", new_text)])
+
+        # n-gram 话题词直接命中 → 同一话题，跳过 LLM
+        if old_topic and new_topic and (old_topic in new_topic or new_topic in old_topic):
+            return False
+
+        from utils.config_manager import get_config_manager
+        cfg = get_config_manager().get_model_api_config("conversation")
+        base_url = str(cfg.get("base_url", ""))
+        model = str(cfg.get("model", ""))
+        api_key = str(cfg.get("api_key", ""))
+        if not base_url or not model:
+            return self._topic_shift_heuristic(buf_texts, new_text, old_topic, new_topic)
+
+        prompt = (
+            "判断新消息是否和已有消息属于同一话题。只回答\"是\"或\"否\"。\n\n"
+            f"已有话题：{old_topic or '（未知）'}\n"
+            f"已有消息：\n" + "\n".join(f"- {t[:100]}" for t in buf_texts) +
+            f"\n\n新消息：{new_text[:100]}"
+        )
+
+        # 链路1: create_chat_llm_async
+        try:
+            from utils.llm_client import create_chat_llm_async
+            llm = await create_chat_llm_async(
+                model=model, base_url=base_url, api_key=api_key,
+                max_completion_tokens=5, timeout=5.0, provider_type=cfg.get("provider_type"),
+            )
+            resp = await asyncio.wait_for(llm.ainvoke([{"role": "user", "content": prompt}]), timeout=5.0)
+            answer = str(getattr(resp, "content", "") or "").strip()
+            is_shift = "否" in answer
+            if is_shift:
+                self.plugin._emit_log("INFO", f"[Buffer] LLM 判定话题偏离 old=「{old_topic}」new=「{new_topic}」")
+            return is_shift
+        except Exception:
+            pass
+
+        # LLM 失败 → 启发式规则兜底
+        result = self._topic_shift_heuristic(buf_texts, new_text, old_topic, new_topic)
+        if result:
+            self.plugin._emit_log("INFO", f"[Buffer] 启发式判定话题偏离 old=「{old_topic}」new=「{new_topic}」")
+        return result
+
+    @staticmethod
+    def _topic_shift_heuristic(buf_texts: list[str], new_text: str,
+                               old_topic: str = "", new_topic: str = "") -> bool:
+        """规则兜底：新消息和桶内消息明显不同时返回 True。"""
+        avg_len = sum(len(t) for t in buf_texts) / max(len(buf_texts), 1)
+        # 桶内全是短消息（≤4字），新消息是完整句子 → 话题偏移
+        if avg_len <= 4 and len(new_text) >= 10:
+            return True
+        # 新消息有问号/疑问词，桶内没有 → 提问式话题转换
+        q_words = ("?", "？", "什么", "怎么", "为什么", "哪", "谁", "几点", "多少", "吗", "呢", "吧")
+        has_q = any(w in new_text for w in q_words)
+        buf_has_q = any(any(w in t for w in q_words) for t in buf_texts)
+        if has_q and not buf_has_q:
+            return True
+        return False
+
+    # ------------------------------------------------------------------
+    # 交付
+    # ------------------------------------------------------------------
+
+    async def _flush_detached(self, session_key: str, pending: PendingReply) -> None:
+        """已从 _pending 摘除的桶的交付逻辑——_flush_impl 内部处理清理。"""
+        await self._flush_impl(session_key, pending, check_pending=False)
+
+    async def _flush(self, session_key: str, pending: PendingReply) -> None:
+        await self._flush_impl(session_key, pending, check_pending=True)
+
+    async def _flush_impl(self, session_key: str, pending: PendingReply, *, check_pending: bool) -> None:
+        delay = max(0.0, pending.wait_until - time.time())
+        gen = pending.task_gen
+        self.plugin._emit_log("DEBUG", f"[Buffer] 等待中 key={session_key} gen={gen} delay={delay:.1f}s count={len(pending.entries)}")
         try:
             await asyncio.sleep(delay)
         except asyncio.CancelledError:
-            return  # 新消息打断了等待
-
-        if self._pending.get(session_key) is not pending:
+            if check_pending and self._pending.get(session_key) is pending and pending.task_gen == gen:
+                self._pending.pop(session_key, None)
+            if not check_pending:
+                self._detached.pop(self._detached_key(session_key, pending.bucket_id), None)
             return
 
-        # 汇总缓冲内容
-        texts = pending.buffered_texts
-        if pending.message_count == 1:
-            from .pipeline_models import QQMessageBlock, QQDeliveryPlan
-            # 优先用原始 blocks（保留 sticker/poke/record），否则纯文本
-            if pending.first_blocks:
-                blocks = pending.first_blocks
-            else:
-                import re
-                clean_text = re.sub(r"<[^>]+>", "", texts[0]).strip() or texts[0]
-                blocks = [QQMessageBlock(text=clean_text)]
-            plan = QQDeliveryPlan(
-                target_type="group" if pending.is_group else "private",
-                target_id=pending.group_id if pending.is_group else pending.sender_id,
-                blocks=blocks,
-                fallback_to_text_on_voice_failure=True,
-            )
-            await self.plugin.reply_delivery_node.deliver(plan)
+        if check_pending and self._pending.get(session_key) is not pending:
+            return
+
+        user_entries = pending.entries
+
+        # pop 再交付——交付期间新消息进来会建新桶，不会污染当前桶
+        if check_pending:
             self._pending.pop(session_key, None)
-            return
+        else:
+            self._detached.pop(self._detached_key(session_key, pending.bucket_id), None)
 
-        # 多条缓冲 → 走 pipeline 生成总结（兼容 Lanlan）
-        self.plugin._emit_log("INFO", f"缓冲{pending.message_count}条消息，走 pipeline 生成总结...")
+        # 始终走汇总：管它 1 条还是 N 条，统一生成一条总结回复
+        # 单条消息的立即回复已由 pipeline 直接交付，这里只负责汇总
+        self.plugin._emit_log("INFO", f"[Buffer] {len(user_entries)}条消息汇总, 走 pipeline 总结...")
+        lines = []
+        for sid, t in user_entries:
+            name = self.plugin.permission_mgr.get_nickname(sid) if self.plugin.permission_mgr else sid
+            lines.append(f"{name or sid}: {t[:150]}")
+        combined = "\n".join(lines)
+        from .pipeline_models import QQReplyRequest
+        chat_type = "群友" if pending.is_group else "对方的"
+        hint = f"[系统] 下面是{'你' if pending.is_group else '你和' + chat_type + '的'}对话，如果你觉得需要接话就自然回复（不要复述，用一两句话）；如果没必要回可以不回，不回复是正常的。\n{combined}"
+        request = QQReplyRequest(
+            message_text=hint,
+            sender_id=pending.sender_id or "0",
+            is_group=pending.is_group,
+            group_id=pending.group_id if pending.is_group else None,
+            is_at_bot=True,
+            source_kind="rapid_fire_flush",
+            fallback_to_text_on_voice_failure=True,
+        )
         try:
-            from .pipeline_models import QQReplyRequest
-            combined = "\n".join(f"[{i+1}] {t[:150]}" for i, t in enumerate(texts))
-            request = QQReplyRequest(
-                message_text=f"[系统] 对方连续发了 {len(texts)} 条消息，请用一两句话自然总结回复：\n{combined}",
-                sender_id=pending.sender_id or "0",
-                is_group=pending.is_group,
-                group_id=pending.group_id if pending.is_group else None,
-                is_at_bot=True,
-                source_kind="rapid_fire_flush",
-                fallback_to_text_on_voice_failure=True,
-            )
             await self.plugin.reply_pipeline.run(request)
-            self._pending.pop(session_key, None)
-        except Exception as e:
-            self.plugin._emit_log("WARN", f"[Buffer] 总结pipeline失败: {e}")
-
-    # ── LLM 合并决策 ──
-
-    async def _generate_ack(self, texts: list[str]) -> str:
-        """让 LLM 决定是否发简短确认，以及确认内容。返回空字符串表示不发。"""
-        try:
-            from utils.config_manager import get_config_manager
-            from utils.llm_client import create_chat_llm_async
-            model_config = get_config_manager().get_model_api_config("conversation")
-            if not model_config.get("base_url") or not model_config.get("model"):
-                return ""
-
-            recent = "\n".join(f"[{i+1}] {t[:100]}" for i, t in enumerate(texts[-5:]))
-            llm = await create_chat_llm_async(
-                model=str(model_config["model"]),
-                base_url=str(model_config["base_url"]),
-                api_key=str(model_config.get("api_key", "")),
-                max_completion_tokens=50,
-                timeout=5.0,
-                provider_type=model_config.get("provider_type"),
-            )
-            from utils.token_tracker import set_call_type
-            set_call_type("conversation")
-            prompt = (
-                "对方连续发了多条消息，以下是最近的内容：\n\n"
-                f"{recent}\n\n"
-                "你需要发一句简短的话表示\"我在听\"吗？如果需要，只输出那句话（不超过10个字，要自然，比如\"嗯嗯\"\"继续\"\"听着呢\"等，要符合你的人设）；"
-                "如果不需要，只输出 SKIP。\n"
-                "只输出确认语或 SKIP，不要输出其他内容。"
-            )
-            resp = await asyncio.wait_for(
-                llm.ainvoke([{"role": "user", "content": prompt}]),
-                timeout=5.0,
-            )
-            result = str(getattr(resp, "content", "") or "").strip()
-            if result and result.upper() != "SKIP":
-                return result[:20]
         except Exception:
-            pass
-        return ""
-
-    async def _summarize_buffered(self, texts: list[str], is_group: bool) -> str:
-        """缓冲结束后，让 LLM 看所有缓冲消息生成一条总结回复。"""
-        try:
-            combined = "\n".join(f"[{i+1}] {t[:150]}" for i, t in enumerate(texts))
-            prompt = (
-                f"对方连续发了 {len(texts)} 条消息，内容如下：\n\n"
-                f"{combined}\n\n"
-                "请用一两句话自然回复，总结或回应对方的要点。不要逐条回复，像真人在听对方讲完一堆话之后的自然反应。"
-            )
-
-            # 通过 OmniOfflineClient 调 LLM（兼容 Lanlan API）
-            from main_logic.omni_offline_client import OmniOfflineClient
-            from utils.config_manager import get_config_manager as _gcm
-            import asyncio as _asyncio
-            _cm = _gcm()
-            _mc = _cm.get_model_api_config("conversation")
-            resp_text = ""
-            async def _on_text(t: str, _first: bool = False) -> None:
-                nonlocal resp_text
-                resp_text += t
-            client = OmniOfflineClient(
-                base_url=str(_mc.get("base_url", "")),
-                api_key=str(_mc.get("api_key", "")),
-                model=str(_mc.get("model", "")),
-                on_text_delta=_on_text,
-            )
-            await _asyncio.wait_for(client.stream_text(prompt), timeout=10.0)
-            result = resp_text.strip()
-            if result:
-                return result
-
-            # 回退：raw LLM
-            from utils.config_manager import get_config_manager
-            from utils.llm_client import create_chat_llm_async
-            model_config = get_config_manager().get_model_api_config("conversation")
-            if not model_config.get("base_url") or not model_config.get("model"):
-                return ""
-            llm = await create_chat_llm_async(
-                model=str(model_config["model"]), base_url=str(model_config["base_url"]),
-                api_key=str(model_config.get("api_key", "")),
-                max_completion_tokens=300, timeout=10.0,
-                provider_type=model_config.get("provider_type"),
-            )
-            resp = await _asyncio.wait_for(llm.ainvoke([{"role": "user", "content": prompt}]), timeout=10.0)
-            result = str(getattr(resp, "content", "") or "").strip()
-            return result if result else ""
-        except Exception as e:
-            self.plugin._emit_log("WARN", f"[Buffer] 总结LLM调用失败: {e}")
-            return ""
+            self.plugin.logger.exception(f"[Buffer] 汇总 pipeline 失败, {len(user_entries)}条消息的桶已弹出无法恢复")
