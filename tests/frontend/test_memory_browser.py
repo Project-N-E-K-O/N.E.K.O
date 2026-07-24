@@ -2215,6 +2215,122 @@ def test_memory_browser_beforeunload_blocks_unsaved_memory_changes(
     }
 
 
+@pytest.mark.frontend
+@pytest.mark.parametrize("partial_import", [False, True])
+def test_external_import_refreshes_open_memory_after_persisting(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+    partial_import: bool,
+):
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    memory_content = {"value": seed_memory_file.read_text(encoding="utf-8")}
+    request_counts = {"recent_files": 0, "recent_file": 0}
+
+    def handle_recent_files(route):
+        request_counts["recent_files"] += 1
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={"files": ["recent_测试猫娘.json"]},
+        )
+
+    def handle_recent_file(route):
+        request_counts["recent_file"] += 1
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={"content": memory_content["value"]},
+        )
+
+    def handle_preview(route):
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "success": True,
+                "character_name": "测试猫娘",
+                "counts": {"persona": 0, "facts": 1, "daily": 0},
+                "warning_count": 0,
+                "warnings": [],
+                "persona_fusion_calls": 0,
+                "persona_candidate_tokens": 0,
+                "daily_extraction_calls": 0,
+                "daily_candidate_tokens": 0,
+            },
+        )
+
+    def handle_commit(route):
+        memory_content["value"] = json.dumps(
+            [
+                {
+                    "type": "system",
+                    "data": {"content": "先前对话的备忘录: 导入后立即可见。"},
+                }
+            ],
+            ensure_ascii=False,
+        )
+        if partial_import:
+            route.fulfill(
+                status=500,
+                content_type="application/json",
+                json={
+                    "success": False,
+                    "error_code": "external_import_partial",
+                    "partial_import": {
+                        "added_persona": 0,
+                        "added_facts": 1,
+                        "character_name": "测试猫娘",
+                    },
+                },
+            )
+            return
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "success": True,
+                "character_name": "测试猫娘",
+                "added_persona": 0,
+                "added_facts": 1,
+                "skipped_duplicates": 0,
+                "warning_count": 0,
+            },
+        )
+
+    mock_page.unroute("**/api/memory/recent_files")
+    mock_page.unroute("**/api/memory/recent_file?**")
+    mock_page.route("**/api/memory/recent_files", handle_recent_files)
+    mock_page.route("**/api/memory/recent_file?**", handle_recent_file)
+    mock_page.route("**/api/memory/external_import/preview", handle_preview)
+    mock_page.route("**/api/memory/external_import/commit", handle_commit)
+    mock_page.on("dialog", lambda dialog: dialog.accept())
+
+    mock_page.goto(f"{running_server}/memory_browser")
+    memo = mock_page.locator("#memory-chat-edit .memo-textarea").first
+    expect(memo).to_have_value("这是测试备忘录内容。", timeout=10000)
+
+    _open_auxiliary_panel(mock_page, "import")
+    mock_page.locator("#external-memory-files").set_input_files(
+        {
+            "name": "MEMORY.md",
+            "mimeType": "text/markdown",
+            "buffer": b"# imported memory",
+        }
+    )
+    expect(mock_page.locator("#external-memory-import-btn")).to_be_enabled()
+    mock_page.locator("#external-memory-import-btn").click()
+
+    expected_status = "is-error" if partial_import else "is-success"
+    expect(mock_page.locator("#external-memory-import-status")).to_have_class(
+        re.compile(rf"\b{expected_status}\b"),
+        timeout=10000,
+    )
+    expect(memo).to_have_value("导入后立即可见。", timeout=10000)
+    assert request_counts["recent_files"] >= 2
+    assert request_counts["recent_file"] >= 2
+
+
 def test_memory_browser_responsive_motion_static_performance_contract() -> None:
     project_root = Path(__file__).parents[2]
     css = (project_root / "static/css/memory_browser.css").read_text(encoding="utf-8")

@@ -2373,6 +2373,21 @@
         }
     }
 
+    async function refreshImportedMemoryView(characterName) {
+        if (!characterName || characterName !== currentCatName) return;
+        await loadMemoryFileList();
+        const button = Array.from(document.querySelectorAll('#memory-file-list .cat-btn')).find(
+            item => item.dataset.catname === characterName
+        );
+        if (!button) return;
+        await selectMemoryFile(
+            button.dataset.filename,
+            button.closest('li'),
+            characterName,
+            { allowDuringImport: true }
+        );
+    }
+
     async function fetchExternalMemoryWithTimeout(url, options, timeoutMs) {
         const controller = new AbortController();
         const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -2403,6 +2418,7 @@
         if (formatSelect) formatSelect.disabled = true;
         // 融合期间每秒刷新「已用 Ns」的计时器；try/catch 任一出口都要清（finally 兜底）。
         let etaTimer = null;
+        let persistedCharacterName = '';
         try {
             const targetCharacter = currentCatName;
             setExternalImportStatus(translate('memory.externalImportReading', 'Reading external memory...'), 'working');
@@ -2506,6 +2522,7 @@
                     // memory_edited，否则主聊天窗口继续用过期记忆上下文（daily
                     // 失败但 MEMORY.md 已写入时尤甚）(Codex P2 / CodeRabbit)。
                     if ((partial.added_persona > 0 || partial.added_facts > 0) && partial.character_name) {
+                        persistedCharacterName = partial.character_name;
                         broadcastExternalMemoryEdited(partial.character_name);
                     }
                     throw new Error(translate(
@@ -2518,6 +2535,7 @@
                     // 确定性「太大」失败：重试无益，提示拆分 workspace（Codex P2）。
                     const big = result.partial_import || {};
                     if ((big.added_persona > 0 || big.added_facts > 0) && big.character_name) {
+                        persistedCharacterName = big.character_name;
                         broadcastExternalMemoryEdited(big.character_name);
                     }
                     throw new Error(translate(
@@ -2539,6 +2557,7 @@
                 ),
                 result.warning_count ? 'warning' : 'success'
             );
+            persistedCharacterName = result.character_name;
             broadcastExternalMemoryEdited(result.character_name);
         } catch (error) {
             setExternalImportStatus(
@@ -2547,6 +2566,9 @@
             );
         } finally {
             if (etaTimer) { window.clearInterval(etaTimer); etaTimer = null; }
+            if (persistedCharacterName) {
+                await refreshImportedMemoryView(persistedCharacterName);
+            }
             window._memoryImportInProgress = false;
             if (fileInput) fileInput.disabled = false;
             if (formatSelect) formatSelect.disabled = false;
@@ -3049,10 +3071,11 @@
         });
     }
 
-    async function selectMemoryFile(filename, li, catName) {
+    async function selectMemoryFile(filename, li, catName, options) {
         // 导入进行中冻结角色 / 文件切换：commit 用的是已快照的 targetCharacter，
         // 放行切换只会让侧栏与正在导入的选择不一致（Codex P2）。
-        if (window._memoryImportInProgress) return;
+        const allowDuringImport = !!(options && options.allowDuringImport);
+        if (window._memoryImportInProgress && !allowDuringImport) return;
         const repeatsCurrentSelection = currentMemoryFile === filename
             && !!li
             && li.classList.contains('selected');
