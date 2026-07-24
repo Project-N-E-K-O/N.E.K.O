@@ -251,12 +251,22 @@ class QQNapcatService:
                     "taskkill", "/PID", str(pid), "/T", "/F",
                     stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
                 )
-                await kill_proc.wait()
+                try:
+                    import time as _time
+                    deadline = _time.time() + 5.0
+                    while kill_proc.returncode is None and _time.time() < deadline:
+                        await asyncio.sleep(0.1)
+                except Exception:
+                    pass
             else:
                 try: process.terminate()
                 except Exception: pass
-                try: await asyncio.wait_for(process.wait(), timeout=5.0)
-                except asyncio.TimeoutError:
+                try:
+                    import time as _time
+                    deadline = _time.time() + 5.0
+                    while process.returncode is None and _time.time() < deadline:
+                        await asyncio.sleep(0.1)
+                except Exception:
                     try: process.kill()
                     except Exception: pass
             self.plugin._emit_log("INFO", f"NapCat 进程已终止 PID={pid}")
@@ -267,6 +277,9 @@ class QQNapcatService:
             except ProcessLookupError:
                 pass
         try:
-            await asyncio.wait_for(process.wait(), timeout=3.0)
-        except asyncio.TimeoutError:
+            import time as _time
+            deadline = _time.time() + 3.0
+            while process.returncode is None and _time.time() < deadline:
+                await asyncio.sleep(0.1)
+        except Exception:
             pass

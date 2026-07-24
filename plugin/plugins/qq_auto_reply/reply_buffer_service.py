@@ -11,10 +11,6 @@ from typing import Any
 
 import random as _random
 
-_DELAY_MU = 9.0
-_DELAY_SIGMA = 1.8
-_MAX_BUFFER_COUNT = 17
-
 # n-gram 话题抽取的静态停用词基础表，运行时会额外并入 backlog_labels 中配置的关键词
 _STOP_WORDS: set[str] = {
     "这个", "那个", "什么", "怎么", "为什么", "是不是", "有没有",
@@ -22,10 +18,6 @@ _STOP_WORDS: set[str] = {
     "哈哈哈", "确实", "是的", "对的", "嗯嗯", "好的", "可以",
     "啊", "吧", "呢", "吗", "哦", "嗯", "哈",
 }
-
-
-def _random_delay() -> float:
-    return max(0.0, _random.gauss(_DELAY_MU, _DELAY_SIGMA))
 
 
 class PendingReply:
@@ -56,6 +48,26 @@ class QQReplyBufferService:
         self._detached: dict[str, PendingReply] = {}
         self._bucket_id_seq: int = 0
 
+    def _cfg(self, key: str, default, is_group: bool):
+        s = self.plugin._qq_settings or {}
+        # 私聊用 buffer_private_* 前缀，未配置时回退到群聊默认
+        if not is_group:
+            val = s.get(f"buffer_private_{key}")
+            if val is not None:
+                return val
+        return s.get(f"buffer_{key}", default)
+
+    def _enabled(self, is_group: bool) -> bool:
+        return bool(self._cfg("enabled", True, is_group))
+
+    def _delay_params(self, is_group: bool) -> tuple[float, float]:
+        mu = max(1.0, float(self._cfg("delay_mean", 9.0, is_group) or 9.0))
+        sigma = max(0.1, float(self._cfg("delay_sigma", 1.8, is_group) or 1.8))
+        return mu, sigma
+
+    def _max_count(self, is_group: bool) -> int:
+        return max(2, int(self._cfg("max_count", 17, is_group) or 17))
+
     def _next_bucket_id(self) -> int:
         self._bucket_id_seq += 1
         return self._bucket_id_seq
@@ -69,24 +81,8 @@ class QQReplyBufferService:
     # ------------------------------------------------------------------
 
     def store_reply(self, session_key: str, reply_text: str, blocks: list, *, expected_bucket_id: int = 0) -> bool:
-        """pipeline 生成的回复存入缓冲桶，等计时器到期再发。返回 True 表示已存储。
-
-        expected_bucket_id: 触发本次 pipeline 的桶 ID。先查 _pending（当前活跃桶），
-        不匹配再按复合键查 _detached（已摘除但仍在等回复的桶）。"""
-        existing = self._pending.get(session_key)
-        if existing is None or (expected_bucket_id and existing.bucket_id != expected_bucket_id):
-            if expected_bucket_id:
-                existing = self._detached.get(self._detached_key(session_key, expected_bucket_id))
-            else:
-                existing = None
-        if existing is None:
-            return False
-        if expected_bucket_id and existing.bucket_id != expected_bucket_id:
-            self.plugin._emit_log("DEBUG", f"[Buffer] 桶身份不匹配 key={session_key} expected_id={expected_bucket_id} actual_id={existing.bucket_id} → 丢弃旧回复")
-            return False
-        existing.bot_blocks = blocks
-        self.plugin._emit_log("DEBUG", f"[Buffer] 存储回复 key={session_key} reply={reply_text[:30]}")
-        return True
+        """已废弃：单条消息回复由 pipeline 直接交付，桶只负责汇总。始终返回 False 让 pipeline 走直接发送。"""
+        return False
 
     def has_pending(self, session_key: str) -> bool:
         p = self._pending.get(session_key)
@@ -111,48 +107,34 @@ class QQReplyBufferService:
 
     async def buffer(self, session_key: str, message_text: str, sender_id: str, is_group: bool, group_id: str) -> bool:
         """消息到达时调用。返回 True 表示跳过 pipeline，返回 False 表示需要走 pipeline（首次）。"""
+        if not self._enabled(is_group):
+            return False
+        max_count = self._max_count(is_group)
+        delay = self._random_delay(is_group)
         existing = self._pending.get(session_key)
         if existing and (existing.task is None or not existing.task.done()):
-            # 话题偏离检测：新消息和桶内已有消息是否同一话题
-            if len(existing.entries) >= 2 and await self._topic_shift(existing, message_text):
-                old_topic = self._bucket_topic(existing.entries)
-                self.plugin._emit_log("INFO", f"[Buffer] 话题偏离 key={session_key} topic=「{old_topic}」→ 先交付旧桶，新消息: {message_text[:30]}")
-                if existing.task:
-                    existing.task.cancel()
-                    existing.task_gen += 1  # 旧任务 gen 不匹配，取消分支不会 pop
-                # 立即交付旧桶（不等计时器），然后新消息开新桶
-                existing.wait_until = 0
-                await self._flush(session_key, existing, abandon_on_no_reply=True)
-                pending = PendingReply(sender_id, is_group, group_id)
-                pending.bucket_id = self._next_bucket_id()
-                pending.entries.append((sender_id, message_text))
-                delay = _random_delay()
-                pending.wait_until = time.time() + delay
-                pending.task = pending._new_task(self._flush(session_key, pending))
-                self._pending[session_key] = pending
-                self.plugin._emit_log("DEBUG", f"[Buffer] 新建(话题偏移) key={session_key} bucket_id={pending.bucket_id} delay={delay:.1f}s")
-                return False
+            # 桶已存在：取消旧计时，追加消息，重启新计时
             if existing.task:
                 existing.task.cancel()
             existing.entries.append((sender_id, message_text))
-            if len(existing.entries) >= _MAX_BUFFER_COUNT:
+            if len(existing.entries) >= max_count:
                 existing.wait_until = 0
-                self._pending.pop(session_key, None)  # 先摘桶，避免新消息 cancel 掉本次交付
+                self._pending.pop(session_key, None)
                 self._detached[self._detached_key(session_key, existing.bucket_id)] = existing
                 existing._new_task(self._flush_detached(session_key, existing))
                 self.plugin._emit_log("INFO", f"[Buffer] 达到上限 key={session_key} count={len(existing.entries)} → 立即交付")
             else:
-                delay = _random_delay()
+                delay = self._random_delay(is_group)
                 existing.wait_until = time.time() + delay
                 existing._new_task(self._flush(session_key, existing))
                 self.plugin._emit_log("DEBUG", f"[Buffer] 追加 key={session_key} count={len(existing.entries)} delay={delay:.1f}s")
-            return True
+            return False  # 不跳过 pipeline：猫娘可以对单条消息立即回复
 
-        # 首条消息：创建缓冲桶，起计时器。pipeline 也照常走——LLM 生成的回复会在计时器到期时才发出
+        # 首条消息：创建缓冲桶，起计时器
         pending = PendingReply(sender_id, is_group, group_id)
         pending.bucket_id = self._next_bucket_id()
         pending.entries.append((sender_id, message_text))
-        delay = _random_delay()
+        delay = self._random_delay(is_group)
         pending.wait_until = time.time() + delay
         pending.task = pending._new_task(self._flush(session_key, pending))
         self._pending[session_key] = pending
@@ -277,10 +259,10 @@ class QQReplyBufferService:
         """已从 _pending 摘除的桶的交付逻辑——_flush_impl 内部处理清理。"""
         await self._flush_impl(session_key, pending, check_pending=False)
 
-    async def _flush(self, session_key: str, pending: PendingReply, *, abandon_on_no_reply: bool = False) -> None:
-        await self._flush_impl(session_key, pending, check_pending=True, abandon_on_no_reply=abandon_on_no_reply)
+    async def _flush(self, session_key: str, pending: PendingReply) -> None:
+        await self._flush_impl(session_key, pending, check_pending=True)
 
-    async def _flush_impl(self, session_key: str, pending: PendingReply, *, check_pending: bool, abandon_on_no_reply: bool = False) -> None:
+    async def _flush_impl(self, session_key: str, pending: PendingReply, *, check_pending: bool) -> None:
         delay = max(0.0, pending.wait_until - time.time())
         gen = pending.task_gen
         self.plugin._emit_log("DEBUG", f"[Buffer] 等待中 key={session_key} gen={gen} delay={delay:.1f}s count={len(pending.entries)}")
@@ -297,36 +279,6 @@ class QQReplyBufferService:
             return
 
         user_entries = pending.entries
-        has_bot_reply = pending.bot_blocks is not None
-
-        if not has_bot_reply:
-            if abandon_on_no_reply:
-                # 话题偏移：旧桶移入 _detached 并起 detached flush，pipeli
-                self._detached[self._detached_key(session_key, pending.bucket_id)] = pending
-                self._pending.pop(session_key, None)
-                pending._new_task(self._flush_detached(session_key, pending))
-                self.plugin._emit_log("INFO", f"[Buffer] key={session_key} 话题偏移，旧桶移入 _detached，等 pipeline 回复后交付")
-                return
-            # 多条消息（≥2）→ 首条 pipeline 回复会被 summary 覆盖，无需等待
-            if len(user_entries) > 1:
-                self.plugin._emit_log("INFO", f"[Buffer] key={session_key} {len(user_entries)}条消息直接汇总，不等待首条 pipeline")
-            else:
-                # 单条消息：LLM 还没生成完 → 等 1 秒重试，最多 30 次（30 秒）
-                # 不递增 task_gen——gate cancel 才能对上号取消掉
-                retries = getattr(pending, "_no_reply_retries", 0) + 1
-                pending._no_reply_retries = retries
-                if retries > 30:
-                    self.plugin._emit_log("WARN", f"[Buffer] key={session_key} 等待回复超时，跳过交付")
-                    if check_pending:
-                        self._pending.pop(session_key, None)
-                    else:
-                        self._detached.pop(self._detached_key(session_key, pending.bucket_id), None)
-                    return
-                pending.wait_until = time.time() + 1.0
-                pending.task = asyncio.create_task(
-                    self._flush(session_key, pending) if check_pending else self._flush_detached(session_key, pending)
-                )
-                return
 
         # pop 再交付——交付期间新消息进来会建新桶，不会污染当前桶
         if check_pending:
@@ -334,34 +286,24 @@ class QQReplyBufferService:
         else:
             self._detached.pop(self._detached_key(session_key, pending.bucket_id), None)
 
-        if len(user_entries) == 1:
-            # 只有首条用户消息 + bot 回复：直接交付 bot 回复
-            from .pipeline_models import QQMessageBlock, QQDeliveryPlan
-            blocks = pending.bot_blocks if pending.bot_blocks else [QQMessageBlock(text=user_entries[0][1])]
-            plan = QQDeliveryPlan(
-                target_type="group" if pending.is_group else "private",
-                target_id=pending.group_id if pending.is_group else pending.sender_id,
-                blocks=blocks,
-                fallback_to_text_on_voice_failure=True,
-            )
-            result = await self.plugin.reply_delivery_node.deliver(plan)
-            self.plugin._emit_log("DEBUG", f"[Buffer] 单条交付 key={session_key} delivered={result.delivered if result else False}")
-        else:
-            # 多条用户消息：合并总结（bot 回复不入桶，不干扰总结）
-            self.plugin._emit_log("INFO", f"[Buffer] {len(user_entries)}条用户消息，走 pipeline 总结...")
-            lines = []
-            for sid, t in user_entries:
-                name = self.plugin.permission_mgr.get_nickname(sid) if self.plugin.permission_mgr else sid
-                lines.append(f"{name or sid}: {t[:150]}")
-            combined = "\n".join(lines)
-            from .pipeline_models import QQReplyRequest
-            request = QQReplyRequest(
-                message_text=f"[系统] 下面是你和群友的对话，如果你觉得需要接话就自然回复（不要复述，用一两句话）；如果没必要回可以不回，不回复是正常的。\n{combined}",
-                sender_id=pending.sender_id or "0",
-                is_group=pending.is_group,
-                group_id=pending.group_id if pending.is_group else None,
-                is_at_bot=True,
-                source_kind="rapid_fire_flush",
-                fallback_to_text_on_voice_failure=True,
-            )
-            await self.plugin.reply_pipeline.run(request)
+        # 始终走汇总：管它 1 条还是 N 条，统一生成一条总结回复
+        # 单条消息的立即回复已由 pipeline 直接交付，这里只负责汇总
+        self.plugin._emit_log("INFO", f"[Buffer] {len(user_entries)}条消息汇总, 走 pipeline 总结...")
+        lines = []
+        for sid, t in user_entries:
+            name = self.plugin.permission_mgr.get_nickname(sid) if self.plugin.permission_mgr else sid
+            lines.append(f"{name or sid}: {t[:150]}")
+        combined = "\n".join(lines)
+        from .pipeline_models import QQReplyRequest
+        chat_type = "群友" if pending.is_group else "对方的"
+        hint = f"[系统] 下面是{'你' if pending.is_group else '你和' + chat_type + '的'}对话，如果你觉得需要接话就自然回复（不要复述，用一两句话）；如果没必要回可以不回，不回复是正常的。\n{combined}"
+        request = QQReplyRequest(
+            message_text=hint,
+            sender_id=pending.sender_id or "0",
+            is_group=pending.is_group,
+            group_id=pending.group_id if pending.is_group else None,
+            is_at_bot=True,
+            source_kind="rapid_fire_flush",
+            fallback_to_text_on_voice_failure=True,
+        )
+        await self.plugin.reply_pipeline.run(request)

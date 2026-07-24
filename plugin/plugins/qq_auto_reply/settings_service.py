@@ -94,6 +94,13 @@ class QQSettingsService:
             self.plugin._qq_settings["token"] = str(token or "")
             masked = self.plugin._mask_token(self.plugin._qq_settings["token"])
             self.plugin._emit_log("INFO", f"Token 已更新: {masked}{' (空)' if not self.plugin._qq_settings['token'] else ''}")
+        local_stt_url = kwargs.get("local_stt_url")
+        if local_stt_url is not None:
+            self.plugin._qq_settings["local_stt_url"] = str(local_stt_url or "").strip()
+            self.plugin._emit_log("INFO", f"本地STT地址已更新: {self.plugin._qq_settings['local_stt_url'] or '(空)'}")
+        locale_val = kwargs.get("locale")
+        if locale_val is not None:
+            self.plugin._qq_settings["locale"] = str(locale_val or "").strip()
         qq_connection_mode = kwargs.get("qq_connection_mode")
         qq_open_app_id = kwargs.get("qq_open_app_id")
         qq_open_client_secret = kwargs.get("qq_open_client_secret")
@@ -138,6 +145,21 @@ class QQSettingsService:
         if sticker_cooldown_messages is not None:
             self.plugin._qq_settings["sticker_cooldown_messages"] = max(0, int(sticker_cooldown_messages))
             self.plugin._sticker_cooldown_messages = max(0, int(sticker_cooldown_messages))
+        # 回复缓冲参数（群聊 + 私聊独立覆盖）
+        for key in ("buffer_enabled",):
+            val = kwargs.get(key)
+            if val is not None:
+                self.plugin._qq_settings[key] = bool(val)
+        for prefix in ("buffer_", "buffer_private_"):
+            for suffix, default in (("delay_mean", 9.0), ("delay_sigma", 1.8)):
+                key = f"{prefix}{suffix}"
+                val = kwargs.get(key)
+                if val is not None:
+                    self.plugin._qq_settings[key] = max(0.1, float(val))
+            key = f"{prefix}max_count"
+            val = kwargs.get(key)
+            if val is not None:
+                self.plugin._qq_settings[key] = max(2, int(val))
         retroactive_review_max_messages = kwargs.get("retroactive_review_max_messages")
         if retroactive_review_max_messages is not None:
             self.plugin._qq_settings["retroactive_review_max_messages"] = max(1, int(retroactive_review_max_messages))

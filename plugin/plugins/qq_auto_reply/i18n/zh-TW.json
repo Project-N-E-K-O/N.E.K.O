@@ -532,6 +532,8 @@
   "ui.napcat.config.sticker_cooldown": "表情包間隔（訊息數，0=不限制）",
   "ui.napcat.config.retro_review_max_msgs": "回溯審核最多取多少條訊息",
   "ui.napcat.config.retro_review_max_reply": "回溯審核最多補回多少條",
+  "ui.napcat.config.local_stt_url": "本機 STT 地址 (Whisper)",
+  "ui.napcat.config.local_stt_url_placeholder": "例如 http://127.0.0.1:8000/v1/audio/transcriptions",
   "ui.napcat.prompts.layer.format_open_platform.name": "Output Format (Open Platform)",
   "ui.napcat.config.proactive_silence": "Proactive silence threshold (sec, 0=off)",
   "ui.napcat.guide.step_linux": "Linux/Docker Setup",
@@ -549,5 +551,10 @@
   "ui.groupprompt.save_failed": "Save failed",
   "ui.groupprompt.delete_failed": "Delete failed",
   "ui.shared.btn.save": "Save",
-  "ui.shared.btn.delete": "Delete"
+  "ui.shared.btn.delete": "Delete",
+  "ui.napcat.config.buffer_title": "Reply Buffer",
+  "ui.napcat.config.buffer_enabled": "Enable Reply Buffer",
+  "ui.napcat.config.buffer_delay_mean": "Delay Mean (sec)",
+  "ui.napcat.config.buffer_delay_sigma": "Delay StdDev (sec)",
+  "ui.napcat.config.buffer_max_count": "Max Messages (flush immediately)"
 }

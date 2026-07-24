@@ -129,7 +129,18 @@ class QQAutoReplyConfigStore:
             # 回溯补回参数
             "retroactive_review_max_messages": 30,  # 回溯最多取多少条被忽略消息
             "retroactive_review_max_reply": 5,      # 回溯最多补回多少条
+            "local_stt_url": "",                     # 本地 STT (whisper) 服务地址，如 http://127.0.0.1:8000/v1/audio/transcriptions
+            "locale": "",                            # 前端界面语言，空=跟随宿主
             "sticker_cooldown_messages": 5,          # 表情包发送间隔（群内消息数），0=不限制
+            # 回复缓冲参数（群聊）
+            "buffer_enabled": True,                  # 是否启用回复缓冲
+            "buffer_delay_mean": 9.0,                # 缓冲延迟均值（秒）
+            "buffer_delay_sigma": 1.8,               # 缓冲延迟标准差（秒）
+            "buffer_max_count": 17,                  # 缓冲桶最大消息数，达到后立即交付
+            # 回复缓冲参数（私聊，未配置时回退到群聊默认）
+            "buffer_private_delay_mean": None,
+            "buffer_private_delay_sigma": None,
+            "buffer_private_max_count": None,
             # 疲劳系统参数（KiraAI-style 动态行为约束）
             "fatigue_enabled": True,
             "fatigue_circadian_peak_hour": 15,       # 昼夜节律峰值时间（24小时制）

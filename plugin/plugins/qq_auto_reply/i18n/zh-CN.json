@@ -532,6 +532,8 @@
   "ui.napcat.config.sticker_cooldown": "表情包间隔（消息数，0=不限制）",
   "ui.napcat.config.retro_review_max_msgs": "回溯审核最多取多少条消息",
   "ui.napcat.config.retro_review_max_reply": "回溯审核最多补回多少条",
+  "ui.napcat.config.local_stt_url": "本地 STT 地址 (Whisper)",
+  "ui.napcat.config.local_stt_url_placeholder": "例如 http://127.0.0.1:8000/v1/audio/transcriptions",
   "entries.reset_prompt_override.name": "重置提示词覆盖",
   "entries.reset_prompt_override.description": "删除某个提示词层的自定义覆盖值，恢复默认。",
   "ui.napcat.config.proactive_silence": "主动发言沉默阈值（秒，0=禁用）",
@@ -553,5 +555,10 @@
   "ui.groupprompt.save_failed": "保存失败",
   "ui.groupprompt.delete_failed": "删除失败",
   "ui.shared.btn.save": "保存",
-  "ui.shared.btn.delete": "删除"
+  "ui.shared.btn.delete": "删除",
+  "ui.napcat.config.buffer_title": "回复缓冲",
+  "ui.napcat.config.buffer_enabled": "启用回复缓冲",
+  "ui.napcat.config.buffer_delay_mean": "延迟均值 (秒)",
+  "ui.napcat.config.buffer_delay_sigma": "延迟标准差 (秒)",
+  "ui.napcat.config.buffer_max_count": "最大消息数 (达到后立即交付)"
 }

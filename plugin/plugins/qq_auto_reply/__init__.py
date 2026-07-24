@@ -214,19 +214,24 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 except Exception:
                     pass
 
-            # ── 本地 STT（tts_custom base_url 推导）──
+            # ── 本地 STT（优先独立配置 local_stt_url，其次 tts_custom base_url 推导）──
             if audio_bytes:
                 try:
                     amr_detected = audio_bytes and (audio_bytes[:6] == b"#!AMR\n" or audio_bytes[:9].startswith(b"#!AMR-W"))
                     stt_filename = "voice.amr" if amr_detected else "voice.mp3"
                     stt_mime = "audio/amr" if amr_detected else "audio/mp3"
-                    tts_config = get_config_manager().get_model_api_config("tts_custom")
-                    local_base = str(tts_config.get("base_url") or "").strip()
-                    _is_ws = local_base.startswith("ws://") or local_base.startswith("wss://")
-                    _is_http = local_base.startswith("http://") or local_base.startswith("https://")
-                    if local_base and (_is_ws or _is_http):
-                        http_base = local_base.replace("ws://", "http://").replace("wss://", "https://")
-                        local_stt_url = http_base.rstrip("/") + "/v1/audio/transcriptions"
+                    # 优先使用 qq_settings 中的 local_stt_url
+                    local_stt_url = str((self.plugin._qq_settings or {}).get("local_stt_url", "") or "").strip()
+                    if not local_stt_url:
+                        # 回退：tts_custom base_url 推导
+                        tts_config = get_config_manager().get_model_api_config("tts_custom")
+                        local_base = str(tts_config.get("base_url") or "").strip()
+                        _is_ws = local_base.startswith("ws://") or local_base.startswith("wss://")
+                        _is_http = local_base.startswith("http://") or local_base.startswith("https://")
+                        if local_base and (_is_ws or _is_http):
+                            http_base = local_base.replace("ws://", "http://").replace("wss://", "https://")
+                            local_stt_url = http_base.rstrip("/") + "/v1/audio/transcriptions"
+                    if local_stt_url:
                         async with httpx.AsyncClient(timeout=30.0, proxy=None, trust_env=False) as client:
                             resp = await client.post(
                                 local_stt_url,
@@ -1025,7 +1030,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         return Ok({"stickers": items, "total": len(items)})
 
     @ui.action(id="save_settings", label=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), refresh_context=True)
-    @plugin_entry(id="save_settings", name=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), description=tr("entries.save_settings.description", default="保存 QQ 插件当前的 OneBot 地址、Token、NapCat 路径、回复概率和 backlog 标签等设置。"), input_schema={"type": "object", "properties": {"onebot_url": {"type": "string"}, "token": {"type": "string"}, "napcat_directory": {"type": "string"}, "show_napcat_window": {"type": "boolean"}, "reply_mode": {"type": "string", "enum": ["text", "voice", "both"]}, "show_onboarding": {"type": "boolean"}, "guide_step_napcat_done": {"type": "boolean"}, "guide_step_config_done": {"type": "boolean"}, "guide_step_runtime_done": {"type": "boolean"}, "normal_relay_probability": {"type": "number"}, "truth_reply_probability": {"type": "number"}, "backlog_labels": {"type": "array", "items": {"type": "object"}}, "strategy_mode": {"type": "string", "enum": ["neko_dynamic", "neko_scene"]}, "qq_connection_mode": {"type": "string", "enum": ["napcat", "open_platform"]}, "qq_open_app_id": {"type": "string"}, "qq_open_client_secret": {"type": "string"}, "sticker_cooldown_messages": {"type": "integer"}, "retroactive_review_max_messages": {"type": "integer"}, "retroactive_review_max_reply": {"type": "integer"}, "enable_group_attention": {"type": "boolean"}, "group_attention_decay_per_second": {"type": "number"}, "group_attention_message_recovery": {"type": "number"}, "group_attention_reply_penalty": {"type": "number"}, "group_attention_keyword_boost_scale": {"type": "number"}, "group_attention_focus_lock_seconds": {"type": "integer"}, "group_attention_focus_rise_seconds": {"type": "integer"}, "group_attention_focus_cooldown_seconds": {"type": "integer"}, "group_attention_max_score": {"type": "number"}, "group_attention_focus_threshold": {"type": "number"}, "group_attention_min_threshold": {"type": "number"}, "group_attention_message_gain": {"type": "number"}, "icebreaker_cold_threshold": {"type": "integer"}}, "additionalProperties": False})
+    @plugin_entry(id="save_settings", name=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), description=tr("entries.save_settings.description", default="保存 QQ 插件当前的 OneBot 地址、Token、NapCat 路径、回复概率和 backlog 标签等设置。"), input_schema={"type": "object", "properties": {"onebot_url": {"type": "string"}, "token": {"type": "string"}, "napcat_directory": {"type": "string"}, "show_napcat_window": {"type": "boolean"}, "reply_mode": {"type": "string", "enum": ["text", "voice", "both"]}, "show_onboarding": {"type": "boolean"}, "guide_step_napcat_done": {"type": "boolean"}, "guide_step_config_done": {"type": "boolean"}, "guide_step_runtime_done": {"type": "boolean"}, "normal_relay_probability": {"type": "number"}, "truth_reply_probability": {"type": "number"}, "backlog_labels": {"type": "array", "items": {"type": "object"}}, "strategy_mode": {"type": "string", "enum": ["neko_dynamic", "neko_scene"]}, "qq_connection_mode": {"type": "string", "enum": ["napcat", "open_platform"]}, "qq_open_app_id": {"type": "string"}, "qq_open_client_secret": {"type": "string"}, "sticker_cooldown_messages": {"type": "integer"}, "retroactive_review_max_messages": {"type": "integer"}, "retroactive_review_max_reply": {"type": "integer"}, "enable_group_attention": {"type": "boolean"}, "group_attention_decay_per_second": {"type": "number"}, "group_attention_message_recovery": {"type": "number"}, "group_attention_reply_penalty": {"type": "number"}, "group_attention_keyword_boost_scale": {"type": "number"}, "group_attention_focus_lock_seconds": {"type": "integer"}, "group_attention_focus_rise_seconds": {"type": "integer"}, "group_attention_focus_cooldown_seconds": {"type": "integer"}, "group_attention_max_score": {"type": "number"}, "group_attention_focus_threshold": {"type": "number"}, "group_attention_min_threshold": {"type": "number"}, "group_attention_message_gain": {"type": "number"}, "icebreaker_cold_threshold": {"type": "integer"}, "local_stt_url": {"type": "string"}, "locale": {"type": "string"}, "buffer_enabled": {"type": "boolean"}, "buffer_delay_mean": {"type": "number"}, "buffer_delay_sigma": {"type": "number"}, "buffer_max_count": {"type": "integer"}, "buffer_private_delay_mean": {"type": "number"}, "buffer_private_delay_sigma": {"type": "number"}, "buffer_private_max_count": {"type": "integer"}}, "additionalProperties": False})
     async def save_settings(
         self,
         onebot_url: Optional[str] = None,
@@ -1060,6 +1065,15 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         group_attention_min_threshold: Optional[float] = None,
         group_attention_message_gain: Optional[float] = None,
         icebreaker_cold_threshold: Optional[int] = None,
+        local_stt_url: Optional[str] = None,
+        locale: Optional[str] = None,
+        buffer_enabled: Optional[bool] = None,
+        buffer_delay_mean: Optional[float] = None,
+        buffer_delay_sigma: Optional[float] = None,
+        buffer_max_count: Optional[int] = None,
+        buffer_private_delay_mean: Optional[float] = None,
+        buffer_private_delay_sigma: Optional[float] = None,
+        buffer_private_max_count: Optional[int] = None,
         **_,
     ):
         return await self.dashboard_service.save_settings(
@@ -1095,6 +1109,15 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             group_attention_min_threshold=group_attention_min_threshold,
             group_attention_message_gain=group_attention_message_gain,
             icebreaker_cold_threshold=icebreaker_cold_threshold,
+            local_stt_url=local_stt_url,
+            locale=locale,
+            buffer_enabled=buffer_enabled,
+            buffer_delay_mean=buffer_delay_mean,
+            buffer_delay_sigma=buffer_delay_sigma,
+            buffer_max_count=buffer_max_count,
+            buffer_private_delay_mean=buffer_private_delay_mean,
+            buffer_private_delay_sigma=buffer_private_delay_sigma,
+            buffer_private_max_count=buffer_private_max_count,
         )
 
     @ui.action(id="add_trusted_user", label=tr("entries.add_trusted_user.name", default="添加信任用户"), refresh_context=True)

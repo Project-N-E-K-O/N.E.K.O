@@ -193,6 +193,15 @@ class QQDashboardService:
         group_attention_min_threshold: Optional[float] = None,
         group_attention_message_gain: Optional[float] = None,
         icebreaker_cold_threshold: Optional[int] = None,
+        local_stt_url: Optional[str] = None,
+        locale: Optional[str] = None,
+        buffer_enabled: Optional[bool] = None,
+        buffer_delay_mean: Optional[float] = None,
+        buffer_delay_sigma: Optional[float] = None,
+        buffer_max_count: Optional[int] = None,
+        buffer_private_delay_mean: Optional[float] = None,
+        buffer_private_delay_sigma: Optional[float] = None,
+        buffer_private_max_count: Optional[int] = None,
     ):
         try:
             result = await self.plugin.settings_service.save_settings(
@@ -228,6 +237,15 @@ class QQDashboardService:
                 group_attention_min_threshold=group_attention_min_threshold,
                 group_attention_message_gain=group_attention_message_gain,
                 icebreaker_cold_threshold=icebreaker_cold_threshold,
+                local_stt_url=local_stt_url,
+                locale=locale,
+                buffer_enabled=buffer_enabled,
+                buffer_delay_mean=buffer_delay_mean,
+                buffer_delay_sigma=buffer_delay_sigma,
+                buffer_max_count=buffer_max_count,
+                buffer_private_delay_mean=buffer_private_delay_mean,
+                buffer_private_delay_sigma=buffer_private_delay_sigma,
+                buffer_private_max_count=buffer_private_max_count,
             )
         except ValueError as exc:
             message = str(exc)
