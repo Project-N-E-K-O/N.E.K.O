@@ -29,7 +29,9 @@ def test_social_open_request_is_deduped_before_fetching_config():
         "fetch('/api/system/social/config')"
     )
     assert listener.index("finally {") < listener.index("releaseSocialOpenRequest();")
-    assert listener.index("releaseSocialOpenRequest();") > listener.index("window.electronShell.openExternal(url)")
+    # Community opens in-app (Electron framed child / browser tab); OAuth may still use openExternal.
+    assert "window.open(url, 'neko-social')" in listener
+    assert listener.index("releaseSocialOpenRequest();") > listener.index("window.open(url, 'neko-social')")
     assert "fetch('/api/card-drop/sync-ticket', { cache: 'no-store' })" in listener
     assert "native_sync: String(ticketJson.sync_ticket)" in listener
     assert "targetUrl.searchParams.set('cid', cidJson.client_id)" in listener
@@ -39,12 +41,13 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert "fetch('/api/card-drop/auth-status', { cache: 'no-store' })" in listener
     assert "fetch('/api/card-drop/oauth/start'" in listener
     assert "请在浏览器完成统一账号登录" in listener
-    assert listener.index("openExternal(url)") < listener.index(
+    assert listener.index("window.open(url, 'neko-social')") < listener.index(
         "fetch('/api/card-drop/auth-status'"
     )
     assert listener.index("fetch('/api/card-drop/auth-status'") < listener.index(
         "fetch('/api/card-drop/oauth/start'"
     )
+    assert "openExternal(authUrl)" in listener
     protocol_guard = "targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:'"
     assert protocol_guard in listener
     assert listener.index(protocol_guard) < listener.index(

@@ -200,13 +200,15 @@
         }
 
         // 猫娘网络（社交平台）按钮：占用原 screen 槽位。
-        // 从 /api/system/social/config 拿云端 base URL，从 /api/system/client-id 拿 device 身份，
-        // 然后在 Electron 内交给系统浏览器打开，避免被 setWindowOpenHandler 拦成桌面 BrowserWindow。
+        // 从 /api/system/social/config 拿云端 base URL，从 /api/system/client-id 拿 device 身份。
+        // Electron：window.open → setWindowOpenHandler 识别 social feed，以带 OS chrome 的内置
+        // framed 子窗口打开（见 NEKO-PC pet-window-lifecycle）。浏览器：预开 about:blank 保手势。
+        // Desktop OAuth 仍走系统浏览器（loopback 回调 + 文案提示在浏览器完成登录）。
         window.addEventListener('live2d-social-click', async () => {
             if (shouldIgnoreSocialOpenRequest()) {
                 return;
             }
-            const useExternal = !!(window.electronShell && typeof window.electronShell.openExternal === 'function');
+            const isElectron = !!(window.electronShell && typeof window.electronShell.openExternal === 'function');
             let popupRef = null;
             const closePopup = () => {
                 if (!popupRef) {
@@ -220,7 +222,7 @@
                 popupRef = null;
             };
             try {
-                if (!useExternal) {
+                if (!isElectron) {
                     // 这里必须先保留 WindowProxy，异步拿到配置/票据后才能导航预开的 tab。
                     // Chromium 在 windowFeatures 里指定 noopener 时可能直接返回 null。
                     popupRef = window.open('about:blank', '_blank');
@@ -296,8 +298,14 @@
                 }
                 url = targetUrl.toString();
                 // 先打开猫娘社区；Desktop 未登录时再额外拉起平台 Desktop OAuth（不挡社区）。
-                if (useExternal) {
-                    await window.electronShell.openExternal(url);
+                if (isElectron) {
+                    // 目标 URL 直接交给 setWindowOpenHandler，才能命中 isSocialFeedUrl → framed 内置窗。
+                    // 复用 'neko-social' 名：已开则聚焦/导航同一窗口，避免叠多个社区窗。
+                    const socialWin = window.open(url, 'neko-social');
+                    if (!socialWin) {
+                        throw new Error('popup blocked');
+                    }
+                    try { socialWin.focus && socialWin.focus(); } catch (_) { /* ignore */ }
                 } else {
                     // about:blank 仍与 opener 同源，可在跨站导航前主动切断反向引用。
                     popupRef.opener = null;
