@@ -25,11 +25,19 @@ class QQReplyPostprocessNode:
         if not text:
             return []
 
+        import re as _re
+
         # 检查是否包含 <msg> 标签 → XML 解析
         if "<msg>" not in text and "<msg " not in text:
             # 检查是否使用旧式标签（<reply> <at> <sticker> <poke> <record> <keyboard>）
             if any(tag in text for tag in ("<reply>", "<at>", "<sticker>", "<poke>", "<record>", "<keyboard>")):
                 return QQReplyPostprocessNode._parse_legacy_tags(text)
+            # 如果包含其他 XML 标签（如裸 <text>、</text>），清洗掉
+            if _re.search(r"</?[a-zA-Z][^>]*>", text):
+                clean = _re.sub(r"<[^>]+>", "", text).strip()
+                if clean:
+                    return [QQMessageBlock(text=clean)]
+                return []
             # 纯文本当作一个块
             block = QQMessageBlock(text=text)
             return [block] if text else []
@@ -39,10 +47,10 @@ class QQReplyPostprocessNode:
             root = ET.fromstring(f"<root>{text}</root>")
         except ET.ParseError:
             # 解析失败 → 回退纯文本（去除 XML 标签）
-            import re as _re
             clean = _re.sub(r"<[^>]+>", "", text).strip()
-            block = QQMessageBlock(text=clean or text)
-            return [block] if (clean or text) else []
+            if clean:
+                return [QQMessageBlock(text=clean)]
+            return []
 
         blocks: list[QQMessageBlock] = []
         for msg_el in root.findall("msg"):
@@ -266,6 +274,12 @@ class QQReplyPostprocessNode:
             # 构建人类可读的 reply_text（首个块的文本）
             first_text = blocks[0].text if blocks else ""
             reply_text = first_text or reply_text
+            # 最后防线：清洗 reply_text 中残留的 XML 标签（防止 LLM 输出的裸标签泄漏到 QQ）
+            if reply_text and re.search(r"</?[a-zA-Z][^>]*>", reply_text):
+                cleaned = re.sub(r"<[^>]+>", "", reply_text).strip()
+                if cleaned:
+                    self.plugin._emit_log("INFO", f"[Sanitize] reply_text残留XML标签已清洗: {reply_text[:60]}")
+                    reply_text = cleaned
 
         # 日志：LLM 使用的标签
         if strategy_mode == "neko_dynamic":
@@ -341,6 +355,12 @@ class QQReplyPostprocessNode:
         if not outcome.blocks and not outcome.reply_text:
             return None
         blocks = outcome.blocks if outcome.blocks else [QQMessageBlock(text=outcome.reply_text or "")]
+        # 最后防线：确保 block.text 不含 XML 标签
+        for b in blocks:
+            if b.text:
+                import re as _re
+                if _re.search(r"</?[a-zA-Z][^>]*>", b.text):
+                    b.text = _re.sub(r"<[^>]+>", "", b.text).strip()
         if request.is_group:
             return QQDeliveryPlan(
                 target_type="group",
