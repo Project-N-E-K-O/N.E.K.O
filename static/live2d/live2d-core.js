@@ -4684,10 +4684,10 @@ class Live2DManager {
                 const viewportLeft = 0;
                 const viewportTop = 0;
                 const viewportRight = Math.max(0, Number.isFinite(rendererW) && rendererW > 0
-                    ? rendererW
+                    ? Math.min(rendererW, Number(window.innerWidth) || rendererW)
                     : Number(window.innerWidth) || 0);
                 const viewportBottom = Math.max(0, Number.isFinite(rendererH) && rendererH > 0
-                    ? rendererH
+                    ? Math.min(rendererH, Number(window.innerHeight) || rendererH)
                     : Number(window.innerHeight) || 0);
                 const visibleLeft = Math.max(left, viewportLeft);
                 const visibleRight = Math.min(right, viewportRight);

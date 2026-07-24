@@ -311,12 +311,14 @@ function getLive2DPeekViewport(bounds = null, manager = null) {
     const canvasH = Number(screen && screen.height);
     const vw = Number(window.innerWidth);
     const vh = Number(window.innerHeight);
+    const validVw = Number.isFinite(vw) && vw > 0;
+    const validVh = Number.isFinite(vh) && vh > 0;
     const viewportW = Number.isFinite(canvasW) && canvasW > 0
-        ? Math.min(canvasW, vw)
-        : (Number.isFinite(vw) && vw > 0 ? vw : fallbackW);
+        ? (validVw ? Math.min(canvasW, vw) : canvasW)
+        : (validVw ? vw : fallbackW);
     const viewportH = Number.isFinite(canvasH) && canvasH > 0
-        ? Math.min(canvasH, vh)
-        : (Number.isFinite(vh) && vh > 0 ? vh : fallbackH);
+        ? (validVh ? Math.min(canvasH, vh) : canvasH)
+        : (validVh ? vh : fallbackH);
     return { left: 0, top: 0, right: viewportW, bottom: viewportH, width: viewportW, height: viewportH };
 }
 
