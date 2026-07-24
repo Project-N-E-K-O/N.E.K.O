@@ -378,6 +378,7 @@
   "ui.shared.attention.focus_tag": "フォーカス",
   "ui.shared.attention.load_failed": "読み込み失敗",
   "ui.shared.attention.title": "注意力状態",
+  "ui.shared.fatigue.title": "疲労状態",
   "ui.shared.attention.global_sleep_badge": "全体休眠",
   "ui.shared.sticker.drop_text": "[ 画像をここにドラッグ ]",
   "ui.shared.sticker.or_click": "またはクリックしてファイルを選択",

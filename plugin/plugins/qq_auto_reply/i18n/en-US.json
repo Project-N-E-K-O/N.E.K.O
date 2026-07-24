@@ -379,6 +379,7 @@
   "ui.shared.attention.focus_tag": "Focus",
   "ui.shared.attention.load_failed": "Failed to load",
   "ui.shared.attention.title": "Attention Status",
+  "ui.shared.fatigue.title": "Fatigue Status",
   "ui.shared.attention.global_sleep_badge": "Global Sleep",
   "ui.shared.sticker.drop_text": "[ Drop images here ]",
   "ui.shared.sticker.or_click": "or click to select",

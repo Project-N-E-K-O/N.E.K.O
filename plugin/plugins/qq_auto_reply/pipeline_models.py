@@ -40,6 +40,7 @@ class QQReplyRequest:
     suppression_reason: str = ""
     forward_sub_count: int = 0
     reply_context: str = ""     # _fetch_reply_content 产生的引用上下文，仅注入 LLM 不存历史
+    buffer_bucket_id: int = 0   # 触发 pipeline 的缓冲桶 ID，store_reply 用于校验桶未被替换
 
 
 @dataclass(slots=True)

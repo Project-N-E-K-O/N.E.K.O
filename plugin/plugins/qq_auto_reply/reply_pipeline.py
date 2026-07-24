@@ -224,7 +224,8 @@ class QQReplyPipelineRunner:
                 return QQDeliveryResult(delivered=False, target_type=delivery_plan.target_type, target_id=delivery_plan.target_id, reply_text=None)
             buf_sid = request.group_id if request.is_group else request.sender_id
             session_key = self.plugin._build_session_key(sender_id=buf_sid, is_group=request.is_group, group_id=request.group_id)
-            if self.plugin.reply_buffer_service.store_reply(session_key, first_text or "", delivery_plan.blocks):
+            expected_bucket_id = getattr(request, 'buffer_bucket_id', 0) if request else 0
+            if self.plugin.reply_buffer_service.store_reply(session_key, first_text or "", delivery_plan.blocks, expected_bucket_id=expected_bucket_id):
                 self.plugin._emit_log("DEBUG", f"[Buffer] 回复已缓存 key={session_key} text={first_text[:30]}")
                 from .pipeline_models import QQDeliveryResult
                 return QQDeliveryResult(delivered=True, target_type=delivery_plan.target_type, target_id=delivery_plan.target_id, reply_text=first_text)

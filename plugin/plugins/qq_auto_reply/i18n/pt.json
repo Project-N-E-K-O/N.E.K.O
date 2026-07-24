@@ -378,6 +378,7 @@
   "ui.shared.attention.focus_tag": "Foco",
   "ui.shared.attention.load_failed": "Falha ao carregar",
   "ui.shared.attention.title": "Estado de atenção",
+  "ui.shared.fatigue.title": "Estado de fadiga",
   "ui.shared.attention.global_sleep_badge": "Sono global",
   "ui.shared.sticker.drop_text": "[ Arraste a imagem aqui ]",
   "ui.shared.sticker.or_click": "ou clique para selecionar",

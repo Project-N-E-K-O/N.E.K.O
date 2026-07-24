@@ -292,12 +292,16 @@ class QQMessageDispatcher:
                 try: await self.plugin.settings_service.persist_business_config()
                 except Exception: pass
         # LLM 生成前预缓冲：如果已有等待中的回复，跳过 pipeline
+        buffer_bucket_id = 0
         if getattr(self.plugin, "reply_buffer_service", None):
             session_key = self.plugin._build_session_key(sender_id=sender_id, is_group=False)
             buf_text = f"[引用: {reply_context}] {message_text}" if reply_context else message_text
             if await self.plugin.reply_buffer_service.buffer(session_key, buf_text, sender_id, False, ""):
                 self.plugin._emit_log("INFO", f"私聊缓冲拦截: from={sender_id} text={message_text[:30]} → 跳过pipeline")
                 return
+            bucket = self.plugin.reply_buffer_service._pending.get(session_key)
+            if bucket:
+                buffer_bucket_id = bucket.bucket_id
         self.plugin._emit_log("INFO", f"私聊 pipeline 开始: from={sender_id} text={message_text[:40]}")
         request = QQReplyRequest(
             message_text=message_text,
@@ -310,6 +314,7 @@ class QQMessageDispatcher:
             forward_sub_count=forward_sub_count,
             current_message_id=current_message_id,
             reply_context=reply_context,
+            buffer_bucket_id=buffer_bucket_id,
         )
         outcome = await self.plugin.reply_pipeline.run(request)
         if outcome.action == "reply" and outcome.reply_text and current_message_id:
@@ -336,12 +341,16 @@ class QQMessageDispatcher:
     ):
         strategy_mode = getattr(self.plugin, "_strategy_mode", "neko_dynamic")
         # 群聊预缓冲：同群所有用户的快速消息共用缓冲桶，合并为一条回复
+        buffer_bucket_id = 0
         if not is_at_bot and getattr(self.plugin, "reply_buffer_service", None):
             gkey = self.plugin._build_session_key(sender_id=group_id, is_group=True, group_id=group_id)
             buf_text = f"[引用: {reply_context}] {message_text}" if reply_context else message_text
             if await self.plugin.reply_buffer_service.buffer(gkey, buf_text, sender_id, True, group_id):
                 self.plugin._emit_log("INFO", f"群聊缓冲拦截: group={group_id} from={sender_id} text={message_text[:30]} → 跳过pipeline")
                 return
+            bucket = self.plugin.reply_buffer_service._pending.get(gkey)
+            if bucket:
+                buffer_bucket_id = bucket.bucket_id
         force_reply = False
         if strategy_mode == "neko_dynamic" and hasattr(self.plugin, "attention_gate_service") and self.plugin.attention_gate_service is not None:
             gate_decision = await self.plugin.attention_gate_service.evaluate(
@@ -403,6 +412,7 @@ class QQMessageDispatcher:
             suppression_reason=suppression_reason,
             force_reply=force_reply,
             reply_context=reply_context,
+            buffer_bucket_id=buffer_bucket_id,
         )
         outcome = await self.plugin.reply_pipeline.run(request)
 

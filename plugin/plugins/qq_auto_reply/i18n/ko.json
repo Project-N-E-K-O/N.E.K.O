@@ -378,6 +378,7 @@
   "ui.shared.attention.focus_tag": "포커스",
   "ui.shared.attention.load_failed": "불러오기 실패",
   "ui.shared.attention.title": "주의 상태",
+  "ui.shared.fatigue.title": "피로 상태",
   "ui.shared.attention.global_sleep_badge": "전역 휴면",
   "ui.shared.sticker.drop_text": "[ 이미지를 여기에 드래그하세요 ]",
   "ui.shared.sticker.or_click": "또는 클릭하여 파일 선택",

@@ -29,7 +29,7 @@ def _random_delay() -> float:
 
 
 class PendingReply:
-    __slots__ = ("entries", "wait_until", "task", "sender_id", "is_group", "group_id", "task_gen", "bot_blocks", "_no_reply_retries")
+    __slots__ = ("entries", "wait_until", "task", "sender_id", "is_group", "group_id", "task_gen", "bot_blocks", "_no_reply_retries", "bucket_id")
 
     def __init__(self, sender_id: str, is_group: bool, group_id: str):
         self.entries: list[tuple[str, str]] = []  # [(sender_id, message_text), ...]
@@ -40,6 +40,7 @@ class PendingReply:
         self.is_group = is_group
         self.group_id = group_id
         self.bot_blocks: list | None = None  # None = pipeline 未完成；有值 = 回复就绪
+        self.bucket_id: int = 0  # 单调递增的身份标识，store_reply 用于校验桶未被替换
 
     def _new_task(self, coro) -> asyncio.Task:
         self.task_gen += 1
@@ -51,15 +52,26 @@ class QQReplyBufferService:
     def __init__(self, plugin: Any):
         self.plugin = plugin
         self._pending: dict[str, PendingReply] = {}
+        self._bucket_id_seq: int = 0
+
+    def _next_bucket_id(self) -> int:
+        self._bucket_id_seq += 1
+        return self._bucket_id_seq
 
     # ------------------------------------------------------------------
     # 公共接口
     # ------------------------------------------------------------------
 
-    def store_reply(self, session_key: str, reply_text: str, blocks: list) -> bool:
-        """pipeline 生成的回复存入缓冲桶，等计时器到期再发。返回 True 表示已存储。"""
+    def store_reply(self, session_key: str, reply_text: str, blocks: list, *, expected_bucket_id: int = 0) -> bool:
+        """pipeline 生成的回复存入缓冲桶，等计时器到期再发。返回 True 表示已存储。
+
+        expected_bucket_id: 触发本次 pipeline 的桶 ID。若与当前 _pending 中的桶不一致
+        （说明旧桶已被替换），则拒绝写入，防止旧 pipeline 结果污染新桶。"""
         existing = self._pending.get(session_key)
         if existing is None:
+            return False
+        if expected_bucket_id and existing.bucket_id != expected_bucket_id:
+            self.plugin._emit_log("DEBUG", f"[Buffer] 桶身份不匹配 key={session_key} expected_id={expected_bucket_id} actual_id={existing.bucket_id} → 丢弃旧回复")
             return False
         existing.bot_blocks = blocks
         self.plugin._emit_log("DEBUG", f"[Buffer] 存储回复 key={session_key} reply={reply_text[:30]}")
@@ -93,12 +105,13 @@ class QQReplyBufferService:
                 existing.wait_until = 0
                 await self._flush(session_key, existing, abandon_on_no_reply=True)
                 pending = PendingReply(sender_id, is_group, group_id)
+                pending.bucket_id = self._next_bucket_id()
                 pending.entries.append((sender_id, message_text))
                 delay = _random_delay()
                 pending.wait_until = time.time() + delay
                 pending.task = pending._new_task(self._flush(session_key, pending))
                 self._pending[session_key] = pending
-                self.plugin._emit_log("DEBUG", f"[Buffer] 新建(话题偏移) key={session_key} delay={delay:.1f}s")
+                self.plugin._emit_log("DEBUG", f"[Buffer] 新建(话题偏移) key={session_key} bucket_id={pending.bucket_id} delay={delay:.1f}s")
                 return False
             if existing.task:
                 existing.task.cancel()
@@ -116,12 +129,13 @@ class QQReplyBufferService:
 
         # 首条消息：创建缓冲桶，起计时器。pipeline 也照常走——LLM 生成的回复会在计时器到期时才发出
         pending = PendingReply(sender_id, is_group, group_id)
+        pending.bucket_id = self._next_bucket_id()
         pending.entries.append((sender_id, message_text))
         delay = _random_delay()
         pending.wait_until = time.time() + delay
         pending.task = pending._new_task(self._flush(session_key, pending))
         self._pending[session_key] = pending
-        self.plugin._emit_log("DEBUG", f"[Buffer] 新建 key={session_key} delay={delay:.1f}s")
+        self.plugin._emit_log("DEBUG", f"[Buffer] 新建 key={session_key} bucket_id={pending.bucket_id} delay={delay:.1f}s")
         return False
 
     # ------------------------------------------------------------------

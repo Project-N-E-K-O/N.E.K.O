@@ -378,6 +378,7 @@
   "ui.shared.attention.focus_tag": "焦點",
   "ui.shared.attention.load_failed": "載入失敗",
   "ui.shared.attention.title": "注意力狀態",
+  "ui.shared.fatigue.title": "疲勞狀態",
   "ui.shared.attention.global_sleep_badge": "全域休眠",
   "ui.shared.sticker.drop_text": "[ 拖曳圖片到此處 ]",
   "ui.shared.sticker.or_click": "或點擊選擇檔案",

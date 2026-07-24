@@ -378,6 +378,7 @@
   "ui.shared.attention.focus_tag": "Foco",
   "ui.shared.attention.load_failed": "<span style=color:#999>Error al cargar</span>",
   "ui.shared.attention.title": "Estado de atención",
+  "ui.shared.fatigue.title": "Estado de fatiga",
   "ui.shared.attention.global_sleep_badge": "Suspensión global",
   "ui.shared.sticker.drop_text": "[ Arrastra una imagen aquí ]",
   "ui.shared.sticker.or_click": "O haz clic para seleccionar",
