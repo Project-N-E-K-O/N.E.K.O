@@ -314,14 +314,6 @@ class VmcSender:
             self._active_expression_names.clear()
             self._close_client_locked()
 
-    def _close_client(self) -> None:
-        with self._send_lock:
-            self._enabled = False
-            if self._client is not None:
-                self._send_terminal_state_to_client(self._client)
-            self._active_expression_names.clear()
-            self._close_client_locked()
-
     def _close_client_locked(self) -> None:
         if self._client is None:
             return
@@ -505,10 +497,3 @@ def get_vmc_sender() -> VmcSender:
         config_dir = None
     _singleton = VmcSender(config_dir)
     return _singleton
-
-
-def reset_vmc_sender_cache() -> None:
-    global _singleton
-    if _singleton is not None:
-        _singleton._close_client()
-    _singleton = None

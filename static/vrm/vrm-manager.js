@@ -809,7 +809,7 @@ class VRMManager {
                 && this.currentModel.vrm
             ) {
                 try {
-                    window.vrmVmcSender.sample(this.currentModel.vrm, delta);
+                    window.vrmVmcSender.sample(this.currentModel.vrm);
                 } catch (e) {
                     // VMC 采样异常绝不能影响渲染循环。挂起采样避免每帧重试
                     // 抛异常污染控制台；vrm-vmc-sender.js 的状态轮询会在后端

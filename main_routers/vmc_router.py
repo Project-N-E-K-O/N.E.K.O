@@ -67,11 +67,17 @@ async def _vmc_frame_worker(
         item = await queue.get()
         sent = False
         try:
-            sent = await asyncio.to_thread(
-                sender.send_frame,
-                item["payload"],
-                force=item["force"],
-            )
+            try:
+                sent = await asyncio.to_thread(
+                    sender.send_frame,
+                    item["payload"],
+                    force=item["force"],
+                )
+            except Exception as exc:
+                # A faulty frame or an unexpected sender implementation must
+                # not permanently strand the bounded queue without a worker.
+                # Report this frame as failed and continue with the newest one.
+                logger.warning("Unexpected VMC frame worker error: %s", exc)
             if item["require_ack"]:
                 try:
                     await websocket.send_json(

@@ -381,6 +381,64 @@ class _FakeSender:
         }
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_frame_worker_survives_unexpected_sender_exception():
+    class FlakySender:
+        def __init__(self) -> None:
+            self.payloads: list[dict[str, object]] = []
+
+        def send_frame(self, payload, *, force=False):
+            self.payloads.append(payload)
+            if len(self.payloads) == 1:
+                raise RuntimeError("unexpected sender failure")
+            return True
+
+    class RecordingWebSocket:
+        def __init__(self) -> None:
+            self.messages: list[dict[str, object]] = []
+
+        async def send_json(self, message):
+            self.messages.append(message)
+
+    queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    sender = FlakySender()
+    websocket = RecordingWebSocket()
+    worker = asyncio.create_task(
+        vmc_router._vmc_frame_worker(queue, sender, websocket)
+    )
+    try:
+        await queue.put(
+            {
+                "payload": {"frame": 1},
+                "force": False,
+                "require_ack": True,
+                "sequence": 1,
+                "completion": None,
+            }
+        )
+        await queue.put(
+            {
+                "payload": {"frame": 2},
+                "force": False,
+                "require_ack": True,
+                "sequence": 2,
+                "completion": None,
+            }
+        )
+        await asyncio.wait_for(queue.join(), timeout=1.0)
+    finally:
+        worker.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await worker
+
+    assert sender.payloads == [{"frame": 1}, {"frame": 2}]
+    assert websocket.messages == [
+        {"type": "frame_ack", "sequence": 1, "sent": False},
+        {"type": "frame_ack", "sequence": 2, "sent": True},
+    ]
+
+
 @pytest.fixture
 def vmc_client(monkeypatch):
     sender = _FakeSender()
