@@ -1325,7 +1325,12 @@ async def test_segmented_completion_fence_finishes_only_old_shadow_candidate() -
     )
 
     first = SpeakerShadowCandidateKey(0, 0, "smart_turn_turn")
-    successor = SpeakerShadowCandidateKey(0, 1, "smart_turn_turn")
+    successor = SpeakerShadowCandidateKey(
+        0,
+        1,
+        "smart_turn_turn",
+        candidate_generation=1,
+    )
     assert [frame[2] for frame in shadow.frames] == [first, successor]
     assert shadow.finished == [first]
     completion_release.set()

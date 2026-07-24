@@ -7,6 +7,13 @@ from .contracts import (
     SpeakerVerifierFactory,
     SpeakerVerifierRuntime,
 )
+from .beta_policy import (
+    OwnerVoiceBetaConfig,
+    OwnerVoiceBetaDecision,
+    OwnerVoiceBetaPolicy,
+    OwnerVoiceCandidateIdentity,
+    OwnerVoiceDecisionRecord,
+)
 from .profile import SpeakerProfile
 from .runtime import VoiceIdentitySession
 
@@ -23,6 +30,11 @@ def create_voice_identity_session(
     return create(asset_dir=asset_dir, on_observation=on_observation)
 
 __all__ = [
+    "OwnerVoiceBetaConfig",
+    "OwnerVoiceBetaDecision",
+    "OwnerVoiceBetaPolicy",
+    "OwnerVoiceCandidateIdentity",
+    "OwnerVoiceDecisionRecord",
     "SpeakerProfile",
     "SpeakerObservationCallback",
     "SpeakerShadowConfig",

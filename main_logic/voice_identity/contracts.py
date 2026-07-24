@@ -24,6 +24,7 @@ class SpeakerShadowConfig:
     similarity_thresholds: tuple[float, ...] = (0.40, 0.44, 0.48, 0.52, 0.55)
     minimum_audio_ms: int = 1_500
     maximum_audio_ms: int = 4_000
+    evaluation_audio_ms: tuple[int, ...] = ()
     idle_unload_seconds: float = 60.0
     queue_capacity: int = 32
     finalized_candidate_capacity: int = 1_024
@@ -55,6 +56,24 @@ class SpeakerShadowConfig:
             raise ValueError("minimum_audio_ms must be positive")
         if self.maximum_audio_ms < self.minimum_audio_ms:
             raise ValueError("maximum_audio_ms must be at least minimum_audio_ms")
+        checkpoints = self.evaluation_checkpoints_ms
+        if (
+            any(
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < self.minimum_audio_ms
+                or value > self.maximum_audio_ms
+                for value in checkpoints
+            )
+            or any(
+                left >= right
+                for left, right in zip(checkpoints, checkpoints[1:])
+            )
+        ):
+            raise ValueError(
+                "evaluation_audio_ms must be unique, increasing integers within "
+                "[minimum_audio_ms, maximum_audio_ms]"
+            )
         if self.idle_unload_seconds <= 0:
             raise ValueError("idle_unload_seconds must be positive")
         if self.queue_capacity <= 0:
@@ -73,6 +92,10 @@ class SpeakerShadowConfig:
             raise ValueError("shutdown_grace_seconds must be positive")
         if self.callback_timeout_seconds <= 0:
             raise ValueError("callback_timeout_seconds must be positive")
+
+    @property
+    def evaluation_checkpoints_ms(self) -> tuple[int, ...]:
+        return self.evaluation_audio_ms or (self.minimum_audio_ms,)
 
 
 @dataclass(frozen=True, slots=True)

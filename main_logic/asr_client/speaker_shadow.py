@@ -13,6 +13,7 @@ class SpeakerShadowCandidateKey:
     detector_epoch: int
     shadow_generation: int
     scope: Literal["provider_pause", "smart_turn_turn"]
+    candidate_generation: int = 0
 
 
 __all__ = ["SpeakerShadowCandidateKey"]

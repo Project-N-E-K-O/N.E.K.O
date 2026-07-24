@@ -59,6 +59,12 @@ from main_logic.voice_identity.contracts import (
     SpeakerVerifierFactory,
     SpeakerVerifierRuntime,
 )
+from main_logic.voice_identity.beta_policy import (
+    OwnerVoiceBetaDecision,
+    OwnerVoiceCandidateIdentity,
+    OwnerVoiceDecisionRecord,
+)
+from .speaker_shadow import SpeakerShadowCandidateKey
 from .transcript import (
     TranscriptDispatcher,
     TranscriptEnvelope,
@@ -189,6 +195,17 @@ class IndependentAsrRuntime:
         self._speaker_verifier_cleanup_tasks: set[asyncio.Task[None]] = set()
         self._speaker_verifier_cleanup_failed = False
         self._speaker_verifier_reconcile_lock = asyncio.Lock()
+        self._owner_voice_soft_suppression: (
+            OwnerVoiceCandidateIdentity | None
+        ) = None
+        self._owner_voice_soft_filter_tasks: set[asyncio.Task[None]] = set()
+        self._owner_voice_soft_filter_reset_task: asyncio.Task[None] | None = None
+        self._owner_voice_soft_filter_detector: DetectorRuntime | None = None
+        self._owner_voice_soft_filter_lifecycle: (
+            VoiceInputLifecycleController | None
+        ) = None
+        self._owner_voice_soft_rejection_count = 0
+        self._owner_voice_stale_decision_count = 0
         self._asr_transport_selection = None
         self._asr_transport_task: asyncio.Task[None] | None = None
         self._asr_transport_lock = asyncio.Lock()
@@ -243,6 +260,14 @@ class IndependentAsrRuntime:
             )
             self._asr_audio_sequence = 0
             self._asr_pending_detector_candidate = None
+        if not hasattr(self, "_owner_voice_soft_suppression"):
+            self._owner_voice_soft_suppression = None
+            self._owner_voice_soft_filter_tasks = set()
+            self._owner_voice_soft_filter_reset_task = None
+            self._owner_voice_soft_filter_detector = None
+            self._owner_voice_soft_filter_lifecycle = None
+            self._owner_voice_soft_rejection_count = 0
+            self._owner_voice_stale_decision_count = 0
 
     def _capture_turn_token(
         self,
@@ -401,6 +426,21 @@ class IndependentAsrRuntime:
             stale_metrics = getattr(envelope.lifecycle_ref, "metrics", None)
             if stale_metrics is not None:
                 stale_metrics.detector_stale_event_count += 1
+            return
+        if self._owner_voice_soft_suppression is not None and (
+            detector is not self._owner_voice_soft_filter_detector
+            or lifecycle is not self._owner_voice_soft_filter_lifecycle
+        ):
+            self._clear_owner_voice_soft_suppression()
+        if self._owner_voice_soft_suppression is not None:
+            if (
+                isinstance(event, DetectorActivityEvent)
+                and event.activity is SpeechActivityEvent.CANDIDATE_PAUSE
+            ):
+                await self._finish_owner_voice_soft_suppression(
+                    detector,
+                    lifecycle,
+                )
             return
         lifecycle.metrics.smart_turn_inference_ms = (
             detector.smart_turn_evaluation_ms
@@ -1069,6 +1109,8 @@ class IndependentAsrRuntime:
         """Invalidate callbacks first, then release the detached provider session."""
 
         self._ensure_asr_runtime_state()
+        self._clear_owner_voice_soft_suppression()
+        await self.wait_owner_voice_soft_filter_idle()
         self._asr_session_epoch += 1
         self._asr_audio_generation += 1
         self._asr_transcript_dispatcher.invalidate_all()
@@ -1160,6 +1202,19 @@ class IndependentAsrRuntime:
         speech_probability = frame.speech_probability
         rnnoise_available = frame.rnnoise_available
         rnnoise_evidence = frame.rnnoise_evidence
+        if self._owner_voice_soft_suppression is not None and (
+            self._asr_detector is not self._owner_voice_soft_filter_detector
+            or self._asr_lifecycle is not self._owner_voice_soft_filter_lifecycle
+        ):
+            self._clear_owner_voice_soft_suppression()
+        reset_task = self._owner_voice_soft_filter_reset_task
+        if (
+            self._owner_voice_soft_suppression is not None
+            and reset_task is not None
+            and not reset_task.done()
+        ):
+            self._record_owner_voice_suppressed_audio(frame)
+            return AsrSubmitResult(AsrSubmitStatus.ACCEPTED)
 
         try:
             lifecycle = self._asr_lifecycle
@@ -1255,6 +1310,9 @@ class IndependentAsrRuntime:
                             status_code="ASR_ENDPOINTING_FAILED",
                         )
                         return AsrSubmitResult(AsrSubmitStatus.UNAVAILABLE)
+                    if self._owner_voice_soft_suppression is not None:
+                        self._record_owner_voice_suppressed_audio(frame)
+                        return AsrSubmitResult(AsrSubmitStatus.ACCEPTED)
                     if not submitted.throttle_available:
                         lifecycle.enable_independent_asr_fail_open()
                         if (
@@ -1299,6 +1357,17 @@ class IndependentAsrRuntime:
                             status_code="ASR_ENDPOINTING_FAILED",
                         )
                         return AsrSubmitResult(AsrSubmitStatus.UNAVAILABLE)
+                    if self._owner_voice_soft_suppression is not None:
+                        self._record_owner_voice_suppressed_audio(frame)
+                        if (
+                            SpeechActivityEvent.CANDIDATE_PAUSE
+                            in detector_result.events
+                        ):
+                            await self._finish_owner_voice_soft_suppression(
+                                detector,
+                                lifecycle,
+                            )
+                        return AsrSubmitResult(AsrSubmitStatus.ACCEPTED)
                     if not detector_result.throttle_available:
                         lifecycle.enable_independent_asr_fail_open()
                     else:
@@ -1437,6 +1506,171 @@ class IndependentAsrRuntime:
             return AsrSubmitResult(AsrSubmitStatus.UNAVAILABLE)
 
         return AsrSubmitResult(AsrSubmitStatus.ACCEPTED)
+
+    def request_owner_voice_candidate_rejection(
+        self,
+        record: OwnerVoiceDecisionRecord,
+        *,
+        active_profile_revision: int | None,
+    ) -> bool:
+        """Fence one exact candidate and detach its Provider transport."""
+
+        self._ensure_asr_runtime_state()
+        identity = getattr(record, "identity", None)
+        detector = self._asr_detector
+        lifecycle = self._asr_lifecycle
+        ingress = self._asr_current_ingress_token
+        if (
+            not isinstance(record, OwnerVoiceDecisionRecord)
+            or record.decision
+            is not OwnerVoiceBetaDecision.REJECT_CURRENT_CANDIDATE
+            or not isinstance(identity, OwnerVoiceCandidateIdentity)
+            or self._owner_voice_soft_suppression is not None
+            or detector is None
+            or lifecycle is None
+            or ingress is None
+            or not self._ingress_token_matches(ingress)
+            or identity.session_id != ingress.connection_id
+            or identity.profile_revision != active_profile_revision
+            or identity.detector_epoch != detector.detector_epoch
+            or lifecycle.snapshot.state
+            not in {
+                VoiceLifecycleState.PREWARMING,
+                VoiceLifecycleState.ACTIVE,
+            }
+        ):
+            self._owner_voice_stale_decision_count += 1
+            return False
+        try:
+            expected = SpeakerShadowCandidateKey(
+                detector_epoch=identity.detector_epoch,
+                shadow_generation=identity.observation_generation,
+                scope=identity.candidate_scope,
+                candidate_generation=identity.candidate_generation,
+            )
+            if not detector.matches_speaker_shadow_candidate(expected):
+                self._owner_voice_stale_decision_count += 1
+                return False
+        except Exception:
+            self._owner_voice_stale_decision_count += 1
+            return False
+
+        self._owner_voice_soft_suppression = identity
+        self._owner_voice_soft_filter_detector = detector
+        self._owner_voice_soft_filter_lifecycle = lifecycle
+        self._owner_voice_soft_rejection_count += 1
+        reserved_final = self._asr_reserved_final_key
+        if reserved_final is not None:
+            self._asr_transcript_dispatcher.release(reserved_final)
+        self._asr_audio_dispatcher.abort(
+            self._asr_audio_dispatcher.active_turn
+        )
+        self._asr_reserved_final_key = None
+        self._asr_sealed_turn_token = None
+        self._asr_provider_candidate_fence = None
+        self._asr_turn_prepared = False
+        self._asr_received_audio = False
+        self._asr_pending_speech_confirmed = False
+        self._asr_pending_detector_candidate = None
+        self._asr_audio_sequence = 0
+        self._asr_turn_endpointed_at = None
+        lifecycle.invalidate_audio()
+        watchdog, self._asr_final_watchdog_task = (
+            self._asr_final_watchdog_task,
+            None,
+        )
+        if watchdog is not None and watchdog is not asyncio.current_task():
+            watchdog.cancel()
+        for task_name in (
+            "_asr_transport_task",
+            "_asr_warm_expiry_task",
+        ):
+            task = getattr(self, task_name, None)
+            setattr(self, task_name, None)
+            if task is not None and task is not asyncio.current_task():
+                task.cancel()
+        session, self._asr_session = self._asr_session, None
+        lease, self._asr_smart_turn_lease = self._asr_smart_turn_lease, None
+        cleanup = asyncio.create_task(
+            self._reset_owner_voice_rejected_candidate(
+                session,
+                lease,
+            ),
+            name="owner-voice-soft-reject-cleanup",
+        )
+        self._owner_voice_soft_filter_reset_task = cleanup
+        self._owner_voice_soft_filter_tasks.add(cleanup)
+        cleanup.add_done_callback(self._owner_voice_soft_filter_tasks.discard)
+        return True
+
+    async def wait_owner_voice_soft_filter_idle(self) -> None:
+        tasks = tuple(self._owner_voice_soft_filter_tasks)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _reset_owner_voice_rejected_candidate(
+        self,
+        session: Any,
+        lease: SmartTurnLease | None,
+    ) -> None:
+        for action in (
+            None if lease is None else lease.release,
+            None if session is None else session.close,
+        ):
+            if action is None:
+                continue
+            try:
+                await action()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                continue
+
+    async def _finish_owner_voice_soft_suppression(
+        self,
+        detector: DetectorRuntime,
+        lifecycle: VoiceInputLifecycleController,
+    ) -> None:
+        if (
+            self._owner_voice_soft_suppression is None
+            or detector is not self._asr_detector
+            or lifecycle is not self._asr_lifecycle
+        ):
+            if self._owner_voice_soft_suppression is not None:
+                self._clear_owner_voice_soft_suppression()
+            return
+        reset_task = self._owner_voice_soft_filter_reset_task
+        if reset_task is not None and not reset_task.done():
+            await asyncio.gather(reset_task, return_exceptions=True)
+        try:
+            await detector.reset()
+        except Exception:
+            self._clear_owner_voice_soft_suppression()
+            return
+        if detector is not self._asr_detector or lifecycle is not self._asr_lifecycle:
+            self._clear_owner_voice_soft_suppression()
+            return
+        lifecycle.invalidate_audio()
+        self._clear_owner_voice_soft_suppression()
+
+    def _clear_owner_voice_soft_suppression(self) -> None:
+        self._owner_voice_soft_suppression = None
+        self._owner_voice_soft_filter_detector = None
+        self._owner_voice_soft_filter_lifecycle = None
+        self._owner_voice_soft_filter_reset_task = None
+
+    def _record_owner_voice_suppressed_audio(
+        self,
+        frame: ProcessedVoiceFrame,
+    ) -> None:
+        lifecycle = self._asr_lifecycle
+        if lifecycle is None:
+            return
+        duration_ms = (
+            len(frame.pcm16) * 1_000 // (max(1, frame.sample_rate_hz) * 2)
+        )
+        lifecycle.metrics.add_local_audio(duration_ms)
+        lifecycle.metrics.add_suppressed_audio(duration_ms)
 
     def _ensure_transport_restart_task(self) -> None:
         task = self._asr_transport_task

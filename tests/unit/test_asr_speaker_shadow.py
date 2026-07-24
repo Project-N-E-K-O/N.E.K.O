@@ -13,6 +13,7 @@ from main_logic.voice_identity.contracts import (
     SpeakerShadowObservation,
 )
 from main_logic.voice_identity.runtime import SpeakerShadowRuntime
+from main_logic.voice_turn.contracts import SpeechActivityEvent
 
 
 class _Backend:
@@ -143,6 +144,37 @@ async def test_shadow_scores_once_and_records_hypothetical_block() -> None:
     await runtime.close()
 
 
+async def test_shadow_emits_configured_non_blocking_observation_checkpoints() -> None:
+    backend = _Backend(score=0.2)
+    observations: list[SpeakerShadowObservation] = []
+    runtime = SpeakerShadowRuntime(
+        backend_factory=lambda: backend,
+        config=_config(
+            minimum_audio_ms=20,
+            maximum_audio_ms=60,
+            evaluation_audio_ms=(20, 40),
+        ),
+        on_observation=observations.append,
+    )
+
+    candidate = (1, 1)
+    for _ in range(5):
+        assert runtime.submit(
+            _pcm(10),
+            sample_rate_hz=16_000,
+            candidate=candidate,
+        )
+    await runtime.wait_idle()
+
+    assert [observation.audio_ms for observation in observations] == [20, 40]
+    assert [len(pcm16) for pcm16, _sample_rate_hz in backend.score_calls] == [
+        len(_pcm(20)),
+        len(_pcm(40)),
+    ]
+    assert runtime.snapshot()["evaluated_candidate_count"] == 2
+    await runtime.close()
+
+
 async def test_shadow_is_disabled_without_loading_a_backend() -> None:
     backend = _Backend()
     runtime = SpeakerShadowRuntime(
@@ -195,6 +227,43 @@ async def test_shadow_failures_and_low_scores_never_change_detector_results() ->
     assert second.throttle_available is True
     assert gate.inputs == [_pcm(10), _pcm(10)]
     assert shadow.snapshot()["inference_failure_count"] == 1
+    await detector.close()
+
+
+async def test_detector_matches_only_the_live_confirmed_shadow_candidate() -> None:
+    class _StartedGate(_Gate):
+        def feed(self, pcm16: bytes):
+            self.inputs.append(pcm16)
+            return (SpeechActivityEvent.SPEECH_STARTED,)
+
+    shadow = SpeakerShadowRuntime(
+        backend_factory=lambda: _Backend(),
+        config=_config(minimum_audio_ms=10),
+    )
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_StartedGate(),
+        speaker_shadow=shadow,
+    )
+
+    await detector.feed(
+        _pcm(10),
+        speech_probability=0.9,
+        rnnoise_available=True,
+    )
+    candidate = detector._speaker_shadow_candidate
+
+    assert candidate is not None
+    assert detector.matches_speaker_shadow_candidate(candidate)
+    assert not detector.matches_speaker_shadow_candidate(
+        SpeakerShadowCandidateKey(
+            candidate.detector_epoch,
+            candidate.shadow_generation + 1,
+            candidate.scope,
+        )
+    )
+    await detector.reset()
+    assert not detector.matches_speaker_shadow_candidate(candidate)
     await detector.close()
 
 
@@ -613,3 +682,15 @@ def test_shadow_config_rejects_unsafe_bounds() -> None:
         SpeakerShadowConfig(shutdown_grace_seconds=0)
     with pytest.raises(ValueError, match="callback_timeout_seconds"):
         SpeakerShadowConfig(callback_timeout_seconds=0)
+    with pytest.raises(ValueError, match="evaluation_audio_ms"):
+        SpeakerShadowConfig(
+            minimum_audio_ms=20,
+            maximum_audio_ms=100,
+            evaluation_audio_ms=(20, 20),
+        )
+    with pytest.raises(ValueError, match="evaluation_audio_ms"):
+        SpeakerShadowConfig(
+            minimum_audio_ms=20,
+            maximum_audio_ms=100,
+            evaluation_audio_ms=(10, 40),
+        )
