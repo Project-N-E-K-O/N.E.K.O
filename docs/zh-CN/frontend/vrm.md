@@ -48,6 +48,20 @@ VRM 情绪把语义名称映射到有顺序的候选表情名称：
 
 VRM 激活时，`window.LanLan1.setEmotion(name)` 委派给 `window.vrmManager.expression.setMood(name)`。非 neutral 情绪会在运行时延时结束后回到 neutral。
 
+## VMC 动作输出
+
+`vrm-vmc-sender.js` 会在动画、视线、弹簧骨和表情更新后采样当前 VRM，并通过独立的 `/api/vmc/ws` 通道发送姿态。后端负责坐标转换，再通过 OSC/UDP 发送给兼容 VMC Protocol 的接收端。
+
+该功能默认关闭。关闭状态只保留轻量代理，不进行状态轮询、VMC 定时任务或逐帧采样。在主页面使用默认本机目标启用：
+
+```js
+await window.vrmVmcSender.enable('127.0.0.1', 39539, 60)
+```
+
+VMC 根节点独立于 `vrm.scene`，因此桌宠布局变换不会被导出。切换或销毁模型时，旧表情会通过带确认的清零帧退出；禁用或释放数据源最终会发送 `/VMC/Ext/OK 0`。
+
+接收端配置、控制接口、安全边界、关闭码与排障方法见 [VMC 动作输出](/zh-CN/api/rest/vmc)。
+
 ## 运行时保护
 
 当前渲染器会在长时间停顿后钳制帧 delta、缩小导入的 spring-bone 碰撞体半径，并通过光照配置缩放 MToon 描边宽度。这些是内部兼容保护，不是模型格式要求；不要为了复现它们而预先修改上传的 VRM 文件。

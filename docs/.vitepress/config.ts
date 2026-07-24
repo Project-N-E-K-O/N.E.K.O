@@ -144,7 +144,7 @@ function apiSidebar(lang: 'en' | 'zh-CN' | 'ja') {
     en: {
       ref: 'API Reference', overview: 'Overview',
       rest: 'REST Endpoints', config: 'Config', chars: 'Characters', pages: 'Web Pages',
-      live2d: 'Live2D Models', vrm: 'VRM Models', mmd: 'MMD Models', pngtuber: 'PNGTuber Models', mem: 'Memory',
+      live2d: 'Live2D Models', vrm: 'VRM Models', vmc: 'VMC Output', mmd: 'MMD Models', pngtuber: 'PNGTuber Models', mem: 'Memory',
       agent: 'Agent', workshop: 'Steam Workshop', cloudsave: 'Cloud Save', tools: 'Runtime Tools', capture: 'Capture Bridge', sys: 'System',
       music: 'Music', jukebox: 'Jukebox', game: 'Minigames', galgame: 'GalGame', icebreaker: 'Icebreaker', proactive: 'Proactive Chat',
       ws: 'WebSocket', proto: 'Protocol', msg: 'Message Types', audio: 'Audio Streaming',
@@ -153,7 +153,7 @@ function apiSidebar(lang: 'en' | 'zh-CN' | 'ja') {
     'zh-CN': {
       ref: 'API 参考', overview: '概览',
       rest: 'REST 接口', config: '配置', chars: '角色', pages: 'Web 页面',
-      live2d: 'Live2D 模型', vrm: 'VRM 模型', mmd: 'MMD 模型', pngtuber: 'PNGTuber 模型', mem: '记忆',
+      live2d: 'Live2D 模型', vrm: 'VRM 模型', vmc: 'VMC 动作输出', mmd: 'MMD 模型', pngtuber: 'PNGTuber 模型', mem: '记忆',
       agent: 'Agent', workshop: 'Steam 创意工坊', cloudsave: '云存档', tools: '运行时工具', capture: '截图桥', sys: '系统',
       music: '音乐', jukebox: '点歌台', game: '小游戏', galgame: 'GalGame', icebreaker: '破冰', proactive: '主动搭话',
       ws: 'WebSocket', proto: '协议', msg: '消息类型', audio: '音频流',
@@ -162,7 +162,7 @@ function apiSidebar(lang: 'en' | 'zh-CN' | 'ja') {
     ja: {
       ref: 'API リファレンス', overview: '概要',
       rest: 'REST エンドポイント', config: '設定', chars: 'キャラクター', pages: 'Web ページ',
-      live2d: 'Live2D モデル', vrm: 'VRM モデル', mmd: 'MMD モデル', pngtuber: 'PNGTuber モデル', mem: 'メモリ',
+      live2d: 'Live2D モデル', vrm: 'VRM モデル', vmc: 'VMC モーション出力', mmd: 'MMD モデル', pngtuber: 'PNGTuber モデル', mem: 'メモリ',
       agent: 'エージェント', workshop: 'Steam Workshop', cloudsave: 'クラウドセーブ', tools: 'ランタイムツール', capture: 'キャプチャブリッジ', sys: 'システム',
       music: '音楽', jukebox: 'ジュークボックス', game: 'ミニゲーム', galgame: 'ギャルゲー', icebreaker: 'アイスブレイク', proactive: 'プロアクティブチャット',
       ws: 'WebSocket', proto: 'プロトコル', msg: 'メッセージ型', audio: 'オーディオストリーミング',
@@ -184,6 +184,7 @@ function apiSidebar(lang: 'en' | 'zh-CN' | 'ja') {
         { text: t.pages, link: `${p}/api/rest/pages` },
         { text: t.live2d, link: `${p}/api/rest/live2d` },
         { text: t.vrm, link: `${p}/api/rest/vrm` },
+        { text: t.vmc, link: `${p}/api/rest/vmc` },
         { text: t.mmd, link: `${p}/api/rest/mmd` },
         { text: t.pngtuber, link: `${p}/api/rest/pngtuber` },
         { text: t.mem, link: `${p}/api/rest/memory` },

@@ -88,7 +88,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/live2d/live2d-interaction.js",
     _PROJECT_ROOT / "static/live2d/live2d-init.js",
     _PROJECT_ROOT / "static/live2d/live2d-ui-buttons.js",
-    _PROJECT_ROOT / "static/vrm/vrm-ui-buttons.js",
+    *sorted(_PROJECT_ROOT.glob("static/vrm/*.js")),
     _PROJECT_ROOT / "static/mmd/mmd-ui-buttons.js",
     _PROJECT_ROOT / "static/pngtuber-core.js",
     _PROJECT_ROOT / "static/i18n-i18next.js",

@@ -44,6 +44,7 @@ These pages are useful for contributors and alternative local clients, but the r
 | [Characters](/api/rest/characters) | `/api/characters` | Character, persona, card, voice, and avatar operations |
 | [Live2D](/api/rest/live2d) | `/api/live2d` | Live2D models and emotion mappings |
 | [VRM](/api/rest/vrm) | `/api/model/vrm` | VRM models, configuration, animations, expressions |
+| [VMC output](/api/rest/vmc) | `/api/vmc` | Local OSC/UDP motion output for the active VRM |
 | [MMD](/api/rest/mmd) | `/api/model/mmd` | MMD model and motion management |
 | [PNGTuber](/api/rest/pngtuber) | `/api/model/pngtuber` | PNGTuber model management |
 | [Memory](/api/rest/memory) | `/api/memory` | Recent-memory files, review/settings, rename, and legacy cleanup; recall uses the internal `/query_memory` route |
