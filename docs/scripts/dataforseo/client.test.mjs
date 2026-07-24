@@ -84,6 +84,8 @@ test('client wraps request timeout failures without exposing credentials', async
       assert.ok(error instanceof DataForSeoApiError)
       assert.match(error.message, /network request failed.*timed out/i)
       assert.doesNotMatch(error.message, /private-login|private-password/)
+      assert.equal(error.retryable, false)
+      assert.equal(error.billingUncertain, true)
       return true
     },
   )
@@ -108,7 +110,28 @@ test('client wraps response body read failures consistently', async () => {
       assert.ok(error instanceof DataForSeoApiError)
       assert.equal(error.endpoint, DATAFORSEO_ENDPOINTS.organicSerp)
       assert.equal(error.statusCode, 200)
+      assert.equal(error.retryable, false)
+      assert.equal(error.billingUncertain, true)
       assert.match(error.message, /response body read failed.*connection reset/i)
+      return true
+    },
+  )
+})
+
+test('client does not retry a non-JSON response with uncertain billing', async () => {
+  const client = new DataForSeoClient({
+    login: 'login',
+    password: 'password',
+    fetchImpl: async () => new Response('<html>upstream error</html>', { status: 200 }),
+  })
+
+  await assert.rejects(
+    client.post(DATAFORSEO_ENDPOINTS.organicSerp, [{}]),
+    error => {
+      assert.ok(error instanceof DataForSeoApiError)
+      assert.equal(error.retryable, false)
+      assert.equal(error.billingUncertain, true)
+      assert.match(error.message, /non-JSON data/i)
       return true
     },
   )
@@ -152,6 +175,58 @@ test('client rejects failed tasks even when the response envelope succeeded', as
   await assert.rejects(
     client.post(DATAFORSEO_ENDPOINTS.organicSerp, [{}]),
     /40501: Invalid field/,
+  )
+})
+
+test('client classifies transient task failures and retains their reported cost', async () => {
+  const client = new DataForSeoClient({
+    login: 'login',
+    password: 'password',
+    fetchImpl: async () => jsonResponse({
+      status_code: 20000,
+      status_message: 'Ok.',
+      tasks_error: 1,
+      tasks: [{
+        status_code: 40101,
+        status_message: 'Internal SE Server Error.',
+        cost: 0.004,
+      }],
+    }),
+  })
+
+  await assert.rejects(
+    client.post(DATAFORSEO_ENDPOINTS.organicSerp, [{}]),
+    error => {
+      assert.ok(error instanceof DataForSeoApiError)
+      assert.equal(error.statusCode, 40101)
+      assert.equal(error.retryable, true)
+      assert.equal(error.fatal, false)
+      assert.equal(error.costUsd, 0.004)
+      return true
+    },
+  )
+})
+
+test('client marks account-wide authorization failures as fatal', async () => {
+  const client = new DataForSeoClient({
+    login: 'login',
+    password: 'password',
+    fetchImpl: async () => jsonResponse({
+      status_code: 40100,
+      status_message: 'Authentication failed.',
+      tasks_error: 0,
+      tasks: [],
+    }),
+  })
+
+  await assert.rejects(
+    client.post(DATAFORSEO_ENDPOINTS.organicSerp, [{}]),
+    error => {
+      assert.ok(error instanceof DataForSeoApiError)
+      assert.equal(error.retryable, false)
+      assert.equal(error.fatal, true)
+      return true
+    },
   )
 })
 

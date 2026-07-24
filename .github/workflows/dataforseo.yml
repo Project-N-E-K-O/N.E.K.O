@@ -1,10 +1,15 @@
 name: DataForSEO SEO Report
 
 on:
+  schedule:
+    # 07:30 Asia/Shanghai (GitHub Actions cron uses UTC).
+    - cron: '30 23 * * *'
   pull_request:
     paths:
       - 'docs/scripts/dataforseo/**'
+      - 'docs/scripts/seo-monitoring/**'
       - 'docs/seo/dataforseo.config.json'
+      - 'docs/seo/monitoring.config.json'
       - 'docs/package.json'
       - '.github/workflows/dataforseo.yml'
   workflow_dispatch:
@@ -39,6 +44,7 @@ concurrency:
 
 jobs:
   test:
+    if: github.event_name != 'schedule' || vars.ENABLE_PAID_DATAFORSEO_SCHEDULE == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -60,19 +66,25 @@ jobs:
         run: npm run test:dataforseo
         working-directory: docs
 
+      - name: Test unified SEO/GEO reporting
+        run: npm run test:seo-monitoring
+        working-directory: docs
+
       - name: Validate the committed request plan
         run: npm run seo:dataforseo -- --dry-run --output .seo-reports/dry-run.json
         working-directory: docs
 
   report:
-    if: github.event_name == 'workflow_dispatch'
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'schedule' && vars.ENABLE_PAID_DATAFORSEO_SCHEDULE == 'true')
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      REPORT_MODE: ${{ inputs.mode }}
-      SERP_DEPTH: ${{ inputs.serp_depth }}
-      INCLUDE_AI_OVERVIEW: ${{ inputs.include_ai_overview }}
+      REPORT_MODE: ${{ github.event_name == 'schedule' && 'serp' || inputs.mode }}
+      SERP_DEPTH: ${{ github.event_name == 'schedule' && '10' || inputs.serp_depth }}
+      INCLUDE_AI_OVERVIEW: ${{ github.event_name == 'schedule' && 'false' || inputs.include_ai_overview }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -89,7 +101,7 @@ jobs:
         working-directory: docs
 
       - name: Require credentials for paid modes
-        if: inputs.mode != 'dry-run'
+        if: env.REPORT_MODE != 'dry-run'
         shell: bash
         env:
           DATAFORSEO_LOGIN: ${{ secrets.DATAFORSEO_LOGIN }}
@@ -101,7 +113,7 @@ jobs:
           fi
 
       - name: Generate dry-run report
-        if: inputs.mode == 'dry-run'
+        if: env.REPORT_MODE == 'dry-run'
         shell: bash
         working-directory: docs
         run: |
@@ -112,7 +124,7 @@ jobs:
           npm run seo:dataforseo -- "${args[@]}"
 
       - name: Generate paid report
-        if: inputs.mode != 'dry-run'
+        if: env.REPORT_MODE != 'dry-run'
         shell: bash
         working-directory: docs
         env:
@@ -125,12 +137,33 @@ jobs:
           fi
           npm run seo:dataforseo -- "${args[@]}"
 
+      - name: Generate unified DataForSEO, GSC, and GA4 summary
+        if: always()
+        shell: bash
+        working-directory: docs
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GA4_PROPERTY_ID: ${{ vars.GA4_PROPERTY_ID }}
+          GSC_SITE_URL: ${{ vars.GSC_SITE_URL }}
+        run: >-
+          npm run seo:report --
+          --dataforseo ".seo-reports/dataforseo-${GITHUB_RUN_ID}.json"
+          --output-json ".seo-reports/seo-monitoring-${GITHUB_RUN_ID}.json"
+          --output-markdown ".seo-reports/seo-monitoring-${GITHUB_RUN_ID}.md"
+
+      - name: Publish unified report in the run summary
+        if: always()
+        shell: bash
+        run: |
+          report="docs/.seo-reports/seo-monitoring-${GITHUB_RUN_ID}.md"
+          if [[ -f "$report" ]]; then cat "$report" >> "$GITHUB_STEP_SUMMARY"; fi
+
       - name: Upload report artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: dataforseo-report-${{ github.run_id }}
-          path: docs/.seo-reports/*.json
+          path: docs/.seo-reports/**
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 14
