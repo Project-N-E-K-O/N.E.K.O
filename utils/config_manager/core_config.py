@@ -16,17 +16,53 @@
 """Core config mixin.
 
 get_core_config / get_model_api_config snapshot assembly, geo (mainland vs
-non-mainland) dual checks, free-route URL adjustment and the agent/voice
+non-mainland) region resolution, free-route URL adjustment and the agent/voice
 free-tier predicates.
 
 The geo caches themselves are class attributes on the assembled
 ``ConfigManager`` (single owner); methods below resolve them late through
 the package facade.
+
+Region resolution: one background probe, everyone else reads its verdict
+------------------------------------------------------------------------
+A single daemon thread (``_ip_probe_loop``) retries the ip-api.com lookup with
+backoff until it lands a verdict, then exits. It is the ONLY writer of
+``_ip_check_cache``. Everything else — ``get_core_config``, session setup,
+startup — only reads that value (and idempotently makes sure the probe is
+running). This shape is deliberate: an earlier version kicked a fresh probe
+from each call site, which forced generation tickets, wedged-thread caps and
+stale-replacement logic to keep concurrent probes from clobbering each other.
+Collapsing to one owner deletes that entire class of bug. When you touch this,
+keep it one-writer; a fix that spawns a second concurrent probe brings the
+whole mess back.
+
+Invariants, each learned by breaking it:
+
+1. The probe never does network IO on the caller's thread. ``get_core_config``
+   fans out to ~40 sync callers living inside ``async def``, so a blocking probe
+   freezes the shared event loop and stalls every WebSocket handshake. Callers
+   read the cache; only ``_ip_probe_loop`` blocks, and it is off to the side.
+2. The probe is started only for the free ``lanlan.tech`` route. Users on their
+   own API keys never have their public IP handed to a third-party geolocation
+   service. The gate lives at the callers of ``_check_non_mainland`` (free-route
+   code only) — ``get_core_config`` first checks a ``lanlan.tech`` URL exists.
+   Re-deriving eligibility elsewhere is how this regressed three times.
+3. ``_region_cache`` is written only from the IP verdict. Steam is a fallback
+   vote that must never latch: latching it on a cold-boot timeout would let it
+   rule permanently, and IP (which bypasses the proxy) must still take over.
+4. The probe never gives up permanently. Connectivity can arrive tens of minutes
+   in (WiFi after boot); the loop backs off but keeps retrying for the life of
+   the process. A DNS-wedged iteration just holds the one thread until the OS
+   resolver times out — no leak, because there is only ever one thread.
+5. Every path that freezes a base URL into a session settles the region first
+   (main session, hot-swap prepare, game session pool). Tests assert this
+   structurally, because the real risk is a *new* path added later.
 """
 import asyncio
 import json
 import math
 import sys
+import threading
 from copy import deepcopy
 from urllib.parse import urlparse, urlunparse
 
@@ -40,6 +76,23 @@ from ._shared import _as_bool, logger
 class CoreConfigMixin:
     """Core config snapshot, geo checks and model API resolution."""
 
+    # 背景探测循环的失败退避：开机自启动时本程序常跑在网络栈就绪之前，首探必超时。
+    # Steam 缺席的机器上 IP 是唯一判据，永久放弃会把整台机器锁死国内，而网络可能
+    # 几十分钟后才好（用户开机后才连 WiFi），故不设次数上限，只指数退避到封顶。
+    _IP_CHECK_RETRY_BASE_S = 30.0
+    _IP_CHECK_RETRY_MAX_S = 600.0
+    # 指数先于乘法封顶：不封的话长期离线攒够失败次数后 float * (2**巨大整数) 会抛
+    # OverflowError 而非溢出成 inf。2**32 * base 已远超封顶，截在这里无损。
+    _IP_CHECK_MAX_EXPONENT = 32
+
+    @classmethod
+    def _ip_check_backoff_s(cls, failures: int) -> float:
+        """Seconds to wait before the next probe after `failures` consecutive failures."""
+        if failures <= 0:
+            return 0.0
+        exponent = min(failures - 1, cls._IP_CHECK_MAX_EXPONENT)
+        return min(cls._IP_CHECK_RETRY_BASE_S * (2 ** exponent), cls._IP_CHECK_RETRY_MAX_S)
+
     async def aget_core_config(self):
         """Async wrapper for get_core_config: internally open()+json.load() reads core_config.json;
         async endpoints must offload it to avoid blocking the event loop."""
@@ -48,41 +101,175 @@ class CoreConfigMixin:
     # --- Core config helpers ---
 
     @staticmethod
-    def _check_ip_non_mainland_http():
-        """Independent IP geolocation via China-fast HTTP API (ip-api.com over HTTP)."""
-        # Late-bound: class-level shared state (single owner) lives on the
-        # assembled ConfigManager; resolve it through the package facade.
+    def _ip_probe_once():
+        """One ip-api.com lookup. Returns True/False on a verdict, None on failure."""
+        import urllib.request
+        req = urllib.request.Request(
+            "http://ip-api.com/json/?fields=countryCode",
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        # 显式禁用代理，避免探测到代理服务器所在国家而非用户真实 IP 所在地。
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(req, timeout=3) as resp:
+            data = json.loads(resp.read().decode())
+        country = (data.get("countryCode") or "").upper()
+        return (country != "CN") if country else None
+
+    @staticmethod
+    def _ip_probe_loop():
+        """The single background probe: retry with backoff until a verdict lands.
+
+        One long-lived daemon thread owns the whole retry schedule, so there is
+        exactly one writer of ``_ip_check_cache`` and no per-call thread churn.
+        That is what lets this stay simple where the earlier per-call design could
+        not: no generation tickets, no wedged-thread bookkeeping, no replacement cap.
+        A DNS-wedged iteration just holds this one thread until the OS resolver times
+        out; the next iteration then retries. Never gives up — connectivity can
+        arrive tens of minutes in (the user connects WiFi after boot).
+        """
         from utils.config_manager import ConfigManager
 
-        cache = ConfigManager._ip_check_cache
-        if cache is not None:
-            # True/False → deterministic result; sentinel → tried-and-failed, skip retry
-            return None if cache is ConfigManager._GEO_INDETERMINATE else cache
-        try:
-            import urllib.request
-            req = urllib.request.Request(
-                "http://ip-api.com/json/?fields=countryCode",
-                headers={"User-Agent": "Mozilla/5.0"},
+        failures = 0
+        while ConfigManager._ip_check_cache is None:
+            try:
+                result = ConfigManager._ip_probe_once()
+                if result is not None:
+                    ConfigManager._ip_check_cache = result
+                    print(f"[GeoIP] HTTP IP check: non_mainland={result}", file=sys.stderr)
+                    return
+            except Exception as e:
+                print(f"[GeoIP] HTTP IP check failed: {e}", file=sys.stderr)
+            failures += 1
+            wait = ConfigManager._ip_check_backoff_s(failures)
+            print(f"[GeoIP] HTTP IP check will retry in {wait:.0f}s", file=sys.stderr)
+            # 可中断退避：进程 shutdown / 测试清理 set 这个 event 即让循环干净退出。
+            # 生产从不 set 它，行为等同 time.sleep(wait)。
+            if ConfigManager._ip_probe_wake.wait(wait):
+                return
+
+    @staticmethod
+    def _ensure_ip_probe_started():
+        """Idempotently start the background probe. Cheap to call from anywhere.
+
+        The free-route gate lives in the *callers* (only ``_check_non_mainland``
+        reaches here, and only free-route code reaches that), so this itself makes
+        no policy decision — it just guarantees at most one probe thread is running.
+        """
+        from utils.config_manager import ConfigManager
+
+        if ConfigManager._ip_check_cache is not None:
+            return
+        with ConfigManager._geo_probe_lock:
+            if ConfigManager._ip_check_cache is not None:
+                return
+            thread = ConfigManager._ip_probe_thread
+            if thread is not None and thread.is_alive():
+                return
+            thread = threading.Thread(
+                target=ConfigManager._ip_probe_loop,
+                name="geoip-probe",
+                daemon=True,
             )
-            # 显式禁用代理，避免探测到代理服务器所在国家而非用户真实 IP 所在地。
-            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-            with opener.open(req, timeout=3) as resp:
-                data = json.loads(resp.read().decode())
-            country = (data.get("countryCode") or "").upper()
-            if country:
-                result = country != "CN"
-                ConfigManager._ip_check_cache = result
-                print(f"[GeoIP] HTTP IP check: country={country}, non_mainland={result}", file=sys.stderr)
-                return result
-        except Exception as e:
-            print(f"[GeoIP] HTTP IP check failed: {e}", file=sys.stderr)
-        # Mark as attempted-but-indeterminate so the network probe is never retried.
-        ConfigManager._ip_check_cache = ConfigManager._GEO_INDETERMINATE
-        return None
+            ConfigManager._ip_probe_thread = thread
+            thread.start()
+
+    @staticmethod
+    def join_ip_probe(timeout: float = 5.0) -> bool:
+        """Block until the in-flight GeoIP probe finishes. Returns whether a verdict landed.
+
+        Only for startup and session setup, and only from a worker thread (see
+        ``awarmup_region_check``): request paths must never wait on the probe.
+        Waiting before a session starts is what keeps it off the transient mainland
+        fallback — the route is frozen into each session at start_session time.
+
+        Skipped entirely once Steam has answered. The wait exists to avoid routing on
+        *no* information; Steam's answer is information, and it is already enough to
+        pick a route. IP still outranks it — the Steam verdict is never latched, so
+        the probe takes over for later sessions once it lands. Waiting anyway would
+        tax exactly the users who already have an answer in hand.
+        """
+        from utils.config_manager import ConfigManager
+
+        if ConfigManager._steam_check_cache is not None:
+            return True
+        thread = ConfigManager._ip_probe_thread
+        if thread is not None:
+            thread.join(timeout)
+        return ConfigManager._ip_check_cache is not None
+
+    async def aensure_region_resolved(self, timeout: float = 1.5) -> bool:
+        """Last chance for an in-flight probe before a session freezes its route.
+
+        A session pins its base URL at start_session and never revisits it, so a
+        verdict that lands one second too late costs that whole session. Startup
+        already waits, but its join can expire while the probe sits in DNS
+        resolution (the 3s socket timeout does not cover ``getaddrinfo``).
+
+        Costs nothing on the normal path: returns immediately unless the region is
+        still unknown *and* a probe is actually in flight. The wait itself is
+        offloaded, so the event loop keeps running.
+        """
+        from utils.config_manager import ConfigManager
+
+        if ConfigManager._region_cache is not None or ConfigManager._ip_check_cache is not None:
+            return True
+        # Steam 已经给出结论：足够选线路了，不必再为 IP 付等待。IP 落地后照样接管
+        # （Steam 票不落定），所以这里省下的是延迟、不是正确性。
+        if self._check_steam_non_mainland() is not None:
+            return True
+
+        # 读一次配置以确保背景探测已启动（幂等）。刻意走 aget_core_config 而不是
+        # 直接戳 _ensure_ip_probe_started：免费路由门在 get_core_config 里
+        # （needs_region + _check_non_mainland），直接戳会让自配 API / livestream
+        # 用户也启动探测、把 IP 发给 ip-api.com——他们的线路根本不经过区域改写。
+        await self.aget_core_config()
+        if ConfigManager._ip_check_cache is not None:
+            return True
+        thread = ConfigManager._ip_probe_thread
+        if thread is None or not thread.is_alive():
+            return False
+        resolved = await asyncio.to_thread(self.join_ip_probe, timeout)
+        if not resolved:
+            # 等满仍无结论：这一场会话会用大陆兜底线路，且中途不会改。无限等不是
+            # 选项（会话会挂死），所以这里只把失败态记下来，让现场可诊断——否则
+            # 「海外用户偶尔一整场很慢」在日志里没有任何痕迹。
+            logger.warning(
+                "[GeoIP] 区域判定在会话开始前仍未落地（等待 %.1fs），本场会话按大陆线路启动",
+                timeout,
+            )
+        return resolved
+
+    async def awarmup_region_check(self, timeout: float = 5.0) -> bool:
+        """Resolve the region before the server starts accepting sessions.
+
+        Reads the config (which kicks the probe only on the free ``lanlan.tech``
+        route, so users on their own API keys never hand their IP to a third-party
+        geolocation service), then waits for that probe off the event loop.
+        """
+        await self.aget_core_config()
+        return await asyncio.to_thread(self.join_ip_probe, timeout)
+
+    @staticmethod
+    def _check_ip_non_mainland_http():
+        """Read the IP geolocation verdict. Pure read — never does network IO here.
+
+        The verdict is produced by the background probe thread (``_ip_probe_loop``);
+        this only reports what has landed so far (True/False, or None if the probe
+        has not answered yet). Blocking here is not an option: ``get_core_config``
+        fans out to ~40 sync callers inside ``async def`` (``get_model_api_config``
+        in ``_start_session_prepare_runtime`` among them), so a 3s connect timeout
+        would freeze the shared event loop and stall every WebSocket handshake.
+        """
+        from utils.config_manager import ConfigManager
+
+        return ConfigManager._ip_check_cache
 
     @staticmethod
     def _check_steam_non_mainland():
-        """Steam-based IP country check via Steamworks SDK."""
+        """Steam-based IP country check via Steamworks SDK.
+
+        Fallback source only — see _check_non_mainland for why the HTTP probe outranks it.
+        """
         # Late-bound: class-level shared state (single owner) lives on the
         # assembled ConfigManager; resolve it through the package facade.
         from utils.config_manager import ConfigManager
@@ -108,13 +295,26 @@ class CoreConfigMixin:
         return None
 
     def _check_non_mainland(self) -> bool:
-        """Dual validation: both HTTP IP geo AND Steam geo must indicate non-mainland."""
+        """Region check: HTTP IP geo first, Steam geo only as a fallback.
+
+        This used to require both to say non-mainland. Steamworks stays silent
+        forever on non-Steam builds and on Steam builds started without the Steam
+        client running — most users only auto-start N.E.K.O., not Steam — so that
+        second yes vote never arrived and pinned those overseas users to the
+        mainland route.
+
+        IP now decides whenever it has an answer, because it is the more accurate
+        of the two: the probe disables proxies explicitly, so a user behind a plain
+        system HTTP proxy still geolocates to their real country, while
+        ``Utils.GetIPCountry()`` reports whatever exit IP Steam's servers saw — the
+        proxy's. Steam only breaks the tie when the probe has no answer at all.
+        """
         # Late-bound: class-level shared state (single owner) lives on the
         # assembled ConfigManager; resolve it through the package facade.
         from utils.config_manager import ConfigManager
 
         # 调试开关：config.GEOIP_FORCE_NON_MAINLAND 非 None 时直接返回它，绕过真实检测。
-        # 生产保持 None（走下方双判）。改 config/__init__.py 那个常量即可，不动这里。
+        # 生产保持 None（走下方判定）。改 config/__init__.py 那个常量即可，不动这里。
         if GEOIP_FORCE_NON_MAINLAND is not None:
             print(
                 f"[GeoIP] override active: forcing non-mainland={GEOIP_FORCE_NON_MAINLAND} "
@@ -126,41 +326,62 @@ class CoreConfigMixin:
         if ConfigManager._region_cache is not None:
             return ConfigManager._region_cache
 
+        # 确保后台探测在跑（幂等；免费路由门在调用者侧，见 _ensure_ip_probe_started）。
+        self._ensure_ip_probe_started()
+
+        # IP 权威：探测有结论就落定它。探测是唯一写者，读到什么就是什么，没有
+        # 「过期结论覆盖」的问题——单线程循环成功即退出。
         ip_result = self._check_ip_non_mainland_http()
+        if ip_result is not None:
+            ConfigManager._region_cache = ip_result
+            ConfigManager._geo_indeterminate_logged = False
+            print(f"[GeoIP] IP decides: non_mainland={ip_result}", file=sys.stderr)
+            return ip_result
+
         steam_result = self._check_steam_non_mainland()
+        if steam_result is not None:
+            # IP 探测无结论时才轮到 Steam。它反映的是 Steam 服务端看到的出口 IP，
+            # 挂代理时同样会跟着代理走，所以只当兜底票、**永不落定** _region_cache：
+            #  - 冷启动首探超时那一刻 Steam 往往已有票，落定它等于让这一票永久裁决，
+            #    IP 的重试再没机会接管；
+            #  - 探测长期失败也不代表 Steam 就对——Steam 走海外代理而直连 GeoIP 暂时
+            #    不可用时两者会分歧，网络恢复后必须让 IP 接管。
+            if not ConfigManager._geo_steam_fallback_logged:
+                ConfigManager._geo_steam_fallback_logged = True
+                print(
+                    f"[GeoIP] Steam fallback: non_mainland={steam_result} "
+                    "(IP has no verdict yet, still retrying)",
+                    file=sys.stderr,
+                )
+            return steam_result
 
-        if ip_result is True and steam_result is True:
-            ConfigManager._region_cache = True
-            ConfigManager._geo_indeterminate_logged = False
-            print(f"[GeoIP] Dual check PASS: non-mainland (IP={ip_result}, Steam={steam_result})", file=sys.stderr)
-            return True
-
-        if ip_result is False or steam_result is False:
-            ConfigManager._region_cache = False
-            ConfigManager._geo_indeterminate_logged = False
-            print(f"[GeoIP] Dual check FAIL: mainland (IP={ip_result}, Steam={steam_result})", file=sys.stderr)
-            return False
-
-        # Both sources simultaneously indeterminate (e.g. ip-api.com blocked AND Steam not
-        # yet initialised).  Do NOT write to _region_cache: Steam may initialise shortly
-        # after this call, and caching False here would permanently suppress re-evaluation.
+        # No verdict from either source (ip-api.com unreachable AND Steam not yet
+        # initialised).  Do NOT write to _region_cache: either may become definitive
+        # shortly after this call, and caching False here would permanently suppress
+        # re-evaluation.
         # Callers that iterate get_core_config() will simply retry the geo check on the
         # next invocation until at least one source becomes definitive.
         if not ConfigManager._geo_indeterminate_logged:
             ConfigManager._geo_indeterminate_logged = True
-            print(f"[GeoIP] Dual check indeterminate (IP={ip_result}, Steam={steam_result}), transient mainland default", file=sys.stderr)
+            print("[GeoIP] Both sources indeterminate, transient mainland default", file=sys.stderr)
         return False
 
     # Livestream 派生只接管 free 路这三个已知端点，避免劫持其他 lanlan.tech 路径
     # （例如未来新增 /docs /metrics 之类的非数据端点）
     _LIVESTREAM_DERIVE_PATHS = frozenset({'/core', '/text/v1', '/tts'})
 
-    def _adjust_free_api_url(self, url: str, is_free: bool) -> str:
+    def _adjust_free_api_url(self, url: str, is_free: bool, non_mainland=None) -> str:
         """Internal URL adjustment for free API users.
 
         Priority: livestream prefix derivation > overseas lanlan.tech→lanlan.app switch > return as-is.
         When livestream is enabled it only takes over whitelisted free-path endpoints under
         the lanlan.tech domain (/core /text/v1 /tts); other paths go through the original region switch.
+
+        ``non_mainland`` lets a caller rewriting several URLs pass one region verdict
+        for all of them. Resolving per URL is not safe: the verdict is not cached
+        while it is still provisional, so Steam initialising midway through the loop
+        would leave earlier URLs on lanlan.tech and later ones on lanlan.app — one
+        snapshot pointing at two regions.
         """
         # Late-bound through the package facade so existing
         # patch("utils.config_manager.<helper>") dotted-path monkeypatches
@@ -183,7 +404,8 @@ class CoreConfigMixin:
             logger.warning(f"Livestream URL 派生失败，回退到原始路径: {e}")
 
         try:
-            if self._check_non_mainland():
+            overseas = non_mainland if non_mainland is not None else self._check_non_mainland()
+            if overseas:
                 # 海外免费统一走 www.lanlan.app（含 /tts）：该节点透传客户端
                 # voice 字段到 Gemini，支持 Gemini 全量 + yui。早期把 /tts 降级到
                 # 裸 lanlan.app（硬覆盖 Leda 的旧端点）的 .replace 已移除。
@@ -835,9 +1057,28 @@ class CoreConfigMixin:
         if config['GPTSOVITS_ENABLED'] and core_cfg.get('ttsVoiceId') is not None:
             config['TTS_VOICE_ID'] = core_cfg.get('ttsVoiceId', '')
 
+        # 整份快照共用一次区域判定：判定尚未落定时它每次都会重算，Steam 若在循环
+        # 中途初始化完成，前面的 URL 会停在 lanlan.tech、后面的却变成 lanlan.app，
+        # 同一份 core_config 指向两个区域。
+        #
+        # 但提到循环外之前必须先确认「确实有 URL 需要它」：区域判定会发起 GeoIP
+        # 探测，而免费路由门原本就长在 _adjust_free_api_url 的首行早退里
+        # （不变量 #2）。无条件判定 = 自配 API 用户也把 IP 发给第三方。
+        needs_region = any(
+            key.endswith('_URL') and isinstance(value, str) and 'lanlan.tech' in value
+            for key, value in config.items()
+        )
+        snapshot_non_mainland = False
+        if needs_region:
+            try:
+                snapshot_non_mainland = self._check_non_mainland()
+            except Exception:
+                snapshot_non_mainland = False
         for key, value in config.items():
             if key.endswith('_URL') and isinstance(value, str):
-                config[key] = self._adjust_free_api_url(value, True)
+                config[key] = self._adjust_free_api_url(
+                    value, True, non_mainland=snapshot_non_mainland,
+                )
 
         # Agent model always uses international API regardless of region
         if isinstance(config.get('AGENT_MODEL_URL'), str):
