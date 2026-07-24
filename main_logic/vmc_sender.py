@@ -105,6 +105,7 @@ class VmcSender:
         self._t_pose_requested = False
         self._t_pose_duration_sec = 2.0
         self._t_pose_generation = 0
+        self._active_expression_names: set[str] = set()
 
     @property
     def enabled(self) -> bool:
@@ -275,10 +276,9 @@ class VmcSender:
     async def disable(self) -> dict[str, Any]:
         await self.ensure_config_loaded()
         async with self._lock:
-            self._enabled = False
-            # Do not block FastAPI's event loop while an in-flight frame owns
-            # _send_lock.
-            await asyncio.to_thread(self._close_client)
+            # Serialize the terminal VMC state behind any in-flight frame,
+            # then close the socket off FastAPI's event-loop thread.
+            await asyncio.to_thread(self._disable_client)
             await self._save_config_best_effort()
             logger.info("VMC sender disabled")
             return self.status()
@@ -296,15 +296,30 @@ class VmcSender:
         )
 
     def _replace_client(self, replacement: Any) -> None:
-        """Atomically install ``replacement`` and close the prior client."""
+        """Retire the prior endpoint, then atomically install ``replacement``."""
         with self._send_lock:
             prior = self._client
-            self._client = replacement
             if prior is not None and prior is not replacement:
+                self._send_terminal_state_to_client(prior)
                 self._close_specific_client(prior)
+                self._active_expression_names.clear()
+            self._client = replacement
+
+    def _disable_client(self) -> None:
+        """Publish an unavailable state and close the client under the send lock."""
+        with self._send_lock:
+            self._enabled = False
+            if self._client is not None:
+                self._send_terminal_state_to_client(self._client)
+            self._active_expression_names.clear()
+            self._close_client_locked()
 
     def _close_client(self) -> None:
         with self._send_lock:
+            self._enabled = False
+            if self._client is not None:
+                self._send_terminal_state_to_client(self._client)
+            self._active_expression_names.clear()
             self._close_client_locked()
 
     def _close_client_locked(self) -> None:
@@ -322,6 +337,22 @@ class VmcSender:
                 close()
         except Exception as exc:
             logger.debug("VMC client close error (ignored): %s", exc)
+
+    def _send_terminal_state_to_client(self, client: Any) -> None:
+        """Best-effort VMC teardown for a connectionless UDP receiver."""
+        try:
+            if self._active_expression_names:
+                for name in sorted(self._active_expression_names):
+                    client.send_message("/VMC/Ext/Blend/Val", [name, 0.0])
+                client.send_message("/VMC/Ext/Blend/Apply", [])
+        except Exception as exc:
+            logger.warning("VMC expression reset send failed: %s", exc)
+        try:
+            # Attempt the authoritative unavailable state even if an optional
+            # blend reset above failed.
+            client.send_message("/VMC/Ext/OK", [0])
+        except Exception as exc:
+            logger.warning("VMC unavailable state send failed: %s", exc)
 
     def send_frame(
         self,
@@ -381,8 +412,17 @@ class VmcSender:
             expressions = payload.get("expressions")
             if isinstance(expressions, list):
                 for expression in expressions[:256]:
-                    self._send_blend_val(expression)
+                    sent_expression = self._send_blend_val(expression)
+                    if sent_expression is not None:
+                        name, value = sent_expression
+                        if value > 0:
+                            self._active_expression_names.add(name)
+                        else:
+                            self._active_expression_names.discard(name)
                 self._client.send_message("/VMC/Ext/Blend/Apply", [])
+            if payload.get("source_released") is True:
+                self._client.send_message("/VMC/Ext/OK", [0])
+                self._active_expression_names.clear()
             return True
         except Exception as exc:
             logger.warning("VMC frame send failed: %s", exc)
@@ -405,23 +445,28 @@ class VmcSender:
         if transform is not None:
             self._client.send_message("/VMC/Ext/Bone/Pos", [unity_name, *transform])
 
-    def _send_blend_val(self, expression: Any) -> None:
+    def _send_blend_val(
+        self,
+        expression: Any,
+    ) -> tuple[str, float] | None:
         if not isinstance(expression, dict):
-            return
+            return None
         name = expression.get("name")
         value = expression.get("value")
         if not isinstance(name, str) or not name or len(name) > 128:
-            return
+            return None
         if isinstance(value, bool) or not isinstance(value, (int, float)):
-            return
+            return None
         numeric = float(value)
         if not math.isfinite(numeric):
-            return
+            return None
         vmc_name = _EXPRESSION_NAME_MAP.get(name, name)
+        clamped_value = max(0.0, min(1.0, numeric))
         self._client.send_message(
             "/VMC/Ext/Blend/Val",
-            [vmc_name, max(0.0, min(1.0, numeric))],
+            [vmc_name, clamped_value],
         )
+        return vmc_name, clamped_value
 
     @staticmethod
     def _extract_transform(data: dict[str, Any]) -> list[float] | None:

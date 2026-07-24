@@ -172,6 +172,52 @@ def test_old_t_pose_frame_cannot_clear_newer_request():
 
 
 @pytest.mark.unit
+def test_source_release_reports_unavailable_after_zeroing_expressions():
+    sender, client = _enabled_sender()
+    sender.send_frame(
+        {
+            "expressions": [{"name": "happy", "value": 0.8}],
+        }
+    )
+
+    assert sender.send_frame(
+        {
+            "expressions": [{"name": "happy", "value": 0}],
+            "source_released": True,
+        },
+        force=True,
+    )
+
+    assert client.messages[-3:] == [
+        ("/VMC/Ext/Blend/Val", ["Joy", 0.0]),
+        ("/VMC/Ext/Blend/Apply", []),
+        ("/VMC/Ext/OK", [0]),
+    ]
+    assert sender._active_expression_names == set()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_disable_zeroes_active_expressions_and_reports_unavailable():
+    sender, client = _enabled_sender()
+    sender.send_frame(
+        {
+            "expressions": [{"name": "happy", "value": 0.8}],
+        }
+    )
+
+    status = await sender.disable()
+
+    assert status["enabled"] is False
+    assert client.messages[-3:] == [
+        ("/VMC/Ext/Blend/Val", ["Joy", 0.0]),
+        ("/VMC/Ext/Blend/Apply", []),
+        ("/VMC/Ext/OK", [0]),
+    ]
+    assert client.closed is True
+
+
+@pytest.mark.unit
 def test_sender_token_bucket_preserves_average_rate_under_jitter(monkeypatch):
     sender, client = _enabled_sender()
     sender._min_interval = 1 / 60
@@ -258,7 +304,13 @@ def test_frontend_status_and_expression_state_have_race_guards():
     assert "messageType: 'release'" in source
     assert "Math.ceil(expressionNames.length / 256)" in source
     assert "if (!await result.ackPromise) return false" in source
+    assert "source_released: index === expressionChunks.length - 1" in source
     assert "else if (!state.enabled || !state.releaseInProgress) closeWebSocket()" in source
+    assert "samplingSuspensionGeneration" in source
+    assert (
+        "samplingSuspensionGeneration\n"
+        "                    === state.samplingSuspensionGeneration"
+    ) in source
     assert "state.nextSampleTs += state.minIntervalSec" in source
     assert "this._nextRenderTime += frameInterval" in manager_source
     assert "this._lastRenderTime" not in manager_source

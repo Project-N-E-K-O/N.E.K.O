@@ -808,10 +808,17 @@ class VRMManager {
                 try {
                     window.vrmVmcSender.sample(this.currentModel.vrm, delta);
                 } catch (e) {
-                    // VMC 采样异常绝不能影响渲染循环。首次失败后降级：清空
-                    // 引用避免每帧重试都抛异常污染控制台。
-                    console.warn('[VRM Manager] VMC sample failed, detaching hook:', e);
-                    window.vrmVmcSender = null;
+                    // VMC 采样异常绝不能影响渲染循环。挂起采样避免每帧重试
+                    // 抛异常污染控制台；vrm-vmc-sender.js 的状态轮询会在后端
+                    // 仍启用 VMC 时自动恢复采样（最多延迟一个轮询周期）。
+                    console.warn('[VRM Manager] VMC sample failed, suspending hook:', e);
+                    if (typeof window.vrmVmcSender.suspendSampling === 'function') {
+                        window.vrmVmcSender.suspendSampling();
+                    } else {
+                        // Mixed-cache/third-party fallback: preserve the old
+                        // fail-closed behavior when suspension is unavailable.
+                        window.vrmVmcSender = null;
+                    }
                 }
             }
         };

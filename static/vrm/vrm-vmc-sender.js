@@ -73,6 +73,8 @@
         retiringExpressionNames: new Set(),
         tPoseDeadline: 0,
         tPoseGeneration: 0,
+        samplingSuspended: false,
+        samplingSuspensionGeneration: 0,
     };
 
     function roundTransform(value) {
@@ -175,13 +177,14 @@
             // Send sequentially so a large custom expression set cannot trip
             // the browser bufferedAmount guard halfway through release.
             releaseAck = (async function () {
-                for (const chunk of expressionChunks) {
+                for (const [index, chunk] of expressionChunks.entries()) {
                     const result = sendFrameEnvelope({
                         root: VMC_LOCAL_ROOT,
                         bones: [],
                         expressions: chunk.map(name => ({ name, value: 0 })),
                         t_pose: false,
                         t_pose_generation: state.tPoseGeneration,
+                        source_released: index === expressionChunks.length - 1,
                         ts: Date.now(),
                     }, {
                         messageType: 'release',
@@ -452,6 +455,8 @@
     async function syncStatusFromBackend() {
         const controlGeneration = state.controlGeneration;
         const requestSequence = ++state.statusRequestSequence;
+        const samplingSuspensionGeneration =
+            state.samplingSuspensionGeneration;
         try {
             const response = await fetch('/api/vmc/status', {
                 credentials: 'same-origin',
@@ -468,6 +473,16 @@
 
             state.enabled = !!data.enabled;
             applySendRate(data.send_rate_hz);
+            if (
+                state.enabled
+                && state.samplingSuspended
+                && samplingSuspensionGeneration
+                    === state.samplingSuspensionGeneration
+            ) {
+                state.samplingSuspended = false;
+                resetSampleSchedule();
+                console.info('[VRM-VMC] sampling resumed after backend status sync');
+            }
             if (state.enabled && state.sourceActive) ensureWebSocket();
             else if (!state.enabled || !state.releaseInProgress) closeWebSocket();
 
@@ -516,6 +531,7 @@
     }
 
     function sample(vrm) {
+        if (state.samplingSuspended) return;
         if (!vrm || !vrm.humanoid) return;
         markSourceActive();
         if (!state.enabled) return;
@@ -687,6 +703,10 @@
         releaseVrm: releaseSource,
         isEnabled: function () { return state.enabled; },
         getSendRateHz: function () { return state.sendRateHz; },
+        suspendSampling: function () {
+            state.samplingSuspended = true;
+            state.samplingSuspensionGeneration += 1;
+        },
     };
 
     window.vrmVmcSender = api;
