@@ -526,6 +526,7 @@ _MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS = {
     "/mmd_emotion_manager",
     "/voice_clone",
     "/api_key",
+    "/voice_identity",
     "/chara_manager",
     "/character_card_manager",
     "/cloudsave_manager",

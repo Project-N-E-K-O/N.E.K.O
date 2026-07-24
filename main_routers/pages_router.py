@@ -322,6 +322,16 @@ async def api_key_settings(request: Request):
     })
 
 
+@router.get("/voice_identity", response_class=HTMLResponse)
+async def voice_identity_settings(request: Request):
+    """Owner voice identity enrollment page."""
+    templates = get_templates()
+    return templates.TemplateResponse("templates/voice_identity.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
+
+
 @router.get('/chara_manager')
 async def chara_manager_redirect(request: Request):
     url = "/character_card_manager"
