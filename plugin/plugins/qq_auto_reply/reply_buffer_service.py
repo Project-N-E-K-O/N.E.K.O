@@ -118,7 +118,8 @@ class QQReplyBufferService:
             existing.entries.append((sender_id, message_text))
             if len(existing.entries) >= _MAX_BUFFER_COUNT:
                 existing.wait_until = 0
-                existing._new_task(self._flush(session_key, existing))
+                self._pending.pop(session_key, None)  # 先摘桶，避免新消息 cancel 掉本次交付
+                existing._new_task(self._flush_detached(session_key, existing))
                 self.plugin._emit_log("INFO", f"[Buffer] 达到上限 key={session_key} count={len(existing.entries)} → 立即交付")
             else:
                 delay = _random_delay()
@@ -252,18 +253,25 @@ class QQReplyBufferService:
     # 交付
     # ------------------------------------------------------------------
 
+    async def _flush_detached(self, session_key: str, pending: PendingReply) -> None:
+        """已从 _pending 摘除的桶的交付逻辑——不会被新消息 cancel。"""
+        await self._flush_impl(session_key, pending, check_pending=False)
+
     async def _flush(self, session_key: str, pending: PendingReply, *, abandon_on_no_reply: bool = False) -> None:
+        await self._flush_impl(session_key, pending, check_pending=True, abandon_on_no_reply=abandon_on_no_reply)
+
+    async def _flush_impl(self, session_key: str, pending: PendingReply, *, check_pending: bool, abandon_on_no_reply: bool = False) -> None:
         delay = max(0.0, pending.wait_until - time.time())
         gen = pending.task_gen
         self.plugin._emit_log("DEBUG", f"[Buffer] 等待中 key={session_key} gen={gen} delay={delay:.1f}s count={len(pending.entries)}")
         try:
             await asyncio.sleep(delay)
         except asyncio.CancelledError:
-            if self._pending.get(session_key) is pending and pending.task_gen == gen:
+            if check_pending and self._pending.get(session_key) is pending and pending.task_gen == gen:
                 self._pending.pop(session_key, None)
             return
 
-        if self._pending.get(session_key) is not pending:
+        if check_pending and self._pending.get(session_key) is not pending:
             return
 
         user_entries = pending.entries
@@ -285,11 +293,14 @@ class QQReplyBufferService:
                 self._pending.pop(session_key, None)
                 return
             pending.wait_until = time.time() + 1.0
-            pending.task = asyncio.create_task(self._flush(session_key, pending))
+            pending.task = asyncio.create_task(
+                self._flush(session_key, pending) if check_pending else self._flush_detached(session_key, pending)
+            )
             return
 
         # pop 再交付——交付期间新消息进来会建新桶，不会污染当前桶
-        self._pending.pop(session_key, None)
+        if check_pending:
+            self._pending.pop(session_key, None)
 
         if len(user_entries) == 1:
             # 只有首条用户消息 + bot 回复：直接交付 bot 回复
