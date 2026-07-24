@@ -175,6 +175,9 @@ from main_routers.storage_location_router import router as storage_location_rout
 from main_routers.system_router import router as system_router  # noqa
 from main_routers.tool_router import router as tool_router  # noqa
 from main_routers.vrm_router import router as vrm_router  # noqa
+from main_routers.voice_identity_router import (
+    router as voice_identity_router,
+)  # noqa
 from main_routers.websocket_router import router as websocket_router  # noqa
 from main_routers.workshop_router import router as workshop_router  # noqa
 from main_routers.cookies_login_router import router as cookies_login_router  # noqa
@@ -397,6 +400,7 @@ app.include_router(icebreaker_router)
 app.include_router(game_router)
 app.include_router(card_assist_router)
 app.include_router(capture_router)
+app.include_router(voice_identity_router)
 app.include_router(
     cookies_login_router
 )  # Cookies登录相关路由，放在最后以避免与其他API路由冲突

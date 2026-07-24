@@ -825,6 +825,18 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
                     logger.warning(f"Steam Auto-Cloud startup import failed: {e}")
 
             await initialize_character_data()
+            try:
+                from main_routers.voice_identity_router import (
+                    restore_voice_identity_profile,
+                )
+
+                await restore_voice_identity_profile()
+            except Exception as e:
+                logger.warning(
+                    "Owner voice identity profile restore failed; "
+                    "continuing without a profile: %s",
+                    e,
+                )
             await _sync_memory_server_after_startup_import(import_result)
 
             logger.info("正在初始化 Steamworks...")
@@ -994,6 +1006,11 @@ async def on_startup():
             ),
             release_storage_startup_barrier=release_storage_startup_barrier,
         )
+        from main_routers.voice_identity_router import (
+            configure_voice_identity_service,
+        )
+
+        configure_voice_identity_service()
         set_steamworks_initializer(ensure_steamworks_initialized)
         # asyncio 的慢回调告警只在 loop debug 模式下输出。默认关闭，
         # 需要排查事件循环停顿时设 NEKO_DEBUG_ASYNC=1 启用（会略微增加每 callback 开销）。
@@ -1051,6 +1068,11 @@ async def on_startup():
 async def on_shutdown():
     """Clean up resources at server shutdown"""
     if _IS_MAIN_PROCESS:
+        from main_routers.voice_identity_router import (
+            close_voice_identity_service,
+        )
+
+        await close_voice_identity_service()
         logger.info("正在清理资源...")
         cleanup()
         try:
