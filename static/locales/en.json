@@ -1727,7 +1727,33 @@
         "summary": "Summary",
         "close": "Close",
         "catgirlMemory": "N.E.K.O. Memory Library",
+        "compactLibraryLabel": "Memory",
+        "currentRole": "Current role:",
         "autoReview": "Auto Memory Review",
+        "globalActionsAria": "Memory actions",
+        "openTutorialManager": "Tutorial guide",
+        "exportLogs": "Export logs",
+        "exportLogsAria": "Export logs",
+        "exportLogsDesktopOnly": "Local logs can only be exported from the desktop app.",
+        "exportLogsDesktopOnlyAria": "Export logs (desktop app only)",
+        "exportLogsReview": "Logs are automatically redacted. Review them before sharing.",
+        "exportLogsPending": "Preparing logs…",
+        "exportLogsPendingShort": "Exporting…",
+        "exportLogsSuccess": "Logs exported",
+        "exportLogsSuccessShort": "Exported",
+        "exportLogsErrorShort": "Failed",
+        "exportLogsEmpty": "No logs were found. A diagnostics note was exported.",
+        "exportLogsPackageError": "Could not package logs. Try again.",
+        "exportLogsWriteError": "Could not save to that location. Choose another location and try again.",
+        "memorySettings": "Memory settings",
+        "openExternalImport": "Import memory",
+        "closePanel": "Close panel",
+        "settingsDialogTitle": "Memory settings",
+        "tutorialDialogTitle": "Tutorial guide",
+        "settingsScopeAllCharacters": "These settings apply to all characters.",
+        "autoReviewTooltipLabel": "About automatic memory review",
+        "strongMemoryTooltipLabel": "About powerful memory",
+        "externalImportTooltipLabel": "About importing external memory",
         "loading": "Loading...",
         "externalImportTitle": "Import External Memory",
         "externalImportNote": "Import OpenClaw or Hermes USER.md, SOUL.md, MEMORY.md, daily notes, or a workspace ZIP into the selected character.",
@@ -1762,16 +1788,25 @@
         "olderSection": "Earlier",
         "memoNone": "None.",
         "delete": "Delete",
+        "deleteEntryAria": "Delete memory {{position}} from {{speaker}}",
         "me": "Me:",
         "pleaseSelectFile": "Please select a file first",
         "saveSuccess": "Save successful",
         "saveFailed": "Save failed: {{error}}",
         "saveFailedGeneral": "Save failed",
-        "clearedChatKeptMemo": "Chat messages cleared; memo kept (not saved)",
+        "clearedChatKeptMemo": "Chat messages cleared; memo kept",
+        "unsavedChanges": "Unsaved changes",
+        "switchCharacterConfirmTitle": "Switch characters?",
+        "closeUnsavedConfirmTitle": "Close the memory editor?",
+        "switchCharacterUnsaved": "{{name}} has unsaved changes",
+        "cancelSwitch": "Cancel",
+        "discardAndSwitch": "Discard changes",
+        "saveAndSwitch": "Save and switch",
+        "saveAndClose": "Save and close",
         "enabled": "Enabled",
         "disabled": "Disabled",
         "autoReviewNote": "When enabled, the system will automatically organize and optimize memory content to improve conversation quality",
-        "strongMemory": "Powerful Memory",
+        "strongMemory": "Powerful Memory Mode",
         "strongMemoryNote": "When enabled, deep memory consolidation runs (verbal feedback, automatic rebuttal detection, multi-channel evidence accumulation). Disabling saves about 40% of model calls.",
         "saveFailedStatus": "Save failed",
         "tutorialReset": "Tutorial Guide",
@@ -3379,20 +3414,16 @@
         },
         "memory_browser": {
             "step1": {
-                "title": "💡 Usage Tips",
-                "desc": "Recent conversation content takes a moment to load. Click character name to refresh if you don't see latest chat."
+                "title": "🐱 Character memory library",
+                "desc": "Choose a character to view her saved memories."
             },
             "step2": {
-                "title": "🐱 Character Memory Library",
-                "desc": "Lists all Neko character memory libraries. Click a character name to view and edit her conversation history."
+                "title": "📝 Browse and review memories",
+                "desc": "Browse and review recent memories and summaries here to help reduce repetition and cognitive errors."
             },
             "step3": {
-                "title": "🤖 Auto Memory Organization",
-                "desc": "When enabled, system automatically organizes and optimizes memory content for better conversation quality. Recommended to keep enabled."
-            },
-            "step4": {
-                "title": "📝 Chat History Editing",
-                "desc": "Shows all conversation records for selected character. View, edit or delete specific conversations here."
+        "title": "🧰 Actions",
+        "desc": "Use this area to reopen the tutorial, export diagnostic logs, and adjust memory settings."
             }
         },
         "buttons": {

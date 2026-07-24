@@ -1722,12 +1722,38 @@
         }
     },
     "memory": {
-        "title": "記憶整理",
+        "title": "記憶瀏覽",
         "recent": "近期記憶",
         "summary": "摘要",
         "close": "關閉",
         "catgirlMemory": "貓娘記憶庫",
+        "compactLibraryLabel": "記憶庫",
+        "currentRole": "目前角色:",
         "autoReview": "自動記憶整理",
+        "globalActionsAria": "記憶操作",
+        "openTutorialManager": "新手引導",
+        "exportLogs": "匯出日誌",
+        "exportLogsAria": "匯出日誌",
+        "exportLogsDesktopOnly": "僅桌面版可匯出本機日誌",
+        "exportLogsDesktopOnlyAria": "匯出日誌（僅桌面版可用）",
+        "exportLogsReview": "日誌會自動遮蔽敏感資訊，分享前仍建議確認",
+        "exportLogsPending": "正在準備日誌…",
+        "exportLogsPendingShort": "匯出中…",
+        "exportLogsSuccess": "日誌已匯出",
+        "exportLogsSuccessShort": "已匯出",
+        "exportLogsErrorShort": "匯出失敗",
+        "exportLogsEmpty": "未找到日誌，已匯出診斷說明",
+        "exportLogsPackageError": "日誌打包失敗，請重試",
+        "exportLogsWriteError": "無法儲存到所選位置，請更換位置後重試",
+        "memorySettings": "記憶設定",
+        "openExternalImport": "匯入記憶",
+        "closePanel": "關閉面板",
+        "settingsDialogTitle": "記憶設定",
+        "tutorialDialogTitle": "新手引導",
+        "settingsScopeAllCharacters": "這些設定適用於所有角色。",
+        "autoReviewTooltipLabel": "瞭解自動記憶整理",
+        "strongMemoryTooltipLabel": "瞭解強力記憶",
+        "externalImportTooltipLabel": "關於匯入外部記憶",
         "loading": "加載中...",
         "externalImportTitle": "匯入外部記憶",
         "externalImportNote": "將 OpenClaw 或 Hermes 的 USER.md、SOUL.md、MEMORY.md、每日記憶或工作區 ZIP 匯入目前選取的角色。",
@@ -1762,16 +1788,25 @@
         "olderSection": "較久前",
         "memoNone": "無。",
         "delete": "刪除",
+        "deleteEntryAria": "刪除 {{speaker}} 的第 {{position}} 條記憶",
         "me": "我：",
         "pleaseSelectFile": "請先選擇文件",
         "saveSuccess": "儲存成功",
         "saveFailed": "保存失敗：{{error}}",
         "saveFailedGeneral": "保存失敗",
-        "clearedChatKeptMemo": "已清空對話紀錄，備忘錄已保留（未保存）",
+        "clearedChatKeptMemo": "已清空對話紀錄，備忘錄已保留",
+        "unsavedChanges": "未儲存",
+        "switchCharacterConfirmTitle": "切換角色？",
+        "closeUnsavedConfirmTitle": "關閉記憶整理？",
+        "switchCharacterUnsaved": "{{name}} 的修改尚未儲存",
+        "cancelSwitch": "取消",
+        "discardAndSwitch": "放棄修改",
+        "saveAndSwitch": "儲存並切換",
+        "saveAndClose": "儲存並關閉",
         "enabled": "已開啓",
         "disabled": "已關閉",
         "autoReviewNote": "開啓後系統將自動整理和優化記憶內容，提高對話質量",
-        "strongMemory": "強力記憶",
+        "strongMemory": "強力記憶模式",
         "strongMemoryNote": "開啟時啟用深度記憶固化（口頭反饋、自動反駁偵測、多通道證據累加），關閉後約可節省 40% 模型呼叫",
         "saveFailedStatus": "保存失敗",
         "tutorialReset": "新手引導",
@@ -3379,20 +3414,16 @@
         },
         "memory_browser": {
             "step1": {
-                "title": "💡 使用提示",
-                "desc": "剛剛結束的對話內容需要稍等片刻才會載入。如果沒有看到最新的對話，可以點擊貓娘名稱來刷新。"
+                "title": "🐱 角色記憶庫",
+                "desc": "選擇一個角色，查看她儲存的記憶。"
             },
             "step2": {
-                "title": "🐱 貓娘記憶庫",
-                "desc": "這裡列出了所有貓娘的記憶庫。點擊一個貓娘的名稱可以查看和編輯她的對話歷史。"
+                "title": "📝 瀏覽與校對記憶",
+                "desc": "在這裡瀏覽和校對近期記憶與摘要，幫助減少重複和認知錯誤。"
             },
             "step3": {
-                "title": "🤖 自動記憶整理",
-                "desc": "開啟這個功能後，系統會自動整理和優化記憶內容，提高對話質量。建議保持開啟狀態。"
-            },
-            "step4": {
-                "title": "📝 聊天記錄編輯",
-                "desc": "這裡顯示選中貓娘的所有對話記錄。妳可以在這裡查看、編輯或刪除特定的對話內容。"
+        "title": "🧰 功能區",
+        "desc": "這裡集中提供新手引導、日誌匯出和記憶設定，可依需要查看教學、排查問題或調整記憶功能。"
             }
         },
         "buttons": {

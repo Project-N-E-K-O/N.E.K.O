@@ -193,6 +193,29 @@ def test_non_home_page_tutorials_are_restored_in_separate_driver_runtime():
     assert "hasCard || hasContainer" not in character_wait_block
 
 
+def test_memory_browser_tutorial_targets_current_responsive_surfaces():
+    page_source = _read_page_manager()
+    block = page_source.split("        getMemoryBrowserSteps() {", 1)[1].split(
+        "        isElementVisible(element) {",
+        1,
+    )[0]
+
+    selectors = [".editor", ".memory-global-actions"]
+    positions = [block.index(f"element: '{selector}'") for selector in selectors]
+    assert positions == sorted(positions)
+    assert "const roleLibraryTarget = document.body.dataset.memoryLayout === 'compact'" in block
+    assert "? '#memory-role-panel'" in block
+    assert ": '#memory-role-library';" in block
+    assert ".tips-container" not in block
+    assert block.count("this.setMemoryBrowserRolePanelOpen(true)") == 3
+    assert "this.setMemoryBrowserRolePanelOpen(false)" not in block
+    assert "this.setMemoryBrowserSettingsPanelOpen(true)" not in block
+    assert "this.prepareMemoryBrowserTutorialUi();" in page_source
+    assert "this.restoreMemoryBrowserTutorialUiState();" in page_source
+    assert "return viewportWidth >= 720;" in page_source
+    assert "this.waitForMemoryBrowserReady().then(() =>" in page_source
+
+
 def test_page_tutorial_manager_ignores_stale_yui_handoff_tokens():
     page_source = _read_page_manager()
 
@@ -232,17 +255,20 @@ def test_page_tutorial_manager_honors_mobile_viewport_bailout():
     assert "!this.shouldAllowCompactDesktopTutorial()" in manage_block
 
 
-def test_page_tutorial_manager_allows_voice_clone_desktop_popup_width():
+def test_page_tutorial_manager_allows_intentional_compact_desktop_pages():
     page_source = _read_page_manager()
 
     compact_block = page_source.split("        shouldAllowCompactDesktopTutorial() {", 1)[1].split(
-        "        }",
+        "        waitForDriver() {",
         1,
     )[0]
 
-    assert "this.currentPage !== 'voice_clone'" in compact_block
+    assert "this.currentPage === 'voice_clone'" in compact_block
+    assert "this.currentPage === 'memory_browser'" in compact_block
     assert "viewportWidth >= 640" in compact_block
+    assert "viewportWidth >= 720" in compact_block
     assert "screenWidth > 768" in compact_block
+    assert "return viewportWidth >= 720;" in compact_block
 
 
 def test_voice_clone_tutorial_targets_visible_dropdown_triggers():

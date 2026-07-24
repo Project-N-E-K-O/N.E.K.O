@@ -1727,7 +1727,33 @@
         "summary": "요약",
         "close": "닫기",
         "catgirlMemory": "N.E.K.O. 메모리 라이브러리",
+        "compactLibraryLabel": "메모리",
+        "currentRole": "현재 캐릭터:",
         "autoReview": "자동 메모리 검토",
+        "globalActionsAria": "메모리 작업",
+        "openTutorialManager": "튜토리얼 가이드",
+        "exportLogs": "로그 내보내기",
+        "exportLogsAria": "로그 내보내기",
+        "exportLogsDesktopOnly": "로컬 로그 내보내기는 데스크톱 앱에서만 사용할 수 있습니다.",
+        "exportLogsDesktopOnlyAria": "로그 내보내기(데스크톱 앱 전용)",
+        "exportLogsReview": "로그는 자동으로 민감 정보를 가립니다. 공유하기 전에 내용을 확인하세요.",
+        "exportLogsPending": "로그 준비 중…",
+        "exportLogsPendingShort": "내보내는 중…",
+        "exportLogsSuccess": "로그를 내보냈습니다",
+        "exportLogsSuccessShort": "내보냄",
+        "exportLogsErrorShort": "실패",
+        "exportLogsEmpty": "로그를 찾지 못해 진단 안내만 내보냈습니다.",
+        "exportLogsPackageError": "로그를 패키징하지 못했습니다. 다시 시도하세요.",
+        "exportLogsWriteError": "선택한 위치에 저장할 수 없습니다. 다른 위치를 선택하세요.",
+        "memorySettings": "메모리 설정",
+        "openExternalImport": "메모리 가져오기",
+        "closePanel": "패널 닫기",
+        "settingsDialogTitle": "메모리 설정",
+        "tutorialDialogTitle": "튜토리얼 가이드",
+        "settingsScopeAllCharacters": "이 설정은 모든 캐릭터에 적용됩니다.",
+        "autoReviewTooltipLabel": "자동 메모리 검토 정보",
+        "strongMemoryTooltipLabel": "강력한 메모리 정보",
+        "externalImportTooltipLabel": "외부 메모리 가져오기 안내",
         "loading": "로드 중...",
         "externalImportTitle": "외부 메모리 가져오기",
         "externalImportNote": "OpenClaw 또는 Hermes의 USER.md, SOUL.md, MEMORY.md, 일일 메모나 워크스페이스 ZIP을 선택한 캐릭터로 가져옵니다.",
@@ -1762,16 +1788,25 @@
         "olderSection": "이전",
         "memoNone": "없음.",
         "delete": "삭제",
+        "deleteEntryAria": "{{speaker}}의 {{position}}번째 기억 삭제",
         "me": "나:",
         "pleaseSelectFile": "먼저 파일을 선택하세요.",
         "saveSuccess": "저장 성공",
         "saveFailed": "저장 실패: {{error}}",
         "saveFailedGeneral": "저장 실패",
-        "clearedChatKeptMemo": "대화 기록만 지웠습니다. 메모는 유지됩니다(저장 안 됨).",
+        "clearedChatKeptMemo": "대화 기록을 지웠습니다. 메모는 유지됩니다.",
+        "unsavedChanges": "저장되지 않은 변경",
+        "switchCharacterConfirmTitle": "캐릭터를 전환할까요?",
+        "closeUnsavedConfirmTitle": "메모리 편집기를 닫을까요?",
+        "switchCharacterUnsaved": "{{name}}에 저장되지 않은 변경 사항이 있습니다",
+        "cancelSwitch": "취소",
+        "discardAndSwitch": "변경 사항 버리기",
+        "saveAndSwitch": "저장하고 전환",
+        "saveAndClose": "저장 후 닫기",
         "enabled": "활성화됨",
         "disabled": "비활성화됨",
         "autoReviewNote": "활성화하면 시스템이 자동으로 메모리 내용을 구성하고 최적화하여 대화 품질을 향상시킵니다.",
-        "strongMemory": "강력 기억",
+        "strongMemory": "강력 기억 모드",
         "strongMemoryNote": "켜면 심화 기억 고착화(구두 피드백, 자동 반박 감지, 다채널 증거 누적)가 동작합니다. 끄면 약 40%의 모델 호출을 절약할 수 있습니다.",
         "saveFailedStatus": "저장 실패",
         "tutorialReset": "튜토리얼 가이드",
@@ -3379,20 +3414,16 @@
         },
         "memory_browser": {
             "step1": {
-                "title": "💡 사용 팁",
-                "desc": "최근 대화 콘텐츠를 로드하는 데 약간의 시간이 걸립니다. 최근 채팅 내용이 보이지 않을 경우 캐릭터 이름을 클릭하여 새로고침하세요."
+                "title": "🐱 캐릭터 메모리 라이브러리",
+                "desc": "캐릭터를 선택해 저장된 메모리를 확인합니다."
             },
             "step2": {
-                "title": "🐱 문자 메모리 라이브러리",
-                "desc": "모든 동반 캐릭터 메모리 라이브러리를 나열합니다. 캐릭터 이름을 클릭하면 대화 기록을 확인하고 편집할 수 있습니다."
+                "title": "📝 메모리 탐색 및 검토",
+                "desc": "최근 메모리와 요약을 탐색하고 검토하여 반복과 인지 오류를 줄일 수 있습니다."
             },
             "step3": {
-                "title": "🤖 자동 메모리 구성",
-                "desc": "활성화되면 시스템은 더 나은 대화 품질을 위해 메모리 콘텐츠를 자동으로 구성하고 최적화합니다. 활성화된 상태를 유지하는 것이 좋습니다."
-            },
-            "step4": {
-                "title": "📝 채팅 기록 편집",
-                "desc": "선택한 캐릭터의 모든 대화 기록을 표시합니다. 여기에서 특정 대화를 보거나 편집하거나 삭제하세요."
+        "title": "🧰 기능 영역",
+        "desc": "여기에서 튜토리얼을 다시 열고, 진단 로그를 내보내고, 메모리 설정을 조정할 수 있습니다."
             }
         },
         "buttons": {
