@@ -119,7 +119,7 @@ async def get_system_client_id(response: Response):
         )
 
 
-_DEFAULT_NEKO_SOCIAL_BASE_URL = "http://localhost:8080"
+_DEFAULT_NEKO_SOCIAL_BASE_URL = "https://community.project-neko.cn"
 
 
 @router.get("/system/social/config")

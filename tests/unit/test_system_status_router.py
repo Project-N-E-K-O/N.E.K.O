@@ -132,7 +132,7 @@ def test_system_social_config_trims_override_and_falls_back(monkeypatch, tmp_pat
         "social_base_url": "https://social.example.test/api",
         "enabled": True,
     }
-    assert fallback.json()["social_base_url"] == "http://localhost:8080"
+    assert fallback.json()["social_base_url"] == "https://community.project-neko.cn"
     assert "no-store" in configured.headers["Cache-Control"]
 
 

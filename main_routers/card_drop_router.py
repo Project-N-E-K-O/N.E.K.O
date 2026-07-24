@@ -35,7 +35,7 @@ logger = logging.getLogger("neko.card_drop")
 router = APIRouter(prefix="/api/card-drop", tags=["card-drop"])
 
 _HTTP_TIMEOUT_SEC = 60.0
-_DEFAULT_SOCIAL_BASE_URL = "http://localhost:8080"
+_DEFAULT_SOCIAL_BASE_URL = "https://community.project-neko.cn"
 _SOCIAL_SESSION_FILENAME = "social_session.json"
 _SOCIAL_SESSION_SCHEMA_VERSION = 2
 _BIND_OWNERSHIP_CONFLICT = "client_already_bound_to_other_user"
