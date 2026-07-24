@@ -1402,6 +1402,43 @@
         syncGoodbyeIdleAppearanceForReturnButtons(
             detail && detail.reason ? `goodbye-idle-appearance-${detail.reason}` : 'goodbye-idle-appearance'
         );
+        if (I.nekoGoodbyeIdleAppearance === I.NEKO_GOODBYE_IDLE_APPEARANCE_BALL) {
+            I.publishCatLocalActive(false, {
+                source: 'goodbye-idle-appearance',
+                reason: detail && detail.reason ? detail.reason : 'appearance-change',
+                appearance: I.NEKO_GOODBYE_IDLE_APPEARANCE_BALL,
+                mode: mode,
+                timestamp: detail && detail.timestamp
+            });
+            return;
+        }
+        const visibleContainer = I.getVisibleIdleReturnBallContainer();
+        if (visibleContainer) {
+            const actualAppearance = I.getReturnButtonAppearance(visibleContainer);
+            let autoGoodbye = false;
+            let visualTier = '';
+            try {
+                const autoGoodbyeState = window.nekoAutoGoodbye && typeof window.nekoAutoGoodbye.getState === 'function'
+                    ? window.nekoAutoGoodbye.getState()
+                    : null;
+                autoGoodbye = !!(autoGoodbyeState && autoGoodbyeState.autoGoodbyeTriggered);
+                visualTier = autoGoodbyeState && typeof autoGoodbyeState.visualTier === 'string'
+                    ? autoGoodbyeState.visualTier
+                    : '';
+            } catch (_) {}
+            I.publishCatLocalActive(
+                actualAppearance === I.NEKO_GOODBYE_IDLE_APPEARANCE_CAT,
+                {
+                    source: 'goodbye-idle-appearance',
+                    reason: detail && detail.reason ? detail.reason : 'appearance-change',
+                    appearance: actualAppearance,
+                    mode: mode,
+                    autoGoodbye: autoGoodbye,
+                    tier: visualTier,
+                    timestamp: detail && detail.timestamp
+                }
+            );
+        }
     });
     window.addEventListener('resize', () => {
         const container = I.getVisibleIdleReturnBallContainer();

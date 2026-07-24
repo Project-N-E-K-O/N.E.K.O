@@ -207,6 +207,11 @@
                     isDestroyed: () => this.destroyed,
                     isResistancePaused: () => this.scenePausedForResistance === true,
                     externalizedChatDetector: () => this.isHomeChatExternalized(),
+                    onExternalizedChatCursorOwnershipChange: (detail) => {
+                        this.setHomePcCursorOutputSuppressedForExternalizedChat(
+                            !!(detail && detail.owned === true)
+                        );
+                    },
                     externalChatChannelProvider: () => {
                         return window.appInterpage && window.appInterpage.nekoBroadcastChannel
                             ? window.appInterpage.nekoBroadcastChannel
@@ -2721,6 +2726,15 @@
                 return;
             }
             const detail = event && event.detail ? event.detail : {};
+            if (
+                this.overlay
+                && typeof this.overlay.isPcOverlayActive === 'function'
+                && this.overlay.isPcOverlayActive()
+                && typeof this.isHomePcCursorOutputSuppressedForExternalizedChat === 'function'
+                && !this.isHomePcCursorOutputSuppressedForExternalizedChat()
+            ) {
+                return;
+            }
             const screenPoint = {
                 x: Number(detail.x),
                 y: Number(detail.y)

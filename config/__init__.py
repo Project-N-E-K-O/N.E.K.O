@@ -144,7 +144,6 @@ from .api_profiles import (  # noqa: F401
     DEFAULT_CORE_API_PROFILES,
     DEFAULT_ASSIST_API_PROFILES,
     DEFAULT_ASSIST_API_KEY_FIELDS,
-    DEFAULT_TUTORIAL_PROMPT_CONFIG,
     DEFAULT_CONFIG_DATA,
 )
 
@@ -428,7 +427,6 @@ __all__ = [
     'get_lanlan_prompt',
     'is_default_prompt',
     'DEFAULT_CORE_CONFIG',
-    'DEFAULT_TUTORIAL_PROMPT_CONFIG',
     'DEFAULT_USER_PREFERENCES',
     'DEFAULT_VOICE_STORAGE',
     'DEFAULT_CONFIG_DATA',

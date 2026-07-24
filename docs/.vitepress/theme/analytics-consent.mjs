@@ -105,8 +105,8 @@ export function setAnalyticsConsent(
 
 function installGtag(windowObject) {
   windowObject.dataLayer = windowObject.dataLayer || []
-  windowObject.gtag = windowObject.gtag || function gtag(...args) {
-    windowObject.dataLayer.push(args)
+  windowObject.gtag = windowObject.gtag || function gtag() {
+    windowObject.dataLayer.push(arguments)
   }
   return windowObject.gtag
 }

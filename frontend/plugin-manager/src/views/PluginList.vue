@@ -51,20 +51,61 @@
                   <component :is="marketPanelVisible ? ArrowLeft : ArrowRight" />
                 </el-icon>
               </button>
+              <el-popover
+                v-if="marketUrl && marketAuth.authenticated"
+                placement="bottom-start"
+                :width="300"
+                trigger="click"
+                popper-class="market-account-popover"
+                @show="loadMarketAccountSummary"
+              >
+                <template #reference>
+                  <el-button
+                    class="market-auth-trigger market-auth-trigger--connected"
+                    :loading="marketAuthBusy"
+                    plain
+                  >
+                    <el-icon><User /></el-icon>
+                    {{ $t('market.accountConnected', { name: marketAuthDisplayName }) }}
+                  </el-button>
+                </template>
+                <div class="market-account-card" v-loading="marketAccountSummaryBusy">
+                  <div class="market-account-card__identity">
+                    <el-avatar :size="44" :src="marketAccountSummary?.profile?.avatar_url || ''">
+                      {{ marketAuthDisplayName.slice(0, 1) }}
+                    </el-avatar>
+                    <div>
+                      <strong>{{ marketAccountSummary?.profile?.display_name || marketAuthDisplayName }}</strong>
+                      <p v-if="marketAccountSummary?.profile?.username">
+                        @{{ marketAccountSummary.profile.username }}
+                      </p>
+                    </div>
+                  </div>
+                  <p v-if="marketAccountSummaryBusy" class="market-account-card__hint">
+                    {{ $t('market.accountSummaryLoading') }}
+                  </p>
+                  <div v-else-if="marketAccountSummary?.market" class="market-account-card__stats">
+                    <span v-if="marketAccountSummary.market.member_days !== null">
+                      {{ $t('market.accountMemberDays', { days: marketAccountSummary.market.member_days }) }}
+                    </span>
+                    <span v-if="marketAccountSummary.market.published_plugins !== null">
+                      {{ $t('market.accountPublished', { count: marketAccountSummary.market.published_plugins }) }}
+                    </span>
+                  </div>
+                  <el-button class="market-account-card__logout" text type="danger" @click="confirmMarketLogout">
+                    {{ $t('market.logout') }}
+                  </el-button>
+                </div>
+              </el-popover>
               <el-button
-                v-if="marketUrl"
+                v-else-if="marketUrl"
                 class="market-auth-trigger"
-                :class="{ 'market-auth-trigger--connected': marketAuth.authenticated }"
                 :loading="marketAuthBusy"
                 plain
-                @click="marketAuth.authenticated ? logoutMarketAccount() : startMarketLogin()"
+                @click="startMarketLogin()"
               >
                 <el-icon><User /></el-icon>
-                {{
-                  marketAuth.authenticated
-                    ? $t('market.accountConnected', { name: marketAuthDisplayName })
-                    : $t('market.login')
-                }}
+                {{ $t('market.login') }}
               </el-button>
               <el-button
                 class="multi-select-trigger"
@@ -402,10 +443,36 @@ const {
   marketAuth,
   marketAuthBusy,
   marketAuthDisplayName,
+  marketAccountSummary,
+  marketAccountSummaryBusy,
   loadMarketAuthStatus,
+  loadMarketAccountSummary,
   logoutMarketAccount,
   startMarketLogin,
 } = useMarketAuth()
+
+async function confirmMarketLogout() {
+  try {
+    await ElMessageBox.confirm(
+      t('market.logoutConfirm'),
+      t('common.logoutConfirmTitle'),
+      { confirmButtonText: t('common.confirm'), cancelButtonText: t('common.cancel'), type: 'warning' },
+    )
+  } catch (error) {
+    const action = typeof error === 'object' && error !== null && 'action' in error
+      ? (error as { action?: unknown }).action
+      : error
+    if (action === 'cancel' || action === 'close') return
+    ElMessage.error(error instanceof Error ? error.message : t('market.logoutFailed'))
+    return
+  }
+
+  try {
+    await logoutMarketAccount()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : t('market.logoutFailed'))
+  }
+}
 
 // confirm_message 是 LocalizedText（string 或 locale-keyed dict），不能直接
 // 透传给 PluginDangerConfirmDialog 的 :message="string" prop。模板里
@@ -1261,6 +1328,42 @@ onUnmounted(() => {
   --el-button-text-color: var(--el-color-success);
   --el-button-border-color: color-mix(in srgb, var(--el-color-success) 35%, transparent);
   --el-button-bg-color: color-mix(in srgb, var(--el-color-success) 8%, transparent);
+}
+
+.market-account-card {
+  display: grid;
+  gap: 12px;
+}
+
+.market-account-card__identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.market-account-card__identity strong,
+.market-account-card__identity p {
+  display: block;
+  margin: 0;
+}
+
+.market-account-card__identity p,
+.market-account-card__hint {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.market-account-card__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  color: var(--el-text-color-regular);
+  font-size: 12px;
+}
+
+.market-account-card__logout {
+  justify-self: start;
+  padding-left: 0;
 }
 
 /* ── Multi-select trigger button (top) ── */

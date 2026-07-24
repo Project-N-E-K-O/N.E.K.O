@@ -174,7 +174,7 @@ def test_live2d_widget_mode_edge_peek_reports_viewport_intersection_bounds():
     assert "Math.max(fallbackH" not in viewport_source
 
 
-def test_live2d_widget_mode_edge_peek_normal_snap_uses_renderer_screen_bounds():
+def test_live2d_widget_mode_edge_peek_normal_snap_caps_renderer_at_web_viewport():
     interaction_source = _source(LIVE2D_INTERACTION_PATH)
     snap_source = interaction_source.split("Live2DManager.prototype._checkSnapRequired = async function", 1)[1]
     snap_source = snap_source.split("Live2DManager.prototype._applySnapAnimation", 1)[0]
@@ -183,6 +183,8 @@ def test_live2d_widget_mode_edge_peek_normal_snap_uses_renderer_screen_bounds():
     assert "const rendererScreen = renderer && renderer.screen;" in snap_source
     assert "let screenRight = Number.isFinite(rendererW) && rendererW > 0 ? rendererW : window.innerWidth;" in snap_source
     assert "let screenBottom = Number.isFinite(rendererH) && rendererH > 0 ? rendererH : window.innerHeight;" in snap_source
+    assert "screenRight = Math.min(screenRight, viewportW);" in snap_source
+    assert "screenBottom = Math.min(screenBottom, viewportH);" in snap_source
 
 
 def test_live2d_widget_mode_edge_peek_does_not_persist_peek_position():

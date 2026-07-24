@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Persistence and state transitions for onboarding prompt flows.
+"""Persistence and state transitions for retained onboarding flows.
 
 The implementation modules live in this package.  The historical modules at
-``utils.*_prompt_state`` remain as compatibility aliases so existing imports,
-including code that patches module-private test seams, continue to work.
+``utils.autostart_prompt_state`` and ``utils.tutorial_choices_state`` remain as
+compatibility aliases so existing imports continue to work.
 """

@@ -4,6 +4,8 @@
         "minimize": "最小化",
         "maximize": "最大化",
         "restore": "還原",
+        "pinWindow": "置頂視窗",
+        "unpinWindow": "取消置頂",
         "expand": "展開",
         "close": "關閉",
         "save": "保存",
@@ -74,15 +76,6 @@
             "accept": "好，關掉螢幕分享",
             "decline": "不用，繼續"
         }
-    },
-    "tutorialPrompt": {
-        "title": "要不要開始首頁新手引導？",
-        "message": "我可以帶你快速認識首頁上的核心入口，用最短路徑上手 N.E.K.O。",
-        "note": "整個過程隨時都可以跳過，也可以之後再從記憶瀏覽裡重新打開。",
-        "startNow": "開始引導",
-        "later": "稍後再說",
-        "never": "不再提示",
-        "startFailed": "暫時無法開始新手引導，請稍後再試"
     },
     "characterProfile": {
         "gender": "性別",

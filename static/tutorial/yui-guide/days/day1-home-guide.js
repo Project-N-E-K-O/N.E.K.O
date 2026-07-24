@@ -141,6 +141,7 @@
                     emotion: 'happy',
                     target: '#${p}-btn-mic',
                     cursorAction: 'move',
+                    clearExternalizedChatCursorOnEnter: true,
                     operation: 'day1-intro-basic-voice-showcase'
                 },
                 {

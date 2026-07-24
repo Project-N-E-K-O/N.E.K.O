@@ -451,7 +451,13 @@ function _attachNekoCatMindProviderDiagnostics(actionId, decision, context = {})
     const pairMove = profile.pairMove || {};
     const minUsableDistancePx = Math.max(1, Number(pairMove.minUsableDistancePx) || _NEKO_IDLE_CAT1_PAIR_MOVE_MIN_USABLE_DISTANCE_PX);
     const maxDistancePx = Math.max(1, Number(pairMove.maxDistancePx) || _NEKO_IDLE_CAT1_PAIR_MOVE_MAX_DISTANCE_PX);
-    const geometryKnown = !!(catRect && catRect.width > 0 && catRect.height > 0 && chatRect && chatRect.width > 0 && chatRect.height > 0);
+    let smallMoveSoloAvailable = false;
+    if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_SMALL_MOVE && !chatTarget) {
+        try { smallMoveSoloAvailable = _canNekoIdleCat1MoveSoloWithExpandedChat(); } catch (_) { smallMoveSoloAvailable = false; }
+    }
+    const catGeometryKnown = !!(catRect && catRect.width > 0 && catRect.height > 0);
+    const chatGeometryKnown = !!(chatRect && chatRect.width > 0 && chatRect.height > 0);
+    const geometryKnown = catGeometryKnown && (chatTarget ? chatGeometryKnown : smallMoveSoloAvailable);
     const art = button && button.querySelector ? button.querySelector('.neko-idle-return-art') : null;
     let playYarnCapability = false;
     if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN) {
@@ -472,14 +478,20 @@ function _attachNekoCatMindProviderDiagnostics(actionId, decision, context = {})
         nearChat: actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_SMALL_MOVE || actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN
             ? _isNekoCatMindCat1NearChat(button) : null,
         smallMove: actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_SMALL_MOVE ? {
-            chatTargetAvailable: !!chatTarget, chatTargetMode: chatTarget && chatTarget.mode || '', geometryKnown,
-            vectorSpaceAvailable: geometryKnown && _hasNekoIdleCat1MoveVectorSpace(catRect, chatRect, maxDistancePx, minUsableDistancePx),
+            mode: chatTarget ? (chatTarget.mode || '') : (smallMoveSoloAvailable ? 'solo' : ''),
+            chatTargetAvailable: !!chatTarget, soloAvailable: smallMoveSoloAvailable, geometryKnown,
+            vectorSpaceAvailable: geometryKnown && _hasNekoIdleCat1MoveVectorSpace(
+                catRect,
+                chatTarget ? chatRect : null,
+                maxDistancePx,
+                minUsableDistancePx
+            ),
             minUsableDistancePx, maxDistancePx
         } : null,
         journey: journey ? { exists: true, paused: !!journey.paused, substate: journey.substate || '',
             idleSubstate: profile.idleSubstate || '', actionSettled: !!journey.actionSettled,
             targetKind: journey.targetKind || '', pairMoveActive: !!(journey.pairMovePlan || journey.pairMoveFrame),
-            pendingWalk: !!(journey.pendingWalkTimer || journey.pendingWalkReady || journey.frame || journey.settleTimer) } : { exists: false }
+            pendingWalk: !!(journey.pendingWalkTimer || journey.pendingWalkReady || journey.frame) } : { exists: false }
     };
     const checks = [
         { id: 'known_action', passed: Object.values(_NEKO_CAT_MIND_ACTION_IDS).includes(actionId) },
@@ -501,7 +513,8 @@ function _attachNekoCatMindProviderDiagnostics(actionId, decision, context = {})
         const moveJourney = facts.journey || {};
         checks.push({ id: 'journey_settled_idle', passed: moveJourney.exists && !moveJourney.paused && !moveJourney.pairMoveActive && !moveJourney.pendingWalk && moveJourney.substate === moveJourney.idleSubstate && moveJourney.actionSettled },
             { id: 'not_compact_top_edge', passed: moveJourney.targetKind !== _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE },
-            { id: 'near_chat', passed: facts.nearChat === true }, { id: 'chat_target_available', passed: facts.smallMove.chatTargetAvailable },
+            { id: 'move_surface_available', passed: facts.smallMove.chatTargetAvailable || facts.smallMove.soloAvailable },
+            { id: 'near_chat_or_solo', passed: facts.smallMove.soloAvailable || facts.nearChat === true },
             { id: 'small_move_geometry_known', passed: facts.smallMove.geometryKnown }, { id: 'move_vector_space', passed: facts.smallMove.vectorSpaceAvailable });
     }
     if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT2_NAP_FEEDBACK || actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT3_SLEEP_FEEDBACK) {
@@ -587,7 +600,7 @@ function _evaluateNekoCatMindActionProvider(actionId, context = {}) {
     else if (!facts.returnBallVisible) reason = 'return_ball_not_visible';
     else if (facts.edgePeekActive) reason = 'edge_peek_active';
     else if ((actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_EAT_SNACK || actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN) && !button.querySelector('.neko-idle-return-art')) reason = 'missing_art';
-    else if ((actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN || actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_SMALL_MOVE) && !facts.nearChat) reason = 'near_chat_unavailable';
+    else if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN && !facts.nearChat) reason = 'near_chat_unavailable';
     else if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN && !_canNekoCatMindControlPlayYarn()) reason = 'play_yarn_unavailable';
     else if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_SMALL_MOVE && (!button.__nekoIdleCat1Journey || !_canScheduleNekoIdleCat1PairMove(button, button.__nekoIdleCat1Journey))) reason = 'small_move_unavailable';
     else if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_SOCIAL_PING && (!facts.audioEnabled || !_nekoIdleCat1AmbientSoundState.active)) reason = facts.audioEnabled ? 'ambient_inactive' : 'audio_disabled';
