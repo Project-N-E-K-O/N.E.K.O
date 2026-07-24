@@ -868,3 +868,57 @@ def test_one_config_snapshot_uses_one_region_verdict(config_manager, monkeypatch
     assert lanlan, '前置条件：配置必须处于免费路由，否则区域判定根本不会被查'
     hosts = {'lanlan.app' if 'lanlan.app' in v else 'lanlan.tech' for v in lanlan}
     assert len(hosts) <= 1, f'同一份快照指向了两个区域: {lanlan}'
+
+
+@pytest.mark.unit
+def test_steam_users_do_not_pay_for_the_ip_wait(monkeypatch):
+    """Having Steam's answer already is enough to pick a route — do not wait for IP.
+
+    The wait exists to avoid routing on *no* information. Making users who already
+    have an answer sit through a probe timeout is pure added first-session latency,
+    and it buys nothing: the Steam verdict is never latched, so the probe still takes
+    over for later sessions once it lands.
+    """
+    release = threading.Event()
+
+    class _Hanging:
+        def open(self, req, timeout=None):
+            release.wait(10)
+            raise OSError('timed out')
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, 'build_opener', lambda *a, **kw: _Hanging())
+
+    try:
+        ConfigManager._check_ip_non_mainland_http()          # 探测挂在网络上
+        monkeypatch.setattr(ConfigManager, '_steam_check_cache', True)
+
+        started = real_time.monotonic()
+        assert ConfigManager.join_ip_probe(timeout=5) is True
+        waited = real_time.monotonic() - started
+        assert waited < 0.5, f'Steam 已有结论却仍等了 {waited:.2f}s'
+    finally:
+        release.set()
+        thread = ConfigManager._ip_probe_thread
+        if thread is not None:
+            thread.join(10)
+
+
+@pytest.mark.unit
+def test_skipping_the_wait_does_not_promote_steam():
+    """Not waiting is a latency call, not a correctness one — Steam still must not latch.
+
+    Exercised through ``aensure_region_resolved`` specifically: that is where the
+    skip lives, so asserting it on ``_check_non_mainland`` would leave the shortcut
+    itself untested.
+    """
+    probe = _Probe()
+    probe._check_steam_non_mainland = lambda: True
+    probe.aget_core_config = _async_return(None)
+
+    assert asyncio.run(probe.aensure_region_resolved(timeout=5)) is True
+    assert ConfigManager._region_cache is None, 'Steam 票不得因为跳过等待而落定'
+
+    # IP 稍后落地并给出相反结论时，照样接管
+    assert _probe(ip=False, steam=True)._check_non_mainland() is False
+    assert ConfigManager._region_cache is False

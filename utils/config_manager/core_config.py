@@ -168,13 +168,21 @@ class CoreConfigMixin:
     def join_ip_probe(timeout: float = 5.0) -> bool:
         """Block until the in-flight GeoIP probe finishes. Returns whether a verdict landed.
 
-        Only for startup, and only from a worker thread (see ``awarmup_region_check``):
-        request paths must never wait on the probe. Waiting once before the server
-        accepts sessions is what keeps the first session off the transient mainland
+        Only for startup and session setup, and only from a worker thread (see
+        ``awarmup_region_check``): request paths must never wait on the probe.
+        Waiting before a session starts is what keeps it off the transient mainland
         fallback — the route is frozen into each session at start_session time.
+
+        Skipped entirely once Steam has answered. The wait exists to avoid routing on
+        *no* information; Steam's answer is information, and it is already enough to
+        pick a route. IP still outranks it — the Steam verdict is never latched, so
+        the probe takes over for later sessions once it lands. Waiting anyway would
+        tax exactly the users who already have an answer in hand.
         """
         from utils.config_manager import ConfigManager
 
+        if ConfigManager._steam_check_cache is not None:
+            return True
         thread = ConfigManager._ip_probe_thread
         if thread is not None:
             thread.join(timeout)
@@ -195,6 +203,10 @@ class CoreConfigMixin:
         from utils.config_manager import ConfigManager
 
         if ConfigManager._region_cache is not None or ConfigManager._ip_check_cache is not None:
+            return True
+        # Steam 已经给出结论：足够选线路了，不必再为 IP 付等待。IP 落地后照样接管
+        # （Steam 票不落定），所以这里省下的是延迟、不是正确性。
+        if self._check_steam_non_mainland() is not None:
             return True
 
         # 读一次配置来补发到期的探测：上一次失败、退避又已到期时这里不发，就只能
