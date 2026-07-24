@@ -74,6 +74,14 @@ def reset_geo_caches(monkeypatch):
     ):
         monkeypatch.setattr(ConfigManager, name, value)
     yield
+    # 探测线程必须在本用例结束前退出。join 超时本身不会让测试失败，而漏掉的线程
+    # 会在 monkeypatch 还原后继续跑，用真实网络污染后续用例——本文件已经被一次
+    # 顺序依赖坑过（见 test_session_start_logs_when_the_wait_expires 的注释）。
+    # 本 fixture 声明了 monkeypatch，故先于它 teardown：断言时打的桩仍然在位。
+    thread = ConfigManager._ip_probe_thread
+    if thread is not None:
+        thread.join(5)
+        assert not thread.is_alive(), '探测线程泄漏，会污染后续用例'
 
 
 def _probe(ip, steam):
