@@ -2380,9 +2380,16 @@
             item => item.dataset.catname === characterName
         );
         if (!button) return;
+        const listItem = button.closest('li');
+        if (memoryHasUnsavedChanges) {
+            Array.from(document.getElementById('memory-file-list').children).forEach(function (item) {
+                setRoleSelected(item, item === listItem);
+            });
+            return;
+        }
         await selectMemoryFile(
             button.dataset.filename,
-            button.closest('li'),
+            listItem,
             characterName,
             { allowDuringImport: true }
         );

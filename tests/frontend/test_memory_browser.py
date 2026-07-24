@@ -2216,12 +2216,16 @@ def test_memory_browser_beforeunload_blocks_unsaved_memory_changes(
 
 
 @pytest.mark.frontend
-@pytest.mark.parametrize("partial_import", [False, True])
+@pytest.mark.parametrize(
+    ("partial_import", "edit_during_import"),
+    [(False, False), (True, False), (False, True)],
+)
 def test_external_import_refreshes_open_memory_after_persisting(
     mock_page: Page,
     running_server: str,
     seed_memory_file,
     partial_import: bool,
+    edit_during_import: bool,
 ):
     _install_ready_memory_browser_routes(mock_page, seed_memory_file)
     memory_content = {"value": seed_memory_file.read_text(encoding="utf-8")}
@@ -2304,11 +2308,25 @@ def test_external_import_refreshes_open_memory_after_persisting(
     mock_page.route("**/api/memory/recent_file?**", handle_recent_file)
     mock_page.route("**/api/memory/external_import/preview", handle_preview)
     mock_page.route("**/api/memory/external_import/commit", handle_commit)
-    mock_page.on("dialog", lambda dialog: dialog.accept())
 
     mock_page.goto(f"{running_server}/memory_browser")
     memo = mock_page.locator("#memory-chat-edit .memo-textarea").first
     expect(memo).to_have_value("这是测试备忘录内容。", timeout=10000)
+    if edit_during_import:
+        mock_page.evaluate(
+            """
+            () => {
+                window.confirm = () => {
+                    const memo = document.querySelector('#memory-chat-edit .memo-textarea');
+                    memo.value = '导入期间的未保存编辑。';
+                    memo.dispatchEvent(new Event('input', { bubbles: true }));
+                    return true;
+                };
+            }
+            """
+        )
+    else:
+        mock_page.on("dialog", lambda dialog: dialog.accept())
 
     _open_auxiliary_panel(mock_page, "import")
     mock_page.locator("#external-memory-files").set_input_files(
@@ -2326,9 +2344,16 @@ def test_external_import_refreshes_open_memory_after_persisting(
         re.compile(rf"\b{expected_status}\b"),
         timeout=10000,
     )
-    expect(memo).to_have_value("导入后立即可见。", timeout=10000)
+    expected_memo = (
+        "导入期间的未保存编辑。" if edit_during_import else "导入后立即可见。"
+    )
+    expect(memo).to_have_value(expected_memo, timeout=10000)
     assert request_counts["recent_files"] >= 2
-    assert request_counts["recent_file"] >= 2
+    if edit_during_import:
+        expect(mock_page.locator("#memory-unsaved-status")).to_be_visible()
+        assert request_counts["recent_file"] == 1
+    else:
+        assert request_counts["recent_file"] >= 2
 
 
 def test_memory_browser_responsive_motion_static_performance_contract() -> None:
