@@ -552,9 +552,9 @@
   "ui.groupprompt.delete_failed": "Delete failed",
   "ui.shared.btn.save": "Save",
   "ui.shared.btn.delete": "Delete",
-  "ui.napcat.config.buffer_title": "Reply Buffer",
-  "ui.napcat.config.buffer_enabled": "Enable Reply Buffer",
-  "ui.napcat.config.buffer_delay_mean": "Delay Mean (sec)",
-  "ui.napcat.config.buffer_delay_sigma": "Delay StdDev (sec)",
-  "ui.napcat.config.buffer_max_count": "Max Messages (flush immediately)"
+  "ui.napcat.config.buffer_title": "답장 버퍼",
+  "ui.napcat.config.buffer_enabled": "답장 버퍼 활성화",
+  "ui.napcat.config.buffer_delay_mean": "지연 평균 (초)",
+  "ui.napcat.config.buffer_delay_sigma": "지연 표준편차 (초)",
+  "ui.napcat.config.buffer_max_count": "최대 메시지 수 (도달 시 즉시 전송)"
 }

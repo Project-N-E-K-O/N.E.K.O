@@ -271,7 +271,12 @@ class QQVoiceReplyService:
             except Exception:
                 tts_api_config = {}
             if not voice_id:
-                raise RuntimeError("未配置 voice_id 且无实时语音 provider，无法合成语音")
+                free_voices = get_free_voices() or {}
+                if free_voices:
+                    voice_id = next(iter(free_voices.values()), "")
+                    self.plugin.logger.info(f"未配置 voice_id，使用默认云音色: {voice_id}")
+            if not voice_id:
+                raise RuntimeError("未配置 voice_id 且无可用默认音色，无法合成语音")
             preview_base_url = cosyvoice_base_url or tts_api_config.get("base_url", "")
             from utils.api_config_loader import get_cosyvoice_clone_model
             clone_model = (voice_data or {}).get("clone_model") or get_cosyvoice_clone_model(provider)
@@ -302,7 +307,13 @@ class QQVoiceReplyService:
             raise RuntimeError("语音合成文本不能为空")
         voice_id = await self.get_current_voice_id()
         if not voice_id:
-            raise RuntimeError("当前猫娘未配置 voice_id，无法发送语音")
+            # 回退：取免费语音列表的第一个
+            free_voices = get_free_voices() or {}
+            if free_voices:
+                voice_id = next(iter(free_voices.values()), "")
+                self.plugin.logger.info(f"未配置 voice_id，使用默认音色: {voice_id}")
+        if not voice_id:
+            raise RuntimeError("未配置 voice_id 且无可用默认音色，无法发送语音")
         await self.cleanup_voice_output_dir()
         audio_bytes, mime_type = await self.synthesize_reply_voice_audio(normalized_text)
         if not audio_bytes:

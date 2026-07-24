@@ -552,9 +552,9 @@
   "ui.groupprompt.delete_failed": "Delete failed",
   "ui.shared.btn.save": "Save",
   "ui.shared.btn.delete": "Delete",
-  "ui.napcat.config.buffer_title": "Reply Buffer",
-  "ui.napcat.config.buffer_enabled": "Enable Reply Buffer",
-  "ui.napcat.config.buffer_delay_mean": "Delay Mean (sec)",
-  "ui.napcat.config.buffer_delay_sigma": "Delay StdDev (sec)",
-  "ui.napcat.config.buffer_max_count": "Max Messages (flush immediately)"
+  "ui.napcat.config.buffer_title": "返信バッファ",
+  "ui.napcat.config.buffer_enabled": "返信バッファを有効化",
+  "ui.napcat.config.buffer_delay_mean": "遅延平均 (秒)",
+  "ui.napcat.config.buffer_delay_sigma": "遅延標準偏差 (秒)",
+  "ui.napcat.config.buffer_max_count": "最大メッセージ数（到達時に即時送信）"
 }

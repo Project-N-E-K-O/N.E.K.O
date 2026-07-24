@@ -360,6 +360,14 @@ class QQMessageDispatcher:
             bucket = self.plugin.reply_buffer_service._pending.get(gkey)
             if bucket:
                 buffer_bucket_id = bucket.bucket_id
+        # 焦点切换检测 — 每条群消息都检查，不受 gate 忽略影响
+        if strategy_mode == "neko_dynamic" and hasattr(self.plugin, "attention_gate_service"):
+            shift = await self.plugin.attention_gate_service.check_focus_shift()
+            if shift and shift.new_focus_group:
+                import asyncio
+                asyncio.create_task(
+                    self.plugin.attention_gate_service.run_retroactive_review(shift.new_focus_group)
+                )
         force_reply = False
         if strategy_mode == "neko_dynamic" and hasattr(self.plugin, "attention_gate_service") and self.plugin.attention_gate_service is not None:
             gate_decision = await self.plugin.attention_gate_service.evaluate(
@@ -446,12 +454,3 @@ class QQMessageDispatcher:
                 )
 
         self.plugin.runtime_service.record_pipeline_outcome(source=request.source_kind, request=request, outcome=outcome)
-
-        # 焦点切换 → 回溯补回
-        if strategy_mode == "neko_dynamic" and hasattr(self.plugin, "attention_gate_service"):
-            shift = await self.plugin.attention_gate_service.check_focus_shift()
-            if shift and shift.new_focus_group:
-                import asyncio
-                asyncio.create_task(
-                    self.plugin.attention_gate_service.run_retroactive_review(shift.new_focus_group)
-                )

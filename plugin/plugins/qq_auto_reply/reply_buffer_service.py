@@ -31,8 +31,7 @@ class PendingReply:
         self.sender_id = sender_id
         self.is_group = is_group
         self.group_id = group_id
-        self.bot_blocks: list | None = None  # None = pipeline 未完成；有值 = 回复就绪
-        self.bucket_id: int = 0  # 单调递增的身份标识，store_reply 用于校验桶未被替换
+        self.bucket_id: int = 0  # 单调递增的身份标识
 
     def _new_task(self, coro) -> asyncio.Task:
         self.task_gen += 1
@@ -67,6 +66,10 @@ class QQReplyBufferService:
 
     def _max_count(self, is_group: bool) -> int:
         return max(2, int(self._cfg("max_count", 17, is_group) or 17))
+
+    def _random_delay(self, is_group: bool) -> float:
+        mu, sigma = self._delay_params(is_group)
+        return max(0.0, _random.gauss(mu, sigma))
 
     def _next_bucket_id(self) -> int:
         self._bucket_id_seq += 1

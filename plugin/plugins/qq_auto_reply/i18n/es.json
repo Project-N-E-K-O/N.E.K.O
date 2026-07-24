@@ -552,9 +552,9 @@
   "ui.groupprompt.delete_failed": "Delete failed",
   "ui.shared.btn.save": "Save",
   "ui.shared.btn.delete": "Delete",
-  "ui.napcat.config.buffer_title": "Reply Buffer",
-  "ui.napcat.config.buffer_enabled": "Enable Reply Buffer",
-  "ui.napcat.config.buffer_delay_mean": "Delay Mean (sec)",
-  "ui.napcat.config.buffer_delay_sigma": "Delay StdDev (sec)",
-  "ui.napcat.config.buffer_max_count": "Max Messages (flush immediately)"
+  "ui.napcat.config.buffer_title": "Búfer de respuestas",
+  "ui.napcat.config.buffer_enabled": "Habilitar búfer de respuestas",
+  "ui.napcat.config.buffer_delay_mean": "Media de retraso (seg)",
+  "ui.napcat.config.buffer_delay_sigma": "Desviación estándar del retraso (seg)",
+  "ui.napcat.config.buffer_max_count": "Máx. mensajes (entrega inmediata al alcanzar el límite)"
 }

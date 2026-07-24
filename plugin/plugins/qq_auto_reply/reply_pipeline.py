@@ -186,7 +186,7 @@ class QQReplyPipelineRunner:
         # 缓冲内部调用的请求（buffer_delayed/rapid_fire_flush/proactive_speech）不再次走缓冲
         source = getattr(request, 'source_kind', '') if request else ''
         skip_buffer = request and (
-            source in ('buffer_delayed', 'rapid_fire_flush', 'proactive_speech', 'retroactive_review')
+            source in ('buffer_delayed', 'rapid_fire_flush', 'proactive_speech', 'retroactive_review', 'incoming_group', 'incoming_private')
             or request.is_at_bot or request.force_reply
         )
         # 情绪/标记：内部状态，先于缓冲/冷却/交付更新
@@ -246,20 +246,7 @@ class QQReplyPipelineRunner:
                 self.plugin._emit_log("DEBUG", f"[Buffer] 空回复，取消缓冲 key={session_key}")
                 from .pipeline_models import QQDeliveryResult
                 return QQDeliveryResult(delivered=False, target_type=delivery_plan.target_type, target_id=delivery_plan.target_id, reply_text=None)
-            buf_sid = request.group_id if request.is_group else request.sender_id
-            session_key = self.plugin._build_session_key(sender_id=buf_sid, is_group=request.is_group, group_id=request.group_id)
-            expected_bucket_id = getattr(request, 'buffer_bucket_id', 0) if request else 0
-            if self.plugin.reply_buffer_service.store_reply(session_key, first_text or "", delivery_plan.blocks, expected_bucket_id=expected_bucket_id):
-                self.plugin._emit_log("DEBUG", f"[Buffer] 回复已缓存 key={session_key} text={first_text[:30]}")
-                from .pipeline_models import QQDeliveryResult
-                return QQDeliveryResult(delivered=True, target_type=delivery_plan.target_type, target_id=delivery_plan.target_id, reply_text=first_text)
-            # store_reply 失败且来自缓冲桶 → 桶已被替换（话题偏移/上限交付），丢弃过期回复
-            if expected_bucket_id:
-                self.plugin._emit_log("INFO", f"[Buffer] 桶已过期 key={session_key} bucket_id={expected_bucket_id} → 丢弃过期回复")
-                from .pipeline_models import QQDeliveryResult
-                return QQDeliveryResult(delivered=False, target_type=delivery_plan.target_type, target_id=delivery_plan.target_id, reply_text=None)
-
-        # 不走缓冲 → 直接交付
+        # 不进缓冲 → 直接交付（单条消息回复不再缓存，由桶定时汇总独立生成）
         reason = "skip" if skip_buffer else ("group" if request and request.is_group else "no_buffer_svc")
         self.plugin._emit_log("DEBUG", f"[Delivery] 直接发送 source={source} reason={reason}")
 
