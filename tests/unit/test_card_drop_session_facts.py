@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import logging
+import threading
 from pathlib import Path
 
 import pytest
@@ -658,6 +659,7 @@ def test_bind_client_approval_uses_persisted_local_id_and_consumes_ticket(
     actual_client_proof = "p" * 43
     challenge = "C" * 43
     sent: list[tuple[str, dict]] = []
+    thread_ids: dict[str, int] = {}
 
     class FakeAsyncClient:
         def __init__(self, *args, **kwargs):
@@ -670,13 +672,18 @@ def test_bind_client_approval_uses_persisted_local_id_and_consumes_ticket(
             return False
 
         async def post(self, url, **kwargs):
+            thread_ids["event_loop"] = threading.get_ident()
             sent.append((url, kwargs["json"]))
             return _CloudResponse(204, {})
+
+    def get_client_credentials():
+        thread_ids["credentials"] = threading.get_ident()
+        return actual_client_id, actual_client_proof
 
     monkeypatch.setattr(
         C,
         "_get_client_credentials",
-        lambda: (actual_client_id, actual_client_proof),
+        get_client_credentials,
     )
     monkeypatch.setattr(C.httpx, "AsyncClient", FakeAsyncClient)
     ticket = _issue_sync_ticket(client)
@@ -709,6 +716,7 @@ def test_bind_client_approval_uses_persisted_local_id_and_consumes_ticket(
             },
         )
     ]
+    assert thread_ids["credentials"] != thread_ids["event_loop"]
     assert replay.status_code == 403
     assert replay.json() == {"detail": "invalid_sync_ticket"}
 
@@ -1400,6 +1408,39 @@ async def test_recoverable_bind_error_still_persists_validated_login(tmp_path, m
 
 
 @pytest.mark.asyncio
+async def test_store_session_offloads_local_credential_io(monkeypatch):
+    event_loop_thread = threading.get_ident()
+    worker_threads: dict[str, int] = {}
+
+    def get_client_id():
+        worker_threads["client_id"] = threading.get_ident()
+        return None
+
+    def save_auth(_payload):
+        worker_threads["auth"] = threading.get_ident()
+        return True
+
+    def save_social_session(*_args, **_kwargs):
+        worker_threads["social"] = threading.get_ident()
+        return True
+
+    monkeypatch.setattr(C, "_get_client_id", get_client_id)
+    monkeypatch.setattr(C, "_save_auth", save_auth)
+    monkeypatch.setattr(C, "_save_social_session", save_social_session)
+
+    bind = await C._store_session(
+        "https://community.example",
+        "new-token",
+        "new-refresh",
+        {"id": USER_A_ID, "display_name": "New User", "email": "new@example.com"},
+    )
+
+    assert bind == {"bound": False, "error": "client_not_registered"}
+    assert set(worker_threads) == {"client_id", "auth", "social"}
+    assert all(thread_id != event_loop_thread for thread_id in worker_threads.values())
+
+
+@pytest.mark.asyncio
 async def test_store_session_reports_partial_local_save_failure(tmp_path, monkeypatch):
     auth = tmp_path / "community_auth.json"
     session = tmp_path / "social_session.json"
@@ -1429,6 +1470,43 @@ async def test_store_session_reports_partial_local_save_failure(tmp_path, monkey
     }
     assert json.loads(auth.read_text(encoding="utf-8"))["bind"] == bind
     assert not session.exists()
+
+
+def test_sync_session_clear_offloads_local_credential_io(client, monkeypatch):
+    ticket = _issue_sync_ticket(client)
+    original_consume = C._consume_sync_ticket
+    thread_ids: dict[str, int] = {}
+
+    def consume_sync_ticket(value):
+        thread_ids.setdefault("event_loop", threading.get_ident())
+        return original_consume(value)
+
+    def access_token():
+        thread_ids["access"] = threading.get_ident()
+        return "token-a"
+
+    def clear_auth():
+        thread_ids["clear"] = threading.get_ident()
+        return True
+
+    monkeypatch.setattr(C, "_consume_sync_ticket", consume_sync_ticket)
+    monkeypatch.setattr(C, "_access_token", access_token)
+    monkeypatch.setattr(C, "_clear_auth", clear_auth)
+
+    response = client.post(
+        "/api/card-drop/sync-session",
+        headers={"Origin": "https://community.example"},
+        json={
+            "clear": True,
+            "base_url": "https://community.example",
+            "access_token": "token-a",
+            "sync_ticket": ticket,
+        },
+    )
+
+    assert response.status_code == 200
+    assert thread_ids["access"] != thread_ids["event_loop"]
+    assert thread_ids["clear"] != thread_ids["event_loop"]
 
 
 def test_sync_session_clear_reports_local_delete_failure(client, tmp_path, monkeypatch):

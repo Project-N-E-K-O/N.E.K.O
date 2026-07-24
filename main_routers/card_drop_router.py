@@ -506,6 +506,33 @@ def _save_social_session(
     return True
 
 
+def _persist_session_credentials(
+    auth_payload: dict,
+    bind: dict,
+    base: str,
+    access: str,
+    refresh: str | None,
+    *,
+    local_user_id: str,
+    auth_source: str,
+) -> None:
+    """Persist both desktop credential files from a worker thread."""
+    auth_saved = _save_auth(auth_payload)
+    social_saved = _save_social_session(
+        base,
+        access,
+        refresh,
+        local_user_id=local_user_id,
+        auth_source=auth_source,
+    )
+    if not (auth_saved and social_saved):
+        bind["local_save_failed"] = True
+        # If auth was written before the Electron session failed, persist the
+        # partial-success marker there as well so auth-status can surface it.
+        if auth_saved:
+            _save_auth(auth_payload)
+
+
 def _persist_session_identity_metadata(
     snapshot: dict,
     local_user_id: str,
@@ -724,7 +751,7 @@ async def _store_session(
     # Other historical bind failures remain recoverable and still persist the cloud-validated
     # login below, together with their bind status.
     bind: dict = {"bound": False, "error": None}
-    cid = _get_client_id() if bind_client else None
+    cid = await asyncio.to_thread(_get_client_id) if bind_client else None
     if not bind_client:
         bind["skipped"] = "native_session_sync"
     elif not cid:
@@ -765,20 +792,16 @@ async def _store_session(
         },
         "bind": bind,
     }
-    auth_saved = _save_auth(auth_payload)
-    social_saved = _save_social_session(
+    await asyncio.to_thread(
+        _persist_session_credentials,
+        auth_payload,
+        bind,
         base,
         access,
         refresh,
         local_user_id=local_user_id,
         auth_source=normalized_source,
     )
-    if not (auth_saved and social_saved):
-        bind["local_save_failed"] = True
-        # If auth was written before the Electron session failed, persist the
-        # partial-success marker there as well so auth-status can surface it.
-        if auth_saved:
-            _save_auth(auth_payload)
     return bind
 
 
@@ -970,7 +993,7 @@ async def bind_client_approve_endpoint(request: Request, payload: dict = Body(..
         return JSONResponse(
             {"detail": "invalid_client_binding_challenge"}, status_code=400, headers=cors
         )
-    credentials = _get_client_credentials()
+    credentials = await asyncio.to_thread(_get_client_credentials)
     if not credentials:
         return JSONResponse(
             {"detail": "client_not_registered"}, status_code=409, headers=cors
@@ -1066,7 +1089,7 @@ async def sync_session_endpoint(request: Request, payload: dict = Body(...)):
     if clear_requested:
         # Logout is account-scoped.  If Web login B could not replace the desktop's bound
         # account A, B's later logout must not erase A's still-valid local session.
-        current_access = _access_token() or ""
+        current_access = await asyncio.to_thread(_access_token) or ""
         requested_access = (
             payload.get("access_token") or payload.get("accessToken") or ""
         ).strip()
@@ -1081,7 +1104,7 @@ async def sync_session_endpoint(request: Request, payload: dict = Body(...)):
             return JSONResponse(
                 {"detail": "invalid_sync_ticket"}, status_code=403, headers=cors
             )
-        if not _clear_auth():
+        if not await asyncio.to_thread(_clear_auth):
             return JSONResponse(
                 {"detail": "local_clear_failed", "cleared": False},
                 status_code=500,
