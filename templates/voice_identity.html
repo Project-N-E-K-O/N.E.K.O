@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title data-i18n="voiceIdentity.title">Owner 声纹设置</title>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
+    <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
+    <link rel="stylesheet" href="/static/css/voice_identity.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
+    <script src="/static/common_dialogs.js?v={{ static_asset_version }}" defer></script>
+    <script src="/static/js/window_controls.js?v={{ static_asset_version }}" defer></script>
+    <script src="/static/js/voice_identity.js?v={{ static_asset_version }}" defer></script>
+</head>
+<body>
+    <main class="voice-identity-shell">
+        <header class="voice-identity-header page-title-bar">
+            <div>
+                <p class="eyebrow">N.E.K.O Voice Identity</p>
+                <h1 data-i18n="voiceIdentity.title">Owner 声纹设置</h1>
+            </div>
+            <div class="neko-window-controls">
+                <button type="button" class="neko-window-control-btn"
+                    data-neko-window-control="minimize"
+                    data-i18n-title="common.minimize"
+                    data-i18n-aria="common.minimize"
+                    aria-label="最小化">
+                    <span class="neko-window-minimize-icon"></span>
+                </button>
+                <button type="button" class="neko-window-control-btn"
+                    data-neko-window-control="maximize"
+                    data-i18n-title="common.maximize"
+                    data-i18n-aria="common.maximize"
+                    aria-label="最大化">
+                    <span class="neko-window-maximize-icon"></span>
+                </button>
+                <button type="button" class="voice-close"
+                    data-neko-window-control="close"
+                    data-i18n-title="common.close"
+                    data-i18n-aria="common.close"
+                    aria-label="关闭">
+                    <img src="/static/icons/close_button.png" alt="" draggable="false">
+                </button>
+            </div>
+        </header>
+
+        <div class="voice-identity-content">
+            <section class="status-card" aria-labelledby="profile-status-title">
+                <div class="status-copy">
+                    <span class="status-dot" id="voice-identity-status-dot" aria-hidden="true"></span>
+                    <div>
+                        <h2 id="profile-status-title" data-i18n="voiceIdentity.profileStatus">Profile 状态</h2>
+                        <p id="voice-identity-profile-status" aria-live="polite"
+                            data-i18n="voiceIdentity.profileMissing">尚未录入 Owner 声纹</p>
+                    </div>
+                </div>
+                <div class="status-actions">
+                    <button type="button" class="secondary-button" id="voice-identity-reenroll"
+                        data-i18n="voiceIdentity.reenroll">重新录入</button>
+                    <button type="button" class="danger-button" id="voice-identity-delete"
+                        data-i18n="voiceIdentity.delete">删除 Profile</button>
+                </div>
+            </section>
+
+            <section class="wizard-card" aria-labelledby="voice-identity-step-title">
+                <div class="step-progress" aria-hidden="true">
+                    <span class="active"></span><span></span><span></span>
+                    <span></span><span></span>
+                </div>
+                <div id="voice-identity-step" class="wizard-step">
+                    <p class="step-kicker" id="voice-identity-step-count"></p>
+                    <h2 id="voice-identity-step-title" data-i18n="voiceIdentity.privacyTitle">开始前请了解</h2>
+                    <p id="voice-identity-step-body" class="step-body"
+                        data-i18n="voiceIdentity.privacyBody">
+                        声纹仅在本机处理和保存，不会发送给 ASR Provider。
+                    </p>
+                    <blockquote id="voice-identity-prompt" hidden></blockquote>
+                    <p class="recording-timer" id="voice-identity-timer" aria-live="polite"></p>
+                    <div class="wizard-actions">
+                        <button type="button" class="primary-button" id="voice-identity-start"
+                            data-i18n="voiceIdentity.start">开始录入</button>
+                        <button type="button" class="record-button" id="voice-identity-record" hidden>
+                            <span class="record-icon" aria-hidden="true"></span>
+                            <span data-i18n="voiceIdentity.record">开始录音</span>
+                        </button>
+                        <button type="button" class="secondary-button" id="voice-identity-cancel" hidden
+                            data-i18n="voiceIdentity.cancel">取消录入</button>
+                    </div>
+                    <p id="voice-identity-message" class="wizard-message" aria-live="polite"></p>
+                </div>
+            </section>
+
+            <section class="filter-card" aria-labelledby="voice-filter-title">
+                <div>
+                    <h2 id="voice-filter-title" data-i18n="voiceIdentity.filterLabel">声纹过滤（测试）</h2>
+                    <p data-i18n="voiceIdentity.filterHelp">
+                        用于减少部分非 Owner 语音产生的 ASR 消耗，不属于安全认证。短语音、不确定语音或检测异常时将正常放行。
+                    </p>
+                </div>
+                <label class="switch">
+                    <input type="checkbox" id="voice-identity-filter"
+                        aria-describedby="voice-filter-title">
+                    <span class="switch-track" aria-hidden="true"></span>
+                </label>
+            </section>
+        </div>
+    </main>
+</body>
+</html>

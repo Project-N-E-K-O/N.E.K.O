@@ -54,6 +54,9 @@ from main_logic.voice_turn.contracts import (
 from main_logic.voice_turn.contracts import EvaluationStatus, TurnDecision
 from main_logic.voice_turn.coordinator import CoordinatorState
 from main_logic.voice_identity.profile import SpeakerProfile
+from main_logic.voice_identity.registry import (
+    get_voice_identity_profile_registry,
+)
 from main_logic.voice_identity.runtime import SpeakerShadowRuntime, VoiceIdentitySession
 from main_logic.voice_input import BuiltinVoiceInputConsumer
 from main_logic.voice_input.consumers import game as game_consumer_module
@@ -156,6 +159,63 @@ async def test_active_speaker_profile_uses_formal_core_composition_entry() -> No
     identity_session.set_profile.assert_awaited_with(None)
     assert runtime._speaker_shadow_factory is None
     runtime._asr_runtime.set_speaker_verifier_factory.assert_awaited_with(None)
+
+
+async def test_enrollment_lease_blocks_native_and_independent_pcm_and_clears_state() -> (
+    None
+):
+    registry = get_voice_identity_profile_registry()
+    registry.close()
+    registry.begin_enrollment("enrollment-a")
+    runtime = _Runtime()
+    runtime._clear_audio_stream_queue = MagicMock()
+    runtime.hot_swap_audio_cache = [b"old-pcm"]
+    runtime._asr_runtime.abort = AsyncMock()
+
+    try:
+        assert runtime._voice_input_accepts_pcm() is False
+
+        await runtime.prepare_voice_identity_enrollment("enrollment-a")
+
+        runtime._clear_audio_stream_queue.assert_called_once_with(
+            "voice_identity_enrollment"
+        )
+        assert runtime.hot_swap_audio_cache == []
+        runtime._asr_runtime.abort.assert_awaited_once_with(
+            "voice_identity_enrollment"
+        )
+    finally:
+        registry.end_enrollment("enrollment-a")
+        registry.close()
+
+    assert runtime._voice_input_accepts_pcm() is True
+
+
+async def test_registered_profile_is_synced_without_reapplying_same_revision() -> None:
+    registry = get_voice_identity_profile_registry()
+    registry.close()
+    profile = SpeakerProfile(
+        np.eye(4, dtype=np.float32)[0],
+        profile_revision=7,
+        model_id="test-model",
+        model_revision="v1",
+        embedding_dimension=4,
+    )
+    registry.install_profile(profile)
+    runtime = _Runtime()
+    runtime.set_active_speaker_profile = AsyncMock(return_value=7)
+
+    try:
+        await runtime._sync_registered_speaker_profile()
+        await runtime._sync_registered_speaker_profile()
+    finally:
+        profile.close()
+        registry.close()
+
+    runtime.set_active_speaker_profile.assert_awaited_once()
+    synced = runtime.set_active_speaker_profile.await_args.args[0]
+    assert synced.profile_revision == 7
+    synced.close()
 
 
 async def test_speaker_identity_observer_has_a_formal_fail_open_port() -> None:

@@ -30,6 +30,9 @@ from main_logic.voice_identity.contracts import (
     SpeakerShadowObservation,
     SpeakerVerifierFactory,
 )
+from main_logic.voice_identity.registry import (
+    get_voice_identity_profile_registry,
+)
 from main_logic.voice_turn.contracts import (
     AsrFailureEvent,
     AsrLifecycleNotification,
@@ -292,6 +295,14 @@ class AsrRuntimeMixin:
         await self._asr_runtime.set_speaker_verifier_factory(factory)
         return None if profile is None else profile.profile_revision
 
+    async def activate_registered_speaker_profile(
+        self,
+        profile: SpeakerProfile | None,
+    ) -> int | None:
+        revision = await self.set_active_speaker_profile(profile)
+        self._voice_identity_registered_revision = revision
+        return revision
+
     def set_speaker_identity_observer(
         self,
         callback: SpeakerObservationCallback | None,
@@ -347,6 +358,7 @@ class AsrRuntimeMixin:
         )
 
     def _voice_input_accepts_pcm(self) -> bool:
+        profile_registry = get_voice_identity_profile_registry()
         return bool(
             self._voice_lease_synchronized
             and self._voice_lease_owner in {"core", "game"}
@@ -354,7 +366,32 @@ class AsrRuntimeMixin:
             and not self._voice_lease_hard_muted
             and not self._voice_lease_focus_suppressed
             and not self._voice_input_suppressed
+            and not profile_registry.enrollment_active
         )
+
+    async def prepare_voice_identity_enrollment(self, session_id: str) -> None:
+        """Fence microphone PCM before accepting local enrollment audio."""
+
+        profile_registry = get_voice_identity_profile_registry()
+        if not profile_registry.enrollment_owned_by(session_id):
+            raise RuntimeError("voice identity enrollment lease is not active")
+        self._ensure_asr_runtime_state()
+        self._invalidate_voice_pcm_sync("voice_identity_enrollment")
+        await self._asr_runtime.abort("voice_identity_enrollment")
+
+    async def _sync_registered_speaker_profile(self) -> None:
+        profile_registry = get_voice_identity_profile_registry()
+        profile = profile_registry.snapshot_profile()
+        revision = None if profile is None else profile.profile_revision
+        if revision == getattr(self, "_voice_identity_registered_revision", None):
+            if profile is not None:
+                profile.close()
+            return
+        try:
+            await self.activate_registered_speaker_profile(profile)
+        finally:
+            if profile is not None:
+                profile.close()
 
     async def _start_independent_asr_if_enabled(self, input_mode: str) -> None:
         self._ensure_asr_runtime_state()
@@ -388,6 +425,7 @@ class AsrRuntimeMixin:
                 )
             )
             return
+        await self._sync_registered_speaker_profile()
         self._independent_asr_route_key = core_type
         result = await self._asr_runtime.start(
             route_key=core_type,
