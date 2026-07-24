@@ -42,8 +42,9 @@ CORE_PATCH_TARGET_EXISTS
     ``create=True`` (intentional absent-name guards).
 
 CORE_MIXIN_SHAPE
-    A mixin module's top level holds only a docstring, imports and exactly
-    one ``*Mixin`` class; the class body holds only a docstring and
+    A mixin module's top level holds only a docstring, imports, exactly one
+    ``*Mixin`` class, and any explicitly registered private support classes;
+    the mixin class body holds only a docstring and
     methods, and the class has an empty base list (a base would pull
     inherited behavior into the MRO uncounted). Instance state has a single
     home (``LLMSessionManager.__init__``), and module-level state in a
@@ -78,6 +79,12 @@ CORE_FACADE_LAYOUT
     must be fully populated before the class modules bind it as
     ``_core_facade``.
 
+ASR_LAYERING
+    The Core ASR bridge owns microphone ingress and Core callbacks, while the
+    independent runtime owns provider state. TTS cannot import ASR, ASR cannot
+    import Core, provider literals cannot leak into the bridge, and streaming
+    can only enqueue audio into the bridge.
+
 Every violation prints as ``path:line:col  CODE  message``. Exit 1 on any
 violation, 0 otherwise, 2 when the expected layout itself is missing (this
 gate hard-fails rather than silently skipping when paths move — see the
@@ -99,8 +106,13 @@ OWNER_SUBMODULES = {
     "callback_render",
     "notices",
 }
-EXTERNAL_MIXINS = {
-    "AsrRuntimeMixin": "main_logic.asr_client.runtime",
+MIXIN_SUPPORT_CLASSES = {
+    "asr_runtime": {
+        "_QueuedMicFrame",
+        "_AudioDurationQueue",
+        "_HotSwapAudioFrame",
+        "_HotSwapAudioBuffer",
+    },
 }
 PATCH_CALL_NAMES = {"setattr", "patch", "delattr"}
 
@@ -531,9 +543,20 @@ def run(root: Path) -> list[Violation]:
             continue
         mixins = [c for c in classes if c.name.endswith("Mixin")]
         if mixins:
-            if len(classes) != 1:
-                violations.append(Violation(path, classes[1].lineno, classes[1].col_offset, "CORE_MIXIN_SHAPE",
-                                            f"{path.name} must define exactly one class (found {len(classes)})"))
+            expected_classes = {
+                mixins[0].name,
+                *MIXIN_SUPPORT_CLASSES.get(path.stem, set()),
+            }
+            actual_classes = {klass.name for klass in classes}
+            if len(mixins) != 1 or actual_classes != expected_classes:
+                violations.append(Violation(
+                    path,
+                    classes[0].lineno if classes else 1,
+                    classes[0].col_offset if classes else 0,
+                    "CORE_MIXIN_SHAPE",
+                    f"{path.name} classes must be exactly {sorted(expected_classes)} "
+                    f"(found {sorted(actual_classes)})",
+                ))
             # A base on a mixin drags inherited methods/state into
             # LLMSessionManager's MRO uncounted by CORE_MIXIN_DISJOINT/BASES.
             if mixins[0].bases or mixins[0].keywords:
@@ -558,31 +581,6 @@ def run(root: Path) -> list[Violation]:
                                         f"define one *Mixin class or be a registered owner submodule — add it "
                                         f"to OWNER_SUBMODULES in scripts/check_core_contracts.py if it is a "
                                         f"deliberate new owner module"))
-
-    # ASR owns its runtime outside core. Keep this an explicit exception, not
-    # a general allowance for arbitrary external manager bases.
-    for class_name, module_name in EXTERNAL_MIXINS.items():
-        path = root.joinpath(*module_name.split(".")).with_suffix(".py")
-        if not path.exists():
-            violations.append(Violation(path, 1, 0, "CORE_MIXIN_SHAPE",
-                                        f"registered external mixin module {module_name} is missing"))
-            continue
-        classes = [n for n in parse(path).body if isinstance(n, ast.ClassDef)]
-        klass = next((c for c in classes if c.name == class_name), None)
-        if klass is None or len(classes) != 1:
-            violations.append(Violation(path, 1, 0, "CORE_MIXIN_SHAPE",
-                                        f"external mixin module {module_name} must define exactly one class: "
-                                        f"{class_name}"))
-            continue
-        if klass.bases or klass.keywords:
-            base = (klass.bases or [kw.value for kw in klass.keywords])[0]
-            violations.append(Violation(path, base.lineno, base.col_offset, "CORE_MIXIN_SHAPE",
-                                        f"external mixin class {class_name} must have an empty base list"))
-        if klass.decorator_list:
-            decorator = klass.decorator_list[0]
-            violations.append(Violation(path, decorator.lineno, decorator.col_offset, "CORE_MIXIN_SHAPE",
-                                        f"external mixin class {class_name} must not be decorated"))
-        mixin_files[path] = klass
 
     # -- CORE_MIXIN_SHAPE: top level and class body
     for path, klass in mixin_files.items():
@@ -623,6 +621,412 @@ def run(root: Path) -> list[Violation]:
             violations.append(Violation(path, node.lineno, node.col_offset, "CORE_MIXIN_SHAPE",
                                         f"mixin class body allows only docstring/methods, "
                                         f"found {type(node).__name__} — state belongs in manager.__init__"))
+
+    # -- ASR_LAYERING: keep microphone ingress, Core integration, and provider
+    # runtime ownership on their explicit sides of the composition boundary.
+    asr_bridge_path = core_dir / "asr_runtime.py"
+    tts_path = core_dir / "tts_runtime.py"
+    streaming_path = core_dir / "streaming.py"
+    asr_client_dir = root / "main_logic" / "asr_client"
+    asr_component_path = asr_client_dir / "runtime.py"
+    asr_audio_path = asr_client_dir / "audio.py"
+    voice_input_path = root / "main_logic" / "voice_turn" / "audio_input.py"
+    for required in (
+        asr_bridge_path,
+        tts_path,
+        streaming_path,
+        asr_client_dir,
+        asr_component_path,
+        asr_audio_path,
+        voice_input_path,
+    ):
+        if not required.exists():
+            violations.append(Violation(
+                required,
+                1,
+                0,
+                "ASR_LAYERING",
+                "required ASR layering path is missing",
+            ))
+
+    if tts_path.exists():
+        tts_tree = parse(tts_path)
+        forbidden_ingress_methods = {
+            "_ensure_audio_stream_worker",
+            "_clear_audio_stream_queue",
+            "_cancel_audio_stream_worker",
+            "_enqueue_audio_stream_data",
+            "_audio_stream_worker_loop",
+        }
+        for node in ast.walk(tts_tree):
+            imported = None
+            if isinstance(node, ast.Import):
+                imported = next(
+                    (a.name for a in node.names if a.name.startswith("main_logic.asr_client")),
+                    None,
+                )
+            elif isinstance(node, ast.ImportFrom):
+                imported = node.module
+            if imported and imported.startswith("main_logic.asr_client"):
+                violations.append(Violation(
+                    tts_path,
+                    node.lineno,
+                    node.col_offset,
+                    "ASR_LAYERING",
+                    "tts_runtime.py must not import main_logic.asr_client",
+                ))
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
+                node.name in forbidden_ingress_methods
+            ):
+                violations.append(Violation(
+                    tts_path,
+                    node.lineno,
+                    node.col_offset,
+                    "ASR_LAYERING",
+                    f"microphone ingress method '{node.name}' belongs in core/asr_runtime.py",
+                ))
+
+    if asr_client_dir.exists():
+        for path in sorted(asr_client_dir.rglob("*.py")):
+            tree = parse(path)
+            pkg = ".".join(path.relative_to(root).parts[:-1])
+            for node in ast.walk(tree):
+                modules: list[str] = []
+                if isinstance(node, ast.Import):
+                    modules.extend(alias.name for alias in node.names)
+                elif isinstance(node, ast.ImportFrom):
+                    resolved = (
+                        node.module
+                        if node.level == 0
+                        else _resolve_relative(pkg, node.level, node.module)
+                    )
+                    if resolved:
+                        modules.append(resolved)
+                if any(
+                    module == "main_logic.core"
+                    or module.startswith("main_logic.core.")
+                    for module in modules
+                ):
+                    violations.append(Violation(
+                        path,
+                        node.lineno,
+                        node.col_offset,
+                        "ASR_LAYERING",
+                        "asr_client must not import main_logic.core",
+                    ))
+
+    if asr_bridge_path.exists():
+        bridge_tree = parse(asr_bridge_path)
+        route_setter_found = False
+        forbidden_runtime_reads = {"lifecycle", "route_mode", "required"}
+        for node in ast.walk(bridge_tree):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and node.value.strip().lower() in {"soniox", "gemini", "free"}
+            ):
+                violations.append(Violation(
+                    asr_bridge_path,
+                    node.lineno,
+                    node.col_offset,
+                    "ASR_LAYERING",
+                    f"provider literal '{node.value}' must stay below the Core ASR bridge",
+                ))
+            if (
+                isinstance(node, ast.Attribute)
+                and node.attr in forbidden_runtime_reads
+                and isinstance(node.value, ast.Attribute)
+                and isinstance(node.value.value, ast.Name)
+                and node.value.value.id == "self"
+                and node.value.attr == "_asr_runtime"
+            ):
+                violations.append(Violation(
+                    asr_bridge_path,
+                    node.lineno,
+                    node.col_offset,
+                    "ASR_LAYERING",
+                    f"Core must not read IndependentAsrRuntime.{node.attr}",
+                ))
+        for node in ast.walk(bridge_tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if node.name == "_set_microphone_route":
+                route_setter_found = True
+            if node.name in {"_init_asr_runtime_state", "_set_microphone_route"}:
+                continue
+            for child in ast.walk(node):
+                targets = []
+                if isinstance(child, ast.Assign):
+                    targets = child.targets
+                elif isinstance(child, ast.AnnAssign):
+                    targets = [child.target]
+                if any(
+                    isinstance(target, ast.Attribute)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "self"
+                    and target.attr == "_asr_route_mode"
+                    for target in targets
+                ):
+                    violations.append(Violation(
+                        asr_bridge_path,
+                        child.lineno,
+                        child.col_offset,
+                        "ASR_LAYERING",
+                        "Core route changes must go through _set_microphone_route()",
+                    ))
+        if not route_setter_found:
+            violations.append(Violation(
+                asr_bridge_path,
+                1,
+                0,
+                "ASR_LAYERING",
+                "core/asr_runtime.py must define _set_microphone_route()",
+            ))
+
+    for path in (asr_bridge_path, asr_component_path):
+        if not path.exists():
+            continue
+        for node in ast.walk(parse(path)):
+            if isinstance(node, ast.ImportFrom) and any(
+                alias.name == "ProcessedVoiceFrame" for alias in node.names
+            ) and node.module != "main_logic.voice_turn.audio_input":
+                violations.append(Violation(
+                    path,
+                    node.lineno,
+                    node.col_offset,
+                    "ASR_LAYERING",
+                    "ProcessedVoiceFrame must come from voice_turn.audio_input",
+                ))
+
+    if asr_audio_path.exists():
+        for node in ast.walk(parse(asr_audio_path)):
+            if isinstance(node, ast.ClassDef) and node.name in {
+                "ProcessedVoiceFrame",
+                "VoiceInputAudioPipeline",
+            }:
+                violations.append(Violation(
+                    asr_audio_path,
+                    node.lineno,
+                    node.col_offset,
+                    "ASR_LAYERING",
+                    f"provider-neutral {node.name} belongs in voice_turn/audio_input.py",
+                ))
+
+    if asr_component_path.exists():
+        component_tree = parse(asr_component_path)
+        component_class = next(
+            (
+                node
+                for node in component_tree.body
+                if isinstance(node, ast.ClassDef)
+                and node.name == "IndependentAsrRuntime"
+            ),
+            None,
+        )
+        if component_class is None:
+            violations.append(Violation(
+                asr_component_path,
+                1,
+                0,
+                "ASR_LAYERING",
+                "asr_client/runtime.py must define IndependentAsrRuntime",
+            ))
+        elif component_class.bases or component_class.keywords:
+            violations.append(Violation(
+                asr_component_path,
+                component_class.lineno,
+                component_class.col_offset,
+                "ASR_LAYERING",
+                "IndependentAsrRuntime must be a plain composed object, not a mixin subclass",
+            ))
+        if component_class is not None:
+            forbidden_fields = {
+                "_asr_route_mode",
+                "_asr_required",
+                "_voice_lease_connection_id",
+                "_voice_lease_generation",
+                "_voice_lease_synchronized",
+                "_voice_lease_owner",
+                "_voice_lease_hard_muted",
+                "_voice_lease_focus_suppressed",
+                "_voice_input_suppressed",
+            }
+            forbidden_methods = {
+                "activate_native_route",
+                "deactivate_audio_route",
+                "block_audio_route",
+                "sync_voice_lease",
+                "apply_voice_lease_state",
+                "process_audio",
+                "_process_microphone_audio",
+            }
+            public_methods = {
+                "__init__",
+                "display_name",
+                "close",
+                "capture_ingress_token",
+                "suspend",
+                "resume",
+                "abort",
+                "wait_transcript_idle",
+                "start",
+                "submit",
+            }
+            for node in ast.walk(component_class):
+                if (
+                    isinstance(node, ast.Attribute)
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id == "self"
+                    and node.attr in forbidden_fields
+                ):
+                    violations.append(Violation(
+                        asr_component_path,
+                        node.lineno,
+                        node.col_offset,
+                        "ASR_LAYERING",
+                        f"IndependentAsrRuntime must not mirror Core state {node.attr}",
+                    ))
+                if (
+                    isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and node in component_class.body
+                ):
+                    if node.name in forbidden_methods:
+                        violations.append(Violation(
+                            asr_component_path,
+                            node.lineno,
+                            node.col_offset,
+                            "ASR_LAYERING",
+                            f"IndependentAsrRuntime must not define {node.name}()",
+                        ))
+                    if not node.name.startswith("_") and node.name not in public_methods:
+                        violations.append(Violation(
+                            asr_component_path,
+                            node.lineno,
+                            node.col_offset,
+                            "ASR_LAYERING",
+                            f"unexpected IndependentAsrRuntime public method {node.name}()",
+                        ))
+            for node in ast.walk(component_tree):
+                if (
+                    isinstance(node, ast.Name)
+                    and node.id == "VoiceInputAudioPipeline"
+                ):
+                    violations.append(Violation(
+                        asr_component_path,
+                        node.lineno,
+                        node.col_offset,
+                        "ASR_LAYERING",
+                        "IndependentAsrRuntime must not own the Core PCM pipeline",
+                    ))
+
+        callbacks_class = next(
+            (
+                node for node in component_tree.body
+                if isinstance(node, ast.ClassDef)
+                and node.name == "AsrRuntimeCallbacks"
+            ),
+            None,
+        )
+        callback_events = {
+            "on_partial": "VoicePartialEvent",
+            "on_final": "VoiceTranscriptEvent",
+            "on_failure": "AsrFailureEvent",
+            "on_status": "AsrStatusEvent",
+            "on_lifecycle": "AsrLifecycleNotification",
+        }
+        annotations = {
+            node.target.id: {name.id for name in ast.walk(node.annotation) if isinstance(name, ast.Name)}
+            for node in (callbacks_class.body if callbacks_class is not None else [])
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+        }
+        for callback_name, event_name in callback_events.items():
+            if event_name not in annotations.get(callback_name, set()):
+                violations.append(Violation(
+                    asr_component_path,
+                    getattr(callbacks_class, "lineno", 1),
+                    0,
+                    "ASR_LAYERING",
+                    f"{callback_name} must receive immutable {event_name}",
+                ))
+        for node in ast.walk(component_tree):
+            if isinstance(node, ast.ClassDef) and node.name.endswith("Mixin"):
+                violations.append(Violation(
+                    asr_component_path,
+                    node.lineno,
+                    node.col_offset,
+                    "ASR_LAYERING",
+                    "asr_client/runtime.py must not define a manager mixin",
+                ))
+            if (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "self"
+                and node.attr
+                in {
+                    "session",
+                    "handle_new_message",
+                    "handle_input_transcript",
+                    "send_status",
+                }
+            ):
+                violations.append(Violation(
+                    asr_component_path,
+                    node.lineno,
+                    node.col_offset,
+                    "ASR_LAYERING",
+                    f"IndependentAsrRuntime must not access Core attribute self.{node.attr}",
+                ))
+
+    if streaming_path.exists():
+        streaming_tree = parse(streaming_path)
+        stream_data_method = next(
+            (
+                node
+                for node in ast.walk(streaming_tree)
+                if isinstance(node, ast.AsyncFunctionDef) and node.name == "stream_data"
+            ),
+            None,
+        )
+        audio_branch = None
+        if stream_data_method is not None:
+            for node in ast.walk(stream_data_method):
+                if (
+                    isinstance(node, ast.If)
+                    and isinstance(node.test, ast.Compare)
+                    and len(node.test.ops) == 1
+                    and isinstance(node.test.ops[0], ast.Eq)
+                    and len(node.test.comparators) == 1
+                    and isinstance(node.test.comparators[0], ast.Constant)
+                    and node.test.comparators[0].value == "audio"
+                ):
+                    audio_branch = node
+                    break
+        valid_audio_branch = False
+        if audio_branch is not None and len(audio_branch.body) == 2:
+            call_stmt, return_stmt = audio_branch.body
+            awaited = call_stmt.value if isinstance(call_stmt, ast.Expr) else None
+            call = awaited.value if isinstance(awaited, ast.Await) else None
+            valid_audio_branch = bool(
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and isinstance(call.func.value, ast.Name)
+                and call.func.value.id == "self"
+                and call.func.attr == "_enqueue_audio_stream_data"
+                and len(call.args) == 1
+                and isinstance(call.args[0], ast.Name)
+                and call.args[0].id == "message"
+                and not call.keywords
+                and isinstance(return_stmt, ast.Return)
+                and return_stmt.value is None
+            )
+        if not valid_audio_branch:
+            violations.append(Violation(
+                streaming_path,
+                getattr(audio_branch or stream_data_method, "lineno", 1),
+                getattr(audio_branch or stream_data_method, "col_offset", 0),
+                "ASR_LAYERING",
+                "stream_data audio branch may only await _enqueue_audio_stream_data(message) and return",
+            ))
 
     # -- CORE_MANAGER_SHAPE: class body is only docstring / class constants /
     #    __init__. Any other statement (extra method, nested class, class-level
@@ -770,11 +1174,7 @@ def run(root: Path) -> list[Violation]:
         # would still pass. ``defining_stem`` comes from where the class was
         # discovered.
         defining_imports = {
-            mklass.name: (
-                (0, EXTERNAL_MIXINS[mklass.name], mklass.name)
-                if mklass.name in EXTERNAL_MIXINS
-                else (1, mpath.stem, mklass.name)
-            )
+            mklass.name: (1, mpath.stem, mklass.name)
             for mpath, mklass in mixin_files.items()
         }
         # bound name -> (relative level, module, ORIGINAL imported symbol).

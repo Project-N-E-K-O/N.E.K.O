@@ -6,6 +6,10 @@ from main_logic.asr_client.provider_policy import (
     AsrProviderPolicy,
     resolve_provider_policy,
 )
+from main_logic.asr_client._registry_meta import (
+    ASR_PROVIDER_REGISTRY,
+    AsrProviderAvailability,
+)
 
 
 def test_streaming_manual_provider_requires_smart_turn() -> None:
@@ -51,3 +55,10 @@ def test_openai_provider_endpoint_does_not_require_smart_turn() -> None:
 def test_openai_manual_endpointing_is_rejected() -> None:
     with pytest.raises(RuntimeError, match="ASR_ENDPOINTING_NOT_SUPPORTED"):
         resolve_provider_policy("openai", "manual")
+
+
+def test_blocked_backend_has_explicit_availability() -> None:
+    assert (
+        ASR_PROVIDER_REGISTRY["free"].availability
+        is AsrProviderAvailability.BLOCKED_BACKEND
+    )

@@ -1583,6 +1583,8 @@
 
     var micPermissionGranted = false;
     var cachedMicDevices = null;
+    var disposeVoiceRecognitionPopover = null;
+    var voiceRecognitionPopoverRenderGeneration = 0;
 
     /** 请求麦克风权限并缓存设备列表 */
     async function ensureMicrophonePermission() {
@@ -1631,6 +1633,12 @@
     window.renderFloatingMicList = async function (popupArg) {
         var micPopup = popupArg || document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
         if (!micPopup) return false;
+        var renderGeneration = ++voiceRecognitionPopoverRenderGeneration;
+        if (disposeVoiceRecognitionPopover) {
+            var previousDispose = disposeVoiceRecognitionPopover;
+            disposeVoiceRecognitionPopover = null;
+            previousDispose();
+        }
         var popupId = micPopup.id;
         var isPopupAvailable = function () {
             if (!micPopup || !micPopup.isConnected) return false;
@@ -1641,7 +1649,10 @@
 
         try {
             var audioInputs = await ensureMicrophonePermission();
-            if (!isPopupAvailable()) return false;
+            if (
+                renderGeneration !== voiceRecognitionPopoverRenderGeneration
+                || !isPopupAvailable()
+            ) return false;
             micPopup.innerHTML = '';
 
             var hasMicrophoneDevices = audioInputs.length > 0;
@@ -1847,100 +1858,382 @@
             Object.assign(sep1.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '8px 0' });
             leftColumn.appendChild(sep1);
 
-            // ===== 左栏 1.5. 降噪开关 =====
-            var nrContainer = document.createElement('div');
-            nrContainer.style.padding = '8px 12px';
-
-            var nrRow = document.createElement('div');
-            Object.assign(nrRow.style, { display: 'flex', justifyContent: 'space-between', alignItems: 'center' });
-
-            var nrLabel = document.createElement('span');
-            nrLabel.textContent = window.t ? window.t('microphone.noiseReduction') : '降噪';
-            nrLabel.setAttribute('data-i18n', 'microphone.noiseReduction');
-            Object.assign(nrLabel.style, { fontSize: '13px', color: 'var(--neko-popup-text)', fontWeight: '500' });
-
-            var nrToggle = document.createElement('label');
-            Object.assign(nrToggle.style, { position: 'relative', display: 'inline-block', width: '36px', height: '20px', flexShrink: '0' });
-            var nrInput = document.createElement('input');
-            nrInput.type = 'checkbox';
-            nrInput.checked = S.noiseReductionEnabled;
-            Object.assign(nrInput.style, { opacity: '0', width: '0', height: '0' });
-            var nrSlider = document.createElement('span');
-            Object.assign(nrSlider.style, { position: 'absolute', cursor: 'pointer', top: '0', left: '0', right: '0', bottom: '0', backgroundColor: S.noiseReductionEnabled ? '#4f8cff' : '#ccc', borderRadius: '10px', transition: 'background-color 0.2s' });
-            var nrKnob = document.createElement('span');
-            Object.assign(nrKnob.style, { position: 'absolute', content: '""', height: '16px', width: '16px', left: S.noiseReductionEnabled ? '18px' : '2px', bottom: '2px', backgroundColor: 'white', borderRadius: '50%', transition: 'left 0.2s' });
-            nrSlider.appendChild(nrKnob);
-            nrToggle.appendChild(nrInput);
-            nrToggle.appendChild(nrSlider);
-
-            nrInput.addEventListener('change', function () {
-                S.noiseReductionEnabled = nrInput.checked;
-                nrSlider.style.backgroundColor = nrInput.checked ? '#4f8cff' : '#ccc';
-                nrKnob.style.left = nrInput.checked ? '18px' : '2px';
-                saveNoiseReductionSetting();
-            });
-
-            nrRow.appendChild(nrLabel);
-            nrRow.appendChild(nrToggle);
-            nrContainer.appendChild(nrRow);
-
-            var nrHint = document.createElement('div');
-            nrHint.textContent = window.t ? window.t('microphone.noiseReductionHint') : 'RNNoise AI 降噪';
-            nrHint.setAttribute('data-i18n', 'microphone.noiseReductionHint');
-            Object.assign(nrHint.style, { fontSize: '11px', color: 'var(--neko-popup-text-sub)', marginTop: '6px' });
-            nrContainer.appendChild(nrHint);
-            leftColumn.appendChild(nrContainer);
-
-            // ===== 独立 ASR 开关（下次语音 session 生效） =====
+            // ===== 语音识别入口与 portal 设置面板 =====
             var asrContainer = document.createElement('div');
-            asrContainer.style.padding = '8px 12px';
+            Object.assign(asrContainer.style, {
+                padding: '8px 12px',
+                borderRadius: '7px',
+                cursor: 'pointer',
+                outline: 'none'
+            });
+            asrContainer.tabIndex = 0;
+            asrContainer.setAttribute('role', 'button');
+            asrContainer.setAttribute('aria-haspopup', 'dialog');
 
             var asrRow = document.createElement('div');
             Object.assign(asrRow.style, { display: 'flex', justifyContent: 'space-between', alignItems: 'center' });
 
-            var asrLabel = document.createElement('span');
-            asrLabel.textContent = window.t ? window.t('microphone.independentAsr') : 'Independent ASR';
+            var asrCopy = document.createElement('div');
+            Object.assign(asrCopy.style, { minWidth: '0', paddingRight: '10px' });
+            var asrLabel = document.createElement('div');
+            asrLabel.textContent = window.t ? window.t('microphone.independentAsr') : '语音识别';
             asrLabel.setAttribute('data-i18n', 'microphone.independentAsr');
-            Object.assign(asrLabel.style, { fontSize: '13px', color: 'var(--neko-popup-text)', fontWeight: '500' });
+            Object.assign(asrLabel.style, { fontSize: '13px', color: 'var(--neko-popup-text)', fontWeight: '600' });
+            var asrSummary = document.createElement('div');
+            Object.assign(asrSummary.style, {
+                fontSize: '11px', color: 'var(--neko-popup-text-sub)', marginTop: '4px',
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
+            });
+            asrCopy.appendChild(asrLabel);
+            asrCopy.appendChild(asrSummary);
 
-            var asrToggle = document.createElement('label');
-            Object.assign(asrToggle.style, { position: 'relative', display: 'inline-block', width: '36px', height: '20px', flexShrink: '0' });
-            var asrInput = document.createElement('input');
-            asrInput.type = 'checkbox';
-            asrInput.checked = S.independentAsrEnabled === true;
-            Object.assign(asrInput.style, { opacity: '0', width: '0', height: '0' });
-            var asrSlider = document.createElement('span');
-            Object.assign(asrSlider.style, { position: 'absolute', cursor: 'pointer', top: '0', left: '0', right: '0', bottom: '0', backgroundColor: asrInput.checked ? '#4f8cff' : '#ccc', borderRadius: '10px', transition: 'background-color 0.2s' });
-            var asrKnob = document.createElement('span');
-            Object.assign(asrKnob.style, { position: 'absolute', content: '""', height: '16px', width: '16px', left: asrInput.checked ? '18px' : '2px', bottom: '2px', backgroundColor: 'white', borderRadius: '50%', transition: 'left 0.2s' });
-            asrSlider.appendChild(asrKnob);
-            asrToggle.appendChild(asrInput);
-            asrToggle.appendChild(asrSlider);
+            function createVoiceSettingToggle(checked, onChange) {
+                var toggle = document.createElement('label');
+                Object.assign(toggle.style, {
+                    position: 'relative', display: 'inline-block', width: '36px', height: '20px',
+                    flexShrink: '0', cursor: 'pointer'
+                });
+                var input = document.createElement('input');
+                input.type = 'checkbox';
+                input.checked = checked;
+                Object.assign(input.style, {
+                    position: 'absolute', inset: '0', width: '100%', height: '100%',
+                    margin: '0', opacity: '0', cursor: 'pointer', zIndex: '2'
+                });
+                var slider = document.createElement('span');
+                Object.assign(slider.style, {
+                    position: 'absolute', inset: '0', backgroundColor: checked ? '#4f8cff' : '#9aa0a6',
+                    borderRadius: '10px', transition: 'background-color 0.2s'
+                });
+                var knob = document.createElement('span');
+                Object.assign(knob.style, {
+                    position: 'absolute', height: '16px', width: '16px',
+                    left: checked ? '18px' : '2px', bottom: '2px', backgroundColor: 'white',
+                    borderRadius: '50%', transition: 'left 0.2s'
+                });
+                slider.appendChild(knob);
+                toggle.appendChild(input);
+                toggle.appendChild(slider);
+                toggle.addEventListener('click', function (event) { event.stopPropagation(); });
+                input.addEventListener('change', function () {
+                    slider.style.backgroundColor = input.checked ? '#4f8cff' : '#9aa0a6';
+                    knob.style.left = input.checked ? '18px' : '2px';
+                    onChange(input.checked);
+                });
+                return {
+                    element: toggle,
+                    input: input,
+                    setDisabled: function (disabled) {
+                        input.disabled = disabled;
+                        toggle.style.cursor = disabled ? 'not-allowed' : 'pointer';
+                        input.style.cursor = disabled ? 'not-allowed' : 'pointer';
+                        toggle.style.opacity = disabled ? '0.5' : '1';
+                    },
+                    setChecked: function (value) {
+                        input.checked = value;
+                        slider.style.backgroundColor = value ? '#4f8cff' : '#9aa0a6';
+                        knob.style.left = value ? '18px' : '2px';
+                    }
+                };
+            }
 
-            asrInput.addEventListener('change', function () {
-                S.independentAsrEnabled = asrInput.checked;
-                asrSlider.style.backgroundColor = asrInput.checked ? '#4f8cff' : '#ccc';
-                asrKnob.style.left = asrInput.checked ? '18px' : '2px';
-                if (window.appSettings && typeof window.appSettings.saveSettings === 'function') {
-                    window.appSettings.saveSettings();
+            var voiceSettingsPendingUntilEpoch = null;
+            function markVoiceSettingsPending() {
+                voiceSettingsPendingUntilEpoch = (
+                    Number(S.voiceSessionStartEpoch) || 0
+                ) + 1;
+            }
+            var asrToggle = createVoiceSettingToggle(
+                S.independentAsrEnabled === true,
+                function (enabled) {
+                    S.independentAsrEnabled = enabled;
+                    markVoiceSettingsPending();
+                    updateVoiceRecognitionUi();
+                    if (window.appSettings && typeof window.appSettings.saveSettings === 'function') {
+                        window.appSettings.saveSettings();
+                    }
+                }
+            );
+
+            asrRow.appendChild(asrCopy);
+            asrRow.appendChild(asrToggle.element);
+            asrContainer.appendChild(asrRow);
+            leftColumn.appendChild(asrContainer);
+
+            var voicePanelId = (popupId || 'neko-mic') + '-voice-recognition-settings';
+            asrContainer.setAttribute('aria-controls', voicePanelId);
+            asrContainer.setAttribute('aria-expanded', 'false');
+            var voicePanel = document.createElement('div');
+            voicePanel.id = voicePanelId;
+            voicePanel.setAttribute('role', 'dialog');
+            voicePanel.setAttribute('aria-label', window.t ? window.t('microphone.voiceRecognitionSettings') : '语音识别设置');
+            Object.assign(voicePanel.style, {
+                display: 'none', position: 'fixed', zIndex: '2147483000', width: '280px',
+                boxSizing: 'border-box', padding: '14px', borderRadius: '10px',
+                color: 'var(--neko-popup-text)', background: 'var(--neko-popup-bg, rgba(30, 30, 34, 0.98))',
+                border: '1px solid var(--neko-popup-separator)', boxShadow: '0 10px 32px rgba(0, 0, 0, 0.28)'
+            });
+            document.body.appendChild(voicePanel);
+
+            var voicePanelTitle = document.createElement('div');
+            voicePanelTitle.textContent = window.t ? window.t('microphone.voiceRecognitionSettings') : '语音识别设置';
+            voicePanelTitle.setAttribute('data-i18n', 'microphone.voiceRecognitionSettings');
+            Object.assign(voicePanelTitle.style, { fontSize: '14px', fontWeight: '650', marginBottom: '14px' });
+            voicePanel.appendChild(voicePanelTitle);
+
+            function appendVoicePanelSetting(labelKey, fallbackLabel, hintKey, fallbackHint, toggle) {
+                var block = document.createElement('div');
+                block.style.marginBottom = '14px';
+                var row = document.createElement('div');
+                Object.assign(row.style, { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' });
+                var label = document.createElement('span');
+                label.textContent = window.t ? window.t(labelKey) : fallbackLabel;
+                label.setAttribute('data-i18n', labelKey);
+                Object.assign(label.style, { fontSize: '13px', fontWeight: '500' });
+                row.appendChild(label);
+                row.appendChild(toggle.element);
+                var hint = document.createElement('div');
+                hint.textContent = window.t ? window.t(hintKey) : fallbackHint;
+                hint.setAttribute('data-i18n', hintKey);
+                Object.assign(hint.style, { fontSize: '11px', color: 'var(--neko-popup-text-sub)', marginTop: '5px', lineHeight: '1.45' });
+                block.appendChild(row);
+                block.appendChild(hint);
+                voicePanel.appendChild(block);
+                return hint;
+            }
+
+            var noiseToggle = createVoiceSettingToggle(S.noiseReductionEnabled === true, function (enabled) {
+                S.noiseReductionEnabled = enabled;
+                saveNoiseReductionSetting();
+            });
+            appendVoicePanelSetting(
+                'microphone.noiseReduction', '降噪',
+                'microphone.noiseReductionHint', '让输入语音更加清晰', noiseToggle
+            );
+
+            var optimizationToggle = createVoiceSettingToggle(
+                S.voiceInputResourceOptimizationEnabled !== false,
+                function (enabled) {
+                    S.voiceInputResourceOptimizationEnabled = enabled;
+                    markVoiceSettingsPending();
+                    updateVoiceRecognitionUi();
+                    if (window.appSettings && typeof window.appSettings.saveSettings === 'function') {
+                        window.appSettings.saveSettings();
+                    }
+                }
+            );
+            var optimizationHint = appendVoicePanelSetting(
+                'microphone.voiceResourceOptimization', '智能资源优化',
+                'microphone.voiceResourceOptimizationHintOn', '空闲时减少连接和音频上传',
+                optimizationToggle
+            );
+
+            var voiceStatus = document.createElement('div');
+            Object.assign(voiceStatus.style, {
+                borderTop: '1px solid var(--neko-popup-separator)', paddingTop: '11px',
+                fontSize: '11px', lineHeight: '1.45', color: 'var(--neko-popup-text-sub)'
+            });
+            voicePanel.appendChild(voiceStatus);
+
+            function providerDisplayName(provider) {
+                var value = String(provider || '').trim();
+                if (!value) return '';
+                var known = { qwen: 'Qwen', soniox: 'Soniox', glm: 'GLM', gemini: 'Gemini', openai: 'OpenAI', step: 'Step', grok: 'Grok' };
+                return known[value.toLowerCase()] || value;
+            }
+
+            function updateVoiceRecognitionUi() {
+                var enabled = S.independentAsrEnabled === true;
+                var provider = providerDisplayName(S.independentAsrProvider);
+                var blocked = S.voiceInputLifecycleState === 'blocked';
+                asrToggle.setChecked(enabled);
+                noiseToggle.setDisabled(!enabled);
+                optimizationToggle.setDisabled(!enabled);
+                asrSummary.textContent = enabled
+                    ? (window.t
+                        ? window.t(provider
+                            ? 'microphone.independentAsrSummary'
+                            : 'microphone.independentAsrSummaryGeneric', { provider: provider })
+                        : ('独立 ASR' + (provider ? ' · ' + provider : '')))
+                    : (window.t ? window.t('microphone.voiceRecognitionDisabled') : '当前使用 Omni 原生语音识别');
+                if (voiceSettingsPendingUntilEpoch !== null) {
+                    voiceStatus.textContent = window.t
+                        ? window.t('microphone.voiceRecognitionSettingsPending')
+                        : '◐ 设置将在下次语音会话生效';
+                } else if (!enabled) {
+                    voiceStatus.textContent = window.t
+                        ? window.t('microphone.voiceRecognitionDisabledHint')
+                        : '独立 ASR 已关闭；语音输入使用 Omni 原生语音识别';
+                } else if (blocked) {
+                    voiceStatus.textContent = window.t
+                        ? window.t('microphone.voiceRecognitionUnavailable')
+                        : '独立语音识别不可用，本次语音输入已停止';
+                } else if (S.independentAsrActive) {
+                    voiceStatus.textContent = window.t
+                        ? window.t('microphone.voiceRecognitionStatusReady')
+                        : '● 当前运行正常';
+                } else {
+                    voiceStatus.textContent = window.t
+                        ? window.t('microphone.voiceRecognitionSettingsPending')
+                        : '◐ 设置将在下次语音会话生效';
+                }
+                var optimizationEnabled = S.voiceInputResourceOptimizationEnabled !== false;
+                optimizationToggle.setChecked(optimizationEnabled);
+                optimizationHint.textContent = window.t
+                    ? window.t(optimizationEnabled
+                        ? 'microphone.voiceResourceOptimizationHintOn'
+                        : 'microphone.voiceResourceOptimizationHintOff')
+                    : (optimizationEnabled
+                        ? '空闲时减少连接和音频上传'
+                        : '持续保持语音识别，可能增加网络和资源占用');
+            }
+            updateVoiceRecognitionUi();
+
+            var voiceBridge = document.createElement('div');
+            Object.assign(voiceBridge.style, { display: 'none', position: 'fixed', zIndex: '2147482999' });
+            document.body.appendChild(voiceBridge);
+            var voicePanelOpen = false;
+            var voicePanelPinned = false;
+            var voiceOpenTimer = null;
+            var voiceCloseTimer = null;
+
+            function clearVoiceTimers() {
+                if (voiceOpenTimer !== null) clearTimeout(voiceOpenTimer);
+                if (voiceCloseTimer !== null) clearTimeout(voiceCloseTimer);
+                voiceOpenTimer = null;
+                voiceCloseTimer = null;
+            }
+
+            function positionVoicePanel() {
+                if (!voicePanelOpen || !asrContainer.isConnected) return;
+                var rect = asrContainer.getBoundingClientRect();
+                var gap = 10;
+                var viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+                var viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+                var panelRect = voicePanel.getBoundingClientRect();
+                var panelWidth = panelRect.width || 280;
+                var panelHeight = panelRect.height || 240;
+                var placeRight = rect.right + gap + panelWidth <= viewportWidth - 12;
+                var left = placeRight ? rect.right + gap : rect.left - panelWidth - gap;
+                left = Math.max(12, Math.min(left, viewportWidth - panelWidth - 12));
+                var top = Math.max(12, Math.min(rect.top, viewportHeight - panelHeight - 12));
+                voicePanel.style.left = Math.round(left) + 'px';
+                voicePanel.style.top = Math.round(top) + 'px';
+                voiceBridge.style.display = 'block';
+                voiceBridge.style.left = Math.round(placeRight ? rect.right : left + panelWidth) + 'px';
+                voiceBridge.style.top = Math.round(Math.min(rect.top, top)) + 'px';
+                voiceBridge.style.width = gap + 'px';
+                voiceBridge.style.height = Math.round(Math.max(rect.bottom, top + panelHeight) - Math.min(rect.top, top)) + 'px';
+            }
+
+            function openVoicePanel(pinned) {
+                clearVoiceTimers();
+                if (pinned === true) voicePanelPinned = true;
+                voicePanelOpen = true;
+                voicePanel.style.display = 'block';
+                asrContainer.setAttribute('aria-expanded', 'true');
+                updateVoiceRecognitionUi();
+                positionVoicePanel();
+            }
+
+            function closeVoicePanel(force) {
+                if (voicePanelPinned && force !== true) return;
+                clearVoiceTimers();
+                voicePanelPinned = false;
+                voicePanelOpen = false;
+                voicePanel.style.display = 'none';
+                voiceBridge.style.display = 'none';
+                asrContainer.setAttribute('aria-expanded', 'false');
+            }
+
+            function scheduleVoiceOpen() {
+                if (voicePanelOpen) return;
+                if (voiceOpenTimer !== null) clearTimeout(voiceOpenTimer);
+                voiceOpenTimer = setTimeout(function () { openVoicePanel(false); }, 150);
+            }
+
+            function scheduleVoiceClose() {
+                if (voicePanelPinned) return;
+                if (voiceOpenTimer !== null) clearTimeout(voiceOpenTimer);
+                if (voiceCloseTimer !== null) clearTimeout(voiceCloseTimer);
+                voiceCloseTimer = setTimeout(function () { closeVoicePanel(false); }, 300);
+            }
+
+            asrContainer.addEventListener('mouseenter', scheduleVoiceOpen);
+            asrContainer.addEventListener('mouseleave', scheduleVoiceClose);
+            asrContainer.addEventListener('focusin', function () { openVoicePanel(false); });
+            asrContainer.addEventListener('focusout', scheduleVoiceClose);
+            asrContainer.addEventListener('click', function () {
+                if (voicePanelOpen && voicePanelPinned) closeVoicePanel(true);
+                else openVoicePanel(true);
+            });
+            asrContainer.addEventListener('keydown', function (event) {
+                if (event.target !== asrContainer) return;
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    if (voicePanelOpen && voicePanelPinned) closeVoicePanel(true);
+                    else openVoicePanel(true);
                 }
             });
+            voicePanel.addEventListener('mouseenter', clearVoiceTimers);
+            voicePanel.addEventListener('mouseleave', scheduleVoiceClose);
+            voicePanel.addEventListener('focusin', clearVoiceTimers);
+            voicePanel.addEventListener('focusout', scheduleVoiceClose);
+            voiceBridge.addEventListener('mouseenter', clearVoiceTimers);
+            voiceBridge.addEventListener('mouseleave', scheduleVoiceClose);
 
-            asrRow.appendChild(asrLabel);
-            asrRow.appendChild(asrToggle);
-            asrContainer.appendChild(asrRow);
-
-            var asrHint = document.createElement('div');
-            var asrHintKey = S.independentAsrActive
-                ? 'microphone.independentAsrActive'
-                : (S.independentAsrEnabled ? 'microphone.independentAsrNextSession' : 'microphone.independentAsrNative');
-            asrHint.textContent = window.t
-                ? window.t(asrHintKey, { provider: S.independentAsrProvider || '' })
-                : (S.independentAsrActive ? 'Independent ASR active' : (S.independentAsrEnabled ? 'Takes effect next voice session' : 'Using Omni native recognition'));
-            asrHint.setAttribute('data-i18n', asrHintKey);
-            Object.assign(asrHint.style, { fontSize: '11px', color: 'var(--neko-popup-text-sub)', marginTop: '6px' });
-            asrContainer.appendChild(asrHint);
-            leftColumn.appendChild(asrContainer);
+            function onVoiceDocumentPointerDown(event) {
+                if (!voicePanelOpen) return;
+                if (!asrContainer.contains(event.target) && !voicePanel.contains(event.target)) {
+                    closeVoicePanel(true);
+                }
+            }
+            function onVoiceDocumentKeyDown(event) {
+                if (event.key === 'Escape' && voicePanelOpen) {
+                    closeVoicePanel(true);
+                    asrContainer.focus();
+                }
+            }
+            function onVoiceLifecycleChanged() { updateVoiceRecognitionUi(); }
+            function onVoiceSessionStarted() {
+                if (
+                    voiceSettingsPendingUntilEpoch === null
+                    || (Number(S.voiceSessionStartEpoch) || 0)
+                        < voiceSettingsPendingUntilEpoch
+                ) return;
+                voiceSettingsPendingUntilEpoch = null;
+                updateVoiceRecognitionUi();
+            }
+            document.addEventListener('pointerdown', onVoiceDocumentPointerDown, true);
+            document.addEventListener('keydown', onVoiceDocumentKeyDown, true);
+            window.addEventListener('resize', positionVoicePanel);
+            window.addEventListener('scroll', positionVoicePanel, true);
+            window.addEventListener('voice-input-lifecycle-changed', onVoiceLifecycleChanged);
+            window.addEventListener('neko:voice-session-started', onVoiceSessionStarted);
+            var voicePopupObserver = new MutationObserver(function () {
+                if (!isPopupAvailable()) closeVoicePanel(true);
+            });
+            voicePopupObserver.observe(micPopup, { attributes: true, attributeFilter: ['style', 'class'] });
+            var voicePopoverDisposed = false;
+            function disposeCurrentVoiceRecognitionPopover() {
+                if (voicePopoverDisposed) return;
+                voicePopoverDisposed = true;
+                clearVoiceTimers();
+                voicePopupObserver.disconnect();
+                document.removeEventListener('pointerdown', onVoiceDocumentPointerDown, true);
+                document.removeEventListener('keydown', onVoiceDocumentKeyDown, true);
+                window.removeEventListener('resize', positionVoicePanel);
+                window.removeEventListener('scroll', positionVoicePanel, true);
+                window.removeEventListener('voice-input-lifecycle-changed', onVoiceLifecycleChanged);
+                window.removeEventListener('neko:voice-session-started', onVoiceSessionStarted);
+                voicePanel.remove();
+                voiceBridge.remove();
+                if (
+                    disposeVoiceRecognitionPopover
+                    === disposeCurrentVoiceRecognitionPopover
+                ) disposeVoiceRecognitionPopover = null;
+            }
+            disposeVoiceRecognitionPopover = disposeCurrentVoiceRecognitionPopover;
 
             var sep1b = document.createElement('div');
             Object.assign(sep1b.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '8px 0' });

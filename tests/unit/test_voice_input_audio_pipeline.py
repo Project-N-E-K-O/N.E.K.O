@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from main_logic.asr_client.audio import VoiceInputAudioPipeline
+import asyncio
+import threading
+
+import pytest
+
+from main_logic.voice_turn.audio_input import VoiceInputAudioPipeline
 
 
 class _Processor:
@@ -65,3 +70,46 @@ async def test_pipeline_rejects_invalid_pcm_and_sample_rate() -> None:
         assert "sample rate" in str(exc)
     else:
         raise AssertionError("unsupported sample rate must be rejected")
+
+
+async def test_pipeline_close_waits_for_cancelled_processing_thread() -> None:
+    processing_started = threading.Event()
+    release_processing = threading.Event()
+
+    class _BlockingProcessor(_Processor):
+        def __init__(self) -> None:
+            super().__init__()
+            self.processing = False
+
+        def process_chunk(self, pcm16: bytes) -> bytes:
+            self.processing = True
+            processing_started.set()
+            assert release_processing.wait(5)
+            self.processing = False
+            return super().process_chunk(pcm16)
+
+        def close(self) -> None:
+            assert not self.processing
+            super().close()
+
+    processor = _BlockingProcessor()
+    pipeline = VoiceInputAudioPipeline(processor_factory=lambda: processor)
+    process_task = asyncio.create_task(
+        pipeline.process(b"\x01\x00" * 480, sample_rate_hz=48_000)
+    )
+    assert await asyncio.to_thread(processing_started.wait, 5)
+
+    process_task.cancel()
+    close_task = asyncio.create_task(pipeline.close())
+    await asyncio.sleep(0)
+
+    assert not process_task.done()
+    assert not close_task.done()
+    assert processor.closed is False
+
+    release_processing.set()
+    with pytest.raises(asyncio.CancelledError):
+        await process_task
+    await close_task
+
+    assert processor.closed is True

@@ -1,12 +1,18 @@
 import pytest
+from dataclasses import FrozenInstanceError
 from unittest.mock import Mock
 
 from main_logic.voice_turn.contracts import (
     AsrTurnCapabilities,
+    AsrLifecycleNotification,
+    AsrStatusEvent,
+    AsrSubmitResult,
+    AsrSubmitStatus,
     EvaluationStatus,
     SmartTurnConfig,
     TurnDecision,
     TurnEvaluation,
+    VoicePartialEvent,
     build_turn_detector_if_required,
     requires_external_turn_detector,
 )
@@ -51,3 +57,21 @@ def test_non_ok_evaluation_rejects_probability():
 def test_config_rejects_missing_vad_hysteresis():
     with pytest.raises(ValueError):
         SmartTurnConfig(onset_probability=0.4, offset_probability=0.4)
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        VoicePartialEvent(text="hello", session_epoch=1),
+        AsrStatusEvent(code="ASR_READY", provider="qwen"),
+        AsrLifecycleNotification(
+            state="local_listen",
+            provider="qwen",
+            session_epoch=1,
+        ),
+        AsrSubmitResult(status=AsrSubmitStatus.ACCEPTED),
+    ],
+)
+def test_cross_layer_asr_events_are_immutable(event):
+    with pytest.raises(FrozenInstanceError):
+        event.__setattr__(next(iter(event.__dataclass_fields__)), object())

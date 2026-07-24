@@ -873,6 +873,7 @@ class DetectorRuntime:
         vad: SileroVad | None = None,
         gate: SileroActivityGate | None = None,
         rnnoise_onset_probability: float = 0.35,
+        resource_optimization_enabled: bool = True,
         provider_policy: AsrProviderPolicy | None = None,
         coordinator: TurnCoordinator | None = None,
         on_turn_complete: Callable[[], Awaitable[None]] | None = None,
@@ -897,6 +898,7 @@ class DetectorRuntime:
         self._available = True
         self._closed = False
         self._rnnoise_onset_probability = rnnoise_onset_probability
+        self._resource_optimization_enabled = bool(resource_optimization_enabled)
         self._speech_active = False
         self._events: list[SpeechActivityEvent] = []
         self._semantic_adapter: _VoiceTurnAdapter | None = None
@@ -1321,7 +1323,8 @@ class DetectorRuntime:
             if self._closed or not self._available:
                 return DetectorFeedResult((), False)
             if (
-                rnnoise_available
+                self._resource_optimization_enabled
+                and rnnoise_available
                 and speech_probability is not None
                 and not self._speech_active
                 and speech_probability < self._rnnoise_onset_probability
@@ -1417,7 +1420,8 @@ class DetectorRuntime:
                 None,
             )
         if (
-            rnnoise_available
+            self._resource_optimization_enabled
+            and rnnoise_available
             and speech_probability is not None
             and not self._candidate_open
             and speech_probability < self._rnnoise_onset_probability

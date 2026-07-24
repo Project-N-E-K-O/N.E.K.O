@@ -36,6 +36,7 @@
         'focusModeEnabled',
         'focusCognitionEnabled',
         'independentAsrEnabled',
+        'voiceInputResourceOptimizationEnabled',
         'avatarReactionBubbleEnabled',
         'slopFilterEnabled',
         'proactiveChatInterval',
@@ -77,6 +78,7 @@
             focusModeEnabled: S.focusModeEnabled,
             focusCognitionEnabled: S.focusCognitionEnabled,
             independentAsrEnabled: S.independentAsrEnabled,
+            voice_input_resource_optimization_enabled: S.voiceInputResourceOptimizationEnabled,
             avatarReactionBubbleEnabled: S.avatarReactionBubbleEnabled,
             slopFilterEnabled: S.slopFilterEnabled,
             proactiveChatInterval: S.proactiveChatInterval,
@@ -101,6 +103,18 @@
                 changed = true;
             }
         });
+        if (
+            Object.prototype.hasOwnProperty.call(
+                settings,
+                'voice_input_resource_optimization_enabled'
+            )
+        ) {
+            const enabled = settings.voice_input_resource_optimization_enabled !== false;
+            if (S.voiceInputResourceOptimizationEnabled !== enabled) {
+                S.voiceInputResourceOptimizationEnabled = enabled;
+                changed = true;
+            }
+        }
         if (
             Object.prototype.hasOwnProperty.call(settings, 'userLanguage') &&
             S.userLanguage !== settings.userLanguage
@@ -313,6 +327,8 @@
             ? window.focusCognitionEnabled
             : S.focusCognitionEnabled;
         const currentIndependentAsr = S.independentAsrEnabled === true;
+        const currentVoiceResourceOptimization =
+            S.voiceInputResourceOptimizationEnabled !== false;
         const currentProactiveChatInterval = typeof window.proactiveChatInterval !== 'undefined'
             ? window.proactiveChatInterval
             : S.proactiveChatInterval;
@@ -385,6 +401,7 @@
             focusModeEnabled: currentFocus,
             focusCognitionEnabled: currentFocusCognition,
             independentAsrEnabled: currentIndependentAsr,
+            voiceInputResourceOptimizationEnabled: currentVoiceResourceOptimization,
             avatarReactionBubbleEnabled: currentAvatarReactionBubble,
             slopFilterEnabled: currentSlopFilter,
             proactiveChatInterval: currentProactiveChatInterval,
@@ -415,6 +432,7 @@
         S.focusModeEnabled = currentFocus;
         S.focusCognitionEnabled = currentFocusCognition;
         S.independentAsrEnabled = currentIndependentAsr;
+        S.voiceInputResourceOptimizationEnabled = currentVoiceResourceOptimization;
         S.avatarReactionBubbleEnabled = currentAvatarReactionBubble;
         S.slopFilterEnabled = currentSlopFilter;
         S.proactiveChatInterval = currentProactiveChatInterval;
@@ -508,7 +526,12 @@
                 S.mergeMessagesEnabled = settings.mergeMessagesEnabled ?? false;
                 S.focusModeEnabled = settings.focusModeEnabled ?? false;
                 S.focusCognitionEnabled = settings.focusCognitionEnabled ?? true;
-                S.independentAsrEnabled = settings.independentAsrEnabled ?? false;
+                S.independentAsrEnabled = settings.independentAsrEnabled ?? true;
+                S.voiceInputResourceOptimizationEnabled = (
+                    settings.voiceInputResourceOptimizationEnabled
+                    ?? settings.voice_input_resource_optimization_enabled
+                    ?? true
+                );
                 S.avatarReactionBubbleEnabled = settings.avatarReactionBubbleEnabled ?? true;
                 S.slopFilterEnabled = settings.slopFilterEnabled ?? true;
                 S.proactiveChatInterval = settings.proactiveChatInterval ?? C.DEFAULT_PROACTIVE_CHAT_INTERVAL;
@@ -671,8 +694,24 @@
                 }
 
                 if (serverSettings) {
+                    if (
+                        Object.prototype.hasOwnProperty.call(
+                            serverSettings,
+                            'voice_input_resource_optimization_enabled'
+                        )
+                    ) {
+                        const enabled = (
+                            serverSettings.voice_input_resource_optimization_enabled
+                            !== false
+                        );
+                        if (S.voiceInputResourceOptimizationEnabled !== enabled) {
+                            S.voiceInputResourceOptimizationEnabled = enabled;
+                            hasUpdate = true;
+                        }
+                    }
                     // 用服务器设置覆盖本地设置
                     for (const key of Object.keys(serverSettings)) {
+                        if (key === 'voice_input_resource_optimization_enabled') continue;
                         if (serverSettings[key] !== undefined && S[key] !== serverSettings[key]) {
                             S[key] = serverSettings[key];
                             hasUpdate = true;

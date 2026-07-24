@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from collections.abc import Callable
-from typing import Protocol, runtime_checkable
+from collections.abc import Awaitable, Callable
+from typing import Protocol, TypeAlias, runtime_checkable
 
 
 class TurnDecision(Enum):
@@ -32,6 +32,118 @@ class SpeechActivityEvent(Enum):
     CANDIDATE_PAUSE = "candidate_pause"
     SPEECH_RESUMED = "speech_resumed"
 
+
+class AsrSubmitStatus(Enum):
+    """Outcome of submitting one already-normalized frame to independent ASR."""
+
+    ACCEPTED = "accepted"
+    STALE = "stale"
+    UNAVAILABLE = "unavailable"
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceIngressToken:
+    """Identity captured before one microphone frame belongs to a turn."""
+
+    session_epoch: int
+    connection_id: str
+    lease_generation: int
+    route_generation: int
+    audio_generation: int
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceTurnToken:
+    """Logical voice-turn identity shared by Core and independent ASR."""
+
+    ingress: VoiceIngressToken
+    turn_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceTransportToken:
+    """Bind Provider I/O and callbacks to one transport attempt."""
+
+    turn: VoiceTurnToken
+    transport_generation: int
+
+
+@dataclass(frozen=True, slots=True)
+class FinalKey:
+    """Logical final identity; transport retries do not create a new turn."""
+
+    session_epoch: int
+    connection_id: str
+    lease_generation: int
+    route_generation: int
+    turn_id: int
+
+    @classmethod
+    def from_turn(cls, token: VoiceTurnToken) -> "FinalKey":
+        ingress = token.ingress
+        return cls(
+            session_epoch=ingress.session_epoch,
+            connection_id=ingress.connection_id,
+            lease_generation=ingress.lease_generation,
+            route_generation=ingress.route_generation,
+            turn_id=token.turn_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceTranscriptEvent:
+    """One route-authorized logical transcript for a Core-side consumer."""
+
+    turn_token: VoiceTurnToken
+    provider: str
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class AsrFailureEvent:
+    """One provider-runtime failure that forces the Core route closed."""
+
+    code: str
+    provider: str
+    session_epoch: int
+
+
+@dataclass(frozen=True, slots=True)
+class VoicePartialEvent:
+    """Display-only partial transcript emitted by independent ASR."""
+
+    text: str
+    session_epoch: int
+
+
+@dataclass(frozen=True, slots=True)
+class AsrStatusEvent:
+    """Stable Core-facing status without provider implementation details."""
+
+    code: str
+    provider: str
+
+
+@dataclass(frozen=True, slots=True)
+class AsrLifecycleNotification:
+    """Independent-ASR lifecycle state; Core remains route authority."""
+
+    state: str
+    provider: str
+    session_epoch: int
+
+
+@dataclass(frozen=True, slots=True)
+class AsrSubmitResult:
+    """Explicit submit disposition so Core never inspects runtime state."""
+
+    status: AsrSubmitStatus
+
+
+VoiceTranscriptCallback: TypeAlias = Callable[
+    [VoiceTranscriptEvent],
+    Awaitable[None],
+]
 
 @dataclass(frozen=True, slots=True)
 class TurnEvaluation:

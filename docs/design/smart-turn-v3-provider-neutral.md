@@ -11,13 +11,12 @@ lower-level `RealtimeAsrSession` is not a supported product voice-input path.
 ## Endpoint authority
 
 - Streaming ASR uses the provider's native endpoint as the logical-turn
-  authority. This includes Qwen `server_vad`, Soniox `<end>`, and the provider
-  endpoint modes implemented by Grok and Step.
+  authority. This includes Qwen and OpenAI `server_vad`, Soniox `<end>`, and
+  the provider endpoint modes implemented by Grok and Step.
 - Segmented ASR uses Smart Turn to seal one logical turn before the session
   commits one or more bounded physical requests. GLM and Gemini use this path.
-- OpenAI's current `gpt-realtime-whisper` worker requires manual commits and
-  does not support provider turn detection, so its production route remains
-  blocked instead of being converted into a Smart Turn streaming route.
+- OpenAI uses provider `server_vad`, rejects client-side manual commits, and
+  does not load N.E.K.O SmartTurn.
 - RNNoise and Silero may suppress idle uploads and wake a streaming transport,
   but neither decides the logical end of a provider-endpointed turn.
 - Provider buffer commit, hard timeout, maximum turn duration, and manual
@@ -29,29 +28,31 @@ also suitable for barge-in and connection lifecycle gating, but it never emits
 
 ## Consumer-neutral voice input
 
-`LLMSessionManager.bind_voice_input_consumer()` exposes the high-level final
-text boundary needed by later game/plugin integration. A binding is inert:
-MicLease remains the sole microphone-ownership authority, and the caller must
-bind before changing the lease owner to `game`.
+`main_logic.voice_input` separates microphone ownership from transcript
+delivery. MicLease remains the sole microphone-resource authority, while
+`VoiceInputRegistry` activates a registry-issued consumer handle. Consumer
+activation never reacquires MicLease and no routing API accepts an arbitrary
+owner string.
 
-- `owner=core` keeps the existing Core transcript path.
-- `owner=game` accepts PCM only while the exact captured consumer binding is
-  still registered; otherwise the route remains fail-closed and suspended.
-- The binding receives only a route-authorized `VoiceTranscriptEvent`: a
-  provider-native logical final for streaming ASR, or a Smart Turn-sealed and
-  aggregated final for segmented ASR. It never receives PCM or partials.
-- Consumer replacement or removal is forbidden while that owner holds
-  MicLease. Lease changes invalidate queued PCM, the active turn, transcript
-  reservations, and delayed callbacks before another target can become active.
-- Consumer callback failure discards that delivery. It never falls back to
-  Core, Omni, another ASR provider, or a browser speech recognizer.
+- Core registers the built-in `core_chat` and `game` consumers and activates
+  `core_chat` by default. A lease transition into or out of game mode selects
+  the corresponding built-in handle.
+- The game adapter calls the shared `utils.game_route_state` dispatcher, so it
+  reaches only an active game route without introducing a
+  `main_logic -> main_routers` dependency.
+- Each logical utterance pins the active handle. Partial and final events use
+  that captured route; switching or closing the consumer invalidates the route,
+  and delayed events are discarded instead of falling back to chat.
+- Consumer capabilities decide whether partial and final events are accepted.
+  Game accepts final transcripts only, so game partials never leak into the
+  ordinary chat preview.
+- A final route is consumed before its callback runs. Duplicate finals and
+  callback failures therefore cannot reach a second consumer.
+- `PluginVoiceInputRegistrar` is a Core-side SPI only. A host-fixed plugin
+  namespace can register a lifecycle-bound consumer, but this phase does not
+  expose an SDK, IPC transport, plugin process lifecycle, or MicLease access.
 - Provider selection remains centralized and follows the active Core/ASR route
   policy. A game or plugin cannot select Qwen, Soniox, or another provider.
-
-Phase 3 supplies only this common binding contract and a fake-consumer
-integration test. Registering concrete games, changing game UI, and removing
-legacy browser `SpeechRecognition` are responsibilities of their own follow-up
-integration changes.
 
 ## Audio contract
 
