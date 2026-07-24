@@ -33,7 +33,7 @@ import httpx
 from utils.music_crawlers import fetch_music_content, MUSIC_SOURCE_DOMAINS
 from utils.cookies_login import load_cookies_from_file
 from utils.logger_config import get_module_logger
-from urllib.parse import unquote, urlparse, urljoin
+from urllib.parse import urlparse, urljoin
 
 router = APIRouter()
 
@@ -163,6 +163,10 @@ MAX_MUSIC_SIZE = 50 * 1024 * 1024
 PLAYABLE_BINARY_CONTENT_TYPES = {'application/octet-stream', 'binary/octet-stream'}
 
 
+class _MusicStreamLimitExceeded(RuntimeError):
+    """Abort a committed stream when the upstream body exceeds our hard limit."""
+
+
 def _is_playable_audio_content_type(content_type: str) -> bool:
     normalized = (content_type or '').split(';', 1)[0].strip().lower()
     return (
@@ -248,11 +252,12 @@ async def proxy_music(url: str, request: Request):
         if not url:
             return JSONResponse(content={"success": False, "error": "缺少URL参数"}, status_code=400)
 
-        decoded_url = unquote(url)
-        if not decoded_url.startswith(('http://', 'https://')):
+        # FastAPI already decoded the query parameter; preserve signed URL escapes.
+        upstream_url = url
+        if not upstream_url.startswith(('http://', 'https://')):
             return JSONResponse(content={"success": False, "error": "无效的URL"}, status_code=400)
 
-        parsed = urlparse(decoded_url)
+        parsed = urlparse(upstream_url)
         hostname = (parsed.hostname or '').lower()
 
         if not any(hostname == domain or hostname.endswith('.' + domain) for domain in MUSIC_SOURCE_DOMAINS):
@@ -272,7 +277,7 @@ async def proxy_music(url: str, request: Request):
             request_headers['If-Range'] = if_range
 
         client = httpx.AsyncClient(timeout=60.0, follow_redirects=False)
-        current_url = decoded_url
+        current_url = upstream_url
         for _ in range(10):
             if not _is_allowed_music_url(current_url):
                 hostname = (urlparse(current_url).hostname or '').lower()
@@ -336,8 +341,9 @@ async def proxy_music(url: str, request: Request):
         }
         if content_range:
             response_headers['Content-Range'] = content_range
-        if content_length:
-            response_headers['Content-Length'] = content_length
+        # Do not forward the upstream Content-Length. The upstream can understate
+        # it, while our generator still stops at MAX_MUSIC_SIZE; advertising that
+        # untrusted length would leave a truncated response with invalid framing.
 
         response = StreamingResponse(
             _stream_music_response(
@@ -387,7 +393,7 @@ async def _stream_music_response(client, response, cache_key, content_type):
             total += len(chunk)
             if total > MAX_MUSIC_SIZE:
                 logger.warning(f"[Music Proxy] 未知长度音乐流超过大小限制: {total}")
-                return
+                raise _MusicStreamLimitExceeded(total)
             if cache_body is not None:
                 if total <= STREAMING_SIZE_THRESHOLD:
                     cache_body.extend(chunk)
@@ -400,8 +406,12 @@ async def _stream_music_response(client, response, cache_key, content_type):
                 'body': bytes(cache_body),
                 'content_type': content_type,
             }
+    # Headers are committed here, so re-raising is how clients learn the body is incomplete.
+    except _MusicStreamLimitExceeded:
+        raise
     except Exception as exc:
         logger.error(f"[Music Proxy] 流式传输错误: {exc}")
+        raise
     finally:
         if not completed and cache_key:
             logger.debug(f"[Music Proxy] 流未完整结束，不写缓存: {cache_key[:60]}...")

@@ -182,15 +182,16 @@ async def test_music_proxy_forwards_range_and_preserves_partial_response(monkeyp
     })
 
     response = await music_router.proxy_music(
-        "https://freemusicarchive.org/track/example/stream/", request
+        "https://freemusicarchive.org/track/example/stream/?Policy=a%2Fb%26c", request
     )
 
+    assert sent_requests[0].url == "https://freemusicarchive.org/track/example/stream/?Policy=a%2Fb%26c"
     assert sent_requests[0].headers["Range"] == "bytes=0-9"
     assert sent_requests[0].headers["Referer"] == "https://freemusicarchive.org/"
     assert response.status_code == 206
     assert response.headers["content-range"] == "bytes 0-9/100"
     assert response.headers["accept-ranges"] == "bytes"
-    assert response.headers["content-length"] == "10"
+    assert "content-length" not in response.headers
     assert await _read_streaming_body(response) == b"0123456789"
     assert len(sent_requests) == 1
     assert response_closed is True
@@ -301,7 +302,7 @@ async def test_music_proxy_does_not_cache_large_or_interrupted_stream(monkeypatc
 
     class FakeResponse:
         status_code = 200
-        headers = {"Content-Type": "audio/mpeg"}
+        headers = {"Content-Type": "audio/mpeg", "Content-Length": "3"}
 
         def __init__(self, interrupted=False):
             self.interrupted = interrupted
@@ -343,13 +344,22 @@ async def test_music_proxy_does_not_cache_large_or_interrupted_stream(monkeypatc
 
     interrupted_url = "https://freemusicarchive.org/interrupted.mp3"
     responses.append(FakeResponse(interrupted=True))
-    assert await _read_streaming_body(await music_router.proxy_music(interrupted_url, request)) == b"abc"
+    interrupted_response = await music_router.proxy_music(interrupted_url, request)
+    interrupted_iterator = interrupted_response.body_iterator.__aiter__()
+    assert await interrupted_iterator.__anext__() == b"abc"
+    with pytest.raises(RuntimeError, match="upstream disconnected"):
+        await interrupted_iterator.__anext__()
     assert interrupted_url not in music_router.MUSIC_PROXY_CACHE
 
     oversize_url = "https://freemusicarchive.org/unknown-size.mp3"
     monkeypatch.setattr(music_router, "MAX_MUSIC_SIZE", 4)
     responses.append(FakeResponse())
-    assert await _read_streaming_body(await music_router.proxy_music(oversize_url, request)) == b"abc"
+    oversize_response = await music_router.proxy_music(oversize_url, request)
+    assert "content-length" not in oversize_response.headers
+    oversize_iterator = oversize_response.body_iterator.__aiter__()
+    assert await oversize_iterator.__anext__() == b"abc"
+    with pytest.raises(music_router._MusicStreamLimitExceeded):
+        await oversize_iterator.__anext__()
     assert oversize_url not in music_router.MUSIC_PROXY_CACHE
 
 
