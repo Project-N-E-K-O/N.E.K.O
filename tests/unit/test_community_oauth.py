@@ -279,6 +279,75 @@ async def test_oauth_callback_offloads_credential_writes(tmp_path, monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("with_existing_session", [False, True])
+async def test_oauth_callback_rolls_back_partial_credential_write(
+    tmp_path,
+    monkeypatch,
+    with_existing_session,
+):
+    auth = tmp_path / "community_auth.json"
+    social = tmp_path / "social_session.json"
+    pending = tmp_path / "community_oauth_pending.json"
+    old_auth = {"access_token": "old-access", "local_user_id": USER_ID}
+    old_social = {
+        "token": "old-access",
+        "access_token": "old-access",
+        "local_user_id": USER_ID,
+        "auth_source": "oauth",
+    }
+    if with_existing_session:
+        auth.write_text(json.dumps(old_auth), encoding="utf-8")
+        social.write_text(json.dumps(old_social), encoding="utf-8")
+    pending.write_text(
+        json.dumps(
+            {
+                "state": "expected-state",
+                "code_verifier": "verifier",
+                "redirect_uri": "http://127.0.0.1:48911/oauth/callback",
+                "client_id": "neko-servers-desktop-dev",
+                "auth_public_url": "https://auth.example",
+                "expires_at": time.time() + 60,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(O, "_oauth_pending_path", lambda: pending)
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    monkeypatch.setattr(C, "_social_session_path", lambda: social)
+    monkeypatch.setattr(C, "_social_base_url", lambda: "https://community.example")
+
+    async def fake_exchange(**_kwargs):
+        return {"access_token": "new-access", "refresh_token": "new-refresh"}
+
+    async def fake_bootstrap(_social_base, _access_token):
+        return {"user": {"id": USER_ID}}
+
+    async def fake_bind(_social_base, _access_token):
+        return {"bound": True, "error": None}
+
+    def save_auth(payload):
+        C._write_private_json(auth, payload)
+        return True
+
+    monkeypatch.setattr(O, "_exchange_oauth_code", fake_exchange)
+    monkeypatch.setattr(O, "_bootstrap_session", fake_bootstrap)
+    monkeypatch.setattr(O, "_oauth_guest_bind", fake_bind)
+    monkeypatch.setattr(C, "_save_auth", save_auth)
+    monkeypatch.setattr(C, "_save_social_session", lambda *_args, **_kwargs: False)
+
+    response = await O._handle_oauth_callback("auth-code", "expected-state")
+
+    assert response.status_code == 400
+    assert not pending.exists()
+    if with_existing_session:
+        assert json.loads(auth.read_text(encoding="utf-8")) == old_auth
+        assert json.loads(social.read_text(encoding="utf-8")) == old_social
+    else:
+        assert not auth.exists()
+        assert not social.exists()
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("challenge_payload", [ValueError("invalid json"), []])
 async def test_oauth_guest_bind_treats_malformed_challenge_as_best_effort(
     monkeypatch,

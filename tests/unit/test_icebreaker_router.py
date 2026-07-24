@@ -1,5 +1,4 @@
 import json
-import logging
 from types import SimpleNamespace
 
 import pytest
@@ -250,19 +249,6 @@ async def test_icebreaker_context_cache_failure_does_not_block_context(monkeypat
     monkeypatch.setattr(icebreaker_router, "_cache_icebreaker_context_memory", fake_cache_memory)
     monkeypatch.setattr(icebreaker_router.logger, "warning", lambda *args: warning_calls.append(args))
     icebreaker_route_state.activate_icebreaker_route("Lan", "icebreaker-day1-test")
-
-    # icebreaker_router.logger is built via get_module_logger with propagate=False,
-    # and the app-root logger (N.E.K.O) also gets propagate=False once another test
-    # in the suite initializes the app logging config — either break stops the record
-    # before it reaches caplog's root handler. Re-enable propagation along the whole
-    # ancestor chain (monkeypatch auto-reverts) so caplog observes the warning
-    # regardless of test ordering.
-    _lg = icebreaker_router.logger
-    _root = logging.getLogger()
-    while _lg is not None and _lg is not _root:
-        monkeypatch.setattr(_lg, "propagate", True)
-        _lg = _lg.parent
-    caplog.set_level(logging.WARNING, logger=icebreaker_router.logger.name)
 
     result = await icebreaker_router.icebreaker_context(
         _FakeRequest({

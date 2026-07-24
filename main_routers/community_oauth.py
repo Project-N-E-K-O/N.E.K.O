@@ -146,6 +146,70 @@ def _unlink_pending() -> None:
         logger.debug("community_oauth: pending unlink failed: %s", exc)
 
 
+def _persist_oauth_credentials(
+    auth_payload: dict[str, Any],
+    *,
+    social_base: str,
+    access_token: str,
+    refresh_token: str | None,
+    local_user_id: str,
+    auth_public_url: str,
+    client_id: str,
+) -> bool:
+    """Persist both OAuth credential files or restore their previous state."""
+    auth_path = C._auth_path()
+    social_path = C._social_session_path()
+    if auth_path is None or social_path is None:
+        return False
+
+    snapshots: list[tuple[Path, bool, dict[str, Any] | None]] = []
+    try:
+        for path in (auth_path, social_path):
+            existed = path.exists()
+            payload = C._read_json_dict(path) if existed else None
+            if existed and payload is None:
+                logger.warning(
+                    "community_oauth: refusing to replace unreadable credential file: %s",
+                    path.name,
+                )
+                return False
+            snapshots.append((path, existed, payload))
+    except OSError as exc:
+        logger.warning("community_oauth: credential snapshot failed: %s", exc)
+        return False
+
+    auth_saved = C._save_auth(auth_payload)
+    social_saved = auth_saved and C._save_social_session(
+        social_base,
+        access_token,
+        refresh_token,
+        local_user_id=local_user_id,
+        auth_source="oauth",
+        auth_public_url=auth_public_url,
+        client_id=client_id,
+    )
+    if auth_saved and social_saved:
+        return True
+
+    rollback_ok = True
+    for path, existed, payload in snapshots:
+        try:
+            if existed:
+                C._write_private_json(path, payload or {})
+            else:
+                path.unlink(missing_ok=True)
+        except OSError as exc:
+            rollback_ok = False
+            logger.warning(
+                "community_oauth: credential rollback failed for %s: %s",
+                path.name,
+                exc,
+            )
+    if not rollback_ok and not C._clear_auth():
+        logger.warning("community_oauth: failed to clear credentials after rollback failure")
+    return False
+
+
 @router.post("/oauth/start", summary="启动社区统一账号 OAuth（Desktop PKCE）")
 async def oauth_start_endpoint(request: Request):
     if not C._local_request_source_allowed(request):
@@ -384,19 +448,18 @@ async def _handle_oauth_callback(
         },
         "bind": bind,
     }
-    auth_saved = await asyncio.to_thread(C._save_auth, auth_payload)
-    social_saved = await asyncio.to_thread(
-        C._save_social_session,
-        social_base,
-        access_token,
-        refresh_token,
+    credentials_saved = await asyncio.to_thread(
+        _persist_oauth_credentials,
+        auth_payload,
+        social_base=social_base,
+        access_token=access_token,
+        refresh_token=refresh_token,
         local_user_id=local_user_id,
-        auth_source="oauth",
         auth_public_url=auth_public_url,
         client_id=client_id,
     )
     _unlink_pending()
-    if not (auth_saved and social_saved):
+    if not credentials_saved:
         return _callback_html(
             "登录未完成",
             "凭证未能完成本地保存，请回到 NEKO 重试。",
