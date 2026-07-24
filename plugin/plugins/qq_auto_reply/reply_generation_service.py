@@ -186,15 +186,8 @@ class QQReplyGenerationService:
         user_data: dict[str, Any],
         context: QQReplyContext,
     ) -> None:
-        # TODO: 记忆缓存流程已关闭，后续接入本体记忆系统
-        if False and user_data.get("memory_enabled"):
-            try:
-                count = await self.plugin._cache_session_delta(session_key, user_data)
-                if count:
-                    self.plugin.logger.info(f"[管理员] 成功同步 {count} 条消息到 Memory Server (会话: {session_key})")
-            except Exception as e:
-                self.plugin.logger.error(f"记忆同步失败: {e}")
-            return
+        # TODO: 记忆持久化已关闭（should_persist_memory 始终返回 False），后续接入本体记忆系统
+        return
 
         if user_data.get("memory_context_used"):
             self.plugin.logger.info(f"[临时发送] 已使用记忆上下文但跳过记忆同步 (会话: {session_key})")

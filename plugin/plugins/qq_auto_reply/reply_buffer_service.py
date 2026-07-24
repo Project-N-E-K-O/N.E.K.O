@@ -309,4 +309,7 @@ class QQReplyBufferService:
             source_kind="rapid_fire_flush",
             fallback_to_text_on_voice_failure=True,
         )
-        await self.plugin.reply_pipeline.run(request)
+        try:
+            await self.plugin.reply_pipeline.run(request)
+        except Exception:
+            self.plugin.logger.exception(f"[Buffer] 汇总 pipeline 失败, {len(user_entries)}条消息的桶已弹出无法恢复")

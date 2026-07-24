@@ -49,9 +49,8 @@ class QQPromptBuilder:
         return bool(requested)
 
     def should_persist_memory(self, *, should_use_memory_context: bool, requested: Optional[bool]) -> bool:
-        if requested is None:
-            return should_use_memory_context
-        return bool(requested)
+        # TODO: 记忆持久化已关闭，后续接入本体记忆系统
+        return False
 
     def build_prompt_message(
         self,
