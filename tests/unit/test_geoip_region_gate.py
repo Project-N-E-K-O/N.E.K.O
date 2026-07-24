@@ -922,3 +922,76 @@ def test_skipping_the_wait_does_not_promote_steam():
     # IP 稍后落地并给出相反结论时，照样接管
     assert _probe(ip=False, steam=True)._check_non_mainland() is False
     assert ConfigManager._region_cache is False
+
+
+@pytest.mark.unit
+def test_paid_route_config_read_never_probes(config_manager, monkeypatch):
+    """Reading config on a paid/custom route must not touch the geolocation service.
+
+    The free-route gate used to live in ``_adjust_free_api_url``'s early return.
+    Hoisting the verdict out of the per-URL loop (so one snapshot uses one verdict)
+    moved the call above that gate, which silently re-exposed every custom-API user.
+    """
+    fired = []
+
+    class _Spy:
+        def open(self, req, timeout=None):
+            fired.append(1)
+            raise OSError('should not fire')
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, 'build_opener', lambda *a, **kw: _Spy())
+
+    import json as _json
+    path = config_manager.get_config_path('core_config.json')
+    with open(str(path), 'w', encoding='utf-8') as fh:
+        _json.dump({'coreApi': 'qwen'}, fh)
+    config_manager._core_config_cache = None
+
+    cfg = config_manager.get_core_config()
+    assert not [v for k, v in cfg.items()
+                if k.endswith('_URL') and isinstance(v, str) and 'lanlan.tech' in v], \
+        '前置条件：该配置不应处于免费路由'
+    thread = ConfigManager._ip_probe_thread
+    if thread is not None:
+        thread.join(5)
+    assert not fired, '自配 API 用户读配置时不应向第三方地理服务暴露 IP'
+
+
+@pytest.mark.unit
+def test_one_wedged_probe_is_counted_once(monkeypatch):
+    """The wedged ledger keys on identity: a thread must not fill the cap alone.
+
+    The backoff gate can reject a round after the stale branch has already run, so
+    booking the same thread on every attempt inflates the count and trips the cap
+    long before that many probes are actually stuck.
+    """
+    clock = _FakeClock()
+    monkeypatch.setattr(core_config_mod, 'time', SimpleNamespace(monotonic=clock))
+
+    release = threading.Event()
+
+    class _Wedged:
+        def open(self, req, timeout=None):
+            release.wait(20)
+            raise OSError('never resolves')
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, 'build_opener', lambda *a, **kw: _Wedged())
+
+    try:
+        ConfigManager._check_ip_non_mainland_http()
+        stuck = ConfigManager._ip_probe_thread
+
+        # 反复越过「超龄」判定但被退避闸拦下：同一个线程不得被重复记账
+        for _ in range(5):
+            clock.now += ConfigManager._IP_PROBE_STALE_AFTER_S + 1
+            ConfigManager._check_ip_non_mainland_http()
+
+        booked = [t for t in ConfigManager._wedged_probes if t is stuck]
+        assert len(booked) <= 1, f'同一个卡死线程被记了 {len(booked)} 次'
+    finally:
+        release.set()
+        for t in list(ConfigManager._wedged_probes) + [ConfigManager._ip_probe_thread]:
+            if t is not None:
+                t.join(20)

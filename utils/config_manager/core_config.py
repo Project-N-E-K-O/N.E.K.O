@@ -303,7 +303,6 @@ class CoreConfigMixin:
                         "starting a slow-rate replacement anyway so recovery is not missed",
                         file=sys.stderr,
                     )
-                ConfigManager._wedged_probes.append(in_flight)
                 print(
                     f"[GeoIP] previous probe stuck for {now - started:.0f}s, starting a replacement",
                     file=sys.stderr,
@@ -312,6 +311,11 @@ class CoreConfigMixin:
             failures = ConfigManager._ip_check_attempts
             if last is not None and (now - last) < ConfigManager._ip_check_backoff_s(failures):
                 return None
+            if in_flight is not None and in_flight.is_alive():
+                # 记账放在「确定要另起一个」之后，且按身份去重：早记会在下面的退避
+                # 闸把本轮拦掉时留下一笔，同一个线程于是被反复计数、虚高到上限。
+                if not any(t is in_flight for t in ConfigManager._wedged_probes):
+                    ConfigManager._wedged_probes.append(in_flight)
             ConfigManager._ip_check_last_attempt_monotonic = now
             ConfigManager._ip_check_attempts = failures + 1
             ConfigManager._ip_probe_generation += 1
@@ -1130,10 +1134,20 @@ class CoreConfigMixin:
         # 整份快照共用一次区域判定：判定尚未落定时它每次都会重算，Steam 若在循环
         # 中途初始化完成，前面的 URL 会停在 lanlan.tech、后面的却变成 lanlan.app，
         # 同一份 core_config 指向两个区域。
-        try:
-            snapshot_non_mainland = self._check_non_mainland()
-        except Exception:
-            snapshot_non_mainland = False
+        #
+        # 但提到循环外之前必须先确认「确实有 URL 需要它」：区域判定会发起 GeoIP
+        # 探测，而免费路由门原本就长在 _adjust_free_api_url 的首行早退里
+        # （不变量 #2）。无条件判定 = 自配 API 用户也把 IP 发给第三方。
+        needs_region = any(
+            key.endswith('_URL') and isinstance(value, str) and 'lanlan.tech' in value
+            for key, value in config.items()
+        )
+        snapshot_non_mainland = False
+        if needs_region:
+            try:
+                snapshot_non_mainland = self._check_non_mainland()
+            except Exception:
+                snapshot_non_mainland = False
         for key, value in config.items():
             if key.endswith('_URL') and isinstance(value, str):
                 config[key] = self._adjust_free_api_url(
