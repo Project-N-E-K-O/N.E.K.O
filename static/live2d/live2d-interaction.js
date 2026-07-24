@@ -940,10 +940,16 @@ Live2DManager.prototype._checkSnapRequired = async function (model, options = {}
         const rendererScreen = renderer && renderer.screen;
         const rendererW = Number(rendererScreen && rendererScreen.width);
         const rendererH = Number(rendererScreen && rendererScreen.height);
+        const viewportW = Number(window.innerWidth);
+        const viewportH = Number(window.innerHeight);
         let screenLeft = 0;
         let screenTop = 0;
         let screenRight = Number.isFinite(rendererW) && rendererW > 0 ? rendererW : window.innerWidth;
         let screenBottom = Number.isFinite(rendererH) && rendererH > 0 ? rendererH : window.innerHeight;
+        // renderer 在旧版本或初始化竞态中可能仍保留物理屏幕尺寸；网页真正能显示的区域
+        // 永远不能超过当前 viewport，否则首次加载围栏会把已出界模型误判为可见。
+        if (Number.isFinite(viewportW) && viewportW > 0) screenRight = Math.min(screenRight, viewportW);
+        if (Number.isFinite(viewportH) && viewportH > 0) screenBottom = Math.min(screenBottom, viewportH);
 
         // 可选：读 workArea 做二次保险（取更小值），但绝不能超过 innerWidth/innerHeight
         if (window.electronScreen && window.electronScreen.getCurrentDisplay) {

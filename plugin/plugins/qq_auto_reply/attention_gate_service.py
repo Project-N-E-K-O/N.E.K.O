@@ -39,7 +39,121 @@ class FocusShiftResult:
 
 
 class QQAttentionGateService:
-    """基于注意力的多群门控 + 回溯补回"""
+    """基于注意力的多群门控 + 回溯补回（含疲劳睡眠）"""
+
+    def _wake_if_sleeping(self, group_id: str) -> None:
+        """@/关键词/回复触发时强制唤醒。"""
+        fatigue = getattr(self.plugin, "fatigue_service", None)
+        if fatigue:
+            fatigue.force_awake(f"group:{group_id}")
+
+    def _mark_active(self, group_id: str) -> None:
+        """标记群活跃（回复后调用，更新疲劳计时）。"""
+        fatigue = getattr(self.plugin, "fatigue_service", None)
+        if fatigue:
+            fatigue.mark_active(f"group:{group_id}")
+
+    # ── 主动发言：焦点群沉默超时后触发 ──
+
+    _PROACTIVE_CHECK_INTERVAL = 60    # 每 60 秒检查一次
+
+    def _proactive_silence_seconds(self) -> int:
+        val = int((self.plugin._qq_settings or {}).get("proactive_silence_seconds", 300) or 300)
+        return max(0, val)
+
+    async def start_proactive_loop(self) -> None:
+        """启动主动发言后台循环。重复调用安全。"""
+        import asyncio
+        if getattr(self, "_proactive_task", None) and not self._proactive_task.done():
+            return
+        self._proactive_task = asyncio.create_task(self._proactive_loop())
+
+    async def stop_proactive_loop(self) -> None:
+        task = getattr(self, "_proactive_task", None)
+        if task and not task.done():
+            task.cancel()
+            try: await task
+            except asyncio.CancelledError: pass
+
+    async def _proactive_loop(self) -> None:
+        import asyncio, time
+        if not hasattr(self, "_group_last_msg_at"):
+            self._group_last_msg_at: dict[str, float] = {}
+        while True:
+            try:
+                await asyncio.sleep(self._PROACTIVE_CHECK_INTERVAL)
+            except asyncio.CancelledError:
+                break
+            try:
+                await self._check_proactive_speech()
+            except Exception:
+                self._logger.warning("主动发言检查异常", exc_info=True)
+
+    def _touch_group(self, group_id: str) -> None:
+        """记录群最近一次消息时间。"""
+        if not hasattr(self, "_group_last_msg_at"):
+            self._group_last_msg_at = {}
+        self._group_last_msg_at[str(group_id)] = __import__("time").time()
+
+    async def _check_proactive_speech(self) -> None:
+        """检查焦点群是否沉默超时，如果是则触发主动发言。"""
+        attention = self.plugin.attention_service
+        if not attention or not attention._enabled():
+            return
+        focus = attention.get_focus_group()
+        if not focus:
+            return
+
+        now = __import__("time").time()
+        last = getattr(self, "_group_last_msg_at", {}).get(focus, 0)
+        silence_sec = self._proactive_silence_seconds()
+        if silence_sec <= 0:
+            return  # 0=禁用
+        if now - last < silence_sec:
+            return  # 还不够安静
+
+        # 疲劳太高时跳过
+        fatigue = getattr(self.plugin, "fatigue_service", None)
+        if fatigue and fatigue.calculate_fatigue(f"group:{focus}") > 60:
+            return
+
+        # 检查是否在睡眠中
+        if fatigue and fatigue.is_sleeping(f"group:{focus}"):
+            return
+
+        self._logger.info(f"[Proactive] 焦点群 {focus} 已沉默 {int(now-last)}秒，尝试主动发言")
+        await self._trigger_proactive_speech(focus)
+
+        # 更新计时，避免反复触发
+        self._group_last_msg_at[focus] = now
+
+    async def _trigger_proactive_speech(self, group_id: str) -> None:
+        """构造一个虚拟的主动发言请求，走完整 pipeline。"""
+        from .pipeline_models import QQReplyRequest
+
+        request = QQReplyRequest(
+            message_text="[系统] 群聊已经安静了一段时间，你可以主动在群里说点什么来活跃气氛。分享一个想法、提一个问题、或者聊聊你最近经历的事。注意保持自然，不要像系统消息一样说话。",
+            sender_id=self.plugin._admin_qq or "0",
+            is_group=True,
+            group_id=group_id,
+            is_at_bot=True,
+            source_kind="proactive_speech",
+            group_scene_mode="group_collective",
+            fallback_to_text_on_voice_failure=True,
+            use_memory_context=False,
+            ephemeral_session=False,
+        )
+        try:
+            outcome = await self.plugin.reply_pipeline.run(request)
+            if outcome.action == "reply" and outcome.reply_text:
+                self._logger.info(f"[Proactive] 主动发言成功: {outcome.reply_text[:50]}...")
+                self.plugin.runtime_service.record_pipeline_outcome(
+                    source="proactive_speech", request=request, outcome=outcome,
+                )
+            else:
+                self._logger.info("[Proactive] AI 决定不主动发言")
+        except Exception:
+            self._logger.warning("[Proactive] 主动发言失败", exc_info=True)
 
     _RETROACTIVE_PICK_PROMPT = (
         "你刚才没有太关注这个群，以下是这段时间群友们聊天的消息摘要：\n\n"
@@ -70,6 +184,7 @@ class QQAttentionGateService:
         is_at_bot: bool = False,
         message_text: str = "",
         message_id: str = "",
+        quoted_message_id: str = "",
         sender_nickname: str = "",
         timestamp: int = 0,
     ) -> GateDecision:
@@ -88,6 +203,9 @@ class QQAttentionGateService:
 
         normalized_group_id = str(group_id or "").strip()
 
+        # 0. 记录消息时间（用于主动发言检测）
+        self._touch_group(normalized_group_id)
+
         # 1. 消息更新注意力
         await attention.update_on_message({
             "group_id": normalized_group_id,
@@ -101,29 +219,45 @@ class QQAttentionGateService:
         # 2. @bot → 必定回复（强制唤醒）
         if is_at_bot:
             attention.mark_focus(normalized_group_id)
+            self._wake_if_sleeping(normalized_group_id)
             return GateDecision("reply", reason="at_bot", force_reply=True)
 
-        # 4. 黑名单 → 不处理
+        # 3. 黑名单 → 不处理
         label_defs = list((self.plugin._qq_settings or {}).get("backlog_labels") or [])
         if QQFeedbackClassifier.is_blacklisted(message_text, label_defs):
             return GateDecision("ignore", reason="blacklist")
 
-        # 4. 关键词 → 必定回复（注意力已在 update_on_message 内完成加成，此处只标记焦点）
+        # 4. 关键词 → 必定回复（注意力已在 update_on_message 内完成加成）
         category = QQFeedbackClassifier.classify(message_text, label_defs)
-        # mention 分类仅对真正 @bot（或 @全体/引用 bot）生效，避免 @其他人触发回复
         if category == "mention" and not is_at_bot:
             category = "chat"
         if category and category != "chat":
             attention.mark_focus(normalized_group_id)
+            self._wake_if_sleeping(normalized_group_id)
             return GateDecision("reply", reason=f"keyword:{category}", force_reply=True)
 
-        # 4. 当前焦点群 → 回复（LLM 自行判断）
+        # 5. 回复 bot 的消息 → 唤醒（检查 quoted_message_id）
+        is_reply_to_bot = bool(
+            quoted_message_id and self.plugin.qq_client
+            and quoted_message_id in getattr(self.plugin.qq_client, "_sent_message_ids", {})
+        )
+        if is_reply_to_bot:
+            self._wake_if_sleeping(normalized_group_id)
+
+        # 6. 疲劳睡眠检查（注意力系统的一部分）
+        session_key = f"group:{normalized_group_id}"
+        fatigue = getattr(self.plugin, "fatigue_service", None)
+        if fatigue and fatigue.is_sleeping(session_key):
+            return GateDecision("ignore", reason="sleeping")
+
+        # 7. 当前焦点群 → 回复（LLM 自行判断）
         focus_group = attention.get_focus_group()
         if focus_group == normalized_group_id:
+            self._mark_active(normalized_group_id)
             self.plugin._emit_log("INFO", f"[Attention] 焦点群 {normalized_group_id} 消息, LLM自行判断是否回复")
             return GateDecision("reply", reason="focus_group")
 
-        # 5. 注意力接近焦点群 → 回复
+        # 8. 注意力接近焦点群 → 回复
         if focus_group:
             focus_score = attention.get_focus_score()
             state = attention.get_state(normalized_group_id)
@@ -131,17 +265,11 @@ class QQAttentionGateService:
             group_score = float(decayed.attention_score)
             gap = max(0.0, focus_score - group_score)
             if gap < attention._focus_threshold():
+                self._mark_active(normalized_group_id)
                 return GateDecision("reply", reason="near_focus")
 
-        # 6. 注意力太低 → 忽略，记录供回溯
-        attention.record_ignored_message(
-            normalized_group_id,
-            message_id=message_id,
-            message_text=message_text,
-            sender_id=sender_id,
-            sender_nickname=sender_nickname,
-            timestamp=timestamp,
-        )
+        # 9. 注意力太低 → 忽略
+        # 消息已在 backlog_store 中记录为 unreviewed，等待回溯补回
         return GateDecision("ignore", reason="low_attention")
 
     # ==========================================
@@ -149,11 +277,11 @@ class QQAttentionGateService:
     # ==========================================
 
     async def on_reply_sent(self, group_id: str) -> None:
-        """回复已发送 → 消耗注意力"""
+        """回复已发送 → 消耗注意力 + 记录活跃"""
         attention = self.plugin.attention_service
-        if not attention:
-            return
-        await attention.update_on_reply(group_id)
+        if attention:
+            await attention.update_on_reply(group_id)
+        self._mark_active(group_id)
 
     async def check_focus_shift(self) -> FocusShiftResult | None:
         """检测焦点群是否切换"""
@@ -204,11 +332,15 @@ class QQAttentionGateService:
         if not attention:
             return []
 
-        # 1. 取出上次 focus 以来的被忽略消息
+        # 1. 从统一 backlog_store 取出上次 focus 以来的未审核消息
         since = attention.get_last_focus_at(group_id)
-        ignored = attention.get_ignored_messages_since(group_id, since_timestamp=since)
-        if not ignored:
-            self._logger.info(f"[RetroReview] 群 {group_id} 无忽略消息，跳过回溯")
+        if not hasattr(self.plugin, "backlog_store") or not self.plugin.backlog_store:
+            self._logger.warning(f"[RetroReview] backlog_store 不可用，跳过回溯")
+            return []
+        max_messages = int((self.plugin._qq_settings or {}).get("retroactive_review_max_messages", 30) or 30)
+        unreviewed = await self.plugin.backlog_store.get_unreviewed_messages_since(group_id, since_timestamp=since, limit=max_messages)
+        if not unreviewed:
+            self._logger.info(f"[RetroReview] 群 {group_id} 无未审核消息，跳过回溯")
             try:
                 await self.plugin.backlog_service.mark_group_reviewed_payload(group_id)
             except Exception:
@@ -216,16 +348,16 @@ class QQAttentionGateService:
             return []
 
         max_messages = int((self.plugin._qq_settings or {}).get("retroactive_review_max_messages", 30) or 30)
-        ignored = ignored[-max_messages:]
-        self._logger.info(f"[RetroReview] 群 {group_id} 有 {len(ignored)} 条忽略消息，开始回溯")
+
+        self._logger.info(f"[RetroReview] 群 {group_id} 有 {len(unreviewed)} 条未审核消息，开始回溯")
 
         # 2. 生成摘要 → LLM 挑选
-        summary = self._build_ignored_summary(ignored)
-        pick_indices = await self._ask_llm_pick_messages(summary, len(ignored))
+        summary = self._build_ignored_summary(unreviewed)
+        pick_indices = await self._ask_llm_pick_messages(summary, len(unreviewed))
         if not pick_indices:
             self._logger.info(f"[RetroReview] LLM 判定无需补回任何消息")
             attention.mark_focus(group_id)
-            attention.clear_ignored_messages(group_id)
+
             try:
                 await self.plugin.backlog_service.mark_group_reviewed_payload(group_id)
             except Exception:
@@ -238,9 +370,9 @@ class QQAttentionGateService:
         # 3. 逐条补回
         replied_ids: list[str] = []
         for idx in pick_indices:
-            if idx < 1 or idx > len(ignored):
+            if idx < 1 or idx > len(unreviewed):
                 continue
-            msg = ignored[idx - 1]
+            msg = unreviewed[idx - 1]
             try:
                 did_reply = await self._reply_to_ignored_message(group_id, msg)
                 if did_reply:
@@ -251,7 +383,6 @@ class QQAttentionGateService:
 
         # 4. 清理 + 标记已读（猫娘已看过摘要，相当于已审阅）
         attention.mark_focus(group_id)
-        attention.clear_ignored_messages(group_id)
         try:
             await self.plugin.backlog_service.mark_group_reviewed_payload(group_id)
             self._logger.info(f"[RetroReview] 群 {group_id} 已标记为已审阅")

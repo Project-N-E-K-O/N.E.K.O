@@ -9,10 +9,10 @@
     <script src="/static/i18n-i18next.js?v={{ static_asset_version|default('0', true) }}"></script>
     <script src="/static/common_dialogs.js"></script>
     <link rel="stylesheet" href="/static/css/voice_clone.css">
-    <link rel="stylesheet" href="/static/css/window_controls.css">
+    <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version|default('0', true) }}">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <script src="/static/theme-manager.js"></script>
-    <script src="/static/js/window_controls.js" defer></script>
+    <script src="/static/js/window_controls.js?v={{ static_asset_version|default('0', true) }}" defer></script>
     <link rel="stylesheet" href="/static/libs/driver.min.css?v={{ static_asset_version|default('0', true) }}">
     <link rel="stylesheet" href="/static/css/tutorial-styles.css?v={{ static_asset_version|default('0', true) }}">
 </head>
@@ -23,6 +23,9 @@
             <div class="neko-window-actions">
                 <a href="javascript:void(0)" onclick="openApiSettings()" class="goto-api-settings-btn" data-i18n="voice.gotoApiSettings">前往API设置</a>
                 <div class="neko-window-controls">
+                    <button type="button" class="neko-window-control-btn" data-neko-window-control="pin" hidden data-i18n-title="common.pinWindow" data-i18n-aria="common.pinWindow" title="置顶窗口" aria-label="置顶窗口" aria-pressed="false">
+                        <span class="neko-window-pin-icon" aria-hidden="true"></span>
+                    </button>
                     <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
                         <span class="neko-window-minimize-icon"></span>
                     </button>

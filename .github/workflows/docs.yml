@@ -49,6 +49,10 @@ jobs:
         run: npm run build
         working-directory: docs
 
+      - name: Validate SEO output
+        run: npm run check:seo
+        working-directory: docs
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:

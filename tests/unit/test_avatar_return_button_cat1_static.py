@@ -37,6 +37,8 @@ INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
 CAT1_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat1.gif"
 CAT1_PLAY_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-play-1.gif"
 CAT1_EAT_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-voice-eat.mp3"
+CAT1_CHAT_HISS_STICKER_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "thought-items" / "cat1-chat-angry.gif"
+CAT1_CHAT_HISS_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-voice-chat-angry.mp3"
 
 
 def test_cat1_return_button_visual_contract_is_present():
@@ -61,9 +63,13 @@ def test_cat1_return_button_assets_are_version_tracked():
     assert CAT1_ASSET_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
     assert CAT1_PLAY_ASSET_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
     assert CAT1_EAT_SOUND_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
+    assert CAT1_CHAT_HISS_STICKER_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
+    assert CAT1_CHAT_HISS_SOUND_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
     assert CAT1_ASSET_PATH.is_file()
     assert CAT1_PLAY_ASSET_PATH.is_file()
     assert CAT1_EAT_SOUND_PATH.is_file()
+    assert CAT1_CHAT_HISS_STICKER_PATH.is_file()
+    assert CAT1_CHAT_HISS_SOUND_PATH.is_file()
 
 
 def test_cat1_play_action_module_is_independent_from_eat_action():
@@ -173,13 +179,50 @@ def test_cat1_walk_finish_keeps_legacy_probability_branch_outside_cat_mind():
     assert "if (targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE && state.walkFinishResolution)" in finish_block
     assert "_playNekoIdleCat1PlayAction(button, {" in finish_block
     assert "source: 'cat1-journey-local'" in finish_block
-    assert "_setNekoIdleCat1Substate(button, state.profile.finishingSubstate, { animate: true });" in finish_block
+    assert "_playNekoIdleCat1StretchAction(button, {" in finish_block
+    assert "_setNekoIdleCat1Substate(button, state.profile.finishingSubstate" not in finish_block
 
     walk_start_block = source.split("function _startNekoIdleCat1Walk", 1)[1].split(
         "function _scheduleNekoIdleCat1WalkStart",
         1,
     )[0]
     assert "_resetNekoIdleCat1WalkFinishResolution(state);" in walk_start_block
+
+
+def test_cat1_stretch_action_has_an_independent_runner():
+    source = _read_avatar_ui_buttons_source()
+
+    state_block = source.split("function _getNekoIdleCat1StretchActionState(button)", 1)[1].split(
+        "function _isNekoIdleCat1StretchActionActive",
+        1,
+    )[0]
+    play_block = source.split("function _playNekoIdleCat1StretchAction(button, options = {})", 1)[1].split(
+        "function _getNekoIdleCat1PlayActionState",
+        1,
+    )[0]
+    cancel_block = source.split("function _cancelNekoIdleCat1StretchAction(button, options = {})", 1)[1].split(
+        "function _finishNekoIdleCat1StretchAction",
+        1,
+    )[0]
+    assert "active: false" in state_block
+    assert "token: 0" in state_block
+    assert "timer: 0" in state_block
+    assert "audio: null" in state_block
+    assert "_stopNekoIdleSoundAudio(state);" in cancel_block
+    assert "_getNekoIdleCat1StretchAssetUrl()" in play_block
+    assert "_NEKO_IDLE_CAT1_STRETCH_FINAL_HOLD_MS" in play_block
+    assert "presentationOnTerminal" in play_block
+    assert "_isNekoIdleCat1EdgePeekActive(button)" in play_block
+    assert "_isNekoCatMindReturnPending(button)" in play_block
+    assert "_isNekoCatMindTransitionActive(button)" in play_block
+    assert "{ animate: true }" in play_block
+    assert "_setNekoIdleCat1Substate" not in play_block
+    assert "_NEKO_IDLE_CAT1_SUBSTATE_STRETCH" not in source
+    assert "function _settleNekoIdleReturnSubactionToIdle" not in source
+    assert "function _scheduleNekoIdleReturnSubactionSettle" not in source
+    assert "function _requestNekoIdleCat1HissStretchPresentation()" in play_block
+    assert "_NEKO_IDLE_CAT1_CHAT_HISS_SOUND_URL" in play_block
+    assert "requestCat1HissStretch: _requestNekoIdleCat1HissStretchPresentation" in play_block
 
 
 def test_cat1_pair_move_is_adapter_only_small_move_runner():
@@ -190,7 +233,7 @@ def test_cat1_pair_move_is_adapter_only_small_move_runner():
         1,
     )[0]
     assert "journey.substate === journey.profile.walkingSubstate" in play_block
-    assert "journey.substate === journey.profile.finishingSubstate" in play_block
+    assert "journey.profile.finishingSubstate" not in play_block
 
     pair_move_start_block = source.split("function _startNekoIdleCat1PairMove(button)", 1)[1].split(
         "function _refreshNekoIdleCat1Observer",
@@ -274,7 +317,7 @@ def test_cat1_native_wayland_yarn_corrections_are_direction_and_state_specific()
     assert 'data-neko-cat1-native-yarn-visual-anchor="true"' in css
     assert 'data-neko-cat1-native-yarn-side="right"' in css
     assert 'data-neko-cat1-substate="idle"' in css
-    assert ":not(.is-cat1-playing):not(.is-cat1-eating):not(.is-drag-action)" in css
+    assert ":not(.is-cat1-playing):not(.is-cat1-eating):not(.is-cat1-stretching):not(.is-drag-action)" in css
     assert "left: 33px;" in css
     assert "left: calc(12.3046875% + 33px);" in css
     assert "left: -17.96875%;" in css
@@ -374,20 +417,17 @@ def test_cat1_walk_uses_resolved_target_facing_instead_of_raw_chat_side():
     assert "state.facingRight = target.facingRight;" not in journey_sync_block
 
 
-def test_cat1_finishing_animation_rechecks_chat_target_after_settle():
+def test_cat1_independent_stretch_completion_rechecks_chat_target():
     source = _read_avatar_ui_buttons_source()
 
-    settle_block = source.split("function _settleNekoIdleReturnSubactionToIdle", 1)[1].split(
-        "function _scheduleNekoIdleReturnSubactionSettle",
+    completion_block = source.split("function _completeNekoIdleCat1JourneyStretch", 1)[1].split(
+        "function _finishNekoIdleCat1Walk",
         1,
     )[0]
-    assert "const shouldRecheckTargetAfterSettle = !!(state.target ||" in settle_block
-    assert "state.targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE" in settle_block
-    assert "state.targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE" in settle_block
-    assert "_getNekoIdleChatMinimizedRect() || _getNekoIdleChatCompactSurfaceRect()" in settle_block
-    assert "_scheduleNekoIdleCat1JourneySync(button);" in settle_block
-    assert settle_block.index("const shouldRecheckTargetAfterSettle") < settle_block.index("state.target = null;")
-    assert settle_block.index("_scheduleNekoIdleCat1JourneySync(button);") < settle_block.index("setTimeout(() => {")
+    assert "result !== _NEKO_CAT_MIND_ACTION_RESULTS.DONE" in completion_block
+    assert "_getNekoIdleChatMinimizedRect() || _getNekoIdleChatCompactSurfaceRect()" in completion_block
+    assert "_scheduleNekoIdleCat1JourneySync(button);" in completion_block
+    assert completion_block.index("_scheduleNekoIdleCat1JourneySync(button);") < completion_block.index("setTimeout(() => {")
 
 
 def test_cat1_hover_blocked_walk_starts_immediately_after_hover_playback():

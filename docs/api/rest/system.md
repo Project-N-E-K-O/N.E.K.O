@@ -82,25 +82,20 @@ Screenshot success uses `{ "success": true, "data": "data:image/jpeg;base64,..."
 
 Proactive responses use `action: chat` or `action: pass` and stable `reason_code`/`stage` fields for outcomes such as busy, empty source, duplicate, delivery preemption, timeout, or delivered chat. There is no separately callable "phase 1" screening route.
 
-## Tutorial and autostart prompt state
+## Seven-day tutorial and autostart prompt state
 
-These are internal endpoints used by the homepage prompt state machines:
+These are internal endpoints used by the homepage tutorial and autostart flows:
 
 | Method and path | Purpose |
 |---|---|
-| `GET /api/tutorial-prompt/state` | Read tutorial prompt state. |
-| `POST /api/tutorial-prompt/heartbeat` | Record idle/interaction input and decide whether prompting is due. |
-| `POST /api/tutorial-prompt/shown` | Record that the prompt was shown. |
-| `POST /api/tutorial-prompt/decision` | Record the user's decision. |
-| `POST /api/tutorial-prompt/reset` | Reset tutorial prompt state. |
-| `POST /api/tutorial-prompt/tutorial-started` | Record tutorial start. |
-| `POST /api/tutorial-prompt/tutorial-completed` | Record tutorial completion. |
+| `GET /api/seven-day-tutorial/state` | Read authoritative Day 1–7 progress. |
+| `PUT /api/seven-day-tutorial/state` | Replace authoritative Day 1–7 progress when `expectedRevision` matches. |
 | `GET /api/autostart-prompt/state` | Read autostart prompt state. |
 | `POST /api/autostart-prompt/heartbeat` | Record homepage state and decide whether prompting is due. |
 | `POST /api/autostart-prompt/shown` | Record display. |
 | `POST /api/autostart-prompt/decision` | Record the user's autostart decision. |
 
-All POST routes in this group require a validated local mutation request. Their bodies are first-party UI state payloads and are not a stable third-party schema.
+All mutation routes in this group require a validated local mutation request. The seven-day tutorial PUT body contains `state` and the last observed `expectedRevision`; a stale revision returns `409` with the current authoritative store. Their bodies are first-party UI state payloads and are not a stable third-party schema.
 
 ## Steam state
 
@@ -135,17 +130,12 @@ GET  /api/meme/proxy-image
 POST /api/mini_game/invite/respond
 POST /api/proactive_chat
 POST /api/proactive/music_played_through
-GET  /api/tutorial-prompt/state
-POST /api/tutorial-prompt/heartbeat
-POST /api/tutorial-prompt/shown
-POST /api/tutorial-prompt/decision
-POST /api/tutorial-prompt/reset
+GET  /api/seven-day-tutorial/state
+PUT  /api/seven-day-tutorial/state
 GET  /api/autostart-prompt/state
 POST /api/autostart-prompt/heartbeat
 POST /api/autostart-prompt/shown
 POST /api/autostart-prompt/decision
-POST /api/tutorial-prompt/tutorial-started
-POST /api/tutorial-prompt/tutorial-completed
 GET  /api/get_window_title
 POST /api/screenshot
 POST /api/screenshot/interactive

@@ -236,7 +236,7 @@ test('memory reset only prepares the formal avatar floating round for the next N
     1
   )[0];
 
-  assert.match(resetHomeBlock, /clearHomeTutorialPromptResetState\(round\);/);
+  assert.match(resetHomeBlock, /await STATE_API\.flush\(\);/);
   assert.doesNotMatch(resetHomeBlock, /startFormalAvatarFloatingGuideRound/);
   assert.doesNotMatch(resetHomeBlock, /createRoundPlayer/);
   assert.match(startDayBlock, /return startFormalAvatarFloatingGuideRound\(day,\s*\{\s*source:\s*options\.source \|\| 'home_reset_button'/);

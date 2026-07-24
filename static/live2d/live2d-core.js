@@ -265,11 +265,12 @@ class Live2DManager {
 
         this._initPIXIPromise = (async () => {
             try {
-                // 使用 window.screen 全屏尺寸初始化渲染器，画布始终覆盖整个屏幕区域
-                // 任务栏/DevTools/键盘等造成的视口缩小只会裁切画布边缘（overflow:hidden），
-                // 不会导致缝隙或模型位移
-                const initW = Math.max(window.screen.width || 1, 1);
-                const initH = Math.max(window.screen.height || 1, 1);
+                // 桌宠窗口继续按物理屏幕初始化；手机网页必须按真实视口初始化。
+                // 否则窄窗口/停靠 DevTools 下 renderer 仍是整屏宽度，移动端默认位置和
+                // 首次边界检查都会误以为屏外模型仍在“可视范围”内，直到 resize 才回正。
+                const useViewportSize = isMobileWidth();
+                const initW = Math.max((useViewportSize ? window.innerWidth : window.screen.width) || 1, 1);
+                const initH = Math.max((useViewportSize ? window.innerHeight : window.screen.height) || 1, 1);
                 this.pixi_app = new PIXI.Application({
                     view: canvas,
                     width: initW,
@@ -4771,16 +4772,20 @@ class Live2DManager {
         }
 
         try {
+            let resetViewport = null;
             if (isMobileWidth()) {
                 this.currentModel.anchor.set(0.5, 0.1);
+                const viewportWidth = Math.max(window.innerWidth || this.pixi_app.renderer.screen.width || 1, 1);
+                const viewportHeight = Math.max(window.innerHeight || this.pixi_app.renderer.screen.height || 1, 1);
+                resetViewport = { width: viewportWidth, height: viewportHeight };
                 const scale = Math.min(
                     0.5,
-                    window.innerHeight * 1.3 / 4000,
-                    window.innerWidth * 1.2 / 2000
+                    viewportHeight * 1.3 / 4000,
+                    viewportWidth * 1.2 / 2000
                 );
                 this.currentModel.scale.set(scale);
-                this.currentModel.x = this.pixi_app.renderer.screen.width * 0.5;
-                this.currentModel.y = this.pixi_app.renderer.screen.height * 0.28;
+                this.currentModel.x = viewportWidth * 0.5;
+                this.currentModel.y = viewportHeight * 0.28;
             } else {
                 this.currentModel.anchor.set(0.65, 0.75);
                 const scale = Math.min(
@@ -4795,9 +4800,9 @@ class Live2DManager {
 
             console.log('模型位置已复位到初始状态');
 
-            // 复位后自动保存位置（viewport 基准与 applyModelSettings / _savePositionAfterInteraction 一致，使用 renderer.screen）
+            // 复位后自动保存位置；手机端沿用本次复位的 viewport，避免坐标与元数据基准不一致。
             if (this._lastLoadedModelPath) {
-                const viewport = {
+                const viewport = resetViewport || {
                     width: this.pixi_app.renderer.screen.width,
                     height: this.pixi_app.renderer.screen.height
                 };

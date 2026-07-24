@@ -346,7 +346,7 @@ test('common helper creates a PC overlay run id before tutorial lifecycle start'
 test('tutorial start activates PC lifecycle before hiding the system cursor', () => {
     const managerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
     const emitBlock = managerSource.split('    emitTutorialStarted(page = this.currentPage, source = this.currentTutorialStartSource, options = {}) {')[1].split(
-        '    logPromptFlow',
+        '    logTutorialFlow',
         1
     )[0];
 
@@ -1085,24 +1085,23 @@ test('full tutorial pages load common helpers before the director', () => {
     }
 });
 
-test('lifecycle state store module is loaded before prompt and manager scripts', () => {
+test('lifecycle state store module is loaded before runtime and manager scripts', () => {
     const lifecyclePath = path.join(__dirname, 'tutorial/core/lifecycle-state-store.js');
     assert.ok(fs.existsSync(lifecyclePath), 'tutorial/core/lifecycle-state-store.js should exist');
     const source = fs.readFileSync(lifecyclePath, 'utf8');
     const stores = require('./tutorial/core/lifecycle-state-store.js');
 
-    for (const exportName of [
-        'TutorialLifecycleStateStore',
-        'HomeTutorialPromptLifecycleStateStore'
-    ]) {
+    for (const exportName of ['TutorialLifecycleStateStore']) {
         assert.equal(typeof stores[exportName], 'function', exportName + ' should be exported');
         assert.match(source, new RegExp('class ' + exportName));
     }
     assert.match(source, /root\.TutorialLifecycleStores = api/);
 
     const orderedScripts = [
-        ['templates/index.html', '/static/tutorial/core/app-prompt.js'],
+        ['templates/index.html', '/static/tutorial/core/home-tutorial-runtime.js'],
         ['templates/index.html', '/static/tutorial/core/universal-manager.js'],
+        ['templates/index.html', '/static/tutorial/avatar/floating-guide-reset.js'],
+        ['templates/index.html', '/static/tutorial/icebreaker/new-user-icebreaker.js'],
         ['templates/api_key_settings.html', '/static/tutorial/core/universal-manager.js'],
         ['templates/memory_browser.html', '/static/tutorial/core/universal-manager.js']
     ];
@@ -1115,6 +1114,27 @@ test('lifecycle state store module is loaded before prompt and manager scripts',
         assert.notEqual(lifecycleIndex, -1, templatePath + ' should load tutorial/core/lifecycle-state-store.js');
         assert.notEqual(consumerIndex, -1, templatePath + ' should load ' + consumerScript);
         assert.ok(lifecycleIndex < consumerIndex, templatePath + ' should load lifecycle stores before ' + consumerScript);
+    }
+});
+
+test('seven-day tutorial state loads before every runtime consumer', () => {
+    const orderedScripts = [
+        ['templates/index.html', '/static/tutorial/core/avatar-floating-boot-predictor.js'],
+        ['templates/index.html', '/static/tutorial/core/home-tutorial-runtime.js'],
+        ['templates/index.html', '/static/tutorial/core/universal-manager.js'],
+        ['templates/api_key_settings.html', '/static/tutorial/core/universal-manager.js'],
+        ['templates/memory_browser.html', '/static/tutorial/core/universal-manager.js'],
+        ['templates/memory_browser.html', '/static/tutorial/avatar/floating-guide-reset.js']
+    ];
+
+    for (const [templatePath, consumerScript] of orderedScripts) {
+        const templateSource = fs.readFileSync(path.join(repoRoot, templatePath), 'utf8');
+        const stateIndex = templateSource.indexOf('/static/tutorial/core/seven-day-state.js');
+        const consumerIndex = templateSource.indexOf(consumerScript);
+
+        assert.notEqual(stateIndex, -1, templatePath + ' should load seven-day tutorial state');
+        assert.notEqual(consumerIndex, -1, templatePath + ' should load ' + consumerScript);
+        assert.ok(stateIndex < consumerIndex, templatePath + ' should load seven-day state before ' + consumerScript);
     }
 });
 
@@ -1799,7 +1819,7 @@ test('settings tour flow owns migrated settings tour concrete scene bodies', () 
     assert.match(day4IntroSceneBlock, /target:\s*'chat-capsule-input'/);
     assert.match(
         settingsTourFlowSource,
-        /runPanelNarrationEllipse[\s\S]*director\.setHomePcCursorOutputSuppressedForExternalizedChat\(false\);[\s\S]*director\.cursor\.runPauseAwareEllipse/
+        /runPanelNarrationEllipse[\s\S]*director\.releaseExternalizedChatCursorToHome\(\);[\s\S]*director\.cursor\.runPauseAwareEllipse/
     );
     assert.match(
         settingsTourFlowSource,
@@ -1811,11 +1831,11 @@ test('settings tour flow owns migrated settings tour concrete scene bodies', () 
     );
     assert.match(
         source,
-        /async moveCursorToElement\(element,\s*durationMs,\s*options\) \{[\s\S]*this\.setHomePcCursorOutputSuppressedForExternalizedChat\(false\);[\s\S]*this\.cursor\.moveToRect/
+        /async moveCursorToElement\(element,\s*durationMs,\s*options\) \{[\s\S]*this\.releaseExternalizedChatCursorToHome\(\);[\s\S]*this\.cursor\.moveToRect/
     );
     assert.match(
         source,
-        /async moveCursorToTrackedElement\(element,\s*durationMs,\s*options\) \{[\s\S]*this\.setHomePcCursorOutputSuppressedForExternalizedChat\(false\);[\s\S]*this\.cursor\.moveToPoint/
+        /async moveCursorToTrackedElement\(element,\s*durationMs,\s*options\) \{[\s\S]*this\.releaseExternalizedChatCursorToHome\(\);[\s\S]*this\.cursor\.moveToPoint/
     );
     assert.match(flowChatBlock, /return this\.playPanelTourScene\(scene,\s*context,\s*this\.getPanelTourSchema\(scene\)\);/);
     assert.match(flowModelBlock, /return this\.playPanelTourScene\(scene,\s*context,\s*this\.getPanelTourSchema\(scene\)\);/);
@@ -2263,7 +2283,7 @@ test('director routes scene and chat stream timers through scoped resources', ()
 
 test('manager keeps Yui-only lifecycle resources and excludes legacy driver tutorial code', () => {
     const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
-    const constructorBlock = source.split('class UniversalTutorialManager {')[1].split('    logPromptFlow(', 1)[0];
+    const constructorBlock = source.split('class UniversalTutorialManager {')[1].split('    logTutorialFlow(', 1)[0];
     const destroyBlock = source.split("    async destroy(reason = 'destroy') {")[1].split(
         '    broadcastYuiGuideTerminationRequest',
         1
@@ -2273,7 +2293,7 @@ test('manager keeps Yui-only lifecycle resources and excludes legacy driver tuto
         1
     )[0];
     const clearViewportWatcherBlock = source.split('    clearTutorialLive2dViewportPlacementWatcher() {')[1].split(
-        '    beginTutorialAvatarOverride() {',
+        '    beginTutorialAvatarOverride(options = {}) {',
         1
     )[0];
     const scrollBlock = source.split('    blockTutorialScroll() {')[1].split(
@@ -2316,7 +2336,7 @@ test('manager keeps Yui-only lifecycle resources and excludes legacy driver tuto
 
     assert.match(source, /getHomeAvatarFloatingGuideStartRound\(options = \{\}\) \{/);
     assert.match(source, /candidates\.push\(state\.pendingRound, state\.manualResetRound, 1\);/);
-    assert.match(startBlock, /const round = this\.getHomeAvatarFloatingGuideStartRound\(\);/);
+    assert.match(startBlock, /const round = this\.getHomeAvatarFloatingGuideLaunchRound\(\);/);
     assert.match(startBlock, /this\.startAvatarFloatingGuideRound\(round, \{/);
     assert.doesNotMatch(source, /startYuiGuideSceneSequence|getDirectYuiGuideSceneIdsForCurrentPage|getPendingYuiGuideResumeScene/);
     assert.doesNotMatch(source, /callYuiGuideDirector|notifyYuiGuideStepEnter|notifyYuiGuideStepLeave/);
@@ -2695,8 +2715,7 @@ test('avatar floating auto-start rechecks current due round before delayed launc
     assert.match(pendingCheckBlock, /const state = loadAvatarFloatingGuideState\(\);/);
     assert.match(pendingCheckBlock, /if \(state\.manualResetRound\) \{[\s\S]*?return state\.manualResetRound === round;[\s\S]*?\}/);
     assert.match(pendingCheckBlock, /return this\.getNextAvatarFloatingGuideAutoRound\(\) === round;/);
-    assert.match(pendingCheckBlock, /state\.completedRounds\.includes\(round\)/);
-    assert.match(pendingCheckBlock, /state\.skippedRounds\.includes\(round\)/);
+    assert.match(pendingCheckBlock, /getSevenDayTutorialStateApi\(\)\.isRoundSettled\(state, round\)/);
     assert.doesNotMatch(pendingCheckBlock, /state\.pendingRound\s*\|\|/);
     assert.doesNotMatch(pendingCheckBlock, /state\.pendingRound === round/);
     assert.doesNotMatch(pendingCheckBlock, /state\.lastAutoShownRound === round/);
@@ -2715,20 +2734,27 @@ test('avatar floating auto-start reserves the round before long playback can be 
     assert.notEqual(autoReservationIndex, -1, 'auto round starts should reserve same-day playback before long narration');
     assert.notEqual(setCurrentIndex, -1, 'round starts should still persist current round state');
     assert.ok(autoReservationIndex < setCurrentIndex, 'auto reservation should be written before pending/current round state');
-    assert.match(startRoundBlock, /if \(source === 'auto'\) \{[\s\S]*?this\.markAvatarFloatingGuideRoundAutoShown\(round\);[\s\S]*?\}/);
+    assert.match(startRoundBlock, /if \(source === 'auto'\) \{[\s\S]*?this\.markAvatarFloatingGuideRoundAutoShown\(round, autoReservationId\);[\s\S]*?\}/);
+    assert.match(startRoundBlock, /this\.rollbackAvatarFloatingGuideRoundAutoShown\(round, autoReservationId\)/);
 });
 
 test('avatar floating auto due calculation ignores runtime pending round after refresh', () => {
     const managerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
+    const stateSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/seven-day-state.js'), 'utf8');
     const nextAutoBlock = managerSource.split('    getNextAvatarFloatingGuideAutoRound() {')[1].split(
         '    getHomeAvatarFloatingGuideStartRound(options = {}) {',
         1
     )[0];
+    const sharedCalculationBlock = stateSource.split('    function getNextAutoRound(stateValue, todayValue) {')[1].split(
+        '    function markRoundOutcome(roundValue, outcome, options) {',
+        1
+    )[0];
 
-    assert.match(nextAutoBlock, /const pendingManualRound = state\.manualResetRound;/);
-    assert.doesNotMatch(nextAutoBlock, /state\.pendingRound\s*\|\|\s*state\.manualResetRound/);
+    assert.match(nextAutoBlock, /getSevenDayTutorialStateApi\(\)\.getNextAutoRound\(state\)/);
+    assert.match(sharedCalculationBlock, /if \(state\.manualResetRound\) \{[\s\S]*?return state\.manualResetRound;/);
+    assert.doesNotMatch(sharedCalculationBlock, /state\.pendingRound/);
     assert.ok(
-        nextAutoBlock.indexOf('if (pendingManualRound)') < nextAutoBlock.indexOf('if (state.lastAutoShownDate === today)'),
+        sharedCalculationBlock.indexOf('if (state.manualResetRound)') < sharedCalculationBlock.indexOf('if (state.lastAutoShownDate === today)'),
         'manual resets should still override same-day auto reservation'
     );
 });

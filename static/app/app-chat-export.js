@@ -18,6 +18,17 @@
     var MAX_EXPORT_SELECTION = 100;
     var DEFAULT_USER_EXPORT_AVATAR = '/static/icons/avatar/master-avatar.png';
     var EXPORT_PREVIEW_SHELL_URL = '/static/chat-export-preview-shell.html';
+    var exportPreviewWindowSequence = 0;
+    var exportPreviewAssetVersion = getCurrentExportAssetVersion();
+
+    function getExportPreviewWindowName(kind) {
+        exportPreviewWindowSequence += 1;
+        var prefix = kind === 'child'
+            ? 'neko_chat_export_preview_child_'
+            : 'neko_chat_export_preview_main_';
+        return prefix
+            + Date.now().toString(36) + '_' + exportPreviewWindowSequence.toString(36);
+    }
 
     // ======================== State ========================
 
@@ -66,12 +77,33 @@
         return translateText(key, fallback);
     }
 
+    function getCurrentExportAssetVersion() {
+        try {
+            var script = document.currentScript;
+            if (!script || !script.src) {
+                script = document.querySelector('script[src*="/static/app/app-chat-export.js"]');
+            }
+            if (!script || !script.src) return '';
+            return new URL(script.src, window.location.href).searchParams.get('v') || '';
+        } catch (_) {
+            return '';
+        }
+    }
+
+    function getVersionedExportAssetUrl(path) {
+        if (!exportPreviewAssetVersion) return path;
+        return path + (path.indexOf('?') === -1 ? '?' : '&')
+            + 'v=' + encodeURIComponent(exportPreviewAssetVersion);
+    }
+
     function buildWindowControlCssHtml() {
-        return '<link rel="stylesheet" href="/static/css/window_controls.css">';
+        return '<link rel="stylesheet" href="'
+            + getVersionedExportAssetUrl('/static/css/window_controls.css') + '">';
     }
 
     function buildWindowControlScriptHtml() {
-        return '<script src="/static/js/window_controls.js" defer data-neko-window-controls="1"></script>';
+        return '<script src="' + getVersionedExportAssetUrl('/static/js/window_controls.js')
+            + '" defer data-neko-window-controls="1"></script>';
     }
 
     function buildWindowControlAssetsHtml() {
@@ -85,6 +117,20 @@
         button.setAttribute('data-i18n-aria', key);
         button.setAttribute('title', label);
         button.setAttribute('aria-label', label);
+    }
+
+    function syncPinButtonLocale(button) {
+        if (!button) return;
+        var pinLabel = translateLabel('common.pinWindow', 'Pin Window');
+        var unpinLabel = translateLabel('common.unpinWindow', 'Unpin Window');
+        button.setAttribute('data-neko-pin-label', pinLabel);
+        button.setAttribute('data-neko-unpin-label', unpinLabel);
+        var isPinned = button.getAttribute('aria-pressed') === 'true';
+        setWindowControlButtonLabel(
+            button,
+            isPinned ? 'common.unpinWindow' : 'common.pinWindow',
+            isPinned ? unpinLabel : pinLabel
+        );
     }
 
     function createWindowControlButton(doc, control, key, fallback, iconClass) {
@@ -108,7 +154,7 @@
         }
         if (doc.querySelector('script[data-neko-window-controls="1"]')) return;
         var script = doc.createElement('script');
-        script.src = '/static/js/window_controls.js';
+        script.src = getVersionedExportAssetUrl('/static/js/window_controls.js');
         script.defer = true;
         script.setAttribute('data-neko-window-controls', '1');
         script.addEventListener('load', function () {
@@ -2542,11 +2588,22 @@
 
         var isStandaloneWindow = !!(doc.body && doc.body.classList.contains('chat-export-window'));
         var windowControls = null;
+        var pinButton = null;
         var minimizeButton = null;
         var maximizeButton = null;
         if (isStandaloneWindow) {
             windowControls = doc.createElement('div');
             windowControls.className = 'neko-window-controls chat-export-preview-window-controls';
+            pinButton = createWindowControlButton(
+                doc,
+                'pin',
+                'common.pinWindow',
+                'Pin Window',
+                'neko-window-pin-icon'
+            );
+            pinButton.hidden = true;
+            pinButton.setAttribute('aria-pressed', 'false');
+            syncPinButtonLocale(pinButton);
             minimizeButton = createWindowControlButton(
                 doc,
                 'minimize',
@@ -2561,6 +2618,7 @@
                 'Maximize',
                 'neko-window-maximize-icon'
             );
+            windowControls.appendChild(pinButton);
             windowControls.appendChild(minimizeButton);
             windowControls.appendChild(maximizeButton);
         }
@@ -2689,6 +2747,7 @@
             panel: panel,
             title: title,
             summary: summary,
+            pinButton: pinButton,
             minimizeButton: minimizeButton,
             maximizeButton: maximizeButton,
             closeButton: closeButton,
@@ -2763,6 +2822,7 @@
         // 应用语言变化时同步预览窗口文案
         var localeHandler = function () {
             closeButton.setAttribute('aria-label', translateLabel('common.close', 'Close'));
+            syncPinButtonLocale(pinButton);
             setWindowControlButtonLabel(minimizeButton, 'common.minimize', 'Minimize');
             title.textContent = translateLabel('chat.exportPreviewTitle', 'Export Preview');
             title.setAttribute('data-text', title.textContent);
@@ -3129,7 +3189,7 @@
         var isExistingWindow = !!existingPreviewWindow;
         var previewWindow = isExistingWindow
             ? existingPreviewWindow
-            : window.open('', '_blank', buildExportWindowFeatures());
+            : window.open('', getExportPreviewWindowName('main'), buildExportWindowFeatures());
         if (!previewWindow) return null;
         if (isCurrentChatWindowHandle(previewWindow)) {
             console.warn('[ChatExport] export preview window resolved to the current chat window; aborting.');
@@ -3234,6 +3294,11 @@
                 modal.selectInvertButton.textContent = translateLabel('chat.exportSelectInvert', 'Invert');
                 modal.copyButton.textContent = translateLabel('chat.copyToClipboard', 'Copy to Clipboard');
                 modal.openWindowButton.textContent = translateLabel('chat.previewOpenWindow', 'Open In Window');
+                syncPinButtonLocale(modal.pinButton);
+                var view = modal.panel.ownerDocument.defaultView || null;
+                if (view && view.nekoWindowControls && typeof view.nekoWindowControls.refresh === 'function') {
+                    view.nekoWindowControls.refresh();
+                }
             };
             window.addEventListener('localechange', localeHandler);
             modal._localeHandler = localeHandler;
@@ -3469,6 +3534,8 @@
     /** 构建无边框 Electron 窗口使用的自绘标题栏。 */
     function buildWindowChromeHtml(title) {
         var closeLabel = escapeHtml(translateLabel('chat.previewClose', 'Close'));
+        var pinLabel = escapeHtml(translateLabel('common.pinWindow', 'Pin Window'));
+        var unpinLabel = escapeHtml(translateLabel('common.unpinWindow', 'Unpin Window'));
         var scrollbarCss = '<style>'
             + '::-webkit-scrollbar{width:8px;height:8px;}'
             + '::-webkit-scrollbar-track{background:transparent;}'
@@ -3486,10 +3553,16 @@
             + 'padding:0 8px;user-select:none;backdrop-filter:blur(6px);">'
             + '<span style="color:#ccc;font-size:13px;margin-left:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
             + escapeHtml(title) + '</span>'
+            + '<div class="neko-window-controls" style="margin-left:auto;gap:4px;">'
+            + '<button type="button" class="neko-window-control-btn" data-neko-window-control="pin" hidden '
+            + 'data-i18n-title="common.pinWindow" data-i18n-aria="common.pinWindow" '
+            + 'data-neko-pin-label="' + pinLabel + '" data-neko-unpin-label="' + unpinLabel + '" title="' + pinLabel
+            + '" aria-label="' + pinLabel + '" aria-pressed="false"><span class="neko-window-pin-icon" aria-hidden="true"></span></button>'
             + '<button onclick="window.close()" title="' + closeLabel + '" style="-webkit-app-region:no-drag;'
             + 'background:none;border:none;color:#fff;font-size:20px;cursor:pointer;width:36px;height:36px;'
             + 'display:flex;align-items:center;justify-content:center;border-radius:4px;flex-shrink:0;" '
             + 'onmouseover="this.style.background=\'#e81123\'" onmouseout="this.style.background=\'none\'">&times;</button>'
+            + '</div>'
             + '</div>';
     }
 
@@ -3509,14 +3582,15 @@
                     showToast('chat.previewOpenFailed', 'The preview URL uses an unsupported protocol.', 4000);
                     return;
                 }
-                var imgWin = window.open('', '_blank');
+                var imgWin = window.open('', getExportPreviewWindowName('child'));
                 if (!imgWin) {
                     showToast('chat.previewOpenBlocked', 'Unable to open a new preview window.', 4000);
                     return;
                 }
                 imgWin.document.write('<!DOCTYPE html><html><head><title>'
                     + escapeHtml(previewTitle)
-                    + '</title></head><body style="margin:0;background:#111;display:flex;align-items:center;justify-content:center;min-height:100vh;padding-top:36px;">'
+                    + '</title>' + buildWindowControlAssetsHtml()
+                    + '</head><body style="margin:0;background:#111;display:flex;align-items:center;justify-content:center;min-height:100vh;padding-top:36px;">'
                     + chromeHtml
                     + '<img src="' + escapeHtml(imgUrl) + '" style="max-width:100%;max-height:calc(100vh - 36px);"/></body></html>');
                 imgWin.document.close();
@@ -3525,10 +3599,11 @@
             var doc = payload.previewDocument;
             // 写入新窗口前先清理不安全协议
             doc = sanitizeHtmlUrls(doc);
+            doc = doc.replace(/<\/head>/i, buildWindowControlAssetsHtml() + '</head>');
             // 注入自绘标题栏并给正文留出顶部空间
             doc = doc.replace(/(<body[^>]*>)/, '$1' + chromeHtml + '<div style="padding-top:36px;">');
             doc = doc.replace(/<\/body>/, '</div></body>');
-            var win = window.open('', '_blank');
+            var win = window.open('', getExportPreviewWindowName('child'));
             if (!win) {
                 showToast('chat.previewOpenBlocked', 'Unable to open a new preview window.', 4000);
                 return;

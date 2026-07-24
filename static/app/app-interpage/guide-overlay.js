@@ -206,6 +206,10 @@
             && storedRunId !== normalizedRunId
             && I.yuiGuidePcOverlayRunIdOverride
             && I.yuiGuidePcOverlayRunIdOverride !== normalizedRunId
+            && !(
+                isYuiGuideChatOwnedPcOverlayRunId(storedRunId)
+                && !isYuiGuideChatOwnedPcOverlayRunId(normalizedRunId)
+            )
         ) {
             I.yuiGuidePcOverlayRunIdOverride = storedRunId;
             I.yuiGuidePcOverlayActive = false;

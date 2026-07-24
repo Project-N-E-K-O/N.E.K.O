@@ -4,6 +4,8 @@
     const CONTROL_SELECTOR = '[data-neko-window-control]';
     const MAXIMIZE_ICON_SELECTOR = '.neko-window-maximize-icon';
     const NATIVE_DRAG_SOURCE_SELECTOR = 'a[href], img, svg, video, audio';
+    const PIN_STATE_RETRY_DELAYS_MS = [50, 150, 350, 750];
+    let pinStateRefreshGeneration = 0;
 
     function translate(key, fallback) {
         try {
@@ -19,9 +21,20 @@
         return fallback;
     }
 
+    function getButtonLabelFallback(button, key, fallback) {
+        if (!button) return fallback;
+        if (key === 'common.pinWindow') {
+            return button.getAttribute('data-neko-pin-label') || fallback;
+        }
+        if (key === 'common.unpinWindow') {
+            return button.getAttribute('data-neko-unpin-label') || fallback;
+        }
+        return fallback;
+    }
+
     function setButtonLabel(button, key, fallback) {
         if (!button) return;
-        const label = translate(key, fallback);
+        const label = translate(key, getButtonLabelFallback(button, key, fallback));
         button.setAttribute('data-i18n-title', key);
         button.setAttribute('data-i18n-aria', key);
         button.setAttribute('title', label);
@@ -47,6 +60,65 @@
             isMaximized ? 'common.restore' : 'common.maximize',
             isMaximized ? '恢复' : '最大化'
         );
+    }
+
+    function updatePinState(state) {
+        const pinButtons = document.querySelectorAll(`${CONTROL_SELECTOR}[data-neko-window-control="pin"]`);
+        if (!pinButtons.length) return;
+
+        const available = !!(state && state.available);
+        const pinned = available && !!state.pinned;
+        pinButtons.forEach((pinButton) => {
+            pinButton.hidden = !available;
+            pinButton.classList.toggle('is-pinned', pinned);
+            pinButton.setAttribute('aria-pressed', pinned ? 'true' : 'false');
+            setButtonLabel(
+                pinButton,
+                pinned ? 'common.unpinWindow' : 'common.pinWindow',
+                pinned ? '取消置顶' : '置顶窗口'
+            );
+        });
+    }
+
+    function schedulePinStateRefreshRetry(generation, retryIndex) {
+        if (generation !== pinStateRefreshGeneration || retryIndex >= PIN_STATE_RETRY_DELAYS_MS.length) {
+            return;
+        }
+        window.setTimeout(() => {
+            if (generation !== pinStateRefreshGeneration) return;
+            void refreshPinState({ generation, retryIndex: retryIndex + 1 });
+        }, PIN_STATE_RETRY_DELAYS_MS[retryIndex]);
+    }
+
+    async function refreshPinState(retryContext) {
+        const pinButtons = document.querySelectorAll(`${CONTROL_SELECTOR}[data-neko-window-control="pin"]`);
+        if (!pinButtons.length) return;
+        const isRetry = !!(
+            retryContext
+            && retryContext.generation === pinStateRefreshGeneration
+            && Number.isInteger(retryContext.retryIndex)
+        );
+        const generation = isRetry ? retryContext.generation : ++pinStateRefreshGeneration;
+        const retryIndex = isRetry ? retryContext.retryIndex : 0;
+        const api = window.nekoWindowControl;
+        if (!api || typeof api.getPinState !== 'function') {
+            updatePinState({ available: false, pinned: false });
+            schedulePinStateRefreshRetry(generation, retryIndex);
+            return;
+        }
+        try {
+            const state = await api.getPinState();
+            if (generation !== pinStateRefreshGeneration) return;
+            const normalizedState = state || { available: false, pinned: false };
+            updatePinState(normalizedState);
+            if (!normalizedState.available) {
+                schedulePinStateRefreshRetry(generation, retryIndex);
+            }
+        } catch (error) {
+            if (generation !== pinStateRefreshGeneration) return;
+            updatePinState({ available: false, pinned: false });
+            schedulePinStateRefreshRetry(generation, retryIndex);
+        }
     }
 
     async function refreshMaximizeState() {
@@ -95,6 +167,29 @@
         });
     }
 
+    function bindPinButton() {
+        const pinButtons = document.querySelectorAll(`${CONTROL_SELECTOR}[data-neko-window-control="pin"]`);
+        pinButtons.forEach((pinButton) => {
+            if (pinButton.dataset.nekoWindowControlBound === '1') return;
+            pinButton.dataset.nekoWindowControlBound = '1';
+            pinButton.addEventListener('click', async () => {
+                if (pinButton.disabled) return;
+                const api = window.nekoWindowControl;
+                if (!api || typeof api.togglePin !== 'function') return;
+                pinButtons.forEach((button) => { button.disabled = true; });
+                try {
+                    const state = await api.togglePin();
+                    ++pinStateRefreshGeneration;
+                    updatePinState(state || { available: false, pinned: false });
+                } catch (error) {
+                    await refreshPinState();
+                } finally {
+                    pinButtons.forEach((button) => { button.disabled = false; });
+                }
+            });
+        });
+    }
+
     function defaultCloseCurrentWindow() {
         try {
             window.close();
@@ -137,13 +232,26 @@
     }
 
     function initWindowControls() {
+        bindPinButton();
         bindMinimizeButton();
         bindMaximizeButton();
         bindCloseButton();
+        refreshPinState();
         refreshMaximizeState();
         if (!window.__nekoWindowControlsResizeBound) {
             window.__nekoWindowControlsResizeBound = true;
             window.addEventListener('resize', refreshMaximizeState);
+        }
+        if (!window.__nekoWindowControlsFocusBound) {
+            window.__nekoWindowControlsFocusBound = true;
+            window.addEventListener('focus', () => refreshPinState());
+        }
+        if (!window.__nekoWindowControlsLocaleBound) {
+            window.__nekoWindowControlsLocaleBound = true;
+            window.addEventListener('localechange', () => {
+                refreshPinState();
+                refreshMaximizeState();
+            });
         }
     }
 
@@ -186,7 +294,7 @@
 
     window.nekoWindowControls = Object.assign({}, window.nekoWindowControls || {}, {
         init: initWindowControls,
-        refresh: refreshMaximizeState
+        refresh: () => Promise.all([refreshPinState(), refreshMaximizeState()])
     });
 
     if (document.readyState === 'loading') {

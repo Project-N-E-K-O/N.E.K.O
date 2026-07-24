@@ -324,6 +324,7 @@ def test_goodbye_composer_hidden_survives_surface_mode_switches():
     assert "function syncComposerAttachmentsVisibility(previousVisible)" in source
     assert "!state.homeTutorialInputLocked" in effective_composer_hidden_block
     assert "state.composerHidden || state.goodbyeComposerHidden" in effective_composer_hidden_block
+    assert "isCatLocalChatActive" in effective_composer_hidden_block
     assert "composerHidden: getEffectiveComposerHidden()" in build_render_block
     assert "state.homeTutorialInteractionLocked" in submit_block
     assert "state.homeTutorialInputLocked" in submit_block
@@ -344,7 +345,11 @@ def test_goodbye_composer_hidden_survives_surface_mode_switches():
     assert "EVENT_PREFIX + 'set-goodbye-composer-hidden'" in source
     assert "window.addEventListener('live2d-goodbye-click'" in source
     assert "setGoodbyeComposerHidden(true, 'live2d-goodbye-click')" in source
-    assert "setGoodbyeComposerHidden(false, 'live2d-return-click')" in source
+    assert "window.addEventListener('neko:cat-return-complete'" in source
+    assert "source !== 'pngtuber-return-click'" in source
+    assert "source !== 'live2d-return-click'" in source
+    assert "setGoodbyeComposerHidden(false, 'return-complete')" in source
+    assert "setGoodbyeComposerHidden(false, 'live2d-return-click')" not in source
 
 
 def test_chat_full_endpoint_uses_chat_template_with_initial_full_surface():
@@ -1872,6 +1877,104 @@ def test_compact_minimize_collapse_origin_matches_target():
     assert "originY = (targetTop - rect.top) / originDenomY;" in collapse_block
     assert "shell.style.transformOrigin = originX + 'px ' + originY + 'px';" in collapse_block
     assert "shell.style.removeProperty('transform-origin');" in collapse_block
+
+
+def test_compact_minimize_does_not_replay_full_shell_collapse_animation():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    request_block = script.split("function handleCompactMinimizeRequest()", 1)[1].split(
+        "function handleMiniGameInviteChoice(option)",
+        1,
+    )[0]
+    assert request_block.count(
+        "setChatSurfaceMode('minimized', { skipShellCollapseAnimation: true });"
+    ) == 2
+
+    set_mode_block = script.split("function setChatSurfaceMode(nextMode)", 1)[1].split(
+        "function cycleChatSurfaceMode()",
+        1,
+    )[0]
+    assert "if (transitionOptions.skipShellCollapseAnimation === true" in set_mode_block
+    assert "&& previousMode === 'compact'" in set_mode_block
+    assert "&& !isElectronChatWindow()" in set_mode_block
+    assert "&& !window.__LANLAN_IS_ELECTRON_PET__" in set_mode_block
+    assert "setMinimized(nextMinimized, { skipShellCollapseAnimation: true });" in set_mode_block
+    assert "setMinimized(nextMinimized);" in set_mode_block
+
+    minimize_block = script.split("function setMinimized(nextMinimized)", 1)[1].split(
+        "// ---- 展开动画",
+        1,
+    )[0]
+    instant_branch = minimize_block.split(
+        "if (transitionOptions.skipShellCollapseAnimation === true)",
+        1,
+    )[1].split("// 3. 计算缩放比", 1)[0]
+    assert "shell.classList.add('is-minimized');" in instant_branch
+    assert "shell.classList.add('is-collapsing');" not in instant_branch
+    assert "requestAnimationFrame" not in instant_branch
+
+
+def test_web_compact_restore_does_not_replay_full_shell_expand_animation():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+
+    set_mode_block = script.split("function setChatSurfaceMode(nextMode)", 1)[1].split(
+        "function cycleChatSurfaceMode()",
+        1,
+    )[0]
+    assert "previousMinimized" in set_mode_block
+    assert "normalized === 'compact'" in set_mode_block
+    assert "!isElectronChatWindow()" in set_mode_block
+    assert "!window.__LANLAN_IS_ELECTRON_PET__" in set_mode_block
+    assert "setMinimized(nextMinimized, { skipShellExpandAnimation: true });" in set_mode_block
+    assert "setMinimized(nextMinimized);" in set_mode_block
+
+    minimize_block = script.split("function setMinimized(nextMinimized)", 1)[1].split(
+        "// ---- 展开动画",
+        1,
+    )[0]
+    compact_restore = minimize_block.split(
+        "if (!willMinimize && transitionOptions.skipShellExpandAnimation === true)",
+        1,
+    )[1].split("if (willMinimize)", 1)[0]
+    assert "shell.style.visibility = 'hidden';" in compact_restore
+    assert "shell.classList.remove('is-mobile-content-capped', 'is-minimized');" in compact_restore
+    assert "syncCompactSurfaceAnchor();" in compact_restore
+    assert "scheduleMobileContentLayout();" in compact_restore
+    assert "COMPACT_EXPAND_WIPE_MS + COMPACT_EXPAND_TRANSITION_BUFFER_MS" in compact_restore
+    assert "shell.classList.add('is-expanding');" not in compact_restore
+    assert "scale(" not in compact_restore
+
+    host_duration = re.search(r"var COMPACT_EXPAND_WIPE_MS = (\d+);", script)
+    css_duration = re.search(
+        r"\.compact-chat-surface-shell\.neko-compact-expanding\s*\{[^}]*"
+        r"animation:\s*neko-compact-expand-wipe\s+(\d+)ms",
+        styles,
+        re.DOTALL,
+    )
+    assert host_duration is not None
+    assert css_duration is not None
+    assert host_duration.group(1) == css_duration.group(1)
+
+
+def test_queued_surface_mode_preserves_compact_transition_options():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    set_mode_block = script.split("function setChatSurfaceMode(nextMode)", 1)[1].split(
+        "function cycleChatSurfaceMode()",
+        1,
+    )[0]
+    flush_block = script.split("function flushPendingChatSurfaceModeIfNeeded()", 1)[1].split(
+        "function setMinimized(nextMinimized)",
+        1,
+    )[0]
+
+    assert "pendingChatSurfaceMode = {" in set_mode_block
+    assert "mode: normalized," in set_mode_block
+    assert "transitionOptions: transitionOptions" in set_mode_block
+    assert "var pendingSurfaceMode = pendingChatSurfaceMode;" in flush_block
+    assert "var targetMode = pendingSurfaceMode.mode;" in flush_block
+    assert "setChatSurfaceMode(targetMode, pendingSurfaceMode.transitionOptions);" in flush_block
 
 
 def test_desktop_compact_layout_change_resets_anchor_only_when_base_surface_changes():
