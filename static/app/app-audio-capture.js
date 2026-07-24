@@ -114,7 +114,6 @@
     function canUploadOrdinaryMicFrame() {
         if (refreshMicLease() !== MIC_LEASE.CORE) return false;
         const state = currentVoiceInputControlState();
-        sendVoiceInputControlState(false);
         return !state.hard_muted && !state.focus_suppressed;
     }
 

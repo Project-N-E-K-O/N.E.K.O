@@ -26,11 +26,15 @@ def test_worklet_upload_is_governed_by_one_mic_lease_gate() -> None:
     handler = source.split("S.workletNode.port.onmessage = (event) => {", 1)[1].split(
         "};", 1
     )[0]
+    upload_gate = source.split("function canUploadOrdinaryMicFrame()", 1)[1].split(
+        "// ======================== DOM 辅助", 1
+    )[0]
 
     assert "canUploadOrdinaryMicFrame()" in handler
     assert "S.isMicMuted" not in handler
     assert "S.gameVoiceSttGateActive" not in handler
     assert "S.focusModeEnabled" not in handler
+    assert "sendVoiceInputControlState" not in upload_gate
 
 
 def test_stop_and_game_takeover_update_mic_lease() -> None:
