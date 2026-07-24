@@ -52,12 +52,17 @@ class QQReplyBufferService:
     def __init__(self, plugin: Any):
         self.plugin = plugin
         self._pending: dict[str, PendingReply] = {}
-        self._detached: dict[str, PendingReply] = {}  # 已 pop 但仍在等 pipeline 回复的桶
+        # 复合键 "session_key:bucket_id" —— 同一会话可同时存在多个 detached 桶
+        self._detached: dict[str, PendingReply] = {}
         self._bucket_id_seq: int = 0
 
     def _next_bucket_id(self) -> int:
         self._bucket_id_seq += 1
         return self._bucket_id_seq
+
+    @staticmethod
+    def _detached_key(session_key: str, bucket_id: int) -> str:
+        return f"{session_key}:{bucket_id}"
 
     # ------------------------------------------------------------------
     # 公共接口
@@ -66,11 +71,14 @@ class QQReplyBufferService:
     def store_reply(self, session_key: str, reply_text: str, blocks: list, *, expected_bucket_id: int = 0) -> bool:
         """pipeline 生成的回复存入缓冲桶，等计时器到期再发。返回 True 表示已存储。
 
-        expected_bucket_id: 触发本次 pipeline 的桶 ID。同时查 _pending 和 _detached，
-        优先匹配 bucket_id 一致的桶，防止旧 pipeline 结果污染新桶。"""
+        expected_bucket_id: 触发本次 pipeline 的桶 ID。先查 _pending（当前活跃桶），
+        不匹配再按复合键查 _detached（已摘除但仍在等回复的桶）。"""
         existing = self._pending.get(session_key)
         if existing is None or (expected_bucket_id and existing.bucket_id != expected_bucket_id):
-            existing = self._detached.get(session_key)
+            if expected_bucket_id:
+                existing = self._detached.get(self._detached_key(session_key, expected_bucket_id))
+            else:
+                existing = None
         if existing is None:
             return False
         if expected_bucket_id and existing.bucket_id != expected_bucket_id:
@@ -81,18 +89,25 @@ class QQReplyBufferService:
         return True
 
     def has_pending(self, session_key: str) -> bool:
-        p = self._pending.get(session_key) or self._detached.get(session_key)
-        return p is not None and (p.task is None or not p.task.done())
+        p = self._pending.get(session_key)
+        if p is not None and (p.task is None or not p.task.done()):
+            return True
+        prefix = f"{session_key}:"
+        return any(
+            (v.task is None or not v.task.done())
+            for k, v in self._detached.items() if k.startswith(prefix)
+        )
 
     def get_state(self) -> dict[str, Any]:
-        all_pending = {**self._pending, **self._detached}
-        return {
-            "pending": [
-                {"session_key": k, "count": len(p.entries), "wait_until": p.wait_until}
-                for k, p in all_pending.items()
-            ],
-            "count": len(all_pending),
-        }
+        count = len(self._pending) + len(self._detached)
+        entries = []
+        for k, p in self._pending.items():
+            entries.append({"session_key": k, "count": len(p.entries), "wait_until": p.wait_until})
+        for k, p in self._detached.items():
+            # k is "session_key:bucket_id", strip the :bucket_id suffix for display
+            display_key = k.rsplit(":", 1)[0]
+            entries.append({"session_key": display_key, "count": len(p.entries), "wait_until": p.wait_until})
+        return {"pending": entries, "count": count}
 
     async def buffer(self, session_key: str, message_text: str, sender_id: str, is_group: bool, group_id: str) -> bool:
         """消息到达时调用。返回 True 表示跳过 pipeline，返回 False 表示需要走 pipeline（首次）。"""
@@ -123,7 +138,7 @@ class QQReplyBufferService:
             if len(existing.entries) >= _MAX_BUFFER_COUNT:
                 existing.wait_until = 0
                 self._pending.pop(session_key, None)  # 先摘桶，避免新消息 cancel 掉本次交付
-                self._detached[session_key] = existing  # 保留在 _detached 中，等 pipeline 回复
+                self._detached[self._detached_key(session_key, existing.bucket_id)] = existing
                 existing._new_task(self._flush_detached(session_key, existing))
                 self.plugin._emit_log("INFO", f"[Buffer] 达到上限 key={session_key} count={len(existing.entries)} → 立即交付")
             else:
@@ -259,15 +274,11 @@ class QQReplyBufferService:
     # ------------------------------------------------------------------
 
     async def _flush_detached(self, session_key: str, pending: PendingReply) -> None:
-        """已从 _pending 摘除的桶的交付逻辑——不会被新消息 cancel。
-        只清理身份匹配的桶，防止并发 detached 桶互相误删。"""
+        """已从 _pending 摘除的桶的交付逻辑——复合键保证不误删其他桶。"""
         try:
             await self._flush_impl(session_key, pending, check_pending=False)
         finally:
-            if self._detached.get(session_key) is pending:
-                self._detached.pop(session_key, None)
-            else:
-                self.plugin._emit_log("DEBUG", f"[Buffer] detached finally: key={session_key} 桶已替换，跳过清理")
+            self._detached.pop(self._detached_key(session_key, pending.bucket_id), None)
 
     async def _flush(self, session_key: str, pending: PendingReply, *, abandon_on_no_reply: bool = False) -> None:
         await self._flush_impl(session_key, pending, check_pending=True, abandon_on_no_reply=abandon_on_no_reply)
@@ -282,7 +293,7 @@ class QQReplyBufferService:
             if check_pending and self._pending.get(session_key) is pending and pending.task_gen == gen:
                 self._pending.pop(session_key, None)
             if not check_pending:
-                self._detached.pop(session_key, None)
+                self._detached.pop(self._detached_key(session_key, pending.bucket_id), None)
             return
 
         if check_pending and self._pending.get(session_key) is not pending:
@@ -293,10 +304,10 @@ class QQReplyBufferService:
 
         if not has_bot_reply:
             if abandon_on_no_reply:
-                # 话题偏移时放弃旧桶：避免 _flush 的 retry task 与 self._pending[session_key]
-                # 被覆盖为新桶后发生竞争，导致旧 pipeline 回复被 store_reply 误路由到新桶。
+                # 话题偏移：旧桶移入 _detached 等 pipeline 回复，再从 _pending 摘除
+                self._detached[self._detached_key(session_key, pending.bucket_id)] = pending
                 self._pending.pop(session_key, None)
-                self.plugin._emit_log("INFO", f"[Buffer] key={session_key} 话题偏移且无 bot 回复，放弃旧桶")
+                self.plugin._emit_log("INFO", f"[Buffer] key={session_key} 话题偏移，旧桶移入 _detached 等 pipeline 回复")
                 return
             # 多条消息（≥2）→ 首条 pipeline 回复会被 summary 覆盖，无需等待
             if len(user_entries) > 1:
@@ -311,7 +322,7 @@ class QQReplyBufferService:
                     if check_pending:
                         self._pending.pop(session_key, None)
                     else:
-                        self._detached.pop(session_key, None)
+                        self._detached.pop(self._detached_key(session_key, pending.bucket_id), None)
                     return
                 pending.wait_until = time.time() + 1.0
                 pending.task = asyncio.create_task(

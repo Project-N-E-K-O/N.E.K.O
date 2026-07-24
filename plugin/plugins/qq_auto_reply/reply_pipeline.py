@@ -227,7 +227,9 @@ class QQReplyPipelineRunner:
                 expected_bucket_id = getattr(request, 'buffer_bucket_id', 0) if request else 0
                 if expected_bucket_id:
                     svc = self.plugin.reply_buffer_service
-                    p = svc._pending.get(session_key) or svc._detached.get(session_key)
+                    p = svc._pending.get(session_key)
+                    if p is None or p.bucket_id != expected_bucket_id:
+                        p = svc._detached.get(svc._detached_key(session_key, expected_bucket_id))
                     if p is None or p.bucket_id != expected_bucket_id:
                         self.plugin._emit_log("DEBUG", f"[Buffer] 空回复但桶已过期 key={session_key} expected_id={expected_bucket_id} actual_id={getattr(p, 'bucket_id', 0)} → 忽略")
                         from .pipeline_models import QQDeliveryResult
@@ -235,7 +237,7 @@ class QQReplyPipelineRunner:
                     if p.task and not p.task.done():
                         p.task.cancel()
                     svc._pending.pop(session_key, None)
-                    svc._detached.pop(session_key, None)
+                    svc._detached.pop(svc._detached_key(session_key, expected_bucket_id), None)
                 else:
                     p = self.plugin.reply_buffer_service._pending.get(session_key)
                     if p and p.task and not p.task.done():
