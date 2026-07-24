@@ -54,7 +54,7 @@ EOF
   #    优先查找常见图标文件名（支持 png/svg/ico）
   ICON_FILE="resources/icon.png"
   
-  if [ -n "$ICON_FILE" ]; then
+  if [ -f "$ICON_FILE" ]; then
     # 根据文件扩展名决定目标名称
     EXT="${ICON_FILE##*.}"
     install -Dm644 "$ICON_FILE" "$pkgdir/usr/share/pixmaps/neko-bin.${EXT}"
