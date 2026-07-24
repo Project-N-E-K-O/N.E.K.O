@@ -52,7 +52,7 @@ EOF
 
   # 5. 自动提取资源中的图标并安装到 pixmaps
   #    优先查找常见图标文件名（支持 png/svg/ico）
-  ICON_FILE=$(find "$pkgdir/usr/lib/neko" -type f \( -iname "icon.*" -o -iname "logo.*" -o -iname "app.*" -o -iname "neko.*" \) -print -quit)
+  ICON_FILE="resources/icon.png"
   
   if [ -n "$ICON_FILE" ]; then
     # 根据文件扩展名决定目标名称
