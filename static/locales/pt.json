@@ -1758,12 +1758,38 @@
         }
     },
     "memory": {
-        "title": "Navegador de memória",
         "recent": "Memórias recentes",
+        "title": "Navegador de memória",
         "summary": "Resumo",
         "close": "Fechar",
         "catgirlMemory": "N.E.K.O. Biblioteca de memória",
+        "compactLibraryLabel": "Memórias",
+        "currentRole": "Personagem atual:",
         "autoReview": "Revisão automática de memória",
+        "globalActionsAria": "Ações de memória",
+        "openTutorialManager": "Guia tutorial",
+        "exportLogs": "Exportar logs",
+        "exportLogsAria": "Exportar logs",
+        "exportLogsDesktopOnly": "A exportação de logs locais está disponível apenas no aplicativo para desktop.",
+        "exportLogsDesktopOnlyAria": "Exportar logs (somente desktop)",
+        "exportLogsReview": "Os logs são ocultados automaticamente. Revise-os antes de compartilhar.",
+        "exportLogsPending": "Preparando logs…",
+        "exportLogsPendingShort": "Exportando…",
+        "exportLogsSuccess": "Logs exportados",
+        "exportLogsSuccessShort": "Exportado",
+        "exportLogsErrorShort": "Falhou",
+        "exportLogsEmpty": "Nenhum log foi encontrado; uma nota de diagnóstico foi exportada.",
+        "exportLogsPackageError": "Não foi possível empacotar os logs. Tente novamente.",
+        "exportLogsWriteError": "Não foi possível salvar no local escolhido. Selecione outro local.",
+        "memorySettings": "Configurações de memória",
+        "openExternalImport": "Importar memória",
+        "closePanel": "Fechar painel",
+        "settingsDialogTitle": "Configurações de memória",
+        "tutorialDialogTitle": "Guia tutorial",
+        "settingsScopeAllCharacters": "Estas configurações se aplicam a todas as personagens.",
+        "autoReviewTooltipLabel": "Sobre a revisão automática de memória",
+        "strongMemoryTooltipLabel": "Sobre a memória reforçada",
+        "externalImportTooltipLabel": "Sobre a importação de memória externa",
         "loading": "Carregando...",
         "externalImportTitle": "Importar memória externa",
         "externalImportNote": "Importe USER.md, SOUL.md, MEMORY.md, notas diárias ou um ZIP do OpenClaw ou Hermes para a personagem selecionada.",
@@ -1797,18 +1823,27 @@
         "noChatContent": "Nenhum conteúdo de bate-papo",
         "previousMemo": "Memorando de conversa anterior:",
         "olderSection": "Antes",
+        "me": "Meu:",
         "memoNone": "Nenhum.",
         "delete": "Excluir",
-        "me": "Meu:",
+        "deleteEntryAria": "Excluir a memória {{position}} de {{speaker}}",
         "pleaseSelectFile": "Selecione um arquivo primeiro",
-        "saveSuccess": "Salvamento bem-sucedido",
         "saveFailed": "Falha ao salvar: {{error}}",
         "saveFailedGeneral": "Falha ao salvar",
-        "clearedChatKeptMemo": "Mensagens de bate-papo apagadas; memorando mantido (não salvo)",
+        "saveSuccess": "Salvamento bem-sucedido",
+        "clearedChatKeptMemo": "Mensagens do chat apagadas; o memorando foi mantido",
+        "unsavedChanges": "Alterações não salvas",
+        "switchCharacterConfirmTitle": "Mudar de personagem?",
+        "closeUnsavedConfirmTitle": "Fechar o editor de memórias?",
+        "switchCharacterUnsaved": "{{name}} tem alterações não salvas",
+        "cancelSwitch": "Cancelar",
+        "discardAndSwitch": "Descartar alterações",
+        "saveAndSwitch": "Salvar e mudar",
+        "saveAndClose": "Salvar e fechar",
         "enabled": "Habilitado",
         "disabled": "Desabilitado",
         "autoReviewNote": "Quando ativado, o sistema organizará e otimizará automaticamente o conteúdo da memória para melhorar a qualidade da conversa",
-        "strongMemory": "Memória reforçada",
+        "strongMemory": "Modo de memória reforçada",
         "strongMemoryNote": "Quando ativada, executa consolidação profunda de memória (feedback verbal, detecção automática de refutação, acúmulo de evidências em múltiplos canais). Desligar economiza cerca de 40% das chamadas ao modelo.",
         "saveFailedStatus": "Falha ao salvar",
         "tutorialReset": "Guia Tutorial",
@@ -3424,20 +3459,16 @@
         },
         "memory_browser": {
             "step1": {
-                "title": "💡 Dicas de uso",
-                "desc": "O conteúdo da conversa recente demora um pouco para carregar. Clique no nome do personagem para atualizar se você não vir o bate-papo mais recente."
+                "title": "🐱 Biblioteca de memórias",
+                "desc": "Escolha um personagem para consultar as memórias salvas."
             },
             "step2": {
-                "title": "🐱 Biblioteca de memória de personagens",
-                "desc": "Lista todas as bibliotecas de memória de caracteres Neko. Clique no nome de um personagem para visualizar e editar seu histórico de conversas."
+                "title": "📝 Explorar e revisar memórias",
+                "desc": "Explore e revise memórias e resumos recentes para ajudar a reduzir repetições e erros cognitivos."
             },
             "step3": {
-                "title": "🤖 Organização automática de memória",
-                "desc": "Quando ativado, o sistema organiza e otimiza automaticamente o conteúdo da memória para melhor qualidade de conversação. Recomendado para manter ativado."
-            },
-            "step4": {
-                "title": "📝 Edição do histórico de bate-papo",
-                "desc": "Mostra todos os registros de conversa do personagem selecionado. Veja, edite ou exclua conversas específicas aqui."
+        "title": "🧰 Ações",
+        "desc": "Nesta área, você pode reabrir o tutorial, exportar logs de diagnóstico e ajustar as configurações de memória."
             }
         },
         "buttons": {

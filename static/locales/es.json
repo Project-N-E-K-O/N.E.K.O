@@ -1758,12 +1758,38 @@
         }
     },
     "memory": {
-        "title": "Explorador de memoria",
         "recent": "Recuerdos recientes",
+        "title": "Explorador de memoria",
         "summary": "Resumen",
         "close": "Cerca",
         "catgirlMemory": "N.E.K.O. Biblioteca de memoria",
+        "compactLibraryLabel": "Memoria",
+        "currentRole": "Personaje actual:",
         "autoReview": "Revisión automática de memoria",
+        "globalActionsAria": "Acciones de memoria",
+        "openTutorialManager": "Guía tutorial",
+        "exportLogs": "Exportar registros",
+        "exportLogsAria": "Exportar registros",
+        "exportLogsDesktopOnly": "La exportación de registros locales solo está disponible en la aplicación de escritorio.",
+        "exportLogsDesktopOnlyAria": "Exportar registros (solo escritorio)",
+        "exportLogsReview": "Los datos sensibles de los registros se ocultan automáticamente. Revísalos antes de compartir.",
+        "exportLogsPending": "Preparando registros…",
+        "exportLogsPendingShort": "Exportando…",
+        "exportLogsSuccess": "Registros exportados",
+        "exportLogsSuccessShort": "Exportado",
+        "exportLogsErrorShort": "Error",
+        "exportLogsEmpty": "No se encontraron registros; se exportó una nota de diagnóstico.",
+        "exportLogsPackageError": "No se pudieron empaquetar los registros. Inténtalo de nuevo.",
+        "exportLogsWriteError": "No se pudo guardar en la ubicación elegida. Selecciona otra ubicación.",
+        "memorySettings": "Configuración de memoria",
+        "openExternalImport": "Importar memoria",
+        "closePanel": "Cerrar panel",
+        "settingsDialogTitle": "Configuración de memoria",
+        "tutorialDialogTitle": "Guía tutorial",
+        "settingsScopeAllCharacters": "Esta configuración se aplica a todos los personajes.",
+        "autoReviewTooltipLabel": "Acerca de la revisión automática de memoria",
+        "strongMemoryTooltipLabel": "Acerca de la memoria reforzada",
+        "externalImportTooltipLabel": "Acerca de importar memoria externa",
         "loading": "Cargando...",
         "externalImportTitle": "Importar memoria externa",
         "externalImportNote": "Importa USER.md, SOUL.md, MEMORY.md, notas diarias o un ZIP de OpenClaw o Hermes al personaje seleccionado.",
@@ -1797,18 +1823,27 @@
         "noChatContent": "Sin contenido de chat",
         "previousMemo": "Nota de conversación anterior:",
         "olderSection": "Antes",
+        "me": "Yo:",
         "memoNone": "Ninguno.",
         "delete": "Borrar",
-        "me": "A mí:",
+        "deleteEntryAria": "Eliminar el recuerdo {{position}} de {{speaker}}",
         "pleaseSelectFile": "Por favor seleccione un archivo primero",
-        "saveSuccess": "Guardar con éxito",
         "saveFailed": "Error al guardar: {{error}}",
         "saveFailedGeneral": "Error al guardar",
-        "clearedChatKeptMemo": "Mensajes de chat borrados; nota guardada (no guardada)",
+        "saveSuccess": "Guardado correctamente",
+        "clearedChatKeptMemo": "Mensajes del chat eliminados; la nota se conservó",
+        "unsavedChanges": "Cambios sin guardar",
+        "switchCharacterConfirmTitle": "¿Cambiar de personaje?",
+        "closeUnsavedConfirmTitle": "¿Cerrar el editor de memoria?",
+        "switchCharacterUnsaved": "{{name}} tiene cambios sin guardar",
+        "cancelSwitch": "Cancelar",
+        "discardAndSwitch": "Descartar cambios",
+        "saveAndSwitch": "Guardar y cambiar",
+        "saveAndClose": "Guardar y cerrar",
         "enabled": "Activado",
         "disabled": "Desactivado",
         "autoReviewNote": "Cuando esté habilitado, el sistema organizará y optimizará automáticamente el contenido de la memoria para mejorar la calidad de la conversación.",
-        "strongMemory": "Memoria reforzada",
+        "strongMemory": "Modo de memoria reforzada",
         "strongMemoryNote": "Cuando está activada, se ejecuta consolidación profunda de memoria (retroalimentación verbal, detección automática de refutaciones, acumulación de evidencia multicanal). Al desactivarla se ahorra alrededor del 40% de llamadas al modelo.",
         "saveFailedStatus": "Error al guardar",
         "tutorialReset": "Guía tutorial",
@@ -3424,20 +3459,16 @@
         },
         "memory_browser": {
             "step1": {
-                "title": "💡 Consejos de uso",
-                "desc": "El contenido de la conversación reciente tarda un momento en cargarse. Haz clic en el nombre del personaje para actualizar si no ves el chat más reciente."
+                "title": "🐱 Biblioteca de memoria",
+                "desc": "Elige un personaje para consultar sus recuerdos guardados."
             },
             "step2": {
-                "title": "🐱 Biblioteca de memoria de personajes",
-                "desc": "Enumera todas las bibliotecas de memoria de personajes de Neko. Haz clic en el nombre de un personaje para ver y editar su historial de conversaciones."
+                "title": "📝 Explorar y revisar recuerdos",
+                "desc": "Explora y revisa los recuerdos y resúmenes recientes para ayudar a reducir repeticiones y errores cognitivos."
             },
             "step3": {
-                "title": "🤖 Organización automática de la memoria",
-                "desc": "Cuando está habilitado, el sistema organiza y optimiza automáticamente el contenido de la memoria para una mejor calidad de la conversación. Se recomienda mantener habilitado."
-            },
-            "step4": {
-                "title": "📝 Edición del historial de chat",
-                "desc": "Muestra todos los registros de conversación del personaje seleccionado. Vea, edite o elimine conversaciones específicas aquí."
+        "title": "🧰 Acciones",
+        "desc": "Desde esta zona puede volver a abrir el tutorial, exportar registros de diagnóstico y ajustar la configuración de memoria."
             }
         },
         "buttons": {

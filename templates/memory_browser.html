@@ -18,10 +18,16 @@
     <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/window_controls.js?v={{ static_asset_version }}" defer></script>
 </head>
-<body>
+<body class="memory-browser-page">
+    <script>
+        document.body.dataset.memoryLayout = window.matchMedia('(max-width: 839px)').matches
+            ? 'compact'
+            : 'wide';
+        document.body.dataset.memorySidebar = 'expanded';
+    </script>
     <div class="container">
         <div class="container-header page-title-bar">
-            <h2 data-i18n="memory.title" data-text="Memory Browser">记忆浏览</h2>
+            <h2 data-i18n="memory.title" data-i18n-aria="memory.title" aria-label="记忆浏览" data-text="Memory Browser">记忆浏览</h2>
             <div class="neko-window-controls">
                 <button type="button" class="neko-window-control-btn" data-neko-window-control="pin" hidden data-i18n-title="common.pinWindow" data-i18n-aria="common.pinWindow" title="置顶窗口" aria-label="置顶窗口" aria-pressed="false">
                     <span class="neko-window-pin-icon" aria-hidden="true"></span>
@@ -38,44 +44,75 @@
             </div>
         </div>
         <div class="container-content">
+            <div class="memory-utility-bar">
+                <button type="button" id="memory-role-panel-trigger" aria-controls="memory-role-panel" aria-expanded="false" aria-label="记忆库" data-i18n-aria="memory.compactLibraryLabel">
+                    <svg class="memory-role-panel-trigger-icon" viewBox="0 0 20 20" aria-hidden="true">
+                        <path class="memory-role-panel-trigger-frame" fill-rule="evenodd" clip-rule="evenodd" d="M5.5 2.75h9A3.25 3.25 0 0 1 17.75 6v8a3.25 3.25 0 0 1-3.25 3.25h-9A3.25 3.25 0 0 1 2.25 14V6A3.25 3.25 0 0 1 5.5 2.75Zm.1 1.35a2 2 0 0 0-2 2v7.8a2 2 0 0 0 2 2h8.8a2 2 0 0 0 2-2V6.1a2 2 0 0 0-2-2H5.6Z"></path>
+                        <rect class="memory-role-panel-trigger-divider" x="7.4" y="2.75" width="1.35" height="14.5" rx="0.675"></rect>
+                    </svg>
+                    <span class="memory-role-panel-trigger-label" aria-hidden="true">
+                        <span data-i18n="memory.compactLibraryLabel">记忆库</span>
+                        <span> · </span>
+                        <span id="memory-compact-current-role-name"></span>
+                    </span>
+                </button>
+                <div class="memory-global-actions" aria-label="Memory actions" data-i18n-aria="memory.globalActionsAria">
+                    <button type="button" id="memory-guide-trigger" class="memory-header-action" data-memory-panel-trigger="guide" aria-controls="memory-guide-panel" aria-expanded="false" title="新手引导" data-i18n-title="memory.openTutorialManager">
+                        <span data-i18n="memory.openTutorialManager">新手引导</span>
+                    </button>
+                    <button type="button" id="memory-export-logs-trigger" class="memory-header-action" title="日志会自动脱敏，分享前仍建议确认" aria-label="导出日志">
+                        <span data-memory-export-label>导出日志</span>
+                    </button>
+                    <button type="button" id="memory-settings-trigger" class="memory-header-action" data-memory-panel-trigger="settings" aria-controls="memory-settings-panel" aria-expanded="false" title="记忆设置" data-i18n-title="memory.memorySettings">
+                        <span data-i18n="memory.memorySettings">记忆设置</span>
+                    </button>
+                    <span id="memory-export-logs-status" class="memory-export-logs-status" role="status" aria-live="polite" aria-atomic="true"></span>
+                </div>
+            </div>
             <div class="tips-container">
                 <img src="/static/icons/exclamation.png" alt="">
                 <span class="tip-text" data-i18n="memory.tip1">刚刚结束的对话内容要稍等片刻才会载入，可以重新点击猫娘名称刷新。</span>
             </div>
             <div class="main">
+                <div id="memory-role-hover-target" aria-hidden="true"></div>
                 <div class="left-column">
-                    <div class="file-list">
-                        <div class="file-list-title" data-i18n="memory.catgirlMemory">猫娘记忆库</div>
-                        <ul id="memory-file-list"></ul>
-                        <div class="review-toggle">
-                            <div class="review-toggle-title" data-i18n="memory.autoReview">自动记忆整理</div>
-                            <div class="auto-review-toggle-wrapper">
-                                <input type="checkbox" id="review-toggle-checkbox">
-                                <label for="review-toggle-checkbox" class="auto-review-toggle-btn">
-                                    <span class="auto-review-toggle-icon"></span>
-                                    <span class="auto-review-toggle-text" id="review-toggle-text" data-i18n="memory.disabled">已关闭</span>
-                                </label>
-                                <div class="auto-review-toggle-note" data-i18n="memory.autoReviewNote">
-                                    开启后系统将自动整理和优化记忆内容，提高对话质量
-                                </div>
-                            </div>
-                        </div>
-                        <div class="review-toggle">
-                            <div class="review-toggle-title" data-i18n="memory.strongMemory">强力记忆</div>
-                            <div class="auto-review-toggle-wrapper">
-                                <input type="checkbox" id="strong-memory-toggle-checkbox">
-                                <label for="strong-memory-toggle-checkbox" class="auto-review-toggle-btn">
-                                    <span class="auto-review-toggle-icon"></span>
-                                    <span class="auto-review-toggle-text" id="strong-memory-toggle-text" data-i18n="memory.disabled">已关闭</span>
-                                </label>
-                                <div class="auto-review-toggle-note" data-i18n="memory.strongMemoryNote">
-                                    开启时启用深度记忆固化（口头反馈、自动反驳检测、多通道证据累加），关闭后约可节省 40% 模型调用
-                                </div>
+                    <div class="file-list" id="memory-role-library">
+                        <div id="memory-role-sidebar">
+                            <div id="memory-role-panel" aria-labelledby="memory-role-panel-title" hidden>
+                                <div class="file-list-title" id="memory-role-panel-title" data-i18n="memory.catgirlMemory">猫娘记忆库</div>
+                                <ul id="memory-file-list"></ul>
                             </div>
                         </div>
                     </div>
+                </div>
+                <div id="memory-unsaved-switch-blocker" class="memory-unsaved-switch-blocker" hidden></div>
+                <section
+                    id="memory-unsaved-switch-dialog"
+                    class="memory-unsaved-switch-dialog"
+                    role="alertdialog"
+                    aria-modal="true"
+                    aria-labelledby="memory-unsaved-switch-title"
+                    aria-describedby="memory-unsaved-switch-message"
+                    hidden
+                >
+                    <h3 id="memory-unsaved-switch-title" data-i18n="memory.switchCharacterConfirmTitle">切换角色？</h3>
+                    <p id="memory-unsaved-switch-message"></p>
+                    <div class="memory-unsaved-switch-actions">
+                        <button type="button" id="memory-unsaved-switch-cancel" class="memory-unsaved-switch-cancel" data-i18n="memory.cancelSwitch">取消</button>
+                        <button type="button" id="memory-unsaved-switch-discard" class="memory-unsaved-switch-discard" data-i18n="memory.discardAndSwitch">放弃修改</button>
+                        <button type="button" id="memory-unsaved-switch-save" class="memory-unsaved-switch-save" data-i18n="memory.saveAndSwitch">保存并切换</button>
+                    </div>
+                </section>
+                <div id="memory-aux-panel-backdrop" class="memory-aux-panel-backdrop" hidden></div>
+                <section id="memory-guide-panel" class="memory-aux-panel" role="dialog" aria-modal="true" aria-labelledby="memory-guide-panel-title" tabindex="-1" hidden>
+                    <div class="memory-aux-panel-header">
+                        <h3 id="memory-guide-panel-title" data-i18n="memory.tutorialDialogTitle">新手引导</h3>
+                        <button type="button" class="memory-aux-panel-close" data-memory-panel-close data-i18n-aria="memory.closePanel" aria-label="关闭面板">
+                            <img src="/static/icons/close_button.png" alt="" aria-hidden="true" draggable="false">
+                        </button>
+                    </div>
+                    <div class="memory-aux-panel-body">
                     <div class="file-list tutorial-section">
-                        <div class="file-list-title" data-i18n="memory.tutorialReset">新手引导</div>
                         <div class="tutorial-reset-wrapper tutorial-reset-cascade">
                             <select id="tutorial-reset-select" hidden aria-hidden="true" tabindex="-1">
                                 <option value="" data-i18n="memory.tutorialSelectPage">-- 选择页面 --</option>
@@ -125,10 +162,24 @@
                             </button>
                         </div>
                     </div>
+                    </div>
+                </section>
+                <section id="memory-import-panel" class="memory-aux-panel" role="dialog" aria-modal="true" aria-labelledby="memory-import-panel-title" tabindex="-1" hidden>
+                    <div class="memory-aux-panel-header">
+                        <div class="memory-aux-panel-title-group">
+                            <h3 id="memory-import-panel-title" data-i18n="memory.externalImportTitle">导入外部记忆</h3>
+                            <button type="button" class="memory-setting-help external-memory-import-help" aria-label="关于导入外部记忆" data-i18n-aria="memory.externalImportTooltipLabel" aria-describedby="external-memory-import-note-tooltip">
+                                <img src="/static/icons/exclamation.png" alt="" aria-hidden="true" draggable="false">
+                            </button>
+                            <span id="external-memory-import-note-tooltip" class="memory-setting-tooltip external-memory-import-tooltip" role="tooltip" data-i18n="memory.externalImportNote">将 OpenClaw 或 Hermes 的 USER.md、SOUL.md、MEMORY.md、每日记忆或工作区 ZIP 导入当前选中的角色。</span>
+                        </div>
+                        <button type="button" class="memory-aux-panel-close" data-memory-panel-close data-i18n-aria="memory.closePanel" aria-label="关闭面板">
+                            <img src="/static/icons/close_button.png" alt="" aria-hidden="true" draggable="false">
+                        </button>
+                    </div>
+                    <div class="memory-aux-panel-body">
                     <div class="file-list external-memory-import-section">
-                        <div class="file-list-title" data-i18n="memory.externalImportTitle">Import External Memory</div>
                         <div class="external-memory-import-card">
-                            <p class="external-memory-import-note" data-i18n="memory.externalImportNote">Import OpenClaw or Hermes USER.md, SOUL.md, MEMORY.md, daily memory files, or a workspace ZIP into the selected character.</p>
                             <div class="external-memory-format-wrapper">
                                 <select id="external-memory-format" hidden aria-hidden="true" tabindex="-1">
                                     <option value="auto" data-i18n="memory.externalImportAuto">Auto detect</option>
@@ -161,6 +212,51 @@
                             <div id="external-memory-import-status" class="external-memory-import-status" role="status" aria-live="polite"></div>
                         </div>
                     </div>
+                    </div>
+                </section>
+                <section id="memory-settings-panel" class="memory-aux-panel" role="dialog" aria-modal="true" aria-labelledby="memory-settings-panel-title" tabindex="-1" hidden>
+                    <div class="memory-aux-panel-header">
+                        <h3 id="memory-settings-panel-title" data-i18n="memory.settingsDialogTitle">记忆设置</h3>
+                        <button type="button" class="memory-aux-panel-close" data-memory-panel-close data-i18n-aria="memory.closePanel" aria-label="关闭面板">
+                            <img src="/static/icons/close_button.png" alt="" aria-hidden="true" draggable="false">
+                        </button>
+                    </div>
+                    <div class="memory-aux-panel-body">
+                        <p id="memory-settings-scope" class="memory-settings-scope" data-i18n="memory.settingsScopeAllCharacters">这些设置适用于所有角色。</p>
+                        <div class="memory-settings-toggle-group">
+                            <div class="review-toggle">
+                                <input type="checkbox" id="review-toggle-checkbox">
+                                <div class="review-toggle-control">
+                                    <div class="review-toggle-heading">
+                                        <label for="review-toggle-checkbox" class="review-toggle-title" data-i18n="memory.autoReview">自动记忆整理</label>
+                                        <button type="button" class="memory-setting-help" aria-label="自动记忆整理" data-i18n-aria="memory.autoReview" aria-describedby="review-setting-tooltip">
+                                            <img src="/static/icons/exclamation.png" alt="" aria-hidden="true" draggable="false">
+                                        </button>
+                                        <span id="review-setting-tooltip" class="memory-setting-tooltip" role="tooltip" data-i18n="memory.autoReviewNote">开启后系统将自动整理和优化记忆内容，提高对话质量</span>
+                                    </div>
+                                    <label for="review-toggle-checkbox" class="auto-review-toggle-btn" aria-hidden="true">
+                                        <span class="auto-review-toggle-icon"></span>
+                                        <span class="auto-review-toggle-text" id="review-toggle-text" data-i18n="memory.disabled">已关闭</span>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="review-toggle">
+                                <input type="checkbox" id="strong-memory-toggle-checkbox">
+                                <div class="review-toggle-control">
+                                    <div class="review-toggle-heading">
+                                        <label for="strong-memory-toggle-checkbox" class="review-toggle-title" data-i18n="memory.strongMemory">强力记忆模式</label>
+                                        <button type="button" class="memory-setting-help" aria-label="强力记忆模式" data-i18n-aria="memory.strongMemory" aria-describedby="strong-memory-setting-tooltip">
+                                            <img src="/static/icons/exclamation.png" alt="" aria-hidden="true" draggable="false">
+                                        </button>
+                                        <span id="strong-memory-setting-tooltip" class="memory-setting-tooltip" role="tooltip" data-i18n="memory.strongMemoryNote">开启时启用深度记忆固化（口头反馈、自动反驳检测、多通道证据累加），关闭后约可节省 40% 模型调用</span>
+                                    </div>
+                                    <label for="strong-memory-toggle-checkbox" class="auto-review-toggle-btn" aria-hidden="true">
+                                        <span class="auto-review-toggle-icon"></span>
+                                        <span class="auto-review-toggle-text" id="strong-memory-toggle-text" data-i18n="memory.disabled">已关闭</span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
                     <div class="file-list storage-location-section">
                         <div class="file-list-title" data-i18n="memory.storageLocation">存储位置</div>
                         <div class="storage-location-card-mini">
@@ -177,18 +273,33 @@
                             </button>
                         </div>
                     </div>
-                </div>
+                    </div>
+                </section>
                 <div class="editor">
-                    <div class="editor-title" data-i18n="memory.chatHistory">聊天记录</div>
+                    <div class="memory-editor-header">
+                        <div class="memory-editor-context">
+                            <div class="editor-title" data-i18n="memory.chatHistory">聊天记录</div>
+                        </div>
+                        <button type="button" id="memory-import-trigger" class="memory-editor-action" data-memory-panel-trigger="import" aria-controls="memory-import-panel" aria-expanded="false" disabled>
+                            <span data-i18n="memory.openExternalImport">导入记忆</span>
+                        </button>
+                    </div>
                     <div id="memory-chat-edit"></div>
                     <div class="editor-actions" id="save-row" style="display:none;">
-                        <span id="save-status"></span>
+                        <div id="save-status" role="status" aria-live="polite" aria-atomic="true" hidden>
+                            <span class="memory-save-toast-icon" aria-hidden="true"></span>
+                            <span class="memory-save-toast-message"></span>
+                        </div>
                         <div class="actions-right">
-                            <button class="save-btn" id="save-memory-btn" data-i18n="memory.save">
-                                <span>保存</span>
-                            </button>
+                            <span id="memory-unsaved-status" class="memory-unsaved-status" aria-live="polite" hidden>
+                                <span class="memory-unsaved-dot" aria-hidden="true"></span>
+                                <span data-i18n="memory.unsavedChanges">未保存</span>
+                            </span>
                             <button class="clear-btn" id="clear-memory-btn" data-i18n="memory.clear">
                                 <span>清空</span>
+                            </button>
+                            <button class="save-btn" id="save-memory-btn" data-i18n="memory.save">
+                                <span>保存</span>
                             </button>
                         </div>
                     </div>

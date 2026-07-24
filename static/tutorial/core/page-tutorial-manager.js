@@ -96,6 +96,7 @@
             this._modelManagerBootstrapTimer = null;
             this._skipSafeAreaCleanup = null;
             this._skipSafeAreaController = null;
+            this._memoryBrowserTutorialUiState = null;
         }
 
         static detectPage() {
@@ -200,17 +201,24 @@
             if (!SUPPORTED_PAGES.includes(this.currentPage)) return false;
 
             // Honor the same mobile bailout as the homepage tutorial, but keep
-            // desktop popup pages usable. Voice clone is intentionally opened in
-            // a 700px desktop popup, which otherwise looks like mobile width here.
+            // desktop popup pages usable. Voice clone and the memory browser have
+            // intentional compact desktop layouts that otherwise look mobile here.
             if (window.innerWidth <= 768 && !this.shouldAllowCompactDesktopTutorial()) return false;
             return true;
         }
 
         shouldAllowCompactDesktopTutorial() {
-            if (this.currentPage !== 'voice_clone') return false;
             const viewportWidth = Number(window.innerWidth || 0);
             const screenWidth = Number(window.screen && window.screen.width || 0);
-            return viewportWidth >= 640 && screenWidth > 768;
+            if (this.currentPage === 'voice_clone') {
+                return viewportWidth >= 640 && screenWidth > 768;
+            }
+            if (this.currentPage === 'memory_browser') {
+                // The memory browser itself is clamped to this desktop minimum,
+                // so its compact layout remains a supported tutorial surface.
+                return viewportWidth >= 720;
+            }
+            return false;
         }
 
         waitForDriver() {
@@ -349,6 +357,13 @@
             if (this.currentPage === 'chara_manager') {
                 this.waitForCharacterCards().then(() => {
                     this.startTutorialWhenI18nReady(500, manual ? 'manual' : 'auto');
+                });
+                return;
+            }
+
+            if (this.currentPage === 'memory_browser') {
+                this.waitForMemoryBrowserReady().then(() => {
+                    this.startTutorialWhenI18nReady(250, manual ? 'manual' : 'auto');
                 });
                 return;
             }
@@ -716,23 +731,99 @@
         }
 
         getMemoryBrowserSteps() {
+            const roleLibraryTarget = document.body.dataset.memoryLayout === 'compact'
+                ? '#memory-role-panel'
+                : '#memory-role-library';
             return [
                 {
-                    element: '#memory-file-list',
+                    element: roleLibraryTarget,
+                    requiresVisible: false,
+                    onHighlighted: () => this.setMemoryBrowserRolePanelOpen(true),
                     popover: {
-                        title: this.t('tutorial.memory_browser.step2.title', '猫娘记忆库'),
-                        description: this.t('tutorial.memory_browser.step2.desc', '这里列出了所有猫娘的记忆库。点击一个猫娘的名称可以查看和编辑她的对话历史。')
+                        title: this.t('tutorial.memory_browser.step1.title', '角色记忆库'),
+                        description: this.t('tutorial.memory_browser.step1.desc', '选择一个角色，查看她保存的记忆。')
                     }
                 },
                 {
-                    element: '#memory-chat-edit',
+                    element: '.editor',
                     requiresVisible: true,
+                    onHighlighted: () => this.setMemoryBrowserRolePanelOpen(true),
                     popover: {
-                        title: this.t('tutorial.memory_browser.step4.title', '聊天记录编辑'),
-                        description: this.t('tutorial.memory_browser.step4.desc', '这里显示选中猫娘的所有对话记录。您可以在这里查看、编辑或删除特定的对话内容。')
+                        title: this.t('tutorial.memory_browser.step2.title', '浏览与校对记忆'),
+                        description: this.t('tutorial.memory_browser.step2.desc', '在这里浏览和校对近期记忆与摘要，帮助减少重复和认知错误。')
+                    }
+                },
+                {
+                    element: '.memory-global-actions',
+                    requiresVisible: true,
+                    onHighlighted: () => {
+                        this.setMemoryBrowserRolePanelOpen(true);
+                        this.setMemoryBrowserSettingsPanelOpen(false);
+                    },
+                    popover: {
+                        title: this.t('tutorial.memory_browser.step3.title', '功能区'),
+                        description: this.t('tutorial.memory_browser.step3.desc', '这里集中提供新手引导、日志导出和记忆设置，可按需查看教程、排查问题或调整记忆功能。')
                     }
                 }
             ];
+        }
+
+        captureMemoryBrowserTutorialUiState() {
+            if (this.currentPage !== 'memory_browser' || this._memoryBrowserTutorialUiState) return;
+            const roleTrigger = document.getElementById('memory-role-panel-trigger');
+            const settingsTrigger = document.getElementById('memory-settings-trigger');
+            this._memoryBrowserTutorialUiState = {
+                roleOpen: !!roleTrigger && roleTrigger.getAttribute('aria-expanded') === 'true',
+                settingsOpen: !!settingsTrigger && settingsTrigger.getAttribute('aria-expanded') === 'true'
+            };
+        }
+
+        prepareMemoryBrowserTutorialUi() {
+            if (this.currentPage !== 'memory_browser') return;
+            const roleTrigger = document.getElementById('memory-role-panel-trigger');
+            if (roleTrigger && roleTrigger.getAttribute('aria-expanded') !== 'true') {
+                roleTrigger.click();
+            }
+        }
+
+        setMemoryBrowserPanelOpen(triggerId, open) {
+            const trigger = document.getElementById(triggerId);
+            if (!trigger) return;
+            const isOpen = trigger.getAttribute('aria-expanded') === 'true';
+
+            if (open) {
+                // Driver advances from a button click. Opening synchronously in
+                // that event would let the page's outside-click handler close a
+                // compact drawer again as the same click bubbles to document.
+                // Recheck even when it is currently open so restoration also
+                // survives the click that finishes the tutorial.
+                const timer = window.setTimeout(() => {
+                    if (trigger.getAttribute('aria-expanded') !== 'true') {
+                        trigger.click();
+                    }
+                }, 0);
+                this._refreshTimers.push(timer);
+                return;
+            }
+
+            if (!isOpen) return;
+            trigger.click();
+        }
+
+        setMemoryBrowserRolePanelOpen(open) {
+            this.setMemoryBrowserPanelOpen('memory-role-panel-trigger', open);
+        }
+
+        setMemoryBrowserSettingsPanelOpen(open) {
+            this.setMemoryBrowserPanelOpen('memory-settings-trigger', open);
+        }
+
+        restoreMemoryBrowserTutorialUiState() {
+            const state = this._memoryBrowserTutorialUiState;
+            this._memoryBrowserTutorialUiState = null;
+            if (!state) return;
+            this.setMemoryBrowserSettingsPanelOpen(state.settingsOpen);
+            this.setMemoryBrowserRolePanelOpen(state.roleOpen);
         }
 
         isElementVisible(element) {
@@ -788,15 +879,19 @@
             if (this.isTutorialRunning || window.isInTutorial) return false;
             if (this.hasActiveYuiHandoff()) return false;
 
+            this.captureMemoryBrowserTutorialUiState();
+            this.prepareMemoryBrowserTutorialUi();
             const steps = this.getValidSteps();
             if (steps.length === 0) {
                 console.warn('[PageTutorial] no valid tutorial steps:', this.currentPage);
+                this.restoreMemoryBrowserTutorialUiState();
                 return false;
             }
 
             const DriverClass = window.driver;
             if (!DriverClass) {
                 console.warn('[PageTutorial] driver missing');
+                this.restoreMemoryBrowserTutorialUiState();
                 return false;
             }
 
@@ -1023,6 +1118,7 @@
             this._refreshTimers = [];
             this.hideSkipButton();
             this.restoreEmotionPicker();
+            this.restoreMemoryBrowserTutorialUiState();
 
             this.isTutorialRunning = false;
             this.driver = null;
@@ -1061,6 +1157,24 @@
                     const hasCard = !!document.querySelector('.chara-card-item, .chara-list-item');
                     if (hasCard || Date.now() - start >= maxWaitTime) {
                         resolve();
+                        return;
+                    }
+                    window.setTimeout(check, 120);
+                };
+                check();
+            });
+        }
+
+        waitForMemoryBrowserReady(maxWaitTime = 5000) {
+            return new Promise((resolve) => {
+                const start = Date.now();
+                const check = () => {
+                    const hasRole = !!document.querySelector('#memory-file-list .cat-btn');
+                    const editor = document.querySelector('.editor');
+                    const saveRow = document.getElementById('save-row');
+                    const ready = hasRole && this.isElementVisible(editor) && this.isElementVisible(saveRow);
+                    if (ready || Date.now() - start >= maxWaitTime) {
+                        resolve(ready);
                         return;
                     }
                     window.setTimeout(check, 120);

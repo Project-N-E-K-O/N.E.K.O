@@ -1758,12 +1758,38 @@
         }
     },
     "memory": {
-        "title": "メモリブラウザ",
         "recent": "最近のメモリ",
+        "title": "メモリブラウザ",
         "summary": "概要",
         "close": "閉じる",
         "catgirlMemory": "N.E.K.O. メモリライブラリ",
+        "compactLibraryLabel": "メモリ",
+        "currentRole": "現在のキャラクター:",
         "autoReview": "自動メモリレビュー",
+        "globalActionsAria": "メモリアクション",
+        "openTutorialManager": "チュートリアル",
+        "exportLogs": "ログを書き出す",
+        "exportLogsAria": "ログを書き出す",
+        "exportLogsDesktopOnly": "ローカルログの書き出しはデスクトップ版でのみ利用できます。",
+        "exportLogsDesktopOnlyAria": "ログを書き出す（デスクトップ版のみ）",
+        "exportLogsReview": "ログは自動的に機密情報を伏せます。共有前に内容を確認してください。",
+        "exportLogsPending": "ログを準備しています…",
+        "exportLogsPendingShort": "書き出し中…",
+        "exportLogsSuccess": "ログを書き出しました",
+        "exportLogsSuccessShort": "書き出し済み",
+        "exportLogsErrorShort": "失敗",
+        "exportLogsEmpty": "ログが見つからなかったため、診断情報のみを書き出しました。",
+        "exportLogsPackageError": "ログをパッケージできませんでした。もう一度お試しください。",
+        "exportLogsWriteError": "選択した場所に保存できませんでした。別の場所を選んでください。",
+        "memorySettings": "メモリ設定",
+        "openExternalImport": "メモリをインポート",
+        "closePanel": "パネルを閉じる",
+        "settingsDialogTitle": "メモリ設定",
+        "tutorialDialogTitle": "チュートリアル",
+        "settingsScopeAllCharacters": "これらの設定はすべてのキャラクターに適用されます。",
+        "autoReviewTooltipLabel": "自動メモリレビューについて",
+        "strongMemoryTooltipLabel": "強力なメモリについて",
+        "externalImportTooltipLabel": "外部メモリのインポートについて",
         "loading": "読み込み中...",
         "externalImportTitle": "外部メモリをインポート",
         "externalImportNote": "OpenClaw または Hermes の USER.md、SOUL.md、MEMORY.md、日次メモ、ワークスペース ZIP を選択中のキャラクターにインポートします。",
@@ -1797,18 +1823,27 @@
         "noChatContent": "チャットコンテンツなし",
         "previousMemo": "前回の会話メモ: ",
         "olderSection": "以前",
+        "me": "私:",
         "memoNone": "なし。",
         "delete": "削除",
-        "me": "私:",
+        "deleteEntryAria": "{{speaker}}の{{position}}件目の記憶を削除",
         "pleaseSelectFile": "まずファイルを選択してください",
-        "saveSuccess": "保存成功",
         "saveFailed": "保存失敗: {{error}}",
         "saveFailedGeneral": "保存失敗",
-        "clearedChatKeptMemo": "会話履歴をクリアしました。メモは残しています（未保存）",
+        "saveSuccess": "保存成功",
+        "clearedChatKeptMemo": "会話履歴をクリアしました。メモは保持されています",
+        "unsavedChanges": "未保存の変更",
+        "switchCharacterConfirmTitle": "キャラクターを切り替えますか？",
+        "closeUnsavedConfirmTitle": "メモリエディターを閉じますか？",
+        "switchCharacterUnsaved": "{{name}} に未保存の変更があります",
+        "cancelSwitch": "キャンセル",
+        "discardAndSwitch": "変更を破棄",
+        "saveAndSwitch": "保存して切り替え",
+        "saveAndClose": "保存して閉じる",
         "enabled": "有効",
         "disabled": "無効",
         "autoReviewNote": "有効にすると、システムはメモリコンテンツを自動的に整理および最適化して、会話品質を向上させます",
-        "strongMemory": "強化メモリ",
+        "strongMemory": "強化メモリモード",
         "strongMemoryNote": "有効時、深い記憶の固定化（口頭フィードバック、自動反論検出、複数チャネルの根拠累積）が動作します。無効にすると約 40% のモデル呼び出しを節約できます。",
         "saveFailedStatus": "保存失敗",
         "tutorialReset": "チュートリアル",
@@ -3424,20 +3459,16 @@
         },
         "memory_browser": {
             "step1": {
-                "title": "💡 使用方法",
-                "desc": "最近の会話内容は読み込みに少し時間がかかります。最新のチャットが表示されない場合は、キャラクター名をクリックして更新してください。"
+                "title": "🐱 キャラクターメモリ",
+                "desc": "キャラクターを選び、保存されたメモリを確認します。"
             },
             "step2": {
-                "title": "🐱 キャラクターメモリライブラリ",
-                "desc": "すべてのネコキャラクターのメモリライブラリを一覧表示します。キャラクター名をクリックして会話履歴を表示・編集できます。"
+                "title": "📝 メモリの閲覧と確認",
+                "desc": "最近のメモリと要約を閲覧・確認し、繰り返しや認識の誤りを減らします。"
             },
             "step3": {
-                "title": "🤖 自動メモリ整理",
-                "desc": "有効にするとシステムが自動的にメモリ内容を整理・最適化して、会話品質を向上させます。有効のままにすることをお勧めします。"
-            },
-            "step4": {
-                "title": "📝 チャット履歴編集",
-                "desc": "選択したキャラクターのすべての会話記録を表示します。ここで特定の会話を表示・編集・削除できます。"
+        "title": "🧰 機能エリア",
+        "desc": "ここからチュートリアルの再表示、診断ログのエクスポート、メモリ設定の調整ができます。"
             }
         },
         "buttons": {
