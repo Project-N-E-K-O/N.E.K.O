@@ -295,6 +295,111 @@ describe('App', () => {
     expect(container.querySelector('.send-button-circle')).toBeNull();
   });
 
+  it('keeps compact cat chat text-only and in input state after submit', () => {
+    const onComposerSubmit = vi.fn();
+    const onCompactMinimizeRequest = vi.fn();
+    const { container } = renderInputApp({
+      catLocalTextOnly: true,
+      composerAttachments: [{ id: 'pending-cat-image', url: 'data:image/png;base64,AA==' }],
+      choicePrompt: {
+        source: 'mini_game_invite',
+        options: [{ choice: 'accept', label: 'Accept' }],
+      },
+      onComposerSubmit,
+      onCompactMinimizeRequest,
+    });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    expect(screen.queryByRole('button', { name: '更多工具' })).toBeNull();
+    expect(container.querySelector('.composer-attachment-viewport')).toBeNull();
+    expect(document.body.querySelector('.composer-choice-layer')).toBeNull();
+
+    fireEvent.change(input, { target: { value: '  你好  ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好' });
+    expect(screen.getByPlaceholderText('Type a message...')).toBeInTheDocument();
+    expect(container.querySelector('[data-compact-chat-state="input"]')).not.toBeNull();
+
+    fireEvent.click(container.querySelector('.compact-chat-minimize-ball') as HTMLButtonElement);
+    expect(onCompactMinimizeRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the ordinary draft separate from the temporary compact cat draft', () => {
+    const onComposerSubmit = vi.fn();
+    const { rerender } = render(
+      <App compactChatState="input" onComposerSubmit={onComposerSubmit} />,
+    );
+    fireEvent.change(screen.getByPlaceholderText('Type a message...'), {
+      target: { value: 'normal draft' },
+    });
+
+    rerender(
+      <App compactChatState="input" catLocalTextOnly onComposerSubmit={onComposerSubmit} />,
+    );
+    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('');
+    fireEvent.change(screen.getByPlaceholderText('Type a message...'), {
+      target: { value: 'cat draft' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    expect(onComposerSubmit).toHaveBeenLastCalledWith({ text: 'cat draft' });
+
+    rerender(
+      <App compactChatState="input" onComposerSubmit={onComposerSubmit} />,
+    );
+    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('normal draft');
+  });
+
+  it('keeps full cat chat text-only while preserving the message surface', () => {
+    const onComposerSubmit = vi.fn();
+    const { container } = render(
+      <App
+        chatSurfaceMode="full"
+        catLocalTextOnly
+        composerAttachments={[{ id: 'pending-full-cat-image', url: 'data:image/png;base64,AA==' }]}
+        galgameModeEnabled
+        galgameOptions={[{ label: 'A', text: 'normal option' }]}
+        onComposerSubmit={onComposerSubmit}
+      />,
+    );
+
+    expect(container.querySelector('.message-list')).not.toBeNull();
+    expect(container.querySelector('.composer-bottom-tools')).toBeNull();
+    expect(container.querySelector('.composer-attachments')).toBeNull();
+    expect(container.querySelector('.composer-choice-layer')).toBeNull();
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: '喵一下' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '喵一下' });
+  });
+
+  it('keeps the ordinary full-chat draft separate from the temporary cat draft', () => {
+    const onComposerSubmit = vi.fn();
+    const { rerender } = render(
+      <App chatSurfaceMode="full" onComposerSubmit={onComposerSubmit} />,
+    );
+    fireEvent.change(screen.getByPlaceholderText('Type a message...'), {
+      target: { value: 'normal full draft' },
+    });
+
+    rerender(
+      <App chatSurfaceMode="full" catLocalTextOnly onComposerSubmit={onComposerSubmit} />,
+    );
+    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('');
+    fireEvent.change(screen.getByPlaceholderText('Type a message...'), {
+      target: { value: 'full cat draft' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    expect(onComposerSubmit).toHaveBeenLastCalledWith({ text: 'full cat draft' });
+
+    rerender(
+      <App chatSurfaceMode="full" onComposerSubmit={onComposerSubmit} />,
+    );
+    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('normal full draft');
+  });
+
   it('uses the shared release runtime and catalog from the full chat menu', async () => {
     const restoreLive2dBounds = installVisibleLive2dBoundsMock();
     const onAvatarInteraction = vi.fn();

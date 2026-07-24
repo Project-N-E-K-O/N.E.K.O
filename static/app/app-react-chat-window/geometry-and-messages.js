@@ -1454,14 +1454,19 @@
         if (I.state.rollbackDraft) {
             console.log('[ROLLBACK] buildRenderProps: rollbackDraftPresent=true length=' + I.state.rollbackDraft.length + ' key=' + I.state._rollbackKey);
         }
+        var catLocalTextOnly = typeof I.isCatLocalChatActive === 'function' && I.isCatLocalChatActive();
+        var catMessages = catLocalTextOnly && typeof I.getCatLocalChatDisplayMessages === 'function'
+            ? I.getCatLocalChatDisplayMessages()
+            : [];
         return Object.assign({}, I.ensureViewProps(), {
-            messages: I.state.messages,
+            messages: I.state.messages.concat(catMessages),
             assistantName: getConfiguredAssistantName() || undefined,
             composerAttachments: I.state.composerAttachments,
             rollbackDraft: I.state.rollbackDraft || undefined,
             _rollbackKey: I.state._rollbackKey || undefined,
             _avatarToolDeactivationKey: I.state._avatarToolDeactivationKey || undefined,
             composerHidden: I.getEffectiveComposerHidden(),
+            catLocalTextOnly: catLocalTextOnly,
             chatSurfaceMode: I.getCurrentChatSurfaceMode(),
             compactMinimizeCancelSeq: I.compactMinimizeCancelSeq,
             compactChatState: I.getCurrentCompactChatState(),

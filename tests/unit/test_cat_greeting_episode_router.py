@@ -6,14 +6,45 @@ import math
 
 import pytest
 
+import main_logic.core.lifecycle as lifecycle_module
 import main_routers.websocket_router as websocket_router
 from fastapi import WebSocketDisconnect
 
+from main_logic.core.lifecycle import LifecycleMixin
 from main_routers.websocket_router import _normalize_cat_greeting_check
 
 
+class _GoodbyeCycleState(LifecycleMixin):
+    lanlan_name = "Test"
+    goodbye_silent = False
+    goodbye_silent_reason = ""
+    goodbye_silent_updated_at = 0.0
+    goodbye_silent_started_monotonic = 0.0
+    goodbye_silent_completed_duration = None
+
+    def _park_proactive_for_goodbye(self):
+        pass
+
+
+def test_goodbye_cycle_duration_is_server_timed_and_consumed_once(monkeypatch):
+    monotonic_values = iter((100.0, 112.0))
+    monkeypatch.setattr(lifecycle_module.time, "monotonic", lambda: next(monotonic_values))
+    state = _GoodbyeCycleState()
+
+    state.set_goodbye_silent(True, "goodbye")
+    state.set_goodbye_silent(True, "reconnect")
+    state.set_goodbye_silent(False, "return")
+
+    assert state.consume_goodbye_cycle_duration() == 12.0
+    assert state.consume_goodbye_cycle_duration() is None
+
+    never_started = _GoodbyeCycleState()
+    never_started.set_goodbye_silent(False, "reconcile")
+    assert never_started.consume_goodbye_cycle_duration() is None
+
+
 def test_cat_greeting_router_uses_canonical_top_level_values_only():
-    duration, tier, was_auto, episode, has_started_autonomous_action = _normalize_cat_greeting_check({
+    duration, tier, was_auto, episode = _normalize_cat_greeting_check({
         "cat_duration_seconds": 181.5,
         "tier": "  CAT2 ",
         "was_auto": True,
@@ -34,7 +65,6 @@ def test_cat_greeting_router_uses_canonical_top_level_values_only():
     assert tier == "cat2"
     assert was_auto is True
     assert episode == {"kind": "rest_after_activity", "highlight": "played_yarn"}
-    assert has_started_autonomous_action is True
 
 
 @pytest.mark.parametrize(
@@ -54,7 +84,7 @@ def test_cat_greeting_router_uses_canonical_top_level_values_only():
     ],
 )
 def test_cat_greeting_router_duration_accepts_only_finite_numbers(raw, expected):
-    duration, _, _, _, _ = _normalize_cat_greeting_check({"cat_duration_seconds": raw})
+    duration, _, _, _ = _normalize_cat_greeting_check({"cat_duration_seconds": raw})
     assert duration == expected
 
 
@@ -72,13 +102,13 @@ def test_cat_greeting_router_duration_accepts_only_finite_numbers(raw, expected)
     ],
 )
 def test_cat_greeting_router_tier_is_allowlisted(raw, expected):
-    _, tier, _, _, _ = _normalize_cat_greeting_check({"tier": raw})
+    _, tier, _, _ = _normalize_cat_greeting_check({"tier": raw})
     assert tier == expected
 
 
 @pytest.mark.parametrize("raw", [False, "false", "true", "1", 1, 0, [], {}, None])
 def test_cat_greeting_router_only_literal_boolean_true_means_auto(raw):
-    _, _, was_auto, _, _ = _normalize_cat_greeting_check({"was_auto": raw})
+    _, _, was_auto, _ = _normalize_cat_greeting_check({"was_auto": raw})
     assert was_auto is False
 
 
@@ -93,7 +123,7 @@ def test_cat_greeting_router_only_literal_boolean_true_means_auto(raw):
     ],
 )
 def test_cat_greeting_router_accepts_only_valid_episode_combinations(raw_episode, expected):
-    _, _, _, episode, _ = _normalize_cat_greeting_check({
+    _, _, _, episode = _normalize_cat_greeting_check({
         "cat_memory_summary": {"episode": raw_episode},
     })
     assert episode == expected
@@ -113,7 +143,7 @@ def test_cat_greeting_router_accepts_only_valid_episode_combinations(raw_episode
     ],
 )
 def test_cat_greeting_router_drops_invalid_episode_without_rejecting_the_check(raw_episode):
-    duration, tier, was_auto, episode, has_started_autonomous_action = _normalize_cat_greeting_check({
+    duration, tier, was_auto, episode = _normalize_cat_greeting_check({
         "cat_duration_seconds": 240,
         "tier": "cat1",
         "was_auto": True,
@@ -121,11 +151,10 @@ def test_cat_greeting_router_drops_invalid_episode_without_rejecting_the_check(r
     })
     assert (duration, tier, was_auto) == (240.0, "cat1", True)
     assert episode is None
-    assert has_started_autonomous_action is False
 
 
 def test_cat_greeting_router_ignores_unrecognized_summary_fields_and_top_level_episode():
-    _, _, _, episode, has_started_autonomous_action = _normalize_cat_greeting_check({
+    _, _, _, episode = _normalize_cat_greeting_check({
         "episode": {"kind": "activity", "highlight": "played_yarn"},
         "cat_memory_summary": {
             "events": ["open", "text"],
@@ -138,39 +167,21 @@ def test_cat_greeting_router_ignores_unrecognized_summary_fields_and_top_level_e
         },
     })
     assert episode == {"kind": "activity", "highlight": "played_yarn"}
-    assert has_started_autonomous_action is False
 
 
 def test_cat_greeting_router_ignores_non_object_summary():
     for summary in (None, [], "summary", 1):
-        _, _, _, episode, has_started_autonomous_action = _normalize_cat_greeting_check({"cat_memory_summary": summary})
+        _, _, _, episode = _normalize_cat_greeting_check({"cat_memory_summary": summary})
         assert episode is None
-        assert has_started_autonomous_action is False
 
 
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [
-        (True, True),
-        (False, False),
-        (1, False),
-        (0, False),
-        ("true", False),
-        ("false", False),
-        ([], False),
-        ({}, False),
-        (None, False),
-    ],
-)
-def test_cat_greeting_router_accepts_only_literal_true_started_delivery_gate(raw, expected):
-    _, _, _, episode, has_started_autonomous_action = _normalize_cat_greeting_check({
-        "has_started_autonomous_action": True,
+def test_cat_greeting_router_ignores_obsolete_started_marker():
+    _, _, _, episode = _normalize_cat_greeting_check({
         "cat_memory_summary": {
-            "has_started_autonomous_action": raw,
+            "has_started_autonomous_action": True,
             "episode": {"kind": "activity", "highlight": "played_yarn"},
         },
     })
-    assert has_started_autonomous_action is expected
     assert episode == {"kind": "activity", "highlight": "played_yarn"}
 
 
@@ -209,7 +220,18 @@ def test_greeting_task_scheduler_coalesces_all_greeting_sources():
     asyncio.run(scenario())
 
 
-def test_cat_greeting_router_passes_only_canonical_episode_to_manager(monkeypatch):
+@pytest.mark.parametrize(
+    ("server_duration", "expected_calls"),
+    [
+        (12.0, [(12.0, "", False, {"kind": "activity", "highlight": "ate_snack"})]),
+        (None, []),
+    ],
+)
+def test_cat_greeting_router_uses_one_server_cycle_and_canonical_episode(
+    monkeypatch,
+    server_duration,
+    expected_calls,
+):
     calls = []
     session_ids = {}
 
@@ -220,8 +242,11 @@ def test_cat_greeting_router_passes_only_canonical_episode_to_manager(monkeypatc
         def set_user_language(self, _value):
             pass
 
-        def trigger_cat_greeting(self, duration, tier, was_auto, *, episode=None, has_started_autonomous_action=False):
-            calls.append((duration, tier, was_auto, episode, has_started_autonomous_action))
+        def consume_goodbye_cycle_duration(self):
+            return server_duration
+
+        def trigger_cat_greeting(self, duration, tier, was_auto, episode=None):
+            calls.append((duration, tier, was_auto, episode))
 
             async def _done():
                 return None
@@ -274,10 +299,4 @@ def test_cat_greeting_router_passes_only_canonical_episode_to_manager(monkeypatc
 
     asyncio.run(websocket_router.websocket_endpoint(_WebSocket(), "Test"))
 
-    assert calls == [(
-        float(7 * 24 * 3600),
-        "",
-        False,
-        {"kind": "activity", "highlight": "ate_snack"},
-        True,
-    )]
+    assert calls == expected_calls

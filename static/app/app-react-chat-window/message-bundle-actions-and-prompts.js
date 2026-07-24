@@ -309,6 +309,14 @@
             requestId: requestId
         };
 
+        if (typeof I.isCatLocalChatActive === 'function' && I.isCatLocalChatActive()) {
+            if (!detail.text.trim()) return;
+            if (typeof I.submitCatLocalChatText === 'function') {
+                I.submitCatLocalChatText(detail);
+            }
+            return;
+        }
+
         var hasAttachments = I.state.composerAttachments && I.state.composerAttachments.length > 0;
         if (!detail.text.trim() && !hasAttachments) return;
 
@@ -1197,6 +1205,11 @@
         if (normalized === 'input' && (I.state.homeTutorialInputLocked || I.isHomeTutorialInteractionLocked())) {
             return;
         }
+        if (typeof I.isCatLocalChatActive === 'function'
+            && I.isCatLocalChatActive()
+            && normalized !== 'input') {
+            return;
+        }
         I.setCompactChatState(normalized);
     }
 
@@ -1767,7 +1780,11 @@
         var restoredEffectiveComposer = wasEffectiveHidden && !isEffectiveHidden;
         I.syncComposerAttachmentsVisibility(previousAttachmentsVisible);
         if (next) {
-            I.resetCompactChatState();
+            if (typeof I.isCatLocalChatActive === 'function' && I.isCatLocalChatActive()) {
+                I.setCompactChatState('input');
+            } else {
+                I.resetCompactChatState();
+            }
             I.invalidatePendingGalgameRequest();
         }
         if (wasEffectiveHidden !== isEffectiveHidden) {

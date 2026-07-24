@@ -784,20 +784,13 @@
         window.addEventListener('live2d-goodbye-click', function () {
             I.setGoodbyeComposerHidden(true, 'live2d-goodbye-click');
         });
-        window.addEventListener('live2d-return-click', function () {
-            I.setGoodbyeComposerHidden(false, 'live2d-return-click');
-            if (I.hasElectronIdleDockPendingOrActive()) { I.exitElectronIdleDock(); }
-            if (I.hasIdleDockPendingOrActive()) { I.exitIdleDock(); return; }
-            I.clearIdleDockState();
-        });
-        window.addEventListener('vrm-return-click', function () {
-            I.setGoodbyeComposerHidden(false, 'vrm-return-click');
-            if (I.hasElectronIdleDockPendingOrActive()) { I.exitElectronIdleDock(); }
-            if (I.hasIdleDockPendingOrActive()) { I.exitIdleDock(); return; }
-            I.clearIdleDockState();
-        });
-        window.addEventListener('mmd-return-click', function () {
-            I.setGoodbyeComposerHidden(false, 'mmd-return-click');
+        window.addEventListener('neko:cat-return-complete', function (event) {
+            const source = event && event.detail ? event.detail.source : '';
+            if (source !== 'live2d-return-click' && source !== 'vrm-return-click' &&
+                source !== 'mmd-return-click' && source !== 'pngtuber-return-click') {
+                return;
+            }
+            I.setGoodbyeComposerHidden(false, 'return-complete');
             if (I.hasElectronIdleDockPendingOrActive()) { I.exitElectronIdleDock(); }
             if (I.hasIdleDockPendingOrActive()) { I.exitIdleDock(); return; }
             I.clearIdleDockState();

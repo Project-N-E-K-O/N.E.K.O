@@ -356,7 +356,7 @@
                 lines.push('触发事实：' + decision.triggerTypes.join(', '));
             }
         }
-        lines.push('', '动作评分（需求余量＋节奏＋短时意图－本动作冷却）');
+        lines.push('', '动作评分（需求余量＋节奏＋短时意图；冷却单独排序）');
         ACTION_DEFINITIONS.forEach(function (action) {
             var score = scoresByAction[action.id] || candidatesByAction[action.id] || {};
             var candidate = candidatesByAction[action.id];
@@ -377,11 +377,11 @@
             lines.push('  短时意图：强度 ' + formatNumber(score.intentLevel) +
                 ' ｜ 计入分：' + formatNumber(score.intentContribution) +
                 ' ｜ 依据：' + (score.intentReason || '-'));
-            lines.push('  冷却扣分：' + formatNumber(score.cooldownPenalty) +
+            lines.push('  冷却排序位：' + formatNumber(score.cooldownSortRank) +
                 (score.cooldownApplied ? ' ｜ 剩余：' + Math.ceil((Number(score.cooldownRemainingMs) || 0) / 1000) + ' 秒' : ' ｜ 未冷却'));
             lines.push('  冷却曲线：剩余比例 ' + Math.round((Number(score.cooldownRecoveryFactor) || 0) * 100) + '%' +
                 ' ｜ 1.9 次幂曲线值：' + formatNumber(score.cooldownCurveFactor));
-            lines.push('  可比效用：' + formatNumber(score.utilityScore) +
+            lines.push('  资格分：' + formatNumber(score.eligibilityScore) +
                 ' ｜ 最终分：' + (currentScore === null ? '-' : formatNumber(currentScore)));
             lines.push('  本轮可用分（仅 provider 允许后计算）：' +
                 (candidateScore === null ? '尚未通过动作条件' : formatNumber(candidateScore)));
