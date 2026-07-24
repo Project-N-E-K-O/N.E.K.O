@@ -259,11 +259,15 @@ class QQReplyBufferService:
     # ------------------------------------------------------------------
 
     async def _flush_detached(self, session_key: str, pending: PendingReply) -> None:
-        """已从 _pending 摘除的桶的交付逻辑——不会被新消息 cancel。"""
+        """已从 _pending 摘除的桶的交付逻辑——不会被新消息 cancel。
+        只清理身份匹配的桶，防止并发 detached 桶互相误删。"""
         try:
             await self._flush_impl(session_key, pending, check_pending=False)
         finally:
-            self._detached.pop(session_key, None)
+            if self._detached.get(session_key) is pending:
+                self._detached.pop(session_key, None)
+            else:
+                self.plugin._emit_log("DEBUG", f"[Buffer] detached finally: key={session_key} 桶已替换，跳过清理")
 
     async def _flush(self, session_key: str, pending: PendingReply, *, abandon_on_no_reply: bool = False) -> None:
         await self._flush_impl(session_key, pending, check_pending=True, abandon_on_no_reply=abandon_on_no_reply)
