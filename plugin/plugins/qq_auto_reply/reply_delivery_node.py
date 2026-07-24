@@ -143,7 +143,8 @@ class QQReplyDeliveryNode:
             if plan.fallback_to_text_on_voice_failure and block.record:
                 self.plugin._emit_log("INFO", f"[Delivery] 语音失败，fallback 文本: {block.record[:40]}")
                 segs = self._build_segments(block)
-                segs.append({"type": "text", "data": {"text": block.record}})
+                if not block.text:
+                    segs.append({"type": "text", "data": {"text": block.record}})
                 if plan.target_type == "group":
                     await self.plugin.qq_client.send_group_message_segments(plan.target_id, segs)
                 else:
