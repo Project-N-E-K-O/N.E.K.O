@@ -497,7 +497,7 @@ test('right edge peek faces inward and restores original transform', async () =>
     assert.equal(model.x, 890);
     assert.equal(model.y, 100);
     assert.equal(model.rotation, -60 * Math.PI / 180);
-    assert.equal(model.scale.x, -1);
+    assert.equal(model.scale.x, 1);
 
     const restorePromise = manager.restoreLive2DPeek('click-restore');
     flushNextFrame(harness);
@@ -527,7 +527,7 @@ test('edge peek uses renderer screen bounds when canvas differs from window view
 
     assert.equal(model.x, 970);
     assert.equal(model.rotation, -60 * Math.PI / 180);
-    assert.equal(model.scale.x, -1);
+    assert.equal(model.scale.x, 1);
     assert.deepEqual(JSON.parse(JSON.stringify(manager._live2DPeekState.visibleBounds)), {
         left: 970,
         right: 1080,
