@@ -186,7 +186,8 @@ class QQReplyGenerationService:
         user_data: dict[str, Any],
         context: QQReplyContext,
     ) -> None:
-        if user_data.get("memory_enabled"):
+        # TODO: 记忆缓存流程已关闭，后续接入本体记忆系统
+        if False and user_data.get("memory_enabled"):
             try:
                 count = await self.plugin._cache_session_delta(session_key, user_data)
                 if count:

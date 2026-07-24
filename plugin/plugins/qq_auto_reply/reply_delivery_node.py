@@ -143,7 +143,10 @@ class QQReplyDeliveryNode:
             if plan.fallback_to_text_on_voice_failure and block.record:
                 self.plugin._emit_log("INFO", f"[Delivery] 语音失败，fallback 文本: {block.record[:40]}")
                 segs = self._build_segments(block)
-                if not block.text:
+                # 在已有文本段前面插入语音转文字内容，避免静默丢失
+                if block.text:
+                    segs.insert(0, {"type": "text", "data": {"text": f"[语音] {block.record}"}})
+                else:
                     segs.append({"type": "text", "data": {"text": block.record}})
                 if plan.target_type == "group":
                     await self.plugin.qq_client.send_group_message_segments(plan.target_id, segs)

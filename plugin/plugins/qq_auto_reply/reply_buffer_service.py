@@ -109,11 +109,11 @@ class QQReplyBufferService:
         return {"pending": entries, "count": count}
 
     async def buffer(self, session_key: str, message_text: str, sender_id: str, is_group: bool, group_id: str) -> bool:
-        """消息到达时调用。返回 True 表示跳过 pipeline，返回 False 表示需要走 pipeline（首次）。"""
+        """消息到达时调用。返回 True 表示跳过 pipeline，返回 False 表示需要走 pipeline。
+        启用时所有消息都入桶，定时汇总一条回复，不产生重复。"""
         if not self._enabled(is_group):
             return False
         max_count = self._max_count(is_group)
-        delay = self._random_delay(is_group)
         existing = self._pending.get(session_key)
         if existing and (existing.task is None or not existing.task.done()):
             # 桶已存在：取消旧计时，追加消息，重启新计时
@@ -131,9 +131,9 @@ class QQReplyBufferService:
                 existing.wait_until = time.time() + delay
                 existing._new_task(self._flush(session_key, existing))
                 self.plugin._emit_log("DEBUG", f"[Buffer] 追加 key={session_key} count={len(existing.entries)} delay={delay:.1f}s")
-            return True   # 跳过 pipeline，桶汇总时会统一生成总结
+            return True   # 跳过 pipeline，统一等汇总
 
-        # 首条消息：创建缓冲桶，起计时器
+        # 首条消息：创建缓冲桶，起计时器。不触发独立 pipeline
         pending = PendingReply(sender_id, is_group, group_id)
         pending.bucket_id = self._next_bucket_id()
         pending.entries.append((sender_id, message_text))
@@ -142,7 +142,7 @@ class QQReplyBufferService:
         pending.task = pending._new_task(self._flush(session_key, pending))
         self._pending[session_key] = pending
         self.plugin._emit_log("DEBUG", f"[Buffer] 新建 key={session_key} bucket_id={pending.bucket_id} delay={delay:.1f}s")
-        return False
+        return True   # 跳过 pipeline，统一等汇总
 
     # ------------------------------------------------------------------
     # 话题抽取
