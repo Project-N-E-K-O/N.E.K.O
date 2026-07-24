@@ -72,6 +72,8 @@ def reset_geo_caches(monkeypatch):
         ('_ip_check_last_attempt_monotonic', None),
         ('_ip_probe_thread', None),
         ('_ip_probe_started_monotonic', None),
+        ('_ip_probe_generation', 0),
+        ('_wedged_probes', []),
     ):
         monkeypatch.setattr(ConfigManager, name, value)
     yield
@@ -646,12 +648,14 @@ def test_stuck_probe_is_replaced_instead_of_blocking_forever(monkeypatch):
     monkeypatch.setattr(core_config_mod, 'time', SimpleNamespace(monotonic=clock))
 
     release = threading.Event()
+    entered = threading.Event()
     started = []
 
     class _WedgedThenOk:
         def open(self, req, timeout=None):
             started.append(1)
             if len(started) == 1:
+                entered.set()             # 已真正进入 open()，避免 is_alive() 竞态
                 release.wait(10)          # 第一个探测卡在 DNS 上
                 raise OSError('unwedged')
             return _JsonResp('{"countryCode": "US"}')
@@ -663,7 +667,7 @@ def test_stuck_probe_is_replaced_instead_of_blocking_forever(monkeypatch):
     try:
         assert ConfigManager._check_ip_non_mainland_http() is None
         stuck = ConfigManager._ip_probe_thread
-        assert stuck.is_alive()
+        assert entered.wait(5), '第一个探测未进入 open()'
 
         # 还没超龄：不顶替
         clock.now += ConfigManager._IP_PROBE_STALE_AFTER_S - 1
@@ -700,3 +704,110 @@ def test_game_session_pool_settles_the_region():
             break
     else:
         pytest.fail('未找到 _get_or_create_session，断言失效')
+
+
+@pytest.mark.unit
+def test_superseded_probe_cannot_overwrite_a_newer_verdict(monkeypatch):
+    """A wedged probe that surfaces late must not clobber its replacement.
+
+    Its answer was taken before the network exit changed (WiFi back, VPN toggled),
+    so publishing it would pin later sessions to the wrong endpoint.
+    """
+    clock = _FakeClock()
+    monkeypatch.setattr(core_config_mod, 'time', SimpleNamespace(monotonic=clock))
+
+    release = threading.Event()
+    entered = threading.Event()
+    started = []
+
+    class _OldSaysCN_NewSaysJP:
+        def open(self, req, timeout=None):
+            started.append(1)
+            if len(started) == 1:
+                entered.set()
+                release.wait(10)
+                return _JsonResp('{"countryCode": "CN"}')     # 换网前的旧答案
+            return _JsonResp('{"countryCode": "JP"}')         # 顶替者的新答案
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, 'build_opener', lambda *a, **kw: _OldSaysCN_NewSaysJP())
+
+    stuck = None
+    try:
+        ConfigManager._check_ip_non_mainland_http()
+        stuck = ConfigManager._ip_probe_thread
+        assert entered.wait(5)
+
+        clock.now += ConfigManager._IP_PROBE_STALE_AFTER_S + 1
+        _probe_once()
+        assert ConfigManager._ip_check_cache is True, '顶替者应当先写入 JP'
+
+        # 旧探测这时才带着 CN 归来
+        release.set()
+        stuck.join(10)
+        assert not stuck.is_alive()
+        assert ConfigManager._ip_check_cache is True, '过期探测不得覆盖更新的结论'
+    finally:
+        release.set()
+        if stuck is not None:
+            stuck.join(10)
+
+
+@pytest.mark.unit
+def test_wedged_probe_replacements_are_bounded(monkeypatch):
+    """Permanently blocked DNS must not leak a thread per backoff cycle.
+
+    Each replacement is an unjoinable daemon; at the 10-minute backoff cap that is
+    roughly six per hour for the life of the process.
+    """
+    clock = _FakeClock()
+    monkeypatch.setattr(core_config_mod, 'time', SimpleNamespace(monotonic=clock))
+
+    release = threading.Event()
+    live = []
+
+    class _AlwaysWedged:
+        def open(self, req, timeout=None):
+            live.append(1)
+            release.wait(20)
+            raise OSError('never resolves')
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, 'build_opener', lambda *a, **kw: _AlwaysWedged())
+
+    threads = []
+    try:
+        for _ in range(10):
+            ConfigManager._check_ip_non_mainland_http()
+            t = ConfigManager._ip_probe_thread
+            if t is not None and t not in threads:
+                threads.append(t)
+            clock.now += ConfigManager._IP_PROBE_STALE_AFTER_S + ConfigManager._IP_CHECK_RETRY_MAX_S + 1
+
+        alive = [t for t in threads if t.is_alive()]
+        cap = ConfigManager._IP_PROBE_MAX_WEDGED
+        assert len(alive) <= cap + 1, f'卡死线程数 {len(alive)} 超出上限 {cap}+1'
+    finally:
+        release.set()
+        for t in threads:
+            t.join(20)
+
+
+@pytest.mark.unit
+def test_steam_fallback_yields_to_a_verdict_that_lands_mid_call():
+    """The probe runs in the background and can land between the two sub-checks.
+
+    Taking the Steam fallback anyway would let one core_config snapshot rewrite some
+    URLs by the IP verdict and others by Steam's — self-contradictory on a proxy,
+    where the two disagree.
+    """
+    probe = _Probe()
+    probe._check_ip_non_mainland_http = lambda: None
+
+    def _steam_then_verdict_lands():
+        ConfigManager._ip_check_cache = True     # 探测恰在此刻落地
+        return False                             # Steam 说大陆（代理出口）
+
+    probe._check_steam_non_mainland = _steam_then_verdict_lands
+    assert probe._check_non_mainland() is True, 'IP 权威结论应当压过 Steam 兜底票'
+    assert ConfigManager._region_cache is True

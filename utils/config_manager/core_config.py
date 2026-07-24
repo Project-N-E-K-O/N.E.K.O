@@ -84,6 +84,9 @@ class CoreConfigMixin:
     # 允许另起一个顶替，否则一个卡死的线程会永久挡住退避重试。取值须明显大于
     # 探测自身的 3s socket 超时，避免把只是慢的正常探测误判成卡死。
     _IP_PROBE_STALE_AFTER_S = 30.0
+    # 同时允许存在的卡死探测线程上限。DNS 永久阻塞时它们 join 不掉、只增不减，
+    # 不封顶就会随进程寿命线性泄漏（封顶退避 10 分钟一档 ≈ 每小时 6 个）。
+    _IP_PROBE_MAX_WEDGED = 3
 
     @classmethod
     def _ip_check_backoff_s(cls, failures: int) -> float:
@@ -101,8 +104,15 @@ class CoreConfigMixin:
     # --- Core config helpers ---
 
     @staticmethod
-    def _run_ip_probe():
-        """Body of the IP geolocation probe. Always runs on a dedicated thread."""
+    def _run_ip_probe(generation):
+        """Body of the IP geolocation probe. Always runs on a dedicated thread.
+
+        ``generation`` is the probe's ticket. A probe wedged in DNS gets replaced
+        while it is still running, and can surface much later with an answer taken
+        before the network exit changed (WiFi came back, VPN toggled). Writing that
+        unconditionally would clobber the replacement's newer, correct verdict — so
+        a probe only publishes while its ticket is still the current one.
+        """
         from utils.config_manager import ConfigManager
 
         try:
@@ -118,7 +128,14 @@ class CoreConfigMixin:
             country = (data.get("countryCode") or "").upper()
             if country:
                 result = country != "CN"
-                ConfigManager._ip_check_cache = result
+                with ConfigManager._geo_probe_lock:
+                    if generation != ConfigManager._ip_probe_generation:
+                        print(
+                            f"[GeoIP] discarding superseded probe result: country={country}",
+                            file=sys.stderr,
+                        )
+                        return
+                    ConfigManager._ip_check_cache = result
                 print(f"[GeoIP] HTTP IP check: country={country}, non_mainland={result}", file=sys.stderr)
                 return
         except Exception as e:
@@ -232,10 +249,24 @@ class CoreConfigMixin:
                 # 用「是否还活着」当唯一判据会留一个死锁：getaddrinfo 不受 socket
                 # 超时约束，DNS 卡住的线程可以活得任意久，而它活着就永远挡住新探测
                 # ——指数退避再也不会跑，网络恢复了也回不来。超龄的当作已失效，另起
-                # 一个（旧线程是 daemon，最终返回时若写入结论同样有效）。
+                # 一个顶替（旧的靠 generation 失去写权，见 _run_ip_probe）。
                 started = ConfigManager._ip_probe_started_monotonic
                 if started is None or (now - started) < ConfigManager._IP_PROBE_STALE_AFTER_S:
                     return None
+                # 顶替不能无限做：DNS 永久阻塞时每个退避周期都换一个，卡死的
+                # daemon 线程只增不减（封顶 10 分钟一档 ≈ 每小时 6 个，进程活多久
+                # 漏多久）。累积到上限就停手——此时网络已经坏得没有再探的意义。
+                ConfigManager._wedged_probes = [
+                    t for t in ConfigManager._wedged_probes if t.is_alive()
+                ]
+                if len(ConfigManager._wedged_probes) >= ConfigManager._IP_PROBE_MAX_WEDGED:
+                    print(
+                        f"[GeoIP] {len(ConfigManager._wedged_probes)} probes already wedged, "
+                        "not starting another",
+                        file=sys.stderr,
+                    )
+                    return None
+                ConfigManager._wedged_probes.append(in_flight)
                 print(
                     f"[GeoIP] previous probe stuck for {now - started:.0f}s, starting a replacement",
                     file=sys.stderr,
@@ -246,9 +277,11 @@ class CoreConfigMixin:
                 return None
             ConfigManager._ip_check_last_attempt_monotonic = now
             ConfigManager._ip_check_attempts = failures + 1
+            ConfigManager._ip_probe_generation += 1
             # daemon：探测永远不该拖住进程退出（最坏挂在 3s 连接超时上）。
             thread = threading.Thread(
                 target=ConfigManager._run_ip_probe,
+                args=(ConfigManager._ip_probe_generation,),
                 name="geoip-probe",
                 daemon=True,
             )
@@ -322,6 +355,11 @@ class CoreConfigMixin:
 
         ip_result = self._check_ip_non_mainland_http()
         steam_result = self._check_steam_non_mainland()
+        if ip_result is None:
+            # 探测在后台跑，可能恰好在上面两行之间落地。不复查就会拿 Steam 的
+            # 兜底票压过刚到手的权威结论——挂代理时两者方向相反，一个 URL 用 IP、
+            # 下一个用 Steam，同一份 core_config 快照内部就自相矛盾了。
+            ip_result = ConfigManager._ip_check_cache
 
         if ip_result is not None:
             ConfigManager._region_cache = ip_result

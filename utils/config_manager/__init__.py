@@ -183,6 +183,11 @@ class ConfigManager(
     # CoreConfigMixin._check_ip_non_mainland_http 的 docstring）。
     _ip_probe_thread = None
     _ip_probe_started_monotonic = None
+    # 探测的「票号」：被顶替的旧探测失去写结论的权利，避免它带着换网前的答案
+    # 晚归、覆盖掉顶替者更新的结论。
+    _ip_probe_generation = 0
+    # 卡死待回收的探测线程（DNS 阻塞时它们 join 不掉），用于给顶替次数封顶。
+    _wedged_probes = []
 
 
 # 全局配置管理器实例
