@@ -100,6 +100,9 @@ class CoreConfigMixin:
     # 同时允许存在的卡死探测线程上限。DNS 永久阻塞时它们 join 不掉、只增不减，
     # 不封顶就会随进程寿命线性泄漏（封顶退避 10 分钟一档 ≈ 每小时 6 个）。
     _IP_PROBE_MAX_WEDGED = 3
+    # 到达上限后的「兜底探测」节奏。目的不是继续正常重试，而是保证网络恢复不会
+    # 被永久错过——线程增速降到每小时 1 个，同时最迟一小时内发现恢复。
+    _IP_PROBE_DESPERATE_INTERVAL_S = 3600.0
 
     @classmethod
     def _ip_check_backoff_s(cls, failures: int) -> float:
@@ -273,12 +276,21 @@ class CoreConfigMixin:
                     t for t in ConfigManager._wedged_probes if t.is_alive()
                 ]
                 if len(ConfigManager._wedged_probes) >= ConfigManager._IP_PROBE_MAX_WEDGED:
+                    # 到顶不能变成永久停手：那等于用「线程不泄漏」换回了本 PR 一开始
+                    # 删掉的那个死局——网络恢复后再也没人去探，海外用户锁死国内线路
+                    # （不变量 #4）。改为把节奏降到 _IP_PROBE_DESPERATE_INTERVAL_S
+                    # 一次：pathological 情况下线程增速从每小时 6 个降到 1 个，同时
+                    # 保证网络一旦恢复最迟一个周期内被发现。
+                    last_desperate = ConfigManager._ip_probe_last_desperate_monotonic
+                    if (last_desperate is not None
+                            and (now - last_desperate) < ConfigManager._IP_PROBE_DESPERATE_INTERVAL_S):
+                        return None
+                    ConfigManager._ip_probe_last_desperate_monotonic = now
                     print(
-                        f"[GeoIP] {len(ConfigManager._wedged_probes)} probes already wedged, "
-                        "not starting another",
+                        f"[GeoIP] {len(ConfigManager._wedged_probes)} probes wedged; "
+                        "starting a slow-rate replacement anyway so recovery is not missed",
                         file=sys.stderr,
                     )
-                    return None
                 ConfigManager._wedged_probes.append(in_flight)
                 print(
                     f"[GeoIP] previous probe stuck for {now - started:.0f}s, starting a replacement",
@@ -417,12 +429,18 @@ class CoreConfigMixin:
     # （例如未来新增 /docs /metrics 之类的非数据端点）
     _LIVESTREAM_DERIVE_PATHS = frozenset({'/core', '/text/v1', '/tts'})
 
-    def _adjust_free_api_url(self, url: str, is_free: bool) -> str:
+    def _adjust_free_api_url(self, url: str, is_free: bool, non_mainland=None) -> str:
         """Internal URL adjustment for free API users.
 
         Priority: livestream prefix derivation > overseas lanlan.tech→lanlan.app switch > return as-is.
         When livestream is enabled it only takes over whitelisted free-path endpoints under
         the lanlan.tech domain (/core /text/v1 /tts); other paths go through the original region switch.
+
+        ``non_mainland`` lets a caller rewriting several URLs pass one region verdict
+        for all of them. Resolving per URL is not safe: the verdict is not cached
+        while it is still provisional, so Steam initialising midway through the loop
+        would leave earlier URLs on lanlan.tech and later ones on lanlan.app — one
+        snapshot pointing at two regions.
         """
         # Late-bound through the package facade so existing
         # patch("utils.config_manager.<helper>") dotted-path monkeypatches
@@ -445,7 +463,7 @@ class CoreConfigMixin:
             logger.warning(f"Livestream URL 派生失败，回退到原始路径: {e}")
 
         try:
-            if self._check_non_mainland():
+            if non_mainland if non_mainland is not None else self._check_non_mainland():
                 # 海外免费统一走 www.lanlan.app（含 /tts）：该节点透传客户端
                 # voice 字段到 Gemini，支持 Gemini 全量 + yui。早期把 /tts 降级到
                 # 裸 lanlan.app（硬覆盖 Leda 的旧端点）的 .replace 已移除。
@@ -1097,9 +1115,18 @@ class CoreConfigMixin:
         if config['GPTSOVITS_ENABLED'] and core_cfg.get('ttsVoiceId') is not None:
             config['TTS_VOICE_ID'] = core_cfg.get('ttsVoiceId', '')
 
+        # 整份快照共用一次区域判定：判定尚未落定时它每次都会重算，Steam 若在循环
+        # 中途初始化完成，前面的 URL 会停在 lanlan.tech、后面的却变成 lanlan.app，
+        # 同一份 core_config 指向两个区域。
+        try:
+            snapshot_non_mainland = self._check_non_mainland()
+        except Exception:
+            snapshot_non_mainland = False
         for key, value in config.items():
             if key.endswith('_URL') and isinstance(value, str):
-                config[key] = self._adjust_free_api_url(value, True)
+                config[key] = self._adjust_free_api_url(
+                    value, True, non_mainland=snapshot_non_mainland,
+                )
 
         # Agent model always uses international API regardless of region
         if isinstance(config.get('AGENT_MODEL_URL'), str):

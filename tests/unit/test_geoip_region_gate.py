@@ -59,6 +59,15 @@ class _JsonResp:
         return self._payload.encode()
 
 
+@pytest.fixture()
+def config_manager(clean_user_data_dir):
+    """Real ConfigManager on a temp config dir (mirrors test_api_config_manager)."""
+    from utils.config_manager import get_config_manager
+    cm = get_config_manager('N.E.K.O')
+    cm.config_dir.mkdir(parents=True, exist_ok=True)
+    return cm
+
+
 @pytest.fixture(autouse=True)
 def reset_geo_caches(monkeypatch):
     monkeypatch.setattr(core_config_mod, 'GEOIP_FORCE_NON_MAINLAND', None)
@@ -754,21 +763,22 @@ def test_superseded_probe_cannot_overwrite_a_newer_verdict(monkeypatch):
 
 
 @pytest.mark.unit
-def test_wedged_probe_replacements_are_bounded(monkeypatch):
-    """Permanently blocked DNS must not leak a thread per backoff cycle.
+def test_wedged_probe_replacements_are_rate_limited_but_never_stop(monkeypatch):
+    """Permanently blocked DNS: bound the thread growth without ever giving up.
 
-    Each replacement is an unjoinable daemon; at the 10-minute backoff cap that is
-    roughly six per hour for the life of the process.
+    Two failure modes to avoid at once. Spawning one replacement per backoff cycle
+    leaks roughly six unjoinable daemons per hour for the life of the process. But
+    refusing outright once the cap is reached recreates the very deadlock this PR
+    removed — nobody probes again, so an overseas user stays on the mainland route
+    until restart even after the network comes back.
     """
     clock = _FakeClock()
     monkeypatch.setattr(core_config_mod, 'time', SimpleNamespace(monotonic=clock))
 
     release = threading.Event()
-    live = []
 
     class _AlwaysWedged:
         def open(self, req, timeout=None):
-            live.append(1)
             release.wait(20)
             raise OSError('never resolves')
 
@@ -776,17 +786,27 @@ def test_wedged_probe_replacements_are_bounded(monkeypatch):
     monkeypatch.setattr(urllib.request, 'build_opener', lambda *a, **kw: _AlwaysWedged())
 
     threads = []
+    step = ConfigManager._IP_PROBE_STALE_AFTER_S + ConfigManager._IP_CHECK_RETRY_MAX_S + 1
+    rounds = 24
     try:
-        for _ in range(10):
+        for _ in range(rounds):
             ConfigManager._check_ip_non_mainland_http()
             t = ConfigManager._ip_probe_thread
             if t is not None and t not in threads:
                 threads.append(t)
-            clock.now += ConfigManager._IP_PROBE_STALE_AFTER_S + ConfigManager._IP_CHECK_RETRY_MAX_S + 1
+            clock.now += step
 
-        alive = [t for t in threads if t.is_alive()]
+        # 有界：远少于「每轮一个」
+        assert len(threads) < rounds, f'{rounds} 轮产生了 {len(threads)} 个线程，没有限速'
+        # 但不停手：到顶之后仍然继续以兜底节奏尝试，否则网络恢复永远发现不了
         cap = ConfigManager._IP_PROBE_MAX_WEDGED
-        assert len(alive) <= cap + 1, f'卡死线程数 {len(alive)} 超出上限 {cap}+1'
+        # 硬停手时线程数恰好停在 cap+1（到顶前的正常顶替），所以必须严格大于它，
+        # 否则这条断言会把「永久停手」放过去。
+        assert len(threads) > cap + 1, '到达上限后就再不尝试 = 回到本 PR 删掉的死局'
+        # 增速不超过兜底节奏（放一格余量给上限前的正常顶替）
+        elapsed = rounds * step
+        budget = cap + 1 + elapsed / ConfigManager._IP_PROBE_DESPERATE_INTERVAL_S + 1
+        assert len(threads) <= budget, f'线程增速 {len(threads)} 超出预算 {budget:.0f}'
     finally:
         release.set()
         for t in threads:
@@ -811,3 +831,40 @@ def test_steam_fallback_yields_to_a_verdict_that_lands_mid_call():
     probe._check_steam_non_mainland = _steam_then_verdict_lands
     assert probe._check_non_mainland() is True, 'IP 权威结论应当压过 Steam 兜底票'
     assert ConfigManager._region_cache is True
+
+
+@pytest.mark.unit
+def test_one_config_snapshot_uses_one_region_verdict(config_manager, monkeypatch):
+    """All URLs in a snapshot must agree on the region.
+
+    The verdict is deliberately not cached while provisional, so resolving it per
+    URL lets Steam initialising mid-loop leave earlier URLs on lanlan.tech and later
+    ones on lanlan.app — one config pointing at two regions. Asserted on the real
+    ``get_core_config`` loop: an earlier version of this test passed
+    ``non_mainland=`` by hand and therefore never exercised the call site at all.
+    """
+    # 必须真的落在免费路由上：URL 里没有 lanlan.tech 时 _adjust_free_api_url
+    # 第一行就早退，根本不会查区域，用例会退化成永远绿。
+    import json as _json
+    path = config_manager.get_config_path('core_config.json')
+    with open(str(path), 'w', encoding='utf-8') as fh:
+        _json.dump({'coreApi': 'free'}, fh)
+    config_manager._core_config_cache = None
+
+    calls = {'n': 0}
+    flips = iter([False] + [True] * 50)
+
+    def _flipping():
+        calls['n'] += 1
+        return next(flips)
+
+    monkeypatch.setattr(type(config_manager), '_check_non_mainland', lambda self: _flipping())
+    config_manager._core_config_cache = None
+    cfg = config_manager.get_core_config()
+
+    assert calls['n'] == 1, f'一次快照内判定了 {calls["n"]} 次，各 URL 可能不一致'
+    lanlan = [v for k, v in cfg.items()
+              if k.endswith('_URL') and isinstance(v, str) and 'lanlan.' in v]
+    assert lanlan, '前置条件：配置必须处于免费路由，否则区域判定根本不会被查'
+    hosts = {'lanlan.app' if 'lanlan.app' in v else 'lanlan.tech' for v in lanlan}
+    assert len(hosts) <= 1, f'同一份快照指向了两个区域: {lanlan}'

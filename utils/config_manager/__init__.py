@@ -188,6 +188,7 @@ class ConfigManager(
     _ip_probe_generation = 0
     # 卡死待回收的探测线程（DNS 阻塞时它们 join 不掉），用于给顶替次数封顶。
     _wedged_probes = []
+    _ip_probe_last_desperate_monotonic = None
 
 
 # 全局配置管理器实例
