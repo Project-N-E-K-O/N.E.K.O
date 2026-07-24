@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
+from .activity_evidence import RnnoiseEvidence
 from utils.audio_processor import AudioProcessor
 
 
@@ -26,6 +27,7 @@ class ProcessedVoiceFrame:
     sample_rate_hz: int
     speech_probability: float | None
     rnnoise_available: bool = False
+    rnnoise_evidence: RnnoiseEvidence | None = None
 
 
 class VoiceInputAudioPipeline:
@@ -82,9 +84,13 @@ class VoiceInputAudioPipeline:
         if self._closed:
             raise RuntimeError("VOICE_AUDIO_PIPELINE_CLOSED")
         if not pcm16:
-            return ProcessedVoiceFrame(b"", 16_000, None, False)
+            return ProcessedVoiceFrame(
+                b"", 16_000, None, False, RnnoiseEvidence.unavailable()
+            )
         if sample_rate_hz == 16_000:
-            return ProcessedVoiceFrame(pcm16, 16_000, None, False)
+            return ProcessedVoiceFrame(
+                pcm16, 16_000, None, False, RnnoiseEvidence.unavailable()
+            )
 
         async with self._lock:
             if self._closed:
@@ -103,11 +109,56 @@ class VoiceInputAudioPipeline:
                     getattr(self._processor, "_denoiser", None) is not None,
                 )
             )
+            if rnnoise_available:
+                frame_count = int(
+                    getattr(
+                        self._processor,
+                        "rnnoise_frame_count",
+                        1 if processed else 0,
+                    )
+                )
+                if frame_count > 0:
+                    peak = float(
+                        getattr(
+                            self._processor,
+                            "rnnoise_probability_peak",
+                            probability,
+                        )
+                    )
+                    mean = float(
+                        getattr(
+                            self._processor,
+                            "rnnoise_probability_mean",
+                            probability,
+                        )
+                    )
+                    last = float(
+                        getattr(
+                            self._processor,
+                            "rnnoise_probability_last",
+                            probability,
+                        )
+                    )
+                    ema = float(
+                        getattr(
+                            self._processor,
+                            "rnnoise_probability_ema",
+                            probability,
+                        )
+                    )
+                    evidence = RnnoiseEvidence(
+                        True, frame_count, peak, mean, last, ema
+                    )
+                else:
+                    evidence = RnnoiseEvidence(True, 0, None, None, None, None)
+            else:
+                evidence = RnnoiseEvidence.unavailable()
         return ProcessedVoiceFrame(
             processed,
             16_000,
-            probability if rnnoise_available else None,
+            evidence.peak,
             rnnoise_available,
+            evidence,
         )
 
     async def close(self) -> None:

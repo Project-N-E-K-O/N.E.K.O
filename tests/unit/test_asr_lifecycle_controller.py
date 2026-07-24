@@ -71,6 +71,25 @@ def test_prewarming_uses_eight_second_pending_connect_buffer() -> None:
     assert controller.pending_connect_bytes == 0
 
 
+def test_unconfirmed_prewarm_expiry_discards_candidate_audio() -> None:
+    controller = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("qwen", "manual"),
+        shadow_mode=False,
+    )
+    controller.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    controller.accept_audio(_pcm(300), sample_rate_hz=16_000)
+    controller.transition(VoiceLifecycleEvent.SOFT_WAKE)
+    controller.accept_audio(_pcm(500), sample_rate_hz=16_000)
+
+    controller.transition(VoiceLifecycleEvent.PREWARM_EXPIRED)
+
+    assert controller.snapshot.state is VoiceLifecycleState.LOCAL_LISTEN
+    assert controller.pre_roll_bytes == 0
+    assert controller.pending_connect_bytes == 0
+    next_audio = controller.accept_audio(_pcm(20), sample_rate_hz=16_000)
+    assert next_audio.disposition is AudioDisposition.BUFFER
+
+
 def test_blocked_route_consumes_audio_without_buffer_or_forward() -> None:
     controller = VoiceInputLifecycleController(
         provider_policy=resolve_provider_policy("gemini", "manual"),
@@ -181,11 +200,16 @@ def test_detector_failure_fails_open_only_to_continuous_independent_asr() -> Non
     controller.enable_independent_asr_fail_open()
     first = controller.accept_audio(_pcm(20), sample_rate_hz=16_000)
     second = controller.accept_audio(_pcm(20), sample_rate_hz=16_000)
+    controller.transition(VoiceLifecycleEvent.SOFT_WAKE)
+    controller.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+    active = controller.accept_audio(_pcm(20), sample_rate_hz=16_000)
 
     assert buffered.disposition is AudioDisposition.BUFFER
-    assert first.disposition is AudioDisposition.FORWARD_WITH_PRE_ROLL
-    assert first.pre_roll == _pcm(120)
-    assert second.disposition is AudioDisposition.FORWARD
+    assert first.disposition is AudioDisposition.BUFFER
+    assert second.disposition is AudioDisposition.BUFFER
+    assert active.disposition is AudioDisposition.FORWARD_WITH_PRE_ROLL
+    assert active.pre_roll == _pcm(160)
+    assert controller.independent_asr_fail_open is True
     assert controller.snapshot.route_mode is VoiceRouteMode.INDEPENDENT
 
 

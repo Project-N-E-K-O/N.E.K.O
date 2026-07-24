@@ -13,6 +13,7 @@ from typing import Generic, Literal, TypeAlias, TypeVar
 from main_logic.voice_turn.contracts import SpeechActivityEvent, TurnEvaluation
 
 from .lifecycle import VoiceIngressToken, VoiceTurnToken
+from .throttle_policy import ThrottleAction
 
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,35 @@ class DetectorCandidateKey:
 
     detector_epoch: int
     candidate_generation: int
+
+
+@dataclass(frozen=True, slots=True)
+class SmartTurnCompletionFence:
+    """Immutable detector boundary accepted with one SmartTurn completion."""
+
+    detector_epoch: int
+    candidate_generation: int
+    through_sequence_no: int
+    semantic_generation: int
+    semantic_turn_id: int
+    successor_candidate_generation: int
+    successor_present: bool
+
+    @property
+    def candidate(self) -> DetectorCandidateKey:
+        return DetectorCandidateKey(
+            self.detector_epoch,
+            self.candidate_generation,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderCandidateFence:
+    """Immutable local detector boundary sealed by a Provider endpoint."""
+
+    detector_epoch: int
+    candidate_generation: int
+    through_sequence_no: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +89,20 @@ class DetectorTurnEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class DetectorPrewarmEvent:
+    ingress: DetectorIngressIdentity
+    candidate: DetectorCandidateKey
+    kind: Literal["prewarm", "continuous"]
+
+
+@dataclass(frozen=True, slots=True)
+class DetectorTransportPrewarmEvent:
+    """Request transport resources without binding or opening a logical turn."""
+
+    ingress: DetectorIngressIdentity
+
+
+@dataclass(frozen=True, slots=True)
 class DetectorRuntimeEvent:
     ingress: DetectorIngressIdentity
     candidate: DetectorCandidateKey | None
@@ -71,7 +115,11 @@ class DetectorRuntimeEvent:
 
 
 DetectorEvent: TypeAlias = (
-    DetectorActivityEvent | DetectorTurnEvent | DetectorRuntimeEvent
+    DetectorActivityEvent
+    | DetectorTurnEvent
+    | DetectorPrewarmEvent
+    | DetectorTransportPrewarmEvent
+    | DetectorRuntimeEvent
 )
 
 
@@ -125,6 +173,9 @@ class DetectorSubmitResult:
     throttle_available: bool
     endpointing_available: bool
     identity: DetectorIngressIdentity | None
+    throttle_action: ThrottleAction | None = None
+    candidate: DetectorCandidateKey | None = None
+    control_event_emitted: bool = False
 
 
 DetectorQueueItem: TypeAlias = DetectorAudioItem | DetectorEvaluationResultItem | object

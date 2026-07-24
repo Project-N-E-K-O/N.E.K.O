@@ -273,6 +273,12 @@ class AudioProcessor:
         self._last_speech_prob = 0.0
         self._last_speech_time = time.time()
         self._needs_reset = False
+        self._rnnoise_frame_count = 0
+        self._rnnoise_peak: float | None = None
+        self._rnnoise_mean: float | None = None
+        self._rnnoise_last: float | None = None
+        self._rnnoise_ema: float | None = None
+        self._rnnoise_ema_state: float | None = None
         
         # AGC state
         self._agc_gain = 1.0
@@ -396,6 +402,12 @@ class AudioProcessor:
         Returns:
             Denoised int16 numpy array
         """
+        self._rnnoise_frame_count = 0
+        self._rnnoise_peak = None
+        self._rnnoise_mean = None
+        self._rnnoise_last = None
+        self._rnnoise_ema = None
+        frame_probabilities: list[float] = []
         pending_size = self._frame_buffer_size
         max_buffer_samples = self.RNNOISE_SAMPLE_RATE
 
@@ -427,8 +439,10 @@ class AudioProcessor:
             nonlocal output_offset
             try:
                 denoised, prob = self._denoiser.process_frame(frame)
-                self._last_speech_prob = prob
-                if prob > 0.2:
+                probability = min(1.0, max(0.0, float(prob)))
+                frame_probabilities.append(probability)
+                self._last_speech_prob = probability
+                if probability > 0.2:
                     self._last_speech_time = time.time()
                 output[output_offset : output_offset + self.RNNOISE_FRAME_SIZE] = denoised
             except Exception as e:
@@ -452,6 +466,19 @@ class AudioProcessor:
         if remaining:
             self._frame_buffer[:remaining] = audio[input_offset:]
         self._frame_buffer_size = remaining
+        if frame_probabilities:
+            self._rnnoise_frame_count = len(frame_probabilities)
+            self._rnnoise_peak = max(frame_probabilities)
+            self._rnnoise_mean = sum(frame_probabilities) / len(frame_probabilities)
+            self._rnnoise_last = frame_probabilities[-1]
+            ema_state = getattr(self, "_rnnoise_ema_state", None)
+            for probability in frame_probabilities:
+                if ema_state is None:
+                    ema_state = probability
+                else:
+                    ema_state = 0.35 * probability + 0.65 * ema_state
+            self._rnnoise_ema_state = ema_state
+            self._rnnoise_ema = ema_state
         return output
     
     def _reset_internal_state(self) -> None:
@@ -459,6 +486,12 @@ class AudioProcessor:
         self._frame_buffer.fill(0)
         self._frame_buffer_size = 0
         self._last_speech_prob = 0.0
+        self._rnnoise_frame_count = 0
+        self._rnnoise_peak = None
+        self._rnnoise_mean = None
+        self._rnnoise_last = None
+        self._rnnoise_ema = None
+        self._rnnoise_ema_state = None
         # Reset AGC gain state
         self._agc_gain = 1.0
         # Reset denoiser GRU hidden states (do not reinitialize)
@@ -549,6 +582,26 @@ class AudioProcessor:
     def speech_probability(self) -> float:
         """Get the last detected speech probability (0.0-1.0)."""
         return self._last_speech_prob
+
+    @property
+    def rnnoise_frame_count(self) -> int:
+        return self._rnnoise_frame_count
+
+    @property
+    def rnnoise_probability_peak(self) -> float | None:
+        return self._rnnoise_peak
+
+    @property
+    def rnnoise_probability_mean(self) -> float | None:
+        return self._rnnoise_mean
+
+    @property
+    def rnnoise_probability_last(self) -> float | None:
+        return self._rnnoise_last
+
+    @property
+    def rnnoise_probability_ema(self) -> float | None:
+        return self._rnnoise_ema
     
     def set_enabled(self, enabled: bool) -> None:
         """Enable or disable noise reduction."""
