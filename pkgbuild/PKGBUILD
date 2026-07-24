@@ -7,7 +7,7 @@ pkgdesc="N.E.K.O., a digital life that yearns to understand, connect, and grow w
 arch=('x86_64')
 url="https://github.com/Project-N-E-K-O/N.E.K.O"
 license=('Apache-2.0')
-depends=()
+depends=('gtk3','nss','libxtst','libsecret','xdg-utils')
 makedepends=()
 source=("$pkgname-$pkgver.tar.gz::https://github.com/Project-N-E-K-O/N.E.K.O/releases/download/v$pkgver/N.E.K.O_$pkgver_linux.tar.gz")
 sha256sums=('769b99970c13248129fd625c22e65b442fa6829ced2599347a8c7242a0fb6257')
@@ -26,7 +26,7 @@ package() {
 
   # 3. 创建启动脚本（命令执行层面的别名）并解决相对路径问题
   mkdir -p "$pkgdir/usr/bin"
-  
+
   # 主脚本：用户输入 n.e.k.o 时执行
   cat > "$pkgdir/usr/bin/n.e.k.o" << 'EOF'
 #!/bin/sh
@@ -44,7 +44,7 @@ Name=Project N.E.K.O
 Comment=N.E.K.O., a digital life that yearns to understand, connect, and grow with us.
 Exec=n.e.k.o
 Icon=neko-bin
-Categories=Utility; 
+Categories=Utility;
 # 分类暂时分到 Utility，后面再看
 Terminal=false
 StartupNotify=true
@@ -53,7 +53,7 @@ EOF
   # 5. 自动提取资源中的图标并安装到 pixmaps
   #    优先查找常见图标文件名（支持 png/svg/ico）
   ICON_FILE=$(find "$pkgdir/usr/lib/neko" -type f \( -iname "icon.*" -o -iname "logo.*" -o -iname "app.*" -o -iname "neko.*" \) -print -quit)
-  
+
   if [ -n "$ICON_FILE" ]; then
     # 根据文件扩展名决定目标名称
     EXT="${ICON_FILE##*.}"
