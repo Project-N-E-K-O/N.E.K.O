@@ -7,12 +7,12 @@ import time
 import pytest
 
 from main_logic.asr_client.detector_runtime import DetectorRuntime
-from main_logic.asr_client.speaker_shadow import (
-    SpeakerShadowCandidateKey,
+from main_logic.asr_client.speaker_shadow import SpeakerShadowCandidateKey
+from main_logic.voice_identity.contracts import (
     SpeakerShadowConfig,
     SpeakerShadowObservation,
-    SpeakerShadowRuntime,
 )
+from main_logic.voice_identity.runtime import SpeakerShadowRuntime
 
 
 class _Backend:
@@ -271,6 +271,29 @@ async def test_close_returns_within_grace_and_defers_backend_cleanup() -> None:
     assert backend.close_during_score is False
 
 
+async def test_wait_closed_joins_deferred_backend_cleanup() -> None:
+    backend = _BlockingBackend()
+    runtime = SpeakerShadowRuntime(
+        backend_factory=lambda: backend,
+        config=_config(minimum_audio_ms=10, shutdown_grace_seconds=0.05),
+    )
+    runtime.submit(_pcm(10), sample_rate_hz=16_000, candidate=(1, 1))
+    assert await asyncio.to_thread(backend.score_started.wait, 1)
+
+    await runtime.close()
+    wait_task = asyncio.create_task(runtime.wait_closed())
+    await asyncio.sleep(0)
+
+    assert wait_task.done() is False
+    assert backend.close_calls == 0
+
+    backend.score_release.set()
+    await asyncio.wait_for(wait_task, 1)
+
+    assert backend.close_calls == 1
+    assert backend.close_during_score is False
+
+
 async def test_detector_close_is_not_blocked_by_shadow_inference() -> None:
     backend = _BlockingBackend()
     shadow = SpeakerShadowRuntime(
@@ -319,7 +342,7 @@ async def test_load_and_callback_failures_stay_inside_shadow_metrics() -> None:
 
 
 async def test_backend_load_retries_after_exponential_backoff(monkeypatch) -> None:
-    from main_logic.asr_client import speaker_shadow as speaker_shadow_module
+    from main_logic.voice_identity import runtime as speaker_shadow_module
 
     now = [100.0]
     monkeypatch.setattr(speaker_shadow_module.time, "monotonic", lambda: now[0])
@@ -358,7 +381,7 @@ async def test_backend_load_retries_after_exponential_backoff(monkeypatch) -> No
 async def test_reset_clears_load_backoff_without_unloading_warm_backend(
     monkeypatch,
 ) -> None:
-    from main_logic.asr_client import speaker_shadow as speaker_shadow_module
+    from main_logic.voice_identity import runtime as speaker_shadow_module
 
     monkeypatch.setattr(speaker_shadow_module.time, "monotonic", lambda: 100.0)
     unavailable = _Backend(load_ok=False)

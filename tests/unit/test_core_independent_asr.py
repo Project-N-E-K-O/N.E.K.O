@@ -7,6 +7,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import numpy as np
 import pytest
 
 from main_logic.core import LLMSessionManager
@@ -38,10 +39,9 @@ from main_logic.asr_client.lifecycle import (
 )
 from main_logic.asr_client.lifecycle import VoiceInputLifecycleController
 from main_logic.asr_client.provider_policy import resolve_provider_policy
-from main_logic.asr_client.speaker_shadow import (
+from main_logic.voice_identity.contracts import (
     SpeakerShadowConfig,
     SpeakerShadowObservation,
-    SpeakerShadowRuntime,
 )
 from main_logic.asr_client.throttle_policy import ThrottleAction
 from main_logic.voice_turn.audio_input import VoiceInputAudioPipeline
@@ -53,6 +53,8 @@ from main_logic.voice_turn.contracts import (
 )
 from main_logic.voice_turn.contracts import EvaluationStatus, TurnDecision
 from main_logic.voice_turn.coordinator import CoordinatorState
+from main_logic.voice_identity.profile import SpeakerProfile
+from main_logic.voice_identity.runtime import SpeakerShadowRuntime, VoiceIdentitySession
 from main_logic.voice_input import BuiltinVoiceInputConsumer
 from main_logic.voice_input.consumers import game as game_consumer_module
 import main_logic.core as core_module
@@ -123,6 +125,474 @@ async def test_speaker_shadow_factory_is_private_default_off_and_fail_open() -> 
         side_effect=RuntimeError("missing model")
     )
     assert await runtime._create_speaker_shadow() is None
+
+
+async def test_active_speaker_profile_uses_formal_core_composition_entry() -> None:
+    runtime = _Runtime()
+    profile = SpeakerProfile(
+        np.eye(4, dtype=np.float32)[0],
+        profile_revision=1,
+        model_id="test-model",
+        model_revision="v1",
+        embedding_dimension=4,
+    )
+    identity_session = type("IdentitySession", (), {})()
+    identity_session.set_profile = AsyncMock()
+    identity_session.create_runtime = MagicMock()
+    identity_session.close = AsyncMock()
+    runtime._voice_identity_session = identity_session
+    runtime._asr_runtime.set_speaker_verifier_factory = AsyncMock()
+
+    assert await runtime.set_active_speaker_profile(profile) == 1
+
+    identity_session.set_profile.assert_awaited_once_with(profile)
+    assert runtime._speaker_shadow_factory == identity_session.create_runtime
+    runtime._asr_runtime.set_speaker_verifier_factory.assert_awaited_once_with(
+        identity_session.create_runtime
+    )
+
+    assert await runtime.set_active_speaker_profile(None) is None
+
+    identity_session.set_profile.assert_awaited_with(None)
+    assert runtime._speaker_shadow_factory is None
+    runtime._asr_runtime.set_speaker_verifier_factory.assert_awaited_with(None)
+
+
+async def test_speaker_identity_observer_has_a_formal_fail_open_port() -> None:
+    runtime = _Runtime()
+    first: list[SpeakerShadowObservation] = []
+    second: list[SpeakerShadowObservation] = []
+    observation = SpeakerShadowObservation((1, 1), 0.82, (), 1_500)
+
+    runtime.set_speaker_identity_observer(first.append)
+    await runtime._receive_speaker_shadow_observation(observation)
+    runtime.set_speaker_identity_observer(second.append)
+    await runtime._receive_speaker_shadow_observation(observation)
+
+    assert first == [observation]
+    assert second == [observation]
+
+    async def failing_observer(_observation) -> None:
+        raise RuntimeError("observer has no ASR authority")
+
+    runtime.set_speaker_identity_observer(failing_observer)
+    await runtime._receive_speaker_shadow_observation(observation)
+    runtime.set_speaker_identity_observer(None)
+    await runtime._receive_speaker_shadow_observation(observation)
+
+    assert second == [observation]
+
+    runtime.set_speaker_identity_observer(second.append)
+    await runtime.close_voice_input_session()
+    await runtime._receive_speaker_shadow_observation(observation)
+
+    assert second == [observation]
+
+
+async def test_formal_profile_entry_reaches_detector_and_emits_observation(
+    monkeypatch,
+) -> None:
+    import main_logic.asr_client.runtime as runtime_module
+    import main_logic.core.asr_runtime as core_asr_module
+
+    observations: list[SpeakerShadowObservation] = []
+    runtime = _Runtime()
+    runtime.core_api_type = "qwen"
+    runtime.set_speaker_identity_observer(observations.append)
+
+    class _Backend:
+        def load(self) -> bool:
+            return True
+
+        def score(self, pcm16: bytes, sample_rate_hz: int) -> float:
+            assert len(pcm16) >= 48_000
+            assert sample_rate_hz == 16_000
+            return 0.82
+
+        def close(self) -> None:
+            return None
+
+    def build_runtime(_profile, callback):
+        return SpeakerShadowRuntime(
+            backend_factory=_Backend,
+            config=SpeakerShadowConfig(enabled=True),
+            on_observation=callback,
+        )
+
+    identity_session = VoiceIdentitySession(
+        runtime_builder=build_runtime,
+        on_observation=runtime._receive_speaker_shadow_observation,
+    )
+    create_session = MagicMock(return_value=identity_session)
+    monkeypatch.setattr(
+        core_asr_module,
+        "create_voice_identity_session",
+        create_session,
+    )
+    profile = SpeakerProfile(
+        np.eye(4, dtype=np.float32)[0],
+        profile_revision=1,
+        model_id="test-model",
+        model_revision="v1",
+        embedding_dimension=4,
+    )
+    await runtime.set_active_speaker_profile(profile)
+
+    class _Vad:
+        def load(self) -> bool:
+            return True
+
+        def close(self) -> None:
+            return None
+
+    class _Gate:
+        def __init__(self) -> None:
+            self.events = (SpeechActivityEvent.SPEECH_STARTED,)
+
+        def feed(self, _pcm16: bytes):
+            events, self.events = self.events, ()
+            return events
+
+        def reset(self) -> None:
+            return None
+
+    gate = _Gate()
+    detectors: list[DetectorRuntime] = []
+
+    def create_detector(**kwargs):
+        detector = DetectorRuntime(vad=_Vad(), gate=gate, **kwargs)
+        detectors.append(detector)
+        return detector
+
+    asr = type("Asr", (), {"is_ready": True})()
+    asr.connect = AsyncMock()
+    asr.close = AsyncMock()
+    asr.stream_audio = AsyncMock()
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(
+            return_value={
+                "independentAsrEnabled": True,
+                "voice_input_resource_optimization_enabled": False,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=_selection("qwen", "provider")),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_create_asr_session_from_selection",
+        MagicMock(return_value=asr),
+    )
+    monkeypatch.setattr(runtime_module, "DetectorRuntime", create_detector)
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    assert create_session.call_count == 1
+    assert len(detectors) == 1
+    detector = detectors[0]
+    frame = b"\x01\x00" * 1_600
+    for _ in range(15):
+        await detector.feed(
+            frame,
+            speech_probability=0.9,
+            rnnoise_available=True,
+        )
+    gate.events = (SpeechActivityEvent.CANDIDATE_PAUSE,)
+    await detector.feed(
+        frame,
+        speech_probability=0.1,
+        rnnoise_available=True,
+    )
+    shadow = detector._speaker_shadow
+    assert isinstance(shadow, SpeakerShadowRuntime)
+    await shadow.wait_idle()
+
+    assert len(observations) == 1
+    assert observations[0].similarity == pytest.approx(0.82)
+    assert observations[0].audio_ms == 1_500
+    assert asr.stream_audio.await_count == 0
+
+    await runtime.set_active_speaker_profile(None)
+    assert detector._speaker_shadow is None
+    await runtime.close_voice_input_session()
+
+
+async def test_real_campplus_uses_formal_core_composition_without_changing_wire_pcm(
+    monkeypatch,
+) -> None:
+    import os
+    from pathlib import Path
+
+    import main_logic.asr_client.runtime as runtime_module
+    import main_logic.core.asr_runtime as core_asr_module
+    from main_logic.voice_identity.campplus import (
+        CampPlusAssetError,
+        CampPlusEmbeddingModel,
+        build_campplus_speaker_profile,
+        create_campplus_voice_identity_session,
+        resolve_verified_campplus_asset,
+    )
+
+    try:
+        model_path = resolve_verified_campplus_asset()
+    except CampPlusAssetError:
+        if os.environ.get("NEKO_RELEASE_BUILD") == "1":
+            raise
+        pytest.skip("run prepare_speaker_model.py")
+    asset_dir = Path(model_path).parent
+    samples = np.arange(24_000, dtype=np.float64)
+    waveform = (
+        0.18 * np.sin(2 * np.pi * 173 * samples / 16_000)
+        + 0.07 * np.sin(2 * np.pi * 641 * samples / 16_000)
+    )
+    enrollment_pcm16 = np.rint(waveform * 32767).astype("<i2").tobytes()
+    immutable_frames = tuple(
+        enrollment_pcm16[offset : offset + 3_200]
+        for offset in range(0, len(enrollment_pcm16), 3_200)
+    )
+    assert len(immutable_frames) == 15
+
+    enrollment_model = CampPlusEmbeddingModel(asset_dir=asset_dir)
+    assert enrollment_model.load()
+    try:
+        profile = build_campplus_speaker_profile(
+            enrollment_model,
+            [enrollment_pcm16, enrollment_pcm16, enrollment_pcm16],
+            sample_rate_hz=16_000,
+            profile_revision=17,
+        )
+    finally:
+        enrollment_model.close()
+
+    model_state = {
+        "active": 0,
+        "maximum_active": 0,
+        "load_count": 0,
+        "unload_count": 0,
+    }
+
+    class _TrackedCampPlusModel:
+        def __init__(self, *, asset_dir: Path | None = None) -> None:
+            self._model = CampPlusEmbeddingModel(asset_dir=asset_dir)
+            self._loaded = False
+
+        @property
+        def model_id(self) -> str:
+            return self._model.model_id
+
+        @property
+        def model_revision(self) -> str:
+            return self._model.model_revision
+
+        def load(self) -> bool:
+            loaded = self._model.load()
+            if loaded and not self._loaded:
+                self._loaded = True
+                model_state["active"] += 1
+                model_state["load_count"] += 1
+                model_state["maximum_active"] = max(
+                    model_state["maximum_active"],
+                    model_state["active"],
+                )
+            return loaded
+
+        def embedding_from_pcm16(
+            self,
+            pcm16: bytes,
+            *,
+            sample_rate_hz: int,
+        ) -> np.ndarray:
+            return self._model.embedding_from_pcm16(
+                pcm16,
+                sample_rate_hz=sample_rate_hz,
+            )
+
+        def snapshot(self) -> dict[str, int]:
+            return self._model.snapshot()
+
+        def close(self) -> None:
+            self._model.close()
+            if self._loaded:
+                self._loaded = False
+                model_state["active"] -= 1
+                model_state["unload_count"] += 1
+
+    def create_identity_session(*, on_observation):
+        return create_campplus_voice_identity_session(
+            asset_dir=asset_dir,
+            on_observation=on_observation,
+            model_factory=_TrackedCampPlusModel,
+        )
+
+    monkeypatch.setattr(
+        core_asr_module,
+        "create_voice_identity_session",
+        create_identity_session,
+    )
+
+    class _Vad:
+        def load(self) -> bool:
+            return True
+
+        def close(self) -> None:
+            return None
+
+    class _Gate:
+        def __init__(self) -> None:
+            self.events = (SpeechActivityEvent.SPEECH_STARTED,)
+
+        def feed(self, _pcm16: bytes):
+            events, self.events = self.events, ()
+            return events
+
+        def reset(self) -> None:
+            return None
+
+    async def run(*, identity_enabled: bool) -> dict[str, object]:
+        runtime = _Runtime()
+        runtime.core_api_type = "qwen"
+        observations: list[SpeakerShadowObservation] = []
+        runtime.set_speaker_identity_observer(observations.append)
+        load_count_before_activation = model_state["load_count"]
+        if identity_enabled:
+            assert await runtime.set_active_speaker_profile(profile) == 17
+        assert model_state["load_count"] == load_count_before_activation
+
+        wire_chunks: list[bytes] = []
+
+        async def stream_audio(
+            pcm16: bytes,
+            *,
+            sample_rate_hz: int,
+        ) -> None:
+            assert sample_rate_hz == 16_000
+            wire_chunks.append(bytes(pcm16))
+
+        asr = type("Asr", (), {"is_ready": True})()
+        asr.connect = AsyncMock()
+        asr.close = AsyncMock()
+        asr.stream_audio = AsyncMock(side_effect=stream_audio)
+        asr.signal_user_activity_end = AsyncMock()
+        gate = _Gate()
+        detectors: list[DetectorRuntime] = []
+
+        def create_detector(**kwargs):
+            detector = DetectorRuntime(vad=_Vad(), gate=gate, **kwargs)
+            detectors.append(detector)
+            return detector
+
+        monkeypatch.setattr(
+            core_module,
+            "aload_global_conversation_settings",
+            AsyncMock(
+                return_value={
+                    "independentAsrEnabled": True,
+                    "voice_input_resource_optimization_enabled": False,
+                }
+            ),
+        )
+        monkeypatch.setattr(
+            runtime_module,
+            "_resolve_asr_selection",
+            MagicMock(return_value=_selection("qwen", "provider")),
+        )
+        monkeypatch.setattr(
+            runtime_module,
+            "_create_asr_session_from_selection",
+            MagicMock(return_value=asr),
+        )
+        monkeypatch.setattr(runtime_module, "DetectorRuntime", create_detector)
+
+        await runtime._start_independent_asr_if_enabled("audio")
+        assert len(detectors) == 1
+        detector = detectors[0]
+        for frame in immutable_frames:
+            assert await runtime._route_microphone_audio(
+                frame,
+                sample_rate_hz=16_000,
+                speech_probability=0.9,
+                rnnoise_available=True,
+            )
+        gate.events = (SpeechActivityEvent.CANDIDATE_PAUSE,)
+        assert await runtime._route_microphone_audio(
+            immutable_frames[-1],
+            sample_rate_hz=16_000,
+            speech_probability=0.1,
+            rnnoise_available=True,
+        )
+        await runtime._asr_detector_dispatcher.wait_idle()
+        await runtime._asr_audio_dispatcher.wait_idle()
+        shadow = detector._speaker_shadow
+        if shadow is not None:
+            await shadow.wait_idle()
+
+        continuous_pcm = b"".join(wire_chunks)
+        result = {
+            "provider_pcm": continuous_pcm,
+            "provider_sha256": hashlib.sha256(continuous_pcm).hexdigest(),
+            "provider_seals": asr.signal_user_activity_end.await_count,
+            "lifecycle_state": runtime._asr_lifecycle.snapshot.state.value,
+            "detector_state": (
+                detector.detector_epoch,
+                detector.candidate_open,
+                detector._candidate_generation,
+                len(detector._completion_fences),
+            ),
+            "similarities": tuple(
+                observation.similarity for observation in observations
+            ),
+        }
+        if observations:
+            observation = observations[0]
+            assert np.isfinite(observation.similarity)
+            assert not hasattr(observation, "pcm16")
+            assert not hasattr(observation, "embedding")
+
+        load_count_before_disable = model_state["load_count"]
+        assert await runtime.set_active_speaker_profile(None) is None
+        assert detector._speaker_shadow is None
+        assert model_state["load_count"] == load_count_before_disable
+        runtime.set_speaker_identity_observer(None)
+        await runtime.close_voice_input_session()
+        assert model_state["active"] == 0
+        assert runtime._asr_runtime._asr_close_tasks == set()
+        assert runtime._asr_runtime._asr_detector_dispatcher._worker is None
+        assert runtime._asr_runtime._asr_audio_dispatcher._worker is None
+        return result
+
+    try:
+        baseline_first = await run(identity_enabled=False)
+        identity_first = await run(identity_enabled=True)
+        identity_second = await run(identity_enabled=True)
+        baseline_second = await run(identity_enabled=False)
+    finally:
+        profile.close()
+
+    isolation_keys = (
+        "provider_pcm",
+        "provider_sha256",
+        "provider_seals",
+        "lifecycle_state",
+        "detector_state",
+    )
+    expected = {key: baseline_first[key] for key in isolation_keys}
+    for result in (identity_first, identity_second, baseline_second):
+        assert {key: result[key] for key in isolation_keys} == expected
+    assert baseline_first["similarities"] == ()
+    assert baseline_second["similarities"] == ()
+    assert identity_first["similarities"] == pytest.approx((1.0,), abs=1e-5)
+    assert identity_second["similarities"] == pytest.approx((1.0,), abs=1e-5)
+    assert model_state == {
+        "active": 0,
+        "maximum_active": 1,
+        "load_count": 2,
+        "unload_count": 2,
+    }
 
 
 class _TestSmartTurnLease:
@@ -2871,6 +3341,210 @@ async def test_core_speaker_shadow_factory_failure_keeps_asr_available(
     assert runtime._asr_route_mode == "independent"
     assert runtime._asr_detector._speaker_shadow is None
     runtime._speaker_shadow_factory.assert_called_once_with()
+
+
+async def test_route_restart_defers_verifier_until_old_cleanup_finishes(
+    monkeypatch,
+) -> None:
+    import main_logic.asr_client.runtime as runtime_module
+
+    class _Verifier:
+        def __init__(self, *, block_close: bool) -> None:
+            self.close_started = asyncio.Event()
+            self.close_release = asyncio.Event()
+            self.close_calls = 0
+            if not block_close:
+                self.close_release.set()
+
+        def submit(self, _pcm16: bytes, *, sample_rate_hz: int, candidate) -> bool:
+            return bool(sample_rate_hz and candidate is not None)
+
+        def finish_candidate(self, _candidate) -> bool:
+            return True
+
+        async def reset(self) -> None:
+            return None
+
+        async def close(self) -> None:
+            self.close_calls += 1
+            self.close_started.set()
+
+        async def wait_closed(self) -> None:
+            await self.close_release.wait()
+
+        def snapshot(self) -> dict[str, int]:
+            return {}
+
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    old_verifier = _Verifier(block_close=True)
+    new_verifier = _Verifier(block_close=False)
+    verifier_factory = MagicMock(side_effect=(old_verifier, new_verifier))
+    runtime._speaker_shadow_factory = verifier_factory
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=_selection("gemini")),
+    )
+
+    await runtime._start_independent_asr_if_enabled("audio")
+    first_detector = runtime._asr_detector
+    assert first_detector._speaker_shadow is old_verifier
+
+    restart = asyncio.create_task(
+        runtime._start_independent_asr_if_enabled("audio")
+    )
+    await asyncio.wait_for(old_verifier.close_started.wait(), 1)
+    await asyncio.wait_for(restart, 1)
+
+    second_detector = runtime._asr_detector
+    assert second_detector is not first_detector
+    assert second_detector._speaker_shadow is None
+    assert runtime._asr_route_mode == "independent"
+    assert verifier_factory.call_count == 1
+
+    old_verifier.close_release.set()
+    async with asyncio.timeout(1):
+        while second_detector._speaker_shadow is None:
+            await asyncio.sleep(0)
+
+    assert second_detector._speaker_shadow is new_verifier
+    assert verifier_factory.call_count == 2
+    assert old_verifier.close_calls == 1
+
+    await runtime.close_voice_input_session()
+    await runtime._asr_runtime._wait_speaker_verifier_cleanup()
+    assert new_verifier.close_calls == 1
+
+
+async def test_route_restart_keeps_identity_detached_after_cleanup_failure(
+    monkeypatch,
+) -> None:
+    import main_logic.asr_client.runtime as runtime_module
+
+    class _Verifier:
+        def __init__(self) -> None:
+            self.close_started = asyncio.Event()
+            self.close_calls = 0
+
+        def submit(self, _pcm16: bytes, *, sample_rate_hz: int, candidate) -> bool:
+            return bool(sample_rate_hz and candidate is not None)
+
+        def finish_candidate(self, _candidate) -> bool:
+            return True
+
+        async def reset(self) -> None:
+            return None
+
+        async def close(self) -> None:
+            self.close_calls += 1
+            self.close_started.set()
+
+        async def wait_closed(self) -> None:
+            raise RuntimeError("cleanup failed")
+
+        def snapshot(self) -> dict[str, int]:
+            return {}
+
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    old_verifier = _Verifier()
+    verifier_factory = MagicMock(return_value=old_verifier)
+    runtime._speaker_shadow_factory = verifier_factory
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=_selection("gemini")),
+    )
+
+    await runtime._start_independent_asr_if_enabled("audio")
+    await runtime._start_independent_asr_if_enabled("audio")
+    await asyncio.wait_for(old_verifier.close_started.wait(), 1)
+    await runtime._asr_runtime._wait_speaker_verifier_cleanup()
+
+    assert runtime._asr_route_mode == "independent"
+    assert runtime._asr_detector is not None
+    assert runtime._asr_detector._speaker_shadow is None
+    assert runtime._asr_runtime._speaker_verifier_cleanup_failed is True
+    assert verifier_factory.call_count == 1
+
+    await runtime.close_voice_input_session()
+
+
+async def test_route_restart_bounds_stalled_verifier_cleanup(monkeypatch) -> None:
+    import main_logic.asr_client.runtime as runtime_module
+
+    class _Verifier:
+        def __init__(self) -> None:
+            self.close_started = asyncio.Event()
+            self.close_calls = 0
+
+        def submit(self, _pcm16: bytes, *, sample_rate_hz: int, candidate) -> bool:
+            return bool(sample_rate_hz and candidate is not None)
+
+        def finish_candidate(self, _candidate) -> bool:
+            return True
+
+        async def reset(self) -> None:
+            return None
+
+        async def close(self) -> None:
+            self.close_calls += 1
+            self.close_started.set()
+
+        async def wait_closed(self) -> None:
+            await asyncio.Event().wait()
+
+        def snapshot(self) -> dict[str, int]:
+            return {}
+
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    old_verifier = _Verifier()
+    verifier_factory = MagicMock(return_value=old_verifier)
+    runtime._speaker_shadow_factory = verifier_factory
+    monkeypatch.setattr(
+        runtime_module,
+        "_SPEAKER_VERIFIER_CLEANUP_TIMEOUT_SECONDS",
+        0.01,
+    )
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=_selection("gemini")),
+    )
+
+    await runtime._start_independent_asr_if_enabled("audio")
+    await runtime._start_independent_asr_if_enabled("audio")
+    await asyncio.wait_for(old_verifier.close_started.wait(), 1)
+    await asyncio.wait_for(
+        runtime._asr_runtime._wait_speaker_verifier_cleanup(),
+        1,
+    )
+
+    assert runtime._asr_route_mode == "independent"
+    assert runtime._asr_detector is not None
+    assert runtime._asr_detector._speaker_shadow is None
+    assert runtime._asr_runtime._speaker_verifier_cleanup_tasks == set()
+    assert runtime._asr_runtime._speaker_verifier_cleanup_failed is True
+    assert verifier_factory.call_count == 1
+
+    await runtime.close_voice_input_session()
 
 
 async def test_missing_setting_defaults_to_independent_asr_enabled(monkeypatch) -> None:

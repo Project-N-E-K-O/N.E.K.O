@@ -9,7 +9,7 @@ import kaldi_native_fbank as knf
 import numpy as np
 import pytest
 
-from main_logic.asr_client.campplus import (
+from main_logic.voice_identity.campplus import (
     CampPlusAssetError,
     CampPlusEmbeddingModel,
     CampPlusSpeakerShadowFactory,

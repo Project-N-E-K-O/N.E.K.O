@@ -55,11 +55,16 @@ from .lifecycle import (
     VoiceTransportToken,
 )
 from .provider_policy import resolve_provider_policy
-from .speaker_shadow import SpeakerShadowRuntime
+from main_logic.voice_identity.contracts import (
+    SpeakerVerifierFactory,
+    SpeakerVerifierRuntime,
+)
 from .transcript import (
     TranscriptDispatcher,
     TranscriptEnvelope,
 )
+
+_SPEAKER_VERIFIER_CLEANUP_TIMEOUT_SECONDS = 1.0
 
 
 class AsrStartStatus(Enum):
@@ -179,9 +184,11 @@ class IndependentAsrRuntime:
         self._asr_detector: DetectorRuntime | None = None
         self._asr_smart_turn_lease: SmartTurnLease | None = None
         self._asr_session_factory = None
-        self._speaker_shadow_factory: (
-            Callable[[], SpeakerShadowRuntime | None] | None
-        ) = None
+        self._speaker_shadow_factory: SpeakerVerifierFactory | None = None
+        self._speaker_verifier_generation = 0
+        self._speaker_verifier_cleanup_tasks: set[asyncio.Task[None]] = set()
+        self._speaker_verifier_cleanup_failed = False
+        self._speaker_verifier_reconcile_lock = asyncio.Lock()
         self._asr_transport_selection = None
         self._asr_transport_task: asyncio.Task[None] | None = None
         self._asr_transport_lock = asyncio.Lock()
@@ -701,7 +708,7 @@ class IndependentAsrRuntime:
             self._asr_provider or "unknown",
         )
 
-    async def _create_speaker_shadow(self) -> SpeakerShadowRuntime | None:
+    async def _create_speaker_shadow(self) -> SpeakerVerifierRuntime | None:
         """Build the private observation runtime without risking ASR startup."""
 
         factory = self._speaker_shadow_factory
@@ -718,12 +725,106 @@ class IndependentAsrRuntime:
             )
             return None
 
+    async def set_speaker_verifier_factory(
+        self,
+        factory: SpeakerVerifierFactory | None,
+    ) -> None:
+        """Apply an explicit profile factory to the current Detector, if any."""
+
+        self._ensure_speaker_verifier_lifecycle_state()
+        self._speaker_shadow_factory = factory
+        self._speaker_verifier_generation += 1
+        await self._reconcile_speaker_verifier()
+
+    def _ensure_speaker_verifier_lifecycle_state(self) -> None:
+        if not hasattr(self, "_speaker_verifier_cleanup_tasks"):
+            self._speaker_verifier_generation = 0
+            self._speaker_verifier_cleanup_tasks = set()
+            self._speaker_verifier_cleanup_failed = False
+            self._speaker_verifier_reconcile_lock = asyncio.Lock()
+
+    def _schedule_speaker_verifier_cleanup(
+        self,
+        verifier: SpeakerVerifierRuntime,
+    ) -> None:
+        self._ensure_speaker_verifier_lifecycle_state()
+
+        async def close_and_wait() -> None:
+            await verifier.close()
+            wait_closed = getattr(verifier, "wait_closed", None)
+            if callable(wait_closed):
+                await wait_closed()
+
+        async def cleanup() -> None:
+            cleaned = False
+            try:
+                await asyncio.wait_for(
+                    close_and_wait(),
+                    timeout=_SPEAKER_VERIFIER_CLEANUP_TIMEOUT_SECONDS,
+                )
+                cleaned = True
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self._speaker_verifier_cleanup_failed = True
+                logger.warning(
+                    "[%s] speaker verifier cleanup failed; "
+                    "keeping voice identity detached",
+                    self.display_name,
+                )
+            finally:
+                task = asyncio.current_task()
+                if task is not None:
+                    self._speaker_verifier_cleanup_tasks.discard(task)
+            if cleaned:
+                await self._reconcile_speaker_verifier()
+
+        task = asyncio.create_task(
+            cleanup(),
+            name="asr-speaker-verifier-cleanup",
+        )
+        self._speaker_verifier_cleanup_tasks.add(task)
+
+    async def _reconcile_speaker_verifier(self) -> bool:
+        self._ensure_speaker_verifier_lifecycle_state()
+        async with self._speaker_verifier_reconcile_lock:
+            if (
+                self._speaker_verifier_cleanup_tasks
+                or self._speaker_verifier_cleanup_failed
+            ):
+                return False
+            detector = self._asr_detector
+            if detector is None:
+                return False
+            generation = self._speaker_verifier_generation
+            verifier = await self._create_speaker_shadow()
+            if (
+                generation != self._speaker_verifier_generation
+                or detector is not self._asr_detector
+                or self._speaker_verifier_cleanup_tasks
+                or self._speaker_verifier_cleanup_failed
+            ):
+                if verifier is not None:
+                    self._schedule_speaker_verifier_cleanup(verifier)
+                return False
+            return await detector.replace_speaker_verifier(verifier)
+
+    async def _wait_speaker_verifier_cleanup(self) -> None:
+        """Join detached verifier cleanup in tests and final controlled shutdown."""
+
+        self._ensure_speaker_verifier_lifecycle_state()
+        while self._speaker_verifier_cleanup_tasks:
+            await asyncio.gather(
+                *tuple(self._speaker_verifier_cleanup_tasks),
+                return_exceptions=True,
+            )
+
     async def start(
         self,
         *,
         route_key: str,
         resource_optimization_enabled: bool,
-        speaker_shadow_factory: Callable[[], SpeakerShadowRuntime | None] | None = None,
+        speaker_shadow_factory: SpeakerVerifierFactory | None = None,
     ) -> AsrStartResult:
         """Resolve and start one independent-ASR route."""
 
@@ -885,7 +986,16 @@ class IndependentAsrRuntime:
                 if not accepted:
                     raise RuntimeError("ASR_DETECTOR_CONTROL_BACKPRESSURE")
 
-            speaker_shadow = await self._create_speaker_shadow()
+            self._ensure_speaker_verifier_lifecycle_state()
+            verifier_cleanup_pending = bool(
+                self._speaker_verifier_cleanup_tasks
+            )
+            speaker_shadow = (
+                None
+                if verifier_cleanup_pending
+                or self._speaker_verifier_cleanup_failed
+                else await self._create_speaker_shadow()
+            )
             detector_ref = DetectorRuntime(
                 provider_policy=policy,
                 resource_optimization_enabled=(
@@ -900,6 +1010,8 @@ class IndependentAsrRuntime:
                 speaker_shadow=speaker_shadow,
             )
             self._asr_detector = detector_ref
+            if verifier_cleanup_pending:
+                await self._reconcile_speaker_verifier()
             self._asr_session_factory = create_candidate
             self._asr_transport_selection = selection
             lifecycle = self._asr_lifecycle
@@ -973,6 +1085,16 @@ class IndependentAsrRuntime:
         detector, self._asr_detector = self._asr_detector, None
         self._asr_smart_turn_lease = None
         if detector is not None:
+            try:
+                verifier = await detector.detach_speaker_verifier()
+            except Exception:
+                verifier = None
+                logger.warning(
+                    "[%s] speaker verifier detach failed during ASR close",
+                    self.display_name,
+                )
+            if verifier is not None:
+                self._schedule_speaker_verifier_cleanup(verifier)
             await detector.close()
         self._asr_current_ingress_token = None
         self._asr_received_audio = False

@@ -1,4 +1,4 @@
-"""Verified, offline CAM++ embeddings for observation-only speaker shadowing."""
+"""Verified CAM++ zh-en advanced embedding and scoring backend."""
 
 from __future__ import annotations
 
@@ -15,7 +15,10 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
-from .speaker_shadow import SpeakerShadowConfig, SpeakerShadowRuntime
+from .contracts import SpeakerObservationCallback, SpeakerShadowConfig
+from .enrollment import build_in_memory_speaker_profile
+from .profile import SpeakerProfile
+from .runtime import SpeakerShadowRuntime, VoiceIdentitySession
 
 
 logger = logging.getLogger(__name__)
@@ -496,8 +499,8 @@ class CampPlusEmbeddingModel:
                 self._reason = "closed"
 
 
-class CampPlusSpeakerProfile:
-    """In-memory reference embedding with no enrollment PCM or user identity."""
+class CampPlusSpeakerProfile(SpeakerProfile):
+    """CAM++-bound compatibility profile backed by the neutral profile type."""
 
     def __init__(
         self,
@@ -506,47 +509,17 @@ class CampPlusSpeakerProfile:
         profile_revision: int,
         model_id: str = CAMPPLUS_MODEL_ID,
         model_revision: str = CAMPPLUS_MODEL_REVISION,
+        embedding_dimension: int = CAMPPLUS_EMBEDDING_DIM,
     ) -> None:
-        if profile_revision < 0:
-            raise ValueError("profile_revision must not be negative")
-        embedding = np.array(reference_embedding, dtype=np.float32, copy=True)
-        if embedding.shape != (CAMPPLUS_EMBEDDING_DIM,):
-            raise ValueError("reference embedding must have shape (192,)")
-        if not np.isfinite(embedding).all():
-            raise ValueError("reference embedding must contain only finite values")
-        norm = float(np.linalg.norm(embedding))
-        if not math.isfinite(norm) or norm <= 1e-12:
-            raise ValueError("reference embedding must have a non-zero L2 norm")
-        embedding /= np.float32(norm)
-        self._reference_embedding = embedding
-        self._profile_revision = int(profile_revision)
-        self._model_id = str(model_id)
-        self._model_revision = str(model_revision)
-        self._closed = False
-
-    @property
-    def reference_embedding(self) -> np.ndarray:
-        if self._closed:
-            raise RuntimeError("speaker profile is closed")
-        return np.array(self._reference_embedding, dtype=np.float32, copy=True)
-
-    @property
-    def profile_revision(self) -> int:
-        return self._profile_revision
-
-    @property
-    def model_id(self) -> str:
-        return self._model_id
-
-    @property
-    def model_revision(self) -> str:
-        return self._model_revision
-
-    def close(self) -> None:
-        if self._closed:
-            return
-        self._reference_embedding.fill(0)
-        self._closed = True
+        if embedding_dimension != CAMPPLUS_EMBEDDING_DIM:
+            raise ValueError("CAM++ profile embedding dimension must be 192")
+        super().__init__(
+            reference_embedding,
+            profile_revision=profile_revision,
+            model_id=model_id,
+            model_revision=model_revision,
+            embedding_dimension=embedding_dimension,
+        )
 
 
 def build_campplus_speaker_profile(
@@ -566,26 +539,23 @@ def build_campplus_speaker_profile(
             raise ValueError("CAM++ enrollment requires valid PCM16LE segments")
         if len(segment) // 2 < CAMPPLUS_MINIMUM_SAMPLES:
             raise ValueError("each CAM++ enrollment segment requires at least 1.5 seconds")
-    embeddings: list[np.ndarray] = []
-    try:
-        for segment in segments:
-            embedding = model.embedding_from_pcm16(
-                segment,
-                sample_rate_hz=sample_rate_hz,
-            )
-            embeddings.append(np.array(embedding, dtype=np.float32, copy=True))
-        mean_embedding = np.mean(np.stack(embeddings, axis=0), axis=0, dtype=np.float32)
-        return CampPlusSpeakerProfile(
-            mean_embedding,
-            profile_revision=profile_revision,
-            model_id=str(getattr(model, "model_id", CAMPPLUS_MODEL_ID)),
-            model_revision=str(
-                getattr(model, "model_revision", CAMPPLUS_MODEL_REVISION)
-            ),
-        )
-    finally:
-        for embedding in embeddings:
-            embedding.fill(0)
+    profile = build_in_memory_speaker_profile(
+        model,
+        segments,
+        sample_rate_hz=sample_rate_hz,
+        profile_revision=profile_revision,
+        minimum_segments=3,
+        maximum_segments=5,
+        minimum_samples=CAMPPLUS_MINIMUM_SAMPLES,
+        embedding_dimension=CAMPPLUS_EMBEDDING_DIM,
+        model_id=str(getattr(model, "model_id", CAMPPLUS_MODEL_ID)),
+        model_revision=str(
+            getattr(model, "model_revision", CAMPPLUS_MODEL_REVISION)
+        ),
+        profile_factory=CampPlusSpeakerProfile,
+    )
+    assert isinstance(profile, CampPlusSpeakerProfile)
+    return profile
 
 
 class CampPlusSpeakerShadowBackend:
@@ -739,3 +709,57 @@ class CampPlusSpeakerShadowFactory:
             config=self._config or SpeakerShadowConfig(enabled=True),
             on_observation=self._on_observation,
         )
+
+
+def create_campplus_voice_identity_session(
+    *,
+    asset_dir: Path | None = None,
+    on_observation: SpeakerObservationCallback | None = None,
+    model_factory: Callable[..., Any] = CampPlusEmbeddingModel,
+    config: SpeakerShadowConfig | None = None,
+) -> VoiceIdentitySession:
+    """Create a lazy, in-memory CAM++ session without loading the model."""
+
+    def validate_profile(profile: SpeakerProfile) -> None:
+        if profile.model_id != CAMPPLUS_MODEL_ID:
+            raise ValueError("speaker profile model_id does not match CAM++")
+        if profile.model_revision != CAMPPLUS_MODEL_REVISION:
+            raise ValueError("speaker profile model_revision does not match CAM++")
+        if profile.embedding_dimension != CAMPPLUS_EMBEDDING_DIM:
+            raise ValueError("speaker profile dimension does not match CAM++")
+        embedding = profile.reference_embedding
+        if (
+            embedding.shape != (CAMPPLUS_EMBEDDING_DIM,)
+            or not np.isfinite(embedding).all()
+            or not np.isclose(np.linalg.norm(embedding), 1.0, atol=1e-6)
+        ):
+            raise ValueError("speaker profile embedding is not normalized CAM++ output")
+
+    def build_runtime(
+        profile: SpeakerProfile,
+        callback: SpeakerObservationCallback | None,
+    ) -> SpeakerShadowRuntime | None:
+        validate_profile(profile)
+        campplus_profile = CampPlusSpeakerProfile(
+            profile.reference_embedding,
+            profile_revision=profile.profile_revision,
+            model_id=profile.model_id,
+            model_revision=profile.model_revision,
+        )
+        try:
+            return CampPlusSpeakerShadowFactory(
+                enabled=True,
+                profile=campplus_profile,
+                asset_dir=asset_dir,
+                model_factory=model_factory,
+                on_observation=callback,
+                config=config,
+            )()
+        finally:
+            campplus_profile.close()
+
+    return VoiceIdentitySession(
+        runtime_builder=build_runtime,
+        on_observation=on_observation,
+        profile_validator=validate_profile,
+    )

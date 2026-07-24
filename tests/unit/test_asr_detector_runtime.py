@@ -196,6 +196,20 @@ class _SpeakerShadowSpy:
         return {"submitted_frame_count": len(self.frames)}
 
 
+class _ControlledCloseShadow(_SpeakerShadowSpy):
+    def __init__(self) -> None:
+        super().__init__()
+        self.close_started = asyncio.Event()
+        self.close_release = asyncio.Event()
+
+    async def close(self) -> None:
+        self.close_calls += 1
+        self.close_started.set()
+
+    async def wait_closed(self) -> None:
+        await self.close_release.wait()
+
+
 def _smart_turn_policy() -> AsrProviderPolicy:
     return AsrProviderPolicy(
         transport="streaming",
@@ -1037,6 +1051,151 @@ async def test_segmented_submit_mirrors_only_accepted_audio_to_speaker_shadow() 
     await detector.close()
     assert shadow.reset_calls == 1
     assert shadow.close_calls == 1
+
+
+async def test_replace_speaker_verifier_invalidates_candidate_without_endpoint_change() -> (
+    None
+):
+    previous = _SpeakerShadowSpy()
+    replacement = _SpeakerShadowSpy()
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate((SpeechActivityEvent.SPEECH_STARTED,)),
+        provider_policy=_provider_endpoint_policy(),
+        speaker_shadow=previous,
+    )
+
+    await detector.feed(
+        b"\x01\x00" * 160,
+        speech_probability=0.9,
+        rnnoise_available=True,
+    )
+    generation = detector._speaker_shadow_generation
+    candidate_generation = detector._candidate_generation
+
+    assert await detector.replace_speaker_verifier(replacement) is True
+
+    assert previous.close_calls == 1
+    assert detector._speaker_shadow is replacement
+    assert detector._speaker_shadow_candidate is None
+    assert detector._speaker_shadow_generation == generation + 1
+    assert detector._candidate_generation == candidate_generation
+    assert detector._semantic_adapter is None
+
+    await detector.close()
+    assert replacement.close_calls == 1
+
+
+async def test_replace_speaker_verifier_installs_new_only_after_old_is_fully_closed() -> (
+    None
+):
+    previous = _ControlledCloseShadow()
+    replacement = _SpeakerShadowSpy()
+    gate = _Gate((SpeechActivityEvent.SPEECH_STARTED,))
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=gate,
+        provider_policy=_provider_endpoint_policy(),
+        speaker_shadow=previous,
+    )
+
+    replace_task = asyncio.create_task(
+        detector.replace_speaker_verifier(replacement)
+    )
+    await asyncio.wait_for(previous.close_started.wait(), 1)
+
+    assert detector._speaker_shadow is None
+    await detector.feed(
+        b"\x01\x00" * 160,
+        speech_probability=0.9,
+        rnnoise_available=True,
+    )
+    assert replacement.frames == []
+    assert replace_task.done() is False
+
+    previous.close_release.set()
+    assert await asyncio.wait_for(replace_task, 1) is True
+    assert detector._speaker_shadow is replacement
+
+    await detector.close()
+
+
+async def test_replace_speaker_verifier_timeout_stays_disabled_and_fail_open(
+    monkeypatch,
+) -> None:
+    import main_logic.asr_client.detector_runtime as detector_module
+
+    previous = _ControlledCloseShadow()
+    replacement = _SpeakerShadowSpy()
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_provider_endpoint_policy(),
+        speaker_shadow=previous,
+    )
+    monkeypatch.setattr(
+        detector_module,
+        "_SPEAKER_VERIFIER_REPLACEMENT_CLOSE_SECONDS",
+        0.01,
+    )
+
+    assert await detector.replace_speaker_verifier(replacement) is False
+
+    assert detector._speaker_shadow is None
+    assert replacement.close_calls == 1
+    assert detector.speaker_shadow_metrics["replacement_failure_count"] == 1
+    await detector.close()
+
+
+async def test_detach_speaker_verifier_transfers_cleanup_ownership() -> None:
+    previous = _ControlledCloseShadow()
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate((SpeechActivityEvent.SPEECH_STARTED,)),
+        provider_policy=_provider_endpoint_policy(),
+        speaker_shadow=previous,
+    )
+    await detector.feed(
+        b"\x01\x00" * 160,
+        speech_probability=0.9,
+        rnnoise_available=True,
+    )
+    generation = detector._speaker_shadow_generation
+    candidate_generation = detector._candidate_generation
+
+    detached = await detector.detach_speaker_verifier()
+
+    assert detached is previous
+    assert detector._speaker_shadow is None
+    assert detector._speaker_shadow_candidate is None
+    assert detector._speaker_shadow_generation == generation + 1
+    assert detector._candidate_generation == candidate_generation
+    assert previous.close_calls == 0
+
+    await detector.close()
+    assert previous.close_calls == 0
+
+
+async def test_detector_close_during_verifier_replacement_never_installs_new() -> None:
+    previous = _ControlledCloseShadow()
+    replacement = _SpeakerShadowSpy()
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_provider_endpoint_policy(),
+        speaker_shadow=previous,
+    )
+
+    replace_task = asyncio.create_task(
+        detector.replace_speaker_verifier(replacement)
+    )
+    await asyncio.wait_for(previous.close_started.wait(), 1)
+    await detector.close()
+
+    previous.close_release.set()
+    assert await asyncio.wait_for(replace_task, 1) is False
+    assert detector._speaker_shadow is None
+    assert replacement.close_calls == 1
 
 
 async def test_shadow_toggle_preserves_provider_pcm_bytes_order_and_detector_results() -> None:
