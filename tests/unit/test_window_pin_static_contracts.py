@@ -227,7 +227,7 @@ def test_plugin_manager_pin_control_and_bridge_contract():
 
 def test_pin_labels_exist_in_all_main_and_plugin_locales():
     i18n_bootstrap = read_text("static/i18n-i18next.js")
-    assert "LOCALE_VERSION = '2026-07-22-window-pin-controls-i18n'" in i18n_bootstrap
+    assert "LOCALE_VERSION = '2026-07-24-social-controls-i18n'" in i18n_bootstrap
 
     locale_names = (
         "en",

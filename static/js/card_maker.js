@@ -542,6 +542,7 @@
             console.error('[CardExport] 加载角色模型失败:', e);
             showLoading(false);
             updatePrimaryActionAvailability();
+            notifyEmbedHost('error');
         }
     }
 

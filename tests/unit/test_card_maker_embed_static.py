@@ -23,6 +23,10 @@ def test_card_maker_exposes_transparent_model_embed_mode() -> None:
     assert "if (!isEmbedMode) {\n                startPreviewLoop();\n                refreshPreview();\n            }\n            notifyEmbedHost('ready');" in script
     assert "notifyEmbedHost('ready')" in script
     assert "notifyEmbedHost('error'" in script
+    config_error_handler = script.split(
+        "console.error('[CardExport] 加载角色模型失败:', e);", 1
+    )[1].split("}", 1)[0]
+    assert "notifyEmbedHost('error');" in config_error_handler
     assert "if (!isEmbedMode) {\n                startPreviewLoop();\n                refreshPreview();" in script
     assert "const EMBED_MODEL_HEIGHT_RATIO = 1.34;" in script
     assert "const EMBED_MODEL_CENTER_X_RATIO = 0.22;" in script
