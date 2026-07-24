@@ -43,6 +43,11 @@ from main_logic.voice_identity.contracts import (
     SpeakerShadowConfig,
     SpeakerShadowObservation,
 )
+from main_logic.voice_identity.beta_policy import OwnerVoiceBetaDecision
+from main_logic.voice_identity.registry import (
+    get_voice_identity_profile_registry,
+)
+from main_logic.asr_client.speaker_shadow import SpeakerShadowCandidateKey
 from main_logic.asr_client.throttle_policy import ThrottleAction
 from main_logic.voice_turn.audio_input import VoiceInputAudioPipeline
 from main_logic.voice_turn.contracts import (
@@ -247,6 +252,46 @@ async def test_speaker_identity_observer_has_a_formal_fail_open_port() -> None:
     await runtime._receive_speaker_shadow_observation(observation)
 
     assert second == [observation]
+
+
+async def test_beta_owner_policy_records_without_executing_rejection() -> None:
+    runtime = _Runtime()
+    runtime._voice_lease_connection_id = "voice-session-1"
+    profile = SpeakerProfile(
+        np.eye(4, dtype=np.float32)[0],
+        profile_revision=7,
+        model_id="test-model",
+        model_revision="v1",
+        embedding_dimension=4,
+    )
+    registry = get_voice_identity_profile_registry()
+    registry.install_profile(profile)
+    profile.close()
+    registry.set_filter_enabled(True)
+    runtime._voice_identity_session = SimpleNamespace(profile_revision=7)
+    candidate = SpeakerShadowCandidateKey(4, 9, "provider_pause")
+
+    try:
+        await runtime._receive_speaker_shadow_observation(
+            SpeakerShadowObservation(candidate, 0.20, ((0.40, True),), 1_500)
+        )
+        await runtime._receive_speaker_shadow_observation(
+            SpeakerShadowObservation(candidate, 0.25, ((0.40, True),), 3_000)
+        )
+
+        record = runtime._owner_voice_beta_last_decision
+        assert record is not None
+        assert (
+            record.decision
+            is OwnerVoiceBetaDecision.REJECT_CURRENT_CANDIDATE
+        )
+        assert runtime._owner_voice_beta_policy.snapshot()[
+            "hypothetical_reject_count"
+        ] == 1
+        assert runtime._asr_runtime._asr_audio_generation == 0
+        assert runtime._asr_runtime._asr_session_epoch == 0
+    finally:
+        registry.close()
 
 
 async def test_formal_profile_entry_reaches_detector_and_emits_observation(

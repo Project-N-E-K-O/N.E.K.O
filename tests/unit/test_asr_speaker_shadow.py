@@ -143,6 +143,37 @@ async def test_shadow_scores_once_and_records_hypothetical_block() -> None:
     await runtime.close()
 
 
+async def test_shadow_emits_configured_non_blocking_observation_checkpoints() -> None:
+    backend = _Backend(score=0.2)
+    observations: list[SpeakerShadowObservation] = []
+    runtime = SpeakerShadowRuntime(
+        backend_factory=lambda: backend,
+        config=_config(
+            minimum_audio_ms=20,
+            maximum_audio_ms=60,
+            evaluation_audio_ms=(20, 40),
+        ),
+        on_observation=observations.append,
+    )
+
+    candidate = (1, 1)
+    for _ in range(5):
+        assert runtime.submit(
+            _pcm(10),
+            sample_rate_hz=16_000,
+            candidate=candidate,
+        )
+    await runtime.wait_idle()
+
+    assert [observation.audio_ms for observation in observations] == [20, 40]
+    assert [len(pcm16) for pcm16, _sample_rate_hz in backend.score_calls] == [
+        len(_pcm(20)),
+        len(_pcm(40)),
+    ]
+    assert runtime.snapshot()["evaluated_candidate_count"] == 2
+    await runtime.close()
+
+
 async def test_shadow_is_disabled_without_loading_a_backend() -> None:
     backend = _Backend()
     runtime = SpeakerShadowRuntime(
@@ -613,3 +644,15 @@ def test_shadow_config_rejects_unsafe_bounds() -> None:
         SpeakerShadowConfig(shutdown_grace_seconds=0)
     with pytest.raises(ValueError, match="callback_timeout_seconds"):
         SpeakerShadowConfig(callback_timeout_seconds=0)
+    with pytest.raises(ValueError, match="evaluation_audio_ms"):
+        SpeakerShadowConfig(
+            minimum_audio_ms=20,
+            maximum_audio_ms=100,
+            evaluation_audio_ms=(20, 20),
+        )
+    with pytest.raises(ValueError, match="evaluation_audio_ms"):
+        SpeakerShadowConfig(
+            minimum_audio_ms=20,
+            maximum_audio_ms=100,
+            evaluation_audio_ms=(10, 40),
+        )

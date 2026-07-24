@@ -71,6 +71,7 @@ class _CandidateBuffer:
     sample_rate_hz: int
     pcm16: bytearray
     audio_ms: int = 0
+    next_evaluation_index: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -320,16 +321,41 @@ class SpeakerShadowRuntime:
         allowed_bytes = min(len(frame.pcm16), allowed_samples * 2)
         buffer.pcm16.extend(frame.pcm16[:allowed_bytes])
         buffer.audio_ms += min(frame.duration_ms, remaining_ms)
-        if buffer.audio_ms < self._config.minimum_audio_ms:
+        checkpoints = self._config.evaluation_checkpoints_ms
+        while (
+            buffer.next_evaluation_index < len(checkpoints)
+            and buffer.audio_ms >= checkpoints[buffer.next_evaluation_index]
+        ):
+            checkpoint_ms = checkpoints[buffer.next_evaluation_index]
+            buffer.next_evaluation_index += 1
+            checkpoint_bytes = (
+                buffer.sample_rate_hz * checkpoint_ms // 1_000
+            ) * 2
+            await self._evaluate(
+                frame,
+                buffer,
+                pcm16=bytes(buffer.pcm16[:checkpoint_bytes]),
+                audio_ms=checkpoint_ms,
+            )
+            if frame.generation != self._generation or self._closed:
+                return
+        if buffer.next_evaluation_index < len(checkpoints):
             return
-        pcm16 = bytes(buffer.pcm16)
-        audio_ms = buffer.audio_ms
         self._buffers.pop(frame.candidate, None)
         self._mark_finalized(
             frame.candidate,
             finish_seen=False,
             terminal_reason="sufficient",
         )
+
+    async def _evaluate(
+        self,
+        frame: _AudioFrame,
+        buffer: _CandidateBuffer,
+        *,
+        pcm16: bytes,
+        audio_ms: int,
+    ) -> None:
         backend = await self._ensure_backend()
         if backend is None:
             return

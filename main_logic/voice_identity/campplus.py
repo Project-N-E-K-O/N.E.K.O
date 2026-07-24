@@ -706,7 +706,11 @@ class CampPlusSpeakerShadowFactory:
 
         return SpeakerShadowRuntime(
             backend_factory=create_backend,
-            config=self._config or SpeakerShadowConfig(enabled=True),
+            config=self._config
+            or SpeakerShadowConfig(
+                enabled=True,
+                evaluation_audio_ms=(1_500, 3_000),
+            ),
             on_observation=self._on_observation,
         )
 
