@@ -14,13 +14,16 @@ export async function safely(operation) {
   }
 }
 
-export function rankBuckets(items) {
-  const ranks = items.map(item => item.organicRank).filter(Number.isFinite)
+export function rankBuckets(items, { maxRank = Infinity } = {}) {
+  const observedItems = items.filter(item => item?.error == null)
+  const ranks = observedItems.map(item => item.organicRank).filter(Number.isFinite)
   return {
     top3: ranks.filter(rank => rank <= 3).length,
     top10: ranks.filter(rank => rank <= 10).length,
-    top30: ranks.filter(rank => rank <= 30).length,
+    top30: maxRank >= 30 ? ranks.filter(rank => rank <= 30).length : null,
     tracked: items.length,
+    observed: observedItems.length,
+    failed: items.length - observedItems.length,
   }
 }
 
@@ -32,6 +35,7 @@ export function summarizeDataForSeo(report, desktopPetKeywords) {
     (report?.keywordMetrics ?? []).map(item => [canonicalKeyword(item.keyword), item]),
   )
   const serp = report?.serp ?? []
+  const maxRank = Number(report?.plan?.serpDepth ?? Infinity)
   const categoryItems = serp
     .filter(item => categorySet.has(canonicalKeyword(item.keyword)))
     .map(item => ({
@@ -47,8 +51,9 @@ export function summarizeDataForSeo(report, desktopPetKeywords) {
   return {
     status: report?.status ?? 'unknown',
     dryRun: report?.dryRun === true,
-    category: rankBuckets(categoryItems),
-    allTracked: rankBuckets(serp),
+    category: rankBuckets(categoryItems, { maxRank }),
+    allTracked: rankBuckets(serp, { maxRank }),
+    serpDepth: Number.isFinite(maxRank) ? maxRank : null,
     plannedCategoryKeywords: desktopPetKeywords.length,
     supportingKeywords: Math.max(0, Number(report?.plan?.keywordCount ?? 0) - desktopPetKeywords.length),
     categoryKeywords: categoryItems,
@@ -89,7 +94,7 @@ export function buildMonitoringReport({
   const dataForSeo = summarizeDataForSeo(dataForSeoReport, config.desktopPetKeywords)
   const blockers = []
   if (dataForSeo.status === 'unavailable') blockers.push(`DataForSEO: ${dataForSeo.reason}`)
-  else if (!['complete', 'planned'].includes(dataForSeo.status)) {
+  else if (!['complete', 'partial', 'planned'].includes(dataForSeo.status)) {
     blockers.push(`DataForSEO report status is ${dataForSeo.status}`)
   }
   if (sitemap.status === 'unavailable') blockers.push(`Sitemap: ${sitemap.reason}`)
@@ -113,7 +118,7 @@ export function buildMonitoringReport({
 export function renderMarkdown(report) {
   const rankingsUnavailable = report.dataForSeo.status === 'unavailable'
     || report.dataForSeo.dryRun
-    || report.dataForSeo.category.tracked === 0
+    || report.dataForSeo.category.observed === 0
   const dataForSeoHeadline = rankingsUnavailable
     ? 'N/A'
     : `${report.dataForSeo.category.top10}/${report.dataForSeo.plannedCategoryKeywords}`
@@ -133,11 +138,14 @@ export function renderMarkdown(report) {
     lines.push(`- N/A — ${report.dataForSeo.reason}`, '')
   } else {
     const category = report.dataForSeo.category
+    const top30 = Number.isFinite(category.top30)
+      ? `Top 30 **${category.top30}**`
+      : `Top 30 **N/A** (SERP depth ${report.dataForSeo.serpDepth ?? 'unknown'})`
     lines.push(
       `- Report status: ${report.dataForSeo.status}${report.dataForSeo.dryRun ? ' (dry-run)' : ''}`,
       rankingsUnavailable
         ? `- Desktop-pet category: N/A — ${report.dataForSeo.plannedCategoryKeywords} keywords planned; no paid SERP result in this artifact`
-        : `- Desktop-pet category: Top 3 **${category.top3}**, Top 10 **${category.top10}**, Top 30 **${category.top30}** / ${report.dataForSeo.plannedCategoryKeywords} planned`,
+        : `- Desktop-pet category: Top 3 **${category.top3}**, Top 10 **${category.top10}**, ${top30}; ${category.observed}/${category.tracked} observed, ${category.failed} failed, ${report.dataForSeo.plannedCategoryKeywords} planned`,
       `- Supporting developer/capability keywords: ${report.dataForSeo.supportingKeywords}`,
       `- Reported cost: ${report.dataForSeo.costUsd == null ? 'N/A' : `$${report.dataForSeo.costUsd.toFixed(4)}`}`,
       `- Per-keyword errors: ${report.dataForSeo.errors.length}`,
@@ -145,11 +153,14 @@ export function renderMarkdown(report) {
     )
     if (report.dataForSeo.categoryKeywords.length > 0) {
       lines.push(
-        '| Desktop-pet keyword | Landing page | Rank | Volume | KD |',
-        '|---|---|---:|---:|---:|',
+        '| Desktop-pet keyword | Landing page | Collection | Rank | Volume | KD |',
+        '|---|---|---|---:|---:|---:|',
       )
       for (const item of report.dataForSeo.categoryKeywords) {
-        lines.push(`| ${escapeCell(item.keyword)} | ${escapeCell(item.landingPage)} | ${display(item.organicRank)} | ${display(item.searchVolume)} | ${display(item.keywordDifficulty)} |`)
+        const collection = item.error == null
+          ? 'observed'
+          : `failed (${item.error.statusCode ?? 'unknown'})`
+        lines.push(`| ${escapeCell(item.keyword)} | ${escapeCell(item.landingPage)} | ${escapeCell(collection)} | ${display(item.organicRank)} | ${display(item.searchVolume)} | ${display(item.keywordDifficulty)} |`)
       }
       lines.push('')
     }
@@ -160,6 +171,7 @@ export function renderMarkdown(report) {
     '',
     `- Overall: ${statusLine(report.gsc, value => `${value.overall.impressions} impressions, ${value.overall.clicks} clicks, CTR ${percentage(value.overall.ctr)}, average position ${display(value.overall.position, 2)}`)}`,
     `- Desktop-pet category: ${statusLine(report.gsc, value => `${value.desktopPetCategory.impressions} impressions, ${value.desktopPetCategory.clicks} clicks, CTR ${percentage(value.desktopPetCategory.ctr)}, average position ${display(value.desktopPetCategory.position, 2)}`)}`,
+    `- GSC query-page rows: ${statusLine(report.gsc, value => `${value.overall.rows} rows across ${value.pagination?.requestCount ?? 1} API page(s)`)}`,
     `- GSC sitemap: ${statusLine(report.gsc, value => `${value.sitemap.errors} errors, ${value.sitemap.warnings} warnings, pending=${value.sitemap.isPending}`)}`,
     '',
     '## GA4 acquisition and conversion',

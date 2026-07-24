@@ -14,6 +14,7 @@ export class DataForSeoApiError extends Error {
     retryable = false,
     fatal = false,
     costUsd = 0,
+    billingUncertain = false,
   } = {}) {
     super(message)
     this.name = 'DataForSeoApiError'
@@ -22,6 +23,7 @@ export class DataForSeoApiError extends Error {
     this.retryable = Boolean(retryable)
     this.fatal = Boolean(fatal)
     this.costUsd = Number.isFinite(Number(costUsd)) ? Number(costUsd) : 0
+    this.billingUncertain = Boolean(billingUncertain)
   }
 }
 
@@ -108,7 +110,7 @@ function assertSuccessfulPayload(payload, endpoint) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     throw new DataForSeoApiError(
       `DataForSEO returned an invalid JSON envelope for ${endpoint}`,
-      { endpoint, retryable: true },
+      { endpoint, costUsd: payloadCost(payload), billingUncertain: true },
     )
   }
 
@@ -187,7 +189,7 @@ export class DataForSeoClient {
     } catch (error) {
       throw new DataForSeoApiError(
         `DataForSEO network request failed for ${endpoint}: ${error?.message ?? 'unknown error'}`,
-        { endpoint, retryable: true },
+        { endpoint, billingUncertain: true },
       )
     }
 
@@ -200,8 +202,8 @@ export class DataForSeoClient {
         {
           endpoint,
           statusCode: response.status,
-          retryable: response.ok || isRetryableHttpStatus(response.status),
           fatal: isFatalHttpStatus(response.status),
+          billingUncertain: true,
         },
       )
     }
@@ -214,8 +216,8 @@ export class DataForSeoClient {
         {
           endpoint,
           statusCode: response.status,
-          retryable: response.ok || isRetryableHttpStatus(response.status),
           fatal: isFatalHttpStatus(response.status),
+          billingUncertain: true,
         },
       )
     }

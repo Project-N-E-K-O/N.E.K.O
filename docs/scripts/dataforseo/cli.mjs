@@ -106,8 +106,14 @@ function printSummary(report, outputPath) {
     ).length
     const aioCitations = successfulSerp.filter(item => item.aiOverviewCitedTarget).length
     console.log(`SERP keyword requests completed: ${successfulSerp.length}/${report.serp.length}`)
-    console.log(`Tracked keywords in Google Top 10: ${topTen}/${successfulSerp.length}`)
-    console.log(`AI Overview citations of target domain: ${aioCitations}/${successfulSerp.length}`)
+    console.log(
+      `Tracked keywords in Google Top 10: ${topTen}/${report.serp.length} tracked `
+      + `(${successfulSerp.length} observed)`,
+    )
+    console.log(
+      `AI Overview citations of target domain: ${aioCitations}/${report.serp.length} tracked `
+      + `(${successfulSerp.length} observed)`,
+    )
   }
   if (report.errors.length > 0) {
     console.warn(

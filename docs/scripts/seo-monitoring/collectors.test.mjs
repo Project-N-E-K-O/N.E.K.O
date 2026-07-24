@@ -55,8 +55,46 @@ test('GSC collector separates desktop-pet queries and reads sitemap state', asyn
   assert.equal(result.desktopPetCategory.impressions, 20)
   assert.equal(result.topDesktopPetQueries[0].query, 'ai desktop pet')
   assert.equal(result.sitemap.warnings, 1)
+  assert.deepEqual(result.pagination, {
+    rowLimit: 25_000,
+    requestCount: 1,
+    rows: 2,
+    exhausted: true,
+  })
   assert.equal(requests.length, 2)
   assert.match(requests[0].options.headers.authorization, /Bearer token/)
+  assert.equal(JSON.parse(requests[0].options.body).startRow, 0)
+})
+
+test('GSC collector paginates query-page rows until the final short page', async () => {
+  const analyticsBodies = []
+  const result = await collectGsc({
+    siteUrl: 'https://project-neko.online/',
+    sitemapUrl: 'https://project-neko.online/sitemap.xml',
+    categoryQueryRegex: 'desktop pet',
+  }, reportingWindow(new Date('2026-07-23T08:00:00Z')), {
+    accessToken: 'token',
+    rowLimit: 2,
+    fetchImpl: async (url, options) => {
+      if (!url.includes('searchAnalytics')) return jsonResponse({ errors: 0, warnings: 0 })
+      const body = JSON.parse(options.body)
+      analyticsBodies.push(body)
+      if (body.startRow === 0) {
+        return jsonResponse({ rows: [
+          { keys: ['ai desktop pet', '/'], clicks: 1, impressions: 2, position: 3 },
+          { keys: ['plugin docs', '/plugins/'], clicks: 1, impressions: 2, position: 4 },
+        ] })
+      }
+      return jsonResponse({ rows: [
+        { keys: ['desktop pet companion', '/'], clicks: 1, impressions: 2, position: 5 },
+      ] })
+    },
+  })
+
+  assert.equal(result.overall.rows, 3)
+  assert.equal(result.desktopPetCategory.rows, 2)
+  assert.equal(result.pagination.requestCount, 2)
+  assert.deepEqual(analyticsBodies.map(body => body.startRow), [0, 2])
 })
 
 test('GA4 collector returns organic, AI-referral, and organic Steam CTA metrics', async () => {

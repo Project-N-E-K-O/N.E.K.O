@@ -20,9 +20,11 @@ DataForSEO bills by request. The repository therefore keeps scheduled billing be
 - each SERP request sets `max_crawl_pages` from that depth, making the displayed page count a hard crawl limit;
 - asynchronous AI Overview loading is disabled by default and can add a charge to every SERP request;
 - Live SERP allows one task per request, so the committed 19-keyword set means 19 paid SERP requests per SERP run;
-- transient zero-cost SERP failures retry only the failed keyword, at most three attempts with backoff;
+- explicit transient SERP API failures that report zero cost retry only the failed keyword, at most three attempts with backoff;
+- ambiguous network, response-body, or JSON failures are never retried automatically because the completed request may already have been billed;
 - a failed response reporting any nonzero cost is never retried automatically, preventing an accidental duplicate charge;
-- one keyword failure does not discard successful results; the artifact records `partial` or `failed` status and per-keyword diagnostics;
+- recoverable keyword failures do not discard successful results; the artifact records `partial` or `failed` status and per-keyword diagnostics;
+- account-wide fatal failures stop the run immediately and do not produce an artifact; the sanitized fatal diagnostic includes attempts and any cost reported for the current keyword;
 - generated reports live under `docs/.seo-reports/`, are ignored by Git, and are retained as workflow artifacts for 14 days.
 
 The request plan always states the request count, maximum SERP pages, and number of AIO-enabled calls before execution. A completed paid report records the costs returned by DataForSEO.
@@ -125,7 +127,7 @@ The workflow also writes a unified GSC/GA4 Markdown and JSON summary. See [SEO/G
 | `serp[].aiOverviewTriggered` | Whether an AIO item appeared |
 | `serp[].aiOverviewCitedTarget` | Whether AIO referenced `project-neko.online` or a subdomain |
 | `status` | `planned`, `complete`, `partial`, or `failed` |
-| `errors[]` | Sanitized per-keyword error, attempts, incurred cost, and cost-guard decision |
+| `errors[]` | Sanitized per-keyword error, attempts, incurred cost, and cost-guard decisions, including uncertain billing |
 | `costs.totalUsd` | Sum of costs returned by the API responses |
 
 SERP crawling stops only when the target is found in an `organic` result. Appearances in other result types do not stop the crawl before the natural ranking can be recorded.

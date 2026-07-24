@@ -84,6 +84,8 @@ test('client wraps request timeout failures without exposing credentials', async
       assert.ok(error instanceof DataForSeoApiError)
       assert.match(error.message, /network request failed.*timed out/i)
       assert.doesNotMatch(error.message, /private-login|private-password/)
+      assert.equal(error.retryable, false)
+      assert.equal(error.billingUncertain, true)
       return true
     },
   )
@@ -108,7 +110,28 @@ test('client wraps response body read failures consistently', async () => {
       assert.ok(error instanceof DataForSeoApiError)
       assert.equal(error.endpoint, DATAFORSEO_ENDPOINTS.organicSerp)
       assert.equal(error.statusCode, 200)
+      assert.equal(error.retryable, false)
+      assert.equal(error.billingUncertain, true)
       assert.match(error.message, /response body read failed.*connection reset/i)
+      return true
+    },
+  )
+})
+
+test('client does not retry a non-JSON response with uncertain billing', async () => {
+  const client = new DataForSeoClient({
+    login: 'login',
+    password: 'password',
+    fetchImpl: async () => new Response('<html>upstream error</html>', { status: 200 }),
+  })
+
+  await assert.rejects(
+    client.post(DATAFORSEO_ENDPOINTS.organicSerp, [{}]),
+    error => {
+      assert.ok(error instanceof DataForSeoApiError)
+      assert.equal(error.retryable, false)
+      assert.equal(error.billingUncertain, true)
+      assert.match(error.message, /non-JSON data/i)
       return true
     },
   )

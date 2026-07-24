@@ -333,6 +333,38 @@ test('SERP mode does not retry when a failed response reports a nonzero cost', a
   assert.equal(report.costs.organicSerpUsd, 0.004)
 })
 
+test('SERP mode does not retry when billing is uncertain', async () => {
+  const config = validateConfig({ ...rawConfig, keywords: [rawConfig.keywords[0]] })
+  let calls = 0
+  const client = {
+    async post() {
+      calls += 1
+      throw new DataForSeoApiError('response body was unavailable', {
+        endpoint: DATAFORSEO_ENDPOINTS.organicSerp,
+        statusCode: 200,
+        retryable: true,
+        billingUncertain: true,
+      })
+    },
+  }
+
+  const report = await createDataForSeoReport({
+    client,
+    config,
+    mode: 'serp',
+    retryOptions: {
+      maxAttempts: 3,
+      baseDelayMs: 0,
+      sleep: async () => {},
+      onRetry: () => {},
+    },
+  })
+
+  assert.equal(calls, 1)
+  assert.equal(report.status, 'failed')
+  assert.equal(report.errors[0].retrySkippedDueToUncertainBilling, true)
+})
+
 test('SERP mode records an exhausted zero-cost keyword error and continues', async () => {
   const config = validateConfig(rawConfig)
   const calls = []
@@ -469,6 +501,7 @@ test('all mode preserves keyword metrics when every SERP request fails', async (
 test('SERP mode still aborts immediately for account-wide fatal failures', async () => {
   const config = validateConfig(rawConfig)
   let calls = 0
+  const fatalDiagnostics = []
   const client = {
     async post() {
       calls += 1
@@ -490,9 +523,16 @@ test('SERP mode still aborts immediately for account-wide fatal failures', async
         baseDelayMs: 0,
         sleep: async () => {},
         onRetry: () => {},
+        onFatal: details => fatalDiagnostics.push(details),
       },
     }),
     /authentication failed/,
   )
   assert.equal(calls, 1)
+  assert.deepEqual(fatalDiagnostics, [{
+    keyword: config.keywords[0].keyword,
+    statusCode: 40100,
+    attempts: 1,
+    costUsd: 0,
+  }])
 })

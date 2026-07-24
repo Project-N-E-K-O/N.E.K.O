@@ -1,5 +1,6 @@
 export const GSC_SCOPE = 'https://www.googleapis.com/auth/webmasters.readonly'
 export const GA4_SCOPE = 'https://www.googleapis.com/auth/analytics.readonly'
+const DEFAULT_GSC_ROW_LIMIT = 25_000
 
 function isoDate(value) {
   return value.toISOString().slice(0, 10)
@@ -71,28 +72,56 @@ function aggregateGscRows(rows) {
   }
 }
 
+function normalizeGscRowLimit(value) {
+  const rowLimit = Number(value)
+  if (!Number.isInteger(rowLimit) || rowLimit < 1 || rowLimit > DEFAULT_GSC_ROW_LIMIT) {
+    throw new TypeError('GSC rowLimit must be an integer from 1 to 25000')
+  }
+  return rowLimit
+}
+
+async function collectGscRows(url, body, { accessToken, fetchImpl, rowLimit }) {
+  const rows = []
+  let requestCount = 0
+  let startRow = 0
+
+  while (true) {
+    const page = await jsonRequest(url, {
+      accessToken,
+      fetchImpl,
+      method: 'POST',
+      body: JSON.stringify({ ...body, rowLimit, startRow }),
+    })
+    const pageRows = Array.isArray(page.rows) ? page.rows : []
+    rows.push(...pageRows)
+    requestCount += 1
+    if (pageRows.length < rowLimit) return { rows, requestCount }
+    startRow += pageRows.length
+  }
+}
+
 export async function collectGsc({
   siteUrl,
   sitemapUrl,
   categoryQueryRegex,
-}, window, { accessToken, fetchImpl = globalThis.fetch } = {}) {
+}, window, {
+  accessToken,
+  fetchImpl = globalThis.fetch,
+  rowLimit: requestedRowLimit = DEFAULT_GSC_ROW_LIMIT,
+} = {}) {
   const property = encodeURIComponent(siteUrl)
-  const analytics = await jsonRequest(
+  const rowLimit = normalizeGscRowLimit(requestedRowLimit)
+  const analytics = await collectGscRows(
     `https://searchconsole.googleapis.com/webmasters/v3/sites/${property}/searchAnalytics/query`,
     {
-      accessToken,
-      fetchImpl,
-      method: 'POST',
-      body: JSON.stringify({
-        startDate: window.gscStart,
-        endDate: window.gscEnd,
-        dimensions: ['query', 'page'],
-        dataState: 'final',
-        rowLimit: 25_000,
-      }),
+      startDate: window.gscStart,
+      endDate: window.gscEnd,
+      dimensions: ['query', 'page'],
+      dataState: 'final',
     },
+    { accessToken, fetchImpl, rowLimit },
   )
-  const rows = analytics.rows ?? []
+  const rows = analytics.rows
   const categoryPattern = new RegExp(categoryQueryRegex, 'iu')
   const categoryRows = rows.filter(row => categoryPattern.test(String(row.keys?.[0] ?? '')))
   const sitemap = await jsonRequest(
@@ -103,6 +132,12 @@ export async function collectGsc({
   return {
     status: 'ok',
     dataThrough: window.gscEnd,
+    pagination: {
+      rowLimit,
+      requestCount: analytics.requestCount,
+      rows: rows.length,
+      exhausted: true,
+    },
     overall: aggregateGscRows(rows),
     desktopPetCategory: aggregateGscRows(categoryRows),
     topDesktopPetQueries: categoryRows

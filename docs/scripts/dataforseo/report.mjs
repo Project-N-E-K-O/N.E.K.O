@@ -139,10 +139,18 @@ function normalizeRetryOptions(options = {}) {
       + `(attempt ${details.nextAttempt}/${details.maxAttempts}, delay ${details.delayMs}ms).`,
     )
   })
+  const onFatal = options.onFatal ?? (details => {
+    console.error(
+      `Aborting DataForSEO SERP collection after fatal status ${details.statusCode ?? 'unknown'} `
+      + `for "${details.keyword}"; ${details.attempts} attempt(s), `
+      + `$${details.costUsd.toFixed(4)} reported for this keyword.`,
+    )
+  })
   if (typeof sleep !== 'function') throw new TypeError('retryOptions.sleep must be a function')
   if (typeof onRetry !== 'function') throw new TypeError('retryOptions.onRetry must be a function')
+  if (typeof onFatal !== 'function') throw new TypeError('retryOptions.onFatal must be a function')
 
-  return { maxAttempts, baseDelayMs, sleep, onRetry }
+  return { maxAttempts, baseDelayMs, sleep, onRetry, onFatal }
 }
 
 export function buildPlan(config, { mode = 'all', includeAiOverview = false, depth } = {}) {
@@ -331,6 +339,7 @@ function serpErrorDetails(entry, error, attempts, incurredCostUsd) {
     attempts,
     incurredCostUsd,
     retrySkippedDueToReportedCost: error.retryable && error.costUsd > 0,
+    retrySkippedDueToUncertainBilling: error.billingUncertain === true,
   }
 }
 
@@ -347,9 +356,19 @@ async function requestSerpWithRetries(client, entry, task, retryOptions) {
     } catch (error) {
       if (!(error instanceof DataForSeoApiError)) throw error
       costUsd += Number.isFinite(error.costUsd) ? error.costUsd : 0
-      if (error.fatal) throw error
+      if (error.fatal) {
+        retryOptions.onFatal({
+          keyword: entry.keyword,
+          statusCode: error.statusCode,
+          attempts,
+          costUsd,
+        })
+        throw error
+      }
 
-      const mayRetryWithoutDuplicateCharge = error.retryable && error.costUsd <= 0
+      const mayRetryWithoutDuplicateCharge = error.retryable
+        && error.billingUncertain !== true
+        && error.costUsd <= 0
       if (mayRetryWithoutDuplicateCharge && attempts < retryOptions.maxAttempts) {
         const delayMs = retryOptions.baseDelayMs * (2 ** (attempts - 1))
         retryOptions.onRetry({
