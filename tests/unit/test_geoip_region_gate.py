@@ -357,6 +357,49 @@ def test_startup_warmup_does_not_block_the_event_loop(monkeypatch):
 
 
 @pytest.mark.unit
+def test_session_start_waits_out_a_probe_that_outlived_startup(monkeypatch):
+    """Startup's join can expire in DNS resolution; the session must not pin blindly."""
+    class _SlowOpener:
+        def open(self, req, timeout=None):
+            real_time.sleep(0.3)
+            return _JsonResp('{"countryCode": "US"}')
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, 'build_opener', lambda *a, **kw: _SlowOpener())
+
+    probe = _Probe()
+    ConfigManager._check_ip_non_mainland_http()
+    assert ConfigManager._ip_check_cache is None, '前置条件：会话开始时结论尚未落地'
+
+    assert asyncio.run(probe.aensure_region_resolved(timeout=5)) is True
+    assert ConfigManager._ip_check_cache is True
+
+
+@pytest.mark.unit
+def test_session_start_region_wait_is_free_when_already_resolved(monkeypatch):
+    """Zero cost on the normal path: no probe in flight, no waiting."""
+    monkeypatch.setattr(ConfigManager, '_region_cache', True)
+
+    def _boom(*a, **kw):
+        raise AssertionError('已落定时不应等待探测')
+
+    monkeypatch.setattr(ConfigManager, 'join_ip_probe', staticmethod(_boom))
+    probe = _Probe()
+    started = real_time.monotonic()
+    assert asyncio.run(probe.aensure_region_resolved()) is True
+    assert real_time.monotonic() - started < 0.2
+
+
+@pytest.mark.unit
+def test_session_start_does_not_wait_when_no_probe_is_running():
+    """Nothing in flight means nothing to wait for — never stall the session."""
+    probe = _Probe()
+    started = real_time.monotonic()
+    assert asyncio.run(probe.aensure_region_resolved(timeout=5)) is False
+    assert real_time.monotonic() - started < 0.2
+
+
+@pytest.mark.unit
 def test_probe_thread_is_daemon(monkeypatch):
     """A probe hung on a 3s connect must never hold up process exit."""
     _patch_probe(monkeypatch, [OSError('down')])

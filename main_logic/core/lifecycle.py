@@ -906,6 +906,11 @@ class LifecycleMixin:
         # 立即通知前端系统正在准备（静默期开始）
         await self.send_session_preparing(input_mode)
 
+        # 会话的线路在下面这几行定死、整场不再复议，所以先给仍在飞的区域探测一个
+        # 收尾窗口（启动预热的 join 可能在 DNS 解析上过期）。已落定时立即返回，
+        # 正常路径零开销；等待也是 offload 的，不占事件循环。
+        await self._config_manager.aensure_region_resolved()
+
         # 重新读取配置以支持热重载
         # core_api_type 从 realtime 配置获取，支持自定义 realtime API 时自动设为 'local'
         realtime_config = self._config_manager.get_model_api_config('realtime')

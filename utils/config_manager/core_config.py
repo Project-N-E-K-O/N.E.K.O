@@ -116,6 +116,27 @@ class CoreConfigMixin:
             thread.join(timeout)
         return ConfigManager._ip_check_cache is not None
 
+    async def aensure_region_resolved(self, timeout: float = 1.5) -> bool:
+        """Last chance for an in-flight probe before a session freezes its route.
+
+        A session pins its base URL at start_session and never revisits it, so a
+        verdict that lands one second too late costs that whole session. Startup
+        already waits, but its join can expire while the probe sits in DNS
+        resolution (the 3s socket timeout does not cover ``getaddrinfo``).
+
+        Costs nothing on the normal path: returns immediately unless the region is
+        still unknown *and* a probe is actually in flight. The wait itself is
+        offloaded, so the event loop keeps running.
+        """
+        from utils.config_manager import ConfigManager
+
+        if ConfigManager._region_cache is not None or ConfigManager._ip_check_cache is not None:
+            return True
+        thread = ConfigManager._ip_probe_thread
+        if thread is None or not thread.is_alive():
+            return False
+        return await asyncio.to_thread(self.join_ip_probe, timeout)
+
     async def awarmup_region_check(self, timeout: float = 5.0) -> bool:
         """Resolve the region before the server starts accepting sessions.
 
