@@ -25,10 +25,16 @@ the package facade.
 
 Region-resolution invariants
 ----------------------------
-These five constrain each other, and a change that satisfies one can quietly
+These six constrain each other, and a change that satisfies one can quietly
 break another — during the work that introduced them, two were broken exactly
 that way (a "kick a due probe" fix bypassed #2; an ``is_alive()`` guard
-disabled #4). Check a change against all five, not just the one it targets.
+disabled #4). Check a change against all six, not just the one it targets.
+
+Checking the list is necessary but not sufficient: the mechanism added to
+satisfy #4 (replacing a wedged probe) was itself correct against every rule
+above and still introduced two fresh defects, because it quietly made the
+cache multi-writer. #6 is what that cost, and it is the rule to reach for
+whenever a fix adds a concurrent actor rather than a condition.
 
 1. The probe never does network IO on the caller's thread. ``get_core_config``
    fans out to ~40 sync callers living inside ``async def``, so a blocking
@@ -48,6 +54,13 @@ disabled #4). Check a change against all five, not just the one it targets.
 5. Every path that freezes a base URL into a session settles the region first
    (main session, hot-swap prepare, game session pool). Tests assert this
    structurally, because the real risk is a *new* path added later.
+6. At most one probe owns the verdict, and outstanding probes are bounded.
+   Replacing a wedged probe does not stop it: it stays runnable and can surface
+   long afterwards with an answer taken before the network exit changed, so
+   ownership is carried by ``_ip_probe_generation`` and a superseded probe
+   discards its own result. Wedged threads are unjoinable, so replacements are
+   also capped (``_IP_PROBE_MAX_WEDGED``) — otherwise a permanently blocked
+   resolver leaks one thread per backoff cycle for the life of the process.
 """
 import asyncio
 import json
