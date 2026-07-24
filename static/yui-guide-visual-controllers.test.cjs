@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { readDirectorSource } = require('./yui-guide-director-test-parts.cjs');
 const test = require('node:test');
 
 const repoRoot = path.resolve(__dirname, '..');
@@ -10,7 +11,7 @@ const avatarStandInControllerPath = path.join(__dirname, 'tutorial/avatar/standi
 const spotlightControllerPath = path.join(__dirname, 'tutorial/visual/spotlight-controller.js');
 const ghostCursorControllerPath = path.join(__dirname, 'tutorial/visual/ghost-cursor-controller.js');
 const petalTransitionControllerPath = path.join(__dirname, 'tutorial/visual/petal-transition-controller.js');
-const directorSource = fs.readFileSync(path.join(__dirname, 'tutorial/yui-guide/director.js'), 'utf8');
+const directorSource = readDirectorSource(__dirname);
 const controllersSource = fs.existsSync(controllersPath) ? fs.readFileSync(controllersPath, 'utf8') : '';
 const highlightControllerSource = fs.existsSync(highlightControllerPath)
     ? fs.readFileSync(highlightControllerPath, 'utf8')
@@ -160,7 +161,7 @@ test('full tutorial pages load visual controllers before the director', () => {
         const petalTransitionControllerIndex = templateSource.indexOf('/static/tutorial/visual/petal-transition-controller.js');
         const highlightControllerIndex = templateSource.indexOf('/static/tutorial/visual/highlight-controller.js');
         const controllersIndex = templateSource.indexOf('/static/tutorial/visual/controllers.js');
-        const directorIndex = templateSource.indexOf('/static/tutorial/yui-guide/director.js');
+        const directorIndex = templateSource.indexOf('/static/tutorial/yui-guide/director/bootstrap.js');
 
         assert.notEqual(avatarStandInControllerIndex, -1, templatePath + ' should load tutorial/avatar/standin-controller.js');
         assert.notEqual(spotlightControllerIndex, -1, templatePath + ' should load tutorial/visual/spotlight-controller.js');
@@ -168,7 +169,7 @@ test('full tutorial pages load visual controllers before the director', () => {
         assert.notEqual(petalTransitionControllerIndex, -1, templatePath + ' should load tutorial/visual/petal-transition-controller.js');
         assert.notEqual(highlightControllerIndex, -1, templatePath + ' should load tutorial/visual/highlight-controller.js');
         assert.notEqual(controllersIndex, -1, templatePath + ' should load tutorial/visual/controllers.js');
-        assert.notEqual(directorIndex, -1, templatePath + ' should load tutorial/yui-guide/director.js');
+        assert.notEqual(directorIndex, -1, templatePath + ' should load tutorial/yui-guide/director parts');
         assert.ok(
             avatarStandInControllerIndex < controllersIndex,
             templatePath + ' should load avatar stand-in controller before visual controllers'
@@ -1528,4 +1529,66 @@ test('PetalTransitionController owns cue-triggered petal cleanup flow', async ()
     assert.doesNotMatch(directorSource, /playAvatarFloatingPetalTransitionAtCueLegacy/);
     assert.match(petalTransitionControllerSource, /const petalSequencePromise = this\.preloadReturnPetalSequence\(\);/);
     assert.match(petalTransitionControllerSource, /await this\.playReturn\(\{/);
+});
+
+test('PetalTransitionController aligns every cue-triggered petal transition from animation duration', async () => {
+    const { PetalTransitionController } = require('./tutorial/visual/controllers.js');
+    const calls = [];
+    const director = {
+        sceneRunId: 7,
+        destroyed: false,
+        returnPetalTransitionActive: false,
+        getAvatarFloatingNarrationDurationMs() {
+            return 10000;
+        },
+        waitForSceneDelay(durationMs) {
+            calls.push(['wait', durationMs]);
+            return Promise.resolve(true);
+        },
+        cursor: {
+            hide() {
+                calls.push('cursor:hide');
+            }
+        },
+        clearExternalizedChatGuideTarget() {},
+        overlay: {
+            clearPersistentSpotlight() {},
+            clearActionSpotlight() {}
+        },
+        clearSceneExtraSpotlights() {},
+        clearRetainedExtraSpotlights() {},
+        clearAllVirtualSpotlights() {},
+        clearSpotlightGeometryHints() {},
+        clearSpotlightVariantHints() {},
+        disableInterrupts() {},
+        runReturnControlCueWavePerformance() {
+            calls.push('wave');
+            return Promise.resolve();
+        },
+        shouldReduceTutorialMotion() {
+            return false;
+        }
+    };
+    const controller = new PetalTransitionController(director);
+    controller.preloadReturnPetalSequence = () => Promise.resolve(null);
+    controller.executeReturnTransition = (options) => {
+        calls.push(['return', options.durationMs]);
+        return Promise.resolve();
+    };
+
+    await controller.playAtCue(
+        { id: 'generic_wrap' },
+        7,
+        'voice',
+        'text',
+        Date.now() - 1000,
+        3000
+    );
+
+    assert.equal(calls[1], 'wave');
+    assert.deepEqual(calls[2], ['return', 3000]);
+    assert.ok(
+        calls[0][1] >= 5950 && calls[0][1] <= 6050,
+        'petal cue should wait until narration duration minus the shared transition window'
+    );
 });

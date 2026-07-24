@@ -146,7 +146,8 @@ class MonitoredPlugin(NekoPluginBase):
     @after_entry(target="*")
     def log_results(self, *, entry_id, result, **_):
         """记录每个入口点的返回结果。"""
-        self.logger.info(f"[{entry_id}] result={result}")
+        # 不要把可能含用户内容的原始结果写进持久日志。
+        self.logger.info(f"[{entry_id}] completed result_type={type(result).__name__}")
 
     # --- 入口点 ---
 
@@ -176,7 +177,7 @@ class MonitoredPlugin(NekoPluginBase):
 from typing import Any
 from plugin.sdk.plugin import (
     NekoPluginBase, neko_plugin, plugin_entry, lifecycle,
-    PluginStore, Ok, Err, SdkError,
+    Ok, Err, SdkError,
 )
 
 @neko_plugin
@@ -198,15 +199,20 @@ class NotesPlugin(NekoPluginBase):
         }
     )
     async def save_note(self, title: str, content: str, **_):
-        await self.store.set(f"note:{title}", {
+        saved = await self.store.set(f"note:{title}", {
             "title": title,
             "content": content,
         })
+        if isinstance(saved, Err):
+            return saved
         return Ok({"saved": title})
 
     @plugin_entry(id="get_note")
     async def get_note(self, title: str, **_):
-        note = await self.store.get(f"note:{title}")
+        stored = await self.store.get(f"note:{title}")
+        if isinstance(stored, Err):
+            return stored
+        note = stored.value
         if note is None:
             return Err(SdkError(f"Note not found: {title}"))
         return Ok(note)

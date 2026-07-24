@@ -57,6 +57,20 @@ class _InvalidJsonRequest:
         raise ValueError("invalid json")
 
 
+def _reload_persona_modules():
+    """Reload the characters_router submodules a persona test depends on.
+
+    Order matters: crud and cards are reloaded first so persona re-imports
+    their fresh globals; notify is imported without reload so its module
+    state (reload-notice codes) stays shared across the suite.
+    Returns (crud, cards, notify, persona) module objects."""
+    crud = importlib.reload(importlib.import_module("main_routers.characters_router.crud"))
+    cards = importlib.reload(importlib.import_module("main_routers.characters_router.cards"))
+    notify = importlib.import_module("main_routers.characters_router.notify")
+    persona = importlib.reload(importlib.import_module("main_routers.characters_router.persona"))
+    return crud, cards, notify, persona
+
+
 def _parse_json_response(response):
     if isinstance(response, dict):
         return response
@@ -66,11 +80,11 @@ def _parse_json_response(response):
 
 @pytest.mark.unit
 def test_reload_page_notice_code_distinguishes_character_settings():
-    router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+    crud_module, cards_module, notify_module, router_module = _reload_persona_modules()
 
-    assert router_module._resolve_reload_page_notice_code("角色设定已更新，页面即将刷新") == "RELOAD_PAGE_CHARACTER_SETTINGS"
-    assert router_module._resolve_reload_page_notice_code("语音已更新，页面即将刷新") == "RELOAD_PAGE_VOICE"
-    assert router_module._resolve_reload_page_notice_code("人格设定已更新，页面即将刷新") == "RELOAD_PAGE_PERSONA"
+    assert notify_module._resolve_reload_page_notice_code("角色设定已更新，页面即将刷新") == "RELOAD_PAGE_CHARACTER_SETTINGS"
+    assert notify_module._resolve_reload_page_notice_code("语音已更新，页面即将刷新") == "RELOAD_PAGE_VOICE"
+    assert notify_module._resolve_reload_page_notice_code("人格设定已更新，页面即将刷新") == "RELOAD_PAGE_PERSONA"
 
 
 @pytest.mark.unit
@@ -112,9 +126,7 @@ def test_get_character_data_uses_persona_override_in_runtime_view(monkeypatch):
         # presence proves the persona template was injected at all.
         assert "sunny cat girl" in prompt_map[current_name]
         # JA-only marker — proves the language branch resolved to "ja" instead of falling back.
-        # "煮干しのご褒美" only appears in classic_genki's ja template (other locales use
-        # "小鱼干"/"fishy reward"/"멸치"/"рыбку").
-        assert "煮干しのご褒美" in prompt_map[current_name]
+        assert "決まり文句は台詞集" in prompt_map[current_name]
 
 
 @pytest.mark.unit
@@ -159,8 +171,7 @@ def test_get_character_data_ignores_stale_persona_selection_system_prompt_when_o
         # English IMPORTANT tail (language-agnostic) — proves persona template was injected.
         assert "butler-cat girl" in prompt_map[current_name]
         # JA-only marker — proves the late-binding language branch resolved to "ja".
-        # "かしこまりましたにゃ" (hiragana) only appears in elegant_butler's ja template.
-        assert "かしこまりましたにゃ" in prompt_map[current_name]
+        assert "定型的な敬語" in prompt_map[current_name]
         assert "<NEKO_PERSONA_SELECTION>" not in prompt_map[current_name]
         assert "笨蛋人类" not in prompt_map[current_name]
 
@@ -203,7 +214,7 @@ def test_get_character_data_keeps_custom_system_prompt_when_override_exists(monk
         # English IMPORTANT tail (language-agnostic) — template was injected.
         assert "sunny cat girl" in prompt_map[current_name]
         # JA-only marker — late-binding resolved to "ja" (see PR #1086 review).
-        assert "煮干しのご褒美" in prompt_map[current_name]
+        assert "決まり文句は台詞集" in prompt_map[current_name]
 
 
 @pytest.mark.unit
@@ -254,7 +265,7 @@ def test_get_character_data_strips_legacy_persona_block_but_keeps_custom_system_
         # English IMPORTANT tail (language-agnostic) — template was injected.
         assert "sunny cat girl" in prompt_map[current_name]
         # JA-only marker — late-binding resolved to "ja" (see PR #1086 review).
-        assert "煮干しのご褒美" in prompt_map[current_name]
+        assert "決まり文句は台詞集" in prompt_map[current_name]
 
 
 @pytest.mark.unit
@@ -306,7 +317,7 @@ async def test_character_persona_routes_save_clear_and_track_onboarding_state():
                 remove_one_catgirl=_noop,
             )
 
-            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+            crud_module, cards_module, notify_module, router_module = _reload_persona_modules()
 
             presets_response = await router_module.list_persona_presets_route(_DummyRequest({}))
             presets_body = _parse_json_response(presets_response)
@@ -321,13 +332,13 @@ async def test_character_persona_routes_save_clear_and_track_onboarding_state():
                 _DummyRequest({}, query_params={"language": "ja-JP"}),
             )
             ja_presets_body = _parse_json_response(ja_presets_response)
-            assert "煮干しのご褒美" in ja_presets_body["presets"][0]["prompt_guidance"]
+            assert "決まり文句は台詞集" in ja_presets_body["presets"][0]["prompt_guidance"]
 
             ja_header_presets_response = await router_module.list_persona_presets_route(
                 _DummyRequest({}, headers={"Accept-Language": "ja-JP"}),
             )
             ja_header_presets_body = _parse_json_response(ja_header_presets_response)
-            assert "煮干しのご褒美" in ja_header_presets_body["presets"][0]["prompt_guidance"]
+            assert "決まり文句は台詞集" in ja_header_presets_body["presets"][0]["prompt_guidance"]
 
             invalid_query_with_header_response = await router_module.list_persona_presets_route(
                 _DummyRequest(
@@ -337,7 +348,7 @@ async def test_character_persona_routes_save_clear_and_track_onboarding_state():
                 ),
             )
             invalid_query_with_header_body = _parse_json_response(invalid_query_with_header_response)
-            assert "煮干しのご褒美" in invalid_query_with_header_body["presets"][0]["prompt_guidance"]
+            assert "決まり文句は台詞集" in invalid_query_with_header_body["presets"][0]["prompt_guidance"]
 
             current_name = config_manager.load_characters()["当前猫娘"]
             save_result = await router_module.update_character_persona_selection(
@@ -354,7 +365,7 @@ async def test_character_persona_routes_save_clear_and_track_onboarding_state():
             characters = config_manager.load_characters()
             override = characters["猫娘"][current_name]["_reserved"]["persona_override"]
             assert override["preset_id"] == "classic_genki"
-            assert "小鱼干奖励喵" in override["prompt_guidance"]
+            assert "固定口头禅不是台词清单" in override["prompt_guidance"]
 
             header_save_result = await router_module.update_character_persona_selection(
                 current_name,
@@ -366,7 +377,7 @@ async def test_character_persona_routes_save_clear_and_track_onboarding_state():
             assert header_save_result["success"] is True
             characters = config_manager.load_characters()
             override = characters["猫娘"][current_name]["_reserved"]["persona_override"]
-            assert "煮干しのご褒美" in override["prompt_guidance"]
+            assert "決まり文句は台詞集" in override["prompt_guidance"]
 
             selection_response = await router_module.get_character_persona_selection(current_name)
             selection_body = _parse_json_response(selection_response)
@@ -424,7 +435,7 @@ async def test_character_persona_selection_change_clears_stale_recent_history():
                 remove_one_catgirl=_noop,
             )
 
-            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+            crud_module, cards_module, notify_module, router_module = _reload_persona_modules()
 
             current_name = config_manager.load_characters()["当前猫娘"]
             recent_path = config_manager.memory_dir / current_name / "recent.json"
@@ -500,8 +511,8 @@ async def test_update_character_persona_selection_restarts_active_current_sessio
                 remove_one_catgirl=_noop,
             )
 
-            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
-            with patch.object(router_module, "send_reload_page_notice", AsyncMock(return_value=True)) as reload_notice:
+            crud_module, cards_module, notify_module, router_module = _reload_persona_modules()
+            with patch.object(router_module, "send_reload_page_notice", AsyncMock(return_value=True)) as reload_notice, patch.object(crud_module, "send_reload_page_notice", reload_notice):
                 save_result = await router_module.update_character_persona_selection(
                     current_name,
                     _DummyRequest({"preset_id": "classic_genki", "source": "manual_reselect"}),
@@ -563,7 +574,7 @@ async def test_update_character_persona_selection_closes_original_session_when_r
                 remove_one_catgirl=_noop,
             )
 
-            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+            crud_module, cards_module, notify_module, router_module = _reload_persona_modules()
             with patch.object(
                 router_module,
                 "send_reload_page_notice",
@@ -620,7 +631,7 @@ async def test_clear_character_persona_selection_restarts_active_current_session
                 remove_one_catgirl=_noop,
             )
 
-            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+            crud_module, cards_module, notify_module, router_module = _reload_persona_modules()
             await router_module.update_character_persona_selection(
                 current_name,
                 _DummyRequest({"preset_id": "classic_genki", "source": "manual_reselect"}),
@@ -629,7 +640,7 @@ async def test_clear_character_persona_selection_restarts_active_current_session
             current_session.end_session.reset_mock()
             init_one_catgirl.reset_mock()
 
-            with patch.object(router_module, "send_reload_page_notice", AsyncMock(return_value=True)) as reload_notice:
+            with patch.object(router_module, "send_reload_page_notice", AsyncMock(return_value=True)) as reload_notice, patch.object(crud_module, "send_reload_page_notice", reload_notice):
                 clear_result = await router_module.clear_character_persona_selection(current_name)
 
         assert clear_result["success"] is True
@@ -688,7 +699,7 @@ async def test_clear_character_persona_selection_closes_original_session_when_re
                 remove_one_catgirl=_noop,
             )
 
-            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+            crud_module, cards_module, notify_module, router_module = _reload_persona_modules()
             await router_module.update_character_persona_selection(
                 current_name,
                 _DummyRequest({"preset_id": "classic_genki", "source": "manual_reselect"}),
@@ -714,6 +725,72 @@ async def test_clear_character_persona_selection_closes_original_session_when_re
         )
         reconnected_session.end_session.assert_not_awaited()
         init_one_catgirl.assert_awaited_once_with(current_name, is_new=False)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_update_catgirl_voice_id_ends_active_session_without_reload_page():
+    with TemporaryDirectory() as td:
+        config_manager = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(config_manager)
+
+        async def _noop(*args, **kwargs):
+            return None
+
+        current_name = config_manager.load_characters()["当前猫娘"]
+        characters = config_manager.load_characters()
+        characters["猫娘"][current_name].setdefault("_reserved", {})["voice_id"] = "old-voice"
+        config_manager.save_characters(characters)
+
+        current_session = SimpleNamespace(
+            is_active=True,
+            websocket=object(),
+            session=object(),
+            end_session=AsyncMock(),
+            send_session_ended_by_server=AsyncMock(),
+            reset_session_start_circuit=Mock(),
+        )
+        role_state = {
+            current_name: SimpleNamespace(session_manager=current_session),
+        }
+        init_one_catgirl = AsyncMock()
+
+        with patch("utils.config_manager._config_manager", config_manager), patch.object(
+            config_manager,
+            "validate_voice_id",
+            return_value=True,
+        ), patch.object(
+            config_manager,
+            "voice_id_to_storage_value",
+            side_effect=lambda voice_id: voice_id,
+        ):
+            init_shared_state(
+                role_state=role_state,
+                steamworks=None,
+                templates=None,
+                config_manager=config_manager,
+                logger=None,
+                initialize_character_data=_noop,
+                switch_current_catgirl_fast=_noop,
+                init_one_catgirl=init_one_catgirl,
+                remove_one_catgirl=_noop,
+            )
+
+            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+            with patch.object(router_module, "send_reload_page_notice", AsyncMock(return_value=True)) as reload_notice:
+                result = await router_module.update_catgirl_voice_id(
+                    current_name,
+                    _DummyRequest({"voice_id": "new-voice"}),
+                )
+
+        assert result == {"success": True, "session_restarted": True, "voice_id_changed": True}
+        reload_notice.assert_not_awaited()
+        current_session.send_session_ended_by_server.assert_awaited_once_with()
+        current_session.end_session.assert_awaited_once_with(by_server=True)
+        current_session.reset_session_start_circuit.assert_called_once_with()
+        init_one_catgirl.assert_awaited_once_with(current_name, is_new=False)
+        saved_characters = config_manager.load_characters()
+        assert saved_characters["猫娘"][current_name]["_reserved"]["voice_id"] == "new-voice"
 
 
 @pytest.mark.unit
@@ -762,9 +839,9 @@ async def test_update_catgirl_profile_fields_refreshes_active_context():
                 remove_one_catgirl=_noop,
             )
 
-            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
-            with patch.object(router_module, "send_reload_page_notice", AsyncMock(return_value=True)) as reload_notice:
-                result = await router_module.update_catgirl(
+            crud_module, cards_module, notify_module, router_module = _reload_persona_modules()
+            with patch.object(router_module, "send_reload_page_notice", AsyncMock(return_value=True)) as reload_notice, patch.object(crud_module, "send_reload_page_notice", reload_notice):
+                result = await crud_module.update_catgirl(
                     current_name,
                     _DummyRequest({"档案名": current_name, "性格": "认真可靠"}),
                 )
@@ -830,9 +907,9 @@ async def test_save_character_card_refreshes_active_context_for_existing_current
                 remove_one_catgirl=_noop,
             )
 
-            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
-            with patch.object(router_module, "send_reload_page_notice", AsyncMock(return_value=True)) as reload_notice:
-                result = await router_module.save_character_card(
+            crud_module, cards_module, notify_module, router_module = _reload_persona_modules()
+            with patch.object(router_module, "send_reload_page_notice", AsyncMock(return_value=True)) as reload_notice, patch.object(crud_module, "send_reload_page_notice", reload_notice):
+                result = await cards_module.save_character_card(
                     _DummyRequest({
                         "character_card_name": current_name,
                         "charaData": {
@@ -889,14 +966,14 @@ async def test_refresh_catgirl_context_returns_partial_failure_if_recent_clear_f
                 remove_one_catgirl=_noop,
             )
 
-            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+            crud_module, cards_module, notify_module, router_module = _reload_persona_modules()
 
             async def _boom(*args, **kwargs):
                 raise OSError("recent write failed")
 
-            with patch.object(router_module, "_clear_character_recent_history", _boom):
-                with patch.object(router_module, "send_reload_page_notice", AsyncMock(return_value=True)) as reload_notice:
-                    result = await router_module._refresh_catgirl_context_after_profile_change(
+            with patch.object(router_module, "_clear_character_recent_history", _boom), patch.object(crud_module, "_clear_character_recent_history", _boom):
+                with patch.object(router_module, "send_reload_page_notice", AsyncMock(return_value=True)) as reload_notice, patch.object(crud_module, "send_reload_page_notice", reload_notice):
+                    result = await crud_module._refresh_catgirl_context_after_profile_change(
                         config_manager,
                         current_name,
                         config_manager.load_characters(),
@@ -943,14 +1020,14 @@ async def test_refresh_catgirl_context_reraises_maintenance_mode_error():
                 remove_one_catgirl=_noop,
             )
 
-            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+            crud_module, cards_module, notify_module, router_module = _reload_persona_modules()
 
             async def _maintenance(*args, **kwargs):
                 raise MaintenanceModeError("maintenance_readonly", operation="save", target="recent.json")
 
-            with patch.object(router_module, "_clear_character_recent_history", _maintenance):
+            with patch.object(router_module, "_clear_character_recent_history", _maintenance), patch.object(crud_module, "_clear_character_recent_history", _maintenance):
                 with pytest.raises(MaintenanceModeError):
-                    await router_module._refresh_catgirl_context_after_profile_change(
+                    await crud_module._refresh_catgirl_context_after_profile_change(
                         config_manager,
                         current_name,
                         config_manager.load_characters(),
@@ -982,7 +1059,7 @@ async def test_update_character_persona_selection_finalizes_onboarding_and_manua
                 remove_one_catgirl=_noop,
             )
 
-            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+            crud_module, cards_module, notify_module, router_module = _reload_persona_modules()
             current_name = config_manager.load_characters()["当前猫娘"]
 
             onboarding_result = await router_module.update_character_persona_selection(
@@ -1033,7 +1110,7 @@ async def test_character_persona_selection_routes_remove_stale_generated_system_
                 remove_one_catgirl=_noop,
             )
 
-            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+            crud_module, cards_module, notify_module, router_module = _reload_persona_modules()
 
             current_name = config_manager.load_characters()["当前猫娘"]
             characters = config_manager.load_characters()
@@ -1091,7 +1168,7 @@ async def test_character_persona_selection_routes_preserve_custom_system_prompt_
                 remove_one_catgirl=_noop,
             )
 
-            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+            crud_module, cards_module, notify_module, router_module = _reload_persona_modules()
 
             current_name = config_manager.load_characters()["当前猫娘"]
             characters = config_manager.load_characters()
@@ -1159,7 +1236,7 @@ async def test_character_persona_routes_reject_invalid_json_and_normalize_non_ob
                 remove_one_catgirl=_noop,
             )
 
-            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+            crud_module, cards_module, notify_module, router_module = _reload_persona_modules()
             current_name = config_manager.load_characters()["当前猫娘"]
 
             invalid_onboarding = await router_module.set_persona_onboarding_state(_InvalidJsonRequest())
@@ -1222,13 +1299,13 @@ async def test_update_character_persona_selection_rolls_back_if_recent_clear_fai
                 remove_one_catgirl=_noop,
             )
 
-            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+            crud_module, cards_module, notify_module, router_module = _reload_persona_modules()
             current_name = config_manager.load_characters()["当前猫娘"]
 
             async def _boom(*args, **kwargs):
                 raise RuntimeError("recent clear failed")
 
-            with patch.object(router_module, "_clear_character_recent_history", _boom):
+            with patch.object(router_module, "_clear_character_recent_history", _boom), patch.object(crud_module, "_clear_character_recent_history", _boom):
                 with pytest.raises(RuntimeError, match="recent clear failed"):
                     await router_module.update_character_persona_selection(
                         current_name,
@@ -1262,7 +1339,7 @@ async def test_clear_character_persona_selection_rolls_back_if_recent_clear_fail
                 remove_one_catgirl=_noop,
             )
 
-            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+            crud_module, cards_module, notify_module, router_module = _reload_persona_modules()
             current_name = config_manager.load_characters()["当前猫娘"]
 
             await router_module.update_character_persona_selection(
@@ -1273,7 +1350,7 @@ async def test_clear_character_persona_selection_rolls_back_if_recent_clear_fail
             async def _boom(*args, **kwargs):
                 raise RuntimeError("recent clear failed")
 
-            with patch.object(router_module, "_clear_character_recent_history", _boom):
+            with patch.object(router_module, "_clear_character_recent_history", _boom), patch.object(crud_module, "_clear_character_recent_history", _boom):
                 with pytest.raises(RuntimeError, match="recent clear failed"):
                     await router_module.clear_character_persona_selection(current_name)
 

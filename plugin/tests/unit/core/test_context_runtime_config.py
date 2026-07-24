@@ -6,6 +6,7 @@ import asyncio
 
 import pytest
 
+from plugin.core import context as context_module
 from plugin.core.context import PluginContext
 
 
@@ -23,6 +24,23 @@ class _Instance:
 
     def refresh_runtime_config(self, effective_config: dict[str, object]) -> None:
         self.refreshed.append(effective_config)
+
+
+@pytest.mark.plugin_unit
+def test_push_message_fast_mode_true_emits_runtime_deprecation_warning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(context_module, "zmq", None)
+    ctx = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "demo" / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+    )
+
+    with pytest.warns(DeprecationWarning, match="fast_mode.*v0.9"):
+        ctx.push_message(parts=[], fast_mode=True)
 
 
 @pytest.mark.plugin_unit

@@ -37,10 +37,8 @@
         :layout-mode="layoutMode"
         :plugin-count="pluginCount"
         :adapter-count="adapterCount"
-        :extension-count="extensionCount"
         :filtered-pure-plugins="filteredPurePlugins"
         :filtered-adapters="filteredAdapters"
-        :filtered-extensions="filteredExtensions"
         :selected-plugin-ids="selectedPluginIds"
         @refresh="refreshPluginSources"
         @select-all-visible="selectAllVisible"
@@ -170,12 +168,13 @@
                   />
                 </el-form-item>
 
-                <el-form-item label="冲突策略">
-                  <el-radio-group v-model="installForm.on_conflict">
-                    <el-radio-button label="rename">rename</el-radio-button>
-                    <el-radio-button label="fail">fail</el-radio-button>
-                  </el-radio-group>
-                </el-form-item>
+                <el-alert
+                  class="install-safety-note"
+                  :title="t('package.install.safeUpgradeHint')"
+                  type="info"
+                  :closable="false"
+                  show-icon
+                />
 
                 <div class="action-row">
                   <el-button type="warning" :loading="installing" @click="handleInstall">
@@ -248,6 +247,7 @@
 
 <script setup lang="ts">
 import { Close } from '@element-plus/icons-vue'
+import { useI18n } from 'vue-i18n'
 import PackageArchiveListPanel from '@/components/plugin/PackageArchiveListPanel.vue'
 import PackageResultPanel from '@/components/plugin/PackageResultPanel.vue'
 import PluginSelectorPanel from '@/components/plugin/PluginSelectorPanel.vue'
@@ -263,6 +263,8 @@ const props = withDefaults(
     externalSelectedPluginIds: undefined,
   },
 )
+
+const { t } = useI18n()
 
 defineEmits<{
   close: []
@@ -298,10 +300,8 @@ const {
   selectablePlugins,
   pluginCount,
   adapterCount,
-  extensionCount,
   filteredPurePlugins,
   filteredAdapters,
-  filteredExtensions,
   selectedPluginIds,
   resolvedBuildTargets,
   filteredLocalPackages,
@@ -447,6 +447,10 @@ const {
 
 .hint-row {
   margin: 6px 0 4px;
+}
+
+.install-safety-note {
+  margin-bottom: 14px;
 }
 
 /* ── Tab content transition ── */

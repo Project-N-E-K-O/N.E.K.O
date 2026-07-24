@@ -16,6 +16,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import utils.llm_client as llm_client_module
+import utils.llm_client.anthropic_client as anthropic_client_module
+import utils.llm_client.factory as llm_factory_module
+import utils.llm_client.lifecycle as lifecycle_module
 
 
 def _make_client_with_response(resp) -> llm_client_module.ChatOpenAI:
@@ -63,6 +66,17 @@ def _resp_with_none_content():
     return resp
 
 
+def _resp_with_finish_reason(reason: str):
+    resp = MagicMock()
+    choice = MagicMock()
+    choice.message = MagicMock()
+    choice.message.content = "partial"
+    choice.finish_reason = reason
+    resp.choices = [choice]
+    resp.usage = None
+    return resp
+
+
 class TestAinvokeDefensiveRead:
     @pytest.mark.asyncio
     async def test_none_message_returns_empty_string(self):
@@ -82,6 +96,12 @@ class TestAinvokeDefensiveRead:
         out = await client.ainvoke([{"role": "user", "content": "hi"}])
         assert out.content == ""
 
+    @pytest.mark.asyncio
+    async def test_finish_reason_is_preserved(self):
+        client = _make_client_with_response(_resp_with_finish_reason("length"))
+        out = await client.ainvoke([{"role": "user", "content": "hi"}])
+        assert out.response_metadata["finish_reason"] == "length"
+
 
 class TestInvokeDefensiveRead:
     def test_none_message_returns_empty_string(self):
@@ -99,6 +119,11 @@ class TestInvokeDefensiveRead:
         out = client.invoke([{"role": "user", "content": "hi"}])
         assert out.content == ""
 
+    def test_finish_reason_is_preserved(self):
+        client = _make_client_with_response(_resp_with_finish_reason("length"))
+        out = client.invoke([{"role": "user", "content": "hi"}])
+        assert out.response_metadata["finish_reason"] == "length"
+
 
 @pytest.mark.asyncio
 async def test_create_chat_llm_async_offloads_factory(monkeypatch):
@@ -110,7 +135,7 @@ async def test_create_chat_llm_async_offloads_factory(monkeypatch):
         calls.append((threading.get_ident(), args, kwargs))
         return sentinel
 
-    monkeypatch.setattr(llm_client_module, "create_chat_llm", fake_create_chat_llm)
+    monkeypatch.setattr(llm_factory_module, "create_chat_llm", fake_create_chat_llm)
 
     result = await llm_client_module.create_chat_llm_async(
         "model-a",
@@ -148,7 +173,7 @@ async def test_create_chat_llm_async_closes_late_result_after_cancellation(
         release.wait(timeout=5)
         return _LateLLM()
 
-    monkeypatch.setattr(llm_client_module, "create_chat_llm", fake_create_chat_llm)
+    monkeypatch.setattr(llm_factory_module, "create_chat_llm", fake_create_chat_llm)
 
     task = asyncio.create_task(
         llm_client_module.create_chat_llm_async(
@@ -185,8 +210,8 @@ def test_create_chat_llm_routes_kimi_code_to_anthropic_client(monkeypatch):
         async def close(self):
             pass
 
-    monkeypatch.setattr(llm_client_module, "Anthropic", _FakeAnthropic)
-    monkeypatch.setattr(llm_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
+    monkeypatch.setattr(anthropic_client_module, "Anthropic", _FakeAnthropic)
+    monkeypatch.setattr(anthropic_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
 
     client = llm_client_module.create_chat_llm(
         "kimi-for-coding",
@@ -235,6 +260,7 @@ def test_chat_anthropic_defaults_and_forwards_payload_overrides(monkeypatch):
     class _Resp:
         content = [_TextBlock()]
         usage = None
+        stop_reason = "max_tokens"
 
     class _Messages:
         def create(self, **kwargs):
@@ -253,8 +279,8 @@ def test_chat_anthropic_defaults_and_forwards_payload_overrides(monkeypatch):
         async def close(self):
             pass
 
-    monkeypatch.setattr(llm_client_module, "Anthropic", _FakeAnthropic)
-    monkeypatch.setattr(llm_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
+    monkeypatch.setattr(anthropic_client_module, "Anthropic", _FakeAnthropic)
+    monkeypatch.setattr(anthropic_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
 
     client = llm_client_module.ChatAnthropic(
         model="claude-test",
@@ -284,6 +310,7 @@ def test_chat_anthropic_defaults_and_forwards_payload_overrides(monkeypatch):
         )
 
         assert response.content == "ok"
+        assert response.response_metadata["finish_reason"] == "length"
         assert captured["max_tokens"] == 1
         assert captured["metadata"] == {"user_id": "user-1"}
         assert captured["thinking"] == {"type": "disabled"}
@@ -336,10 +363,10 @@ def test_chat_anthropic_explicit_empty_extra_body_skips_default(monkeypatch):
         async def close(self):
             pass
 
-    monkeypatch.setattr(llm_client_module, "Anthropic", _FakeAnthropic)
-    monkeypatch.setattr(llm_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
+    monkeypatch.setattr(anthropic_client_module, "Anthropic", _FakeAnthropic)
+    monkeypatch.setattr(anthropic_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
     monkeypatch.setattr(
-        llm_client_module,
+        anthropic_client_module,
         "_record_anthropic_token_usage",
         lambda model, usage: recorded.append((model, dict(usage))),
     )
@@ -380,9 +407,9 @@ def test_chat_anthropic_max_completion_tokens_property_sync(monkeypatch):
         async def close(self):
             pass
 
-    monkeypatch.setattr(llm_client_module, "Anthropic", _FakeAnthropic)
-    monkeypatch.setattr(llm_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
-    monkeypatch.setattr(llm_client_module, "_record_anthropic_token_usage", lambda *_args: None)
+    monkeypatch.setattr(anthropic_client_module, "Anthropic", _FakeAnthropic)
+    monkeypatch.setattr(anthropic_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
+    monkeypatch.setattr(anthropic_client_module, "_record_anthropic_token_usage", lambda *_args: None)
 
     client = llm_client_module.ChatAnthropic(
         model="claude-test",
@@ -503,6 +530,143 @@ def test_anthropic_message_normalization_keeps_pending_tool_use_across_assistant
     ]
 
 
+def test_anthropic_message_normalization_dedupes_tool_ids_across_assistant_turns():
+    _system, messages = llm_client_module._normalize_messages_to_anthropic([
+        {"role": "user", "content": "start"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call_dup",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": "{}"},
+            }],
+        },
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call_dup",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": "{}"},
+            }],
+        },
+        {"role": "tool", "tool_call_id": "call_dup", "content": "result"},
+    ])
+
+    tool_uses = [
+        block
+        for message in messages
+        for block in message["content"]
+        if block.get("type") == "tool_use"
+    ]
+    assert [block["id"] for block in tool_uses] == ["call_dup"]
+
+
+def test_anthropic_message_normalization_keeps_repeated_no_id_tool_calls():
+    _system, messages = llm_client_module._normalize_messages_to_anthropic([
+        {"role": "user", "content": "start"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{\"q\":\"first\"}"},
+                },
+                {
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{\"q\":\"second\"}"},
+                },
+            ],
+        },
+        {"role": "tool", "name": "lookup", "content": "first result"},
+        {"role": "tool", "name": "lookup", "content": "second result"},
+    ])
+
+    tool_uses = [
+        block
+        for message in messages
+        for block in message["content"]
+        if block.get("type") == "tool_use"
+    ]
+    tool_results = [
+        block
+        for message in messages
+        for block in message["content"]
+        if block.get("type") == "tool_result"
+    ]
+    assert [block["input"]["q"] for block in tool_uses] == ["first", "second"]
+    assert len({block["id"] for block in tool_uses}) == 2
+    assert [block["tool_use_id"] for block in tool_results] == [
+        block["id"] for block in tool_uses
+    ]
+
+
+def test_anthropic_message_normalization_remaps_reused_ids_across_tool_rounds():
+    _system, messages = llm_client_module._normalize_messages_to_anthropic([
+        {"role": "user", "content": "start"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call_0",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": "{\"q\":\"first\"}"},
+            }],
+        },
+        {"role": "tool", "tool_call_id": "call_0", "content": "first result"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call_0",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": "{\"q\":\"second\"}"},
+            }],
+        },
+        {"role": "tool", "tool_call_id": "call_0", "content": "second result"},
+    ])
+
+    tool_uses = [
+        block
+        for message in messages
+        for block in message["content"]
+        if block.get("type") == "tool_use"
+    ]
+    tool_results = [
+        block
+        for message in messages
+        for block in message["content"]
+        if block.get("type") == "tool_result"
+    ]
+    assert [block["input"]["q"] for block in tool_uses] == ["first", "second"]
+    assert tool_uses[0]["id"] == "call_0"
+    assert tool_uses[1]["id"] != "call_0"
+    assert [block["tool_use_id"] for block in tool_results] == [
+        block["id"] for block in tool_uses
+    ]
+
+
+def test_anthropic_message_normalization_drops_unanswered_tool_use_before_user_turn():
+    _system, messages = llm_client_module._normalize_messages_to_anthropic([
+        {"role": "user", "content": "start"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call_unanswered",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": "{}"},
+            }],
+        },
+        {"role": "user", "content": "skip that"},
+    ])
+
+    assert "tool_use" not in repr(messages)
+    assert messages[-1]["role"] == "user"
+
+
 def test_anthropic_message_normalization_downgrades_orphan_tool_result():
     _system, messages = llm_client_module._normalize_messages_to_anthropic([
         {"role": "user", "content": "start"},
@@ -591,9 +755,9 @@ async def test_chat_anthropic_stream_helper_does_not_forward_stream_kwarg(monkey
         async def close(self):
             pass
 
-    monkeypatch.setattr(llm_client_module, "Anthropic", _FakeAnthropic)
-    monkeypatch.setattr(llm_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
-    monkeypatch.setattr(llm_client_module, "_record_anthropic_token_usage", lambda *_args: None)
+    monkeypatch.setattr(anthropic_client_module, "Anthropic", _FakeAnthropic)
+    monkeypatch.setattr(anthropic_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
+    monkeypatch.setattr(anthropic_client_module, "_record_anthropic_token_usage", lambda *_args: None)
 
     client = llm_client_module.ChatAnthropic(
         model="kimi-for-coding",
@@ -604,9 +768,88 @@ async def test_chat_anthropic_stream_helper_does_not_forward_stream_kwarg(monkey
         chunks = [chunk async for chunk in client.astream([{"role": "user", "content": "hi"}])]
         assert [chunk.content for chunk in chunks] == ["ok", "", ""]
         assert chunks[1].finish_reason == "stop"
-        assert chunks[2].usage_metadata == {"input_tokens": 2, "output_tokens": 3}
+        assert chunks[2].usage_metadata == {
+            "input_tokens": 2,
+            "output_tokens": 3,
+            "prompt_tokens": 2,
+            "completion_tokens": 3,
+            "total_tokens": 5,
+        }
         assert "stream" not in captured
         assert captured["model"] == "kimi-for-coding"
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_chat_anthropic_stream_records_partial_usage_when_closed_early(monkeypatch):
+    recorded = []
+
+    class _Usage:
+        def model_dump(self):
+            return {"input_tokens": 4}
+
+    class _Message:
+        usage = _Usage()
+
+    class _MessageStart:
+        type = "message_start"
+        message = _Message()
+
+    class _TextDelta:
+        type = "text_delta"
+        text = "first"
+
+    class _TextEvent:
+        type = "content_block_delta"
+        delta = _TextDelta()
+
+    class _StreamContext:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def __aiter__(self):
+            self._events = iter([_MessageStart(), _TextEvent()])
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._events)
+            except StopIteration:
+                raise StopAsyncIteration
+
+    class _Messages:
+        def stream(self, **_kwargs):
+            return _StreamContext()
+
+    class _FakeAnthropic:
+        def __init__(self, **_kwargs):
+            self.messages = _Messages()
+
+        def close(self):
+            pass
+
+    class _FakeAsyncAnthropic(_FakeAnthropic):
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(anthropic_client_module, "Anthropic", _FakeAnthropic)
+    monkeypatch.setattr(anthropic_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
+    monkeypatch.setattr(
+        anthropic_client_module,
+        "_record_anthropic_token_usage",
+        lambda model, usage: recorded.append((model, dict(usage))),
+    )
+
+    client = llm_client_module.ChatAnthropic(model="claude-test", api_key="sk-test")
+    stream = client.astream([{"role": "user", "content": "hi"}])
+    try:
+        assert (await anext(stream)).content == "first"
+        await stream.aclose()
+        assert recorded == [("claude-test", {"input_tokens": 4})]
     finally:
         await client.aclose()
 
@@ -688,9 +931,9 @@ async def test_chat_anthropic_stream_converts_tool_use_to_openai_deltas(monkeypa
         async def close(self):
             pass
 
-    monkeypatch.setattr(llm_client_module, "Anthropic", _FakeAnthropic)
-    monkeypatch.setattr(llm_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
-    monkeypatch.setattr(llm_client_module, "_record_anthropic_token_usage", lambda *_args: None)
+    monkeypatch.setattr(anthropic_client_module, "Anthropic", _FakeAnthropic)
+    monkeypatch.setattr(anthropic_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
+    monkeypatch.setattr(anthropic_client_module, "_record_anthropic_token_usage", lambda *_args: None)
 
     client = llm_client_module.ChatAnthropic(
         model="kimi-for-coding",
@@ -735,16 +978,16 @@ async def test_chat_anthropic_stream_converts_tool_use_to_openai_deltas(monkeypa
 
 @pytest.mark.asyncio
 async def test_chat_openai_reuses_default_ssl_context(monkeypatch):
-    original_create_default_context = llm_client_module.ssl.create_default_context
+    original_create_default_context = lifecycle_module.ssl.create_default_context
     calls = []
 
     def counting_create_default_context(*args, **kwargs):
         calls.append((args, kwargs))
         return original_create_default_context(*args, **kwargs)
 
-    monkeypatch.setattr(llm_client_module, "_DEFAULT_SSL_CONTEXT", None)
+    monkeypatch.setattr(lifecycle_module, "_DEFAULT_SSL_CONTEXT", None)
     monkeypatch.setattr(
-        llm_client_module.ssl,
+        lifecycle_module.ssl,
         "create_default_context",
         counting_create_default_context,
     )

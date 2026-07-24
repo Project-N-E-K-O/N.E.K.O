@@ -34,10 +34,6 @@ export function usePluginListContextActions() {
   const pluginStore = usePluginStore()
   const { t, locale } = useI18n()
 
-  // status === 'disabled' 现在只出现在 extension 上（extension 仍由
-  // enable_extension / disable_extension 两个按钮显式切换）。非 extension
-  // 的 runtime_enabled=false 已不再被前端提升成 disabled 状态，统一显示成
-  // stopped —— 详见 stores/plugin.ts pluginsWithStatus。
   function isRunning(plugin: PluginListContextPlugin): boolean {
     return plugin.status === 'running'
   }
@@ -47,27 +43,6 @@ export function usePluginListContextActions() {
       id,
       kind: 'builtin',
     }))
-
-    if (plugin.type === 'extension') {
-      actions.push({
-        id: plugin.status === 'disabled' ? 'enable_extension' : 'disable_extension',
-        kind: 'builtin',
-        danger: plugin.status !== 'disabled',
-      })
-      actions.push(
-        {
-          id: 'build',
-          kind: 'builtin',
-        },
-        {
-          id: 'delete',
-          kind: 'builtin',
-          danger: true,
-          confirm_mode: 'hold',
-        },
-      )
-      return actions
-    }
 
     if (!isRunning(plugin)) {
       actions.push({
@@ -129,10 +104,6 @@ export function usePluginListContextActions() {
         return t('plugins.build')
       case 'delete':
         return t('plugins.delete')
-      case 'enable_extension':
-        return t('plugins.enableExtension')
-      case 'disable_extension':
-        return t('plugins.disableExtension')
       case 'open_ui':
         return t('plugins.ui.open')
       default:
@@ -169,8 +140,6 @@ export function usePluginListContextActions() {
       case 'start':
       case 'stop':
       case 'reload':
-      case 'enable_extension':
-      case 'disable_extension':
         return {
           key: 'runtime',
           label: t('plugins.contextSections.runtime'),
@@ -307,23 +276,13 @@ export function usePluginListContextActions() {
       }
       case 'delete':
         await deletePlugin(plugin.id)
-        await pluginStore.fetchPlugins(true)
-        await pluginStore.fetchPluginStatus()
         ElMessage.success(t('messages.pluginDeleted'))
-        return
-      case 'enable_extension':
-        await pluginStore.enableExt(plugin.id)
-        ElMessage.success(t('messages.extensionEnabled'))
-        return
-      case 'disable_extension':
-        if (!(await confirmIfNeeded({
-          ...action,
-          confirm_message: action.confirm_message || t('messages.confirmDisableExt'),
-        }))) {
-          return
+        try {
+          await pluginStore.syncRegistryAndFetch()
+          await pluginStore.fetchPluginStatus()
+        } catch (error) {
+          console.warn('Failed to refresh plugin data after delete:', error)
         }
-        await pluginStore.disableExt(plugin.id)
-        ElMessage.success(t('messages.extensionDisabled'))
         return
       default:
         ElMessage.warning(action.label)

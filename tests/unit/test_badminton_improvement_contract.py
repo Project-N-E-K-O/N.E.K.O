@@ -6,6 +6,9 @@ import pytest
 
 from config.prompts import prompts_badminton
 from main_routers import game_router, pages_router
+from main_routers.game_router import balance as gr_balance
+from main_routers.game_router import pregame as gr_pregame
+from main_routers.game_router import runtime as gr_runtime
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1287,7 +1290,7 @@ def test_badminton_shot_distance_caps_one_step_beyond_baseline():
 
 @pytest.mark.unit
 def test_badminton_llm_control_contract_accepts_mood_and_difficulty():
-    parsed = game_router._parse_control_instructions(
+    parsed = gr_runtime._parse_control_instructions(
         '认真点喵\n{"mood":"angry","expression":"tease","intensity":"high","difficulty":"max"}',
         game_type="badminton",
     )
@@ -1379,7 +1382,7 @@ def test_badminton_quick_lines_uses_dedicated_prompt_module_for_neko_core_locale
         "es",
         "pt",
     )
-    router_source = (ROOT / "main_routers" / "game_router.py").read_text(encoding="utf-8")
+    router_source = "".join(q.read_text(encoding="utf-8") for q in sorted((ROOT / "main_routers" / "game_router").glob("*.py")))
     assert "_BADMINTON_QUICK_LINES_FALLBACK" not in router_source
 
     english_prompt = prompts_badminton.get_badminton_quick_lines_prompt("en", mode="duel")
@@ -1416,7 +1419,7 @@ def test_badminton_prompt_localizations_do_not_fallback_to_english():
 
 @pytest.mark.unit
 def test_badminton_pregame_context_normalize_and_prompt_injection():
-    context, invalid = game_router._normalize_badminton_pregame_context(
+    context, invalid = gr_pregame._normalize_badminton_pregame_context(
         {
             "gameStance": "competitive",
             "initialMood": "happy",
@@ -1434,7 +1437,7 @@ def test_badminton_pregame_context_normalize_and_prompt_injection():
     assert context["initialIntensity"] == "high"
     assert context["expressionPolicy"] == "更兴奋地盯着比分"
 
-    prompt = game_router._build_game_prompt(
+    prompt = gr_runtime._build_game_prompt(
         "badminton",
         "Neko",
         "傲娇猫娘",
@@ -1449,7 +1452,7 @@ def test_badminton_pregame_context_normalize_and_prompt_injection():
 
 @pytest.mark.unit
 def test_badminton_pregame_opening_line_keeps_spec_length_cap():
-    context, invalid = game_router._normalize_badminton_pregame_context(
+    context, invalid = gr_pregame._normalize_badminton_pregame_context(
         {
             "openingLine": "1234567890123456",
         },
@@ -1462,35 +1465,35 @@ def test_badminton_pregame_opening_line_keeps_spec_length_cap():
 
 @pytest.mark.unit
 def test_badminton_duel_balance_hint_and_anger_cap():
-    hint = game_router._build_badminton_duel_balance_hint(
+    hint = gr_balance._build_badminton_duel_balance_hint(
         {"duel": {"player_score": 1, "neko_score": 6, "round": 2, "max_rounds": 8}}
     )
     assert hint["state"] == "neko_leading"
     assert hint["diff"] == 5
     assert hint["remainingPoints"] == 12
 
-    final_pending = game_router._build_badminton_duel_balance_hint(
+    final_pending = gr_balance._build_badminton_duel_balance_hint(
         {"duel": {"player_score": 6, "neko_score": 4, "round": 5, "max_rounds": 5, "active_shooter": "neko"}}
     )
     assert final_pending["state"] == "player_leading"
     assert final_pending["remainingRounds"] == 0
     assert final_pending["remainingPoints"] == 2
 
-    miss_pressure = game_router._build_badminton_duel_balance_hint(
+    miss_pressure = gr_balance._build_badminton_duel_balance_hint(
         {"duel": {"player_score": 4, "neko_score": 6, "round": 6, "player_misses": 2, "neko_misses": 1, "max_misses": 3}}
     )
     assert miss_pressure["playerMissesLeft"] == 1
     assert miss_pressure["nekoMissesLeft"] == 2
     assert miss_pressure["maxMisses"] == 3
 
-    current_state_fallback = game_router._build_badminton_duel_balance_hint(
+    current_state_fallback = gr_balance._build_badminton_duel_balance_hint(
         {"currentState": {"duel": {"playerScore": 1, "nekoScore": 5, "playerMisses": 2, "nekoMisses": 0, "maxMisses": 3}}}
     )
     assert current_state_fallback["state"] == "neko_leading"
     assert current_state_fallback["diff"] == 4
     assert current_state_fallback["playerMissesLeft"] == 1
 
-    merged_current_state = game_router._build_badminton_duel_balance_hint(
+    merged_current_state = gr_balance._build_badminton_duel_balance_hint(
         {
             "duel": {"player_score": 4},
             "currentState": {"duel": {"playerScore": 1, "nekoScore": 6, "playerMisses": 2, "nekoMisses": 1, "maxMisses": 3}},
@@ -1500,7 +1503,7 @@ def test_badminton_duel_balance_hint_and_anger_cap():
     assert merged_current_state["playerMissesLeft"] == 1
     assert merged_current_state["nekoMissesLeft"] == 2
 
-    miss_elimination_ignores_round_decider = game_router._build_badminton_duel_balance_hint(
+    miss_elimination_ignores_round_decider = gr_balance._build_badminton_duel_balance_hint(
         {"duel": {"player_score": 0, "neko_score": 9, "round": 5, "max_rounds": 5, "player_misses": 1, "neko_misses": 1, "max_misses": 3}}
     )
     assert miss_elimination_ignores_round_decider["state"] == "neko_leading"
@@ -1516,10 +1519,10 @@ def test_badminton_duel_balance_hint_and_anger_cap():
         "difficulty": "max",
         "duel": {"player_score": 1, "neko_score": 6, "round": 5, "max_rounds": 8},
     }
-    cap = game_router._build_badminton_duel_anger_pressure_cap(event, route_state)
+    cap = gr_balance._build_badminton_duel_anger_pressure_cap(event, route_state)
     assert cap["reached"] is True
 
-    result = game_router._apply_badminton_anger_pressure_cap(
+    result = gr_balance._apply_badminton_anger_pressure_cap(
         {"line": "继续", "control": {"difficulty": "max"}},
         {**event, "angerPressureCap": cap},
     )
@@ -1530,7 +1533,7 @@ def test_badminton_duel_balance_hint_and_anger_cap():
 @pytest.mark.unit
 def test_game_memory_generic_keys_update_legacy_policy_fields():
     state = {}
-    game_router._update_game_memory_enabled_from_payload(
+    gr_runtime._update_game_memory_enabled_from_payload(
         state,
         {
             "game_memory_enabled": True,
@@ -2096,7 +2099,7 @@ def test_badminton_debug_voice_mode_allows_tts_when_debugging():
     assert "missing_project_voice_playback_bridge" not in mirror_section
     assert "lastVoiceRequest = speakPayload;" in mirror_section
     assert "function shouldInterruptVoiceAudio(event) {" in html
-    assert "return kind === 'yui_cheat_item' || kind === 'yui_cheat_hit' || kind === 'yui_cheat_score';" in html
+    assert "return kind === 'yui_cheat_item' || kind === 'yui_cheat_hit' || kind === 'yui_cheat_score' || kind === 'player_ice_score';" in html
     assert "interrupt_audio: shouldInterruptVoiceAudio(entry.event)," in mirror_section
     assert "function requestMirror() {" in mirror_section
     assert "function requestSpeak() {" in mirror_section

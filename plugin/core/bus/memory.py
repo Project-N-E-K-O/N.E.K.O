@@ -80,9 +80,8 @@ class MemoryList(BusList[MemoryRecord]):
         ctx: Optional[Any] = None,
         trace: Optional[Sequence[Any]] = None,
         plan: Optional[Any] = None,
-        fast_mode: bool = False,
     ):
-        super().__init__(items, ctx=ctx, trace=trace, plan=plan, fast_mode=fast_mode)
+        super().__init__(items, ctx=ctx, trace=trace, plan=plan)
         self.bucket_id = bucket_id
 
     def _clone_from(self, source: BusList[MemoryRecord]) -> "MemoryList":
@@ -92,7 +91,6 @@ class MemoryList(BusList[MemoryRecord]):
             ctx=getattr(source, "_ctx", None),
             trace=getattr(source, "_trace", None),
             plan=getattr(source, "_plan", None),
-            fast_mode=bool(getattr(source, "_fast_mode", False)),
         )
 
     def filter(self, *args: Any, **kwargs: Any) -> "MemoryList":

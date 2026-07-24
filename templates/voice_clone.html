@@ -6,13 +6,13 @@
     <meta charset="UTF-8">
     <title data-i18n="voice.title">音色注册 - Project N.E.K.O.</title>
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
-    <script src="/static/i18n-i18next.js"></script>
+    <script src="/static/i18n-i18next.js?v={{ static_asset_version|default('0', true) }}"></script>
     <script src="/static/common_dialogs.js"></script>
     <link rel="stylesheet" href="/static/css/voice_clone.css">
-    <link rel="stylesheet" href="/static/css/window_controls.css">
+    <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version|default('0', true) }}">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <script src="/static/theme-manager.js"></script>
-    <script src="/static/js/window_controls.js" defer></script>
+    <script src="/static/js/window_controls.js?v={{ static_asset_version|default('0', true) }}" defer></script>
     <link rel="stylesheet" href="/static/libs/driver.min.css?v={{ static_asset_version|default('0', true) }}">
     <link rel="stylesheet" href="/static/css/tutorial-styles.css?v={{ static_asset_version|default('0', true) }}">
 </head>
@@ -23,6 +23,9 @@
             <div class="neko-window-actions">
                 <a href="javascript:void(0)" onclick="openApiSettings()" class="goto-api-settings-btn" data-i18n="voice.gotoApiSettings">前往API设置</a>
                 <div class="neko-window-controls">
+                    <button type="button" class="neko-window-control-btn" data-neko-window-control="pin" hidden data-i18n-title="common.pinWindow" data-i18n-aria="common.pinWindow" title="置顶窗口" aria-label="置顶窗口" aria-pressed="false">
+                        <span class="neko-window-pin-icon" aria-hidden="true"></span>
+                    </button>
                     <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
                         <span class="neko-window-minimize-icon"></span>
                     </button>
@@ -46,6 +49,7 @@
                         <option value="minimax_intl" data-i18n="voice.provider.minimax_intl">MiniMax（国际服）</option>
                         <option value="elevenlabs" data-i18n="voice.provider.elevenlabs">ElevenLabs</option>
                         <option value="mimo" data-i18n="voice.provider.mimo">MiMo（小米）</option>
+                        <option value="doubao_tts" data-i18n="voice.provider.doubao_tts">豆包语音(火山引擎)</option>
                         <option value="vllm_omni" data-i18n="voice.provider.vllm_omni">vLLM-Omni（本地克隆）</option>
                     </select>
                 </div>
@@ -61,8 +65,21 @@
                     <audio id="workshopVoicePreview" class="workshop-source-audio" controls style="display: none;"></audio>
                     <div id="workshopVoiceSourceStatus" class="workshop-source-status"></div>
                 </div>
+                <div class="field-row" id="voiceSourceRow">
+                    <label data-i18n="voice.voiceSource">Voice Source</label>
+                    <div class="clone-method-toggle voice-source-toggle" role="tablist" aria-label="声音来源选择">
+                        <button type="button" class="clone-method-btn active" id="btnVoiceSourceClone" onclick="switchVoiceSource('clone')"
+                            role="tab" aria-selected="true" aria-controls="cloneInputContainer" tabindex="0">
+                            <span data-i18n="voice.sourceClone">声音克隆</span>
+                        </button>
+                        <button type="button" class="clone-method-btn" id="btnVoiceSourceDesign" onclick="switchVoiceSource('design')"
+                            role="tab" aria-selected="false" aria-controls="voiceDesignSection" tabindex="-1">
+                            <span data-i18n="voice.sourceDesign">声音设计</span>
+                        </button>
+                    </div>
+                </div>
                 <!-- 克隆方式切换 -->
-                <div class="field-row">
+                <div class="field-row" id="cloneMethodRow">
                     <label data-i18n="voice.cloneMethod">克隆方式</label>
                     <div class="clone-method-toggle" role="tablist" aria-label="克隆方式选择">
                         <button type="button" class="clone-method-btn active" id="btnFileClone" onclick="switchCloneMethod('file')"
@@ -77,7 +94,7 @@
                 </div>
 
                 <!-- 克隆输入区域容器（固定高度防止切换时页面跳动） -->
-                <div class="clone-input-container">
+                <div class="clone-input-container" id="cloneInputContainer">
                     <!-- 本地文件克隆区域 -->
                     <div id="fileCloneSection" class="clone-section">
                         <label class="section-label">
@@ -106,11 +123,22 @@
                         </div>
                         <label class="hint" data-i18n="voice.directLinkHint">输入可公网访问的音频文件直链，系统将跳过上传步骤直接使用该链接注册音色</label>
                     </div>
+                    <div id="voiceDesignSection" class="clone-section voice-design-section" style="display: none;">
+                        <label class="section-label">
+                            <img src="/static/icons/exclamation.png" alt="" class="section-icon">
+                            <span data-i18n="voice.designPromptLabel">Describe the voice you want to design</span>
+                        </label>
+                        <div class="field-row">
+                            <textarea id="voiceDesignPrompt" rows="4" data-i18n-placeholder="voice.designPromptPlaceholder"
+                                placeholder="A calm young woman with a warm, clear voice and gentle speaking style"></textarea>
+                        </div>
+                        <label id="voiceDesignHint" class="hint" data-i18n="voice.designHint">只描述音色，不要描述角色设定。试听使用与声音克隆相同的模板。</label>
+                    </div>
                 </div>
 
-                <div class="field-row">
-                    <label for="refLanguage" data-i18n="voice.refLanguage">参考音频语言（注意：不是目标音频，是您上传的参考音频的语言）</label>
-                    <label class="hint" data-i18n="voice.refLanguageNote">选择您上传的参考音频的语言，中文以外的语言需要指定</label>
+                <div class="field-row" id="refLanguageRow">
+                    <label id="refLanguageLabel" for="refLanguage" data-i18n="voice.refLanguage">参考音频语言（注意：不是目标音频，是您上传的参考音频的语言）</label>
+                    <label id="refLanguageHint" class="hint" data-i18n="voice.refLanguageNote">选择您上传的参考音频的语言，中文以外的语言需要指定</label>
                     <select id="refLanguage" class="api-provider-select">
                         <option value="ch" data-i18n="voice.lang.ch">中文</option>
                         <option value="en" data-i18n="voice.lang.en">英语</option>
@@ -130,7 +158,7 @@
 
                 <div class="field-row">
                     <label data-i18n="voice.customPrefix">自定义前缀（必填，用于区分音色）</label>
-                    <input type="text" id="prefix" data-i18n-placeholder="voice.voiceIdPlaceholder"
+                    <input type="text" id="prefix" data-i18n-placeholder="voice.prefixPlaceholder"
                         placeholder="Maximum 10 characters, numbers and English letters only" required>
                 </div>
 
@@ -164,7 +192,7 @@
         </div>
     </div>
     <script src="/static/js/voice_display_utils.js"></script>
-    <script src="/static/js/voice_clone.js"></script>
+    <script src="/static/js/voice_clone.js?v={{ static_asset_version|default('0', true) }}"></script>
     <script src="/static/js/voice_silence_remover.js"></script>
 
     <!-- API未设置提示弹窗 -->

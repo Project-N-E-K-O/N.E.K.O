@@ -1,11 +1,12 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { readDirectorSource } = require('./yui-guide-director-test-parts.cjs');
 const test = require('node:test');
 
 const repoRoot = path.resolve(__dirname, '..');
 const orchestratorPath = path.join(__dirname, 'tutorial/core/scene-orchestrator.js');
-const directorSource = fs.readFileSync(path.join(__dirname, 'tutorial/yui-guide/director.js'), 'utf8');
+const directorSource = readDirectorSource(__dirname);
 
 test('scene orchestrator exports reusable round facade', () => {
     assert.ok(fs.existsSync(orchestratorPath), 'tutorial/core/scene-orchestrator.js should exist');
@@ -1101,15 +1102,15 @@ test('SceneOrchestrator places the first daily guide cursor in the capsule input
         }
     };
     const orchestrator = new SceneOrchestrator(director);
-    orchestrator.playGenericScene = function () {
-        calls.push('core');
+    orchestrator.playGenericScene = function (_scene, _day, _index, _total, context) {
+        calls.push(['core', context.introCursorPreludeApplied]);
         return Promise.resolve(true);
     };
 
     const result = await orchestrator.playScene(scene, 6, 0, 8);
 
     assert.equal(result, true);
-    assert.ok(calls.includes('core'));
+    assert.ok(calls.some((entry) => Array.isArray(entry) && entry[0] === 'core' && entry[1] === true));
     assert.ok(!calls.includes('externalized:clear'));
     assert.ok(calls.some((entry) => (
         Array.isArray(entry)
@@ -1118,7 +1119,100 @@ test('SceneOrchestrator places the first daily guide cursor in the capsule input
         && entry[2] === ''
         && entry[3] === 0
     )));
-    assert.ok(calls.indexOf('cursor:home-hide') < calls.indexOf('core'));
+    assert.ok(calls.indexOf('cursor:home-hide') < calls.findIndex((entry) => Array.isArray(entry) && entry[0] === 'core'));
+});
+
+test('SceneOrchestrator preserves Day1 input-origin wobble during the first externalized cursor handoff', () => {
+    const { SceneOrchestrator } = require('./tutorial/core/scene-orchestrator.js');
+    const calls = [];
+    const scene = { id: 'day1_intro_activation', cursorAction: 'input-origin' };
+    const director = {
+        isAvatarFloatingInputIntroScene() {
+            return true;
+        },
+        isHomeChatExternalized() {
+            return true;
+        },
+        getAvatarFloatingIntroExternalizedSpotlightKind() {
+            return 'capsule-input';
+        },
+        getAvatarFloatingIntroExternalizedCursorOptions(inputScene) {
+            calls.push(['options', inputScene.id]);
+            return { effect: 'wobble', durationMs: 0 };
+        },
+        interactionTakeover: {
+            setExternalizedChatCursor(kind, options) {
+                calls.push(['cursor', kind, options.effect, options.durationMs]);
+            }
+        },
+        hideHomeCursorForExternalizedChat() {
+            calls.push('hide-home-cursor');
+        }
+    };
+    const orchestrator = new SceneOrchestrator(director);
+
+    const applied = orchestrator.applyFirstDailySceneIntroCursorPrelude(scene, {
+        isFirstDailyScene: true
+    });
+
+    assert.equal(applied, true);
+    assert.deepEqual(calls, [
+        ['options', 'day1_intro_activation'],
+        ['cursor', 'capsule-input', 'wobble', 0],
+        'hide-home-cursor'
+    ]);
+});
+
+test('SceneOrchestrator sends the first externalized intro cursor only once across prelude and spotlight', async () => {
+    const { SceneOrchestrator } = require('./tutorial/core/scene-orchestrator.js');
+    const calls = [];
+    const scene = { id: 'day1_intro_activation', cursorAction: 'input-origin' };
+    const director = {
+        currentStep: null,
+        isAvatarFloatingInputIntroScene() {
+            return true;
+        },
+        isHomeChatExternalized() {
+            return true;
+        },
+        getAvatarFloatingIntroSpotlightTarget() {
+            return null;
+        },
+        getAvatarFloatingIntroExternalizedSpotlightKind() {
+            return 'capsule-input';
+        },
+        getAvatarFloatingIntroExternalizedCursorOptions() {
+            return { effect: 'wobble', durationMs: 0 };
+        },
+        interactionTakeover: {
+            setExternalizedChatSpotlight(kind) {
+                calls.push(['spotlight', kind]);
+            },
+            setExternalizedChatCursor(kind, options) {
+                calls.push(['cursor', kind, options.effect, options.durationMs]);
+            }
+        },
+        clearHomeSpotlightsForExternalizedChat() {},
+        setHomePcCursorOutputSuppressedForExternalizedChat() {},
+        hideHomeCursorForExternalizedChat() {},
+        enableInterrupts() {}
+    };
+    const orchestrator = new SceneOrchestrator(director);
+
+    const introCursorPreludeApplied = orchestrator.applyFirstDailySceneIntroCursorPrelude(scene, {
+        isFirstDailyScene: true
+    });
+    await orchestrator.resolveAndApplySceneSpotlight(scene, {
+        isFirstDailyScene: true,
+        introCursorPreludeApplied
+    });
+
+    assert.deepEqual(calls.filter((entry) => entry[0] === 'cursor'), [
+        ['cursor', 'capsule-input', 'wobble', 0]
+    ]);
+    assert.deepEqual(calls.filter((entry) => entry[0] === 'spotlight'), [
+        ['spotlight', 'capsule-input']
+    ]);
 });
 
 test('SceneOrchestrator schedules avatar stand-ins after scene surface preparation', async () => {
@@ -1489,11 +1583,11 @@ test('full tutorial pages load scene orchestrator before director', () => {
         const source = fs.readFileSync(path.join(repoRoot, templatePath), 'utf8');
         const settingsTourFlowIndex = source.indexOf('/static/tutorial/core/settings-tour-flow.js');
         const orchestratorIndex = source.indexOf('/static/tutorial/core/scene-orchestrator.js');
-        const directorIndex = source.indexOf('/static/tutorial/yui-guide/director.js');
+        const directorIndex = source.indexOf('/static/tutorial/yui-guide/director/bootstrap.js');
 
         assert.notEqual(settingsTourFlowIndex, -1, templatePath + ' should load tutorial/core/settings-tour-flow.js');
         assert.notEqual(orchestratorIndex, -1, templatePath + ' should load tutorial/core/scene-orchestrator.js');
-        assert.notEqual(directorIndex, -1, templatePath + ' should load tutorial/yui-guide/director.js');
+        assert.notEqual(directorIndex, -1, templatePath + ' should load tutorial/yui-guide/director parts');
         assert.ok(settingsTourFlowIndex < orchestratorIndex, templatePath + ' should load settings tour flow before scene orchestrator');
         assert.ok(orchestratorIndex < directorIndex, templatePath + ' should load scene orchestrator before director');
     }

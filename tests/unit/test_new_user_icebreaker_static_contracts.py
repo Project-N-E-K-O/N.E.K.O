@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from tests.static_app_parts import read_js_parts
+
+from tests.yui_guide_director_parts import read_director_source
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -12,20 +15,20 @@ ICEBREAKER_FREE_TEXT_RUNTIME_PATH = ROOT / "static" / "tutorial" / "icebreaker" 
 SCRIPTS_PATH = ROOT / "static" / "tutorial" / "icebreaker" / "icebreaker_scripts.json"
 LOCALE_PATH = ROOT / "static" / "tutorial" / "icebreaker" / "locales" / "zh-CN.json"
 LOCALES_DIR = ROOT / "static" / "tutorial" / "icebreaker" / "locales"
-CHAT_HOST_PATH = ROOT / "static" / "app-react-chat-window.js"
-APP_WEBSOCKET_PATH = ROOT / "static" / "app-websocket.js"
-APP_PROACTIVE_PATH = ROOT / "static" / "app-proactive.js"
-APP_PROMPT_PATH = ROOT / "static" / "tutorial" / "core" / "app-prompt.js"
+CHAT_HOST_PATH = ROOT / "static" / "app" / "app-react-chat-window"
+APP_WEBSOCKET_PATH = ROOT / "static" / "app" / "app-websocket.js"
+APP_PROACTIVE_PATH = ROOT / "static" / "app" / "app-proactive.js"
+SEVEN_DAY_STATE_PATH = ROOT / "static" / "tutorial" / "core" / "seven-day-state.js"
 UNIVERSAL_TUTORIAL_MANAGER_PATH = ROOT / "static" / "tutorial" / "core" / "universal-manager.js"
-APP_INTERPAGE_PATH = ROOT / "static" / "app-interpage.js"
+APP_INTERPAGE_PATH = ROOT / "static" / "app" / "app-interpage"
 INDEX_TEMPLATE_PATH = ROOT / "templates" / "index.html"
 WEBSOCKET_ROUTER_PATH = ROOT / "main_routers" / "websocket_router.py"
-GAME_ROUTER_PATH = ROOT / "main_routers" / "game_router.py"
+GAME_ROUTER_DIR = ROOT / "main_routers" / "game_router"
 ICEBREAKER_ROUTER_PATH = ROOT / "main_routers" / "icebreaker_router.py"
 ICEBREAKER_PROMPTS_PATH = ROOT / "config" / "prompts" / "prompts_icebreaker.py"
 ICEBREAKER_FREE_TEXT_UTILS_PATH = ROOT / "utils" / "icebreaker_free_text.py"
-LIVE2D_CORE_PATH = ROOT / "static" / "live2d-core.js"
-SUBTITLE_PATH = ROOT / "static" / "subtitle.js"
+LIVE2D_CORE_PATH = ROOT / "static" / "live2d" / "live2d-core.js"
+SUBTITLE_PATH = ROOT / "static" / "subtitle" / "subtitle.js"
 
 
 def assert_icebreaker_script_has_voice_keys_for_every_spoken_line(day_key: str):
@@ -360,7 +363,8 @@ def test_day1_icebreaker_fallback_redirect_is_node_agnostic():
 
 def test_icebreaker_runtime_wires_choice_prompt_and_project_tts():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
-    chat_host = CHAT_HOST_PATH.read_text(encoding="utf-8")
+    seven_day_state = SEVEN_DAY_STATE_PATH.read_text(encoding="utf-8")
+    chat_host = read_js_parts(CHAT_HOST_PATH)
     app_websocket = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
     index_html = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
 
@@ -384,13 +388,14 @@ def test_icebreaker_runtime_wires_choice_prompt_and_project_tts():
     assert "expressionFile" not in runtime
     assert "resolveLatestEndState(detail, eventType)" in runtime
     assert "synthesizeEndStateFromEvent(eventType, normalizedDetail)" in runtime
-    assert "eventType === 'neko:tutorial-skipped'" in runtime
+    assert "eventType === 'neko:tutorial-skipped'" not in runtime
     assert "eventType === 'neko:tutorial-completed'" in runtime
     assert "normalizedDetail.day" in runtime
     assert "day = 1" not in runtime
     assert "playExpression(normalizedEmotion, normalizedExpressionFile)" not in runtime
     assert "bootstrapFromRecentEndState" in runtime
-    assert "neko_avatar_floating_guide_v1" in runtime
+    assert "window.NekoSevenDayTutorialState" in runtime
+    assert "neko_avatar_floating_guide_v1" in seven_day_state
     assert "resolveRecentPersistedEndState" in runtime
     assert "setIcebreakerChoicePrompt" in chat_host
     assert "clearIcebreakerChoicePrompt" in chat_host
@@ -418,7 +423,7 @@ def test_icebreaker_runtime_wires_choice_prompt_and_project_tts():
 def test_icebreaker_context_append_does_not_touch_shared_websocket_router():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
     websocket_router = WEBSOCKET_ROUTER_PATH.read_text(encoding="utf-8")
-    game_router = GAME_ROUTER_PATH.read_text(encoding="utf-8")
+    game_router = "".join(q.read_text(encoding="utf-8") for q in sorted(GAME_ROUTER_DIR.glob("*.py")))
     icebreaker_router = ICEBREAKER_ROUTER_PATH.read_text(encoding="utf-8")
 
     assert "appendLlmContext(role, messageText" in runtime
@@ -443,7 +448,7 @@ def test_icebreaker_context_append_does_not_touch_shared_websocket_router():
 
 
 def test_icebreaker_route_is_separate_from_game_route_active_state():
-    game_router = GAME_ROUTER_PATH.read_text(encoding="utf-8")
+    game_router = "".join(q.read_text(encoding="utf-8") for q in sorted(GAME_ROUTER_DIR.glob("*.py")))
     icebreaker_router = ICEBREAKER_ROUTER_PATH.read_text(encoding="utf-8")
     window_open_guard = game_router.split("mgr_for_ws = get_session_manager().get(lanlan_name)", 1)[1].split(
         "else:",
@@ -481,7 +486,10 @@ def test_icebreaker_route_is_finalized_when_renderer_websocket_disconnects():
 
 
 def test_icebreaker_context_reuses_existing_session_context_paths():
-    core = (ROOT / "main_logic" / "core.py").read_text(encoding="utf-8")
+    core = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in sorted((ROOT / "main_logic" / "core").glob("*.py"))
+    )
 
     assert "pending_icebreaker_context" not in core
     assert "_icebreaker_context_request_ids" not in core
@@ -550,7 +558,7 @@ def test_icebreaker_context_append_requires_successful_json_payload():
 
 def test_icebreaker_assistant_messages_update_compact_caption_like_normal_chat():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
-    interpage_runtime = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+    interpage_runtime = read_js_parts(APP_INTERPAGE_PATH)
 
     assert "function syncIcebreakerAssistantCompactCaption(role, message)" in runtime
     assert "function finalizeIcebreakerAssistantSubtitleTranslation(role, message)" in runtime
@@ -885,13 +893,18 @@ def test_icebreaker_defers_while_home_tutorial_is_active():
 
     assert "function isIcebreakerBlockerVisible(el)" in runtime
     assert "function hasVisibleTutorialBlocker(selectors)" in runtime
+    assert "function isDay1SystrayIntroBlockingIcebreaker()" in runtime
     assert "function isTutorialBlockingIcebreaker()" in runtime
     assert "window.isInTutorial" in runtime
     assert "manager.isTutorialRunning" in runtime
     assert "manager._teardownPromise" in runtime
+    assert "neko-day1-systray-intro-open" in runtime
+    assert "#neko-day1-systray-intro-modal" in runtime
+    assert ".neko-day1-systray-intro-modal" in runtime
     assert "startFromEndStateWhenTutorialIdle" in runtime
     assert "TUTORIAL_IDLE_RETRY_MS" in runtime
     assert "if (isTutorialBlockingIcebreaker())" in runtime
+    assert "window.addEventListener('neko:day1-systray-intro-closed'" in runtime
     assert "return false;" in runtime
     assert "getEndStateTriggerDeadline(endState)" in runtime
     assert "retryCount >= TUTORIAL_IDLE_MAX_RETRIES" not in runtime
@@ -920,12 +933,64 @@ def test_icebreaker_tutorial_end_events_start_from_explicit_event_state():
     body = match.group("body")
     assert "startFromEndState(resolveLatestEndState(detail, eventType))" not in body
     assert "var endState = resolveLatestEndState(detail, eventType);" in body
+    assert "String(endState.outcome || endState.rawReason || '') !== 'complete'" in body
     assert "var pendingDay = markPendingStartFromEndState(endState);" in body
-    assert "startFromEndStateWhenTutorialIdle(endState)" in body
-    assert "clearPendingGuideEndStateDay(pendingDay)" in body
-    assert ".catch(function (error)" in body
-    assert "console.warn('[NewUserIcebreaker] deferred start failed:', error);" in body
-    assert "dispatchIcebreakerEnded('start_failed')" in body
+    assert "attemptStartFromGuideEndState(endState, pendingDay)" in body
+
+
+def test_day1_systray_intro_close_releases_icebreaker_and_desktop_passthrough():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    manager = UNIVERSAL_TUTORIAL_MANAGER_PATH.read_text(encoding="utf-8")
+
+    assert "pendingGuideEndState = endState;" in runtime
+    assert "attemptStartFromGuideEndState(pendingGuideEndState" in runtime
+    assert "window.addEventListener('neko:day1-systray-intro-closed'" in runtime
+    assert "window.dispatchEvent(new CustomEvent('neko:day1-systray-intro-closed'" in manager
+    assert "document.body.classList.remove('neko-day1-systray-intro-open')" in manager
+
+
+def test_icebreaker_keeps_pending_start_while_day1_systray_intro_is_open():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    match = re.search(
+        r"function startFromEndStateWhenTutorialIdle\(endState\) \{(?P<body>.*?)\n    \}",
+        runtime,
+        re.DOTALL,
+    )
+
+    assert match is not None
+    body = match.group("body")
+    assert "if (isTutorialBlockingIcebreaker())" in body
+    assert (
+        "!isDay1SystrayIntroBlockingIcebreaker() && Date.now() >= getEndStateTriggerDeadline(endState)"
+        in body
+    )
+    assert body.index("!isDay1SystrayIntroBlockingIcebreaker()") < body.index(
+        "window.setTimeout(resolve, TUTORIAL_IDLE_RETRY_MS)"
+    )
+
+
+def test_icebreaker_deferred_start_promise_cleanup_has_no_unreachable_rejection_handler():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    match = re.search(
+        r"function attemptStartFromGuideEndState\(endState, pendingDay\) \{(?P<body>.*?)\n    \}",
+        runtime,
+        re.DOTALL,
+    )
+
+    assert match is not None
+    body = match.group("body")
+    assert "}).catch(function (error) {" in body
+    assert "}).then(function (started) {" in body
+    assert "}, function (error) {" not in body
+    assert "throw error;" not in body
+
+
+def test_yui_guide_bridge_timestamp_helper_exists_for_cursor_relay():
+    interpage = read_js_parts(APP_INTERPAGE_PATH)
+
+    assert "function getYuiGuideBridgeMessageTimestamp(message)" in interpage
+    assert "timestamp: getYuiGuideBridgeMessageTimestamp(message)" in interpage
+    assert "getYuiGuideBridgeMessageTimestamp is not defined" not in interpage
 
 
 def test_icebreaker_does_not_bootstrap_from_persisted_end_state_on_cold_start():
@@ -962,6 +1027,7 @@ def test_home_tutorial_release_events_carry_current_avatar_round_end_state():
     tutorial_manager = UNIVERSAL_TUTORIAL_MANAGER_PATH.read_text(encoding="utf-8")
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
     reset_runtime = (ROOT / "static" / "tutorial" / "avatar" / "floating-guide-reset.js").read_text(encoding="utf-8")
+    seven_day_state = SEVEN_DAY_STATE_PATH.read_text(encoding="utf-8")
 
     assert "avatarFloatingEndState = recordAvatarFloatingGuideEndState(" in tutorial_manager
     assert "day: avatarFloatingEndState ? avatarFloatingEndState.day : undefined" in tutorial_manager
@@ -970,17 +1036,18 @@ def test_home_tutorial_release_events_carry_current_avatar_round_end_state():
     assert "neko:avatar-floating-guide-complete" in tutorial_manager
     assert "day: avatarFloatingEndState.day" in tutorial_manager
     assert "lastEndState" in tutorial_manager
-    assert "lastEndState" in reset_runtime
-    assert "state.lastEndState" in reset_runtime
+    assert "STATE_API.resetRound" in reset_runtime
+    assert "state.lastEndState" in seven_day_state
     assert "state.lastEndState" in runtime
 
-    generic_tutorial_branch = re.search(
-        r"eventType === 'neko:tutorial-skipped'.*?outcome = 'skip';",
-        runtime,
-        re.DOTALL,
-    )
-    assert generic_tutorial_branch is not None
-    assert "day = 1" not in generic_tutorial_branch.group(0)
+    assert "window.addEventListener('neko:avatar-floating-guide-skip', handleGuideEndEvent)" not in runtime
+    assert "window.addEventListener('neko:tutorial-skipped', handleGuideEndEvent)" not in runtime
+    can_start_block = runtime.split("function canStartFromEndState(endState, scripts)", 1)[1].split(
+        "function readPersistedAvatarGuideState",
+        1,
+    )[0]
+    assert "if (outcome !== 'complete') return false;" in can_start_block
+    assert "outcome !== 'skip'" not in can_start_block
 
 
 def test_avatar_floating_angry_exit_skip_event_preserves_raw_end_state():
@@ -1021,7 +1088,7 @@ def test_avatar_floating_angry_exit_skip_event_preserves_raw_end_state():
 
 def test_icebreaker_uses_broadcast_channel_for_desktop_chat_window():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
-    interpage = (ROOT / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    interpage = read_js_parts(ROOT / "static" / "app" / "app-interpage")
 
     assert "broadcastIcebreakerAppendMessage" in runtime
     assert "broadcastIcebreakerChoicePrompt" in runtime
@@ -1066,7 +1133,7 @@ def test_icebreaker_uses_broadcast_channel_for_desktop_chat_window():
 
 def test_icebreaker_desktop_bridge_has_storage_fallback():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
-    interpage = (ROOT / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    interpage = read_js_parts(ROOT / "static" / "app" / "app-interpage")
 
     assert "ICEBREAKER_BRIDGE_STORAGE_KEY" in runtime
     assert "localStorage.setItem(ICEBREAKER_BRIDGE_STORAGE_KEY" in runtime
@@ -1079,7 +1146,7 @@ def test_icebreaker_desktop_bridge_has_storage_fallback():
 
 
 def test_icebreaker_source_clear_bridge_cannot_clear_non_icebreaker_prompt():
-    interpage = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+    interpage = read_js_parts(APP_INTERPAGE_PATH)
 
     source_clear_block = interpage.split("function clearIcebreakerChoicePromptSourceFromBroadcast(source, reason)", 1)[1].split(
         "function getIcebreakerMessageText",
@@ -1103,8 +1170,8 @@ def test_icebreaker_page_exit_clears_choice_prompt_before_route_end():
 
 
 def test_yui_guide_chat_bridge_has_storage_queue_fallback():
-    director = (ROOT / "static" / "tutorial" / "yui-guide" / "director.js").read_text(encoding="utf-8")
-    interpage = (ROOT / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    director = read_director_source(ROOT)
+    interpage = read_js_parts(ROOT / "static" / "app" / "app-interpage")
 
     assert "YUI_GUIDE_CHAT_BRIDGE_QUEUE_KEY" in director
     assert "enqueueYuiGuideChatBridgeMessage" in director
@@ -1124,7 +1191,7 @@ def test_yui_guide_chat_bridge_has_storage_queue_fallback():
 
 
 def test_yui_guide_native_relay_uses_defined_chat_helpers():
-    interpage = (ROOT / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    interpage = read_js_parts(ROOT / "static" / "app" / "app-interpage")
     relay_block = interpage.split("function handleYuiGuideRelayedMessage(message)", 1)[1].split(
         "yuiGuideInterpageResources.addEventListener(window, 'neko:tutorial-overlay-relay'",
         1,
@@ -1283,14 +1350,16 @@ def test_icebreaker_start_dedupes_pending_tutorial_end_triggers():
 def test_home_tutorial_reset_also_resets_day1_icebreaker_state():
     reset_source = (ROOT / "static" / "tutorial" / "avatar" / "floating-guide-reset.js").read_text(encoding="utf-8")
     memory_browser_source = (ROOT / "static" / "js" / "memory_browser.js").read_text(encoding="utf-8")
+    seven_day_state = SEVEN_DAY_STATE_PATH.read_text(encoding="utf-8")
 
     assert "neko.new_user_icebreaker.v1" in reset_source
     assert "resetIcebreakerDay(round)" in reset_source
     assert "delete store.days[key]" in reset_source
     assert "function resetAllIcebreakerDays()" in reset_source
     assert "resetAllAvatarFloatingGuideDays" in reset_source
-    assert "state.completedRounds = []" in reset_source
-    assert "state.skippedRounds = []" in reset_source
+    assert "STATE_API.resetAll" in reset_source
+    assert "state.completedRounds = []" in seven_day_state
+    assert "state.skippedRounds = []" in seven_day_state
     assert "selection.pageKey === 'all'" in memory_browser_source
     assert "resetAllAvatarFloatingGuideDays({" in memory_browser_source
     home_all_block = memory_browser_source.split("if (selection.type === 'home-all') {", 1)[1].split(
@@ -1301,19 +1370,13 @@ def test_home_tutorial_reset_also_resets_day1_icebreaker_state():
         "if (selection.type === 'home-all'",
         1,
     )[0]
-    prompt_reset_helper = memory_browser_source.split("async function resetHomeTutorialPromptState(", 1)[1].split(
-        "async function resetSelectedTutorial()",
-        1,
-    )[0]
-    assert "resetHomeTutorialPromptState('memory_browser_home_day_reset')" in home_day_block
-    assert "resetHomeTutorialPromptState('memory_browser_home_all_reset')" in home_all_block
-    assert "window.universalTutorialManager.resetHomeTutorialPromptState(" in prompt_reset_helper
-    assert "resetHomeTutorialPromptStateViaApi(" in prompt_reset_helper
-    assert "'/api/tutorial-prompt/reset'" in memory_browser_source
+    assert "resetAvatarFloatingGuideDay" in home_day_block
+    assert "resetAllAvatarFloatingGuideDays" in home_all_block
+    assert "/api/tutorial-prompt/" not in memory_browser_source
 
 
 def test_react_chat_fallback_sort_key_stays_after_existing_timestamped_messages():
-    chat_host = CHAT_HOST_PATH.read_text(encoding="utf-8")
+    chat_host = read_js_parts(CHAT_HOST_PATH)
 
     assert "getNextAppendSortKey" in chat_host
     assert "maxExistingSortKey" in chat_host
@@ -1436,13 +1499,17 @@ def test_react_chat_assets_use_react_chat_cache_version():
     react_chat_assets = [
         "/static/react/neko-chat/neko-chat-window.css",
         "/static/react/neko-chat/neko-chat-window.iife.js",
-        "/static/app-react-chat-window.js",
-        "/static/app-chat-adapter.js",
-        "/static/app-buttons.js",
+        "/static/app/app-react-chat-window/bootstrap-state-and-geometry.js",
+        "/static/app/app-react-chat-window/geometry-and-messages.js",
+        "/static/app/app-react-chat-window/message-bundle-actions-and-prompts.js",
+        "/static/app/app-react-chat-window/minimize-and-idle-dock.js",
+        "/static/app/app-react-chat-window/resize-drag-and-api.js",
+        "/static/app/app-chat-adapter.js",
+        "/static/app/app-buttons.js",
     ]
 
     for asset in react_chat_assets:
         assert f'{asset}?v={{{{ react_chat_asset_version }}}}' in index_html
         assert f'{asset}?v={{{{ react_chat_asset_version }}}}' in chat_html
 
-    assert pages_router.count('_PROJECT_ROOT / "static/app-interpage.js"') == 1
+    assert pages_router.count('_PROJECT_ROOT.glob("static/app/app-interpage/*.js")') == 1

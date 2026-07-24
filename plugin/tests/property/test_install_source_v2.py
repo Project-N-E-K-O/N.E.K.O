@@ -482,6 +482,72 @@ def test_property_3_record_market_upgrade_equivalent_to_install_when_no_prior(
     assert entry.source_detail.version == "1.0.0"
 
 
+def test_restore_entry_for_rollback_restores_only_prior_market_row(
+    manager: InstallSourceManager,
+) -> None:
+    old_entry, _ = manager.record_market_install(
+        root_id="user",
+        directory_name="rollback-target",
+        plugin_id="rollback-target",
+        market_detail={
+            "plugin_market_id": "rollback-target",
+            "version": "1.0.0",
+            "package_url": "https://example.com/v1.neko-plugin",
+            "channel": "stable",
+            "package_sha256": "a" * 64,
+            "payload_hash": None,
+            "published_at": "2026-05-16T08:00:00.000000Z",
+        },
+        package_id="old-package",
+    )
+    other_entry, _ = manager.record_market_install(
+        root_id="user",
+        directory_name="unrelated",
+        plugin_id="unrelated",
+        market_detail={
+            "plugin_market_id": "unrelated",
+            "version": "3.0.0",
+            "package_url": "https://example.com/other.neko-plugin",
+            "channel": "stable",
+            "package_sha256": "b" * 64,
+            "payload_hash": None,
+            "published_at": "2026-05-16T08:00:00.000000Z",
+        },
+    )
+    manager.record_market_upgrade(
+        root_id="user",
+        directory_name="rollback-target",
+        plugin_id="rollback-target",
+        market_detail={
+            "plugin_market_id": "rollback-target",
+            "version": "2.0.0",
+            "package_url": "https://example.com/v2.neko-plugin",
+            "channel": "stable",
+            "package_sha256": "c" * 64,
+            "payload_hash": None,
+            "published_at": "2026-05-17T08:00:00.000000Z",
+        },
+        package_id="old-package",
+    )
+
+    manager.restore_entry_for_rollback(old_entry)
+
+    by_key = {entry.primary_key: entry for entry in manager.snapshot().entries}
+    assert by_key[old_entry.primary_key] == old_entry
+    assert by_key[other_entry.primary_key] == other_entry
+
+    reloaded = InstallSourceManager(
+        lock_path=manager.lock_path,
+        builtin_root=manager.builtin_root,
+        user_root=manager.user_root,
+        scanner=manager.scanner,
+    )
+    reloaded.load()
+    persisted = {entry.primary_key: entry for entry in reloaded.snapshot().entries}
+    assert persisted[old_entry.primary_key] == old_entry
+    assert persisted[other_entry.primary_key] == other_entry
+
+
 def test_property_3_missing_sha256_emits_warning(
     manager: InstallSourceManager,
 ) -> None:

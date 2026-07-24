@@ -7,6 +7,7 @@ The agent server speaks a small JSON protocol:
 * **server → client** ``{"type": "screenshot", "image": "<base64>", "encoding": "png"|"jpeg"}``
 * **server → client** ``{"type": "task_finished", "status": "ok", "text": "..."}``
 * **server → client** ``{"type": "agent_status", ...}``  # informational, ignored by callbacks
+* **server → client** ``{"type": "ingame_chat", "messages": [{"player": "...", "text": "..."}]}``
 
 Why a long-lived WebSocket instead of polling HTTP: screenshot frames can
 arrive at >1Hz, and the handshake cost of HTTP per frame would dominate
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 import websockets
@@ -29,6 +31,18 @@ OnScreenshot = Callable[[str, str], Awaitable[None]]  # (base64_payload, encodin
 OnTaskFinished = Callable[[dict[str, Any]], Awaitable[None]]
 OnAlert = Callable[[dict[str, Any]], Awaitable[None]]
 OnInventory = Callable[[dict[str, Any]], Awaitable[None]]
+OnBotStatus = Callable[[dict[str, Any]], Awaitable[None]]  # bot_status_nl frame
+
+
+@dataclass(frozen=True, slots=True)
+class IngameChatMessage:
+    """One validated ordinary-player chat item from an ``ingame_chat`` batch."""
+
+    player: str
+    text: str
+
+
+OnIngameChat = Callable[[tuple[IngameChatMessage, ...]], Awaitable[None]]
 
 
 class GameAgentClient:
@@ -49,6 +63,8 @@ class GameAgentClient:
         on_task_finished: Optional[OnTaskFinished] = None,
         on_alert: Optional[OnAlert] = None,
         on_inventory: Optional[OnInventory] = None,
+        on_bot_status: Optional[OnBotStatus] = None,
+        on_ingame_chat: Optional[OnIngameChat] = None,
         reconnect_interval: float = 5.0,
         logger: Any = None,
     ):
@@ -58,6 +74,8 @@ class GameAgentClient:
         self.on_task_finished = on_task_finished
         self.on_alert = on_alert
         self.on_inventory = on_inventory
+        self.on_bot_status = on_bot_status
+        self.on_ingame_chat = on_ingame_chat
         self.reconnect_interval = reconnect_interval
         # Plugin SDK injects a per-plugin loguru logger; fall back to a
         # noop when running outside that environment (unit tests).
@@ -66,6 +84,7 @@ class GameAgentClient:
         self._ws: Optional[Any] = None
         self._running = False
         self.is_connected: bool = False
+        self._background_callbacks: set[asyncio.Task[None]] = set()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -136,6 +155,12 @@ class GameAgentClient:
                 # already torn down (peer hung up, OS reaped fd, ...)
                 # there's nothing for us to recover; we're stopping.
                 pass
+        callbacks = tuple(self._background_callbacks)
+        for task in callbacks:
+            task.cancel()
+        if callbacks:
+            await asyncio.gather(*callbacks, return_exceptions=True)
+        self._background_callbacks.clear()
         self._log_info("stopped")
 
     # ------------------------------------------------------------------
@@ -248,6 +273,22 @@ class GameAgentClient:
                         # and wakes any pending ``query_inventory`` calls.
                         await self.on_inventory(data)
 
+                    elif msg_type == "bot_status_nl" and self.on_bot_status is not None:
+                        # Natural-language activity status (🎯[按指令]/🤖[自主] +
+                        # skill/kind). The service uses it to know whether the
+                        # mc-agent is actively executing, so the autonomous
+                        # nudge loop stops telling her to dispatch a new task
+                        # while the agent is already mid-action.
+                        await self.on_bot_status(data)
+
+                    elif msg_type == "ingame_chat" and self.on_ingame_chat is not None:
+                        messages = self._parse_ingame_chat_messages(data)
+                        if messages:
+                            self._start_background_callback(
+                                self.on_ingame_chat(messages),
+                                msg_type=msg_type,
+                            )
+
                     elif msg_type == "agent_status":
                         # Informational status — the original integration
                         # logged this at debug. Keep parity.
@@ -267,6 +308,62 @@ class GameAgentClient:
         except Exception as exc:
             self.is_connected = False
             self._log_error("listen error: {}: {}", type(exc).__name__, exc)
+
+    def _start_background_callback(
+        self,
+        callback: Awaitable[None],
+        *,
+        msg_type: str,
+    ) -> None:
+        """Run a potentially slow callback without stalling frame ingestion."""
+        task = asyncio.create_task(
+            callback,
+            name=f"game_agent_minecraft.callback.{msg_type}",
+        )
+        self._background_callbacks.add(task)
+
+        def _done(done: asyncio.Task[None]) -> None:
+            self._background_callbacks.discard(done)
+            if done.cancelled():
+                return
+            try:
+                done.result()
+            except Exception as exc:
+                self._log_error(
+                    "background callback error for type={}: {}: {}",
+                    msg_type, type(exc).__name__, exc,
+                )
+
+        task.add_done_callback(_done)
+
+    @staticmethod
+    def _parse_ingame_chat_messages(
+        data: dict[str, Any],
+    ) -> tuple[IngameChatMessage, ...]:
+        """Validate the structured batch and discard malformed or empty items.
+
+        The frame's aggregate ``text`` field intentionally is not consumed: the
+        structured ``messages`` list is authoritative, and reading both would
+        inject the same player chat into the dialog context twice.
+        """
+        raw_messages = data.get("messages")
+        if not isinstance(raw_messages, list):
+            return ()
+
+        messages: list[IngameChatMessage] = []
+        for item in raw_messages:
+            if not isinstance(item, dict):
+                continue
+            player = item.get("player")
+            text = item.get("text")
+            if not isinstance(player, str) or not isinstance(text, str):
+                continue
+            player = player.strip()
+            text = text.strip()
+            if not player or not text:
+                continue
+            messages.append(IngameChatMessage(player=player, text=text))
+        return tuple(messages)
 
     # ------------------------------------------------------------------
     # Logging helpers — silently no-op when no logger is supplied.
@@ -312,4 +409,7 @@ __all__ = [
     "OnTaskFinished",
     "OnAlert",
     "OnInventory",
+    "OnBotStatus",
+    "IngameChatMessage",
+    "OnIngameChat",
 ]

@@ -1,115 +1,42 @@
 # Development Setup
 
-## Clone the repository
+## Clone and synchronize
 
 ```bash
 git clone https://github.com/Project-N-E-K-O/N.E.K.O.git
 cd N.E.K.O
-```
-
-## Install dependencies
-
-```bash
 uv sync
 ```
 
-This installs all Python dependencies into a managed virtual environment. The project requires Python 3.11.
+`uv` selects the Python 3.11 environment pinned by `pyproject.toml`. Run modules, scripts, pytest, and temporary Python commands through `uv run`.
 
-## Start the servers
+## Build frontend assets
 
-N.E.K.O. runs as multiple cooperating servers. At minimum, you need the **main server** and the **memory server**:
+```powershell
+.\build_frontend.bat
+```
 
 ```bash
-# Terminal 1 — Memory server
-uv run python app/memory_server.py
-
-# Terminal 2 — Main server
-uv run python app/main_server.py
-```
-
-Optionally, start the agent server for background task execution:
-
-```bash
-# Terminal 3 — Agent server (optional)
-uv run python app/agent_server.py
-```
-
-## Configure API keys
-
-Once the main server is running, open the Web UI to configure your API keys:
-
-```
-http://localhost:48911/api_key
-```
-
-Select your preferred Core API provider and enter your API key. See [API Providers](/config/api-providers) for details on each provider.
-
-## Verify the setup
-
-Open the main interface:
-
-```
-http://localhost:48911
-```
-
-You should see the character interface with a Live2D model. Try sending a text message or starting a voice session to verify everything works.
-
-## Default ports
-
-| Server | Port | Purpose |
-|--------|------|---------|
-| Main server | 48911 | Web UI, REST API, WebSocket |
-| Memory server | 48912 | Memory storage and retrieval |
-| Monitor server | 48913 | Status monitoring |
-| Agent/Tool server | 48915 | Agent task execution |
-| Plugin server | 48916 | User plugins |
-
-## Build the frontend projects
-
-The project has two modern frontend projects under `frontend/`. Both must be built before running the full application.
-
-### Recommended: one-shot script
-
-> **Prerequisite**: Building the frontend requires [Node.js](https://nodejs.org/) (>= 20.19). Make sure it is installed before running these commands.
-
-This is the officially supported build path — always prefer the script over running npm manually:
-
-```bash
-# Windows
-build_frontend.bat
-
-# Linux / macOS
 ./build_frontend.sh
 ```
 
-The sections below document per-project commands for development (dev server, incremental builds). For production builds, the script above is the source of truth.
+The scripts verify/unpack `assets/yui-origin.tar.gz`, run `npm ci`, build the Vue plugin manager to `frontend/plugin-manager/dist/`, and build React chat to `static/react/neko-chat/`.
 
-### Chat Window (React)
+For iterative work, run `npm ci && npm run dev` in the owning frontend directory. Plugin manager uses port 5173 and proxies to `VITE_BACKEND_URL` or `http://localhost:48916`; React chat uses port 5174. Its production bundle is mounted by both `templates/index.html` and `templates/chat.html`.
 
-```bash
-cd frontend/react-neko-chat
-npm install
-npm run dev          # Dev server on port 5174
-npm run build        # Production build → static/react/neko-chat/
-```
-
-The chat window is built as an IIFE library (`NekoChatWindow`) and embedded in `templates/index.html`.
-
-### Plugin Manager (Vue)
+## Start and verify
 
 ```bash
-cd frontend/plugin-manager
-npm install
-npm run dev          # Dev server on port 5173 (proxies API to localhost:48916)
-npm run build-only   # Production build → frontend/plugin-manager/dist/
+uv run python launcher.py
 ```
 
-The plugin manager dashboard is served at `/ui/` by the plugin server (port 48916).
+Open the URL reported by the launcher, normally `http://127.0.0.1:48911`. Configure providers at `/api_key`; use `/health` for startup diagnosis.
 
-## Running tests
+## Basic checks
 
 ```bash
 uv run pytest
+uv run ruff check .
 ```
 
-See `tests/README.md` for details on the test suite structure and how to run specific test categories.
+CI also runs repository-specific checks for async blocking, banned logging imports, prompt/i18n rules, LLM budgets, API trailing slashes, module layering, docs paths, and core contracts. Read `.github/workflows/analyze.yml` before claiming local CI parity.

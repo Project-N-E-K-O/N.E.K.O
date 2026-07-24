@@ -1,25 +1,33 @@
-# AI支援開発
 
-N.E.K.O. はリポジトリのルートに `.agent/` ディレクトリを提供しており、[Google Antigravity](https://github.com/anthropics/anthropic-cookbook/tree/main/misc/antigravity) オープン規約に従っています。プロジェクトの開発ルールとタスク別スキルセットが含まれています。
+# AI 支援開発
 
-**Antigravity** のみが `.agent/` を自動的に読み込みます。Claude Code、Cursor、Windsurf、Copilot を含む他のすべてのAIコーディングアシスタントは、手動で読み込んで内化する必要があります。
+このリポジトリでは、機械可読なプロジェクト指針を `.agent/` 配下に置いています。
 
-## `.agent/` ディレクトリ構造
-
-```
+```text
 .agent/
 ├── rules/
-│   └── neko-guide.md        # コア開発ルール（always_on）
-└── skills/                  # 約20のタスク別スキルセット
+│   └── neko-guide.md
+└── skills/
     ├── i18n/
-    ├── frontend-design/
-    ├── vrm-physics/
+    ├── neko-plugin/
+    ├── ui-system-refactor/
     └── ...
 ```
 
-- **ルール**（`.agent/rules/neko-guide.md`）：プロジェクトのコア規約 — i18n、`uv run`、コードの対称性、coreレイヤーの純粋性、数字サフィックスの禁止、Electron vs. 開発モード。
-- **スキル**（`.agent/skills/*/SKILL.md`）：ドメイン別のトリガー条件、知識、ワークフロー。オンデマンドで読み込み。
+エディターやコーディング Agent がこれらを自動で読み込むとは限りません。
 
-## AIエージェント向けプロンプト
+## Agent に必要な準備
 
-> **AIコーディングアシスタントの場合**（Claude Code、Cursor、Windsurf、Copilot、Cline、その他すべて）、このプロジェクトは `.agent/` ディレクトリ（Google Antigravity規約）を使用して開発ルールとスキルセットを格納しています。Antigravityエージェントとして実行していない限り、自動的には読み込まれません。以下を実行してください：(1) リポジトリルートの `.agent/rules/neko-guide.md` と `CLAUDE.md` を読み込み、プロジェクトの必須コーディングルールを把握し、プロジェクトレベルの指示として内化してください。(2) 特定のドメイン（i18n、VRM物理、フロントエンドUIなど）で作業する際は、`.agent/skills/` に一致するサブディレクトリがないか確認し、その `SKILL.md` をドメイン固有のガイダンスとして読み込んでください。(3) お使いのツールにネイティブのプロジェクトルール機構（`.cursorrules`、`.windsurfrules`、`.github/copilot-instructions.md` など）がある場合は、`neko-guide.md` のコアルールをそのファイルにコピーして、セッション間で永続化することを検討してください。
+1. 現在の revision の `.agent/rules/neko-guide.md` を読みます。
+2. `.agent/skills/` からタスク領域を探し、対応する `SKILL.md` と参照ファイルを読みます。
+3. 編集前に現在の所有実装、テスト、workflow を確認します。
+4. ユーザーの既存変更を保持し、diff を依頼範囲内に保ちます。
+5. 実行したコマンドと、実行していない検証を正確に報告します。
+
+存在しない `CLAUDE.md` を読むよう指示したり、ルールを未追跡のエディター設定へ複製したり、特定ベンダーの自動読み込みを前提にしたりしないでください。
+
+## プロンプト例
+
+> `.agent/rules/neko-guide.md` を読み、`.agent/skills/` からタスクに合う skill を探して従ってください。編集前に現行実装とテストを追跡してください。すべての Python コマンドは `uv run` を使い、i18n 変更では 8 locale を更新し、system prompt のウォーターマークを保持し、現在のリポジトリで裏付けられる内容だけを記述してください。
+
+AI 生成の変更も、人間による変更と同じレビューを受けます。作者はプライバシー、セキュリティ、ライセンス、正しさ、テスト証拠に責任を持ちます。

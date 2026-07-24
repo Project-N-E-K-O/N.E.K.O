@@ -5,7 +5,7 @@
 // opens an embedded Chromium webview that has no close affordance —
 // users get trapped. The host preload script exposes window.electronShell
 // as the bridge to shell.openExternal in the main process; the same
-// convention is used by static/app-proactive.js for url-card / meme
+// convention is used by static/app/app-proactive.js for url-card / meme
 // links, and by frontend/react-neko-chat/src/openExternal.ts on the
 // chat side. The plugin-manager surface lives in the same Electron host,
 // so it needs the same routing.
@@ -56,4 +56,83 @@ export function openExternalUrl(url: string): void {
     return
   }
   window.open(href, '_blank', 'noopener,noreferrer')
+}
+
+export function openLocalPath(path: string): void {
+  const raw = String(path || '').trim()
+  if (!isLocalPath(raw)) return
+  const target = normalizeLocalPath(raw)
+  const host = (window as unknown as {
+    nekoHost?: { openPath?: (payload: { path: string }) => void | Promise<unknown> }
+    electronShell?: {
+      openPath?: (path: string) => void | Promise<unknown>
+      showItemInFolder?: (path: string) => void | Promise<unknown>
+      openExternal?: (url: string) => void | Promise<unknown>
+    }
+  })
+  if (host.nekoHost && typeof host.nekoHost.openPath === 'function') {
+    Promise.resolve(host.nekoHost.openPath({ path: target })).catch((err) => {
+      console.warn('[openLocalPath] nekoHost.openPath failed:', err)
+    })
+    return
+  }
+  if (host.electronShell && typeof host.electronShell.openPath === 'function') {
+    Promise.resolve(host.electronShell.openPath(target)).catch((err) => {
+      console.warn('[openLocalPath] electronShell.openPath failed:', err)
+    })
+    return
+  }
+  if (host.electronShell && typeof host.electronShell.showItemInFolder === 'function') {
+    Promise.resolve(host.electronShell.showItemInFolder(target)).catch((err) => {
+      console.warn('[openLocalPath] electronShell.showItemInFolder failed:', err)
+    })
+    return
+  }
+  if (host.electronShell && typeof host.electronShell.openExternal === 'function') {
+    Promise.resolve(host.electronShell.openExternal(localPathToFileUrl(target))).catch((err) => {
+      console.warn('[openLocalPath] electronShell.openExternal(file://) failed:', err)
+    })
+  }
+}
+
+function isLocalPath(value: string): boolean {
+  if (!value) return false
+  if (/^[a-zA-Z]:[\\/]/.test(value)) return true
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value)) return value.toLowerCase().startsWith('file://')
+  return value.startsWith('/') || value.startsWith('~/') || value.startsWith('\\\\')
+}
+
+function localPathToFileUrl(value: string): string {
+  if (value.toLowerCase().startsWith('file://')) return value
+  let normalized = value
+  if (normalized.startsWith('\\\\')) {
+    const parts = normalized.replace(/^\\\\+/, '').split(/[\\/]+/).filter(Boolean)
+    const host = parts.shift()
+    if (!host) return value
+    return `file://${host}/${encodeFilePathParts(parts)}`
+  }
+  normalized = normalized.replace(/\\/g, '/')
+  if (/^[a-zA-Z]:\//.test(normalized)) normalized = `/${normalized}`
+  return `file://${encodeFilePathParts(normalized.split('/'))}`
+}
+
+function normalizeLocalPath(value: string): string {
+  if (!value.toLowerCase().startsWith('file://')) return value
+  try {
+    const parsed = new URL(value)
+    const pathname = decodeURIComponent(parsed.pathname)
+    if (parsed.host && parsed.host !== 'localhost') {
+      return `\\\\${parsed.host}${pathname.replace(/\//g, '\\')}`
+    }
+    if (/^\/[a-zA-Z]:($|\/)/.test(pathname)) {
+      return pathname.slice(1).replace(/\//g, '\\')
+    }
+    return pathname
+  } catch {
+    return value
+  }
+}
+
+function encodeFilePathParts(parts: string[]): string {
+  return parts.map((part) => (/^[a-zA-Z]:$/.test(part) ? part : encodeURIComponent(part))).join('/')
 }

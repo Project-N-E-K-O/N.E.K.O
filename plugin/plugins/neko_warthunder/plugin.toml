@@ -1,0 +1,74 @@
+[plugin]
+name = "战雷猫娘副驾驶"
+description = "War Thunder 猫娘副驾驶：只读 8111 遥测（经数据层 :8112），把连续数据转成分立战斗事件，按战场场景仲裁后让猫娘提醒/陪伴。不做外挂、不做自动操作。"
+short_description = "War Thunder catgirl copilot: reads telemetry only, turns it into battle events and proactive call-outs."
+keywords = ["war thunder", "战雷", "战争雷霆", "copilot", "副驾驶", "telemetry", "8111"]
+version = "0.1.0"
+id = "neko_warthunder"
+entry = "plugin.plugins.neko_warthunder:NekoWarthunderPlugin"
+
+[plugin.author]
+name = "0N.E.K"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin.i18n]
+default_locale = "zh-CN"
+locales_dir = "i18n"
+
+[plugin.ui]
+enabled = true
+
+[[plugin.ui.panel]]
+id = "main"
+title = "战雷猫娘副驾驶"
+entry = "ui/panel.tsx"
+context = "dashboard"
+permissions = ["state:read", "action:call"]
+
+[plugin_runtime]
+enabled = true
+auto_start = false
+
+[plugin.store]
+enabled = true
+
+# 运行参数。dry_run 默认开：跑完整链路但 dispatcher 短路、绝不真投给猫娘。
+# 详见 docs/实现计划-codex.md 与 docs/D-B4-arbiter-rules.md。
+[neko_warthunder]
+enabled = true
+dry_run = true
+data_layer_url = "http://127.0.0.1:8112"
+data_layer_auto_start = true
+data_layer_startup_timeout_seconds = 3
+data_layer_shutdown_timeout_seconds = 3
+poll_interval_seconds = 0.4
+http_timeout_seconds = 1.5
+# 仲裁/限流（草稿值，待真机校准）
+global_rate_limit_seconds = 12
+critical_preempt_cooldown_seconds = 5
+output_backpressure_seconds = 20
+output_event_max_age_seconds = 8
+dialogue_intrusion_mode = "critical_only"
+user_chat_quiet_window_seconds = 60
+battle_output_quiet_window_seconds = 30
+kill_coalesce_window_seconds = 6
+plugin_owned_battle_output_enabled = false
+plugin_owned_urgent_output_enabled = false
+spawn_grace_seconds = 6
+takeoff_low_alt_grace_seconds = 45
+takeoff_radio_altitude_enter_m = 10
+takeoff_radio_altitude_exit_m = 40
+# 安全门
+queue_limit = 5
+safety_auto_stop_enabled = true
+safety_window_seconds = 60
+safety_failure_limit = 5
+# 兼容旧配置；kill/death 归属以数据层 /api/identity + combat.feed[].is_my_* 为准。
+player_name = ""
+observability_enabled = false
+observability_max_events = 100
+observability_include_prompt_preview = false
+v2_live_verified_real_output_enabled = false

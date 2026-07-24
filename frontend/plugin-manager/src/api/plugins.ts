@@ -97,7 +97,6 @@ export function deletePlugin(pluginId: string): Promise<{
   plugin_id: string
   plugin_dir: string
   deleted_from_disk: boolean
-  host_plugin_id?: string
   message: string
 }> {
   const safeId = encodeURIComponent(pluginId)
@@ -257,6 +256,7 @@ export function callPluginHostedSurfaceAction(pluginId: string, actionId: string
   kind: PluginUiSurface['kind']
   id: string
   locale?: string
+  timeoutMs?: number
 }): Promise<{
   plugin_id: string
   action_id: string
@@ -264,28 +264,15 @@ export function callPluginHostedSurfaceAction(pluginId: string, actionId: string
 }> {
   const safeId = encodeURIComponent(pluginId)
   const safeActionId = encodeURIComponent(actionId)
+  const requestedTimeoutMs = Number(surface?.timeoutMs)
+  const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : undefined
   return post(`/plugin/${safeId}/hosted-ui/action/${safeActionId}`, {
     args: args || {},
     kind: surface?.kind,
     surface_id: surface?.id,
     locale: surface?.locale,
-  })
-}
-
-/**
- * 禁用 Extension（热切换）
- */
-export function disableExtension(extId: string): Promise<{ success: boolean; ext_id: string; host_plugin_id: string; data?: any; message?: string }> {
-  const safeId = encodeURIComponent(extId)
-  return post(`/plugin/${safeId}/extension/disable`)
-}
-
-/**
- * 启用 Extension（热切换）
- */
-export function enableExtension(extId: string): Promise<{ success: boolean; ext_id: string; host_plugin_id: string; data?: any; message?: string }> {
-  const safeId = encodeURIComponent(extId)
-  return post(`/plugin/${safeId}/extension/enable`)
+    timeout_ms: timeoutMs,
+  }, timeoutMs ? { timeout: timeoutMs } : undefined)
 }
 
 /**

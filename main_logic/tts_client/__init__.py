@@ -31,9 +31,9 @@ import websockets
 from functools import partial
 
 from utils.config_manager import get_config_manager
-from utils.native_voice_registry import get_native_tts_worker
-from utils.mimo_tts_voices import MIMO_PRESET_CATALOG
-from utils import tts_provider_registry as _tts_providers
+from utils.tts.native_voice_registry import get_native_tts_worker
+from utils.tts.providers.mimo import MIMO_PRESET_CATALOG
+from utils.tts import provider_registry as _tts_providers
 from utils.logger_config import get_module_logger
 
 # ── shared infrastructure (re-exported for namespace stability) ──────────────
@@ -94,6 +94,11 @@ from .workers.mimo import (
     _mimo_is_selected,
     _mimo_resolve,
 )
+from .workers.doubao import (
+    doubao_tts_worker,
+    _doubao_is_selected,
+    _doubao_resolve,
+)
 from .workers.gptsovits import (
     gptsovits_tts_worker,
     get_custom_tts_voices,
@@ -145,6 +150,7 @@ __all__ = [
     "step_realtime_tts_worker", "grok_streaming_tts_worker", "qwen_realtime_tts_worker",
     "cosyvoice_vc_tts_worker", "cogtts_tts_worker", "gemini_tts_worker",
     "openai_tts_worker", "vllm_omni_tts_worker", "mimo_tts_worker",
+    "doubao_tts_worker",
     "gptsovits_tts_worker", "minimax_tts_worker", "elevenlabs_tts_worker",
     "local_cosyvoice_worker", "dummy_tts_worker",
     # provider constants
@@ -171,6 +177,7 @@ __all__ = [
     "_elevenlabs_clone_is_selected", "_elevenlabs_clone_resolve",
     "_cosyvoice_clone_is_selected", "_cosyvoice_clone_resolve",
     "_mimo_is_selected", "_mimo_resolve",
+    "_doubao_is_selected", "_doubao_resolve",
 ]
 
 
@@ -230,7 +237,7 @@ def _grok_voice_id_is_xai_custom(voice_id: str) -> bool:
     if not voice_id:
         return False
     try:
-        from utils.grok_tts_voices import normalize_grok_tts_voice
+        from utils.tts.providers.grok import normalize_grok_tts_voice
     except Exception:
         # 没装 grok adapter — 保守要求 xAI custom 格式才路由
         return bool(_XAI_CUSTOM_VOICE_PATTERN.match(voice_id))
@@ -283,7 +290,7 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     assist_api_type = str(core_cfg.get('assistApi') or '').strip().lower()
 
     # 特异 TTS provider（用户显式配置端点的 vllm_omni / 本地 GPT-SoVITS 等）的
-    # 选择与 worker 解析已收敛到 utils.tts_provider_registry，按 priority 顺序匹配：
+    # 选择与 worker 解析已收敛到 utils.tts.provider_registry，按 priority 顺序匹配：
     # GPT-SoVITS（本地显式开关）优先于 vLLM-Omni，二者都优先于克隆音色 /
     # assistApi fallback / 原生 TTS（沿用原内联顺序）。新增此类 provider 只需在
     # 本文件末尾 register 一条，不再在此处插内联特判。凭证防泄漏（vllm_omni 无 key
@@ -389,7 +396,7 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
         return dummy_tts_worker, None, None
 
 
-# ─── 特异 TTS provider 注册（与 utils.tts_provider_registry 对偶）────────────
+# ─── 特异 TTS provider 注册（与 utils.tts.provider_registry 对偶）────────────
 #
 # 在所有 worker 定义之后注册，避免元数据模块过早拉入 soxr/websockets 等重依赖
 # （与 native_voice_registry 的两层注册同源）。各 adapter 精确复刻
@@ -434,7 +441,7 @@ _tts_providers.register(_tts_providers.TTSProvider(
 
 # 克隆音色 provider（hosted SaaS，按 voice_meta.provider 选中）。priority 30/40/50
 # 沿用原 get_tts_worker 克隆块顺序：都在 vllm(20) 之后、mimo/native 之前。capabilities
-# 暂记 {clone}（当前仅克隆路由经注册表；preset/design 待 wiring 后按实际能力追加）。
+# 同时声明实际支持的 clone/design 来源；两种来源保存后都按 voice_meta 路由到同一 worker。
 # tts_dropdown_only=False：这几家不靠下拉选中（靠 voice_meta），且 minimax 本身还是
 # LLM provider，绝不能被前端从对话/总结等 LLM 下拉里隐藏。它们在 ui_metadata 里的存在
 # 是给前端 source-first 选声器读 capabilities 用的，不参与下拉过滤。
@@ -442,7 +449,12 @@ _tts_providers.register(_tts_providers.TTSProvider(
     key='minimax',
     kind='hosted',
     priority=30,
-    capabilities=frozenset({'clone'}),
+    capabilities=frozenset({'clone', 'design'}),
+    aliases=frozenset({'minimax_intl'}),
+    # MiniMax documents a 500-character maximum for preview_text, not prompt.
+    # NEKO supplies a short fixed preview template, so the user description has
+    # no documented hard limit to enforce here.
+    voice_design=_tts_providers.VoiceDesignMetadata(),
     is_selected=_minimax_clone_is_selected,
     resolve=_minimax_clone_resolve,
     tts_dropdown_only=False,
@@ -456,6 +468,9 @@ _tts_providers.register(_tts_providers.TTSProvider(
     # 普通的 ElevenLabs voice_id（voice_meta.source='design'），dispatch 与 clone 同路
     # （_elevenlabs_clone_is_selected 按 provider=='elevenlabs' 选中），无需独立 worker。
     capabilities=frozenset({'clone', 'design'}),
+    # Both ElevenLabs design and create-from-preview reject descriptions outside
+    # this documented 20-1000 character window.
+    voice_design=_tts_providers.VoiceDesignMetadata(prompt_min=20, prompt_max=1000),
     is_selected=_elevenlabs_clone_is_selected,
     resolve=_elevenlabs_clone_resolve,
     tts_dropdown_only=False,
@@ -465,31 +480,60 @@ _tts_providers.register(_tts_providers.TTSProvider(
     key='cosyvoice',
     kind='hosted',
     priority=50,
-    capabilities=frozenset({'clone'}),
+    capabilities=frozenset({'clone', 'design'}),
+    # DashScope voice-enrollment enforces all four constraints upstream: prompt
+    # <=500 characters, alphanumeric prefix <=10, and zh/en language hints only.
+    voice_design=_tts_providers.VoiceDesignMetadata(
+        prompt_max=500,
+        prefix_max=10,
+        prefix_pattern=r'^[A-Za-z0-9]+$',
+        language_hints=('ch', 'en'),
+    ),
     is_selected=_cosyvoice_clone_is_selected,
     resolve=_cosyvoice_clone_resolve,
     tts_dropdown_only=False,
 ))
 
 # MiMo：priority 60（clone 之后、native 之前，沿用原 get_tts_worker 顺序）。
-# capabilities {preset, clone}：
+# capabilities {preset, clone, design}：
 #   - preset：固定音色目录由 preset_catalog 提供（MIMO_PRESET_CATALOG，数据复用
-#     utils.mimo_tts_voices 的固定音色表）——MiMo 预制音色的单一真相，UI /voices 与
+#     utils.tts.providers.mimo 的固定音色表）——MiMo 预制音色的单一真相，UI /voices 与
 #     validate_voice_id 都查注册表，不再借道 native_voice_registry（MiMo 是 hosted SaaS，
 #     不是核心自带，见设计文档 §4）。
 #   - clone：voiceclone enrollment（characters_router /voice_clone 的 mimo 分支，对偶
 #     cosyvoice/minimax）。MiMo 克隆没有远端 voice_id——参考音频本地保存、每次合成内联，
 #     dispatch 由 _mimo_resolve 按 voice_meta.provider=='mimo' 选中并读出样本（见 §4/§7）。
-# 同一 provider 条目承载两种选中机制（config-selected preset / voice_meta-selected clone），
+#   - design：保存文字描述并由 voicedesign 模型在合成时复用，同样通过 voice_meta 选中。
+# 同一 provider 条目承载两种选中机制（config-selected preset / voice_meta-selected custom voice），
 # 见 workers/mimo.py 的 _mimo_is_selected/_mimo_resolve。
 # tts_dropdown_only=False：MiMo 本身是 assist LLM provider，不能被前端从 LLM 下拉隐藏。
 _tts_providers.register(_tts_providers.TTSProvider(
     key='mimo',
     kind='hosted',
     priority=60,
-    capabilities=frozenset({'preset', 'clone'}),
+    capabilities=frozenset({'preset', 'clone', 'design'}),
+    # MiMo recommends a concise 1-4 sentence description but does not document a
+    # request limit. A quality recommendation must not become a hard validator.
+    voice_design=_tts_providers.VoiceDesignMetadata(),
     is_selected=_mimo_is_selected,
     resolve=_mimo_resolve,
     preset_catalog=MIMO_PRESET_CATALOG,
     tts_dropdown_only=False,
+))
+
+_tts_providers.register(_tts_providers.TTSProvider(
+    key='doubao_tts',
+    kind='hosted',
+    priority=65,
+    capabilities=frozenset({'clone'}),
+    is_selected=_doubao_is_selected,
+    resolve=_doubao_resolve,
+    default_url='https://openspeech.bytedance.com',
+    default_model='seed-icl-2.0',
+    default_voice='',
+    editable_endpoint=True,
+    probe_kind='http_tts',
+    probe_sub_type='doubao_tts',
+    tts_dropdown_only=True,
+    tts_config_visible=False,
 ))

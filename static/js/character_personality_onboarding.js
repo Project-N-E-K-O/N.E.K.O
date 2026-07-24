@@ -17,7 +17,7 @@
             return '';
         }
     })();
-    const TUTORIAL_PROMPT_POLL_INTERVAL_MS = 120;
+    const TUTORIAL_FLOW_POLL_INTERVAL_MS = 120;
     const TYPEWRITER_BASE_DELAY_MS = 18;
     const TYPEWRITER_PUNCTUATION_DELAY_MS = 110;
     const HOME_TUTORIAL_RESET_EVENT = 'neko:home-tutorial-reset';
@@ -132,11 +132,9 @@
             this.currentLanguage = '';
             this.typewriterRunId = 0;
             this.typewriterTimer = null;
-            this.lastTutorialPromptState = null;
             this.homeTutorialCompletedInSession = false;
             this.resetBroadcastChannel = null;
-            // bootstrap 超时 fallthrough 时拉这个旗子，让 waitForTutorialFlowToSettle 的轮询循环退出，
-            // 避免后台每 120ms 一次的 /api/tutorial-prompt/state 永久泄漏。
+            // bootstrap 超时 fallthrough 时拉这个旗子，让教程门控轮询退出。
             this._tutorialFlowAborted = false;
             // bootstrap 启动闭环 Promise：所有出口（不需要 / confirm / skip / 异常）都会 resolve；
             // 供 app.js / app-autostart-prompt.js 在显示低优先级通知前 await，避免与 onboarding overlay 争焦点。
@@ -167,8 +165,7 @@
                 return;
             }
             this.bootstrapStarted = true;
-            // tutorial flow settle 有超时兜底：fetchTutorialPromptState() 持续 fail 时
-            // waitForTutorialFlowToSettle 会无限轮询，需要超时让 finally 能跑到。
+            // 教程启动链异常时允许超时放行；仍处于明确占屏锁时继续等待。
             const TUTORIAL_FLOW_TIMEOUT_MS = 15000;
             try {
                 await this.waitForStartupBarrier();
@@ -308,8 +305,6 @@
             const lockReaders = [
                 window.isNekoHomeTutorialInteractionLocked,
                 window.isNekoHomeTutorialBlockingGreeting,
-                window.appTutorialPrompt && window.appTutorialPrompt.isHomeTutorialInteractionLocked,
-                window.appTutorialPrompt && window.appTutorialPrompt.isHomeTutorialBlockingGreeting,
             ];
             return lockReaders.some((reader) => {
                 if (typeof reader !== 'function') {
@@ -326,112 +321,9 @@
         async waitForHomeTutorialInteractionUnlock() {
             while (this.isHomeTutorialInteractionLocked()) {
                 await new Promise((resolve) => {
-                    window.setTimeout(resolve, TUTORIAL_PROMPT_POLL_INTERVAL_MS);
+                    window.setTimeout(resolve, TUTORIAL_FLOW_POLL_INTERVAL_MS);
                 });
             }
-        }
-
-        async fetchTutorialPromptState() {
-            try {
-                const payload = await requestJson('/api/tutorial-prompt/state', {
-                    cache: 'no-store',
-                });
-                return payload && payload.state ? payload.state : null;
-            } catch (error) {
-                console.warn('[CharacterPersonalityOnboarding] failed to fetch tutorial prompt state:', error);
-                return null;
-            }
-        }
-
-        normalizeTutorialPromptStatus(state) {
-            if (!state || typeof state !== 'object') {
-                return '';
-            }
-            return String(state.status || '').trim().toLowerCase();
-        }
-
-        normalizeTutorialPromptUserCohort(state) {
-            if (!state || typeof state !== 'object') {
-                return '';
-            }
-            return String(state.user_cohort || '').trim().toLowerCase();
-        }
-
-        hasHomeTutorialCompletionMarker() {
-            if (this.homeTutorialCompletedInSession) {
-                return true;
-            }
-
-            const manager = window.universalTutorialManager || null;
-            if (manager && typeof manager.hasSeenTutorial === 'function') {
-                try {
-                    if (manager.hasSeenTutorial('home')) {
-                        return true;
-                    }
-                } catch (_) {}
-            }
-
-            try {
-                return localStorage.getItem('neko_tutorial_home_yui_v1') === 'true';
-            } catch (_) {
-                return false;
-            }
-        }
-
-        shouldWaitForHomeTutorialCompletion(state) {
-            if (!this.shouldRespectHomeTutorialGate() || this.hasHomeTutorialCompletionMarker()) {
-                return false;
-            }
-            if (!state || typeof state !== 'object') {
-                return false;
-            }
-
-            if (state.home_tutorial_completed === true || state.manual_home_tutorial_viewed === true) {
-                return false;
-            }
-
-            const userCohort = this.normalizeTutorialPromptUserCohort(state);
-            if (userCohort === 'new') {
-                return true;
-            }
-            if (userCohort !== 'existing') {
-                return false;
-            }
-
-            const chatTurns = Number(state.chat_turns || 0);
-            const voiceSessions = Number(state.voice_sessions || 0);
-            const shownCount = Number(state.shown_count || 0);
-            return (!Number.isFinite(chatTurns) || chatTurns <= 0)
-                && (!Number.isFinite(voiceSessions) || voiceSessions <= 0)
-                && (!Number.isFinite(shownCount) || shownCount <= 0);
-        }
-
-        isTutorialPromptSettled(state) {
-            if (!state || typeof state !== 'object') {
-                return false;
-            }
-            const status = this.normalizeTutorialPromptStatus(state);
-            if (this.shouldWaitForHomeTutorialCompletion(state) && (
-                status === 'completed'
-                || status === 'error'
-                || status === 'observing'
-                || status === 'prompted'
-            )) {
-                return false;
-            }
-            if (status === 'completed' || status === 'deferred' || status === 'never' || status === 'error') {
-                return true;
-            }
-            if (status === 'started') {
-                return false;
-            }
-
-            const userCohort = this.normalizeTutorialPromptUserCohort(state);
-            if (status === 'observing' || status === 'prompted') {
-                return userCohort === 'existing';
-            }
-
-            return false;
         }
 
         async waitForTutorialFlowToSettle() {
@@ -440,6 +332,13 @@
             }
 
             await this.waitForTutorialCompletion();
+            const stateApi = window.NekoSevenDayTutorialState || null;
+            if (!stateApi) {
+                return;
+            }
+            if (typeof stateApi.ready === 'function') {
+                await stateApi.ready();
+            }
 
             while (true) {
                 if (this._tutorialFlowAborted) {
@@ -454,28 +353,16 @@
                     continue;
                 }
 
-                const tutorialPromptState = await this.fetchTutorialPromptState();
-                if (!tutorialPromptState) {
-                    await new Promise((resolve) => {
-                        window.setTimeout(resolve, TUTORIAL_PROMPT_POLL_INTERVAL_MS);
-                    });
-                    continue;
+                const tutorialState = stateApi.loadState();
+                if (stateApi.isRoundSettled(tutorialState, 1)) {
+                    return;
                 }
-                const status = this.normalizeTutorialPromptStatus(tutorialPromptState);
-                this.lastTutorialPromptState = tutorialPromptState;
-                if (this.isTutorialPromptSettled(tutorialPromptState)) {
+                if (stateApi.getNextAutoRound(tutorialState) !== 1) {
                     return;
                 }
 
-                if (status === 'started') {
-                    await new Promise((resolve) => {
-                        window.setTimeout(resolve, TUTORIAL_PROMPT_POLL_INTERVAL_MS);
-                    });
-                    continue;
-                }
-
                 await new Promise((resolve) => {
-                    window.setTimeout(resolve, TUTORIAL_PROMPT_POLL_INTERVAL_MS);
+                    window.setTimeout(resolve, TUTORIAL_FLOW_POLL_INTERVAL_MS);
                 });
             }
         }
@@ -599,7 +486,12 @@
             };
 
             const markHomeTutorialCompleted = (event) => {
-                if (!event || !event.detail || event.detail.page !== 'home') {
+                if (
+                    !event
+                    || !event.detail
+                    || event.detail.page !== 'home'
+                    || (event.detail.day != null && Number(event.detail.day) !== 1)
+                ) {
                     return;
                 }
                 this.homeTutorialCompletedInSession = true;
@@ -615,11 +507,7 @@
                 const source = String(event.detail.source || '').trim().toLowerCase();
                 const tutorialActuallyRunning = !!(window.universalTutorialManager
                     && window.universalTutorialManager.isTutorialRunning);
-                if (
-                    source === 'auto'
-                    && !tutorialActuallyRunning
-                    && this.isTutorialPromptSettled(this.lastTutorialPromptState)
-                ) {
+                if (source === 'auto' && !tutorialActuallyRunning) {
                     return;
                 }
                 this.pendingResumeAfterTutorial = true;
@@ -660,8 +548,7 @@
                 if (!this.shouldRespectHomeTutorialGate()) {
                     return;
                 }
-                // 停止等待新手教程、放行选人格。否则在「教程夭折」一类没有 tutorial-completed/skipped 事件的路径上，
-                // pending 被 choke point 清除后 settle 轮询会卡在新用户 observing 态永不 resolve（永远不弹选人格）。
+                // 停止等待新手教程、放行选人格；教程夭折可能没有 completed/skipped 事件。
                 this._tutorialFlowAborted = true;
             };
 
@@ -1105,9 +992,9 @@
             const profile = preset.profile && typeof preset.profile === 'object' ? preset.profile : {};
             [
                 {
-                    containerId: 'detailCatchphrases',
+                    containerId: 'detailSpeechHabits',
                     groupClassName: 'detail-group',
-                    label: translate('memory.characterSelection.detailSpeechHabits', '常挂嘴边的话喵'),
+                    label: translate('memory.characterSelection.detailSpeechHabits', '说话习惯喵'),
                     items: this.getPresetDetailItems(
                         preset,
                         'speechHabits',

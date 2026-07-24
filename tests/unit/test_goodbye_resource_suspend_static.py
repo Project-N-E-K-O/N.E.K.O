@@ -1,24 +1,26 @@
 from __future__ import annotations
 
 from pathlib import Path
+from tests.static_app_parts import read_path_or_parts
 
 import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-APP_AGENT_PATH = REPO_ROOT / "static" / "app-agent.js"
-APP_UI_PATH = REPO_ROOT / "static" / "app-ui.js"
-APP_WEBSOCKET_PATH = REPO_ROOT / "static" / "app-websocket.js"
+APP_AGENT_PATH = REPO_ROOT / "static" / "app" / "app-agent.js"
+APP_UI_PATH = REPO_ROOT / "static" / "app" / "app-ui"
+APP_WEBSOCKET_PATH = REPO_ROOT / "static" / "app" / "app-websocket.js"
 COMMON_UI_HUD_PATH = REPO_ROOT / "static" / "common-ui-hud.js"
+AGENTHUD_TEMPLATE_PATH = REPO_ROOT / "templates" / "agenthud.html"
 PNGTUBER_PATH = REPO_ROOT / "static" / "pngtuber-core.js"
 PLUGIN_DASHBOARD_PATH = REPO_ROOT / "frontend" / "plugin-manager" / "src" / "views" / "Dashboard.vue"
 PLUGIN_METRICS_VIEW_PATH = REPO_ROOT / "frontend" / "plugin-manager" / "src" / "views" / "Metrics.vue"
 PLUGIN_METRICS_PATH = REPO_ROOT / "frontend" / "plugin-manager" / "src" / "stores" / "metrics.ts"
-SUBTITLE_PATH = REPO_ROOT / "static" / "subtitle.js"
+SUBTITLE_PATH = REPO_ROOT / "static" / "subtitle" / "subtitle.js"
 
 
 def _read(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
+    return read_path_or_parts(path)
 
 
 def _js_function_block(source: str, function_name: str) -> str:
@@ -99,7 +101,7 @@ def test_goodbye_resource_suspend_waits_for_cat_transition_and_uses_token_snapsh
     complete_suspend = _js_function_block(source, "completeGoodbyeResourceSuspend")
     restore_suspend = _js_function_block(source, "restoreGoodbyeResourceSuspend")
 
-    assert "const NEKO_MODEL_CAT_TRANSITION_DURATION_MS = 850;" in source
+    assert "NEKO_MODEL_CAT_TRANSITION_DURATION_MS = 850;" in source
     assert "const GOODBYE_RESOURCE_SUSPEND_STORAGE_KEY = 'neko-goodbye-resource-suspended';" in source
     assert "window.goodbyeResourceSuspended = suspended;" in source
     assert "window.__nekoGoodbyeResourceSuspendPending = pending;" in source
@@ -131,6 +133,9 @@ def test_goodbye_resource_suspend_waits_for_cat_transition_and_uses_token_snapsh
     assert "goodbyeResourceSuspendToken += 1;" in restore_suspend
     assert restore_suspend.index("resumeModelRenderingFromGoodbye(snapshot);") < restore_suspend.index("publishGoodbyeResourceState(null, reason || 'goodbye-resource-restoring');")
     assert "restoreWindow: true" in restore_suspend
+    assert "window.AgentHUD.showAgentTaskHUD();" in restore_suspend
+    assert "window.checkAndToggleTaskHUD();" in restore_suspend
+    assert "window.nekoAgentHud.show();" not in restore_suspend
 
 
 @pytest.mark.unit
@@ -142,9 +147,13 @@ def test_goodbye_resource_suspend_pauses_only_active_render_loops_and_restores_o
     get_manager = _js_function_block(source, "getModelManagerByType")
 
     assert "if (type === 'live2d')" in is_rendering
-    assert "ticker && ticker.started !== false" in is_rendering
-    assert "if (type === 'vrm' || type === 'mmd')" in is_rendering
-    assert "return !!manager._animationFrameId;" in is_rendering
+    # 空闲低频 tick 模式（round-2）下 ticker.started/rAF id 为"停"的假象，
+    # isModelRenderingActive 必须把 _idleTickMode 也算作在渲染
+    assert "ticker.started !== false || manager._idleTickMode" in is_rendering
+    assert "if (type === 'vrm')" in is_rendering
+    assert "manager._animationFrameId || manager._idleTickMode" in is_rendering
+    assert "if (type === 'mmd')" in is_rendering
+    assert "manager.core && manager.core._idleTickMode" in is_rendering
     assert "if (type === 'pngtuber')" in is_rendering
     assert "document.getElementById('pngtuber-container')" in is_rendering
     assert "container.style.display !== 'none'" in is_rendering
@@ -294,3 +303,14 @@ def test_goodbye_agent_hud_and_websocket_ui_timers_are_suppressed_without_stoppi
     assert "stop_plugin" not in hud_source
     assert "stop_plugin" not in websocket_source
     assert "stop_plugin" not in metrics_source
+
+
+@pytest.mark.unit
+def test_standalone_agent_hud_page_keeps_root_background_transparent():
+    template = _read(AGENTHUD_TEMPLATE_PATH)
+
+    assert '<html lang="en" class="agent-hud-standalone-page">' in template
+    assert "html.agent-hud-standalone-page," in template
+    assert "body.agent-hud-standalone-page:not(.lanlan-pet-mode)" in template
+    assert "background: transparent !important;" in template
+    assert "background: #1a1a2e;" not in template

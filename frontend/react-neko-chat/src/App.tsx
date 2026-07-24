@@ -15,6 +15,8 @@ import { createPortal } from 'react-dom';
 import AvatarToolItemManager, { type AvatarToolManagerAnchorRect } from './AvatarToolItemManager';
 import AvatarToolQuickbar from './AvatarToolQuickbar';
 import FullChatSurface from './FullChatSurface';
+import AvatarToolVisuals from './avatar-tools/presentation';
+import { useAvatarToolRuntime } from './avatar-tools/runtime';
 import {
   COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
   COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
@@ -28,6 +30,7 @@ import {
   useCompactToolWheelAudioPreload,
 } from './compactToolWheelAudio';
 import { useFocusGlow } from './useFocusGlow';
+import { useGuideChatButtonLock } from './useGuideChatButtonLock';
 import CompactExportHistoryPanel, {
   COMPACT_EXPORT_SELECTION_LIMIT,
   COMPACT_HISTORY_ROUTED_WHEEL_EVENT,
@@ -36,6 +39,7 @@ import CompactExportHistoryPanel, {
   type CompactExportPreviewResult,
 } from './CompactExportHistoryPanel';
 import { getChatCompanionEmptyStateFallback, getChatEmptyStateFallback } from './chat-copy';
+import { swapImageToMemeLoadFailedSticker } from './memeImageFallback';
 import { i18n } from './i18n';
 import {
   type ChatMessage,
@@ -51,16 +55,13 @@ import {
   type ChoicePromptSource,
 } from './message-schema';
 import {
-  AVAILABLE_AVATAR_TOOLS,
+  AVAILABLE_COMPACT_AVATAR_TOOLS,
   DEFAULT_ACTIVE_AVATAR_TOOL_IDS,
   persistActiveAvatarToolIds,
   readPersistedActiveAvatarToolIds,
-  resolveAvatarToolImagePaths,
   sanitizeAvatarToolIds,
-  withAvatarToolAssetVersion,
   type AvatarToolId,
   type AvatarToolItem,
-  type CursorVariant,
 } from './avatarTools';
 
 export {
@@ -124,21 +125,15 @@ function getEffectiveCompactChatState(
   return requestedState;
 }
 
-function isGuideChatButtonLockActive(): boolean {
-  const body = document.body;
-  return body?.classList.contains('yui-guide-standalone-input-shield-active') === true
-    || body?.classList.contains('yui-guide-chat-buttons-disabled') === true;
-}
-
 const COMPACT_SPEECH_REVEAL_MAX_CHARS_PER_SECOND = 8;
 const COMPACT_SPEECH_TURN_MERGE_WINDOW_MS = 12000;
 const COMPACT_SPEECH_FALLBACK_REVEAL_DELAY_MS = 700;
 const SPEECH_PLAYBACK_STATE_STORAGE_KEY = 'neko_speech_playback_state';
 const SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';
 const COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY = 'neko.reactChatWindow.compactExportHistoryOpen';
-const COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY = 'neko.experiment.compactHistoryDefault';
-// A/B 变体「套用」的兜底延迟：本次不跑教程的老用户在此延迟后若仍非教程态，就直接套用变体默认值。
-const COMPACT_HISTORY_EXPERIMENT_APPLY_FALLBACK_MS = 3000;
+// ⚠️ 'neko.experiment.compactHistoryDefault' 是已退役的「历史首启默认」A/B 分组 key（退役记录见
+// utils/token_tracker.py 的已退役实验清单）：存量用户 localStorage 里仍残留 'open'/'closed' 值，
+// 只停读写、不清理（保留取证窗口），勿把该 key 名挪作他用。
 const COMPACT_HISTORY_HEIGHT_STORAGE_KEY = 'neko.reactChatWindow.compactHistorySlotHeight';
 export const COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS = 560;
 const COMPACT_INPUT_TOOL_WHEEL_TOOL_ORDER = [
@@ -526,27 +521,6 @@ function getCompactSurfaceResizePointerX(event: ReactPointerEvent<HTMLDivElement
   return event.clientX;
 }
 
-type AvatarToolPointerPosition = {
-  x: number;
-  y: number;
-  screenX?: number;
-  screenY?: number;
-};
-
-function getAvatarToolPointerPosition(event: Pick<PointerEvent | ReactMouseEvent<HTMLElement>, 'clientX' | 'clientY' | 'screenX' | 'screenY'>): AvatarToolPointerPosition {
-  const next: AvatarToolPointerPosition = {
-    x: Number(event.clientX) || 0,
-    y: Number(event.clientY) || 0,
-  };
-  const screenX = Number(event.screenX);
-  const screenY = Number(event.screenY);
-  if (Number.isFinite(screenX) && Number.isFinite(screenY)) {
-    next.screenX = screenX;
-    next.screenY = screenY;
-  }
-  return next;
-}
-
 function isDesktopCompactSurfaceLayoutActive(): boolean {
   return typeof window !== 'undefined'
     && !!(window as typeof window & {
@@ -559,29 +533,10 @@ function readPersistedCompactExportHistoryOpen(): boolean {
   try {
     const persisted = window.localStorage?.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
     if (persisted !== null) return persisted === 'true';
-    // 无显式偏好：初始一律折叠。A/B 变体默认值（含 open 展开）改由「教程完全结束后 / 本次不跑教程的老
-    // 用户」的 effect 套用（见 applyCompactHistoryExperimentDefault）——避免教程进行中、或教程演示历史区
-    // 之前就先展开，与教学冲突。
+    // 无显式偏好：一律折叠（原「历史首启默认」A/B 已退役，closed 即最终默认；用户手动展开写入偏好后照旧恢复）。
     return false;
   } catch {
     return false;
-  }
-}
-
-// 读取（必要时分配）A/B「历史首启默认」变体：用户已有显式开/合偏好 → null（不在实验内）；否则读已分配
-// variant，没有则随机分配并持久化（稳定 cohort），返回 'open'|'closed'。
-function readCompactHistoryExperimentVariant(): 'open' | 'closed' | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    if (window.localStorage?.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY) !== null) return null;
-    let variant = window.localStorage?.getItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY);
-    if (variant !== 'open' && variant !== 'closed') {
-      variant = Math.random() < 0.5 ? 'open' : 'closed';
-      window.localStorage?.setItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY, variant);
-    }
-    return variant === 'open' ? 'open' : 'closed';
-  } catch {
-    return null;
   }
 }
 
@@ -592,64 +547,6 @@ function persistCompactExportHistoryOpen(open: boolean) {
   } catch {
     // localStorage can be unavailable in restricted hosts; keep the in-memory state.
   }
-}
-
-// A/B「聊天历史首启默认」曝光上报。刻意从 readPersistedCompactExportHistoryOpen（useState
-// 初始化器/render 阶段）里抽出，挪到组件挂载后的 useEffect 调用：(1) telemetry 是带副作用的
-// fire-and-forget，不该在 render 阶段触发；(2) 上报走 appTelemetry→WS，挂载前 socket 多半未
-// OPEN，过早上报会被静默丢弃。仅在「用户无显式开/合偏好 + 已分配实验 variant」时上报。
-const COMPACT_HISTORY_EXPOSURE_REPORTED_SESSION_KEY = 'neko.experiment.compactHistoryDefault.exposureReported';
-// 返回 true = 「已处理完、无需重试」（成功上报 / 本会话已报过 / 不适用）；返回 false 仅当「该报但
-// appTelemetry 没投出去」(WS 未 OPEN)，调用方据此挂 socket open 重试。去重用 sessionStorage 而非
-// useRef（useRef 仅同实例有效，挡不住真实重挂载如 surface 切换）、也非 localStorage（那会「一生一次」
-// 丢后续会话曝光）；按会话粒度，跨真实重挂载 + StrictMode 双 effect 都只报一次。只有真正投出去才置
-// flag，避免「标记了却没报」永久丢曝光。
-// sessionStorage 去重是 best-effort：隐私浏览器/webview 里 localStorage 仍可能持久化 cohort，但
-// sessionStorage 访问会抛 SecurityError。读失败时必须当作「本会话还没报过」、让曝光照常投出去，
-// 绝不能把存储异常当成「已处理的曝光」——否则有 variant 的用户永远漏曝光、A/B 指标被低估（回应 Codex）。
-function readCompactHistoryExposureReportedThisSession(): boolean {
-  try {
-    return window.sessionStorage?.getItem(COMPACT_HISTORY_EXPOSURE_REPORTED_SESSION_KEY) === 'true';
-  } catch {
-    return false;
-  }
-}
-function markCompactHistoryExposureReportedThisSession(): void {
-  try {
-    window.sessionStorage?.setItem(COMPACT_HISTORY_EXPOSURE_REPORTED_SESSION_KEY, 'true');
-  } catch {
-    // 存不下就退化成「跨真实重挂载可能重复上报」，但不丢曝光——去重只是降噪。
-  }
-}
-function reportCompactHistoryExperimentExposure(): boolean {
-  if (typeof window === 'undefined') return true;
-  let variant: string | null = null;
-  try {
-    const persisted = window.localStorage?.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
-    if (persisted !== null) return true;
-    variant = window.localStorage?.getItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY) ?? null;
-  } catch {
-    // localStorage 不可用 → 读不到 cohort、没有可上报的 variant，视为不适用。
-    return true;
-  }
-  if (variant !== 'open' && variant !== 'closed') return true;
-  if (readCompactHistoryExposureReportedThisSession()) return true;
-  let sent = false;
-  try {
-    // 必须走 counter 不是 event：event 只落本地 events.jsonl、不进 instrument.snapshot()，
-    // 永远到不了 TokenTracker 的远程上报通道（见 utils/instrument.py、utils/event_logger.py）。
-    // A/B 曝光要进远程指标必须用 counter，与 session_start / session_end 同范式。
-    sent = (window as unknown as { appTelemetry?: { counter?: (n: string, v?: number, d?: Record<string, unknown>) => boolean } })
-      .appTelemetry?.counter?.('experiment_exposure', 1, { experiment: 'compact_history_default', variant }) === true;
-  } catch {
-    // 投递本身抛错：留给调用方挂 socket open 重试。
-    return false;
-  }
-  if (sent) {
-    markCompactHistoryExposureReportedThisSession();
-    return true;
-  }
-  return false;
 }
 
 function readPersistedCompactHistorySlotHeight(): number | null {
@@ -870,70 +767,11 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
 
 type ToolIconItem = AvatarToolItem;
 
-const toolIconItems = AVAILABLE_AVATAR_TOOLS;
-
-const hammerToolItem = toolIconItems.find(item => item.id === 'hammer') ?? null;
-const hammerOverlayTransformOrigin = {
-  x: 60,
-  y: 118,
-};
-
-const avatarToolSoundPaths = {
-  lollipopBite: '/static/sounds/avatar-tools/lollipop-bite.mp3',
-  coinDrop: '/static/sounds/avatar-tools/coin-drop.mp3',
-  hammerSmall: '/static/sounds/avatar-tools/hammer-small.mp3',
-  hammerBig: '/static/sounds/avatar-tools/hammer-big.mp3',
-} as const;
+const toolIconItems = AVAILABLE_COMPACT_AVATAR_TOOLS;
 
 function getToolItemLabel(item: ToolIconItem): string {
   return i18n(item.labelKey, item.labelFallback);
 }
-
-const avatarToolRangePadding = 100;
-const avatarToolRangeHoldMs = 180;
-const compactCursorZoneSelector = [
-  '.composer-bottom-tools',
-  '.composer-tool-menu',
-  '.composer-icon-popover',
-  '.composer-tool-btn',
-  '.composer-icon-button',
-  '.compact-input-tool-fan',
-  '.compact-input-tool-toggle',
-  '.avatar-tool-quickbar',
-  '.avatar-tool-manager-overlay',
-  '.avatar-tool-manager-dialog',
-  '.compact-export-history-anchor',
-  '.compact-history-visibility-handle',
-  '.send-button-circle',
-  '.window-topbar-actions',
-  '.topbar-action-btn',
-  '.message-action-button',
-  '#live2d-floating-buttons',
-  '#vrm-floating-buttons',
-  '#mmd-floating-buttons',
-  '#live2d-return-button-container',
-  '#vrm-return-button-container',
-  '#mmd-return-button-container',
-  '#live2d-lock-icon',
-  '#vrm-lock-icon',
-  '#mmd-lock-icon',
-  '.live2d-floating-btn',
-  '.vrm-floating-btn',
-  '.mmd-floating-btn',
-  '.live2d-trigger-btn',
-  '.vrm-trigger-btn',
-  '.mmd-trigger-btn',
-  '.live2d-return-btn',
-  '.vrm-return-btn',
-  '.mmd-return-btn',
-  '.live2d-popup',
-  '.vrm-popup',
-  '.mmd-popup',
-  '[id^="live2d-popup-"]',
-  '[id^="vrm-popup-"]',
-  '[id^="mmd-popup-"]',
-  '[data-neko-sidepanel]',
-].join(', ');
 
 const compactToolWheelControlWheelTargetSelector = [
   '.compact-input-tool-item',
@@ -947,125 +785,10 @@ const compactHistoryOpenScrollSelector = [
   '.compact-export-history-scroll',
 ].join(' ');
 
-type ToolCursorVariantState = Record<string, CursorVariant>;
-type InteractionIntensity = NonNullable<AvatarInteractionPayload['intensity']>;
-type AvatarInteractionToolId = AvatarToolId;
-type AvatarTouchZone = 'ear' | 'head' | 'face' | 'body';
 type CompactInputToolWheelLayout = 'default' | 'viewport-fit';
 
 function getCompactToolWheelVisualDirectionMultiplier(layout: CompactInputToolWheelLayout): 1 | -1 {
   return layout === 'viewport-fit' ? -1 : 1;
-}
-
-type AvatarInteractionPayloadByTool = {
-  [K in AvatarInteractionToolId]: Extract<AvatarInteractionPayload, { toolId: K }>;
-};
-
-type HostAvatarBounds = {
-  left: number;
-  right: number;
-  top: number;
-  bottom: number;
-  width: number;
-  height: number;
-  centerX?: number;
-  centerY?: number;
-};
-
-type HostAvatarManager = {
-  currentModel?: unknown;
-  getModelScreenBounds?: () => HostAvatarBounds | null;
-};
-
-type AvatarBoundsCacheEntry = {
-  bounds: HostAvatarBounds;
-};
-
-type AvatarToolCacheState = {
-  loadedCursorImageCache: Map<string, Promise<HTMLImageElement>>;
-  compactCursorValueCache: Map<string, Promise<string>>;
-  avatarBoundsCacheTtlMs: number;
-  avatarBoundsCache: {
-    expiresAt: number;
-    entries: AvatarBoundsCacheEntry[];
-  };
-};
-
-type AvatarRangeHit = {
-  bounds: HostAvatarBounds;
-  touchZone: AvatarTouchZone;
-};
-
-function normalizeHostAvatarBounds(bounds: unknown): HostAvatarBounds | null {
-  if (!bounds || typeof bounds !== 'object') return null;
-  const raw = bounds as Partial<HostAvatarBounds>;
-  const left = Number(raw.left);
-  const top = Number(raw.top);
-  const width = Number(raw.width);
-  const height = Number(raw.height);
-  if (
-    !Number.isFinite(left)
-    || !Number.isFinite(top)
-    || !Number.isFinite(width)
-    || !Number.isFinite(height)
-    || width <= 0
-    || height <= 0
-  ) {
-    return null;
-  }
-  const right = Number.isFinite(Number(raw.right)) ? Number(raw.right) : left + width;
-  const bottom = Number.isFinite(Number(raw.bottom)) ? Number(raw.bottom) : top + height;
-  return {
-    left,
-    top,
-    right,
-    bottom,
-    width,
-    height,
-    centerX: Number.isFinite(Number(raw.centerX)) ? Number(raw.centerX) : left + width / 2,
-    centerY: Number.isFinite(Number(raw.centerY)) ? Number(raw.centerY) : top + height / 2,
-  };
-}
-
-type FloatingHeart = {
-  id: number;
-  x: number;
-  y: number;
-  driftX: number;
-  driftY: number;
-  scale: number;
-  delayMs: number;
-};
-
-type FloatingFistDrop = {
-  id: number;
-  x: number;
-  y: number;
-  driftX: number;
-  driftY: number;
-  rotation: number;
-  scale: number;
-  delayMs: number;
-};
-
-function resolveToolImagePaths(item: ToolIconItem, variant: CursorVariant) {
-  return resolveAvatarToolImagePaths(item, variant);
-}
-
-function loadCursorImage(imagePath: string, cacheState: AvatarToolCacheState): Promise<HTMLImageElement> {
-  const cached = cacheState.loadedCursorImageCache.get(imagePath);
-  if (cached) return cached;
-
-  const pending = new Promise<HTMLImageElement>((resolve, reject) => {
-    const image = new Image();
-    image.decoding = 'async';
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error(`Failed to load cursor image: ${imagePath}`));
-    image.src = imagePath;
-  });
-
-  cacheState.loadedCursorImageCache.set(imagePath, pending);
-  return pending;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -1116,333 +839,12 @@ function getCompactHistoryScrollUnderCompactToolWheel(
     .find(scrollNode => isPointInElementRect(scrollNode, clientX, clientY)) ?? null;
 }
 
-async function resolveCompactCursorValue(
-  item: ToolIconItem,
-  variant: CursorVariant,
-  cacheState: AvatarToolCacheState,
-): Promise<string> {
-  const { iconImagePath, cursorImagePath } = resolveToolImagePaths(item, variant);
-  const cursorScale = item.menuIconScale ?? 1;
-  const cacheKey = [
-    iconImagePath,
-    cursorImagePath,
-    cursorScale,
-    item.cursorHotspotX ?? 18,
-    item.cursorHotspotY ?? 18,
-  ].join('|');
-
-  const cached = cacheState.compactCursorValueCache.get(cacheKey);
-  if (cached) return cached;
-
-  const pending = Promise.all([
-    loadCursorImage(iconImagePath, cacheState),
-    loadCursorImage(cursorImagePath, cacheState),
-  ]).then(([iconImage, cursorImage]) => {
-    const boxSize = Math.max(32, Math.round(40 * cursorScale));
-    const scale = Math.min(boxSize / iconImage.naturalWidth, boxSize / iconImage.naturalHeight);
-    const drawWidth = Math.max(1, Math.round(iconImage.naturalWidth * scale));
-    const drawHeight = Math.max(1, Math.round(iconImage.naturalHeight * scale));
-    const offsetX = Math.round((boxSize - drawWidth) / 2);
-    const offsetY = Math.round((boxSize - drawHeight) / 2);
-
-    const canvas = document.createElement('canvas');
-    canvas.width = boxSize;
-    canvas.height = boxSize;
-    const context = canvas.getContext('2d');
-    if (!context) {
-      return resolveCursorValue(item, variant);
-    }
-
-    context.clearRect(0, 0, boxSize, boxSize);
-    context.drawImage(iconImage, offsetX, offsetY, drawWidth, drawHeight);
-
-    const hotspotRatioX = (item.cursorHotspotX ?? 18) / Math.max(cursorImage.naturalWidth, 1);
-    const hotspotRatioY = (item.cursorHotspotY ?? 18) / Math.max(cursorImage.naturalHeight, 1);
-    const hotspotX = clamp(Math.round(offsetX + drawWidth * hotspotRatioX), 0, boxSize - 1);
-    const hotspotY = clamp(Math.round(offsetY + drawHeight * hotspotRatioY), 0, boxSize - 1);
-
-    return `url("${canvas.toDataURL('image/png')}") ${hotspotX} ${hotspotY}, auto`;
-  }).catch(() => resolveCursorValue(item, variant));
-
-  cacheState.compactCursorValueCache.set(cacheKey, pending);
-  return pending;
-}
-
-function resolveCursorValue(item: ToolIconItem, variant: CursorVariant): string {
-  const { cursorImagePath: imagePath } = resolveToolImagePaths(item, variant);
-  const hotspotX = typeof item.cursorHotspotX === 'number' ? item.cursorHotspotX : 18;
-  const hotspotY = typeof item.cursorHotspotY === 'number' ? item.cursorHotspotY : 18;
-  return `url("${imagePath}") ${hotspotX} ${hotspotY}, auto`;
-}
-
-function getToolCursorOverlayScale(toolId: AvatarInteractionToolId | null, compact: boolean): number {
-  if (!compact) return 1;
-  return toolId === 'hammer' ? 0.52 : 0.56;
-}
-
-function getPositiveCursorMetric(value: number | undefined, fallback: number): number {
-  const number = Number(value);
-  return Number.isFinite(number) && number > 0 ? number : fallback;
-}
-
-function getScaledToolCursorHotspot(
-  item: Pick<ToolIconItem, 'cursorHotspotX' | 'cursorHotspotY' | 'cursorNaturalWidth' | 'cursorNaturalHeight' | 'cursorDisplayWidth' | 'cursorDisplayHeight'>,
-  scale: number,
-) {
-  const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
-  const naturalWidth = getPositiveCursorMetric(item.cursorNaturalWidth, 0);
-  const naturalHeight = getPositiveCursorMetric(item.cursorNaturalHeight, 0);
-  const displayWidth = getPositiveCursorMetric(item.cursorDisplayWidth, naturalWidth);
-  const displayHeight = getPositiveCursorMetric(item.cursorDisplayHeight, naturalHeight);
-  const displayRatioX = naturalWidth > 0 && displayWidth > 0 ? displayWidth / naturalWidth : 1;
-  const displayRatioY = naturalHeight > 0 && displayHeight > 0 ? displayHeight / naturalHeight : 1;
-  return {
-    x: (item.cursorHotspotX ?? 18) * displayRatioX * safeScale,
-    y: (item.cursorHotspotY ?? 18) * displayRatioY * safeScale,
-  };
-}
-
-function formatCursorOverlayPx(value: number): string {
-  const rounded = Math.round(value * 100) / 100;
-  return `${Object.is(rounded, -0) ? 0 : rounded}px`;
-}
-
-function playAvatarToolSound(soundPath: string) {
-  if (typeof Audio === 'undefined') return;
-  try {
-    const audio = new Audio(soundPath);
-    audio.preload = 'auto';
-    audio.volume = 0.9;
-    const playPromise = audio.play();
-    if (playPromise && typeof playPromise.catch === 'function') {
-      playPromise.catch(() => {});
-    }
-  } catch {
-    // Ignore autoplay or unsupported-audio failures; the interaction itself should continue.
-  }
-}
-
-function supportsDesktopFinePointer(): boolean {
-  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
-    return true;
-  }
-
-  try {
-    return window.matchMedia('(pointer: fine)').matches;
-  } catch {
-    return true;
-  }
-}
-
-function isElectronMultiWindowHost(): boolean {
-  return typeof window !== 'undefined'
-    && (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__ === true;
-}
-
-function clearForcedNativeCursorFallback() {
-  if (typeof document === 'undefined') return;
-  const root = document.documentElement;
-  root.style.removeProperty('cursor');
-  document.body?.style.removeProperty('cursor');
-}
-
-function clearGlobalToolCursorState() {
-  if (typeof document === 'undefined') return;
-  const root = document.documentElement;
-  root.classList.remove('neko-tool-cursor-active');
-  root.style.removeProperty('--neko-chat-tool-cursor');
-  root.style.setProperty('cursor', 'auto', 'important');
-  document.body?.style.setProperty('cursor', 'auto', 'important');
-}
-
-function isElementVisible(elementId: string): boolean {
-  const element = document.getElementById(elementId);
-  if (!element) return false;
-  const computedStyle = window.getComputedStyle(element);
-  return computedStyle.display !== 'none'
-    && computedStyle.visibility !== 'hidden'
-    && computedStyle.opacity !== '0'
-    && element.getClientRects().length > 0;
-}
-
-function isPointInsideAvatarBounds(bounds: HostAvatarBounds, clientX: number, clientY: number): boolean {
-  if (
-    clientX < bounds.left - avatarToolRangePadding
-    || clientX > bounds.right + avatarToolRangePadding
-    || clientY < bounds.top - avatarToolRangePadding
-    || clientY > bounds.bottom + avatarToolRangePadding
-  ) {
-    return false;
-  }
-
-  const centerX = typeof bounds.centerX === 'number'
-    ? bounds.centerX
-    : (bounds.left + bounds.right) / 2;
-  const centerY = typeof bounds.centerY === 'number'
-    ? bounds.centerY
-    : (bounds.top + bounds.bottom) / 2;
-  const radiusX = bounds.width * 0.3 + avatarToolRangePadding;
-  const radiusY = bounds.height * 0.475 + avatarToolRangePadding;
-  if (radiusX <= 0 || radiusY <= 0) return false;
-
-  const normalizedX = (clientX - centerX) / radiusX;
-  const normalizedY = (clientY - centerY) / radiusY;
-  return normalizedX * normalizedX + normalizedY * normalizedY <= 1;
-}
-
-function getAvatarBoundsEntries(cacheState: AvatarToolCacheState): AvatarBoundsCacheEntry[] {
-  const now = performance.now();
-  if (cacheState.avatarBoundsCache.expiresAt <= now) {
-    const hostWindow = window as Window & {
-      mmdManager?: HostAvatarManager;
-      vrmManager?: HostAvatarManager;
-      live2dManager?: HostAvatarManager;
-      __nekoDesktopAvatarBounds?: HostAvatarBounds | null;
-    };
-    const desktopAvatarBounds = normalizeHostAvatarBounds(hostWindow.__nekoDesktopAvatarBounds);
-
-    const candidates: Array<{ containerId: string; manager: HostAvatarManager | undefined }> = [
-      { containerId: 'mmd-container', manager: hostWindow.mmdManager },
-      { containerId: 'vrm-container', manager: hostWindow.vrmManager },
-      { containerId: 'live2d-container', manager: hostWindow.live2dManager },
-    ];
-
-    cacheState.avatarBoundsCache = {
-      expiresAt: now + cacheState.avatarBoundsCacheTtlMs,
-      entries: [
-        ...(desktopAvatarBounds ? [{ bounds: desktopAvatarBounds }] : []),
-        ...candidates.flatMap(({ containerId, manager }) => {
-          if (!manager?.currentModel || typeof manager.getModelScreenBounds !== 'function') {
-            return [];
-          }
-          if (!isElementVisible(containerId)) return [];
-
-          try {
-            const bounds = manager.getModelScreenBounds();
-            return bounds ? [{ bounds }] : [];
-          } catch {
-            return [];
-          }
-        }),
-      ],
-    };
-  }
-
-  return cacheState.avatarBoundsCache.entries;
-}
-
-function classifyAvatarTouchZone(bounds: HostAvatarBounds, clientX: number, clientY: number): AvatarTouchZone {
-  if (bounds.width <= 0 || bounds.height <= 0) {
-    return 'body';
-  }
-
-  const relativeX = clamp((clientX - bounds.left) / bounds.width, 0, 1);
-  const relativeY = clamp((clientY - bounds.top) / bounds.height, 0, 1);
-
-  if (relativeY <= 0.24 && (relativeX <= 0.24 || relativeX >= 0.76)) {
-    return 'ear';
-  }
-  if (relativeY <= 0.34) {
-    return 'head';
-  }
-  if (relativeY <= 0.62) {
-    return 'face';
-  }
-  return 'body';
-}
-
-function getAvatarRangeHit(
-  clientX: number,
-  clientY: number,
-  cacheState: AvatarToolCacheState,
-): AvatarRangeHit | null {
-  const matchedEntry = getAvatarBoundsEntries(cacheState).find(({ bounds }) => (
-    isPointInsideAvatarBounds(bounds, clientX, clientY)
-  ));
-  if (!matchedEntry) {
-    return null;
-  }
-  return {
-    bounds: matchedEntry.bounds,
-    touchZone: classifyAvatarTouchZone(matchedEntry.bounds, clientX, clientY),
-  };
-}
-
-function isPointerWithinAvatarRange(
-  clientX: number,
-  clientY: number,
-  cacheState: AvatarToolCacheState,
-): boolean {
-  return getAvatarRangeHit(clientX, clientY, cacheState) !== null;
-}
-
-function clearAvatarBoundsCache(cacheState: AvatarToolCacheState) {
-  cacheState.avatarBoundsCache = {
-    expiresAt: 0,
-    entries: [],
-  };
-}
-
-function isPointerOverCompactCursorZone(target: EventTarget | null): boolean {
-  return target instanceof Element && !!target.closest(compactCursorZoneSelector);
-}
-
-function isPointWithinCompactCursorZone(clientX: number, clientY: number): boolean {
-  if (typeof document === 'undefined') return false;
-
-  const hitElements = typeof document.elementsFromPoint === 'function'
-    ? document.elementsFromPoint(clientX, clientY)
-    : (
-      typeof document.elementFromPoint === 'function'
-        ? [document.elementFromPoint(clientX, clientY)].filter((element): element is Element => element instanceof Element)
-        : []
-    );
-
-  return hitElements.some(element => !!element.closest(compactCursorZoneSelector));
-}
-
-function resolveEffectiveCursorVariant(
-  toolId: string | null,
-  avatarRangeVariants: ToolCursorVariantState,
-  outsideRangeVariants: ToolCursorVariantState,
-  isWithinAvatarRange: boolean,
-): CursorVariant {
-  const avatarRangeVariant = toolId ? (avatarRangeVariants[toolId] ?? 'primary') : 'primary';
-  const outsideRangeVariant = toolId ? (outsideRangeVariants[toolId] ?? 'primary') : 'primary';
-  if (toolId === 'lollipop') {
-    return avatarRangeVariant;
-  }
-  if (toolId === 'hammer') {
-    return isWithinAvatarRange
-      ? 'primary'
-      : outsideRangeVariant;
-  }
-  return isWithinAvatarRange ? avatarRangeVariant : outsideRangeVariant;
-}
-
-function createDefaultToolCursorVariantState(): ToolCursorVariantState {
-  return Object.fromEntries(toolIconItems.map(item => [item.id, 'primary'])) as ToolCursorVariantState;
-}
-
-function createAvatarInteractionId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  return `avatar-int-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function sanitizeInteractionTextContext(text: string): string | undefined {
-  const trimmed = text.trim();
-  if (!trimmed) return undefined;
-  return trimmed.length > 80 ? trimmed.slice(0, 80).trimEnd() : trimmed;
-}
-
 /**
  * Top-level dispatcher. The host mounts this as the chat window root. It routes
- * the frozen legacy `full` surface to the self-contained {@link FullChatSurface}
- * and keeps the active `compact`/`minimized` experience on {@link CompactChatApp}.
- * The two are sibling subtrees — only one mounts at a time, so their hooks and
- * state stay fully isolated. Compact work never touches full, and vice versa.
+ * the `full` layout to {@link FullChatSurface} and the `compact`/`minimized`
+ * layouts to {@link CompactChatApp}. The layouts stay separate while avatar-tool
+ * selection, lifecycle, hit testing, feedback, payloads, and visuals use the
+ * same shared runtime.
  */
 export default function ChatWindowRoot(props: ChatWindowProps) {
   if (props.chatSurfaceMode === 'full') {
@@ -1455,6 +857,7 @@ function CompactChatApp({
   title = i18n('chat.title', 'N.E.K.O Chat'),
   iconSrc = '/static/icons/chat_icon.png',
   messages = defaultMessages,
+  assistantName = '',
   inputPlaceholder = i18n('chat.textInputPlaceholder', 'Type a message...'),
   sendButtonLabel = i18n('chat.send', 'Send'),
   chatWindowAriaLabel = i18n('chat.reactWindowAriaLabel', 'Neko chat window'),
@@ -1463,6 +866,7 @@ function CompactChatApp({
   composerHidden = false,
   composerDisabled = false,
   compactInputLocked = false,
+  catLocalTextOnly = false,
   chatSurfaceMode = 'compact',
   compactMinimizeCancelSeq = 0,
   compactChatState,
@@ -1514,25 +918,19 @@ function CompactChatApp({
   onCompactMinimizeRequest,
   rollbackDraft,
   _rollbackKey,
-  _toolCursorResetKey,
+  _avatarToolDeactivationKey,
 }: ChatWindowProps) {
   useCompactToolWheelAudioPreload();
 
   const [draft, setDraft] = useState('');
-  const [guideChatButtonsLocked, setGuideChatButtonsLocked] = useState(isGuideChatButtonLockActive);
+  const [catDraft, setCatDraft] = useState('');
+  const visibleDraft = catLocalTextOnly ? catDraft : draft;
+  const guideChatButtonsLocked = useGuideChatButtonLock();
   const compactTextEntryLocked = composerDisabled || compactInputLocked || guideChatButtonsLocked;
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
-  const [activeCursorToolId, setActiveCursorToolId] = useState<string | null>(null);
   const [activeAvatarToolIds, setActiveAvatarToolIds] = useState<AvatarToolId[]>(readPersistedActiveAvatarToolIds);
   const [avatarToolManagerOpen, setAvatarToolManagerOpen] = useState(false);
   const [avatarToolManagerAnchorRect, setAvatarToolManagerAnchorRect] = useState<AvatarToolManagerAnchorRect | null>(null);
-  const [avatarRangeCursorVariants, setAvatarRangeCursorVariants] = useState<ToolCursorVariantState>(() => createDefaultToolCursorVariantState());
-  const [outsideRangeCursorVariants, setOutsideRangeCursorVariants] = useState<ToolCursorVariantState>(() => createDefaultToolCursorVariantState());
-  const [isCursorOverAvatarRange, setIsCursorOverAvatarRange] = useState(false);
-  const [isCursorOverCompactCursorZone, setIsCursorOverCompactCursorZone] = useState(false);
-  const [isCursorInsideHostWindow, setIsCursorInsideHostWindow] = useState(true);
-  const [hammerSwingPhase, setHammerSwingPhase] = useState<'idle' | 'windup' | 'swing' | 'impact' | 'recover'>('idle');
-  const [isInnerHammerEasterEggActive, setIsInnerHammerEasterEggActive] = useState(false);
   const appShellRef = useRef<HTMLElement | null>(null);
   const toolMenuRef = useRef<HTMLDivElement | null>(null);
   const compactInputShellRef = useRef<HTMLDivElement | null>(null);
@@ -1580,20 +978,7 @@ function CompactChatApp({
   const compactInputToolFanInteractiveRef = useRef(false);
   const compactInputRef = useRef<HTMLTextAreaElement | null>(null);
   const compactChoiceLayerRef = useRef<HTMLDivElement | null>(null);
-  const avatarCursorOverlayRef = useRef<HTMLDivElement | null>(null);
-  const hammerCursorOverlayRef = useRef<HTMLDivElement | null>(null);
-  const hammerSwingTimeoutIdsRef = useRef<number[]>([]);
-  const outsideHammerResetTimeoutRef = useRef<number | null>(null);
-  const floatingHeartIdRef = useRef(0);
-  const floatingHeartTimeoutIdsRef = useRef<number[]>([]);
-  const floatingFistDropIdRef = useRef(0);
-  const floatingFistDropTimeoutIdsRef = useRef<number[]>([]);
-  const interactionBurstHistoryRef = useRef<Record<string, number[]>>({});
-  const latestPointerPositionRef = useRef<AvatarToolPointerPosition>({ x: 0, y: 0 });
-  const latestPointerTargetRef = useRef<EventTarget | null>(null);
-  const avatarRangeHoldUntilRef = useRef(0);
-  const avatarRangeHoldTimerRef = useRef<number | null>(null);
-  const draftRef = useRef(draft);
+  const draftRef = useRef(visibleDraft);
   const compactPreviewTextVisibleRef = useRef('');
   const previousCompactPreviewTextRef = useRef('');
   const compactPreviewTextRef = useRef<HTMLSpanElement | null>(null);
@@ -1615,18 +1000,6 @@ function CompactChatApp({
   const compactSpeechFallbackTimerRef = useRef<number | null>(null);
   const isCompactSurfaceRef = useRef(false);
   const speechPlaybackStateRef = useRef<SpeechPlaybackState | null>(null);
-  const avatarInteractionCallbackRef = useRef(onAvatarInteraction);
-  const avatarToolCacheState = useMemo<AvatarToolCacheState>(() => ({
-    loadedCursorImageCache: new Map<string, Promise<HTMLImageElement>>(),
-    compactCursorValueCache: new Map<string, Promise<string>>(),
-    avatarBoundsCacheTtlMs: 80,
-    avatarBoundsCache: {
-      expiresAt: 0,
-      entries: [],
-    },
-  }), []);
-  const [floatingHearts, setFloatingHearts] = useState<FloatingHeart[]>([]);
-  const [floatingFistDrops, setFloatingFistDrops] = useState<FloatingFistDrop[]>([]);
   const [compactPreviewTextVisible, setCompactPreviewTextVisible] = useState('');
   const [compactSpeechVisibleLength, setCompactSpeechVisibleLength] = useState(0);
   const [compactSpeechFallbackRevealActive, setCompactSpeechFallbackRevealActive] = useState(false);
@@ -1667,76 +1040,17 @@ function CompactChatApp({
   const [compactHistorySlotHeight, setCompactHistorySlotHeight] = useState<number | null>(readPersistedCompactHistorySlotHeight);
   const [compactHistoryResizeActive, setCompactHistoryResizeActive] = useState(false);
   const [compactHistoryResizeContentLocked, setCompactHistoryResizeContentLocked] = useState(false);
-  // 快照一次再复用：open/mounted 必须来自同一次持久化读取（readPersistedCompactExportHistoryOpen
-  // 无偏好时一律返回折叠；随机分组在 readCompactHistoryExperimentVariant 里、不在这条读取上）。
-  // 单读单源避免后续给初始化引入副作用时，两个 useState 各算一次导致 open/mounted 分裂初态。
+  // 快照一次再复用：open/mounted 必须来自同一次持久化读取，单读单源避免后续给初始化引入副作用时，
+  // 两个 useState 各算一次导致 open/mounted 分裂初态。无偏好一律折叠（「历史首启默认」A/B 已退役）。
   const [initialCompactExportHistoryOpen] = useState(readPersistedCompactExportHistoryOpen);
   const [compactExportHistoryOpen, setCompactExportHistoryOpen] = useState(initialCompactExportHistoryOpen);
   const [compactExportHistoryMounted, setCompactExportHistoryMounted] = useState(initialCompactExportHistoryOpen);
-  // A/B「历史首启默认」套用（含 open 展开 + 曝光上报）：初始一律折叠（见 readPersistedCompactExportHistoryOpen），
-  // 变体只在「教程完全结束（neko:tutorial-completed / -ended-without-completion）」或「本次不跑教程的老用户」
-  // 时套用——避免教程进行中 / 演示历史区前就展开，与教学冲突。surface 门控见下方 useEffect 开头。
-  // ref 保证整会话只套一次；曝光走 sessionStorage 去重（不可用则退化为 best-effort）+ WS 未就绪有界轮询重试。
-  const compactHistoryExperimentAppliedRef = useRef(false);
-  useEffect(() => {
-    // 仅 compact 才套用 + 计曝光：full 聊天页 / 宽屏 web index（无 surface 偏好）下用户没看到紧凑历史面板，
-    // 若只跳过 minimized，full-surface 用户 3s 兜底后会分配 variant + 上报曝光，污染 compact A/B 数据
-    // （回应 Codex）。从 full 切到 compact 时本 effect 因 deps=[chatSurfaceMode] 重跑、会正常套用。
-    if (chatSurfaceMode !== 'compact') return undefined;
-    const win = window as unknown as { isInTutorial?: boolean };
-    let exposureTimer: number | null = null;
-    let fallbackTimer = 0;
-    // 曝光重试独立于「套用」guard：已套用但本会话还没成功上报的，重新可见（minimized→compact）时要能继续
-    // 补报——否则首报失败后一旦最小化打断，曝光就永久漏掉、A/B 指标被低估。sessionStorage 保证只投一次。
-    const startExposureReporting = () => {
-      if (exposureTimer !== null) return;
-      if (reportCompactHistoryExperimentExposure()) return;
-      let tries = 0;
-      exposureTimer = window.setInterval(() => {
-        if (reportCompactHistoryExperimentExposure() || (tries += 1) >= 20) {
-          if (exposureTimer !== null) { window.clearInterval(exposureTimer); exposureTimer = null; }
-        }
-      }, 1000);
-    };
-    const applyExperimentDefault = () => {
-      if (!compactHistoryExperimentAppliedRef.current) {
-        const variant = readCompactHistoryExperimentVariant();
-        compactHistoryExperimentAppliedRef.current = true;
-        if (variant === 'open') {
-          // 用 openCompactExportHistory({persist:false}) 而非直接 set state：会清掉 close 留下的 560ms
-          // unmount 定时器（否则它会在展开后触发把 mounted 设回 false，留下 open=true 但面板不渲染），
-          // 且 persist:false 不把 A/B 自动展开写成用户偏好。
-          openCompactExportHistory({ persist: false });
-        }
-      }
-      startExposureReporting();
-    };
-    const onTutorialEnd = () => applyExperimentDefault();
-    // 教程结束的三种信号都要监听：完成 / 未完成结束 / 跳过——skip 路径只派发 neko:tutorial-skipped，
-    // 不发另外两个，否则跳过新手教程的用户永远等不到变体套用 + 曝光（回应 Codex）。
-    const tutorialEndEvents = ['neko:tutorial-completed', 'neko:tutorial-ended-without-completion', 'neko:tutorial-skipped'];
-    tutorialEndEvents.forEach((name) => window.addEventListener(name, onTutorialEnd));
-    if (compactHistoryExperimentAppliedRef.current) {
-      // 上次可见时已套用（过了教程/兜底），但曝光可能还没成功 → 重新可见时继续补报。
-      startExposureReporting();
-    } else if (win.isInTutorial !== true && !isGuideChatButtonLockActive()) {
-      // 本次不跑教程的老用户：教程启动会置 window.isInTutorial=true / body 加 guide-active 类。给它一点
-      // 时间，到时仍非教程态就直接套用；教程态则等上面的结束事件。
-      fallbackTimer = window.setTimeout(() => {
-        if (win.isInTutorial !== true && !isGuideChatButtonLockActive()) applyExperimentDefault();
-      }, COMPACT_HISTORY_EXPERIMENT_APPLY_FALLBACK_MS);
-    }
-    return () => {
-      tutorialEndEvents.forEach((name) => window.removeEventListener(name, onTutorialEnd));
-      if (fallbackTimer) window.clearTimeout(fallbackTimer);
-      if (exposureTimer !== null) window.clearInterval(exposureTimer);
-    };
-  }, [chatSurfaceMode]);
   const [compactExportHistoryClosingMessages, setCompactExportHistoryClosingMessages] = useState<ChatMessage[] | null>(null);
   const [compactExportControlsOpen, setCompactExportControlsOpen] = useState(false);
   const [compactExportPreviewOpen, setCompactExportPreviewOpen] = useState(false);
   const [compactExportSelectedIds, setCompactExportSelectedIds] = useState<Set<string>>(() => new Set());
   const [compactExportAutoScrollToBottom, setCompactExportAutoScrollToBottom] = useState(true);
+  const compactExportHistoryGeometryStateRef = useRef<{ mounted: boolean; open: boolean } | null>(null);
   // 折叠进行中：点最小化时置 true → 蓝条（历史区开关）淡出（#2）+ 胶囊右→左擦除收走。mode 切到
   // minimized 后由下方 useEffect 复位。展开进行中：minimized→compact 时置 true → 胶囊左→右展开 reveal。
   // 这两个擦除/reveal 类必须由 React state 写进 className（而非 host/preload 用 classList 加）—— 否则
@@ -1755,105 +1069,46 @@ function CompactChatApp({
   const compactExportHistoryUnmountTimerRef = useRef<number | null>(null);
   const submittingRef = useRef(false);
   const lastRollbackKeyRef = useRef('');
-  const lastToolCursorResetKeyRef = useRef('');
   const lastAvatarToolMenuOpenRequestIdRef = useRef('');
   const lastCompactToolFanOpenRequestIdRef = useRef('');
   const lastCompactToolWheelRotateRequestIdRef = useRef('');
   const lastCompactHistoryOpenRequestIdRef = useRef('');
   const lastCompactToolWheelIndexRequestIdRef = useRef('');
-  const compactInputHasPayload = draft.trim().length > 0 || composerAttachments.length > 0;
+  const compactInputHasPayload = visibleDraft.trim().length > 0
+    || (!catLocalTextOnly && composerAttachments.length > 0);
   const canSubmit = !compactTextEntryLocked && compactInputHasPayload;
-  const clearActiveCursorToolSelection = useCallback(() => {
-    clearGlobalToolCursorState();
-    latestPointerTargetRef.current = null;
-    avatarRangeHoldUntilRef.current = 0;
-    if (avatarRangeHoldTimerRef.current !== null) {
-      window.clearTimeout(avatarRangeHoldTimerRef.current);
-      avatarRangeHoldTimerRef.current = null;
-    }
-    setActiveCursorToolId(null);
-    setToolMenuOpen(false);
-    setIsCursorOverAvatarRange(false);
-    setIsCursorOverCompactCursorZone(false);
-  }, []);
-  const setCursorOverAvatarRange = useCallback((nextValue: boolean, options?: { allowHold?: boolean }) => {
-    if (avatarRangeHoldTimerRef.current !== null) {
-      window.clearTimeout(avatarRangeHoldTimerRef.current);
-      avatarRangeHoldTimerRef.current = null;
-    }
-
-    if (nextValue) {
-      const holdUntil = performance.now() + avatarToolRangeHoldMs;
-      avatarRangeHoldUntilRef.current = holdUntil;
-      setIsCursorOverAvatarRange(previousValue => (
-        previousValue === true ? previousValue : true
-      ));
-      return;
-    }
-
-    setIsCursorOverAvatarRange(previousValue => {
-      const shouldHold = options?.allowHold !== false
-        && previousValue
-        && performance.now() <= avatarRangeHoldUntilRef.current;
-      if (shouldHold) {
-        if (avatarRangeHoldTimerRef.current === null) {
-          const delay = Math.max(0, avatarRangeHoldUntilRef.current - performance.now());
-          avatarRangeHoldTimerRef.current = window.setTimeout(() => {
-            avatarRangeHoldTimerRef.current = null;
-            if (performance.now() < avatarRangeHoldUntilRef.current) return;
-            avatarRangeHoldUntilRef.current = 0;
-            setIsCursorOverAvatarRange(currentValue => (currentValue ? false : currentValue));
-          }, delay);
-        }
-        return true;
-      }
-      if (avatarRangeHoldTimerRef.current !== null) {
-        window.clearTimeout(avatarRangeHoldTimerRef.current);
-        avatarRangeHoldTimerRef.current = null;
-      }
-      if (avatarRangeHoldUntilRef.current !== 0) {
-        avatarRangeHoldUntilRef.current = 0;
-      }
-      return previousValue ? false : previousValue;
-    });
-  }, []);
-
-  const handleAvatarQuickbarToolClick = useCallback((
-    item: ToolIconItem,
-    event: ReactMouseEvent<HTMLButtonElement>,
-  ) => {
-    latestPointerPositionRef.current = getAvatarToolPointerPosition(event);
-    latestPointerTargetRef.current = event.currentTarget;
-    setIsCursorInsideHostWindow(true);
-    setIsCursorOverCompactCursorZone(true);
-    setCursorOverAvatarRange(
-      isPointerWithinAvatarRange(event.clientX, event.clientY, avatarToolCacheState),
-      { allowHold: true },
-    );
-    if (activeCursorToolId === item.id) {
-      setActiveCursorToolId(null);
-      return;
-    }
-    setAvatarRangeCursorVariants(prev => ({ ...prev, [item.id]: 'primary' }));
-    setOutsideRangeCursorVariants(prev => ({ ...prev, [item.id]: 'primary' }));
-    setActiveCursorToolId(item.id);
-  }, [activeCursorToolId, avatarToolCacheState, setCursorOverAvatarRange]);
+  const avatarToolRuntime = useAvatarToolRuntime({
+    composerHidden,
+    composerDisabled,
+    interactionDisabled: guideChatButtonsLocked,
+    deactivationKey: _avatarToolDeactivationKey,
+    onInteraction: onAvatarInteraction,
+    onStateChange: onAvatarToolStateChange,
+    getToolLabel: getToolItemLabel,
+    avatarName: assistantName,
+    onDeactivate: () => setToolMenuOpen(false),
+  });
+  const activeAvatarToolId = avatarToolRuntime.activeToolId;
+  const activeToolItem = avatarToolRuntime.activeTool;
+  const effectiveAvatarToolVariant = avatarToolRuntime.effectiveVariant;
+  const clearActiveAvatarToolSelection = avatarToolRuntime.clearTool;
+  const handleAvatarQuickbarToolClick = avatarToolRuntime.selectTool;
 
   const handleAvatarToolManagerSave = useCallback((toolIds: AvatarToolId[]) => {
     const nextToolIds = sanitizeAvatarToolIds(toolIds);
     setActiveAvatarToolIds(nextToolIds);
     persistActiveAvatarToolIds(nextToolIds);
     setAvatarToolManagerOpen(false);
-    if (activeCursorToolId && !nextToolIds.includes(activeCursorToolId as AvatarToolId)) {
-      clearActiveCursorToolSelection();
+    if (activeAvatarToolId && !nextToolIds.includes(activeAvatarToolId)) {
+      clearActiveAvatarToolSelection();
     }
-  }, [activeCursorToolId, clearActiveCursorToolSelection]);
+  }, [activeAvatarToolId, clearActiveAvatarToolSelection]);
 
   useEffect(() => {
-    if (!activeCursorToolId) return;
-    if (activeAvatarToolIds.includes(activeCursorToolId as AvatarToolId)) return;
-    clearActiveCursorToolSelection();
-  }, [activeAvatarToolIds, activeCursorToolId, clearActiveCursorToolSelection]);
+    if (!activeAvatarToolId) return;
+    if (activeAvatarToolIds.includes(activeAvatarToolId as AvatarToolId)) return;
+    clearActiveAvatarToolSelection();
+  }, [activeAvatarToolIds, activeAvatarToolId, clearActiveAvatarToolSelection]);
 
   // Rollback draft when host signals a RESPONSE_TOO_LONG error
   // Use _rollbackKey for dedup. It changes on every rollbackLastDraft() call
@@ -1867,13 +1122,6 @@ function CompactChatApp({
       }
     }
   }, [rollbackDraft, _rollbackKey, draft]);
-
-  useEffect(() => {
-    if (_toolCursorResetKey && _toolCursorResetKey !== lastToolCursorResetKeyRef.current) {
-      lastToolCursorResetKeyRef.current = _toolCursorResetKey;
-      clearActiveCursorToolSelection();
-    }
-  }, [_toolCursorResetKey, clearActiveCursorToolSelection]);
 
   useEffect(() => {
     const markImage = (img: HTMLImageElement) => {
@@ -1923,13 +1171,14 @@ function CompactChatApp({
   const compactExportHistoryToggleLabel = compactExportHistoryOpen
     ? i18n('chat.compactHistoryToggleClose', 'Hide history')
     : i18n('chat.compactHistoryToggleOpen', 'Show history');
-  const compactExportControlsButtonLabel = compactExportControlsVisible
-    ? i18n('chat.compactHistoryControlsHide', 'Hide history actions')
-    : i18n('chat.compactHistoryControlsShow', 'Show history actions');
+  const compactExportControlsButtonLabel = i18n(
+    'chat.compactHistoryExport',
+    'Export conversation history',
+  );
   // ChoicePrompt and galgame options share the same composer-anchored slot.
   // The transient invite should win when both are present so we do not stack
   // two button groups in the same compact surface.
-  const compactChoiceInteractionsAllowed = !composerHidden;
+  const compactChoiceInteractionsAllowed = !composerHidden && !catLocalTextOnly;
   const choicePromptHasOptions = compactChoiceInteractionsAllowed
     && !!(choicePrompt && choicePrompt.options.length > 0);
   const galgameOptionsVisible =
@@ -2130,11 +1379,31 @@ function CompactChatApp({
   }, [clearCompactExportHistoryUnmountTimer, messages]);
 
   useEffect(() => {
+    if (!isCompactSurface) {
+      compactExportHistoryGeometryStateRef.current = null;
+      return;
+    }
+    const previous = compactExportHistoryGeometryStateRef.current;
+    compactExportHistoryGeometryStateRef.current = {
+      mounted: compactExportHistoryMounted,
+      open: compactExportHistoryOpen,
+    };
+    if (!previous) return;
+    if (
+      previous.mounted === compactExportHistoryMounted
+      && previous.open === compactExportHistoryOpen
+    ) {
+      return;
+    }
+    window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-refresh'));
+  }, [compactExportHistoryMounted, compactExportHistoryOpen, isCompactSurface]);
+
+  useEffect(() => {
     const request = compactHistoryOpenRequest;
     if (!request || !request.id || request.id === lastCompactHistoryOpenRequestIdRef.current) return;
     lastCompactHistoryOpenRequestIdRef.current = request.id;
     if (request.open) {
-      // 教程演示历史区只临时展开，不写用户偏好（与 close 对称）——否则会覆盖 A/B 变体默认值。
+      // 教程演示历史区只临时展开，不写用户偏好（与 close 对称）——演示动作不该变成用户的持久化选择。
       openCompactExportHistory({ persist: false });
       return;
     }
@@ -2161,7 +1430,7 @@ function CompactChatApp({
     if (chatSurfaceMode === 'compact' && prev !== 'compact'
       && compactHistoryReopenAfterRestoreRef.current) {
       compactHistoryReopenAfterRestoreRef.current = false;
-      openCompactExportHistory({ persist: false }); // restore 重开不持久化：manual-open OPEN_KEY 本就 true（幂等），experiment-open 保持 null 不变成偏好
+      openCompactExportHistory({ persist: false }); // restore 重开不持久化：manual-open OPEN_KEY 本就 true（幂等），教程临时展开不变成偏好
     }
     // 方向性 reveal 擦除只在毛线球 minimized→compact 恢复时播（full→compact 不播）。~340ms 后复位。
     // useLayoutEffect 让首帧绘制前就挂 mask，消除 web 端首帧闪（壳侧有 opacity-0 门、Electron 看不出）。
@@ -2205,7 +1474,7 @@ function CompactChatApp({
       // 不渲染（受 isCompactSurface 门控），无副作用。正常折叠走 minimized→compact 重开、不到这里。
       if (compactHistoryReopenAfterRestoreRef.current) {
         compactHistoryReopenAfterRestoreRef.current = false;
-        openCompactExportHistory({ persist: false }); // restore 重开不持久化：manual-open OPEN_KEY 本就 true（幂等），experiment-open 保持 null 不变成偏好
+        openCompactExportHistory({ persist: false }); // restore 重开不持久化：manual-open OPEN_KEY 本就 true（幂等），教程临时展开不变成偏好
       }
     }, 600);
     return () => window.clearTimeout(t);
@@ -2221,7 +1490,7 @@ function CompactChatApp({
     setCompactCollapsing(false);
     if (compactHistoryReopenAfterRestoreRef.current) {
       compactHistoryReopenAfterRestoreRef.current = false;
-      openCompactExportHistory({ persist: false }); // restore 重开不持久化：manual-open OPEN_KEY 本就 true（幂等），experiment-open 保持 null 不变成偏好
+      openCompactExportHistory({ persist: false }); // restore 重开不持久化：manual-open OPEN_KEY 本就 true（幂等），教程临时展开不变成偏好
     }
   }, [compactMinimizeCancelSeq, openCompactExportHistory]);
   const handleCompactHistoryVisibilityToggle = useCallback(() => {
@@ -2458,6 +1727,10 @@ function CompactChatApp({
     setLoadedMemeOverlayKey(compactMemeOverlayLoadKey);
     scheduleCompactMemeGeometryRefresh();
   }, [compactMemeOverlayLoadKey, scheduleCompactMemeGeometryRefresh]);
+  const handleCompactMemeOverlayImageError = useCallback((event: React.SyntheticEvent<HTMLImageElement>) => {
+    swapImageToMemeLoadFailedSticker(event.currentTarget, compactMemeOverlay?.url || '');
+    markCompactMemeOverlayImageSettled();
+  }, [compactMemeOverlay?.url, markCompactMemeOverlayImageSettled]);
   const handleCompactMemeOverlayImageRef = useCallback((node: HTMLImageElement | null) => {
     if (!node?.complete) return;
     markCompactMemeOverlayImageSettled();
@@ -2623,71 +1896,11 @@ function CompactChatApp({
     compactPreviewIsStreaming,
   ]);
   const overflowMenuAriaLabel = i18n('chat.composerOverflowMenu', '更多工具');
-  const clearCursorToolAriaLabel = i18n('chat.clearCursorToolAriaLabel', '恢复鼠标');
-  const effectiveCursorVariant = resolveEffectiveCursorVariant(
-    activeCursorToolId,
-    avatarRangeCursorVariants,
-    outsideRangeCursorVariants,
-    isCursorOverAvatarRange,
-  );
-  const avatarRangeCursorVariant = activeCursorToolId
-    ? (avatarRangeCursorVariants[activeCursorToolId] ?? 'primary')
-    : 'primary';
-  const activeToolItem = toolIconItems.find(item => item.id === activeCursorToolId) ?? null;
-  const activeToolImagePaths = activeToolItem
-    ? resolveToolImagePaths(activeToolItem, avatarRangeCursorVariant)
-    : null;
-  const isElectronMultiWindow = isElectronMultiWindowHost();
-  const shouldUseLocalDesktopCursorOverlay = !!activeToolItem
-    && supportsDesktopFinePointer()
-    && !isElectronMultiWindow;
-  const shouldRenderLocalDesktopCursorOverlay = shouldUseLocalDesktopCursorOverlay
-    && isCursorInsideHostWindow;
-  const avatarCursorOverlayActive = !!activeToolItem
-    && activeCursorToolId !== 'hammer'
-    && shouldRenderLocalDesktopCursorOverlay;
-  const hammerCursorOverlayActive = activeCursorToolId === 'hammer' && shouldRenderLocalDesktopCursorOverlay;
-  const hammerCursorOverlayMotionActive = hammerSwingPhase !== 'idle';
-  const isCursorWithinAvatarToolRange = isCursorInsideHostWindow
-    && isCursorOverAvatarRange
-    && !isCursorOverCompactCursorZone;
-  const shouldRenderAvatarRangeOverlay = isCursorWithinAvatarToolRange
-    && activeCursorToolId !== 'lollipop';
-  const avatarCursorOverlayCompact = avatarCursorOverlayActive && !shouldRenderAvatarRangeOverlay;
-  const hammerCursorOverlayCompact = hammerCursorOverlayActive
-    && !shouldRenderAvatarRangeOverlay
-    && !hammerCursorOverlayMotionActive;
-  const hammerCompactImagePaths = hammerToolItem
-    ? resolveToolImagePaths(hammerToolItem, effectiveCursorVariant)
-    : null;
-  const hammerCursorOverlayUsesCompactImage = hammerCursorOverlayCompact && !hammerCursorOverlayMotionActive;
-  const avatarCursorOverlayImagePath = activeToolItem && activeCursorToolId !== 'hammer'
-    ? (avatarCursorOverlayCompact
-      ? (activeToolImagePaths?.cursorImagePath ?? '')
-      : (activeToolImagePaths?.iconImagePath ?? ''))
-    : '';
-  const avatarCursorOverlayScale = activeToolItem
-    ? getToolCursorOverlayScale(activeToolItem.id, avatarCursorOverlayCompact)
-    : 1;
-  const hammerCursorOverlayCompactImagePath = hammerCursorOverlayUsesCompactImage
-    ? (hammerCompactImagePaths?.cursorImagePath ?? '')
-    : '';
-  const hammerCursorOverlayScale = getToolCursorOverlayScale('hammer', hammerCursorOverlayCompact);
-  const hammerCursorOverlayPrimaryImagePath = hammerToolItem
-    ? resolveToolImagePaths(hammerToolItem, 'primary').iconImagePath
-    : '';
-  const hammerCursorOverlaySecondaryImagePath = hammerToolItem
-    ? resolveToolImagePaths(hammerToolItem, 'secondary').iconImagePath
-    : '';
-  const shouldReportAvatarRangeImageKind = shouldRenderAvatarRangeOverlay
-    || (activeCursorToolId === 'hammer' && hammerCursorOverlayMotionActive);
-  const avatarToolImageKind = activeToolItem
-    ? (shouldReportAvatarRangeImageKind ? 'icon' : 'cursor')
-    : 'cursor';
+  const clearAvatarToolAriaLabel = i18n('chat.clearAvatarToolAriaLabel', '取消道具');
 
   useEffect(() => {
-    draftRef.current = draft;
-  }, [draft]);
+    draftRef.current = visibleDraft;
+  }, [visibleDraft]);
 
   useEffect(() => {
     compactPreviewTextVisibleRef.current = compactPreviewTextVisible;
@@ -2874,23 +2087,6 @@ function CompactChatApp({
   useEffect(() => {
     compactSpeechVisibleLengthRef.current = compactSpeechVisibleLength;
   }, [compactSpeechVisibleLength]);
-
-  useEffect(() => {
-    const syncGuideChatButtonLock = () => {
-      setGuideChatButtonsLocked(isGuideChatButtonLockActive());
-    };
-
-    syncGuideChatButtonLock();
-    const observer = new MutationObserver(syncGuideChatButtonLock);
-    observer.observe(document.body, {
-      attributes: true,
-      attributeFilter: ['class'],
-    });
-
-    return () => {
-      observer.disconnect();
-    };
-  }, []);
 
   useEffect(() => {
     if (compactMessagePreview?.isGuide) {
@@ -3285,14 +2481,62 @@ function CompactChatApp({
     const gap = 16;
     let frameId: number | null = null;
 
-    const syncChoiceLayerSurfaceVars = (shellRect: DOMRect, layerNode: HTMLElement) => {
-      layerNode.style.setProperty('--compact-choice-surface-left', `${shellRect.left}px`);
-      layerNode.style.setProperty('--compact-choice-surface-top', `${shellRect.top}px`);
-      layerNode.style.setProperty('--compact-choice-surface-width', `${Math.max(1, shellRect.width)}px`);
-      layerNode.style.setProperty('--compact-choice-surface-height', `${Math.max(1, shellRect.height)}px`);
+    const syncChoiceLayerSurfaceVars = (
+      surfaceRect: { left: number; top: number; width: number; height: number },
+      layerNode: HTMLElement,
+    ) => {
+      layerNode.style.setProperty('--compact-choice-surface-left', `${surfaceRect.left}px`);
+      layerNode.style.setProperty('--compact-choice-surface-top', `${surfaceRect.top}px`);
+      layerNode.style.setProperty('--compact-choice-surface-width', `${Math.max(1, surfaceRect.width)}px`);
+      layerNode.style.setProperty('--compact-choice-surface-height', `${Math.max(1, surfaceRect.height)}px`);
     };
 
-    const getDesktopPlacementSpace = (shellRect: DOMRect) => {
+    const getDesktopCompactLayout = (event?: Event) => {
+      const eventDetail = event instanceof CustomEvent ? event.detail : null;
+      if (eventDetail && typeof eventDetail === 'object') {
+        return eventDetail as DesktopCompactChoicePlacementLayout;
+      }
+      return (window as typeof window & {
+        __nekoDesktopCompactLayout?: DesktopCompactChoicePlacementLayout | null;
+      }).__nekoDesktopCompactLayout;
+    };
+
+    const getDesktopLayoutSurfaceRect = (layout?: DesktopCompactChoicePlacementLayout | null) => {
+      const surface = layout?.surface;
+      const left = Number(surface?.left);
+      const top = Number(surface?.top);
+      const width = Number(surface?.width);
+      const height = Number(surface?.height);
+      if (
+        !Number.isFinite(left)
+        || !Number.isFinite(top)
+        || !Number.isFinite(width)
+        || !Number.isFinite(height)
+        || width <= 0
+        || height <= 0
+      ) {
+        return null;
+      }
+      return {
+        left,
+        top,
+        right: left + width,
+        bottom: top + height,
+        width,
+        height,
+      };
+    };
+
+    const syncChoiceLayerSurfaceVarsFromDesktopLayout = (layout?: DesktopCompactChoicePlacementLayout | null) => {
+      const nextLayerNode = compactChoiceLayerRef.current;
+      if (!nextLayerNode) return false;
+      const surfaceRect = getDesktopLayoutSurfaceRect(layout ?? getDesktopCompactLayout());
+      if (!surfaceRect) return false;
+      syncChoiceLayerSurfaceVars(surfaceRect, nextLayerNode);
+      return true;
+    };
+
+    const getDesktopPlacementSpace = (surfaceRect: { top: number; height: number }) => {
       const layout = (window as typeof window & {
         __nekoDesktopCompactLayout?: DesktopCompactChoicePlacementLayout | null;
       }).__nekoDesktopCompactLayout;
@@ -3312,13 +2556,13 @@ function CompactChatApp({
 
       const layoutSurfaceTop = Number(layout?.surface?.top);
       const layoutSurfaceHeight = Number(layout?.surface?.height);
-      const measuredTop = Number.isFinite(shellRect.top) ? shellRect.top : layoutSurfaceTop;
-      const measuredHeight = Number.isFinite(shellRect.height) && shellRect.height > 0
-        ? shellRect.height
+      const measuredTop = Number.isFinite(surfaceRect.top) ? surfaceRect.top : layoutSurfaceTop;
+      const measuredHeight = Number.isFinite(surfaceRect.height) && surfaceRect.height > 0
+        ? surfaceRect.height
         : layoutSurfaceHeight;
       const surfaceScreenTop = windowY + (Number.isFinite(measuredTop) ? measuredTop : 0);
       const surfaceScreenBottom = surfaceScreenTop
-        + (Number.isFinite(measuredHeight) && measuredHeight > 0 ? measuredHeight : Math.max(1, shellRect.height));
+        + (Number.isFinite(measuredHeight) && measuredHeight > 0 ? measuredHeight : Math.max(1, surfaceRect.height));
       const workAreaBottom = workAreaY + workAreaHeight;
       return {
         availableAbove: Math.max(0, surfaceScreenTop - workAreaY),
@@ -3326,16 +2570,17 @@ function CompactChatApp({
       };
     };
 
-    const updatePlacement = () => {
+    const updatePlacement = (desktopLayoutOverride?: DesktopCompactChoicePlacementLayout | null) => {
       const nextShellNode = compactInputShellRef.current;
       const nextLayerNode = compactChoiceLayerRef.current;
       if (!nextShellNode || !nextLayerNode) return;
 
-      const desktopForcedPlacement = ((window as typeof window & {
-        __nekoDesktopCompactLayout?: DesktopCompactChoicePlacementLayout | null;
-      }).__nekoDesktopCompactLayout?.compactChoicePlacement);
+      const desktopLayout = desktopLayoutOverride ?? getDesktopCompactLayout();
+      const desktopForcedPlacement = desktopLayout?.compactChoicePlacement;
       const shellRect = nextShellNode.getBoundingClientRect();
-      syncChoiceLayerSurfaceVars(shellRect, nextLayerNode);
+      const desktopLayoutSurfaceRect = getDesktopLayoutSurfaceRect(desktopLayout);
+      const surfaceRect = desktopLayoutSurfaceRect ?? shellRect;
+      syncChoiceLayerSurfaceVars(surfaceRect, nextLayerNode);
       if (desktopForcedPlacement === 'above' || desktopForcedPlacement === 'below') {
         setCompactChoiceLayerPlacement(current => (current === desktopForcedPlacement ? current : desktopForcedPlacement));
         return;
@@ -3343,9 +2588,9 @@ function CompactChatApp({
       const layerRect = nextLayerNode.getBoundingClientRect();
       const layerHeight = Math.max(layerRect.height, nextLayerNode.scrollHeight);
       const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
-      const desktopSpace = getDesktopPlacementSpace(shellRect);
-      const availableBelow = desktopSpace?.availableBelow ?? Math.max(0, viewportHeight - shellRect.bottom);
-      const availableAbove = desktopSpace?.availableAbove ?? Math.max(0, shellRect.top);
+      const desktopSpace = getDesktopPlacementSpace(surfaceRect);
+      const availableBelow = desktopSpace?.availableBelow ?? Math.max(0, viewportHeight - surfaceRect.bottom);
+      const availableAbove = desktopSpace?.availableAbove ?? Math.max(0, surfaceRect.top);
       const requiredSpace = layerHeight + gap;
       const nextPlacement = availableBelow >= requiredSpace
         ? 'below'
@@ -3374,22 +2619,35 @@ function CompactChatApp({
       });
     };
 
+    let scheduledDesktopLayoutOverride: DesktopCompactChoicePlacementLayout | null | undefined;
     const schedulePlacementUpdate = () => {
       if (frameId !== null) {
         window.cancelAnimationFrame(frameId);
       }
       frameId = window.requestAnimationFrame(() => {
         frameId = null;
-        updatePlacement();
+        const desktopLayoutOverride = scheduledDesktopLayoutOverride;
+        scheduledDesktopLayoutOverride = undefined;
+        updatePlacement(desktopLayoutOverride);
       });
     };
+    const schedulePlacementUpdateWithDesktopLayout = (layout?: DesktopCompactChoicePlacementLayout | null) => {
+      scheduledDesktopLayoutOverride = layout;
+      schedulePlacementUpdate();
+    };
 
+    syncChoiceLayerSurfaceVarsFromDesktopLayout();
     schedulePlacementUpdate();
 
     const visualViewport = window.visualViewport;
+    const handleDesktopCompactLayoutChange = (event: Event) => {
+      const layout = getDesktopCompactLayout(event);
+      syncChoiceLayerSurfaceVarsFromDesktopLayout(layout);
+      schedulePlacementUpdateWithDesktopLayout(layout);
+    };
     window.addEventListener('resize', schedulePlacementUpdate);
     window.addEventListener('neko:compact-surface-layout-change', schedulePlacementUpdate);
-    window.addEventListener('neko:desktop-compact-layout-change', schedulePlacementUpdate);
+    window.addEventListener('neko:desktop-compact-layout-change', handleDesktopCompactLayoutChange);
     visualViewport?.addEventListener('resize', schedulePlacementUpdate);
     visualViewport?.addEventListener('scroll', schedulePlacementUpdate);
 
@@ -3408,7 +2666,7 @@ function CompactChatApp({
       }
       window.removeEventListener('resize', schedulePlacementUpdate);
       window.removeEventListener('neko:compact-surface-layout-change', schedulePlacementUpdate);
-      window.removeEventListener('neko:desktop-compact-layout-change', schedulePlacementUpdate);
+      window.removeEventListener('neko:desktop-compact-layout-change', handleDesktopCompactLayoutChange);
       visualViewport?.removeEventListener('resize', schedulePlacementUpdate);
       visualViewport?.removeEventListener('scroll', schedulePlacementUpdate);
       observer?.disconnect();
@@ -4004,8 +3262,6 @@ function CompactChatApp({
       && workAreaWidth > 0
       && Number.isFinite(workAreaHeight)
       && workAreaHeight > 0;
-    const isMobileViewport = window.matchMedia?.('(max-width: 820px)').matches === true;
-    if (!isMobileViewport && !hasDesktopWorkArea) return 'default';
     const fanElement = compactInputToolFanRef.current;
     const fanRect = fanElement?.getBoundingClientRect();
     if (!fanElement || !fanRect || fanRect.width <= 0 || fanRect.height <= 0) return 'default';
@@ -4048,30 +3304,35 @@ function CompactChatApp({
       prefersViewportFitFromBottomGap = bottomGap < bottomFlipThreshold;
     }
 
-    const wheelLayoutFitsViewport = (
+    const getWheelLayoutViewportOverflow = (
       slots: ReadonlyArray<{ angleDeg: number; scale: number }>,
       options?: { axis?: 'both' | 'horizontal' },
-    ) => slots.every(({ angleDeg, scale }) => {
+    ) => slots.reduce((totalOverflow, { angleDeg, scale }) => {
       const angle = angleDeg * (Math.PI / 180);
       const itemCenterX = centerX + (Math.cos(angle) * orbitRadius);
       const itemCenterY = centerY + (Math.sin(angle) * orbitRadius);
       const halfSize = (buttonSize * scale) / 2;
-      const fitsHorizontally = itemCenterX - halfSize >= minX
-        && itemCenterX + halfSize <= maxX;
-      if (options?.axis === 'horizontal') return fitsHorizontally;
-      return fitsHorizontally
-        && itemCenterY - halfSize >= minY
-        && itemCenterY + halfSize <= maxY;
-    });
+      const horizontalOverflow = Math.max(0, minX - (itemCenterX - halfSize))
+        + Math.max(0, (itemCenterX + halfSize) - maxX);
+      if (options?.axis === 'horizontal') return totalOverflow + horizontalOverflow;
+      const verticalOverflow = Math.max(0, minY - (itemCenterY - halfSize))
+        + Math.max(0, (itemCenterY + halfSize) - maxY);
+      return totalOverflow + horizontalOverflow + verticalOverflow;
+    }, 0);
+
+    const defaultOverflow = getWheelLayoutViewportOverflow(compactInputToolWheelDefaultVisibleSlots);
+    const viewportFitOverflow = getWheelLayoutViewportOverflow(compactInputToolWheelViewportFitVisibleSlots);
 
     if (
       prefersViewportFitFromBottomGap
-      && wheelLayoutFitsViewport(compactInputToolWheelViewportFitVisibleSlots, { axis: 'horizontal' })
+      && getWheelLayoutViewportOverflow(compactInputToolWheelViewportFitVisibleSlots, { axis: 'horizontal' }) === 0
+      && viewportFitOverflow <= defaultOverflow
     ) {
       return 'viewport-fit';
     }
-    if (wheelLayoutFitsViewport(compactInputToolWheelDefaultVisibleSlots)) return 'default';
-    if (wheelLayoutFitsViewport(compactInputToolWheelViewportFitVisibleSlots)) return 'viewport-fit';
+    if (defaultOverflow === 0) return 'default';
+    if (viewportFitOverflow === 0) return 'viewport-fit';
+    if (!hasDesktopWorkArea && viewportFitOverflow < defaultOverflow) return 'viewport-fit';
     return 'default';
   }, []);
 
@@ -4165,7 +3426,7 @@ function CompactChatApp({
     });
     return () => window.cancelAnimationFrame(frameId);
   }, [
-    activeCursorToolId,
+    activeAvatarToolId,
     compactInputToolFanInteractive,
     compactInputToolFanOpen,
     compactInputToolWheelIndex,
@@ -4214,7 +3475,15 @@ function CompactChatApp({
   ]);
 
   const openCompactInputToolFan = useCallback((intent: 'click' | 'hover', options?: { ignoreDisabled?: boolean }) => {
-    if ((!options?.ignoreDisabled && composerDisabled) || compactInputHasPayload) return false;
+    if (catLocalTextOnly || (!options?.ignoreDisabled && composerDisabled) || compactInputHasPayload) return false;
+    if (compactInputToolFanOpenRef.current) {
+      clearCompactInputToolFanCloseTimer();
+      if (compactInputToolFanOpenIntentRef.current !== 'click') {
+        compactInputToolFanOpenIntentRef.current = intent;
+      }
+      updateCompactInputToolFanPosition();
+      return true;
+    }
     // 展开时延续上次轮盘中心索引（compactInputToolWheelIndex 是组件级 state，会话内常驻）：
     // hover 抖动重入或重新打开都不主动把用户刚滚到的位置弹回默认位。复位只随页面刷新/组件
     // 重挂发生（useState 初值为环位 0）。取舍脉络：#1697 曾在此「每次展开复位 index=0」，
@@ -4238,6 +3507,7 @@ function CompactChatApp({
   }, [
     clearCompactInputToolFanCloseTimer,
     clearCompactInputToolFanInteractiveTimer,
+    catLocalTextOnly,
     compactInputHasPayload,
     composerDisabled,
     dispatchCompactToolFanOpenState,
@@ -4246,7 +3516,7 @@ function CompactChatApp({
   ]);
 
   const shouldOpenCompactToolFanOnHover = useCallback((pointerType: string) => {
-    return pointerType === 'mouse';
+    return pointerType === 'mouse' || pointerType === '';
   }, []);
 
   const isCompactInputToolPointerInToggleHoverRegion = useCallback((clientX: number, clientY: number, relatedTarget?: EventTarget | null) => {
@@ -4314,11 +3584,10 @@ function CompactChatApp({
     });
   }, [closeCompactInputToolFan]);
 
-  const clearActiveCursorToolAndCloseCompactFan = useCallback(() => {
-    setIsCursorInsideHostWindow(true);
-    clearActiveCursorToolSelection();
+  const clearActiveAvatarToolAndCloseCompactFan = useCallback(() => {
+    clearActiveAvatarToolSelection({ insideHostWindow: true });
     closeCompactInputToolFanFromUserClick();
-  }, [clearActiveCursorToolSelection, closeCompactInputToolFanFromUserClick]);
+  }, [clearActiveAvatarToolSelection, closeCompactInputToolFanFromUserClick]);
 
   const closeCompactInputToolFanFromDesktopOutside = useCallback(() => {
     resetCompactInputToolFanHoverBlock();
@@ -4646,7 +3915,7 @@ function CompactChatApp({
 
   // ── compact surface 控件「按住拖动对话框」手势 ────────────────────────────
   // 在 toggle / fan 中心 / 毛球 / 胶囊 / textarea 按下后移动超阈值 → 把 surface
-  // 拖拽交给宿主（web: app-react-chat-window.js / Electron: preload-chat-react.js）经
+  // 拖拽交给宿主（web: app-react-chat-window / Electron: preload-chat-react.js）经
   // neko:compact-surface-drag-grab 接管。
   // 点按（无移动）语义保持原样：toggle 展开/关闭，fan 原点收起，毛球折叠，胶囊进入 input，
   // textarea 正常聚焦输入。
@@ -4902,7 +4171,7 @@ function CompactChatApp({
   ]);
 
   useEffect(() => {
-    if (!isCompactSurface || effectiveCompactChatState !== 'input') {
+    if (!isCompactSurface || composerHidden) {
       resetCompactInputToolFanHoverBlock();
       return;
     }
@@ -4950,8 +4219,8 @@ function CompactChatApp({
   }, [
     clearCompactInputToolFanCloseTimer,
     compactInputHasPayload,
+    composerHidden,
     composerDisabled,
-    effectiveCompactChatState,
     isCompactInputToolPointerInHoverRegion,
     isCompactInputToolPointerInToggleHoverRegion,
     isCompactSurface,
@@ -5275,6 +4544,20 @@ function CompactChatApp({
   ]);
 
   useEffect(() => {
+    if (!catLocalTextOnly) return;
+    closeCompactInputToolFan();
+    setToolMenuOpen(false);
+    setAvatarToolManagerOpen(false);
+    setCompactExportControlsOpen(false);
+    setCompactExportPreviewOpen(false);
+    clearActiveAvatarToolSelection();
+  }, [catLocalTextOnly, clearActiveAvatarToolSelection, closeCompactInputToolFan]);
+
+  useEffect(() => {
+    if (!catLocalTextOnly) setCatDraft('');
+  }, [catLocalTextOnly]);
+
+  useEffect(() => {
     if (compactInputToolFanOpen) return;
     clearCompactInputToolFanCloseTimer();
     clearCompactInputToolWheelDragGuardTimer();
@@ -5419,211 +4702,6 @@ function CompactChatApp({
   }, [composerAttachments.length, effectiveCompactChatState, isCompactSurface, requestCompactChatState]);
 
   useEffect(() => {
-    avatarInteractionCallbackRef.current = onAvatarInteraction;
-  }, [onAvatarInteraction]);
-
-  useEffect(() => {
-    if (!onAvatarToolStateChange) return;
-
-    const outsideRangeVariant = activeCursorToolId
-      ? (outsideRangeCursorVariants[activeCursorToolId] ?? 'primary')
-      : 'primary';
-    const textContext = sanitizeInteractionTextContext(draft);
-    const latestPointerPosition = latestPointerPositionRef.current;
-    const hasCursorScreenPoint = Number.isFinite(latestPointerPosition.screenX)
-      && Number.isFinite(latestPointerPosition.screenY);
-
-    onAvatarToolStateChange({
-      active: !!activeToolItem,
-      toolId: activeToolItem?.id ?? null,
-      variant: effectiveCursorVariant,
-      avatarRangeVariant: avatarRangeCursorVariant,
-      outsideRangeVariant,
-      imageKind: avatarToolImageKind,
-      withinAvatarRange: isCursorWithinAvatarToolRange,
-      overCompactZone: isCursorOverCompactCursorZone,
-      insideHostWindow: isCursorInsideHostWindow,
-      cursorClientX: latestPointerPosition.x,
-      cursorClientY: latestPointerPosition.y,
-      ...(hasCursorScreenPoint ? {
-        cursorScreenX: latestPointerPosition.screenX,
-        cursorScreenY: latestPointerPosition.screenY,
-      } : {}),
-      tool: activeToolItem
-        ? {
-          id: activeToolItem.id,
-          label: getToolItemLabel(activeToolItem),
-          iconImagePath: withAvatarToolAssetVersion(activeToolItem.iconImagePath),
-          iconImagePathAlt: activeToolItem.iconImagePathAlt
-            ? withAvatarToolAssetVersion(activeToolItem.iconImagePathAlt)
-            : undefined,
-          iconImagePathAlt2: activeToolItem.iconImagePathAlt2
-            ? withAvatarToolAssetVersion(activeToolItem.iconImagePathAlt2)
-            : undefined,
-          cursorImagePath: withAvatarToolAssetVersion(activeToolItem.cursorImagePath),
-          cursorImagePathAlt: activeToolItem.cursorImagePathAlt
-            ? withAvatarToolAssetVersion(activeToolItem.cursorImagePathAlt)
-            : undefined,
-          cursorImagePathAlt2: activeToolItem.cursorImagePathAlt2
-            ? withAvatarToolAssetVersion(activeToolItem.cursorImagePathAlt2)
-            : undefined,
-          cursorHotspotX: activeToolItem.cursorHotspotX,
-          cursorHotspotY: activeToolItem.cursorHotspotY,
-          cursorNaturalWidth: activeToolItem.cursorNaturalWidth,
-          cursorNaturalHeight: activeToolItem.cursorNaturalHeight,
-          cursorDisplayWidth: activeToolItem.cursorDisplayWidth,
-          cursorDisplayHeight: activeToolItem.cursorDisplayHeight,
-          menuIconScale: activeToolItem.menuIconScale,
-        }
-        : null,
-      textContext,
-      timestamp: Date.now(),
-    });
-  }, [
-    activeCursorToolId,
-    activeToolItem,
-    avatarRangeCursorVariant,
-    avatarToolImageKind,
-    draft,
-    effectiveCursorVariant,
-    isCursorInsideHostWindow,
-    isCursorOverCompactCursorZone,
-    isCursorWithinAvatarToolRange,
-    onAvatarToolStateChange,
-    outsideRangeCursorVariants,
-  ]);
-
-  function clearHammerSwingAnimation() {
-    hammerSwingTimeoutIdsRef.current.forEach(timeoutId => window.clearTimeout(timeoutId));
-    hammerSwingTimeoutIdsRef.current = [];
-    setHammerSwingPhase('idle');
-    setIsInnerHammerEasterEggActive(false);
-  }
-
-  function clearOutsideHammerResetTimer(shouldResetToPrimary = true) {
-    if (outsideHammerResetTimeoutRef.current !== null) {
-      window.clearTimeout(outsideHammerResetTimeoutRef.current);
-      outsideHammerResetTimeoutRef.current = null;
-    }
-    if (shouldResetToPrimary) {
-      setOutsideRangeCursorVariants(prev => ({ ...prev, hammer: 'primary' }));
-    }
-  }
-
-  function spawnLollipopHearts(clientX: number, clientY: number) {
-    const hearts: FloatingHeart[] = [
-      { id: floatingHeartIdRef.current += 1, x: clientX - 12, y: clientY - 26, driftX: -26, driftY: -124, scale: 0.92, delayMs: 0 },
-      { id: floatingHeartIdRef.current += 1, x: clientX + 10, y: clientY - 20, driftX: 24, driftY: -138, scale: 1.06, delayMs: 110 },
-      { id: floatingHeartIdRef.current += 1, x: clientX - 4, y: clientY - 40, driftX: -18, driftY: -154, scale: 0.84, delayMs: 190 },
-    ];
-    setFloatingHearts(prev => [...prev, ...hearts]);
-    hearts.forEach(heart => {
-      const timeoutId = window.setTimeout(() => {
-        setFloatingHearts(prev => prev.filter(item => item.id !== heart.id));
-        floatingHeartTimeoutIdsRef.current = floatingHeartTimeoutIdsRef.current.filter(id => id !== timeoutId);
-      }, 2100 + heart.delayMs);
-      floatingHeartTimeoutIdsRef.current.push(timeoutId);
-    });
-  }
-
-  function spawnFistDrops(clientX: number, clientY: number) {
-    const drops: FloatingFistDrop[] = Array.from({ length: 3 }, () => {
-      const launchAngleDeg = -140 + Math.random() * 100;
-      const launchAngleRad = (launchAngleDeg * Math.PI) / 180;
-      const distance = 76 + Math.random() * 42;
-      return {
-        id: floatingFistDropIdRef.current += 1,
-        x: Math.round(clientX - 8 + (Math.random() * 28 - 14)),
-        y: Math.round(clientY - 24 + (Math.random() * 18 - 9)),
-        driftX: Math.round(Math.cos(launchAngleRad) * distance),
-        driftY: Math.round(Math.sin(launchAngleRad) * distance),
-        rotation: Math.round(-120 + Math.random() * 240),
-        scale: Number((0.82 + Math.random() * 0.38).toFixed(2)),
-        delayMs: Math.round(Math.random() * 140),
-      };
-    });
-    setFloatingFistDrops(prev => [...prev, ...drops]);
-    drops.forEach(drop => {
-      const timeoutId = window.setTimeout(() => {
-        setFloatingFistDrops(prev => prev.filter(item => item.id !== drop.id));
-        floatingFistDropTimeoutIdsRef.current = floatingFistDropTimeoutIdsRef.current.filter(id => id !== timeoutId);
-      }, 920 + drop.delayMs);
-      floatingFistDropTimeoutIdsRef.current.push(timeoutId);
-    });
-  }
-
-  function recordInteractionBurst(key: string, windowMs: number) {
-    const now = Date.now();
-    const recentTimestamps = (interactionBurstHistoryRef.current[key] ?? [])
-      .filter(timestamp => now - timestamp <= windowMs);
-    recentTimestamps.push(now);
-    interactionBurstHistoryRef.current[key] = recentTimestamps;
-    return recentTimestamps.length;
-  }
-
-  function updateHammerCursorOverlayPosition(clientX: number, clientY: number) {
-    const overlayNode = hammerCursorOverlayRef.current;
-    if (!overlayNode || !hammerToolItem) return;
-    const hotspot = getScaledToolCursorHotspot(hammerToolItem, hammerCursorOverlayScale);
-    overlayNode.style.transform = `translate3d(${formatCursorOverlayPx(clientX - hotspot.x)}, ${formatCursorOverlayPx(clientY - hotspot.y)}, 0)`;
-  }
-
-  function updateAvatarCursorOverlayPosition(clientX: number, clientY: number) {
-    const overlayNode = avatarCursorOverlayRef.current;
-    if (!overlayNode || !activeToolItem) return;
-    const hotspot = getScaledToolCursorHotspot(activeToolItem, avatarCursorOverlayScale);
-    overlayNode.style.transform = `translate3d(${formatCursorOverlayPx(clientX - hotspot.x)}, ${formatCursorOverlayPx(clientY - hotspot.y)}, 0)`;
-  }
-
-  function emitAvatarInteraction<T extends AvatarInteractionToolId>(
-    toolId: T,
-    actionId: AvatarInteractionPayloadByTool[T]['actionId'],
-    target: AvatarInteractionPayload['target'],
-    clientX: number,
-    clientY: number,
-    options?: {
-      intensity?: InteractionIntensity;
-      rewardDrop?: boolean;
-      easterEgg?: boolean;
-      touchZone?: AvatarTouchZone;
-    },
-  ) {
-    const callback = avatarInteractionCallbackRef.current;
-    if (!callback) return;
-
-    const payload = {
-      interactionId: createAvatarInteractionId(),
-      toolId,
-      actionId,
-      target,
-      pointer: {
-        clientX,
-        clientY,
-      },
-      timestamp: Date.now(),
-    } as AvatarInteractionPayloadByTool[T];
-
-    const textContext = sanitizeInteractionTextContext(draftRef.current);
-    if (textContext) {
-      payload.textContext = textContext;
-    }
-    if (options?.intensity) {
-      payload.intensity = options.intensity;
-    }
-    if (options?.touchZone && toolId !== 'lollipop') {
-      (payload as { touchZone?: AvatarTouchZone }).touchZone = options.touchZone;
-    }
-    if (options?.rewardDrop && toolId === 'fist') {
-      (payload as Extract<AvatarInteractionPayload, { toolId: 'fist' }>).rewardDrop = true;
-    }
-    if (options?.easterEgg && toolId === 'hammer') {
-      (payload as Extract<AvatarInteractionPayload, { toolId: 'hammer' }>).easterEgg = true;
-    }
-
-    callback(payload);
-  }
-
-  useEffect(() => {
     if (!toolMenuOpen) return;
 
     const closeMenuOnOutsideClick = (event: MouseEvent) => {
@@ -5656,18 +4734,17 @@ function CompactChatApp({
     const requestId = request.id;
     lastAvatarToolMenuOpenRequestIdRef.current = requestId;
     if (request.open) {
-      lastAvatarToolMenuOpenRequestIdRef.current = requestId;
       const opened = openCompactInputToolFan('click', { ignoreDisabled: true });
       if (!opened) return;
       if (activeAvatarToolIds.length === 0) {
         setActiveAvatarToolIds([...DEFAULT_ACTIVE_AVATAR_TOOL_IDS]);
       }
-      setActiveCursorToolId(null);
+      clearActiveAvatarToolSelection();
       setToolMenuOpen(opened);
       return;
     }
     setToolMenuOpen(false);
-  }, [activeAvatarToolIds.length, avatarToolMenuOpenRequest, openCompactInputToolFan]);
+  }, [activeAvatarToolIds.length, avatarToolMenuOpenRequest, clearActiveAvatarToolSelection, openCompactInputToolFan]);
 
   useEffect(() => {
     const request = compactToolFanOpenRequest;
@@ -5675,7 +4752,9 @@ function CompactChatApp({
     lastCompactToolFanOpenRequestIdRef.current = request.id;
     if (request.open) {
       lastCompactToolFanOpenRequestIdRef.current = request.id;
-      const opened = openCompactInputToolFan('click', { ignoreDisabled: true });
+      const requestReason = typeof request.reason === 'string' ? request.reason : '';
+      const requestIntent = requestReason.startsWith('desktop-compact-tool-toggle') ? 'hover' : 'click';
+      const opened = openCompactInputToolFan(requestIntent, { ignoreDisabled: true });
       if (!opened) return;
       return;
     }
@@ -5709,368 +4788,6 @@ function CompactChatApp({
     });
   }, [compactToolWheelRotateRequest, openCompactInputToolFan, rotateCompactInputToolWheelSteps]);
 
-  useEffect(() => {
-    if (!activeCursorToolId) return;
-
-    const resetFistCursorVariant = () => {
-      setAvatarRangeCursorVariants(prev => ({ ...prev, fist: 'primary' }));
-      setOutsideRangeCursorVariants(prev => ({ ...prev, fist: 'primary' }));
-    };
-
-    const toggleCursorVariantOnPointerDown = (event: PointerEvent) => {
-      if (event.button !== 0) return;
-      latestPointerPositionRef.current = getAvatarToolPointerPosition(event);
-      latestPointerTargetRef.current = event.target;
-      const isOverCompactCursorZoneAtPointer = isPointWithinCompactCursorZone(event.clientX, event.clientY);
-      setIsCursorOverCompactCursorZone(previousValue => (
-        previousValue === isOverCompactCursorZoneAtPointer ? previousValue : isOverCompactCursorZoneAtPointer
-      ));
-      if (isOverCompactCursorZoneAtPointer) {
-        return;
-      }
-      const avatarRangeHit = getAvatarRangeHit(event.clientX, event.clientY, avatarToolCacheState);
-      const isOverAvatarAtPointer = avatarRangeHit !== null;
-      setCursorOverAvatarRange(isOverAvatarAtPointer, { allowHold: true });
-
-      if (activeCursorToolId === 'lollipop') {
-        if (isOverAvatarAtPointer) {
-          const currentVariant = avatarRangeCursorVariants.lollipop ?? 'primary';
-          const actionId = currentVariant === 'primary'
-            ? 'offer'
-            : currentVariant === 'secondary'
-              ? 'tease'
-              : 'tap_soft';
-          const lollipopTapCount = currentVariant === 'tertiary'
-            ? recordInteractionBurst('lollipop:tap_soft', 1800)
-            : 0;
-          const intensity: InteractionIntensity = currentVariant === 'tertiary'
-            ? (lollipopTapCount >= 4 ? 'burst' : 'rapid')
-            : 'normal';
-          emitAvatarInteraction('lollipop', actionId, 'avatar', event.clientX, event.clientY, {
-            intensity,
-          });
-          playAvatarToolSound(avatarToolSoundPaths.lollipopBite);
-
-          if (currentVariant === 'tertiary') {
-            spawnLollipopHearts(event.clientX, event.clientY);
-            return;
-          }
-          const nextVariant: CursorVariant = currentVariant === 'primary' ? 'secondary' : 'tertiary';
-          setAvatarRangeCursorVariants(prev => (
-            prev.lollipop === nextVariant ? prev : { ...prev, lollipop: nextVariant }
-          ));
-          return;
-        }
-        return;
-      }
-      if (activeCursorToolId === 'fist') {
-        const shouldSpawnRewardDrop = isOverAvatarAtPointer && Math.random() < 0.25;
-        const fistTapCount = isOverAvatarAtPointer
-          ? recordInteractionBurst('fist:poke', 1400)
-          : 0;
-        setAvatarRangeCursorVariants(prev => ({ ...prev, fist: 'secondary' }));
-        setOutsideRangeCursorVariants(prev => ({ ...prev, fist: 'secondary' }));
-        if (isOverAvatarAtPointer) {
-          emitAvatarInteraction(
-            'fist',
-            'poke',
-            'avatar',
-            event.clientX,
-            event.clientY,
-            {
-              intensity: fistTapCount >= 4 ? 'rapid' : 'normal',
-              rewardDrop: shouldSpawnRewardDrop,
-              touchZone: avatarRangeHit?.touchZone,
-            },
-          );
-        }
-        if (shouldSpawnRewardDrop) {
-          playAvatarToolSound(avatarToolSoundPaths.coinDrop);
-          spawnFistDrops(event.clientX, event.clientY);
-        }
-        return;
-      }
-      if (activeCursorToolId === 'hammer') {
-        if (!isOverAvatarAtPointer) {
-          clearOutsideHammerResetTimer(false);
-          setOutsideRangeCursorVariants(prev => ({ ...prev, hammer: 'secondary' }));
-          outsideHammerResetTimeoutRef.current = window.setTimeout(() => {
-            setOutsideRangeCursorVariants(prev => ({ ...prev, hammer: 'primary' }));
-            outsideHammerResetTimeoutRef.current = null;
-          }, 220);
-          return;
-        }
-        if (hammerSwingPhase !== 'idle') {
-          return;
-        }
-        const shouldTriggerInnerHammerEasterEgg = Math.random() < 0.05;
-        const hammerBonkCount = recordInteractionBurst('hammer:bonk', 3200);
-        const hammerIntensity: InteractionIntensity = shouldTriggerInnerHammerEasterEgg
-          ? 'easter_egg'
-          : hammerBonkCount >= 3
-            ? 'burst'
-            : hammerBonkCount >= 2
-              ? 'rapid'
-              : 'normal';
-        emitAvatarInteraction('hammer', 'bonk', 'avatar', event.clientX, event.clientY, {
-          intensity: hammerIntensity,
-          easterEgg: shouldTriggerInnerHammerEasterEgg,
-          touchZone: avatarRangeHit?.touchZone,
-        });
-        playAvatarToolSound(
-          shouldTriggerInnerHammerEasterEgg
-            ? avatarToolSoundPaths.hammerBig
-            : avatarToolSoundPaths.hammerSmall,
-        );
-        setIsInnerHammerEasterEggActive(shouldTriggerInnerHammerEasterEgg);
-        setHammerSwingPhase('windup');
-        hammerSwingTimeoutIdsRef.current = [
-          window.setTimeout(() => {
-            setHammerSwingPhase('swing');
-          }, 240),
-          window.setTimeout(() => {
-            setHammerSwingPhase('impact');
-          }, 420),
-          window.setTimeout(() => {
-            setHammerSwingPhase('recover');
-          }, 520),
-          window.setTimeout(() => {
-            setHammerSwingPhase('idle');
-            if (shouldTriggerInnerHammerEasterEgg) {
-              setIsInnerHammerEasterEggActive(false);
-            }
-            hammerSwingTimeoutIdsRef.current = [];
-          }, 620),
-        ];
-        return;
-      }
-      if (isOverAvatarAtPointer) {
-        setAvatarRangeCursorVariants(prev => ({
-          ...prev,
-          [activeCursorToolId]: prev[activeCursorToolId] === 'primary' ? 'secondary' : 'primary',
-        }));
-      } else {
-        setOutsideRangeCursorVariants(prev => ({
-          ...prev,
-          [activeCursorToolId]: prev[activeCursorToolId] === 'primary' ? 'secondary' : 'primary',
-        }));
-      }
-    };
-
-    const handlePointerUp = () => {
-      if (activeCursorToolId !== 'fist') return;
-      resetFistCursorVariant();
-    };
-
-    window.addEventListener('pointerdown', toggleCursorVariantOnPointerDown, true);
-    window.addEventListener('pointerup', handlePointerUp, true);
-    window.addEventListener('pointercancel', handlePointerUp, true);
-    window.addEventListener('blur', handlePointerUp);
-    return () => {
-      window.removeEventListener('pointerdown', toggleCursorVariantOnPointerDown, true);
-      window.removeEventListener('pointerup', handlePointerUp, true);
-      window.removeEventListener('pointercancel', handlePointerUp, true);
-      window.removeEventListener('blur', handlePointerUp);
-    };
-  }, [activeCursorToolId, avatarRangeCursorVariants, hammerSwingPhase, setCursorOverAvatarRange]);
-
-  useEffect(() => {
-    if (activeCursorToolId === 'hammer') return;
-    clearHammerSwingAnimation();
-    clearOutsideHammerResetTimer();
-  }, [activeCursorToolId, avatarToolCacheState]);
-
-  useEffect(() => () => {
-    clearHammerSwingAnimation();
-    clearOutsideHammerResetTimer();
-    if (avatarRangeHoldTimerRef.current !== null) {
-      window.clearTimeout(avatarRangeHoldTimerRef.current);
-      avatarRangeHoldTimerRef.current = null;
-    }
-    floatingHeartTimeoutIdsRef.current.forEach(timeoutId => window.clearTimeout(timeoutId));
-    floatingHeartTimeoutIdsRef.current = [];
-    floatingFistDropTimeoutIdsRef.current.forEach(timeoutId => window.clearTimeout(timeoutId));
-    floatingFistDropTimeoutIdsRef.current = [];
-  }, []);
-
-  useEffect(() => {
-    if (!activeCursorToolId) {
-      setCursorOverAvatarRange(false, { allowHold: false });
-      setIsCursorOverCompactCursorZone(false);
-      return;
-    }
-
-    let frameId = 0;
-
-    const updateCursorRangeState = (clientX: number, clientY: number) => {
-      const nextValue = isPointerWithinAvatarRange(clientX, clientY, avatarToolCacheState);
-      setCursorOverAvatarRange(nextValue, { allowHold: true });
-    };
-
-    const handlePointerMove = (event: PointerEvent) => {
-      setIsCursorInsideHostWindow(true);
-      latestPointerPositionRef.current = getAvatarToolPointerPosition(event);
-      latestPointerTargetRef.current = event.target;
-      if (activeCursorToolId === 'hammer') {
-        updateHammerCursorOverlayPosition(event.clientX, event.clientY);
-      } else if (activeCursorToolId) {
-        updateAvatarCursorOverlayPosition(event.clientX, event.clientY);
-      }
-      if (frameId) return;
-
-      frameId = window.requestAnimationFrame(() => {
-        frameId = 0;
-        const { x, y } = latestPointerPositionRef.current;
-        const isOverCompactCursorZone = isPointerOverCompactCursorZone(latestPointerTargetRef.current);
-        updateCursorRangeState(x, y);
-        setIsCursorOverCompactCursorZone(previousValue => (
-          previousValue === isOverCompactCursorZone ? previousValue : isOverCompactCursorZone
-        ));
-      });
-    };
-
-    const hideLocalCursorOverlay = () => {
-      clearAvatarBoundsCache(avatarToolCacheState);
-      latestPointerTargetRef.current = null;
-      setCursorOverAvatarRange(false, { allowHold: false });
-      setIsCursorOverCompactCursorZone(false);
-      setIsCursorInsideHostWindow(false);
-    };
-
-    const isPointerOutsideViewport = (event: MouseEvent | PointerEvent) => (
-      event.clientX <= 0
-      || event.clientY <= 0
-      || event.clientX >= window.innerWidth
-      || event.clientY >= window.innerHeight
-    );
-
-    const handleMouseOut = (event: MouseEvent) => {
-      if (event.relatedTarget !== null) return;
-      if (!isPointerOutsideViewport(event)) return;
-      hideLocalCursorOverlay();
-    };
-
-    const handlePointerOut = (event: PointerEvent) => {
-      if (event.relatedTarget !== null) return;
-      if (!isPointerOutsideViewport(event)) return;
-      hideLocalCursorOverlay();
-    };
-
-    const handleVisibilityChange = () => {
-      if (document.hidden) {
-        hideLocalCursorOverlay();
-      }
-    };
-
-    window.addEventListener('pointermove', handlePointerMove, { passive: true, capture: true });
-    document.addEventListener('mouseleave', hideLocalCursorOverlay);
-    window.addEventListener('pointerout', handlePointerOut, true);
-    window.addEventListener('mouseout', handleMouseOut, true);
-    window.addEventListener('blur', hideLocalCursorOverlay);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-
-    return () => {
-      if (frameId) {
-        window.cancelAnimationFrame(frameId);
-      }
-      clearAvatarBoundsCache(avatarToolCacheState);
-      window.removeEventListener('pointermove', handlePointerMove, true);
-      document.removeEventListener('mouseleave', hideLocalCursorOverlay);
-      window.removeEventListener('pointerout', handlePointerOut, true);
-      window.removeEventListener('mouseout', handleMouseOut, true);
-      window.removeEventListener('blur', hideLocalCursorOverlay);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, [
-    activeCursorToolId,
-    avatarCursorOverlayScale,
-    avatarToolCacheState,
-    hammerCursorOverlayScale,
-    setCursorOverAvatarRange,
-  ]);
-
-  useEffect(() => {
-    const root = document.documentElement;
-    let cancelled = false;
-
-    if (!activeCursorToolId || composerHidden) {
-      clearGlobalToolCursorState();
-      return;
-    }
-
-    if ((shouldUseLocalDesktopCursorOverlay || isElectronMultiWindow) && !isCursorInsideHostWindow) {
-      clearGlobalToolCursorState();
-      return;
-    }
-
-    const selected = toolIconItems.find(item => item.id === activeCursorToolId);
-    if (!selected) {
-      clearGlobalToolCursorState();
-      return;
-    }
-
-    clearForcedNativeCursorFallback();
-    root.classList.add('neko-tool-cursor-active');
-
-    const applyResolvedCursor = async () => {
-      let cursorValue: string;
-      if (shouldUseLocalDesktopCursorOverlay || isElectronMultiWindow) {
-        cursorValue = 'none';
-      } else if (isCursorOverAvatarRange && !isCursorOverCompactCursorZone) {
-        cursorValue = resolveCursorValue(selected, effectiveCursorVariant);
-      } else {
-        cursorValue = await resolveCompactCursorValue(selected, effectiveCursorVariant, avatarToolCacheState);
-      }
-      if (cancelled) return;
-      root.style.setProperty('--neko-chat-tool-cursor', cursorValue);
-    };
-
-    void applyResolvedCursor();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [activeCursorToolId, composerHidden, avatarToolCacheState, effectiveCursorVariant, isCursorInsideHostWindow, isCursorOverAvatarRange, isCursorOverCompactCursorZone, isElectronMultiWindow, shouldUseLocalDesktopCursorOverlay]);
-
-  useEffect(() => {
-    if (!activeToolItem) return;
-    void resolveCompactCursorValue(activeToolItem, effectiveCursorVariant, avatarToolCacheState);
-  }, [activeToolItem, avatarToolCacheState, effectiveCursorVariant]);
-
-  useEffect(() => {
-    if (!avatarCursorOverlayActive) return;
-    updateAvatarCursorOverlayPosition(
-      latestPointerPositionRef.current.x,
-      latestPointerPositionRef.current.y,
-    );
-  }, [avatarCursorOverlayActive, avatarCursorOverlayImagePath, activeToolItem, avatarCursorOverlayScale]);
-
-  useEffect(() => {
-    if (!hammerCursorOverlayActive) return;
-    updateHammerCursorOverlayPosition(
-      latestPointerPositionRef.current.x,
-      latestPointerPositionRef.current.y,
-    );
-  }, [hammerCursorOverlayActive, hammerCursorOverlayScale, hammerSwingPhase]);
-
-  useEffect(() => {
-    if (composerHidden || composerDisabled) {
-      clearActiveCursorToolSelection();
-    }
-  }, [clearActiveCursorToolSelection, composerHidden, composerDisabled]);
-
-  useEffect(() => {
-    function handleDeactivate() {
-      clearActiveCursorToolSelection();
-    }
-    window.addEventListener('neko:deactivate-tool-cursor', handleDeactivate);
-    return () => window.removeEventListener('neko:deactivate-tool-cursor', handleDeactivate);
-  }, []);
-
-  useEffect(() => () => {
-    clearGlobalToolCursorState();
-  }, []);
-
   function restoreCompactExportHistoryToBottomForOutgoingMessage() {
     if (compactExportHistoryOpen) {
       setCompactExportAutoScrollToBottom(true);
@@ -6094,14 +4811,18 @@ function CompactChatApp({
   function submitDraft() {
     if (compactTextEntryLocked) return;
     if (submittingRef.current) return;
-    const text = draft.trim();
-    if (!text && composerAttachments.length === 0) return;
+    const text = visibleDraft.trim();
+    if (!text && (catLocalTextOnly || composerAttachments.length === 0)) return;
     closeCompactInputToolFan();
     submittingRef.current = true;
     let shouldRefocusCompactInput = false;
     try {
       onComposerSubmit?.({ text });
-      setDraft('');
+      if (catLocalTextOnly) {
+        setCatDraft('');
+      } else {
+        setDraft('');
+      }
       restoreCompactExportHistoryToBottomForOutgoingMessage();
       shouldRefocusCompactInput = isCompactSurface
         && effectiveCompactChatState === 'input'
@@ -6311,8 +5032,10 @@ function CompactChatApp({
       ? 'true'
       : 'false'
   );
-  const compactToolToggleVisible = isCompactSurface && !composerHidden;
   const compactToolToggleActsAsSubmit = effectiveCompactChatState === 'input' && compactInputHasPayload;
+  const compactToolToggleVisible = isCompactSurface
+    && !composerHidden
+    && (!catLocalTextOnly || compactToolToggleActsAsSubmit);
   const compactInputToolToggleButton = compactToolToggleVisible ? (
     <button
       className={`send-button-circle compact-input-tool-toggle${compactInputToolFanOpen ? ' is-open' : ''}`}
@@ -6378,7 +5101,6 @@ function CompactChatApp({
           compactToolOriginSuppressClickRef.current = false;
           return;
         }
-        clearActiveCursorToolSelection();
         // onCompactMinimizeRequest 是可选 prop：真正把 surfaceMode 切到 'minimized'
         // 的是宿主回调，切回 minimized 后才会复位 compactCollapsing。宿主没传回调时
         // 若仍 setCompactCollapsing(true)，模式永不变、collapsing 永不复位，蓝条/胶囊
@@ -6386,6 +5108,7 @@ function CompactChatApp({
         if (!onCompactMinimizeRequest) {
           return;
         }
+        clearActiveAvatarToolSelection();
         // #3 折叠时若历史区已开，异步触发其收回动画（与折叠并行，不阻塞）。
         // 用 persist:false：只播收回动画、不把「关闭」写进偏好；并记下恢复后重开，
         // 这样 minimize→恢复后历史区按折叠前状态重新打开（不把临时折叠误当偏好变更）。
@@ -6405,7 +5128,7 @@ function CompactChatApp({
     </button>
   );
 
-  const compactInputToolFanNode = compactToolToggleVisible ? (
+  const compactInputToolFanNode = compactToolToggleVisible && !catLocalTextOnly ? (
     <div
       ref={compactInputToolFanRef}
       className="compact-input-tool-fan"
@@ -6686,7 +5409,7 @@ function CompactChatApp({
             }
             if (activeToolItem) {
               event.stopPropagation();
-              clearActiveCursorToolAndCloseCompactFan();
+              clearActiveAvatarToolAndCloseCompactFan();
               return;
             }
             compactInputToolFanOpenIntentRef.current = 'click';
@@ -6705,8 +5428,8 @@ function CompactChatApp({
           <button
             className="composer-tool-clear-btn"
             type="button"
-            aria-label={clearCursorToolAriaLabel}
-            title={clearCursorToolAriaLabel}
+            aria-label={clearAvatarToolAriaLabel}
+            title={clearAvatarToolAriaLabel}
             disabled={compactAvatarToolActionsDisabled}
             tabIndex={getCompactToolWheelTabIndex(1)}
             onClick={(event) => {
@@ -6716,7 +5439,7 @@ function CompactChatApp({
                 return;
               }
               event.stopPropagation();
-              clearActiveCursorToolAndCloseCompactFan();
+              clearActiveAvatarToolAndCloseCompactFan();
             }}
           >
             <span className="composer-tool-clear-icon" aria-hidden="true" />
@@ -6726,11 +5449,11 @@ function CompactChatApp({
       {toolMenuOpen && compactInputToolFanOpen ? (
         <AvatarToolQuickbar
           activeToolIds={activeAvatarToolIds}
-          activeCursorToolId={activeCursorToolId}
+          activeAvatarToolId={activeAvatarToolId}
           availableTools={toolIconItems}
           disabled={compactAvatarToolActionsDisabled}
           getToolVariant={(toolId) => (
-            activeCursorToolId === toolId ? effectiveCursorVariant : 'primary'
+            activeAvatarToolId === toolId ? effectiveAvatarToolVariant : 'primary'
           )}
           onToolClick={(item, event) => {
             if (shouldSuppressCompactToolClick(event)) {
@@ -6757,7 +5480,7 @@ function CompactChatApp({
       ) : null}
     </div>
   ) : null;
-  const composerAttachmentPreviewNode = composerAttachments.length > 0 ? (
+  const composerAttachmentPreviewNode = !catLocalTextOnly && composerAttachments.length > 0 ? (
     <div
       className={`composer-attachment-viewport${isCompactSurface ? ' composer-attachment-viewport-compact' : ''}`}
       aria-label={composerAttachmentsAriaLabel}
@@ -6785,9 +5508,7 @@ function CompactChatApp({
                   onComposerRemoveAttachment?.(attachment.id);
                 }
               }}
-            >
-              <span className="composer-attachment-remove-icon" aria-hidden="true" />
-            </button>
+            />
           </figure>
         ))}
       </div>
@@ -6914,6 +5635,8 @@ function CompactChatApp({
             role="group"
             aria-label={choicePrompt.source === 'mini_game_invite'
               ? i18n('chat.miniGameInviteOptionsAriaLabel', 'Mini-game invite options')
+              : choicePrompt.source === 'new_user_icebreaker'
+                ? i18n('chat.newUserIcebreakerOptionsAriaLabel', 'New user icebreaker options')
               : galgameToggleButtonLabel}
           >
             {choicePrompt.options.slice(0, 3).map((option, index) => (
@@ -6948,84 +5671,9 @@ function CompactChatApp({
       ) : null}
     </div>
   );
-  const compactChoiceLayerNode = isCompactSurface
+  const compactChoiceLayerNode = isCompactSurface && !catLocalTextOnly
     ? (typeof document !== 'undefined' ? createPortal(choiceLayerNode, document.body) : choiceLayerNode)
     : null;
-  const avatarCursorOverlayNode = activeToolItem && activeCursorToolId !== 'hammer' && avatarCursorOverlayActive ? (
-    <div
-      ref={avatarCursorOverlayRef}
-      className={`avatar-cursor-overlay avatar-cursor-overlay-${activeToolItem.id}${avatarCursorOverlayActive ? ' is-visible' : ''}${avatarCursorOverlayCompact ? ' is-compact' : ''}`}
-      aria-hidden="true"
-    >
-      <div
-        className="avatar-cursor-overlay-stage"
-        style={{
-          transformOrigin: '0 0',
-        }}
-      >
-        <img
-          className={`avatar-cursor-overlay-image avatar-cursor-overlay-image-${activeToolItem.id}`}
-          src={avatarCursorOverlayImagePath}
-          alt=""
-        />
-      </div>
-    </div>
-  ) : null;
-  const hammerCursorOverlayNode = hammerToolItem && hammerCursorOverlayActive ? (
-    <div
-      ref={hammerCursorOverlayRef}
-      className={`hammer-cursor-overlay${hammerCursorOverlayActive ? ' is-visible' : ''}${hammerCursorOverlayCompact ? ' is-compact' : ''}${isInnerHammerEasterEggActive ? ' is-easter-egg' : ''}`}
-      aria-hidden="true"
-    >
-      <div
-        className="hammer-cursor-overlay-stage"
-        style={{
-          transformOrigin: '0 0',
-        }}
-      >
-        {hammerCursorOverlayUsesCompactImage ? (
-          <img
-            className="hammer-cursor-overlay-compact-image"
-            src={hammerCursorOverlayCompactImagePath}
-            alt=""
-          />
-        ) : (
-          <div
-            className={`hammer-cursor-overlay-visual${hammerCursorOverlayMotionActive ? ' is-active' : ' is-idle'}${hammerSwingPhase === 'impact' ? ' is-impact' : ''}`}
-            style={{
-              transformOrigin: `${hammerOverlayTransformOrigin.x}px ${hammerOverlayTransformOrigin.y}px`,
-            }}
-          >
-            <img
-              className="hammer-cursor-overlay-image hammer-cursor-overlay-image-primary"
-              src={hammerCursorOverlayPrimaryImagePath}
-              alt=""
-            />
-            <img
-              className="hammer-cursor-overlay-image hammer-cursor-overlay-image-secondary"
-              src={hammerCursorOverlaySecondaryImagePath}
-              alt=""
-            />
-          </div>
-        )}
-      </div>
-    </div>
-  ) : null;
-  const avatarToolCursorOverlayNodes = typeof document !== 'undefined'
-    ? createPortal(
-      <>
-        {avatarCursorOverlayNode}
-        {hammerCursorOverlayNode}
-      </>,
-      document.body,
-    )
-    : (
-      <>
-        {avatarCursorOverlayNode}
-        {hammerCursorOverlayNode}
-      </>
-    );
-
   const compactExportHistoryMessages = compactExportHistoryOpen
     ? messages
     : (compactExportHistoryClosingMessages || messages);
@@ -7084,7 +5732,8 @@ function CompactChatApp({
   // 兜底），不再随历史区收起而隐藏——否则历史默认折叠的 A/B closed 分支会连带看不到主动分享音乐条。
   const compactMusicPlayerVisibility = 'open' as const;
   const closeMemeButtonAriaLabel = i18n('chat.closeMemeAriaLabel', 'Close image');
-  const compactMemeOverlayNode = compactMemeOverlayVisible && compactMemeOverlay ? (
+  const compactMemeOverlayImageLoadingProps = { loading: 'eager' as const, fetchpriority: 'high' as const };
+  const compactMemeOverlayNode = !catLocalTextOnly && compactMemeOverlayVisible && compactMemeOverlay ? (
     <div
       className="compact-meme-overlay"
       data-compact-meme-overlay="compact-surface"
@@ -7101,18 +5750,19 @@ function CompactChatApp({
             IntersectionObserver 判定。注：表情包「常显、不被同轮台词顶掉」靠的是上面 compactMemeOverlay
             的 role 收起逻辑，不是这个属性。 */}
         <img
+          key={compactMemeOverlay.url}
           src={compactMemeOverlay.url}
           alt={compactMemeOverlay.alt}
-          loading="eager"
+          {...compactMemeOverlayImageLoadingProps}
           decoding="async"
           ref={handleCompactMemeOverlayImageRef}
           onLoad={markCompactMemeOverlayImageSettled}
-          onError={markCompactMemeOverlayImageSettled}
+          onError={handleCompactMemeOverlayImageError}
         />
         {/* 关闭叉：overlay 整体 pointer-events:none（点击穿透到桌面/下层），唯独这个按钮 CSS 里单独开
             auto 才接得住点击；点了把当前 meme id 记进 dismissedMemeId（会话级），下一张新 meme 照常显示。
             ⚠️ data-compact-hit-region 必带：overlay 的 data-compact-geometry-hit-scope="children" 让 host
-            只把带该标记的子元素登记成 native 可交互区（见 app-react-chat-window.js collectCompactCompositeGeometryItems）。
+            只把带该标记的子元素登记成 native 可交互区（见 app-react-chat-window collectCompactCompositeGeometryItems）。
             漏了它，Electron pass-through 窗口会把按钮当穿透区、点击穿到桌面（普通浏览器窗口测不出，对齐音乐条）。 */}
         {compactMemeOverlayImageSettled ? (
           <button
@@ -7229,48 +5879,7 @@ function CompactChatApp({
         onSave={handleAvatarToolManagerSave}
         onCancel={() => setAvatarToolManagerOpen(false)}
       />
-      {floatingFistDrops.map(drop => (
-        <span
-          key={drop.id}
-          className="fist-floating-drop"
-          aria-hidden="true"
-          style={{
-            position: 'fixed',
-            left: `${drop.x}px`,
-            top: `${drop.y}px`,
-            '--drop-drift-x': `${drop.driftX}px`,
-            '--drop-drift-y': `${drop.driftY}px`,
-            '--drop-rotation': `${drop.rotation}deg`,
-            '--drop-scale': drop.scale,
-            '--drop-delay': `${drop.delayMs}ms`,
-          } as CSSProperties}
-        >
-            <img
-            className="fist-floating-drop-image"
-            src="/static/icons/cat_moneny.png"
-            alt=""
-          />
-        </span>
-      ))}
-      {floatingHearts.map(heart => (
-        <span
-          key={heart.id}
-          className="lollipop-floating-heart"
-          aria-hidden="true"
-          style={{
-            left: `${heart.x}px`,
-            top: `${heart.y}px`,
-            '--heart-drift-x': `${heart.driftX}px`,
-            '--heart-drift-y': `${heart.driftY}px`,
-            '--heart-sway-x': `${Math.max(8, Math.round(Math.abs(heart.driftX) * 0.32)) * (heart.driftX < 0 ? -1 : 1)}px`,
-            '--heart-scale': heart.scale,
-            '--heart-delay': `${heart.delayMs}ms`,
-          } as CSSProperties}
-        >
-          <span className="lollipop-floating-heart-glyph">*</span>
-        </span>
-      ))}
-      {avatarToolCursorOverlayNodes}
+      <AvatarToolVisuals model={avatarToolRuntime.visualModel} />
       <section
         className={`chat-window ${surfaceModeClassName}`}
         aria-label={chatWindowAriaLabel}
@@ -7348,7 +5957,7 @@ function CompactChatApp({
                     data-compact-drag-surface="true"
                     data-compact-chat-state={effectiveCompactChatState}
                     data-compact-geometry-part={effectiveCompactChatState === 'input' ? 'inputBody' : 'capsuleBody'}
-                    data-compact-geometry-hit-scope={effectiveCompactChatState === 'input' ? 'children' : undefined}
+                    data-compact-geometry-hit-scope={!composerHidden ? 'children' : undefined}
                     data-compact-tool-toggle-visible={compactToolToggleVisible ? 'true' : 'false'}
                     onPointerDown={beginCompactToolOriginDrag}
                     onPointerMove={updateCompactToolOriginDrag}
@@ -7371,12 +5980,16 @@ function CompactChatApp({
                           placeholder={inputPlaceholder}
                           aria-label={inputPlaceholder}
                           rows={1}
-                          value={draft}
+                          value={visibleDraft}
                           readOnly={compactTextEntryLocked}
                           disabled={composerDisabled}
                           onChange={(event) => {
                             if (compactTextEntryLocked) return;
-                            setDraft(event.target.value);
+                            if (catLocalTextOnly) {
+                              setCatDraft(event.target.value);
+                            } else {
+                              setDraft(event.target.value);
+                            }
                             if (event.target.value.trim().length > 0) {
                               closeCompactInputToolFan();
                             }
@@ -7398,6 +6011,9 @@ function CompactChatApp({
                         <button
                           className="compact-chat-capsule-button"
                           type="button"
+                          data-compact-hit-region="true"
+                          data-compact-hit-region-id="capsule:text"
+                          data-compact-hit-region-kind="capsule-text"
                           disabled={compactCapsuleEntryLocked}
                           onClick={() => {
                             if (composerHidden) return;

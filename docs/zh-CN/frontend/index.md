@@ -1,63 +1,39 @@
 # 前端概述
 
-N.E.K.O. 的前端由三层组成：传统的服务端渲染页面、React 聊天窗口组件和 Vue 插件管理面板。
+N.E.K.O. 的主界面由 FastAPI 主服务器提供。仓库中有三套构建与运行边界不同的前端代码。
 
-## 架构
+## 代码组成
 
-| 层级 | 技术 | 位置 |
-|------|------|------|
-| 主 UI 页面 | 原生 JS + Jinja2 模板 | `static/` + `templates/` |
-| 聊天窗口 | React 18 + TypeScript | `frontend/react-neko-chat/` |
-| 插件管理面板 | Vue 3 + Element Plus | `frontend/plugin-manager/` |
-| Live2D 渲染 | Pixi.js + Live2D Cubism SDK | `static/` |
-| VRM 渲染 | Three.js + @pixiv/three-vrm | `static/` |
-| MMD 渲染 | Three.js + MMD 加载器（PMX/PMD 模型 + VMD 动画） | `static/`（mmd-*.js） |
-| PNGTuber 渲染 | 2D 图片状态（Canvas/IMG）+ layered_canvas_v1 适配器 | `static/pngtuber-core.js` |
+| 界面 | 技术 | 源码 | 运行产物 |
+| --- | --- | --- | --- |
+| 主界面与辅助页面 | Jinja2、原生 JavaScript、CSS | `templates/`、`static/app/`、`static/live2d/`、`static/vrm/`、`static/mmd/` | 由主服务器渲染，通常使用 `48911` 端口 |
+| 聊天 UI | React 18、TypeScript | `frontend/react-neko-chat/` | `static/react/neko-chat/neko-chat-window.iife.js` 与 `.css` |
+| 插件管理器 | Vue 3、TypeScript | `frontend/plugin-manager/` | `frontend/plugin-manager/dist/`，由插件服务器提供 |
 
-桌宠是一种窗口**模式**（加载 `index.html` 的 Electron 桌宠窗口），并非独立的形象格式——上述任意一种形象都可以在其中渲染。
+角色渲染器属于主界面：Live2D 使用 Pixi/Cubism，VRM 和 MMD 使用 Three.js，PNGTuber 使用 `static/pngtuber-core.js`。Electron 桌宠是宿主模式，不是另一种角色格式。
 
-## 传统前端（static/ + templates/）
+## 唯一的聊天实现
 
-主 UI 使用**原生 JavaScript** 和 Jinja2 HTML 模板构建。
+`frontend/react-neko-chat/` 是聊天 UI 的唯一真实实现。IIFE 产物暴露 `window.NekoChatWindow`，`static/app/app-react-chat-window/` 下的脚本把它挂载到 `#react-chat-window-root`。
 
-```
-static/
-├── app.js                    # 主应用逻辑
-├── theme-manager.js          # 深色/浅色模式切换
-├── css/                      # 样式表
-├── js/                       # 功能模块 JS
-├── locales/                  # 国际化 JSON 文件（en, zh-CN, zh-TW, ja, ko, ru, es, pt）
-├── live2d-ui-*.js            # Live2D UI 组件
-├── vrm-ui-*.js               # VRM UI 组件
-├── mmd-*.js                  # MMD 渲染（Three.js，PMX/PMD + VMD）
-├── pngtuber-core.js          # PNGTuber 渲染（Canvas/IMG）
-└── react/neko-chat/          # React 聊天窗口构建产物
-```
+`templates/index.html` 与 `templates/chat.html` 都提供该挂载点。前者在主页面中显示可收起的浮动聊天界面；后者承载 compact 或 full 独立聊天界面。
 
-## 聊天窗口（React）
+旧 `#chat-container` DOM 仅作为旧脚本的兼容空壳保留。两个模板都会隐藏它，`static/app/app-chat-adapter.js` 会把遗留的 `appendMessage()` 调用替换为对 `window.reactChatWindowHost` 的调用。不要再往旧容器增加 UI 或逻辑。
 
-聊天窗口以 IIFE 库的形式构建，嵌入到主页面中。
+## Web 与 Electron 宿主
 
-- **源码**: `frontend/react-neko-chat/`
-- **构建产物**: `static/react/neko-chat/neko-chat-window.iife.js`
-- **全局变量**: `window.NekoChatWindow`
-- **开发服务器**: `npm run dev`（端口 5174）
+在浏览器中，`/` 是单一主页面；也可以直接打开 `/chat`、`/chat_full` 与 `/subtitle` 进行开发和测试。
 
-胶水层 `static/app-react-chat-window.js` 负责加载 React 组件并挂载到 DOM。
+Electron 分发应用是独立的宿主程序。它把多个路由加载到不同窗口：桌宠使用主页面模板，聊天窗口使用 `/chat` 或 `/chat_full`，字幕使用 `/subtitle`。渲染器代码检测 `window.nekoChatWindow`、`window.nekoSubtitle` 等 preload 全局；原生窗口创建与 IPC 由宿主负责。
 
-## 插件管理面板（Vue）
+跨窗口的 Web 后备通道位于 `static/app/app-interpage/`，使用 `neko_page_channel` `BroadcastChannel`，并以同源 `postMessage` 兜底。修改路由、资源 URL、初始化顺序或窗口通信时，必须同时检查浏览器与 Electron 模式。
 
-用于管理插件、查看日志和监控指标的独立仪表板。
+## 加载与资源规则
 
-- **源码**: `frontend/plugin-manager/`
-- **构建产物**: `frontend/plugin-manager/dist/`
-- **服务路径**: 插件服务器（端口 48916）的 `/ui/`
-- **开发服务器**: `npm run dev`（端口 5173，代理 API 到插件服务器）
+- 服务端渲染页面使用 `/static/...` 形式的根相对 URL；不要根据当前路由推导资源路径。
+- 用户模型与创意工坊模型通过专用挂载点提供；不要把文件系统路径转换成浏览器 URL。
+- `static/` 下的经典脚本通过约定的全局对象和 DOM 事件通信，因此模板加载顺序属于运行时契约。
+- React 聊天改动应进入 `frontend/react-neko-chat/`，重新构建 IIFE，不要编辑生成文件。
+- 插件管理器改动应进入 `frontend/plugin-manager/`；它的构建与本地化独立于主页面。
 
-## 核心概念
-
-- **页面**是服务端渲染的 HTML 模板，加载 JavaScript 模块
-- **WebSocket** 用于实时音频/文本聊天（参见 [WebSocket 协议](/zh-CN/api/websocket/protocol)）
-- **REST API** 用于所有 CRUD 操作（参见 [API 参考](/zh-CN/api/)）
-- **主题管理器**通过 CSS 变量覆盖处理深色/浅色模式
-- **国际化**在客户端通过加载对应的语言 JSON 文件实现
+当前入口请继续阅读[页面与模板](/zh-CN/frontend/pages)、[国际化](/zh-CN/frontend/i18n)以及各渲染器页面。

@@ -73,6 +73,28 @@ type AvatarToolManagerPosition = {
   top: number;
 };
 
+type AvatarToolManagerViewport = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  right: number;
+  bottom: number;
+  compactDesktop: boolean;
+};
+
+type DesktopCompactLayoutRect = {
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+} | null;
+
+type DesktopCompactLayoutForAvatarToolManager = {
+  workArea?: DesktopCompactLayoutRect;
+  windowBounds?: DesktopCompactLayoutRect;
+} | null;
+
 type AvatarToolManagerDialogDragSession = {
   pointerId: number;
   startX: number;
@@ -85,6 +107,15 @@ type AvatarToolManagerDialogDragSession = {
 
 function getToolLabel(tool: AvatarToolItem): string {
   return i18n(tool.labelKey, tool.labelFallback);
+}
+
+function getToolImageStyle(tool: AvatarToolItem): CSSProperties | undefined {
+  const visual = tool.managerIconVisual;
+  if (!visual) return undefined;
+  return {
+    transform: `scale(${visual.scale}) translate(${visual.translateXPercent}%, ${visual.translateYPercent}%)`,
+    transformOrigin: 'center center',
+  };
 }
 
 function createSlots(toolIds: AvatarToolId[]): AvatarToolSlotValue[] {
@@ -164,6 +195,23 @@ function getViewportSize() {
   };
 }
 
+function readPositiveLayoutNumber(value: unknown): number | null {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+}
+
+function readLayoutNumber(value: unknown): number | null {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function getDesktopCompactLayout(): DesktopCompactLayoutForAvatarToolManager {
+  if (typeof window === 'undefined') return null;
+  return (window as typeof window & {
+    __nekoDesktopCompactLayout?: DesktopCompactLayoutForAvatarToolManager;
+  }).__nekoDesktopCompactLayout || null;
+}
+
 function isElectronDesktopEnvironment(): boolean {
   return typeof window !== 'undefined' && !!(
     (window as any).__LANLAN_IS_ELECTRON_PET__
@@ -172,25 +220,86 @@ function isElectronDesktopEnvironment(): boolean {
   );
 }
 
-function getDialogSize(dialogElement: HTMLElement | null) {
+function getDialogViewport(): AvatarToolManagerViewport {
+  const fallback = getViewportSize();
+  const defaultViewport = {
+    left: 0,
+    top: 0,
+    width: fallback.width,
+    height: fallback.height,
+    right: fallback.width,
+    bottom: fallback.height,
+    compactDesktop: false,
+  };
+  if (!isElectronDesktopEnvironment()) return defaultViewport;
+
+  const layout = getDesktopCompactLayout();
+  const workArea = layout?.workArea;
+  const workAreaWidth = readPositiveLayoutNumber(workArea?.width);
+  const workAreaHeight = readPositiveLayoutNumber(workArea?.height);
+  if (!workAreaWidth || !workAreaHeight) return defaultViewport;
+
+  const workAreaX = readLayoutNumber(workArea?.x) ?? 0;
+  const workAreaY = readLayoutNumber(workArea?.y) ?? 0;
+  const windowX = readLayoutNumber(layout?.windowBounds?.x) ?? workAreaX;
+  const windowY = readLayoutNumber(layout?.windowBounds?.y) ?? workAreaY;
+  const left = workAreaX - windowX;
+  const top = workAreaY - windowY;
+  return {
+    left,
+    top,
+    width: workAreaWidth,
+    height: workAreaHeight,
+    right: left + workAreaWidth,
+    bottom: top + workAreaHeight,
+    compactDesktop: true,
+  };
+}
+
+function getDesktopCompactDialogSize(viewport: AvatarToolManagerViewport) {
+  return {
+    width: Math.max(
+      1,
+      Math.min(
+        AVATAR_TOOL_MANAGER_FALLBACK_WIDTH,
+        viewport.width - AVATAR_TOOL_MANAGER_VIEWPORT_GUTTER * 2,
+      ),
+    ),
+    height: Math.max(
+      1,
+      Math.min(
+        AVATAR_TOOL_MANAGER_FALLBACK_HEIGHT,
+        viewport.height - AVATAR_TOOL_MANAGER_VIEWPORT_GUTTER * 2,
+      ),
+    ),
+  };
+}
+
+function getDialogSize(dialogElement: HTMLElement | null, viewport: AvatarToolManagerViewport = getDialogViewport()) {
+  if (viewport.compactDesktop) {
+    return getDesktopCompactDialogSize(viewport);
+  }
   return {
     width: dialogElement?.offsetWidth || AVATAR_TOOL_MANAGER_FALLBACK_WIDTH,
     height: dialogElement?.offsetHeight || AVATAR_TOOL_MANAGER_FALLBACK_HEIGHT,
   };
 }
 
-function clampDialogPosition(position: AvatarToolManagerPosition, dialogSize: { width: number; height: number }) {
-  const viewport = getViewportSize();
+function clampDialogPosition(
+  position: AvatarToolManagerPosition,
+  dialogSize: { width: number; height: number },
+  viewport: AvatarToolManagerViewport = getDialogViewport(),
+) {
   return {
     left: clampValue(
       position.left,
-      AVATAR_TOOL_MANAGER_VIEWPORT_GUTTER,
-      viewport.width - dialogSize.width - AVATAR_TOOL_MANAGER_VIEWPORT_GUTTER,
+      viewport.left + AVATAR_TOOL_MANAGER_VIEWPORT_GUTTER,
+      viewport.right - dialogSize.width - AVATAR_TOOL_MANAGER_VIEWPORT_GUTTER,
     ),
     top: clampValue(
       position.top,
-      AVATAR_TOOL_MANAGER_VIEWPORT_GUTTER,
-      viewport.height - dialogSize.height - AVATAR_TOOL_MANAGER_VIEWPORT_GUTTER,
+      viewport.top + AVATAR_TOOL_MANAGER_VIEWPORT_GUTTER,
+      viewport.bottom - dialogSize.height - AVATAR_TOOL_MANAGER_VIEWPORT_GUTTER,
     ),
   };
 }
@@ -199,21 +308,21 @@ function resolveAnchoredDialogPosition(
   anchorRect: AvatarToolManagerAnchorRect | null | undefined,
   dialogSize: { width: number; height: number },
 ) {
-  const viewport = getViewportSize();
+  const viewport = getDialogViewport();
   if ((!isElectronDesktopEnvironment() && viewport.width <= 640) || !anchorRect) {
     return null;
   }
 
   const preferredBelowTop = anchorRect.bottom + AVATAR_TOOL_MANAGER_ANCHOR_GAP;
   const preferredAboveTop = anchorRect.top - dialogSize.height - AVATAR_TOOL_MANAGER_ANCHOR_GAP;
-  const top = preferredBelowTop + dialogSize.height <= viewport.height - AVATAR_TOOL_MANAGER_VIEWPORT_GUTTER
+  const top = preferredBelowTop + dialogSize.height <= viewport.bottom - AVATAR_TOOL_MANAGER_VIEWPORT_GUTTER
     ? preferredBelowTop
     : preferredAboveTop;
 
   return clampDialogPosition({
     left: anchorRect.right - dialogSize.width,
     top,
-  }, dialogSize);
+  }, dialogSize, viewport);
 }
 
 function getFocusableElements(container: HTMLElement | null): HTMLElement[] {
@@ -258,22 +367,26 @@ export default function AvatarToolItemManager({
       setDialogDragSession(null);
       return;
     }
-    const nextPosition = resolveAnchoredDialogPosition(anchorRect, getDialogSize(dialogRef.current));
+    const viewport = getDialogViewport();
+    const nextPosition = resolveAnchoredDialogPosition(anchorRect, getDialogSize(dialogRef.current, viewport));
     setDialogPosition(nextPosition);
   }, [anchorRect, open]);
 
   useEffect(() => {
     if (!open || typeof window === 'undefined') return undefined;
-    const handleResize = () => {
+    const clampCurrentPosition = () => {
+      const viewport = getDialogViewport();
       setDialogPosition((position) => {
-        if (!isElectronDesktopEnvironment() && getViewportSize().width <= 640) return null;
+        if (!isElectronDesktopEnvironment() && viewport.width <= 640) return null;
         if (!position) return position;
-        return clampDialogPosition(position, getDialogSize(dialogRef.current));
+        return clampDialogPosition(position, getDialogSize(dialogRef.current, viewport), viewport);
       });
     };
-    window.addEventListener('resize', handleResize);
+    window.addEventListener('resize', clampCurrentPosition);
+    window.addEventListener('neko:desktop-compact-layout-change', clampCurrentPosition);
     return () => {
-      window.removeEventListener('resize', handleResize);
+      window.removeEventListener('resize', clampCurrentPosition);
+      window.removeEventListener('neko:desktop-compact-layout-change', clampCurrentPosition);
     };
   }, [open]);
 
@@ -486,10 +599,11 @@ export default function AvatarToolItemManager({
         || Math.hypot(event.clientX - session.startX, event.clientY - session.startY) >= AVATAR_TOOL_DRAG_THRESHOLD;
       if (!active) return session;
       event.preventDefault();
+      const viewport = getDialogViewport();
       setDialogPosition(clampDialogPosition({
         left: session.startLeft + event.clientX - session.startX,
         top: session.startTop + event.clientY - session.startY,
-      }, getDialogSize(dialogRef.current)));
+      }, getDialogSize(dialogRef.current, viewport), viewport));
       return {
         ...session,
         active,
@@ -522,13 +636,23 @@ export default function AvatarToolItemManager({
   }
 
   const isDesktopMode = dialogPosition !== null;
+  const dialogViewport = getDialogViewport();
+  const dialogSize = getDialogSize(dialogRef.current, dialogViewport);
+  const isDesktopCompactDialog = dialogViewport.compactDesktop;
   const dragTool = dragSession ? availableById.get(dragSession.toolId) : null;
   const managerDragging = !!dialogDragSession?.active || !!dragSession?.active;
 
-  const dialogStyle = dialogPosition
+  const dialogStyle = dialogPosition || isDesktopCompactDialog
     ? ({
-      '--avatar-tool-manager-left': `${dialogPosition.left}px`,
-      '--avatar-tool-manager-top': `${dialogPosition.top}px`,
+      ...(dialogPosition ? {
+        '--avatar-tool-manager-left': `${dialogPosition.left}px`,
+        '--avatar-tool-manager-top': `${dialogPosition.top}px`,
+      } : {}),
+      ...(isDesktopCompactDialog ? {
+        '--avatar-tool-manager-width': `${dialogSize.width}px`,
+        '--avatar-tool-manager-height': `${dialogSize.height}px`,
+        '--avatar-tool-manager-max-height': `${dialogSize.height}px`,
+      } : {}),
     } as CSSProperties)
     : undefined;
 
@@ -539,7 +663,7 @@ export default function AvatarToolItemManager({
 
   const dialogElement = (
     <section
-      className={`avatar-tool-manager-dialog${dialogPosition ? ' is-positioned' : ''}${managerDragging ? ' is-dragging' : ''}`}
+      className={`avatar-tool-manager-dialog${dialogPosition ? ' is-positioned' : ''}${isDesktopCompactDialog ? ' is-desktop-compact-layout' : ''}${managerDragging ? ' is-dragging' : ''}`}
       ref={dialogRef}
       style={dialogStyle}
       role="dialog"
@@ -601,8 +725,9 @@ export default function AvatarToolItemManager({
                       onPointerCancel={cancelDrag}
                     >
                       <img
-                        className={`avatar-tool-manager-tool-image avatar-tool-icon avatar-tool-icon-${tool.id}`}
+                        className="avatar-tool-manager-tool-image"
                         src={withAvatarToolAssetVersion(tool.iconImagePath)}
+                        style={getToolImageStyle(tool)}
                         alt=""
                         aria-hidden="true"
                       />
@@ -649,8 +774,9 @@ export default function AvatarToolItemManager({
                     onPointerCancel={cancelDrag}
                   >
                     <img
-                      className={`avatar-tool-manager-tool-image avatar-tool-icon avatar-tool-icon-${tool.id}`}
+                      className="avatar-tool-manager-tool-image"
                       src={withAvatarToolAssetVersion(tool.iconImagePath)}
+                      style={getToolImageStyle(tool)}
                       alt=""
                       aria-hidden="true"
                     />
@@ -696,8 +822,8 @@ export default function AvatarToolItemManager({
           }}
         >
           <img
-            className={`avatar-tool-icon avatar-tool-icon-${dragTool.id}`}
             src={withAvatarToolAssetVersion(dragTool.iconImagePath)}
+            style={getToolImageStyle(dragTool)}
             alt=""
           />
         </div>

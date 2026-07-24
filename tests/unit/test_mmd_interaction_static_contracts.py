@@ -5,7 +5,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _mmd_source() -> str:
-    return (PROJECT_ROOT / "static/mmd-interaction.js").read_text(encoding="utf-8")
+    return (PROJECT_ROOT / "static/mmd/mmd-interaction.js").read_text(encoding="utf-8")
 
 
 def test_mmd_pan_drag_snaps_on_all_platforms_before_saving_position():

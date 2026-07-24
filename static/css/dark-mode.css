@@ -1009,25 +1009,35 @@ html[data-theme="dark"].subtitle-window-host body.subtitle-window-host {
 
 /* ===== 子页面：模型配置区 ===== */
 [data-theme="dark"] .model-config-container {
-  border-color: #444;
+  border-color: transparent;
 }
 
 [data-theme="dark"] .model-header {
   background: linear-gradient(135deg, #2a7bc4, #1e5fa3);
+  border-color: #365a72;
 }
 
 [data-theme="dark"] .model-content {
   background: #2d2d2d;
 }
 
+[data-theme="dark"] .model-content.expanded {
+  border-color: #444;
+}
+
 [data-theme="dark"] .nested-model-config-container {
-  background: rgba(42, 123, 196, 0.12);
-  border-color: #365a72;
+  background: transparent;
+  border-color: transparent;
 }
 
 [data-theme="dark"] .nested-model-header {
   background: rgba(42, 123, 196, 0.22);
-  border-bottom-color: #365a72;
+  border-color: #365a72;
+}
+
+[data-theme="dark"] .nested-model-content.expanded {
+  background: rgba(42, 123, 196, 0.12);
+  border-color: #365a72;
 }
 
 [data-theme="dark"] .nested-model-header .model-title,
@@ -1400,6 +1410,20 @@ html[data-theme="dark"].subtitle-window-host body.subtitle-window-host {
   background: #2d2d2d;
   color: #e0e0e0;
   border-color: #3a5a6e;
+}
+
+[data-theme="dark"] .tutorial-cascader-trigger,
+[data-theme="dark"] .tutorial-cascader-option {
+  color: #0f5f7a;
+}
+
+[data-theme="dark"] .tutorial-cascader-trigger:hover,
+[data-theme="dark"] .tutorial-cascader-trigger:focus-visible,
+[data-theme="dark"] .tutorial-cascader-trigger.is-open,
+[data-theme="dark"] .tutorial-cascader-option:hover,
+[data-theme="dark"] .tutorial-cascader-option:focus-visible,
+[data-theme="dark"] .tutorial-cascader-option.is-selected {
+  color: #075985;
 }
 
 [data-theme="dark"] .tutorial-reset-wrapper select:hover,

@@ -38,8 +38,8 @@ def _install(tmpdir: str):
     cm = _mock_cm(tmpdir)
     with patch("memory.event_log.get_config_manager", return_value=cm), \
          patch("memory.facts.get_config_manager", return_value=cm), \
-         patch("memory.persona.get_config_manager", return_value=cm), \
-         patch("memory.reflection.get_config_manager", return_value=cm):
+         patch("memory.persona.manager.get_config_manager", return_value=cm), \
+         patch("memory.reflection.manager.get_config_manager", return_value=cm):
         event_log = EventLog()
         event_log._config_manager = cm
         fs = FactStore()
@@ -144,6 +144,24 @@ def test_entity_kind_resolves_canonical_entities():
     assert _entity_kind("master") == "user"
     assert _entity_kind("neko") == "character"
     assert _entity_kind("relationship") == "relationship"
+
+
+def test_reflection_facade_preserves_ontology_and_archive_exports():
+    """The internal split must not remove or copy legacy facade symbols."""
+    from memory import reflection as facade
+    from memory._reflection import ontology, schema
+
+    assert facade.RELATION_TYPES is ontology.RELATION_TYPES
+    assert facade.ENTITY_KINDS is ontology.ENTITY_KINDS
+    assert facade.KIND_RELATION_MAP is ontology.KIND_RELATION_MAP
+    assert facade.TEMPORAL_SCOPES is ontology.TEMPORAL_SCOPES
+    assert (
+        facade.MAX_REFLECTION_TEXT_TOKENS
+        is ontology.MAX_REFLECTION_TEXT_TOKENS
+    )
+    assert facade._entity_kind is ontology.entity_kind
+    assert facade._allowed_relation_types is ontology.allowed_relation_types
+    assert facade._REFLECTION_ARCHIVE_DAYS == schema.REFLECTION_ARCHIVE_DAYS
 
 
 def test_unknown_entity_defaults_to_user_kind():

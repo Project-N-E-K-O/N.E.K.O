@@ -28,7 +28,7 @@ from typing import Dict, Any, List, Optional, Callable, Awaitable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import uuid
-from openai import APIConnectionError, InternalServerError, RateLimitError
+from utils.llm_client import openai_retry_error_types
 import httpx
 from config import (
     USER_PLUGIN_SERVER_PORT,
@@ -553,8 +553,15 @@ class DirectTaskExecutor:
         except RuntimeError:
             logger.debug("[Agent] No running event loop, skipping async LLM close")
 
-    def _format_messages(self, messages: List[Dict[str, str]]) -> str:
-        """Format conversation messages"""
+    def _format_messages(self, messages: List[Dict[str, str]], *, proactive: bool = False) -> str:
+        """Format conversation messages.
+
+        ``proactive`` marks a self-initiated turn with no new user request: the
+        ``LATEST_USER_REQUEST`` marker (which both the unified and plugin
+        assessors key on) is taken from lanlan's own latest utterance instead of
+        the stale prior user line, so the assessment is driven by the proactive
+        intent rather than the old request.
+        """
         def _extract_text(m: dict) -> str:
             return str(m.get('text') or m.get('content') or '').strip()
 
@@ -584,11 +591,20 @@ class DirectTaskExecutor:
             return ""
 
         latest_user_text = ""
-        for m in reversed(messages[-AGENT_HISTORY_TURNS:]):
-            if m.get('role') == 'user':
-                latest_user_text = _describe_user_message(_extract_text(m), _extract_attachments(m))
-                if latest_user_text:
-                    break
+        if proactive:
+            # Self-initiated turn → the actionable "request" is lanlan's own
+            # latest utterance, not the (stale) latest user line.
+            for m in reversed(messages[-AGENT_HISTORY_TURNS:]):
+                if str(m.get('role') or '').lower() == 'assistant':
+                    latest_user_text = _extract_text(m)
+                    if latest_user_text:
+                        break
+        else:
+            for m in reversed(messages[-AGENT_HISTORY_TURNS:]):
+                if m.get('role') == 'user':
+                    latest_user_text = _describe_user_message(_extract_text(m), _extract_attachments(m))
+                    if latest_user_text:
+                        break
         lines = []
         if latest_user_text:
             lines.append(f"LATEST_USER_REQUEST: {latest_user_text}")
@@ -1186,7 +1202,7 @@ class DirectTaskExecutor:
                 )
                 return result
 
-            except (APIConnectionError, InternalServerError, RateLimitError) as e:
+            except openai_retry_error_types() as e:
                 if attempt < max_retries - 1:
                     logger.warning("[UnifiedAssessment] Attempt %d failed: %s, retrying...", attempt + 1, e)
                     await asyncio.sleep(retry_delays[attempt])
@@ -1755,7 +1771,7 @@ class DirectTaskExecutor:
                     reason=decision.get("reason", "")
                 )
                 
-            except (APIConnectionError, InternalServerError, RateLimitError) as e:
+            except openai_retry_error_types() as e:
                 logger.info(f"ℹ️ 捕获到 {type(e).__name__} 错误")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(retry_delays[attempt])
@@ -1774,11 +1790,17 @@ class DirectTaskExecutor:
         conversation_id: Optional[str] = None,
         lang: str = "en",
         external_intent: Optional[float] = None,
+        proactive: bool = False,
     ) -> Optional[TaskResult]:
         """
         Assess each channel's feasibility and return a Decision (no execution).
         Plugin is judged separately; qwenpaw/openfang/browser/computer are merged into one LLM call.
         Actual execution is dispatched uniformly by agent_server.
+
+        ``proactive`` marks a self-initiated turn (lanlan spoke with no fresh user
+        input). There is no new user request, so the actionable intent is taken
+        from lanlan's own latest utterance instead of the (stale) latest user
+        line.
         """
         # Bind active character for {MASTER_NAME}/{LANLAN_NAME} substitution
         # in any LLM call made under this analyze_and_execute (assess_user_plugin
@@ -1795,6 +1817,7 @@ class DirectTaskExecutor:
                 conversation_id=conversation_id,
                 lang=lang,
                 external_intent=external_intent,
+                proactive=proactive,
             )
         finally:
             reset_active_character(char_token)
@@ -1866,6 +1889,7 @@ class DirectTaskExecutor:
         conversation_id: Optional[str] = None,
         lang: str = "en",
         external_intent: Optional[float] = None,
+        proactive: bool = False,
     ) -> Optional[TaskResult]:
         task_id = str(uuid.uuid4())
 
@@ -1887,8 +1911,10 @@ class DirectTaskExecutor:
             logger.debug("[TaskExecutor] All execution channels disabled, skipping")
             return None
 
-        # 格式化对话
-        conversation = self._format_messages(messages)
+        # 格式化对话。主动搭话轮把 LATEST_USER_REQUEST 设为猫娘自己最近这句主动
+        # 台词（而非上一轮旧用户请求），让 unified / plugin 两路评估都对着主动意图
+        # 跑——两者都从 conversation 的 LATEST_USER_REQUEST 取意图。
+        conversation = self._format_messages(messages, proactive=proactive)
         if not conversation.strip():
             return None
         latest_user_request = self._extract_latest_user_intent(conversation)
@@ -1955,9 +1981,16 @@ class DirectTaskExecutor:
                 logger.warning("[TaskExecutor] Failed to check QwenPaw: %s", e)
 
         # ── 魔法命令前置拦截（仅对 openclaw/qwenpaw）──────────────────────
-        user_intent, user_attachments = self._extract_latest_user_payload(messages)
-        if not user_intent:
-            user_intent = self._extract_latest_user_intent(conversation)
+        if proactive:
+            # 主动搭话轮：意图是猫娘自己最近这句主动台词（已写进 latest_user_request /
+            # conversation 的 LATEST_USER_REQUEST），无 user 附件。绝不拿窗口里那条陈旧
+            # user 消息去 classify_magic_intent——否则旧 user 的魔法命令会被重放，或
+            # OpenClaw 派单成旧 user 文本而非主动意图。
+            user_intent, user_attachments = latest_user_request, []
+        else:
+            user_intent, user_attachments = self._extract_latest_user_payload(messages)
+            if not user_intent:
+                user_intent = self._extract_latest_user_intent(conversation)
         if qwenpaw_available and self.openclaw and user_intent and not user_attachments:
             try:
                 magic_intent = await self.openclaw.classify_magic_intent(user_intent)

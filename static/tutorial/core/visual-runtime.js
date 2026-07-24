@@ -181,6 +181,12 @@
                 && typeof director.isAvatarFloatingInputIntroScene === 'function'
                 && director.isAvatarFloatingInputIntroScene(legacyScene)
             );
+            const legacySpotlightVariant = legacyScene && typeof legacyScene.spotlightVariant === 'string'
+                ? legacyScene.spotlightVariant.trim()
+                : '';
+            const externalizedSpotlightOptions = {
+                variant: legacySpotlightVariant
+            };
             if (
                 isFirstDailyInputIntro
                 && typeof director.isHomeChatExternalized === 'function'
@@ -195,7 +201,10 @@
                 if (typeof director.clearHomeSpotlightsForExternalizedChat === 'function') {
                     director.clearHomeSpotlightsForExternalizedChat();
                 }
-                director.interactionTakeover.setExternalizedChatSpotlight(normalizedIntroKind);
+                director.interactionTakeover.setExternalizedChatSpotlight(
+                    normalizedIntroKind,
+                    externalizedSpotlightOptions
+                );
                 if (typeof director.interactionTakeover.setExternalizedChatCursor === 'function') {
                     const cursorOptions = typeof director.getAvatarFloatingIntroExternalizedCursorOptions === 'function'
                         ? director.getAvatarFloatingIntroExternalizedCursorOptions(legacyScene)
@@ -233,7 +242,10 @@
                     if (typeof director.clearHomeSpotlightsForExternalizedChat === 'function') {
                         director.clearHomeSpotlightsForExternalizedChat();
                     }
-                    director.interactionTakeover.setExternalizedChatSpotlight(externalizedSpotlightKind);
+                    director.interactionTakeover.setExternalizedChatSpotlight(
+                        externalizedSpotlightKind,
+                        externalizedSpotlightOptions
+                    );
                     return true;
                 }
             }
@@ -620,7 +632,8 @@
                     context ? context.sceneRunId : 0,
                     audio.voiceKey || legacyScene.voiceKey || '',
                     audio.text || legacyScene.text || '',
-                    context ? context.narrationStartedAt : 0
+                    context ? context.narrationStartedAt : 0,
+                    event.beforeAudioEndMs
                 );
             }
             if (director && director.cursor && typeof director.cursor.hide === 'function') {

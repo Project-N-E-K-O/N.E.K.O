@@ -49,6 +49,55 @@ def test_registry_covers_latin_labels() -> None:
         assert lab.casefold() in labels, f"registry missing {lab!r}"
 
 
+def test_registry_covers_activity_state_enums() -> None:
+    # Multi-token activity enums / labels are leak-prone and safe to deny: an
+    # underscore key or multi-word label never occurs as natural speech.
+    labels = get_proactive_intent_leak_labels()
+    for lab in ('focused_work', 'restricted_screen_only', 'casual_browsing',
+                'focused work', 'casual browsing'):
+        assert lab.casefold() in labels, f"registry missing activity enum {lab!r}"
+
+
+def test_registry_skips_single_common_word_enums() -> None:
+    # Single common words (idle / gaming / open) are deliberately NOT denied —
+    # they can legitimately open an English reply and _strip matches whole
+    # first lines, so denying them would scrub real speech (greptile P2 #2173).
+    labels = get_proactive_intent_leak_labels()
+    for common in ('idle', 'gaming', 'open', 'away', 'chatting'):
+        assert common.casefold() not in labels, f"common word wrongly denied: {common!r}"
+
+
+def test_registry_skips_localized_common_activity_labels() -> None:
+    labels = get_proactive_intent_leak_labels()
+    for common in (
+        '聊天中', '口吻', 'アイドル', '評価', '채팅 중', '말투',
+        'scores', 'narrative', 'open threads', 'tone',
+        'ausente', 'jugando', 'ocioso',
+        'puntuaciones', 'narrativa', 'tópicos abertos', 'tom',
+        'отсутствует', 'играет', 'тон',
+    ):
+        assert common.casefold() not in labels, f"common rendered label wrongly denied: {common!r}"
+
+
+def test_common_word_exclusions_cover_all_single_token_enums() -> None:
+    # Contract: every single-token ActivityState/Propensity enum must be in the
+    # exclusion set, else it would be denied and could scrub a legit English
+    # reply opening with the word. This pins the exclusion set to stay complete
+    # as the enums evolve — a new one-word state fails here instead of silently
+    # stripping speech.
+    from typing import get_args
+
+    from config.prompts.prompts_activity import _ACTIVITY_ENUM_COMMON_WORDS
+    from main_logic.activity.snapshot import ActivityState, Propensity
+
+    single_token = [
+        e for e in (*get_args(ActivityState), *get_args(Propensity))
+        if '_' not in e and ' ' not in e
+    ]
+    missing = [e for e in single_token if e not in _ACTIVITY_ENUM_COMMON_WORDS]
+    assert not missing, f"single-word enums missing from exclusion set: {missing}"
+
+
 def test_registry_skips_colonless_sentence_bullets() -> None:
     # The hushed 2nd bullet is a full sentence with no "<label>：" shape; it must
     # NOT become a denylist entry (would be an over-broad, sentence-long label).
@@ -101,6 +150,15 @@ def test_strip_same_line_mixed_colon_takes_earliest() -> None:
     ) == "that trip：mentioned?"
 
 
+def test_strip_slash_form_context_label_prefixes() -> None:
+    assert _strip_proactive_intent_label_leak("QQ/ 你好") == "你好"
+    assert _strip_proactive_intent_label_leak("/QQ 你好") == "你好"
+    assert _strip_proactive_intent_label_leak(
+        "聊天中/ 那咱们找小鱼干星的时候，能顺路去摸猫爪星云吗？"
+    ) == "那咱们找小鱼干星的时候，能顺路去摸猫爪星云吗？"
+    assert _strip_proactive_intent_label_leak("QQ/") == ""
+
+
 # ── False-positive guard ────────────────────────────────────────────
 
 
@@ -119,6 +177,19 @@ def test_no_strip_label_words_inside_natural_sentence() -> None:
     # The label words appearing mid-sentence (not as a heading) must survive.
     txt = "我刚刚也在想这个屏幕细节，问你一句话哦"
     assert _strip_proactive_intent_label_leak(txt) == txt
+
+
+def test_no_strip_localized_common_label_openers() -> None:
+    for txt in (
+        "Ausente\npero igual te estoy leyendo.",
+        "Jugando\npero sin perderte de vista.",
+        "Ocioso\nentão podemos pensar com calma.",
+        "Scores\nI still think this round went fine.",
+        "Tone\nLet's keep it softer this time.",
+        "聊天中\n那这轮先慢慢聊。",
+        "口吻\n这次轻一点说就好。",
+    ):
+        assert _strip_proactive_intent_label_leak(txt) == txt
 
 
 def test_empty_input_safe() -> None:

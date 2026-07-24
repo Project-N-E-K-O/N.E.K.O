@@ -26,6 +26,7 @@ class QQBacklogStore:
             "schema_version": 2,
             "conversations": {},
             "groups": {},
+            "group_attention_state": {},
         }
 
     async def exists(self) -> bool:
@@ -115,6 +116,78 @@ class QQBacklogStore:
             await atomic_write_json_async(self._path, state)
             return state
 
+    async def purge_old_reviewed(self, *, max_age_seconds: int = 86400) -> int:
+        """删除已审核超过 max_age_seconds 的消息，返回清除条数。"""
+        async with self._lock:
+            state = await self.load()
+            conversations = state["conversations"]
+            groups = state["groups"]
+            now = int(__import__("time").time())
+            cutoff = now - max_age_seconds
+            total_removed = 0
+            affected_groups: set[str] = set()
+
+            for key, conv in list(conversations.items()):
+                if not isinstance(conv, dict):
+                    continue
+                old = list(conv.get("messages") or [])
+                kept = []
+                removed_count = 0
+                for item in old:
+                    ts = int(item.get("timestamp") or item.get("recorded_at") or 0)
+                    if item.get("review_status") == "reviewed" and ts < cutoff:
+                        removed_count += 1
+                        continue
+                    kept.append(item)
+                if removed_count > 0:
+                    conv["messages"] = kept
+                    # 更新未读计数：只统计 kept 中 unreviewed 的
+                    conv["unread_count"] = sum(1 for m in kept if m.get("review_status") != "reviewed")
+                    if "group_id" in (old[0] if old else {}):
+                        affected_groups.add(str(old[0].get("group_id", "")))
+                    conversations[key] = conv
+                    total_removed += removed_count
+
+            # 清理空会话
+            empty_keys = [k for k, c in conversations.items() if isinstance(c, dict) and not c.get("messages")]
+            for k in empty_keys:
+                del conversations[k]
+                for gid, group in list(groups.items()):
+                    if isinstance(group, dict) and k in (group.get("conversation_keys") or []):
+                        group["conversation_keys"] = [ck for ck in group.get("conversation_keys") or [] if ck != k]
+                        groups[gid] = group
+
+            # 更新受影响群的统计
+            for gid in affected_groups:
+                group = groups.get(gid)
+                if not isinstance(group, dict):
+                    continue
+                keys = group.get("conversation_keys") or []
+                total_unread = 0
+                labels: dict[str, int] = {}
+                for ck in keys:
+                    c = conversations.get(ck)
+                    if not isinstance(c, dict):
+                        continue
+                    total_unread += int(c.get("unread_count") or 0)
+                    for msg in c.get("messages") or []:
+                        if msg.get("review_status") == "unreviewed":
+                            cat = str(msg.get("category") or "chat")
+                            labels[cat] = int(labels.get(cat, 0)) + 1
+                group["unread_count"] = total_unread
+                group["label_counts"] = labels
+                groups[gid] = group
+
+            # 清理空群
+            empty_groups = [gid for gid, g in groups.items() if isinstance(g, dict) and not g.get("conversation_keys")]
+            for gid in empty_groups:
+                del groups[gid]
+
+            state["conversations"] = conversations
+            state["groups"] = groups
+            await atomic_write_json_async(self._path, state)
+            return total_removed
+
     async def mark_group_reviewed(self, group_id: str) -> dict[str, Any]:
         async with self._lock:
             state = await self.load()
@@ -203,6 +276,106 @@ class QQBacklogStore:
             state["groups"] = groups
             await atomic_write_json_async(self._path, state)
             return state
+
+    async def get_recent_group_messages(self, group_id: str, *, limit: int = 5, exclude_message_id: str = "") -> list[dict[str, Any]]:
+        state = await self.load()
+        groups = state["groups"]
+        conversations = state["conversations"]
+        group = groups.get(str(group_id or "").strip())
+        if not isinstance(group, dict):
+            return []
+        excluded = str(exclude_message_id or "").strip()
+        timeline: list[dict[str, Any]] = []
+        for key in list(group.get("conversation_keys") or []):
+            conversation = conversations.get(key)
+            if not isinstance(conversation, dict):
+                continue
+            for item in list(conversation.get("messages") or []):
+                if not isinstance(item, dict):
+                    continue
+                message_id = str(item.get("message_id") or "").strip()
+                if excluded and message_id == excluded:
+                    continue
+                timeline.append(item)
+        timeline.sort(key=lambda item: (int(item.get("timestamp") or 0), str(item.get("message_id") or "")))
+        if limit > 0:
+            timeline = timeline[-int(limit):]
+        return timeline
+
+
+    async def get_unreviewed_messages_since(self, group_id: str, since_timestamp: int = 0, *, limit: int = 30) -> list[dict[str, Any]]:
+        """取出群中自 since_timestamp 以来的未审核消息（供回溯补回使用）。"""
+        state = await self.load()
+        groups = state["groups"]
+        conversations = state["conversations"]
+        group = groups.get(str(group_id or "").strip())
+        if not isinstance(group, dict):
+            return []
+        results: list[dict[str, Any]] = []
+        for key in list(group.get("conversation_keys") or []):
+            conv = conversations.get(key)
+            if not isinstance(conv, dict):
+                continue
+            for item in list(conv.get("messages") or []):
+                if not isinstance(item, dict):
+                    continue
+                if item.get("review_status") != "unreviewed":
+                    continue
+                ts = int(item.get("timestamp") or 0)
+                if since_timestamp > 0 and ts < since_timestamp:
+                    continue
+                results.append(item)
+        results.sort(key=lambda item: (int(item.get("timestamp") or 0), str(item.get("message_id") or "")))
+        if limit > 0:
+            results = results[-int(limit):]
+        return results
+
+    async def mark_message_reviewed(self, message_id: str) -> None:
+        """将指定消息标记为已审核（AI 回复后即时调用）。"""
+        mid = str(message_id or "").strip()
+        if not mid:
+            return
+        async with self._lock:
+            state = await self.load()
+            conversations = state["conversations"]
+            groups = state["groups"]
+            updated_group_ids: set[str] = set()
+            for conv_key, conv in list(conversations.items()):
+                if not isinstance(conv, dict):
+                    continue
+                for item in list(conv.get("messages") or []):
+                    if not isinstance(item, dict):
+                        continue
+                    if str(item.get("message_id") or "").strip() == mid and item.get("review_status") != "reviewed":
+                        item["review_status"] = "reviewed"
+                        conv["unread_count"] = max(0, int(conv.get("unread_count") or 0) - 1)
+                        if "group_id" in item:
+                            updated_group_ids.add(str(item["group_id"] or ""))
+                        continue
+                conversations[conv_key] = conv
+            # 更新群级统计
+            for gid in updated_group_ids:
+                group = groups.get(gid)
+                if isinstance(group, dict):
+                    group["unread_count"] = int(group.get("unread_count") or 0) - 1
+                    if group["unread_count"] < 0:
+                        group["unread_count"] = 0
+                    # 重新计算 label_counts
+                    group["label_counts"] = {}
+                    for key in list(group.get("conversation_keys") or []):
+                        conv = conversations.get(key)
+                        if not isinstance(conv, dict):
+                            continue
+                        for item in list(conv.get("messages") or []):
+                            if not isinstance(item, dict):
+                                continue
+                            if item.get("review_status") == "unreviewed":
+                                cat = str(item.get("category") or "chat")
+                                group["label_counts"][cat] = int(group["label_counts"].get(cat, 0)) + 1
+                    groups[gid] = group
+            state["conversations"] = conversations
+            state["groups"] = groups
+            await atomic_write_json_async(self._path, state)
 
     async def get_group_detail(self, group_id: str) -> dict[str, Any]:
         state = await self.load()

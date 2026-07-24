@@ -1,6 +1,6 @@
 import { computed, onMounted, ref, toValue, watch, type MaybeRefOrGetter } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   analyzePluginBundle,
   getPluginCliPackages,
@@ -8,6 +8,7 @@ import {
   inspectPluginPackage,
   buildPluginCli,
   installPluginPackage,
+  planPluginInstall,
   verifyPluginPackage,
   type PluginCliAnalyzeResponse,
   type PluginCliInspectResponse,
@@ -16,6 +17,7 @@ import {
   type PluginCliBuildRequest,
   type PluginCliBuildResponse,
   type PluginCliInstallRequest,
+  type PluginCliInstallPlanResponse,
   type PluginCliPluginRef,
 } from '@/api/pluginCli'
 import { usePluginStore } from '@/stores/plugin'
@@ -102,8 +104,9 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
     package: '',
     plugins_root: '',
     profiles_root: '',
-    on_conflict: 'rename',
+    on_conflict: 'fail',
   })
+  const installPlan = ref<PluginCliInstallPlanResponse | null>(null)
 
   const analyzeForm = ref({
     plugins: [] as string[],
@@ -131,7 +134,6 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
           version: plugin.version || '0.0.0',
           type: normalizePluginType(plugin.type),
           status: plugin.status,
-          host_plugin_id: plugin.host_plugin_id,
           entries: plugin.entries || [],
           i18n: plugin.i18n,
           runtime_enabled: plugin.runtime_enabled,
@@ -176,10 +178,8 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
     regexError,
     pluginCount,
     adapterCount,
-    extensionCount,
     filteredPurePlugins,
     filteredAdapters,
-    filteredExtensions,
     setSelectedPluginIds,
     togglePlugin: toggleWorkbenchPlugin,
     selectAllVisible,
@@ -215,7 +215,6 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
 
   function normalizePluginType(type?: string): PluginGroupType {
     if (type === 'adapter') return 'adapter'
-    if (type === 'extension') return 'extension'
     return 'plugin'
   }
 
@@ -745,18 +744,89 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
     }
     installing.value = true
     inspectResult.value = null
+    installPlan.value = null
     try {
-      const response = await installPluginPackage({
-        package: installForm.value.package.trim(),
-        plugins_root: installForm.value.plugins_root?.trim() || undefined,
-        profiles_root: installForm.value.profiles_root?.trim() || undefined,
-        on_conflict: installForm.value.on_conflict || 'rename',
+      const packagePath = installForm.value.package.trim()
+      const pluginsRoot = installForm.value.plugins_root?.trim() || undefined
+      const profilesRoot = installForm.value.profiles_root?.trim() || undefined
+      const plan = await planPluginInstall({
+        package: packagePath,
+        plugins_root: pluginsRoot,
+        profiles_root: profilesRoot,
       })
+      installPlan.value = plan
+
+      if (plan.action === 'blocked') {
+        const blockedKey = plan.reason === 'bundle_conflict'
+          ? 'package.install.blockedBundleConflict'
+          : plan.reason === 'legacy_plugin_present'
+            ? 'package.install.blockedLegacyPlugin'
+            : 'package.install.blockedDirectoryConflict'
+        ElMessage.error(
+          plan.reason === 'legacy_plugin_present'
+            ? t(blockedKey, {
+                plugin: plan.legacy_plugin_ids[0] || plan.plugin_id || plan.directory_name,
+              })
+            : t(blockedKey),
+        )
+        return
+      }
+
+      const request: PluginCliInstallRequest = {
+        package: packagePath,
+        plugins_root: pluginsRoot,
+        profiles_root: profilesRoot,
+        on_conflict: 'fail',
+      }
+      if (plan.action === 'upgrade') {
+        try {
+          await ElMessageBox.confirm(
+            t('package.install.upgradeBody', {
+              current: plan.current_version || '-',
+              target: plan.target_version || '-',
+            }),
+            t('package.install.upgradeTitle', {
+              plugin: plan.plugin_id || plan.directory_name,
+            }),
+            {
+              type: 'warning',
+              confirmButtonText: t('package.install.upgradeConfirm'),
+              cancelButtonText: t('common.cancel'),
+            },
+          )
+        } catch {
+          ElMessage.info(t('package.install.upgradeCancelled'))
+          return
+        }
+        request.confirm_upgrade = true
+        request.confirmation_token = plan.confirmation_token
+      }
+
+      const response = await installPluginPackage(request)
       setResult('install', response)
       await refreshPluginSources()
-      ElMessage.success(`安装完成，处理了 ${response.installed_plugin_count} 个插件`)
+      if (response.operation === 'upgrade') {
+        ElMessage.success(t('package.install.upgradeSucceeded', {
+          plugin: plan.plugin_id || plan.directory_name,
+        }))
+      } else {
+        ElMessage.success(`安装完成，处理了 ${response.installed_plugin_count} 个插件`)
+      }
     } catch (error) {
-      ElMessage.error(`安装失败：${formatHttpError(error)}`)
+      const errorCode = (error as any)?.response?.data?.detail?.code
+        || (error as any)?.response?.data?.code
+      if (errorCode === 'PLUGIN_UPGRADE_ROLLED_BACK') {
+        const rollbackStatus = (error as any)?.response?.data?.detail?.details?.rollback_status
+        ElMessage.error(t(
+          rollbackStatus === 'completed'
+            ? 'package.install.rollbackCompleted'
+            : 'package.install.rollbackIncomplete',
+        ))
+      } else if (!installPlan.value) {
+        ElMessage.error(t('package.install.planFailed'))
+      } else {
+        ElMessage.error(`安装失败：${formatHttpError(error)}`)
+      }
     } finally {
       installing.value = false
     }
@@ -846,14 +916,13 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
     buildForm,
     packageRef,
     installForm,
+    installPlan,
     analyzeForm,
     selectablePlugins,
     pluginCount,
     adapterCount,
-    extensionCount,
     filteredPurePlugins,
     filteredAdapters,
-    filteredExtensions,
     selectedPluginIds,
     resolvedBuildTargets,
     filteredLocalPackages,

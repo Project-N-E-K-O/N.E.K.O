@@ -116,11 +116,19 @@ jobs:
           # reads numpy's __cpu_features__, no py-cpuinfo) are in
           # [project.dependencies] now — plain `uv sync` covers both the
           # build-time prepare step and the bundled runtime.
-          # `--group galgame` adds rapidocr-onnxruntime + opencv-python-headless
-          # for the bundled OCR backend; pyproject's [tool.uv].override-dependencies
-          # blocks opencv-python (full) so only the headless cv2 ships.
+          # `--group galgame` adds the local rapidocr-pillow fork for the
+          # bundled OCR backend without the opencv/shapely dependency chain.
           uv sync --group galgame
           uv pip install --python .venv nuitka ordered-set zstandard
+
+      - name: Prepare filtered built-in plugins for Nuitka
+        shell: bash
+        run: |
+          VENV_PYTHON=".venv/bin/python"
+          if [ -f ".venv/Scripts/python.exe" ]; then
+            VENV_PYTHON=".venv/Scripts/python.exe"
+          fi
+          "$VENV_PYTHON" scripts/prepare_nuitka_plugins.py prepare
 
       # --- Generate runtime config files (not tracked in git) ---
       - name: Generate default config files
@@ -273,7 +281,14 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          NUITKA_OPTS="--standalone"
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            # PyObjC Foundation/AppKit refuse Nuitka's plain standalone mode.
+            # Keep the backend as a background app bundle; the packaging step
+            # below adds a stable bin/projectneko_server wrapper for Electron.
+            NUITKA_OPTS="--mode=app --macos-app-mode=background"
+          else
+            NUITKA_OPTS="--standalone"
+          fi
           NUITKA_OPTS="$NUITKA_OPTS --output-dir=dist"
           NUITKA_OPTS="$NUITKA_OPTS --output-filename=projectneko_server"
 
@@ -303,9 +318,8 @@ jobs:
           else
             echo "[WARNING] frontend/plugin-manager/dist missing; /ui will be empty in bundle."
           fi
-          if [ -d "plugin/plugins" ]; then
-            NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=plugin/plugins=plugin/plugins"
-          fi
+          # Built-in plugin data is installed from the filtered stage after
+          # compilation. Nuitka intentionally refuses to treat .py as data.
           # macOS: skip bundling playwright_browsers (Chromium .app path has spaces
           # that break Nuitka's xattr call; browser will download on first run)
           if [[ "$RUNNER_OS" != "macOS" ]]; then
@@ -330,13 +344,9 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package=websockets"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=app"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=config"
+          # The generated launcher carries selective --nofollow-import-to
+          # directives derived from each plugin's [tool.neko.build] rules.
           NUITKA_OPTS="$NUITKA_OPTS --include-package=plugin"
-          # Built-in plugins are imported at runtime via their dotted entry path
-          # (plugin.plugins.<name>:Class in each plugin.toml), so they must be
-          # compiled into the binary. Shipping them only via --include-data-dir
-          # drops the .py (Nuitka treats it as code) and every built-in plugin
-          # fails to import. Kept in sync with build_nuitka.bat.
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=plugin.plugins"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=brain"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_logic"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_routers"
@@ -360,15 +370,11 @@ jobs:
           # package itself (CI previously only carried its package-data).
           NUITKA_OPTS="$NUITKA_OPTS --include-package=bilibili_api"
           # galgame_plugin native OCR/vision cohort. Installed on every platform by
-          # `uv sync --group galgame` (rapidocr-onnxruntime + opencv-python-headless,
-          # which pulls shapely/pyclipper). Nuitka's auto-follow misses their data
-          # files, so include package + data explicitly. Synced with build_nuitka.bat.
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=cv2"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package-data=cv2"
+          # `uv sync --group galgame` (local rapidocr-pillow fork + pyclipper).
+          # Nuitka's auto-follow misses their data files, so include package +
+          # data explicitly.
           NUITKA_OPTS="$NUITKA_OPTS --include-package=rapidocr_onnxruntime"
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=rapidocr_onnxruntime"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=shapely"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package-data=shapely"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=pyclipper"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=mss"
           # dxcam is Windows-only (win32 marker); it's handled in the Windows cmd
@@ -395,16 +401,6 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=pyrnnoise"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=matplotlib"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=pytest"
-
-          # macOS: exclude pyobjc frameworks (Foundation requires --mode=app)
-          if [[ "$RUNNER_OS" == "macOS" ]]; then
-            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=Foundation"
-            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=AppKit"
-            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=objc"
-            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=PyObjCTools"
-            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=CoreFoundation"
-            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=Quartz"
-          fi
 
           # Plugin & CI flags
           NUITKA_OPTS="$NUITKA_OPTS --enable-plugin=dill-compat"
@@ -443,7 +439,7 @@ jobs:
           echo "$NUITKA_OPTS" | tr ' ' '\n'
           echo "======================"
 
-          .venv/bin/python -m nuitka $NUITKA_OPTS launcher.py
+          .venv/bin/python -m nuitka $NUITKA_OPTS build_nuitka_launcher.py
 
       - name: Build with Nuitka (Windows)
         if: runner.os == 'Windows'
@@ -472,7 +468,7 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=data/browser_use_prompts=data/browser_use_prompts
           if not exist "frontend\plugin-manager\dist" echo [WARNING] frontend\plugin-manager\dist missing; /ui will be empty in bundle.
           if exist "frontend\plugin-manager\dist" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=frontend/plugin-manager/dist=frontend/plugin-manager/dist
-          if exist "plugin\plugins" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=plugin/plugins=plugin/plugins
+          rem Built-in plugin payload is copied from the filtered stage after Nuitka.
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=playwright_browsers=playwright_browsers
           if exist "data\tiktoken_cache" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=data/tiktoken_cache=data/tiktoken_cache
           if exist "data\embedding_models" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=data/embedding_models=data/embedding_models
@@ -487,12 +483,10 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=websockets
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=app
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=config
+          rem The generated launcher excludes Python modules filtered by each
+          rem plugin's [tool.neko.build] rules while --include-package compiles
+          rem the remaining dynamically imported built-in modules.
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=plugin
-          rem Built-in plugins are imported at runtime via their dotted entry path
-          rem (plugin.plugins.[name]:Class in plugin.toml), so they must be compiled
-          rem into the binary; --include-data-dir alone drops the .py. Synced with
-          rem build_nuitka.bat. training/ is offline-only (torch) so carve it out.
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=plugin.plugins
           set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=plugin.plugins.galgame_plugin.training
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=brain
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=main_logic
@@ -536,16 +530,11 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=bilibili_api
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=bilibili_api
           rem galgame_plugin native OCR/vision cohort (uv sync --group galgame:
-          rem rapidocr-onnxruntime + opencv-python-headless, pulling shapely/pyclipper;
-          rem mss/dxcam from main deps). Nuitka auto-follow misses their data files,
-          rem so include package + data explicitly. Synced with build_nuitka.bat.
+          rem local rapidocr-pillow fork + pyclipper; mss/dxcam from main deps).
+          rem Nuitka auto-follow misses their data files, so include package + data.
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=rapidocr_onnxruntime
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=rapidocr_onnxruntime
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=cv2
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=cv2
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=pyclipper
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=shapely
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=shapely
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=mss
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=dxcam
           set NUITKA_OPTS=%NUITKA_OPTS% --enable-plugin=dill-compat
@@ -554,21 +543,42 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --windows-console-mode=force
           set NUITKA_OPTS=%NUITKA_OPTS% --assume-yes-for-downloads
 
-          .venv\Scripts\python.exe -m nuitka %NUITKA_OPTS% launcher.py
+          .venv\Scripts\python.exe -m nuitka %NUITKA_OPTS% build_nuitka_launcher.py
 
       # --- Rename Nuitka output directory ---
       - name: Rename build output
         shell: bash
         run: |
-          if [ -d "dist/launcher.dist" ]; then
-            mv dist/launcher.dist dist/Xiao8
+          if [[ "$RUNNER_OS" == "macOS" && -d "dist/build_nuitka_launcher.app" ]]; then
+            mkdir -p dist/Xiao8
+            mv dist/build_nuitka_launcher.app dist/Xiao8/projectneko_server.app
+            {
+              echo '#!/bin/sh'
+              echo 'SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)'
+              echo 'exec "$SCRIPT_DIR/projectneko_server.app/Contents/MacOS/projectneko_server" "$@"'
+            } > dist/Xiao8/projectneko_server
+            chmod +x dist/Xiao8/projectneko_server
+            RUNTIME_DIR="dist/Xiao8/projectneko_server.app/Contents/MacOS"
+          elif [ -d "dist/build_nuitka_launcher.dist" ]; then
+            mv dist/build_nuitka_launcher.dist dist/Xiao8
+            RUNTIME_DIR="dist/Xiao8"
+          else
+            echo "::error::Nuitka output directory not found"
+            exit 1
           fi
+          echo "NEKO_NUITKA_RUNTIME_DIR=$RUNTIME_DIR" >> "$GITHUB_ENV"
           # macOS: playwright_browsers was excluded from Nuitka (xattr bug with
           # spaces in .app paths), copy it manually into the output directory
           if [[ "$RUNNER_OS" == "macOS" && -d "playwright_browsers" ]]; then
-            cp -R playwright_browsers dist/Xiao8/playwright_browsers
-            echo "Copied playwright_browsers into dist/Xiao8/"
+            cp -R playwright_browsers "$RUNTIME_DIR/playwright_browsers"
+            echo "Copied playwright_browsers into $RUNTIME_DIR/"
           fi
+          VENV_PYTHON=".venv/bin/python"
+          if [ -f ".venv/Scripts/python.exe" ]; then
+            VENV_PYTHON=".venv/Scripts/python.exe"
+          fi
+          "$VENV_PYTHON" scripts/prepare_nuitka_plugins.py install \
+            --destination-dir "$RUNTIME_DIR/plugin/plugins"
           echo "=== Build output ==="
           ls -la dist/Xiao8/ || echo "dist/Xiao8 not found!"
 
@@ -583,8 +593,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -d "dist/Xiao8" ]; then
-            echo "::error::dist/Xiao8 not found, cannot verify"
+          if [ ! -d "$NEKO_NUITKA_RUNTIME_DIR" ]; then
+            echo "::error::$NEKO_NUITKA_RUNTIME_DIR not found, cannot verify"
             exit 1
           fi
           embedding_required=(
@@ -596,12 +606,12 @@ jobs:
           )
           missing=0
           for rel in "${embedding_required[@]}"; do
-            if [ ! -s "dist/Xiao8/data/embedding_models/$EMBEDDING_MODEL_PROFILE_ID/$rel" ]; then
+            if [ ! -s "$NEKO_NUITKA_RUNTIME_DIR/data/embedding_models/$EMBEDDING_MODEL_PROFILE_ID/$rel" ]; then
               echo "::error::missing or empty bundled embedding asset: $rel"
               missing=1
             fi
           done
-          if ! ls dist/Xiao8/data/tiktoken_cache/ 2>/dev/null | grep -q .; then
+          if ! ls "$NEKO_NUITKA_RUNTIME_DIR/data/tiktoken_cache/" 2>/dev/null | grep -q .; then
             echo "::error::data/tiktoken_cache empty in bundle (o200k_base would re-download at runtime)"
             missing=1
           fi
@@ -617,10 +627,22 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            .venv/Scripts/python.exe scripts/check_nuitka_dist.py dist/Xiao8
+            .venv/Scripts/python.exe scripts/check_nuitka_dist.py dist/Xiao8 --plugin-stage build/nuitka-plugins
           else
-            .venv/bin/python scripts/check_nuitka_dist.py dist/Xiao8
+            .venv/bin/python scripts/check_nuitka_dist.py "$NEKO_NUITKA_RUNTIME_DIR" --plugin-stage build/nuitka-plugins
           fi
+
+      # Nuitka signs macOS app bundles when it creates them. The steps above
+      # then add Playwright and plugin payloads inside the bundle, invalidating
+      # that seal. Restore a valid ad-hoc signature for the backend artifact;
+      # electron-builder applies the configured distribution identity later.
+      - name: Re-sign macOS backend after post-processing
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          codesign --force --deep --sign - dist/Xiao8/projectneko_server.app
+          codesign --verify --deep --strict dist/Xiao8/projectneko_server.app
 
       - name: Upload Python backend artifact
         uses: actions/upload-artifact@v4
@@ -687,7 +709,12 @@ jobs:
 
       - name: Make server binary executable (Unix)
         if: runner.os != 'Windows'
-        run: chmod +x electron-app/bin/projectneko_server
+        shell: bash
+        run: |
+          chmod +x electron-app/bin/projectneko_server
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            chmod +x electron-app/bin/projectneko_server.app/Contents/MacOS/projectneko_server
+          fi
 
       # --- Cache Electron binary to avoid download failures ---
       - name: Cache Electron binary

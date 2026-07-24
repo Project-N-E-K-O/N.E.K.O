@@ -1,72 +1,64 @@
 # Architecture Overview
 
-Project N.E.K.O. is built as a **multi-process microservice system** where three main servers cooperate through WebSocket, HTTP, and ZeroMQ messaging.
+Project N.E.K.O. uses three principal Python service processes. The Main Server owns the UI and live sessions, the Memory Server owns durable memory, and the Agent Server assesses and executes optional background work. HTTP/WebSocket carry service and browser traffic; ZeroMQ carries the Agent event bridge.
 
 ## System diagram
 
 ![Architecture](/framework.svg)
 
-## Three-server design
+## Principal services
 
-| Server | Port | Entry point | Role |
-|--------|------|-------------|------|
-| **Main Server** | 48911 | `app/main_server.py` | Web UI, REST API, WebSocket chat, TTS |
-| **Memory Server** | 48912 | `app/memory_server.py` | Semantic recall, time-indexed history, memory compression |
-| **Agent Server** | 48915 | `app/agent_server.py` | Background task execution (Computer Use, Browser Use, OpenClaw remote agent, OpenFang standalone agent, User Plugins) |
+| Service | Default port | Standalone entry | Role |
+|---|---:|---|---|
+| **Main Server** | 48911 | `app/main_server/__main__.py` | Web UI/static assets, REST API, browser WebSocket, per-character sessions, external TTS |
+| **Memory Server** | 48912 | `app/memory_server/__main__.py` | Conversation ingest, recent context, facts/reflections/persona, startup rendering, and recall |
+| **Agent Server / Tool Server** | 48915 | `app/agent_server/__main__.py` | Capability state, task assessment, channel dispatch, cancellation, and task results |
 
-The main server is the user-facing entry point. It serves the Web UI, handles all REST API requests, and maintains WebSocket connections for real-time voice/text chat. The memory and agent servers are internal services that the main server communicates with.
+Each service's FastAPI application and implementation live in the matching package. In particular, the Agent implementation is `app/agent_server/`.
 
-## Communication patterns
+The Agent process also hosts an embedded user-plugin FastAPI service on `127.0.0.1:48916` in an isolated thread. It is a second HTTP listener, not a fourth principal process. The optional Monitor Server on `:48913` receives the per-character mirror stream and is also outside the core three-service control path.
 
-```
-┌────────────────────────────────────────────────┐
-│              Main Server (:48911)                │
-│                                                  │
-│  FastAPI ─── REST Routers                        │
-│  WebSocket ─── LLMSessionManager                 │
-│  HTTP Client (httpx) ───────────┐                │
-│  ZeroMQ PUB  (:48961) ──┐       │                │
-│  ZeroMQ PUSH (:48963) ──┼── MainServerAgentBridge│
-│  ZeroMQ PULL (:48962) ──┘       │                │
-└─────────┬───────────────────────┼────────────────┘
-          │                       │
-    ┌─────┴─────┐         ┌───────┴────────┐
-    │           │         │                │
-    ▼           ▼         ▼                ▼
-  Memory     Monitor    Agent Server   User-Plugin
-  Server     Server     (Tool Server)  Server
-  (:48912)   (:48913)   (:48915)       (:48916)
-   HTTP      one-way     HTTP REST +    HTTP REST
-            status push  ZeroMQ events
+## Communication map
+
+```text
+Browser
+  │ HTTP + WebSocket
+  ▼
+Main Server :48911
+  ├── HTTP ───────────────> Memory Server :48912
+  ├── HTTP control ───────> Agent Tool Server :48915
+  ├── HTTP proxy/calls ───> Embedded User-Plugin :48916
+  ├── WebSocket mirror ───> Monitor Server :48913 (optional)
+  └── ZeroMQ bridge
+       PUB  :48961 ───────> Agent SUB       session/lifecycle events
+       PUSH :48963 ───────> Agent PULL      reliable analyze requests
+       PULL :48962 <─────── Agent PUSH      ACKs, task updates, results
 ```
 
-- **Main ↔ Memory**: HTTP requests for storing/querying memories (memory server `:48912`)
-- **Main ↔ Agent**: two channels working together —
-  - **Control / dispatch**: HTTP REST via `httpx` to the Tool Server (`:48915`), plus the User-Plugin server (`:48916`)
-  - **Event streaming**: ZeroMQ, where the main process binds the sockets — `PUB :48961` (session → agent), `PUSH :48963` (analyze queue → agent), `PULL :48962` (agent → main results); `agent_server` connects the mirror sockets
-- **Main ↔ Monitor**: one-way status push to the monitor server (`:48913`)
+The Main process binds all three ZeroMQ sockets; the Agent process connects the mirror sockets. Agent-to-Main results have no HTTP fallback.
 
-## Key architectural patterns
+## Key runtime patterns
 
-### Hot-swap sessions
+### Per-character ownership
 
-The `LLMSessionManager` prepares a new LLM session in the background while the current session is still active. When the user ends a conversation turn, it seamlessly swaps to the pre-warmed session with zero downtime. Audio is cached during the transition and flushed afterward.
+`app/main_server/character_runtime.py` owns one role-state slot per `lanlan_name`: an `LLMSessionManager`, an async WebSocket lock, a sync-message queue, and a cross-server connector asyncio task. Inactive managers can be replaced after their long-lived tasks are shut down; active or starting managers are preserved.
 
-### Per-character isolation
+### Explicit session modes and conditional hot swap
 
-Each character (identified by `lanlan_name`) gets its own:
-- `LLMSessionManager` instance
-- Sync connector thread
-- WebSocket lock
-- Message queue
-- Shutdown event
+Text input uses `OmniOfflineClient`; audio input uses `OmniRealtimeClient`. The manager does not silently fail over between them. Pending-session preparation is triggered by turn/token thresholds, renew state, or queued context, rather than unconditionally on every session start.
 
-### Async/sync boundary
+### Async, thread, and process boundaries
 
-FastAPI handlers are async. TTS synthesis runs in a dedicated thread with queue-based communication. Audio processing uses executor thread pools. The ZeroMQ event bridge runs a background recv thread.
+- FastAPI lifecycle, WebSocket I/O, model callbacks, cross-server connectors, and the Main-side Agent bridge coordination run on asyncio.
+- External TTS provider workers run in per-character threads behind request/response queues.
+- The Agent ZeroMQ bridge uses background receive threads around synchronous sockets so it works with the Windows Proactor loop.
+- The embedded user-plugin HTTP server runs in its own thread but shares the Agent process.
+- Memory and Agent state are process-local and are accessed through their public HTTP/ZeroMQ contracts, not by importing another process's runtime objects.
 
 ## Next
 
-- [Three-Server Design](./three-servers) — Detailed breakdown of each server
-- [Data Flow](./data-flow) — Request lifecycle from frontend to LLM and back
-- [Session Management](./session-management) — Hot-swap mechanism deep dive
+- [Three-Server Design](/architecture/three-servers) — service ownership and startup boundaries
+- [Data Flow](/architecture/data-flow) — browser input through model output and persistence
+- [Session Management](/architecture/session-management) — mode selection and hot-swap lifecycle
+- [Memory System](/architecture/memory-system) — persistence, automatic rendering, and on-demand recall
+- [Agent System](/architecture/agent-system) — assessment, channels, event delivery, and task state

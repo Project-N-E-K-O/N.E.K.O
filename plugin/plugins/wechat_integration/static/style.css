@@ -1,0 +1,75 @@
+:root { --primary: #07c160; --primary-dark: #06ae56; --primary-light: #e8f8ef; --secondary: #576b95; --bg: #f5f7fa; --card-bg: #ffffff; --text-main: #4b5563; --text-sub: #9ca3af; --border: #d1f0d9; --input-bg: #f9fdfa; --radius-lg: 32px; }
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+body, html { margin: 0; padding: 0; font-family: -apple-system, sans-serif; background: var(--bg); color: var(--text-main); overflow-x: hidden; }
+
+/* app */
+.app-container { width: 100%; max-width: 560px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 20px; }
+.page-title { font-size: 28px; font-weight: 900; color: var(--primary); text-align: center; margin: 10px 0; }
+
+/* panels */
+.config-section { background: var(--card-bg); border-radius: var(--radius-lg); padding: 24px; border: 2px solid var(--border); }
+
+/* ---------- buttons (same structure as qq_auto_reply, green theme) ---------- */
+.btn-next, .primary-action, .secondary-action, .ghost-action, .danger-action { padding: 14px 18px; border: none; border-radius: 18px; font-weight: 800; font-size: 14px; cursor: pointer; transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease, color 0.15s ease; }
+.btn-next, .primary-action { background: var(--primary); color: white; box-shadow: 0 8px 0 var(--primary-dark); }
+.secondary-action { background: var(--primary-light); color: var(--primary); box-shadow: inset 0 0 0 2px var(--border); }
+.ghost-action { background: white; color: var(--secondary); box-shadow: inset 0 0 0 2px var(--border); }
+.danger-action { background: #fff; color: #dc2626; box-shadow: inset 0 0 0 2px #fecaca; }
+.btn-next:active, .primary-action:active { transform: translateY(4px); box-shadow: 0 4px 0 var(--primary-dark); }
+.secondary-action:active, .ghost-action:active, .danger-action:active { transform: translateY(2px); }
+.btn-next:disabled, .primary-action:disabled, .secondary-action:disabled, .ghost-action:disabled, .danger-action:disabled { opacity: 0.6; cursor: not-allowed; box-shadow: none; transform: none; }
+
+.btn-add-entity { padding: 14px 18px; background: var(--primary); color: white; border: none; border-radius: 18px; font-weight: 800; font-size: 14px; cursor: pointer; box-shadow: 0 8px 0 var(--primary-dark); transition: transform 0.15s ease, box-shadow 0.15s ease; }
+.btn-add-entity:active { transform: translateY(4px); box-shadow: 0 4px 0 var(--primary-dark); }
+.btn-add-entity:disabled { opacity: 0.6; cursor: not-allowed; box-shadow: none; transform: none; }
+
+/* ---------- QR code ---------- */
+.qrcode-section { background: var(--card-bg); border-radius: var(--radius-lg); padding: 24px; border: 2px solid var(--border); text-align: center; }
+.qrcode-body { display: block; }
+.qrcode-card.collapsed .qrcode-body { display: none; }
+.qrcode-card.collapsed .qrcode-actions { padding-top: 0; }
+.qrcode-wrapper { min-height: 260px; display: flex; align-items: center; justify-content: center; margin: 16px 0; }
+.qrcode-wrapper img { max-width: 260px; border-radius: 18px; border: 2px solid var(--border); background: #fff; padding: 8px; }
+.qrcode-placeholder { width: 260px; height: 260px; border-radius: 18px; border: 2px dashed var(--border); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--text-sub); }
+.qrcode-placeholder-icon { font-size: 48px; opacity: 0.6; }
+.qrcode-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; padding-top: 4px; }
+.login-tips { margin-top: 12px; color: var(--text-sub); font-size: 14px; }
+.login-tips p { margin: 4px 0; }
+.qrcode-error { margin-top: 14px; padding: 12px 18px; background: #fef2f2; border-radius: 16px; color: #dc2626; font-size: 13px; font-weight: 700; }
+
+/* ---------- status ---------- */
+.status-pill { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 999px; background: var(--primary-light); color: var(--primary); font-size: 13px; font-weight: 700; }
+.status-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.status-title { font-size: 18px; font-weight: 900; color: var(--primary); }
+
+/* ---------- account overlay (inside QR area when logged in) ---------- */
+.account-overlay {
+    width: 260px; min-height: 200px; border-radius: 18px;
+    background: var(--primary-light); border: 2px solid var(--border);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+    padding: 24px 16px; text-align: center;
+}
+.account-icon { font-size: 48px; }
+.account-title { font-size: 18px; font-weight: 900; color: #166534; }
+.account-info-row { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.account-label { font-size: 12px; color: var(--text-sub); }
+.account-value { font-weight: 800; font-size: 13px; word-break: break-all; text-align: right; }
+
+/* ---------- config ---------- */
+.config-section { overflow: hidden; }
+.form-group { margin-bottom: 18px; }
+.field-label { display: block; font-size: 13px; font-weight: 700; margin-bottom: 8px; }
+.field-hint { margin-top: 6px; color: var(--text-sub); font-size: 12px; line-height: 1.4; }
+.input-control { width: 100%; padding: 14px 18px; border-radius: 18px; border: 2px solid var(--border); background: var(--input-bg); font-family: monospace; }
+.input-control:focus { outline: none; border-color: var(--primary); background: #fff; }
+.save-row { display: flex; justify-content: flex-end; gap: 12px; flex-wrap: wrap; margin-top: 8px; }
+.save-row > button { min-width: 132px; }
+
+/* ---------- misc ---------- */
+.toast { position: fixed; top: 30px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.8); color: white; padding: 10px 24px; border-radius: 50px; font-size: 13px; opacity: 0; transition: 0.3s; z-index: 200; }
+.toast.show { opacity: 1; }
+.empty-state { padding: 20px; text-align: center; color: var(--text-sub); }
+
+@media (max-width: 640px) {
+    .app-container { padding: 16px; }
+}

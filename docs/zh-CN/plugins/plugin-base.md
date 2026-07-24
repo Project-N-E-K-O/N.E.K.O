@@ -235,20 +235,27 @@ content = cache_file.read_text()
 
 ---
 
-## self.bus — 总线快照
+## self.bus — Bus 读取与监听
 
-**什么时候用**：你想读取按命名空间组织的总线快照，比如消息、事件、生命周期记录、会话和记忆记录。
+**什么时候用**：你想读取或监听按命名空间组织的宿主状态快照。该门面没有 publish/emit API。
 
 ```python
 # 读取最近事件
-recent_events = await self.bus.events.get(filter={"type": "note_created"}, max_count=20)
+recent_events = await self.bus.events.get(max_count=50)
+recent_events = recent_events.filter(type="note_created").sort(
+    by="timestamp", reverse=True,
+).limit(20)
 
 # 读取最近消息
 recent_messages = await self.bus.messages.get(max_count=20)
 
-# 读取某个 bucket 的记忆记录
+# 从内存 bucket 读取近期用户话语事件
 memory_records = await self.bus.memory.get(bucket_id="default", limit=20)
 ```
+
+列表接口为 `filter` / `where`、`sort`、`limit`、`watch`。可调用形式 `filter(predicate)`、`where(predicate)` 与 `sort(key=...)` 仅处理本地快照，因此 watcher 链必须使用结构化 `filter(field=value, ...)` 与 `sort(by=...)`。只有 `messages`、`events`、`lifecycle` 支持 `watch()`；`conversations` 与 `memory` 是只读快照。watcher 只接受 `add`、`del`、`change`。
+
+`memory` bucket 有容量上限，在进程内保留一小时。它是插件上下文，不是角色持久化的事实、反思或人格。`ctx.query_memory(...)` 只为兼容而保留，它调用已弃用的占位端点，不执行语义召回。
 
 ---
 
@@ -284,18 +291,6 @@ self.push_message(
 
 ---
 
-## self.memory — 记忆系统
-
-**什么时候用**：你想访问 N.E.K.O 的长期记忆（用户和 AI 的历史对话、记住的事情等）。
-
-```python
-from plugin.sdk.plugin import unwrap_or
-
-result = await self.memory.query("default", "上次聊了什么话题")
-matches = unwrap_or(result, {})
-```
-
----
 
 ## self.system_info — 系统信息
 
@@ -322,8 +317,7 @@ python_env = unwrap_or(await self.system_info.get_python_env(), {})
 | `self.db` | SQLite 数据库 | `[plugin.database] enabled = true` |
 | `self.i18n` | 多语言 | `[plugin.i18n]` |
 | `self.data_path()` | 存放文件 | 不需要 |
-| `self.bus` | 读取总线快照 | 不需要 |
+| `self.bus` | 读取/监听总线快照 | 不需要 |
 | `report_status()` | 面板中显示进度 | 不需要 |
 | `push_message()` | 向聊天推送消息 | 不需要 |
-| `self.memory` | 访问记忆系统 | 不需要 |
 | `self.system_info` | 查询系统信息 | 不需要 |

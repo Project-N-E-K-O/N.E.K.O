@@ -7,6 +7,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title data-i18n="live2d.manager">模型管理器 - Project N.E.K.O.</title>
     <!-- VRM 光照默认值：从后端注入，保证在所有 JS 之前同步可用 -->
+    <!-- 模型预览/编辑页豁免 avatar 空闲节流：用户在此手动播放任意动画（含无参
+         playAnimation 的舞蹈 VMD），期望满帧预览，不应被空闲地板压到 30fps -->
+    <script>window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ = true;</script>
     <script id="vrm-default-lighting-data" type="application/json">{{ (vrm_defaults | default({}, true)) | tojson | safe }}</script>
     <script>
         const vrmDefaultLightingData = document.getElementById('vrm-default-lighting-data');
@@ -66,12 +69,12 @@
                 </button>
                 <select id="model-type-select" class="control-select" style="display: none;">
                     <option value="live2d">Live2D</option>
-                    <option value="live3d">Live3D</option>
+                    <option value="live3d" data-i18n="live2d.modelType3d">3D Model</option>
                     <option value="pngtuber">PNGTuber</option>
                 </select>
                 <div id="model-type-dropdown" class="model-type-dropdown" style="display: none;">
                     <div class="dropdown-item" data-value="live2d"><span class="dropdown-item-text" data-text="Live2D">Live2D</span></div>
-                    <div class="dropdown-item" data-value="live3d"><span class="dropdown-item-text" data-text="Live3D">Live3D</span></div>
+                    <div class="dropdown-item" data-value="live3d"><span class="dropdown-item-text" data-text="3D Model">3D Model</span></div>
                     <div class="dropdown-item" data-value="pngtuber"><span class="dropdown-item-text" data-text="PNGTuber">PNGTuber</span></div>
                 </div>
             </div>
@@ -625,17 +628,27 @@
     <script src="/static/libs/live2d.min.js"></script>
     <script src="/static/libs/pixi.min.js"></script>
     <script src="/static/libs/index.min.js"></script>
-    <script src="/static/live2d-core.js"></script>
-    <script src="/static/live2d-emotion.js"></script>
-    <script src="/static/live2d-model.js"></script>
-    <script src="/static/live2d-interaction.js"></script>
-    <script src="/static/avatar-popup-common.js"></script>
-    <script src="/static/avatar-ui-popup.js"></script>
-    <script src="/static/avatar-ui-popup-config.js"></script>
-    <script src="/static/avatar-ui-buttons.js"></script>
-    <script src="/static/live2d-ui-buttons.js"></script>
-    <script src="/static/avatar-ui-drag.js"></script>
-    <script src="/static/live2d-init.js"></script>
+    <script src="/static/live2d/live2d-core.js"></script>
+    <script src="/static/live2d/live2d-emotion.js"></script>
+    <script src="/static/live2d/live2d-model.js"></script>
+    <script src="/static/live2d/live2d-interaction.js"></script>
+    <script src="/static/avatar/avatar-popup-common.js"></script>
+    <script src="/static/avatar/avatar-ui-popup.js"></script>
+    <script src="/static/avatar/avatar-ui-popup-config.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/core.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/idle-assets-and-question.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/idle-playground.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/idle-actions-and-audio.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/idle-drag-and-subactions.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/idle-journey-and-presentation.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/idle-cat-mind-observations.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/methods-setup.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/methods-buttons.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/methods-return.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/methods-state-and-cleanup.js"></script>
+    <script src="/static/live2d/live2d-ui-buttons.js"></script>
+    <script src="/static/avatar/avatar-ui-drag.js"></script>
+    <script src="/static/live2d/live2d-init.js"></script>
 
     <!-- Three.js 核心库和importmap（用于ES6模块导入）-->
     <!-- 
@@ -663,10 +676,16 @@
         window.dispatchEvent(new CustomEvent('three-ready'));
     </script>
     <!-- VRM模块（按顺序加载，失败不影响Live2D）-->
-    <script src="/static/avatar-portrait.js"></script>
+    <script src="/static/avatar/avatar-portrait.js"></script>
     <script src="/static/pngtuber-core.js?v={{ static_asset_version | default('0') }}"></script>
 
-    <script src="/static/js/model_manager.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/model_manager/runtime-loaders.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/model_manager/dropdown-manager.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/model_manager/page-bridge.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/model_manager/card-face.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/model_manager/path-request-fullscreen.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/model_manager/page-controller.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/model_manager/window-lifecycle.js?v={{ static_asset_version | default('0') }}"></script>
 
     <!-- 性能分析器 -->
     <script src="/static/model-profiler.js"></script>

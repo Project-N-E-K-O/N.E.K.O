@@ -23,6 +23,9 @@
         <div class="container-header page-title-bar">
             <h2 data-i18n="memory.title" data-text="Memory Browser">记忆浏览</h2>
             <div class="neko-window-controls">
+                <button type="button" class="neko-window-control-btn" data-neko-window-control="pin" hidden data-i18n-title="common.pinWindow" data-i18n-aria="common.pinWindow" title="置顶窗口" aria-label="置顶窗口" aria-pressed="false">
+                    <span class="neko-window-pin-icon" aria-hidden="true"></span>
+                </button>
                 <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
                     <span class="neko-window-minimize-icon"></span>
                 </button>
@@ -122,6 +125,42 @@
                             </button>
                         </div>
                     </div>
+                    <div class="file-list external-memory-import-section">
+                        <div class="file-list-title" data-i18n="memory.externalImportTitle">Import External Memory</div>
+                        <div class="external-memory-import-card">
+                            <p class="external-memory-import-note" data-i18n="memory.externalImportNote">Import OpenClaw or Hermes USER.md, SOUL.md, MEMORY.md, daily memory files, or a workspace ZIP into the selected character.</p>
+                            <div class="external-memory-format-wrapper">
+                                <select id="external-memory-format" hidden aria-hidden="true" tabindex="-1">
+                                    <option value="auto" data-i18n="memory.externalImportAuto">Auto detect</option>
+                                    <option value="openclaw">OpenClaw</option>
+                                    <option value="hermes">Hermes</option>
+                                </select>
+                                <div class="tutorial-cascader external-memory-format-cascader" id="external-memory-format-cascader">
+                                    <button type="button" class="tutorial-cascader-trigger external-memory-format-trigger" aria-haspopup="listbox" aria-expanded="false" aria-label="Source format" data-i18n-aria="memory.externalImportFormat">
+                                        <span class="external-memory-format-value">Auto detect</span>
+                                        <span class="tutorial-cascader-arrow" aria-hidden="true"></span>
+                                    </button>
+                                    <div class="tutorial-cascader-popup external-memory-format-popup" hidden>
+                                        <div class="tutorial-cascader-column external-memory-format-options" role="listbox" aria-label="Source format" data-i18n-aria="memory.externalImportFormat">
+                                            <button type="button" class="tutorial-cascader-option" data-external-memory-format="auto" data-i18n="memory.externalImportAuto">Auto detect</button>
+                                            <button type="button" class="tutorial-cascader-option" data-external-memory-format="openclaw">OpenClaw</button>
+                                            <button type="button" class="tutorial-cascader-option" data-external-memory-format="hermes">Hermes</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div id="external-memory-target" class="external-memory-selection"></div>
+                            <input id="external-memory-files" type="file" accept=".md,.zip,text/markdown,application/zip" multiple hidden>
+                            <button type="button" class="storage-location-open-btn" id="external-memory-pick-btn">
+                                <span data-i18n="memory.externalImportPick">Choose Markdown or ZIP</span>
+                            </button>
+                            <div id="external-memory-selection" class="external-memory-selection" data-i18n="memory.externalImportNoSelection">No files selected</div>
+                            <button type="button" class="storage-location-manage-btn" id="external-memory-import-btn" disabled>
+                                <span data-i18n="memory.externalImportAction">Import into selected character</span>
+                            </button>
+                            <div id="external-memory-import-status" class="external-memory-import-status" role="status" aria-live="polite"></div>
+                        </div>
+                    </div>
                     <div class="file-list storage-location-section">
                         <div class="file-list-title" data-i18n="memory.storageLocation">存储位置</div>
                         <div class="storage-location-card-mini">
@@ -184,7 +223,7 @@
             </div>
         </div>
     </div>
-    <script src="/static/app-storage-location.js?v={{ static_asset_version }}" data-storage-location-auto-start="false"></script>
+    <script src="/static/app/app-storage-location.js?v={{ static_asset_version }}" data-storage-location-auto-start="false"></script>
     <script src="/static/js/memory_browser.js?v={{ static_asset_version }}"></script>
 
 
@@ -219,11 +258,21 @@
     <script src="/static/tutorial/core/operation-registry.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/settings-tour-flow.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/scene-orchestrator.js?v={{ static_asset_version }}"></script>
-    <script src="/static/tutorial/yui-guide/director.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/foundation.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/voice-queue.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/emotion-bridge.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/cursor-anchor-store.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/director-core.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/avatar-rounds.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/page-flows.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/chat-performance.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/lifecycle.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/bootstrap.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/skip-controller.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/avatar/reload-controller.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/round-prelude-controller.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/lifecycle-state-store.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/seven-day-state.js?v={{ static_asset_version }}"></script>
     <!-- 通用教程管理器 -->
     <script src="/static/libs/driver.min.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/universal-manager.js?v={{ static_asset_version }}"></script>

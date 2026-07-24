@@ -66,6 +66,142 @@ describe('hosted ui runtime', () => {
     expect(root.querySelector('#counter')?.textContent).toBe('1')
   })
 
+  it('applies a controlled Select value after mounting its options', () => {
+    ui.render(
+      ui.h(ui.Select, {
+        value: 'solo_stream',
+        options: [
+          { value: 'co_stream', label: 'Co-stream' },
+          { value: 'solo_stream', label: 'Solo stream' },
+        ],
+      }),
+      root,
+    )
+
+    expect(root.querySelector<HTMLSelectElement>('select')?.value).toBe('solo_stream')
+  })
+
+  it('forwards disabled state to hosted form controls', () => {
+    ui.render(
+      ui.h(
+        'section',
+        null,
+        ui.h(ui.Input, { disabled: true, value: 'locked' }),
+        ui.h(ui.Textarea, { disabled: true, value: 'locked' }),
+        ui.h(ui.Select, {
+          disabled: true,
+          value: 'locked',
+          options: [{ value: 'locked', label: 'Locked' }],
+        }),
+      ),
+      root,
+    )
+
+    expect(root.querySelector<HTMLInputElement>('input')?.disabled).toBe(true)
+    expect(root.querySelector<HTMLTextAreaElement>('textarea')?.disabled).toBe(true)
+    expect(root.querySelector<HTMLSelectElement>('select')?.disabled).toBe(true)
+  })
+
+  it('renders high-value layout primitives with stable CSS variables', () => {
+    ui.render(
+      ui.h(
+        ui.Container,
+        { maxWidth: 720, padding: '8px' },
+        ui.h(
+          ui.Inline,
+          { gap: 6, align: 'center', justify: 'space-between', wrap: false },
+          ui.h('span', null, 'left'),
+          ui.h('span', null, 'right'),
+        ),
+        ui.h(
+          ui.Columns,
+          { minWidth: 180, gap: '10px' },
+          ui.h('span', null, 'a'),
+          ui.h('span', null, 'b'),
+        ),
+        ui.h(
+          ui.Split,
+          { ratio: '2fr 1fr', gap: 14 },
+          ui.h('span', null, 'input'),
+          ui.h('span', null, 'output'),
+        ),
+        ui.h(ui.ScrollArea, { maxHeight: 120, axis: 'both', padding: 4 }, ui.h('span', null, 'scrollable')),
+      ),
+      root,
+    )
+
+    const container = root.querySelector<HTMLElement>('.neko-container')!
+    const inline = root.querySelector<HTMLElement>('.neko-inline')!
+    const columns = root.querySelector<HTMLElement>('.neko-columns')!
+    const split = root.querySelector<HTMLElement>('.neko-split')!
+    const scrollArea = root.querySelector<HTMLElement>('.neko-scroll-area')!
+
+    expect(container.style.getPropertyValue('--container-max-width')).toBe('720px')
+    expect(container.style.getPropertyValue('--container-padding')).toBe('8px')
+    expect(inline.dataset.wrap).toBe('false')
+    expect(inline.style.getPropertyValue('--inline-gap')).toBe('6px')
+    expect(columns.classList.contains('is-fluid')).toBe(true)
+    expect(columns.style.getPropertyValue('--columns-min')).toBe('180px')
+    expect(split.dataset.direction).toBe('horizontal')
+    expect(split.style.getPropertyValue('--split-template')).toBe('2fr 1fr')
+    expect(scrollArea.dataset.axis).toBe('both')
+    expect(scrollArea.style.getPropertyValue('--scroll-max-height')).toBe('120px')
+  })
+
+  it('supports controlled DOM helpers without exposing global DOM querying patterns', async () => {
+    const scrollIntoView = vi.fn()
+    const scrollTo = vi.fn()
+    const writeText = vi.fn(async () => undefined)
+    const previousScrollIntoView = Element.prototype.scrollIntoView
+    const previousScrollTo = HTMLElement.prototype.scrollTo
+    Element.prototype.scrollIntoView = scrollIntoView
+    HTMLElement.prototype.scrollTo = scrollTo
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText, readText: vi.fn(async () => 'copied') },
+    })
+
+    function DomDemo() {
+      const inputRef = ui.useRef(null)
+      const targetRef = ui.useRef(null)
+      const size = ui.useElementSize(inputRef)
+      const scrollTarget = ui.useScrollIntoView(targetRef)
+      const clipboard = ui.useClipboard()
+
+      ui.useEffect(() => {
+        if (inputRef.current) inputRef.current.setAttribute('data-ref-ready', 'yes')
+      }, [])
+
+      return ui.h('div', null,
+        ui.h(ui.Input, { ref: inputRef, value: 'hello' }),
+        ui.h('span', { id: 'size' }, `${size.width}x${size.height}`),
+        ui.h('div', { ref: targetRef, id: 'target' }, 'target'),
+        ui.h('button', { id: 'jump', onClick: () => scrollTarget({ block: 'end' }) }, 'jump'),
+        ui.h('button', { id: 'copy', onClick: () => clipboard.write('copy me') }, 'copy'),
+        ui.h(ui.ScrollArea, { maxHeight: 40, autoScroll: true }, ui.h('div', null, 'scroll body')),
+      )
+    }
+
+    ui.render(ui.h(DomDemo, null), root)
+    await flushMicrotasks()
+
+    const input = root.querySelector<HTMLInputElement>('.neko-input')!
+    const scrollArea = root.querySelector<HTMLElement>('.neko-scroll-area')!
+    Object.defineProperty(scrollArea, 'scrollHeight', { configurable: true, value: 300 })
+
+    expect(input.getAttribute('data-ref-ready')).toBe('yes')
+    expect(root.querySelector('#size')?.textContent).toMatch(/^\d+x\d+$/)
+    fireEvent.click(root.querySelector<HTMLButtonElement>('#jump')!)
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'end' })
+    fireEvent.click(root.querySelector<HTMLButtonElement>('#copy')!)
+    await flushMicrotasks()
+    expect(writeText).toHaveBeenCalledWith('copy me')
+    expect(scrollTo).toHaveBeenCalled()
+
+    Element.prototype.scrollIntoView = previousScrollIntoView
+    HTMLElement.prototype.scrollTo = previousScrollTo
+  })
+
   it('keeps input DOM and focus while useLocalState updates', async () => {
     function Form() {
       const [value, setValue] = ui.useLocalState('name', '')
@@ -558,6 +694,7 @@ describe('hosted ui runtime', () => {
       const settled = vi.fn()
       promise.then(settled, settled)
       expect(requestMessage?.type).toBe('neko-hosted-surface-request')
+      expect(requestMessage?.timeoutMs).toBe(80000)
 
       await vi.advanceTimersByTimeAsync(30000)
       await flushMicrotasks()
@@ -582,6 +719,21 @@ describe('hosted ui runtime', () => {
     vi.useRealTimers()
   })
 
+  it('tracks toast promise states', async () => {
+    vi.useFakeTimers()
+    const promise = Promise.resolve('done')
+    const tracked = ui.showToast.promise(promise, {
+      loading: 'Saving',
+      success: (value: string) => `Saved ${value}`,
+    })
+
+    expect(document.querySelector('.neko-toast')?.textContent).toBe('Saving')
+    await expect(tracked).resolves.toBe('done')
+    await flushMicrotasks()
+    expect(Array.from(document.querySelectorAll('.neko-toast')).map((item) => item.textContent)).toContain('Saved done')
+    vi.useRealTimers()
+  })
+
   it('confirms through useConfirm', async () => {
     let confirm!: (options: any) => Promise<boolean>
     let setCount!: (value: number) => number
@@ -603,23 +755,35 @@ describe('hosted ui runtime', () => {
     expect(root.querySelector('#open')?.textContent).toBe('1')
   })
 
-  it('manages form helpers and debounced state', async () => {
+  it('manages form helpers, validation, and debounced state', async () => {
     vi.useFakeTimers()
     let formApi: any
+    const submit = vi.fn()
+    const invalid = vi.fn()
     let setSearch!: (value: string) => string
 
     function App() {
-      formApi = ui.useForm({ name: '', enabled: false })
+      formApi = ui.useForm({ name: '', enabled: false }, {
+        validate: (values: any) => values.name ? {} : { name: 'Name required' },
+      })
       const [search, updateSearch, debounced] = ui.useDebouncedState('', 50)
       setSearch = updateSearch
-      return ui.h('section', null,
-        ui.h('input', { id: 'name', ...formApi.field('name') }),
-        ui.h('input', { id: 'enabled', type: 'checkbox', ...formApi.checkbox('enabled') }),
+      return ui.h(ui.Form, { onSubmit: formApi.handleSubmit(submit, invalid) },
+        ui.h(ui.FormSection, { title: 'Profile', description: 'Demo form section' },
+          ui.h('input', { id: 'name', ...formApi.field('name') }),
+          ui.h('input', { id: 'enabled', type: 'checkbox', ...formApi.checkbox('enabled') }),
+        ),
         ui.h('output', { id: 'search', 'data-value': search }, debounced),
+        ui.h(ui.FormActions, null, ui.h('button', { id: 'submit', type: 'submit' }, 'Save')),
       )
     }
 
     ui.render(ui.h(App, null), root)
+    fireEvent.submit(root.querySelector('form')!)
+    await flushMicrotasks()
+    expect(invalid).toHaveBeenCalledWith({ name: 'Name required' }, { name: '', enabled: false }, expect.anything())
+    expect(root.querySelector('.neko-form-section-title')?.textContent).toBe('Profile')
+
     formApi.setField('name', 'Neko')
     formApi.setField('enabled', true)
     setSearch('abc')
@@ -627,7 +791,13 @@ describe('hosted ui runtime', () => {
 
     expect(root.querySelector<HTMLInputElement>('#name')!.value).toBe('Neko')
     expect(root.querySelector<HTMLInputElement>('#enabled')!.checked).toBe(true)
+    expect(formApi.dirty).toBe(true)
+    expect(formApi.touched.name).toBe(true)
     expect(root.querySelector('#search')?.textContent).toBe('')
+
+    fireEvent.submit(root.querySelector('form')!)
+    await flushMicrotasks()
+    expect(submit).toHaveBeenCalledWith({ name: 'Neko', enabled: true }, expect.anything())
 
     vi.advanceTimersByTime(50)
     await flushMicrotasks()
@@ -686,19 +856,225 @@ describe('hosted ui runtime', () => {
     expect(root.querySelector('#fallback')?.textContent).toBe('broken')
   })
 
-  it('closes modal with Escape', async () => {
+  it('enhances modal focus, size, scroll lock, and Escape close', async () => {
     let setOpen!: (value: boolean) => boolean
+    const previousOverflow = document.body.style.overflow
 
     function App() {
       const [open, updateOpen] = ui.useState(true)
       setOpen = updateOpen
-      return ui.h(ui.Modal, { open, title: 'Dialog', onClose: () => setOpen(false) }, 'content')
+      return ui.h(ui.Modal, {
+        open,
+        title: 'Dialog',
+        size: 'lg',
+        onClose: () => setOpen(false),
+        footer: ui.h('button', { id: 'close' }, 'Close'),
+      }, ui.h('button', { id: 'first' }, 'First'))
     }
 
     ui.render(ui.h(App, null), root)
-    expect(document.querySelector('.neko-modal')).not.toBeNull()
+    await flushMicrotasks()
+    const modal = document.querySelector<HTMLElement>('.neko-modal')!
+    expect(modal).not.toBeNull()
+    expect(modal.dataset.size).toBe('lg')
+    expect(document.body.style.overflow).toBe('hidden')
     fireEvent.keyDown(window, { key: 'Escape' })
     await flushMicrotasks()
     expect(document.querySelector('.neko-modal')).toBeNull()
+    expect(document.body.style.overflow).toBe(previousOverflow)
+  })
+
+  it('renders tooltip content for hover and focus help', () => {
+    ui.render(ui.h(ui.Tooltip, { content: 'Helpful context', placement: 'right' }, ui.h('button', null, 'Info')), root)
+
+    const tooltip = root.querySelector<HTMLElement>('.neko-tooltip')!
+    expect(tooltip.dataset.placement).toBe('right')
+    expect(tooltip.querySelector('.neko-tooltip-content')?.textContent).toBe('Helpful context')
+  })
+
+  it('supports Gradio-parity controls', async () => {
+    let selectedLayer: any = null
+
+    function App() {
+      const [parts, setParts] = ui.useState(['Hair'])
+      const [method, setMethod] = ui.useState('anime_face')
+      const [feather, setFeather] = ui.useState(2)
+      const [image, setImage] = ui.useState({ type: 'image', dataUrl: 'data:image/png;base64,ZmFrZQ==', label: 'Preview' })
+      return ui.h('section', null,
+        ui.h(ui.CheckboxGroup, {
+          value: parts,
+          options: [{ value: 'Hair', label: 'Hair' }, { value: 'Body', label: 'Body' }],
+          onChange: setParts,
+        }),
+        ui.h(ui.RadioGroup, {
+          value: method,
+          options: [{ value: 'anime_face', label: 'AnimeFace' }, { value: 'color', label: 'Color' }],
+          onChange: setMethod,
+        }),
+        ui.h(ui.SegmentedControl, {
+          value: method,
+          options: ['anime_face', 'color'],
+          onChange: setMethod,
+        }),
+        ui.h(ui.Slider, { value: feather, min: 0, max: 8, onChange: setFeather }),
+        ui.h(ui.PasswordInput, { value: 'secret', onChange: () => undefined }),
+        ui.h(ui.ImageUpload, { value: image, onChange: setImage }),
+        ui.h(ui.ImagePreview, { src: image, label: 'Preview' }),
+        ui.h(ui.Gallery, {
+          items: [{ name: 'Layer', preview_data_url: image }],
+          onSelect: (item: any) => { selectedLayer = item },
+        }),
+        ui.h('output', { id: 'state', 'data-parts': parts.join(','), 'data-method': method, 'data-feather': feather }, image.dataUrl),
+      )
+    }
+
+    ui.render(ui.h(App, null), root)
+
+    fireEvent.click(Array.from(root.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')).find((input) => input.value === 'Body')!)
+    await flushMicrotasks()
+    expect(root.querySelector('#state')?.getAttribute('data-parts')).toBe('Hair,Body')
+
+    fireEvent.click(Array.from(root.querySelectorAll<HTMLInputElement>('input[type="radio"]')).find((input) => input.value === 'color')!)
+    await flushMicrotasks()
+    expect(root.querySelector('#state')?.getAttribute('data-method')).toBe('color')
+
+    const slider = root.querySelector<HTMLInputElement>('input[type="range"]')!
+    slider.value = '5'
+    fireEvent.input(slider)
+    await flushMicrotasks()
+    expect(root.querySelector('#state')?.getAttribute('data-feather')).toBe('5')
+
+    expect(root.querySelector('.neko-image-preview img')?.getAttribute('src')).toContain('data:image/png;base64')
+    fireEvent.click(root.querySelector('.neko-gallery-item')!)
+    expect(selectedLayer?.name).toBe('Layer')
+  })
+
+  it('routes hosted downloads through the parent window', () => {
+    const messages: any[] = []
+    Object.defineProperty(window, 'parent', {
+      value: {
+        postMessage(message: any) {
+          messages.push(message)
+        },
+      },
+      configurable: true,
+    })
+    window.__NEKO_PAYLOAD.host = { origin: 'http://127.0.0.1:48911' }
+
+    ui.render(ui.h(ui.FileDownload, { href: '/plugin/demo/hosted-ui/artifact?path=x.zip', label: 'Download' }), root)
+    fireEvent.click(root.querySelector('button')!)
+
+    expect(messages).toEqual([{
+      type: 'neko-hosted-surface-open-external',
+      payload: { url: 'http://127.0.0.1:48911/plugin/demo/hosted-ui/artifact?path=x.zip' },
+    }])
+  })
+
+  it('routes local hosted download paths through the parent window', () => {
+    const messages: any[] = []
+    Object.defineProperty(window, 'parent', {
+      value: {
+        postMessage(message: any) {
+          messages.push(message)
+        },
+      },
+      configurable: true,
+    })
+    window.__NEKO_PAYLOAD.host = { origin: 'http://127.0.0.1:48911' }
+
+    ui.render(ui.h(ui.FileDownload, { path: '/tmp/neko/package', label: 'Open folder' }), root)
+    fireEvent.click(root.querySelector('button')!)
+
+    expect(messages).toEqual([{
+      type: 'neko-hosted-surface-open-path',
+      payload: { path: '/tmp/neko/package' },
+    }])
+  })
+
+  it('normalizes artifact-like values into type and view', () => {
+    expect(ui.normalizeArtifact({ type: 'table', rows: [{ a: 1 }] })).toMatchObject({
+      type: 'json',
+      view: 'table',
+      data: [{ a: 1 }],
+    })
+    expect(ui.normalizeArtifact({ type: 'folder', path: '/tmp/out' })).toMatchObject({
+      type: 'file',
+      isDirectory: true,
+      path: '/tmp/out',
+    })
+    expect(ui.normalizeArtifact({ markdown: '# Report' })).toMatchObject({
+      type: 'text',
+      view: 'markdown',
+      text: '# Report',
+    })
+    expect(ui.normalizeArtifact({ mime: 'audio/webm', dataUrl: 'data:audio/webm;base64,ZmFrZQ==' })).toMatchObject({
+      type: 'audio',
+      dataUrl: 'data:audio/webm;base64,ZmFrZQ==',
+    })
+  })
+
+  it('automatically renders mixed artifacts', () => {
+    ui.render(ui.h(ui.ArtifactList, {
+      items: [
+        { type: 'image', dataUrl: 'data:image/png;base64,ZmFrZQ==', label: 'Image' },
+        { type: 'audio', dataUrl: 'data:audio/webm;base64,ZmFrZQ==', label: 'Audio' },
+        { type: 'video', dataUrl: 'data:video/webm;base64,ZmFrZQ==', label: 'Video' },
+        { type: 'text', view: 'log', text: 'line 1\nline 2', label: 'Log' },
+        { type: 'json', view: 'table', data: [{ name: 'Neko', score: 9 }], label: 'Rows' },
+        { type: 'file', path: '/tmp/out.zip', label: 'Package' },
+      ],
+    }), root)
+
+    expect(root.querySelectorAll('.neko-artifact-card')).toHaveLength(6)
+    expect(root.querySelector('.neko-image-preview img')?.getAttribute('src')).toContain('data:image/png')
+    expect(root.querySelector('audio')?.getAttribute('src')).toContain('data:audio')
+    expect(root.querySelector('video')?.getAttribute('src')).toContain('data:video')
+    expect(root.querySelector('.neko-log-viewer')?.textContent).toContain('line 2')
+    expect(root.querySelector('.neko-table')?.textContent).toContain('Neko')
+    expect(root.querySelector('.neko-download')?.textContent).toContain('Package')
+  })
+
+  it('emits artifact-like objects from audio and video uploads', async () => {
+    const OriginalFileReader = window.FileReader
+    class MockFileReader {
+      result = ''
+      onload: null | (() => void) = null
+      onerror: null | (() => void) = null
+      error: Error | null = null
+      readAsDataURL(file: File) {
+        this.result = `data:${file.type};base64,ZmFrZQ==`
+        queueMicrotask(() => this.onload && this.onload())
+      }
+    }
+    Object.defineProperty(window, 'FileReader', { value: MockFileReader, configurable: true })
+
+    const audioChange = vi.fn()
+    const videoChange = vi.fn()
+    ui.render(ui.h('section', null,
+      ui.h(ui.AudioUpload, { onChange: audioChange }),
+      ui.h(ui.VideoUpload, { onChange: videoChange }),
+    ), root)
+
+    const [audioInput, videoInput] = Array.from(root.querySelectorAll<HTMLInputElement>('input[type="file"]')) as [HTMLInputElement, HTMLInputElement]
+    fireEvent.change(audioInput, { target: { files: [new File(['audio'], 'voice.webm', { type: 'audio/webm' })] } })
+    fireEvent.change(videoInput, { target: { files: [new File(['video'], 'clip.webm', { type: 'video/webm' })] } })
+    await flushMicrotasks()
+
+    expect(audioChange).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'audio',
+      dataUrl: 'data:audio/webm;base64,ZmFrZQ==',
+      name: 'voice.webm',
+      mime: 'audio/webm',
+      size: 5,
+    }))
+    expect(videoChange).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'video',
+      dataUrl: 'data:video/webm;base64,ZmFrZQ==',
+      name: 'clip.webm',
+      mime: 'video/webm',
+      size: 5,
+    }))
+
+    Object.defineProperty(window, 'FileReader', { value: OriginalFileReader, configurable: true })
   })
 })

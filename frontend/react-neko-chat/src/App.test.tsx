@@ -17,19 +17,18 @@ import {
 import MessageList from './MessageList';
 import { ACTIVE_AVATAR_TOOLS_STORAGE_KEY } from './avatarTools';
 import { getChatCompanionEmptyStateFallback, getChatEmptyStateFallback } from './chat-copy';
+import { MEME_IMAGE_LOAD_FAILED_STICKER_URL } from './memeImageFallback';
 import { parseChatMessage, type CompactChatState } from './message-schema';
 import compactChatStyles from './styles.css?raw';
 
 describe('App', () => {
   const COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY = 'neko.reactChatWindow.compactExportHistoryOpen';
-  const COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY = 'neko.experiment.compactHistoryDefault';
   const COMPACT_HISTORY_HEIGHT_STORAGE_KEY = 'neko.reactChatWindow.compactHistorySlotHeight';
   const COMPACT_INPUT_TOOL_WHEEL_INDEX_STORAGE_KEY = 'neko.reactChatWindow.compactInputToolWheelIndex';
   const DEFAULT_CHAT_EMPTY_STATE_FALLBACK = getChatEmptyStateFallback('en');
   const DEFAULT_CHAT_COMPANION_EMPTY_STATE_FALLBACK = getChatCompanionEmptyStateFallback('en');
   const LOCAL_STORAGE_KEYS_TO_RESET = [
     COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY,
-    COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY,
     COMPACT_HISTORY_HEIGHT_STORAGE_KEY,
     COMPACT_INPUT_TOOL_WHEEL_INDEX_STORAGE_KEY,
     ACTIVE_AVATAR_TOOLS_STORAGE_KEY,
@@ -39,13 +38,16 @@ describe('App', () => {
     LOCAL_STORAGE_KEYS_TO_RESET.forEach(key => {
       window.localStorage.removeItem(key);
     });
-    // 历史 UI 用例需要历史区默认展开：A/B 变体默认值现改为「教程完全结束后」才异步套用，测试里直接给一个
-    // 显式持久化「开」偏好，让历史区同步展开、与实验门控解耦（实验/门控行为另有专门用例覆盖）。
+    // 历史 UI 用例需要历史区默认展开：无偏好一律折叠（「历史首启默认」A/B 已退役），测试里直接给一个
+    // 显式持久化「开」偏好，让历史区同步展开（默认折叠行为另有专门用例覆盖）。
     window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'true');
     delete window.__NEKO_REACT_CHAT_ASSET_VERSION__;
     delete (window as Window & { NekoGameSystem?: unknown }).NekoGameSystem;
+    delete (window as Window & { live2dManager?: unknown }).live2dManager;
+    delete (window as Window & { __nekoDesktopCompactLayout?: unknown }).__nekoDesktopCompactLayout;
     resetCompactToolWheelDetentAudioForTests();
     document.body.style.pointerEvents = '';
+    document.body.classList.remove('electron-chat-window');
     document.body.classList.remove('yui-guide-chat-buttons-disabled');
     document.body.classList.remove('yui-guide-standalone-input-shield-active');
   });
@@ -191,8 +193,17 @@ describe('App', () => {
   const renderInputApp = (
     props: React.ComponentProps<typeof App> = {},
   ) => render(<App compactChatState="input" {...props} />);
-  const queryAvatarCursorOverlay = () => document.body.querySelector<HTMLElement>('.avatar-cursor-overlay');
-  const queryHammerCursorCompactImage = () => document.body.querySelector<HTMLImageElement>('.hammer-cursor-overlay-compact-image');
+  const queryAvatarToolVisualOverlay = () => document.body.querySelector<HTMLElement>('.avatar-tool-visual-overlay');
+  const queryAvatarToolImpactEffect = () => document.body.querySelector<HTMLElement>(
+    '.avatar-tool-visual-overlay-hammer, .avatar-tool-impact-effect',
+  );
+  const queryAvatarToolImpactPointerImage = () => document.body.querySelector<HTMLImageElement>(
+    '.avatar-tool-visual-overlay-hammer.is-compact .avatar-tool-visual-overlay-image-hammer, .avatar-tool-impact-effect.is-compact .avatar-tool-impact-effect-pointer-image',
+  );
+  const tapAvatarTool = (clientX: number, clientY: number, pointerId = 1) => {
+    fireEvent.pointerDown(window, { button: 0, pointerId, clientX, clientY });
+    fireEvent.pointerUp(window, { pointerId, clientX, clientY });
+  };
   const installLive2dBoundsMock = () => {
     const testWindow = window as Window & { live2dManager?: unknown };
     const hadLive2dManager = Object.prototype.hasOwnProperty.call(testWindow, 'live2dManager');
@@ -219,6 +230,21 @@ describe('App', () => {
     };
   };
 
+  const installVisibleLive2dBoundsMock = () => {
+    const live2dContainer = document.createElement('div');
+    live2dContainer.id = 'live2d-container';
+    Object.defineProperty(live2dContainer, 'getClientRects', {
+      configurable: true,
+      value: () => [{ width: 100, height: 100 }],
+    });
+    document.body.appendChild(live2dContainer);
+    const restoreLive2dManager = installLive2dBoundsMock();
+    return () => {
+      restoreLive2dManager();
+      live2dContainer.remove();
+    };
+  };
+
   it('renders compact subtitle capsule by default while keeping the tool button visible', () => {
     render(<App />);
 
@@ -230,7 +256,7 @@ describe('App', () => {
     expect(document.body.querySelector('.compact-input-tool-fan')).not.toBeNull();
   });
 
-  it('dispatches the frozen legacy full surface for chatSurfaceMode="full"', () => {
+  it('dispatches the full layout for chatSurfaceMode="full"', () => {
     // The dispatcher routes `full` to the isolated FullChatSurface, which shows
     // the full history list + full composer instead of the compact surface.
     const message = parseChatMessage({
@@ -267,6 +293,226 @@ describe('App', () => {
     expect(container.querySelector('.composer-panel')).toBeNull();
     expect(container.querySelector('.composer-bottom-tools')).toBeNull();
     expect(container.querySelector('.send-button-circle')).toBeNull();
+  });
+
+  it('keeps compact cat chat text-only and in input state after submit', () => {
+    const onComposerSubmit = vi.fn();
+    const onCompactMinimizeRequest = vi.fn();
+    const { container } = renderInputApp({
+      catLocalTextOnly: true,
+      composerAttachments: [{ id: 'pending-cat-image', url: 'data:image/png;base64,AA==' }],
+      choicePrompt: {
+        source: 'mini_game_invite',
+        options: [{ choice: 'accept', label: 'Accept' }],
+      },
+      onComposerSubmit,
+      onCompactMinimizeRequest,
+    });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    expect(screen.queryByRole('button', { name: '更多工具' })).toBeNull();
+    expect(container.querySelector('.composer-attachment-viewport')).toBeNull();
+    expect(document.body.querySelector('.composer-choice-layer')).toBeNull();
+
+    fireEvent.change(input, { target: { value: '  你好  ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好' });
+    expect(screen.getByPlaceholderText('Type a message...')).toBeInTheDocument();
+    expect(container.querySelector('[data-compact-chat-state="input"]')).not.toBeNull();
+
+    fireEvent.click(container.querySelector('.compact-chat-minimize-ball') as HTMLButtonElement);
+    expect(onCompactMinimizeRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the ordinary draft separate from the temporary compact cat draft', () => {
+    const onComposerSubmit = vi.fn();
+    const { rerender } = render(
+      <App compactChatState="input" onComposerSubmit={onComposerSubmit} />,
+    );
+    fireEvent.change(screen.getByPlaceholderText('Type a message...'), {
+      target: { value: 'normal draft' },
+    });
+
+    rerender(
+      <App compactChatState="input" catLocalTextOnly onComposerSubmit={onComposerSubmit} />,
+    );
+    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('');
+    fireEvent.change(screen.getByPlaceholderText('Type a message...'), {
+      target: { value: 'cat draft' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    expect(onComposerSubmit).toHaveBeenLastCalledWith({ text: 'cat draft' });
+
+    rerender(
+      <App compactChatState="input" onComposerSubmit={onComposerSubmit} />,
+    );
+    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('normal draft');
+  });
+
+  it('keeps full cat chat text-only while preserving the message surface', () => {
+    const onComposerSubmit = vi.fn();
+    const { container } = render(
+      <App
+        chatSurfaceMode="full"
+        catLocalTextOnly
+        composerAttachments={[{ id: 'pending-full-cat-image', url: 'data:image/png;base64,AA==' }]}
+        galgameModeEnabled
+        galgameOptions={[{ label: 'A', text: 'normal option' }]}
+        onComposerSubmit={onComposerSubmit}
+      />,
+    );
+
+    expect(container.querySelector('.message-list')).not.toBeNull();
+    expect(container.querySelector('.composer-bottom-tools')).toBeNull();
+    expect(container.querySelector('.composer-attachments')).toBeNull();
+    expect(container.querySelector('.composer-choice-layer')).toBeNull();
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: '喵一下' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '喵一下' });
+  });
+
+  it('keeps the ordinary full-chat draft separate from the temporary cat draft', () => {
+    const onComposerSubmit = vi.fn();
+    const { rerender } = render(
+      <App chatSurfaceMode="full" onComposerSubmit={onComposerSubmit} />,
+    );
+    fireEvent.change(screen.getByPlaceholderText('Type a message...'), {
+      target: { value: 'normal full draft' },
+    });
+
+    rerender(
+      <App chatSurfaceMode="full" catLocalTextOnly onComposerSubmit={onComposerSubmit} />,
+    );
+    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('');
+    fireEvent.change(screen.getByPlaceholderText('Type a message...'), {
+      target: { value: 'full cat draft' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    expect(onComposerSubmit).toHaveBeenLastCalledWith({ text: 'full cat draft' });
+
+    rerender(
+      <App chatSurfaceMode="full" onComposerSubmit={onComposerSubmit} />,
+    );
+    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('normal full draft');
+  });
+
+  it('uses the shared release runtime and catalog from the full chat menu', async () => {
+    const restoreLive2dBounds = installVisibleLive2dBoundsMock();
+    const onAvatarInteraction = vi.fn();
+    const onAvatarToolStateChange = vi.fn();
+
+    try {
+      render(
+        <App
+          chatSurfaceMode="full"
+          onAvatarInteraction={onAvatarInteraction}
+          onAvatarToolStateChange={onAvatarToolStateChange}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      const toolGroup = screen.getByRole('group', { name: 'Tool icons' });
+      expect(Array.from(toolGroup.querySelectorAll<HTMLButtonElement>('.composer-icon-button'))
+        .map(button => button.getAttribute('aria-label'))).toEqual(['棒棒糖', '猫爪', '锤子']);
+      fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
+
+      fireEvent.pointerDown(window, {
+        button: 0,
+        pointerId: 7,
+        clientX: 150,
+        clientY: 150,
+      });
+      expect(onAvatarInteraction).not.toHaveBeenCalled();
+
+      fireEvent.pointerUp(window, {
+        button: 0,
+        pointerId: 7,
+        clientX: 150,
+        clientY: 150,
+      });
+      expect(onAvatarInteraction).toHaveBeenCalledTimes(1);
+      expect(onAvatarInteraction).toHaveBeenCalledWith(expect.objectContaining({
+        toolId: 'lollipop',
+        actionId: 'offer',
+      }));
+
+      fireEvent.click(screen.getByRole('button', { name: '取消道具' }));
+      await waitFor(() => expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+        active: false,
+        toolId: null,
+      })));
+    } finally {
+      restoreLive2dBounds();
+    }
+  });
+
+  it('publishes only the strict desktop descriptor from the full chat surface', async () => {
+    (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__ = true;
+    const onAvatarInteraction = vi.fn();
+    const onAvatarToolStateChange = vi.fn();
+
+    try {
+      render(
+        <App
+          chatSurfaceMode="full"
+          onAvatarInteraction={onAvatarInteraction}
+          onAvatarToolStateChange={onAvatarToolStateChange}
+        />,
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+
+      await waitFor(() => expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+        active: true,
+        toolId: 'fist',
+        desktopContract: expect.objectContaining({
+          wireVersion: 1,
+          definition: expect.objectContaining({ id: 'fist' }),
+        }),
+      })));
+      const activePayload = onAvatarToolStateChange.mock.calls[
+        onAvatarToolStateChange.mock.calls.length - 1
+      ]?.[0];
+      expect(activePayload).not.toHaveProperty('tool');
+      expect(activePayload).not.toHaveProperty('cursorClientX');
+      expect(document.body.querySelector('.avatar-tool-visual-overlay')).toBeNull();
+
+      fireEvent.pointerDown(window, { button: 0, pointerId: 9, clientX: 150, clientY: 150 });
+      fireEvent.pointerUp(window, { button: 0, pointerId: 9, clientX: 150, clientY: 150 });
+      expect(onAvatarInteraction).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji: 猫爪' }));
+      await waitFor(() => expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+        active: false,
+        toolId: null,
+      })));
+    } finally {
+      delete (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__;
+    }
+  });
+
+  it('deactivates a full chat avatar tool when the tutorial shield takes control', async () => {
+    const onAvatarToolStateChange = vi.fn();
+    render(<App chatSurfaceMode="full" onAvatarToolStateChange={onAvatarToolStateChange} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: '锤子' }));
+    await waitFor(() => expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      active: true,
+      toolId: 'hammer',
+    })));
+
+    act(() => {
+      document.body.classList.add('yui-guide-standalone-input-shield-active');
+    });
+
+    await waitFor(() => expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      active: false,
+      toolId: null,
+    })));
   });
 
   it('enters compact input from the subtitle capsule when used uncontrolled', () => {
@@ -655,70 +901,32 @@ describe('App', () => {
     }
   });
 
-  it('keeps compact history collapsed by default and only applies the open variant after the tutorial ends', () => {
+  it('keeps compact history collapsed by default, including after the tutorial ends (retired A/B stays retired)', () => {
     window.localStorage.removeItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
-    window.localStorage.setItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY, 'open');
-    const message = parseChatMessage({
-      id: 'assistant-gate-1', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
-      blocks: [{ type: 'text', text: 'hi' }], status: 'sent',
-    });
-    const { container } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />,
-    );
-    // 无显式偏好 → 初始折叠（即便 variant=open，也要等教程结束才展开）
-    expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
-    // 教程完成 → 套用 open 变体 → 展开
-    act(() => {
-      window.dispatchEvent(new Event('neko:tutorial-completed'));
-    });
-    expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
-  });
-
-  it('does not allocate the history experiment variant when starting on a full surface (keeps compact A/B clean)', () => {
-    window.localStorage.removeItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
-    window.localStorage.removeItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY);
-    const message = parseChatMessage({
-      id: 'assistant-full-gate', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
-      blocks: [{ type: 'text', text: 'hi' }], status: 'sent',
-    });
-    render(<App chatSurfaceMode="full" messages={[message]} />);
-    act(() => {
-      window.dispatchEvent(new Event('neko:tutorial-completed'));
-    });
-    // full → FullChatSurface（CompactChatApp 不 mount），实验 effect 不跑：不分配 variant、不上报曝光，
-    // full-surface 用户没见过紧凑历史面板，不该进入 compact A/B 样本。
-    expect(window.localStorage.getItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY)).toBeNull();
-  });
-
-  it('still reports the exposure when sessionStorage access throws (privacy mode)', () => {
-    window.localStorage.removeItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
-    window.localStorage.setItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY, 'closed');
+    // 存量用户 localStorage 里可能残留已退役实验的 'open' 分组值——它不能再触发自动展开。
+    window.localStorage.setItem('neko.experiment.compactHistoryDefault', 'open');
     const telemetry = vi.fn(() => true);
     (window as unknown as { appTelemetry?: { counter: (n: string, v?: number, d?: Record<string, unknown>) => boolean } }).appTelemetry = { counter: telemetry };
-    // 只让 sessionStorage.getItem 抛（隐私浏览器/webview），localStorage 仍可读 cohort——
-    // 二者共享 Storage.prototype，按 this 区分。
-    const realGetItem = Storage.prototype.getItem;
-    const getItemSpy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, key: string) {
-      if (this === window.sessionStorage) throw new DOMException('denied', 'SecurityError');
-      return realGetItem.call(this, key);
-    });
     try {
       const message = parseChatMessage({
-        id: 'assistant-privacy-exposure', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
+        id: 'assistant-gate-1', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
         blocks: [{ type: 'text', text: 'hi' }], status: 'sent',
       });
-      render(<App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />);
+      const { container } = render(
+        <App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />,
+      );
+      // 无显式偏好 → 折叠
+      expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+      // 教程完成也不再套用任何变体：保持折叠、不上报曝光、不动残留分组值
       act(() => {
         window.dispatchEvent(new Event('neko:tutorial-completed'));
       });
-      // sessionStorage 去重读失败不能吞掉曝光：有 variant 的用户仍要发出 experiment_exposure。
-      expect(telemetry).toHaveBeenCalledWith('experiment_exposure', 1, expect.objectContaining({
-        experiment: 'compact_history_default',
-        variant: 'closed',
-      }));
+      expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+      expect(telemetry).not.toHaveBeenCalled();
+      expect(window.localStorage.getItem('neko.experiment.compactHistoryDefault')).toBe('open');
     } finally {
-      getItemSpy.mockRestore();
       delete (window as unknown as { appTelemetry?: unknown }).appTelemetry;
+      window.localStorage.removeItem('neko.experiment.compactHistoryDefault');
     }
   });
 
@@ -741,6 +949,9 @@ describe('App', () => {
     const img = container.querySelector('.compact-meme-overlay img');
     expect(img).not.toBeNull();
     expect(img).toHaveAttribute('src', '/api/meme/proxy-image?url=x');
+    expect(img).toHaveAttribute('loading', 'eager');
+    expect(img).toHaveAttribute('fetchpriority', 'high');
+    expect(img).not.toHaveAttribute('data-neko-image-load-failed-sticker');
 
     const caption = parseChatMessage({
       id: 'assistant-newer',
@@ -878,7 +1089,7 @@ describe('App', () => {
     await waitFor(() => expect(container.querySelector('.compact-meme-overlay-close')).not.toBeNull());
     const closeButton = container.querySelector('.compact-meme-overlay-close');
     // ⚠️ host 只把带 data-compact-hit-region 的子元素登记成 native 可交互区；漏了它 Electron
-    // pass-through 窗口里点击会穿到桌面（见 app-react-chat-window.js collectCompactCompositeGeometryItems）。
+    // pass-through 窗口里点击会穿到桌面（见 app-react-chat-window collectCompactCompositeGeometryItems）。
     expect(closeButton).toHaveAttribute('data-compact-hit-region', 'true');
 
     fireEvent.click(closeButton as Element);
@@ -938,6 +1149,8 @@ describe('App', () => {
       expect(img).not.toBeNull();
       expect(container.querySelector('.compact-meme-overlay-close')).toBeNull();
       fireEvent.error(img as Element);
+      expect(img).toHaveAttribute('src', MEME_IMAGE_LOAD_FAILED_STICKER_URL);
+      expect(img).toHaveAttribute('data-neko-image-load-failed-sticker', 'true');
       expect(geometryRefreshes.length).toBe(0);
       await waitFor(() => expect(geometryRefreshes.length).toBeGreaterThan(0));
       expect(container.querySelector('.compact-meme-overlay-close')).not.toBeNull();
@@ -1220,6 +1433,56 @@ describe('App', () => {
       expect(container.querySelector('[data-compact-export-history-message-id="assistant-history-after-close"]')).not.toBeNull();
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it('refreshes compact interaction geometry when compact history closes, unmounts, and reopens', async () => {
+    const message = parseChatMessage({
+      id: 'assistant-history-geometry-refresh',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'History geometry should stay fresh.' }],
+      status: 'sent',
+    });
+    const geometryRefreshes: Event[] = [];
+    const handleGeometryRefresh = (event: Event) => geometryRefreshes.push(event);
+    window.addEventListener('neko:compact-interaction-geometry-refresh', handleGeometryRefresh);
+    vi.useFakeTimers();
+    let unmount: (() => void) | null = null;
+    try {
+      const rendered = render(
+        <App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />,
+      );
+      const { container } = rendered;
+      unmount = rendered.unmount;
+      expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+      geometryRefreshes.length = 0;
+
+      await act(async () => {
+        fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
+      });
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'closing');
+      expect(geometryRefreshes.length).toBeGreaterThan(0);
+      const closeRefreshCount = geometryRefreshes.length;
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
+      });
+      expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+      expect(geometryRefreshes.length).toBeGreaterThan(closeRefreshCount);
+      const unmountRefreshCount = geometryRefreshes.length;
+
+      await act(async () => {
+        fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
+      });
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'open');
+      expect(geometryRefreshes.length).toBeGreaterThan(unmountRefreshCount);
+    } finally {
+      unmount?.();
+      vi.useRealTimers();
+      window.removeEventListener('neko:compact-interaction-geometry-refresh', handleGeometryRefresh);
     }
   });
 
@@ -2692,6 +2955,91 @@ describe('App', () => {
         });
       });
     } finally {
+      desktopWindow.__nekoDesktopCompactLayout = originalDesktopLayout;
+    }
+  });
+
+  it('syncs compact choice surface vars immediately from desktop layout events', async () => {
+    const desktopWindow = window as typeof window & { __nekoDesktopCompactLayout?: unknown };
+    const originalDesktopLayout = desktopWindow.__nekoDesktopCompactLayout;
+    let unmount: (() => void) | null = null;
+    let restoreShellRect: (() => void) | null = null;
+
+    try {
+      const rendered = render(
+        <App
+          chatSurfaceMode="compact"
+          galgameModeEnabled
+          galgameOptions={[
+            { label: 'A', text: 'Option A' },
+            { label: 'B', text: 'Option B' },
+          ]}
+        />,
+      );
+      const { container } = rendered;
+      unmount = rendered.unmount;
+
+      const shell = container.querySelector('.compact-chat-surface-shell');
+      const choiceLayer = document.body.querySelector<HTMLElement>('body > .compact-chat-choice-anchor');
+      expect(shell).not.toBeNull();
+      expect(choiceLayer).not.toBeNull();
+
+      const originalShellRect = shell!.getBoundingClientRect;
+      restoreShellRect = () => {
+        Object.defineProperty(shell!, 'getBoundingClientRect', {
+          configurable: true,
+          value: originalShellRect,
+        });
+      };
+      Object.defineProperty(shell!, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          x: 0,
+          y: 0,
+          top: 72,
+          left: 18,
+          right: 448,
+          bottom: 154,
+          width: 430,
+          height: 82,
+          toJSON: () => ({}),
+        }),
+      });
+
+      const nextLayout = {
+        compactChoicePlacement: 'below',
+        surface: {
+          left: 120,
+          top: 260,
+          width: 388,
+          height: 64,
+        },
+        windowBounds: { x: 200, y: 100, width: 900, height: 700 },
+        workArea: { x: 0, y: 0, width: 1440, height: 900 },
+      };
+      desktopWindow.__nekoDesktopCompactLayout = nextLayout;
+
+      window.dispatchEvent(new CustomEvent('neko:desktop-compact-layout-change', {
+        detail: nextLayout,
+      }));
+
+      expect(choiceLayer).toHaveStyle({
+        '--compact-choice-surface-left': '120px',
+        '--compact-choice-surface-top': '260px',
+        '--compact-choice-surface-width': '388px',
+        '--compact-choice-surface-height': '64px',
+      });
+      await waitFor(() => {
+        expect(choiceLayer).toHaveStyle({
+          '--compact-choice-surface-left': '120px',
+          '--compact-choice-surface-top': '260px',
+          '--compact-choice-surface-width': '388px',
+          '--compact-choice-surface-height': '64px',
+        });
+      });
+    } finally {
+      restoreShellRect?.();
+      unmount?.();
       desktopWindow.__nekoDesktopCompactLayout = originalDesktopLayout;
     }
   });
@@ -4503,6 +4851,17 @@ describe('App', () => {
     expect(actionButton.querySelector('img')).toHaveClass('compact-input-tool-toggle-icon');
   });
 
+  it('exposes compact capsule inline tool regions before entering input state', () => {
+    const { container } = render(<App chatSurfaceMode="compact" compactChatState="default" />);
+
+    expect(container.querySelector('[data-compact-geometry-part="capsuleBody"]')).not.toBeNull();
+    expect(container.querySelector('[data-compact-geometry-part="capsuleBody"]')).toHaveAttribute('data-compact-geometry-hit-scope', 'children');
+    expect(container.querySelector('.compact-chat-capsule-button')).toHaveAttribute('data-compact-hit-region-id', 'capsule:text');
+    expect(container.querySelector('.compact-chat-capsule-button')).toHaveAttribute('data-compact-hit-region-kind', 'capsule-text');
+    expect(container.querySelector('.compact-input-tool-toggle')).toHaveAttribute('data-compact-hit-region-id', 'input:tool-toggle');
+    expect(container.querySelector('.compact-input-tool-toggle')).toHaveAttribute('data-compact-hit-region-kind', 'input-tool-toggle');
+  });
+
   it('keeps the compact chat surface visible while voice mode hides the composer input', () => {
     const { container } = render(
       <App chatSurfaceMode="compact" compactChatState="input" composerHidden />,
@@ -4585,6 +4944,39 @@ describe('App', () => {
     expect(onCompactChatStateChange).not.toHaveBeenCalledWith('input');
   });
 
+  it('opens compact input tools from the default capsule hover ring without entering input state', () => {
+    const onCompactChatStateChange = vi.fn();
+    const { container } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="default"
+        onCompactChatStateChange={onCompactChatStateChange}
+      />,
+    );
+
+    const actionButton = screen.getByRole('button', { name: '更多工具' });
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    vi.spyOn(actionButton, 'getBoundingClientRect').mockReturnValue({
+      left: 100,
+      top: 40,
+      right: 148,
+      bottom: 88,
+      width: 48,
+      height: 48,
+      x: 100,
+      y: 40,
+      toJSON: () => ({}),
+    });
+
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+
+    fireEvent.pointerMove(window, { clientX: 124, clientY: 64, pointerType: 'mouse' });
+
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'default');
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+    expect(onCompactChatStateChange).not.toHaveBeenCalledWith('input');
+  });
+
   it('opens compact input tools from the same right-side button without submitting', () => {
     const onComposerSubmit = vi.fn();
     const { container } = render(
@@ -4648,7 +5040,7 @@ describe('App', () => {
       ['.compact-input-tool-item-jukebox', 'Jukebox test label'],
       ['.compact-input-tool-item-translate', 'Translate test label'],
       ['.compact-input-tool-item-galgame', 'Galgame test label'],
-      ['.compact-input-tool-item-export', 'Show history actions'],
+      ['.compact-input-tool-item-export', 'Export conversation history'],
       ['.compact-input-tool-item-avatar', 'Avatar tools'],
     ];
 
@@ -4732,6 +5124,80 @@ describe('App', () => {
     }
   });
 
+  it('uses viewport-fit compact tool wheel layout in a wide browser viewport when the original arc would clip', () => {
+    const originalMatchMedia = window.matchMedia;
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+    mockMobileMatchMedia(false);
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1280 });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 720 });
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+      const fan = container.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      vi.spyOn(fan, 'getBoundingClientRect').mockReturnValue({
+        left: 884,
+        top: 544,
+        right: 1116,
+        bottom: 776,
+        width: 232,
+        height: 232,
+        x: 884,
+        y: 544,
+        toJSON: () => ({}),
+      });
+
+      const actionButton = container.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+      expect(actionButton).not.toBeNull();
+      fireEvent.click(actionButton);
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-layout', 'viewport-fit');
+    } finally {
+      window.matchMedia = originalMatchMedia;
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight });
+    }
+  });
+
+  it('chooses the lower-overflow compact tool wheel layout when neither arc fully fits', () => {
+    // At 94px high, the default arc clips below the viewport and viewport-fit clips above it;
+    // viewport-fit has the smaller total overflow, so this reaches the browser-only tiebreaker.
+    const originalMatchMedia = window.matchMedia;
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+    mockMobileMatchMedia(true);
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 532 });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 94 });
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+      const fan = container.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      vi.spyOn(fan, 'getBoundingClientRect').mockReturnValue({
+        left: 302,
+        top: -65,
+        right: 534,
+        bottom: 167,
+        width: 232,
+        height: 232,
+        x: 302,
+        y: -65,
+        toJSON: () => ({}),
+      });
+
+      const actionButton = container.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+      expect(actionButton).not.toBeNull();
+      fireEvent.click(actionButton);
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-layout', 'viewport-fit');
+    } finally {
+      window.matchMedia = originalMatchMedia;
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight });
+    }
+  });
+
   it('uses viewport-fit compact tool wheel layout on desktop when the surface is near the taskbar', () => {
     const desktopLayout = installDesktopCompactLayout({
       windowBounds: { x: 0, y: 470, width: 700, height: 330 },
@@ -4759,6 +5225,38 @@ describe('App', () => {
 
       expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
       expect(fan).toHaveAttribute('data-compact-tool-wheel-layout', 'viewport-fit');
+    } finally {
+      desktopLayout.restore();
+    }
+  });
+
+  it('keeps the default compact tool wheel layout when a short desktop work area clips the reversed arc vertically', () => {
+    const desktopLayout = installDesktopCompactLayout({
+      windowBounds: { x: 0, y: 0, width: 430, height: 156 },
+      workArea: { x: 0, y: 0, width: 430, height: 156 },
+    }, { width: 430, height: 156 });
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+      const fan = container.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      vi.spyOn(fan, 'getBoundingClientRect').mockReturnValue({
+        left: 100,
+        top: -60,
+        right: 332,
+        bottom: 172,
+        width: 232,
+        height: 232,
+        x: 100,
+        y: -60,
+        toJSON: () => ({}),
+      });
+
+      const actionButton = container.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+      expect(actionButton).not.toBeNull();
+      fireEvent.click(actionButton);
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-layout', 'default');
     } finally {
       desktopLayout.restore();
     }
@@ -4971,7 +5469,10 @@ describe('App', () => {
       const editButton = container.querySelector('.avatar-tool-quickbar-edit') as HTMLButtonElement;
       expect(editButton).not.toBeNull();
       expect(editButton.querySelectorAll('img')).toHaveLength(1);
-      expect(editButton.querySelector('img')).toHaveAttribute('src', '/static/icons/edit_tool_unified.png');
+      expect(editButton.querySelector('img')).toHaveAttribute(
+        'src',
+        '/static/assets/avatar-tools/ui/edit.png',
+      );
       Object.defineProperty(editButton, 'getBoundingClientRect', {
         configurable: true,
         value: () => ({
@@ -4996,7 +5497,11 @@ describe('App', () => {
         '--avatar-tool-manager-top': '12px',
       });
       expect(dialog.querySelectorAll('.avatar-tool-manager-slot')).toHaveLength(3);
-      expect(dialog.querySelector('.avatar-tool-icon-hammer')).not.toBeNull();
+      const hammerImage = dialog.querySelector('[data-avatar-tool-id="hammer"] .avatar-tool-manager-tool-image');
+      expect(hammerImage).toHaveStyle({
+        transform: 'scale(1.38) translate(-14%, 10%)',
+        transformOrigin: 'center center',
+      });
 
       const header = dialog.querySelector('.avatar-tool-manager-header') as HTMLElement;
       expect(header).not.toBeNull();
@@ -5038,6 +5543,129 @@ describe('App', () => {
     }
   });
 
+  it('lets Compact equip and select rps while preserving the three-slot limit', async () => {
+    const onAvatarToolStateChange = vi.fn();
+    const { container } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        onAvatarToolStateChange={onAvatarToolStateChange}
+      />,
+    );
+
+    await openCompactInputTools();
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+    fireEvent.click(container.querySelector('.avatar-tool-quickbar-edit') as HTMLButtonElement);
+
+    const dialog = screen.getByRole('dialog', { name: 'Manage tools' });
+    expect(dialog.querySelector('[data-avatar-tool-library-id="rps"]')).not.toBeNull();
+    fireEvent.click(dialog.querySelector('.avatar-tool-manager-remove') as HTMLButtonElement);
+    fireEvent.click(dialog.querySelector('[data-avatar-tool-library-id="rps"]') as HTMLButtonElement);
+    fireEvent.click(dialog.querySelector('.avatar-tool-manager-action.primary') as HTMLButtonElement);
+
+    const quickbarButtons = container.querySelectorAll('.avatar-tool-quickbar-button');
+    expect(quickbarButtons).toHaveLength(3);
+    const rpsButton = container.querySelector('[data-avatar-tool-id="rps"]') as HTMLButtonElement;
+    expect(rpsButton).not.toBeNull();
+    fireEvent.click(container.querySelector('[data-avatar-tool-id="rps"]') as HTMLButtonElement);
+    await waitFor(() => expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      active: true,
+      toolId: 'rps',
+    })));
+    expect(JSON.parse(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY) || '[]')).toContain('rps');
+
+    await openCompactInputTools();
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+    await waitFor(() => expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      active: false,
+      toolId: null,
+    })));
+  });
+
+  it('sizes compact avatar tool manager against the desktop work area when the carrier is small', async () => {
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+    const desktopWindow = window as typeof window & {
+      __nekoDesktopCompactLayout?: {
+        windowBounds: { x: number; y: number; width: number; height: number };
+        workArea: { x: number; y: number; width: number; height: number };
+      } | null;
+    };
+    const originalDesktopLayout = desktopWindow.__nekoDesktopCompactLayout;
+    const hadElectronChatWindowClass = document.body.classList.contains('electron-chat-window');
+
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 393 });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 74 });
+    document.body.classList.add('electron-chat-window');
+    desktopWindow.__nekoDesktopCompactLayout = {
+      windowBounds: { x: 976, y: 485, width: 393, height: 74 },
+      workArea: { x: 0, y: 0, width: 1706, height: 1066 },
+    };
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+
+      await openCompactInputTools();
+      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+
+      const editButton = container.querySelector('.avatar-tool-quickbar-edit') as HTMLButtonElement;
+      expect(editButton).not.toBeNull();
+      Object.defineProperty(editButton, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          left: 310,
+          top: 20,
+          right: 356,
+          bottom: 66,
+          width: 46,
+          height: 46,
+          x: 310,
+          y: 20,
+          toJSON: () => ({}),
+        }),
+      });
+
+      fireEvent.click(editButton);
+
+      const dialog = screen.getByRole('dialog', { name: 'Manage tools' });
+      expect(dialog).toHaveClass('is-positioned');
+      expect(dialog).toHaveClass('is-desktop-compact-layout');
+      expect(dialog).toHaveAttribute('data-compact-geometry-item', 'avatarToolManager');
+      expect(dialog).toHaveStyle({
+        '--avatar-tool-manager-left': '-24px',
+        '--avatar-tool-manager-top': '-473px',
+        '--avatar-tool-manager-width': '380px',
+        '--avatar-tool-manager-height': '600px',
+      });
+
+      desktopWindow.__nekoDesktopCompactLayout = {
+        windowBounds: { x: 0, y: 0, width: 1706, height: 1066 },
+        workArea: { x: 0, y: 0, width: 1706, height: 1066 },
+      };
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko:desktop-compact-layout-change', {
+          detail: desktopWindow.__nekoDesktopCompactLayout,
+        }));
+      });
+
+      await waitFor(() => {
+        expect(dialog).toHaveStyle({
+          '--avatar-tool-manager-left': '12px',
+          '--avatar-tool-manager-top': '12px',
+        });
+      });
+    } finally {
+      if (hadElectronChatWindowClass) {
+        document.body.classList.add('electron-chat-window');
+      } else {
+        document.body.classList.remove('electron-chat-window');
+      }
+      desktopWindow.__nekoDesktopCompactLayout = originalDesktopLayout;
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight });
+    }
+  });
+
   it('adds the React chat asset version to compact avatar tool images when provided by the host template', async () => {
     window.__NEKO_REACT_CHAT_ASSET_VERSION__ = 'asset 1';
     const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
@@ -5049,13 +5677,22 @@ describe('App', () => {
     const editImage = editButton?.querySelector('img');
     const quickbarImage = container.querySelector('.avatar-tool-quickbar-image') as HTMLImageElement;
     expect(editButton).not.toBeNull();
-    expect(editImage).toHaveAttribute('src', '/static/icons/edit_tool_unified.png?v=asset%201');
-    expect(quickbarImage).toHaveAttribute('src', '/static/icons/chat_sugar1.png?v=asset%201');
+    expect(editImage).toHaveAttribute(
+      'src',
+      '/static/assets/avatar-tools/ui/edit.png?v=asset%201',
+    );
+    expect(quickbarImage).toHaveAttribute(
+      'src',
+      '/static/assets/avatar-tools/lollipop/primary-icon.png?v=asset%201',
+    );
 
     fireEvent.click(editButton);
     const dialog = await screen.findByRole('dialog', { name: 'Manage tools' });
     const managerImage = dialog.querySelector('.avatar-tool-manager-tool-image') as HTMLImageElement;
-    expect(managerImage).toHaveAttribute('src', '/static/icons/chat_sugar1.png?v=asset%201');
+    expect(managerImage).toHaveAttribute(
+      'src',
+      '/static/assets/avatar-tools/lollipop/primary-icon.png?v=asset%201',
+    );
   });
 
   it('temporarily restores body pointer events while the avatar tool manager is open', async () => {
@@ -5246,6 +5883,62 @@ describe('App', () => {
       expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
     } finally {
       window.matchMedia = originalMatchMedia;
+    }
+  });
+
+  it('opens compact input tools on hover when Electron reports an empty pointer type', () => {
+    render(<App chatSurfaceMode="compact" compactChatState="input" />);
+
+    const actionButton = document.body.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    expect(actionButton).not.toBeNull();
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+
+    fireEvent.pointerEnter(actionButton, { pointerType: '' });
+
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+  });
+
+  it('keeps compact input tools interactive when desktop hover open requests repeat', async () => {
+    vi.useFakeTimers();
+    try {
+      const { rerender } = render(
+        <App
+          chatSurfaceMode="compact"
+          compactChatState="input"
+          compactToolFanOpenRequest={{
+            id: 'desktop-hover-open-1',
+            open: true,
+            reason: 'desktop-compact-tool-toggle-cursor-poll',
+          }}
+        />,
+      );
+
+      const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-interactive', 'false');
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(230);
+      });
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-interactive', 'true');
+
+      rerender(
+        <App
+          chatSurfaceMode="compact"
+          compactChatState="input"
+          compactToolFanOpenRequest={{
+            id: 'desktop-hover-open-2',
+            open: true,
+            reason: 'desktop-compact-tool-toggle-hover-keepalive',
+          }}
+        />,
+      );
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-interactive', 'true');
+    } finally {
+      vi.useRealTimers();
     }
   });
 
@@ -5843,7 +6536,7 @@ describe('App', () => {
 
       fireEvent.click(emojiButton);
 
-      expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
+      expect(queryAvatarToolVisualOverlay()).toBeNull();
       expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
     } finally {
       vi.useRealTimers();
@@ -6159,6 +6852,32 @@ describe('App', () => {
     expect(compactChatStyles).toMatch(
       /\[data-compact-tool-wheel-layout="viewport-fit"\]\s+\.compact-input-tool-item\[data-compact-tool-wheel-slot="hidden"[\s\S]*?transition: none;/s,
     );
+  });
+
+  it('uses the same visual slot stacking hierarchy for both compact tool wheel layouts', () => {
+    expect(compactChatStyles).toMatch(
+      /data-compact-input-tool-fan-open="true"\]\s+\.compact-input-tool-item\[data-compact-tool-wheel-slot="-2"\],[\s\S]*?data-compact-tool-wheel-slot="2"\]\s*\{\s*z-index:\s*1;/s,
+    );
+    expect(compactChatStyles).toMatch(
+      /data-compact-input-tool-fan-open="true"\]\s+\.compact-input-tool-item\[data-compact-tool-wheel-slot="-1"\],[\s\S]*?data-compact-tool-wheel-slot="1"\]\s*\{\s*z-index:\s*2;/s,
+    );
+    expect(compactChatStyles).toMatch(
+      /data-compact-input-tool-fan-open="true"\]\s+\.compact-input-tool-item\[data-compact-tool-wheel-slot="0"\]\s*\{\s*z-index:\s*3;/s,
+    );
+  });
+
+  it('uses dark theme tokens for active compact tool wheel buttons', () => {
+    const darkToolButtonSelector = '[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-item {';
+    const ruleStart = compactChatStyles.indexOf(darkToolButtonSelector);
+    const ruleEnd = compactChatStyles.indexOf('}', ruleStart);
+    const darkToolButtonRule = ruleStart >= 0 && ruleEnd > ruleStart
+      ? compactChatStyles.slice(ruleStart, ruleEnd + 1)
+      : '';
+
+    expect(darkToolButtonRule).toContain('--compact-tool-button-active-fill:');
+    expect(darkToolButtonRule).toContain('rgba(17, 34, 51, 0.98)');
+    expect(darkToolButtonRule).toContain('--compact-tool-button-active-shadow:');
+    expect(darkToolButtonRule).not.toContain('rgba(255, 255, 255, 0.98)');
   });
 
   it('shows compact tool wheel tooltips from pointer hover or keyboard-visible focus only', () => {
@@ -7082,7 +7801,7 @@ describe('App', () => {
     expect(container.querySelector('.compact-chat-minimize-ball')).not.toBeNull();
   });
 
-  it('clears the active avatar tool cursor before compact minimize', async () => {
+  it('clears the active avatar tool before compact minimize', async () => {
     const onCompactMinimizeRequest = vi.fn();
     const { container } = render(
       <App chatSurfaceMode="compact" compactChatState="input" onCompactMinimizeRequest={onCompactMinimizeRequest} />,
@@ -7093,13 +7812,26 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
 
     await waitFor(() => {
-      expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+      expect(queryAvatarToolVisualOverlay()).not.toBeNull();
     });
 
     fireEvent.click(container.querySelector('.compact-chat-minimize-ball') as HTMLButtonElement);
 
     expect(onCompactMinimizeRequest).toHaveBeenCalledTimes(1);
-    expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
+    expect(queryAvatarToolVisualOverlay()).toBeNull();
+  });
+
+  it('preserves the active avatar tool when compact minimize is unsupported', async () => {
+    const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+
+    await openCompactInputTools();
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+    fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+    await waitFor(() => expect(queryAvatarToolVisualOverlay()).not.toBeNull());
+
+    fireEvent.click(container.querySelector('.compact-chat-minimize-ball') as HTMLButtonElement);
+
+    expect(queryAvatarToolVisualOverlay()).not.toBeNull();
   });
 
   it('dispatches compact surface drag prime and renderer drag events from the input body', () => {
@@ -8154,6 +8886,22 @@ describe('App', () => {
     expect(onComposerRemoveAttachment).toHaveBeenCalledWith('img-1');
   });
 
+  it('renders a single CSS-drawn remove icon for full chat attachments', () => {
+    const { container } = render(
+      <App
+        chatSurfaceMode="full"
+        composerAttachments={[
+          { id: 'img-1', url: 'data:image/png;base64,aaa', alt: 'Screenshot 1' },
+        ]}
+      />,
+    );
+
+    const removeButton = screen.getByRole('button', { name: 'Remove image: Screenshot 1' });
+    expect(removeButton.textContent).toBe('');
+    expect(removeButton.childElementCount).toBe(0);
+    expect(container.querySelector('.composer-panel > .composer-attachments')).not.toBeNull();
+  });
+
   it('keeps pending composer attachments locked while the composer is disabled', () => {
     const onComposerRemoveAttachment = vi.fn();
 
@@ -8172,116 +8920,6 @@ describe('App', () => {
     fireEvent.click(removeButton);
 
     expect(onComposerRemoveAttachment).not.toHaveBeenCalled();
-  });
-
-  it('only emits avatar interactions when the pointer hits the avatar range', async () => {
-    const onAvatarInteraction = vi.fn();
-    const live2dContainer = document.createElement('div');
-    live2dContainer.id = 'live2d-container';
-    Object.defineProperty(live2dContainer, 'getClientRects', {
-      configurable: true,
-      value: () => [{ width: 100, height: 100 }],
-    });
-    document.body.appendChild(live2dContainer);
-
-    Object.assign(window, {
-      live2dManager: {
-        currentModel: {},
-        getModelScreenBounds: () => ({
-          left: 100,
-          right: 200,
-          top: 100,
-          bottom: 200,
-          width: 100,
-          height: 100,
-        }),
-      },
-    });
-
-    try {
-      renderInputApp({ onAvatarInteraction });
-
-      await openCompactInputTools();
-      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
-      fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
-
-      fireEvent.pointerDown(window, { button: 0, clientX: 20, clientY: 20 });
-      expect(onAvatarInteraction).not.toHaveBeenCalled();
-
-      fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 150 });
-      expect(onAvatarInteraction).toHaveBeenCalledTimes(1);
-      expect(onAvatarInteraction).toHaveBeenCalledWith(expect.objectContaining({
-        toolId: 'lollipop',
-        actionId: 'offer',
-        target: 'avatar',
-        pointer: {
-          clientX: 150,
-          clientY: 150,
-        },
-      }));
-      expect(onAvatarInteraction.mock.calls[0]?.[0]).not.toHaveProperty('touchZone');
-    } finally {
-      delete (window as Window & { live2dManager?: unknown }).live2dManager;
-      live2dContainer.remove();
-    }
-  });
-
-  it('derives different touch zones for different avatar hit areas', async () => {
-    const onAvatarInteraction = vi.fn();
-    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.9);
-    const live2dContainer = document.createElement('div');
-    live2dContainer.id = 'live2d-container';
-    Object.defineProperty(live2dContainer, 'getClientRects', {
-      configurable: true,
-      value: () => [{ width: 100, height: 100 }],
-    });
-    document.body.appendChild(live2dContainer);
-
-    Object.assign(window, {
-      live2dManager: {
-        currentModel: {},
-        getModelScreenBounds: () => ({
-          left: 100,
-          right: 200,
-          top: 100,
-          bottom: 200,
-          width: 100,
-          height: 100,
-        }),
-      },
-    });
-
-    try {
-      renderInputApp({ onAvatarInteraction });
-
-      await openCompactInputTools();
-      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
-      fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
-
-      fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 110 });
-      fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 150 });
-      fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 185 });
-
-      expect(onAvatarInteraction.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
-        toolId: 'fist',
-        actionId: 'poke',
-        touchZone: 'head',
-      }));
-      expect(onAvatarInteraction.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
-        toolId: 'fist',
-        actionId: 'poke',
-        touchZone: 'face',
-      }));
-      expect(onAvatarInteraction.mock.calls[2]?.[0]).toEqual(expect.objectContaining({
-        toolId: 'fist',
-        actionId: 'poke',
-        touchZone: 'body',
-      }));
-    } finally {
-      randomSpy.mockRestore();
-      delete (window as Window & { live2dManager?: unknown }).live2dManager;
-      live2dContainer.remove();
-    }
   });
 
   it('uses viewport positioning for cat-paw reward drops', async () => {
@@ -8316,14 +8954,14 @@ describe('App', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
       fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
 
-      fireEvent.pointerDown(window, { button: 0, clientX: 190, clientY: 190 });
+      tapAvatarTool(190, 190);
 
       expect(onAvatarInteraction).toHaveBeenCalledWith(expect.objectContaining({
         toolId: 'fist',
         rewardDrop: true,
       }));
 
-      const firstDrop = container.querySelector<HTMLElement>('.fist-floating-drop');
+      const firstDrop = container.querySelector<HTMLElement>('.avatar-tool-random-scatter-particle');
       expect(firstDrop).not.toBeNull();
       expect(window.getComputedStyle(firstDrop!).position).toBe('fixed');
       expect(firstDrop).toHaveStyle({
@@ -8369,7 +9007,7 @@ describe('App', () => {
       fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
 
       for (let index = 0; index < 6; index += 1) {
-        fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 150 });
+        tapAvatarTool(150, 150);
       }
 
       expect(onAvatarInteraction).toHaveBeenCalledTimes(6);
@@ -8399,8 +9037,9 @@ describe('App', () => {
     }
   });
 
-  it('keeps the lollipop desktop cursor image stable across avatar range changes', async () => {
+  it('expands the lollipop in avatar range and keeps the icon stable across brief bounds gaps', async () => {
     vi.useFakeTimers();
+    const onAvatarToolStateChange = vi.fn();
     const live2dContainer = document.createElement('div');
     live2dContainer.id = 'live2d-container';
     Object.defineProperty(live2dContainer, 'getClientRects', {
@@ -8427,7 +9066,7 @@ describe('App', () => {
     });
 
     try {
-      renderInputApp();
+      renderInputApp({ onAvatarToolStateChange });
 
       fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
       await act(async () => {
@@ -8441,8 +9080,14 @@ describe('App', () => {
         await vi.advanceTimersByTimeAsync(90);
       });
 
-      const avatarImage = () => document.body.querySelector('.avatar-cursor-overlay-image-lollipop');
-      expect(avatarImage()).toHaveAttribute('src', '/static/icons/chat_sugar1_cursor.png');
+      const avatarImage = () => document.body.querySelector('.avatar-tool-visual-overlay-image-lollipop');
+      expect(avatarImage()).toHaveAttribute('src', '/static/assets/avatar-tools/lollipop/primary-icon.png');
+      expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
+        active: true,
+        toolId: 'lollipop',
+        imageKind: 'icon',
+        withinAvatarRange: true,
+      }));
 
       boundsAvailable = false;
       fireEvent.pointerMove(window, { clientX: 150, clientY: 150 });
@@ -8451,7 +9096,7 @@ describe('App', () => {
         await vi.advanceTimersByTimeAsync(90);
       });
 
-      expect(avatarImage()).toHaveAttribute('src', '/static/icons/chat_sugar1_cursor.png');
+      expect(avatarImage()).toHaveAttribute('src', '/static/assets/avatar-tools/lollipop/primary-icon.png');
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(200);
@@ -8462,7 +9107,7 @@ describe('App', () => {
         await vi.advanceTimersByTimeAsync(90);
       });
 
-      expect(avatarImage()).toHaveAttribute('src', '/static/icons/chat_sugar1_cursor.png');
+      expect(avatarImage()).toHaveAttribute('src', '/static/assets/avatar-tools/lollipop/primary-icon.png');
     } finally {
       vi.useRealTimers();
       delete (window as Window & { live2dManager?: unknown }).live2dManager;
@@ -8470,9 +9115,8 @@ describe('App', () => {
     }
   });
 
-  it('escalates fist interactions to rapid on repeated in-range taps', async () => {
-    const onAvatarInteraction = vi.fn();
-    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.9);
+  it('keeps the progressed lollipop variant when the pointer leaves the avatar range', async () => {
+    const onAvatarToolStateChange = vi.fn();
     const live2dContainer = document.createElement('div');
     live2dContainer.id = 'live2d-container';
     Object.defineProperty(live2dContainer, 'getClientRects', {
@@ -8480,41 +9124,42 @@ describe('App', () => {
       value: () => [{ width: 100, height: 100 }],
     });
     document.body.appendChild(live2dContainer);
-
-    Object.assign(window, {
-      live2dManager: {
-        currentModel: {},
-        getModelScreenBounds: () => ({
-          left: 100,
-          right: 200,
-          top: 100,
-          bottom: 200,
-          width: 100,
-          height: 100,
-        }),
-      },
-    });
+    const restoreLive2dManager = installLive2dBoundsMock();
 
     try {
-      renderInputApp({ onAvatarInteraction });
-
+      renderInputApp({ onAvatarToolStateChange });
       await openCompactInputTools();
       fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
-      fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+      fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
+      fireEvent.pointerMove(window, { clientX: 150, clientY: 150 });
 
-      for (let index = 0; index < 4; index += 1) {
-        fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 150 });
-      }
+      await waitFor(() => {
+        expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+          toolId: 'lollipop',
+          variant: 'primary',
+          withinAvatarRange: true,
+        }));
+      });
 
-      expect(onAvatarInteraction).toHaveBeenCalledTimes(4);
-      expect(onAvatarInteraction.mock.calls[3]?.[0]).toEqual(expect.objectContaining({
-        toolId: 'fist',
-        actionId: 'poke',
-        intensity: 'rapid',
+      tapAvatarTool(150, 150);
+      await waitFor(() => {
+        expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+          toolId: 'lollipop',
+          variant: 'secondary',
+          avatarRangeVariant: 'secondary',
+        }));
+      });
+
+      fireEvent.blur(window);
+      expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+        toolId: 'lollipop',
+        variant: 'secondary',
+        avatarRangeVariant: 'secondary',
+        withinAvatarRange: false,
+        insideHostWindow: false,
       }));
     } finally {
-      randomSpy.mockRestore();
-      delete (window as Window & { live2dManager?: unknown }).live2dManager;
+      restoreLive2dManager();
       live2dContainer.remove();
     }
   });
@@ -8559,7 +9204,7 @@ describe('App', () => {
       await openCompactInputTools();
       fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
       fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
-      fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 150 });
+      tapAvatarTool(150, 150);
 
       expect(onAvatarInteraction).not.toHaveBeenCalled();
     } finally {
@@ -8587,17 +9232,17 @@ describe('App', () => {
 
     fireEvent.click(lollipopButton!);
 
-    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+    expect(queryAvatarToolVisualOverlay()).not.toBeNull();
     expect(screen.queryByRole('group', { name: 'Avatar quick tools' })).toBeNull();
 
     await openCompactInputTools();
     fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
 
-    expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
+    expect(queryAvatarToolVisualOverlay()).toBeNull();
     expect(screen.queryByRole('group', { name: 'Avatar quick tools' })).toBeNull();
   });
 
-  it('closes the transparent compact tool fan after selecting an avatar cursor tool', async () => {
+  it('closes the transparent compact tool fan after selecting an avatar tool', async () => {
     renderInputApp();
 
     await openCompactInputTools();
@@ -8607,8 +9252,7 @@ describe('App', () => {
     const fan = document.body.querySelector<HTMLElement>('.compact-input-tool-fan');
     expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
     expect(fan).toHaveAttribute('aria-hidden', 'true');
-    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
-    expect(queryAvatarCursorOverlay()).not.toBeNull();
+    expect(queryAvatarToolVisualOverlay()).not.toBeNull();
   });
 
   it('clears the selected compact avatar tool from the avatar wheel button', async () => {
@@ -8620,7 +9264,7 @@ describe('App', () => {
     expect(lollipopButton).not.toBeNull();
     fireEvent.click(lollipopButton!);
 
-    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+    expect(queryAvatarToolVisualOverlay()).not.toBeNull();
     expect(screen.queryByRole('group', { name: 'Avatar quick tools' })).toBeNull();
 
     await openCompactInputTools();
@@ -8631,8 +9275,7 @@ describe('App', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
 
-    expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
-    expect(queryAvatarCursorOverlay()).toBeNull();
+    expect(queryAvatarToolVisualOverlay()).toBeNull();
     expect(screen.queryByRole('group', { name: 'Avatar quick tools' })).toBeNull();
     expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
   });
@@ -8659,7 +9302,7 @@ describe('App', () => {
     expect(editButton).toBeDisabled();
   });
 
-  it('clears the selected avatar tool from the quickbar bubble', async () => {
+  it('clears an active avatar tool when the tutorial interaction shield takes control', async () => {
     renderInputApp();
 
     await openCompactInputTools();
@@ -8667,25 +9310,28 @@ describe('App', () => {
     const fistButton = document.body.querySelector<HTMLButtonElement>('[data-avatar-tool-id="fist"]');
     expect(fistButton).not.toBeNull();
     fireEvent.click(fistButton!);
+    expect(queryAvatarToolVisualOverlay()).not.toBeNull();
 
-    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+    document.body.classList.add('yui-guide-standalone-input-shield-active');
 
-    await openCompactInputTools();
-    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
-
-    expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
-    expect(document.body.querySelector('.compact-input-tool-fan')).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+    await waitFor(() => {
+      expect(queryAvatarToolVisualOverlay()).toBeNull();
+    });
   });
 
   it('emits avatar tool state changes for desktop hosts', async () => {
     const onAvatarToolStateChange = vi.fn();
-    renderInputApp({ onAvatarToolStateChange });
+    const { rerender } = renderInputApp({ onAvatarToolStateChange });
 
     expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
       active: false,
       toolId: null,
       tool: null,
     }));
+    expect(onAvatarToolStateChange).toHaveBeenCalledTimes(1);
+
+    rerender(<App compactChatState="input" onAvatarToolStateChange={onAvatarToolStateChange} />);
+    expect(onAvatarToolStateChange).toHaveBeenCalledTimes(1);
 
     onAvatarToolStateChange.mockClear();
     await openCompactInputTools();
@@ -8701,25 +9347,25 @@ describe('App', () => {
       active: true,
       toolId: 'hammer',
       variant: 'primary',
-      imageKind: 'cursor',
+      imageKind: 'pointer',
       cursorClientX: 240,
       cursorClientY: 320,
       cursorScreenX: 640,
       cursorScreenY: 420,
       tool: expect.objectContaining({
         id: 'hammer',
-        cursorImagePath: '/static/icons/chat_hammer1_cursor.png',
-        cursorHotspotX: 50,
-        cursorHotspotY: 54,
-        cursorNaturalWidth: 100,
-        cursorNaturalHeight: 96,
-        cursorDisplayWidth: 100,
-        cursorDisplayHeight: 96,
+        pointerImagePath: '/static/assets/avatar-tools/hammer/primary-pointer.png',
+        pointerHotspotX: 50,
+        pointerHotspotY: 54,
+        pointerNaturalWidth: 100,
+        pointerNaturalHeight: 96,
+        pointerDisplayWidth: 100,
+        pointerDisplayHeight: 96,
       }),
     }));
   });
 
-  it('anchors the desktop cursor overlay to the current pointer when a tool is activated', async () => {
+  it('moves the desktop tool visual synchronously with pointer movement', async () => {
     renderInputApp();
 
     await openCompactInputTools();
@@ -8729,22 +9375,7 @@ describe('App', () => {
       clientY: 320,
     });
 
-    const overlay = queryAvatarCursorOverlay();
-    expect(overlay).not.toBeNull();
-    expect((overlay as HTMLDivElement).style.transform).toBe('translate3d(218.16px, 294.24px, 0)');
-  });
-
-  it('moves the desktop cursor overlay synchronously with pointer movement', async () => {
-    renderInputApp();
-
-    await openCompactInputTools();
-    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
-    fireEvent.click(screen.getByRole('button', { name: '猫爪' }), {
-      clientX: 240,
-      clientY: 320,
-    });
-
-    const overlay = queryAvatarCursorOverlay();
+    const overlay = queryAvatarToolVisualOverlay();
     expect(overlay).not.toBeNull();
 
     fireEvent.pointerMove(window, { clientX: 420, clientY: 360 });
@@ -8773,16 +9404,22 @@ describe('App', () => {
         clientY: 20,
       });
 
-      const overlay = queryAvatarCursorOverlay();
+      const overlay = queryAvatarToolVisualOverlay();
       expect(overlay).not.toBeNull();
       expect(overlay).toHaveClass('is-compact');
-      expect(overlay?.querySelector('img')).toHaveAttribute('src', '/static/icons/cat_claw1_cursor.png');
+      expect(overlay?.querySelector('img')).toHaveAttribute(
+        'src',
+        '/static/assets/avatar-tools/fist/primary-pointer.png',
+      );
 
       fireEvent.pointerMove(window, { clientX: 150, clientY: 150 });
 
       await waitFor(() => {
         expect(overlay).not.toHaveClass('is-compact');
-        expect(overlay?.querySelector('img')).toHaveAttribute('src', '/static/icons/cat_claw1.png');
+        expect(overlay?.querySelector('img')).toHaveAttribute(
+          'src',
+          '/static/assets/avatar-tools/fist/primary-icon.png',
+        );
         expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
           active: true,
           toolId: 'fist',
@@ -8797,6 +9434,7 @@ describe('App', () => {
   });
 
   it('expands the desktop hammer overlay on avatar range hover before clicking', async () => {
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
     const onAvatarToolStateChange = vi.fn();
     const live2dContainer = document.createElement('div');
     live2dContainer.id = 'live2d-container';
@@ -8817,13 +9455,13 @@ describe('App', () => {
         clientY: 20,
       });
 
-      expect(queryHammerCursorCompactImage()).not.toBeNull();
+      expect(queryAvatarToolImpactPointerImage()).not.toBeNull();
 
       fireEvent.pointerMove(window, { clientX: 150, clientY: 150 });
 
       await waitFor(() => {
-        expect(queryHammerCursorCompactImage()).toBeNull();
-        expect(document.body.querySelector('.hammer-cursor-overlay')).not.toHaveClass('is-compact');
+        expect(queryAvatarToolImpactPointerImage()).toBeNull();
+        expect(queryAvatarToolImpactEffect()).not.toHaveClass('is-compact');
         expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
           active: true,
           toolId: 'hammer',
@@ -8833,62 +9471,67 @@ describe('App', () => {
       });
 
       onAvatarToolStateChange.mockClear();
-      fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 150 });
+      vi.useFakeTimers();
+      tapAvatarTool(150, 150);
       fireEvent.pointerMove(window, { clientX: 20, clientY: 20 });
 
-      await waitFor(() => {
-        expect(queryHammerCursorCompactImage()).toBeNull();
-        expect(document.body.querySelector('.hammer-cursor-overlay')).not.toHaveClass('is-compact');
-        expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
-          active: true,
-          toolId: 'hammer',
-          imageKind: 'icon',
-          withinAvatarRange: false,
-        }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(16);
+        await vi.advanceTimersByTimeAsync(220);
       });
+
+      expect(queryAvatarToolImpactPointerImage()).toBeNull();
+      const hammerEffectOverlay = queryAvatarToolImpactEffect();
+      expect(hammerEffectOverlay).not.toHaveClass('is-compact');
+      expect(hammerEffectOverlay?.style.getPropertyValue('--avatar-tool-impact-origin-x')).toBe('80.19px');
+      expect(hammerEffectOverlay?.style.getPropertyValue('--avatar-tool-impact-origin-y')).toBe('68px');
+      expect(hammerEffectOverlay?.style.getPropertyValue('--avatar-tool-impact-translate-x')).toBe('19.62px');
+      expect(hammerEffectOverlay?.style.getPropertyValue('--avatar-tool-impact-translate-y')).toBe('-9.01px');
+      expect(hammerEffectOverlay?.style.getPropertyValue('--avatar-tool-impact-rotation')).toBe('34.258deg');
+      expect(hammerEffectOverlay?.style.getPropertyValue('--avatar-tool-impact-scale')).toBe('0.999333');
+      expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
+        active: true,
+        toolId: 'hammer',
+        imageKind: 'icon',
+        withinAvatarRange: false,
+      }));
     } finally {
+      vi.useRealTimers();
+      window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'true');
       restoreLive2dManager();
       live2dContainer.remove();
     }
   });
 
-  it('clears the tool cursor when the composer is hidden for voice mode', async () => {
+  it('clears the selected avatar tool when the composer is hidden for voice mode', async () => {
     const { rerender } = renderInputApp();
 
     await openCompactInputTools();
     fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
     fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
 
-    expect(queryAvatarCursorOverlay()).not.toBeNull();
-    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+    expect(queryAvatarToolVisualOverlay()).not.toBeNull();
 
     rerender(<App compactChatState="input" composerHidden />);
 
-    expect(queryAvatarCursorOverlay()).toBeNull();
-    expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
-    expect(document.documentElement.style.getPropertyValue('--neko-chat-tool-cursor')).toBe('');
-    expect(document.documentElement.style.getPropertyValue('cursor')).toBe('auto');
+    expect(queryAvatarToolVisualOverlay()).toBeNull();
   });
 
-  it('clears the tool cursor when the host issues a reset key', async () => {
+  it('clears the selected avatar tool when the host issues a deactivation key', async () => {
     const { rerender } = renderInputApp();
 
     await openCompactInputTools();
     fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
     fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
 
-    expect(queryAvatarCursorOverlay()).not.toBeNull();
-    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+    expect(queryAvatarToolVisualOverlay()).not.toBeNull();
 
-    rerender(<App compactChatState="input" _toolCursorResetKey="voice-mode-reset-1" />);
+    rerender(<App compactChatState="input" _avatarToolDeactivationKey="voice-mode-reset-1" />);
 
-    expect(queryAvatarCursorOverlay()).toBeNull();
-    expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
-    expect(document.documentElement.style.getPropertyValue('--neko-chat-tool-cursor')).toBe('');
-    expect(document.documentElement.style.getPropertyValue('cursor')).toBe('auto');
+    expect(queryAvatarToolVisualOverlay()).toBeNull();
   });
 
-  it('preserves the outside-window cursor state when the host resets a tool cursor', async () => {
+  it('preserves the outside-window state when the host deactivates an avatar tool', async () => {
     const onAvatarToolStateChange = vi.fn();
     const { rerender } = renderInputApp({ onAvatarToolStateChange });
 
@@ -8905,7 +9548,7 @@ describe('App', () => {
     }));
 
     onAvatarToolStateChange.mockClear();
-    rerender(<App compactChatState="input" onAvatarToolStateChange={onAvatarToolStateChange} _toolCursorResetKey="voice-mode-reset-2" />);
+    rerender(<App compactChatState="input" onAvatarToolStateChange={onAvatarToolStateChange} _avatarToolDeactivationKey="voice-mode-reset-2" />);
 
     expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
       active: false,
@@ -8914,15 +9557,14 @@ describe('App', () => {
     }));
   });
 
-  it('marks the cursor back inside the host when clearing a tool from the composer', async () => {
+  it('marks the pointer back inside the host when clearing a tool from the composer', async () => {
     const onAvatarToolStateChange = vi.fn();
     renderInputApp({ onAvatarToolStateChange });
 
     await openCompactInputTools();
     fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
     fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
-    expect(queryAvatarCursorOverlay()).not.toBeNull();
-    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+    expect(queryAvatarToolVisualOverlay()).not.toBeNull();
 
     fireEvent.blur(window);
 
@@ -8935,38 +9577,43 @@ describe('App', () => {
       toolId: null,
       insideHostWindow: true,
     }));
-    expect(queryAvatarCursorOverlay()).toBeNull();
-    expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
-    expect(document.documentElement.style.getPropertyValue('--neko-chat-tool-cursor')).toBe('');
-    expect(document.documentElement.style.getPropertyValue('cursor')).toBe('auto');
+    expect(queryAvatarToolVisualOverlay()).toBeNull();
     expect(screen.queryByRole('group', { name: 'Avatar quick tools' })).toBeNull();
   });
 
-  it('restores the native cursor while desktop system UI owns focus', async () => {
+  it('never changes the page cursor while the avatar-tool overlay follows focus', async () => {
+    const root = document.documentElement;
+    root.style.setProperty('cursor', 'text', 'important');
+    document.body.style.setProperty('cursor', 'crosshair');
     renderInputApp();
 
     await openCompactInputTools();
     fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
     fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
 
-    expect(queryAvatarCursorOverlay()).not.toBeNull();
-    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+    expect(queryAvatarToolVisualOverlay()).not.toBeNull();
+    expect(root.style.getPropertyValue('cursor')).toBe('text');
+    expect(document.body.style.getPropertyValue('cursor')).toBe('crosshair');
 
     fireEvent.blur(window);
 
-    expect(queryAvatarCursorOverlay()).toBeNull();
-    expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
-    expect(document.documentElement.style.getPropertyValue('--neko-chat-tool-cursor')).toBe('');
-    expect(document.documentElement.style.getPropertyValue('cursor')).toBe('auto');
+    expect(queryAvatarToolVisualOverlay()).toBeNull();
+    expect(root.style.getPropertyValue('cursor')).toBe('text');
+    expect(document.body.style.getPropertyValue('cursor')).toBe('crosshair');
 
     fireEvent.pointerMove(window, { clientX: 180, clientY: 260 });
 
-    expect(queryAvatarCursorOverlay()).not.toBeNull();
-    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+    expect(queryAvatarToolVisualOverlay()).not.toBeNull();
+    expect(root.style.getPropertyValue('cursor')).toBe('text');
+    expect(document.body.style.getPropertyValue('cursor')).toBe('crosshair');
+    root.style.removeProperty('cursor');
+    document.body.style.removeProperty('cursor');
   });
 
-  it('uses the native cursor and clears it when leaving the Electron chat window', async () => {
+  it('leaves the native cursor visible throughout the Electron chat window', async () => {
     (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__ = true;
+    document.documentElement.style.setProperty('cursor', 'text');
+    document.body.style.setProperty('cursor', 'crosshair');
 
     try {
       renderInputApp();
@@ -8975,23 +9622,26 @@ describe('App', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
       fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
 
-      expect(queryAvatarCursorOverlay()).toBeNull();
-      expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+      expect(queryAvatarToolVisualOverlay()).toBeNull();
+      expect(document.documentElement.style.getPropertyValue('cursor')).toBe('text');
+      expect(document.body.style.getPropertyValue('cursor')).toBe('crosshair');
 
       fireEvent.pointerOut(window, { relatedTarget: null, clientX: 160, clientY: 220 });
-      expect(queryAvatarCursorOverlay()).toBeNull();
-      expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+      expect(queryAvatarToolVisualOverlay()).toBeNull();
+      expect(document.documentElement.style.getPropertyValue('cursor')).toBe('text');
 
       fireEvent.pointerOut(window, { relatedTarget: null, clientX: -1, clientY: 220 });
 
-      expect(queryAvatarCursorOverlay()).toBeNull();
-      expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
+      expect(queryAvatarToolVisualOverlay()).toBeNull();
+      expect(document.body.style.getPropertyValue('cursor')).toBe('crosshair');
     } finally {
+      document.documentElement.style.removeProperty('cursor');
+      document.body.style.removeProperty('cursor');
       delete (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__;
     }
   });
 
-  it('shows the hammer secondary cursor asset on outside-range desktop clicks', async () => {
+  it('keeps the hammer outside-click feedback active for 220ms after the latest click', async () => {
     const live2dContainer = document.createElement('div');
     live2dContainer.id = 'live2d-container';
     Object.defineProperty(live2dContainer, 'getClientRects', {
@@ -8999,39 +9649,39 @@ describe('App', () => {
       value: () => [{ width: 100, height: 100 }],
     });
     document.body.appendChild(live2dContainer);
-
-    Object.assign(window, {
-      live2dManager: {
-        currentModel: {},
-        getModelScreenBounds: () => ({
-          left: 100,
-          right: 200,
-          top: 100,
-          bottom: 200,
-          width: 100,
-          height: 100,
-        }),
-      },
-    });
+    const restoreLive2dManager = installLive2dBoundsMock();
 
     try {
       renderInputApp();
-
       await openCompactInputTools();
       fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
       fireEvent.click(screen.getByRole('button', { name: '锤子' }));
-
-      const compactImageBefore = queryHammerCursorCompactImage();
-      expect(compactImageBefore).not.toBeNull();
-      expect(compactImageBefore).toHaveAttribute('src', '/static/icons/chat_hammer1_cursor.png');
+      vi.useFakeTimers();
 
       fireEvent.pointerDown(window, { button: 0, clientX: 20, clientY: 20 });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(150);
+      });
+      fireEvent.pointerDown(window, { button: 0, clientX: 20, clientY: 20 });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+      });
 
-      const compactImageAfter = queryHammerCursorCompactImage();
-      expect(compactImageAfter).not.toBeNull();
-      expect(compactImageAfter).toHaveAttribute('src', '/static/icons/chat_hammer2_cursor.png');
+      expect(queryAvatarToolImpactPointerImage()).toHaveAttribute(
+        'src',
+        '/static/assets/avatar-tools/hammer/secondary-pointer.png',
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(120);
+      });
+      expect(queryAvatarToolImpactPointerImage()).toHaveAttribute(
+        'src',
+        '/static/assets/avatar-tools/hammer/primary-pointer.png',
+      );
     } finally {
-      delete (window as Window & { live2dManager?: unknown }).live2dManager;
+      vi.useRealTimers();
+      restoreLive2dManager();
       live2dContainer.remove();
     }
   });

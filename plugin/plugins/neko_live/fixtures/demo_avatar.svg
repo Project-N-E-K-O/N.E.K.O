@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="NEKO Live demo avatar">
+  <rect width="512" height="512" fill="#f7bed7"/>
+  <rect x="48" y="48" width="416" height="416" rx="18" fill="#fff"/>
+  <circle cx="256" cy="226" r="136" fill="#fff1f8" stroke="#7d536b" stroke-width="6"/>
+  <path d="M128 214 L82 132 L174 168 Z" fill="#ffd8ea" stroke="#7d536b" stroke-width="6"/>
+  <path d="M384 214 L430 132 L338 168 Z" fill="#ffd8ea" stroke="#7d536b" stroke-width="6"/>
+  <path d="M136 178 C166 76 346 76 376 178 C336 148 176 148 136 178 Z" fill="#393746" stroke="#393746" stroke-width="4"/>
+  <path d="M144 210 C176 116 336 116 368 210 C338 184 174 184 144 210 Z" fill="#fff7fb"/>
+  <path d="M152 250 C198 220 226 220 256 246 C286 220 314 220 360 250" fill="none" stroke="#eaa3c2" stroke-width="9" stroke-linecap="round"/>
+  <ellipse cx="204" cy="270" rx="38" ry="31" fill="#f45aa7"/>
+  <ellipse cx="308" cy="270" rx="38" ry="31" fill="#f45aa7"/>
+  <circle cx="192" cy="260" r="11" fill="#fff"/>
+  <circle cx="296" cy="260" r="11" fill="#fff"/>
+  <path d="M238 324 C248 352 264 352 274 324 C266 332 246 332 238 324 Z" fill="#ff9bc4" stroke="#7d536b" stroke-width="5"/>
+  <path d="M164 344 C144 380 128 416 126 464 H386 C384 416 368 380 348 344 C318 378 194 378 164 344 Z" fill="#33313c"/>
+  <path d="M210 372 H302 V464 H210 Z" fill="#fff" opacity=".95"/>
+  <path d="M210 372 C232 394 280 394 302 372" fill="none" stroke="#d14f8d" stroke-width="8"/>
+  <text x="256" y="492" text-anchor="middle" font-family="Arial, sans-serif" font-size="24" fill="#d14f8d">NEKO DEMO</text>
+</svg>

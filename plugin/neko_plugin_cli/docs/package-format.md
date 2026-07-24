@@ -154,7 +154,6 @@ Python dependency rules:
 - Python runtime dependencies must be declared in `pyproject.toml [project].dependencies`.
 - `requirements.txt` is not supported for plugin packages.
 - Python runtime dependencies must not be installed into the shared N.E.K.O interpreter. Packages that need third-party libraries must vendor them under their own `vendor/` directory or use a future managed isolated dependency store.
-- Extension plugins currently cannot declare Python runtime dependencies because they run inside a host plugin process.
 
 Must not include:
 

@@ -7,11 +7,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title data-i18n="steam.workshopManager">角色卡管理 - Project N.E.K.O.</title>
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
-    <script src="/static/i18n-i18next.js"></script>
+    <!-- 模型预览/编辑页豁免 avatar 空闲节流：用户在此手动播放任意动画（含无参
+         playAnimation 的舞蹈 VMD），期望满帧预览，不应被空闲地板压到 30fps -->
+    <script>window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ = true;</script>
+    <script src="/static/i18n-i18next.js?v={{ static_asset_version | default('0') }}"></script>
     <script src="/static/common_dialogs.js"></script>
     <link rel="stylesheet" href="/static/css/character_card_manager.css?v={{ static_asset_version | default('0') }}">
+    <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version | default('0') }}">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <script src="/static/theme-manager.js"></script>
+    <script src="/static/js/window_controls.js?v={{ static_asset_version | default('0') }}" defer></script>
     <style>
         /* 标题栏按钮容器 */
         .title-bar-buttons {
@@ -350,29 +355,6 @@
         .card-hide-btn:hover, .list-hide-btn:hover {
             background: rgba(64, 197, 241, 0.12);
         }
-        /* 自动保存提示 */
-        .auto-save-toast {
-            position: fixed;
-            top: 80px;
-            right: 20px;
-            background: #e8f5e9;
-            border: 2px solid #4caf50;
-            border-radius: 999px;
-            padding: 8px 20px;
-            color: #2e7d32;
-            font-size: 0.9rem;
-            font-weight: 500;
-            z-index: 100000;
-            opacity: 0;
-            transform: translateY(-10px);
-            transition: opacity 0.3s ease, transform 0.3s ease;
-            pointer-events: none;
-            box-shadow: 0 4px 12px rgba(76, 175, 80, 0.2);
-        }
-        .auto-save-toast.visible {
-            opacity: 1;
-            transform: translateY(0);
-        }
         /* 卡片左上角隐藏按钮 */
         .card-hide-corner {
             position: absolute;
@@ -461,6 +443,9 @@
     <div class="page-title-bar">
         <h2 data-i18n="steam.workshopManager" data-text="Character Card Manager - Project N.E.K.O.">Character Card Manager - Project N.E.K.O.</h2>
         <div class="title-bar-buttons">
+            <button type="button" class="neko-window-control-btn" data-neko-window-control="pin" hidden data-i18n-title="common.pinWindow" data-i18n-aria="common.pinWindow" title="置顶窗口" aria-label="置顶窗口" aria-pressed="false">
+                <span class="neko-window-pin-icon" aria-hidden="true"></span>
+            </button>
             <button class="minimize-btn" id="minimizeBtn" onclick="minimizeWindow()" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
                 <span class="minimize-icon"></span>
             </button>
@@ -708,6 +693,9 @@
 </div>
 </div>
 
+<!-- 全局非模态通知必须位于页面顶层，避免被任一隐藏的模态框连带隐藏。 -->
+<div id="message-area"></div>
+
 <!-- 上传到创意工坊模态框 -->
 <div id="uploadToWorkshopModal" class="modal" onclick="closeUploadModalOnOutsideClick(event)" style="display: none;">
 <div class="modal-content" onclick="event.stopPropagation()" style="max-width: 900px;">
@@ -716,8 +704,6 @@
 <button class="modal-close" onclick="closeUploadModal()">&times;</button>
 </div>
 <div class="modal-body" style="padding: 20px;">
-<div id="message-area"></div>
-                
 <div class="control-group">
 <div class="control-label" data-i18n="steam.title">标题</div>
 <div id="item-title" class="control-input" style="background-color: #f5f5f5; padding: 8px 12px; border-radius: 4px; min-height: 20px;"></div>
@@ -897,21 +883,41 @@
     <script src="/static/libs/index.min.js"></script>
     
     <!-- Live2D功能模块 -->
-    <script src="/static/live2d-core.js"></script>
-    <script src="/static/live2d-model.js"></script>
-    <script src="/static/live2d-interaction.js"></script>
-    <script src="/static/live2d-emotion.js"></script>
-    <script src="/static/avatar-popup-common.js"></script>
-    <script src="/static/avatar-ui-popup.js"></script>
-    <script src="/static/avatar-ui-popup-config.js"></script>
-    <script src="/static/avatar-ui-buttons.js"></script>
-    <script src="/static/live2d-ui-buttons.js"></script>
-    <script src="/static/live2d-init.js"></script>
+    <script src="/static/live2d/live2d-core.js"></script>
+    <script src="/static/live2d/live2d-model.js"></script>
+    <script src="/static/live2d/live2d-interaction.js"></script>
+    <script src="/static/live2d/live2d-emotion.js"></script>
+    <script src="/static/avatar/avatar-popup-common.js"></script>
+    <script src="/static/avatar/avatar-ui-popup.js"></script>
+    <script src="/static/avatar/avatar-ui-popup-config.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/core.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/idle-assets-and-question.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/idle-playground.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/idle-actions-and-audio.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/idle-drag-and-subactions.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/idle-journey-and-presentation.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/idle-cat-mind-observations.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/methods-setup.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/methods-buttons.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/methods-return.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/methods-state-and-cleanup.js"></script>
+    <script src="/static/live2d/live2d-ui-buttons.js"></script>
+    <script src="/static/live2d/live2d-init.js"></script>
     
     <script src="/static/js/reserved_fields_utils.js"></script>
     <script src="/static/js/voice_display_utils.js"></script>
     <script src="/static/js/character_personality_onboarding.js?v={{ static_asset_version | default('0') }}"></script>
-    <script src="/static/js/character_card_manager.js?v={{ static_asset_version | default('0') }}"></script>
+    <!-- Character card manager parts share the classic-script global scope; keep this dependency order. -->
+    <script src="/static/js/character_card_manager/core-and-upload.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/character_card_manager/subscriptions-and-scan.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/character_card_manager/character-data-and-transfer.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/character_card_manager/card-list-and-panel.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/character_card_manager/card-form-and-actions.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/character_card_manager/workshop-card-and-upload.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/character_card_manager/model-previews.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/character_card_manager/master-profile.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/character_card_manager/card-companion.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/character_card_manager/sync-and-legacy-memory.js?v={{ static_asset_version | default('0') }}"></script>
 
     <!-- Three.js 核心库和importmap（用于VRM/MMD模型预览）-->
     <script type="importmap">

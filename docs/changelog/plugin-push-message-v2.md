@@ -1,6 +1,6 @@
 # Plugin SDK: `push_message` v2 (orthogonal axes + parts)
 
-**Status**: introduced this release · old fields scheduled to be removed in **v0.9**.
+**Current-source status (verified 2026-07-16)**: v2 is the canonical schema. Legacy fields are still translated and emit deprecation warnings. This page does not guarantee which future release will remove them.
 
 ## Summary
 
@@ -79,27 +79,30 @@ The new schema solves these by:
 | `delivery="passive"` | `ai_behavior="read"` |
 | `delivery="silent"` / `reply=False` | `visibility=["hud"], ai_behavior="blind"` |
 | `content="X"` | `parts=[{"type":"text","text":"X"}]` |
-| `binary_data=bytes, mime=...` | `parts=[{"type":"image","data":bytes,"mime":...}]` (or `audio`; `video` accepted in schema but main_server warn-drops it for now) |
-| `binary_url=URL` | `parts=[{"type":"image","url":URL}]` |
+| `binary_data=bytes, mime=...` | choose `type="image" \| "audio" \| "video"` from the MIME and use `parts=[{"type":...,"data":bytes,"mime":...}]` (`video` is accepted by the schema but currently warn-dropped by `main_server`) |
+| `binary_url=URL, mime=...` | choose `type="image" \| "audio" \| "video"` from the MIME and use `parts=[{"type":...,"url":URL,"mime":...}]` (same current `video` limitation) |
 | `message_type="music_play_url"` | `parts=[{"type":"ui_action","action":"media_play_url","url":..., "media_type":"audio"}]`, `visibility=["chat"]`, `ai_behavior="blind"` |
 | `message_type="music_allowlist_add"` | `parts=[{"type":"ui_action","action":"media_allowlist_add","domains":[...]}]`, `ai_behavior="blind"` |
 | `register_music_domains(domains)` SDK helper | **deleted** — push directly via `ui_action: media_allowlist_add` (see above) |
 | `description="X"` | `metadata={"description": "X"}` |
 | `unsafe=True` | drop |
+| `fast_mode=True` | drop; v2 uses the standard host delivery path (benchmark high-volume producers because the legacy batching/backpressure optimization is not preserved) |
 
 ## Backward compatibility
 
 All legacy parameters (`message_type`, `description`, `content`,
-`binary_data`, `binary_url`, `mime`, `delivery`, `reply`, `unsafe`) still
+`binary_data`, `binary_url`, `mime`, `delivery`, `reply`, `unsafe`,
+`fast_mode`) still
 work and are translated client-side by
 `translate_push_message`.
-Each legacy parameter that is actually passed emits a `DeprecationWarning`
-on every call, citing this version target.
+Each active legacy parameter emits a `DeprecationWarning` on every call,
+citing this version target. `None` values and inactive boolean flags
+(`unsafe=False`, `fast_mode=False`) do not warn.
 
 The wire payload populates **both** v2 (`schema`, `visibility`,
 `ai_behavior`, `parts`) and synthesised legacy fields (`message_type`,
-`content`, `binary_url`, `description`) so that downstream readers that
-have not migrated yet (notably
+`content`, `binary_data`, `binary_url`, `mime`, `description`, `unsafe`,
+`delivery`, `reply`) so that downstream readers that have not migrated yet (notably
 `plugin/server/application/messages/query_service.py`)
 keep working through the deprecation window.
 
@@ -126,34 +129,38 @@ single unexpected field can never drop the whole message); the swallowing
 the image from `parts[].binary_base64`, never from `binary_data`.
 
 This is shared infrastructure: any plugin sending an image part depends on
-it. The whole class of bug disappears once the legacy `binary_data` wire
-field is removed in **v0.9** (see below).
+it. The whole class of bug can be removed only after the legacy
+`binary_data` wire field is no longer emitted; that cleanup has not happened
+in the source verified above.
 
-## Removed in v0.9
+## Recorded cleanup target (not a release guarantee)
 
-* All legacy `push_message` parameters listed above.
-* The legacy fields synthesised on the wire payload (`message_type`,
-  `content`, `binary_data`, `binary_url`, `description`, `unsafe`,
+The current source still carries TODO/deprecation text that names v0.9 as a
+target. Treat that label as migration metadata, not as proof that a released
+v0.9 has removed the compatibility layer. The pending cleanup consists of:
+
+* Removing all legacy `push_message` parameters listed above.
+* Removing the legacy fields synthesised on the wire payload (`message_type`,
+  `content`, `binary_data`, `binary_url`, `mime`, `description`, `unsafe`,
   `delivery`, `reply`).
-* `description` everywhere it currently lingers — has no semantic
+* Removing `description` everywhere it currently lingers — it has no semantic
   consumer in v2, only surfaces as a human label in legacy log lines and
   the `query_service` response.  Marked with `TODO(v0.9)` in
-  `plugin/core/context.py`, `plugin/server/application/messages/query_service.py`,
-  and the three migrated in-tree plugin senders
-  (`bilibili_danmaku` / `memo_reminder` / `sts2_autoplay`) so the cleanup
-  PR can grep for the marker.
-* The legacy event-bus event shape (`proactive_message` event type
+  `plugin/core/context.py` and
+  `plugin/server/application/messages/query_service.py` so the cleanup PR
+  can grep for the marker; plugin call sites are found by the static v1 checker.
+* Removing the legacy event-bus event shape (`proactive_message` event type
   itself stays, but its `media_parts` / `visibility` / `ai_behavior`
   fields become the only schema; `delivery_mode` becomes derived).
 
-## Touched files (this release)
+## Current implementation map
 
-* `plugin/sdk/shared/core/push_message_schema.py` (new)
+* `plugin/sdk/shared/core/push_message_schema.py`
 * `plugin/sdk/shared/core/context.py`, `types.py`
 * `plugin/sdk/plugin/base.py` (deleted `register_music_domains`)
 * `plugin/_types/protocols.py`, `_types/models.py`
 * `plugin/core/context.py`
 * `plugin/server/messaging/proactive_bridge.py`
-* `main_server.py` (image `media_parts` → `session.stream_image`; audio/video warn-drop pending a transport)
+* `app/main_server/character_runtime.py` (image `media_parts` → `session.stream_image`; audio/video warn-drop pending a transport)
 * `plugin/plugins/{bilibili_danmaku,memo_reminder,sts2_autoplay}/__init__.py` (migrated senders)
 * `plugin/PLUGIN_DEVELOPMENT_GUIDE.md`

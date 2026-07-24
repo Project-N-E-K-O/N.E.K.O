@@ -246,6 +246,7 @@ test('rejects relative dynamic imports in hosted TSX', () => {
 
     assert.equal(result.status, 1)
     assert.match(result.stderr, /Dynamic import is not supported in hosted TSX/)
+    assert.match(result.stderr, /Use a static relative import/)
   })
 })
 
@@ -649,6 +650,7 @@ test('rejects bare/external package imports', () => {
 
     assert.equal(result.status, 1)
     assert.match(result.stderr, /bare module 'lodash-es' cannot resolve/)
+    assert.match(result.stderr, /move third-party code behind a plugin action/)
   })
 })
 

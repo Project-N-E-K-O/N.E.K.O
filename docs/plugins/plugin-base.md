@@ -235,20 +235,27 @@ content = cache_file.read_text()
 
 ---
 
-## self.bus — Bus snapshots
+## self.bus — Bus read/watch
 
-**When you need it**: You want to read namespaced bus snapshots such as messages, events, lifecycle records, conversations, and memory records.
+**When you need it**: You want to read or watch namespaced host-state snapshots. This facade has no publish/emit API.
 
 ```python
 # Read recent events
-recent_events = await self.bus.events.get(filter={"type": "note_created"}, max_count=20)
+recent_events = await self.bus.events.get(max_count=50)
+recent_events = recent_events.filter(type="note_created").sort(
+    by="timestamp", reverse=True,
+).limit(20)
 
 # Read recent messages
 recent_messages = await self.bus.messages.get(max_count=20)
 
-# Read memory records from a bucket
+# Read recent user-utterance events from an in-memory bucket
 memory_records = await self.bus.memory.get(bucket_id="default", limit=20)
 ```
+
+The list surface is `filter` / `where`, `sort`, `limit`, and `watch`. Callable `filter(predicate)`, `where(predicate)`, and `sort(key=...)` are local-only, so watcher chains must use structured `filter(field=value, ...)` and `sort(by=...)`. Only `messages`, `events`, and `lifecycle` support `watch()`; `conversations` and `memory` are read-only snapshots. Watcher subscriptions accept only `add`, `del`, or `change`.
+
+The `memory` bucket is bounded and kept in process for one hour. It is plugin context, not access to the character's persistent facts, reflections, or persona. `ctx.query_memory(...)` is retained only as a deprecated compatibility call to a placeholder endpoint and does not perform semantic recall.
 
 ---
 
@@ -284,18 +291,6 @@ self.push_message(
 
 ---
 
-## self.memory — Memory system
-
-**When you need it**: You want to access N.E.K.O's long-term memory (past conversations, remembered facts, etc.).
-
-```python
-from plugin.sdk.plugin import unwrap_or
-
-result = await self.memory.query("default", "what topic did we discuss last time")
-matches = unwrap_or(result, {})
-```
-
----
 
 ## self.system_info — System info
 
@@ -322,8 +317,7 @@ python_env = unwrap_or(await self.system_info.get_python_env(), {})
 | `self.db` | SQLite database | `[plugin.database] enabled = true` |
 | `self.i18n` | Multi-language | `[plugin.i18n]` |
 | `self.data_path()` | Store files | No |
-| `self.bus` | Read bus snapshots | No |
+| `self.bus` | Read/watch bus snapshots | No |
 | `report_status()` | Show progress in panel | No |
 | `push_message()` | Push to chat | No |
-| `self.memory` | Access memory system | No |
 | `self.system_info` | Query system info | No |

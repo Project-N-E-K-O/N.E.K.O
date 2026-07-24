@@ -2,7 +2,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-CHAT_EXPORT_JS = PROJECT_ROOT / "static" / "app-chat-export.js"
+CHAT_EXPORT_JS = PROJECT_ROOT / "static" / "app" / "app-chat-export.js"
 
 
 def test_export_preview_waits_for_shell_before_rewriting_document():
@@ -33,3 +33,28 @@ def test_neko_export_group_time_uses_single_send_time():
 
     assert "return times[0];" in get_group_time
     assert "times[0] + ' - ' + times[times.length - 1]" not in get_group_time
+
+
+def test_export_preview_reuses_only_shell_window_handles():
+    script = CHAT_EXPORT_JS.read_text(encoding="utf-8")
+
+    assert "function isReusableExportPreviewWindow(win)" in script
+    assert "function isExportPreviewDocumentWindow(win)" in script
+    assert "win.__nekoChatExportPreviewWindow === true" in script
+    assert "classList.contains('chat-export-window')" in script
+    assert "isExportPreviewShellUrl(getWindowHref(win)) || isExportPreviewDocumentWindow(win)" in script
+
+    function_start = script.index("async function openExportPreviewWindow()")
+    function_end = script.index("async function openPreviewModal", function_start)
+    open_export = script[function_start:function_end]
+
+    assert "var existingPreviewWindow = isReusableExportPreviewWindow(state.previewWindow)" in open_export
+    assert "state.previewWindow = null;" in open_export
+    assert "function isCurrentChatWindowHandle(win)" in script
+    assert "win.document === document" in script
+    assert "window.open('', getExportPreviewWindowName('main'), buildExportWindowFeatures())" in open_export
+    assert "if (isCurrentChatWindowHandle(previewWindow))" in open_export
+    assert "var returnedHref = getWindowHref(previewWindow);" in open_export
+    assert "returnedHref !== 'about:blank' && !isExportPreviewShellUrl(returnedHref)" in open_export
+    assert "var openedShellWindow = isExportPreviewShellUrl(returnedHref);" in open_export
+    assert "previewWindow.__nekoChatExportPreviewWindow = true;" in open_export

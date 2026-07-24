@@ -318,31 +318,31 @@ PROMPTS: Dict[str, Dict[str, str]] = {
         "pt": "Inventário atual: vazio",
     },
     "COMPLETION_FOLLOWUP_BLOCKED": {
-        "zh": "上面的反馈说明这次没真做成——换思路再派新任务（比如改坐标、用真名而不是中文称呼、换个目标）。",
-        "en": "The feedback above means this didn't really succeed — change tack and dispatch a fresh task (e.g. different coordinates, real username instead of a nickname, different target).",
-        "ja": "上のフィードバックは「今回は実際にはできていない」って意味——別の発想で新しいタスクを送って（座標を変える、ニックネームじゃなく本名にする、目標を変えるなど）。",
-        "ko": "위 피드백은 '이번엔 실제로 안 됐다'는 뜻——방향을 바꿔서 새 작업을 보내 (좌표 변경, 별명 대신 실제 이름 사용, 다른 목표 등).",
-        "ru": "Отклик выше означает «на самом деле не получилось» — смени подход и отправь новую задачу (другие координаты, настоящий username вместо прозвища, другая цель).",
-        "es": "El feedback de arriba significa que en realidad no salió bien — cambia de enfoque y envía una tarea nueva (otras coordenadas, el nombre de usuario real en vez de un apodo, otro objetivo).",
-        "pt": "O feedback acima significa que na real não deu certo — mude a abordagem e envie uma tarefa nova (outras coordenadas, o username real em vez de apelido, outro alvo).",
+        "zh": "上面的反馈只用于让你知道这次没有真正成功。不要自动重试、改派或自己补坐标；简短说明或等待。",
+        "en": "The feedback above is awareness that this did not really succeed. Do not automatically retry, pivot, or add coordinates; briefly explain or wait.",
+        "ja": "上のフィードバックは、今回は本当に成功しなかったと把握するためのもの。自動で再試行・別タスク・座標追加をせず、短く説明するか待つ。",
+        "ko": "위 피드백은 이번에 실제로 성공하지 못했다는 사실을 인지하기 위한 거야. 자동으로 재시도하거나 다른 작업을 보내거나 좌표를 덧붙이지 말고, 짧게 설명하거나 기다려.",
+        "ru": "Отклик выше нужен лишь для понимания, что действие не удалось. Не повторяй автоматически, не меняй задачу и не добавляй координаты; коротко объясни или подожди.",
+        "es": "El feedback de arriba solo sirve para saber que esto no salió bien. No reintentes, cambies de tarea ni añadas coordenadas automáticamente; explica brevemente o espera.",
+        "pt": "O feedback acima serve apenas para saber que isso não deu certo. Não tente de novo, mude a tarefa nem acrescente coordenadas automaticamente; explique brevemente ou espere.",
     },
     "COMPLETION_FOLLOWUP_SUCCESS": {
-        "zh": "心里有数即可，别复读上面的字面。要继续动作就直接派下一步。",
-        "en": "Just internalize it — don't parrot the lines above. If you want to keep moving, dispatch the next step directly.",
-        "ja": "頭の中で押さえとくだけでいい、上の文字を繰り返さないで。続けたいなら次の動作を直接送って。",
-        "ko": "머릿속에 담아두기만 해, 위 문장을 그대로 따라 읽지 마. 계속 움직이고 싶으면 다음 동작을 바로 보내.",
-        "ru": "Просто учти это — не повторяй текст выше. Хочешь продолжить — сразу отправляй следующее действие.",
-        "es": "Solo tenlo en cuenta — no repitas las líneas de arriba. Si quieres seguir, envía el siguiente paso directamente.",
-        "pt": "Só leve em conta — não repita as linhas acima. Se quiser continuar, envie o próximo passo direto.",
+        "zh": "心里有数即可，别复读上面的字面。这条完成提示不是让你再派新任务；简短承认或保持安静。",
+        "en": "Just internalize it; do not parrot the lines above. This completion cue is not an instruction to dispatch another task; briefly acknowledge it or stay quiet.",
+        "ja": "把握するだけでよく、上の文面を繰り返さない。この完了通知は新しいタスクを送る指示ではない。短く認めるか黙る。",
+        "ko": "상황만 인지하고 위 문장을 그대로 반복하지 마. 이 완료 알림은 새 작업을 보내라는 지시가 아니야. 짧게 인정하거나 조용히 있어.",
+        "ru": "Просто учти это и не повторяй текст выше. Это уведомление о завершении не является командой отправить новую задачу; коротко отреагируй или молчи.",
+        "es": "Solo tenlo en cuenta y no repitas las líneas de arriba. Este aviso de finalización no es una orden para enviar otra tarea; reconócelo brevemente o guarda silencio.",
+        "pt": "Só leve isso em conta e não repita as linhas acima. Este aviso de conclusão não é uma ordem para enviar outra tarefa; reconheça brevemente ou fique em silêncio.",
     },
     "COMPLETION_FOLLOWUP_FAILED": {
-        "zh": "这次没真做成——先根据上面的反馈想清楚原因再决定要不要重试或改派下一步，别直接说『搞定了』。",
-        "en": "This didn't actually succeed — work out the cause from the feedback above before deciding whether to retry or pivot, don't just say 'done'.",
-        "ja": "今回は実際にはできていない——上のフィードバックから原因を読み取って、リトライするか別の動作にするか決めてから動いて。『できた』とは言わないこと。",
-        "ko": "이번엔 실제로 안 됐어——위 피드백에서 원인을 파악한 다음 재시도할지 다른 동작으로 갈지 정해, '됐어'라고 그냥 말하지 마.",
-        "ru": "На самом деле не получилось — разберись по отклику выше в причине, прежде чем решать, повторять или сменить тактику, и не говори просто «готово».",
-        "es": "En realidad no salió — primero entiende la causa por el feedback de arriba antes de decidir si reintentar o cambiar el plan, no digas simplemente 'listo'.",
-        "pt": "Na real não deu certo — primeiro entenda a causa pelo feedback acima antes de decidir se tenta de novo ou muda o plano, não diga só 'pronto'.",
+        "zh": "这次没真做成。先理解反馈，别说『搞定了』，也不要自动重试、改派或补坐标。",
+        "en": "This did not actually succeed. Understand the feedback and do not say 'done', automatically retry, pivot, or add coordinates.",
+        "ja": "今回は実際には成功していない。フィードバックを理解し、『できた』と言わず、自動で再試行・別タスク・座標追加もしない。",
+        "ko": "이번엔 실제로 성공하지 못했어. 피드백을 이해하고 '됐어'라고 말하지 말며, 자동 재시도·작업 변경·좌표 추가도 하지 마.",
+        "ru": "Действие не удалось. Пойми отклик, не говори «готово» и не повторяй автоматически, не меняй задачу и не добавляй координаты.",
+        "es": "Esto no salió bien. Entiende el feedback, no digas 'listo' y no reintentes, cambies de tarea ni añadas coordenadas automáticamente.",
+        "pt": "Isso não deu certo. Entenda o feedback, não diga 'pronto' e não tente de novo, mude a tarefa nem acrescente coordenadas automaticamente.",
     },
 
     # -------------------------------------------------------------------
@@ -526,6 +526,20 @@ PROMPTS: Dict[str, Dict[str, str]] = {
         "es": "La tarea anterior que enviaste (\"{task_text}\") en realidad terminó (resultado: {status}).",
         "pt": "A tarefa anterior que você enviou (\"{task_text}\") na real terminou (resultado: {status}).",
     },
+    "RETROACTIVE_HEADER_ENDED": {
+        # Used when the late frame's status is NOT a genuine completion
+        # (interrupted / superseded / failed / timeout). The plain
+        # RETROACTIVE_HEADER asserts "actually finished", which would
+        # contradict the status and re-tell 猫娘 a completion that never
+        # happened. {task_text} = the earlier task, {status} = final status.
+        "zh": "你之前派出去的「{task_text}」已经结束了，但没真正跑完（结果 {status}）。",
+        "en": "The earlier task you dispatched (\"{task_text}\") has since ended, but didn't actually complete (result: {status}).",
+        "ja": "前に送った「{task_text}」、もう終わったけど実際には完了しなかった（結果: {status}）。",
+        "ko": "전에 보낸 \"{task_text}\", 이제 끝났는데 실제로 완료되진 않았어 (결과: {status}).",
+        "ru": "Та задача, которую ты раньше отправил(а) («{task_text}»), уже завершилась, но по-настоящему не выполнена (результат: {status}).",
+        "es": "La tarea anterior que enviaste (\"{task_text}\") ya terminó, pero en realidad no se completó (resultado: {status}).",
+        "pt": "A tarefa anterior que você enviou (\"{task_text}\") já encerrou, mas na real não foi concluída (resultado: {status}).",
+    },
     "RETROACTIVE_INVENTORY_LINE": {
         # {snippet} = item list
         "zh": "现在背包：{snippet}",
@@ -537,13 +551,13 @@ PROMPTS: Dict[str, Dict[str, str]] = {
         "pt": "Inventário atual: {snippet}",
     },
     "RETROACTIVE_FOLLOWUP": {
-        "zh": "简短承认一下这件事（不用复述细节，用第一人称讲游戏里的事），想接着干啥就直接派下一步。\n**不要播报内部状态给 {{MASTER_NAME}}**——『连接』『任务空闲』『系统』『minecraft_task』『工具』『tool』一律不准说出口。",
-        "en": "Acknowledge it briefly (no detail dump, first-person about what's happening in the game). If you want to keep moving, dispatch the next step directly.\n**Do not narrate internals to {{MASTER_NAME}}** — never say 'connect', 'idle', 'system', 'minecraft_task', 'tool'.",
-        "ja": "短く認める（詳細は不要、一人称でゲーム内の話だけ）、続けたいなら次の動作を直接送って。\n**{{MASTER_NAME}} に内部状態を実況しない**——『接続』『タスク空き』『システム』『minecraft_task』『ツール』『tool』は口に出さない。",
-        "ko": "짧게 인정해 (디테일 풀어놓지 말고, 1인칭으로 게임 속 일만), 계속 움직이고 싶으면 다음 동작 바로 보내.\n**{{MASTER_NAME}} 에게 내부 상태 중계 금지**——'연결' '대기' '시스템' 'minecraft_task' '도구' 'tool' 입 밖에 내지 마.",
-        "ru": "Признай это коротко (без подробностей, от первого лица о том, что в игре), хочешь продолжить — сразу отправляй следующее действие.\n**Не озвучивай {{MASTER_NAME}} внутреннее состояние** — не говори «подключение», «простой», «система», «minecraft_task», «инструмент», «tool».",
-        "es": "Reconócelo brevemente (sin detalles, en primera persona sobre lo que pasa en el juego), si quieres seguir, envía el siguiente paso directamente.\n**No narres a {{MASTER_NAME}} el estado interno** — nunca digas 'conexión', 'inactivo', 'sistema', 'minecraft_task', 'herramienta', 'tool'.",
-        "pt": "Reconheça rapidinho (sem detalhe, em primeira pessoa sobre o que acontece no jogo), se quiser continuar, envie o próximo passo direto.\n**Não narre o estado interno para {{MASTER_NAME}}** — nunca diga 'conexão', 'inativo', 'sistema', 'minecraft_task', 'ferramenta', 'tool'.",
+        "zh": "这是迟到的状态 awareness，不是让你派新任务。需要时用第一人称简短承认，别复述细节；不要自动重试或改派。\n**不要播报内部状态给 {{MASTER_NAME}}**——『连接』『任务空闲』『系统』『minecraft_task』『工具』『tool』一律不准说出口。",
+        "en": "This is delayed state awareness, not an instruction to dispatch a new task. Briefly acknowledge it in first person if useful, without repeating details. Do not automatically retry or pivot.\n**Do not narrate internals to {{MASTER_NAME}}** — never say 'connect', 'idle', 'system', 'minecraft_task', 'tool'.",
+        "ja": "これは遅れて届いた状態把握で、新しいタスクを送る指示ではない。必要なら詳細を繰り返さず一人称で短く認め、自動で再試行や別タスクをしない。\n**{{MASTER_NAME}} に内部状態を実況しない**——『接続』『タスク空き』『システム』『minecraft_task』『ツール』『tool』は口に出さない。",
+        "ko": "이건 늦게 도착한 상태 인지이며 새 작업을 보내라는 지시가 아니야. 필요하면 세부 내용을 반복하지 말고 1인칭으로 짧게 인정하며, 자동으로 재시도하거나 다른 작업을 보내지 마.\n**{{MASTER_NAME}} 에게 내부 상태 중계 금지**——'연결' '대기' '시스템' 'minecraft_task' '도구' 'tool' 입 밖에 내지 마.",
+        "ru": "Это запоздалое обновление осведомлённости, а не команда отправить новую задачу. При необходимости коротко отреагируй от первого лица, не повторяя подробности. Не повторяй автоматически и не меняй задачу.\n**Не озвучивай {{MASTER_NAME}} внутреннее состояние** — не говори «подключение», «простой», «система», «minecraft_task», «инструмент», «tool».",
+        "es": "Esto es una actualización tardía de contexto, no una orden para enviar una tarea nueva. Si sirve, reconócelo brevemente en primera persona sin repetir detalles. No reintentes ni cambies de tarea automáticamente.\n**No narres a {{MASTER_NAME}} el estado interno** — nunca digas 'conexión', 'inactivo', 'sistema', 'minecraft_task', 'herramienta', 'tool'.",
+        "pt": "Isto é uma atualização tardia de contexto, não uma ordem para enviar uma nova tarefa. Se for útil, reconheça brevemente em primeira pessoa sem repetir detalhes. Não tente de novo nem mude a tarefa automaticamente.\n**Não narre o estado interno para {{MASTER_NAME}}** — nunca diga 'conexão', 'inativo', 'sistema', 'minecraft_task', 'ferramenta', 'tool'.",
     },
 
     # -------------------------------------------------------------------

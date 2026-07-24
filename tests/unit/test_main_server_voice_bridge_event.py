@@ -30,7 +30,7 @@ async def test_agent_status_update_syncs_master_state_into_session_flags(monkeyp
             self.seen_flags = dict(flags)
 
     mgr = DummyManager()
-    monkeypatch.setattr(main_server, "_get_session_manager", lambda lanlan_name=None: mgr)
+    monkeypatch.setattr(main_server.character_runtime, "_get_session_manager", lambda lanlan_name=None: mgr)
 
     await main_server._handle_agent_event(
         {

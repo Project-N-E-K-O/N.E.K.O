@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 from pathlib import Path
+import inspect
 import shutil
 import zipfile
 
 import pytest
 
-from plugin.neko_plugin_cli.public import inspect_package, build_bundle, build_plugin, install_package
+from plugin.neko_plugin_cli.public import (
+    build_bundle,
+    build_plugin,
+    inspect_package,
+    install_package,
+    unpack_package,
+)
 from plugin.neko_plugin_cli.public.build_rules import BuildRuleSet, should_skip_path
 
 pytestmark = pytest.mark.plugin_unit
@@ -288,7 +295,7 @@ def test_inspect_package_uses_dependency_manifest_when_pyproject_is_missing(tmp_
         inspect_package(package_path)
 
 
-def test_install_package_supports_rename_and_fail_conflict_modes(tmp_path: Path) -> None:
+def test_install_package_never_renames_existing_plugin_directory(tmp_path: Path) -> None:
     plugin_dir = _make_plugin_dir(tmp_path)
     package_path = tmp_path / "demo_plugin.neko-plugin"
     plugins_root = tmp_path / "plugins"
@@ -301,25 +308,64 @@ def test_install_package_supports_rename_and_fail_conflict_modes(tmp_path: Path)
         profiles_root=profiles_root,
         on_conflict="rename",
     )
-    second = install_package(
-        package_path,
-        plugins_root=plugins_root,
-        profiles_root=profiles_root,
-        on_conflict="rename",
-    )
 
     assert first.installed_plugins[0].target_plugin_id == "demo_plugin"
     assert first.installed_plugins[0].renamed is False
-    assert second.installed_plugins[0].target_plugin_id == "demo_plugin_1"
-    assert second.installed_plugins[0].renamed is True
 
-    with pytest.raises(FileExistsError):
+    with pytest.raises(FileExistsError, match="demo_plugin"):
         install_package(
             package_path,
             plugins_root=plugins_root,
             profiles_root=profiles_root,
-            on_conflict="fail",
+            on_conflict="rename",
         )
+
+    assert not (plugins_root / "demo_plugin_1").exists()
+
+
+def test_executable_install_entry_points_default_to_fail_closed() -> None:
+    assert inspect.signature(install_package).parameters["on_conflict"].default == "fail"
+    assert inspect.signature(unpack_package).parameters["on_conflict"].default == "fail"
+
+
+def test_unpack_package_never_renames_existing_plugin_directory(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    package_path = tmp_path / "demo_plugin.neko-plugin"
+    plugins_root = tmp_path / "plugins"
+    profiles_root = tmp_path / "profiles"
+    build_plugin(plugin_dir, package_path)
+    (plugins_root / "demo_plugin").mkdir(parents=True)
+
+    with pytest.raises(FileExistsError, match="demo_plugin"):
+        unpack_package(
+            package_path,
+            plugins_root=plugins_root,
+            profiles_root=profiles_root,
+            on_conflict="rename",
+        )
+
+    assert not (plugins_root / "demo_plugin_1").exists()
+
+
+def test_unpack_package_preflights_profile_conflict_before_extracting_plugin(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    package_path = tmp_path / "demo_plugin.neko-plugin"
+    plugins_root = tmp_path / "plugins"
+    profiles_root = tmp_path / "profiles"
+    build_plugin(plugin_dir, package_path)
+    profile_dir = profiles_root / "demo_plugin"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "default.toml").write_text("existing = true\n", encoding="utf-8")
+
+    with pytest.raises(FileExistsError, match="demo_plugin"):
+        unpack_package(
+            package_path,
+            plugins_root=plugins_root,
+            profiles_root=profiles_root,
+        )
+
+    assert not (plugins_root / "demo_plugin").exists()
+    assert (profile_dir / "default.toml").read_text(encoding="utf-8") == "existing = true\n"
 
 
 def test_install_package_rejects_payload_hash_mismatch(tmp_path: Path) -> None:
@@ -416,6 +462,74 @@ def test_inspect_package_fails_when_plugin_toml_is_missing(tmp_path: Path) -> No
         inspect_package(package_path)
 
 
+def test_inspect_package_rejects_removed_script_plugin_type(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    package_path = tmp_path / "demo_plugin.neko-plugin"
+    build_plugin(plugin_dir, package_path)
+    plugin_toml = (plugin_dir / "plugin.toml").read_text(encoding="utf-8").replace(
+        'type = "plugin"',
+        'type = "script"',
+    )
+    _rewrite_package_member(
+        package_path,
+        "payload/plugins/demo_plugin/plugin.toml",
+        plugin_toml,
+    )
+
+    with pytest.raises(ValueError, match="plugin.type"):
+        inspect_package(package_path)
+
+
+def test_install_package_rejects_removed_script_type_before_extraction(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    package_path = tmp_path / "demo_plugin.neko-plugin"
+    build_plugin(plugin_dir, package_path)
+    plugin_toml = (plugin_dir / "plugin.toml").read_text(encoding="utf-8").replace(
+        'type = "plugin"',
+        'type = "script"',
+    )
+    _rewrite_package_member(
+        package_path,
+        "payload/plugins/demo_plugin/plugin.toml",
+        plugin_toml,
+    )
+    plugins_root = tmp_path / "installed-plugins"
+
+    with pytest.raises(ValueError, match="plugin.type"):
+        install_package(
+            package_path,
+            plugins_root=plugins_root,
+            profiles_root=tmp_path / "installed-profiles",
+        )
+
+    assert not plugins_root.exists() or not any(plugins_root.iterdir())
+
+
+def test_unpack_package_rejects_removed_script_type_before_extraction(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    package_path = tmp_path / "demo_plugin.neko-plugin"
+    build_plugin(plugin_dir, package_path)
+    plugin_toml = (plugin_dir / "plugin.toml").read_text(encoding="utf-8").replace(
+        'type = "plugin"',
+        'type = "script"',
+    )
+    _rewrite_package_member(
+        package_path,
+        "payload/plugins/demo_plugin/plugin.toml",
+        plugin_toml,
+    )
+    plugins_root = tmp_path / "unpacked-plugins"
+
+    with pytest.raises(ValueError, match="plugin.type"):
+        unpack_package(
+            package_path,
+            plugins_root=plugins_root,
+            profiles_root=tmp_path / "unpacked-profiles",
+        )
+
+    assert not plugins_root.exists() or not any(plugins_root.iterdir())
+
+
 def test_inspect_package_without_metadata_reports_unverified_hash(tmp_path: Path) -> None:
     plugin_dir = _make_plugin_dir(tmp_path)
     package_path = tmp_path / "demo_plugin.neko-plugin"
@@ -466,31 +580,28 @@ def test_build_bundle_writes_multi_plugin_archive_and_installs(tmp_path: Path) -
     assert (tmp_path / "plugins" / "bundle_two" / "plugin.toml").is_file()
 
 
-def test_install_bundle_reserves_renamed_target_names(tmp_path: Path) -> None:
+def test_install_bundle_rejects_existing_plugin_without_partial_promotion(tmp_path: Path) -> None:
     first_plugin = _make_plugin_dir(tmp_path, plugin_id="foo")
-    second_plugin = _make_plugin_dir(tmp_path, plugin_id="foo_1")
-    package_path = tmp_path / "reserved_names.neko-bundle"
+    second_plugin = _make_plugin_dir(tmp_path, plugin_id="bar")
+    package_path = tmp_path / "bundle.neko-bundle"
     build_bundle(
         [first_plugin, second_plugin],
         package_path,
-        bundle_id="reserved_names",
-        package_name="Reserved Names",
-        version="0.1.0",
+        bundle_id="bundle",
+        package_name="Bundle",
+        version="1.0.0",
     )
     plugins_root = tmp_path / "plugins"
     (plugins_root / "foo").mkdir(parents=True)
 
-    install_result = install_package(
-        package_path,
-        plugins_root=plugins_root,
-        profiles_root=tmp_path / "profiles",
-        on_conflict="rename",
-    )
+    with pytest.raises(FileExistsError, match="foo"):
+        install_package(
+            package_path,
+            plugins_root=plugins_root,
+            profiles_root=tmp_path / "profiles",
+        )
 
-    target_ids = [item.target_plugin_id for item in install_result.installed_plugins]
-    assert target_ids == ["foo_1", "foo_1_1"]
-    assert (plugins_root / "foo_1" / "plugin.toml").is_file()
-    assert (plugins_root / "foo_1_1" / "plugin.toml").is_file()
+    assert not (plugins_root / "bar").exists()
 
 
 def test_build_bundle_rejects_unsafe_bundle_id(tmp_path: Path) -> None:

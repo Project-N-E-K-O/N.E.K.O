@@ -19,6 +19,7 @@
 import { i18n } from '../../core/i18n.js';
 import { api } from '../../core/api.js';
 import { toast } from '../../core/toast.js';
+import { deliverZip } from '../../core/download.js';
 import { el } from '../_dom.js';
 
 export async function renderImportPage(host) {
@@ -117,6 +118,70 @@ function renderArchiveImport(host) {
       nameField, pickBtn, fileInput),
     statusEl,
   );
+}
+
+// ── 角色一键导出 (P31) ────────────────────────────────────────────────
+//
+// 与"从本地导入"镜像: 每个真实角色行的 [导出] 把该角色主程序记忆目录忠实打成
+// `<角色名>.zip` (不脱敏, 备份/迁移用). 走 GET /api/persona/export_real/{name},
+// 用 File System Access 的"另存为"picker 让用户选保存位置; 回退 anchor 下载.
+// 不用 core/api.js (它会 JSON parse; 这里要原始 zip 字节).
+// 文件名解析 + 另存为/anchor 兜底走共享 core/download.js, 与 P30 记忆导出同一实现.
+
+async function onExportReal(name, button) {
+  const suggested = `${name}.zip`;
+
+  // 1) Acquire the 另存为 handle FIRST, while user activation is still fresh
+  //    (showSaveFilePicker needs transient activation an `await fetch` consumes).
+  let saveHandle = null;
+  if (typeof window.showSaveFilePicker === 'function') {
+    try {
+      saveHandle = await window.showSaveFilePicker({
+        suggestedName: suggested,
+        types: [{ description: 'ZIP archive', accept: { 'application/zip': ['.zip'] } }],
+      });
+    } catch (err) {
+      if (err && err.name === 'AbortError') return; // user cancelled → do nothing
+      saveHandle = null; // insecure ctx / unsupported → anchor fallback
+    }
+  }
+
+  const labelIdle = i18n('setup.import.button_export');
+  button.disabled = true;
+  button.textContent = i18n('setup.import.button_exporting');
+  try {
+    let resp;
+    try {
+      resp = await fetch(`/api/persona/export_real/${encodeURIComponent(name)}`, {
+        method: 'GET',
+        headers: { 'Accept': 'application/zip, application/json, */*' },
+      });
+    } catch {
+      toast.err(i18n('setup.import.export_failed'), { message: i18n('errors.network') });
+      return;
+    }
+    if (!resp.ok) {
+      let message = `HTTP ${resp.status}`;
+      try {
+        const body = await resp.json();
+        const detail = body?.detail || body;
+        if (resp.status === 404) message = i18n('setup.import.export_no_session');
+        else if (resp.status === 413) message = i18n('setup.import.export_too_large');
+        else message = detail?.message || message;
+      } catch { /* keep HTTP status message */ }
+      toast.err(i18n('setup.import.export_failed'), { message });
+      return;
+    }
+    try {
+      const { filename } = await deliverZip(resp, saveHandle, suggested);
+      toast.ok(i18n('setup.import.export_ok', filename));
+    } catch (downloadErr) {
+      toast.err(i18n('setup.import.export_failed'), { message: String(downloadErr) });
+    }
+  } finally {
+    button.disabled = false;
+    button.textContent = labelIdle;
+  }
 }
 
 function _bytesToBase64(bytes) {
@@ -519,12 +584,20 @@ function renderRow(ch, source) {
     onClick: (ev) => onImport(ch.name, ev.currentTarget),
   }, i18n('setup.import.button_import'));
 
+  // 镜像操作: 把该本地角色的完整记忆目录忠实导出为 <角色名>.zip (P31).
+  // tooltip 明示"含隐私原始数据, 仅供备份/迁移" — 与脱敏的 P30 记忆分析导出区分.
+  const exportBtn = el('button', {
+    className: 'small',
+    title: i18n('setup.import.export_hint'),
+    onClick: (ev) => onExportReal(ch.name, ev.currentTarget),
+  }, i18n('setup.import.button_export'));
+
   return el('div', { className: 'import-row' },
     el('div', { className: 'import-row-head' },
       el('div', { className: 'import-row-name' }, ch.name, ' ', ...badges),
     ),
     el('div', { className: 'import-row-files' }, files),
-    el('div', { className: 'import-row-actions' }, button),
+    el('div', { className: 'import-row-actions' }, exportBtn, button),
   );
 }
 

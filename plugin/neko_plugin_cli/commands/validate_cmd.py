@@ -13,6 +13,17 @@ from plugin.core.python_dependencies import (
     find_missing_python_requirements,
     split_host_provided_requirements,
 )
+from plugin._types.plugin_types import (
+    SUPPORTED_PLUGIN_TYPES,
+    format_plugin_type_choice_error,
+    format_removed_plugin_host,
+)
+from plugin.sdk.shared.core.push_message_schema import (
+    LEGACY_PUSH_MESSAGE_FIELD_MIGRATIONS,
+    LEGACY_PUSH_MESSAGE_POSITIONAL_FIELDS,
+    LEGACY_PUSH_MESSAGE_TRUTHY_ONLY_FIELDS,
+    format_push_message_v1_static_diagnostic,
+)
 
 from ..core.plugin_source import load_plugin_source
 from ..core.toml_utils import load_toml
@@ -106,6 +117,7 @@ def _check_plugin_toml_schema(
         "config_profiles",
         "dependency",
         "dependencies",
+        "previous_ids",
     }
     _warn_unknown_keys(plugin_table, allowed_plugin_keys, "[plugin]", issues)
 
@@ -115,23 +127,22 @@ def _check_plugin_toml_schema(
     _require_string(plugin_table, "entry", "[plugin].entry", issues, pattern=r"^[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*$")
 
     plugin_type = plugin_table.get("type", "plugin")
-    _check_enum(plugin_type, "[plugin].type", {"plugin", "extension", "script", "adapter"}, issues)
-    if plugin_type == "extension" and "host" not in plugin_table:
-        issues.append(("error", "type='extension' requires [plugin.host]"))
-    if plugin_type != "extension" and "host" in plugin_table:
-        issues.append(("error", "[plugin.host] is only valid when [plugin].type = 'extension'"))
+    if not isinstance(plugin_type, str) or plugin_type not in SUPPORTED_PLUGIN_TYPES:
+        issues.append(("error", format_plugin_type_choice_error("[plugin].type")))
+    if "host" in plugin_table:
+        issues.append(("error", format_removed_plugin_host()))
 
     _check_optional_string(plugin_table, "description", "[plugin].description", issues)
     _check_optional_string(plugin_table, "short_description", "[plugin].short_description", issues)
     _check_optional_bool(plugin_table, "passive", "[plugin].passive", issues)
     _check_string_list(plugin_table.get("keywords"), "[plugin].keywords", issues, required=False)
     _check_plugin_dependency_id_list(plugin_table.get("dependencies"), "[plugin].dependencies", plugin_id, issues)
+    _check_previous_plugin_ids(plugin_table.get("previous_ids"), plugin_id, issues)
 
     _check_author_table(plugin_table.get("author"), issues)
     _check_sdk_table(plugin_table.get("sdk"), issues)
     _check_store_table(plugin_table.get("store"), issues)
     _check_i18n_table(plugin_dir, plugin_table.get("i18n"), issues)
-    _check_host_table(plugin_table.get("host"), issues)
     _check_safety_table(plugin_table.get("safety"), issues)
     _check_config_profiles_table(plugin_table.get("config_profiles"), issues)
     _check_dependency_tables(plugin_table.get("dependency"), issues)
@@ -234,6 +245,33 @@ def _check_plugin_dependency_id_list(
             issues.append(("error", f"{label}[{index}] must not reference the plugin itself"))
 
 
+def _check_previous_plugin_ids(
+    value: object,
+    plugin_id: str,
+    issues: list[tuple[str, str]],
+) -> None:
+    label = "[plugin].previous_ids"
+    if value is None:
+        return
+    if not isinstance(value, list):
+        issues.append(("error", f"{label} must be a list of plugin id strings"))
+        return
+
+    seen: set[str] = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item.strip():
+            issues.append(("error", f"{label}[{index}] must be a non-empty plugin id"))
+            continue
+        previous_id = item.strip()
+        if not re.fullmatch(r"^[A-Za-z0-9_-]+$", previous_id):
+            issues.append(("error", f"{label}[{index}] must be a plugin id, got '{previous_id}'"))
+        elif previous_id == plugin_id:
+            issues.append(("error", f"{label}[{index}] must not equal [plugin].id"))
+        elif previous_id in seen:
+            issues.append(("error", f"{label}[{index}] duplicates '{previous_id}'"))
+        seen.add(previous_id)
+
+
 def _check_optional_number(
     table: dict[str, object],
     key: str,
@@ -306,17 +344,6 @@ def _check_i18n_table(plugin_dir: Path, value: object, issues: list[tuple[str, s
             issues.append(("error", "[plugin.i18n].locales_dir must be a non-empty string"))
         elif not (plugin_dir / locales_dir).is_dir():
             issues.append(("warning", f"[plugin.i18n].locales_dir does not exist: {locales_dir}"))
-
-
-def _check_host_table(value: object, issues: list[tuple[str, str]]) -> None:
-    if value is None:
-        return
-    if not isinstance(value, dict):
-        issues.append(("error", "[plugin.host] must be a table"))
-        return
-    _warn_unknown_keys(value, {"plugin_id", "prefix"}, "[plugin.host]", issues)
-    _require_string(value, "plugin_id", "[plugin.host].plugin_id", issues, pattern=r"^[A-Za-z0-9_-]+$")
-    _check_optional_string(value, "prefix", "[plugin.host].prefix", issues)
 
 
 def _check_safety_table(value: object, issues: list[tuple[str, str]]) -> None:
@@ -526,7 +553,6 @@ def _check_entry_target(
     expected_bases = {
         "plugin": {"NekoPluginBase"},
         "adapter": {"NekoAdapterPlugin"},
-        "extension": {"NekoExtensionBase"},
     }.get(package_type, {"NekoPluginBase"})
     actual_bases = {_name_of(base) for base in class_node.bases}
     if expected_bases and actual_bases.isdisjoint(expected_bases):
@@ -564,6 +590,7 @@ def _check_python_decorators(plugin_dir: Path, issues: list[tuple[str, str]]) ->
         tree = _parse_python_file(path, issues, label=str(relative))
         if tree is None:
             continue
+        _check_deprecated_push_message_calls(tree, relative, issues)
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
@@ -600,6 +627,85 @@ def _check_python_decorators(plugin_dir: Path, issues: list[tuple[str, str]]) ->
                     if not message_id:
                         issues.append(("error", f"@message in {relative}:{node.lineno} must declare a non-empty id"))
                     _check_schema_keyword(decorator, "input_schema", f"{relative}:{node.lineno}", issues)
+
+
+def _check_deprecated_push_message_calls(
+    tree: ast.Module,
+    relative: Path,
+    issues: list[tuple[str, str]],
+) -> None:
+    """Report explicitly-written v1 fields without executing plugin code."""
+    for node in ast.walk(tree):
+        # The SDK exposes push_message as a method. Requiring an attribute call
+        # avoids flagging an unrelated local helper named ``push_message``.
+        if (
+            not isinstance(node, ast.Call)
+            or not isinstance(node.func, ast.Attribute)
+            or node.func.attr != "push_message"
+        ):
+            continue
+        reported_fields: set[str] = set()
+
+        for index, argument in enumerate(node.args):
+            if index >= len(LEGACY_PUSH_MESSAGE_POSITIONAL_FIELDS):
+                break
+            field = LEGACY_PUSH_MESSAGE_POSITIONAL_FIELDS[index]
+            if field is None or isinstance(argument, ast.Starred):
+                continue
+            if _legacy_push_value_is_inactive(field, argument):
+                continue
+            _append_push_v1_warning(
+                field=field,
+                value_node=argument,
+                call_node=node,
+                relative=relative,
+                issues=issues,
+            )
+            reported_fields.add(field)
+
+        for keyword in node.keywords:
+            field = keyword.arg
+            if (
+                field not in LEGACY_PUSH_MESSAGE_FIELD_MIGRATIONS
+                or field in reported_fields
+                or _legacy_push_value_is_inactive(field, keyword.value)
+            ):
+                continue
+            _append_push_v1_warning(
+                field=field,
+                value_node=keyword,
+                call_node=node,
+                relative=relative,
+                issues=issues,
+            )
+
+
+def _legacy_push_value_is_inactive(field: str, value_node: ast.AST) -> bool:
+    if not isinstance(value_node, ast.Constant):
+        return False
+    if value_node.value is None:
+        return True
+    return (
+        field in LEGACY_PUSH_MESSAGE_TRUTHY_ONLY_FIELDS
+        and value_node.value is False
+    )
+
+
+def _append_push_v1_warning(
+    *,
+    field: str,
+    value_node: ast.AST,
+    call_node: ast.Call,
+    relative: Path,
+    issues: list[tuple[str, str]],
+) -> None:
+    location = f"{relative}:{getattr(value_node, 'lineno', call_node.lineno)}"
+    issues.append(
+        (
+            "warning",
+            f"{location}: {format_push_message_v1_static_diagnostic(field)}",
+        )
+    )
 
 
 def _parse_python_file(path: Path, issues: list[tuple[str, str]], *, label: str) -> ast.Module | None:
@@ -721,12 +827,6 @@ def _check_pyproject_dependency_layout(
     python_requirements = collect_project_python_requirements(pyproject_toml)
     external_requirements, _host_requirements = split_host_provided_requirements(python_requirements)
     if not external_requirements:
-        return
-    if package_type == "extension":
-        issues.append((
-            "error",
-            "extension plugins cannot declare Python runtime dependencies because they run in a host process",
-        ))
         return
     vendor_dir = plugin_dir / "vendor"
     if not vendor_dir.is_dir():

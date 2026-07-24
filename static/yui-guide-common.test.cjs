@@ -1,7 +1,10 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { hasOrderedDirectorScripts, readDirectorSource } = require('./yui-guide-director-test-parts.cjs');
 const test = require('node:test');
+const vm = require('node:vm');
+const { jsPartPaths, readJsParts } = require('./app-part-test-utils.cjs');
 
 const guideHelpers = require('./tutorial/core/guide-helpers.js');
 const scopedResources = require('./tutorial/core/scoped-resources.js');
@@ -239,6 +242,33 @@ test('common helper relays temporary PC system cursor reveal duration', () => {
     assert.equal(typeof chatRelays[1].timestamp, 'number');
 });
 
+test('common helper relays angry exit reveal after temporary PC cursor reveal', () => {
+    const chatRelays = [];
+    const storage = new Map([['yuiGuidePcOverlayRunId', 'run-cursor']]);
+    const relayOptions = {
+        localStorage: {
+            getItem(key) {
+                return storage.get(key) || null;
+            }
+        },
+        nekoTutorialOverlay: {
+            relayToChat(message) {
+                chatRelays.push(message);
+            }
+        }
+    };
+
+    common.syncPcSystemCursorTemporaryReveal(2000, 'interrupt_resist_light', relayOptions);
+    common.syncPcSystemCursorHidden(false, 'interrupt_angry_exit', relayOptions);
+
+    assert.deepEqual(chatRelays.map((message) => [message.action, message.hidden, message.reason]), [
+        ['yui_guide_system_cursor_visibility', false, 'interrupt_resist_light'],
+        ['yui_guide_system_cursor_temporary_reveal', undefined, 'interrupt_resist_light'],
+        ['yui_guide_system_cursor_visibility', false, 'interrupt_angry_exit']
+    ]);
+    assert.equal(chatRelays[2].tutorialRunId, 'run-cursor');
+});
+
 test('common helper relays PC tutorial lifecycle start before cursor visibility', () => {
     const chatRelays = [];
     const petRelays = [];
@@ -315,8 +345,8 @@ test('common helper creates a PC overlay run id before tutorial lifecycle start'
 
 test('tutorial start activates PC lifecycle before hiding the system cursor', () => {
     const managerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
-    const emitBlock = managerSource.split('    emitTutorialStarted(page = this.currentPage, source = this.currentTutorialStartSource) {')[1].split(
-        '    logPromptFlow',
+    const emitBlock = managerSource.split('    emitTutorialStarted(page = this.currentPage, source = this.currentTutorialStartSource, options = {}) {')[1].split(
+        '    logTutorialFlow',
         1
     )[0];
 
@@ -661,6 +691,8 @@ test('target geometry registry and chat window adapter expose phase two boundari
     const capsule = registry.resolve('chat-capsule-input');
     assert.equal(capsule.externalKind, 'capsule-input');
     assert.equal(capsule.fallbackGroup, 'chat-input');
+    assert.ok(capsule.localSelectors.length > 0, 'localSelectors must be non-empty');
+    assert.ok(capsule.localSelectors[0].includes('capsuleBody'));
     assert.ok(capsule.localSelectors.some((selector) => selector.includes('capsuleBody')));
     assert.equal(registry.getExternalKind('chat-galgame'), 'galgame');
     assert.equal(typeof registry.getByExternalKind, 'function');
@@ -806,7 +838,7 @@ test('target geometry registry and chat window adapter expose phase two boundari
 });
 
 test('app interpage recognizes explicit Yui guide dedup bypass messages', () => {
-    const source = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+    const source = readJsParts(path.join(repoRoot, 'static', 'app/app-interpage'));
 
     assert.match(source, /function shouldBypassYuiGuideMessageDedup\(action,\s*message\)/);
     assert.match(source, /message\s*&&\s*message\.bypassDedup === true/);
@@ -818,7 +850,7 @@ test('app interpage recognizes explicit Yui guide dedup bypass messages', () => 
 });
 
 test('app interpage sends external chat pet reports through the command bus', () => {
-    const source = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+    const source = readJsParts(path.join(repoRoot, 'static', 'app/app-interpage'));
     const bridgeDataBlock = source.split('    function handleYuiGuideChatBridgeData(data) {')[1].split(
         '    function drainPendingYuiGuideChatBridgeQueue',
         1
@@ -881,7 +913,7 @@ test('app interpage sends external chat pet reports through the command bus', ()
 });
 
 test('app interpage routes non-guide broadcasts through a shared interpage sender', () => {
-    const source = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+    const source = readJsParts(path.join(repoRoot, 'static', 'app/app-interpage'));
     const senderBlock = source.split('    function postInterpageMessage(message, options) {')[1].split(
         '    function stopIdleChatCompactSurfaceHeartbeat',
         1
@@ -920,7 +952,7 @@ test('app interpage routes non-guide broadcasts through a shared interpage sende
 });
 
 test('app interpage routes Yui guide timers and local listeners through scoped resources', () => {
-    const source = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+    const source = readJsParts(path.join(repoRoot, 'static', 'app/app-interpage'));
     const helperBlock = source.split('    function createAppInterpageScopedResources() {')[1].split(
         '    /**\n     * Returns true if this action+timestamp was already processed',
         1
@@ -1034,7 +1066,7 @@ test('full tutorial pages load common helpers before the director', () => {
         const targetRegistryIndex = source.indexOf('/static/tutorial/core/target-geometry-registry.js');
         const chatAdapterIndex = source.indexOf('/static/tutorial/core/chat-window-adapter.js');
         const commonIndex = source.indexOf('/static/tutorial/yui-guide/common.js');
-        const directorIndex = source.indexOf('/static/tutorial/yui-guide/director.js');
+        const directorIndex = source.indexOf('/static/tutorial/yui-guide/director/bootstrap.js');
 
         assert.notEqual(guideHelpersIndex, -1, templatePath + ' should load tutorial/core/guide-helpers.js');
         assert.notEqual(scopedResourcesIndex, -1, templatePath + ' should load tutorial/core/scoped-resources.js');
@@ -1042,7 +1074,8 @@ test('full tutorial pages load common helpers before the director', () => {
         assert.notEqual(targetRegistryIndex, -1, templatePath + ' should load tutorial/core/target-geometry-registry.js');
         assert.notEqual(chatAdapterIndex, -1, templatePath + ' should load tutorial/core/chat-window-adapter.js');
         assert.notEqual(commonIndex, -1, templatePath + ' should load tutorial/yui-guide/common.js');
-        assert.notEqual(directorIndex, -1, templatePath + ' should load tutorial/yui-guide/director.js');
+        assert.ok(hasOrderedDirectorScripts(source), templatePath + ' should load all director parts in dependency order');
+        assert.notEqual(directorIndex, -1, templatePath + ' should load tutorial/yui-guide/director parts');
         assert.ok(guideHelpersIndex < commonIndex, templatePath + ' should load guide helpers before common helpers');
         assert.ok(scopedResourcesIndex < commonIndex, templatePath + ' should load scoped resources before common helpers');
         assert.ok(bridgeCommandBusIndex < commonIndex, templatePath + ' should load bridge command bus before common helpers');
@@ -1052,24 +1085,23 @@ test('full tutorial pages load common helpers before the director', () => {
     }
 });
 
-test('lifecycle state store module is loaded before prompt and manager scripts', () => {
+test('lifecycle state store module is loaded before runtime and manager scripts', () => {
     const lifecyclePath = path.join(__dirname, 'tutorial/core/lifecycle-state-store.js');
     assert.ok(fs.existsSync(lifecyclePath), 'tutorial/core/lifecycle-state-store.js should exist');
     const source = fs.readFileSync(lifecyclePath, 'utf8');
     const stores = require('./tutorial/core/lifecycle-state-store.js');
 
-    for (const exportName of [
-        'TutorialLifecycleStateStore',
-        'HomeTutorialPromptLifecycleStateStore'
-    ]) {
+    for (const exportName of ['TutorialLifecycleStateStore']) {
         assert.equal(typeof stores[exportName], 'function', exportName + ' should be exported');
         assert.match(source, new RegExp('class ' + exportName));
     }
     assert.match(source, /root\.TutorialLifecycleStores = api/);
 
     const orderedScripts = [
-        ['templates/index.html', '/static/tutorial/core/app-prompt.js'],
+        ['templates/index.html', '/static/tutorial/core/home-tutorial-runtime.js'],
         ['templates/index.html', '/static/tutorial/core/universal-manager.js'],
+        ['templates/index.html', '/static/tutorial/avatar/floating-guide-reset.js'],
+        ['templates/index.html', '/static/tutorial/icebreaker/new-user-icebreaker.js'],
         ['templates/api_key_settings.html', '/static/tutorial/core/universal-manager.js'],
         ['templates/memory_browser.html', '/static/tutorial/core/universal-manager.js']
     ];
@@ -1082,6 +1114,27 @@ test('lifecycle state store module is loaded before prompt and manager scripts',
         assert.notEqual(lifecycleIndex, -1, templatePath + ' should load tutorial/core/lifecycle-state-store.js');
         assert.notEqual(consumerIndex, -1, templatePath + ' should load ' + consumerScript);
         assert.ok(lifecycleIndex < consumerIndex, templatePath + ' should load lifecycle stores before ' + consumerScript);
+    }
+});
+
+test('seven-day tutorial state loads before every runtime consumer', () => {
+    const orderedScripts = [
+        ['templates/index.html', '/static/tutorial/core/avatar-floating-boot-predictor.js'],
+        ['templates/index.html', '/static/tutorial/core/home-tutorial-runtime.js'],
+        ['templates/index.html', '/static/tutorial/core/universal-manager.js'],
+        ['templates/api_key_settings.html', '/static/tutorial/core/universal-manager.js'],
+        ['templates/memory_browser.html', '/static/tutorial/core/universal-manager.js'],
+        ['templates/memory_browser.html', '/static/tutorial/avatar/floating-guide-reset.js']
+    ];
+
+    for (const [templatePath, consumerScript] of orderedScripts) {
+        const templateSource = fs.readFileSync(path.join(repoRoot, templatePath), 'utf8');
+        const stateIndex = templateSource.indexOf('/static/tutorial/core/seven-day-state.js');
+        const consumerIndex = templateSource.indexOf(consumerScript);
+
+        assert.notEqual(stateIndex, -1, templatePath + ' should load seven-day tutorial state');
+        assert.notEqual(consumerIndex, -1, templatePath + ' should load ' + consumerScript);
+        assert.ok(stateIndex < consumerIndex, templatePath + ' should load seven-day state before ' + consumerScript);
     }
 });
 
@@ -1109,10 +1162,10 @@ test('resistance controller support module is loaded before the director', () =>
     ]) {
         const templateSource = fs.readFileSync(path.join(repoRoot, templatePath), 'utf8');
         const controllerIndex = templateSource.indexOf('/static/tutorial/visual/resistance-controllers.js');
-        const directorIndex = templateSource.indexOf('/static/tutorial/yui-guide/director.js');
+        const directorIndex = templateSource.indexOf('/static/tutorial/yui-guide/director/bootstrap.js');
 
         assert.notEqual(controllerIndex, -1, templatePath + ' should load tutorial/visual/resistance-controllers.js');
-        assert.notEqual(directorIndex, -1, templatePath + ' should load tutorial/yui-guide/director.js');
+        assert.notEqual(directorIndex, -1, templatePath + ' should load tutorial/yui-guide/director parts');
         assert.ok(controllerIndex < directorIndex, templatePath + ' should load resistance controllers before director');
     }
 });
@@ -1120,7 +1173,10 @@ test('resistance controller support module is loaded before the director', () =>
 test('interpage consumes common tutorial geometry before chat bridge scripts run', () => {
     const indexTemplate = fs.readFileSync(path.join(repoRoot, 'templates', 'index.html'), 'utf8');
     const chatTemplate = fs.readFileSync(path.join(repoRoot, 'templates', 'chat.html'), 'utf8');
-    const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+    const appInterpageDirectory = path.join(repoRoot, 'static', 'app/app-interpage');
+    const appInterpageSource = readJsParts(appInterpageDirectory);
+    const interpageAssetPaths = jsPartPaths(appInterpageDirectory)
+        .map((partPath) => '/static/app/app-interpage/' + path.basename(partPath));
 
     assert.notEqual(indexTemplate.indexOf('/static/tutorial/core/bridge-command-bus.js'), -1);
     assert.notEqual(chatTemplate.indexOf('/static/tutorial/core/bridge-command-bus.js'), -1);
@@ -1136,8 +1192,10 @@ test('interpage consumes common tutorial geometry before chat bridge scripts run
     assert.notEqual(chatTemplate.indexOf('/static/tutorial/core/timeline-engine.js'), -1);
     assert.notEqual(indexTemplate.indexOf('/static/tutorial/core/visual-runtime.js'), -1);
     assert.notEqual(chatTemplate.indexOf('/static/tutorial/core/visual-runtime.js'), -1);
-    assert.match(indexTemplate, /\/static\/app-interpage\.js\?v=\{\{\s*static_asset_version\s*\}\}/);
-    assert.match(chatTemplate, /\/static\/app-interpage\.js\?v=\{\{\s*static_asset_version\s*\}\}/);
+    for (const assetPath of interpageAssetPaths) {
+        assert.ok(indexTemplate.includes(assetPath + '?v={{ static_asset_version }}'));
+        assert.ok(chatTemplate.includes(assetPath + '?v={{ static_asset_version }}'));
+    }
     assert.ok(
         indexTemplate.indexOf('/static/tutorial/core/guide-helpers.js') >= 0
             && indexTemplate.indexOf('/static/tutorial/core/guide-helpers.js') < indexTemplate.indexOf('/static/tutorial/yui-guide/common.js')
@@ -1149,8 +1207,8 @@ test('interpage consumes common tutorial geometry before chat bridge scripts run
             && indexTemplate.indexOf('/static/tutorial/core/script-normalizer.js') < indexTemplate.indexOf('/static/tutorial/yui-guide/common.js')
             && indexTemplate.indexOf('/static/tutorial/core/timeline-engine.js') < indexTemplate.indexOf('/static/tutorial/yui-guide/common.js')
             && indexTemplate.indexOf('/static/tutorial/core/visual-runtime.js') < indexTemplate.indexOf('/static/tutorial/yui-guide/common.js')
-            && indexTemplate.indexOf('/static/tutorial/yui-guide/common.js') < indexTemplate.indexOf('/static/app-interpage.js'),
-        'index.html should load scoped resources and common helpers before app-interpage.js'
+            && indexTemplate.indexOf('/static/tutorial/yui-guide/common.js') < indexTemplate.indexOf('/static/app/app-interpage'),
+        'index.html should load scoped resources and common helpers before app-interpage'
     );
     assert.ok(
         chatTemplate.indexOf('/static/tutorial/core/guide-helpers.js') >= 0
@@ -1163,18 +1221,18 @@ test('interpage consumes common tutorial geometry before chat bridge scripts run
             && chatTemplate.indexOf('/static/tutorial/core/script-normalizer.js') < chatTemplate.indexOf('/static/tutorial/yui-guide/common.js')
             && chatTemplate.indexOf('/static/tutorial/core/timeline-engine.js') < chatTemplate.indexOf('/static/tutorial/yui-guide/common.js')
             && chatTemplate.indexOf('/static/tutorial/core/visual-runtime.js') < chatTemplate.indexOf('/static/tutorial/yui-guide/common.js')
-            && chatTemplate.indexOf('/static/tutorial/yui-guide/common.js') < chatTemplate.indexOf('/static/app-interpage.js'),
-        'chat.html should load scoped resources and common helpers before app-interpage.js'
+            && chatTemplate.indexOf('/static/tutorial/yui-guide/common.js') < chatTemplate.indexOf('/static/app/app-interpage'),
+        'chat.html should load scoped resources and common helpers before app-interpage'
     );
     assert.ok(
         indexTemplate.indexOf('/static/tutorial/yui-guide/common.js') >= 0
-            && indexTemplate.indexOf('/static/tutorial/yui-guide/common.js') < indexTemplate.indexOf('/static/app-interpage.js'),
-        'index.html should load tutorial/yui-guide/common.js before app-interpage.js'
+            && indexTemplate.indexOf('/static/tutorial/yui-guide/common.js') < indexTemplate.indexOf('/static/app/app-interpage'),
+        'index.html should load tutorial/yui-guide/common.js before app-interpage'
     );
     assert.ok(
         chatTemplate.indexOf('/static/tutorial/yui-guide/common.js') >= 0
-            && chatTemplate.indexOf('/static/tutorial/yui-guide/common.js') < chatTemplate.indexOf('/static/app-interpage.js'),
-        'chat.html should load tutorial/yui-guide/common.js before app-interpage.js'
+            && chatTemplate.indexOf('/static/tutorial/yui-guide/common.js') < chatTemplate.indexOf('/static/app/app-interpage'),
+        'chat.html should load tutorial/yui-guide/common.js before app-interpage'
     );
     assert.match(appInterpageSource, /createYuiGuideTargetGeometryRegistry\(\)/);
     assert.match(appInterpageSource, /function getYuiGuideChatSpotlightElement\(createIfMissing\) \{[\s\S]*document\.createElement\('div'\)[\s\S]*spotlight\.id = 'yui-guide-chat-spotlight'/);
@@ -1182,6 +1240,12 @@ test('interpage consumes common tutorial geometry before chat bridge scripts run
     assert.match(appInterpageSource, /entry\.localSelectors\.some\(function \(selector\)/);
     assert.match(appInterpageSource, /getYuiGuideChatTargetShape\(kind\)/);
     assert.match(appInterpageSource, /getYuiGuideChatTargetShape\(kind\) === 'circle'/);
+    assert.match(appInterpageSource, /function shouldAlignYuiGuideChatSpotlightToCapsuleText\(kind, variant\)/);
+    // 修改原因：胶囊输入框定位走 registry 的 capsuleBody，不新增 capsule-input 的 plain-capsule 特例。
+    assert.match(appInterpageSource, /function shouldAlignYuiGuideChatSpotlightToCapsuleText\(kind, variant\) \{\s*return kind === 'input' && variant === 'plain-capsule';\s*\}/);
+    assert.match(appInterpageSource, /function getYuiGuideChatSpotlightSourceRect\(kind, variant, rect\)/);
+    assert.match(appInterpageSource, /anchorOffsetX \* YUI_GUIDE_CHAT_CAPSULE_TEXT_ALIGNMENT_RATIO/);
+    assert.match(appInterpageSource, /return \{ rect: sourceRect \};/);
 });
 
 test('daily guide files consume common helpers instead of redeclaring shared helpers', () => {
@@ -1218,7 +1282,7 @@ test('Day3 guide ships every referenced audio file', () => {
 });
 
 test('director delegates external chat bridge messages to the command bus', () => {
-    const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
+    const source = readDirectorSource(path.join(repoRoot, 'static'));
     const constructorBlock = source.split('    class YuiGuideDirector {')[1].split(
         '            const capabilityApi = window.homeTutorialPlatformCapabilities;',
         1
@@ -1236,7 +1300,7 @@ test('director delegates external chat bridge messages to the command bus', () =
 });
 
 test('director streams guide chat text over voice duration without an empty placeholder', () => {
-    const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
+    const source = readDirectorSource(path.join(repoRoot, 'static'));
     const appendBlock = source.split('        appendGuideChatMessage(text, options) {')[1].split(
         '        focusAndHighlightChatInput',
         1
@@ -1303,7 +1367,7 @@ test('interaction takeover delegates external chat commands to the command bus b
 });
 
 test('standalone chat guide lock uses a transparent shield instead of per-input locks', () => {
-    const source = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+    const source = readJsParts(path.join(repoRoot, 'static', 'app/app-interpage'));
     const lockBlock = source.split('    function applyYuiGuideChatLockState(disabled) {')[1].split(
         '    function getReactChatWindowHost() {',
         1
@@ -1337,8 +1401,9 @@ test('interaction takeover preserves external chat spotlight clears during resis
     )[0];
 
     assert.match(spotlightBlock, /const previousKind = this\.externalizedChatSpotlightKind;/);
-    assert.match(spotlightBlock, /this\.externalizedChatSpotlightKind = typeof kind === 'string' \? kind : '';/);
-    assert.match(spotlightBlock, /\(this\.externalizedChatSpotlightKind \|\| previousKind\)/);
+    assert.match(spotlightBlock, /const normalizedKind = typeof kind === 'string' \? kind : '';/);
+    assert.match(spotlightBlock, /this\.externalizedChatSpotlightKind = normalizedKind;/);
+    assert.match(spotlightBlock, /\(this\.externalizedChatSpotlightKind \|\| previousKind \|\| previousVariant\)/);
     assert.match(spotlightBlock, /safeInvoke\(this\.isResistancePaused,\s*\[\],\s*false\) === true/);
     assert.match(spotlightBlock, /message\.preserveDuringResistance = true;/);
     assert.match(spotlightBlock, /this\.postExternalChatCommand\('yui_guide_set_chat_spotlight', message\);/);
@@ -1347,7 +1412,7 @@ test('interaction takeover preserves external chat spotlight clears during resis
 });
 
 test('externalized chat spotlight ownership stops home overlay spotlight tracking', () => {
-    const directorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
+    const directorSource = readDirectorSource(path.join(repoRoot, 'static'));
     const overlaySource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/overlay.js'), 'utf8');
     const sceneOrchestratorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/scene-orchestrator.js'), 'utf8');
     const visualRuntimeSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/visual-runtime.js'), 'utf8');
@@ -1377,12 +1442,13 @@ test('externalized chat spotlight ownership stops home overlay spotlight trackin
     assert.match(clearSpotlightBlock, /this\.spotlightState\.clearAll\(\);/);
     assert.match(clearSpotlightBlock, /if \(this\.isPcOverlayActive\(\) && !preservePcOverlaySpotlights\) \{/);
     assert.match(helperBlock, /this\.overlay\.clearSpotlight\(\{\s*preservePcOverlaySpotlights: true\s*\}\);/);
-    assert.match(setTargetBlock, /this\.clearHomeSpotlightsForExternalizedChat\(\);\s*this\.interactionTakeover\.setExternalizedChatSpotlight\(normalizedKind\);/);
-    assert.match(sceneOrchestratorSource, /clearHomeSpotlightsForExternalizedChat\(\);[\s\S]*setExternalizedChatSpotlight\(introExternalizedChatSpotlightKind\)/);
-    assert.match(sceneOrchestratorSource, /clearHomeSpotlightsForExternalizedChat\(\);[\s\S]*setExternalizedChatSpotlight\(externalizedSpotlightKind\)/);
-    assert.match(visualRuntimeSource, /clearHomeSpotlightsForExternalizedChat\(\);[\s\S]*setExternalizedChatSpotlight\(normalizedIntroKind\)/);
-    assert.match(visualRuntimeSource, /clearHomeSpotlightsForExternalizedChat\(\);[\s\S]*setExternalizedChatSpotlight\(externalizedSpotlightKind\)/);
-    assert.match(settingsTourSource, /clearHomeSpotlightsForExternalizedChat\(\);[\s\S]*setExternalizedChatSpotlight\(introExternalizedChatSpotlightKind\)/);
+    assert.match(setTargetBlock, /const spotlightVariant = options && typeof options\.spotlightVariant === 'string'/);
+    assert.match(setTargetBlock, /this\.clearHomeSpotlightsForExternalizedChat\(\);[\s\S]*setExternalizedChatSpotlight\(normalizedKind,\s*\{[\s\S]*variant: spotlightVariant/);
+    assert.match(sceneOrchestratorSource, /clearHomeSpotlightsForExternalizedChat\(\);[\s\S]*setExternalizedChatSpotlight\(\s*introExternalizedChatSpotlightKind,\s*externalizedSpotlightOptions/);
+    assert.match(sceneOrchestratorSource, /clearHomeSpotlightsForExternalizedChat\(\);[\s\S]*setExternalizedChatSpotlight\(\s*externalizedSpotlightKind,\s*externalizedSpotlightOptions/);
+    assert.match(visualRuntimeSource, /clearHomeSpotlightsForExternalizedChat\(\);[\s\S]*setExternalizedChatSpotlight\(\s*normalizedIntroKind,\s*externalizedSpotlightOptions/);
+    assert.match(visualRuntimeSource, /clearHomeSpotlightsForExternalizedChat\(\);[\s\S]*setExternalizedChatSpotlight\(\s*externalizedSpotlightKind,\s*externalizedSpotlightOptions/);
+    assert.match(settingsTourSource, /clearHomeSpotlightsForExternalizedChat\(\);[\s\S]*setExternalizedChatSpotlight\(\s*introExternalizedChatSpotlightKind,\s*\{[\s\S]*variant: spotlightVariant/);
     assert.match(operationRegistrySource, /clearHomeSpotlightsForExternalizedChat\(\);[\s\S]*setExternalizedChatSpotlight\(/);
     assert.match(chatAdapterSource, /const beforeExternalizedSpotlight = typeof normalizedOptions\.beforeExternalizedSpotlight === 'function'/);
     assert.match(chatAdapterSource, /function getExternalizedRunMeta\(\) \{/);
@@ -1420,7 +1486,7 @@ test('new user icebreaker exports state used by greeting gating', () => {
 });
 
 test('director exposes phase one guard and timing helpers for complex sequences', () => {
-    const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
+    const source = readDirectorSource(path.join(repoRoot, 'static'));
     const directorSource = source.split('    class YuiGuideDirector {')[1];
     const helperBlock = directorSource.split('        isStopping() {')[1].split(
         '        setTutorialTakingOver(active) {',
@@ -1459,11 +1525,23 @@ test('director exposes phase one guard and timing helpers for complex sequences'
 });
 
 test('director routes resistance interrupts through ResistanceController boundary', () => {
-    const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
+    const source = readDirectorSource(path.join(repoRoot, 'static'));
     const resistanceSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/visual/resistance-controllers.js'), 'utf8');
     const cssSource = fs.readFileSync(path.join(repoRoot, 'static', 'css/yui-guide.css'), 'utf8');
     const pluginRuntimeSource = fs.readFileSync(path.join(repoRoot, 'frontend', 'plugin-manager/src/yui-guide-runtime.ts'), 'utf8');
     const resetSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/avatar/floating-guide-reset.js'), 'utf8');
+    const voiceQueueSource = source.split('    class YuiGuideVoiceQueue {')[1].split(
+        '    class YuiGuideEmotionBridge {',
+        1
+    )[0];
+    const audioContextPlaybackBlock = voiceQueueSource.split('        async playPreviewAudioThroughContext(')[1].split(
+        '        resolveGuideAudioSrc(',
+        1
+    )[0];
+    const speakBlock = voiceQueueSource.split('        async speak(text, options) {')[1].split(
+        '        capturePlaybackSnapshot() {',
+        1
+    )[0];
     const directorSource = source.split('    class YuiGuideDirector {')[1];
     const constructorBlock = directorSource.split(
         '            this.keydownHandler = this.onKeyDown.bind(this);',
@@ -1497,6 +1575,7 @@ test('director routes resistance interrupts through ResistanceController boundar
 
     assert.match(resistanceSource, /class ResistanceController/);
     assert.match(resistanceSource, /const DEFAULT_RESISTANCE_VOICE_KEYS = Object\.freeze\(\[/);
+    assert.match(resistanceSource, /'interrupt_resist_light_1',[\s\S]*'interrupt_resist_light_2',[\s\S]*'interrupt_resist_light_3'/);
     assert.match(source, /const ResistanceController = TutorialResistanceControllers\.ResistanceController;/);
     assert.doesNotMatch(source, /    class ResistanceController \{/);
     assert.match(constructorBlock, /this\.resistanceController = new ResistanceController\(this\);/);
@@ -1511,14 +1590,51 @@ test('director routes resistance interrupts through ResistanceController boundar
     assert.match(resistanceControllerBlock, /playLightResistance\(x,\s*y,\s*options\) \{/);
     assert.match(resistanceControllerBlock, /abortAsAngryExit\(source\) \{/);
     assert.match(resistanceControllerBlock, /destroy\(\) \{/);
-    assert.match(resistanceControllerBlock, /director\.interruptQualifyingMoveStreak \+= 1;/);
+    assert.match(resistanceControllerBlock, /\|\| director\.scenePausedForResistance[\s\S]*\|\| this\.lightResistanceActive/);
+    assert.doesNotMatch(resistanceControllerBlock, /shouldAllowPausedLightResistanceInterrupt/);
+    assert.match(resistanceSource, /const DEFAULT_INTERRUPT_SHAKE_WINDOW_MS = 1100;/);
+    assert.match(resistanceSource, /const DEFAULT_INTERRUPT_SHAKE_MIN_DISTANCE = 50;/);
+    assert.match(resistanceSource, /const DEFAULT_INTERRUPT_SHAKE_REQUIRED_REVERSALS = 8;/);
+    assert.match(resistanceSource, /const DEFAULT_INTERRUPT_SHAKE_MIN_SPAN_MS = 600;/);
+    assert.match(resistanceSource, /const DEFAULT_INTERRUPT_SHAKE_MIN_SUSTAINED_SPEED = 1100;/);
+    assert.match(resistanceSource, /reversals\.slice\(1\)\.reduce\(/);
+    assert.match(resistanceControllerBlock, /trackInterruptShakeMotion\(point\) \{/);
+    assert.match(resistanceControllerBlock, /shakeReady = isInterruptShakeReady\(motion\.reversals\);/);
+    assert.doesNotMatch(resistanceControllerBlock, /isPrimaryButtonDrag/);
+    assert.doesNotMatch(resistanceControllerBlock, /director\.interruptQualifyingMoveStreak \+= 1;/);
+    assert.match(pluginRuntimeSource, /const DEFAULT_INTERRUPT_SHAKE_WINDOW_MS = 1100/);
+    assert.match(pluginRuntimeSource, /const DEFAULT_INTERRUPT_SHAKE_MIN_DISTANCE = 50/);
+    assert.match(pluginRuntimeSource, /const DEFAULT_INTERRUPT_SHAKE_REQUIRED_REVERSALS = 8/);
+    assert.match(pluginRuntimeSource, /const DEFAULT_INTERRUPT_SHAKE_MIN_SPAN_MS = 600/);
+    assert.match(pluginRuntimeSource, /const DEFAULT_INTERRUPT_SHAKE_MIN_SUSTAINED_SPEED = 1100/);
+    assert.match(pluginRuntimeSource, /reversals\.slice\(1\)\.reduce\(/);
+    assert.match(pluginRuntimeSource, /'interrupt_resist_light_1',[\s\S]*'interrupt_resist_light_2',[\s\S]*'interrupt_resist_light_3'/);
+    assert.match(pluginRuntimeSource, /if \(this\.interruptCount >= 4\)/);
+    assert.match(pluginRuntimeSource, /const audioLocale = \['zh', 'en', 'ja', 'ko', 'ru'\]\.includes\(locale\) \? locale : 'en'/);
+    assert.match(source, /const fileName = hasLocaleFile \? files\[locale\] : \(files\.en \|\| ''\);/);
+    assert.match(pluginRuntimeSource, /trackInterruptShakeMotion\(point:/);
+    assert.match(pluginRuntimeSource, /if \(!this\.trackInterruptShakeMotion\(shakePoint\)\) \{[\s\S]*?return[\s\S]*?this\.resetInterruptShakeMotion\(\)/);
+    assert.doesNotMatch(pluginRuntimeSource, /DEFAULT_INTERRUPT_ACCELERATION_STREAK/);
+    assert.doesNotMatch(pluginRuntimeSource, /DEFAULT_INTERRUPT_DISTANCE/);
     assert.match(resistanceControllerBlock, /director\.interruptCount \+= 1;/);
     assert.match(resistanceControllerBlock, /director\.abortAsAngryExit\('pointer_interrupt'\);/);
     assert.match(resistanceControllerBlock, /director\.playLightResistance\(x,\s*y,\s*\{/);
+    assert.match(resistanceControllerBlock, /if \(director\.resistanceCursorTimer\) \{[\s\S]*?window\.clearTimeout\(director\.resistanceCursorTimer\);[\s\S]*?director\.resistanceCursorTimer = null;/);
+    assert.doesNotMatch(resistanceControllerBlock, /director\.revealRealCursorForInterruptCount\(\);/);
+    assert.match(resistanceControllerBlock, /suppressCursorReveal:\s*true/);
+    assert.match(resistanceControllerBlock, /forceSystemCursorReveal:\s*true/);
+    assert.match(resistanceControllerBlock, /const cursorRevealAlreadyRequested = typeof director\.revealSystemCursorTemporarily === 'function';[\s\S]*?director\.revealSystemCursorTemporarily\(2000,\s*'interrupt_resist_light'\);[\s\S]*?cursorRevealAlreadyRequested:\s*cursorRevealAlreadyRequested/);
+    assert.match(resistanceControllerBlock, /if \(!normalizedOptions\.suppressCursorReveal\) \{[\s\S]*?director\.suppressResistanceCursorReveal\(normalizedOptions\);/);
+    assert.match(resistanceControllerBlock, /!normalizedOptions\.cursorRevealAlreadyRequested[\s\S]*?typeof director\.revealSystemCursorTemporarily === 'function'[\s\S]*?director\.revealSystemCursorTemporarily\(2000,\s*'interrupt_resist_light'\)/);
     assert.match(resistanceControllerBlock, /this\.lightResistanceActive = true;/);
     assert.match(resistanceControllerBlock, /director\.revealSystemCursorTemporarily\(2000,\s*'interrupt_resist_light'\);/);
-    assert.match(resistanceControllerBlock, /normalizedOptions\.forceSystemCursorReveal/);
+    assert.doesNotMatch(resistanceControllerBlock, /normalizedOptions\.forceSystemCursorReveal[\s\S]*?director\.revealSystemCursorTemporarily/);
     assert.match(directorSource, /revealSystemCursorTemporarily\(durationMs = 2000,\s*reason = 'tutorial-temporary-reveal'\)/);
+    assert.match(voiceQueueSource, /this\.stopGeneration = 0;/);
+    assert.match(voiceQueueSource, /stop\(\) \{[\s\S]*?this\.stopGeneration \+= 1;/);
+    assert.match(speakBlock, /const stopGenerationAtStart = this\.stopGeneration;[\s\S]*?await wait\(48\);[\s\S]*?if \(this\.stopGeneration !== stopGenerationAtStart\) \{[\s\S]*?return;/);
+    assert.match(speakBlock, /catch \(error\) \{[\s\S]*?AudioContext 教程语音播放失败[\s\S]*?\}[\s\S]*?if \(this\.stopGeneration !== stopGenerationAtStart\) \{[\s\S]*?return;/);
+    assert.match(audioContextPlaybackBlock, /const stopGenerationAtStart = this\.stopGeneration;[\s\S]*?decodeGuideAudioBuffer[\s\S]*?if \(this\.stopGeneration !== stopGenerationAtStart\) \{[\s\S]*?return true;/);
     assert.match(directorSource, /classList\.add\('yui-user-cursor-revealed',\s*'yui-resistance-cursor-reveal'\)/);
     assert.match(directorSource, /syncPcSystemCursorTemporaryReveal\(normalizedDurationMs,\s*reason\)/);
     assert.match(directorSource, /window\.setTimeout\(\(\) => \{[\s\S]*?this\.suppressResistanceCursorReveal\(\);[\s\S]*?\},\s*normalizedDurationMs\)/);
@@ -1551,6 +1667,7 @@ test('director routes resistance interrupts through ResistanceController boundar
     assert.match(resistanceControllerBlock, /director\.runAngryExitPerformance\(\{/);
     assert.match(resistanceControllerBlock, /const angryExitNarrationDurationMs = director\.getGuideVoiceDurationMs\(/);
     assert.match(resistanceControllerBlock, /minDurationMs:\s*Number\.isFinite\(angryExitNarrationDurationMs\)/);
+    assert.match(resistanceControllerBlock, /this\.syncSystemCursorHidden\(false,\s*'interrupt_angry_exit'\);/);
     assert.match(resistanceControllerBlock, /director\.requestTermination\(source \|\| 'angry_exit', 'angry_exit'\);/);
     assert.match(pointerDownBlock, /this\.resistanceController\.recordPointerDown\(event\);/);
     assert.match(handleInterruptBlock, /return this\.resistanceController\.handleInterrupt\(event\);/);
@@ -1573,7 +1690,7 @@ test('director routes resistance interrupts through ResistanceController boundar
 });
 
 test('director wraps round-level look-at lifecycle with withLookAt helper', () => {
-    const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
+    const source = readDirectorSource(path.join(repoRoot, 'static'));
     const orchestratorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/scene-orchestrator.js'), 'utf8');
     const directorSource = source.split('    class YuiGuideDirector {')[1];
     const helperBlock = directorSource.split('        isStopping() {')[1].split(
@@ -1595,7 +1712,7 @@ test('director wraps round-level look-at lifecycle with withLookAt helper', () =
 });
 
 test('settings tour flow owns migrated settings tour concrete scene bodies', () => {
-    const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
+    const source = readDirectorSource(path.join(repoRoot, 'static'));
     const settingsTourFlowSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/settings-tour-flow.js'), 'utf8');
     const day4GuideSource = fs.readFileSync(
         path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day4-companion-guide.js'),
@@ -1702,7 +1819,7 @@ test('settings tour flow owns migrated settings tour concrete scene bodies', () 
     assert.match(day4IntroSceneBlock, /target:\s*'chat-capsule-input'/);
     assert.match(
         settingsTourFlowSource,
-        /runPanelNarrationEllipse[\s\S]*director\.setHomePcCursorOutputSuppressedForExternalizedChat\(false\);[\s\S]*director\.cursor\.runPauseAwareEllipse/
+        /runPanelNarrationEllipse[\s\S]*director\.releaseExternalizedChatCursorToHome\(\);[\s\S]*director\.cursor\.runPauseAwareEllipse/
     );
     assert.match(
         settingsTourFlowSource,
@@ -1714,11 +1831,11 @@ test('settings tour flow owns migrated settings tour concrete scene bodies', () 
     );
     assert.match(
         source,
-        /async moveCursorToElement\(element,\s*durationMs,\s*options\) \{[\s\S]*this\.setHomePcCursorOutputSuppressedForExternalizedChat\(false\);[\s\S]*this\.cursor\.moveToRect/
+        /async moveCursorToElement\(element,\s*durationMs,\s*options\) \{[\s\S]*this\.releaseExternalizedChatCursorToHome\(\);[\s\S]*this\.cursor\.moveToRect/
     );
     assert.match(
         source,
-        /async moveCursorToTrackedElement\(element,\s*durationMs,\s*options\) \{[\s\S]*this\.setHomePcCursorOutputSuppressedForExternalizedChat\(false\);[\s\S]*this\.cursor\.moveToPoint/
+        /async moveCursorToTrackedElement\(element,\s*durationMs,\s*options\) \{[\s\S]*this\.releaseExternalizedChatCursorToHome\(\);[\s\S]*this\.cursor\.moveToPoint/
     );
     assert.match(flowChatBlock, /return this\.playPanelTourScene\(scene,\s*context,\s*this\.getPanelTourSchema\(scene\)\);/);
     assert.match(flowModelBlock, /return this\.playPanelTourScene\(scene,\s*context,\s*this\.getPanelTourSchema\(scene\)\);/);
@@ -1758,8 +1875,29 @@ test('settings tour flow owns migrated settings tour concrete scene bodies', () 
     }
 });
 
+test('Day1 activation uses the shared first-daily input cursor handoff', () => {
+    const source = readDirectorSource(path.join(repoRoot, 'static'));
+    const orchestratorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/scene-orchestrator.js'), 'utf8');
+    const inputIntroSceneBlock = source.split('        isAvatarFloatingInputIntroScene(scene) {')[1].split(
+        '        getAvatarFloatingIntroSpotlightTarget(scene) {',
+        1
+    )[0];
+    const cursorOptionsBlock = source.split('        getAvatarFloatingIntroExternalizedCursorOptions(scene) {')[1].split(
+        '        getAvatarFloatingSidePanel(type) {',
+        1
+    )[0];
+    const cursorPreludeBlock = orchestratorSource.split('        applyFirstDailySceneIntroCursorPrelude(scene, context) {')[1].split(
+        '        async resolveAndApplySceneSpotlight(scene, context) {',
+        1
+    )[0];
+
+    assert.match(inputIntroSceneBlock, /sceneId === 'day1_intro_activation'/);
+    assert.match(cursorOptionsBlock, /scene\.id === 'day1_intro_activation'[\s\S]*effect: this\.getExternalizedChatCursorEffect\(scene\)/);
+    assert.match(cursorPreludeBlock, /getAvatarFloatingIntroExternalizedCursorOptions\(scene\)/);
+});
+
 test('director routes cursor anchor persistence through CursorAnchorStore', () => {
-    const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
+    const source = readDirectorSource(path.join(repoRoot, 'static'));
     const orchestratorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/scene-orchestrator.js'), 'utf8');
     const constructorBlock = source.split('    class YuiGuideDirector {')[1].split(
         '            this.keydownHandler = this.onKeyDown.bind(this);',
@@ -1797,7 +1935,7 @@ test('director routes cursor anchor persistence through CursorAnchorStore', () =
 });
 
 test('director delegates avatar floating scene operations through OperationRegistry facade', () => {
-    const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
+    const source = readDirectorSource(path.join(repoRoot, 'static'));
     const operationRegistrySource = fs.readFileSync(
         path.join(repoRoot, 'static', 'tutorial/core/operation-registry.js'),
         'utf8'
@@ -1889,10 +2027,10 @@ test('director delegates avatar floating scene operations through OperationRegis
 });
 
 test('day2 Galgame guide drag follows the compact tool wheel arc and holds the target after day swap', () => {
-    const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
+    const source = readDirectorSource(path.join(repoRoot, 'static'));
     const overlaySource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/overlay.js'), 'utf8');
     const day2GuideSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day2-screen-voice-guide.js'), 'utf8');
-    const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+    const appInterpageSource = readJsParts(path.join(repoRoot, 'static', 'app/app-interpage'));
     const sceneOrchestratorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/scene-orchestrator.js'), 'utf8');
     const operationRegistrySource = fs.readFileSync(
         path.join(repoRoot, 'static', 'tutorial/core/operation-registry.js'),
@@ -2058,9 +2196,9 @@ test('templates and frontend harness load OperationRegistry before Director', ()
     for (const templatePath of templatePaths) {
         const templateSource = fs.readFileSync(templatePath, 'utf8');
         const registryIndex = templateSource.indexOf('/static/tutorial/core/operation-registry.js');
-        const directorIndex = templateSource.indexOf('/static/tutorial/yui-guide/director.js');
+        const directorIndex = templateSource.indexOf('/static/tutorial/yui-guide/director/bootstrap.js');
         assert.notStrictEqual(registryIndex, -1, `${templatePath} should load tutorial/core/operation-registry.js`);
-        assert.notStrictEqual(directorIndex, -1, `${templatePath} should load tutorial/yui-guide/director.js`);
+        assert.notStrictEqual(directorIndex, -1, `${templatePath} should load tutorial/yui-guide/director parts`);
         assert.ok(registryIndex < directorIndex, `${templatePath} should load OperationRegistry before Director`);
     }
 
@@ -2073,7 +2211,7 @@ test('templates and frontend harness load OperationRegistry before Director', ()
 });
 
 test('director routes final teardown through performFullCleanup helper', () => {
-    const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
+    const source = readDirectorSource(path.join(repoRoot, 'static'));
     const directorSource = source.split('    class YuiGuideDirector {')[1];
     const destroyBlock = directorSource.split('        destroy() {')[1].split(
         '        onKeyDown(event) {',
@@ -2085,8 +2223,30 @@ test('director routes final teardown through performFullCleanup helper', () => {
     assert.doesNotMatch(destroyBlock, /this\.overlay\.hidePluginPreview\(\);\s*this\.overlay\.hideBubble\(\);\s*this\.overlay\.setAngry\(false\);\s*this\.setTutorialTakingOver\(false\);/);
 });
 
+test('tutorial teardown removes DOM overlay residue and blocks late overlay recreation', () => {
+    const overlaySource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/overlay.js'), 'utf8');
+    const ensureRootBlock = overlaySource.split('        ensureRoot() {')[1].split(
+        '        syncControlBanner() {',
+        1
+    )[0];
+    const destroyBlock = overlaySource.split('        destroy() {')[1].split(
+        '    window.YuiGuideOverlay = YuiGuideOverlay;',
+        1
+    )[0];
+
+    assert.match(overlaySource, /this\.lifecycleEpoch = Number\([\s\S]*__NEKO_YUI_GUIDE_OVERLAY_LIFECYCLE_EPOCH__/);
+    assert.match(overlaySource, /this\.destroyed = false;/);
+    assert.match(overlaySource, /isTutorialLifecycleCurrent\(\) \{[\s\S]*return currentEpoch === this\.lifecycleEpoch;/);
+    assert.match(ensureRootBlock, /if \(!this\.isTutorialLifecycleCurrent\(\)\) \{[\s\S]*this\.root = null;[\s\S]*return null;/);
+    assert.doesNotMatch(ensureRootBlock, /staleRoot|\.remove\(\)/);
+    assert.match(destroyBlock, /__NEKO_YUI_GUIDE_OVERLAY_LIFECYCLE_EPOCH__[\s\S]*\+ 1;/);
+    assert.match(destroyBlock, /if \(this\.destroyed\) \{\s*return;\s*\}[\s\S]*this\.destroyed = true;/);
+    assert.doesNotMatch(overlaySource, /^\s*this\.ensureRoot\(\);/m);
+    assert.match(overlaySource, /if \(!this\.ensureRoot\(\)\) return;/);
+});
+
 test('director routes scene and chat stream timers through scoped resources', () => {
-    const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
+    const source = readDirectorSource(path.join(repoRoot, 'static'));
     const constructorBlock = source.split('    class YuiGuideDirector {')[1].split(
         '            this.keydownHandler = this.onKeyDown.bind(this);',
         1
@@ -2123,7 +2283,7 @@ test('director routes scene and chat stream timers through scoped resources', ()
 
 test('manager keeps Yui-only lifecycle resources and excludes legacy driver tutorial code', () => {
     const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
-    const constructorBlock = source.split('class UniversalTutorialManager {')[1].split('    logPromptFlow(', 1)[0];
+    const constructorBlock = source.split('class UniversalTutorialManager {')[1].split('    logTutorialFlow(', 1)[0];
     const destroyBlock = source.split("    async destroy(reason = 'destroy') {")[1].split(
         '    broadcastYuiGuideTerminationRequest',
         1
@@ -2133,7 +2293,7 @@ test('manager keeps Yui-only lifecycle resources and excludes legacy driver tuto
         1
     )[0];
     const clearViewportWatcherBlock = source.split('    clearTutorialLive2dViewportPlacementWatcher() {')[1].split(
-        '    beginTutorialAvatarOverride() {',
+        '    beginTutorialAvatarOverride(options = {}) {',
         1
     )[0];
     const scrollBlock = source.split('    blockTutorialScroll() {')[1].split(
@@ -2176,7 +2336,7 @@ test('manager keeps Yui-only lifecycle resources and excludes legacy driver tuto
 
     assert.match(source, /getHomeAvatarFloatingGuideStartRound\(options = \{\}\) \{/);
     assert.match(source, /candidates\.push\(state\.pendingRound, state\.manualResetRound, 1\);/);
-    assert.match(startBlock, /const round = this\.getHomeAvatarFloatingGuideStartRound\(\);/);
+    assert.match(startBlock, /const round = this\.getHomeAvatarFloatingGuideLaunchRound\(\);/);
     assert.match(startBlock, /this\.startAvatarFloatingGuideRound\(round, \{/);
     assert.doesNotMatch(source, /startYuiGuideSceneSequence|getDirectYuiGuideSceneIdsForCurrentPage|getPendingYuiGuideResumeScene/);
     assert.doesNotMatch(source, /callYuiGuideDirector|notifyYuiGuideStepEnter|notifyYuiGuideStepLeave/);
@@ -2186,7 +2346,7 @@ test('manager keeps Yui-only lifecycle resources and excludes legacy driver tuto
 });
 
 test('director uses SpotlightController facade for guide highlight operations', () => {
-    const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
+    const source = readDirectorSource(path.join(repoRoot, 'static'));
     const visualControllerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/visual/controllers.js'), 'utf8');
     const spotlightControllerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/visual/spotlight-controller.js'), 'utf8');
     const resistanceControllerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/visual/resistance-controllers.js'), 'utf8');
@@ -2254,7 +2414,7 @@ test('director uses SpotlightController facade for guide highlight operations', 
 });
 
 test('director registers settings side panels as pause tokens', () => {
-    const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
+    const source = readDirectorSource(path.join(repoRoot, 'static'));
     const resistanceControllerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/visual/resistance-controllers.js'), 'utf8');
     const directorSource = source.split('    class YuiGuideDirector {')[1];
     const sidebarControllerBlock = resistanceControllerSource.split('    class SidebarPauseController {')[1].split(
@@ -2301,7 +2461,7 @@ test('director registers settings side panels as pause tokens', () => {
 });
 
 test('director routes termination requests through TutorialTerminationRouter', () => {
-    const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
+    const source = readDirectorSource(path.join(repoRoot, 'static'));
     const resistanceControllerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/visual/resistance-controllers.js'), 'utf8');
     const directorSource = source.split('    class YuiGuideDirector {')[1];
     const routerBlock = resistanceControllerSource.split('    class TutorialTerminationRouter {')[1];
@@ -2483,7 +2643,11 @@ test('tutorial skip button reuses the manager tutorial end lifecycle', () => {
     assert.match(managerSource, /modelType === 'live3d'/);
     assert.match(managerSource, /live3d_sub_type/);
     assert.match(teardownBlock, /this\.restoreAvatarFloatingModelInteractionState\('teardown-early'\);/);
-    assert.match(teardownBlock, /\.then\(\(\) => this\.restoreAvatarFloatingModelInteractionState\('tutorial-avatar-restored'\)\)/);
+    // 最终恢复必须先判断猫咪业务形态，不能把旧 DOM 的穿透样式直接应用到重载后的模型。
+    assert.match(teardownBlock, /\.then\(\(\) => this\.restoreAvatarFloatingModelStateAfterTutorial\(\)\)/);
+    assert.match(managerSource, /goodbyeActive:/);
+    assert.match(avatarInteractionRestoreBlock, /window\.dispatchEvent\(new CustomEvent\('live2d-goodbye-click'/);
+    assert.match(avatarInteractionRestoreBlock, /this\._avatarFloatingModelLockSnapshot = null;/);
     assert.doesNotMatch(routerBlock, /requestAvatarFloatingGuideCooperativeEnd\(finalReason\)/);
     assert.match(routerBlock, /return director\.tutorialManager\.requestTutorialEnd\(finalReason\);/);
     assert.match(routerBlock, /return director\.tutorialManager\.requestTutorialDestroy\(finalReason\);/);
@@ -2551,8 +2715,7 @@ test('avatar floating auto-start rechecks current due round before delayed launc
     assert.match(pendingCheckBlock, /const state = loadAvatarFloatingGuideState\(\);/);
     assert.match(pendingCheckBlock, /if \(state\.manualResetRound\) \{[\s\S]*?return state\.manualResetRound === round;[\s\S]*?\}/);
     assert.match(pendingCheckBlock, /return this\.getNextAvatarFloatingGuideAutoRound\(\) === round;/);
-    assert.match(pendingCheckBlock, /state\.completedRounds\.includes\(round\)/);
-    assert.match(pendingCheckBlock, /state\.skippedRounds\.includes\(round\)/);
+    assert.match(pendingCheckBlock, /getSevenDayTutorialStateApi\(\)\.isRoundSettled\(state, round\)/);
     assert.doesNotMatch(pendingCheckBlock, /state\.pendingRound\s*\|\|/);
     assert.doesNotMatch(pendingCheckBlock, /state\.pendingRound === round/);
     assert.doesNotMatch(pendingCheckBlock, /state\.lastAutoShownRound === round/);
@@ -2571,20 +2734,27 @@ test('avatar floating auto-start reserves the round before long playback can be 
     assert.notEqual(autoReservationIndex, -1, 'auto round starts should reserve same-day playback before long narration');
     assert.notEqual(setCurrentIndex, -1, 'round starts should still persist current round state');
     assert.ok(autoReservationIndex < setCurrentIndex, 'auto reservation should be written before pending/current round state');
-    assert.match(startRoundBlock, /if \(source === 'auto'\) \{[\s\S]*?this\.markAvatarFloatingGuideRoundAutoShown\(round\);[\s\S]*?\}/);
+    assert.match(startRoundBlock, /if \(source === 'auto'\) \{[\s\S]*?this\.markAvatarFloatingGuideRoundAutoShown\(round, autoReservationId\);[\s\S]*?\}/);
+    assert.match(startRoundBlock, /this\.rollbackAvatarFloatingGuideRoundAutoShown\(round, autoReservationId\)/);
 });
 
 test('avatar floating auto due calculation ignores runtime pending round after refresh', () => {
     const managerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
+    const stateSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/seven-day-state.js'), 'utf8');
     const nextAutoBlock = managerSource.split('    getNextAvatarFloatingGuideAutoRound() {')[1].split(
         '    getHomeAvatarFloatingGuideStartRound(options = {}) {',
         1
     )[0];
+    const sharedCalculationBlock = stateSource.split('    function getNextAutoRound(stateValue, todayValue) {')[1].split(
+        '    function markRoundOutcome(roundValue, outcome, options) {',
+        1
+    )[0];
 
-    assert.match(nextAutoBlock, /const pendingManualRound = state\.manualResetRound;/);
-    assert.doesNotMatch(nextAutoBlock, /state\.pendingRound\s*\|\|\s*state\.manualResetRound/);
+    assert.match(nextAutoBlock, /getSevenDayTutorialStateApi\(\)\.getNextAutoRound\(state\)/);
+    assert.match(sharedCalculationBlock, /if \(state\.manualResetRound\) \{[\s\S]*?return state\.manualResetRound;/);
+    assert.doesNotMatch(sharedCalculationBlock, /state\.pendingRound/);
     assert.ok(
-        nextAutoBlock.indexOf('if (pendingManualRound)') < nextAutoBlock.indexOf('if (state.lastAutoShownDate === today)'),
+        sharedCalculationBlock.indexOf('if (state.manualResetRound)') < sharedCalculationBlock.indexOf('if (state.lastAutoShownDate === today)'),
         'manual resets should still override same-day auto reservation'
     );
 });
@@ -2645,7 +2815,7 @@ test('PC global overlay cleanup clears the stored run id before the next tutoria
 
 test('PC global overlay cleanup notifies external chat windows to stop overlay relays', () => {
     const managerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
-    const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+    const appInterpageSource = readJsParts(path.join(repoRoot, 'static', 'app/app-interpage'));
     const clearOverlayBlock = managerSource.split('    clearPcTutorialGlobalOverlay(reason = ')[1].split(
         '    requestTutorialEnd(reason = ',
         1
@@ -2663,7 +2833,8 @@ test('PC global overlay cleanup notifies external chat windows to stop overlay r
     const lifecycleMessageBlock = clearOverlayBlock.split('const lifecycleEndedMessage = {')[1].split('};', 1)[0];
     assert.match(lifecycleMessageBlock, /tutorialRunId:\s*tutorialRunId/);
     assert.match(appInterpageSource, /if \(message\.tutorialRunId && message\.action !== 'yui_guide_tutorial_lifecycle_ended'\) \{/);
-    assert.match(appInterpageSource, /var bounds = metrics\.contentBounds \|\| metrics\.bounds \|\| \{ x: 0, y: 0 \};/);
+    assert.match(appInterpageSource, /function getYuiGuideScreenCoordinateBounds\(metrics\) \{/);
+    assert.match(appInterpageSource, /return metrics && \(metrics\.bounds \|\| metrics\.contentBounds\) \|\| \{ x: 0, y: 0 \};/);
     assert.match(externalCleanupBlock, /yuiGuidePcOverlayActive = false;/);
     assert.match(externalCleanupBlock, /yuiGuidePcOverlayReady = false;/);
     assert.match(externalCleanupBlock, /var endedRunId = typeof tutorialRunId === 'string' && tutorialRunId/);
@@ -2693,7 +2864,7 @@ test('PC global overlay cleanup notifies external chat windows to stop overlay r
 });
 
 test('external chat ignores stale guide commands after lifecycle ended', () => {
-    const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+    const appInterpageSource = readJsParts(path.join(repoRoot, 'static', 'app/app-interpage'));
     const relayHandlerBlock = appInterpageSource.split('    function handleYuiGuideRelayedMessage(message) {')[1].split(
         '    function postInterpageMessage',
         1
@@ -2727,17 +2898,37 @@ test('external chat ignores stale guide commands after lifecycle ended', () => {
         1
     )[0];
     const broadcastStaleGuardBlock = appInterpageSource.split('nekoBroadcastChannel.onmessage = async function (event) {')[1].split(
-        '                console.log(\'[BroadcastChannel] 收到消息:\', event.data.action);',
+        '                switch (event.data.action) {',
+        1
+    )[0];
+    const lifecycleBlock = appInterpageSource.split('    function isYuiGuideLifecycleStartAction(action) {')[1].split(
+        '    function resetYuiGuidePcOverlayRunForRetry() {',
+        1
+    )[0];
+    const staleResultBlock = appInterpageSource.split('    function handleYuiGuidePcOverlayStaleResult(')[1].split(
+        '    function resolveYuiGuidePcOverlayRunIdForSend(',
         1
     )[0];
 
     assert.match(appInterpageSource, /var yuiGuidePcOverlayEndedRunId = '';/);
+    assert.match(appInterpageSource, /var yuiGuidePcOverlayLifecycleEpoch = 0;/);
+    assert.match(appInterpageSource, /var yuiGuidePcOverlayLifecycleClosed = false;/);
+    assert.match(appInterpageSource, /var yuiGuidePcOverlayLifecycleRunId = '';/);
     assert.match(appInterpageSource, /function isYuiGuidePcOverlayRunEnded\(runId\) \{/);
     assert.match(appInterpageSource, /function isYuiGuideLifecycleScopedAction\(action\) \{/);
+    assert.match(lifecycleBlock, /function openYuiGuidePcOverlayLifecycle\(message\) \{/);
+    assert.match(lifecycleBlock, /runId && isYuiGuidePcOverlayRunEnded\(runId\)/);
+    assert.match(lifecycleBlock, /yuiGuidePcOverlayLifecycleClosed && !runId/);
+    assert.match(lifecycleBlock, /yuiGuidePcOverlayLifecycleEpoch === 0/);
+    assert.match(lifecycleBlock, /runId && runId !== yuiGuidePcOverlayLifecycleRunId/);
+    assert.match(lifecycleBlock, /function closeYuiGuidePcOverlayLifecycle\(\) \{[\s\S]*yuiGuidePcOverlayLifecycleEpoch \+= 1;[\s\S]*yuiGuidePcOverlayLifecycleClosed = true;/);
+    assert.match(lifecycleBlock, /function isYuiGuideMessageForCurrentLifecycle\(message\) \{[\s\S]*runId === yuiGuidePcOverlayLifecycleRunId;/);
+    assert.match(lifecycleBlock, /message\.action !== 'yui_guide_tutorial_lifecycle_ended'/);
     assert.match(appInterpageSource, /case 'yui_guide_set_chat_input_locked':/);
     assert.match(appInterpageSource, /case 'yui_guide_set_chat_spotlight':/);
     assert.match(appInterpageSource, /case 'yui_guide_set_chat_cursor':/);
     assert.match(clearStateBlock, /yuiGuidePcOverlayEndedRunId = endedRunId;/);
+    assert.match(clearStateBlock, /closeYuiGuidePcOverlayLifecycle\(\);/);
     assert.match(getRunIdBlock, /isYuiGuidePcOverlayRunEnded\(yuiGuidePcOverlayRunIdOverride\)/);
     assert.match(appInterpageSource, /function readStoredYuiGuidePcOverlayRunId\(\) \{/);
     assert.match(appInterpageSource, /function syncYuiGuidePcOverlayRunIdFromStorage\(\) \{/);
@@ -2750,21 +2941,31 @@ test('external chat ignores stale guide commands after lifecycle ended', () => {
     assert.match(rememberRunIdBlock, /var storedRunId = readStoredYuiGuidePcOverlayRunId\(\);/);
     assert.match(rememberRunIdBlock, /storedRunId !== normalizedRunId[\s\S]*return storedRunId/);
     assert.match(relayHandlerBlock, /isYuiGuideLifecycleScopedAction\(message\.action\)/);
+    assert.match(relayHandlerBlock, /yuiGuidePcOverlayLifecycleClosed[\s\S]*isYuiGuideLifecycleScopedAction\(message\.action\)[\s\S]*return true;/);
+    assert.match(relayHandlerBlock, /if \(!isYuiGuideMessageForCurrentLifecycle\(message\)\) \{\s*return true;/);
     assert.match(relayHandlerBlock, /isYuiGuidePcOverlayRunEnded\(message\.tutorialRunId\)/);
     assert.match(relayHandlerBlock, /clearYuiGuidePcOverlayBridgeState\('stale-after-lifecycle-ended', message\.tutorialRunId \|\| ''\);/);
     assert.match(relayHandlerBlock, /return true;\s*\}\s*if \(message\.tutorialRunId && message\.action !== 'yui_guide_tutorial_lifecycle_ended'\) \{/);
+    assert.match(sendPatchBlock, /if \(!host \|\| yuiGuidePcOverlayLifecycleClosed\) \{/);
+    assert.match(sendPatchBlock, /var sendLifecycleEpoch = yuiGuidePcOverlayLifecycleEpoch;/);
+    assert.match(sendPatchBlock, /sendLifecycleEpoch !== yuiGuidePcOverlayLifecycleEpoch/);
     assert.match(sendPatchBlock, /if \(isYuiGuidePcOverlayRunEnded\(sendOptions\.tutorialRunId\)\) \{/);
     assert.match(sendPatchBlock, /resolveYuiGuidePcOverlayRunIdForSend\(/);
     assert.match(sendPatchBlock, /if \(!runId \|\| isYuiGuidePcOverlayRunEnded\(runId\)\) \{/);
+    assert.match(cursorRelayBlock, /if \(yuiGuidePcOverlayLifecycleClosed\) \{/);
     assert.match(cursorRelayBlock, /if \(isYuiGuidePcOverlayRunEnded\(message\.tutorialRunId\)\) \{/);
+    assert.match(cursorRelayBlock, /if \(!isYuiGuideMessageForCurrentLifecycle\(message\)\) \{/);
     assert.match(broadcastStaleGuardBlock, /isYuiGuideLifecycleScopedAction\(message\.action\)/);
+    assert.match(broadcastStaleGuardBlock, /yuiGuidePcOverlayLifecycleClosed[\s\S]*isYuiGuideLifecycleScopedAction\(message\.action\)[\s\S]*return;/);
+    assert.match(broadcastStaleGuardBlock, /if \(!isYuiGuideMessageForCurrentLifecycle\(message\)\) \{\s*return;/);
     assert.match(broadcastStaleGuardBlock, /isYuiGuidePcOverlayRunEnded\(message\.tutorialRunId\)/);
     assert.match(broadcastStaleGuardBlock, /clearYuiGuidePcOverlayBridgeState\('stale-after-lifecycle-ended', message\.tutorialRunId \|\| ''\);/);
     assert.match(broadcastStaleGuardBlock, /return;/);
+    assert.match(staleResultBlock, /attemptedLifecycleEpoch !== yuiGuidePcOverlayLifecycleEpoch/);
 });
 
 test('external chat reuses tutorial PC overlay run id for capsule spotlight and cursor patches', () => {
-    const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+    const appInterpageSource = readJsParts(path.join(repoRoot, 'static', 'app/app-interpage'));
     const normalizeBridgeBlock = appInterpageSource.split('    function normalizeYuiGuideBridgeMessage(action, payload) {')[1].split(
         '    function postYuiGuideMessageToChat',
         1
@@ -2830,7 +3031,7 @@ test('external chat reuses tutorial PC overlay run id for capsule spotlight and 
 });
 
 test('PC overlay bridges rotate stale run ids and replay current state', () => {
-    const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+    const appInterpageSource = readJsParts(path.join(repoRoot, 'static', 'app/app-interpage'));
     const overlaySource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/overlay.js'), 'utf8');
     const externalBridgeBlock = appInterpageSource.split('    function resetYuiGuidePcOverlayRunForRetry() {')[1].split(
         '    function createYuiGuideTargetGeometryRegistry() {',
@@ -2843,7 +3044,7 @@ test('PC overlay bridges rotate stale run ids and replay current state', () => {
 
     assert.match(externalBridgeBlock, /window\.localStorage\.removeItem\('yuiGuidePcOverlayRunId'\)/);
     assert.match(appInterpageSource, /function getExistingYuiGuidePcOverlayRunId\(\) \{/);
-    assert.match(externalBridgeBlock, /function handleYuiGuidePcOverlayStaleResult\(result, patch, attemptedRunId, retried\)/);
+    assert.match(externalBridgeBlock, /function handleYuiGuidePcOverlayStaleResult\(result, patch, attemptedRunId, retried, attemptedLifecycleEpoch\)/);
     assert.match(externalBridgeBlock, /var isStaleResponse = !!\(result && result\.stale === true\);/);
     assert.match(externalBridgeBlock, /var attemptedCurrentRun = !!\(attemptedRunId && attemptedRunId === yuiGuidePcOverlayRunIdOverride\);/);
     assert.match(externalBridgeBlock, /var attemptedChatOwnedRun = isYuiGuideChatOwnedPcOverlayRunId\(attemptedRunId\);/);
@@ -2882,7 +3083,7 @@ test('PC overlay bridges rotate stale run ids and replay current state', () => {
 });
 
 test('director wraps the legacy ghost cursor with GhostCursorController facade', () => {
-    const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
+    const source = readDirectorSource(path.join(repoRoot, 'static'));
     const visualControllerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/visual/controllers.js'), 'utf8');
     const ghostCursorControllerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/visual/ghost-cursor-controller.js'), 'utf8');
     const constructorBlock = source.split('    class YuiGuideDirector {')[1].split(
@@ -2926,7 +3127,7 @@ test('spotlight facade exposes pause and resume hooks for pause coordination', (
 });
 
 test('director consumes phase two target registry and chat adapter boundaries', () => {
-    const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
+    const source = readDirectorSource(path.join(repoRoot, 'static'));
     const constructorBlock = source.split('    class YuiGuideDirector {')[1].split(
         '            this.latestExternalizedChatCursorMoveSceneId =',
         1
@@ -3008,14 +3209,191 @@ test('skip controller uses scoped resources with a fallback cleanup path', () =>
     assert.match(source, /createScopedTutorialResources/);
     assert.match(source, /this\.currentResources\.destroy\(\)/);
     assert.match(source, /button\.removeEventListener\('pointerdown', handleSkipRequest\)/);
+    assert.match(source, /applySafeAreaVariables: function \(options\)/);
+    assert.match(source, /portalId = normalizedOptions\.portalId \|\| 'neko-tutorial-fixed-ui-root'/);
+    assert.match(source, /document\.documentElement\.appendChild\(portal\)/);
+    assert.match(source, /--neko-tutorial-visible-safe-area-top/);
+    assert.match(source, /getNiriPetVisibleTopSafeInset\(\)/);
+    assert.match(source, /getNiriFixedUiMinimumTopInset\(\)/);
+    assert.match(source, /hasNiriFixedUiEvidence\(metrics\)/);
+});
+
+test('skip controller treats niri crop evidence as a top work-area safe inset', () => {
+    const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/skip-controller.js'), 'utf8');
+
+    function createController(metrics, screenOverrides = {}) {
+        const rootStyle = {
+            values: new Map(),
+            getPropertyValue(name) {
+                return this.values.get(name) || '';
+            },
+            setProperty(name, value) {
+                this.values.set(name, value);
+            }
+        };
+        const document = {
+            documentElement: { style: rootStyle },
+            getElementById() { return null; },
+            createElement() {
+                return {
+                    style: {},
+                    setAttribute() {},
+                    removeAttribute() {},
+                    addEventListener() {},
+                    removeEventListener() {},
+                    remove() {}
+                };
+            },
+            head: { appendChild() {} },
+            body: { appendChild() {} }
+        };
+        const context = {
+            window: {
+                screen: Object.assign({ availTop: 46 }, screenOverrides.screen || {}),
+                screenY: Object.prototype.hasOwnProperty.call(screenOverrides, 'screenY')
+                    ? screenOverrides.screenY
+                    : 46,
+                getComputedStyle() {
+                    return { getPropertyValue: () => '' };
+                },
+                addEventListener() {},
+                removeEventListener() {},
+                setTimeout(callback) {
+                    if (typeof callback === 'function') callback();
+                    return 1;
+                },
+                clearTimeout() {}
+            },
+            document,
+            console
+        };
+        if (metrics) {
+            context.window.nekoTutorialOverlay = {
+                getWindowMetricsSync() {
+                    return metrics;
+                }
+            };
+        }
+        vm.runInNewContext(source, context);
+        return context.window.TutorialSkipController.createController({ document });
+    }
+
+    const cropController = createController({
+        niriPetPhysicalCrop: true,
+        niriPetPhysicalCropBounds: { x: 0, y: 46, width: 1920, height: 1034 },
+        niriPetPhysicalCropVirtualBounds: { x: 0, y: 0, width: 1920, height: 1080 }
+    });
+    const cropUnderWorkAreaController = createController({
+        niriPetPhysicalCrop: true,
+        niriPetPhysicalCropBounds: { x: 0, y: 46, width: 1920, height: 1034 },
+        niriPetPhysicalCropVirtualBounds: { x: 0, y: 0, width: 1920, height: 1080 },
+        desktopWorkAreaTopInset: 14
+    });
+    const workAreaController = createController({
+        desktopWorkAreaTopInset: 46
+    });
+    const niriRenderedLowerController = createController({
+        niriPetPhysicalCrop: true,
+        niriPetPhysicalCropBounds: { x: 0, y: 46, width: 1920, height: 1034 },
+        niriPetPhysicalCropVirtualBounds: { x: 0, y: 0, width: 1920, height: 1080 },
+        desktopWorkAreaTopInset: 14,
+        niriWindowTopInset: 84,
+        niriPetPhysicalCropVisibleTopInset: 84
+    });
+    const niriHeightReservedController = createController({}, {
+        screen: { availTop: 0, height: 1066, availHeight: 1027 },
+        screenY: 1
+    });
+    const niriRuntimeFallbackController = createController({
+        niriWaylandRuntime: true
+    }, {
+        screen: { availTop: 0, height: 1066, availHeight: 1066 },
+        screenY: 72
+    });
+    const plainController = createController(null);
+
+    assert.equal(cropController.getNiriPetPhysicalCropTopInset(), 46);
+    assert.equal(cropUnderWorkAreaController.getNiriPetPhysicalCropTopInset(), 60);
+    assert.equal(workAreaController.getNiriPetPhysicalCropTopInset(), 46);
+    assert.equal(cropController.getNiriPetVisibleTopSafeInset(), 46);
+    assert.equal(cropUnderWorkAreaController.getNiriPetVisibleTopSafeInset(), 46);
+    assert.equal(workAreaController.getNiriPetVisibleTopSafeInset(), 46);
+    assert.equal(niriRenderedLowerController.getNiriPetPhysicalCropTopInset(), 60);
+    assert.equal(niriRenderedLowerController.getNiriPetVisibleTopSafeInset(), 84);
+    assert.equal(niriHeightReservedController.getNiriPetVisibleTopSafeInset(), 39);
+    assert.equal(niriRuntimeFallbackController.getNiriPetPhysicalCropTopInset(), 0);
+    assert.equal(niriRuntimeFallbackController.getNiriPetVisibleTopSafeInset(), 40);
+    assert.equal(plainController.getNiriPetPhysicalCropTopInset(), 0);
+    assert.equal(plainController.getNiriPetVisibleTopSafeInset(), 0);
+});
+
+test('tutorial css preserves niri crop compensation for DOM overlays and skip button', () => {
+    const yuiGuideCss = fs.readFileSync(path.join(repoRoot, 'static', 'css', 'yui-guide.css'), 'utf8');
+    const tutorialStylesCss = fs.readFileSync(path.join(repoRoot, 'static', 'css', 'tutorial-styles.css'), 'utf8');
+    const indexCss = fs.readFileSync(path.join(repoRoot, 'static', 'css', 'index.css'), 'utf8');
+    const getRuleBody = (source, selector) => {
+        const selectorIndex = source.indexOf(selector);
+        assert.notEqual(selectorIndex, -1, `missing CSS rule for ${selector}`);
+        const blockStart = source.indexOf('{', selectorIndex);
+        const blockEnd = source.indexOf('}', blockStart);
+        assert.notEqual(blockStart, -1, `missing CSS rule body start for ${selector}`);
+        assert.notEqual(blockEnd, -1, `missing CSS rule body end for ${selector}`);
+        return source.slice(blockStart + 1, blockEnd);
+    };
+    const yuiSkipRule = getRuleBody(yuiGuideCss, '#neko-tutorial-skip-btn');
+    const tutorialSkipRule = getRuleBody(tutorialStylesCss, '#neko-tutorial-skip-btn');
+    const pageSkipRule = getRuleBody(tutorialStylesCss, '.neko-page-tutorial-skip-btn');
+    const statusToastRule = getRuleBody(indexCss, '#status-toast');
+
+    assert.match(yuiGuideCss, /html\.neko-niri-pet-physical-crop \.yui-guide-overlay \{/);
+    assert.match(yuiGuideCss, /calc\(var\(--neko-niri-pet-crop-offset-x, 0\) \* 1px\)/);
+    assert.match(yuiGuideCss, /calc\(var\(--neko-niri-pet-crop-offset-y, 0\) \* 1px\)/);
+    assert.match(yuiGuideCss, /transform-origin: 0 0;/);
+    assert.match(
+        yuiSkipRule,
+        /--neko-tutorial-crop-safe-area-top: max\(var\(--neko-tutorial-safe-area-top, 0px\), calc\(var\(--neko-niri-pet-crop-offset-y, 0\) \* 1px\)\);/
+    );
+    assert.match(
+        yuiSkipRule,
+        /top: calc\(max\(14px, env\(safe-area-inset-top\)\) \+ var\(--neko-tutorial-crop-safe-area-top\)\);/
+    );
+    assert.match(
+        tutorialSkipRule,
+        /--neko-tutorial-crop-safe-area-top: max\(var\(--neko-tutorial-safe-area-top, 0px\), calc\(var\(--neko-niri-pet-crop-offset-y, 0\) \* 1px\)\);/
+    );
+    assert.match(
+        tutorialSkipRule,
+        /top: calc\(max\(14px, env\(safe-area-inset-top\)\) \+ var\(--neko-tutorial-crop-safe-area-top\)\);/
+    );
+    assert.match(
+        pageSkipRule,
+        /--neko-tutorial-crop-safe-area-top: max\(var\(--neko-tutorial-safe-area-top, 0px\), calc\(var\(--neko-niri-pet-crop-offset-y, 0\) \* 1px\)\);/
+    );
+    assert.match(
+        pageSkipRule,
+        /top: calc\(max\(18px, env\(safe-area-inset-top\)\) \+ var\(--neko-tutorial-crop-safe-area-top\)\);/
+    );
+    assert.match(
+        statusToastRule,
+        /--neko-status-toast-crop-safe-area-top: calc\(var\(--neko-niri-pet-crop-offset-y, 0\) \* 1px\);/
+    );
+    assert.match(
+        statusToastRule,
+        /top: calc\(20px \+ var\(--neko-status-toast-crop-safe-area-top\)\);/
+    );
+    assert.doesNotMatch(yuiSkipRule, /top: max\(14px, env\(safe-area-inset-top\)\);/);
+    assert.doesNotMatch(tutorialSkipRule, /top: max\(14px, env\(safe-area-inset-top\)\);/);
+    assert.doesNotMatch(pageSkipRule, /top: 18px;/);
+    assert.doesNotMatch(statusToastRule, /top: 20px;/);
+    assert.match(indexCss, /top: calc\(10px \+ var\(--neko-status-toast-crop-safe-area-top\)\);/);
 });
 
 test('day6 chat cursor handoff clears external ownership without hiding the PC cursor', () => {
     const day6Source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day6-agent-guide.js'), 'utf8');
     const sceneOrchestratorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/scene-orchestrator.js'), 'utf8');
     const takeoverSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/interaction-takeover.js'), 'utf8');
-    const directorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
-    const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+    const directorSource = readDirectorSource(path.join(repoRoot, 'static'));
+    const appInterpageSource = readJsParts(path.join(repoRoot, 'static', 'app/app-interpage'));
 
     const day6StatusSceneBlock = day6Source.split("id: 'day6_agent_status_master'")[1].split(
         "id: 'day6_plugin_side_panel'",

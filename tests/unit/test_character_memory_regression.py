@@ -96,7 +96,7 @@ class _FakeTranslationService:
 
 @pytest.mark.unit
 def test_character_router_profile_name_validation_maps_dot_error_codes():
-    router_module = reload_module("main_routers.characters_router")
+    router_module = reload_module("main_routers.characters_router.crud")
 
     assert "点号" in router_module._validate_profile_name(".")
     assert "点号" in router_module._validate_profile_name("foo.")
@@ -272,7 +272,7 @@ async def test_character_management_and_recent_save_regression():
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
             memory_router_module = reload_module("main_routers.memory_router")
             initial_name = next(iter(cm.load_characters().get("猫娘", {}).keys()))
 
@@ -286,7 +286,7 @@ async def test_character_management_and_recent_save_regression():
             fake_client.__aexit__.return_value = False
             fake_client.post.return_value = fake_response
 
-            with patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client):
+            with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client):
                 add_result = await characters_router_module.add_catgirl(
                     _DummyRequest({"档案名": "测试角色"})
                 )
@@ -316,7 +316,7 @@ async def test_character_management_and_recent_save_regression():
             assert switch_back_result["success"] is True
             assert cm.load_characters()["当前猫娘"] == initial_name
 
-            with patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client):
+            with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client):
                 delete_result = await characters_router_module.delete_catgirl("测试角色")
             assert delete_result["success"] is True
             assert "测试角色" not in cm.load_characters().get("猫娘", {})
@@ -351,7 +351,7 @@ async def test_add_catgirl_rejects_unsafe_dot_profile_name():
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
             response = await characters_router_module.add_catgirl(_DummyRequest({"档案名": "."}))
 
             assert response.status_code == 400
@@ -364,7 +364,7 @@ async def test_add_catgirl_rejects_unsafe_dot_profile_name():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_body_delete_rejects_non_object_json_payload():
-    characters_router_module = reload_module("main_routers.characters_router")
+    characters_router_module = reload_module("main_routers.characters_router.crud")
 
     response = await characters_router_module.delete_catgirl_by_body(_DummyRequest(["."]))
 
@@ -410,7 +410,7 @@ async def test_body_delete_rescues_unsafe_dot_character_without_touching_memory_
             sentinel.parent.mkdir(parents=True, exist_ok=True)
             sentinel.write_text("keep", encoding="utf-8")
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
             mock_notify_reload = AsyncMock(return_value=True)
             with (
                 patch.object(characters_router_module, "notify_memory_server_reload", mock_notify_reload),
@@ -453,7 +453,7 @@ async def test_character_read_endpoints_disable_caching():
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
 
             characters_response = await characters_router_module.get_characters(
                 _DummyGetRequest(headers={"Accept-Language": "zh-CN"})
@@ -506,7 +506,7 @@ async def test_get_characters_preserves_profile_names_when_translating_display_f
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
             response = await characters_router_module.get_characters(
                 _DummyGetRequest(headers={"Accept-Language": "en-US"})
             )
@@ -547,7 +547,7 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatc
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
             memory_router_module = reload_module("main_routers.memory_router")
 
             fake_response = type(
@@ -560,7 +560,7 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatc
             fake_client.__aexit__.return_value = False
             fake_client.post.return_value = fake_response
 
-            with patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client):
+            with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client):
                 add_result = await characters_router_module.add_catgirl(
                     _DummyRequest({"档案名": "旧角色"})
                 )
@@ -589,7 +589,7 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatc
                 encoding="utf-8",
             )
 
-            with patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client):
+            with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client):
                 rename_result = await characters_router_module.rename_catgirl(
                     "旧角色",
                     _DummyRequest({"new_name": "新角色"}),
@@ -665,7 +665,7 @@ async def test_rename_master_adds_hidden_ai_context_and_master_save_preserves_it
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
             old_master_name = cm.load_characters()["主人"]["档案名"]
             current_catgirl = cm.load_characters()["当前猫娘"]
 
@@ -791,7 +791,7 @@ async def test_update_master_body_rename_fallback_repairs_legacy_path_name(monke
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
             legacy_characters = cm.load_characters()
             legacy_characters["主人"]["档案名"] = "旧/主人"
             legacy_characters["主人"]["昵称"] = "旧昵称"
@@ -849,7 +849,7 @@ async def test_rename_catgirl_rolls_back_memory_and_suppresses_switch_notice_on_
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
 
             fake_response = type(
                 "Resp",
@@ -861,7 +861,7 @@ async def test_rename_catgirl_rolls_back_memory_and_suppresses_switch_notice_on_
             fake_client.__aexit__.return_value = False
             fake_client.post.return_value = fake_response
 
-            with patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client):
+            with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client):
                 add_result = await characters_router_module.add_catgirl(
                     _DummyRequest({"档案名": "旧角色"})
                 )
@@ -898,7 +898,7 @@ async def test_rename_catgirl_rolls_back_memory_and_suppresses_switch_notice_on_
                     bypass_write_fence=bypass_write_fence,
                 )
 
-            with patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client), patch.object(
+            with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client), patch.object(
                 cm,
                 "save_characters",
                 side_effect=_fail_primary_save,
@@ -955,7 +955,7 @@ async def test_rename_catgirl_returns_503_and_keeps_disk_unchanged_when_memory_r
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
 
             fake_response = type(
                 "Resp",
@@ -967,7 +967,7 @@ async def test_rename_catgirl_returns_503_and_keeps_disk_unchanged_when_memory_r
             fake_client.__aexit__.return_value = False
             fake_client.post.return_value = fake_response
 
-            with patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client):
+            with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client):
                 add_result = await characters_router_module.add_catgirl(
                     _DummyRequest({"档案名": "旧角色"})
                 )
@@ -1045,7 +1045,7 @@ async def test_rename_catgirl_maintenance_error_preserves_original_exception_typ
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
             characters = cm.load_characters()
             characters.setdefault("猫娘", {})["维护重命名角色"] = {"昵称": "维护重命名角色"}
             cm.save_characters(characters, bypass_write_fence=True)
@@ -1092,7 +1092,7 @@ async def test_rename_catgirl_maintenance_error_preserves_original_exception_typ
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_deleted_workshop_character_is_not_restored_by_startup_sync():
+async def test_workshop_sync_imports_legacy_dotted_name_but_rejects_unsafe_names():
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))
         bootstrap_local_cloudsave_environment(cm)
@@ -1116,12 +1116,83 @@ async def test_deleted_workshop_character_is_not_restored_by_startup_sync():
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
+            installed_folder = Path(td) / "legacy_dotted_name_workshop_item"
+            installed_folder.mkdir(parents=True, exist_ok=True)
+
+            card_payloads = {
+                "legacy.chara.json": {"档案名": "N.E.K.O", "昵称": "历史点号角色"},
+                "traversal.chara.json": {"档案名": "..", "昵称": "路径穿越"},
+                "trailing-dot.chara.json": {"档案名": "角色.", "昵称": "尾随点号"},
+                "separator.chara.json": {"档案名": "角色/子目录", "昵称": "路径分隔符"},
+            }
+            for filename, payload in card_payloads.items():
+                (installed_folder / filename).write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+
+            with patch.object(
+                workshop_router_module,
+                "get_subscribed_workshop_items",
+                AsyncMock(
+                    return_value={
+                        "success": True,
+                        "items": [
+                            {
+                                "publishedFileId": "123456",
+                                "installedFolder": str(installed_folder),
+                            }
+                        ],
+                    }
+                ),
+            ):
+                sync_result = await workshop_router_module.sync_workshop_character_cards(
+                    target_item_id="123456",
+                )
+
+            assert sync_result["added"] == 1
+            assert sync_result["found_character_names"] == ["N.E.K.O"]
+            assert sync_result["added_character_names"] == ["N.E.K.O"]
+            current_catgirls = cm.load_characters().get("猫娘", {})
+            assert "N.E.K.O" in current_catgirls
+            assert ".." not in current_catgirls
+            assert "角色." not in current_catgirls
+            assert "角色/子目录" not in current_catgirls
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_deleted_workshop_character_casefold_variant_is_not_restored_by_startup_sync():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            characters_router_module = reload_module("main_routers.characters_router.crud")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             characters = cm.load_characters()
             initial_name = next(iter(characters.get("猫娘", {})))
-            characters["猫娘"]["工坊角色"] = {"昵称": "会复活吗"}
+            characters["猫娘"]["N.E.K.O"] = {"昵称": "会复活吗"}
             cm.save_characters(characters, bypass_write_fence=True)
 
             fake_response = type(
@@ -1134,15 +1205,15 @@ async def test_deleted_workshop_character_is_not_restored_by_startup_sync():
             fake_client.__aexit__.return_value = False
             fake_client.post.return_value = fake_response
 
-            with patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client):
-                delete_result = await characters_router_module.delete_catgirl("工坊角色")
+            with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client):
+                delete_result = await characters_router_module.delete_catgirl("N.E.K.O")
             assert delete_result["success"] is True
-            assert "工坊角色" not in cm.load_characters().get("猫娘", {})
+            assert "N.E.K.O" not in cm.load_characters().get("猫娘", {})
 
             installed_folder = Path(td) / "mock_workshop_item"
             installed_folder.mkdir(parents=True, exist_ok=True)
             (installed_folder / "角色卡.chara.json").write_text(
-                json.dumps({"档案名": "工坊角色", "昵称": "来自工坊"}, ensure_ascii=False, indent=2),
+                json.dumps({"档案名": "n.e.k.o", "昵称": "来自工坊"}, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
 
@@ -1166,8 +1237,79 @@ async def test_deleted_workshop_character_is_not_restored_by_startup_sync():
             assert sync_result["added"] == 0
             assert sync_result["skipped"] >= 1
             current_characters = cm.load_characters()
-            assert "工坊角色" not in current_characters.get("猫娘", {})
+            assert "n.e.k.o" not in current_characters.get("猫娘", {})
             assert current_characters["当前猫娘"] == initial_name
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_workshop_sync_skips_casefold_conflicting_dotted_names():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
+            installed_folder = Path(td) / "casefold_conflict_workshop_item"
+            installed_folder.mkdir(parents=True, exist_ok=True)
+
+            for filename, payload in {
+                "upper.chara.json": {"档案名": "N.E.K.O", "昵称": "历史点号角色"},
+                "lower.chara.json": {"档案名": "n.e.k.o", "昵称": "大小写冲突角色"},
+            }.items():
+                (installed_folder / filename).write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+
+            with patch.object(
+                workshop_router_module,
+                "get_subscribed_workshop_items",
+                AsyncMock(
+                    return_value={
+                        "success": True,
+                        "items": [
+                            {
+                                "publishedFileId": "123456",
+                                "installedFolder": str(installed_folder),
+                            }
+                        ],
+                    }
+                ),
+            ):
+                sync_result = await workshop_router_module.sync_workshop_character_cards(
+                    target_item_id="123456",
+                )
+
+            assert sync_result["added"] == 1
+            assert sync_result["skipped"] >= 1
+            current_catgirls = cm.load_characters().get("猫娘", {})
+            assert len(current_catgirls) == len(
+                {name.casefold() for name in current_catgirls}
+            )
+            imported_names = {"N.E.K.O", "n.e.k.o"} & set(current_catgirls)
+            assert len(imported_names) == 1
+            assert sync_result["existing_character_names"] == [
+                next(iter(imported_names))
+            ]
 
 
 @pytest.mark.unit
@@ -1196,9 +1338,9 @@ async def test_delete_catgirl_skips_tombstone_state_when_cloudsave_local_state_i
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
-            workshop_router_module = reload_module("main_routers.workshop_router")
-            workshop_router_module._session_deleted_names.clear()
+            characters_router_module = reload_module("main_routers.characters_router.crud")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
+            importlib.import_module('main_routers.workshop_router.meta')._session_deleted_names.clear()
             characters = cm.load_characters()
             initial_name = next(iter(characters.get("猫娘", {})))
             characters["猫娘"]["禁用云存档删除角色"] = {"昵称": "禁用云存档删除角色"}
@@ -1217,7 +1359,7 @@ async def test_delete_catgirl_skips_tombstone_state_when_cloudsave_local_state_i
 
             monkeypatch.setenv(CLOUDSAVE_DISABLED_ENV, "local_state_unavailable")
             with (
-                patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client),
+                patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client),
                 patch.object(
                     cm,
                     "load_character_tombstones_state",
@@ -1269,7 +1411,7 @@ async def test_delete_catgirl_skips_tombstone_state_when_cloudsave_local_state_i
             assert sync_result["skipped"] >= 1
             current_characters = cm.load_characters()
             assert "禁用云存档删除角色" not in current_characters.get("猫娘", {})
-            workshop_router_module._session_deleted_names.clear()
+            importlib.import_module('main_routers.workshop_router.meta')._session_deleted_names.clear()
 
 
 @pytest.mark.unit
@@ -1298,9 +1440,11 @@ async def test_manual_workshop_character_sync_restores_deleted_character_and_cle
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
-            deleted_name = "手动恢复工坊角色"
+            deleted_name = "N.E.K.O"
+            deleted_alias = "n.e.k.o"
+            restored_name = "N.e.k.o"
             cm.save_character_tombstones_state({
                 "version": cm.CHARACTER_TOMBSTONES_STATE_VERSION,
                 "tombstones": [
@@ -1308,14 +1452,19 @@ async def test_manual_workshop_character_sync_restores_deleted_character_and_cle
                         "character_name": deleted_name,
                         "deleted_at": "2026-05-25T00:00:00Z",
                         "sequence_number": 1,
-                    }
+                    },
+                    {
+                        "character_name": deleted_alias,
+                        "deleted_at": "2026-05-25T00:00:01Z",
+                        "sequence_number": 2,
+                    },
                 ],
             })
 
             installed_folder = Path(td) / "mock_workshop_manual_restore_item"
             installed_folder.mkdir(parents=True, exist_ok=True)
             (installed_folder / "角色卡.chara.json").write_text(
-                json.dumps({"档案名": deleted_name, "昵称": "来自手动恢复"}, ensure_ascii=False, indent=2),
+                json.dumps({"档案名": restored_name, "昵称": "来自手动恢复"}, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
 
@@ -1345,15 +1494,19 @@ async def test_manual_workshop_character_sync_restores_deleted_character_and_cle
                 )
 
             assert sync_result["added"] == 1
-            assert sync_result["added_character_names"] == [deleted_name]
-            assert sync_result["restored_deleted_names"] == [deleted_name]
+            assert sync_result["added_character_names"] == [restored_name]
+            assert sync_result["restored_deleted_names"] == [restored_name]
             current_characters = cm.load_characters()
-            assert deleted_name in current_characters.get("猫娘", {})
+            assert restored_name in current_characters.get("猫娘", {})
             tombstones = cm.load_character_tombstones_state().get("tombstones") or []
-            assert not any(entry.get("character_name") == deleted_name for entry in tombstones)
+            assert not any(
+                str(entry.get("character_name") or "").casefold()
+                == restored_name.casefold()
+                for entry in tombstones
+            )
 
             assert second_result["added"] == 0
-            assert second_result["existing_character_names"] == [deleted_name]
+            assert second_result["existing_character_names"] == [restored_name]
 
 
 @pytest.mark.unit
@@ -1382,11 +1535,12 @@ async def test_manual_workshop_character_sync_clears_tombstone_for_existing_char
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
-            restored_name = "已存在但有墓碑角色"
+            existing_name = "N.E.K.O"
+            restored_name = "n.e.k.o"
             characters = cm.load_characters()
-            characters.setdefault("猫娘", {})[restored_name] = {
+            characters.setdefault("猫娘", {})[existing_name] = {
                 "昵称": "已存在",
                 "_reserved": {
                     "character_origin": {
@@ -1435,8 +1589,11 @@ async def test_manual_workshop_character_sync_clears_tombstone_for_existing_char
                 )
 
             assert sync_result["added"] == 0
-            assert sync_result["existing_character_names"] == [restored_name]
-            assert sync_result["restored_deleted_names"] == [restored_name]
+            assert sync_result["existing_character_names"] == [existing_name]
+            assert sync_result["restored_deleted_names"] == [existing_name]
+            current_characters = cm.load_characters().get("猫娘", {})
+            assert existing_name in current_characters
+            assert restored_name not in current_characters
             tombstones = cm.load_character_tombstones_state().get("tombstones") or []
             assert not any(entry.get("character_name") == restored_name for entry in tombstones)
 
@@ -1471,7 +1628,7 @@ async def test_manual_workshop_character_sync_clears_tombstone_for_avatar_only_b
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             restored_name = "仅头像绑定角色"
             characters = cm.load_characters()
@@ -1556,7 +1713,7 @@ async def test_manual_workshop_character_sync_keeps_tombstone_for_nonmatching_ex
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             restored_name = "同名本地角色"
             characters = cm.load_characters()
@@ -1633,7 +1790,7 @@ async def test_manual_workshop_character_sync_defers_tombstone_cleanup_after_suc
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             restored_name = "延后清理墓碑角色"
             characters = cm.load_characters()
@@ -1708,7 +1865,7 @@ async def test_manual_workshop_character_sync_defers_tombstone_cleanup_after_suc
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_sync_single_workshop_character_card_treats_restored_existing_as_success():
-    workshop_router_module = reload_module("main_routers.workshop_router")
+    workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
     sync_result = {
         "added": 0,
         "backfilled_faces": 0,
@@ -1814,7 +1971,7 @@ async def test_sync_single_workshop_character_card_uses_error_status_codes(
     expected_status,
     expected_code,
 ):
-    workshop_router_module = reload_module("main_routers.workshop_router")
+    workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
     with patch.object(
         workshop_router_module,
@@ -1833,7 +1990,7 @@ async def test_sync_single_workshop_character_card_uses_error_status_codes(
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_batch_workshop_character_sync_reports_subscription_unavailable():
-    workshop_router_module = reload_module("main_routers.workshop_router")
+    workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
     sync_result = {
         "added": 0,
         "backfilled_faces": 0,
@@ -1861,7 +2018,7 @@ async def test_batch_workshop_character_sync_reports_subscription_unavailable():
 async def test_batch_workshop_character_sync_reports_internal_failure_as_500():
     # 后端异常被标记为 WORKSHOP_SYNC_FAILED 时，批量入口也要回 500，
     # 不能伪装成 success 的“同步完成”。
-    workshop_router_module = reload_module("main_routers.workshop_router")
+    workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
     sync_result = {
         "added": 0,
         "backfilled_faces": 0,
@@ -1910,7 +2067,7 @@ async def test_sync_workshop_character_cards_skips_save_when_maintenance_fence_t
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             installed_folder = Path(td) / "mock_workshop_maintenance_item"
             installed_folder.mkdir(parents=True, exist_ok=True)
@@ -1980,7 +2137,7 @@ async def test_sync_workshop_character_cards_preserves_persona_override_written_
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             installed_folder = Path(td) / "mock_workshop_persona_race_item"
             installed_folder.mkdir(parents=True, exist_ok=True)
@@ -2062,7 +2219,7 @@ async def test_sync_workshop_character_cards_does_not_write_orphan_face_when_pen
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             installed_folder = Path(td) / "mock_workshop_orphan_face_item"
             installed_folder.mkdir(parents=True, exist_ok=True)
@@ -2143,7 +2300,7 @@ async def test_sync_workshop_character_cards_aborts_when_latest_catgirl_map_is_m
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             installed_folder = Path(td) / "mock_workshop_bad_latest_characters"
             installed_folder.mkdir(parents=True, exist_ok=True)
@@ -2209,7 +2366,7 @@ async def test_sync_workshop_character_cards_skips_face_writes_when_maintenance_
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             installed_folder = Path(td) / "mock_workshop_face_fence_item"
             installed_folder.mkdir(parents=True, exist_ok=True)
@@ -2279,7 +2436,7 @@ async def test_sync_workshop_character_cards_counts_errors_when_new_face_backfil
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             installed_folder = Path(td) / "mock_workshop_face_error_item"
             installed_folder.mkdir(parents=True, exist_ok=True)
@@ -2340,7 +2497,7 @@ async def test_sync_workshop_character_cards_counts_errors_when_existing_face_ba
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             characters = cm.load_characters()
             characters.setdefault("猫娘", {})["已有工坊角色"] = {
@@ -2413,7 +2570,7 @@ async def test_sync_workshop_character_cards_uses_character_specific_preview_in_
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             installed_folder = Path(td) / "mock_workshop_multi_card_item"
             installed_folder.mkdir(parents=True, exist_ok=True)
@@ -2488,7 +2645,7 @@ async def test_sync_workshop_character_cards_persists_character_origin_metadata(
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             installed_folder = Path(td) / "mock_workshop_origin_item"
             installed_folder.mkdir(parents=True, exist_ok=True)
@@ -2598,7 +2755,7 @@ async def test_sync_workshop_character_cards_persists_live3d_workshop_origin_met
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             installed_folder = Path(td) / "mock_workshop_live3d_item"
             installed_folder.mkdir(parents=True, exist_ok=True)
@@ -2667,7 +2824,7 @@ async def test_delete_catgirl_returns_error_when_memory_cleanup_fails():
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
 
             characters = cm.load_characters()
             characters.setdefault("猫娘", {})["删除失败角色"] = {"昵称": "删除失败角色"}
@@ -2684,9 +2841,9 @@ async def test_delete_catgirl_returns_error_when_memory_cleanup_fails():
             fake_client.post.return_value = fake_response
 
             with (
-                patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client),
+                patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client),
                 patch(
-                    "main_routers.characters_router.delete_character_memory_storage",
+                    "main_routers.characters_router.crud.delete_character_memory_storage",
                     side_effect=OSError("time_indexed.db is locked"),
                 ),
             ):
@@ -2726,7 +2883,7 @@ async def test_delete_catgirl_returns_503_when_memory_handle_release_fails_befor
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
             characters = cm.load_characters()
             characters.setdefault("猫娘", {})["删除句柄失败角色"] = {"昵称": "删除句柄失败角色"}
             cm.save_characters(characters, bypass_write_fence=True)
@@ -2775,7 +2932,7 @@ async def test_delete_catgirl_rolls_back_tombstone_and_memory_when_persist_failu
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
 
             characters = cm.load_characters()
             characters.setdefault("猫娘", {})["删除回滚角色"] = {"昵称": "删除回滚角色"}
@@ -2809,7 +2966,7 @@ async def test_delete_catgirl_rolls_back_tombstone_and_memory_when_persist_failu
                     bypass_write_fence=bypass_write_fence,
                 )
 
-            with patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client), patch.object(
+            with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client), patch.object(
                 cm,
                 "save_characters",
                 side_effect=_fail_primary_save,
@@ -2853,7 +3010,7 @@ async def test_delete_catgirl_rolls_back_when_notify_reload_returns_false():
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
             characters = cm.load_characters()
             characters.setdefault("猫娘", {})["删除重载失败角色"] = {"昵称": "删除重载失败角色"}
             cm.save_characters(characters, bypass_write_fence=True)
@@ -2916,7 +3073,7 @@ async def test_delete_catgirl_maintenance_error_preserves_original_exception_typ
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
             characters = cm.load_characters()
             characters.setdefault("猫娘", {})["维护删除角色"] = {"昵称": "维护删除角色"}
             cm.save_characters(characters, bypass_write_fence=True)
@@ -2983,15 +3140,15 @@ def test_resolve_live2d_model_binding_keeps_manual_external_url_without_catalog_
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
 
             with patch.object(
-                characters_router_module,
+                importlib.import_module('main_routers.characters_router.live2d_models'),
                 "find_models",
                 side_effect=AssertionError("manual_external should skip local model lookup"),
             ):
                 model_ref = "https://example.com/live2d/neko/neko.model3.json"
-                model_path, source_id, source = characters_router_module._resolve_live2d_model_binding(model_ref)
+                model_path, source_id, source = importlib.import_module('main_routers.characters_router.live2d_models')._resolve_live2d_model_binding(model_ref)
 
             assert model_path == model_ref
             assert source == "manual_external"
@@ -3031,7 +3188,7 @@ async def test_update_catgirl_l2d_marks_builtin_live2d_as_builtin():
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
             characters = cm.load_characters()
             characters["当前猫娘"] = "测试内置模型"
             characters["猫娘"]["测试内置模型"] = json.loads(
@@ -3040,7 +3197,7 @@ async def test_update_catgirl_l2d_marks_builtin_live2d_as_builtin():
             cm.save_characters(characters, bypass_write_fence=True)
 
             with patch.object(
-                characters_router_module,
+                importlib.import_module('main_routers.characters_router.live2d_models'),
                 "find_models",
                 return_value=[
                     {
@@ -3050,7 +3207,7 @@ async def test_update_catgirl_l2d_marks_builtin_live2d_as_builtin():
                     }
                 ],
             ):
-                response = await characters_router_module.update_catgirl_l2d(
+                response = await importlib.import_module('main_routers.characters_router.live2d_models').update_catgirl_l2d(
                     "测试内置模型",
                     _DummyRequest({"live2d": "mao_pro", "model_type": "live2d"}),
                 )
@@ -3091,7 +3248,7 @@ async def test_character_rollback_reports_notify_reload_false_as_failure():
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
             characters_snapshot = cm.load_characters()
 
             with patch.object(

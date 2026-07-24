@@ -1,86 +1,44 @@
-# Nuitka Packaging Caveats
+# Nuitka Packaging
 
-N.E.K.O ships its Python backend as a Nuitka standalone executable, then wraps
-it in Electron for Windows distribution. Nuitka has a few default behaviors
-that quietly break things if you don't know about them. **Read this before
-adding new directories or dynamic imports.**
+The tracked packaging contract is the desktop workflow plus its preparation and verification scripts. There is no tracked `build_nuitka.bat` in the current repository, so do not cite one as an authoritative second entrypoint.
 
-## Rule 1: Directories containing `.py` files must use underscore names
+## Python package names
 
-Python package names cannot contain hyphens, so
-`--include-package=plugin.my-tool.public` is rejected by Nuitka. The natural
-fallback — `--include-data-dir=plugin/my-tool` — is also a trap: Nuitka's
-`--include-data-dir` **filters out `.py`, `.pyc`, `.pyd`, `.so`, `.dll`** and
-other code suffixes by default (see the `default_ignored_suffixes` tuple in
-`nuitka/freezer/IncludedDataFiles.py` of your installed Nuitka — it is the
-upstream default, not project config). The bundled dist ends up with only
-the non-code files (`.md`, `.json`), runtime imports raise
-`ModuleNotFoundError`, and the build looks fine until end users open the
-affected feature.
+Directories containing importable `.py` files use underscore names and contain `__init__.py`. Hyphenated import packages fail normal Python naming and interact badly with data inclusion. `tests/unit/test_no_hyphen_python_packages.py` enforces this source rule.
 
-**Real bug**: `plugin/neko-plugin-cli/` historically held a `public/` Python
-package. Server callers did `sys.path.insert(_CLI_ROOT)` then
-`from public import ...`. In source mode it worked; in Nuitka standalone it
-silently dropped the entire `public/` package, the embedded user plugin
-server failed to start, and the plugin management UI was unreachable.
+Do not use `--include-data-dir` to ship importable Python. Nuitka filters code-like suffixes from data directories. Compile packages normally; use raw-data inclusion only for an intentionally interpreted/sandboxed source payload with an explicit runtime contract.
 
-**Required form**: any directory holding `.py` source uses underscores and
-has an `__init__.py`. If you need a hyphenated name for an external CLI tool,
-expose it via `pyproject.toml [project.scripts]` mapping; keep the underlying
-Python package name with underscores.
+## Built-in plugin staging
 
-`tests/unit/test_no_hyphen_python_packages.py` enforces this at PR time.
+Current desktop workflows run:
 
-## Rule 2: Don't mix `.py` source with `--include-data-dir`
+1. `scripts/prepare_nuitka_plugins.py prepare`
+2. compile generated `build_nuitka_launcher.py`
+3. `scripts/prepare_nuitka_plugins.py install` into the built distribution
+4. `scripts/check_nuitka_dist.py <dist> --plugin-stage build/nuitka-plugins`
 
-If you ever genuinely need to ship `.py` source files as data (rare — usually
-sandboxed runtime plugins), use `--include-raw-dir=` instead, which skips the
-default suffix filter. For everything else, prefer
-`--include-package=<dotted.name>` so Nuitka compiles the modules into the
-binary.
+The staging script applies each plugin's `[tool.neko.build]` rules and generates selective exclusions. Do not restore blanket `--include-data-dir=plugin/plugins=plugin/plugins` or blanket `--nofollow-import-to=plugin.plugins`; both bypass the staged contract in different ways.
 
-## Rule 3: New directories require synced updates in build script + CI
+The workflow has a targeted exclusion for `plugin.plugins.galgame_plugin.training`. Treat such exclusions as reviewed, feature-specific policy, not a pattern to broaden.
 
-Two independent build configurations exist:
+## Assets and dynamic imports
 
-- `build_nuitka.bat` — local maintainer script, **gitignored** (contains
-  signing paths, machine-specific settings).
-- `.github/workflows/build-desktop.yml` — CI build for Linux/macOS/Windows
-  release artifacts.
+A new runtime asset or dynamic import may require coordinated updates to:
 
-If you add a directory that needs to ship in the bundle, you must update
-**both**. After the Nuitka build, the CI workflow runs
-`scripts/check_nuitka_dist.py` to verify critical assets exist; register new
-required assets there too.
+- Nuitka include options in both cross-platform and Linux-only workflows;
+- `scripts/prepare_nuitka_plugins.py` for plugin payloads;
+- `scripts/check_nuitka_dist.py` required-asset verification;
+- targeted import/package tests.
 
-## Rule 4: Don't run the bundled exe casually for diagnosis
+Embedding and tiktoken assets are prepared and verified separately by the workflow.
 
-The launcher spawns multiple subprocesses (`memory_server`, `agent_server`,
-`main_server`, plugin server, etc.). Killing only the launcher leaves
-children alive holding file locks on `dist/Xiao8/`. The next build's
-`rmdir /s /q dist\Xiao8` then partially fails, and the subsequent
-`move dist\launcher.dist dist\Xiao8` lands the new build *inside* the
-leftover directory rather than replacing it — producing a half-broken
-nested bundle that boots but is missing config/static/templates.
+## Diagnose safely
 
-For diagnosing packaging issues, prefer:
+The packaged launcher starts multiple services. Killing only the parent can leave processes holding `dist/Xiao8`. Prefer static checks before launching:
 
-- `scripts/check_nuitka_dist.py dist/Xiao8` for asset inventory
-- `grep -r <symbol> dist/Xiao8/` for content checks
-- Log files in `data/` if you must run the exe — and explicitly kill all
-  `projectneko_server`, `neko_main_server`, `neko_memory_server`,
-  `neko_agent_server` processes afterwards.
+```bash
+uv run python scripts/check_nuitka_dist.py dist/Xiao8 --plugin-stage build/nuitka-plugins
+uv run pytest tests/unit/test_no_hyphen_python_packages.py -q
+```
 
-## Defense in depth
-
-The historical neko-plugin-cli bug (PR #1115, "rename neko-plugin-cli
-→ neko_plugin_cli") sat in production for weeks because nothing alerted on
-it. We now have three layers:
-
-1. **Build-time check** — `scripts/check_nuitka_dist.py` runs in CI after
-   Nuitka, verifying the dist root contains every critical directory and
-   that each built-in plugin has its `plugin.toml`.
-2. **Source-level lint** — `tests/unit/test_no_hyphen_python_packages.py`
-   fails at PR time if any tracked directory with a hyphen name contains
-   `.py` files.
-3. **This document** — read before adding packaging-relevant code.
+If a packaged run is necessary, record the exact artifact/revision and shut down all child services before rebuilding. Never fix a stale locked distribution with an unreviewed recursive delete.

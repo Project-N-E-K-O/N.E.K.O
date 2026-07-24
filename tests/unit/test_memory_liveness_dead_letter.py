@@ -179,8 +179,8 @@ async def test_run_path_b_persisted_none_triggers_dead_letter_at_threshold():
     fake_fact_store.aload_facts = AsyncMock(return_value=[])
     fake_fact_store.aextract_facts_with_known_pool = AsyncMock(return_value=None)
 
-    with patch.object(memory_server, 'time_manager', fake_time_manager), \
-         patch.object(memory_server, 'fact_store', fake_fact_store):
+    with patch.object(memory_server.runtime, 'time_manager', fake_time_manager), \
+         patch.object(memory_server.runtime, 'fact_store', fake_fact_store):
         for i in range(MEMORY_LIVENESS_MAX_ATTEMPTS):
             await memory_server._run_path_b('neko_test_b_e2e', state)
 
@@ -623,10 +623,10 @@ async def test_run_outbox_op_dead_letters_at_threshold(tmp_path):
     async def _poison_handler(_n, _p):
         raise RuntimeError("simulated poison payload — handler always raises")
 
-    original_outbox = memory_server.outbox
+    original_outbox = memory_server.runtime.outbox
     original_handlers = memory_server._OUTBOX_HANDLERS.copy()
     try:
-        memory_server.outbox = outbox
+        memory_server.runtime.outbox = outbox
         memory_server._OUTBOX_HANDLERS['poison_op'] = _poison_handler
 
         with patch.object(outbox, '_outbox_path', return_value=str(path)):
@@ -645,7 +645,7 @@ async def test_run_outbox_op_dead_letters_at_threshold(tmp_path):
                 f"实际剩 {pending_after}"
             )
     finally:
-        memory_server.outbox = original_outbox
+        memory_server.runtime.outbox = original_outbox
         memory_server._OUTBOX_HANDLERS.clear()
         memory_server._OUTBOX_HANDLERS.update(original_handlers)
 
@@ -681,10 +681,10 @@ async def test_run_outbox_op_short_circuits_when_already_dead_letter(tmp_path):
         handler_called.append(True)
         raise RuntimeError("不应该被调用：op 已达 dead-letter 阈值")
 
-    original_outbox = memory_server.outbox
+    original_outbox = memory_server.runtime.outbox
     original_handlers = memory_server._OUTBOX_HANDLERS.copy()
     try:
-        memory_server.outbox = outbox
+        memory_server.runtime.outbox = outbox
         memory_server._OUTBOX_HANDLERS['side_effect_op'] = _side_effect_handler
 
         with patch.object(outbox, '_outbox_path', return_value=str(path)):
@@ -703,7 +703,7 @@ async def test_run_outbox_op_short_circuits_when_already_dead_letter(tmp_path):
             f"实际剩 {pending_after}"
         )
     finally:
-        memory_server.outbox = original_outbox
+        memory_server.runtime.outbox = original_outbox
         memory_server._OUTBOX_HANDLERS.clear()
         memory_server._OUTBOX_HANDLERS.update(original_handlers)
 
@@ -738,10 +738,10 @@ async def test_run_outbox_op_attempt_persist_failure_keeps_pending(tmp_path):
     async def _poison_handler(_n, _p):
         raise RuntimeError("simulated poison")
 
-    original_outbox = memory_server.outbox
+    original_outbox = memory_server.runtime.outbox
     original_handlers = memory_server._OUTBOX_HANDLERS.copy()
     try:
-        memory_server.outbox = outbox
+        memory_server.runtime.outbox = outbox
         memory_server._OUTBOX_HANDLERS['poison_op'] = _poison_handler
 
         # 让 aappend_attempt 抛异常（模拟磁盘 transient 失败）
@@ -765,6 +765,6 @@ async def test_run_outbox_op_attempt_persist_failure_keeps_pending(tmp_path):
         # 磁盘上 attempt 计数仍是 N-1（本次 attempt 没落盘）
         assert pending_after[0]['_attempt_count'] == MEMORY_LIVENESS_MAX_ATTEMPTS - 1
     finally:
-        memory_server.outbox = original_outbox
+        memory_server.runtime.outbox = original_outbox
         memory_server._OUTBOX_HANDLERS.clear()
         memory_server._OUTBOX_HANDLERS.update(original_handlers)

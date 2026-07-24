@@ -235,20 +235,27 @@ content = cache_file.read_text()
 
 ---
 
-## self.bus — バススナップショット
+## self.bus — Bus read/watch
 
-**必要になる場面**: messages、events、lifecycle、conversations、memory など、名前空間ごとのバススナップショットを読みたいとき。
+**必要になる場面**: namespace ごとの host-state snapshot を read/watch したいとき。この facade に publish/emit API はありません。
 
 ```python
 # 最近のイベントを読む
-recent_events = await self.bus.events.get(filter={"type": "note_created"}, max_count=20)
+recent_events = await self.bus.events.get(max_count=50)
+recent_events = recent_events.filter(type="note_created").sort(
+    by="timestamp", reverse=True,
+).limit(20)
 
 # 最近のメッセージを読む
 recent_messages = await self.bus.messages.get(max_count=20)
 
-# bucket 内のメモリレコードを読む
+# メモリ上の bucket から最近のユーザー発話イベントを読む
 memory_records = await self.bus.memory.get(bucket_id="default", limit=20)
 ```
+
+list surface は `filter` / `where`、`sort`、`limit`、`watch` です。callable の `filter(predicate)`、`where(predicate)`、`sort(key=...)` は local-only のため、watcher chain では structured `filter(field=value, ...)` と `sort(by=...)` を使います。`watch()` を使えるのは `messages`、`events`、`lifecycle` だけで、`conversations` と `memory` は read-only snapshot です。watcher は `add`、`del`、`change` のみ受け付けます。
+
+`memory` bucket は件数制限付きで、プロセス内に 1 時間保持されます。これは plugin context であり、キャラクターの永続的な facts、reflections、persona へのアクセスではありません。`ctx.query_memory(...)` は非推奨の placeholder endpoint に対する互換呼び出しとしてのみ残されており、semantic recall は行いません。
 
 ---
 
@@ -284,18 +291,6 @@ self.push_message(
 
 ---
 
-## self.memory — メモリシステム
-
-**必要になる場面**: N.E.K.O の長期記憶、過去の会話、記憶された事実などにアクセスしたいとき。
-
-```python
-from plugin.sdk.plugin import unwrap_or
-
-result = await self.memory.query("default", "what topic did we discuss last time")
-matches = unwrap_or(result, {})
-```
-
----
 
 ## self.system_info — システム情報
 
@@ -322,8 +317,7 @@ python_env = unwrap_or(await self.system_info.get_python_env(), {})
 | `self.db` | SQLite データベース | `[plugin.database] enabled = true` |
 | `self.i18n` | 多言語対応 | `[plugin.i18n]` |
 | `self.data_path()` | ファイル保存 | 不要 |
-| `self.bus` | バススナップショットを読む | 不要 |
+| `self.bus` | バススナップショットを読み取り・監視 | 不要 |
 | `report_status()` | パネルに進捗表示 | 不要 |
 | `push_message()` | チャットへ送信 | 不要 |
-| `self.memory` | メモリシステムへアクセス | 不要 |
 | `self.system_info` | システム情報を取得 | 不要 |

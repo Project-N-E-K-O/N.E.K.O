@@ -36,8 +36,8 @@ For *every* endpoint in
 2. does NOT include ``?token=...`` in its URL,
 
 SHOULD succeed (HTTP 200) once the dual-accept fix lands. Specifically,
-``/oauth/start`` returns 200 with an ``auth_url`` (because ``MARKET_URL``
-and ``MARKET_WEB_URL`` are populated in this test), ``/oauth/status``
+``/oauth/start`` returns 200 with an ``auth_url`` (because ``NEKO_AUTH_URL``
+and ``MARKET_API_URL`` are populated in this test), ``/oauth/status``
 and ``/oauth/complete`` and ``/oauth/logout`` all return 200 with
 "unauthenticated / no pending session / logged out" payloads.
 
@@ -169,17 +169,19 @@ async def _run_one(endpoint: str) -> None:
         saved_pending = market_bridge_module._OAUTH_PENDING_FILE
         saved_callback = market_bridge_module._OAUTH_CALLBACK_FILE
         saved_token = market_bridge_module._OAUTH_TOKEN_FILE
-        saved_market_url = market_bridge_module.MARKET_URL
+        saved_auth_url = market_bridge_module.NEKO_AUTH_URL
+        saved_market_api_url = market_bridge_module.MARKET_API_URL
         saved_market_web_url = market_bridge_module.MARKET_WEB_URL
 
         market_bridge_module._OAUTH_PENDING_FILE = tmp / "market_oauth_pending.json"
         market_bridge_module._OAUTH_CALLBACK_FILE = tmp / "oauth_callback.json"
         market_bridge_module._OAUTH_TOKEN_FILE = tmp / "market_auth.json"
-        # ``/oauth/start`` raises 400 if either MARKET_URL or
-        # MARKET_WEB_URL is empty. Pin both to known non-empty values
+        # ``/oauth/start`` raises 400 if either NEKO_AUTH_URL or
+        # MARKET_API_URL is empty. Pin both to known non-empty values
         # so the unfixed-vs-fixed distinction is bridged solely on
         # token transport.
-        market_bridge_module.MARKET_URL = "https://market.test"
+        market_bridge_module.NEKO_AUTH_URL = "https://auth.test"
+        market_bridge_module.MARKET_API_URL = "https://market.test"
         market_bridge_module.MARKET_WEB_URL = "https://web.market.test"
 
         try:
@@ -199,7 +201,8 @@ async def _run_one(endpoint: str) -> None:
             market_bridge_module._OAUTH_PENDING_FILE = saved_pending
             market_bridge_module._OAUTH_CALLBACK_FILE = saved_callback
             market_bridge_module._OAUTH_TOKEN_FILE = saved_token
-            market_bridge_module.MARKET_URL = saved_market_url
+            market_bridge_module.NEKO_AUTH_URL = saved_auth_url
+            market_bridge_module.MARKET_API_URL = saved_market_api_url
             market_bridge_module.MARKET_WEB_URL = saved_market_web_url
 
     # ── The bug assertion ─────────────────────────────────────────────

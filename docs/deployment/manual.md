@@ -1,15 +1,6 @@
-# Manual Setup
+# Manual Source Setup
 
-For development and customization on any platform.
-
-## Prerequisites
-
-- Python 3.11 (exactly — not 3.12+)
-- [uv](https://docs.astral.sh/uv/getting-started/installation/) package manager
-- Node.js (>=20.19)
-- Git
-
-## Installation
+## Install
 
 ```bash
 git clone https://github.com/Project-N-E-K-O/N.E.K.O.git
@@ -17,100 +8,51 @@ cd N.E.K.O
 uv sync
 ```
 
-## Optional Local Embeddings
+Python is pinned to 3.11. Run every Python module, script, test, and temporary command through `uv run`.
 
-Vector memory uses optional local ONNX assets. See
-[`embedding-models.md`](embedding-models.md) for the download command, expected
-directory layout, and packaging notes for PyInstaller/Nuitka builds.
+## Build frontend assets
 
-## Build Frontend
+From the repository root:
 
-The project has two frontend projects under `frontend/` that must be built before running.
-
-**Recommended** — use the convenience script from the project root. This is the officially supported build path:
+```powershell
+.\build_frontend.bat
+```
 
 ```bash
-# Windows
-build_frontend.bat
-
-# Linux / macOS
 ./build_frontend.sh
 ```
 
-If you need to run the commands manually, they must match what the script does:
+Both scripts verify/unpack the Yui Origin asset, run `npm ci`, build `frontend/plugin-manager/dist/index.html`, and build `static/react/neko-chat/neko-chat-window.iife.js`.
 
-```bash
-cd frontend/react-neko-chat && npm install && npm run build && cd ../..
-cd frontend/plugin-manager && npm install && npm run build-only && cd ../..
-```
-
-## Running
-
-Prefer the unified launcher when possible:
+## Run normally
 
 ```bash
 uv run python launcher.py
 ```
 
-This path bootstraps local `cloudsave/`, applies any staged snapshot, and only
-then starts the backend services, so it is closer to the real Steam / desktop
-startup path.
+The launcher plans ports, starts memory/main/agent services, coordinates shutdown, and follows the desktop startup path more closely than split mode. It also applies any staged cloud-save snapshot before server startup. Open the URL it reports; 48911 is only the preferred main port.
 
-Alternatively, start the required servers manually in separate terminals:
+## Diagnostic split mode
 
-```bash
-# Terminal 1 — Memory server (required)
-uv run python app/memory_server.py
-
-# Terminal 2 — Main server (required)
-uv run python app/main_server.py
-
-# Terminal 3 — Agent server (optional)
-uv run python app/agent_server.py
-```
-
-Notes:
-
-- To validate the production Steam cloud path, launch through Steam or the desktop launcher. Packaged builds and desktop source runs on Windows, macOS, and Linux use the RemoteStorage bundle helper when Steam is running and logged in, while Steam Auto-Cloud still syncs the raw `cloudsave/` directory when the App Admin rules match the platform anchor path.
-- In manual three-server mode, `main_server` will still perform a fallback snapshot import when needed and will try to notify `memory_server` to reload afterward.
-- Shutdown no longer stages runtime changes into `cloudsave/` automatically. If you want Steam to upload new character data, prepare or overwrite the staged snapshot for that character from Cloud Save Manager before you exit.
-- On macOS source runs, if Apple reports that `SteamworksPy.dylib` cannot be verified, Gatekeeper is usually blocking the local unnotarized Steamworks libraries. First make sure you are launching from the project root. If it is still blocked, run the following from the repo root:
+Use separate terminals only to isolate services:
 
 ```bash
-xattr -dr com.apple.quarantine steamworks/SteamworksPy.dylib steamworks/libsteam_api.dylib
-codesign --force --sign - steamworks/libsteam_api.dylib
-codesign --force --sign - steamworks/SteamworksPy.dylib
+uv run python -m app.memory_server
+uv run python -m app.main_server
+uv run python -m app.agent_server
 ```
 
-- After that, retry `uv run python launcher.py` or `uv run python app/main_server.py`.
+The main UI can load with memory and main, but Agent, hosted-plugin, browser/computer-use, and related capabilities require agent/tool. Split mode does not reproduce launcher fallback ports or coordinated lifecycle behavior.
 
-## Configuration
+## Cloud-save notes
 
-1. Open `http://localhost:48911/api_key` in your browser
-2. Select your Core API provider
-3. Enter your API key
-4. Click Save
+- Validate the Steam RemoteStorage path through Steam or the desktop launcher.
+- Main-server split mode can perform the fallback staged-snapshot import and notify memory to reload.
+- Shutdown does not automatically stage runtime changes. Use Cloud Save Manager to prepare/replace the per-character snapshot intended for upload.
+- On macOS source runs, only if Gatekeeper blocks the local unnotarized Steamworks libraries, launch from the repository root and apply the documented quarantine/signing workaround to the two `steamworks/*.dylib` files; do not run that workaround preemptively.
 
-Alternatively, set environment variables before starting:
+## Configure and verify
 
-```bash
-export NEKO_CORE_API_KEY="sk-your-key"
-export NEKO_CORE_API="qwen"
-uv run python app/main_server.py
-```
+Open `/api_key` on the reported main URL, select current Core/Assist providers, enter their credentials, and run the connectivity checks. Source mode does not consume Docker's API-initialization variables.
 
-## Alternative: pip install
-
-If you prefer pip over uv:
-
-```bash
-python3.11 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python app/memory_server.py
-python app/main_server.py
-```
-
-## Verify
-
-Open `http://localhost:48911` — you should see the character interface.
+Use `/health` for startup diagnosis and [Local Embedding Model Assets](./embedding-models) when preparing optional vectors.

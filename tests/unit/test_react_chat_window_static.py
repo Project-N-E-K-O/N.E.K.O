@@ -1,22 +1,39 @@
 import json
 import re
 from pathlib import Path
+from tests.static_app_parts import read_js_parts
 
 
-APP_REACT_CHAT_WINDOW_PATH = Path(__file__).resolve().parents[2] / "static" / "app-react-chat-window.js"
-APP_JS_PATH = Path(__file__).resolve().parents[2] / "static" / "app.js"
-APP_BUTTONS_PATH = Path(__file__).resolve().parents[2] / "static" / "app-buttons.js"
-APP_CHAT_EXPORT_PATH = Path(__file__).resolve().parents[2] / "static" / "app-chat-export.js"
-APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app-interpage.js"
-AVATAR_UI_POPUP_PATH = Path(__file__).resolve().parents[2] / "static" / "avatar-ui-popup.js"
+class JavaScriptParts:
+    def __init__(self, directory: Path) -> None:
+        self.directory = directory
+
+    def read_text(self, *, encoding: str) -> str:
+        return read_js_parts(self.directory, encoding=encoding)
+
+
+APP_REACT_CHAT_WINDOW_PATH = JavaScriptParts(
+    Path(__file__).resolve().parents[2] / "static" / "app" / "app-react-chat-window"
+)
+APP_JS_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app.js"
+APP_BUTTONS_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-buttons.js"
+APP_CHAT_EXPORT_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-chat-export.js"
+APP_INTERPAGE_PATH = JavaScriptParts(
+    Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage"
+)
+AVATAR_UI_POPUP_PATH = Path(__file__).resolve().parents[2] / "static" / "avatar" / "avatar-ui-popup.js"
+AVATAR_POPUP_COMMON_PATH = Path(__file__).resolve().parents[2] / "static" / "avatar" / "avatar-popup-common.js"
 STATIC_LOCALES_DIR = Path(__file__).resolve().parents[2] / "static" / "locales"
-MUSIC_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "music_ui.js"
+MUSIC_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "jukebox" / "music_ui.js"
 MUSIC_UI_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "music_ui.css"
 STATIC_INDEX_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "index.css"
 STATIC_DARK_MODE_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "dark-mode.css"
 STATIC_INDEX_JS_PATH = Path(__file__).resolve().parents[2] / "static" / "js" / "index.js"
 REACT_CHAT_STYLES_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "styles.css"
 REACT_CHAT_APP_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "App.tsx"
+REACT_CHAT_AVATAR_TOOL_MANAGER_PATH = (
+    Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "AvatarToolItemManager.tsx"
+)
 REACT_CHAT_FULL_SURFACE_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "FullChatSurface.tsx"
 REACT_CHAT_MESSAGE_SCHEMA_PATH = (
     Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "message-schema.ts"
@@ -26,7 +43,7 @@ CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "chat.h
 INDEX_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "index.html"
 SUBTITLE_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "subtitle.html"
 PAGES_ROUTER_PATH = Path(__file__).resolve().parents[2] / "main_routers" / "pages_router.py"
-MAIN_SERVER_PATH = Path(__file__).resolve().parents[2] / "app" / "main_server.py"
+MAIN_SERVER_PATH = Path(__file__).resolve().parents[2] / "app" / "main_server" / "__init__.py"
 COMPACT_EXPORT_HISTORY_PANEL_PATH = (
     Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "CompactExportHistoryPanel.tsx"
 )
@@ -57,7 +74,19 @@ def assert_no_layout_transition(block: str) -> None:
         assert prop not in transition_section
 
 
-def test_chat_settings_cat_audio_toggle_is_under_auto_cat_and_dependent():
+def test_rps_result_hands_separate_smoothly_and_winner_is_already_above_on_approach():
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+
+    assert ".avatar-tool-round-reveal.is-result .avatar-tool-round-reveal-hand.is-user" in styles
+    assert "animation: avatar-tool-rps-user-separate" in styles
+    assert "animation: avatar-tool-rps-avatar-separate" in styles
+    assert "@keyframes avatar-tool-rps-user-separate" in styles
+    assert "@keyframes avatar-tool-rps-avatar-separate" in styles
+    assert ".avatar-tool-round-reveal.is-user_win.is-approach .avatar-tool-round-reveal-hand.is-user" in styles
+    assert ".avatar-tool-round-reveal.is-avatar_win.is-approach .avatar-tool-round-reveal-hand.is-avatar" in styles
+
+
+def test_chat_settings_auto_cat_and_cat_audio_toggles_are_independent():
     source = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
     chat_settings_block = source.split("const chatToggles = [", 1)[1].split("];", 1)[0]
 
@@ -65,7 +94,8 @@ def test_chat_settings_cat_audio_toggle_is_under_auto_cat_and_dependent():
     assert "id: 'cat-audio'" in chat_settings_block
     assert chat_settings_block.index("id: 'auto-cat'") < chat_settings_block.index("id: 'cat-audio'")
     assert "labelKey: 'settings.toggles.catAudio'" in chat_settings_block
-    assert "dependsOnToggleId: 'auto-cat'" in chat_settings_block
+    cat_audio_config = chat_settings_block.split("{ id: 'cat-audio'", 1)[1].split("}", 1)[0]
+    assert "dependsOnToggleId" not in cat_audio_config
     assert "neko:auto-cat-setting-changed" not in source
 
     cat_audio_init_block = source.split("} else if (toggle.id === 'cat-audio'", 1)[1].split(
@@ -199,7 +229,7 @@ def test_standalone_subtitle_page_initializes_theme_before_subtitle_scripts():
     source = SUBTITLE_TEMPLATE_PATH.read_text(encoding="utf-8")
 
     assert '<script src="/static/theme-manager.js"></script>' in source
-    assert source.index('/static/theme-manager.js') < source.index('/static/subtitle-shared.js')
+    assert source.index('/static/theme-manager.js') < source.index('/static/subtitle/subtitle-shared.js')
 
 
 def test_chat_surface_mode_preference_is_shared_with_electron():
@@ -225,6 +255,31 @@ def test_chat_surface_mode_preference_is_shared_with_electron():
     # never does — it restores via lastRestorableChatSurfaceMode.
     assert "if (mode !== 'compact' && mode !== 'full') return;" in persist_block
     assert "localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, mode)" in persist_block
+
+
+def test_avatar_tool_result_name_tracks_the_current_catgirl():
+    geometry_path = (
+        Path(__file__).resolve().parents[2]
+        / "static"
+        / "app"
+        / "app-react-chat-window"
+        / "geometry-and-messages.js"
+    )
+    source = geometry_path.read_text(encoding="utf-8")
+
+    name_block = source.split("function getConfiguredAssistantName()", 1)[1].split(
+        "function getCurrentAssistantName()",
+        1,
+    )[0]
+    build_render_block = source.split("function buildRenderProps()", 1)[1].split(
+        "function showToast",
+        1,
+    )[0]
+
+    assert name_block.index("window.appState && window.appState.lanlan_name") < name_block.index(
+        "window.lanlan_config && window.lanlan_config.lanlan_name"
+    )
+    assert "assistantName: getConfiguredAssistantName() || undefined" in build_render_block
 
 
 def test_goodbye_composer_hidden_survives_surface_mode_switches():
@@ -254,6 +309,10 @@ def test_goodbye_composer_hidden_survives_surface_mode_switches():
         "function createResizeEdges",
         1,
     )[0]
+    effective_composer_hidden_block = source.split("function getEffectiveComposerHidden()", 1)[1].split(
+        "function getNekoGoodbyeModeActive",
+        1,
+    )[0]
 
     assert "goodbyeComposerHidden: false" in source
     assert "function getEffectiveComposerHidden()" in source
@@ -263,7 +322,9 @@ def test_goodbye_composer_hidden_survives_surface_mode_switches():
     assert "&& window.isNekoGoodbyeModeActive()" in source
     assert "function getEffectiveComposerAttachmentsVisible()" in source
     assert "function syncComposerAttachmentsVisibility(previousVisible)" in source
-    assert "return !!(state.composerHidden || state.goodbyeComposerHidden);" in source
+    assert "!state.homeTutorialInputLocked" in effective_composer_hidden_block
+    assert "state.composerHidden || state.goodbyeComposerHidden" in effective_composer_hidden_block
+    assert "isCatLocalChatActive" in effective_composer_hidden_block
     assert "composerHidden: getEffectiveComposerHidden()" in build_render_block
     assert "state.homeTutorialInteractionLocked" in submit_block
     assert "state.homeTutorialInputLocked" in submit_block
@@ -284,7 +345,11 @@ def test_goodbye_composer_hidden_survives_surface_mode_switches():
     assert "EVENT_PREFIX + 'set-goodbye-composer-hidden'" in source
     assert "window.addEventListener('live2d-goodbye-click'" in source
     assert "setGoodbyeComposerHidden(true, 'live2d-goodbye-click')" in source
-    assert "setGoodbyeComposerHidden(false, 'live2d-return-click')" in source
+    assert "window.addEventListener('neko:cat-return-complete'" in source
+    assert "source !== 'pngtuber-return-click'" in source
+    assert "source !== 'live2d-return-click'" in source
+    assert "setGoodbyeComposerHidden(false, 'return-complete')" in source
+    assert "setGoodbyeComposerHidden(false, 'live2d-return-click')" not in source
 
 
 def test_chat_full_endpoint_uses_chat_template_with_initial_full_surface():
@@ -340,8 +405,28 @@ def test_chat_templates_version_react_chat_bundle_from_react_assets():
     assert 'neko-chat-window.iife.js?v={{ react_chat_asset_version }}' in chat_template
     assert 'neko-chat-window.css?v={{ react_chat_asset_version }}' in index_template
     assert 'neko-chat-window.iife.js?v={{ react_chat_asset_version }}' in index_template
-    assert 'app-interpage.js?v={{ static_asset_version }}' in chat_template
-    assert 'app-interpage.js?v={{ static_asset_version }}' in index_template
+    interpage_parts = (
+        'bootstrap-resources-and-model-reload.js',
+        'composer-voice-sync.js',
+        'cross-window-broadcast-and-bridge.js',
+        'guide-message-relay.js',
+        'guide-overlay.js',
+        'guide-targets.js',
+        'listeners-and-api.js',
+    )
+    for part_name in interpage_parts:
+        versioned_path = f'app-interpage/{part_name}?v={{{{ static_asset_version }}}}'
+        assert versioned_path in chat_template
+        assert versioned_path in index_template
+
+
+def test_static_app_part_filenames_are_semantic_not_numbered():
+    app_root = Path(__file__).resolve().parents[2] / "static" / "app"
+
+    for directory_name in ("app-react-chat-window", "app-ui", "app-interpage"):
+        part_names = [path.name for path in sorted((app_root / directory_name).glob("*.js"))]
+        assert part_names, f"no JavaScript parts found under {directory_name}"
+        assert all(not re.match(r"^\d", name) for name in part_names), part_names
 
 
 def test_web_chat_compact_endpoint_uses_index_template_with_initial_compact_surface():
@@ -483,7 +568,7 @@ def test_open_from_minimized_restores_surface_mode_before_mounting():
 def test_minimized_restore_uses_previous_real_surface_mode():
     source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
-    assert "var lastRestorableChatSurfaceMode = 'compact';" in source
+    assert "lastRestorableChatSurfaceMode = 'compact';" in source
     assert "var CHAT_SURFACE_MODE_SEQUENCE = ['compact', 'minimized'];" in source
     assert "var COMPACT_CHAT_STATES = ['default', 'options', 'input'];" in source
     assert "compactChatState: 'default'," in source
@@ -542,6 +627,8 @@ def test_home_tutorial_input_lock_blocks_compact_capsule_input_state():
         1,
     )[0]
     assert "compactInputLocked: next" in input_lock_block
+    assert "var previousAttachmentsVisible = getEffectiveComposerAttachmentsVisible();" in input_lock_block
+    assert "syncComposerAttachmentsVisibility(previousAttachmentsVisible);" in input_lock_block
     assert "setHomeTutorialInteractionLocked(next" not in input_lock_block
     assert "disabled={compactCapsuleEntryLocked}" in capsule_block
     assert "if (compactCapsuleEntryLocked) return;" in capsule_block
@@ -595,8 +682,12 @@ def test_home_tutorial_host_wires_avatar_tool_requests():
     assert "setCompactToolFanOpen: setCompactToolFanOpen" in script
     assert "rotateCompactToolWheel: rotateCompactToolWheel" in script
     assert "setCompactToolWheelIndex: setCompactToolWheelIndex" in script
-    assert "avatarToolMenuOpenRequest" in script
-    assert "compactToolFanOpenRequest" in script
+    build_render_block = script.split("function buildRenderProps()", 1)[1].split(
+        "function showToast",
+        1,
+    )[0]
+    assert "avatarToolMenuOpenRequest: state.viewProps.avatarToolMenuOpenRequest || null" in build_render_block
+    assert "compactToolFanOpenRequest: state.viewProps.compactToolFanOpenRequest || null" in build_render_block
     assert "compactToolWheelRotateRequest" in script
     assert "compactToolWheelIndexRequest" in script
 
@@ -751,13 +842,13 @@ def test_compact_surface_resize_handles_keep_width_in_dom_geometry_contract():
     assert "function applyCompactSurfaceResizeRequest(detail)" in script
     assert "function isDesktopHomeCompactSurfaceRoute()" in script
     assert "if (!isHomeCompactSurfaceRoute() && !isDesktopHomeCompactSurfaceRoute()) return;" in script
-    assert "var compactSurfaceDesktopResizeActive = false;" in script
+    assert "compactSurfaceDesktopResizeActive = false;" in script
     assert "if (isElectronChatWindow() && detail && detail.screenRect)" in script
     assert "compactSurfaceDesktopResizeActive = phase !== 'end';" in script
     assert "if (compactSurfaceDesktopResizeActive && isElectronChatWindow())" in script
     assert "function handleDesktopCompactLayoutChange(layout)" in script
     assert "if (baseAnchorChanged && !compactSurfaceDesktopResizeActive)" in script
-    assert "var compactSurfaceResizeSession = null;" in script
+    assert "compactSurfaceResizeSession = null;" in script
     assert "surfaceScreenRect: surfaceScreenRect" in script
     assert "function getCompactSurfaceDesktopWindowX()" in script
     assert "function getCompactSurfaceDesktopScreenRect()" in script
@@ -957,7 +1048,7 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
         '.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] '
         '.compact-input-tool-toggle:hover'
     ) in styles
-    assert "--compact-chat-minimize-ball-size: 41px;" in styles
+    assert "--compact-chat-minimize-ball-size: 46px;" in styles
     assert "--compact-chat-minimize-ball-inset: 2px;" in styles
     assert "--compact-chat-minimize-ball-gap: 8px;" in styles
     assert "--compact-chat-minimize-ball-slot: calc(" in styles
@@ -999,7 +1090,7 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     assert '.compact-input-tool-fan[data-compact-tool-wheel-fast-animation="true"]' in styles
     assert "--compact-tool-wheel-transform-duration: 0.07s;" in styles
     assert "pointer-events: none;" in styles
-    assert "activeCursorToolId" in geometry_sync_block
+    assert "activeAvatarToolId" in geometry_sync_block
     assert "toolMenuOpen" in geometry_sync_block
     assert "var COMPACT_TOOL_AVATAR_CHOICE_FLOAT_PADDING_X = 6;" in script
     assert "var COMPACT_TOOL_AVATAR_CHOICE_FLOAT_PADDING_Y = 12;" in script
@@ -1033,12 +1124,14 @@ def test_compact_tool_fan_labels_are_plain_noninteractive_tags():
     tooltip_block = css_block(
         styles,
         ".compact-input-tool-fan .compact-input-tool-tooltip {",
-        ".compact-input-tool-fan .compact-input-tool-item:hover,",
+        ".compact-input-tool-fan button.compact-input-tool-item:not(:disabled):focus-within,",
     )
     visible_block = css_block(
         styles,
-        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:hover > .compact-input-tool-tooltip,\n'
-        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:focus-within > .compact-input-tool-tooltip {',
+        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] button.compact-input-tool-item:not(:disabled)[data-compact-tool-pointer-hovered="true"] > .compact-input-tool-tooltip,\n'
+        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] button.compact-input-tool-item:not(:disabled):focus-visible > .compact-input-tool-tooltip,\n'
+        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item-avatar[data-compact-tool-pointer-hovered="true"]:has(> .composer-emoji-btn:not(:disabled)) > .compact-input-tool-tooltip,\n'
+        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item-avatar:has(> .composer-emoji-btn:not(:disabled):focus-visible) > .compact-input-tool-tooltip {',
         ".compact-input-tool-fan .compact-input-tool-item > img,",
     )
     dark_tooltip_block = css_block(
@@ -1145,7 +1238,8 @@ def test_desktop_compact_choice_placement_uses_surface_anchor_without_frame_poll
     assert "const shellNode = compactInputShellRef.current;" in placement_effect
     assert "const nextShellNode = compactInputShellRef.current;" in placement_effect
     assert "appShellRef.current" not in placement_effect
-    assert "window.addEventListener('neko:desktop-compact-layout-change', schedulePlacementUpdate);" in placement_effect
+    assert "window.addEventListener('neko:desktop-compact-layout-change', handleDesktopCompactLayoutChange);" in placement_effect
+    assert "schedulePlacementUpdateWithDesktopLayout(layout);" in placement_effect
     assert "requestAnimationFrame(trackPlacement)" not in placement_effect
     assert "const trackPlacement = () =>" not in placement_effect
 
@@ -1232,39 +1326,44 @@ def test_compact_geometry_snapshot_separates_base_surface_from_extra_islands():
 
 
 def test_externalized_chat_input_spotlight_uses_pc_overlay_rounded_rect_radius():
-    script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    script = read_js_parts(Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage")
 
-    rect_block = script.split("function buildYuiGuidePcOverlayRect(kind, rect, index)", 1)[1].split(
-        "function dispatchCrossWindowIdleActivity",
+    rect_block = script.split("function updateYuiGuideChatSpotlight(kind, pcOverlayRunId)", 1)[1].split(
+        "function applyYuiGuideChatSpotlight",
         1,
     )[0]
 
     assert (
         "var radius = kind === 'window' ? 26 : Math.min(34, Math.max(18, "
-        "Math.round((rect.height + padding * 2) / 2)));"
+        "Math.round((sourceRect.height + padding * 2) / 2)));"
     ) in rect_block
 
 
 def test_externalized_chat_input_spotlight_uses_global_overlay_only():
-    script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    script = read_js_parts(Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage")
 
-    update_block = script.split("function updateYuiGuideChatSpotlight(kind)", 1)[1].split(
-        "function applyYuiGuideChatSpotlight(kind)",
+    update_block = script.split("function updateYuiGuideChatSpotlight(kind, pcOverlayRunId)", 1)[1].split(
+        "function applyYuiGuideChatSpotlight(kind, options)",
         1,
     )[0]
 
-    assert "if (isYuiGuidePcOverlayAvailable()) {" in update_block
+    assert "var pcOverlayAvailable = isYuiGuidePcOverlayAvailable();" in update_block
+    assert "if (pcOverlayAvailable) {" in update_block
+    assert "var sourceRectInfo = rect ? getYuiGuideChatSpotlightSourceRect(kind, yuiGuideChatSpotlightVariant, rect) : null;" in update_block
+    assert "var sourceRect = sourceRectInfo ? sourceRectInfo.rect : rect;" in update_block
+    assert "toYuiGuideScreenRect({" in update_block
+    assert "}, kind, yuiGuideChatSpotlightVariant)" in update_block
     assert "kind !== 'input' && isYuiGuidePcOverlayAvailable()" not in update_block
     assert "hideYuiGuideChatSpotlightElement" not in script
     assert "hideYuiGuideChatSpotlightElements" not in script
     assert "is-plain-capsule" not in update_block
+    assert "getYuiGuideChatSpotlightElement(!pcOverlayAvailable)" in update_block
     assert "renderYuiGuideChatSpotlight(" not in update_block
-    assert "getYuiGuideChatSpotlightElement(" not in script
     assert "function renderYuiGuideChatSpotlight" not in script
 
 
 def test_yui_guide_state_messages_bypass_cross_channel_dedup_but_cursor_deltas_do_not():
-    script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    script = read_js_parts(Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage")
 
     bypass_block = script.split("function shouldBypassYuiGuideMessageDedup(action, message)", 1)[1].split(
         "function isMainUIHiddenByModelManager()",
@@ -1293,7 +1392,7 @@ def test_yui_guide_state_messages_bypass_cross_channel_dedup_but_cursor_deltas_d
 
 def test_yui_guide_external_compact_history_open_is_bridged_to_react_host():
     react_host = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
-    interpage = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    interpage = read_js_parts(Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage")
 
     assert "function setCompactHistoryOpen(open, reason)" in react_host
     assert "compactHistoryOpenRequest" in react_host
@@ -1310,7 +1409,7 @@ def test_yui_guide_compact_chat_fixed_layout_is_bridged_to_standalone_chat_body(
         "function ensureYuiGuideStandaloneInteractionShield",
         1,
     )[0]
-    broadcast_block = interpage.split("nekoBroadcastChannel.onmessage = async function (event)", 1)[1].split(
+    broadcast_block = interpage.split("handleNekoBroadcastMessage = async function (event)", 1)[1].split(
         "console.log('[BroadcastChannel] 初始化失败",
         1,
     )[0]
@@ -1330,7 +1429,32 @@ def test_yui_guide_compact_chat_fixed_layout_is_bridged_to_standalone_chat_body(
     assert "case 'yui_guide_set_compact_chat_fixed_layout':" in broadcast_block
     assert "applyYuiGuideCompactChatFixedLayout(event.data.fixed === true);" in broadcast_block
     assert "case 'yui_guide_set_compact_chat_fixed_layout':" in scoped_block
+    # prepare 会建立本轮教程的胶囊恢复快照，也必须拒绝旧 run 的迟到消息。
+    assert "case 'yui_guide_prepare_compact_chat':" in scoped_block
     assert "applyYuiGuideCompactChatFixedLayout(false);" in cleanup_block
+
+
+def test_interpage_defers_broadcast_binding_until_all_parts_are_loaded():
+    root = Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage"
+    relay_part = (root / "guide-message-relay.js").read_text(encoding="utf-8")
+    final_part = (root / "listeners-and-api.js").read_text(encoding="utf-8")
+
+    assert "I.handleNekoBroadcastMessage = async function (event)" in relay_part
+    assert "I.nekoBroadcastChannel.onmessage =" not in relay_part
+    assert "I.nekoBroadcastChannel.onmessage = I.handleNekoBroadcastMessage;" in final_part
+
+
+def test_interpage_defers_tutorial_relay_listeners_until_all_parts_are_loaded():
+    root = Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage"
+    bridge_part = (root / "cross-window-broadcast-and-bridge.js").read_text(encoding="utf-8")
+    final_part = (root / "listeners-and-api.js").read_text(encoding="utf-8")
+
+    assert "I.handleYuiGuideRelayedCustomEvent = function" in bridge_part
+    assert "I.handleYuiGuideRelayedWindowMessage = function" in bridge_part
+    assert bridge_part.count("I.handleYuiGuideRelayedCustomEvent") == 1
+    assert bridge_part.count("I.handleYuiGuideRelayedWindowMessage") == 1
+    assert "I.handleYuiGuideRelayedCustomEvent" in final_part
+    assert "I.handleYuiGuideRelayedWindowMessage" in final_part
 
 
 def test_new_user_icebreaker_choice_prompt_dispatches_host_event():
@@ -1450,7 +1574,7 @@ def test_externalized_tutorial_chat_ready_replays_input_lock():
     bridge_bus = (Path(__file__).resolve().parents[2] / "static" / "tutorial" / "core" / "bridge-command-bus.js").read_text(
         encoding="utf-8"
     )
-    interpage = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    interpage = read_js_parts(Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage")
 
     assert "yui_guide_set_chat_input_locked: true" in bridge_bus
     bridge_replay_block = interpage.split("function handleYuiGuideChatBridgeData(data)", 1)[1].split(
@@ -1488,23 +1612,35 @@ def test_interpage_bundle_uses_static_asset_version_on_home_and_chat():
     index_template = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
     chat_template = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
 
-    assert '/static/app-interpage.js?v={{ static_asset_version }}' in index_template
-    assert '/static/app-interpage.js?v={{ static_asset_version }}' in chat_template
-    assert '/static/app-interpage.js?v={{ react_chat_asset_version }}' not in index_template
-    assert '/static/app-interpage.js?v={{ react_chat_asset_version }}' not in chat_template
+    for part_name in (
+        'bootstrap-resources-and-model-reload.js',
+        'composer-voice-sync.js',
+        'cross-window-broadcast-and-bridge.js',
+        'guide-message-relay.js',
+        'guide-overlay.js',
+        'guide-targets.js',
+        'listeners-and-api.js',
+    ):
+        static_path = f'/static/app/app-interpage/{part_name}?v={{{{ static_asset_version }}}}'
+        react_path = f'/static/app/app-interpage/{part_name}?v={{{{ react_chat_asset_version }}}}'
+        assert static_path in index_template
+        assert static_path in chat_template
+        assert react_path not in index_template
+        assert react_path not in chat_template
 
 
 def test_externalized_chat_input_spotlight_retries_after_message_layout():
-    script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    script = read_js_parts(Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage")
 
-    retry_block = script.split("function scheduleYuiGuideChatInputSpotlightRetry()", 1)[1].split(
-        "function updateYuiGuideChatSpotlight(kind)",
+    retry_block = script.split("function scheduleYuiGuideChatInputSpotlightRetry(kind, pcOverlayRunId)", 1)[1].split(
+        "function updateYuiGuideChatSpotlight(kind, pcOverlayRunId)",
         1,
     )[0]
 
-    assert "if (yuiGuideChatSpotlightKind !== 'input')" in retry_block
-    assert "updateYuiGuideChatSpotlight('input');" in retry_block
-    assert "scheduleYuiGuideChatInputSpotlightRetry();" in script
+    assert "if (!isYuiGuideChatInputSpotlightKind(retryKind))" in retry_block
+    assert "if (yuiGuideChatSpotlightKind === retryKind)" in retry_block
+    assert "updateYuiGuideChatSpotlight(retryKind, retryRunId);" in retry_block
+    assert "scheduleYuiGuideChatInputSpotlightRetry(normalizedKind, pcOverlayRunId);" in script
 
 
 def test_compact_tutorial_guide_preview_scrolls_without_ellipsis():
@@ -1553,13 +1689,41 @@ def test_compact_input_geometry_preserves_drag_surface_native_region():
     assert "hitRect: null" in shell_block
     assert "nativeRect: null" in shell_block
 
-    assert "data-compact-geometry-hit-scope={effectiveCompactChatState === 'input' ? 'children' : undefined}" in app_source
+    assert "data-compact-geometry-hit-scope={!composerHidden ? 'children' : undefined}" in app_source
+    assert "if (!isCompactSurface || composerHidden)" in app_source
+    assert "if (!isCompactSurface || effectiveCompactChatState !== 'input')" not in app_source
     assert 'data-compact-hit-region-id="input:text"' in app_source
     assert 'data-compact-hit-region-kind="input-text"' in app_source
     assert 'data-compact-hit-region-id="input:minimize"' in app_source
     assert 'data-compact-hit-region-kind="input-minimize"' in app_source
     assert 'data-compact-hit-region-id="input:tool-toggle"' in app_source
     assert 'data-compact-hit-region-kind="input-tool-toggle"' in app_source
+
+
+def test_compact_avatar_tool_manager_uses_desktop_work_area_for_carrier_layout():
+    manager_source = REACT_CHAT_AVATAR_TOOL_MANAGER_PATH.read_text(encoding="utf-8")
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+
+    assert "__nekoDesktopCompactLayout" in manager_source
+    assert "workAreaX - windowX" in manager_source
+    assert "workAreaY - windowY" in manager_source
+    assert "viewport.compactDesktop" in manager_source
+    assert "getDesktopCompactDialogSize(viewport)" in manager_source
+    assert "neko:desktop-compact-layout-change" in manager_source
+    assert "'--avatar-tool-manager-width'" in manager_source
+    assert "'--avatar-tool-manager-height'" in manager_source
+    assert "is-desktop-compact-layout" in manager_source
+
+    desktop_compact_block = css_block(
+        styles,
+        ".avatar-tool-manager-dialog.is-desktop-compact-layout",
+        ".avatar-tool-manager-dialog.is-dragging",
+    )
+    assert "width: var(--avatar-tool-manager-width, 380px);" in desktop_compact_block
+    assert "height: var(--avatar-tool-manager-height, 600px);" in desktop_compact_block
+    assert "max-height: var(--avatar-tool-manager-max-height, 600px);" in desktop_compact_block
+    assert "100vw" not in desktop_compact_block
+    assert "85vh" not in desktop_compact_block
 
 
 def test_compact_surface_drag_uses_declared_surface_and_no_drag_exclusions():
@@ -1597,7 +1761,7 @@ def test_moved_drag_suppresses_trailing_release_click():
     # 时 arm，并在 document capture 阶段吞掉紧随的那一次 click。
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
-    assert "var suppressDragReleaseClick = false;" in script
+    assert "suppressDragReleaseClick = false;" in script
 
     stop_block = script.split("function stopDrag(options)", 1)[1].split(
         "function bindDragging()",
@@ -1633,10 +1797,26 @@ def test_moved_drag_suppresses_trailing_release_click():
     assert "document.addEventListener('click', consumeDragReleaseClickGuard, true);" in listeners_block
 
 
+def test_minimized_yarn_drag_reports_forced_release_as_cancel():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    stop_block = script.split("function stopDrag(options)", 1)[1].split(
+        "function bindDragging()",
+        1,
+    )[0]
+    assert "dispatchMinimizedYarnDragPhase(opts.suppressClick ? 'cancel' : 'end'" in stop_block
+
+    touch_cancel_block = script.split("document.addEventListener('touchcancel'", 1)[1].split(
+        ");",
+        1,
+    )[0]
+    assert "suppressClick: true" in touch_cancel_block
+
+
 def test_compact_minimize_targets_inline_yarn_ball_button_center():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
-    assert "var compactMinimizeBallTargetAnchor = null;" in script
+    assert "compactMinimizeBallTargetAnchor = null;" in script
     assert "function getCompactMinimizeBallTargetRect()" in script
     assert "root.querySelector('.compact-chat-minimize-ball')" in script
     assert "width: MINIMIZED_SIZE" in script
@@ -1699,6 +1879,104 @@ def test_compact_minimize_collapse_origin_matches_target():
     assert "shell.style.removeProperty('transform-origin');" in collapse_block
 
 
+def test_compact_minimize_does_not_replay_full_shell_collapse_animation():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    request_block = script.split("function handleCompactMinimizeRequest()", 1)[1].split(
+        "function handleMiniGameInviteChoice(option)",
+        1,
+    )[0]
+    assert request_block.count(
+        "setChatSurfaceMode('minimized', { skipShellCollapseAnimation: true });"
+    ) == 2
+
+    set_mode_block = script.split("function setChatSurfaceMode(nextMode)", 1)[1].split(
+        "function cycleChatSurfaceMode()",
+        1,
+    )[0]
+    assert "if (transitionOptions.skipShellCollapseAnimation === true" in set_mode_block
+    assert "&& previousMode === 'compact'" in set_mode_block
+    assert "&& !isElectronChatWindow()" in set_mode_block
+    assert "&& !window.__LANLAN_IS_ELECTRON_PET__" in set_mode_block
+    assert "setMinimized(nextMinimized, { skipShellCollapseAnimation: true });" in set_mode_block
+    assert "setMinimized(nextMinimized);" in set_mode_block
+
+    minimize_block = script.split("function setMinimized(nextMinimized)", 1)[1].split(
+        "// ---- 展开动画",
+        1,
+    )[0]
+    instant_branch = minimize_block.split(
+        "if (transitionOptions.skipShellCollapseAnimation === true)",
+        1,
+    )[1].split("// 3. 计算缩放比", 1)[0]
+    assert "shell.classList.add('is-minimized');" in instant_branch
+    assert "shell.classList.add('is-collapsing');" not in instant_branch
+    assert "requestAnimationFrame" not in instant_branch
+
+
+def test_web_compact_restore_does_not_replay_full_shell_expand_animation():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+
+    set_mode_block = script.split("function setChatSurfaceMode(nextMode)", 1)[1].split(
+        "function cycleChatSurfaceMode()",
+        1,
+    )[0]
+    assert "previousMinimized" in set_mode_block
+    assert "normalized === 'compact'" in set_mode_block
+    assert "!isElectronChatWindow()" in set_mode_block
+    assert "!window.__LANLAN_IS_ELECTRON_PET__" in set_mode_block
+    assert "setMinimized(nextMinimized, { skipShellExpandAnimation: true });" in set_mode_block
+    assert "setMinimized(nextMinimized);" in set_mode_block
+
+    minimize_block = script.split("function setMinimized(nextMinimized)", 1)[1].split(
+        "// ---- 展开动画",
+        1,
+    )[0]
+    compact_restore = minimize_block.split(
+        "if (!willMinimize && transitionOptions.skipShellExpandAnimation === true)",
+        1,
+    )[1].split("if (willMinimize)", 1)[0]
+    assert "shell.style.visibility = 'hidden';" in compact_restore
+    assert "shell.classList.remove('is-mobile-content-capped', 'is-minimized');" in compact_restore
+    assert "syncCompactSurfaceAnchor();" in compact_restore
+    assert "scheduleMobileContentLayout();" in compact_restore
+    assert "COMPACT_EXPAND_WIPE_MS + COMPACT_EXPAND_TRANSITION_BUFFER_MS" in compact_restore
+    assert "shell.classList.add('is-expanding');" not in compact_restore
+    assert "scale(" not in compact_restore
+
+    host_duration = re.search(r"var COMPACT_EXPAND_WIPE_MS = (\d+);", script)
+    css_duration = re.search(
+        r"\.compact-chat-surface-shell\.neko-compact-expanding\s*\{[^}]*"
+        r"animation:\s*neko-compact-expand-wipe\s+(\d+)ms",
+        styles,
+        re.DOTALL,
+    )
+    assert host_duration is not None
+    assert css_duration is not None
+    assert host_duration.group(1) == css_duration.group(1)
+
+
+def test_queued_surface_mode_preserves_compact_transition_options():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    set_mode_block = script.split("function setChatSurfaceMode(nextMode)", 1)[1].split(
+        "function cycleChatSurfaceMode()",
+        1,
+    )[0]
+    flush_block = script.split("function flushPendingChatSurfaceModeIfNeeded()", 1)[1].split(
+        "function setMinimized(nextMinimized)",
+        1,
+    )[0]
+
+    assert "pendingChatSurfaceMode = {" in set_mode_block
+    assert "mode: normalized," in set_mode_block
+    assert "transitionOptions: transitionOptions" in set_mode_block
+    assert "var pendingSurfaceMode = pendingChatSurfaceMode;" in flush_block
+    assert "var targetMode = pendingSurfaceMode.mode;" in flush_block
+    assert "setChatSurfaceMode(targetMode, pendingSurfaceMode.transitionOptions);" in flush_block
+
+
 def test_desktop_compact_layout_change_resets_anchor_only_when_base_surface_changes():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
@@ -1742,8 +2020,8 @@ def test_compact_surface_tracking_stops_idle_raf_but_keeps_active_sessions():
         1,
     )[0]
 
-    assert "var COMPACT_SURFACE_IDLE_SETTLE_FRAME_COUNT = 3;" in script
-    assert "var compactSurfaceTrackingSettleFramesRemaining = 0;" in script
+    assert "COMPACT_SURFACE_IDLE_SETTLE_FRAME_COUNT = 3;" in script
+    assert "compactSurfaceTrackingSettleFramesRemaining = 0;" in script
     assert "function isCompactSurfaceTrackingActive()" in script
     assert "(dragState && dragState.compactSurface)" in script
     assert "compactSurfaceDesktopDragActive" in script
@@ -2011,26 +2289,26 @@ def test_compact_history_reduced_motion_closing_hides_immediately():
     closing_block = css_block(
         reduced_motion_block,
         '.compact-export-history-anchor[data-compact-export-history-visibility="closing"] {',
-        ".avatar-cursor-overlay-stage",
+        ".avatar-tool-visual-overlay-stage",
     )
 
     assert "opacity: 0 !important;" in closing_block
     assert "visibility: hidden !important;" in closing_block
 
 
-def test_avatar_tool_cursor_overlays_stay_above_model_side_menus():
+def test_avatar_tool_visuals_stay_above_model_side_menus():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
     popup_source = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
 
-    avatar_cursor_layer = css_z_index(css_block(
+    avatar_tool_visual_layer = css_z_index(css_block(
         styles,
-        ".avatar-cursor-overlay {",
-        ".avatar-cursor-overlay.is-compact",
+        ".avatar-tool-visual-overlay {",
+        ".avatar-tool-visual-overlay.is-compact",
     ))
-    hammer_cursor_layer = css_z_index(css_block(
+    avatar_tool_impact_layer = css_z_index(css_block(
         styles,
-        ".hammer-cursor-overlay {",
-        ".hammer-cursor-overlay.is-compact",
+        ".avatar-tool-impact-effect {",
+        ".avatar-tool-impact-effect.is-compact",
     ))
     model_popup_layer = css_z_index(css_block(
         popup_source,
@@ -2051,8 +2329,68 @@ def test_avatar_tool_cursor_overlays_stay_above_model_side_menus():
     )
     max_model_menu_layer = max(model_popup_layer, model_side_panel_layer, interval_side_panel_layer)
 
-    assert avatar_cursor_layer > max_model_menu_layer
-    assert hammer_cursor_layer > max_model_menu_layer
+    assert avatar_tool_visual_layer > max_model_menu_layer
+    assert avatar_tool_impact_layer > max_model_menu_layer
+
+
+def test_avatar_popup_actions_have_stable_input_region_markers():
+    source = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
+
+    assert "function markAvatarPopupActionElement(el, type)" in source
+    assert "function setAvatarPopupActionDebugMetadata(el, item, source)" in source
+    assert "data-neko-avatar-popup-action" in source
+    assert "data-neko-avatar-popup-item-id" in source
+    assert "data-neko-avatar-popup-url" in source
+    assert "function dispatchAvatarPopupLifecycleEvent(eventName, buttonId, popup, prefix)" in source
+    assert "function dispatchAvatarPopupNavigateEvent(item, finalUrl, windowName, source)" in source
+    assert "neko-avatar-popup-opening" in source
+    assert "neko-avatar-popup-opened" in source
+    assert "neko-avatar-popup-closing" in source
+    assert "neko-avatar-popup-closed" in source
+    assert "neko-avatar-popup-navigate" in source
+    assert "markAvatarPopupActionElement(btn, 'settings-menu');" in source
+    assert "setAvatarPopupActionDebugMetadata(btn, config, 'settings-button');" in source
+    assert "markAvatarPopupActionElement(menuItem, 'sidepanel-menu');" in source
+    assert "setAvatarPopupActionDebugMetadata(menuItem, item, 'sidepanel-menu');" in source
+    assert "markAvatarPopupActionElement(linkItem, 'settings-link');" in source
+    assert "markAvatarPopupActionElement(toggleItem, 'settings-toggle');" in source
+    assert "markAvatarPopupActionElement(menuItem, isSubmenuItem ? 'settings-submenu' : 'settings-menu');" in source
+    assert "setAvatarPopupActionDebugMetadata(menuItem, item, isSubmenuItem ? 'settings-submenu' : 'settings-menu');" in source
+
+
+def test_avatar_popup_positioning_uses_niri_physical_crop_coordinates_only_when_available():
+    source = AVATAR_POPUP_COMMON_PATH.read_text(encoding="utf-8")
+    position_popup_block = source.split("function positionPopup(popup, options = {})", 1)[1].split(
+        "function getButtonZone",
+        1,
+    )[0]
+    position_sidepanel_block = source.split("function positionSidePanel(container, anchor, options = {})", 1)[1].split(
+        "window.AvatarPopupUI =",
+        1,
+    )[0]
+
+    assert "function getNiriPetPhysicalCropPlacementApi()" in source
+    assert "window.__nekoNiriPetPhysicalCrop" in source
+    assert "return api.isActive() ? api : null;" in source
+    assert "const placementApi = niriViewport ? niriCropApi : null;" in position_popup_block
+    assert "toPlacementRect(popup.getBoundingClientRect(), placementApi)" in position_popup_block
+    assert "const screenWidth = niriViewport ? niriViewport.width : window.innerWidth;" in position_popup_block
+    assert "try {\n            const state = api.getState();" in source
+    assert "try {\n            const virtualRect = api.toVirtualRect({" in source
+    assert "catch (_) {\n            return normalized;" in source
+    assert "container.dataset.niriPhysicalCropPositioned = 'true';" in position_sidepanel_block
+    assert (
+        "const goLeft = isNiriPetPhysicalCrop\n"
+        "            ? false\n"
+        "            : (popup ? (popup.dataset.opensLeft === 'true' || !popup.dataset.opensLeft) : true);"
+    ) in position_sidepanel_block
+    assert "const popupRect = toPlacementRect" in position_sidepanel_block
+    assert "placementApi)" in position_sidepanel_block
+    niri_early_return_block = position_sidepanel_block.split("if (isNiriPetPhysicalCrop) {", 1)[1].split("}", 1)[0]
+    assert "return;" in niri_early_return_block
+
+    ui_source = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
+    assert "container.dataset.niriPhysicalCropPositioned === 'true' && hasPositionStyles" in ui_source
 
 
 def test_compact_history_closing_bubbles_disable_pointer_events():
@@ -2186,10 +2524,10 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     assert "aria-hidden={compactMusicPlayerVisibility === 'open' ? undefined : true}" in app_source
     assert 'data-compact-geometry-item="musicPlayer"' in app_source
     assert 'data-compact-geometry-hit-scope="children"' in app_source
-    assert "function getPreferredMusicMountTarget()" in music_ui_source
+    assert "function getPreferredMusicMountTarget(" in music_ui_source
     assert "function getCompactMusicMountTarget()" in music_ui_source
     assert "document.querySelector('[data-music-player-mount=\"compact-surface\"]')" in music_ui_source
-    assert "document.getElementById('music-player-mount')" in music_ui_source
+    assert "document.querySelectorAll('#music-player-mount')" in music_ui_source
     assert "document.getElementById(MUSIC_CONFIG.dom.containerId)" in music_ui_source
     assert "mutation.type === 'attributes' && isMusicMountMutationTarget(mutation.target)" in music_ui_source
     assert "function isCompactMusicGeometryMutationTarget(node)" in music_ui_source
@@ -2432,7 +2770,45 @@ def test_chat_image_file_drop_uses_import_pipeline_and_blocks_browser_navigation
     assert "e.preventDefault();" in drop_block
     assert "e.stopPropagation();" in drop_block
     assert "showHomeTutorialLockedToast();" in drop_block
-    assert "mod.importImageFilesToPendingList(files, { logPrefix: '[拖放图片]' });" in drop_block
+    assert "mod.importImageFilesToPendingList(imageFiles, { logPrefix: '[拖放图片]' });" in drop_block
+    assert "window.NekoAvatarDropParser" in drop_block
+    assert "parser.parseFiles(otherFiles)" in drop_block
+    assert "mod.sendAvatarDropPayload" in drop_block
+
+
+def test_chat_composer_user_images_use_text_attachment_input_type():
+    script = APP_BUTTONS_PATH.read_text(encoding="utf-8")
+
+    helper_block = script.split("function getPendingAttachmentInputType(item)", 1)[1].split(
+        "mod.syncPendingComposerAttachments",
+        1,
+    )[0]
+    assert "source === 'user-image'" in helper_block
+    assert "source === 'clipboard-image'" in helper_block
+    assert "source === 'compact-history'" in helper_block
+    assert "return 'user_image';" in helper_block
+    assert "return U.isMobile() ? 'camera' : 'screen';" in helper_block
+
+    import_block = script.split(
+        "mod.importImageFileToPendingList = function importImageFileToPendingList(file)",
+        1,
+    )[1].split(
+        "mod.importImageFilesToPendingList = function importImageFilesToPendingList(files, options)",
+        1,
+    )[0]
+    paste_block = script.split("document.addEventListener('paste'", 1)[1].split(
+        "document.addEventListener('dragover'",
+        1,
+    )[0]
+    send_block = script.split("// Send screenshots first", 1)[1].split(
+        "if (!isReactWindowSource)",
+        1,
+    )[0]
+
+    assert "mod.addScreenshotToList(dataUrl, null, { source: 'user-image' });" in import_block
+    assert "mod.addScreenshotToList(dataUrl, null, { source: 'clipboard-image' });" in paste_block
+    assert "input_type: getPendingAttachmentInputType(screenshotItems[i])" in send_block
+    assert "input_type: U.isMobile() ? 'camera' : 'screen'" not in send_block
 
 
 def test_text_mode_screenshot_payload_only_tags_paired_text_turn():

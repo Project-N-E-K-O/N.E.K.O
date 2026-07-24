@@ -1,26 +1,11 @@
-# Windows 実行ファイル
+# Windows デスクトップビルド
 
-エンドユーザー向けに、N.E.K.O. は Steam 経由でスタンドアロンの Windows 実行ファイルとして利用できます。
+End user は [Steam store](https://store.steampowered.com/app/4099310/__NEKO/) から install し、Steam 経由で起動して Provider を desktop/Web UI で設定します。
 
-## Steam インストール
+Python-backend artifact 単体には Electron windows、tray、Steam integration、routing、updater はありません。
 
-1. [Steam ストアページ](https://store.steampowered.com/app/4099310/__NEKO/) にアクセスします
-2. N.E.K.O. をインストールします
-3. `N.E.K.O.exe` を起動します
-4. Web UI がデフォルトブラウザで自動的に開きます
+`.github/workflows/build-desktop.yml` は Windows x64 Electron artifact と別の Python backend artifact を build します。Scheduled run は必要 stage 成功時に repository の `nightly` prerelease を更新します。
 
-## ワンクリックパッケージ
+Nightly は unsigned testing build で、次の run に置き換えられます。Stable/auto-update channel ではありません。Project GitHub Releases だけから取得し、built commit を確認して data root を backup してください。
 
-スタンドアロンパッケージも利用可能です：
-
-1. アーカイブをダウンロードして展開します
-2. `N.E.K.O.exe` を実行します
-3. `http://localhost:48911/api_key` で API キーを設定します
-
-## デスクトップビルド固有の機能
-
-- モデル共有のための Steam Workshop 統合
-- Steam 実績
-- Steam クライアントからの自動言語検出
-- システムトレイ統合
-- Steam 経由の自動アップデート
+Desktop workflow は configured N.E.K.O.-PC revision、Nuitka standalone backend、packaging checks 対象の config/templates/static/plugins/embedding/tiktoken/browser resources を組み合わせます。Port conflict 時は fallback するため、automation で 48911 を固定しません。

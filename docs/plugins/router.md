@@ -50,8 +50,7 @@ In Plugin Manager, users see one "Life Kit" plugin with 12+ entry points. They d
 ```python
 # routers/countdown.py
 
-from plugin.sdk.plugin import plugin_entry, Ok, Err, SdkError
-from plugin.sdk.shared.core.router import PluginRouter
+from plugin.sdk.plugin import PluginRouter, plugin_entry, Ok, Err, SdkError
 
 
 class CountdownRouter(PluginRouter):
@@ -160,6 +159,8 @@ class MyRouter(PluginRouter):
 
 A router is not a separate process. It runs in the same process as the main plugin and shares all resources.
 
+It is also not a manifest entry point: `[plugin].entry` must resolve to the owning `NekoPluginBase` class. Pointing it at a `PluginRouter` subclass is rejected by the host. `include_router()` performs binding and entry collection; the `on_mount` / `on_unmount` methods present on the router class are not automatically called by this base-class path.
+
 ---
 
 ## Sharing logic
@@ -212,7 +213,7 @@ Most of the time you don't need prefixes — just make sure entry IDs don't coll
 
 `exclude_router()` removes a router from the plugin's router list, but normal plugin code should not use it as a live feature toggle. Entries are collected when the host builds its dispatch table, so removing a router later does not automatically make its already-collected entries uncallable.
 
-If you need runtime enable/disable behavior, use the host extension enable/disable controls (`DISABLE_EXTENSION` / `ENABLE_EXTENSION`) that rebuild the dispatch table, or gate the entry logic with your own config check.
+If you need runtime enable/disable behavior, gate the entry logic with explicit plugin configuration and rebuild/restart the plugin when its dispatch structure changes. Do not depend on the removed Extension control path.
 
 ```python
 # Removes from the router list only
@@ -230,8 +231,7 @@ A plugin with two routers:
 
 ```python
 # routers/greet.py
-from plugin.sdk.plugin import plugin_entry, Ok
-from plugin.sdk.shared.core.router import PluginRouter
+from plugin.sdk.plugin import PluginRouter, plugin_entry, Ok
 
 class GreetRouter(PluginRouter):
     def __init__(self):
@@ -243,8 +243,7 @@ class GreetRouter(PluginRouter):
 
 
 # routers/math.py
-from plugin.sdk.plugin import plugin_entry, Ok, Err, SdkError
-from plugin.sdk.shared.core.router import PluginRouter
+from plugin.sdk.plugin import PluginRouter, plugin_entry, Ok, Err, SdkError
 
 class MathRouter(PluginRouter):
     def __init__(self):

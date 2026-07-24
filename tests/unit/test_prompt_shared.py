@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 
-PROMPT_SHARED_PATH = Path(__file__).resolve().parents[2] / "static" / "app-prompt-shared.js"
+PROMPT_SHARED_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-prompt-shared.js"
 
 
 def _run_prompt_shared_node_scenario(script_body: str) -> dict:

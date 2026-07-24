@@ -4,7 +4,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const repoRoot = path.resolve(__dirname, '..');
-const appWebsocketSource = fs.readFileSync(path.join(repoRoot, 'static', 'app-websocket.js'), 'utf8');
+const appWebsocketSource = fs.readFileSync(path.join(repoRoot, 'static', 'app/app-websocket.js'), 'utf8');
 const universalManagerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
 const websocketRouterSource = fs.readFileSync(path.join(repoRoot, 'main_routers/websocket_router.py'), 'utf8');
 
@@ -80,6 +80,17 @@ test('startup greeting waits for an explicit release instead of firing on websoc
         1,
     )[0];
     assert.match(listenerBlock, /if \(detail\.released === false\) \{\s*return;\s*\}/);
+});
+
+test('migration completion notice does not block the released startup greeting', () => {
+    const blockerBlock = appWebsocketSource.split('function _isGreetingCheckBlocked()')[1].split(
+        'function _resetGreetingCheckRetry',
+        1,
+    )[0];
+
+    assert.doesNotMatch(blockerBlock, /\.storage-location-completion-card/);
+    assert.match(blockerBlock, /#storage-location-overlay/);
+    assert.match(blockerBlock, /\.storage-location-modal/);
 });
 
 test('startup greeting is deferred until new-user icebreaker ends', () => {

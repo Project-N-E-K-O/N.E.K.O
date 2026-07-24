@@ -65,6 +65,9 @@
             <div class="container-header page-title-bar">
                 <h2 data-i18n="api.settings" data-text="API Key Settings">API Key 设置</h2>
                 <div class="neko-window-controls">
+                    <button type="button" class="neko-window-control-btn" data-neko-window-control="pin" hidden data-i18n-title="common.pinWindow" data-i18n-aria="common.pinWindow" title="置顶窗口" aria-label="置顶窗口" aria-pressed="false">
+                        <span class="neko-window-pin-icon" aria-hidden="true"></span>
+                    </button>
                     <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
                         <span class="neko-window-minimize-icon"></span>
                     </button>
@@ -285,7 +288,6 @@
                                 <!-- 清空自定义API按钮 -->
                                 <div class="clear-custom-api-wrapper">
                                     <button type="button" id="clearCustomApiBtn" class="clear-custom-api-btn" onclick="clearCustomApi()">
-                                        <span class="clear-custom-api-icon">🗑️</span>
                                         <span data-i18n="api.clearCustomApi">清空自定义API配置</span>
                                     </button>
                                 </div>
@@ -873,11 +875,21 @@
     <script src="/static/tutorial/core/operation-registry.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/settings-tour-flow.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/scene-orchestrator.js?v={{ static_asset_version }}"></script>
-    <script src="/static/tutorial/yui-guide/director.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/foundation.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/voice-queue.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/emotion-bridge.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/cursor-anchor-store.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/director-core.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/avatar-rounds.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/page-flows.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/chat-performance.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/lifecycle.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/bootstrap.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/skip-controller.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/avatar/reload-controller.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/round-prelude-controller.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/lifecycle-state-store.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/seven-day-state.js?v={{ static_asset_version }}"></script>
     <!-- 通用教程管理器 -->
     <script src="/static/libs/driver.min.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/universal-manager.js?v={{ static_asset_version }}"></script>

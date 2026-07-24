@@ -51,20 +51,61 @@
                   <component :is="marketPanelVisible ? ArrowLeft : ArrowRight" />
                 </el-icon>
               </button>
+              <el-popover
+                v-if="marketUrl && marketAuth.authenticated"
+                placement="bottom-start"
+                :width="300"
+                trigger="click"
+                popper-class="market-account-popover"
+                @show="loadMarketAccountSummary"
+              >
+                <template #reference>
+                  <el-button
+                    class="market-auth-trigger market-auth-trigger--connected"
+                    :loading="marketAuthBusy"
+                    plain
+                  >
+                    <el-icon><User /></el-icon>
+                    {{ $t('market.accountConnected', { name: marketAuthDisplayName }) }}
+                  </el-button>
+                </template>
+                <div class="market-account-card" v-loading="marketAccountSummaryBusy">
+                  <div class="market-account-card__identity">
+                    <el-avatar :size="44" :src="marketAccountSummary?.profile?.avatar_url || ''">
+                      {{ marketAuthDisplayName.slice(0, 1) }}
+                    </el-avatar>
+                    <div>
+                      <strong>{{ marketAccountSummary?.profile?.display_name || marketAuthDisplayName }}</strong>
+                      <p v-if="marketAccountSummary?.profile?.username">
+                        @{{ marketAccountSummary.profile.username }}
+                      </p>
+                    </div>
+                  </div>
+                  <p v-if="marketAccountSummaryBusy" class="market-account-card__hint">
+                    {{ $t('market.accountSummaryLoading') }}
+                  </p>
+                  <div v-else-if="marketAccountSummary?.market" class="market-account-card__stats">
+                    <span v-if="marketAccountSummary.market.member_days !== null">
+                      {{ $t('market.accountMemberDays', { days: marketAccountSummary.market.member_days }) }}
+                    </span>
+                    <span v-if="marketAccountSummary.market.published_plugins !== null">
+                      {{ $t('market.accountPublished', { count: marketAccountSummary.market.published_plugins }) }}
+                    </span>
+                  </div>
+                  <el-button class="market-account-card__logout" text type="danger" @click="confirmMarketLogout">
+                    {{ $t('market.logout') }}
+                  </el-button>
+                </div>
+              </el-popover>
               <el-button
-                v-if="marketUrl"
+                v-else-if="marketUrl"
                 class="market-auth-trigger"
-                :class="{ 'market-auth-trigger--connected': marketAuth.authenticated }"
                 :loading="marketAuthBusy"
                 plain
-                @click="marketAuth.authenticated ? logoutMarketAccount() : startMarketLogin()"
+                @click="startMarketLogin()"
               >
                 <el-icon><User /></el-icon>
-                {{
-                  marketAuth.authenticated
-                    ? $t('market.accountConnected', { name: marketAuthDisplayName })
-                    : $t('market.login')
-                }}
+                {{ $t('market.login') }}
               </el-button>
               <el-button
                 class="multi-select-trigger"
@@ -340,7 +381,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Expand, Finished, Sort, CircleClose, Close, VideoPlay, VideoPause, Delete, Upload, Download, ShoppingCart, ArrowRight, ArrowLeft, InfoFilled, User } from '@element-plus/icons-vue'
+import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Finished, Sort, CircleClose, Close, VideoPlay, VideoPause, Delete, Upload, Download, ShoppingCart, ArrowRight, ArrowLeft, InfoFilled, User } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
@@ -361,6 +402,7 @@ import type {
   GroupChoiceDescriptor,
   LayoutChoiceDescriptor,
 } from '@/composables/workbenchDescriptors'
+import { getMarketUrl } from '@/api/market'
 import { reloadAllPlugins, deletePlugin } from '@/api/plugins'
 import { uploadAndInstallPlugin, buildPluginCli, downloadPluginPackage } from '@/api/pluginCli'
 import { usePluginListContextActions, type ResolvedPluginListAction } from '@/composables/usePluginListContextActions'
@@ -401,10 +443,36 @@ const {
   marketAuth,
   marketAuthBusy,
   marketAuthDisplayName,
+  marketAccountSummary,
+  marketAccountSummaryBusy,
   loadMarketAuthStatus,
+  loadMarketAccountSummary,
   logoutMarketAccount,
   startMarketLogin,
 } = useMarketAuth()
+
+async function confirmMarketLogout() {
+  try {
+    await ElMessageBox.confirm(
+      t('market.logoutConfirm'),
+      t('common.logoutConfirmTitle'),
+      { confirmButtonText: t('common.confirm'), cancelButtonText: t('common.cancel'), type: 'warning' },
+    )
+  } catch (error) {
+    const action = typeof error === 'object' && error !== null && 'action' in error
+      ? (error as { action?: unknown }).action
+      : error
+    if (action === 'cancel' || action === 'close') return
+    ElMessage.error(error instanceof Error ? error.message : t('market.logoutFailed'))
+    return
+  }
+
+  try {
+    await logoutMarketAccount()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : t('market.logoutFailed'))
+  }
+}
 
 // confirm_message 是 LocalizedText（string 或 locale-keyed dict），不能直接
 // 透传给 PluginDangerConfirmDialog 的 :message="string" prop。模板里
@@ -435,7 +503,6 @@ const {
   groupCounts,
   filteredPurePlugins,
   filteredAdapters,
-  filteredExtensions,
   selectedPluginIds,
   togglePlugin: togglePluginSelection,
   selectAllVisible,
@@ -480,19 +547,11 @@ const pluginSections = computed(() => [
     items: filteredAdapters.value,
     variant: 'adapter' as const,
   },
-  {
-    key: 'extension',
-    title: t('plugins.extensionsSection'),
-    icon: Expand,
-    items: filteredExtensions.value,
-    variant: 'extension' as const,
-  },
 ])
 
 const typeFilterChoices = computed<GroupChoiceDescriptor[]>(() => [
   { id: 'plugin', label: t('plugins.typePlugin'), icon: Box },
   { id: 'adapter', label: t('plugins.typeAdapter'), icon: Connection },
-  { id: 'extension', label: t('plugins.typeExtension'), icon: Expand },
 ])
 
 const layoutChoices = computed<LayoutChoiceDescriptor[]>(() => [
@@ -521,10 +580,8 @@ const filterRuleGroups = computed<FilterRuleGroupDescriptor[]>(() => [
     rules: [
       { token: 'type:plugin', label: t('plugins.filterRuleLabels.plugin') },
       { token: 'type:adapter', label: t('plugins.filterRuleLabels.adapter') },
-      { token: 'type:extension', label: t('plugins.filterRuleLabels.extension') },
       { token: 'is:ui', label: t('plugins.filterRuleLabels.ui') },
       { token: 'has:entries', label: t('plugins.filterRuleLabels.entries') },
-      { token: 'has:host', label: t('plugins.filterRuleLabels.host') },
     ],
   },
   {
@@ -533,7 +590,6 @@ const filterRuleGroups = computed<FilterRuleGroupDescriptor[]>(() => [
     rules: [
       { token: 'name:', label: t('plugins.filterRuleLabels.name') },
       { token: 'id:', label: t('plugins.filterRuleLabels.id') },
-      { token: 'host:', label: t('plugins.filterRuleLabels.hostTarget') },
       { token: 'version:', label: t('plugins.filterRuleLabels.version') },
       { token: 'entry:', label: t('plugins.filterRuleLabels.entry') },
       { token: 'author:', label: t('plugins.filterRuleLabels.author') },
@@ -541,11 +597,28 @@ const filterRuleGroups = computed<FilterRuleGroupDescriptor[]>(() => [
   },
 ])
 
-async function handleRefresh() {
+type PluginListRefreshMode = 'full' | 'initial-open' | 'light'
+
+async function refreshPluginListData(mode: PluginListRefreshMode) {
   let warningMessage = ''
   try {
-    const syncResult = await pluginStore.syncRegistryAndFetch()
-    warningMessage = syncResult.warningMessage || ''
+    if (mode === 'full') {
+      const syncResult = await pluginStore.syncRegistryAndFetch()
+      warningMessage = syncResult.warningMessage || ''
+    } else if (mode === 'initial-open') {
+      try {
+        const syncResult = await pluginStore.ensurePluginListRegistrySynced()
+        warningMessage = syncResult?.warningMessage || ''
+        if (!syncResult) {
+          await pluginStore.fetchPlugins()
+        }
+      } catch (syncError) {
+        console.warn('Failed to sync plugin registry on first plugin list open:', syncError)
+        await pluginStore.fetchPlugins()
+      }
+    } else {
+      await pluginStore.fetchPlugins()
+    }
     await pluginStore.fetchPluginStatus()
   } catch (error) {
     console.warn('Failed to refresh plugin data:', error)
@@ -560,6 +633,18 @@ async function handleRefresh() {
   if (warningMessage) {
     ElMessage.warning(warningMessage)
   }
+}
+
+async function handleRefresh() {
+  await refreshPluginListData('full')
+}
+
+async function refreshAfterPluginChange() {
+  await refreshPluginListData('full')
+}
+
+async function refreshForInitialOpen() {
+  await refreshPluginListData('initial-open')
 }
 
 async function toggleMetrics() {
@@ -660,6 +745,17 @@ function closeDangerDialog() {
   pendingDangerPlugin.value = null
 }
 
+async function loadMarketEntry() {
+  try {
+    const url = await getMarketUrl()
+    if (!url) return
+    marketUrl.value = url
+    loadMarketAuthStatus().catch(() => {})
+  } catch {
+    // Market is optional; keep the local plugin list usable if it is absent.
+  }
+}
+
 function openDangerDialog(
   action: ResolvedPluginListAction,
   plugin: PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean },
@@ -695,7 +791,7 @@ function handlePluginContextMenu(
 }
 
 function getTutorialPlugin() {
-  return filteredPurePlugins.value[0] || filteredAdapters.value[0] || filteredExtensions.value[0] || rawPlugins.value[0] || null
+  return filteredPurePlugins.value[0] || filteredAdapters.value[0] || rawPlugins.value[0] || null
 }
 
 async function showTutorialContextMenu() {
@@ -806,7 +902,7 @@ async function handleImportFileChange(event: Event) {
     const result = await uploadAndInstallPlugin(file)
     const count = result.install.installed_plugin_count ?? 0
     ElMessage.success(t('plugins.importSuccess', { name: file.name, count }))
-    await handleRefresh()
+    await refreshAfterPluginChange()
   } catch (error: any) {
     console.error('Failed to import plugin package:', error)
     const detail = formatHttpError(error)
@@ -886,12 +982,12 @@ async function handleBatchStart() {
   batchBusy.value = true
   let ok = 0; let fail = 0
   for (const p of plugins) {
-    try { await pluginStore.start(p.id); ok++ } catch { fail++ }
+    try { await pluginStore.start(p.id, { refresh: false }); ok++ } catch { fail++ }
   }
   batchBusy.value = false
   if (fail === 0) ElMessage.success(t('plugins.batchStartSuccess', { count: ok }))
   else ElMessage.warning(t('plugins.batchPartial', { success: ok, fail }))
-  await handleRefresh()
+  await refreshAfterPluginChange()
 }
 
 async function handleBatchStop() {
@@ -911,12 +1007,12 @@ async function handleBatchStop() {
   batchBusy.value = true
   let ok = 0; let fail = 0
   for (const p of plugins) {
-    try { await pluginStore.stop(p.id); ok++ } catch { fail++ }
+    try { await pluginStore.stop(p.id, { refresh: false }); ok++ } catch { fail++ }
   }
   batchBusy.value = false
   if (fail === 0) ElMessage.success(t('plugins.batchStopSuccess', { count: ok }))
   else ElMessage.warning(t('plugins.batchPartial', { success: ok, fail }))
-  await handleRefresh()
+  await refreshAfterPluginChange()
 }
 
 async function handleBatchReload() {
@@ -936,12 +1032,12 @@ async function handleBatchReload() {
   batchBusy.value = true
   let ok = 0; let fail = 0
   for (const p of plugins) {
-    try { await pluginStore.reload(p.id); ok++ } catch { fail++ }
+    try { await pluginStore.reload(p.id, { refresh: false }); ok++ } catch { fail++ }
   }
   batchBusy.value = false
   if (fail === 0) ElMessage.success(t('plugins.batchReloadSuccess', { count: ok }))
   else ElMessage.warning(t('plugins.batchPartial', { success: ok, fail }))
-  await handleRefresh()
+  await refreshAfterPluginChange()
 }
 
 async function handleBatchDelete() {
@@ -964,7 +1060,7 @@ async function handleBatchDelete() {
   clearSelection()
   if (fail === 0) ElMessage.success(t('plugins.batchDeleteSuccess', { count: ok }))
   else ElMessage.warning(t('plugins.batchPartial', { success: ok, fail }))
-  await handleRefresh()
+  await refreshAfterPluginChange()
 }
 
 async function handleReloadAll() {
@@ -1008,7 +1104,7 @@ async function handleReloadAll() {
     reloadingAll.value = false
   }
 
-  await handleRefresh()
+  await refreshAfterPluginChange()
 }
 
 watch(
@@ -1052,20 +1148,7 @@ watch(packagePanelVisible, (visible) => {
 
 onMounted(async () => {
   window.addEventListener(TUTORIAL_ACTION_EVENT, handleTutorialAction)
-  await handleRefresh()
-  // 获取 Market URL（用于显示"获取新插件"入口）
-  try {
-    const res = await fetch('/market/status')
-    if (res.ok) {
-      const data = await res.json()
-      if (data.market_url) {
-        marketUrl.value = data.market_url
-        loadMarketAuthStatus().catch(() => {})
-      }
-    }
-  } catch {
-    // 静默失败
-  }
+  await Promise.all([loadMarketEntry(), refreshForInitialOpen()])
 })
 
 onUnmounted(() => {
@@ -1162,9 +1245,9 @@ onUnmounted(() => {
 
 .workbench-header {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
   gap: 10px;
 }
 
@@ -1245,6 +1328,42 @@ onUnmounted(() => {
   --el-button-text-color: var(--el-color-success);
   --el-button-border-color: color-mix(in srgb, var(--el-color-success) 35%, transparent);
   --el-button-bg-color: color-mix(in srgb, var(--el-color-success) 8%, transparent);
+}
+
+.market-account-card {
+  display: grid;
+  gap: 12px;
+}
+
+.market-account-card__identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.market-account-card__identity strong,
+.market-account-card__identity p {
+  display: block;
+  margin: 0;
+}
+
+.market-account-card__identity p,
+.market-account-card__hint {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.market-account-card__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  color: var(--el-text-color-regular);
+  font-size: 12px;
+}
+
+.market-account-card__logout {
+  justify-self: start;
+  padding-left: 0;
 }
 
 /* ── Multi-select trigger button (top) ── */
@@ -1625,7 +1744,8 @@ onUnmounted(() => {
   gap: 8px;
   align-items: center;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  justify-content: flex-start;
+  width: 100%;
   flex: 0 1 auto;
   min-width: 0;
 }

@@ -47,12 +47,12 @@ def _function_returns_path_from_file(source: str, function_name: str, *, parent_
 
 @pytest.mark.unit
 def test_main_server_source_mode_app_root_no_longer_uses_cwd():
-    source = (REPO_ROOT / "app" / "main_server.py").read_text(encoding="utf-8")
+    source = (REPO_ROOT / "app" / "main_server" / "__init__.py").read_text(encoding="utf-8")
 
     assert _contains_os_getcwd_call(source) is False
-    # main_server.py is at <repo>/app/main_server.py, so _get_app_root()
-    # must climb two levels (dirname × 2) to land at the repo root.
-    assert _function_returns_path_from_file(source, "_get_app_root", parent_dirs=2) is True
+    # __init__.py is at <repo>/app/main_server/__init__.py, so _get_app_root()
+    # must climb three levels (dirname × 3) to land at the repo root.
+    assert _function_returns_path_from_file(source, "_get_app_root", parent_dirs=3) is True
 
 
 @pytest.mark.unit

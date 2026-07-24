@@ -12,6 +12,8 @@ let _isLoadingSavedConfig = false;
 let _apiKeyRegistry = {};
 // 辅助API服务商完整信息（从后端加载）
 let _assistApiProviders = {};
+// 仅用于 API 管理簿 / 专用模型配置的 provider，不进入辅助 API 下拉
+let _keyBookApiProviders = {};
 // 核心API服务商完整信息（从后端加载）
 let _coreApiProviders = {};
 // 特异 TTS provider（vllm_omni 等）前端驱动元数据，key→meta；来自后端
@@ -44,6 +46,18 @@ const MODEL_DEFAULT_PROVIDER = {
     omni: 'follow_core',
     gameMain: 'follow_conversation',
     gameSummary: 'follow_summary',
+};
+const MODEL_CONFIG_EXPANSION_PATHS = {
+    conversation: ['conversation'],
+    summary: ['summary'],
+    gameMain: ['game', 'game-main'],
+    gameSummary: ['game', 'game-summary'],
+    correction: ['correction'],
+    emotion: ['emotion'],
+    vision: ['vision'],
+    agent: ['agent'],
+    omni: ['omni'],
+    tts: ['tts'],
 };
 const MODEL_PROVIDER_FIELD_BY_TYPE = {
     conversation: 'conversation_model',
@@ -926,11 +940,23 @@ function expandAndScrollToKeyBook(options = {}) {
     }
 
     const section = document.getElementById('key-book-section');
-    if (section) {
-        section.scrollIntoView({
+    const providerKey = typeof options.providerKey === 'string' ? options.providerKey : '';
+    const targetInputId = providerKey === MIMO_TOKEN_PLAN_PROVIDER_KEY
+        ? 'mimoTokenPlanKeyInput'
+        : (providerKey ? `keyBookInput_${providerKey}` : '');
+    const targetInput = targetInputId ? document.getElementById(targetInputId) : null;
+    const scrollTarget = targetInput?.closest('.key-book-row, .field-row') || section;
+
+    if (scrollTarget) {
+        scrollTarget.scrollIntoView({
             behavior: options.instant ? 'auto' : 'smooth',
             block: 'center'
         });
+    }
+
+    if (targetInput) {
+        targetInput.focus({ preventScroll: true });
+        targetInput.select();
     }
 }
 
@@ -996,7 +1022,7 @@ function appendModelProviderOption(selectEl, value, i18nKey, fallbackText) {
  * 但没有任何 LLM 模型字段」这个结构信号兜底，避免在前端再 re-hardcode 具体 provider key。
  */
 function isStructuralTtsOnlyProvider(pk) {
-    const p = _assistApiProviders[pk];
+    const p = _assistApiProviders[pk] || _keyBookApiProviders[pk];
     if (!p || typeof p !== 'object') return false;
     if (!p.tts_default_model && !p.tts_default_voice) return false;
     // 任意 LLM 模型字段（conversation_model / summary_model / ...）非空 → 不是纯 TTS。
@@ -1018,7 +1044,7 @@ function getTtsProviderMeta(pk) {
     const meta = _ttsProviders[pk];
     if (meta) return meta;
     if (isStructuralTtsOnlyProvider(pk)) {
-        const p = _assistApiProviders[pk] || {};
+        const p = _assistApiProviders[pk] || _keyBookApiProviders[pk] || {};
         return {
             key: pk,
             tts_dropdown_only: true,
@@ -1030,9 +1056,9 @@ function getTtsProviderMeta(pk) {
             model_field: 'ttsModelId',
             voice_field: 'ttsVoiceId',
             api_key_field: 'ttsModelApiKey',
-            probe_kind: 'none',
-            probe_sub_type: '',
-            probe_ws_path: '',
+            probe_kind: p.probe_kind || 'none',
+            probe_sub_type: p.probe_sub_type || '',
+            probe_ws_path: p.probe_ws_path || '',
             _synthesized: true,
         };
     }
@@ -1044,11 +1070,26 @@ function getTtsProviderMeta(pk) {
  */
 function getProviderInfo(providerKey) {
     if (!providerKey) return {};
-    return _assistApiProviders[providerKey] || _coreApiProviders[providerKey] || {};
+    return _assistApiProviders[providerKey] || _keyBookApiProviders[providerKey] || _coreApiProviders[providerKey] || {};
 }
 
 function isProviderFlagEnabled(value) {
     return value === true || value === 1 || value === 'true' || value === '1';
+}
+
+function isProviderFlagDisabled(value) {
+    return value === false || value === 0 || value === 'false' || value === '0';
+}
+
+function isTtsProviderVisibleInModelConfig(providerKey, meta = null) {
+    const profile = getProviderInfo(providerKey);
+    if (isProviderFlagDisabled(profile.tts_config_visible) || isProviderFlagDisabled(profile.ttsConfigVisible)) {
+        return false;
+    }
+    if (meta && (isProviderFlagDisabled(meta.tts_config_visible) || isProviderFlagDisabled(meta.ttsConfigVisible))) {
+        return false;
+    }
+    return true;
 }
 
 function isFixedModelProvider(providerKey) {
@@ -1061,7 +1102,7 @@ function getProviderType(providerKey, fallback = 'openai_compatible') {
     const providerType = String(profile.provider_type || profile.providerType || fallback || 'openai_compatible')
         .trim()
         .toLowerCase();
-    return ['openai_compatible', 'anthropic', 'websocket'].includes(providerType)
+    return ['openai_compatible', 'anthropic', 'websocket', 'tts'].includes(providerType)
         ? providerType
         : 'openai_compatible';
 }
@@ -1172,6 +1213,7 @@ function populateModelProviderDropdowns() {
             // 成员由后端 tts_provider_registry 驱动；注册表元数据缺失时 getTtsProviderMeta
             // 用结构信号兜底，前端始终不硬编码 provider key。
             const _spFilter = getTtsProviderMeta(pk);
+            if (mt === 'tts' && !isTtsProviderVisibleInModelConfig(pk, _spFilter)) return;
             if (_spFilter && _spFilter.tts_dropdown_only && mt !== 'tts') return;
             const pInfo = _assistApiProviders[pk];
             const opt = document.createElement('option');
@@ -1194,6 +1236,7 @@ function populateModelProviderDropdowns() {
                 if (_assistApiProviders[pk]) return; // 已在上面的循环里加过
                 const meta = _ttsProviders[pk];
                 if (!meta) return;
+                if (!isTtsProviderVisibleInModelConfig(pk, meta)) return;
                 const opt = document.createElement('option');
                 opt.value = pk;
                 const translationKey = `api.assistProviderNames.${pk}`;
@@ -1259,12 +1302,12 @@ function onCustomModelProviderChange(modelType) {
     /**
      * 将 key 输入框设为 readonly 并显示管理簿提示 + 快捷跳转按钮
      */
-    const setKeyReadonly = (input, value) => {
+    const setKeyReadonly = (input, value, providerKey = '') => {
         if (!input) return;
         setMaskedInput(input, value || '');
         input.setAttribute('readonly', 'readonly');
         input.placeholder = window.t ? window.t('api.keyAutoFilledFromKeyBook') : 'Key从API管理簿自动填充';
-        ensureKeyBookLink(input);
+        ensureKeyBookLink(input, providerKey);
     };
 
     /**
@@ -1331,15 +1374,19 @@ function onCustomModelProviderChange(modelType) {
                     urlInput.setAttribute('readonly', 'readonly');
                 }
                 const coreBookKey = syncKeyFromBook(coreProviderKey);
-                setKeyReadonly(keyInput, coreBookKey);
+                setKeyReadonly(keyInput, coreBookKey, coreProviderKey);
             } else {
-                const pInfo = _assistApiProviders[sourceProviderKey] || _coreApiProviders[sourceProviderKey] || {};
+                const pInfo = getProviderInfo(sourceProviderKey);
                 if (urlInput) {
                     urlInput.value = getEffectiveAssistUrl(sourceProviderKey, pInfo) || getProviderCoreUrl(sourceProviderKey, pInfo);
                     urlInput.setAttribute('readonly', 'readonly');
                 }
                 const bookKey = getEffectiveAssistKey(sourceProviderKey);
-                setKeyReadonly(keyInput, bookKey);
+                setKeyReadonly(
+                    keyInput,
+                    bookKey,
+                    getEffectiveAssistProviderKey(sourceProviderKey)
+                );
             }
         } else {
             // free or empty
@@ -1353,7 +1400,7 @@ function onCustomModelProviderChange(modelType) {
         // tts_provider_registry 的 editable_endpoint 驱动（缺失时 getTtsProviderMeta
         // 结构信号兜底）；预填默认值优先取 api_providers.json，缺失时回退注册表 default_*。
         const _spMeta = getTtsProviderMeta(provider);
-        const pInfo = _assistApiProviders[provider] || {};
+        const pInfo = getProviderInfo(provider);
         if (urlInput) {
             // 切换到该 provider 时：
             // - 若 URL 为空，或当前 URL 是从其他 provider 自动填充的 readonly 值（用户没主动编辑过），
@@ -1388,7 +1435,7 @@ function onCustomModelProviderChange(modelType) {
         setKeyEditable(keyInput);
     } else {
         // Specific provider
-        const pInfo = _assistApiProviders[provider] || _coreApiProviders[provider] || {};
+        const pInfo = getProviderInfo(provider);
         const fixedModelApplied = applyFixedModelProviderUi(modelType, provider);
         if (modelIdInput && !fixedModelApplied) modelIdInput.removeAttribute('readonly');
         if (modelType === 'omni') {
@@ -1404,7 +1451,7 @@ function onCustomModelProviderChange(modelType) {
             }
         }
         const bookKey = getEffectiveAssistKey(provider, null, { useTokenPlan: false });
-        setKeyReadonly(keyInput, bookKey);
+        setKeyReadonly(keyInput, bookKey, provider);
     }
     if (modelType === 'tts') {
         updateTtsProviderFieldVisibility(provider);
@@ -1446,23 +1493,33 @@ window.addEventListener('localechange', updateGptSovitsTutorialLink);
 /**
  * 在 key 输入框旁添加"前往管理簿"快捷按钮（如果还没有）
  */
-function ensureKeyBookLink(input) {
+function ensureKeyBookLink(input, providerKey = '') {
     if (!input) return;
     const parent = input.parentElement;
     if (!parent) return;
-    if (parent.querySelector('.key-book-shortcut')) return;
+    const shortcutScope = input.closest('.field-row') || parent;
+    const existingLinks = Array.from(shortcutScope.querySelectorAll('.key-book-shortcut'));
 
-    const link = document.createElement('a');
-    link.href = 'javascript:void(0)';
-    link.className = 'key-book-shortcut';
-    link.setAttribute('data-i18n', 'api.goToKeyBook');
-    link.textContent = window.t ? window.t('api.goToKeyBook') : '前往管理簿';
-    link.style.cssText = 'font-size: 0.85em; color: #40C5F1; cursor: pointer; margin-left: 8px; white-space: nowrap;';
-    link.addEventListener('click', (e) => {
-        e.preventDefault();
-        expandAndScrollToKeyBook();
-    });
-    parent.appendChild(link);
+    let link = existingLinks.shift() || null;
+    existingLinks.forEach(extraLink => extraLink.remove());
+    if (!link) {
+        link = document.createElement('a');
+        link.href = 'javascript:void(0)';
+        link.className = 'key-book-shortcut';
+        link.setAttribute('data-i18n', 'api.goToKeyBook');
+        link.textContent = window.t ? window.t('api.goToKeyBook') : '前往管理簿';
+        link.style.cssText = 'font-size: 0.85em; color: #40C5F1; cursor: pointer; margin-left: 8px; white-space: nowrap;';
+        link.addEventListener('click', (e) => {
+            e.preventDefault();
+            expandAndScrollToKeyBook({ providerKey: link.dataset.providerKey || '' });
+        });
+    }
+
+    link.dataset.providerKey = providerKey || '';
+    link.dataset.sourceInputId = input.id || '';
+    if (link.parentElement !== parent) {
+        parent.appendChild(link);
+    }
 }
 
 /**
@@ -1472,15 +1529,15 @@ function removeKeyBookLink(input) {
     if (!input) return;
     const parent = input.parentElement;
     if (!parent) return;
-    const link = parent.querySelector('.key-book-shortcut');
-    if (link) link.remove();
+    const shortcutScope = input.closest('.field-row') || parent;
+    shortcutScope.querySelectorAll('.key-book-shortcut').forEach(link => link.remove());
 }
 
 // ==================== 加载API服务商选项 ====================
 
 async function loadApiProviders() {
     try {
-        const response = await fetch('/api/config/api_providers');
+        const response = await fetch('/api/config/api_providers', { cache: 'no-store' });
         if (response.ok) {
             const data = await response.json();
             if (data.success) {
@@ -1488,6 +1545,7 @@ async function loadApiProviders() {
                 _apiKeyRegistry = data.api_key_registry || {};
                 _coreApiProviders = data.core_api_providers_full || {};
                 _assistApiProviders = data.assist_api_providers_full || {};
+                _keyBookApiProviders = data.keybook_api_providers_full || {};
 
                 // TTS provider 元数据（后端 tts_provider_registry → ui_metadata）：
                 // 列表转成 key→meta 映射，供下拉过滤 / 字段解锁 / 探测 / 来源能力复用。
@@ -1511,7 +1569,7 @@ async function loadApiProviders() {
                 }
                 // Build registry from providers if not provided
                 if (Object.keys(_apiKeyRegistry).length === 0) {
-                    const allProviders = { ..._coreApiProviders, ..._assistApiProviders };
+                    const allProviders = { ..._coreApiProviders, ..._assistApiProviders, ..._keyBookApiProviders };
                     Object.keys(allProviders).forEach(pk => {
                         if (pk === 'free') return;
                         // Backend expects camelCase: assistApiKey + PascalCased provider key
@@ -1558,11 +1616,8 @@ async function loadApiProviders() {
                     assistSelect.innerHTML = ''; // 清空现有选项
                     const assistList = Array.isArray(data.assist_api_providers) ? data.assist_api_providers : [];
                     assistList.forEach(provider => {
-                        // 修复 PR #1764 review 第三轮 #1：vllm_omni 是 TTS-only provider，
-                        // 不应出现在主 assistApiSelect 下拉框（否则被选作辅助 API 时
-                        // ConfigManager 会把 TTS WebSocket URL 复制到 OpenAI-compatible 配置，
-                        // summary/correction/agent 等 LLM 调用会打到错误的 endpoint）
-                        if (provider.key === 'vllm_omni') return;
+                        const ttsMeta = getTtsProviderMeta(provider.key);
+                        if (ttsMeta && ttsMeta.tts_dropdown_only) return;
 
                         // 如果是大陆用户，过滤掉受限的服务商
                         if (isProviderRestricted(provider.key)) {
@@ -2558,7 +2613,10 @@ async function save_button_down(e) {
     Object.keys(allBookKeys).forEach(pk => {
         const field = (_apiKeyRegistry[pk] || {}).config_field;
         if (field) {
-            bookPayload[field] = allBookKeys[pk];
+            const value = allBookKeys[pk];
+            if (!Object.prototype.hasOwnProperty.call(bookPayload, field) || value || !bookPayload[field]) {
+                bookPayload[field] = value;
+            }
         }
     });
 
@@ -2584,7 +2642,7 @@ async function save_button_down(e) {
     if (gptsovitsEnabled) {
         payload.ttsProvider = 'gptsovits';
     } else if (selectedTtsProvider === 'mimo') {
-        payload.ttsProvider = 'mimo';
+        payload.ttsProvider = selectedTtsProvider;
     } else if (_loadedGptSovitsState !== 'none') {
         payload.ttsProvider = '';
     } else if (selectedTtsProvider) {
@@ -2690,7 +2748,7 @@ function refreshAutoResolvedModelUrlsForSave(params) {
             return getProviderCoreUrl(providerKey, _coreApiProviders[providerKey] || {});
         }
 
-        const assistProfile = _assistApiProviders[providerKey] || _coreApiProviders[providerKey] || {};
+        const assistProfile = getProviderInfo(providerKey);
         const useTokenPlan = providerMode === 'follow_assist';
         return getEffectiveAssistUrl(providerKey, assistProfile, { useTokenPlan }) || getProviderCoreUrl(providerKey, assistProfile);
     };
@@ -3123,6 +3181,50 @@ function toggleModelConfig(modelType) {
     }
 }
 
+function navigateToCustomModelConfig(modelType) {
+    const expansionPath = MODEL_CONFIG_EXPANSION_PATHS[modelType];
+    if (!expansionPath) return false;
+
+    const customApiOptions = document.getElementById('custom-api-options');
+    const customApiToggleBtn = document.getElementById('custom-api-toggle-btn');
+    if (customApiOptions && getComputedStyle(customApiOptions).display === 'none') {
+        customApiOptions.style.display = 'block';
+        if (customApiToggleBtn) customApiToggleBtn.classList.add('rotated');
+    }
+
+    const customApiContainer = document.getElementById('custom-api-container');
+    if (customApiContainer && getComputedStyle(customApiContainer).display === 'none') {
+        customApiContainer.style.display = 'block';
+    }
+
+    let expandedConfig = false;
+    expansionPath.forEach(configType => {
+        const content = document.getElementById(`${configType}-model-content`);
+        if (content && !content.classList.contains('expanded')) {
+            toggleModelConfig(configType);
+            expandedConfig = true;
+        }
+    });
+
+    const targetType = expansionPath[expansionPath.length - 1];
+    const targetContent = document.getElementById(`${targetType}-model-content`);
+    const targetHeader = targetContent?.previousElementSibling;
+    if (!targetHeader) return false;
+    const targetPanel = targetHeader.closest(
+        '.nested-model-config-container, .model-config-container'
+    ) || targetHeader;
+
+    const prefersReducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    window.setTimeout(() => {
+        targetPanel.scrollIntoView({
+            behavior: prefersReducedMotion ? 'auto' : 'smooth',
+            block: 'center'
+        });
+    }, expandedConfig ? 320 : 0);
+
+    return true;
+}
+
 // 页面加载完成后初始化折叠状态
 document.addEventListener('DOMContentLoaded', function () {
     // 初始化所有模型配置为折叠状态
@@ -3302,6 +3404,9 @@ function updateLightStatus(lightElement, status) {
     const fallback = fallbackMap[status] || status;
     const statusLabel = window.t ? window.t(tooltipKey, fallback) : fallback;
     lightElement.title = buildConnectivityLightTitle(lightElement, statusLabel);
+    if (lightElement.classList.contains('connectivity-summary-light')) {
+        lightElement.setAttribute('aria-label', lightElement.title);
+    }
 }
 
 // ==================== 连通性测试：错误信息展示 UI 组件 ====================
@@ -3372,7 +3477,7 @@ function buildConnectivityCacheId(scope, providerKey, key, url) {
     return key || url || '';
 }
 
-function buildCustomConnectivityCacheId(providerType, subType, url, key, model) {
+function buildCustomConnectivityCacheId(providerType, subType, url, key, model, voiceId = '') {
     return [
         'custom',
         providerType || 'openai_compatible',
@@ -3380,6 +3485,7 @@ function buildCustomConnectivityCacheId(providerType, subType, url, key, model) 
         url || '',
         key || '',
         model || '',
+        voiceId || '',
     ].join('|');
 }
 
@@ -3584,6 +3690,13 @@ const ConnectivityManager = {
                 result.subType = _spProbe.probe_sub_type || '';
                 result.key = keyInput ? getRealKey(keyInput) : '';
                 result.model = getResolvedCustomModelId(mt, provider);
+                } else if (_spProbe.probe_kind === 'http_tts') {
+                    result.url = urlInput ? urlInput.value.trim() : '';
+                    result.providerType = 'tts';
+                    result.subType = _spProbe.probe_sub_type || provider;
+                    result.key = keyInput ? getRealKey(keyInput) : '';
+                    result.model = getResolvedCustomModelId(mt, provider);
+                    result.voiceId = document.getElementById('ttsVoiceId')?.value?.trim() || '';
                 } else {
                     // 非 ws 的可编辑端点（结构兜底 / 未来 http 探测的 provider）：当 custom
                     // 处理——用户填的 URL/Key/Model，不绑定内置 provider profile。
@@ -3602,7 +3715,7 @@ const ConnectivityManager = {
                     result.providerKey = provider;
                     result.providerScope = 'core';
                 } else {
-                    const pInfo = _assistApiProviders[provider] || _coreApiProviders[provider] || {};
+                    const pInfo = getProviderInfo(provider);
                     result.url = getEffectiveAssistUrl(provider, pInfo, { useTokenPlan: false }) || getProviderCoreUrl(provider, pInfo);
                     result.providerType = getProviderType(provider);
                     result.providerKey = provider;
@@ -3619,7 +3732,8 @@ const ConnectivityManager = {
                         result.subType,
                         result.url,
                         result.key,
-                        result.model
+                        result.model,
+                        result.voiceId || ''
                     );
                 }
             }
@@ -3685,7 +3799,7 @@ const ConnectivityManager = {
      * @returns {Promise<{success: boolean, error?: string, error_code?: string}>}
      */
     async testKey(params) {
-        const { provider_key, provider_scope, url, api_key: apiKey, model, provider_type: providerType, sub_type: subType, is_free: isFree, cache_id: cacheId } = params;
+        const { provider_key, provider_scope, url, api_key: apiKey, model, voice_id: voiceId, provider_type: providerType, sub_type: subType, is_free: isFree, cache_id: cacheId } = params;
         console.log('[ConnectivityManager] testKey called:', {
             provider_key: provider_key || '(custom)',
             provider_scope: provider_scope || '(none)',
@@ -3738,6 +3852,9 @@ const ConnectivityManager = {
                     // 让后端走 _test_vllm_omni_ws_handshake 而非 _test_websocket。
                     if (subType) {
                         body.sub_type = subType;
+                    }
+                    if (voiceId) {
+                        body.voice_id = voiceId;
                     }
                     body.is_free = !!isFree;
                 }
@@ -3884,6 +4001,7 @@ const ConnectivityManager = {
                     keyConfigs[customCacheId] = {
                         provider_key: customResult.providerKey, provider_scope: customResult.providerScope,
                         url: customResult.url, api_key: customResult.key || '', model: model,
+                        voice_id: customResult.voiceId || '',
                         provider_type: customResult.providerType, sub_type: customResult.subType || '', is_free: isFree
                     };
                 }
@@ -4036,6 +4154,7 @@ const ConnectivityManager = {
                     keyConfigs[cacheId] = {
                         provider_key: customResult.providerKey, provider_scope: customResult.providerScope,
                         url: customResult.url, api_key: customResult.key || '', model: model,
+                        voice_id: customResult.voiceId || '',
                         provider_type: customResult.providerType, sub_type: customResult.subType || '', is_free: isFree
                     };
                 }
@@ -4215,7 +4334,12 @@ function initConnectivityLights() {
                 ConnectivityManager.syncErrorDisplaysForKey(resolved.cacheId);
                 const result = await ConnectivityManager.testKey({
                     provider_key: resolved.providerKey, provider_scope: resolved.providerScope,
-                    url: resolved.url, api_key: resolved.key, provider_type: resolved.providerType, is_free: isFree,
+                    url: resolved.url, api_key: resolved.key,
+                    model: resolved.model || '',
+                    voice_id: resolved.voiceId || '',
+                    provider_type: resolved.providerType,
+                    sub_type: resolved.subType || '',
+                    is_free: isFree,
                     cache_id: resolved.cacheId
                 });
                 if (result.cancelled) {
@@ -4270,7 +4394,12 @@ function initConnectivityLights() {
                 ConnectivityManager.syncErrorDisplaysForKey(resolved.cacheId);
                 const result = await ConnectivityManager.testKey({
                     provider_key: resolved.providerKey, provider_scope: resolved.providerScope,
-                    url: resolved.url, api_key: resolved.key, provider_type: resolved.providerType, is_free: isFree,
+                    url: resolved.url, api_key: resolved.key,
+                    model: resolved.model || '',
+                    voice_id: resolved.voiceId || '',
+                    provider_type: resolved.providerType,
+                    sub_type: resolved.subType || '',
+                    is_free: isFree,
                     cache_id: resolved.cacheId
                 });
                 if (result.cancelled) {
@@ -4326,12 +4455,19 @@ function initConnectivityLights() {
         summaryRow.id = 'customApiSummaryLights';
 
         CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
-            const summaryLight = document.createElement('span');
+            const summaryLight = document.createElement('button');
+            summaryLight.type = 'button';
             summaryLight.className = 'connectivity-summary-light';
             summaryLight.dataset.status = LightStatus.NOT_CONFIGURED;
             summaryLight.dataset.modelType = mt;
             summaryLight.dataset.tooltipLabel = getCustomModelDisplayLabel(mt);
+            const expansionPath = MODEL_CONFIG_EXPANSION_PATHS[mt];
+            const targetType = expansionPath?.[expansionPath.length - 1];
+            if (targetType) {
+                summaryLight.dataset.targetContentId = `${targetType}-model-content`;
+            }
             updateLightStatus(summaryLight, LightStatus.NOT_CONFIGURED);
+            summaryLight.addEventListener('click', () => navigateToCustomModelConfig(mt));
             summaryRow.appendChild(summaryLight);
         });
 

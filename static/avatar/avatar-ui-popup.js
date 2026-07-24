@@ -1,0 +1,3290 @@
+/**
+ * Avatar UI Popup Mixin - 统一的弹出框组件库
+ * 为 MMD/VRM/Live2D 提供通用的弹窗逻辑
+ *
+ * 使用方式：
+ *   AvatarPopupMixin.apply(XXXManager.prototype, 'xxx', { options });
+ */
+
+// 常量
+const AVATAR_POPUP_ANIMATION_DURATION_MS = 200;
+const AVATAR_POPUP_HOVER_COLLAPSE_DELAY_MS = 260;
+const AVATAR_POPUP_HOVER_BRIDGE_GRACE_MS = 900;
+const AVATAR_POPUP_HOVER_BRIDGE_PADDING_PX = 18;
+const AVATAR_CHARACTER_MANAGER_WINDOW_WIDTH = 1240;
+const AVATAR_CHARACTER_MANAGER_WINDOW_HEIGHT = 940;
+
+function isAvatarFramedSettingsWindowUrl(finalUrl) {
+    return typeof finalUrl === 'string'
+        && (
+            finalUrl.startsWith('/character_card_manager')
+            || finalUrl.startsWith('/chara_manager')
+            || finalUrl.startsWith('/api_key')
+            || finalUrl.startsWith('/memory_browser')
+        );
+}
+
+function buildAvatarCenteredWindowFeatures(width, height) {
+    const availableWidth = Math.max(1, Number(window.screen && (window.screen.availWidth || window.screen.width)) || width);
+    const availableHeight = Math.max(1, Number(window.screen && (window.screen.availHeight || window.screen.height)) || height);
+    const windowWidth = Math.min(width, Math.max(720, availableWidth - 80));
+    const windowHeight = Math.min(height, Math.max(560, availableHeight - 80));
+    // 居中走 core 公共 helper：多显示器下叠加当前屏幕偏移，避免副屏弹窗跳回主屏。
+    if (typeof window.buildCenteredPopupFeatures === 'function') {
+        return window.buildCenteredPopupFeatures(windowWidth, windowHeight);
+    }
+    const left = Math.max(0, Math.floor((availableWidth - windowWidth) / 2));
+    const top = Math.max(0, Math.floor((availableHeight - windowHeight) / 2));
+    return `width=${windowWidth},height=${windowHeight},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+}
+
+function buildAvatarFullscreenWindowFeatures() {
+    const screenRef = window.screen || {};
+    const width = Math.max(720, Math.floor(Number(screenRef.availWidth || screenRef.width) || 1280));
+    const height = Math.max(560, Math.floor(Number(screenRef.availHeight || screenRef.height) || 900));
+    const left = Number.isFinite(screenRef.availLeft) ? screenRef.availLeft : 0;
+    const top = Number.isFinite(screenRef.availTop) ? screenRef.availTop : 0;
+    return `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+}
+
+function getAvatarNavigationWindowFeatures(finalUrl) {
+    if (isAvatarFramedSettingsWindowUrl(finalUrl)) {
+        return buildAvatarCenteredWindowFeatures(
+            AVATAR_CHARACTER_MANAGER_WINDOW_WIDTH,
+            AVATAR_CHARACTER_MANAGER_WINDOW_HEIGHT
+        );
+    }
+    return undefined;
+}
+
+function clearAvatarSidePanelHoverState(panel) {
+    if (!panel) return;
+    if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
+    if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+    if (typeof panel._stopHoverPointerTracking === 'function') panel._stopHoverPointerTracking();
+}
+
+function applyAvatarSidePanelTransform(panel, motion = 'none') {
+    if (window.AvatarPopupUI && typeof window.AvatarPopupUI.applySidePanelTransform === 'function') {
+        window.AvatarPopupUI.applySidePanelTransform(panel, motion);
+        return;
+    }
+    panel.style.transform = motion && motion !== 'none' ? motion : 'none';
+}
+
+function getAvatarSidePanelExitMotion(panel) {
+    if (panel && panel.dataset && panel.dataset.goDown === 'true') return 'translateY(-6px)';
+    return panel && panel.dataset && panel.dataset.goLeft === 'true'
+        ? 'translateX(6px)'
+        : 'translateX(-6px)';
+}
+
+if (typeof window !== 'undefined') {
+    window.clearAvatarSidePanelHoverState = clearAvatarSidePanelHoverState;
+}
+
+/**
+ * 注入指定前缀的 CSS 样式
+ */
+function injectPopupStyles(prefix) {
+    const styleId = `${prefix}-popup-styles`;
+    if (document.getElementById(styleId)) return;
+
+    const style = document.createElement('style');
+    style.id = styleId;
+
+    const commonCss = `
+        .${prefix}-popup {
+            position: absolute;
+            left: 100%;
+            top: 0;
+            margin-left: 8px;
+            z-index: 100001;
+            background: var(--neko-popup-bg, rgba(255, 255, 255, 0.65));
+            backdrop-filter: saturate(180%) blur(20px);
+            border: var(--neko-popup-border, 1px solid rgba(255, 255, 255, 0.18));
+            border-radius: 8px;
+            padding: 8px;
+            box-shadow: var(--neko-popup-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04));
+            display: none;
+            flex-direction: column;
+            gap: 6px;
+            min-width: 180px;
+            max-height: 200px;
+            overflow-y: auto;
+            pointer-events: auto !important; /* 【维护注意】此 !important 会与拖动屏蔽机制冲突。拖动期间由 body.neko-model-dragging 选择器覆盖（见下方及 avatar-ui-drag.js），其 body.class .popup 特异性更高。修改此处特异性时需同步检查拖动屏蔽规则。 */
+            opacity: 0;
+            transform: translateX(-10px);
+            transition: opacity 0.2s cubic-bezier(0.1, 0.9, 0.2, 1), transform 0.2s cubic-bezier(0.1, 0.9, 0.2, 1);
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+        }
+        .${prefix}-popup.is-positioning {
+            pointer-events: none !important;
+        }
+        /* 移动端宽度兜底：弹窗自然宽度超窄屏时贴边收敛（Electron Pet 小窗同受益，无副作用） */
+        @media (max-width: 768px) {
+            .${prefix}-popup {
+                max-width: calc(100vw - 32px);
+            }
+        }
+        .${prefix}-popup.${prefix}-popup-settings {
+            max-height: 70vh;
+        }
+        .${prefix}-popup.${prefix}-popup-agent {
+            max-height: calc(100vh - 120px);
+            overflow-y: auto;
+        }
+        .${prefix}-popup.visible {
+            display: flex;
+            opacity: 1;
+            transform: translateX(0);
+        }
+        /* 弹窗滚动条 - 透明背景 */
+        .${prefix}-popup::-webkit-scrollbar {
+            width: 6px;
+        }
+        .${prefix}-popup::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .${prefix}-popup::-webkit-scrollbar-thumb {
+            background: rgba(128, 128, 128, 0.6);
+            border-radius: 3px;
+        }
+        .${prefix}-popup::-webkit-scrollbar-thumb:hover {
+            background: rgba(128, 128, 128, 0.8);
+        }
+        .${prefix}-popup-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 8px;
+            cursor: pointer;
+            border-radius: 6px;
+            transition: background 0.2s ease;
+            font-size: 13px;
+            white-space: nowrap;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+        }
+        .${prefix}-popup-item:hover {
+            background: rgba(68, 183, 254, 0.08);
+        }
+        .${prefix}-popup-item.selected {
+            background: rgba(68, 183, 254, 0.1);
+        }
+        .${prefix}-toggle-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 8px;
+            cursor: pointer;
+            border-radius: 6px;
+            transition: background 0.2s ease, opacity 0.2s ease;
+            font-size: 13px;
+            white-space: nowrap;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+        }
+        .${prefix}-toggle-item:focus-within {
+            outline: 2px solid var(--neko-popup-accent, #44b7fe);
+            outline-offset: 2px;
+        }
+        .${prefix}-toggle-item[aria-disabled="true"] {
+            opacity: 0.5;
+            cursor: default;
+        }
+        .${prefix}-toggle-indicator {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            border: 2px solid var(--neko-popup-indicator-border, #ccc);
+            background-color: transparent;
+            cursor: pointer;
+            flex-shrink: 0;
+            transition: all 0.2s ease;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .${prefix}-toggle-indicator[aria-checked="true"] {
+            background-color: var(--neko-popup-accent, #44b7fe);
+            border-color: var(--neko-popup-accent, #44b7fe);
+        }
+        .${prefix}-toggle-checkmark {
+            color: #fff;
+            font-size: 13px;
+            font-weight: bold;
+            line-height: 1;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+            pointer-events: none;
+            user-select: none;
+        }
+        .${prefix}-toggle-indicator[aria-checked="true"] .${prefix}-toggle-checkmark {
+            opacity: 1;
+        }
+        .${prefix}-toggle-label {
+            cursor: pointer;
+            user-select: none;
+            font-size: 13px;
+            color: var(--neko-popup-text, #333);
+        }
+        .${prefix}-toggle-item:hover:not([aria-disabled="true"]) {
+            background: var(--neko-popup-hover, rgba(68, 183, 254, 0.1));
+        }
+        .${prefix}-toggle-item.${prefix}-toggle-item-static:hover:not([aria-disabled="true"]) {
+            background: var(--neko-popup-hover, rgba(68, 183, 254, 0.1)) !important;
+        }
+        .${prefix}-toggle-item.${prefix}-toggle-item-static .${prefix}-toggle-indicator[aria-checked="true"] {
+            background-color: var(--neko-popup-accent, #44b7fe);
+            border-color: var(--neko-popup-accent, #44b7fe);
+        }
+        .${prefix}-settings-menu-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            cursor: pointer;
+            border-radius: 6px;
+            transition: background 0.2s ease;
+            font-size: 13px;
+            white-space: nowrap;
+            color: var(--neko-popup-text, #333);
+            pointer-events: auto !important;
+            position: relative;
+            z-index: 100002;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+        }
+        .${prefix}-settings-menu-item:hover {
+            background: var(--neko-popup-hover, rgba(68, 183, 254, 0.1));
+        }
+        .${prefix}-settings-separator {
+            height: 1px;
+            background: var(--neko-popup-separator, rgba(0, 0, 0, 0.1));
+            margin: 4px 0;
+        }
+        .${prefix}-agent-status {
+            font-size: 12px;
+            color: var(--neko-popup-accent, #2a7bc4);
+            padding: 6px 8px;
+            border-radius: 4px;
+            background: var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.05));
+            margin-bottom: 8px;
+            min-height: 20px;
+            text-align: center;
+        }
+        /* 拖动模型期间禁用弹窗和侧面板及其所有子元素的 pointer-events */
+        body.neko-model-dragging .${prefix}-popup,
+        body.neko-model-dragging .${prefix}-popup *,
+        body.neko-model-dragging [data-neko-sidepanel],
+        body.neko-model-dragging [data-neko-sidepanel] * {
+            pointer-events: none !important;
+        }
+    `;
+
+    // VRM 额外的 CSS 变量
+    const vrmCss = prefix === 'vrm' ? `
+        :root {
+            --neko-popup-selected-bg: rgba(68, 183, 254, 0.1);
+            --neko-popup-selected-hover: rgba(68, 183, 254, 0.15);
+            --neko-popup-hover-subtle: rgba(68, 183, 254, 0.08);
+        }
+    ` : '';
+
+    style.textContent = vrmCss + commonCss;
+    document.head.appendChild(style);
+}
+
+/**
+ * 创建弹出框（按 buttonId 区分类型）
+ */
+function createPopup(manager, prefix, buttonId) {
+    // 去重守卫：如果同 ID 弹窗已存在，先移除旧的及其侧面板
+    const existingPopup = document.getElementById(`${prefix}-popup-${buttonId}`);
+    if (existingPopup) {
+        const existingId = existingPopup.id;
+        document.querySelectorAll(`[data-neko-sidepanel-owner="${existingId}"]`).forEach(panel => {
+            clearAvatarSidePanelHoverState(panel);
+            panel.remove();
+        });
+        if (existingPopup._hideTimeoutId) { clearTimeout(existingPopup._hideTimeoutId); }
+        existingPopup.remove();
+    }
+
+    const popup = document.createElement('div');
+    popup.id = `${prefix}-popup-${buttonId}`;
+    popup.className = `${prefix}-popup`;
+
+    // 【维护注意】拖动模型期间必须跳过 stopPropagation，
+    //  否则 pointerup/mouseup 无法冒泡到 window/document 的 drag-end handler，
+    //  导致拖动状态永远无法结束（「粘手」bug）。
+    const stopEventPropagation = (e) => {
+        if (document.body.classList.contains('neko-model-dragging')) return;
+        e.stopPropagation();
+    };
+    ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend'].forEach(evt => {
+        popup.addEventListener(evt, stopEventPropagation, true);
+    });
+    popup.addEventListener('click', stopEventPropagation);
+
+    if (buttonId === 'mic') {
+        popup.setAttribute('data-legacy-id', `${prefix}-mic-popup`);
+        popup.style.minWidth = '400px';
+        popup.style.maxHeight = '420px';
+        popup.style.flexDirection = 'row';
+        popup.style.gap = '0';
+        popup.style.overflowY = 'hidden';
+    } else if (buttonId === 'screen') {
+        popup.style.width = '360px';
+        popup.style.maxHeight = '400px';
+        popup.style.overflowX = 'hidden';
+        popup.style.overflowY = 'auto';
+    } else if (buttonId === 'agent') {
+        popup.classList.add(`${prefix}-popup-agent`);
+        popup.style.gap = '0';
+        popup.style.cursor = 'pointer';
+        window.AgentHUD._createAgentPopupContent.call(manager, popup);
+    } else if (buttonId === 'settings') {
+        popup.classList.add(`${prefix}-popup-settings`);
+        popup.style.gap = '0';
+        popup.style.cursor = 'pointer';
+        manager._createSettingsPopupContent(popup);
+    }
+
+    return popup;
+}
+
+/**
+ * 最终化弹窗关闭状态
+ */
+function finalizePopupClosedState(popup) {
+    if (!popup) return;
+    popup.style.left = '';
+    popup.style.right = '';
+    popup.style.top = '';
+    popup.style.transform = '';
+    popup.style.opacity = '';
+    popup.style.marginLeft = '';
+    popup.style.marginRight = '';
+    popup.style.display = 'none';
+    delete popup.dataset.opensLeft;
+    popup._hideTimeoutId = null;
+}
+
+function showWidgetModeMutationFailure(error) {
+    console.warn('[WidgetMode] settings mutation failed:', error);
+    const message = window.t
+        ? window.t('settings.widgetMode.toggleFailed')
+        : '挂边模式 Beta 切换失败，请稍后重试。';
+    if (typeof window.showStatusToast === 'function') {
+        window.showStatusToast(message, 3000);
+    }
+}
+
+let widgetModeMutationQueue = Promise.resolve();
+
+function queueWidgetModeMutation(operation) {
+    const run = function () { return operation(); };
+    widgetModeMutationQueue = widgetModeMutationQueue.then(run, run);
+    return widgetModeMutationQueue;
+}
+
+function createAdvancedSettingsSidePanel(manager, prefix, popup) {
+    const panel = manager._createSidePanelContainer();
+    panel.setAttribute('data-neko-sidepanel-type', 'advanced-settings');
+    Object.assign(panel.style, {
+        width: '224px', minWidth: '224px', padding: '4px', display: 'flex',
+        flexDirection: 'column', alignItems: 'stretch', gap: '0'
+    });
+    const widgetModeItem = manager._createSettingsToggleItem({
+        id: 'widget-mode',
+        label: window.t ? window.t('settings.toggles.widgetMode') : '挂边模式 Beta',
+        labelKey: 'settings.toggles.widgetMode',
+        tooltipKey: 'settings.toggles.widgetModeTooltip',
+        alwaysTinted: true
+    });
+    widgetModeItem.style.display = 'flex';
+    widgetModeItem.style.alignItems = 'center';
+    widgetModeItem.style.minWidth = '0';
+    const widgetModeLabel = widgetModeItem.querySelector('label');
+    if (widgetModeLabel) {
+        widgetModeLabel.style.flex = '1 1 auto';
+        widgetModeLabel.style.minWidth = '0';
+        widgetModeLabel.style.height = 'auto';
+        widgetModeLabel.style.lineHeight = '1.25';
+        widgetModeLabel.style.whiteSpace = 'normal';
+    }
+
+    panel.appendChild(widgetModeItem);
+
+    panel._widgetModeToggleItem = widgetModeItem;
+    document.body.appendChild(panel);
+    return panel;
+}
+
+/**
+ * 创建设置弹窗内容（通用）
+ */
+function createSettingsPopupContent(manager, prefix, popup) {
+    // 1. 对话设置按钮
+    const chatSettingsBtn = manager._createSettingsMenuButton({
+        label: window.t ? window.t('settings.toggles.chatSettings') : '对话设置',
+        labelKey: 'settings.toggles.chatSettings'
+    });
+    popup.appendChild(chatSettingsBtn);
+
+    const chatSidePanel = manager._createChatSettingsSidePanel(popup);
+    chatSidePanel._anchorElement = chatSettingsBtn;
+    chatSidePanel._popupElement = popup;
+    manager._attachSidePanelHover(chatSettingsBtn, chatSidePanel);
+
+    // 2. 动画设置按钮
+    const animSettingsBtn = manager._createSettingsMenuButton({
+        label: window.t ? window.t('settings.toggles.animationSettings') : '动画设置',
+        labelKey: 'settings.toggles.animationSettings'
+    });
+    popup.appendChild(animSettingsBtn);
+
+    const animSidePanel = manager._createAnimationSettingsSidePanel();
+    animSidePanel._anchorElement = animSettingsBtn;
+    animSidePanel._popupElement = popup;
+    manager._attachSidePanelHover(animSettingsBtn, animSidePanel);
+
+    const advancedSettingsBtn = manager._createSettingsMenuButton({
+        label: window.t ? window.t('settings.menu.advancedSettings') : '高级设置',
+        labelKey: 'settings.menu.advancedSettings'
+    });
+    advancedSettingsBtn.id = `${prefix}-advanced-settings-entry`;
+    popup.appendChild(advancedSettingsBtn);
+    const advancedSidePanel = createAdvancedSettingsSidePanel(manager, prefix, popup);
+    advancedSidePanel._anchorElement = advancedSettingsBtn;
+    advancedSidePanel._popupElement = popup;
+    manager._attachSidePanelHover(advancedSettingsBtn, advancedSidePanel);
+    advancedSettingsBtn.addEventListener('click', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (typeof advancedSidePanel._expand === 'function') advancedSidePanel._expand();
+    });
+
+    // 3. 角色设置按钮已移至分隔线下方（在 _createSettingsMenuItems 中创建）
+
+    // 4. 主动搭话和自主视觉（角色设置已移至分隔线下方的导航菜单区域）
+    const settingsToggles = [
+        { id: 'proactive-chat', label: window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话', labelKey: 'settings.toggles.proactiveChat', storageKey: 'proactiveChatEnabled', hasInterval: true, intervalKey: 'proactiveChatInterval', defaultInterval: 15 },
+        { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '隐私模式', labelKey: 'settings.toggles.proactiveVision', tooltipKey: 'settings.toggles.proactiveVisionTooltip', storageKey: 'proactiveVisionEnabled', hasInterval: true, intervalKey: 'proactiveVisionInterval', defaultInterval: 15, inverted: true }
+    ];
+
+    settingsToggles.forEach(toggle => {
+        const toggleItem = manager._createSettingsToggleItem(toggle);
+        popup.appendChild(toggleItem);
+
+        if (toggle.hasInterval) {
+            const sidePanel = manager._createIntervalControl(toggle);
+            sidePanel._anchorElement = toggleItem;
+            sidePanel._popupElement = popup;
+
+            if (toggle.id === 'proactive-chat') {
+                const AUTH_I18N_KEY = 'settings.menu.mediaCredentials';
+                const AUTH_FALLBACK_LABEL = '配置媒体凭证';
+                const authLink = document.createElement('div');
+                Object.assign(authLink.style, {
+                    display: 'flex', alignItems: 'center', gap: '4px',
+                    padding: '6px 10px', marginLeft: '0', fontSize: '12px',
+                    color: 'var(--neko-popup-text, #333)', cursor: 'pointer',
+                    borderRadius: '6px', transition: 'background 0.2s ease', width: '100%', boxSizing: 'border-box'
+                });
+
+                const authIcon = document.createElement('img');
+                authIcon.src = '/static/icons/cookies_icon.png';
+                authIcon.alt = '';
+                Object.assign(authIcon.style, { width: '16px', height: '16px', objectFit: 'contain', flexShrink: '0' });
+                authLink.appendChild(authIcon);
+
+                const authLabel = document.createElement('span');
+                authLabel.textContent = window.t ? window.t(AUTH_I18N_KEY) : AUTH_FALLBACK_LABEL;
+                authLabel.setAttribute('data-i18n', AUTH_I18N_KEY);
+                Object.assign(authLabel.style, { fontSize: '12px', userSelect: 'none' });
+                authLink.appendChild(authLabel);
+
+                authLink.addEventListener('mouseenter', () => { authLink.style.background = 'var(--neko-popup-hover, rgba(68,183,254,0.1))'; });
+                authLink.addEventListener('mouseleave', () => { authLink.style.background = 'transparent'; });
+                let isOpening = false;
+                authLink.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    if (isOpening) return;
+                    isOpening = true;
+                    if (typeof window.openOrFocusWindow === 'function') {
+                        window.openOrFocusWindow('/api/auth/page', 'neko_auth-page');
+                    } else {
+                        window.open('/api/auth/page', 'neko_auth-page');
+                    }
+                    setTimeout(() => { isOpening = false; }, 500);
+                });
+                sidePanel.appendChild(authLink);
+            }
+
+            manager._attachSidePanelHover(toggleItem, sidePanel);
+        }
+    });
+
+    // 5. 桌面端添加导航菜单
+    if (!window.isMobileWidth || !window.isMobileWidth()) {
+        const separator = document.createElement('div');
+        separator.className = `${prefix}-settings-separator`;
+        popup.appendChild(separator);
+
+        manager._createSettingsMenuItems(popup);
+    }
+}
+
+/**
+ * 将菜单锚点 ID 标准化：trim、小写、去非法字符，再拼 ${prefix}-menu-${id}。
+ */
+function createMenuAnchorId(prefix, rawId) {
+    if (!rawId) return '';
+    var sanitized = String(rawId)
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^[-]+|[-]+$/g, '');
+    return sanitized ? `${prefix}-menu-${sanitized}` : '';
+}
+
+function markAvatarPopupActionElement(el, type) {
+    if (!el || typeof el.setAttribute !== 'function') return el;
+    el.setAttribute('data-neko-avatar-popup-action', type || 'menu');
+    return el;
+}
+
+function setAvatarPopupActionDebugMetadata(el, item, source) {
+    if (!el || !item || typeof el.setAttribute !== 'function') return el;
+    try {
+        if (item.id) el.setAttribute('data-neko-avatar-popup-item-id', String(item.id));
+        if (item.action) el.setAttribute('data-neko-avatar-popup-item-action', String(item.action));
+        if (item.url || item.urlBase) el.setAttribute('data-neko-avatar-popup-url', String(item.url || item.urlBase));
+        if (source) el.setAttribute('data-neko-avatar-popup-source', String(source));
+    } catch (_) {}
+    return el;
+}
+
+function dispatchAvatarPopupLifecycleEvent(eventName, buttonId, popup, prefix) {
+    if (!eventName || typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
+    try {
+        window.dispatchEvent(new CustomEvent(eventName, {
+            detail: {
+                buttonId: buttonId || '',
+                popupId: popup && popup.id ? popup.id : '',
+                prefix: prefix || ''
+            }
+        }));
+    } catch (_) {}
+}
+
+function dispatchAvatarPopupNavigateEvent(item, finalUrl, windowName, source) {
+    if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
+    try {
+        window.dispatchEvent(new CustomEvent('neko-avatar-popup-navigate', {
+            detail: {
+                itemId: item && item.id ? String(item.id) : '',
+                action: item && item.action ? String(item.action) : '',
+                url: finalUrl ? String(finalUrl) : '',
+                windowName: windowName ? String(windowName) : '',
+                source: source ? String(source) : ''
+            }
+        }));
+    } catch (_) {}
+}
+
+/**
+ * 创建设置菜单按钮
+ */
+function createSettingsMenuButton(manager, prefix, config) {
+    const btn = document.createElement('div');
+    btn.className = `${prefix}-settings-menu-item`;
+    markAvatarPopupActionElement(btn, 'settings-menu');
+    setAvatarPopupActionDebugMetadata(btn, config, 'settings-button');
+    var btnAnchorId = createMenuAnchorId(prefix, config && config.id);
+    if (btnAnchorId) btn.id = btnAnchorId;
+    Object.assign(btn.style, {
+        justifyContent: 'space-between'
+    });
+
+    const leftWrapper = document.createElement('div');
+    Object.assign(leftWrapper.style, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px'
+    });
+
+    let iconImg = null;
+    if (config.icon) {
+        iconImg = document.createElement('img');
+        iconImg.src = config.icon;
+        iconImg.alt = config.label || '';
+        Object.assign(iconImg.style, {
+            width: '24px',
+            height: '24px',
+            objectFit: 'contain',
+            flexShrink: '0'
+        });
+        leftWrapper.appendChild(iconImg);
+    }
+
+    const label = document.createElement('span');
+    label.textContent = config.label;
+    if (config.labelKey) label.setAttribute('data-i18n', config.labelKey);
+    Object.assign(label.style, {
+        userSelect: 'none',
+        fontSize: '13px'
+    });
+    leftWrapper.appendChild(label);
+
+    btn.appendChild(leftWrapper);
+
+    const arrow = document.createElement('span');
+    arrow.textContent = '›';
+    Object.assign(arrow.style, {
+        fontSize: '16px',
+        color: 'var(--neko-popup-text-sub, #999)',
+        lineHeight: '1',
+        flexShrink: '0'
+    });
+    btn.appendChild(arrow);
+
+    if (config.labelKey) {
+        btn._updateLabelText = () => {
+            if (window.t) {
+                label.textContent = window.t(config.labelKey);
+                if (iconImg) {
+                    iconImg.alt = window.t(config.labelKey);
+                }
+            }
+        };
+    }
+
+    btn.addEventListener('mouseenter', () => {
+        btn.style.background = 'var(--neko-popup-hover, rgba(68,183,254,0.1))';
+    });
+    btn.addEventListener('mouseleave', () => {
+        btn.style.background = 'transparent';
+    });
+
+    return btn;
+}
+
+/**
+ * 创建对话设置侧边面板
+ */
+function createChatSettingsSidePanel(manager, prefix, popup) {
+    const container = manager._createSidePanelContainer();
+    container.setAttribute('data-neko-sidepanel-type', 'chat-settings');
+    container.style.flexDirection = 'column';
+    container.style.alignItems = 'stretch';
+    container.style.gap = '0';
+    container.style.width = '200px';
+    container.style.minWidth = '0';
+    container.style.padding = '4px 4px';
+
+    const chatToggles = [
+        { id: 'merge-messages', label: window.t ? window.t('settings.toggles.mergeMessages') : '合并消息', labelKey: 'settings.toggles.mergeMessages', alwaysTinted: true },
+        { id: 'focus-mode', label: window.t ? window.t('settings.toggles.allowInterrupt') : '允许打断', labelKey: 'settings.toggles.allowInterrupt', storageKey: 'focusModeEnabled', inverted: true, alwaysTinted: true },
+        { id: 'avatar-reaction-bubble', label: window.t ? window.t('settings.toggles.avatarReactionBubble') : '表情气泡', labelKey: 'settings.toggles.avatarReactionBubble', storageKey: 'avatarReactionBubbleEnabled', alwaysTinted: true },
+        { id: 'focus-cognition', label: window.t ? window.t('settings.toggles.focusCognition') : '凝神模式', labelKey: 'settings.toggles.focusCognition', tooltipKey: 'settings.toggles.focusCognitionTooltip', storageKey: 'focusCognitionEnabled', alwaysTinted: true },
+        { id: 'slop-filter', label: window.t ? window.t('settings.toggles.slopFilter') : '自然表达', labelKey: 'settings.toggles.slopFilter', tooltipKey: 'settings.toggles.slopFilterTooltip', storageKey: 'slopFilterEnabled', alwaysTinted: true },
+        { id: 'auto-cat', label: window.t ? window.t('settings.toggles.autoCat') : '自动变猫', labelKey: 'settings.toggles.autoCat', tooltipKey: 'settings.toggles.autoCatTooltip', alwaysTinted: true },
+        { id: 'cat-audio', label: window.t ? window.t('settings.toggles.catAudio') : '猫猫音效', labelKey: 'settings.toggles.catAudio', tooltipKey: 'settings.toggles.catAudioTooltip', alwaysTinted: true },
+    ];
+
+    chatToggles.forEach(toggle => {
+        const toggleItem = manager._createSettingsToggleItem(toggle);
+        container.appendChild(toggleItem);
+        if (typeof toggleItem._nekoUpdateSettingsToggleStyle === 'function') {
+            toggleItem._nekoUpdateSettingsToggleStyle();
+        }
+    });
+
+    // 字数限制滑动条
+    const textGuardContainer = manager._createTextGuardSlider();
+    textGuardContainer.style.marginTop = '12px';
+    container.appendChild(textGuardContainer);
+
+    document.body.appendChild(container);
+    return container;
+}
+
+/**
+ * 创建字数限制滑动条
+ */
+function createTextGuardSlider(manager, prefix) {
+    const container = document.createElement('div');
+    Object.assign(container.style, {
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '4px',
+        padding: '4px 0',
+        userSelect: 'none',
+        WebkitUserSelect: 'none'
+    });
+
+    // 标签和数值行
+    const labelRow = document.createElement('div');
+    Object.assign(labelRow.style, {
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        gap: '8px'
+    });
+
+    const label = document.createElement('span');
+    label.textContent = window.t ? window.t('settings.toggles.textGuardMaxLength') : '回复字数限制';
+    label.setAttribute('data-i18n', 'settings.toggles.textGuardMaxLength');
+    Object.assign(label.style, {
+        fontSize: '12px',
+        color: 'var(--neko-popup-text, #333)',
+        flexShrink: '0',
+        userSelect: 'none',
+        WebkitUserSelect: 'none'
+    });
+
+    const valueDisplay = document.createElement('span');
+    Object.assign(valueDisplay.style, {
+        fontSize: '12px',
+        color: 'var(--neko-popup-active, #2a7bc4)',
+        fontWeight: '500',
+        minWidth: '60px',
+        textAlign: 'right',
+        userSelect: 'none',
+        WebkitUserSelect: 'none'
+    });
+
+    labelRow.appendChild(label);
+    labelRow.appendChild(valueDisplay);
+
+    // 滑动条行
+    const sliderRow = document.createElement('div');
+    Object.assign(sliderRow.style, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        width: '100%'
+    });
+
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    // 滑动条位置：0-10 对应 100-1100（每档 100 tokens），11 对应无限制
+    // 默认值 300 tokens = (300-100)/100 = 2
+    slider.min = '0';
+    slider.max = '11';
+    slider.step = '1';
+
+    // 当前值转换：数值 -> 滑动条位置
+    const currentValue = typeof window.textGuardMaxLength !== 'undefined' ? window.textGuardMaxLength : 300;
+    let currentPosition;
+    if (currentValue === 0 || currentValue === null || currentValue === undefined) {
+        currentPosition = 11; // 无限制
+    } else {
+        // 找到最接近的档位：100 + position * 100
+        currentPosition = Math.min(10, Math.max(0, Math.round((currentValue - 100) / 100)));
+    }
+    slider.value = currentPosition;
+
+    Object.assign(slider.style, {
+        flex: '1',
+        height: '4px',
+        cursor: 'pointer',
+        accentColor: 'var(--neko-popup-accent, #44b7fe)'
+    });
+
+    // 更新显示文本
+    const updateDisplay = (position) => {
+        if (parseInt(position) === 11) {
+            const unlimitedText = (typeof window.t === 'function') ? window.t('settings.toggles.unlimited') : '无限制';
+            valueDisplay.textContent = unlimitedText;
+            valueDisplay.setAttribute('data-i18n', 'settings.toggles.unlimited');
+        } else {
+            const value = 100 + parseInt(position) * 100;
+            // 单位从"字"切到 token：UI label 用独立的 i18n key（locale 文件已同步）。
+            const unit = (typeof window.t === 'function') ? window.t('settings.toggles.tokens') : 'tokens';
+            valueDisplay.textContent = `${value} ${unit}`;
+            valueDisplay.removeAttribute('data-i18n');
+        }
+    };
+
+    updateDisplay(currentPosition);
+
+    slider.addEventListener('input', () => {
+        const position = parseInt(slider.value);
+        updateDisplay(position);
+    });
+
+    slider.addEventListener('change', () => {
+        const position = parseInt(slider.value);
+        let value;
+        if (position === 11) {
+            value = 0; // 0 表示无限制
+        } else {
+            value = 100 + position * 100;
+        }
+        window.textGuardMaxLength = value;
+        if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
+        console.log(`[TextGuard] 回复 token 上限已设置为 ${value === 0 ? '无限制' : value + ' tokens'}`);
+    });
+
+    slider.addEventListener('click', (e) => e.stopPropagation());
+    slider.addEventListener('mousedown', (e) => e.stopPropagation());
+
+    sliderRow.appendChild(slider);
+
+    // 底部提示（仅对文本回复有效）
+    const noteRow = document.createElement('div');
+    Object.assign(noteRow.style, {
+        fontSize: '10px',
+        color: '#888',
+        lineHeight: '1.4',
+        marginTop: '0',
+        userSelect: 'none',
+        WebkitUserSelect: 'none'
+    });
+    const noteText = (typeof window.t === 'function')
+        ? window.t('settings.toggles.textGuardNote')
+        : '仅对文本回复有效，不影响语音对话';
+    noteRow.textContent = noteText;
+
+    container.appendChild(labelRow);
+    container.appendChild(sliderRow);
+    container.appendChild(noteRow);
+
+    return container;
+}
+
+/**
+ * 创建角色设置侧边面板
+ */
+function createCharacterSettingsSidePanel(manager, prefix) {
+    const container = manager._createSidePanelContainer();
+    container.setAttribute('data-neko-sidepanel-type', 'character-settings');
+    container.style.flexDirection = 'column';
+    container.style.alignItems = 'stretch';
+    container.style.gap = '2px';
+    container.style.width = '160px';
+    container.style.minWidth = '0';
+    container.style.padding = '4px 8px';
+
+    const items = manager._characterMenuItems || [];
+    items.forEach(item => {
+        const menuItem = manager._createSidePanelMenuItem(item);
+        container.appendChild(menuItem);
+    });
+
+    document.body.appendChild(container);
+    return container;
+}
+
+/**
+ * 创建侧边面板菜单项
+ */
+function createSidePanelMenuItem(manager, prefix, item) {
+    const menuItem = document.createElement('div');
+    menuItem.id = `${prefix}-sidepanel-${item.id}`;
+    markAvatarPopupActionElement(menuItem, 'sidepanel-menu');
+    setAvatarPopupActionDebugMetadata(menuItem, item, 'sidepanel-menu');
+    Object.assign(menuItem.style, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '6px',
+        padding: '6px 8px',
+        cursor: 'pointer',
+        borderRadius: '6px',
+        transition: 'background 0.2s ease',
+        fontSize: '12px',
+        whiteSpace: 'nowrap',
+        color: 'var(--neko-popup-text, #333)'
+    });
+
+    if (item.icon) {
+        const iconImg = document.createElement('img');
+        iconImg.src = item.icon;
+        iconImg.alt = item.label || '';
+        Object.assign(iconImg.style, {
+            width: '16px',
+            height: '16px',
+            objectFit: 'contain',
+            flexShrink: '0'
+        });
+        menuItem.appendChild(iconImg);
+    }
+
+    const labelText = document.createElement('span');
+    labelText.textContent = (item.labelKey && window.t) ? window.t(item.labelKey) : (item.label || '');
+    if (item.labelKey) {
+        labelText.setAttribute('data-i18n', item.labelKey);
+    }
+    Object.assign(labelText.style, {
+        userSelect: 'none',
+        fontSize: '12px'
+    });
+    menuItem.appendChild(labelText);
+
+    if (item.labelKey) {
+        menuItem._updateLabelText = () => {
+            if (window.t) {
+                labelText.textContent = window.t(item.labelKey);
+                if (item.icon && menuItem.querySelector('img')) {
+                    menuItem.querySelector('img').alt = window.t(item.labelKey);
+                }
+            }
+        };
+    }
+
+    menuItem.addEventListener('mouseenter', () => {
+        menuItem.style.background = 'var(--neko-popup-hover, rgba(68,183,254,0.1))';
+    });
+    menuItem.addEventListener('mouseleave', () => {
+        menuItem.style.background = 'transparent';
+    });
+
+    let isOpening = false;
+
+    // 打开模型管理子窗口，主页面模型保持原样显示。
+    function openModelManagerWindow(url, name, feat) {
+        let childWin;
+        if (typeof window.openOrFocusWindow === 'function') {
+            childWin = window.openOrFocusWindow(url, name, feat);
+        } else {
+            childWin = window.open(url, name, feat);
+        }
+        return childWin;
+    }
+
+    menuItem.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (isOpening) return;
+
+        if (item.action === 'navigate') {
+            let finalUrl = item.url || item.urlBase;
+            let windowName = `neko_${item.id}`;
+            let features;
+
+            if ((item.id === `${prefix}-manage` || item.id === 'live2d-manage' || item.id === 'vrm-manage' || item.id === 'mmd-manage') && item.urlBase) {
+                const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+                finalUrl = `${item.urlBase}?lanlan_name=${encodeURIComponent(lanlanName)}`;
+                isOpening = true;
+                windowName = `neko_${item.id}_${encodeURIComponent(lanlanName || 'default')}`;
+                features = buildAvatarFullscreenWindowFeatures();
+                dispatchAvatarPopupNavigateEvent(item, finalUrl, windowName, 'sidepanel-model-manager');
+                openModelManagerWindow(finalUrl, windowName, features);
+                setTimeout(() => { isOpening = false; }, 500);
+            } else if (item.id === 'voice-clone' && item.url) {
+                const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+                const lanlanNameForKey = lanlanName || 'default';
+                finalUrl = `${item.url}?lanlan_name=${encodeURIComponent(lanlanName)}`;
+                windowName = `neko_voice_clone_${encodeURIComponent(lanlanNameForKey)}`;
+
+                const width = 700;
+                const height = 750;
+                const left = Math.max(0, Math.floor((screen.width - width) / 2));
+                const top = Math.max(0, Math.floor((screen.height - height) / 2));
+                features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+
+                isOpening = true;
+                dispatchAvatarPopupNavigateEvent(item, finalUrl, windowName, 'sidepanel-voice-clone');
+                if (typeof window.openOrFocusWindow === 'function') {
+                    window.openOrFocusWindow(finalUrl, windowName, features);
+                } else {
+                    window.open(finalUrl, windowName, features);
+                }
+                setTimeout(() => { isOpening = false; }, 500);
+            } else if (item.url) {
+                if (isAvatarFramedSettingsWindowUrl(finalUrl)) {
+                    if (typeof finalUrl === 'string' && (finalUrl.startsWith('/character_card_manager') || finalUrl.startsWith('/chara_manager'))) {
+                        windowName = 'neko_chara_manager';
+                    } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/api_key')) {
+                        windowName = 'neko_api_key';
+                    } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/memory_browser')) {
+                        windowName = 'neko_memory_browser';
+                    }
+                    features = getAvatarNavigationWindowFeatures(finalUrl);
+                }
+                isOpening = true;
+                dispatchAvatarPopupNavigateEvent(item, finalUrl, windowName, 'sidepanel-navigate');
+                if (typeof window.openOrFocusWindow === 'function') {
+                    window.openOrFocusWindow(finalUrl, windowName, features);
+                } else {
+                    window.open(finalUrl, windowName, features);
+                }
+                setTimeout(() => { isOpening = false; }, 500);
+            }
+        }
+    });
+
+    return menuItem;
+}
+
+/**
+ * 创建设置链接项（可展开/折叠）
+ */
+function createSettingsLinkItem(manager, prefix, item, popup) {
+    const linkItem = document.createElement('div');
+    linkItem.id = `${prefix}-link-${item.id}`;
+    markAvatarPopupActionElement(linkItem, 'settings-link');
+    Object.assign(linkItem.style, {
+        display: 'none',
+        alignItems: 'center',
+        gap: '6px',
+        padding: '0 12px 0 44px',
+        fontSize: '12px',
+        color: 'var(--neko-popup-text, #333)',
+        height: '0',
+        overflow: 'hidden',
+        opacity: '0',
+        cursor: 'pointer',
+        borderRadius: '6px',
+        transition: 'height 0.2s ease, opacity 0.2s ease, padding 0.2s ease, background 0.2s ease'
+    });
+
+    if (item.icon) {
+        const iconImg = document.createElement('img');
+        iconImg.src = item.icon;
+        iconImg.alt = item.label || '';
+        Object.assign(iconImg.style, {
+            width: '16px',
+            height: '16px',
+            objectFit: 'contain',
+            flexShrink: '0'
+        });
+        linkItem.appendChild(iconImg);
+    }
+
+    const labelSpan = document.createElement('span');
+    labelSpan.textContent = (item.labelKey && window.t) ? window.t(item.labelKey) : (item.label || '');
+    if (item.labelKey) {
+        labelSpan.setAttribute('data-i18n', item.labelKey);
+    }
+    Object.assign(labelSpan.style, {
+        flexShrink: '0',
+        fontSize: '11px',
+        userSelect: 'none'
+    });
+    linkItem.appendChild(labelSpan);
+
+    if (item.labelKey) {
+        linkItem._updateLabelText = () => {
+            if (window.t) {
+                labelSpan.textContent = window.t(item.labelKey);
+                if (item.icon && linkItem.querySelector('img')) {
+                    linkItem.querySelector('img').alt = window.t(item.labelKey);
+                }
+            }
+        };
+    }
+
+    linkItem.addEventListener('mouseenter', () => {
+        linkItem.style.background = 'var(--neko-popup-hover, rgba(68,183,254,0.1))';
+    });
+    linkItem.addEventListener('mouseleave', () => {
+        linkItem.style.background = 'transparent';
+    });
+
+    let isOpening = false;
+    linkItem.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (isOpening) return;
+        if (item.action === 'navigate' && item.url) {
+            isOpening = true;
+            if (typeof window.openOrFocusWindow === 'function') {
+                window.openOrFocusWindow(item.url, `neko_${item.id}`);
+            } else {
+                window.open(item.url, `neko_${item.id}`);
+            }
+            setTimeout(() => { isOpening = false; }, 500);
+        }
+    });
+
+    linkItem._expand = () => {
+        linkItem.style.display = 'flex';
+        if (linkItem._expandTimeout) {
+            clearTimeout(linkItem._expandTimeout);
+            linkItem._expandTimeout = null;
+        }
+        if (linkItem._collapseTimeout) {
+            clearTimeout(linkItem._collapseTimeout);
+            linkItem._collapseTimeout = null;
+        }
+        requestAnimationFrame(() => {
+            const targetHeight = linkItem.scrollHeight || 28;
+            linkItem.style.height = targetHeight + 'px';
+            linkItem.style.opacity = '1';
+            linkItem.style.padding = '4px 12px 4px 44px';
+            linkItem._expandTimeout = setTimeout(() => {
+                if (linkItem.style.opacity === '1') {
+                    linkItem.style.height = 'auto';
+                }
+                linkItem._expandTimeout = null;
+            }, manager._animationDurationMs);
+        });
+    };
+
+    linkItem._collapse = () => {
+        if (linkItem._expandTimeout) {
+            clearTimeout(linkItem._expandTimeout);
+            linkItem._expandTimeout = null;
+        }
+        if (linkItem._collapseTimeout) {
+            clearTimeout(linkItem._collapseTimeout);
+            linkItem._collapseTimeout = null;
+        }
+        linkItem.style.height = linkItem.scrollHeight + 'px';
+        requestAnimationFrame(() => {
+            linkItem.style.height = '0';
+            linkItem.style.opacity = '0';
+            linkItem.style.padding = '0 12px 0 44px';
+            linkItem._collapseTimeout = setTimeout(() => {
+                if (linkItem.style.opacity === '0') {
+                    linkItem.style.display = 'none';
+                }
+                linkItem._collapseTimeout = null;
+            }, manager._animationDurationMs);
+        });
+    };
+
+    return linkItem;
+}
+
+/**
+ * 创建动画设置侧边面板
+ */
+function createAnimationSettingsSidePanel(manager, prefix) {
+    const container = manager._createSidePanelContainer();
+    container.setAttribute('data-neko-sidepanel-type', 'animation-settings');
+    container.style.flexDirection = 'column';
+    container.style.alignItems = 'stretch';
+    container.style.gap = '0';
+    container.style.width = '200px';
+    container.style.minWidth = '0';
+    container.style.padding = '10px 14px 2px';
+
+    const LABEL_STYLE = { width: '36px', flexShrink: '0', fontSize: '12px', color: 'var(--neko-popup-text, #333)' };
+    const VALUE_STYLE = { width: '36px', flexShrink: '0', textAlign: 'right', fontSize: '12px', color: 'var(--neko-popup-text, #333)' };
+    const SLIDER_STYLE = { flex: '1', minWidth: '0', height: '4px', cursor: 'pointer', accentColor: 'var(--neko-popup-accent, #44b7fe)' };
+
+    // 画质滑动条
+    const qualityRow = document.createElement('div');
+    Object.assign(qualityRow.style, { display: 'flex', alignItems: 'center', gap: '8px', width: '100%' });
+
+    const qualityLabel = document.createElement('span');
+    qualityLabel.textContent = window.t ? window.t('settings.toggles.renderQuality') : '画质';
+    qualityLabel.setAttribute('data-i18n', 'settings.toggles.renderQuality');
+    Object.assign(qualityLabel.style, LABEL_STYLE);
+
+    const qualitySlider = document.createElement('input');
+    qualitySlider.type = 'range';
+    qualitySlider.min = '0';
+    qualitySlider.max = '2';
+    qualitySlider.step = '1';
+    const qualityMap = { 'low': 0, 'medium': 1, 'high': 2 };
+    const qualityNames = ['low', 'medium', 'high'];
+    qualitySlider.value = qualityMap[window.renderQuality || 'medium'] ?? 1;
+    Object.assign(qualitySlider.style, SLIDER_STYLE);
+
+    const qualityLabelKeys = ['settings.toggles.renderQualityLow', 'settings.toggles.renderQualityMedium', 'settings.toggles.renderQualityHigh'];
+    const qualityDefaults = ['低', '中', '高'];
+    const qualityValue = document.createElement('span');
+    const curQIdx = parseInt(qualitySlider.value, 10);
+    qualityValue.textContent = window.t ? window.t(qualityLabelKeys[curQIdx]) : qualityDefaults[curQIdx];
+    qualityValue.setAttribute('data-i18n', qualityLabelKeys[curQIdx]);
+    Object.assign(qualityValue.style, VALUE_STYLE);
+
+    qualitySlider.addEventListener('input', () => {
+        const idx = parseInt(qualitySlider.value, 10);
+        qualityValue.textContent = window.t ? window.t(qualityLabelKeys[idx]) : qualityDefaults[idx];
+        qualityValue.setAttribute('data-i18n', qualityLabelKeys[idx]);
+    });
+    let _qualityChangeTimer = null;
+    qualitySlider.addEventListener('change', () => {
+        const idx = parseInt(qualitySlider.value, 10);
+        const quality = qualityNames[idx];
+        window.renderQuality = quality;
+        if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
+        // 防抖：避免快速连续切换画质触发多次模型重载
+        if (_qualityChangeTimer) clearTimeout(_qualityChangeTimer);
+        _qualityChangeTimer = setTimeout(() => {
+            _qualityChangeTimer = null;
+            window.dispatchEvent(new CustomEvent('neko-render-quality-changed', { detail: { quality: window.renderQuality } }));
+            // 调用系统特定的回调
+            if (typeof manager._onQualityChange === 'function') {
+                manager._onQualityChange(window.renderQuality);
+            }
+        }, 300);
+    });
+    qualitySlider.addEventListener('click', (e) => e.stopPropagation());
+    qualitySlider.addEventListener('mousedown', (e) => e.stopPropagation());
+
+    qualityRow.appendChild(qualityLabel);
+    qualityRow.appendChild(qualitySlider);
+    qualityRow.appendChild(qualityValue);
+    container.appendChild(qualityRow);
+
+    // 帧率滑动条
+    const fpsRow = document.createElement('div');
+    Object.assign(fpsRow.style, { display: 'flex', alignItems: 'center', gap: '8px', width: '100%' });
+
+    const fpsLabel = document.createElement('span');
+    fpsLabel.textContent = window.t ? window.t('settings.toggles.frameRate') : '帧率';
+    fpsLabel.setAttribute('data-i18n', 'settings.toggles.frameRate');
+    Object.assign(fpsLabel.style, LABEL_STYLE);
+
+    const fpsSlider = document.createElement('input');
+    fpsSlider.type = 'range';
+    fpsSlider.min = '0';
+    fpsSlider.max = '3';
+    fpsSlider.step = '1';
+    const fpsValues = [30, 45, 60, 0];
+    const curFps = typeof window.targetFrameRate === 'number' ? window.targetFrameRate : 60;
+    fpsSlider.value = curFps === 0 ? '3' : curFps >= 60 ? '2' : curFps >= 45 ? '1' : '0';
+    Object.assign(fpsSlider.style, SLIDER_STYLE);
+
+    const fpsLabelKeys = ['settings.toggles.frameRateLow', 'settings.toggles.frameRateMedium', 'settings.toggles.frameRateHigh', 'settings.toggles.frameRateUnlimited'];
+    const fpsDefaults = ['30fps', '45fps', '60fps', 'VSync'];
+    const fpsValue = document.createElement('span');
+    const curFIdx = parseInt(fpsSlider.value, 10);
+    fpsValue.textContent = window.t ? window.t(fpsLabelKeys[curFIdx]) : fpsDefaults[curFIdx];
+    fpsValue.setAttribute('data-i18n', fpsLabelKeys[curFIdx]);
+    Object.assign(fpsValue.style, VALUE_STYLE);
+
+    fpsSlider.addEventListener('input', () => {
+        const idx = parseInt(fpsSlider.value, 10);
+        fpsValue.textContent = window.t ? window.t(fpsLabelKeys[idx]) : fpsDefaults[idx];
+        fpsValue.setAttribute('data-i18n', fpsLabelKeys[idx]);
+    });
+    fpsSlider.addEventListener('change', () => {
+        const idx = parseInt(fpsSlider.value, 10);
+        window.targetFrameRate = fpsValues[idx];
+        if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
+        window.dispatchEvent(new CustomEvent('neko-frame-rate-changed', { detail: { fps: fpsValues[idx] } }));
+    });
+    fpsSlider.addEventListener('click', (e) => e.stopPropagation());
+    fpsSlider.addEventListener('mousedown', (e) => e.stopPropagation());
+
+    fpsRow.appendChild(fpsLabel);
+    fpsRow.appendChild(fpsSlider);
+    fpsRow.appendChild(fpsValue);
+    container.appendChild(fpsRow);
+
+    // ── 跟踪相关开关（统一三行间距） ──
+    const trackingRow = document.createElement('div');
+    Object.assign(trackingRow.style, { display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: '0', width: '100%', marginTop: '0' });
+
+    const trackingToggleRowStyle = {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '6px',
+        cursor: 'pointer',
+        width: '100%',
+        padding: '8px 12px',
+        borderRadius: '6px',
+        boxSizing: 'border-box',
+        transition: 'background 0.2s ease'
+    };
+    const updateTrackingToggleRowBackground = (row, checked) => {
+        if (!row) return;
+        const hovered = row.matches(':hover');
+        row.style.background = hovered
+            ? (checked
+                ? 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))'
+                : 'var(--neko-popup-hover-subtle, rgba(68,183,254,0.08))')
+            : 'transparent';
+    };
+    const bindTrackingToggleRowHover = (row, getChecked) => {
+        if (!row || typeof getChecked !== 'function') return;
+        row.addEventListener('mouseenter', () => updateTrackingToggleRowBackground(row, getChecked()));
+        row.addEventListener('mouseleave', () => updateTrackingToggleRowBackground(row, getChecked()));
+    };
+
+    // 鼠标跟踪复选框
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.id = `${prefix}-mouse-tracking-toggle`;
+    checkbox.style.display = 'none';
+    checkbox.checked = typeof manager._getMouseTrackingState === 'function' ? manager._getMouseTrackingState() : true;
+
+    const { indicator, updateStyle: updateIndicatorStyle } = manager._createCheckIndicator();
+    Object.assign(indicator.style, { width: '20px', height: '20px', flexShrink: '0' });
+
+    let trackingClickArea = null;
+    const updateRowStyle = () => {
+        const isChecked = checkbox.checked;
+        updateIndicatorStyle(isChecked);
+        updateTrackingToggleRowBackground(trackingClickArea, isChecked);
+    };
+    checkbox.updateStyle = updateRowStyle;
+    updateRowStyle();
+    checkbox.addEventListener('change', updateRowStyle);
+
+    const label = document.createElement('span');
+    label.textContent = window.t ? window.t('settings.toggles.mouseTracking') : '跟踪鼠标';
+    label.setAttribute('data-i18n', 'settings.toggles.mouseTracking');
+    Object.assign(label.style, { userSelect: 'none', fontSize: '12px', whiteSpace: 'nowrap' });
+
+    // 鼠标跟踪点击区域（左半部分）
+    trackingClickArea = document.createElement('div');
+    Object.assign(trackingClickArea.style, trackingToggleRowStyle);
+    trackingClickArea.appendChild(checkbox);
+    trackingClickArea.appendChild(indicator);
+    trackingClickArea.appendChild(label);
+    bindTrackingToggleRowHover(trackingClickArea, () => checkbox.checked);
+    updateRowStyle();
+
+    const handleTrackingChange = () => {
+        const enabled = !checkbox.checked;
+        checkbox.checked = enabled;
+        updateRowStyle();
+        updateTrackingModeToggleState();
+        trackingClickArea.setAttribute('aria-checked', String(enabled));
+        // 必须先跑回调写 window.mouseTrackingEnabled，再 save——saveSettings 是从该
+        // 全局变量读值落盘的，顺序反了会把切换前的旧值持久化（刷新后看着像被重置）
+        if (typeof manager._onMouseTrackingToggle === 'function') {
+            manager._onMouseTrackingToggle(enabled);
+        }
+        if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
+    };
+
+    trackingClickArea.addEventListener('click', (e) => {
+        e.stopPropagation();
+        handleTrackingChange();
+    });
+    trackingClickArea.setAttribute('role', 'switch');
+    trackingClickArea.setAttribute('aria-checked', String(checkbox.checked));
+    trackingClickArea.tabIndex = 0;
+    trackingClickArea.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            e.stopPropagation();
+            handleTrackingChange();
+        }
+    });
+
+    // 全屏/局部跟踪复选框（右半部分）
+    const supportsTrackingModeToggle = prefix === 'live2d' || prefix === 'vrm' || prefix === 'mmd';
+    const modeCheckbox = document.createElement('input');
+    modeCheckbox.type = 'checkbox';
+    modeCheckbox.style.display = 'none';
+
+    const { indicator: modeIndicator, updateStyle: updateModeIndicatorStyle } = manager._createCheckIndicator();
+    Object.assign(modeIndicator.style, { width: '20px', height: '20px', flexShrink: '0' });
+
+    const updateTrackingModeToggleState = () => {
+        if (!modeClickArea || !supportsTrackingModeToggle) return;
+        const isEnabled = checkbox.checked;
+        modeClickArea.style.opacity = isEnabled ? '1' : '0.4';
+        modeClickArea.style.pointerEvents = isEnabled ? 'auto' : 'none';
+        modeClickArea.tabIndex = isEnabled ? 0 : -1;
+    };
+
+    let modeClickArea = null;
+    const updateModeRowStyle = () => {
+        updateModeIndicatorStyle(modeCheckbox.checked);
+        updateTrackingToggleRowBackground(modeClickArea, modeCheckbox.checked);
+    };
+
+    const getTrackingModeState = () => {
+        if (prefix === 'live2d') {
+            return window.live2dFullscreenTrackingEnabled === true;
+        } else if (prefix === 'vrm' || prefix === 'mmd') {
+            return window.humanoidLocalTrackingEnabled === true;
+        }
+        return false;
+    };
+    modeCheckbox.checked = getTrackingModeState();
+    modeCheckbox.updateStyle = updateModeRowStyle;
+    updateModeRowStyle();
+
+    const modeLabel = document.createElement('span');
+    if (prefix === 'live2d') {
+        modeLabel.textContent = window.t ? window.t('settings.toggles.fullscreenTracking') : '全屏跟踪';
+        modeLabel.setAttribute('data-i18n', 'settings.toggles.fullscreenTracking');
+    } else if (prefix === 'vrm' || prefix === 'mmd') {
+        modeLabel.textContent = window.t ? window.t('settings.toggles.localTracking') : '局部跟踪';
+        modeLabel.setAttribute('data-i18n', 'settings.toggles.localTracking');
+    }
+    Object.assign(modeLabel.style, { userSelect: 'none', fontSize: '12px', whiteSpace: 'nowrap' });
+
+    modeClickArea = document.createElement('div');
+    Object.assign(modeClickArea.style, trackingToggleRowStyle);
+    modeClickArea.appendChild(modeCheckbox);
+    modeClickArea.appendChild(modeIndicator);
+    modeClickArea.appendChild(modeLabel);
+    bindTrackingToggleRowHover(modeClickArea, () => modeCheckbox.checked);
+    updateModeRowStyle();
+
+    // 初始化跟踪模式按钮状态
+    updateTrackingModeToggleState();
+
+    const handleModeChange = () => {
+        if (checkbox.checked !== true) return;
+        const enabled = !modeCheckbox.checked;
+        modeCheckbox.checked = enabled;
+        updateModeRowStyle();
+        modeClickArea.setAttribute('aria-checked', String(enabled));
+
+        if (prefix === 'live2d') {
+            window.live2dFullscreenTrackingEnabled = enabled;
+            if (window.live2dManager && typeof window.live2dManager.setFullscreenTrackingEnabled === 'function') {
+                window.live2dManager.setFullscreenTrackingEnabled(enabled);
+            }
+        } else if (prefix === 'vrm' || prefix === 'mmd') {
+            window.humanoidLocalTrackingEnabled = enabled;
+            if (prefix === 'vrm' && window.vrmManager && window.vrmManager._cursorFollow && typeof window.vrmManager._cursorFollow.setLocalTrackingEnabled === 'function') {
+                window.vrmManager._cursorFollow.setLocalTrackingEnabled(enabled);
+            } else if (prefix === 'mmd' && window.mmdManager && window.mmdManager.cursorFollow && typeof window.mmdManager.cursorFollow.setLocalTrackingEnabled === 'function') {
+                window.mmdManager.cursorFollow.setLocalTrackingEnabled(enabled);
+            }
+        }
+
+        if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
+    };
+
+    modeClickArea.addEventListener('click', (e) => {
+        e.stopPropagation();
+        handleModeChange();
+    });
+    modeClickArea.setAttribute('role', 'switch');
+    modeClickArea.setAttribute('aria-checked', String(modeCheckbox.checked));
+    modeClickArea.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            e.stopPropagation();
+            if (checkbox.checked === true) handleModeChange();
+        }
+    });
+
+    trackingRow.appendChild(trackingClickArea);
+    if (supportsTrackingModeToggle) {
+        trackingRow.appendChild(modeClickArea);
+    }
+    container.appendChild(trackingRow);
+
+    // ── 取消隐藏（锁定悬停淡化）开关 ──
+    const hoverFadeRow = document.createElement('div');
+    Object.assign(hoverFadeRow.style, trackingToggleRowStyle);
+
+    const hoverFadeCheckbox = document.createElement('input');
+    hoverFadeCheckbox.type = 'checkbox';
+    hoverFadeCheckbox.style.display = 'none';
+    hoverFadeCheckbox.checked = window.lockedHoverFadeEnabled !== false; // 默认开启
+
+    const { indicator: hoverFadeIndicator, updateStyle: updateHoverFadeIndicatorStyle } = manager._createCheckIndicator();
+    Object.assign(hoverFadeIndicator.style, { width: '20px', height: '20px', flexShrink: '0' });
+
+    const updateHoverFadeRowStyle = () => {
+        updateHoverFadeIndicatorStyle(hoverFadeCheckbox.checked);
+        updateTrackingToggleRowBackground(hoverFadeRow, hoverFadeCheckbox.checked);
+        hoverFadeRow.setAttribute('aria-checked', String(hoverFadeCheckbox.checked));
+    };
+    hoverFadeCheckbox.updateStyle = updateHoverFadeRowStyle;
+    updateHoverFadeRowStyle();
+
+    const hoverFadeLabel = document.createElement('span');
+    hoverFadeLabel.textContent = window.t ? window.t('settings.toggles.lockedHoverFade') : '锁定悬停淡化';
+    hoverFadeLabel.setAttribute('data-i18n', 'settings.toggles.lockedHoverFade');
+    Object.assign(hoverFadeLabel.style, { userSelect: 'none', fontSize: '12px', flex: '1' });
+
+    hoverFadeRow.appendChild(hoverFadeCheckbox);
+    hoverFadeRow.appendChild(hoverFadeIndicator);
+    hoverFadeRow.appendChild(hoverFadeLabel);
+    Object.assign(hoverFadeRow.style, { cursor: 'pointer' });
+    bindTrackingToggleRowHover(hoverFadeRow, () => hoverFadeCheckbox.checked);
+    updateHoverFadeRowStyle();
+
+    const handleHoverFadeChange = () => {
+        const enabled = !hoverFadeCheckbox.checked;
+        hoverFadeCheckbox.checked = enabled;
+        window.lockedHoverFadeEnabled = enabled;
+        updateHoverFadeRowStyle();
+        if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
+        // 如果关闭，立即移除当前的淡化效果
+        if (!enabled) {
+            window.dispatchEvent(new CustomEvent('neko-locked-hover-fade-changed', { detail: { enabled } }));
+        }
+    };
+
+    hoverFadeRow.addEventListener('click', (e) => {
+        e.stopPropagation();
+        handleHoverFadeChange();
+    });
+    hoverFadeRow.setAttribute('role', 'switch');
+    hoverFadeRow.setAttribute('aria-checked', String(hoverFadeCheckbox.checked));
+    hoverFadeRow.tabIndex = 0;
+    hoverFadeRow.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            e.stopPropagation();
+            handleHoverFadeChange();
+        }
+    });
+
+    trackingRow.appendChild(hoverFadeRow);
+
+    document.body.appendChild(container);
+    return container;
+}
+
+/**
+ * 创建侧边面板容器（公共基础样式）
+ */
+function createSidePanelContainer(manager, prefix, options = {}) {
+    const container = document.createElement('div');
+    container.setAttribute('data-neko-sidepanel', '');
+    const getInteractionGuardDelay = () => {
+        const sidePanelType = container.getAttribute('data-neko-sidepanel-type') || '';
+        if (sidePanelType === 'agent-user-plugin-actions' || sidePanelType === 'agent-openclaw-actions') {
+            return 220;
+        }
+        return 0;
+    };
+    container._getInteractionGuardDelay = getInteractionGuardDelay;
+    Object.assign(container.style, {
+        position: 'fixed',
+        display: 'none',
+        alignItems: options.alignItems || 'center',
+        flexDirection: options.flexDirection || 'row',
+        gap: '6px',
+        padding: '6px 12px',
+        fontSize: '12px',
+        color: 'var(--neko-popup-text, #333)',
+        opacity: '0',
+        zIndex: '100001',
+        background: 'var(--neko-popup-bg, rgba(255,255,255,0.65))',
+        backdropFilter: 'saturate(180%) blur(20px)',
+        border: 'var(--neko-popup-border, 1px solid rgba(255,255,255,0.18))',
+        borderRadius: '8px',
+        boxShadow: 'var(--neko-popup-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04))',
+        transition: 'opacity 0.2s cubic-bezier(0.1, 0.9, 0.2, 1), transform 0.2s cubic-bezier(0.1, 0.9, 0.2, 1)',
+        transform: 'translateX(-6px)',
+        pointerEvents: 'auto',
+        cursor: 'pointer',
+        flexWrap: options.flexWrap || 'wrap',
+        width: options.width || 'auto',
+        maxWidth: '300px'
+    });
+
+    const stopEventPropagation = (e) => {
+        if (document.body.classList.contains('neko-model-dragging')) return;
+        e.stopPropagation();
+    };
+    ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend'].forEach(evt => {
+        container.addEventListener(evt, stopEventPropagation, true);
+    });
+    container.addEventListener('click', stopEventPropagation);
+
+    const positionContainerFromAnchor = () => {
+        const anchor = container._anchorElement;
+        if (!anchor) {
+            return false;
+        }
+        const anchorRect = anchor.getBoundingClientRect();
+        if (!anchorRect || anchorRect.width <= 0 || anchorRect.height <= 0) {
+            return false;
+        }
+
+        if (
+            container.dataset.nekoNestedSidePanel !== 'true'
+            && window.AvatarPopupUI
+            && typeof window.AvatarPopupUI.positionSidePanel === 'function'
+        ) {
+            window.AvatarPopupUI.positionSidePanel(container, anchor);
+        }
+        const hasPositionStyles = !!(container.style.left || container.style.right || container.style.top);
+        if (container.dataset.niriPhysicalCropPositioned === 'true' && hasPositionStyles) {
+            return true;
+        }
+
+        const rect = container.getBoundingClientRect();
+        const horizontalGap = rect
+            ? Math.max(0, anchorRect.left - rect.right, rect.left - anchorRect.right)
+            : Infinity;
+        const verticalGap = rect
+            ? Math.max(0, anchorRect.top - rect.bottom, rect.top - anchorRect.bottom)
+            : Infinity;
+        const nearAnchor = (
+            horizontalGap <= Math.max(420, rect.width + anchorRect.width + 80)
+            && verticalGap <= Math.max(220, rect.height + anchorRect.height + 80)
+        );
+        if (
+            rect
+            && rect.width > 0
+            && rect.height > 0
+            && rect.right > 0
+            && rect.bottom > 0
+            && rect.left < window.innerWidth
+            && rect.top < window.innerHeight
+            && nearAnchor
+            && hasPositionStyles
+        ) {
+            return true;
+        }
+
+        const edgeMargin = 8;
+        const gap = 12;
+        const panelW = container.offsetWidth || rect.width || 180;
+        const panelH = container.offsetHeight || rect.height || 40;
+        const nestedPrefersRight = container.dataset.nekoNestedSidePanel === 'true'
+            && anchorRect.right + gap + panelW <= window.innerWidth - edgeMargin;
+        const placeLeft = !nestedPrefersRight && anchorRect.left >= (window.innerWidth / 2);
+        let left = placeLeft
+            ? anchorRect.left - gap - panelW
+            : anchorRect.right + gap;
+        let top = anchorRect.top;
+
+        left = Math.max(edgeMargin, Math.min(left, window.innerWidth - edgeMargin - panelW));
+        top = Math.max(edgeMargin, Math.min(top, window.innerHeight - 60 - panelH));
+        container.style.left = `${left}px`;
+        container.style.right = 'auto';
+        container.style.top = `${top}px`;
+        container.dataset.goDown = 'false';
+        container.dataset.goLeft = String(placeLeft);
+        applyAvatarSidePanelTransform(container, placeLeft ? 'translateX(6px)' : 'translateX(-6px)');
+        return true;
+    };
+
+    container._expand = () => {
+        const alreadyVisible = container.style.display === 'flex' && container.style.opacity !== '0';
+        const visibilityRevision = (container._visibilityRevision || 0) + 1;
+        container._visibilityRevision = visibilityRevision;
+        if (container._expandFrameId) {
+            cancelAnimationFrame(container._expandFrameId);
+            container._expandFrameId = null;
+        }
+        if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
+        if (container._interactionGuardTimer) { clearTimeout(container._interactionGuardTimer); container._interactionGuardTimer = null; }
+
+        container.style.display = 'flex';
+        container.style.pointerEvents = alreadyVisible ? 'auto' : 'none';
+        if (!alreadyVisible) {
+            const savedTransition = container.style.transition;
+            container.style.transition = 'none';
+            container.style.opacity = '0';
+            container.style.left = '';
+            container.style.right = '';
+            container.style.top = '';
+            container.style.transform = '';
+            void container.offsetHeight;
+            container.style.transition = savedTransition;
+        }
+        const positioned = positionContainerFromAnchor();
+        if (!positioned) {
+            container.style.opacity = '0';
+            container.style.display = 'none';
+            container.style.pointerEvents = 'none';
+            container._visibilityRevision = visibilityRevision + 1;
+            return false;
+        }
+
+        container._expandFrameId = requestAnimationFrame(() => {
+            container._expandFrameId = null;
+            if (container._visibilityRevision !== visibilityRevision || container.style.display === 'none') {
+                return;
+            }
+            container.style.opacity = '1';
+            applyAvatarSidePanelTransform(container, 'none');
+            if (alreadyVisible) {
+                container.style.pointerEvents = 'auto';
+                return;
+            }
+            const interactionGuardDelay = getInteractionGuardDelay();
+            if (interactionGuardDelay > 0) {
+                container._interactionGuardTimer = setTimeout(() => {
+                    container.style.pointerEvents = 'auto';
+                    container._interactionGuardTimer = null;
+                }, interactionGuardDelay);
+            } else {
+                container.style.pointerEvents = 'auto';
+            }
+        });
+        return true;
+    };
+
+    container._collapse = () => {
+        if (container.style.display === 'none') return;
+        container._visibilityRevision = (container._visibilityRevision || 0) + 1;
+        const visibilityRevision = container._visibilityRevision;
+        if (container._expandFrameId) {
+            cancelAnimationFrame(container._expandFrameId);
+            container._expandFrameId = null;
+        }
+        if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
+        if (container._interactionGuardTimer) { clearTimeout(container._interactionGuardTimer); container._interactionGuardTimer = null; }
+        container.style.pointerEvents = 'none';
+        container.style.opacity = '0';
+        applyAvatarSidePanelTransform(container, getAvatarSidePanelExitMotion(container));
+        container._collapseTimeout = setTimeout(() => {
+            if (container._visibilityRevision === visibilityRevision && container.style.opacity === '0') {
+                container.style.display = 'none';
+            }
+            container._collapseTimeout = null;
+        }, AVATAR_POPUP_ANIMATION_DURATION_MS);
+    };
+
+    if (window.AvatarPopupUI && window.AvatarPopupUI.registerSidePanel) {
+        window.AvatarPopupUI.registerSidePanel(container);
+    }
+
+    return container;
+}
+
+/**
+ * 附加侧边面板悬停逻辑
+ */
+function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
+    const popupEl = sidePanel._popupElement || null;
+    const ownerId = popupEl && popupEl.id ? popupEl.id : '';
+    let lastPointerPosition = null;
+    let isPointerTracking = false;
+    const isTutorialHoverDisabled = () => {
+        if (window.isInTutorial !== true) {
+            return false;
+        }
+
+        const sidePanelType = sidePanel && typeof sidePanel.getAttribute === 'function'
+            ? (sidePanel.getAttribute('data-neko-sidepanel-type') || '')
+            : '';
+
+        return [
+            'agent-user-plugin-actions',
+            'agent-openclaw-actions',
+            'chat-settings',
+            'animation-settings',
+            'advanced-settings',
+            'interval-proactive-chat',
+            'interval-proactive-vision',
+            'character-settings'
+        ].includes(sidePanelType);
+    };
+
+    if (ownerId) sidePanel.setAttribute('data-neko-sidepanel-owner', ownerId);
+
+    const rememberPointerPosition = (event) => {
+        if (!event || typeof event.clientX !== 'number' || typeof event.clientY !== 'number') return;
+        lastPointerPosition = { x: event.clientX, y: event.clientY };
+    };
+
+    const startPointerTracking = () => {
+        if (isPointerTracking) return;
+        document.addEventListener('mousemove', rememberPointerPosition, true);
+        document.addEventListener('pointermove', rememberPointerPosition, true);
+        isPointerTracking = true;
+    };
+
+    const stopPointerTracking = () => {
+        if (!isPointerTracking) return;
+        document.removeEventListener('mousemove', rememberPointerPosition, true);
+        document.removeEventListener('pointermove', rememberPointerPosition, true);
+        isPointerTracking = false;
+    };
+    sidePanel._stopHoverPointerTracking = stopPointerTracking;
+
+    const isHoveringAnchorOrPanel = () => {
+        return anchorEl.matches(':hover') || sidePanel.matches(':hover');
+    };
+
+    const isPointerInTransferBridge = () => {
+        if (!lastPointerPosition || sidePanel.style.display === 'none') return false;
+        const anchorRect = anchorEl.getBoundingClientRect();
+        const panelRect = sidePanel.getBoundingClientRect();
+        if (!anchorRect || !panelRect || panelRect.width <= 0 || panelRect.height <= 0) return false;
+
+        const padding = AVATAR_POPUP_HOVER_BRIDGE_PADDING_PX;
+        const left = Math.min(anchorRect.left, panelRect.left) - padding;
+        const right = Math.max(anchorRect.right, panelRect.right) + padding;
+        const top = Math.min(anchorRect.top, panelRect.top) - padding;
+        const bottom = Math.max(anchorRect.bottom, panelRect.bottom) + padding;
+        return lastPointerPosition.x >= left
+            && lastPointerPosition.x <= right
+            && lastPointerPosition.y >= top
+            && lastPointerPosition.y <= bottom;
+    };
+
+    const collapseWithDelay = (delay = AVATAR_POPUP_HOVER_COLLAPSE_DELAY_MS) => {
+        if (isTutorialHoverDisabled()) {
+            if (sidePanel._hoverCollapseTimer) {
+                clearTimeout(sidePanel._hoverCollapseTimer);
+                sidePanel._hoverCollapseTimer = null;
+            }
+            stopPointerTracking();
+            return;
+        }
+        const interactionGuardDelay = typeof sidePanel._getInteractionGuardDelay === 'function'
+            ? sidePanel._getInteractionGuardDelay()
+            : 0;
+        const normalizedDelay = interactionGuardDelay > 0
+            ? Math.max(delay, interactionGuardDelay) + 80
+            : delay;
+        if (sidePanel._hoverCollapseTimer) { clearTimeout(sidePanel._hoverCollapseTimer); sidePanel._hoverCollapseTimer = null; }
+        startPointerTracking();
+        const bridgeGraceStartedAt = Date.now();
+        const attemptCollapse = () => {
+            sidePanel._hoverCollapseTimer = null;
+            if (!sidePanel.isConnected || isTutorialHoverDisabled()) {
+                stopPointerTracking();
+                return;
+            }
+            if (isHoveringAnchorOrPanel()) {
+                stopPointerTracking();
+                return;
+            }
+            if (
+                isPointerInTransferBridge()
+                && Date.now() - bridgeGraceStartedAt < AVATAR_POPUP_HOVER_BRIDGE_GRACE_MS
+            ) {
+                sidePanel._hoverCollapseTimer = setTimeout(attemptCollapse, 90);
+                return;
+            }
+            sidePanel._collapse();
+            stopPointerTracking();
+        };
+        sidePanel._hoverCollapseTimer = setTimeout(attemptCollapse, normalizedDelay);
+    };
+
+    const expandPanel = () => {
+        if (isTutorialHoverDisabled()) return;
+        if (window.AvatarPopupUI && window.AvatarPopupUI.collapseOtherSidePanels) {
+            window.AvatarPopupUI.collapseOtherSidePanels(sidePanel);
+        }
+        void document.body.offsetHeight;
+        if (sidePanel._hoverCollapseTimer) { clearTimeout(sidePanel._hoverCollapseTimer); sidePanel._hoverCollapseTimer = null; }
+        stopPointerTracking();
+        sidePanel._expand();
+    };
+    const collapsePanel = (e) => {
+        if (isTutorialHoverDisabled()) return;
+        rememberPointerPosition(e);
+        const target = e.relatedTarget;
+        if (!target || (!anchorEl.contains(target) && !sidePanel.contains(target))) collapseWithDelay();
+    };
+
+    anchorEl.addEventListener('mouseenter', expandPanel);
+    anchorEl.addEventListener('mousemove', rememberPointerPosition);
+    anchorEl.addEventListener('mouseleave', collapsePanel);
+    sidePanel.addEventListener('mouseenter', () => {
+        expandPanel();
+        if (manager.interaction) {
+            manager.interaction._isMouseOverButtons = true;
+            if (manager.interaction._hideButtonsTimer) { clearTimeout(manager.interaction._hideButtonsTimer); manager.interaction._hideButtonsTimer = null; }
+        }
+    });
+    sidePanel.addEventListener('mouseleave', (e) => {
+        collapsePanel(e);
+        if (manager.interaction) manager.interaction._isMouseOverButtons = false;
+    });
+    sidePanel.addEventListener('mousemove', rememberPointerPosition);
+
+    if (popupEl) {
+        popupEl.addEventListener('mouseleave', (e) => {
+            rememberPointerPosition(e);
+            const target = e.relatedTarget;
+            if (!target || (!anchorEl.contains(target) && !sidePanel.contains(target))) collapseWithDelay();
+        });
+        popupEl.addEventListener('mousemove', rememberPointerPosition);
+    }
+}
+
+/**
+ * 创建时间间隔控件
+ */
+function createIntervalControl(manager, prefix, toggle) {
+    const container = document.createElement('div');
+    container.className = `${prefix}-interval-control-${toggle.id}`;
+    container.setAttribute('data-neko-sidepanel', '');
+    container.setAttribute('data-neko-sidepanel-type', `interval-${toggle.id}`);
+    Object.assign(container.style, {
+        position: 'fixed',
+        display: 'none',
+        alignItems: 'stretch',
+        flexDirection: 'column',
+        gap: toggle.id === 'proactive-chat' ? '0' : '6px',
+        padding: toggle.id === 'proactive-chat' ? '10px 10px 1px' : '6px 12px',
+        fontSize: '12px',
+        color: 'var(--neko-popup-text, #333)',
+        opacity: '0',
+        zIndex: '100001',
+        background: 'var(--neko-popup-bg, rgba(255,255,255,0.65))',
+        backdropFilter: 'saturate(180%) blur(20px)',
+        border: 'var(--neko-popup-border, 1px solid rgba(255,255,255,0.18))',
+        borderRadius: '8px',
+        boxShadow: 'var(--neko-popup-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04))',
+        transition: 'opacity 0.2s cubic-bezier(0.1, 0.9, 0.2, 1), transform 0.2s cubic-bezier(0.1, 0.9, 0.2, 1)',
+        transform: 'translateX(-6px)',
+        pointerEvents: 'auto',
+        cursor: 'pointer',
+        flexWrap: 'nowrap',
+        width: 'max-content',
+        maxWidth: 'min(320px, calc(100vw - 24px))'
+    });
+
+    const stopEventPropagation = (e) => {
+        if (document.body.classList.contains('neko-model-dragging')) return;
+        e.stopPropagation();
+    };
+    ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend'].forEach(evt => {
+        container.addEventListener(evt, stopEventPropagation, true);
+    });
+    container.addEventListener('click', stopEventPropagation);
+
+    const sliderRow = document.createElement('div');
+    Object.assign(sliderRow.style, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '4px',
+        width: 'auto',
+        marginBottom: toggle.id === 'proactive-chat' ? '8px' : '0'
+    });
+
+    const labelKey = toggle.id === 'proactive-chat' ? 'settings.interval.chatIntervalBase' : 'settings.interval.visionInterval';
+    const defaultLabel = toggle.id === 'proactive-chat' ? '最低间隔' : '感知间隔';
+    const labelText = document.createElement('span');
+    labelText.textContent = window.t ? window.t(labelKey) : defaultLabel;
+    labelText.setAttribute('data-i18n', labelKey);
+    Object.assign(labelText.style, { flexShrink: '0', fontSize: '12px' });
+
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.id = `${prefix}-${toggle.id}-interval`;
+    const minVal = toggle.id === 'proactive-chat' ? 10 : 5;
+    slider.min = minVal;
+    slider.max = '120';
+    slider.step = '5';
+    let currentValue = typeof window[toggle.intervalKey] !== 'undefined' ? window[toggle.intervalKey] : toggle.defaultInterval;
+    // 后端契约接受 1..3600 秒（utils/preferences.py），预设也会写入低于 UI 默认
+    // 下限的合法值（如 frequent 预设 5s，见 main_routers/proactive_router.py）。
+    // 持久化值越出滑条默认边界时，按契约放宽边界如实显示，绝不钳制或改写运行时/
+    // 持久化配置——否则打开设置面板就会把服务端配置的值静默改回 UI 边界。
+    const numericValue = Number(currentValue);
+    if (Number.isFinite(numericValue)) {
+        if (numericValue < minVal) slider.min = Math.max(1, numericValue);
+        if (numericValue > 120) slider.max = Math.min(3600, numericValue);
+        // 契约接受任意 1..3600 整数，值不在 5s 步进格点上（如 121、47）时浏览器
+        // 会把 slider.value 吸附到最近格点，显示与滑块再度分叉；此时改用 1s 步进
+        // 让该值可被精确表示。按格点值正常保持 5s 拖动手感。
+        const sliderShownValue = Math.min(Math.max(numericValue, Number(slider.min)), Number(slider.max));
+        if ((sliderShownValue - Number(slider.min)) % 5 !== 0) slider.step = '1';
+    }
+    slider.value = currentValue;
+    Object.assign(slider.style, { width: '60px', height: '4px', cursor: 'pointer', accentColor: 'var(--neko-popup-accent, #44b7fe)' });
+
+    const valueDisplay = document.createElement('span');
+    valueDisplay.textContent = `${currentValue}s`;
+    Object.assign(valueDisplay.style, { minWidth: '26px', textAlign: 'right', fontFamily: 'monospace', fontSize: '12px', flexShrink: '0' });
+
+    slider.addEventListener('input', () => { valueDisplay.textContent = `${parseInt(slider.value, 10)}s`; });
+    slider.addEventListener('change', () => {
+        const value = parseInt(slider.value, 10);
+        window[toggle.intervalKey] = value;
+        if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
+        console.log(`${toggle.id} 间隔已设置为 ${value} 秒`);
+        // 滑块变更后立即重排定时器，让新间隔马上生效
+        if (toggle.id === 'proactive-chat' && typeof window.resetProactiveChatBackoff === 'function') {
+            window.resetProactiveChatBackoff();
+        }
+    });
+    slider.addEventListener('click', (e) => e.stopPropagation());
+    slider.addEventListener('mousedown', (e) => e.stopPropagation());
+
+    sliderRow.appendChild(labelText);
+    sliderRow.appendChild(slider);
+    sliderRow.appendChild(valueDisplay);
+    container.appendChild(sliderRow);
+
+    if (toggle.id === 'proactive-chat') {
+        if (typeof window.createChatModeToggles === 'function') {
+            const chatModesContainer = window.createChatModeToggles(prefix);
+            container.appendChild(chatModesContainer);
+        }
+    }
+
+    container._expand = () => {
+        if (container.style.display === 'flex' && container.style.opacity !== '0') return;
+        const visibilityRevision = (container._visibilityRevision || 0) + 1;
+        container._visibilityRevision = visibilityRevision;
+        if (container._expandFrameId) {
+            cancelAnimationFrame(container._expandFrameId);
+            container._expandFrameId = null;
+        }
+        if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
+
+        container.style.display = 'flex';
+        container.style.pointerEvents = 'none';
+        const savedTransition = container.style.transition;
+        container.style.transition = 'none';
+        container.style.opacity = '0';
+        container.style.left = '';
+        container.style.right = '';
+        container.style.top = '';
+        container.style.transform = '';
+        void container.offsetHeight;
+        container.style.transition = savedTransition;
+
+        const anchor = container._anchorElement;
+        if (anchor && window.AvatarPopupUI && window.AvatarPopupUI.positionSidePanel) {
+            window.AvatarPopupUI.positionSidePanel(container, anchor);
+        }
+
+        container._expandFrameId = requestAnimationFrame(() => {
+            container._expandFrameId = null;
+            if (container._visibilityRevision !== visibilityRevision || container.style.display === 'none') {
+                return;
+            }
+            container.style.pointerEvents = 'auto';
+            container.style.opacity = '1';
+            applyAvatarSidePanelTransform(container, 'none');
+        });
+    };
+
+    container._collapse = () => {
+        if (container.style.display === 'none') return;
+        container._visibilityRevision = (container._visibilityRevision || 0) + 1;
+        const visibilityRevision = container._visibilityRevision;
+        if (container._expandFrameId) {
+            cancelAnimationFrame(container._expandFrameId);
+            container._expandFrameId = null;
+        }
+        if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
+        container.style.opacity = '0';
+        applyAvatarSidePanelTransform(container, getAvatarSidePanelExitMotion(container));
+        container._collapseTimeout = setTimeout(() => {
+            if (container._visibilityRevision === visibilityRevision && container.style.opacity === '0') container.style.display = 'none';
+            container._collapseTimeout = null;
+        }, AVATAR_POPUP_ANIMATION_DURATION_MS);
+    };
+
+    if (window.AvatarPopupUI && window.AvatarPopupUI.registerSidePanel) {
+        window.AvatarPopupUI.registerSidePanel(container);
+    }
+
+    document.body.appendChild(container);
+    return container;
+}
+
+/**
+ * 创建圆形指示器和对勾
+ */
+function createCheckIndicator(manager, prefix) {
+    const indicator = document.createElement('div');
+    Object.assign(indicator.style, {
+        width: '20px',
+        height: '20px',
+        borderRadius: '50%',
+        border: '2px solid var(--neko-popup-indicator-border, #ccc)',
+        backgroundColor: 'transparent',
+        cursor: 'pointer',
+        flexShrink: '0',
+        transition: 'all 0.2s ease',
+        position: 'relative',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center'
+    });
+
+    const checkmark = document.createElement('div');
+    checkmark.textContent = '✓';
+    Object.assign(checkmark.style, {
+        color: '#fff',
+        fontSize: '13px',
+        fontWeight: 'bold',
+        lineHeight: '1',
+        opacity: '0',
+        transition: 'opacity 0.2s ease',
+        pointerEvents: 'none',
+        userSelect: 'none'
+    });
+    indicator.appendChild(checkmark);
+
+    const updateStyle = (checked) => {
+        if (checked) {
+            indicator.style.backgroundColor = 'var(--neko-popup-accent, #44b7fe)';
+            indicator.style.borderColor = 'var(--neko-popup-accent, #44b7fe)';
+            checkmark.style.opacity = '1';
+        } else {
+            indicator.style.backgroundColor = 'transparent';
+            indicator.style.borderColor = 'var(--neko-popup-indicator-border, #ccc)';
+            checkmark.style.opacity = '0';
+        }
+    };
+
+    return { indicator, updateStyle };
+}
+
+/**
+ * 创建Agent开关项
+ */
+function createToggleItem(manager, prefix, toggle, popup) {
+    const toggleItem = document.createElement('div');
+    toggleItem.className = `${prefix}-toggle-item`;
+    toggleItem.id = `${prefix}-toggle-${toggle.id}`;
+    markAvatarPopupActionElement(toggleItem, 'toggle');
+    toggleItem.setAttribute('role', 'switch');
+    toggleItem.setAttribute('tabIndex', toggle.initialDisabled ? '-1' : '0');
+    toggleItem.setAttribute('aria-checked', 'false');
+    toggleItem.setAttribute('aria-disabled', toggle.initialDisabled ? 'true' : 'false');
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.id = `${prefix}-${toggle.id}`;
+    Object.assign(checkbox.style, {
+        position: 'absolute',
+        opacity: '0',
+        width: '1px',
+        height: '1px',
+        overflow: 'hidden'
+    });
+    checkbox.setAttribute('aria-hidden', 'true');
+
+    if (toggle.initialDisabled) {
+        checkbox.disabled = true;
+        checkbox.title = window.t ? window.t('settings.toggles.checking') : '查询中...';
+        checkbox.setAttribute('data-i18n-title', 'settings.toggles.checking');
+    }
+
+    const indicator = document.createElement('div');
+    indicator.className = `${prefix}-toggle-indicator`;
+    indicator.setAttribute('role', 'presentation');
+    indicator.setAttribute('aria-hidden', 'true');
+
+    const checkmark = document.createElement('div');
+    checkmark.className = `${prefix}-toggle-checkmark`;
+    checkmark.innerHTML = '✓';
+    indicator.appendChild(checkmark);
+
+    const label = document.createElement('label');
+    label.className = `${prefix}-toggle-label`;
+    label.innerText = toggle.label;
+    if (toggle.labelKey) label.setAttribute('data-i18n', toggle.labelKey);
+    label.htmlFor = `${prefix}-${toggle.id}`;
+    toggleItem.setAttribute('aria-label', toggle.label);
+
+    const updateLabelText = () => {
+        if (toggle.labelKey && window.t) {
+            label.innerText = window.t(toggle.labelKey);
+            toggleItem.setAttribute('aria-label', window.t(toggle.labelKey));
+        }
+    };
+    if (toggle.labelKey) {
+        toggleItem._updateLabelText = updateLabelText;
+    }
+
+    const updateStyle = () => {
+        const isChecked = checkbox.checked;
+        toggleItem.setAttribute('aria-checked', isChecked ? 'true' : 'false');
+        indicator.setAttribute('aria-checked', isChecked ? 'true' : 'false');
+    };
+
+    const updateDisabledStyle = () => {
+        const disabled = checkbox.disabled;
+        toggleItem.setAttribute('aria-disabled', disabled ? 'true' : 'false');
+        toggleItem.setAttribute('tabIndex', disabled ? '-1' : '0');
+        toggleItem.style.opacity = disabled ? '0.5' : '1';
+        const cursor = disabled ? 'default' : 'pointer';
+        [toggleItem, label, indicator].forEach(el => { el.style.cursor = cursor; });
+    };
+
+    const updateTitle = () => {
+        const title = checkbox.title || '';
+        toggleItem.title = title;
+        label.title = title;
+    };
+
+    checkbox.addEventListener('change', updateStyle);
+    updateStyle();
+    updateDisabledStyle();
+    updateTitle();
+
+    const disabledObserver = new MutationObserver(() => {
+        updateDisabledStyle();
+        updateTitle();
+    });
+    disabledObserver.observe(checkbox, { attributes: true, attributeFilter: ['disabled', 'title'] });
+
+    toggleItem.appendChild(checkbox);
+    toggleItem.appendChild(indicator);
+    toggleItem.appendChild(label);
+    checkbox._updateStyle = () => {
+        updateStyle();
+        updateDisabledStyle();
+        updateTitle();
+    };
+
+    const handleToggle = (e) => {
+        if (checkbox.disabled) return;
+        if (checkbox._processing) {
+            if (Date.now() - (checkbox._processingTime || 0) < 500) { e?.preventDefault(); return; }
+        }
+        checkbox._processing = true;
+        checkbox._processingTime = Date.now();
+        checkbox.checked = !checkbox.checked;
+        checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+        updateStyle();
+        setTimeout(() => checkbox._processing = false, 500);
+        e?.preventDefault();
+        e?.stopPropagation();
+    };
+
+    toggleItem.addEventListener('keydown', (e) => {
+        if (checkbox.disabled) return;
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            handleToggle(e);
+        }
+    });
+
+    [toggleItem, indicator, label].forEach(el => el.addEventListener('click', (e) => {
+        if (e.target !== checkbox) handleToggle(e);
+    }));
+
+    return toggleItem;
+}
+
+/**
+ * 创建设置开关项
+ */
+function createSettingsToggleItem(manager, prefix, toggle) {
+    const toggleItem = document.createElement('div');
+    toggleItem.className = `${prefix}-toggle-item`;
+    markAvatarPopupActionElement(toggleItem, 'settings-toggle');
+    if (toggle.alwaysTinted) {
+        toggleItem.classList.add(`${prefix}-toggle-item-static`);
+    }
+    toggleItem.id = `${prefix}-toggle-${toggle.id}`;
+    toggleItem.setAttribute('role', 'switch');
+    toggleItem.setAttribute('tabIndex', '0');
+    toggleItem.setAttribute('aria-checked', 'false');
+    toggleItem.setAttribute('aria-label', toggle.label);
+    if (toggle.tooltipKey) {
+        const tooltipText = window.t ? window.t(toggle.tooltipKey) : '';
+        if (tooltipText) toggleItem.title = tooltipText;
+        toggleItem.setAttribute('data-i18n-title', toggle.tooltipKey);
+    }
+    Object.assign(toggleItem.style, {
+        padding: '8px 12px'
+    });
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.id = `${prefix}-${toggle.id}`;
+    Object.assign(checkbox.style, {
+        position: 'absolute',
+        width: '1px',
+        height: '1px',
+        padding: '0',
+        margin: '-1px',
+        overflow: 'hidden',
+        clip: 'rect(0, 0, 0, 0)',
+        whiteSpace: 'nowrap',
+        border: '0'
+    });
+    checkbox.setAttribute('aria-hidden', 'true');
+    checkbox.setAttribute('tabindex', '-1');
+
+    if (toggle.id === 'merge-messages') {
+        if (typeof window.mergeMessagesEnabled !== 'undefined') {
+            checkbox.checked = window.mergeMessagesEnabled;
+        }
+    } else if (toggle.id === 'focus-mode' && typeof window.focusModeEnabled !== 'undefined') {
+        checkbox.checked = toggle.inverted ? !window.focusModeEnabled : window.focusModeEnabled;
+    } else if (toggle.id === 'avatar-reaction-bubble' && typeof window.avatarReactionBubbleEnabled !== 'undefined') {
+        checkbox.checked = window.avatarReactionBubbleEnabled;
+    } else if (toggle.id === 'focus-cognition' && typeof window.focusCognitionEnabled !== 'undefined') {
+        checkbox.checked = window.focusCognitionEnabled;
+    } else if (toggle.id === 'slop-filter' && typeof window.slopFilterEnabled !== 'undefined') {
+        checkbox.checked = window.slopFilterEnabled;
+    } else if (toggle.id === 'proactive-chat' && typeof window.proactiveChatEnabled !== 'undefined') {
+        checkbox.checked = window.proactiveChatEnabled;
+    } else if (toggle.id === 'proactive-vision' && typeof window.proactiveVisionEnabled !== 'undefined') {
+        checkbox.checked = toggle.inverted ? !window.proactiveVisionEnabled : window.proactiveVisionEnabled;
+    } else if (toggle.id === 'fullscreen-tracking' && typeof window.live2dFullscreenTrackingEnabled !== 'undefined') {
+        checkbox.checked = window.live2dFullscreenTrackingEnabled;
+    } else if (toggle.id === 'auto-cat' && window.nekoAutoGoodbye && typeof window.nekoAutoGoodbye.isAutoCatEnabled === 'function') {
+        checkbox.checked = window.nekoAutoGoodbye.isAutoCatEnabled();
+    } else if (toggle.id === 'cat-audio' && window.nekoIdleCatAudio && typeof window.nekoIdleCatAudio.isEnabled === 'function') {
+        checkbox.checked = window.nekoIdleCatAudio.isEnabled();
+    } else if (toggle.id === 'widget-mode' && window.nekoWidgetMode && typeof window.nekoWidgetMode.isEnabled === 'function') {
+        checkbox.checked = window.nekoWidgetMode.isEnabled();
+    }
+
+    const indicator = document.createElement('div');
+    indicator.className = `${prefix}-toggle-indicator`;
+    indicator.setAttribute('role', 'presentation');
+    indicator.setAttribute('aria-hidden', 'true');
+
+    const checkmark = document.createElement('div');
+    checkmark.className = `${prefix}-toggle-checkmark`;
+    checkmark.setAttribute('aria-hidden', 'true');
+    checkmark.innerHTML = '✓';
+    indicator.appendChild(checkmark);
+
+    const updateIndicatorStyle = (checked) => {
+        if (checked) {
+            const activeColor = 'var(--neko-popup-accent, #44b7fe)';
+            indicator.style.backgroundColor = activeColor;
+            indicator.style.borderColor = activeColor;
+            checkmark.style.opacity = '1';
+        } else {
+            indicator.style.backgroundColor = 'transparent';
+            indicator.style.borderColor = 'var(--neko-popup-indicator-border, #ccc)';
+            checkmark.style.opacity = '0';
+        }
+    };
+
+    const label = document.createElement('label');
+    label.innerText = toggle.label;
+    if (toggle.labelKey) {
+        label.setAttribute('data-i18n', toggle.labelKey);
+    }
+    label.style.cursor = 'pointer';
+    label.style.userSelect = 'none';
+    label.style.fontSize = '13px';
+    label.style.color = 'var(--neko-popup-text, #333)';
+    label.style.display = 'flex';
+    label.style.alignItems = 'center';
+    label.style.lineHeight = '1';
+    label.style.height = '20px';
+
+    const updateDependentToggleState = () => {
+        if (!toggle.dependsOnToggleId) {
+            return true;
+        }
+        const dependencyId = `${prefix}-${toggle.dependsOnToggleId}`;
+        const parent = toggleItem.parentElement;
+        const dependencyCheckbox = (parent && parent.querySelector(`#${dependencyId}`)) ||
+            document.getElementById(dependencyId);
+        const dependencyChecked = !!(dependencyCheckbox && dependencyCheckbox.checked && !dependencyCheckbox.disabled);
+        checkbox.disabled = !dependencyChecked;
+        toggleItem.setAttribute('aria-disabled', dependencyChecked ? 'false' : 'true');
+        toggleItem.setAttribute('tabIndex', dependencyChecked ? '0' : '-1');
+        toggleItem.style.opacity = dependencyChecked ? '1' : '0.5';
+        const cursor = dependencyChecked ? 'pointer' : 'default';
+        [toggleItem, indicator, label].forEach(el => { el.style.cursor = cursor; });
+        return dependencyChecked;
+    };
+
+    const updateStyle = () => {
+        const enabledByDependency = updateDependentToggleState();
+        const isChecked = checkbox.checked;
+        const hovered = toggleItem.matches(':hover');
+        toggleItem.setAttribute('aria-checked', isChecked ? 'true' : 'false');
+        indicator.setAttribute('aria-checked', isChecked ? 'true' : 'false');
+        updateIndicatorStyle(isChecked);
+        toggleItem.style.background = enabledByDependency && hovered
+            ? (isChecked
+                ? 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))'
+                : 'var(--neko-popup-hover-subtle, rgba(68,183,254,0.08))')
+            : 'transparent';
+    };
+
+    toggleItem._nekoUpdateSettingsToggleStyle = updateStyle;
+    if (toggle.id === 'widget-mode') {
+        toggleItem._nekoUpdateWidgetModeStatus = function () {
+            if (window.nekoWidgetMode && typeof window.nekoWidgetMode.isEnabled === 'function') {
+                checkbox.checked = window.nekoWidgetMode.isEnabled();
+            }
+            updateStyle();
+        };
+    }
+    updateStyle();
+
+    toggleItem.appendChild(checkbox);
+    toggleItem.appendChild(indicator);
+    toggleItem.appendChild(label);
+
+    toggleItem.addEventListener('mouseenter', () => {
+        updateStyle();
+    });
+    toggleItem.addEventListener('mouseleave', () => {
+        updateStyle();
+    });
+
+    const handleToggleChange = (isChecked) => {
+        updateStyle();
+
+        if (toggle.id === 'merge-messages') {
+            window.mergeMessagesEnabled = isChecked;
+            if (typeof window.saveNEKOSettings === 'function') {
+                window.saveNEKOSettings();
+            }
+        } else if (toggle.id === 'focus-mode') {
+            const actualValue = toggle.inverted ? !isChecked : isChecked;
+            window.focusModeEnabled = actualValue;
+            if (typeof window.saveNEKOSettings === 'function') {
+                window.saveNEKOSettings();
+            }
+        } else if (toggle.id === 'avatar-reaction-bubble') {
+            window.avatarReactionBubbleEnabled = isChecked;
+            if (typeof window.saveNEKOSettings === 'function') {
+                window.saveNEKOSettings();
+            }
+            window.dispatchEvent(new CustomEvent('neko-avatar-reaction-bubble-setting-changed', {
+                detail: {
+                    enabled: isChecked,
+                    timestamp: Date.now()
+                }
+            }));
+        } else if (toggle.id === 'focus-cognition') {
+            // 凝神（cognition focus）的 per-user 总开关。关掉后端就进不了 focus
+            // （core.py `_focus_inline_decision` 读 focusCognitionEnabled gate），
+            // 思考气泡随之不再出现；master 情绪读不受影响。
+            window.focusCognitionEnabled = isChecked;
+            if (typeof window.saveNEKOSettings === 'function') {
+                window.saveNEKOSettings();
+            }
+        } else if (toggle.id === 'slop-filter') {
+            // 自然表达（slop reduction）总开关。关掉后端 _params 不再改写历史
+            // （utils/slop_filter.py 读 slopFilterEnabled gate）。promptOnly，
+            // 不影响用户看到的原文。
+            window.slopFilterEnabled = isChecked;
+            if (typeof window.saveNEKOSettings === 'function') {
+                window.saveNEKOSettings();
+            }
+        } else if (toggle.id === 'proactive-chat') {
+            window.proactiveChatEnabled = isChecked;
+            if (typeof window.saveNEKOSettings === 'function') {
+                window.saveNEKOSettings();
+            }
+            if (isChecked && typeof window.resetProactiveChatBackoff === 'function') {
+                window.resetProactiveChatBackoff();
+            } else if (!isChecked && typeof window.stopProactiveChatSchedule === 'function') {
+                window.stopProactiveChatSchedule();
+            }
+        } else if (toggle.id === 'proactive-vision') {
+            const visionEnabled = toggle.inverted ? !isChecked : isChecked;
+            window.proactiveVisionEnabled = visionEnabled;
+            if (typeof window.saveNEKOSettings === 'function') {
+                window.saveNEKOSettings();
+            }
+            if (visionEnabled) {
+                if (typeof window.acquireProactiveVisionStream === 'function') {
+                    window.acquireProactiveVisionStream();
+                }
+                if (typeof window.resetProactiveChatBackoff === 'function') {
+                    window.resetProactiveChatBackoff();
+                }
+                if (typeof window.isRecording !== 'undefined' && window.isRecording) {
+                    if (typeof window.startProactiveVisionDuringSpeech === 'function') {
+                        window.startProactiveVisionDuringSpeech();
+                    }
+                }
+            } else {
+                if (typeof window.releaseProactiveVisionStream === 'function') {
+                    window.releaseProactiveVisionStream();
+                }
+                if (typeof window.stopProactiveChatSchedule === 'function') {
+                    if (!window.proactiveChatEnabled) {
+                        window.stopProactiveChatSchedule();
+                    }
+                }
+                if (typeof window.stopProactiveVisionDuringSpeech === 'function') {
+                    window.stopProactiveVisionDuringSpeech();
+                }
+            }
+        } else if (toggle.id === 'fullscreen-tracking') {
+            window.live2dFullscreenTrackingEnabled = isChecked;
+            if (window.live2dManager && typeof window.live2dManager.setFullscreenTrackingEnabled === 'function') {
+                window.live2dManager.setFullscreenTrackingEnabled(isChecked);
+            }
+            if (typeof window.saveNEKOSettings === 'function') {
+                window.saveNEKOSettings();
+            }
+        } else if (toggle.id === 'auto-cat') {
+            // 「自动变猫」开关：开=启用自动 idle 变猫（默认）。状态由 app-auto-goodbye 自管（独立 localStorage），
+            // 不走 saveNEKOSettings 的 server-sync 对话设置管线。
+            if (window.nekoAutoGoodbye && typeof window.nekoAutoGoodbye.setAutoCatEnabled === 'function') {
+                window.nekoAutoGoodbye.setAutoCatEnabled(isChecked);
+            }
+        } else if (toggle.id === 'cat-audio') {
+            if (window.nekoIdleCatAudio && typeof window.nekoIdleCatAudio.setEnabled === 'function') {
+                window.nekoIdleCatAudio.setEnabled(isChecked);
+            }
+        } else if (toggle.id === 'widget-mode') {
+            if (window.nekoWidgetMode && typeof window.nekoWidgetMode.setEnabled === 'function') {
+                return queueWidgetModeMutation(function () {
+                    return Promise.resolve()
+                        .then(function () { return window.nekoWidgetMode.setEnabled(isChecked); })
+                        .then(function (ok) {
+                            if (!ok) checkbox.checked = !isChecked;
+                            updateStyle();
+                            return ok;
+                        })
+                        .catch(function (error) {
+                            checkbox.checked = !isChecked;
+                            updateStyle();
+                            showWidgetModeMutationFailure(error);
+                            return false;
+                        });
+                });
+            }
+        }
+    };
+
+    const refreshDependentToggles = () => {
+        const parent = toggleItem.parentElement;
+        if (!parent) return;
+        parent.querySelectorAll(`.${prefix}-toggle-item`).forEach((candidate) => {
+            if (!candidate || candidate === toggleItem) return;
+            if (typeof candidate._nekoUpdateSettingsToggleStyle === 'function') {
+                candidate._nekoUpdateSettingsToggleStyle();
+            }
+        });
+    };
+
+    const performToggle = () => {
+        if (checkbox.disabled) {
+            return;
+        }
+
+        if (checkbox._processing) {
+            const elapsed = Date.now() - (checkbox._processingTime || 0);
+            if (toggle.id === 'widget-mode' || elapsed < 500) {
+                return;
+            }
+        }
+
+        checkbox._processing = true;
+        checkbox._processingTime = Date.now();
+
+        const newChecked = !checkbox.checked;
+        checkbox.checked = newChecked;
+        const mutation = handleToggleChange(newChecked);
+        refreshDependentToggles();
+        checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+
+        const clearProcessing = () => {
+            checkbox._processing = false;
+            checkbox._processingTime = null;
+        };
+        if (toggle.id === 'widget-mode' && mutation && typeof mutation.finally === 'function') {
+            void mutation.finally(clearProcessing);
+        } else {
+            setTimeout(clearProcessing, 500);
+        }
+    };
+
+    toggleItem.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            performToggle();
+        }
+    });
+
+    toggleItem.addEventListener('click', (e) => {
+        if (e.target !== checkbox) {
+            e.preventDefault();
+            e.stopPropagation();
+            performToggle();
+        }
+    });
+
+    indicator.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        performToggle();
+    });
+
+    label.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        performToggle();
+    });
+
+    checkbox.updateStyle = updateStyle;
+
+    return toggleItem;
+}
+
+/**
+ * 创建菜单项
+ */
+function createMenuItem(manager, prefix, config) {
+    const menuItem = document.createElement('div');
+    menuItem.className = `${prefix}-popup-item`;
+    markAvatarPopupActionElement(menuItem, 'popup-menu');
+    menuItem.textContent = config.label;
+    if (config.selected) menuItem.classList.add('selected');
+
+    menuItem.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (config.onClick) config.onClick();
+    });
+
+    return menuItem;
+}
+
+/**
+ * 应用mixin到Manager原型
+ */
+const AvatarPopupMixin = {
+    apply: function (ManagerProto, prefix, options = {}) {
+        ManagerProto._avatarPrefix = prefix;
+        ManagerProto._animationDurationMs = options.animationDurationMs || AVATAR_POPUP_ANIMATION_DURATION_MS;
+
+        // 注入CSS
+        injectPopupStyles(prefix);
+
+        // 核心方法
+        ManagerProto.createPopup = function (buttonId) {
+            return createPopup(this, prefix, buttonId);
+        };
+
+        ManagerProto._createSettingsPopupContent = function (popup) {
+            return createSettingsPopupContent(this, prefix, popup);
+        };
+
+        ManagerProto._createSettingsMenuButton = function (config) {
+            return createSettingsMenuButton(this, prefix, config);
+        };
+
+        ManagerProto._createChatSettingsSidePanel = function (popup) {
+            return createChatSettingsSidePanel(this, prefix, popup);
+        };
+
+        ManagerProto._createAnimationSettingsSidePanel = function () {
+            return createAnimationSettingsSidePanel(this, prefix);
+        };
+
+        ManagerProto._createTextGuardSlider = function () {
+            return createTextGuardSlider(this, prefix);
+        };
+
+        ManagerProto._createSidePanelContainer = function (panelOptions = {}) {
+            return createSidePanelContainer(this, prefix, options.sidePanelContainerLayout || panelOptions);
+        };
+
+        ManagerProto._attachSidePanelHover = function (anchorEl, sidePanel) {
+            return attachSidePanelHover(this, prefix, anchorEl, sidePanel);
+        };
+
+        ManagerProto._createIntervalControl = function (toggle) {
+            return createIntervalControl(this, prefix, toggle);
+        };
+
+        ManagerProto._createCheckIndicator = function () {
+            return createCheckIndicator(this, prefix);
+        };
+
+        ManagerProto._createToggleItem = function (toggle, popup) {
+            return createToggleItem(this, prefix, toggle, popup);
+        };
+
+        ManagerProto._createSettingsToggleItem = function (toggle) {
+            return createSettingsToggleItem(this, prefix, toggle);
+        };
+
+        ManagerProto._createMenuItem = function (item, isSubmenuItem = false) {
+            const menuItem = document.createElement('div');
+            menuItem.className = `${prefix}-settings-menu-item`;
+            markAvatarPopupActionElement(menuItem, isSubmenuItem ? 'settings-submenu' : 'settings-menu');
+            setAvatarPopupActionDebugMetadata(menuItem, item, isSubmenuItem ? 'settings-submenu' : 'settings-menu');
+            var itemAnchorId = createMenuAnchorId(prefix, item && item.id);
+            if (itemAnchorId) menuItem.id = itemAnchorId;
+            Object.assign(menuItem.style, {
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                padding: isSubmenuItem ? '6px 12px 6px 36px' : '8px 12px',
+                cursor: 'pointer',
+                borderRadius: '6px',
+                transition: 'background 0.2s ease',
+                fontSize: isSubmenuItem ? '12px' : '13px',
+                whiteSpace: 'nowrap',
+                color: 'var(--neko-popup-text, #333)'
+            });
+
+            if (item.icon) {
+                const iconImg = document.createElement('img');
+                iconImg.src = item.icon;
+                iconImg.alt = item.label;
+                Object.assign(iconImg.style, {
+                    width: isSubmenuItem ? '18px' : '24px',
+                    height: isSubmenuItem ? '18px' : '24px',
+                    objectFit: 'contain',
+                    flexShrink: '0'
+                });
+                menuItem.appendChild(iconImg);
+            }
+
+            const labelText = document.createElement('span');
+            labelText.textContent = (item.labelKey && window.t) ? window.t(item.labelKey) : (item.label || '');
+            if (item.labelKey) labelText.setAttribute('data-i18n', item.labelKey);
+            Object.assign(labelText.style, {
+                display: 'flex',
+                alignItems: 'center',
+                lineHeight: '1',
+                height: isSubmenuItem ? '18px' : '24px'
+            });
+            menuItem.appendChild(labelText);
+
+            if (item.labelKey) {
+                menuItem._updateLabelText = () => {
+                    if (window.t) {
+                        labelText.textContent = window.t(item.labelKey);
+                        if (item.icon && menuItem.querySelector('img')) {
+                            menuItem.querySelector('img').alt = window.t(item.labelKey);
+                        }
+                    }
+                };
+            }
+
+            menuItem.addEventListener('mouseenter', () => menuItem.style.background = 'var(--neko-popup-hover, rgba(68, 183, 254, 0.1))');
+            menuItem.addEventListener('mouseleave', () => menuItem.style.background = 'transparent');
+
+            let isOpening = false;
+
+            menuItem.addEventListener('click', (e) => {
+                e.stopPropagation();
+
+                if (isOpening) {
+                    return;
+                }
+
+                if (item.action === 'navigate') {
+                    let finalUrl = item.url || item.urlBase;
+                    let windowName = `neko_${item.id}`;
+                    let features;
+
+                    if ((item.id === `${prefix}-manage` || item.id === 'live2d-manage') && item.urlBase) {
+                        const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+                        finalUrl = `${item.urlBase}?lanlan_name=${encodeURIComponent(lanlanName)}`;
+                        dispatchAvatarPopupNavigateEvent(item, finalUrl, windowName, 'settings-model-manager');
+                        window.location.href = finalUrl;
+                    } else if (item.id === 'voice-clone' && item.url) {
+                        const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+                        const lanlanNameForKey = lanlanName || 'default';
+                        finalUrl = `${item.url}?lanlan_name=${encodeURIComponent(lanlanName)}`;
+                        windowName = `neko_voice_clone_${encodeURIComponent(lanlanNameForKey)}`;
+
+                        const width = 700, height = 750;
+                        const left = Math.max(0, Math.floor((screen.width - width) / 2));
+                        const top = Math.max(0, Math.floor((screen.height - height) / 2));
+                        features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+
+                        isOpening = true;
+                        dispatchAvatarPopupNavigateEvent(item, finalUrl, windowName, 'settings-voice-clone');
+                        if (typeof window.openOrFocusWindow === 'function') {
+                            window.openOrFocusWindow(finalUrl, windowName, features);
+                        } else {
+                            window.open(finalUrl, windowName, features);
+                        }
+                        setTimeout(() => { isOpening = false; }, 500);
+                    } else {
+                        if (isAvatarFramedSettingsWindowUrl(finalUrl)) {
+                            if (typeof finalUrl === 'string' && (finalUrl.startsWith('/character_card_manager') || finalUrl.startsWith('/chara_manager'))) {
+                                windowName = 'neko_chara_manager';
+                            } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/api_key')) {
+                                windowName = 'neko_api_key';
+                            } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/memory_browser')) {
+                                windowName = 'neko_memory_browser';
+                            }
+                            features = getAvatarNavigationWindowFeatures(finalUrl);
+                        }
+
+                        isOpening = true;
+                        dispatchAvatarPopupNavigateEvent(item, finalUrl, windowName, 'settings-navigate');
+                        if (typeof window.openOrFocusWindow === 'function') {
+                            window.openOrFocusWindow(finalUrl, windowName, features);
+                        } else {
+                            window.open(finalUrl, windowName, features);
+                        }
+                        setTimeout(() => { isOpening = false; }, 500);
+                    }
+                }
+            });
+
+            return menuItem;
+        };
+
+        // 引导模式下阻止关闭设置弹窗，防止用户误触打断 yui-guide 引导流程
+        // （showPopup 切换关闭与 closePopupById 两条路径共用）
+        function isTutorialGuardedSettingsClose(buttonId) {
+            if (window.isInTutorial === true && buttonId === 'settings') {
+                console.log(`[${prefix}] 引导中：阻止关闭设置弹出框`);
+                return true;
+            }
+            return false;
+        }
+
+        // 新增的核心方法
+        ManagerProto.showPopup = function (buttonId, popup) {
+            const isVisible = popup.style.display === 'flex';
+            const popupUi = window.AvatarPopupUI || null;
+            if (typeof popup._showToken !== 'number') popup._showToken = 0;
+
+            if (buttonId === 'agent' && !isVisible) {
+                window.dispatchEvent(new CustomEvent('neko-popup-opening'));
+            }
+
+            if (isVisible) {
+                if (isTutorialGuardedSettingsClose(buttonId)) return;
+
+                // 关闭弹窗
+                popup._showToken += 1;
+                dispatchAvatarPopupLifecycleEvent('neko-avatar-popup-closing', buttonId, popup, prefix);
+                popup.style.opacity = '0';
+                const closingOpensLeft = popup.dataset.opensLeft === 'true';
+                popup.style.transform = closingOpensLeft ? 'translateX(10px)' : 'translateX(-10px)';
+                if (typeof this.updateSeparatePopupTriggerIcon === 'function') {
+                    this.updateSeparatePopupTriggerIcon(buttonId, false);
+                }
+                if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('neko-popup-closed'));
+
+                // 关闭该 popup 所属的所有侧面板
+                const closingPopupId = popup.id;
+                if (closingPopupId) {
+                    document.querySelectorAll(`[data-neko-sidepanel-owner="${closingPopupId}"]`).forEach(panel => {
+                        clearAvatarSidePanelHoverState(panel);
+                        panel.style.transition = 'none';
+                        panel.style.opacity = '0';
+                        panel.style.display = 'none';
+                        panel.style.transition = '';
+                    });
+                }
+
+                const hasSeparatePopupTrigger = this._buttonConfigs && this._buttonConfigs.find(c => c.id === buttonId && c.separatePopupTrigger);
+                if (!hasSeparatePopupTrigger && typeof this.setButtonActive === 'function') {
+                    this.setButtonActive(buttonId, false);
+                }
+
+                const hideTimeoutId = setTimeout(() => {
+                    finalizePopupClosedState(popup);
+                    dispatchAvatarPopupLifecycleEvent('neko-avatar-popup-closed', buttonId, popup, prefix);
+                }, this._animationDurationMs);
+                popup._hideTimeoutId = hideTimeoutId;
+            } else {
+                // 打开弹窗
+                const showToken = popup._showToken + 1;
+                popup._showToken = showToken;
+                if (popup._hideTimeoutId) {
+                    clearTimeout(popup._hideTimeoutId);
+                    popup._hideTimeoutId = null;
+                }
+
+                this.closeAllPopupsExcept(buttonId);
+                // goodbye 隐藏路径（app-ui）会给弹窗 inline pointer-events:none!important，
+                // 返回路径负责成对清除；此处自愈兜底，与 display/opacity/visibility 的覆盖行为对齐
+                popup.style.removeProperty('pointer-events');
+                popup.style.display = 'flex';
+                popup.style.opacity = '0';
+                popup.style.visibility = 'visible';
+                popup.classList.add('is-positioning');
+                dispatchAvatarPopupLifecycleEvent('neko-avatar-popup-opening', buttonId, popup, prefix);
+                if (typeof this.updateSeparatePopupTriggerIcon === 'function') {
+                    this.updateSeparatePopupTriggerIcon(buttonId, true);
+                }
+
+                const hasSeparatePopupTrigger = this._buttonConfigs && this._buttonConfigs.find(c => c.id === buttonId && c.separatePopupTrigger);
+                if (!hasSeparatePopupTrigger && typeof this.setButtonActive === 'function') {
+                    this.setButtonActive(buttonId, true);
+                }
+
+                // 预加载图片后定位
+                const images = popup.querySelectorAll('img');
+                Promise.all(Array.from(images).map(img => img.complete ? Promise.resolve() : new Promise(r => { img.onload = img.onerror = r; setTimeout(r, 100); }))).then(() => {
+                    if (popup._showToken !== showToken || popup.style.display !== 'flex') return;
+                    void popup.offsetHeight;
+                    requestAnimationFrame(() => {
+                        if (popup._showToken !== showToken || popup.style.display !== 'flex') return;
+                        if (popupUi && typeof popupUi.positionPopup === 'function') {
+                            const pos = popupUi.positionPopup(popup, {
+                                buttonId,
+                                buttonPrefix: `${prefix}-btn-`,
+                                triggerPrefix: `${prefix}-trigger-icon-`,
+                                rightMargin: 20,
+                                bottomMargin: 60,
+                                topMargin: 8,
+                                gap: 8,
+                                // 移动端不为侧面板预留宽度：侧面板此时向下展开（goDown），
+                                // 右侧预留 320px 会让 opensLeft 误判把弹窗推出屏幕左缘
+                                sidePanelWidth: (buttonId === 'settings' || buttonId === 'agent')
+                                    && !(typeof window.isMobileWidth === 'function' && window.isMobileWidth()) ? 320 : 0
+                            });
+                            popup.dataset.opensLeft = String(!!(pos && pos.opensLeft));
+                            popup.style.transform = pos && pos.opensLeft ? 'translateX(10px)' : 'translateX(-10px)';
+                        }
+                        if (popup._showToken !== showToken || popup.style.display !== 'flex') return;
+                        popup.style.visibility = 'visible';
+                        popup.style.opacity = '1';
+                        popup.classList.remove('is-positioning');
+                        dispatchAvatarPopupLifecycleEvent('neko-avatar-popup-opened', buttonId, popup, prefix);
+                        if (typeof this.updateSeparatePopupTriggerIcon === 'function') {
+                            this.updateSeparatePopupTriggerIcon(buttonId);
+                        }
+                        requestAnimationFrame(() => {
+                            if (popup._showToken !== showToken || popup.style.display !== 'flex') return;
+                            popup.style.transform = 'translateX(0)';
+                        });
+                    });
+                });
+            }
+
+            // 允许系统特定的钩子
+            if (typeof this._onPopupShow === 'function') {
+                this._onPopupShow(popup, buttonId);
+            }
+        };
+
+        ManagerProto.closePopupById = function (buttonId) {
+            if (!buttonId) return false;
+            if (isTutorialGuardedSettingsClose(buttonId)) return false;
+
+            const popup = document.getElementById(`${prefix}-popup-${buttonId}`);
+            if (!popup || popup.style.display !== 'flex') return false;
+
+            if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('neko-popup-closed'));
+            popup._showToken = (popup._showToken || 0) + 1;
+            if (popup._hideTimeoutId) { clearTimeout(popup._hideTimeoutId); popup._hideTimeoutId = null; }
+
+            dispatchAvatarPopupLifecycleEvent('neko-avatar-popup-closing', buttonId, popup, prefix);
+            popup.style.opacity = '0';
+            const closeOpensLeft = popup.dataset.opensLeft === 'true';
+            popup.style.transform = closeOpensLeft ? 'translateX(10px)' : 'translateX(-10px)';
+
+            // 关闭侧面板
+            const popupId = popup.id;
+            if (popupId) {
+                document.querySelectorAll(`[data-neko-sidepanel-owner="${popupId}"]`).forEach(panel => {
+                    clearAvatarSidePanelHoverState(panel);
+                    panel.style.transition = 'none';
+                    panel.style.opacity = '0';
+                    panel.style.display = 'none';
+                    panel.style.transition = '';
+                });
+            }
+
+            if (typeof this.updateSeparatePopupTriggerIcon === 'function') {
+                this.updateSeparatePopupTriggerIcon(buttonId, false);
+            }
+
+            popup._hideTimeoutId = setTimeout(() => {
+                finalizePopupClosedState(popup);
+                dispatchAvatarPopupLifecycleEvent('neko-avatar-popup-closed', buttonId, popup, prefix);
+            }, this._animationDurationMs);
+
+            const hasSeparatePopupTrigger = this._buttonConfigs && this._buttonConfigs.find(c => c.id === buttonId && c.separatePopupTrigger);
+            if (!hasSeparatePopupTrigger && typeof this.setButtonActive === 'function') {
+                this.setButtonActive(buttonId, false);
+            }
+            return true;
+        };
+
+        ManagerProto.closeAllPopupsExcept = function (currentButtonId) {
+            document.querySelectorAll(`[id^="${prefix}-popup-"]`).forEach(popup => {
+                const popupId = popup.id.replace(`${prefix}-popup-`, '');
+                if (popupId !== currentButtonId && popup.style.display === 'flex') this.closePopupById(popupId);
+            });
+        };
+
+        ManagerProto.closeAllPopups = function () {
+            this.closeAllPopupsExcept(null);
+        };
+
+        ManagerProto.closeAllSettingsWindows = function (exceptUrl = null) {
+            if (!this._openSettingsWindows) return;
+            this._windowCheckTimers = this._windowCheckTimers || {};
+            Object.keys(this._openSettingsWindows).forEach(url => {
+                if (exceptUrl && url === exceptUrl) return;
+                if (this._windowCheckTimers[url]) {
+                    clearTimeout(this._windowCheckTimers[url]);
+                    delete this._windowCheckTimers[url];
+                }
+                try { if (this._openSettingsWindows[url] && !this._openSettingsWindows[url].closed) this._openSettingsWindows[url].close(); } catch (_) { }
+                delete this._openSettingsWindows[url];
+            });
+        };
+
+        ManagerProto._createSettingsMenuItems = function (popup) {
+            // 角色设置按钮（带侧边面板）
+            if (this._characterMenuItems && this._characterMenuItems.length > 0) {
+                const charSettingsBtn = this._createSettingsMenuButton({
+                    id: 'character',
+                    label: window.t ? window.t('settings.menu.characterSettings') : '角色设置',
+                    labelKey: 'settings.menu.characterSettings',
+                    icon: '/static/icons/character_icon.png'
+                });
+                popup.appendChild(charSettingsBtn);
+                const charSidePanel = this._createCharacterSettingsSidePanel();
+                charSidePanel._anchorElement = charSettingsBtn;
+                charSidePanel._popupElement = popup;
+                this._attachSidePanelHover(charSettingsBtn, charSidePanel);
+            }
+
+            const settingsItems = [
+                { id: 'api-keys', label: window.t ? window.t('settings.menu.apiKeys') : 'API密钥', labelKey: 'settings.menu.apiKeys', icon: '/static/icons/api_key_icon.png', action: 'navigate', url: '/api_key' },
+                { id: 'memory', label: window.t ? window.t('settings.menu.memoryBrowser') : '记忆浏览', labelKey: 'settings.menu.memoryBrowser', icon: '/static/icons/memory_icon.png', action: 'navigate', url: '/memory_browser' },
+            ];
+
+            settingsItems.forEach(item => {
+                const menuItem = this._createMenuItem(item);
+                popup.appendChild(menuItem);
+            });
+        };
+
+        ManagerProto.renderScreenSourceList = async function (popup) {
+            if (!popup) return false;
+            const popupId = popup.id;
+            const isPopupAvailable = () => {
+                if (!popup || !popup.isConnected) return false;
+                if (popupId && document.getElementById(popupId) !== popup) return false;
+                return popup.style.display === 'flex' && popup.style.opacity !== '0';
+            };
+            if (!isPopupAvailable()) return false;
+            popup.innerHTML = '';
+
+            if (!window.electronDesktopCapturer || typeof window.electronDesktopCapturer.getSources !== 'function') {
+                const noElectron = document.createElement('div');
+                noElectron.textContent = window.t ? window.t('app.screenSource.notAvailable') : '屏幕捕获不可用';
+                Object.assign(noElectron.style, { padding: '12px', fontSize: '13px', color: 'var(--neko-popup-text-sub, #666)', textAlign: 'center' });
+                popup.appendChild(noElectron);
+                return true;
+            }
+
+            const loading = document.createElement('div');
+            loading.textContent = window.t ? window.t('app.screenSource.loading') : '加载中...';
+            Object.assign(loading.style, { padding: '12px', fontSize: '13px', color: 'var(--neko-popup-text-sub, #666)', textAlign: 'center' });
+            popup.appendChild(loading);
+
+            try {
+                const sources = await window.electronDesktopCapturer.getSources({ types: ['window', 'screen'] });
+                if (!isPopupAvailable()) return false;
+                popup.innerHTML = '';
+
+                if (!sources || sources.length === 0) {
+                    const noSrc = document.createElement('div');
+                    noSrc.textContent = window.t ? window.t('app.screenSource.noSources') : '未找到可用源';
+                    Object.assign(noSrc.style, { padding: '12px', fontSize: '13px', color: 'var(--neko-popup-text-sub, #666)', textAlign: 'center' });
+                    popup.appendChild(noSrc);
+                    return true;
+                }
+
+                const screens = sources.filter(s => s.id.startsWith('screen:'));
+                const windows = sources.filter(s => s.id.startsWith('window:'));
+
+                const createGrid = (title, items) => {
+                    if (items.length === 0) return;
+                    const header = document.createElement('div');
+                    header.textContent = title;
+                    Object.assign(header.style, { fontSize: '12px', fontWeight: '600', padding: '4px 8px', color: 'var(--neko-popup-text-sub, #666)' });
+                    popup.appendChild(header);
+
+                    const grid = document.createElement('div');
+                    Object.assign(grid.style, { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px', padding: '6px' });
+
+                    items.forEach((source, index) => {
+                        const displayName = typeof window.getScreenSourceDisplayName === 'function'
+                            ? window.getScreenSourceDisplayName(source, index)
+                            : source.name;
+                        const option = document.createElement('div');
+                        option.className = 'screen-source-option';
+                        option.dataset.sourceId = source.id;
+                        const isSelected = window.appState && source.id === window.appState.selectedScreenSourceId;
+                        Object.assign(option.style, {
+                            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px',
+                            padding: '6px', borderRadius: '6px', cursor: 'pointer',
+                            border: '2px solid ' + (isSelected ? '#4f8cff' : 'transparent'),
+                            background: isSelected ? 'var(--neko-popup-selected-bg, rgba(68,183,254,0.1))' : 'transparent',
+                            transition: 'background 0.15s ease, border-color 0.15s ease'
+                        });
+                        if (isSelected) option.classList.add('selected');
+
+                        const thumb = document.createElement('img');
+                        if (source.thumbnail) {
+                            thumb.src = source.thumbnail;
+                        }
+                        Object.assign(thumb.style, { width: '90px', height: '56px', objectFit: 'contain', borderRadius: '4px', background: 'rgba(0,0,0,0.05)' });
+                        thumb.onerror = () => { thumb.style.display = 'none'; };
+
+                        const name = document.createElement('div');
+                        name.textContent = displayName || source.name || '';
+                        if (source.name) {
+                            name.title = source.name;
+                            option.title = source.name;
+                        }
+                        Object.assign(name.style, {
+                            fontSize: '11px', textAlign: 'center', maxWidth: '90px',
+                            overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box',
+                            WebkitLineClamp: '2', WebkitBoxOrient: 'vertical', lineHeight: '1.3'
+                        });
+
+                        option.appendChild(thumb);
+                        option.appendChild(name);
+
+                        option.addEventListener('mouseenter', () => {
+                            if (!option.classList.contains('selected')) {
+                                option.style.background = 'rgba(68, 183, 254, 0.1)';
+                            }
+                        });
+                        option.addEventListener('mouseleave', () => {
+                            if (!option.classList.contains('selected')) {
+                                option.style.background = 'transparent';
+                            }
+                        });
+                        option.addEventListener('click', (e) => {
+                            e.stopPropagation();
+                            if (typeof window.selectScreenSource === 'function') {
+                                window.selectScreenSource(source.id, source.name, displayName);
+                            }
+                        });
+
+                        grid.appendChild(option);
+                    });
+
+                    popup.appendChild(grid);
+                };
+
+                createGrid(window.t ? window.t('app.screenSource.screens') : '屏幕', screens);
+                createGrid(window.t ? window.t('app.screenSource.windows') : '窗口', windows);
+                return true;
+            } catch (err) {
+                if (!isPopupAvailable()) return false;
+                popup.innerHTML = '';
+                const errDiv = document.createElement('div');
+                errDiv.textContent = window.t ? window.t('app.screenSource.loadFailed') : '获取屏幕源失败';
+                Object.assign(errDiv.style, { padding: '12px', fontSize: '13px', color: '#ff4d4f', textAlign: 'center' });
+                popup.appendChild(errDiv);
+                return true;
+            }
+        };
+
+        ManagerProto.renderMicList = async function (popup) {
+            if (!popup) return;
+            popup.innerHTML = '';
+
+            const t = window.t || ((k, opt) => k);
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                stream.getTracks().forEach(track => track.stop());
+
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const audioInputs = devices.filter(device => device.kind === 'audioinput');
+
+                if (audioInputs.length === 0) {
+                    const noDev = document.createElement('div');
+                    noDev.textContent = window.t ? window.t('microphone.noDevices') : '未检测到麦克风';
+                    Object.assign(noDev.style, { padding: '8px', fontSize: '13px', color: 'var(--neko-popup-text-sub, #666)' });
+                    popup.appendChild(noDev);
+                    return;
+                }
+
+                const addOption = (label, deviceId) => {
+                    const btn = document.createElement('div');
+                    btn.textContent = label;
+                    Object.assign(btn.style, {
+                        padding: '8px 12px', cursor: 'pointer', fontSize: '13px',
+                        borderRadius: '6px', transition: 'background 0.2s',
+                        color: 'var(--neko-popup-text, #333)'
+                    });
+
+                    btn.addEventListener('mouseenter', () => btn.style.background = 'var(--neko-popup-hover, rgba(68, 183, 254, 0.1))');
+                    btn.addEventListener('mouseleave', () => btn.style.background = 'transparent');
+
+                    btn.addEventListener('click', async (e) => {
+                        e.stopPropagation();
+                        if (deviceId) {
+                            try {
+                                const response = await fetch('/api/characters/set_microphone', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ microphone_id: deviceId })
+                                });
+
+                                if (!response.ok) {
+                                    let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+                                    try {
+                                        const errorData = await response.json();
+                                        errorMessage = errorData.error || errorData.message || errorMessage;
+                                    } catch {
+                                        try {
+                                            const errorText = await response.text();
+                                            if (errorText) errorMessage = errorText;
+                                        } catch { }
+                                    }
+                                    if (window.showStatusToast) {
+                                        const message = window.t ? window.t('microphone.switchFailed', { error: errorMessage }) : `切换麦克风失败: ${errorMessage}`;
+                                        window.showStatusToast(message, 3000);
+                                    } else {
+                                        console.error('[UI] 切换麦克风失败:', errorMessage);
+                                    }
+                                    return;
+                                }
+                                if (window.showStatusToast) {
+                                    const message = window.t ? window.t('microphone.switched') : '已切换麦克风 (下一次录音生效)';
+                                    window.showStatusToast(message, 2000);
+                                }
+                            } catch (e) {
+                                console.error('[UI] 切换麦克风时发生网络错误:', e);
+                                if (window.showStatusToast) {
+                                    const message = window.t ? window.t('microphone.networkError') : '切换麦克风失败：网络错误';
+                                    window.showStatusToast(message, 3000);
+                                }
+                            }
+                        }
+                    });
+                    popup.appendChild(btn);
+                };
+
+                audioInputs.forEach((device, index) => {
+                    const deviceLabel = device.label || (window.t ? window.t('microphone.deviceLabel', { index: index + 1 }) : `麦克风 ${index + 1}`);
+                    addOption(deviceLabel, device.deviceId);
+                });
+
+            } catch (e) {
+                console.error('获取麦克风失败', e);
+                const errDiv = document.createElement('div');
+                errDiv.textContent = window.t ? window.t('microphone.accessFailed') : '无法访问麦克风';
+                popup.appendChild(errDiv);
+            }
+        };
+
+        // 新增方法连接
+        ManagerProto._createCharacterSettingsSidePanel = function () {
+            return createCharacterSettingsSidePanel(this, prefix);
+        };
+
+        ManagerProto._createSidePanelMenuItem = function (item) {
+            return createSidePanelMenuItem(this, prefix, item);
+        };
+
+        ManagerProto._createSettingsLinkItem = function (item, popup) {
+            return createSettingsLinkItem(this, prefix, item, popup);
+        };
+
+        // 存储字符菜单项配置
+        if (options.characterMenuItems) {
+            ManagerProto._characterMenuItems = options.characterMenuItems;
+        }
+
+        // 存储回调函数
+        if (options.onQualityChange) {
+            ManagerProto._onQualityChange = options.onQualityChange;
+        }
+        if (options.onMouseTrackingToggle) {
+            ManagerProto._onMouseTrackingToggle = options.onMouseTrackingToggle;
+        }
+        if (options.getMouseTrackingState) {
+            ManagerProto._getMouseTrackingState = options.getMouseTrackingState;
+        }
+
+        // 允许系统特定的覆盖
+        if (options.overrides) {
+            Object.assign(ManagerProto, options.overrides);
+        }
+    }
+};
+
+window.AvatarPopupMixin = AvatarPopupMixin;

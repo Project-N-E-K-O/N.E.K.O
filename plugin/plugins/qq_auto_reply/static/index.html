@@ -1,335 +1,61 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title data-i18n="ui.page.title">喵喵控制中心</title>
-    <link rel="stylesheet" href="./style.css">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title data-i18n="ui.index.title">QQ 接入方式</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f0f2f5; display:flex; align-items:center; justify-content:center; min-height:100vh; }
+.card { background:#fff; border-radius:12px; padding:36px 28px; text-align:center; cursor:pointer; transition:.2s; border:2px solid #e2e8f0; width:280px; }
+.card:hover { border-color:#6366f1; box-shadow:0 4px 16px rgba(99,102,241,.12); }
+.card .icon { font-size:42px; margin-bottom:14px; }
+.card h2 { font-size:18px; margin-bottom:10px; color:#1a1a2e; }
+.card p { font-size:12px; color:#666; line-height:1.7; }
+.card .tag { display:inline-block; padding:2px 10px; border-radius:4px; font-size:11px; font-weight:600; margin-top:12px; }
+.tag-warn { background:rgba(245,158,11,.12); color:#f59e0b; }
+.tag-ok { background:rgba(34,197,94,.12); color:#22c55e; }
+.wrap { display:flex; gap:28px; flex-wrap:wrap; justify-content:center; align-items:flex-start; }
+h1 { font-size:22px; color:#1a1a2e; text-align:center; margin-bottom:6px; width:100%; }
+.sub { color:#999; font-size:13px; text-align:center; margin-bottom:28px; width:100%; }
+</style>
 </head>
 <body>
-    <div id="onboarding">
-        <div class="guide-container">
-            <div class="step-card active" id="step1">
-                <span class="guide-icon">🧩</span>
-                <h2 class="guide-title" data-i18n="ui.onboarding.step1.title">启动 NapCat</h2>
-                <p class="guide-desc" data-i18n="ui.onboarding.step1.desc">先启动 NapCat，让本地 QQ OneBot 服务进入可连接状态。</p>
-                <div class="guide-footer">
-                    <button class="btn-next" onclick="nextStep(2)" data-i18n="ui.onboarding.step1.next">下一步</button>
-                    <button class="ghost-action" onclick="enterApp()" data-i18n="ui.onboarding.step1.skip">跳过引导</button>
-                </div>
-            </div>
-            <div class="step-card" id="step2">
-                <span class="guide-icon">🔌</span>
-                <h2 class="guide-title" data-i18n="ui.onboarding.step2.title">配置 NapCat 服务</h2>
-                <p class="guide-desc" data-i18n="ui.onboarding.step2.desc">填写 OneBot 地址和访问令牌，只要这两项不为空就视为已完成。</p>
-                <div class="guide-footer">
-                    <button class="btn-next" onclick="nextStep(3)" data-i18n="ui.onboarding.step2.next">下一步</button>
-                    <button class="ghost-action" onclick="enterApp()" data-i18n="ui.onboarding.step2.skip">跳过引导</button>
-                </div>
-            </div>
-            <div class="step-card" id="step3">
-                <span class="guide-icon">👥</span>
-                <h2 class="guide-title" data-i18n="ui.onboarding.step3.title">添加联系人</h2>
-                <p class="guide-desc" data-i18n="ui.onboarding.step3.desc">至少添加一个信任用户；检测到 trusted_users 不为空时就显示已完成。</p>
-                <div class="guide-footer">
-                    <button class="btn-next" onclick="nextStep(4)" data-i18n="ui.onboarding.step3.next">下一步</button>
-                    <button class="ghost-action" onclick="enterApp()" data-i18n="ui.onboarding.step3.skip">跳过引导</button>
-                </div>
-            </div>
-            <div class="step-card" id="step4">
-                <span class="guide-icon">💬</span>
-                <h2 class="guide-title" data-i18n="ui.onboarding.step4.title">启动自动回复</h2>
-                <p class="guide-desc" data-i18n="ui.onboarding.step4.desc">点击启用自动回复后，该步骤会写入配置并显示为已完成。</p>
-                <div class="guide-footer">
-                    <button class="btn-next" onclick="finishOnboarding()" data-i18n="ui.onboarding.step4.next">完成引导</button>
-                </div>
-            </div>
-            <div class="step-dots">
-                <div class="dot active" id="dot1"></div>
-                <div class="dot" id="dot2"></div>
-                <div class="dot" id="dot3"></div>
-                <div class="dot" id="dot4"></div>
-            </div>
+<div style="max-width:700px;">
+    <h1 data-i18n="ui.index.title">QQ 接入方式</h1>
+    <p class="sub" data-i18n="ui.index.subtitle">请选择一种连接方式。不同方式的配置流程不同，可随时切换。</p>
+    <div class="wrap">
+        <div class="card" onclick="go('napcat')">
+            <div class="icon">N</div>
+            <h2>NapCat</h2>
+            <p>
+                <span data-i18n="ui.index.napcat.desc1">需要部署 NapCat 进程</span><br>
+                <span data-i18n="ui.index.napcat.desc2">支持 QQ 扫码登录</span><br>
+                <span data-i18n="ui.index.napcat.desc3">可接收群聊</span><strong>全部消息</strong><br>
+                <span data-i18n="ui.index.napcat.desc4">支持戳一戳、表情包等完整能力</span>
+            </p>
+            <span class="tag tag-warn" data-i18n="ui.index.napcat.tag">全功能 · 多群聊</span>
+        </div>
+        <div class="card" onclick="go('open_platform')">
+            <div class="icon">Q</div>
+            <h2>QQ 开放平台</h2>
+            <p>
+                <span data-i18n="ui.index.openplat.desc1">无需额外进程</span><br>
+                <span data-i18n="ui.index.openplat.desc2">AppID + 密钥即可接入</span><br>
+                <span data-i18n="ui.index.openplat.desc3">仅接收 </span><strong>@机器人</strong> 消息<br>
+                <span data-i18n="ui.index.openplat.desc4">支持 Markdown、按钮模板</span>
+            </p>
+            <span class="tag tag-ok" data-i18n="ui.index.openplat.tag">轻量 · 指令式</span>
         </div>
     </div>
-
-    <div class="app-container">
-        <header><h1 class="page-title" data-i18n="ui.page.title">控制中心</h1></header>
-
-        <section class="guide-panel">
-            <div class="guide-header">
-                <span class="guide-title-inline" data-i18n="ui.guide.title">快速引导</span>
-                <button class="ghost-action" type="button" onclick="reopenOnboarding()" data-i18n="ui.guide.replay">重新播放引导</button>
-            </div>
-            <p class="inline-note" data-i18n="ui.guide.summary">按顺序完成启动 NapCat、配置 NapCat 服务、添加联系人、启动自动回复。(卡片可以直接点击，快速执行)</p>
-            <div class="guide-step-list">
-                <button class="guide-step-item" id="guide-step-napcat" type="button">
-                    <div class="guide-step-head">
-                        <div class="guide-step-index" data-i18n="ui.guide.step1.index">STEP 1</div>
-                        <span class="guide-step-badge" id="guide-step-napcat-badge" data-i18n="ui.guide.pending">未完成</span>
-                    </div>
-                    <div class="guide-step-name" data-i18n="ui.guide.step1.title">启动 NapCat</div>
-                    <div class="guide-step-desc" data-i18n="ui.guide.step1.desc">先启动 NapCat，让本地 QQ OneBot 服务进入可连接状态。</div>
-                </button>
-                <button class="guide-step-item" id="guide-step-settings" type="button">
-                    <div class="guide-step-head">
-                        <div class="guide-step-index" data-i18n="ui.guide.step2.index">STEP 2</div>
-                        <span class="guide-step-badge" id="guide-step-settings-badge" data-i18n="ui.guide.pending">未完成</span>
-                    </div>
-                    <div class="guide-step-name" data-i18n="ui.guide.step2.title">配置 NapCat 服务</div>
-                    <div class="guide-step-desc" data-i18n="ui.guide.step2.desc">填写 OneBot 地址和访问令牌，只要这两项不为空就视为已完成。</div>
-                </button>
-                <button class="guide-step-item" id="guide-step-contacts" type="button">
-                    <div class="guide-step-head">
-                        <div class="guide-step-index" data-i18n="ui.guide.step3.index">STEP 3</div>
-                        <span class="guide-step-badge" id="guide-step-contacts-badge" data-i18n="ui.guide.pending">未完成</span>
-                    </div>
-                    <div class="guide-step-name" data-i18n="ui.guide.step3.title">添加联系人</div>
-                    <div class="guide-step-desc" data-i18n="ui.guide.step3.desc">至少添加一个信任用户；检测到 trusted_users 不为空时就显示已完成。</div>
-                </button>
-                <button class="guide-step-item" id="guide-step-runtime" type="button">
-                    <div class="guide-step-head">
-                        <div class="guide-step-index" data-i18n="ui.guide.step4.index">STEP 4</div>
-                        <span class="guide-step-badge" id="guide-step-runtime-badge" data-i18n="ui.guide.pending">未完成</span>
-                    </div>
-                    <div class="guide-step-name" id="guide-step-runtime-title" data-i18n="ui.guide.step4.title">启动自动回复</div>
-                    <div class="guide-step-desc" id="guide-step-runtime-desc" data-i18n="ui.guide.step4.desc">点击启用自动回复后，该步骤会写入配置并显示为已完成。</div>
-                </button>
-            </div>
-        </section>
-
-        <section class="status-card">
-            <div class="status-head">
-                <span class="status-title" data-i18n="ui.status.title">运行状态</span>
-                <span id="login-status-pill" class="guide-step-index" data-i18n="ui.status.loading">加载中</span>
-            </div>
-            <div class="status-grid">
-                <div class="status-item"><span class="status-label" data-i18n="ui.status.napcat_pid">NapCat PID</span><div id="status-self-id" class="status-value">-</div></div>
-                <div class="status-item"><span class="status-label" data-i18n="ui.status.onebot">OneBot</span><div id="status-onebot" class="status-value">-</div></div>
-                <div class="status-item"><span class="status-label" data-i18n="ui.status.users">信任用户</span><div id="status-users" class="status-value">0</div></div>
-                <div class="status-item"><span class="status-label" data-i18n="ui.status.groups">信任群聊</span><div id="status-groups" class="status-value">0</div></div>
-            </div>
-        </section>
-
-        <section class="qrcode-section qrcode-card" id="qrcode-card">
-            <div class="status-head">
-                <span class="status-title" data-i18n="ui.qrcode.title">登录二维码</span>
-            </div>
-            <div class="qrcode-body">
-                <div class="field-hint" data-i18n="ui.qrcode.hint">启动 NapCat 后会在 NapCat.Shell\cache\qrcode.png 生成登录二维码。</div>
-                <div class="field-hint" data-i18n="ui.qrcode.tip">请使用 QQ 扫一扫完成登录，登录成功后可以折叠此卡片。</div>
-                <img id="qrcode-image" alt="QR Code" style="display:none;max-width:260px;border-radius:18px;border:2px solid var(--border);background:#fff;padding:8px;margin:16px auto 0 auto;" />
-                <div id="qrcode-empty" class="empty-state" data-i18n="ui.qrcode.empty">暂未检测到二维码，请先启动 NapCat。</div>
-            </div>
-            <div class="qrcode-actions">
-                <button class="ghost-action" id="qrcode-toggle" type="button" onclick="toggleQrcodeCard()" data-i18n="ui.qrcode.toggle.hide">隐藏</button>
-                <button class="btn-add-entity" type="button" onclick="refreshQrcode()" data-i18n="ui.qrcode.refresh">刷新二维码</button>
-            </div>
-        </section>
-
-        <section class="config-section" id="config-section">
-            <span class="status-title" data-i18n="ui.config.section">OneBot 服务配置</span>
-            <div class="form-group"><label class="field-label" for="cfg-url" data-i18n="ui.config.url.label">通信地址 (URL)</label><input type="text" id="cfg-url" class="input-control" data-i18n-placeholder="ui.config.url.placeholder" placeholder="ws://127.0.0.1:3001"></div>
-            <div class="form-group"><label class="field-label" for="cfg-token" data-i18n="ui.config.token.label">访问令牌 (TOKEN)</label><input type="password" id="cfg-token" class="input-control" data-i18n-placeholder="ui.config.token.placeholder" placeholder="请输入 Token..."></div>
-            <div class="form-group"><label class="field-label" for="cfg-path" data-i18n="ui.config.path.label">执行目录 (PATH)</label><input type="text" id="cfg-path" class="input-control" data-i18n-placeholder="ui.config.path.placeholder" placeholder=""></div>
-            <div class="form-group">
-                <label class="field-label" data-i18n="ui.config.show_napcat_window.label">NapCat 启动窗口</label>
-                <label style="display:flex;align-items:center;gap:10px;font-weight:700;">
-                    <input type="checkbox" id="cfg-show-napcat-window" />
-                    <span data-i18n="ui.config.show_napcat_window.hint">勾选为前台启动（显示 NapCat 控制台），取消为后台启动。</span>
-                </label>
-            </div>
-            <div class="form-group">
-                <label class="field-label" for="cfg-reply-mode" data-i18n="ui.config.reply_mode.label">回复模式</label>
-                <select id="cfg-reply-mode" class="input-control">
-                    <option value="text" data-i18n="ui.config.reply_mode.option_text">纯文本</option>
-                    <option value="voice" data-i18n="ui.config.reply_mode.option_voice">纯语音</option>
-                    <option value="both" data-i18n="ui.config.reply_mode.option_both">复合发送</option>
-                </select>
-                <div class="field-hint" data-i18n="ui.config.reply_mode.hint">选择 QQ 自动回复实际发送文本、语音，或两者都发。</div>
-            </div>
-            <div class="config-divider"></div>
-            <span class="status-title" data-i18n="ui.probability.section">回复概率设置</span>
-            <p class="inline-note" data-i18n="ui.probability.summary">这两个概率只影响未来消息的触发行为，取值范围为 0 到 1。</p>
-            <div class="probability-grid">
-                <div class="form-group">
-                    <label class="field-label" for="cfg-normal-probability" data-i18n="ui.probability.normal.label">普通转发概率</label>
-                    <input type="number" id="cfg-normal-probability" class="input-control" min="0" max="1" step="0.01">
-                    <div class="field-hint" data-i18n="ui.probability.normal.hint">普通用户 / 普通群消息命中后，会按这个概率转发给主人。</div>
-                </div>
-                <div class="form-group">
-                    <label class="field-label" for="cfg-truth-probability" data-i18n="ui.probability.truth.label">开放群回复概率</label>
-                    <input type="number" id="cfg-truth-probability" class="input-control" min="0" max="1" step="0.01">
-                    <div class="field-hint" data-i18n="ui.probability.truth.hint">开放群里未 @ 机器人时，会按这个概率主动回复。</div>
-                </div>
-            </div>
-
-            <div class="save-row">
-                <button class="primary-action" id="save-settings-btn" data-i18n="ui.actions.save_settings">保存设置</button>
-            </div>
-        </section>
-
-        <section class="status-card backlog-section">
-            <div class="status-head">
-                <span class="status-title" data-i18n="ui.backlog.title">群反馈审阅</span>
-                <div class="backlog-head-actions">
-                    <button class="ghost-action" type="button" id="backlog-label-add" data-i18n="ui.backlog.labels.add">新增标签</button>
-                    <button class="ghost-action" type="button" id="backlog-refresh" data-i18n="ui.backlog.refresh">刷新摘要</button>
-                </div>
-                <div id="backlog-label-editor" class="backlog-label-summary"></div>
-            </div>
-            <div class="backlog-overview" id="backlog-overview">
-                <div class="status-grid" id="backlog-overview-grid">
-                    <div class="status-item"><span class="status-label" data-i18n="ui.backlog.pending_groups">待审阅群聊</span><div id="backlog-group-count" class="status-value">0</div></div>
-                    <div class="status-item"><span class="status-label" data-i18n="ui.backlog.pending_items">待审阅消息</span><div id="backlog-unread-count" class="status-value">0</div></div>
-                </div>
-            </div>
-            <div class="guide-step-list backlog-layout">
-                <div class="backlog-pane status-item">
-                    <div class="status-head backlog-pane-head">
-                        <span class="status-title" data-i18n="ui.backlog.groups_title">待审阅群聊</span>
-                    </div>
-                    <div id="backlog-group-list" class="backlog-group-list list-content">
-                        <div class="empty-state" data-i18n="ui.backlog.empty">暂时没有待审阅的群反馈。</div>
-                    </div>
-                </div>
-                <div class="backlog-pane backlog-detail-pane status-item">
-                    <div class="status-head backlog-pane-head">
-                        <span class="status-title" data-i18n="ui.backlog.detail_title">群详情</span>
-                        <button class="primary-action" type="button" id="backlog-review-button" disabled data-i18n="ui.backlog.review">标记已审阅</button>
-                    </div>
-                    <div id="backlog-detail" class="backlog-detail empty-state" data-i18n="ui.backlog.select_group">请选择一个群查看详情。</div>
-                </div>
-            </div>
-        </section>
-
-        <section class="manager-container">
-            <div class="tab-switcher">
-                <button id="tab-users" class="tab-btn active" onclick="switchTab('users')" data-i18n="ui.tabs.users">小鱼干用户</button>
-                <button id="tab-groups" class="tab-btn" onclick="switchTab('groups')" data-i18n="ui.tabs.groups">猫圈群聊</button>
-            </div>
-            <div class="list-toolbar">
-                <button class="btn-add-entity" onclick="addNewEntity()"><span data-i18n="ui.actions.add">添加</span></button>
-            </div>
-            <div id="list-container" class="list-content"></div>
-        </section>
-    </div>
-
-    <div class="modal-overlay" id="entity-form-overlay">
-        <section class="entity-form-card" id="entity-form-card">
-            <div class="entity-form-head">
-                <span class="entity-form-title" id="entity-form-title" data-i18n="ui.entity_form.user.title">添加用户</span>
-            </div>
-            <div class="form-group">
-                <label class="field-label" id="entity-number-label" for="entity-number" data-i18n="ui.entity_form.number">号码</label>
-                <input type="text" id="entity-number" class="input-control">
-            </div>
-            <div class="form-group">
-                <label class="field-label" id="entity-level-label" for="entity-level" data-i18n="ui.entity_form.level">级别</label>
-                <select id="entity-level" class="input-control"></select>
-            </div>
-            <div class="form-group" id="entity-nickname-group">
-                <label class="field-label" for="entity-nickname" data-i18n="ui.entity_form.nickname">昵称</label>
-                <input type="text" id="entity-nickname" class="input-control">
-            </div>
-            <div class="form-group" id="entity-normal-probability-group">
-                <label class="field-label" for="entity-normal-probability" data-i18n="ui.entity_form.normal_probability">转发概率</label>
-                <input type="number" id="entity-normal-probability" class="input-control" min="0" max="1" step="0.01">
-                <div class="field-hint" data-i18n="ui.entity_form.probability_hint">留空则沿用全局默认值。</div>
-            </div>
-            <div class="form-group" id="entity-open-probability-group">
-                <label class="field-label" for="entity-open-probability" data-i18n="ui.entity_form.open_probability">回复概率</label>
-                <input type="number" id="entity-open-probability" class="input-control" min="0" max="1" step="0.01">
-                <div class="field-hint" data-i18n="ui.entity_form.probability_hint">留空则沿用全局默认值。</div>
-            </div>
-            <div class="save-row">
-                <button class="ghost-action" type="button" id="entity-form-cancel" data-i18n="ui.actions.cancel">取消</button>
-                <button class="primary-action" type="button" id="entity-form-save" data-i18n="ui.actions.save">保存</button>
-            </div>
-        </section>
-    </div>
-
-    <div class="modal-overlay" id="backlog-reply-modal-overlay">
-        <section class="entity-form-card" id="backlog-reply-modal">
-            <div class="entity-form-head">
-                <span class="entity-form-title" data-i18n="ui.backlog.reply.title">快捷回复</span>
-            </div>
-            <div class="form-group">
-                <label class="field-label" data-i18n="ui.backlog.reply.target">目标群聊</label>
-                <div id="backlog-reply-target" class="backlog-highlight-item">-</div>
-            </div>
-            <div class="form-group">
-                <label class="field-label" data-i18n="ui.backlog.reply.original">具体回复的发言</label>
-                <div id="backlog-reply-original" class="backlog-highlight-item">-</div>
-            </div>
-            <div class="form-group">
-                <label class="field-label" for="backlog-reply-input" data-i18n="ui.backlog.reply.content">回复内容</label>
-                <textarea id="backlog-reply-input" class="input-control backlog-label-keywords"></textarea>
-            </div>
-            <div class="save-row">
-                <button class="ghost-action" type="button" id="backlog-reply-cancel" data-i18n="ui.actions.cancel">取消</button>
-                <button class="primary-action" type="button" id="backlog-reply-send" data-i18n="ui.backlog.reply.send">发送</button>
-            </div>
-        </section>
-    </div>
-
-    <div class="modal-overlay" id="step1-guide-modal-overlay">
-        <section class="entity-form-card" id="step1-guide-modal">
-            <div class="entity-form-head">
-                <span class="entity-form-title" data-i18n="ui.guide.step1.modal.title">NapCat 启动说明</span>
-            </div>
-            <p class="inline-note" data-i18n="ui.guide.step1.modal.summary">如果你不是通过插件直接启动 NapCat，请先按下面 4 步手动完成配置，再点击确认。</p>
-            <ol class="step1-guide-list">
-                <li>
-                    <span data-i18n="ui.guide.step1.modal.item1">下载 OneBot（推荐 NapCat），打开发布页：</span>
-                    <a class="step1-guide-link" href="https://github.com/NapNeko/NapCatQQ/releases" target="_blank" rel="noopener noreferrer">https://github.com/NapNeko/NapCatQQ/releases</a>
-                </li>
-                <li data-i18n="ui.guide.step1.modal.item2">启动 NapCat，并打开 NapCat 配置页。</li>
-                <li data-i18n="ui.guide.step1.modal.item3">在左侧工具栏进入“网络配置”。</li>
-                <li data-i18n="ui.guide.step1.modal.item4">添加一个 WS 服务器，点击启用，然后保存。</li>
-            </ol>
-            <div class="save-row">
-                <button class="ghost-action" type="button" id="step1-guide-cancel" data-i18n="ui.actions.cancel">取消</button>
-                <button class="primary-action" type="button" id="step1-guide-confirm" data-i18n="ui.guide.step1.modal.confirm">确认</button>
-            </div>
-        </section>
-    </div>
-
-    <div class="modal-overlay" id="backlog-label-modal-overlay">
-        <section class="entity-form-card" id="backlog-label-modal">
-            <div class="entity-form-head">
-                <span class="entity-form-title" data-i18n="ui.backlog.labels.modal_title">新增标签</span>
-            </div>
-            <p class="inline-note" data-i18n="ui.backlog.labels.summary">每条消息只会命中一个优先级最高的标签，没命中时会归类为 chat。</p>
-            <div class="backlog-label-grid">
-                <div class="form-group">
-                    <label class="field-label" data-i18n="ui.backlog.labels.id">标签 ID</label>
-                    <input type="text" id="backlog-label-modal-id" class="input-control">
-                </div>
-                <div class="form-group">
-                    <label class="field-label" data-i18n="ui.backlog.labels.name">显示名称</label>
-                    <input type="text" id="backlog-label-modal-name" class="input-control">
-                </div>
-                <div class="form-group">
-                    <label class="field-label" data-i18n="ui.backlog.labels.priority">优先级</label>
-                    <input type="number" id="backlog-label-modal-priority" class="input-control" value="0">
-                </div>
-                <div class="form-group">
-                    <label class="field-label" data-i18n="ui.backlog.labels.keywords">关键词</label>
-                    <textarea id="backlog-label-modal-keywords" class="input-control backlog-label-keywords"></textarea>
-                    <div class="field-hint" data-i18n="ui.backlog.labels.keywords_hint">每行一个关键词或正则。</div>
-                </div>
-            </div>
-            <div class="save-row">
-                <button class="ghost-action" type="button" id="backlog-label-modal-delete" data-i18n="ui.actions.delete">删除</button>
-                <button class="ghost-action" type="button" id="backlog-label-modal-cancel" data-i18n="ui.actions.cancel">取消</button>
-                <button class="primary-action" type="button" id="backlog-label-modal-save" data-i18n="ui.actions.save">保存</button>
-            </div>
-        </section>
-    </div>
-
-    <div id="toast" class="toast"></div>
-    <script src="./i18n.js"></script>
-    <script src="./script.js"></script>
+</div>
+<script src="i18n.js"></script>
+<script>
+function t(key,fallback){return window.I18n&&typeof window.I18n.t==='function'?window.I18n.t(key,fallback):(fallback||key)}
+function go(mode) {
+    localStorage.setItem('qq_connection_mode', mode);
+    location.href = mode === 'napcat' ? 'napcat.html' : 'open_platform.html';
+}
+</script>
 </body>
 </html>

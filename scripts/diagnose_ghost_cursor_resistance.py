@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from yui_guide_director_parts import DIRECTOR_SCRIPT_NAMES
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 STATIC_DIR = PROJECT_ROOT / "static"
@@ -14,7 +16,7 @@ SCRIPT_NAMES = (
     "tutorial/visual/highlight-controller.js",
     "tutorial-interrupt-controller.js",
     "tutorial/yui-guide/overlay.js",
-    "tutorial/yui-guide/director.js",
+    *DIRECTOR_SCRIPT_NAMES,
 )
 
 
@@ -50,7 +52,7 @@ def _bootstrap_page(page: Any, *, pc_overlay: bool) -> None:
             window.universalTutorialManager = {
                 currentPage: 'home',
                 isTutorialRunning: true,
-                logPromptFlow: () => {},
+                logTutorialFlow: () => {},
             };
             window.matchMedia = window.matchMedia || (() => ({
                 matches: false,

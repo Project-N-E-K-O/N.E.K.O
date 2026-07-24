@@ -6,12 +6,16 @@ import re
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, computed_field, model_validator
+from plugin._types.plugin_types import (
+    SUPPORTED_PLUGIN_TYPES,
+    format_plugin_type_choice_error,
+)
 
 # Keep low-level validation helpers module-local so the public models stay small
 # and consistent across CLI/API/service usage.
 _PLUGIN_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _HEX_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_PACKAGE_TYPES = {"plugin", "bundle", "extension", "adapter"}
+_PACKAGE_TYPES = SUPPORTED_PLUGIN_TYPES | {"bundle"}
 _PACKAGE_SUFFIXES = {".neko-plugin", ".neko-bundle"}
 
 
@@ -58,7 +62,7 @@ def _normalize_required_string(value: str, *, field_name: str) -> str:
 def _normalize_package_type(value: str) -> str:
     normalized = str(value).strip().lower()
     if normalized not in _PACKAGE_TYPES:
-        raise ValueError("package_type must be one of: plugin, bundle, extension, adapter")
+        raise ValueError(format_plugin_type_choice_error("package_type", allowed=_PACKAGE_TYPES))
     return normalized
 
 
@@ -447,7 +451,7 @@ class InstallResult(_BaseModel):
     metadata_found: bool = False
     payload_hash: OptionalPayloadHashValue = ""
     payload_hash_verified: bool | None = None
-    conflict_strategy: ConflictStrategyValue = "rename"
+    conflict_strategy: ConflictStrategyValue = "fail"
 
     @model_validator(mode="after")
     def _validate_layout(self) -> InstallResult:

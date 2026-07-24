@@ -43,20 +43,6 @@ async def reload_all_plugins() -> dict[str, object]:
         raise_http_from_domain(error, logger=logger)
 
 
-async def disable_extension(ext_id: str) -> dict[str, object]:
-    try:
-        return await _service.disable_extension(ext_id)
-    except ServerDomainError as error:
-        raise_http_from_domain(error, logger=logger)
-
-
-async def enable_extension(ext_id: str) -> dict[str, object]:
-    try:
-        return await _service.enable_extension(ext_id)
-    except ServerDomainError as error:
-        raise_http_from_domain(error, logger=logger)
-
-
 async def freeze_plugin(plugin_id: str) -> dict[str, object]:
     logger.error("freeze_plugin is removed from management API: plugin_id={}", plugin_id)
     raise HTTPException(

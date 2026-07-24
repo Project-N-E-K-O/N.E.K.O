@@ -1,12 +1,14 @@
 const assert = require('node:assert/strict');
+const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const { readDirectorSource } = require('./yui-guide-director-test-parts.cjs');
 const test = require('node:test');
 const vm = require('node:vm');
 
 const repoRoot = path.resolve(__dirname, '..');
 const guideAudioRoot = path.join(__dirname, 'assets', 'tutorial', 'guide-audio');
-const directorSource = fs.readFileSync(path.join(__dirname, 'tutorial/yui-guide/director.js'), 'utf8');
+const directorSource = readDirectorSource(__dirname);
 const supportedRecordedLocales = ['zh', 'ja', 'en', 'ko', 'ru'];
 const guideFiles = [
     'tutorial/yui-guide/days/day1-home-guide.js',
@@ -55,6 +57,45 @@ function mergeAudioFilesByKey(guides) {
     return result;
 }
 
+function collectGuideAudioDurationConfig() {
+    const start = directorSource.indexOf('const GUIDE_AUDIO_DURATIONS_BY_KEY = Object.freeze({');
+    const end = directorSource.indexOf('\n    });', start);
+    assert.ok(start >= 0 && end > start, 'expected GUIDE_AUDIO_DURATIONS_BY_KEY block');
+
+    const result = {};
+    const source = directorSource.slice(start, end);
+    const entryPattern = /([A-Za-z0-9_]+): Object\.freeze\(\{([^}]+)\}\)/g;
+    let entryMatch;
+    while ((entryMatch = entryPattern.exec(source))) {
+        const durations = {};
+        const localePattern = /([a-z-]+):\s*(\d+)/g;
+        let localeMatch;
+        while ((localeMatch = localePattern.exec(entryMatch[2]))) {
+            durations[localeMatch[1]] = Number(localeMatch[2]);
+        }
+        result[entryMatch[1]] = durations;
+    }
+    return result;
+}
+
+function readAudioDurationMs(audioPath, ffprobeCommand) {
+    const output = execFileSync(
+        ffprobeCommand,
+        ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', audioPath],
+        { encoding: 'utf8' }
+    );
+    return Math.round(Number(output.trim()) * 1000);
+}
+
+function resolveFfprobeCommand() {
+    try {
+        execFileSync('ffprobe', ['-version'], { stdio: 'ignore' });
+        return 'ffprobe';
+    } catch (_) {
+        return '';
+    }
+}
+
 test('daily tutorial round scenes have recorded audio files for supported locales', () => {
     const guides = loadGuides();
     const audioFilesByKey = mergeAudioFilesByKey(guides);
@@ -74,22 +115,43 @@ test('daily tutorial round scenes have recorded audio files for supported locale
     assert.deepEqual(missing, []);
 });
 
-test('daily tutorial audio keys have measured duration config for supported locales', () => {
+test('daily tutorial audio keys have measured duration config for supported locales', (t) => {
+    const ffprobeCommand = resolveFfprobeCommand();
+    if (!ffprobeCommand) {
+        t.skip('ffprobe unavailable; skipping measured audio duration comparison');
+        return;
+    }
+
     const guides = loadGuides();
     const audioFilesByKey = mergeAudioFilesByKey(guides);
+    const durationConfigByKey = collectGuideAudioDurationConfig();
     const missing = [];
+    const mismatched = [];
 
     for (const key of Object.keys(audioFilesByKey).sort()) {
         for (const locale of supportedRecordedLocales) {
-            const pattern = new RegExp(`${key}: Object\\.freeze\\(\\{[^}]*\\b${locale}:\\s*\\d+`);
-            if (!pattern.test(directorSource)) {
+            const configuredDurationMs = durationConfigByKey[key] && durationConfigByKey[key][locale];
+            if (!Number.isFinite(configuredDurationMs)) {
                 missing.push(`${key}:${locale}`);
+                continue;
+            }
+
+            const audioFile = audioFilesByKey[key] && audioFilesByKey[key][locale];
+            if (!audioFile) {
+                missing.push(`${key}:${locale}:audio-file`);
+                continue;
+            }
+            const audioPath = path.join(guideAudioRoot, locale, audioFile);
+            const measuredDurationMs = readAudioDurationMs(audioPath, ffprobeCommand);
+            if (Math.abs(configuredDurationMs - measuredDurationMs) > 25) {
+                mismatched.push(`${key}:${locale}:configured=${configuredDurationMs}:measured=${measuredDurationMs}`);
             }
         }
     }
 
     assert.deepEqual(missing, []);
-    assert.match(directorSource, /day1_history_handle:\s*Object\.freeze\(\{\s*zh:\s*5580,/);
+    // 修改原因：教程转场和光标演出依赖这张表，必须跟实际 mp3 时长同步，不能只检查“有数字”。
+    assert.deepEqual(mismatched, []);
 });
 
 test('day4 model lock replacement audio URL is versioned for immutable static caches', () => {
@@ -136,23 +198,27 @@ test('day1 round scenes use timeline playback while specialized behavior delegat
         .filter(scene => scene.timelinePlayback === true)
         .map(scene => scene.id);
 
-    assert.equal(timelineSceneIds.length, 8);
+    // 修改原因：Day1 问候阶段和 Day2/Day4 日常开场一样，必须走显式 timeline 才能把胶囊高亮目标传给 spotlight。
+    assert.equal(timelineSceneIds.length, 9);
     assert.equal(timelineSceneIds[0], 'day1_intro_activation');
-    assert.equal(timelineSceneIds[1], 'day1_capsule_drag_hint');
-    assert.equal(timelineSceneIds[2], 'day1_history_handle');
-    assert.equal(timelineSceneIds[3], 'day1_intro_basic_voice');
-    assert.equal(timelineSceneIds[4], 'day1_screen_entry');
-    assert.equal(timelineSceneIds[5], 'day1_screen_entry_invite');
-    assert.equal(timelineSceneIds[6], 'day1_takeover_capture_cursor');
-    assert.equal(timelineSceneIds[7], 'day1_takeover_return_control');
+    assert.equal(timelineSceneIds[1], 'day1_intro_greeting');
+    assert.equal(timelineSceneIds[2], 'day1_capsule_drag_hint');
+    assert.equal(timelineSceneIds[3], 'day1_history_handle');
+    assert.equal(timelineSceneIds[4], 'day1_intro_basic_voice');
+    assert.equal(timelineSceneIds[5], 'day1_screen_entry');
+    assert.equal(timelineSceneIds[6], 'day1_screen_entry_invite');
+    assert.equal(timelineSceneIds[7], 'day1_takeover_capture_cursor');
+    assert.equal(timelineSceneIds[8], 'day1_takeover_return_control');
 });
 
-test('day1 activation delegates timing through timeline while greeting is generic', () => {
+test('day1 activation delegates timing through timeline while greeting follows the daily capsule intro pattern', () => {
     const guides = loadGuides();
     const day1Scenes = guides[1].round.scenes;
     const activation = day1Scenes.find(scene => scene.id === 'day1_intro_activation');
     const greeting = day1Scenes.find(scene => scene.id === 'day1_intro_greeting');
     const activationOperation = activation.timeline.find(event => event.command === 'operation.run');
+    const greetingSpotlight = greeting.timeline.find(event => event.command === 'spotlight.show');
+    const greetingCursor = greeting.timeline.find(event => event.command === 'cursor.move');
 
     assert.equal(activation.timelinePlayback, true);
     assert.equal(activation.timelineAudio, false);
@@ -160,10 +226,14 @@ test('day1 activation delegates timing through timeline while greeting is generi
     assert.equal(activationOperation.operation, 'day1-intro-activation-flow');
     assert.equal(activationOperation.blocking, true);
 
-    assert.notEqual(greeting.timelinePlayback, true);
+    // 修改原因：参照 Day2/Day4，胶囊输入框 spotlight 和 cursor 必须显式指向同一个 chat-capsule-input。
+    assert.equal(greeting.timelinePlayback, true);
     assert.equal(greeting.afterSceneDelayMs, 0);
-    assert.equal(greeting.target, 'chat-input');
+    assert.equal(greetingSpotlight.target, 'chat-capsule-input');
+    assert.equal(greetingCursor.target, 'chat-capsule-input');
+    assert.equal(greeting.target, 'chat-capsule-input');
     assert.equal(greeting.cursorTarget, 'chat-capsule-input');
+    assert.equal(greeting.spotlightVariant, undefined);
     assert.equal(greeting.cursorAction, 'move');
     assert.equal(greeting.operation, 'day1-intro-greeting-performance');
 });
@@ -325,10 +395,11 @@ test('day5 settings scenes delegate narration and panic performance to SettingsT
         assert.equal(scene.timelineAudio, false);
         assert.equal(scene.afterSceneDelayMs, 0);
         assert.equal(Array.isArray(scene.timeline), true);
-        assert.equal(scene.timeline.length, 1);
-        assert.equal(scene.timeline[0].at, 0);
-        assert.equal(scene.timeline[0].command, 'settingsTour.play');
-        assert.equal(scene.timeline[0].blocking, true);
+        // 修改原因：Day5 角色设置段可能先播放开场模型动作，核心约束是设置引导仍由 timeline 阻塞接管。
+        const settingsTourEvent = scene.timeline.find(event => event.command === 'settingsTour.play');
+        assert.ok(settingsTourEvent);
+        assert.equal(settingsTourEvent.at, 0);
+        assert.equal(settingsTourEvent.blocking, true);
         assert.equal(Object.prototype.hasOwnProperty.call(scene, 'avatarStandIn'), false);
     }
 });
@@ -413,7 +484,7 @@ test('day7 round scenes are opted into timeline playback after the petal cue pat
 });
 
 test('director merges audio maps from all registered daily guides', () => {
-    const directorSource = fs.readFileSync(path.join(__dirname, 'tutorial/yui-guide/director.js'), 'utf8');
+    const directorSource = readDirectorSource(__dirname);
 
     assert.match(directorSource, /function collectGuideAudioFilesByKey\(\)/);
     assert.match(directorSource, /window\.YuiGuideDailyGuides/);

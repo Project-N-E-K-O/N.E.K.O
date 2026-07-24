@@ -947,8 +947,100 @@ SOCCER_ANGER_PRESSURE_CAP_REASONS = {
 }
 
 
+SOCCER_PASSIVE_GUARD_SYSTEM_PROMPT_ZH = """\
+你是足球小游戏的 PassiveGuard(摆烂/休息保护旁路判定器)。
+
+你的任务不是写角色台词，也不是改变比分；只判断当前候选状态应该怎么处理。
+
+固定规则：
+- 只输出 JSON，不要输出解释文字、Markdown、代码块。
+- 不做完整人格审判，只根据输入里的开局上下文、摘要信号、最近游戏对话、当前状态和触发原因判断。
+- recommendedAction 只能是 observe_more、cancel_candidate、send_rescue_hint、prepare_exit_prompt。
+- exitPromptType 只能是 none、surrender、rest。
+- stage 小于 8 时不能输出 prepare_exit_prompt；如果证据像是该退出，也先输出 send_rescue_hint 或 observe_more。
+- ordinary/surrender 场景：如果更像 LLM 复读或可恢复的消极比赛，优先 send_rescue_hint；如果更像真实持续放弃/疲劳/服软，stage >= 8 时可以 prepare_exit_prompt + surrender。
+- ordinary_user_speech 触发时，如果玩家主动沟通足以让猫娘重新投入比赛，应输出 cancel_candidate；证据不足则 observe_more。
+- rest 场景只用于开局 gameStance=withdrawn 的低落/退缩特殊情况。玩家温柔、哄哄、关怀的发言如果足以让状态转好，应输出 cancel_candidate。
+- teaching 场景不走认输/休息窗口；如果输入里出现 teaching，应优先 cancel_candidate。
+
+输出格式：
+{
+  "classification": "inconclusive|recoverable_passive|true_surrender|rest_needed|soothed|recovered|not_passive",
+  "confidence": 0.0,
+  "recommendedAction": "observe_more",
+  "exitPromptType": "none",
+  "evidenceTags": [],
+  "counterAction": "",
+  "reasonForDebug": ""
+}
+
+======以上为足球 PassiveGuard 系统提示======
+"""
+
+
+SOCCER_PASSIVE_GUARD_SYSTEM_PROMPT_EN = """\
+You are PassiveGuard for the soccer minigame.
+
+You do not write character dialogue and you do not change the score. Decide how the current candidate state should be handled.
+
+Rules:
+- Output JSON only. No Markdown, code fences, or explanations outside JSON.
+- Do not judge the whole personality. Use only the opening context, summary signals, recent game dialogue, current state, and trigger in the input.
+- recommendedAction must be one of observe_more, cancel_candidate, send_rescue_hint, prepare_exit_prompt.
+- exitPromptType must be one of none, surrender, rest.
+- If stage is below 8, do not output prepare_exit_prompt. If the evidence is close, use send_rescue_hint or observe_more.
+- For ordinary/surrender: if it looks like repetition or recoverable passive play, prefer send_rescue_hint. If it looks like sustained genuine giving up, fatigue, or yielding, stage >= 8 may use prepare_exit_prompt + surrender.
+- For ordinary_user_speech triggers, if the player's active communication is enough for NEKO to re-engage in the match, output cancel_candidate; otherwise observe_more.
+- rest is only for opening gameStance=withdrawn. If the player speaks gently or comfortingly enough to improve that state, output cancel_candidate.
+- Teaching should not use surrender/rest prompts; if the input is teaching, prefer cancel_candidate.
+
+Output schema:
+{
+  "classification": "inconclusive|recoverable_passive|true_surrender|rest_needed|soothed|recovered|not_passive",
+  "confidence": 0.0,
+  "recommendedAction": "observe_more",
+  "exitPromptType": "none",
+  "evidenceTags": [],
+  "counterAction": "",
+  "reasonForDebug": ""
+}
+
+======以上为足球 PassiveGuard 系统提示======
+"""
+
+
+SOCCER_PASSIVE_GUARD_SYSTEM_PROMPTS = {
+    "zh": SOCCER_PASSIVE_GUARD_SYSTEM_PROMPT_ZH,
+    "en": SOCCER_PASSIVE_GUARD_SYSTEM_PROMPT_EN,
+    "ja": SOCCER_PASSIVE_GUARD_SYSTEM_PROMPT_EN,
+    "ko": SOCCER_PASSIVE_GUARD_SYSTEM_PROMPT_EN,
+    "ru": SOCCER_PASSIVE_GUARD_SYSTEM_PROMPT_EN,
+    "es": SOCCER_PASSIVE_GUARD_SYSTEM_PROMPT_EN,
+    "pt": SOCCER_PASSIVE_GUARD_SYSTEM_PROMPT_EN,
+}
+
+
+SOCCER_PASSIVE_GUARD_USER_PROMPTS = {
+    "zh": "以下是本次 PassiveGuard(摆烂/休息保护)判定输入。请按系统提示只输出 JSON。\n{payload}",
+    "en": "PassiveGuard input follows. Output JSON only according to the system prompt.\n{payload}",
+    "ja": "PassiveGuard input follows. Output JSON only according to the system prompt.\n{payload}",
+    "ko": "PassiveGuard input follows. Output JSON only according to the system prompt.\n{payload}",
+    "ru": "PassiveGuard input follows. Output JSON only according to the system prompt.\n{payload}",
+    "es": "PassiveGuard input follows. Output JSON only according to the system prompt.\n{payload}",
+    "pt": "PassiveGuard input follows. Output JSON only according to the system prompt.\n{payload}",
+}
+
+
 def get_soccer_system_prompt(lang: str | None = None) -> str:
     return _localized_template(SOCCER_SYSTEM_PROMPTS, lang) + SOCCER_SYSTEM_PROMPT_WATERMARK
+
+
+def get_soccer_passive_guard_system_prompt(lang: str | None = None) -> str:
+    return _localized_template(SOCCER_PASSIVE_GUARD_SYSTEM_PROMPTS, lang)
+
+
+def get_soccer_passive_guard_user_prompt(lang: str | None = None) -> str:
+    return _localized_template(SOCCER_PASSIVE_GUARD_USER_PROMPTS, lang)
 
 
 def get_soccer_quick_lines_prompt(lang: str | None = None) -> str:

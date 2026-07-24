@@ -1,312 +1,70 @@
-# 開発者ノート
 
-すべての N.E.K.O. コントリビューターが知っておくべき重要なルールと注意点です。これらはプロジェクト経験から得られた貴重な知見です。
+# 開発者向け注意事項
 
-## コアルール
+以下は現在のリポジトリ契約です。過去の障害詳細は、陳腐化しやすい model／version 表として複製せず、所有するルール、テスト、設計記録に残します。
 
-::: danger 必ず従うこと
-これらのルールはコードベース全体で適用されます。
-:::
+## 必須規則
 
-### 1. 必ず `uv` を使用して実行する
-
-すべての Python コマンドは `uv` を通す必要があります：
+### Python は uv 経由
 
 ```bash
-# ✅ 正しい
-uv run python app/main_server.py
-uv run pytest tests/
-
-# ❌ 間違い
-python app/main_server.py
-pytest tests/
+uv run python launcher.py
+uv run pytest
+uv run ruff check .
 ```
 
-### 2. ユーザー向けテキストには i18n が必須
+プロジェクト Python を裸の `python`、`pytest`、一時的な `pip` で実行・記述しません。
 
-プロジェクトは 8 言語（`en`、`zh-CN`、`zh-TW`、`ja`、`ko`、`ru`、`es`、`pt`）をサポートしています。すべてのユーザーに表示される文字列は i18n システムを通す必要があります。
+### 8 locale の i18n
 
-- **HTML**: `data-i18n` 属性を使用
-- **JS**: 中国語フォールバック付きの `window.t('key')` を使用
-- ロケールファイルは `static/locales/` にあります
+ランタイム locale は次のとおりです。
 
-完全なガイドは [国際化](/ja/frontend/i18n) を参照してください。
-
-### 3. プライバシーに関わるログ: `print()` のみ
-
-**生のユーザー会話データ** を含む可能性のあるログは `print()` を使用し、`logger` は使用しないでください。これにより機密データが永続的なログファイルに残らないようにします。
-
-```python
-# ✅ ユーザー会話データ
-print(f"User said: {user_message}")
-
-# ✅ システムイベントには logger を使用
-logger.info("Session started for character: %s", lanlan_name)
-
-# ❌ ユーザー会話を logger で記録しないこと
-logger.info(f"User said: {user_message}")  # ダメ！
+```text
+en, ja, ko, zh-CN, zh-TW, ru, pt, es
 ```
 
-### 4. 翻訳時にシステムプロンプトのウォーターマークを保持する
+ユーザー向け i18n の変更では `static/locales/` の全ファイルを更新します。プラグインマネージャーの locale には独自の同期グループがあります。CI が同期差分を検査します。
 
-システムプロンプトを（いかなる理由でも）翻訳する際は、必ずマーカー `======以上為` を保持してください。これはプロンプト境界検出に使用される内部ウォーターマークです。
+### プライバシーに関わる出力
 
-### 5. Steam 実績は不可逆
+生の会話やユーザーの機密テキストには `print` だけを使い、プロジェクト `logger` へ送りません。生の機密内容を含まないシステムイベントは、設定済み logger を利用できます。
 
-Steam 実績は一度アンロックすると、コードで **取り消すことができません**。デプロイ前に必ずコンソールコマンドで実績ロジックを十分にテストしてください：
+### Prompt ウォーターマーク
 
-```javascript
-// ブラウザコンソールでテスト
-await window.unlockAchievement('ACH_NAME');
-window.getAchievementStats();
-```
+system prompt の翻訳や並べ替えでも `======以上为` を保持します。
 
-### 6. ミニゲーム prompt は2つの locale 正規化を意図的に併存させている
+### 構造の対称性
 
-`config/prompts` はミニゲーム prompt 向けに **2 つの異なる locale 正規化** を意図的に使い分けており、統一してはいけません：
+Provider／backend／feature は構造的に対になっています。一つの経路を分割、改名、設定、パッケージ化するときは peer provider を確認します。
 
-- **バドミントンのクイック台詞** は `normalize_badminton_prompt_locale`（`prompts_badminton.py`）を使う **フルロケール** 方式で、`zh-CN` と `zh-TW` を区別します。テーブル `BADMINTON_QUICK_LINES_PROMPTS` / `BADMINTON_QUICK_LINES_FALLBACKS` はフルロケールをキーにしているため、繁体字のフォールバック台詞が保持されます。
-- **それ以外**（サッカー、および `BADMINTON_SYSTEM_PROMPTS` を含むすべての system / pregame prompt）は `_normalize_prompt_lang`（`prompts_minigame_common.py`）を使う **ショートロケール** 方式で、中国語の派生をすべて `zh` に畳み込みます。
+## ランタイム境界
 
-バドミントンのクイック台詞をショート方式に畳み込むと `zh-TW` が `zh-CN` に戻り、PR #2000 の繁体字フォールバック修正が退行します。各正規化関数が自分のテーブルを管轄します。整理のために統合しないでください。
+- ブラウザー開発は `/`、単一ページ／ウィンドウ、既定 port 48911 です。
+- Electron は `/chat`、`/subtitle` などの個別 route／window を読み込みます。
+- 静的 path、初期化、IPC、build output は両方で動作する必要があります。
+- `frontend/react-neko-chat/` が唯一の chat 実装です。`index.html` と `chat.html` は `#react-chat-window-root` にマウントします。
+- 旧 `#chat-container` は非表示・廃止済みで、`app-chat-adapter.js` が旧 `appendMessage()` 呼び出しを bridge します。
 
-## フロントエンドの注意点
+## バックエンド境界
 
-### i18n が HTML アイコンを破壊する
+- API リソース path は `/` で終えず、proxy 配下の Starlette redirect を避けます。
+- async handler でブロッキング処理を直接実行しません。
+- 起動時の同期 config write を async 経路でも使う場合は、対応する async `a*` interface を提供します。
+- main package の layering と `main_logic/core/` facade 契約は CI が検査します。
+- 制限対象の LLM 構築／呼び出しへ `temperature=` を渡さず、output、timeout、input の budget を監視します。
 
-i18next が `textContent` 経由で要素テキストを更新すると、要素内の `<img>` や `<span>` タグが破壊されます。翻訳文字列に HTML が含まれている場合、i18n システムはこれを検出して代わりに `innerHTML` を使用します。翻訳可能な要素にアイコンを追加する場合は、ロケール JSON に HTML を含めてください：
+## メモリ
 
-```json
-{
-  "button.save": "<img src='icon.svg'> Save"
-}
-```
+会話イベント永続化、projection、recall candidate、evidence／reflection、persona、maintenance queue は別レイヤーです。変更前に[メモリシステム](/ja/architecture/memory-system)と実装済み設計記録を読んでください。プラグイン内の 1 時間コンテキストを semantic memory recall と説明しないでください。
 
-### `overflow: hidden` が `<select>` ドロップダウンを壊す
+## フロントエンド境界
 
-カプセル UI システムは大きな border-radius を使用しており、開発者がコンテナに `overflow: hidden` を追加しがちです。これによりネイティブの `<select>` ドロップダウンがクリップされます。修正方法：
+このプロジェクトは「vanilla JavaScript のみ」ではありません。静的／Jinja JavaScript、React chat、Vue plugin manager を含みます。所有 subtree とテストを確認します。固定 delay で DOM ready を推測せず、既存の lifecycle／event に従います。
 
-```css
-/* <select> を含むコンテナ */
-.field-row-with-select {
-  overflow: visible !important;
-}
-```
+## Steam とパッケージング
 
-### ボタンインタラクションの公式
+achievement と cloud state は外部に不可逆な影響を与えることがあります。既存の test hook と staging flow を使い、実アカウントで破壊的挙動を安易に試しません。パッケージング変更では [Nuitka パッケージング](./nuitka-packaging)と現在の build workflow に従います。
 
-すべてのボタンは一貫した操作感のために以下のインタラクションパターンに従う必要があります：
+## 検証
 
-```css
-.button:hover {
-  transform: translateY(-1px);
-  /* 強調されたシャドウ */
-}
-.button:active {
-  transform: translateY(1px) scale(0.98);
-}
-```
-
-### Vanilla JS の競合状態（DOM の遅延読み込み）
-
-N.E.K.O. はリアクティブフレームワークなしの vanilla JavaScript を使用しているため、コード実行時に DOM 要素が存在しない場合があります -- 特に最初のクリック時に遅延作成されるポップアップや HUD コンポーネントで顕著です。
-
-::: warning DOM バインディングに固定の `setTimeout` を使用しないこと
-ハードコードされた `setTimeout(..., 100)` はまだ作成されていない要素を見逃します。代わりに自己終了型の再帰ポーリングを使用してください：
-:::
-
-```javascript
-const bindEvents = () => {
-    const getEl = (ids) => {
-        for (let id of ids) {
-            const el = document.getElementById(id);
-            if (el) return el;
-        }
-        return null;
-    };
-
-    const targetEl = getEl(['live2d-agent-keyboard', 'vrm-agent-keyboard']);
-
-    if (!targetEl) {
-        setTimeout(bindEvents, 500); // DOM が存在するまでリトライ
-        return;
-    }
-
-    // 見つかった -- バインドしてポーリングを停止
-    targetEl.addEventListener('change', myLogic);
-    myLogic(); // 最初のチェックをトリガー
-};
-
-setTimeout(bindEvents, 100); // ポーリング開始
-```
-
-**楽観的 UI の競合**: トグルボタンがクリックされると、バックエンドリクエストの送信中に UI は楽観的に「オン」に切り替わります。別のコンポーネント（例えばポーリングループ）がこの間に DOM を読み取ると、古い状態を見る可能性があります。要素の値を信頼する前に、要素がローディング/無効状態にあるかどうかを確認して防御してください。
-
-### UI デザインシステム: カプセル UI + Neko Blue
-
-プロジェクトには厳格なビジュアルシステムがあります：
-
-| トークン | 値 | 用途 |
-|-------|-------|-------|
-| `--color-n-main` | `#40C5F1` | ブランドブルー: タイトル、プライマリボタン、アクティブ状態 |
-| `--color-n-deep` | `#22b3ff` | ストローク/ディープブルー: テキストアウトライン、フォーカスグロー |
-| `--color-n-light` | `#e3f4ff` | ライトバックグラウンドブルー |
-| `--color-n-border` | `#b3e5fc` | ボーダーブルー: カプセルボーダー、仕切り |
-| `--radius-capsule` | `50px` | すべてのインタラクティブ要素 |
-| `--radius-card` | `20px` | カードとコンテナ |
-
-フォント：
-- **ラテン文字**: `'Comic Neue'`, `'Segoe UI'`, `Arial`
-- **CJK**: `'Source Han Sans CN'`, `'Noto Sans SC'`
-- **等幅フォント**（API キー、ID）: `'Courier New', monospace`
-
-完全なデザインシステムは `.agent/skills/ui-system-refactor/references/design-system.md` を参照してください。
-
-## バックエンドの注意点
-
-### Gemini API レスポンス形式
-
-Gemini は JSON レスポンスをマークダウンコードブロックでラップすることがあります：
-
-````
-```json
-{"emotion": "happy"}
-```
-````
-
-パース前に必ずマークダウンラッピングを除去してください：
-
-```python
-if result_text.startswith("```"):
-    lines = result_text.split("\n")
-    if lines[0].startswith("```"):
-        lines = lines[1:]
-    if lines and lines[-1].strip() == "```":
-        lines = lines[:-1]
-    result_text = "\n".join(lines).strip()
-```
-
-### Gemini `extra_body` は二重ネストが必要
-
-OpenAI 互換 API 経由で Gemini のシンキングモードを制御する場合、`extra_body` は二重ネストにする必要があります：
-
-```python
-# ✅ 正しい: 二重ネスト
-extra_body = {
-    "extra_body": {
-        "google": {
-            "thinking_config": {
-                "thinking_budget": 0  # 2.5 のシンキングを無効化
-            }
-        }
-    }
-}
-
-# ❌ 間違い: 単一ネスト（"Unknown name 'google'" エラーの原因）
-extra_body = {
-    "google": {
-        "thinking_config": {"thinking_budget": 0}
-    }
-}
-```
-
-### シンキングモードはプロバイダーごとに異なる
-
-各 LLM プロバイダーは拡張推論を無効化するためのフォーマットが異なります：
-
-| プロバイダー | フォーマット |
-|----------|--------|
-| Qwen, Step, DeepSeek | `{"enable_thinking": false}` |
-| GLM | `{"thinking": {"type": "disabled"}}` |
-| Gemini 2.x | `{"thinking_config": {"thinking_budget": 0}}` |
-| Gemini 3.x | `{"thinking_config": {"thinking_level": "low"}}` |
-
-`config/__init__.py` モジュールがこのマッピングを自動的に処理します -- `MODELS_EXTRA_BODY_MAP` を確認してください。
-
-## VRM モデルの注意点
-
-### SpringBone 物理演算の暴走
-
-VRM の物理演算は `vrm.update(delta)` を使用し、`delta` はミリ秒ではなく **秒** 単位である必要があります。読み込み時に髪/衣服が上方に飛ぶ場合：
-
-```javascript
-let delta = clock.getDelta();
-delta = Math.min(delta, 0.05); // タブ切り替え時の暴走を防止するためクランプ
-vrm.update(delta);
-```
-
-### コライダーのサイズ過大（VRM モデルの約 100% に影響）
-
-VRoid Studio/UniVRM からエクスポートされた VRM モデルには、コライダーの半径が約 2 倍大きくなる既知のバグ（[UniVRM #673](https://github.com/vrm-c/UniVRM/issues/673)）があります。これにより髪が水平に固定されたように見えます。
-
-**修正方法**: 読み込み後にすべてのコライダー半径を 50% 縮小します：
-
-```javascript
-const COLLIDER_REDUCTION = 0.5;
-springBoneManager.colliders.forEach(collider => {
-    if (collider.shape?.radius > 0) {
-        collider._originalRadius = collider.shape.radius;
-        collider.shape.radius *= COLLIDER_REDUCTION;
-    }
-});
-```
-
-### MToon アウトラインの太さ
-
-VRM モデルをスケーリングすると、MToon のアウトラインが不均衡に太くなります。スクリーンスペースアウトラインに切り替えてください：
-
-```javascript
-material.outlineWidthMode = 'screenCoordinates';
-material.outlineWidthFactor = 0.005; // 細く一貫したアウトライン
-material.needsUpdate = true;
-```
-
-### 3D カメラ: ピクセルからワールドへのマッピング
-
-VRM モデルのドラッグ/ズームを実装する場合、**固定のパン速度を使用しないでください**。カメラ距離に基づいてピクセルからワールドへのマッピングを動的に計算します：
-
-```javascript
-const worldHeight = 2 * Math.tan(fov / 2) * cameraDistance;
-const pixelToWorld = worldHeight / screenHeight;
-// マウスのデルタ * pixelToWorld = ワールド空間の移動量
-```
-
-## テスト
-
-### テスト構成
-
-```
-tests/
-├── unit/          # OmniOffline/Realtime クライアント、プロバイダー接続
-├── frontend/      # 各 Web UI ページの Playwright テスト
-├── e2e/           # 完全なユーザージャーニー（8 ステージ、--run-e2e フラグが必要）
-└── utils/         # LLM ベースのレスポンス品質評価器
-```
-
-### テストの実行
-
-```bash
-# すべてのテスト（e2e を除く）
-uv run pytest tests/ -s
-
-# ユニットテストのみ
-uv run pytest tests/unit -s
-
-# フロントエンドテスト（Playwright ブラウザが必要）
-uv run playwright install
-uv run pytest tests/frontend -s
-
-# E2E テスト（明示的なフラグが必要）
-uv run pytest tests/e2e --run-e2e -s
-```
-
-### テスト用 API キー
-
-`tests/api_keys.json.template` を `tests/api_keys.json` にコピーし、キーを入力してください。このファイルは gitignore されています。
-
-## Issue テンプレート
-
-バグ報告や機能リクエストを提出する際は、GitHub の Issue テンプレートを使用してください：
-
-- **バグ報告**: 再現手順、期待される動作と実際の動作、環境情報を含めてください
-- **機能リクエスト**: 機能、ユースケース、関連するコンテキストを記述してください
+最小の関連テストから始め、リスクに応じてテスト／ビルドを広げます。静的ゲートの正本は `.github/workflows/analyze.yml` です。plugin test、docs build、desktop package、Docker には個別 workflow があります。

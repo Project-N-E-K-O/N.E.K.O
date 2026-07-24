@@ -1,73 +1,64 @@
 # 架构概览
 
-Project N.E.K.O. 采用**多进程微服务架构**构建，三个主要服务器通过 WebSocket、HTTP 和 ZeroMQ 消息进行协作。
+Project N.E.K.O. 由三个主要 Python 服务进程组成：主服务器拥有 UI 与实时会话；记忆服务器拥有持久记忆；Agent 服务器评估并执行可选后台工作。HTTP/WebSocket 承载服务和浏览器流量，ZeroMQ 承载 Agent 事件桥。
 
 ## 系统架构图
 
 ![架构图](/framework.svg)
 
-## 三服务器设计
+## 主要服务
 
-| 服务器 | 端口 | 入口文件 | 职责 |
-|--------|------|---------|------|
-| **主服务器** | 48911 | `app/main_server.py` | Web UI、REST API、WebSocket 聊天、TTS |
-| **记忆服务器** | 48912 | `app/memory_server.py` | 语义召回、时间索引历史、记忆压缩 |
-| **智能体服务器** | 48915 | `app/agent_server.py` | 后台任务执行（Computer Use、Browser Use、OpenClaw 远程代理、OpenFang 独立智能体、用户插件） |
+| 服务 | 默认端口 | 独立启动入口 | 职责 |
+|---|---:|---|---|
+| **主服务器** | 48911 | `app/main_server/__main__.py` | Web UI/静态资源、REST API、浏览器 WebSocket、逐角色会话、外部 TTS |
+| **记忆服务器** | 48912 | `app/memory_server/__main__.py` | 对话接收、近期上下文、事实/反思/persona、启动上下文渲染与召回 |
+| **Agent / Tool Server** | 48915 | `app/agent_server/__main__.py` | 能力状态、任务评估、通道分派、取消与任务结果 |
 
-主服务器是面向用户的入口。它提供 Web UI 服务，处理所有 REST API 请求，并维护用于实时语音/文字聊天的 WebSocket 连接。记忆服务器和智能体服务器是内部服务，由主服务器与之通信。
+每个服务的 FastAPI app 与实现都位于对应 package 中。特别是 Agent 实现位于 `app/agent_server/`。
 
-## 通信模式
+Agent 进程还会在独立线程中，于 `127.0.0.1:48916` 托管内嵌的 user-plugin FastAPI 服务。它是第二个 HTTP listener，不是第四个主要进程。可选 Monitor Server 位于 `:48913`，接收逐角色 mirror stream，也不属于三个核心服务的控制路径。
 
-```
-┌────────────────────────────────────────────────┐
-│              Main Server (:48911)                │
-│                                                  │
-│  FastAPI ─── REST Routers                        │
-│  WebSocket ─── LLMSessionManager                 │
-│  HTTP Client (httpx) ───────────┐                │
-│  ZeroMQ PUB  (:48961) ──┐       │                │
-│  ZeroMQ PUSH (:48963) ──┼── MainServerAgentBridge│
-│  ZeroMQ PULL (:48962) ──┘       │                │
-└─────────┬───────────────────────┼────────────────┘
-          │                       │
-    ┌─────┴─────┐         ┌───────┴────────┐
-    │           │         │                │
-    ▼           ▼         ▼                ▼
-  记忆服务器   监控服务器  智能体服务器     用户插件
-  Memory     Monitor    (Tool Server)  服务器
-  Server     Server     (:48915)       (:48916)
-  (:48912)   (:48913)   HTTP REST +    HTTP REST
-   HTTP      单向状态推送  ZeroMQ 事件
+## 通信图
+
+```text
+浏览器
+  │ HTTP + WebSocket
+  ▼
+主服务器 :48911
+  ├── HTTP ───────────────> 记忆服务器 :48912
+  ├── HTTP control ───────> Agent Tool Server :48915
+  ├── HTTP proxy/call ────> 内嵌 User-Plugin :48916
+  ├── WebSocket mirror ───> Monitor Server :48913（可选）
+  └── ZeroMQ bridge
+       PUB  :48961 ───────> Agent SUB       session/lifecycle 事件
+       PUSH :48963 ───────> Agent PULL      可靠 analyze request
+       PULL :48962 <─────── Agent PUSH      ACK、任务更新、结果
 ```
 
-- **主服务器 <-> 记忆服务器**：通过 HTTP 请求存储/查询记忆（记忆服务器 `:48912`）
-- **主服务器 <-> 智能体服务器**：两条通道协同工作 ——
-  - **控制 / 派发**：通过 `httpx` 走 HTTP REST 调用 Tool Server（`:48915`），以及用户插件服务器（`:48916`）
-  - **事件流式传输**：通过 ZeroMQ，由主进程绑定套接字 —— `PUB :48961`（会话 → 智能体）、`PUSH :48963`（分析队列 → 智能体）、`PULL :48962`（智能体 → 主进程结果）；`agent_server` 连接对应的镜像套接字
-- **主服务器 <-> 监控服务器**：向监控服务器单向推送状态（`:48913`）
+三个 ZeroMQ socket 都由主进程 bind；Agent 进程连接对应的镜像 socket。Agent → Main 结果没有 HTTP fallback。
 
-## 关键架构模式
+## 关键运行时模式
 
-### 会话热切换
+### 逐角色 ownership
 
-`LLMSessionManager` 在当前会话仍然活跃时，于后台预先准备新的 LLM 会话。当用户结束一个对话轮次时，系统无缝切换到预热好的会话，实现零停机。音频在过渡期间被缓存，之后再行发送。
+`app/main_server/character_runtime.py` 为每个 `lanlan_name` 拥有一个 role-state slot：`LLMSessionManager`、异步 WebSocket lock、sync-message queue 和 cross-server connector asyncio task。非活动 manager 可在停止长期任务后替换；活动中或启动中的 manager 会被保留。
 
-### 按角色隔离
+### 显式会话模式与条件热切换
 
-每个角色（通过 `lanlan_name` 标识）拥有独立的：
-- `LLMSessionManager` 实例
-- 同步连接器线程
-- WebSocket 锁
-- 消息队列
-- 关闭事件
+文本输入使用 `OmniOfflineClient`，音频输入使用 `OmniRealtimeClient`；manager 不会在两者间静默 failover。Pending-session 准备由回合/token 阈值、renew 状态或排队上下文触发，并非每次启动会话都无条件执行。
 
-### 异步/同步边界
+### Async、线程与进程边界
 
-FastAPI 处理器是异步的。TTS 合成在专用线程中运行，通过队列通信。音频处理使用执行器线程池。ZeroMQ 事件桥运行后台接收线程。
+- FastAPI lifecycle、WebSocket I/O、模型回调、cross-server connector 和主服务器侧 Agent bridge 协调运行在 asyncio 上。
+- 外部 TTS provider worker 运行在逐角色线程中，通过请求/响应队列通信。
+- Agent ZeroMQ bridge 使用后台接收线程包装同步 socket，以兼容 Windows Proactor loop。
+- 内嵌 user-plugin HTTP server 在自己的线程运行，但与 Agent 共用一个进程。
+- Memory 与 Agent 状态都是进程本地状态；其他进程通过公开 HTTP/ZeroMQ 契约访问，而不是 import 对方运行时对象。
 
 ## 下一步
 
-- [三服务器设计](./three-servers) —— 每个服务器的详细分析
-- [数据流](./data-flow) —— 从前端到 LLM 再返回的请求生命周期
-- [会话管理](./session-management) —— 热切换机制深入解析
-- [Neko x QwenPaw 接入规范](./neko-qwenpaw-integration) —— 桌宠前端与能力后端的 REST 接入约定
+- [三服务器设计](/zh-CN/architecture/three-servers) —— 服务 ownership 与启动边界
+- [数据流](/zh-CN/architecture/data-flow) —— 浏览器输入、模型输出与持久化路径
+- [会话管理](/zh-CN/architecture/session-management) —— 模式选择与热切换生命周期
+- [记忆系统](/zh-CN/architecture/memory-system) —— 持久化、自动渲染与按需召回
+- [Agent 系统](/zh-CN/architecture/agent-system) —— 评估、通道、事件投递与任务状态

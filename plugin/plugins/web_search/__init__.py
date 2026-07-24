@@ -5,13 +5,13 @@
 - 中国大陆 → Baidu
 - 海外 → DuckDuckGo HTML 抓取
 全部基于 httpx + BeautifulSoup，不依赖任何第三方搜索库。
+解析与文本清洗逻辑在 _parsing.py（纯函数，可单测）。
 """
 
 from __future__ import annotations
 
-import re
+import asyncio
 from typing import Any, Dict, List, Optional
-from urllib.parse import unquote
 
 from plugin.sdk.plugin import (
     NekoPluginBase,
@@ -24,7 +24,15 @@ from plugin.sdk.plugin import (
 )
 
 import httpx
-from bs4 import BeautifulSoup  # type: ignore[import-untyped]
+
+from ._parsing import (
+    SearchBlockedError,
+    decode_html,
+    is_baidu_blocked,
+    parse_baidu_html,
+    parse_ddg_html,
+    parse_ddg_lite_html,
+)
 
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -34,6 +42,7 @@ _UA = (
 
 _DDG_HTML_URL = "https://html.duckduckgo.com/html/"
 _DDG_LITE_URL = "https://lite.duckduckgo.com/lite/"
+_BAIDU_HOME_URL = "https://www.baidu.com/"
 _BAIDU_SEARCH_URL = "https://www.baidu.com/s"
 _GEOIP_URL = "http://ip-api.com/json/?fields=countryCode"
 
@@ -63,130 +72,56 @@ async def _detect_country(timeout: float = 4.0) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# DuckDuckGo HTML scraping (international)
+# Fetchers (shared client: keeps cookies + connection reuse across searches)
 # ---------------------------------------------------------------------------
 
-def _extract_real_url(href: str) -> str:
-    if "uddg=" in href:
-        match = re.search(r"uddg=([^&]+)", href)
-        if match:
-            return unquote(match.group(1))
-    return href
-
-
-def _is_ddg_ad_url(url: str) -> bool:
-    return "duckduckgo.com/y.js" in url or "ad_provider=" in url
-
-
-async def _search_ddg_html(
-    query: str,
-    max_results: int = 8,
-    region: str = "wt-wt",
-    timeout: float = 15.0,
-) -> List[Dict[str, str]]:
-    headers = {
+def _ddg_headers() -> Dict[str, str]:
+    return {
         "User-Agent": _UA,
         "Accept": "text/html,application/xhtml+xml",
         "Accept-Language": "en-US,en;q=0.9",
         "Referer": "https://duckduckgo.com/",
     }
-    data = {"q": query, "kl": region}
-
-    async with httpx.AsyncClient(
-        timeout=timeout,
-        follow_redirects=True,
-        headers=headers,
-    ) as client:
-        resp = await client.post(_DDG_HTML_URL, data=data)
-        resp.raise_for_status()
-
-    soup = BeautifulSoup(resp.text, "html.parser")
-    results: List[Dict[str, str]] = []
-
-    for link_tag in soup.select("a.result__a"):
-        parent = link_tag.find_parent("div", class_=re.compile(r"result--ad"))
-        if parent:
-            continue
-
-        title = link_tag.get_text(strip=True)
-        href = link_tag.get("href", "")
-        real_url = _extract_real_url(str(href))
-        if not real_url or not title:
-            continue
-        if _is_ddg_ad_url(real_url):
-            continue
-
-        snippet_tag = link_tag.find_parent("div", class_="result")
-        snippet = ""
-        if snippet_tag:
-            sn = snippet_tag.select_one("a.result__snippet")
-            if sn:
-                snippet = sn.get_text(strip=True)
-
-        results.append({"title": title, "url": real_url, "snippet": snippet})
-        if len(results) >= max_results:
-            break
-
-    return results
 
 
-async def _search_ddg_lite(
+async def _search_ddg_html(
+    client: httpx.AsyncClient,
     query: str,
     max_results: int = 8,
     region: str = "wt-wt",
     timeout: float = 15.0,
 ) -> List[Dict[str, str]]:
-    headers = {
-        "User-Agent": _UA,
-        "Accept": "text/html",
-        "Accept-Language": "en-US,en;q=0.9",
-    }
-    data = {"q": query, "kl": region}
-
-    async with httpx.AsyncClient(
+    resp = await client.post(
+        _DDG_HTML_URL,
+        data={"q": query, "kl": region},
+        headers=_ddg_headers(),
         timeout=timeout,
-        follow_redirects=True,
-        headers=headers,
-    ) as client:
-        resp = await client.post(_DDG_LITE_URL, data=data)
-        resp.raise_for_status()
-
-    soup = BeautifulSoup(resp.text, "html.parser")
-    results: List[Dict[str, str]] = []
-
-    for row in soup.find_all("tr"):
-        link = row.find("a", href=True)
-        if not link:
-            continue
-        href = str(link.get("href", ""))
-        if not href.startswith("http"):
-            continue
-
-        title = link.get_text(strip=True)
-        real_url = _extract_real_url(href)
-        if _is_ddg_ad_url(real_url):
-            continue
-
-        snippet_td = row.find_next_sibling("tr")
-        snippet = ""
-        if snippet_td:
-            snippet_cell = snippet_td.find("td", class_="result-snippet")
-            if snippet_cell:
-                snippet = snippet_cell.get_text(strip=True)
-
-        if title and real_url:
-            results.append({"title": title, "url": real_url, "snippet": snippet})
-        if len(results) >= max_results:
-            break
-
-    return results
+    )
+    resp.raise_for_status()
+    html = decode_html(resp.content, resp.headers.get("content-type", ""))
+    return parse_ddg_html(html, max_results)
 
 
-# ---------------------------------------------------------------------------
-# Baidu scraping (China mainland)
-# ---------------------------------------------------------------------------
+async def _search_ddg_lite(
+    client: httpx.AsyncClient,
+    query: str,
+    max_results: int = 8,
+    region: str = "wt-wt",
+    timeout: float = 15.0,
+) -> List[Dict[str, str]]:
+    resp = await client.post(
+        _DDG_LITE_URL,
+        data={"q": query, "kl": region},
+        headers=_ddg_headers(),
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    html = decode_html(resp.content, resp.headers.get("content-type", ""))
+    return parse_ddg_lite_html(html, max_results)
+
 
 async def _search_baidu(
+    client: httpx.AsyncClient,
     query: str,
     max_results: int = 8,
     timeout: float = 15.0,
@@ -195,46 +130,29 @@ async def _search_baidu(
         "User-Agent": _UA,
         "Accept": "text/html,application/xhtml+xml",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        "Referer": "https://www.baidu.com/",
+        "Referer": _BAIDU_HOME_URL,
     }
-    params = {"wd": query, "rn": str(min(max_results, 50))}
+    params = {"wd": query, "rn": str(min(max_results, 50)), "ie": "utf-8"}
 
-    async with httpx.AsyncClient(
-        timeout=timeout,
-        follow_redirects=True,
-        headers=headers,
-    ) as client:
-        resp = await client.get(_BAIDU_SEARCH_URL, params=params)
-        resp.raise_for_status()
+    # 无 BAIDUID Cookie 的裸请求几乎必中"百度安全验证"页，先访问首页领 Cookie
+    if not any(c.name == "BAIDUID" for c in client.cookies.jar):
+        try:
+            await client.get(_BAIDU_HOME_URL, headers=headers, timeout=timeout)
+        except httpx.HTTPError:
+            # Cookie 预热失败不阻断搜索本身：没拿到 Cookie 时大概率命中
+            # 安全验证页，由下方 is_baidu_blocked 显式报错，无需在此处理
+            pass
 
-    soup = BeautifulSoup(resp.text, "html.parser")
-    results: List[Dict[str, str]] = []
+    resp = await client.get(
+        _BAIDU_SEARCH_URL, params=params, headers=headers, timeout=timeout
+    )
+    resp.raise_for_status()
 
-    for item in soup.select("div.result, div.c-container"):
-        link = item.find("a", href=True)
-        if not link:
-            continue
-        title = link.get_text(strip=True)
-        href = str(link.get("href", ""))
-        if not title or not href:
-            continue
-
-        snippet = ""
-        for sel in ("div.c-abstract", "span.content-right_8Zs40", "div.c-span-last"):
-            sn = item.select_one(sel)
-            if sn:
-                snippet = sn.get_text(strip=True)
-                break
-        if not snippet:
-            abs_tag = item.find("div", class_=re.compile(r"abstract|summary|desc"))
-            if abs_tag:
-                snippet = abs_tag.get_text(strip=True)
-
-        results.append({"title": title, "url": href, "snippet": snippet})
-        if len(results) >= max_results:
-            break
-
-    return results
+    html = decode_html(resp.content, resp.headers.get("content-type", ""))
+    # 被拦截时会 302 到 wappass.baidu.com 验证码页
+    if "wappass.baidu.com" in str(resp.url) or is_baidu_blocked(html):
+        raise SearchBlockedError("百度返回安全验证页（反爬拦截），请稍后重试")
+    return parse_baidu_html(html, max_results)
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +169,21 @@ class WebSearchPlugin(NekoPluginBase):
         self._cfg: Dict[str, Any] = {}
         self._country: Optional[str] = None
         self._is_cn: bool = False
+        self._client: Optional[httpx.AsyncClient] = None
+        self._client_loop: Optional[asyncio.AbstractEventLoop] = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        # 宿主对 startup / 命令循环 / shutdown 分别 asyncio.run()（plugin/core/host.py），
+        # 连接池绑定在创建它的循环上：只在同一循环内复用，循环切换时丢弃重建
+        loop = asyncio.get_running_loop()
+        if (
+            self._client is None
+            or self._client.is_closed
+            or self._client_loop is not loop
+        ):
+            self._client = httpx.AsyncClient(follow_redirects=True)
+            self._client_loop = loop
+        return self._client
 
     @lifecycle(id="startup")
     async def startup(self, **_):
@@ -270,6 +203,15 @@ class WebSearchPlugin(NekoPluginBase):
 
     @lifecycle(id="shutdown")
     async def shutdown(self, **_):
+        client, self._client = self._client, None
+        self._client_loop = None
+        if client is not None and not client.is_closed:
+            try:
+                await client.aclose()
+            except Exception:
+                # shutdown 运行在新的事件循环里，跨循环关闭旧连接池可能报错；
+                # 进程即将退出，尽力关闭即可
+                pass
         self.logger.info("WebSearch shutdown")
         return Ok({"status": "shutdown"})
 
@@ -293,15 +235,16 @@ class WebSearchPlugin(NekoPluginBase):
         max_results: int,
         timeout: float,
     ) -> List[Dict[str, str]]:
+        client = self._get_client()
         if self._is_cn:
-            return await _search_baidu(query, max_results, timeout)
+            return await _search_baidu(client, query, max_results, timeout)
 
         try:
-            return await _search_ddg_html(query, max_results, timeout=timeout)
+            return await _search_ddg_html(client, query, max_results, timeout=timeout)
         except Exception as e:
             self.logger.warning("DDG html failed, trying lite: {}", e)
 
-        return await _search_ddg_lite(query, max_results, timeout=timeout)
+        return await _search_ddg_lite(client, query, max_results, timeout=timeout)
 
     @staticmethod
     def _build_summary(query: str, results: List[Dict[str, str]]) -> str:
@@ -350,24 +293,28 @@ class WebSearchPlugin(NekoPluginBase):
         max_r = max(3, max_r)
         timeout = defs["timeout"]
 
-        self.logger.info("Searching: query={!r} max={} engine={}", query, max_r, "baidu" if self._is_cn else "duckduckgo")
+        # query / titles / snippets / summary 含外部网页内容 + 用户搜索词，
+        # 任何输出渠道（logger/stdout）都只记录长度与条数
+        self.logger.info(
+            "Searching: query_len={} max={} engine={}",
+            len(query), max_r, "baidu" if self._is_cn else "duckduckgo",
+        )
 
         try:
             results = await self._do_text_search(query, max_r, timeout)
+        except SearchBlockedError as e:
+            return Err(SdkError(str(e)))
         except Exception as e:
-            self.logger.exception("Search failed for query={!r}", query)
-            return Err(SdkError(f"搜索失败: {e}"))
+            # 异常文本可能带完整请求 URL（含 wd= 查询词），只回传类型名，
+            # 细节留在本地文件日志里
+            self.logger.exception("Search failed (query_len={})", len(query))
+            return Err(SdkError(f"搜索失败: {type(e).__name__}"))
 
         summary = self._build_summary(query, results)
-        # query / titles / snippets / summary 含外部网页内容 + 用户搜索词，不写 logger
-        self.logger.info("Search returned {} results (query_len={})", len(results), len(query or ""))
-        print(f"[WebSearch] query: {query!r}")
-        for i, r in enumerate(results, 1):
-            print(
-                f"  [{i}] title={r.get('title', '')!r}  snippet={r.get('snippet', '')!r}  url={r.get('url', '')!r}"
-            )
-        self.logger.info("Summary sent to LLM (summary_len={})", len(summary or ""))
-        print(f"[WebSearch] Summary sent to LLM:\n{summary}")
+        self.logger.info(
+            "Search returned {} results (query_len={}, summary_len={})",
+            len(results), len(query), len(summary),
+        )
         return Ok({
             "query": query,
             "count": len(results),
@@ -408,8 +355,11 @@ class WebSearchPlugin(NekoPluginBase):
 
         try:
             results = await self._do_text_search(query, max_r, timeout)
+        except SearchBlockedError as e:
+            return Err(SdkError(str(e)))
         except Exception as e:
-            return Err(SdkError(f"搜索失败: {e}"))
+            self.logger.exception("Search failed (query_len={})", len(query))
+            return Err(SdkError(f"搜索失败: {type(e).__name__}"))
 
         return Ok({
             "query": query,

@@ -212,6 +212,7 @@ __all__ = [
     "_RAPIDOCR_RUNTIME_IDLE_TTL_SECONDS",
     "_RapidOcrToken",
     "_RuntimeFieldProxy",
+    "_acquire_rapidocr_runtime_cache",
     "_SCENE_CHANGE_COOLDOWN_SECONDS",
     "_SCREEN_AWARENESS_LATENCY_MODES",
     "_SCREEN_AWARENESS_LATENCY_MODE_AGGRESSIVE",
@@ -262,6 +263,7 @@ __all__ = [
     "_float_or_zero",
     "_frame_choice_bounds_metadata",
     "_get_rapidocr_runtime_cache",
+    "_release_rapidocr_runtime_cache",
     "_join_ocr_segments",
     "_looks_like_dialogue_line",
     "_looks_like_english_overlay_label",
@@ -362,6 +364,7 @@ _WINDOW_SCAN_CACHE_TTL_SECONDS = 5.0
 _RAPIDOCR_RUNTIME_IDLE_TTL_SECONDS = 300.0
 _RAPIDOCR_RUNTIME_CACHE_LOCK = threading.RLock()
 _RAPIDOCR_RUNTIME_CACHE: dict[tuple[str, str, str, str, str], tuple[Any, float]] = {}
+_RAPIDOCR_RUNTIME_CACHE_OWNERS: dict[tuple[str, str, str, str, str], int] = {}
 _RAPIDOCR_INFERENCE_LOCK = threading.Lock()
 _OCR_PREPARE_UPSCALE_SOURCE_LONG_EDGE = 900
 _OCR_PREPARE_TARGET_LONG_EDGE = 1400
@@ -458,10 +461,14 @@ def _prune_rapidocr_runtime_cache(now: float) -> None:
         stale_keys = [
             key
             for key, (_runtime, last_used_at) in _RAPIDOCR_RUNTIME_CACHE.items()
-            if now - float(last_used_at or 0.0) >= _RAPIDOCR_RUNTIME_IDLE_TTL_SECONDS
+            if (
+                now - float(last_used_at or 0.0) >= _RAPIDOCR_RUNTIME_IDLE_TTL_SECONDS
+                and _RAPIDOCR_RUNTIME_CACHE_OWNERS.get(key, 0) <= 0
+            )
         ]
         for key in stale_keys:
             _RAPIDOCR_RUNTIME_CACHE.pop(key, None)
+            _RAPIDOCR_RUNTIME_CACHE_OWNERS.pop(key, None)
 
 
 def _get_rapidocr_runtime_cache(
@@ -472,10 +479,15 @@ def _get_rapidocr_runtime_cache(
     with _RAPIDOCR_RUNTIME_CACHE_LOCK:
         cached = _RAPIDOCR_RUNTIME_CACHE.get(key)
         if cached is None:
+            _RAPIDOCR_RUNTIME_CACHE_OWNERS.pop(key, None)
             return None
         runtime, last_used_at = cached
-        if now - float(last_used_at or 0.0) >= _RAPIDOCR_RUNTIME_IDLE_TTL_SECONDS:
+        if (
+            now - float(last_used_at or 0.0) >= _RAPIDOCR_RUNTIME_IDLE_TTL_SECONDS
+            and _RAPIDOCR_RUNTIME_CACHE_OWNERS.get(key, 0) <= 0
+        ):
             _RAPIDOCR_RUNTIME_CACHE.pop(key, None)
+            _RAPIDOCR_RUNTIME_CACHE_OWNERS.pop(key, None)
             return None
         _RAPIDOCR_RUNTIME_CACHE[key] = (runtime, now)
         return runtime
@@ -489,7 +501,43 @@ def _store_rapidocr_runtime_cache(
 ) -> None:
     with _RAPIDOCR_RUNTIME_CACHE_LOCK:
         _prune_rapidocr_runtime_cache(now)
+        if key not in _RAPIDOCR_RUNTIME_CACHE:
+            _RAPIDOCR_RUNTIME_CACHE_OWNERS[key] = 0
         _RAPIDOCR_RUNTIME_CACHE[key] = (runtime, now)
+
+
+def _acquire_rapidocr_runtime_cache(
+    key: tuple[str, str, str, str, str],
+) -> None:
+    with _RAPIDOCR_RUNTIME_CACHE_LOCK:
+        _RAPIDOCR_RUNTIME_CACHE_OWNERS[key] = (
+            _RAPIDOCR_RUNTIME_CACHE_OWNERS.get(key, 0) + 1
+        )
+
+
+def _release_rapidocr_runtime_cache(
+    key: tuple[str, str, str, str, str],
+    *,
+    runtime: Any | None = None,
+    owner_acquired: bool = False,
+) -> bool:
+    """Drop a cached native runtime when its owning backend is closed."""
+    with _RAPIDOCR_RUNTIME_CACHE_LOCK:
+        cached = _RAPIDOCR_RUNTIME_CACHE.get(key)
+        if cached is None:
+            return False
+        if runtime is not None and cached[0] is not runtime:
+            return False
+        if owner_acquired:
+            remaining = max(0, _RAPIDOCR_RUNTIME_CACHE_OWNERS.get(key, 0) - 1)
+            if remaining:
+                _RAPIDOCR_RUNTIME_CACHE_OWNERS[key] = remaining
+                return False
+            _RAPIDOCR_RUNTIME_CACHE_OWNERS.pop(key, None)
+        else:
+            _RAPIDOCR_RUNTIME_CACHE_OWNERS.pop(key, None)
+        _RAPIDOCR_RUNTIME_CACHE.pop(key, None)
+        return True
 
 
 def _aihong_choice_boxes(
@@ -872,7 +920,31 @@ def _rapidocr_lines_from_output(raw_output: Any) -> list[tuple[str, float, OcrTe
                 ),
             )
         )
+    if len(line_results) > 1:
+        has_anchor_line = any(
+            _significant_char_count(text) > 2 or float(score or 0.0) >= 0.80
+            for text, score, _box in line_results
+        )
+        if has_anchor_line:
+            filtered_results = [
+                item
+                for item in line_results
+                if not (
+                    (
+                        _significant_char_count(item[0]) <= 2
+                        and float(item[1] or 0.0) < 0.60
+                    )
+                    or (
+                        bool(re.fullmatch(r"[A-Za-z0-9]", normalize_text(item[0])))
+                        and float(item[1] or 0.0) < 0.80
+                    )
+                )
+            ]
+            if filtered_results:
+                line_results = filtered_results
     text = "\n".join(line for line in rendered_lines if line)
+    if len(line_results) != len(rendered_lines):
+        text = "\n".join(text for text, _score, _box in line_results if text)
     normalized = normalize_text(text)
     if not normalized:
         return []

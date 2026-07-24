@@ -9,6 +9,9 @@
 <link rel="preload" as="image" href="/static/game/games/badminton/images/player-ice-powerup.png?v={{ static_asset_version }}">
 <link rel="preload" as="image" href="/static/game/games/badminton/images/yui-frozen-crystals.png?v={{ static_asset_version }}">
 <title>羽毛球挑战 - Badminton</title>
+<!-- 小游戏页豁免 avatar 空闲节流：gameplay 姿态由本页自有 rAF 循环驱动骨骼，
+     manager 的活动探测看不见它，节流会让挥拍/蓄力等动作以 30fps 渲染出卡顿 -->
+<script>window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ = true;</script>
 <script>
   (function () {
     var params = null;
@@ -699,11 +702,11 @@
 <script src="/static/libs/live2d.min.js"></script>
 <script src="/static/libs/pixi.min.js"></script>
 <script src="/static/libs/index.min.js"></script>
-<script src="/static/live2d-core.js"></script>
-<script src="/static/live2d-emotion.js"></script>
-<script src="/static/live2d-model.js"></script>
-<script src="/static/live2d-interaction.js"></script>
-<script src="/static/live2d-init.js"></script>
+<script src="/static/live2d/live2d-core.js"></script>
+<script src="/static/live2d/live2d-emotion.js"></script>
+<script src="/static/live2d/live2d-model.js"></script>
+<script src="/static/live2d/live2d-interaction.js"></script>
+<script src="/static/live2d/live2d-init.js"></script>
 <script type="importmap">
 {
   "imports": {
@@ -721,8 +724,8 @@
   window.THREE = THREE;
   window.dispatchEvent(new CustomEvent('three-ready'));
 </script>
-<script src="/static/vrm-init.js"></script>
-<script src="/static/mmd-init.js"></script>
+<script src="/static/vrm/vrm-init.js"></script>
+<script src="/static/mmd/mmd-init.js"></script>
 <script src="/static/game/system/game-audio-system.js?v={{ static_asset_version }}"></script>
 <script src="/static/game/games/badminton/badminton-audio-config.js?v={{ static_asset_version }}"></script>
 

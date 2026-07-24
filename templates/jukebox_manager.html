@@ -23,6 +23,12 @@
             -webkit-user-select: none;
         }
 
+        html[data-theme="dark"],
+        html[data-theme="dark"] body {
+            background: #101722;
+            color-scheme: dark;
+        }
+
         /* 管理器面板覆盖全窗口 */
         .jukebox-sam-panel {
             position: fixed !important;
@@ -141,6 +147,224 @@
             -webkit-app-region: no-drag !important;
             cursor: grab !important;
         }
+
+        /* Keep this standalone override palette in sync with static/jukebox/jukebox/*.js. */
+        html[data-theme="dark"] body .jukebox-sam-panel {
+            color: #e6edf3 !important;
+            background: linear-gradient(160deg, rgba(18, 25, 36, 0.98), rgba(26, 38, 52, 0.96)) !important;
+            border-color: rgba(124, 218, 244, 0.24) !important;
+            box-shadow: 0 20px 54px rgba(2, 8, 23, 0.54), 0 4px 18px rgba(0, 0, 0, 0.28) !important;
+        }
+
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-header {
+            border-bottom-color: rgba(124, 218, 244, 0.16) !important;
+        }
+
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-title,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-import-header h4,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-item-name,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-binding-item-name,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-danger-modal h3 {
+            color: #f8fafc !important;
+        }
+
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-close-btn,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-tab,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-btn,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-add-binding-btn,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-visibility-btn {
+            color: #b7e8f8 !important;
+            background: linear-gradient(160deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.82)) !important;
+            border-color: rgba(124, 218, 244, 0.22) !important;
+        }
+
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-close-btn:hover,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-tab:hover,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-btn:hover,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-add-binding-btn:hover,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-visibility-btn:hover {
+            color: #f8fafc !important;
+            background: linear-gradient(135deg, rgba(14, 165, 233, 0.28), rgba(244, 114, 182, 0.18)) !important;
+            border-color: rgba(124, 218, 244, 0.36) !important;
+        }
+
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-tab.active {
+            color: #ffffff !important;
+            background: linear-gradient(135deg, rgba(14, 165, 233, 0.88), rgba(244, 114, 182, 0.62)) !important;
+            box-shadow: 0 8px 20px rgba(14, 165, 233, 0.22) !important;
+        }
+
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-file-drop-zone,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-bindings-list {
+            border-color: rgba(124, 218, 244, 0.22) !important;
+        }
+
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-file-drop-zone:hover,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-file-drop-zone.drag-over,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-bindings-list.drag-over {
+            background: rgba(14, 165, 233, 0.12) !important;
+            border-color: rgba(125, 211, 252, 0.48) !important;
+        }
+
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-drop-hint,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-empty,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-import-hint,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-unified-hint,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-danger-modal-detail,
+        html[data-theme="dark"] body > .sam-danger-modal-backdrop .sam-danger-modal-detail {
+            color: #94a3b8 !important;
+            background: rgba(15, 23, 42, 0.58) !important;
+            border-color: rgba(124, 218, 244, 0.18) !important;
+        }
+
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-item,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-binding-item {
+            background: rgba(15, 23, 42, 0.58) !important;
+            border-color: rgba(124, 218, 244, 0.16) !important;
+            box-shadow: 0 8px 20px rgba(2, 8, 23, 0.24) !important;
+        }
+
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-item:hover,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-binding-item:hover,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-add-hint:hover,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-import-item:hover,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-item-name:hover,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-item-artist:hover {
+            background: rgba(30, 41, 59, 0.78) !important;
+        }
+
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-item-name:focus,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-item-artist:focus {
+            background: rgba(14, 165, 233, 0.16) !important;
+        }
+
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-item-artist,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-import-item-name,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-checkbox,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-bindings-section h4,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-item-format,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-binding-item-index {
+            color: #b8c7d9 !important;
+        }
+
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-item-format,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-binding-item-index,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-binding-tag,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-binding-count {
+            background: rgba(30, 41, 59, 0.76) !important;
+            border-color: rgba(124, 218, 244, 0.18) !important;
+        }
+
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-binding-tag {
+            color: #b7e8f8 !important;
+        }
+
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-binding-count {
+            color: #f8fafc !important;
+        }
+
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-binding-item-tags {
+            border-top-color: rgba(124, 218, 244, 0.14) !important;
+        }
+
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-add-binding-input,
+        html[data-theme="dark"] body .jukebox-sam-panel input:not([type="checkbox"]):not([type="file"]),
+        html[data-theme="dark"] body .jukebox-sam-panel textarea,
+        html[data-theme="dark"] body .jukebox-sam-panel select {
+            color: #e6edf3 !important;
+            background: rgba(15, 23, 42, 0.78) !important;
+            border-color: rgba(124, 218, 244, 0.24) !important;
+        }
+
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-add-binding-input:focus,
+        html[data-theme="dark"] body .jukebox-sam-panel input:not([type="checkbox"]):not([type="file"]):focus,
+        html[data-theme="dark"] body .jukebox-sam-panel textarea:focus,
+        html[data-theme="dark"] body .jukebox-sam-panel select:focus {
+            border-color: #38bdf8 !important;
+            box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.18) !important;
+        }
+
+        html[data-theme="dark"] body .jukebox-sam-panel input[type="checkbox"] {
+            accent-color: #38bdf8;
+        }
+
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-import-container {
+            background: rgba(15, 23, 42, 0.52) !important;
+            border-color: rgba(124, 218, 244, 0.18) !important;
+        }
+
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-import-header,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-list-header,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-footer,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-import-footer {
+            background: rgba(15, 23, 42, 0.62) !important;
+            border-color: rgba(124, 218, 244, 0.14) !important;
+        }
+
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-selection-info,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-footer,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-danger-modal p,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-danger-modal-detail,
+        html[data-theme="dark"] body > .sam-danger-modal-backdrop .sam-danger-modal p,
+        html[data-theme="dark"] body > .sam-danger-modal-backdrop .sam-danger-modal-detail {
+            color: #b8c7d9 !important;
+        }
+
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-item-selected {
+            background: rgba(14, 165, 233, 0.18) !important;
+            border-left-color: #38bdf8 !important;
+        }
+
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-visibility-btn.hidden {
+            color: #f9a8d4 !important;
+            background: rgba(244, 114, 182, 0.14) !important;
+            border-color: rgba(244, 114, 182, 0.28) !important;
+        }
+
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-delete-btn,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-btn-danger,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-danger-modal-confirm,
+        html[data-theme="dark"] body > .sam-danger-modal-backdrop .sam-danger-modal-confirm {
+            color: #fca5a5 !important;
+            background: rgba(220, 38, 38, 0.14) !important;
+            border-color: rgba(248, 113, 113, 0.28) !important;
+        }
+
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-delete-btn:hover,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-btn-danger:hover,
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-danger-modal-confirm:hover,
+        html[data-theme="dark"] body > .sam-danger-modal-backdrop .sam-danger-modal-confirm:hover {
+            color: #fff1f2 !important;
+            background: rgba(220, 38, 38, 0.24) !important;
+        }
+
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-danger-modal-backdrop,
+        html[data-theme="dark"] body > .sam-danger-modal-backdrop {
+            background: rgba(2, 8, 23, 0.68) !important;
+        }
+
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-danger-modal,
+        html[data-theme="dark"] body > .sam-danger-modal-backdrop .sam-danger-modal {
+            color: #e6edf3 !important;
+            background: linear-gradient(160deg, rgba(15, 23, 42, 0.98), rgba(30, 41, 59, 0.94)) !important;
+            border-color: rgba(124, 218, 244, 0.22) !important;
+            box-shadow: 0 20px 54px rgba(2, 8, 23, 0.58) !important;
+        }
+
+        html[data-theme="dark"] body .jukebox-sam-panel .sam-danger-modal-cancel,
+        html[data-theme="dark"] body > .sam-danger-modal-backdrop .sam-danger-modal-cancel {
+            color: #dbeafe !important;
+            background: rgba(30, 41, 59, 0.92) !important;
+            border-color: rgba(124, 218, 244, 0.2) !important;
+        }
+
+        html[data-theme="dark"] body .jukebox-tooltip,
+        html[data-theme="dark"] body .sam-danger-tooltip {
+            color: #e6edf3 !important;
+            background: linear-gradient(160deg, rgba(15, 23, 42, 0.96), rgba(30, 41, 59, 0.92)) !important;
+            border-color: rgba(124, 218, 244, 0.2) !important;
+            box-shadow: 0 12px 30px rgba(2, 8, 23, 0.42) !important;
+        }
     </style>
 </head>
 <body>
@@ -148,8 +372,13 @@
         // 标记为管理器独立窗口模式
         window.__NEKO_JUKEBOX_MANAGER_STANDALONE__ = true;
     </script>
-    <!-- Jukebox.js 包含 SongActionManager 定义 -->
-    <script src="/static/Jukebox.js"></script>
+    <!-- jukebox/*.js 包含 SongActionManager 定义 -->
+    <script src="/static/jukebox/jukebox/bootstrap.js"></script>
+    <script src="/static/jukebox/jukebox/core.js"></script>
+    <script src="/static/jukebox/jukebox/manager.js"></script>
+    <script src="/static/jukebox/jukebox/shell.js"></script>
+    <script src="/static/jukebox/jukebox/transport.js"></script>
+    <script src="/static/jukebox/jukebox/wiring.js"></script>
     <script>
         // 管理器独立窗口初始化
         // 拖动走 CSS `-webkit-app-region: drag`（OS 原生），不再用 JS mousedown 模拟。

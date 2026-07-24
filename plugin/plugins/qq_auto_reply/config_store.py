@@ -10,6 +10,7 @@ from utils.file_utils import atomic_write_json_async, read_json_async
 class QQAutoReplyConfigStore:
     FILE_NAME = "business_config.json"
     VALID_REPLY_MODES = {"text", "voice", "both"}
+    VALID_STRATEGY_MODES = {"neko_dynamic", "neko_scene"}
 
     def __init__(self, base_dir: Path):
         self._path = Path(base_dir) / self.FILE_NAME
@@ -25,7 +26,7 @@ class QQAutoReplyConfigStore:
             {
                 "id": "mention",
                 "label": "点名",
-                "keywords": [r"@用户\d+", r"@全体成员"],
+                "keywords": [r"@全体成员"],
                 "priority": 60,
             },
         ]
@@ -68,10 +69,19 @@ class QQAutoReplyConfigStore:
         mode = str(value or "").strip().lower()
         return mode if mode in cls.VALID_REPLY_MODES else "text"
 
+    @classmethod
+    def _normalize_strategy_mode(cls, value: Any) -> str:
+        mode = str(value or "").strip().lower()
+        return mode if mode in cls.VALID_STRATEGY_MODES else "neko_dynamic"
+
     def default_config(self) -> dict[str, Any]:
         return {
-            "onebot_url": "ws://127.0.0.1:3001",
+            "qq_connection_mode": "napcat",     # "napcat" | "open_platform"
+            "onebot_url": "ws://0.0.0.0:6199",
             "token": "",
+            # QQ 开放平台
+            "qq_open_app_id": "",
+            "qq_open_client_secret": "",
             "trusted_users": [],
             "trusted_groups": [],
             "normal_relay_probability": 0.1,
@@ -87,11 +97,41 @@ class QQAutoReplyConfigStore:
             "napcat_directory": "",
             "show_napcat_window": True,
             "reply_mode": "text",
+            "group_attention_decay_per_second": 0.02,
+            "group_attention_message_recovery": 0.6,
+            "group_attention_reply_penalty": 1.3,
+            "group_attention_keyword_boost_scale": 2.5,
+            "group_attention_focus_lock_seconds": 120,
+            "group_attention_max_score": 10.0,
+            "group_attention_focus_threshold": 4.0,
+            "group_attention_min_threshold": 1.0,
+            "group_attention_message_gain": 0.25,
             "backlog_retention_limit": 200,
             "backlog_summary_threshold": 10,
             "backlog_notify_cooldown_seconds": 900,
             "backlog_issue_notify_threshold": 1,
             "backlog_labels": self.default_backlog_labels(),
+            # === 猫娘动态注意力策略 ===
+            "strategy_mode": "neko_dynamic",     # "neko_dynamic" | "neko_scene" — 主策略 / 退级策略
+            "enable_group_attention": True,      # neko_dynamic 模式下强制启用多群注意力
+            "neko_dynamic_idle_timeout_seconds": 10.0,  # 已废弃（注意力系统下不再使用）
+            "neko_dynamic_waking_users": [],            # 已废弃（改用 attention + backlog_labels）
+            "neko_dynamic_waking_keywords": [],         # 已废弃（改用 backlog_labels keywords）
+            # 回溯补回参数
+            "retroactive_review_max_messages": 30,  # 回溯最多取多少条被忽略消息
+            "retroactive_review_max_reply": 5,      # 回溯最多补回多少条
+            "sticker_cooldown_messages": 5,          # 表情包发送间隔（群内消息数），0=不限制
+            # 疲劳系统参数（KiraAI-style 动态行为约束）
+            "fatigue_enabled": True,
+            "fatigue_circadian_peak_hour": 15,       # 昼夜节律峰值时间（24小时制）
+            "fatigue_circadian_low_hour": 3,         # 昼夜节律低谷时间
+            "fatigue_session_per_reply": 5.0,        # 每条回复增加的会话疲劳
+            "fatigue_awake_idle_timeout": 10.0,      # 苏醒后空闲多久回睡眠（秒）
+            "proactive_silence_seconds": 300,         # 焦点群沉默多久后主动发言（秒），0=禁用
+            # 提示词编辑器覆盖值（locale → layer_id → text）
+            "prompt_overrides": {},
+            # 按群自定义提示词（group_id → 提示词文本）
+            "group_prompts": {},
         }
 
     async def exists(self) -> bool:
@@ -115,6 +155,8 @@ class QQAutoReplyConfigStore:
             merged["reply_mode"] = "voice"
         else:
             merged["reply_mode"] = "text"
+        merged["strategy_mode"] = self._normalize_strategy_mode(payload.get("strategy_mode"))
+        merged["group_prompts"] = payload.get("group_prompts") if isinstance(payload.get("group_prompts"), dict) else {}
         merged.pop("audio_reply_enabled", None)
         return merged
 
@@ -131,6 +173,11 @@ class QQAutoReplyConfigStore:
             normalized["trusted_groups"] = list(normalized.get("trusted_groups") or [])
             normalized["backlog_labels"] = self.normalize_backlog_labels(normalized.get("backlog_labels"))
             normalized["reply_mode"] = self.normalize_reply_mode(normalized.get("reply_mode"))
+            normalized["strategy_mode"] = self._normalize_strategy_mode(normalized.get("strategy_mode"))
+            normalized["group_prompts"] = {
+                str(k): str(v) for k, v in (normalized.get("group_prompts") or {}).items()
+                if str(k).strip() and str(v).strip()
+            }
             normalized.pop("audio_reply_enabled", None)
             await atomic_write_json_async(self._path, normalized)
             return normalized

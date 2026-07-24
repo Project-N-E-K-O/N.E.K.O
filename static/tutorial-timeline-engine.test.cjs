@@ -297,6 +297,47 @@ test('TimelineEngine shares audio runtime context with later commands', async ()
     ]);
 });
 
+test('TimelineEngine schedules commands relative to narration end', async () => {
+    let currentTime = 0;
+    const calls = [];
+    const registry = new CommandRegistry({
+        handlers: {
+            'petal.play': () => {
+                calls.push(['petal.play', currentTime]);
+            }
+        }
+    });
+    const engine = new TimelineEngine({
+        commandRegistry: registry,
+        audioRuntime: {
+            getDurationMs() {
+                return 10000;
+            },
+            play(voiceKey) {
+                calls.push(['audio.play', voiceKey, currentTime]);
+            }
+        },
+        now: () => currentTime,
+        wait: async (delayMs) => {
+            currentTime += delayMs;
+        }
+    });
+
+    const result = await engine.playScene({
+        id: 'scene-with-petal',
+        audio: { voiceKey: 'voice-a', minDurationMs: 1000 },
+        timeline: [
+            { id: 'petal', beforeAudioEndMs: 2600, command: 'petal.play', blocking: true }
+        ]
+    });
+
+    assert.equal(result.completed, true);
+    assert.deepEqual(calls, [
+        ['audio.play', 'voice-a', 0],
+        ['petal.play', 7400]
+    ]);
+});
+
 test('TimelineEngine dispatches afterAudioEnd commands after narration settles', async () => {
     let currentTime = 0;
     const calls = [];

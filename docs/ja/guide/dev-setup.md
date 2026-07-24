@@ -1,115 +1,34 @@
-# 開発環境セットアップ
-
-## リポジトリのクローン
+# 開発環境の構築
 
 ```bash
 git clone https://github.com/Project-N-E-K-O/N.E.K.O.git
 cd N.E.K.O
-```
-
-## 依存関係のインストール
-
-```bash
 uv sync
 ```
 
-これにより、すべてのPython依存関係がマネージド仮想環境にインストールされます。プロジェクトにはPython 3.11が必要です。
+`uv` は Python 3.11 を選択します。Python modules/scripts/pytest/temporary commands は `uv run` 経由です。
 
-## サーバーの起動
-
-N.E.K.O. は複数の協調するサーバーとして動作します。最低限、**メインサーバー**と**メモリサーバー**が必要です：
+```powershell
+.\build_frontend.bat
+```
 
 ```bash
-# ターミナル1 — メモリサーバー
-uv run python app/memory_server.py
-
-# ターミナル2 — メインサーバー
-uv run python app/main_server.py
-```
-
-オプションで、バックグラウンドタスク実行用のエージェントサーバーを起動できます：
-
-```bash
-# ターミナル3 — エージェントサーバー（オプション）
-uv run python app/agent_server.py
-```
-
-## APIキーの設定
-
-メインサーバーが起動したら、Web UIを開いてAPIキーを設定します：
-
-```
-http://localhost:48911/api_key
-```
-
-お好みのCore APIプロバイダーを選択し、APIキーを入力してください。各プロバイダーの詳細は[APIプロバイダー](/config/api-providers)を参照してください。
-
-## セットアップの確認
-
-メインインターフェースを開きます：
-
-```
-http://localhost:48911
-```
-
-Live2Dモデルを含むキャラクターインターフェースが表示されるはずです。テキストメッセージを送信するか、音声セッションを開始して、すべてが正常に動作することを確認してください。
-
-## デフォルトポート
-
-| サーバー | ポート | 用途 |
-|---------|--------|------|
-| メインサーバー | 48911 | Web UI、REST API、WebSocket |
-| メモリサーバー | 48912 | メモリの保存と検索 |
-| モニターサーバー | 48913 | ステータス監視 |
-| エージェント/ツールサーバー | 48915 | エージェントタスクの実行 |
-| プラグインサーバー | 48916 | ユーザープラグイン |
-
-## フロントエンドプロジェクトのビルド
-
-プロジェクトには `frontend/` 配下に2つのモダンフロントエンドプロジェクトがあります。アプリケーションを完全に実行するには、両方をビルドする必要があります。
-
-### 推奨：一括ビルドスクリプト
-
-> **前提条件**：フロントエンドのビルドには [Node.js](https://nodejs.org/)（>= 20.19）が必要です。事前にインストールしてください。
-
-これが公式にサポートされているビルド方法です -- npm を手動で実行するよりも、常にこのスクリプトを優先してください：
-
-```bash
-# Windows
-build_frontend.bat
-
-# Linux / macOS
 ./build_frontend.sh
 ```
 
-以下のプロジェクト別セクションは、開発用途（開発サーバー、インクリメンタルビルド）のコマンドです。本番ビルドでは上記スクリプトが正となります。
+Scripts は Yui Origin を確認し、`npm ci` で Vue plugin manager を `frontend/plugin-manager/dist/`、React chat を `static/react/neko-chat/` に build します。
 
-### チャットウィンドウ（React）
-
-```bash
-cd frontend/react-neko-chat
-npm install
-npm run dev          # 開発サーバー（ポート5174）
-npm run build        # 本番ビルド → static/react/neko-chat/
-```
-
-チャットウィンドウはIIFEライブラリ（`NekoChatWindow`）としてビルドされ、`templates/index.html` に埋め込まれます。
-
-### プラグインマネージャー（Vue）
+Iterative work は owning frontend directory で `npm ci && npm run dev`。Plugin manager は 5173 で `VITE_BACKEND_URL` または 48916 へ proxy、React は 5174。Production React bundle は `index.html` と `chat.html` が共有します。
 
 ```bash
-cd frontend/plugin-manager
-npm install
-npm run dev          # 開発サーバー（ポート5173、APIをlocalhost:48916にプロキシ）
-npm run build-only   # 本番ビルド → frontend/plugin-manager/dist/
+uv run python launcher.py
 ```
 
-プラグインマネージャーダッシュボードは、プラグインサーバー（ポート48916）の `/ui/` で配信されます。
-
-## テストの実行
+Launcher URL を開き、`/api_key` で設定、`/health` で診断します。
 
 ```bash
 uv run pytest
+uv run ruff check .
 ```
 
-テストスイートの構造と特定のテストカテゴリの実行方法については、`tests/README.md` を参照してください。
+CI parity を主張する前に repository-specific checks を含む `.github/workflows/analyze.yml` を確認してください。

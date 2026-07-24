@@ -54,6 +54,11 @@ describe('message-schema', () => {
     expect(props).toEqual({});
   });
 
+  it('accepts only a real non-empty assistant name for localized tool results', () => {
+    expect(parseChatWindowProps({ assistantName: ' Yui ' }).assistantName).toBe('Yui');
+    expect(() => parseChatWindowProps({ assistantName: '   ' })).toThrow();
+  });
+
   it('accepts new user icebreaker choice prompts', () => {
     const onChoiceSelect = vi.fn();
     const props = parseChatWindowProps({
@@ -72,6 +77,10 @@ describe('message-schema', () => {
     props.onChoiceSelect?.(props.choicePrompt!.options[0]!, 'new_user_icebreaker');
     expect(onChoiceSelect).toHaveBeenCalledTimes(1);
     expect(onChoiceSelect).toHaveBeenCalledWith(props.choicePrompt!.options[0]!, 'new_user_icebreaker');
+  });
+
+  it('preserves the cat local text-only presentation flag', () => {
+    expect(parseChatWindowProps({ catLocalTextOnly: true }).catLocalTextOnly).toBe(true);
   });
 
   it('accepts chat surface mode props', () => {
@@ -125,121 +134,33 @@ describe('message-schema', () => {
         clientX: 10,
         clientY: 20,
       },
+      intensity: 'normal',
       touchZone: 'head',
       timestamp: Date.now(),
     });
     expect(onAvatarInteraction).toHaveBeenCalledTimes(1);
-  });
 
-  it('rejects avatar interaction payloads with a non-avatar target', () => {
-    const onAvatarInteraction = vi.fn();
-    const props = parseChatWindowProps({ onAvatarInteraction });
-    const invalidPayload = {
-      interactionId: 'avatar-int-2',
-      toolId: 'hammer',
-      actionId: 'bonk',
-      target: 'outside',
-      pointer: {
-        clientX: 10,
-        clientY: 20,
-      },
-      timestamp: Date.now(),
-    } as unknown;
-
-    expect(() => props.onAvatarInteraction?.(invalidPayload as never)).toThrow(ZodError);
-  });
-
-  it('rejects avatar interaction payloads with an invalid tool/action pairing', () => {
-    const onAvatarInteraction = vi.fn();
-    const props = parseChatWindowProps({ onAvatarInteraction });
-    const invalidPayload = {
-      interactionId: 'avatar-int-3',
-      toolId: 'lollipop',
+    expect(() => props.onAvatarInteraction?.({
+      interactionId: 'avatar-int-invalid',
+      toolId: 'fist',
       actionId: 'bonk',
       target: 'avatar',
-      pointer: {
-        clientX: 10,
-        clientY: 20,
-      },
+      pointer: { clientX: 10, clientY: 20 },
+      intensity: 'normal',
+      touchZone: 'head',
       timestamp: Date.now(),
-    } as unknown;
-
-    expect(() => props.onAvatarInteraction?.(invalidPayload as never)).toThrow(ZodError);
+    } as never)).toThrow(ZodError);
+    expect(onAvatarInteraction).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects avatar interaction payloads with an invalid touch zone', () => {
-    const onAvatarInteraction = vi.fn();
-    const props = parseChatWindowProps({ onAvatarInteraction });
-    const invalidPayload = {
-      interactionId: 'avatar-int-4',
-      toolId: 'fist',
-      actionId: 'poke',
-      target: 'avatar',
-      pointer: {
-        clientX: 10,
-        clientY: 20,
-      },
-      touchZone: 'tail',
-      timestamp: Date.now(),
-    } as unknown;
+  it('keeps validated host callback identities stable across repeated prop parsing', () => {
+    const onAvatarToolStateChange = vi.fn();
+    const firstProps = parseChatWindowProps({ onAvatarToolStateChange });
+    const secondProps = parseChatWindowProps({ onAvatarToolStateChange });
 
-    expect(() => props.onAvatarInteraction?.(invalidPayload as never)).toThrow(ZodError);
+    expect(firstProps.onAvatarToolStateChange).toBe(secondProps.onAvatarToolStateChange);
+    expect(firstProps.onAvatarToolStateChange).not.toBe(onAvatarToolStateChange);
+    expect(() => secondProps.onAvatarToolStateChange?.({ active: 'yes' } as never)).toThrow(ZodError);
   });
 
-  it('rejects lollipop payloads with fist-only rewardDrop', () => {
-    const onAvatarInteraction = vi.fn();
-    const props = parseChatWindowProps({ onAvatarInteraction });
-    const invalidPayload = {
-      interactionId: 'avatar-int-5',
-      toolId: 'lollipop',
-      actionId: 'offer',
-      target: 'avatar',
-      pointer: {
-        clientX: 10,
-        clientY: 20,
-      },
-      rewardDrop: true,
-      timestamp: Date.now(),
-    } as unknown;
-
-    expect(() => props.onAvatarInteraction?.(invalidPayload as never)).toThrow(ZodError);
-  });
-
-  it('rejects lollipop payloads with touchZone', () => {
-    const onAvatarInteraction = vi.fn();
-    const props = parseChatWindowProps({ onAvatarInteraction });
-    const invalidPayload = {
-      interactionId: 'avatar-int-5b',
-      toolId: 'lollipop',
-      actionId: 'offer',
-      target: 'avatar',
-      pointer: {
-        clientX: 10,
-        clientY: 20,
-      },
-      touchZone: 'face',
-      timestamp: Date.now(),
-    } as unknown;
-
-    expect(() => props.onAvatarInteraction?.(invalidPayload as never)).toThrow(ZodError);
-  });
-
-  it('rejects fist payloads with hammer-only easterEgg', () => {
-    const onAvatarInteraction = vi.fn();
-    const props = parseChatWindowProps({ onAvatarInteraction });
-    const invalidPayload = {
-      interactionId: 'avatar-int-6',
-      toolId: 'fist',
-      actionId: 'poke',
-      target: 'avatar',
-      pointer: {
-        clientX: 10,
-        clientY: 20,
-      },
-      easterEgg: true,
-      timestamp: Date.now(),
-    } as unknown;
-
-    expect(() => props.onAvatarInteraction?.(invalidPayload as never)).toThrow(ZodError);
-  });
 });

@@ -1,52 +1,25 @@
 # クイックスタート
 
-このページでは、[開発環境セットアップ](./dev-setup)の完了後に N.E.K.O. を初めて実行する手順を説明します。
-
-## 1. サーバーの起動
+[開発環境](./dev-setup)を完了して実行します。
 
 ```bash
-# 別々のターミナルで：
-uv run python app/memory_server.py
-uv run python app/main_server.py
+uv run python launcher.py
 ```
 
-## 2. APIプロバイダーの設定
+Launcher は cooperating services と selected ports を報告します。報告 URL を使い、48911 を固定しません。
 
-`http://localhost:48911/api_key` にアクセスし、少なくとも**Core API**プロバイダーを設定します。
+Main URL の `/api_key` で Core/Assist Provider、credentials を設定し connectivity check。Provider/model list は revision-specific です。
 
-APIキーなしでクイックテストを行う場合は、Core APIプロバイダーとして **Free** を選択してください。
+Fresh data root は locale character defaults と Yui Origin から初期化されます。Identifier/display name は active data から来るため、旧固定名「小天」は current contract ではありません。Text chat は shared React、voice は core/TTS と microphone permission に依存します。
 
-## 3. デフォルトキャラクターとの対話
+| Route | Purpose |
+| --- | --- |
+| `/character_card_manager` | character/avatar |
+| `/model_manager` | avatar models |
+| `/live2d_emotion_manager` | Live2D mapping |
+| `/vrm_emotion_manager` | VRM mapping |
+| `/voice_clone` | provider-dependent cloning |
+| `/memory_browser` | memory output/status |
+| `/api_key` | provider/credential |
 
-ブラウザで `http://localhost:48911` を開きます。デフォルトキャラクター（「小天」）がLive2Dモデルとともに読み込まれます。
-
-**テキストモード：** チャット入力欄にメッセージを入力し、Enterキーを押します。
-
-**音声モード：** マイクボタンをクリックして音声セッションを開始します。自然に話してください — システムはサーバーサイドVAD（Voice Activity Detection）を使用して、発話の終了を検出します。
-
-## 4. キャラクターのカスタマイズ
-
-`http://localhost:48911/character_card_manager` にアクセスして、以下の操作ができます：
-
-- キャラクターの名前、性別、年齢、性格特性の変更
-- カスタムLive2DまたはVRMモデルの設定
-- カスタムボイスのクローン（約15秒のクリーンな音声サンプルをアップロード）
-- 動作を完全に制御するためのシステムプロンプトの編集
-
-## 5. Web UIページの探索
-
-| URL | 用途 |
-|-----|------|
-| `/` | メインチャットインターフェース |
-| `/api_key` | APIキーの設定 |
-| `/model_manager` | Live2D/VRMモデル管理 |
-| `/live2d_emotion_manager` | 感情からアニメーションへのマッピング |
-| `/vrm_emotion_manager` | VRM感情マッピング |
-| `/voice_clone` | 音声クローン |
-| `/memory_browser` | メモリの閲覧と編集 |
-
-## 次のステップ
-
-- [プロジェクト構成](./project-structure) — コードベースのレイアウトを理解する
-- [アーキテクチャ概要](/ja/architecture/) — 3つのサーバーがどのように連携するか
-- [APIリファレンス](/api/) — すべてのRESTおよびWebSocketエンドポイント
+すべての Provider/deployment が全機能を持つわけではありません。Agent/hosted plugin は agent/tool service が必要です。

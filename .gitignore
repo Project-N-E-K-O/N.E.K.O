@@ -34,6 +34,7 @@ memory/store/*
 utils/cache/
 config/api.py
 config/*.json
+config/*_key.key
 !config/api_providers.json
 env/*
 lanlan_frd.exe
@@ -99,6 +100,7 @@ dist/
 build/
 *.tsbuildinfo
 docs/.vitepress/cache/
+docs/.seo-reports/
 static/react/neko-chat/
 
 # Python venvs and wheels
@@ -189,6 +191,7 @@ plugin/plugins/web_radio/
 
 # QQ 自动回复：NapCat.Shell 整个目录不入库，仅保留 .gitkeep 占位
 plugin/plugins/qq_auto_reply/NapCat.Shell/*
+plugin/plugins/writer_power_analysis
 
 # QQ 自动回复 测试数据
 plugin/plugins/qq_auto_reply/static/cache/
@@ -216,3 +219,7 @@ tests/testbench/docs/dev_note.txt
 
 # yui-origin Live2D 模型源码打包在 assets/yui-origin.tar.gz；build_frontend 解压到此
 /static/yui-origin/
+
+# Plugin runtime and local live-screen artifacts
+/plugin/plugins/*/plugin.toml.lock
+/.codex-live-screen.png

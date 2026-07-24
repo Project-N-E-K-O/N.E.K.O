@@ -1,7 +1,10 @@
+import re
 from pathlib import Path
 
 
-APP_WEBSOCKET_PATH = Path(__file__).resolve().parents[2] / "static" / "app-websocket.js"
+APP_WEBSOCKET_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-websocket.js"
+APP_STATE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-state.js"
+WEBSOCKET_ROUTER_PATH = Path(__file__).resolve().parents[2] / "main_routers" / "websocket_router.py"
 
 
 def test_response_discarded_visible_in_react_chat():
@@ -27,6 +30,16 @@ def test_response_discarded_visible_in_react_chat():
     )[0]
     assert "document.createElement('div')" not in response_discarded_block
     assert "appendChild(messageDiv)" not in response_discarded_block
+
+
+def test_websocket_has_no_widget_mode_capability_or_lifecycle_protocol():
+    frontend_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    router_source = WEBSOCKET_ROUTER_PATH.read_text(encoding="utf-8")
+
+    assert "widget_mode_capable" not in frontend_source
+    assert "widget_mode_capable" not in router_source
+    assert "response.type.startsWith('widget_mode_')" not in frontend_source
+    assert "neko:widget-mode-message" not in frontend_source
 
 
 def test_startup_greeting_release_event_replaces_home_tutorial_block_state():
@@ -185,6 +198,102 @@ def test_goodbye_blocks_stale_audio_session_started():
     assert "window.cancelPendingSessionStart('Voice start cancelled by goodbye');" in stale_audio_guard
     assert "S.socket.send(JSON.stringify({ action: 'end_session' }));" in stale_audio_guard
     assert "return;" in stale_audio_guard
+
+
+def test_session_ended_by_server_stops_assistant_text_output():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    app_state = APP_STATE_PATH.read_text(encoding="utf-8")
+
+    assert "suppressAssistantStreamUntilNextSession: false," in app_state
+    helper_block = source.split("function stopAssistantTextOutputOnSessionEnd(source)", 1)[1].split(
+        "window.addEventListener('neko-assistant-turn-start'",
+        1,
+    )[0]
+    assert "S.suppressAssistantStreamUntilNextSession = true;" in helper_block
+    assert "window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;" in helper_block
+    assert "window._realisticGeminiQueue = [];" in helper_block
+    assert "window._realisticGeminiBuffer = '';" in helper_block
+    assert "window._geminiTurnFullText = '';" in helper_block
+    assert "window._isProcessingRealisticQueue = false;" in helper_block
+    assert "window._realisticProcessingOwner = null;" in helper_block
+    assert "window.setReactMessageStatus(bubble, 'assistant', 'sent');" in helper_block
+    assert "window._clearPendingHostMessagesByIds(currentBubbleIds);" in helper_block
+    assert "window.currentGeminiMessage = null;" in helper_block
+    assert "window.currentTurnGeminiBubbles = [];" in helper_block
+
+    rollback_helper = source.split("function clearPendingRollbackForRequest(requestId)", 1)[1].split(
+        "function isNewUserIcebreakerMirrorTurnEnd(response)",
+        1,
+    )[0]
+    assert "window.reactChatWindowHost.clearPendingRollbackDraft(requestId);" in rollback_helper
+    assert "window._lastSubmittedRequestId === requestId" in rollback_helper
+    assert "window._lastSubmittedText = '';" in rollback_helper
+    assert "window._lastSubmittedRequestId = '';" in rollback_helper
+
+    session_ended_block = source.split("// -------- session_ended_by_server --------", 1)[1].split(
+        "// -------- reload_page --------",
+        1,
+    )[0]
+    assert "stopAssistantTextOutputOnSessionEnd('session_ended_by_server');" in session_ended_block
+    assert session_ended_block.index("stopAssistantTextOutputOnSessionEnd('session_ended_by_server');") < session_ended_block.index(
+        "clearAssistantLifecycleOnDisconnect('session_ended_by_server');"
+    )
+
+    gemini_block = source.split("// -------- gemini_response --------", 1)[1].split(
+        "// -------- response_discarded --------",
+        1,
+    )[0]
+    assert "if (S.suppressAssistantStreamUntilNextSession)" in gemini_block
+    assert gemini_block.index("if (S.suppressAssistantStreamUntilNextSession)") < gemini_block.index(
+        "window.appendMessage(response.text, 'gemini', isNewMessage)"
+    )
+    assert "return;" in gemini_block.split("if (S.suppressAssistantStreamUntilNextSession)", 1)[1].split(
+        "var isNewMessage",
+        1,
+    )[0]
+
+    discard_block = source.split("// -------- response_discarded --------", 1)[1].split(
+        "// -------- summary_response --------",
+        1,
+    )[0]
+    assert "if (S.suppressAssistantStreamUntilNextSession)" in discard_block
+    assert discard_block.index("if (S.suppressAssistantStreamUntilNextSession)") < discard_block.index(
+        "// Fallback: clear trailing gemini bubbles not tracked"
+    )
+    assert "return;" in discard_block.split("if (S.suppressAssistantStreamUntilNextSession)", 1)[1].split(
+        "emitAssistantSpeechCancel('response_discarded');",
+        1,
+    )[0]
+
+    session_started_block = source.split("// -------- session_started --------", 1)[1].split(
+        "// -------- session_failed --------",
+        1,
+    )[0]
+    assert "S.suppressAssistantStreamUntilNextSession = false;" in session_started_block
+
+    agent_callback_turn_end_block = source.split("// -------- system turn end (agent_callback", 1)[1].split(
+        "// -------- system turn end --------",
+        1,
+    )[0]
+    assert "if (S.suppressAssistantStreamUntilNextSession)" in agent_callback_turn_end_block
+    assert agent_callback_turn_end_block.index("if (S.suppressAssistantStreamUntilNextSession)") < agent_callback_turn_end_block.index(
+        "flushRealisticBufferOnTurnEnd();"
+    )
+    assert agent_callback_turn_end_block.index("clearPendingRollbackForRequest(response.request_id);") < agent_callback_turn_end_block.index(
+        "clearPendingAssistantTurnStart();"
+    )
+
+    turn_end_block = source.split("// -------- system turn end --------", 1)[1].split(
+        "// AI turn_end 后只 reschedule",
+        1,
+    )[0]
+    assert "if (S.suppressAssistantStreamUntilNextSession)" in turn_end_block
+    assert turn_end_block.index("if (S.suppressAssistantStreamUntilNextSession)") < turn_end_block.index(
+        "flushRealisticBufferOnTurnEnd();"
+    )
+    assert turn_end_block.index("clearPendingRollbackForRequest(response.request_id);") < turn_end_block.index(
+        "clearPendingAssistantTurnStart();"
+    )
 
 
 def test_ws_open_resyncs_goodbye_state_and_defers_regular_greeting_until_release():

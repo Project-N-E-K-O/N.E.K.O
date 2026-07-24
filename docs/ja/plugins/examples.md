@@ -146,7 +146,8 @@ class MonitoredPlugin(NekoPluginBase):
     @after_entry(target="*")
     def log_results(self, *, entry_id, result, **_):
         """すべてのエントリーポイントの結果をログに記録する。"""
-        self.logger.info(f"[{entry_id}] result={result}")
+        # user content を含み得る raw result を persistent log に書かない。
+        self.logger.info(f"[{entry_id}] completed result_type={type(result).__name__}")
 
     # --- エントリーポイント ---
 
@@ -176,7 +177,7 @@ class MonitoredPlugin(NekoPluginBase):
 from typing import Any
 from plugin.sdk.plugin import (
     NekoPluginBase, neko_plugin, plugin_entry, lifecycle,
-    PluginStore, Ok, Err, SdkError,
+    Ok, Err, SdkError,
 )
 
 @neko_plugin
@@ -198,15 +199,20 @@ class NotesPlugin(NekoPluginBase):
         }
     )
     async def save_note(self, title: str, content: str, **_):
-        await self.store.set(f"note:{title}", {
+        saved = await self.store.set(f"note:{title}", {
             "title": title,
             "content": content,
         })
+        if isinstance(saved, Err):
+            return saved
         return Ok({"saved": title})
 
     @plugin_entry(id="get_note")
     async def get_note(self, title: str, **_):
-        note = await self.store.get(f"note:{title}")
+        stored = await self.store.get(f"note:{title}")
+        if isinstance(stored, Err):
+            return stored
+        note = stored.value
         if note is None:
             return Err(SdkError(f"Note not found: {title}"))
         return Ok(note)

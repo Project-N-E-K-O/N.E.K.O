@@ -1,63 +1,39 @@
-# Frontend Overview
+# Frontend overview
 
-N.E.K.O.'s frontend consists of three layers: traditional server-rendered pages, a React chat window component, and a Vue plugin manager dashboard.
+N.E.K.O. serves its main interface from the FastAPI main server. The repository contains three frontend codebases with different build and runtime boundaries.
 
-## Architecture
+## Codebases
 
-| Layer | Technology | Location |
-|-------|-----------|----------|
-| Main UI pages | Vanilla JS + Jinja2 templates | `static/` + `templates/` |
-| Chat window | React 18 + TypeScript | `frontend/react-neko-chat/` |
-| Plugin manager | Vue 3 + Element Plus | `frontend/plugin-manager/` |
-| Live2D rendering | Pixi.js + Live2D Cubism SDK | `static/` |
-| VRM rendering | Three.js + @pixiv/three-vrm | `static/` |
-| MMD rendering | Three.js + MMD loader (PMX/PMD models + VMD animations) | `static/` (mmd-*.js) |
-| PNGTuber rendering | 2D image states (Canvas/IMG) + layered_canvas_v1 adapter | `static/pngtuber-core.js` |
+| Surface | Technology | Source | Runtime artifact |
+| --- | --- | --- | --- |
+| Main UI and auxiliary pages | Jinja2, vanilla JavaScript, CSS | `templates/`, `static/app/`, `static/live2d/`, `static/vrm/`, `static/mmd/` | Rendered by the main server, normally on port `48911` |
+| Chat UI | React 18 and TypeScript | `frontend/react-neko-chat/` | `static/react/neko-chat/neko-chat-window.iife.js` and `.css` |
+| Plugin manager | Vue 3 and TypeScript | `frontend/plugin-manager/` | `frontend/plugin-manager/dist/`, served by the plugin server |
 
-The desktop pet (桌宠) is a window **mode** (the Electron pet window loading `index.html`), not a separate avatar format — any of the avatar forms above renders inside it.
+The avatar renderers are part of the main UI: Live2D uses Pixi/Cubism, VRM and MMD use Three.js, and PNGTuber uses `static/pngtuber-core.js`. The Electron desktop pet is a host mode, not another avatar format.
 
-## Traditional frontend (static/ + templates/)
+## One chat implementation
 
-The main UI is built with **vanilla JavaScript** and Jinja2 HTML templates.
+`frontend/react-neko-chat/` is the only chat UI implementation. Its IIFE exposes `window.NekoChatWindow`, and scripts under `static/app/app-react-chat-window/` mount it into `#react-chat-window-root`.
 
-```
-static/
-├── app.js                    # Main application logic
-├── theme-manager.js          # Dark/light mode toggle
-├── css/                      # Stylesheets
-├── js/                       # Feature-specific JS modules
-├── locales/                  # i18n JSON files (en, zh-CN, zh-TW, ja, ko, ru, es, pt)
-├── live2d-ui-*.js            # Live2D UI components
-├── vrm-ui-*.js               # VRM UI components
-├── mmd-*.js                  # MMD rendering (Three.js, PMX/PMD + VMD)
-├── pngtuber-core.js          # PNGTuber rendering (Canvas/IMG)
-└── react/neko-chat/          # React chat window build output
-```
+Both `templates/index.html` and `templates/chat.html` provide that mount point. The former shows the chat as a floating/collapsible surface in the main page; the latter hosts compact or full standalone chat surfaces.
 
-## Chat window (React)
+The old `#chat-container` DOM remains only as a compatibility shell for older scripts. Both templates hide it, and `static/app/app-chat-adapter.js` replaces legacy `appendMessage()` calls with calls to `window.reactChatWindowHost`. Do not add new UI or logic to the legacy container.
 
-The chat window is built as an IIFE library and embedded in the main page.
+## Web and Electron hosts
 
-- **Source**: `frontend/react-neko-chat/`
-- **Build output**: `static/react/neko-chat/neko-chat-window.iife.js`
-- **Global**: `window.NekoChatWindow`
-- **Dev server**: `npm run dev` (port 5174)
+In a browser, `/` is the single main page. `/chat`, `/chat_full`, and `/subtitle` can also be opened directly for development and testing.
 
-The glue layer `static/app-react-chat-window.js` loads and mounts the React component into the DOM.
+The Electron distribution is a separate host application. It loads multiple routes into independent windows: the pet uses the main-page template, chat windows use `/chat` or `/chat_full`, and subtitles use `/subtitle`. Renderer code detects preload globals such as `window.nekoChatWindow` and `window.nekoSubtitle`; the host owns native window creation and IPC.
 
-## Plugin manager (Vue)
+Cross-window web fallbacks live under `static/app/app-interpage/`. They use the `neko_page_channel` `BroadcastChannel`, with same-origin `postMessage` fallbacks. Changes to routes, asset URLs, initialization order, or window communication must be checked in both browser and Electron modes.
 
-A standalone dashboard for managing plugins, viewing logs, and monitoring metrics.
+## Loading and asset rules
 
-- **Source**: `frontend/plugin-manager/`
-- **Build output**: `frontend/plugin-manager/dist/`
-- **Served at**: `/ui/` by the plugin server (port 48916)
-- **Dev server**: `npm run dev` (port 5173, proxies API to plugin server)
+- Server-rendered pages use root-relative URLs such as `/static/...`; do not derive assets from the current route.
+- User and Workshop models are exposed through dedicated mounts; never turn filesystem paths into browser URLs.
+- Classic scripts under `static/` communicate through documented globals and DOM events, so template load order is part of the runtime contract.
+- React chat changes belong in `frontend/react-neko-chat/`; rebuild the IIFE instead of editing generated files.
+- Plugin-manager changes belong in `frontend/plugin-manager/`; its build and localization are separate from the main page.
 
-## Key concepts
-
-- **Pages** are server-rendered HTML templates that load JavaScript modules
-- **WebSocket** is used for real-time audio/text chat (see [WebSocket Protocol](/api/websocket/protocol))
-- **REST API** is used for all CRUD operations (see [API Reference](/api/))
-- **Theme manager** handles dark/light mode with CSS variable overrides
-- **i18n** is handled client-side by loading the appropriate locale JSON file
+See [Pages and templates](/frontend/pages), [Internationalization](/frontend/i18n), and the renderer-specific pages for the current entry points.

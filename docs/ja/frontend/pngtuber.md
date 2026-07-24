@@ -1,166 +1,63 @@
 # PNGTuber モデル
 
-## 概要
+## ランタイム
 
-N.E.K.O. は Live2D・MMD・VRM モデルの代替として、軽量な 2D 画像アバター（「PNGTuber」スタイル）をレンダリングできます。PNGTuber アバターは `static/pngtuber-core.js`（`PNGTuberManager` クラス）が駆動し、音声とポインター操作に応じて静止画を切り替えます（インポートしたレイヤー方式のプロジェクトの場合は、重ね合わせた canvas を描画します）。
+PNGTuber は `static/pngtuber-core.js` が描画する画像ステート型アバターです。`PNGTuberManager` は単純な画像切り替えと、`layered_canvas_v1` アダプターを介した正規化レイヤーパッケージに対応します。Live2D、VRM、MMD と同じメインページのアバター選択と `window.LanLan1.setEmotion()` 契約に接続されます。
 
-3D/Live2D アバターと違い、PNGTuber パッケージは画像のフォルダと `model.json` 記述ファイルだけで構成されます——リギングも Cubism ランタイムも不要です。
+## 正規化パッケージ
 
-## パッケージ形式
-
-PNGTuber モデルは、`model_type` を `pngtuber` に設定した `model.json` ファイルを含むフォルダです。画像の参照は `pngtuber` オブジェクトの下に置きます。
+インポートされた各モデルは設定済みユーザー PNGTuber ディレクトリに保存され、`/user_pngtuber/{folder}/model.json` から配信されます。最小の単純パッケージは次のとおりです。
 
 ```json
 {
-  "name": "My Avatar",
   "model_type": "pngtuber",
+  "name": "Example",
   "pngtuber": {
     "idle_image": "idle.png",
-    "talking_image": "talking.png",
-    "drag_image": "drag.png",
-    "click_image": "click.png",
-    "happy_image": "happy.png",
-    "sad_image": "sad.png",
-    "angry_image": "angry.png",
-    "surprised_image": "surprised.png"
+    "talking_image": "talking.png"
   }
 }
 ```
 
-### 画像ステートのキー
+`model_type` は `pngtuber`、`idle_image` は必須です。相対画像パスはパッケージ内に留めます。対応拡張子は `.png`、`.gif`、`.jpg`、`.jpeg`、`.webp` です。
 
-| キー | 用途 |
-|-----|---------|
-| `idle_image` | **必須。** 既定の待機フレーム。 |
-| `talking_image` | アシスタントの発話中に表示。 |
-| `drag_image` | アバターのドラッグ中に表示。 |
-| `click_image` | アバターのクリック時に一瞬表示。 |
-| `happy_image` / `sad_image` / `angry_image` / `surprised_image` | 感情フレーム（[感情ステート](#感情ステートまだ感情解析では駆動されない)を参照）。 |
+任意の画像ステートキーは `talking_image`、`drag_image`、`click_image`、`happy_image`、`sad_image`、`angry_image`、`surprised_image` です。talking が idle を使うなど、欠落ステートにはランタイムフォールバックがあるため、必須なのは `idle_image` だけです。
 
-相対パスはパッケージフォルダ内で解決されます。絶対パス（`/…`）と `http(s)://` URL はそのまま保持されます。画像参照はサーバー側で `/user_pngtuber/<folder>/<file>` に正規化されます。
-
-### 許可される拡張子とサイズ上限
-
-| 制約 | 値 |
-|------------|-------|
-| 画像拡張子 | `.png`、`.gif`、`.jpg`、`.jpeg`、`.webp` |
-| 単一ファイル上限 | 50 MB |
-| パッケージ合計上限 | 250 MB |
-
-サーバーはパッケージを受理する前に、`idle_image` が存在すること、およびすべての `*_image` 参照が許可された拡張子を持つ実在のファイルを指していることを検証します。
-
-## 感情ステート（まだ感情解析では駆動されない）
-
-::: warning 正直な現状
-`happy_image` / `sad_image` / `angry_image` / `surprised_image` の各キーはパッケージのスキーマの一部であり、**サーバー側で検証**されます（アップロード時にパスと拡張子をチェック）。しかし PNGTuber ランタイムは、感情解析に基づいてこれらに**まだ**切り替えません。
-
-`PNGTuberManager` が現在駆動するのは以下のみです。
-
-- `idle` ↔ `talking`。アシスタントの**音声**開始/終了イベントで切り替わります。
-- `drag` と `click`。ポインターの**操作**で切り替わります。
-
-Live2D / MMD / VRM に相当する `setEmotion` 系のフックはなく、専用の PNGTuber 感情マネージャーページもありません。4 つの感情画像キーは、将来の感情駆動パスに備えてパッケージとともに保存・配布されますが、現時点ではそれらを指定しても検証を通過する以外に目に見える効果はありません。
-:::
+レイアウトキーには `scale`、`offset_x`、`offset_y`、モバイル専用 scale/offset、`mirror` があります。レイヤーインポートでは `adapter: "layered_canvas_v1"` と `layered_metadata` も使います。
 
 ## インポート形式
 
-アップロードエンドポイントはパッケージの種類を検出し、その場で正規化します。検出された種類は `source_format` として返されます。
+インポーターは次の順で形式を検出します。
 
-| 入力元 | 検出方法 | 結果 |
-|--------|-----------|--------|
-| ネイティブ simple package | フォルダ直下に `model.json` | `source_format: simple_package`——そのまま使用。 |
-| **PNGTuber-Plus** | `.save` プロジェクトファイル | `layered_canvas_v1` アダプターに変換。 |
-| **PNGTube-Remix** | `.pngremix` プロジェクトファイル | `layered_canvas_v1` アダプターに変換。 |
-| veadotube | `.veadomini` / `.veado` ファイル | **認識されるが未対応**——アップロードは説明付きエラーで拒否されます。 |
+1. ルートに `model.json` があるネイティブ単純パッケージ
+2. PNGTuber Plus `.save` プロジェクト
+3. PNGTube Remix `.pngRemix` プロジェクト
+4. veadotube `.veadomini` または `.veado` ファイル
 
-### レイヤーアダプター（`layered_canvas_v1`）
+PNGTuber Plus と PNGTube Remix は正規化パッケージに変換され、レイヤーメタデータや警告を生成することがあります。veadotube は現在、識別後に未対応形式として拒否されます。画像だけのフォルダーもパッケージ API では拒否されるため、モデルマネージャーの画像ペアフローか、有効な `model.json` を使ってください。
 
-PNGTuber-Plus または PNGTube-Remix のプロジェクトをインポートすると、コンバーターはレイヤーメタデータファイルを生成し、`adapter` を `layered_canvas_v1` に設定します。ランタイムでは `PNGTuberManager` が単一の `<img>` を切り替える代わりに各レイヤーを `<canvas>` に描画し、さらに次を追加します。
+リクエストではフォルダーツリーをアップロードできます。サーバーは共通トップディレクトリを 1 つ取り除き、各相対パスを検証し、一時ディレクトリへ書き込み、インポート成功後だけ所定位置へリネームします。既存モデルフォルダーは上書きしません。
 
-- **まばたき（blink）**——目のレイヤーがランダムなタイマーでまばたきします。
-- **発話バウンス（speech bounce）**——発話中にアバターが上下に弾み/つぶれます。
+上限は 1 ファイル 50 MB、パッケージ全体 250 MB です。
 
-元プロジェクトのホットキー・物理・マルチフレームアニメーションは、将来のランタイム対応に備えてメタデータに保持されますが、現時点ではすべてが駆動されるわけではありません。メタデータの読み込みに失敗した場合、ランタイムは通常の単一画像モードにフォールバックします。
+## ステートと感情の動作
 
-## 静的配信
+基本ステートは idle、talking、drag、click です。意味的な感情は任意の `happy`、`sad`、`angry`、`surprised` 画像または同等のレイヤーステートを使います。インポーターが対応する場合、レイヤーアダプターは第三者形式の表示状態、ホットキー、トグル、スプライトシート、まばたき、物理メタデータを維持できます。
 
-ユーザーの PNGTuber パッケージは `/user_pngtuber` マウントから配信され、ディスク上の設定済み PNGTuber ディレクトリにマッピングされます。モデルファイルは `/user_pngtuber/<folder>/model.json` および `/user_pngtuber/<folder>/<image>` として参照されます。
+正規化された `source_format` はパッケージの生成元を示します。クライアントは診断にのみ使い、描画方式の選択には使わないでください。描画方式は正規化済み `pngtuber` オブジェクトとアダプターメタデータで決まります。
 
-## API エンドポイント
+## API 概要
 
-**プレフィックス:** `/api/model/pngtuber`
+すべてのエンドポイントは `/api/model/pngtuber` プレフィックスを使います。
 
-### `POST /upload_model`
+| メソッド | エンドポイント | 用途 |
+| --- | --- | --- |
+| `POST` | `/api/model/pngtuber/upload_model` | フォルダー/パッケージをアップロードして正規化 |
+| `GET` | `/api/model/pngtuber/models` | 有効なユーザーパッケージを一覧 |
+| `DELETE` | `/api/model/pngtuber/model` | `folder`、`url`、`name` のいずれかでパッケージを削除 |
 
-PNGTuber パッケージを multipart のファイルリストとしてアップロードします。各ファイルの `filename` はパッケージ内の相対パスを保持します。共有された単一の最上位フォルダは自動的に取り除かれます。パッケージはまずステージングされ、検出・検証され、（サードパーティ製プロジェクトの場合は）変換されてから正式に確定されます。
+アップロード成功応答には正規化モデル、公開 URL、`source_format`、警告、アップロード合計サイズが含まれます。一覧 API は有効な PNGTuber `model.json` がないディレクトリを無視します。削除は直接のパッケージフォルダーか `/user_pngtuber/{folder}/model.json` だけを受け付け、ネストパスとパストラバーサルを拒否します。
 
-**Body**——`multipart/form-data`、`files` フィールド（1 つ以上の `UploadFile` エントリ）を含みます。
+## ホスト境界
 
-**Response**（成功）
-
-```json
-{
-  "success": true,
-  "message": "...",
-  "model_type": "pngtuber",
-  "model_name": "My Avatar",
-  "name": "My Avatar",
-  "folder": "My_Avatar",
-  "url": "/user_pngtuber/My_Avatar/model.json",
-  "pngtuber": { "idle_image": "/user_pngtuber/My_Avatar/idle.png", "...": "..." },
-  "source_format": "simple_package",
-  "warnings": [],
-  "file_size": 123456
-}
-```
-
-失敗時は `{ "success": false, "error": "..." }` を該当する 4xx/5xx ステータスとともに返します。サードパーティのインポートエラーには `source_format` と `warnings` も含まれます。
-
-### `GET /models`
-
-インストール済みのユーザー PNGTuber パッケージをすべて一覧します。
-
-**Response**
-
-```json
-{
-  "success": true,
-  "models": [
-    {
-      "name": "My Avatar",
-      "folder": "My_Avatar",
-      "filename": "My_Avatar",
-      "location": "user",
-      "type": "pngtuber",
-      "model_type": "pngtuber",
-      "url": "/user_pngtuber/My_Avatar/model.json",
-      "pngtuber": { "idle_image": "/user_pngtuber/My_Avatar/idle.png", "...": "..." },
-      "source_format": "simple_package"
-    }
-  ]
-}
-```
-
-有効な `model.json` を持たない、または `model_type` が `pngtuber` でないフォルダはスキップされます。
-
-### `DELETE /model`
-
-インストール済みの PNGTuber パッケージを削除します。
-
-**Body**
-
-```json
-{ "folder": "My_Avatar" }
-```
-
-識別子は**フォルダ slug** として解決されます（優先順位 `folder` → `url` → `name`）。`/user_pngtuber/My_Avatar/model.json` のような `model.json` の URL は、そのフォルダに解決されます。`GET /models` が返す `folder` slug（または `url`）の使用を推奨します——`name` は表示用の名前で slug と異なる場合があり、`name` での削除はそれがフォルダ名と一致するときのみ機能します。対象は PNGTuber ディレクトリ内に限定されます。
-
-**Response**
-
-```json
-{ "success": true, "message": "PNGTuber model My_Avatar deleted" }
-```
-
-::: info
-PNGTuber のモデル管理は共有の `/model_manager` ページにあります。専用の PNGTuber 感情マネージャーページはありません。アバターの設定メニューは、キャラクターカードマネージャー・モデルマネージャー・ボイスクローンの各ページへリンクします。
-:::
+PNGTuber はメインページと `index.html` を使う Electron ペットウィンドウに描画されます。`/chat` と `/subtitle` は別の PNGTuber マネージャーを初期化しません。ウィンドウ間でアバター状態を反映する場合はメインウィンドウと通信します。

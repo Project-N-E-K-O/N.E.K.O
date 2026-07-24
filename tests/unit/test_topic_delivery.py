@@ -117,6 +117,18 @@ def test_build_topic_hook_callback_preserves_traditional_chinese():
     assert "请只生成一句自然开场" not in detail
 
 
+def test_detail_templates_online_clause_has_no_english_hook_term():
+    """Regression: the online sub-clause must not leak the English internal
+    term 'hook' into any locale's prompt. When a topic is online-enriched
+    (has online_angle), every locale's detail carries the online clause and
+    weak models echo the trailing 'hook' as spoken text (non-EN especially)."""
+    from main_logic.topic.delivery import _DETAIL_TEMPLATES
+    for locale, tmpl in _DETAIL_TEMPLATES.items():
+        assert 'hook' not in tmpl['online'].lower(), (
+            f"{locale} online template still leaks the English term 'hook'"
+        )
+
+
 @pytest.mark.asyncio
 async def test_trigger_topic_hook_once_enqueues_existing_manager_callback(monkeypatch):
     mgr = MagicMock()
@@ -327,7 +339,7 @@ def test_topic_hook_delivery_available_false_when_proactive_chat_disabled(monkey
         clear_topic_session_manager_getter()
 
 
-def test_topic_hook_delivery_available_false_when_proactive_chat_setting_missing(monkeypatch):
+def test_topic_hook_delivery_available_true_when_proactive_chat_setting_missing(monkeypatch):
     class FakeManager:
         def topic_hook_delivery_allowed(self):
             return True
@@ -342,7 +354,7 @@ def test_topic_hook_delivery_available_false_when_proactive_chat_setting_missing
     clear_topic_session_manager_getter()
     register_topic_session_manager_getter(lambda name: FakeManager())
     try:
-        assert topic_hook_delivery_available("妮可") is False
+        assert topic_hook_delivery_available("妮可") is True
     finally:
         clear_topic_session_manager_getter()
 

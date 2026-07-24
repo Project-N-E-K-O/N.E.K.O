@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 
-AUTOSTART_PROVIDER_PATH = Path(__file__).resolve().parents[2] / "static" / "app-autostart-provider.js"
+AUTOSTART_PROVIDER_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-autostart-provider.js"
 
 
 @pytest.fixture(scope="session", autouse=True)

@@ -1,50 +1,27 @@
-# Introduction
+# Developer Guide
 
-**Project N.E.K.O.** (**N**etworked **E**motional **K**nowledging **O**rganism) is an open-source AI companion platform that combines real-time voice/text interaction, multi-form avatar rendering (Live2D / VRM / MMD / PNGTuber / desktop cat pet), persistent memory, and agent-based task execution into a cohesive experience.
+Project N.E.K.O. is an open-source AI companion platform with avatar rendering, realtime/text interaction, persistent memory, agent execution, and plugins. This site documents the current repository for contributors and integrators; it is not a product-pricing or provider-capability catalog.
 
-## What is N.E.K.O.?
+## Repository surfaces
 
-N.E.K.O. is a UGC (User-Generated Content) platform for AI companions. Users can create, customize, and share AI characters with unique personalities, voices, and visual models. The system supports:
+- Python 3.11 FastAPI/Uvicorn services under `app/`
+- Conversation and persistent-memory domains under `main_logic/` and `memory/`
+- Agent execution under `brain/` and the agent server
+- Jinja/static pages plus one shared React chat implementation
+- Vue plugin manager under `frontend/plugin-manager/`
+- Electron desktop distribution built from N.E.K.O.-PC plus this packaged backend
+- Container deployment under `docker/`
 
-- **Real-time voice conversation** via WebSocket with Realtime API providers (Qwen, OpenAI, Gemini, Step, GLM)
-- **Live2D and VRM model rendering** with emotion-mapped animations
-- **Persistent memory** across sessions with semantic recall and time-indexed history
-- **Background agent execution** via MCP, Computer Use, Browser Use, and Virtual Machine adapters
-- **Voice cloning** with custom TTS voices
-- **Steam Workshop integration** for content sharing
-- **Plugin system** for developer extensions
+## Start here
 
-## Who is this for?
-
-This documentation is written for **developers** who want to:
-
-- Contribute to the N.E.K.O. core codebase
-- Build plugins that extend N.E.K.O.'s capabilities
-- Integrate with N.E.K.O.'s REST and WebSocket APIs
-- Deploy N.E.K.O. in custom environments
-- Understand the system architecture for debugging or extending
-
-## Quick Links
-
-| Goal | Start here |
-|------|-----------|
-| Set up a dev environment | [Development Setup](./dev-setup) |
-| Understand the architecture | [Architecture Overview](/architecture/) |
+| Goal | Page |
+| --- | --- |
+| Check tools | [Prerequisites](./prerequisites) |
+| Prepare a checkout | [Development Setup](./dev-setup) |
+| Run N.E.K.O. | [Quick Start](./quick-start) |
+| Navigate code | [Project Structure](./project-structure) |
+| Understand services | [Architecture](/architecture/) |
 | Build a plugin | [Plugin Quick Start](/plugins/quick-start) |
-| Integrate via API | [API Reference](/api/) |
-| Deploy with Docker | [Docker Deployment](/deployment/docker) |
-| Configure the system | [Configuration Reference](/config/) |
+| Deploy | [Deployment](/deployment/) |
 
-## Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| Backend framework | FastAPI + Uvicorn |
-| Realtime communication | WebSocket (native + Alibaba DashScope) |
-| Inter-service messaging | ZeroMQ (PUB/SUB + PUSH/PULL) |
-| LLM integration | LangChain + OpenAI-compatible APIs |
-| TTS | DashScope CosyVoice, GPT-SoVITS |
-| Frontend | Vanilla JS, Pixi.js (Live2D), Three.js (VRM) |
-| Memory storage | SQLite + text embeddings |
-| Package management | uv (Python 3.11) |
-| Containerization | Docker (multi-arch) |
+All Python examples use `uv run`. If a page conflicts with the same-revision entrypoint, loader, or workflow, current code is the source of truth; please report the documentation drift.

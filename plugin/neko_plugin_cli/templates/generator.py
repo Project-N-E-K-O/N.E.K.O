@@ -6,6 +6,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import re
 
+from plugin._types.plugin_types import (
+    SCAFFOLDABLE_PLUGIN_TYPES,
+    format_unsupported_scaffold_type,
+)
+
 _PYTHON_PLUGIN_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MARKET_REPO_PREFIX = "n.e.k.o_plugin_"
 _DEFAULT_NEKO_REPOSITORY = "Project-N-E-K-O/N.E.K.O"
@@ -17,16 +22,12 @@ class PluginSpec:
 
     plugin_id: str
     name: str = ""
-    plugin_type: str = "plugin"  # plugin | extension | adapter
+    plugin_type: str = "plugin"
     description: str = ""
     version: str = "0.1.0"
     author_name: str = ""
     author_email: str = ""
     entry_point_override: str = ""
-
-    # Extension-specific
-    host_plugin_id: str = ""
-    host_prefix: str = ""
 
     # Features
     features: list[str] = field(default_factory=list)
@@ -54,15 +55,17 @@ class PluginSpec:
     def entry_point(self) -> str:
         if self.entry_point_override:
             return self.entry_point_override
-        return f"plugins.{self.plugin_id}:{self.class_name}"
+        return f"plugin.plugins.{self.plugin_id}:{self.class_name}"
 
     @property
     def module_path(self) -> str:
-        return f"plugins.{self.plugin_id}"
+        return f"plugin.plugins.{self.plugin_id}"
 
 
 def generate_plugin(spec: PluginSpec, target_dir: Path) -> list[Path]:
     """Generate all scaffold files and return the list of created paths."""
+    if spec.plugin_type not in SCAFFOLDABLE_PLUGIN_TYPES:
+        raise ValueError(format_unsupported_scaffold_type(spec.plugin_type))
     if not _PYTHON_PLUGIN_ID_RE.fullmatch(spec.plugin_id):
         raise ValueError(
             "plugin_id must be a valid Python package name: use letters, numbers, and underscores only"
@@ -236,15 +239,6 @@ def _render_plugin_toml(spec: PluginSpec) -> str:
     if "store" in spec.features:
         lines.extend(["", "[plugin.store]", "enabled = true"])
 
-    if spec.plugin_type == "extension" and spec.host_plugin_id:
-        lines.extend([
-            "",
-            "[plugin.host]",
-            f'plugin_id = "{spec.host_plugin_id}"',
-        ])
-        if spec.host_prefix:
-            lines.append(f'prefix = "{_escape(spec.host_prefix)}"')
-
     auto_start = "true" if "timer" in spec.features or "message" in spec.features else "false"
     lines.extend([
         "",
@@ -262,8 +256,6 @@ def _render_plugin_toml(spec: PluginSpec) -> str:
 # ---------------------------------------------------------------------------
 
 def _render_init_py(spec: PluginSpec) -> str:
-    if spec.plugin_type == "extension":
-        return _render_extension_init(spec)
     if spec.plugin_type == "adapter":
         return _render_adapter_init(spec)
     if spec.quick_start:
@@ -308,7 +300,7 @@ class {spec.class_name}(NekoPluginBase):
             }}
         }}
     )
-    def hello(self, name: str = "World", **_):
+    async def hello(self, name: str = "World", **_):
         return Ok({{"message": f"Hello, {{name}}!"}})
 '''
 
@@ -392,7 +384,6 @@ def _render_plugin_init(spec: PluginSpec) -> str:
 
     # entry point
     if "entry_point" in spec.features:
-        async_kw = "async " if is_async else ""
         lines.extend([
             "",
             "    @plugin_entry(",
@@ -406,7 +397,7 @@ def _render_plugin_init(spec: PluginSpec) -> str:
             "            }",
             "        }",
             "    )",
-            f"    {async_kw}def example(self, input: str = \"\", **_):",
+            "    async def example(self, input: str = \"\", **_):",
             '        return Ok({"result": input})',
         ])
 
@@ -433,23 +424,6 @@ def _render_plugin_init(spec: PluginSpec) -> str:
 
     lines.append("")
     return "\n".join(lines)
-
-
-def _render_extension_init(spec: PluginSpec) -> str:
-    return f'''from plugin.sdk.extension import (
-    NekoExtensionBase, extension, extension_entry,
-    Ok,
-)
-
-
-@extension
-class {spec.class_name}(NekoExtensionBase):
-    """{_escape(spec.name or spec.plugin_id)}"""
-
-    @extension_entry(id="example", description="An example extension entry")
-    def example(self, param: str = "", **_):
-        return Ok({{"extended": True, "param": param}})
-'''
 
 
 def _render_adapter_init(spec: PluginSpec) -> str:
