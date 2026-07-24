@@ -1,8 +1,10 @@
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
-import main_routers.system_router.proactive_chat_flow as system_router
-from main_routers.system_router import (
+from main_logic.proactive_chat import service as proactive_service
+from main_logic.proactive_chat.contracts import ProactiveChatCommand
+from main_logic.proactive_chat.service import (
     _open_threads_for_activity_state,
     _render_followup_topic_hooks,
     _resolve_topic_hook_locale,
@@ -11,7 +13,7 @@ from utils.llm_client import anthropic_retry_error_types
 
 
 def test_proactive_llm_retry_errors_include_anthropic_transients():
-    retry_types = system_router._proactive_llm_retry_error_types()
+    retry_types = proactive_service._proactive_llm_retry_error_types()
     anthropic_types = anthropic_retry_error_types()
     # anthropic 缺席时 accessor 兜底返回 ()，for 循环会零迭代假绿——CI/开发环境必装
     # anthropic，空即测试环境坏了，别让本测试静默空跑。
@@ -21,7 +23,9 @@ def test_proactive_llm_retry_errors_include_anthropic_transients():
 
 
 def test_screen_only_and_unfinished_thread_suppress_softer_open_threads():
-    restricted = SimpleNamespace(propensity="restricted_screen_only", unfinished_thread=None)
+    restricted = SimpleNamespace(
+        propensity="restricted_screen_only", unfinished_thread=None
+    )
     restricted_with_thread = SimpleNamespace(
         propensity="restricted_screen_only",
         unfinished_thread={"text": "刚才没聊完的问题"},
@@ -80,7 +84,7 @@ def test_topic_hook_locale_preserves_traditional_chinese_request_language():
     mgr = SimpleNamespace(user_language="zh-CN")
 
     topic_hook_lang = _resolve_topic_hook_locale(
-        {"language": "zh-TW"},
+        ProactiveChatCommand.from_payload({"language": "zh-TW"}),
         mgr,
         fallback="zh",
     )
@@ -96,7 +100,11 @@ def test_topic_hook_locale_preserves_traditional_chinese_request_language():
 
 def test_topic_hook_locale_falls_back_to_full_global_language(monkeypatch):
     mgr = SimpleNamespace(user_language=None)
-    monkeypatch.setattr(system_router, "get_global_language_full", lambda: "zh-TW", raising=False)
+    monkeypatch.setattr(
+        proactive_service,
+        "get_global_language_full",
+        lambda: "zh-TW",
+    )
 
     topic_hook_lang = _resolve_topic_hook_locale({}, mgr, fallback="zh")
     prompt, _surfaced_ids = _render_followup_topic_hooks(
@@ -110,7 +118,8 @@ def test_topic_hook_locale_falls_back_to_full_global_language(monkeypatch):
 
 
 def test_open_threads_compute_uses_topic_hook_locale():
-    source = Path(system_router.__file__).read_text(encoding="utf-8")
+    source = Path(proactive_service.__file__).read_text(encoding="utf-8")
 
-    assert "topic_hook_lang = _resolve_topic_hook_locale(data, mgr, fallback=proactive_lang)" in source
+    assert "topic_hook_lang = _resolve_topic_hook_locale(" in source
+    assert re.search(r"_resolve_topic_hook_locale\(\s*command\s*,", source)
     assert "kickoff_open_threads_compute(lang=topic_hook_lang)" in source
