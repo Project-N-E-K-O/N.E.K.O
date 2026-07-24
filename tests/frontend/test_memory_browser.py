@@ -2183,7 +2183,17 @@ def test_memory_browser_beforeunload_blocks_unsaved_memory_changes(
         timeout=10000,
     )
 
-    mock_page.locator("#clear-memory-btn").click()
+    memo = mock_page.locator("#memory-chat-edit .memo-textarea").first
+    memo.evaluate(
+        """
+        element => {
+            element.focus();
+            element.value = '仍在输入中的备忘录';
+            element.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        """
+    )
+    assert memo.evaluate("element => document.activeElement === element") is True
     expect(mock_page.locator("#memory-unsaved-status")).to_be_visible()
 
     result = mock_page.evaluate(

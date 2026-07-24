@@ -2634,7 +2634,7 @@
                 const ta = document.createElement('textarea');
                 ta.className = 'memo-textarea';
                 ta.value = bodyValue;
-                ta.addEventListener('change', function () {
+                ta.addEventListener('input', function () {
                     bodyValue = this.value;
                     commitMemo();
                     setMemoryDirty(true);
@@ -2652,7 +2652,7 @@
                     const olderTa = document.createElement('textarea');
                     olderTa.className = 'memo-textarea memo-textarea--older';
                     olderTa.value = olderValue;
-                    olderTa.addEventListener('change', function () {
+                    olderTa.addEventListener('input', function () {
                         olderValue = this.value;
                         commitMemo();
                         setMemoryDirty(true);
