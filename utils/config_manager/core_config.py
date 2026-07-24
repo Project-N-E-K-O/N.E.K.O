@@ -23,44 +23,40 @@ The geo caches themselves are class attributes on the assembled
 ``ConfigManager`` (single owner); methods below resolve them late through
 the package facade.
 
-Region-resolution invariants
-----------------------------
-These six constrain each other, and a change that satisfies one can quietly
-break another — during the work that introduced them, two were broken exactly
-that way (a "kick a due probe" fix bypassed #2; an ``is_alive()`` guard
-disabled #4). Check a change against all six, not just the one it targets.
+Region resolution: one background probe, everyone else reads its verdict
+------------------------------------------------------------------------
+A single daemon thread (``_ip_probe_loop``) retries the ip-api.com lookup with
+backoff until it lands a verdict, then exits. It is the ONLY writer of
+``_ip_check_cache``. Everything else — ``get_core_config``, session setup,
+startup — only reads that value (and idempotently makes sure the probe is
+running). This shape is deliberate: an earlier version kicked a fresh probe
+from each call site, which forced generation tickets, wedged-thread caps and
+stale-replacement logic to keep concurrent probes from clobbering each other.
+Collapsing to one owner deletes that entire class of bug. When you touch this,
+keep it one-writer; a fix that spawns a second concurrent probe brings the
+whole mess back.
 
-Checking the list is necessary but not sufficient: the mechanism added to
-satisfy #4 (replacing a wedged probe) was itself correct against every rule
-above and still introduced two fresh defects, because it quietly made the
-cache multi-writer. #6 is what that cost, and it is the rule to reach for
-whenever a fix adds a concurrent actor rather than a condition.
+Invariants, each learned by breaking it:
 
 1. The probe never does network IO on the caller's thread. ``get_core_config``
-   fans out to ~40 sync callers living inside ``async def``, so a blocking
-   probe freezes the shared event loop and stalls every WebSocket handshake in
-   the process. Waiting is allowed only at startup and only offloaded.
+   fans out to ~40 sync callers living inside ``async def``, so a blocking probe
+   freezes the shared event loop and stalls every WebSocket handshake. Callers
+   read the cache; only ``_ip_probe_loop`` blocks, and it is off to the side.
 2. The probe is started only for the free ``lanlan.tech`` route. Users on their
    own API keys never have their public IP handed to a third-party geolocation
-   service. Reading the config is the natural gate (URL rewriting consults the
-   region only for that host) — go through it rather than re-deriving
-   eligibility at each call site, or the checks will drift apart.
+   service. The gate lives at the callers of ``_check_non_mainland`` (free-route
+   code only) — ``get_core_config`` first checks a ``lanlan.tech`` URL exists.
+   Re-deriving eligibility elsewhere is how this regressed three times.
 3. ``_region_cache`` is written only from the IP verdict. Steam is a fallback
-   vote that must never latch, at any failure count: it counts probes started,
-   not finished, so any threshold can fire while one is still in flight.
-4. The probe never gives up permanently — including when a thread wedges in
-   ``getaddrinfo`` (not covered by the socket timeout). Liveness alone must not
-   gate new probes, or one wedged thread cancels the retry schedule forever.
+   vote that must never latch: latching it on a cold-boot timeout would let it
+   rule permanently, and IP (which bypasses the proxy) must still take over.
+4. The probe never gives up permanently. Connectivity can arrive tens of minutes
+   in (WiFi after boot); the loop backs off but keeps retrying for the life of
+   the process. A DNS-wedged iteration just holds the one thread until the OS
+   resolver times out — no leak, because there is only ever one thread.
 5. Every path that freezes a base URL into a session settles the region first
    (main session, hot-swap prepare, game session pool). Tests assert this
    structurally, because the real risk is a *new* path added later.
-6. At most one probe owns the verdict, and outstanding probes are bounded.
-   Replacing a wedged probe does not stop it: it stays runnable and can surface
-   long afterwards with an answer taken before the network exit changed, so
-   ownership is carried by ``_ip_probe_generation`` and a superseded probe
-   discards its own result. Wedged threads are unjoinable, so replacements are
-   also capped (``_IP_PROBE_MAX_WEDGED``) — otherwise a permanently blocked
-   resolver leaks one thread per backoff cycle for the life of the process.
 """
 import asyncio
 import json
@@ -81,28 +77,14 @@ from ._shared import _as_bool, logger
 class CoreConfigMixin:
     """Core config snapshot, geo checks and model API resolution."""
 
-    # HTTP 地理探测的失败退避：开机自启动时本程序常常跑在网络栈就绪之前，第一次
-    # 探测必定超时。Steam 缺席的机器上 IP 是唯一判据（见 _check_non_mainland），
-    # 永久放弃会把整台机器锁死在国内线路，而网络可能几十分钟后才好（用户开机后
-    # 才连 WiFi），所以不设次数上限，只按失败次数指数退避到 _IP_CHECK_RETRY_MAX_S。
+    # 背景探测循环的失败退避：开机自启动时本程序常跑在网络栈就绪之前，首探必超时。
+    # Steam 缺席的机器上 IP 是唯一判据，永久放弃会把整台机器锁死国内，而网络可能
+    # 几十分钟后才好（用户开机后才连 WiFi），故不设次数上限，只指数退避到封顶。
     _IP_CHECK_RETRY_BASE_S = 30.0
     _IP_CHECK_RETRY_MAX_S = 600.0
-
-    # 指数先于乘法封顶：探测不设次数上限，一台长期离线的机器攒够失败次数后
-    # float * (2 ** 巨大整数) 会直接抛 OverflowError，而不是溢出成 inf。
-    # 2**_IP_CHECK_MAX_EXPONENT 乘上 base 已远超 _IP_CHECK_RETRY_MAX_S，封在这里无损。
+    # 指数先于乘法封顶：不封的话长期离线攒够失败次数后 float * (2**巨大整数) 会抛
+    # OverflowError 而非溢出成 inf。2**32 * base 已远超封顶，截在这里无损。
     _IP_CHECK_MAX_EXPONENT = 32
-
-    # 探测线程超过这个时长仍未结束就当作卡死（getaddrinfo 不受 socket 超时约束），
-    # 允许另起一个顶替，否则一个卡死的线程会永久挡住退避重试。取值须明显大于
-    # 探测自身的 3s socket 超时，避免把只是慢的正常探测误判成卡死。
-    _IP_PROBE_STALE_AFTER_S = 30.0
-    # 同时允许存在的卡死探测线程上限。DNS 永久阻塞时它们 join 不掉、只增不减，
-    # 不封顶就会随进程寿命线性泄漏（封顶退避 10 分钟一档 ≈ 每小时 6 个）。
-    _IP_PROBE_MAX_WEDGED = 3
-    # 到达上限后的「兜底探测」节奏。目的不是继续正常重试，而是保证网络恢复不会
-    # 被永久错过——线程增速降到每小时 1 个，同时最迟一小时内发现恢复。
-    _IP_PROBE_DESPERATE_INTERVAL_S = 3600.0
 
     @classmethod
     def _ip_check_backoff_s(cls, failures: int) -> float:
@@ -120,49 +102,77 @@ class CoreConfigMixin:
     # --- Core config helpers ---
 
     @staticmethod
-    def _run_ip_probe(generation):
-        """Body of the IP geolocation probe. Always runs on a dedicated thread.
+    def _ip_probe_once():
+        """One ip-api.com lookup. Returns True/False on a verdict, None on failure."""
+        import urllib.request
+        req = urllib.request.Request(
+            "http://ip-api.com/json/?fields=countryCode",
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        # 显式禁用代理，避免探测到代理服务器所在国家而非用户真实 IP 所在地。
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(req, timeout=3) as resp:
+            data = json.loads(resp.read().decode())
+        country = (data.get("countryCode") or "").upper()
+        return (country != "CN") if country else None
 
-        ``generation`` is the probe's ticket. A probe wedged in DNS gets replaced
-        while it is still running, and can surface much later with an answer taken
-        before the network exit changed (WiFi came back, VPN toggled). Writing that
-        unconditionally would clobber the replacement's newer, correct verdict — so
-        a probe only publishes while its ticket is still the current one.
+    @staticmethod
+    def _ip_probe_loop():
+        """The single background probe: retry with backoff until a verdict lands.
+
+        One long-lived daemon thread owns the whole retry schedule, so there is
+        exactly one writer of ``_ip_check_cache`` and no per-call thread churn.
+        That is what lets this stay simple where the earlier per-call design could
+        not: no generation tickets, no wedged-thread bookkeeping, no replacement cap.
+        A DNS-wedged iteration just holds this one thread until the OS resolver times
+        out; the next iteration then retries. Never gives up — connectivity can
+        arrive tens of minutes in (the user connects WiFi after boot).
         """
         from utils.config_manager import ConfigManager
 
-        try:
-            import urllib.request
-            req = urllib.request.Request(
-                "http://ip-api.com/json/?fields=countryCode",
-                headers={"User-Agent": "Mozilla/5.0"},
-            )
-            # 显式禁用代理，避免探测到代理服务器所在国家而非用户真实 IP 所在地。
-            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-            with opener.open(req, timeout=3) as resp:
-                data = json.loads(resp.read().decode())
-            country = (data.get("countryCode") or "").upper()
-            if country:
-                result = country != "CN"
-                with ConfigManager._geo_probe_lock:
-                    if generation != ConfigManager._ip_probe_generation:
-                        print(
-                            f"[GeoIP] discarding superseded probe result: country={country}",
-                            file=sys.stderr,
-                        )
-                        return
+        failures = 0
+        while ConfigManager._ip_check_cache is None:
+            try:
+                result = ConfigManager._ip_probe_once()
+                if result is not None:
                     ConfigManager._ip_check_cache = result
-                print(f"[GeoIP] HTTP IP check: country={country}, non_mainland={result}", file=sys.stderr)
+                    print(f"[GeoIP] HTTP IP check: non_mainland={result}", file=sys.stderr)
+                    return
+            except Exception as e:
+                print(f"[GeoIP] HTTP IP check failed: {e}", file=sys.stderr)
+            failures += 1
+            wait = ConfigManager._ip_check_backoff_s(failures)
+            print(f"[GeoIP] HTTP IP check will retry in {wait:.0f}s", file=sys.stderr)
+            # 可中断退避：进程 shutdown / 测试清理 set 这个 event 即让循环干净退出。
+            # 生产从不 set 它，行为等同 time.sleep(wait)。
+            if ConfigManager._ip_probe_wake.wait(wait):
                 return
-        except Exception as e:
-            print(f"[GeoIP] HTTP IP check failed: {e}", file=sys.stderr)
-        # 刻意不写永久放弃标记：网络可能在几十分钟后才就绪，退避到 10 分钟一次的
-        # 探测成本可以忽略，而永久放弃会把 Steam 缺席的海外用户锁死在国内线路。
-        print(
-            f"[GeoIP] HTTP IP check will retry in "
-            f"{ConfigManager._ip_check_backoff_s(ConfigManager._ip_check_attempts):.0f}s",
-            file=sys.stderr,
-        )
+
+    @staticmethod
+    def _ensure_ip_probe_started():
+        """Idempotently start the background probe. Cheap to call from anywhere.
+
+        The free-route gate lives in the *callers* (only ``_check_non_mainland``
+        reaches here, and only free-route code reaches that), so this itself makes
+        no policy decision — it just guarantees at most one probe thread is running.
+        """
+        from utils.config_manager import ConfigManager
+
+        if ConfigManager._ip_check_cache is not None:
+            return
+        with ConfigManager._geo_probe_lock:
+            if ConfigManager._ip_check_cache is not None:
+                return
+            thread = ConfigManager._ip_probe_thread
+            if thread is not None and thread.is_alive():
+                return
+            thread = threading.Thread(
+                target=ConfigManager._ip_probe_loop,
+                name="geoip-probe",
+                daemon=True,
+            )
+            ConfigManager._ip_probe_thread = thread
+            thread.start()
 
     @staticmethod
     def join_ip_probe(timeout: float = 5.0) -> bool:
@@ -209,13 +219,10 @@ class CoreConfigMixin:
         if self._check_steam_non_mainland() is not None:
             return True
 
-        # 读一次配置来补发到期的探测：上一次失败、退避又已到期时这里不发，就只能
-        # 用兜底线路开一整场，而随后 get_core_config 发起的那次赶不上本场线路定死。
-        #
-        # 刻意走 aget_core_config 而不是直接戳 _check_ip_non_mainland_http：URL 改写
-        # 内部只对 lanlan.tech 免费路由做区域判定，这就是「该不该探测」的天然门。
-        # 直接戳会让自配 API / livestream 用户也把 IP 发给 ip-api.com——他们的线路
-        # 根本不经过区域改写，那次请求纯属白白暴露。
+        # 读一次配置以确保背景探测已启动（幂等）。刻意走 aget_core_config 而不是
+        # 直接戳 _ensure_ip_probe_started：免费路由门在 get_core_config 里
+        # （needs_region + _check_non_mainland），直接戳会让自配 API / livestream
+        # 用户也启动探测、把 IP 发给 ip-api.com——他们的线路根本不经过区域改写。
         await self.aget_core_config()
         if ConfigManager._ip_check_cache is not None:
             return True
@@ -245,92 +252,18 @@ class CoreConfigMixin:
 
     @staticmethod
     def _check_ip_non_mainland_http():
-        """Non-blocking read of the IP geolocation verdict (ip-api.com over HTTP).
+        """Read the IP geolocation verdict. Pure read — never does network IO here.
 
-        Never performs network IO on the caller's thread. When a probe is due this
-        kicks one off in the background and reports "no verdict yet"; the answer is
-        picked up by whichever call comes after it lands.
-
-        Blocking here is not an option: ``get_core_config`` fans out to ~40 sync
-        callers that sit inside ``async def`` (``get_model_api_config`` in
-        ``_start_session_prepare_runtime`` among them), so a 3s connect timeout
-        freezes the shared event loop — every WebSocket handshake and heartbeat
-        across all three subsystems stalls with it, which reads to users as
-        "cannot connect".
+        The verdict is produced by the background probe thread (``_ip_probe_loop``);
+        this only reports what has landed so far (True/False, or None if the probe
+        has not answered yet). Blocking here is not an option: ``get_core_config``
+        fans out to ~40 sync callers inside ``async def`` (``get_model_api_config``
+        in ``_start_session_prepare_runtime`` among them), so a 3s connect timeout
+        would freeze the shared event loop and stall every WebSocket handshake.
         """
-        # Late-bound: class-level shared state (single owner) lives on the
-        # assembled ConfigManager; resolve it through the package facade.
         from utils.config_manager import ConfigManager
 
-        cache = ConfigManager._ip_check_cache
-        if cache is not None:
-            return cache
-
-        # 退避账本的 check-and-set 必须原子：并发调用同时穿过门会在一次网络未就绪的
-        # 爆发里把退避烧光，也会同时起多个探测线程。
-        now = time.monotonic()
-        with ConfigManager._geo_probe_lock:
-            if ConfigManager._ip_check_cache is not None:
-                return ConfigManager._ip_check_cache
-            in_flight = ConfigManager._ip_probe_thread
-            if in_flight is not None and in_flight.is_alive():
-                # 用「是否还活着」当唯一判据会留一个死锁：getaddrinfo 不受 socket
-                # 超时约束，DNS 卡住的线程可以活得任意久，而它活着就永远挡住新探测
-                # ——指数退避再也不会跑，网络恢复了也回不来。超龄的当作已失效，另起
-                # 一个顶替（旧的靠 generation 失去写权，见 _run_ip_probe）。
-                started = ConfigManager._ip_probe_started_monotonic
-                if started is None or (now - started) < ConfigManager._IP_PROBE_STALE_AFTER_S:
-                    return None
-                # 顶替不能无限做：DNS 永久阻塞时每个退避周期都换一个，卡死的
-                # daemon 线程只增不减（封顶 10 分钟一档 ≈ 每小时 6 个，进程活多久
-                # 漏多久）。累积到上限就停手——此时网络已经坏得没有再探的意义。
-                ConfigManager._wedged_probes = [
-                    t for t in ConfigManager._wedged_probes if t.is_alive()
-                ]
-                if len(ConfigManager._wedged_probes) >= ConfigManager._IP_PROBE_MAX_WEDGED:
-                    # 到顶不能变成永久停手：那等于用「线程不泄漏」换回了本 PR 一开始
-                    # 删掉的那个死局——网络恢复后再也没人去探，海外用户锁死国内线路
-                    # （不变量 #4）。改为把节奏降到 _IP_PROBE_DESPERATE_INTERVAL_S
-                    # 一次：pathological 情况下线程增速从每小时 6 个降到 1 个，同时
-                    # 保证网络一旦恢复最迟一个周期内被发现。
-                    last_desperate = ConfigManager._ip_probe_last_desperate_monotonic
-                    if (last_desperate is not None
-                            and (now - last_desperate) < ConfigManager._IP_PROBE_DESPERATE_INTERVAL_S):
-                        return None
-                    ConfigManager._ip_probe_last_desperate_monotonic = now
-                    print(
-                        f"[GeoIP] {len(ConfigManager._wedged_probes)} probes wedged; "
-                        "starting a slow-rate replacement anyway so recovery is not missed",
-                        file=sys.stderr,
-                    )
-                print(
-                    f"[GeoIP] previous probe stuck for {now - started:.0f}s, starting a replacement",
-                    file=sys.stderr,
-                )
-            last = ConfigManager._ip_check_last_attempt_monotonic
-            failures = ConfigManager._ip_check_attempts
-            if last is not None and (now - last) < ConfigManager._ip_check_backoff_s(failures):
-                return None
-            if in_flight is not None and in_flight.is_alive():
-                # 记账放在「确定要另起一个」之后，且按身份去重：早记会在下面的退避
-                # 闸把本轮拦掉时留下一笔，同一个线程于是被反复计数、虚高到上限。
-                if not any(t is in_flight for t in ConfigManager._wedged_probes):
-                    ConfigManager._wedged_probes.append(in_flight)
-            ConfigManager._ip_check_last_attempt_monotonic = now
-            ConfigManager._ip_check_attempts = failures + 1
-            ConfigManager._ip_probe_generation += 1
-            # daemon：探测永远不该拖住进程退出（最坏挂在 3s 连接超时上）。
-            thread = threading.Thread(
-                target=ConfigManager._run_ip_probe,
-                args=(ConfigManager._ip_probe_generation,),
-                name="geoip-probe",
-                daemon=True,
-            )
-            ConfigManager._ip_probe_thread = thread
-            ConfigManager._ip_probe_started_monotonic = now
-            thread.start()
-
-        return None
+        return ConfigManager._ip_check_cache
 
     @staticmethod
     def _check_steam_non_mainland():
@@ -394,33 +327,26 @@ class CoreConfigMixin:
         if ConfigManager._region_cache is not None:
             return ConfigManager._region_cache
 
-        ip_result = self._check_ip_non_mainland_http()
-        steam_result = self._check_steam_non_mainland()
-        if ip_result is None:
-            # 探测在后台跑，可能恰好在上面两行之间落地。不复查就会拿 Steam 的
-            # 兜底票压过刚到手的权威结论——挂代理时两者方向相反，一个 URL 用 IP、
-            # 下一个用 Steam，同一份 core_config 快照内部就自相矛盾了。
-            ip_result = ConfigManager._ip_check_cache
+        # 确保后台探测在跑（幂等；免费路由门在调用者侧，见 _ensure_ip_probe_started）。
+        self._ensure_ip_probe_started()
 
+        # IP 权威：探测有结论就落定它。探测是唯一写者，读到什么就是什么，没有
+        # 「过期结论覆盖」的问题——单线程循环成功即退出。
+        ip_result = self._check_ip_non_mainland_http()
         if ip_result is not None:
             ConfigManager._region_cache = ip_result
             ConfigManager._geo_indeterminate_logged = False
-            print(f"[GeoIP] IP decides: non_mainland={ip_result} (Steam={steam_result})", file=sys.stderr)
+            print(f"[GeoIP] IP decides: non_mainland={ip_result}", file=sys.stderr)
             return ip_result
 
+        steam_result = self._check_steam_non_mainland()
         if steam_result is not None:
             # IP 探测无结论时才轮到 Steam。它反映的是 Steam 服务端看到的出口 IP，
-            # 挂代理时同样会跟着代理走，所以只当兜底票，不当权威票。
-            #
-            # 刻意**永不写** _region_cache，无论 IP 失败多少次：
-            #  - 冷启动首探超时那一刻 Steam 往往已经有票，落定它等于把这一票变成
-            #    永久裁决，IP 的退避重试再也没机会接管；
-            #  - 「失败够多次就落定」也不行：_ip_check_attempts 在网络 IO 之前递增，
-            #    某次探测尚在飞行中时并发调用就会看到阈值达标并落定 Steam，随后那次
-            #    探测的成功结论写进 _ip_check_cache 也永远不会被采纳；
-            #  - 且探测长期失败不代表 Steam 就对——Steam 走海外代理而直连 GeoIP 暂时
+            # 挂代理时同样会跟着代理走，所以只当兜底票、**永不落定** _region_cache：
+            #  - 冷启动首探超时那一刻 Steam 往往已有票，落定它等于让这一票永久裁决，
+            #    IP 的重试再没机会接管；
+            #  - 探测长期失败也不代表 Steam 就对——Steam 走海外代理而直连 GeoIP 暂时
             #    不可用时两者会分歧，网络恢复后必须让 IP 接管。
-            # 代价是探测持续失败时每个封顶退避周期再付一次超时，这是有意的取舍。
             if not ConfigManager._geo_steam_fallback_logged:
                 ConfigManager._geo_steam_fallback_logged = True
                 print(

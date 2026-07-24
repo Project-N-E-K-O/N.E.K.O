@@ -164,31 +164,23 @@ class ConfigManager(
     CLOUDSAVE_LOCAL_STATE_VERSION = 1
     CHARACTER_TOMBSTONES_STATE_VERSION = 1
 
-    # Combined region cache (None = not checked, True = non-mainland, False = mainland)
+    # 区域判定的三个缓存（None=未定，True=非大陆，False=大陆）：
+    #  - _region_cache：最终裁决，只由 IP 结论写（Steam 兜底票从不落定它）
+    #  - _ip_check_cache：背景探测线程的产物，唯一写者是 _ip_probe_loop
+    #  - _steam_check_cache：Steam SDK 的国家码
     _region_cache = None
-    # Individual caches for dual check (None = not yet tried, True/False = result,
-    # _GEO_INDETERMINATE = tried but got no usable answer → do not retry)
     _ip_check_cache = None
     _steam_check_cache = None
     _geo_indeterminate_logged = False
     _geo_steam_fallback_logged = False
-    # HTTP 探测的失败退避账本：开机自启动时网络栈常常还没就绪，首次探测必超时。
-    # 探测永不永久放弃（网络可能几十分钟后才好），只按失败次数指数退避。
-    # 账本的 check-and-set 由 _geo_probe_lock 保护：aget_core_config 会把探测
-    # 丢进 asyncio.to_thread，并发调用同时穿过门会在一次爆发里把退避烧光。
-    _ip_check_attempts = 0
-    _ip_check_last_attempt_monotonic = None
+    # 保护背景探测线程的幂等启动（_ensure_ip_probe_started 的 check-and-set）。
     _geo_probe_lock = threading.Lock()
-    # 在飞的探测线程；探测**永远**在后台跑，调用方从不等网络（见
-    # CoreConfigMixin._check_ip_non_mainland_http 的 docstring）。
+    # 背景探测线程：单个 daemon 循环，内部退避重试到成功即退出，是 _ip_check_cache
+    # 的唯一写者。单线程单写者 → 无需票号 / 卡死顶替 / 泄漏封顶那套并发管理。
     _ip_probe_thread = None
-    _ip_probe_started_monotonic = None
-    # 探测的「票号」：被顶替的旧探测失去写结论的权利，避免它带着换网前的答案
-    # 晚归、覆盖掉顶替者更新的结论。
-    _ip_probe_generation = 0
-    # 卡死待回收的探测线程（DNS 阻塞时它们 join 不掉），用于给顶替次数封顶。
-    _wedged_probes = []
-    _ip_probe_last_desperate_monotonic = None
+    # 可中断退避：set 它让探测循环从退避 sleep 中醒来并退出（进程 shutdown / 测试
+    # 清理）。生产从不 set，退避行为等同 time.sleep。
+    _ip_probe_wake = threading.Event()
 
 
 # 全局配置管理器实例
