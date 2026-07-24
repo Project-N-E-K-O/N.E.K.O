@@ -1,6 +1,6 @@
 {
-  "plugin.name": "QQ 자동 응답",
-  "plugin.description": "QQ 메시지를 읽어 권한에 따라 자동으로 응답합니다. OneBot 프로토콜로 QQ에 연결하며 다단계 권한 관리와 AI 대화를 지원합니다",
+  "plugin.name": "QQ 통합",
+  "plugin.description": "NapCat(OneBot 리버스 WebSocket) 또는 QQ 공식 오픈 플랫폼으로 연결. 답장 체인 분석, 음성, 스티커, 찌르기 등 멀티모달 출력 지원.",
   "entries.init_config.name": "QQ 설정 초기화",
   "entries.init_config.description": "QQ 플러그인을 처음 사용할 때, 가이드를 마친 뒤, 또는 설정 파일이 없을 때 새 QQ 설정을 만듭니다.",
   "entries.get_dashboard_state.name": "대시보드 상태 가져오기",

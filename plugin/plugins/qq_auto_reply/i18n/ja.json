@@ -1,6 +1,6 @@
 {
-  "plugin.name": "QQ 自動返信",
-  "plugin.description": "QQ メッセージを読み取り、権限に応じて自動返信します。OneBot プロトコル経由で QQ に接続し、多段階の権限管理と AI 対話に対応",
+  "plugin.name": "QQ 統合",
+  "plugin.description": "NapCat（OneBot 逆方向 WebSocket）または QQ 公式オープンプラットフォームで接続。返信チェーン解析、音声、スタンプ、つんつん などのマルチモーダル出力に対応。",
   "entries.init_config.name": "QQ 設定を初期化",
   "entries.init_config.description": "QQ プラグインを初めて使うとき、ガイド完了後、または設定ファイルがないときに新しい QQ 設定を作成します。",
   "entries.get_dashboard_state.name": "ダッシュボード状態を取得",

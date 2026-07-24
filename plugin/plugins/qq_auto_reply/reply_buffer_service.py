@@ -52,6 +52,7 @@ class QQReplyBufferService:
     def __init__(self, plugin: Any):
         self.plugin = plugin
         self._pending: dict[str, PendingReply] = {}
+        self._detached: dict[str, PendingReply] = {}  # 已 pop 但仍在等 pipeline 回复的桶
         self._bucket_id_seq: int = 0
 
     def _next_bucket_id(self) -> int:
@@ -65,9 +66,9 @@ class QQReplyBufferService:
     def store_reply(self, session_key: str, reply_text: str, blocks: list, *, expected_bucket_id: int = 0) -> bool:
         """pipeline 生成的回复存入缓冲桶，等计时器到期再发。返回 True 表示已存储。
 
-        expected_bucket_id: 触发本次 pipeline 的桶 ID。若与当前 _pending 中的桶不一致
+        expected_bucket_id: 触发本次 pipeline 的桶 ID。若与当前 _pending/_detached 中的桶不一致
         （说明旧桶已被替换），则拒绝写入，防止旧 pipeline 结果污染新桶。"""
-        existing = self._pending.get(session_key)
+        existing = self._pending.get(session_key) or self._detached.get(session_key)
         if existing is None:
             return False
         if expected_bucket_id and existing.bucket_id != expected_bucket_id:
@@ -78,16 +79,17 @@ class QQReplyBufferService:
         return True
 
     def has_pending(self, session_key: str) -> bool:
-        p = self._pending.get(session_key)
+        p = self._pending.get(session_key) or self._detached.get(session_key)
         return p is not None and (p.task is None or not p.task.done())
 
     def get_state(self) -> dict[str, Any]:
+        all_pending = {**self._pending, **self._detached}
         return {
             "pending": [
                 {"session_key": k, "count": len(p.entries), "wait_until": p.wait_until}
-                for k, p in self._pending.items()
+                for k, p in all_pending.items()
             ],
-            "count": len(self._pending),
+            "count": len(all_pending),
         }
 
     async def buffer(self, session_key: str, message_text: str, sender_id: str, is_group: bool, group_id: str) -> bool:
@@ -119,6 +121,7 @@ class QQReplyBufferService:
             if len(existing.entries) >= _MAX_BUFFER_COUNT:
                 existing.wait_until = 0
                 self._pending.pop(session_key, None)  # 先摘桶，避免新消息 cancel 掉本次交付
+                self._detached[session_key] = existing  # 保留在 _detached 中，等 pipeline 回复
                 existing._new_task(self._flush_detached(session_key, existing))
                 self.plugin._emit_log("INFO", f"[Buffer] 达到上限 key={session_key} count={len(existing.entries)} → 立即交付")
             else:
@@ -255,7 +258,10 @@ class QQReplyBufferService:
 
     async def _flush_detached(self, session_key: str, pending: PendingReply) -> None:
         """已从 _pending 摘除的桶的交付逻辑——不会被新消息 cancel。"""
-        await self._flush_impl(session_key, pending, check_pending=False)
+        try:
+            await self._flush_impl(session_key, pending, check_pending=False)
+        finally:
+            self._detached.pop(session_key, None)
 
     async def _flush(self, session_key: str, pending: PendingReply, *, abandon_on_no_reply: bool = False) -> None:
         await self._flush_impl(session_key, pending, check_pending=True, abandon_on_no_reply=abandon_on_no_reply)
@@ -269,6 +275,8 @@ class QQReplyBufferService:
         except asyncio.CancelledError:
             if check_pending and self._pending.get(session_key) is pending and pending.task_gen == gen:
                 self._pending.pop(session_key, None)
+            if not check_pending:
+                self._detached.pop(session_key, None)
             return
 
         if check_pending and self._pending.get(session_key) is not pending:
@@ -284,19 +292,26 @@ class QQReplyBufferService:
                 self._pending.pop(session_key, None)
                 self.plugin._emit_log("INFO", f"[Buffer] key={session_key} 话题偏移且无 bot 回复，放弃旧桶")
                 return
-            # LLM 还没生成完 → 等 1 秒重试，最多 30 次（30 秒）
-            # 不递增 task_gen——gate cancel 才能对上号取消掉
-            retries = getattr(pending, "_no_reply_retries", 0) + 1
-            pending._no_reply_retries = retries
-            if retries > 30:
-                self.plugin._emit_log("WARN", f"[Buffer] key={session_key} 等待回复超时，跳过交付")
-                self._pending.pop(session_key, None)
+            # 多条消息（≥2）→ 首条 pipeline 回复会被 summary 覆盖，无需等待
+            if len(user_entries) > 1:
+                self.plugin._emit_log("INFO", f"[Buffer] key={session_key} {len(user_entries)}条消息直接汇总，不等待首条 pipeline")
+            else:
+                # 单条消息：LLM 还没生成完 → 等 1 秒重试，最多 30 次（30 秒）
+                # 不递增 task_gen——gate cancel 才能对上号取消掉
+                retries = getattr(pending, "_no_reply_retries", 0) + 1
+                pending._no_reply_retries = retries
+                if retries > 30:
+                    self.plugin._emit_log("WARN", f"[Buffer] key={session_key} 等待回复超时，跳过交付")
+                    if check_pending:
+                        self._pending.pop(session_key, None)
+                    else:
+                        self._detached.pop(session_key, None)
+                    return
+                pending.wait_until = time.time() + 1.0
+                pending.task = asyncio.create_task(
+                    self._flush(session_key, pending) if check_pending else self._flush_detached(session_key, pending)
+                )
                 return
-            pending.wait_until = time.time() + 1.0
-            pending.task = asyncio.create_task(
-                self._flush(session_key, pending) if check_pending else self._flush_detached(session_key, pending)
-            )
-            return
 
         # pop 再交付——交付期间新消息进来会建新桶，不会污染当前桶
         if check_pending:

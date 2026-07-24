@@ -1,6 +1,6 @@
 {
-  "plugin.name": "QQ 自動回覆",
-  "plugin.description": "讀取 QQ 訊息並依權限自動回覆。透過 OneBot 協議連接 QQ，支援多級權限管理與 AI 對話",
+  "plugin.name": "QQ 整合",
+  "plugin.description": "透過 NapCat（OneBot 反向 WebSocket）或 QQ 官方開放平台接入，支援回覆引用鏈解析、語音/表情包/戳一戳等多模態輸出。",
   "entries.init_config.name": "初始化 QQ 設定",
   "entries.init_config.description": "在第一次使用 QQ 插件、完成引導或缺少設定檔時，建立一份新的 QQ 設定。",
   "entries.get_dashboard_state.name": "取得控制面板狀態",

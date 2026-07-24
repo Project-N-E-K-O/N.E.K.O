@@ -1,6 +1,6 @@
 {
-  "plugin.name": "Resposta automática do QQ",
-  "plugin.description": "Lê mensagens do QQ e responde automaticamente conforme as permissões. Conecta-se ao QQ via OneBot, com controle de acesso em vários níveis e conversa com IA",
+  "plugin.name": "Integração QQ",
+  "plugin.description": "Conecte via NapCat (OneBot WebSocket reverso) ou plataforma aberta oficial do QQ. Suporte a análise de cadeia de respostas, voz, figurinhas, cutucadas e outras saídas multimodais.",
   "entries.init_config.name": "Inicializar configuração do QQ",
   "entries.init_config.description": "Cria uma nova configuração do QQ quando você usa o plugin pela primeira vez, termina o onboarding ou ainda não existe um arquivo de configuração.",
   "entries.get_dashboard_state.name": "Obter estado do painel",

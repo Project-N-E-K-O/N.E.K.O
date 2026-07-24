@@ -221,12 +221,26 @@ class QQReplyPipelineRunner:
             )
             if not has_content:
                 # 空回复（如 <msg></msg>）→ 取消对应缓冲桶，避免 _flush 空等 30 次
+                # 必须校验 bucket_id，防止旧 pipeline 的空回复误删已被替换的新桶
                 buf_sid = request.group_id if request.is_group else request.sender_id
                 session_key = self.plugin._build_session_key(sender_id=buf_sid, is_group=request.is_group, group_id=request.group_id)
-                p = self.plugin.reply_buffer_service._pending.get(session_key)
-                if p and p.task and not p.task.done():
-                    p.task.cancel()
-                self.plugin.reply_buffer_service._pending.pop(session_key, None)
+                expected_bucket_id = getattr(request, 'buffer_bucket_id', 0) if request else 0
+                if expected_bucket_id:
+                    svc = self.plugin.reply_buffer_service
+                    p = svc._pending.get(session_key) or svc._detached.get(session_key)
+                    if p is None or p.bucket_id != expected_bucket_id:
+                        self.plugin._emit_log("DEBUG", f"[Buffer] 空回复但桶已过期 key={session_key} expected_id={expected_bucket_id} actual_id={getattr(p, 'bucket_id', 0)} → 忽略")
+                        from .pipeline_models import QQDeliveryResult
+                        return QQDeliveryResult(delivered=False, target_type=delivery_plan.target_type, target_id=delivery_plan.target_id, reply_text=None)
+                    if p.task and not p.task.done():
+                        p.task.cancel()
+                    svc._pending.pop(session_key, None)
+                    svc._detached.pop(session_key, None)
+                else:
+                    p = self.plugin.reply_buffer_service._pending.get(session_key)
+                    if p and p.task and not p.task.done():
+                        p.task.cancel()
+                    self.plugin.reply_buffer_service._pending.pop(session_key, None)
                 self.plugin._emit_log("DEBUG", f"[Buffer] 空回复，取消缓冲 key={session_key}")
                 from .pipeline_models import QQDeliveryResult
                 return QQDeliveryResult(delivered=False, target_type=delivery_plan.target_type, target_id=delivery_plan.target_id, reply_text=None)
@@ -237,6 +251,11 @@ class QQReplyPipelineRunner:
                 self.plugin._emit_log("DEBUG", f"[Buffer] 回复已缓存 key={session_key} text={first_text[:30]}")
                 from .pipeline_models import QQDeliveryResult
                 return QQDeliveryResult(delivered=True, target_type=delivery_plan.target_type, target_id=delivery_plan.target_id, reply_text=first_text)
+            # store_reply 失败且来自缓冲桶 → 桶已被替换（话题偏移/上限交付），丢弃过期回复
+            if expected_bucket_id:
+                self.plugin._emit_log("INFO", f"[Buffer] 桶已过期 key={session_key} bucket_id={expected_bucket_id} → 丢弃过期回复")
+                from .pipeline_models import QQDeliveryResult
+                return QQDeliveryResult(delivered=False, target_type=delivery_plan.target_type, target_id=delivery_plan.target_id, reply_text=None)
 
         # 不走缓冲 → 直接交付
         reason = "skip" if skip_buffer else ("group" if request and request.is_group else "no_buffer_svc")

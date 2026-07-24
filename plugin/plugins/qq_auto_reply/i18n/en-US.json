@@ -1,6 +1,6 @@
 {
-  "plugin.name": "QQ Auto-Reply",
-  "plugin.description": "Read QQ messages and auto-reply based on permission tiers. Connects to QQ over the OneBot protocol with multi-level access control and AI conversation",
+  "plugin.name": "QQ Integration",
+  "plugin.description": "Connect via NapCat (OneBot reverse WebSocket) or QQ official Open Platform. Supports reply-chain parsing, voice, stickers, pokes, and other multi-modal output.",
   "entries.init_config.name": "Initialize QQ config",
   "entries.init_config.description": "Create a new QQ configuration when you first use the plugin, finish onboarding, or don't have a config file yet.",
   "entries.get_dashboard_state.name": "Get dashboard state",
