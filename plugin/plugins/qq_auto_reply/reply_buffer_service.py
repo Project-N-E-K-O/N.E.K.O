@@ -274,11 +274,8 @@ class QQReplyBufferService:
     # ------------------------------------------------------------------
 
     async def _flush_detached(self, session_key: str, pending: PendingReply) -> None:
-        """已从 _pending 摘除的桶的交付逻辑——复合键保证不误删其他桶。"""
-        try:
-            await self._flush_impl(session_key, pending, check_pending=False)
-        finally:
-            self._detached.pop(self._detached_key(session_key, pending.bucket_id), None)
+        """已从 _pending 摘除的桶的交付逻辑——_flush_impl 内部处理清理。"""
+        await self._flush_impl(session_key, pending, check_pending=False)
 
     async def _flush(self, session_key: str, pending: PendingReply, *, abandon_on_no_reply: bool = False) -> None:
         await self._flush_impl(session_key, pending, check_pending=True, abandon_on_no_reply=abandon_on_no_reply)
@@ -334,6 +331,8 @@ class QQReplyBufferService:
         # pop 再交付——交付期间新消息进来会建新桶，不会污染当前桶
         if check_pending:
             self._pending.pop(session_key, None)
+        else:
+            self._detached.pop(self._detached_key(session_key, pending.bucket_id), None)
 
         if len(user_entries) == 1:
             # 只有首条用户消息 + bot 回复：直接交付 bot 回复
