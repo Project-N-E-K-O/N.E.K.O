@@ -134,8 +134,8 @@ class QQAutoReplyConfigStore:
             "sticker_cooldown_messages": 5,          # 表情包发送间隔（群内消息数），0=不限制
             # 回复缓冲参数（群聊）
             "buffer_enabled": True,                  # 是否启用回复缓冲
-            "buffer_delay_mean": 9.0,                # 缓冲延迟均值（秒）
-            "buffer_delay_sigma": 1.8,               # 缓冲延迟标准差（秒）
+            "buffer_delay_mean": 4.0,                # 缓冲延迟均值（秒）
+            "buffer_delay_sigma": 0.8,               # 缓冲延迟标准差（秒）
             "buffer_max_count": 17,                  # 缓冲桶最大消息数，达到后立即交付
             # 回复缓冲参数（私聊，未配置时回退到群聊默认）
             "buffer_private_delay_mean": None,
