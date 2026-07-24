@@ -283,6 +283,18 @@ async def openai_asr_worker(
                 }:
                     await _handle_transcript_event(event)
                     continue
+                if (
+                    event_type
+                    == "conversation.item.input_audio_transcription.failed"
+                ):
+                    item_id = event.get("item_id")
+                    if isinstance(item_id, str):
+                        item_keys.pop(item_id, None)
+                    await _emit_error(
+                        "ASR_OPENAI_TRANSCRIPTION_FAILED",
+                        "OpenAI failed to transcribe a committed audio item",
+                    )
+                    return
                 if event_type == "error":
                     if _openai_event_is_auth_rejection(event):
                         await _emit_error(

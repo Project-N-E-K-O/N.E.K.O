@@ -1,4 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
+import json
 import sys
 import os
 import platform
@@ -65,6 +66,20 @@ embedding_assets_present = os.path.isdir(
 voice_turn_assets_present = os.path.isdir(
     os.path.join(PROJECT_ROOT, 'data', 'vad_models')
 )
+speaker_model_dir = os.path.join(PROJECT_ROOT, 'data', 'speaker_models')
+speaker_model_manifest_path = os.path.join(speaker_model_dir, 'manifest.json')
+speaker_model_assets_present = False
+if os.path.isfile(speaker_model_manifest_path):
+    with open(speaker_model_manifest_path, encoding='utf-8') as manifest_file:
+        speaker_model_filename = json.load(manifest_file)['filename']
+    if (
+        not isinstance(speaker_model_filename, str)
+        or os.path.basename(speaker_model_filename) != speaker_model_filename
+    ):
+        raise RuntimeError('Invalid speaker model filename in manifest.json')
+    speaker_model_assets_present = os.path.isfile(
+        os.path.join(speaker_model_dir, speaker_model_filename)
+    )
 
 # galgame OCR deps: bundling is the ONLY path post-refactor (in-app install
 # routes were removed). Two distinct failure modes get distinct diagnostics:
@@ -101,7 +116,7 @@ for pkg in critical_packages:
     except Exception as e:
         if pkg in embedding_runtime_packages and (
             embedding_assets_present
-            or (pkg == 'onnxruntime' and voice_turn_assets_present)
+            or (pkg == 'onnxruntime' and (voice_turn_assets_present or speaker_model_assets_present))
         ):
             raise RuntimeError(
                 f"Cannot collect {pkg!r}, but packaged model assets require it. "
@@ -178,6 +193,7 @@ add_data('data/browser_use_prompts', 'data/browser_use_prompts')
 add_data('data/tiktoken_cache', 'data/tiktoken_cache')
 add_data('data/embedding_models', 'data/embedding_models')
 add_data('data/vad_models', 'data/vad_models')
+add_data('data/speaker_models', 'data/speaker_models')
 add_data('steam_appid.txt', '.')
 
 # 添加 Steam 相关的 DLL 和库文件（源文件位于 steamworks/，打包后放在根目录）
