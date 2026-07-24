@@ -63,7 +63,6 @@ import json
 import math
 import sys
 import threading
-import time
 from copy import deepcopy
 from urllib.parse import urlparse, urlunparse
 
@@ -405,7 +404,8 @@ class CoreConfigMixin:
             logger.warning(f"Livestream URL 派生失败，回退到原始路径: {e}")
 
         try:
-            if non_mainland if non_mainland is not None else self._check_non_mainland():
+            overseas = non_mainland if non_mainland is not None else self._check_non_mainland()
+            if overseas:
                 # 海外免费统一走 www.lanlan.app（含 /tts）：该节点透传客户端
                 # voice 字段到 Gemini，支持 Gemini 全量 + yui。早期把 /tts 降级到
                 # 裸 lanlan.app（硬覆盖 Leda 的旧端点）的 .replace 已移除。

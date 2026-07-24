@@ -156,11 +156,16 @@ async def _get_or_create_session(
     # 与 core/lifecycle.py 的会话准备路径对偶：下面建出来的 OmniOfflineClient 会连
     # base_url 一起缓存进会话池、整场不再复议，所以要先给仍在飞的区域探测一个收尾
     # 窗口。已落定时零开销；自配 API 用户不会因此发起探测（内部按免费路由设门）。
+    #
+    # 刻意 fail-open 并 warning（区别于主会话/热切换路径的异常传播）：小游戏是轻量
+    # 入口，不该因区域探测本身出错而开不了；落定失败时退化到当前配置（最坏用国内
+    # 兜底线路）仍可用，比 fail-closed 更符合游戏场景。warning 而非静默，便于诊断
+    # 「海外用户偶尔一整场走国内线路」。
     from ..shared_state import get_config_manager as _get_cm
     try:
         await _get_cm().aensure_region_resolved()
     except Exception:
-        logger.debug("[GeoIP] 游戏会话区域落定失败，按现有配置继续", exc_info=True)
+        logger.warning("[GeoIP] 游戏会话区域落定失败，退化到当前配置继续", exc_info=True)
 
     char_info = _get_character_info(lanlan_name)
     canonical_lanlan = str(char_info.get("lanlan_name") or lanlan_name or "").strip()
