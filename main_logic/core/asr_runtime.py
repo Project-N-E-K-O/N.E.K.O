@@ -21,6 +21,7 @@ from main_logic.asr_client.runtime import (
     IndependentAsrRuntime,
 )
 from main_logic.voice_identity import (
+    OwnerVoiceBetaDecision,
     OwnerVoiceBetaPolicy,
     OwnerVoiceCandidateIdentity,
     OwnerVoiceDecisionRecord,
@@ -323,7 +324,28 @@ class AsrRuntimeMixin:
         self,
         observation: SpeakerShadowObservation,
     ) -> None:
-        self._record_owner_voice_beta_decision(observation)
+        decision = self._record_owner_voice_beta_decision(observation)
+        if (
+            decision is not None
+            and decision.decision
+            is OwnerVoiceBetaDecision.REJECT_CURRENT_CANDIDATE
+        ):
+            try:
+                registry = get_voice_identity_profile_registry()
+                revision = registry.profile_revision
+                if (
+                    registry.filter_enabled
+                    and revision == decision.identity.profile_revision
+                    and self._asr_runtime.request_owner_voice_candidate_rejection(
+                        decision,
+                        active_profile_revision=revision,
+                    )
+                ):
+                    self._voice_input_registry.invalidate_utterance(
+                        "owner_voice_soft_reject"
+                    )
+            except Exception:
+                pass
         callback = self._speaker_shadow_observation_callback
         if callback is None:
             return
@@ -339,7 +361,7 @@ class AsrRuntimeMixin:
     def _record_owner_voice_beta_decision(
         self,
         observation: SpeakerShadowObservation,
-    ) -> None:
+    ) -> OwnerVoiceDecisionRecord | None:
         """Record a beta observation without granting execution authority."""
 
         try:
@@ -355,13 +377,14 @@ class AsrRuntimeMixin:
                 or not session_id
                 or scope not in {"provider_pause", "smart_turn_turn"}
             ):
-                return
+                return None
             identity = OwnerVoiceCandidateIdentity(
                 session_id=session_id,
                 detector_epoch=int(candidate.detector_epoch),
-                candidate_generation=int(candidate.shadow_generation),
+                candidate_generation=int(candidate.candidate_generation),
                 candidate_scope=scope,
                 profile_revision=revision,
+                observation_generation=int(candidate.shadow_generation),
             )
             registry = get_voice_identity_profile_registry()
             self._owner_voice_beta_last_decision = (
@@ -372,9 +395,10 @@ class AsrRuntimeMixin:
                     active_profile_revision=registry.profile_revision,
                 )
             )
+            return self._owner_voice_beta_last_decision
         except Exception:
             # Identity observation is always fail-open and cannot affect ASR.
-            return
+            return None
 
     def _set_microphone_route(
         self,

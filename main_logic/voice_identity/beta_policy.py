@@ -58,6 +58,7 @@ class OwnerVoiceCandidateIdentity:
     candidate_generation: int
     candidate_scope: OwnerCandidateScope
     profile_revision: int
+    observation_generation: int = 0
 
     def __post_init__(self) -> None:
         if not self.session_id.strip():
@@ -70,13 +71,17 @@ class OwnerVoiceCandidateIdentity:
             raise ValueError("candidate_scope is invalid")
         if self.profile_revision < 0:
             raise ValueError("profile_revision must not be negative")
+        if self.observation_generation < 0:
+            raise ValueError("observation_generation must not be negative")
 
     def matches_observation(self, observation: SpeakerShadowObservation) -> bool:
         candidate = observation.candidate
         return bool(
             getattr(candidate, "detector_epoch", None) == self.detector_epoch
-            and getattr(candidate, "shadow_generation", None)
+            and getattr(candidate, "candidate_generation", None)
             == self.candidate_generation
+            and getattr(candidate, "shadow_generation", None)
+            == self.observation_generation
             and getattr(candidate, "scope", None) == self.candidate_scope
         )
 

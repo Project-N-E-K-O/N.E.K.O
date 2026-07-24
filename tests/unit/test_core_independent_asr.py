@@ -31,6 +31,7 @@ from main_logic.asr_client.detector import (
 )
 from main_logic.asr_client.lifecycle import (
     AudioDisposition,
+    FinalKey,
     VoiceIngressToken,
     VoiceLifecycleConfig,
     VoiceLifecycleEvent,
@@ -43,13 +44,17 @@ from main_logic.voice_identity.contracts import (
     SpeakerShadowConfig,
     SpeakerShadowObservation,
 )
-from main_logic.voice_identity.beta_policy import OwnerVoiceBetaDecision
-from main_logic.voice_identity.registry import (
-    get_voice_identity_profile_registry,
+from main_logic.voice_identity.beta_policy import (
+    OwnerVoiceBetaDecision,
+    OwnerVoiceCandidateIdentity,
+    OwnerVoiceDecisionRecord,
 )
 from main_logic.asr_client.speaker_shadow import SpeakerShadowCandidateKey
 from main_logic.asr_client.throttle_policy import ThrottleAction
-from main_logic.voice_turn.audio_input import VoiceInputAudioPipeline
+from main_logic.voice_turn.audio_input import (
+    ProcessedVoiceFrame,
+    VoiceInputAudioPipeline,
+)
 from main_logic.voice_turn.contracts import (
     AsrSubmitResult,
     AsrSubmitStatus,
@@ -269,7 +274,12 @@ async def test_beta_owner_policy_records_without_executing_rejection() -> None:
     profile.close()
     registry.set_filter_enabled(True)
     runtime._voice_identity_session = SimpleNamespace(profile_revision=7)
-    candidate = SpeakerShadowCandidateKey(4, 9, "provider_pause")
+    candidate = SpeakerShadowCandidateKey(
+        4,
+        9,
+        "provider_pause",
+        candidate_generation=3,
+    )
 
     try:
         await runtime._receive_speaker_shadow_observation(
@@ -799,6 +809,318 @@ async def _start_and_seal_turn(
         runtime._asr_session_epoch,
     )
     await runtime._handle_independent_asr_endpoint(runtime._asr_session_epoch)
+
+
+def _soft_reject_record(
+    *,
+    session_id: str = "voice-session-1",
+    detector_epoch: int = 4,
+    candidate_generation: int = 3,
+    candidate_scope: str = "provider_pause",
+    profile_revision: int = 7,
+    observation_generation: int = 9,
+) -> OwnerVoiceDecisionRecord:
+    return OwnerVoiceDecisionRecord(
+        identity=OwnerVoiceCandidateIdentity(
+            session_id=session_id,
+            detector_epoch=detector_epoch,
+            candidate_generation=candidate_generation,
+            candidate_scope=candidate_scope,
+            profile_revision=profile_revision,
+            observation_generation=observation_generation,
+        ),
+        decision=OwnerVoiceBetaDecision.REJECT_CURRENT_CANDIDATE,
+        config_version="beta-v1",
+        observed_audio_ms=3_000,
+        reason="stable_clear_mismatch",
+    )
+
+
+class _SoftRejectDetector(_ReadyDetector):
+    def __init__(self) -> None:
+        super().__init__()
+        self.detector_epoch = 4
+        self.expected_shadow = SpeakerShadowCandidateKey(
+            4,
+            9,
+            "provider_pause",
+            candidate_generation=3,
+        )
+        self.feed = AsyncMock(
+            side_effect=[
+                DetectorFeedResult(
+                    (SpeechActivityEvent.SPEECH_RESUMED,),
+                    True,
+                ),
+                DetectorFeedResult(
+                    (SpeechActivityEvent.CANDIDATE_PAUSE,),
+                    True,
+                ),
+                DetectorFeedResult(
+                    (SpeechActivityEvent.SPEECH_STARTED,),
+                    True,
+                ),
+            ]
+        )
+
+    def matches_speaker_shadow_candidate(
+        self,
+        expected: SpeakerShadowCandidateKey,
+    ) -> bool:
+        return expected == self.expected_shadow
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("session_id", "another-session"),
+        ("detector_epoch", 5),
+        ("candidate_generation", 10),
+        ("observation_generation", 10),
+        ("candidate_scope", "smart_turn_turn"),
+        ("profile_revision", 8),
+    ),
+)
+async def test_owner_soft_reject_ignores_every_stale_identity_field(
+    field: str,
+    value,
+) -> None:
+    runtime = _Runtime()
+    runtime._voice_lease_connection_id = "voice-session-1"
+    _install_ready_lifecycle(runtime, "openai")
+    detector = _SoftRejectDetector()
+    runtime._asr_detector = detector
+    runtime._asr_runtime._asr_current_ingress_token = runtime._capture_ingress_token()
+    record_values = {field: value}
+
+    accepted = runtime._asr_runtime.request_owner_voice_candidate_rejection(
+        _soft_reject_record(**record_values),
+        active_profile_revision=7,
+    )
+
+    assert accepted is False
+    assert runtime._asr_session is not None
+    detector.reset.assert_not_awaited()
+
+
+async def test_owner_soft_reject_drops_tail_and_next_candidate_recovers() -> None:
+    runtime = _Runtime()
+    runtime._voice_lease_connection_id = "voice-session-1"
+    old_asr = type(
+        "Asr",
+        (),
+        {
+            "is_ready": True,
+            "stream_audio": AsyncMock(),
+            "close": AsyncMock(),
+        },
+    )()
+    runtime._asr_session = old_asr
+    runtime._asr_provider = "openai"
+    runtime._asr_route_mode = "independent"
+    runtime._asr_lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("openai", "provider"),
+        shadow_mode=False,
+    )
+    runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    runtime._asr_lifecycle.transition(VoiceLifecycleEvent.SOFT_WAKE)
+    runtime._asr_lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+    detector = _SoftRejectDetector()
+    runtime._asr_detector = detector
+    ingress = runtime._capture_ingress_token()
+    runtime._asr_runtime._asr_current_ingress_token = ingress
+    turn = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    current_final = FinalKey.from_turn(turn)
+    previous_final = FinalKey(
+        session_epoch=99,
+        connection_id="previous-session",
+        lease_generation=1,
+        route_generation=1,
+        turn_id=1,
+    )
+    assert runtime._asr_transcript_dispatcher.try_reserve(previous_final)
+    assert runtime._asr_transcript_dispatcher.try_reserve(current_final)
+    runtime._asr_reserved_final_key = current_final
+    assert runtime._asr_audio_dispatcher.activate(turn, old_asr, b"")
+    runtime._asr_audio_sequence = 1
+    assert runtime._asr_audio_dispatcher.enqueue_audio(
+        turn,
+        old_asr,
+        b"\x01\x00" * 160,
+        sample_rate_hz=16_000,
+        sequence_no=1,
+    )
+
+    assert runtime._asr_runtime.request_owner_voice_candidate_rejection(
+        _soft_reject_record(),
+        active_profile_revision=7,
+    )
+    assert runtime._asr_session is None
+    assert runtime._asr_audio_dispatcher.active_turn is None
+    assert previous_final in runtime._asr_transcript_dispatcher._reservations
+    assert current_final not in runtime._asr_transcript_dispatcher._reservations
+    assert (
+        runtime._asr_lifecycle.snapshot.state
+        is VoiceLifecycleState.LOCAL_LISTEN
+    )
+
+    await runtime._asr_runtime.wait_owner_voice_soft_filter_idle()
+    old_asr.close.assert_awaited_once_with()
+    detector.reset.assert_not_awaited()
+    await runtime._handle_independent_asr_final(
+        "must not reach the LLM",
+        runtime._asr_session_epoch,
+        "openai",
+    )
+    runtime.handle_input_transcript.assert_not_awaited()
+
+    tail = ProcessedVoiceFrame(
+        pcm16=b"\x02\x00" * 160,
+        sample_rate_hz=16_000,
+        speech_probability=0.9,
+        rnnoise_available=True,
+    )
+    assert (
+        await runtime._asr_runtime.submit(tail, ingress_token=ingress)
+    ).status is AsrSubmitStatus.ACCEPTED
+    assert runtime._asr_session is None
+    assert runtime._asr_runtime._owner_voice_soft_suppression is not None
+
+    assert (
+        await runtime._asr_runtime.submit(tail, ingress_token=ingress)
+    ).status is AsrSubmitStatus.ACCEPTED
+    assert runtime._asr_runtime._owner_voice_soft_suppression is None
+    detector.reset.assert_awaited_once_with()
+
+    next_asr = type(
+        "Asr",
+        (),
+        {
+            "is_ready": True,
+            "stream_audio": AsyncMock(),
+            "close": AsyncMock(),
+        },
+    )()
+    runtime._asr_session = next_asr
+    assert (
+        await runtime._asr_runtime.submit(tail, ingress_token=ingress)
+    ).status is AsrSubmitStatus.ACCEPTED
+    await runtime._asr_audio_dispatcher.wait_idle()
+
+    next_asr.stream_audio.assert_awaited()
+    runtime.handle_input_transcript.assert_not_awaited()
+
+
+async def test_core_executes_only_current_beta_rejection_record() -> None:
+    runtime = _Runtime()
+    runtime._voice_lease_connection_id = "voice-session-1"
+    old_asr = type(
+        "Asr",
+        (),
+        {
+            "is_ready": True,
+            "stream_audio": AsyncMock(),
+            "close": AsyncMock(),
+        },
+    )()
+    runtime._asr_session = old_asr
+    runtime._asr_provider = "openai"
+    runtime._asr_route_mode = "independent"
+    runtime._asr_lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("openai", "provider"),
+        shadow_mode=False,
+    )
+    runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    runtime._asr_lifecycle.transition(VoiceLifecycleEvent.SOFT_WAKE)
+    runtime._asr_lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+    runtime._asr_detector = _SoftRejectDetector()
+    runtime._asr_runtime._asr_current_ingress_token = runtime._capture_ingress_token()
+    runtime._voice_identity_session = SimpleNamespace(profile_revision=7)
+    runtime._voice_input_registry.invalidate_utterance = MagicMock(return_value=True)
+    registry = get_voice_identity_profile_registry()
+    profile = SpeakerProfile(
+        np.eye(4, dtype=np.float32)[0],
+        profile_revision=7,
+        model_id="test-model",
+        model_revision="v1",
+        embedding_dimension=4,
+    )
+    registry.install_profile(profile)
+    profile.close()
+    registry.set_filter_enabled(True)
+    candidate = SpeakerShadowCandidateKey(
+        4,
+        9,
+        "provider_pause",
+        candidate_generation=3,
+    )
+
+    try:
+        await runtime._receive_speaker_shadow_observation(
+            SpeakerShadowObservation(candidate, 0.20, (), 1_500)
+        )
+        assert runtime._asr_session is old_asr
+        await runtime._receive_speaker_shadow_observation(
+            SpeakerShadowObservation(candidate, 0.25, (), 3_000)
+        )
+
+        assert runtime._asr_session is None
+        assert runtime._asr_runtime._owner_voice_soft_suppression is not None
+        runtime._voice_input_registry.invalidate_utterance.assert_called_once_with(
+            "owner_voice_soft_reject"
+        )
+        await runtime._asr_runtime.wait_owner_voice_soft_filter_idle()
+        old_asr.close.assert_awaited_once_with()
+    finally:
+        registry.close()
+
+
+async def test_owner_soft_reject_reset_failure_fails_open() -> None:
+    runtime = _Runtime()
+    runtime._voice_lease_connection_id = "voice-session-1"
+    old_asr = type(
+        "Asr",
+        (),
+        {
+            "is_ready": True,
+            "close": AsyncMock(),
+        },
+    )()
+    runtime._asr_session = old_asr
+    runtime._asr_provider = "openai"
+    runtime._asr_lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("openai", "provider"),
+        shadow_mode=False,
+    )
+    runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    runtime._asr_lifecycle.transition(VoiceLifecycleEvent.SOFT_WAKE)
+    runtime._asr_lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+    detector = _SoftRejectDetector()
+    detector.reset = AsyncMock(side_effect=RuntimeError("reset failed"))
+    runtime._asr_detector = detector
+    runtime._asr_runtime._asr_current_ingress_token = runtime._capture_ingress_token()
+
+    assert runtime._asr_runtime.request_owner_voice_candidate_rejection(
+        _soft_reject_record(),
+        active_profile_revision=7,
+    )
+    await runtime._asr_runtime.wait_owner_voice_soft_filter_idle()
+
+    tail = ProcessedVoiceFrame(
+        pcm16=b"\x02\x00" * 160,
+        sample_rate_hz=16_000,
+        speech_probability=0.9,
+        rnnoise_available=True,
+    )
+    ingress = runtime._asr_runtime._asr_current_ingress_token
+    assert ingress is not None
+    await runtime._asr_runtime.submit(tail, ingress_token=ingress)
+    assert runtime._asr_runtime._owner_voice_soft_suppression is not None
+    await runtime._asr_runtime.submit(tail, ingress_token=ingress)
+
+    assert runtime._asr_runtime._owner_voice_soft_suppression is None
+    detector.reset.assert_awaited_once_with()
+    old_asr.close.assert_awaited_once_with()
 
 
 async def test_runtime_registers_chat_and_game_with_chat_active_by_default() -> None:

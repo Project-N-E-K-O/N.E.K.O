@@ -13,6 +13,7 @@ from main_logic.voice_identity.contracts import (
     SpeakerShadowObservation,
 )
 from main_logic.voice_identity.runtime import SpeakerShadowRuntime
+from main_logic.voice_turn.contracts import SpeechActivityEvent
 
 
 class _Backend:
@@ -226,6 +227,43 @@ async def test_shadow_failures_and_low_scores_never_change_detector_results() ->
     assert second.throttle_available is True
     assert gate.inputs == [_pcm(10), _pcm(10)]
     assert shadow.snapshot()["inference_failure_count"] == 1
+    await detector.close()
+
+
+async def test_detector_matches_only_the_live_confirmed_shadow_candidate() -> None:
+    class _StartedGate(_Gate):
+        def feed(self, pcm16: bytes):
+            self.inputs.append(pcm16)
+            return (SpeechActivityEvent.SPEECH_STARTED,)
+
+    shadow = SpeakerShadowRuntime(
+        backend_factory=lambda: _Backend(),
+        config=_config(minimum_audio_ms=10),
+    )
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_StartedGate(),
+        speaker_shadow=shadow,
+    )
+
+    await detector.feed(
+        _pcm(10),
+        speech_probability=0.9,
+        rnnoise_available=True,
+    )
+    candidate = detector._speaker_shadow_candidate
+
+    assert candidate is not None
+    assert detector.matches_speaker_shadow_candidate(candidate)
+    assert not detector.matches_speaker_shadow_candidate(
+        SpeakerShadowCandidateKey(
+            candidate.detector_epoch,
+            candidate.shadow_generation + 1,
+            candidate.scope,
+        )
+    )
+    await detector.reset()
+    assert not detector.matches_speaker_shadow_candidate(candidate)
     await detector.close()
 
 

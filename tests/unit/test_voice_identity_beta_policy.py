@@ -15,9 +15,10 @@ def _identity(*, revision: int = 7) -> OwnerVoiceCandidateIdentity:
     return OwnerVoiceCandidateIdentity(
         session_id="voice-session-1",
         detector_epoch=4,
-        candidate_generation=9,
+        candidate_generation=3,
         candidate_scope="provider_pause",
         profile_revision=revision,
+        observation_generation=9,
     )
 
 
@@ -33,7 +34,8 @@ def _observation(
         (),
         {
             "detector_epoch": identity.detector_epoch,
-            "shadow_generation": identity.candidate_generation,
+            "candidate_generation": identity.candidate_generation,
+            "shadow_generation": identity.observation_generation,
             "scope": identity.candidate_scope,
         },
     )()

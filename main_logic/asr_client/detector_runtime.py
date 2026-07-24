@@ -1202,6 +1202,19 @@ class DetectorRuntime:
     def candidate_open(self) -> bool:
         return self._candidate_open
 
+    def matches_speaker_shadow_candidate(
+        self,
+        expected: SpeakerShadowCandidateKey,
+    ) -> bool:
+        """Confirm one fully-scoped shadow identity is still the live candidate."""
+
+        return bool(
+            not self._closed
+            and self._speaker_shadow_state is _SpeakerShadowState.CONFIRMED
+            and self._speaker_shadow_candidate == expected
+            and expected.detector_epoch == self._detector_epoch
+        )
+
     @property
     def throttle_shadow_metrics(self) -> ThrottleShadowMetrics:
         return self._throttle_policy.shadow_metrics
@@ -2208,6 +2221,7 @@ class DetectorRuntime:
             detector_epoch=self._detector_epoch,
             shadow_generation=self._speaker_shadow_generation,
             scope=scope,
+            candidate_generation=self._candidate_generation,
         )
         self._speaker_shadow_candidate = candidate
         self._speaker_shadow_state = state
