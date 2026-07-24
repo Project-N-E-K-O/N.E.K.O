@@ -39,6 +39,7 @@ import CompactExportHistoryPanel, {
   type CompactExportPreviewResult,
 } from './CompactExportHistoryPanel';
 import { getChatCompanionEmptyStateFallback, getChatEmptyStateFallback } from './chat-copy';
+import { swapImageToMemeLoadFailedSticker } from './memeImageFallback';
 import { i18n } from './i18n';
 import {
   type ChatMessage,
@@ -54,7 +55,7 @@ import {
   type ChoicePromptSource,
 } from './message-schema';
 import {
-  AVAILABLE_AVATAR_TOOLS,
+  AVAILABLE_COMPACT_AVATAR_TOOLS,
   DEFAULT_ACTIVE_AVATAR_TOOL_IDS,
   persistActiveAvatarToolIds,
   readPersistedActiveAvatarToolIds,
@@ -766,7 +767,7 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
 
 type ToolIconItem = AvatarToolItem;
 
-const toolIconItems = AVAILABLE_AVATAR_TOOLS;
+const toolIconItems = AVAILABLE_COMPACT_AVATAR_TOOLS;
 
 function getToolItemLabel(item: ToolIconItem): string {
   return i18n(item.labelKey, item.labelFallback);
@@ -856,6 +857,7 @@ function CompactChatApp({
   title = i18n('chat.title', 'N.E.K.O Chat'),
   iconSrc = '/static/icons/chat_icon.png',
   messages = defaultMessages,
+  assistantName = '',
   inputPlaceholder = i18n('chat.textInputPlaceholder', 'Type a message...'),
   sendButtonLabel = i18n('chat.send', 'Send'),
   chatWindowAriaLabel = i18n('chat.reactWindowAriaLabel', 'Neko chat window'),
@@ -864,6 +866,7 @@ function CompactChatApp({
   composerHidden = false,
   composerDisabled = false,
   compactInputLocked = false,
+  catLocalTextOnly = false,
   chatSurfaceMode = 'compact',
   compactMinimizeCancelSeq = 0,
   compactChatState,
@@ -920,6 +923,8 @@ function CompactChatApp({
   useCompactToolWheelAudioPreload();
 
   const [draft, setDraft] = useState('');
+  const [catDraft, setCatDraft] = useState('');
+  const visibleDraft = catLocalTextOnly ? catDraft : draft;
   const guideChatButtonsLocked = useGuideChatButtonLock();
   const compactTextEntryLocked = composerDisabled || compactInputLocked || guideChatButtonsLocked;
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
@@ -973,7 +978,7 @@ function CompactChatApp({
   const compactInputToolFanInteractiveRef = useRef(false);
   const compactInputRef = useRef<HTMLTextAreaElement | null>(null);
   const compactChoiceLayerRef = useRef<HTMLDivElement | null>(null);
-  const draftRef = useRef(draft);
+  const draftRef = useRef(visibleDraft);
   const compactPreviewTextVisibleRef = useRef('');
   const previousCompactPreviewTextRef = useRef('');
   const compactPreviewTextRef = useRef<HTMLSpanElement | null>(null);
@@ -1069,7 +1074,8 @@ function CompactChatApp({
   const lastCompactToolWheelRotateRequestIdRef = useRef('');
   const lastCompactHistoryOpenRequestIdRef = useRef('');
   const lastCompactToolWheelIndexRequestIdRef = useRef('');
-  const compactInputHasPayload = draft.trim().length > 0 || composerAttachments.length > 0;
+  const compactInputHasPayload = visibleDraft.trim().length > 0
+    || (!catLocalTextOnly && composerAttachments.length > 0);
   const canSubmit = !compactTextEntryLocked && compactInputHasPayload;
   const avatarToolRuntime = useAvatarToolRuntime({
     composerHidden,
@@ -1079,6 +1085,7 @@ function CompactChatApp({
     onInteraction: onAvatarInteraction,
     onStateChange: onAvatarToolStateChange,
     getToolLabel: getToolItemLabel,
+    avatarName: assistantName,
     onDeactivate: () => setToolMenuOpen(false),
   });
   const activeAvatarToolId = avatarToolRuntime.activeToolId;
@@ -1164,13 +1171,14 @@ function CompactChatApp({
   const compactExportHistoryToggleLabel = compactExportHistoryOpen
     ? i18n('chat.compactHistoryToggleClose', 'Hide history')
     : i18n('chat.compactHistoryToggleOpen', 'Show history');
-  const compactExportControlsButtonLabel = compactExportControlsVisible
-    ? i18n('chat.compactHistoryControlsHide', 'Hide history actions')
-    : i18n('chat.compactHistoryControlsShow', 'Show history actions');
+  const compactExportControlsButtonLabel = i18n(
+    'chat.compactHistoryExport',
+    'Export conversation history',
+  );
   // ChoicePrompt and galgame options share the same composer-anchored slot.
   // The transient invite should win when both are present so we do not stack
   // two button groups in the same compact surface.
-  const compactChoiceInteractionsAllowed = !composerHidden;
+  const compactChoiceInteractionsAllowed = !composerHidden && !catLocalTextOnly;
   const choicePromptHasOptions = compactChoiceInteractionsAllowed
     && !!(choicePrompt && choicePrompt.options.length > 0);
   const galgameOptionsVisible =
@@ -1719,6 +1727,10 @@ function CompactChatApp({
     setLoadedMemeOverlayKey(compactMemeOverlayLoadKey);
     scheduleCompactMemeGeometryRefresh();
   }, [compactMemeOverlayLoadKey, scheduleCompactMemeGeometryRefresh]);
+  const handleCompactMemeOverlayImageError = useCallback((event: React.SyntheticEvent<HTMLImageElement>) => {
+    swapImageToMemeLoadFailedSticker(event.currentTarget, compactMemeOverlay?.url || '');
+    markCompactMemeOverlayImageSettled();
+  }, [compactMemeOverlay?.url, markCompactMemeOverlayImageSettled]);
   const handleCompactMemeOverlayImageRef = useCallback((node: HTMLImageElement | null) => {
     if (!node?.complete) return;
     markCompactMemeOverlayImageSettled();
@@ -1887,8 +1899,8 @@ function CompactChatApp({
   const clearAvatarToolAriaLabel = i18n('chat.clearAvatarToolAriaLabel', '取消道具');
 
   useEffect(() => {
-    draftRef.current = draft;
-  }, [draft]);
+    draftRef.current = visibleDraft;
+  }, [visibleDraft]);
 
   useEffect(() => {
     compactPreviewTextVisibleRef.current = compactPreviewTextVisible;
@@ -3250,8 +3262,6 @@ function CompactChatApp({
       && workAreaWidth > 0
       && Number.isFinite(workAreaHeight)
       && workAreaHeight > 0;
-    const isMobileViewport = window.matchMedia?.('(max-width: 820px)').matches === true;
-    if (!isMobileViewport && !hasDesktopWorkArea) return 'default';
     const fanElement = compactInputToolFanRef.current;
     const fanRect = fanElement?.getBoundingClientRect();
     if (!fanElement || !fanRect || fanRect.width <= 0 || fanRect.height <= 0) return 'default';
@@ -3294,30 +3304,35 @@ function CompactChatApp({
       prefersViewportFitFromBottomGap = bottomGap < bottomFlipThreshold;
     }
 
-    const wheelLayoutFitsViewport = (
+    const getWheelLayoutViewportOverflow = (
       slots: ReadonlyArray<{ angleDeg: number; scale: number }>,
       options?: { axis?: 'both' | 'horizontal' },
-    ) => slots.every(({ angleDeg, scale }) => {
+    ) => slots.reduce((totalOverflow, { angleDeg, scale }) => {
       const angle = angleDeg * (Math.PI / 180);
       const itemCenterX = centerX + (Math.cos(angle) * orbitRadius);
       const itemCenterY = centerY + (Math.sin(angle) * orbitRadius);
       const halfSize = (buttonSize * scale) / 2;
-      const fitsHorizontally = itemCenterX - halfSize >= minX
-        && itemCenterX + halfSize <= maxX;
-      if (options?.axis === 'horizontal') return fitsHorizontally;
-      return fitsHorizontally
-        && itemCenterY - halfSize >= minY
-        && itemCenterY + halfSize <= maxY;
-    });
+      const horizontalOverflow = Math.max(0, minX - (itemCenterX - halfSize))
+        + Math.max(0, (itemCenterX + halfSize) - maxX);
+      if (options?.axis === 'horizontal') return totalOverflow + horizontalOverflow;
+      const verticalOverflow = Math.max(0, minY - (itemCenterY - halfSize))
+        + Math.max(0, (itemCenterY + halfSize) - maxY);
+      return totalOverflow + horizontalOverflow + verticalOverflow;
+    }, 0);
+
+    const defaultOverflow = getWheelLayoutViewportOverflow(compactInputToolWheelDefaultVisibleSlots);
+    const viewportFitOverflow = getWheelLayoutViewportOverflow(compactInputToolWheelViewportFitVisibleSlots);
 
     if (
       prefersViewportFitFromBottomGap
-      && wheelLayoutFitsViewport(compactInputToolWheelViewportFitVisibleSlots, { axis: 'horizontal' })
+      && getWheelLayoutViewportOverflow(compactInputToolWheelViewportFitVisibleSlots, { axis: 'horizontal' }) === 0
+      && viewportFitOverflow <= defaultOverflow
     ) {
       return 'viewport-fit';
     }
-    if (wheelLayoutFitsViewport(compactInputToolWheelDefaultVisibleSlots)) return 'default';
-    if (wheelLayoutFitsViewport(compactInputToolWheelViewportFitVisibleSlots)) return 'viewport-fit';
+    if (defaultOverflow === 0) return 'default';
+    if (viewportFitOverflow === 0) return 'viewport-fit';
+    if (!hasDesktopWorkArea && viewportFitOverflow < defaultOverflow) return 'viewport-fit';
     return 'default';
   }, []);
 
@@ -3460,7 +3475,7 @@ function CompactChatApp({
   ]);
 
   const openCompactInputToolFan = useCallback((intent: 'click' | 'hover', options?: { ignoreDisabled?: boolean }) => {
-    if ((!options?.ignoreDisabled && composerDisabled) || compactInputHasPayload) return false;
+    if (catLocalTextOnly || (!options?.ignoreDisabled && composerDisabled) || compactInputHasPayload) return false;
     if (compactInputToolFanOpenRef.current) {
       clearCompactInputToolFanCloseTimer();
       if (compactInputToolFanOpenIntentRef.current !== 'click') {
@@ -3492,6 +3507,7 @@ function CompactChatApp({
   }, [
     clearCompactInputToolFanCloseTimer,
     clearCompactInputToolFanInteractiveTimer,
+    catLocalTextOnly,
     compactInputHasPayload,
     composerDisabled,
     dispatchCompactToolFanOpenState,
@@ -4528,6 +4544,20 @@ function CompactChatApp({
   ]);
 
   useEffect(() => {
+    if (!catLocalTextOnly) return;
+    closeCompactInputToolFan();
+    setToolMenuOpen(false);
+    setAvatarToolManagerOpen(false);
+    setCompactExportControlsOpen(false);
+    setCompactExportPreviewOpen(false);
+    clearActiveAvatarToolSelection();
+  }, [catLocalTextOnly, clearActiveAvatarToolSelection, closeCompactInputToolFan]);
+
+  useEffect(() => {
+    if (!catLocalTextOnly) setCatDraft('');
+  }, [catLocalTextOnly]);
+
+  useEffect(() => {
     if (compactInputToolFanOpen) return;
     clearCompactInputToolFanCloseTimer();
     clearCompactInputToolWheelDragGuardTimer();
@@ -4781,14 +4811,18 @@ function CompactChatApp({
   function submitDraft() {
     if (compactTextEntryLocked) return;
     if (submittingRef.current) return;
-    const text = draft.trim();
-    if (!text && composerAttachments.length === 0) return;
+    const text = visibleDraft.trim();
+    if (!text && (catLocalTextOnly || composerAttachments.length === 0)) return;
     closeCompactInputToolFan();
     submittingRef.current = true;
     let shouldRefocusCompactInput = false;
     try {
       onComposerSubmit?.({ text });
-      setDraft('');
+      if (catLocalTextOnly) {
+        setCatDraft('');
+      } else {
+        setDraft('');
+      }
       restoreCompactExportHistoryToBottomForOutgoingMessage();
       shouldRefocusCompactInput = isCompactSurface
         && effectiveCompactChatState === 'input'
@@ -4998,8 +5032,10 @@ function CompactChatApp({
       ? 'true'
       : 'false'
   );
-  const compactToolToggleVisible = isCompactSurface && !composerHidden;
   const compactToolToggleActsAsSubmit = effectiveCompactChatState === 'input' && compactInputHasPayload;
+  const compactToolToggleVisible = isCompactSurface
+    && !composerHidden
+    && (!catLocalTextOnly || compactToolToggleActsAsSubmit);
   const compactInputToolToggleButton = compactToolToggleVisible ? (
     <button
       className={`send-button-circle compact-input-tool-toggle${compactInputToolFanOpen ? ' is-open' : ''}`}
@@ -5092,7 +5128,7 @@ function CompactChatApp({
     </button>
   );
 
-  const compactInputToolFanNode = compactToolToggleVisible ? (
+  const compactInputToolFanNode = compactToolToggleVisible && !catLocalTextOnly ? (
     <div
       ref={compactInputToolFanRef}
       className="compact-input-tool-fan"
@@ -5444,7 +5480,7 @@ function CompactChatApp({
       ) : null}
     </div>
   ) : null;
-  const composerAttachmentPreviewNode = composerAttachments.length > 0 ? (
+  const composerAttachmentPreviewNode = !catLocalTextOnly && composerAttachments.length > 0 ? (
     <div
       className={`composer-attachment-viewport${isCompactSurface ? ' composer-attachment-viewport-compact' : ''}`}
       aria-label={composerAttachmentsAriaLabel}
@@ -5472,9 +5508,7 @@ function CompactChatApp({
                   onComposerRemoveAttachment?.(attachment.id);
                 }
               }}
-            >
-              <span className="composer-attachment-remove-icon" aria-hidden="true" />
-            </button>
+            />
           </figure>
         ))}
       </div>
@@ -5637,7 +5671,7 @@ function CompactChatApp({
       ) : null}
     </div>
   );
-  const compactChoiceLayerNode = isCompactSurface
+  const compactChoiceLayerNode = isCompactSurface && !catLocalTextOnly
     ? (typeof document !== 'undefined' ? createPortal(choiceLayerNode, document.body) : choiceLayerNode)
     : null;
   const compactExportHistoryMessages = compactExportHistoryOpen
@@ -5698,7 +5732,8 @@ function CompactChatApp({
   // 兜底），不再随历史区收起而隐藏——否则历史默认折叠的 A/B closed 分支会连带看不到主动分享音乐条。
   const compactMusicPlayerVisibility = 'open' as const;
   const closeMemeButtonAriaLabel = i18n('chat.closeMemeAriaLabel', 'Close image');
-  const compactMemeOverlayNode = compactMemeOverlayVisible && compactMemeOverlay ? (
+  const compactMemeOverlayImageLoadingProps = { loading: 'eager' as const, fetchpriority: 'high' as const };
+  const compactMemeOverlayNode = !catLocalTextOnly && compactMemeOverlayVisible && compactMemeOverlay ? (
     <div
       className="compact-meme-overlay"
       data-compact-meme-overlay="compact-surface"
@@ -5715,13 +5750,14 @@ function CompactChatApp({
             IntersectionObserver 判定。注：表情包「常显、不被同轮台词顶掉」靠的是上面 compactMemeOverlay
             的 role 收起逻辑，不是这个属性。 */}
         <img
+          key={compactMemeOverlay.url}
           src={compactMemeOverlay.url}
           alt={compactMemeOverlay.alt}
-          loading="eager"
+          {...compactMemeOverlayImageLoadingProps}
           decoding="async"
           ref={handleCompactMemeOverlayImageRef}
           onLoad={markCompactMemeOverlayImageSettled}
-          onError={markCompactMemeOverlayImageSettled}
+          onError={handleCompactMemeOverlayImageError}
         />
         {/* 关闭叉：overlay 整体 pointer-events:none（点击穿透到桌面/下层），唯独这个按钮 CSS 里单独开
             auto 才接得住点击；点了把当前 meme id 记进 dismissedMemeId（会话级），下一张新 meme 照常显示。
@@ -5944,12 +5980,16 @@ function CompactChatApp({
                           placeholder={inputPlaceholder}
                           aria-label={inputPlaceholder}
                           rows={1}
-                          value={draft}
+                          value={visibleDraft}
                           readOnly={compactTextEntryLocked}
                           disabled={composerDisabled}
                           onChange={(event) => {
                             if (compactTextEntryLocked) return;
-                            setDraft(event.target.value);
+                            if (catLocalTextOnly) {
+                              setCatDraft(event.target.value);
+                            } else {
+                              setDraft(event.target.value);
+                            }
                             if (event.target.value.trim().length > 0) {
                               closeCompactInputToolFan();
                             }

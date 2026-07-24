@@ -85,6 +85,7 @@ def test_upload_and_install_records_source(tmp_path: Path) -> None:
         directory_path=target,
         package_filename="uploaded_plugin.neko-plugin",
         package_sha256="d" * 64,
+        package_id="uploaded-package",
     )
     lf = _parse_lock(mgr.lock_path.read_bytes())
     assert len(lf.entries) == 1
@@ -92,6 +93,8 @@ def test_upload_and_install_records_source(tmp_path: Path) -> None:
     assert e.channel == "imported"
     assert e.reason == "user_requested"
     assert e.plugin_id == "uploaded_plugin"
+    assert e.package_id == "uploaded-package"
+    assert mgr.package_id_for_directory(target) == "uploaded-package"
     assert isinstance(e.source_detail, SourceDetailImported)
     assert e.source_detail.package_sha256 == "d" * 64
 
@@ -114,11 +117,13 @@ def test_market_install_single_write(tmp_path: Path) -> None:
         plugin_market_id="pid-1",
         version="1.0.0",
         package_url="https://m.example/pkg.neko-plugin",
+        package_id="market-package",
     )
     assert len(import_calls) == 0
     lf = _parse_lock(mgr.lock_path.read_bytes())
     e = lf.entries[0]
     assert e.channel == "market"
+    assert e.package_id == "market-package"
     assert isinstance(e.source_detail, SourceDetailMarket)
     assert e.source_detail.plugin_market_id == "pid-1"
     assert e.source_detail.previous_version is None

@@ -512,6 +512,12 @@ button * {
     gap: 12px;
 }
 
+body.neko-live2d-peek #live2d-floating-buttons,
+body.neko-live2d-peek #live2d-lock-icon {
+    display: none !important;
+    pointer-events: none !important;
+}
+
 body.neko-game-active #live2d-container,
 body.neko-game-active #vrm-container,
 body.neko-game-active #mmd-container,
@@ -706,9 +712,9 @@ body.neko-game-active [id$="-lock-icon"] {
 /*
  * 只校准 GNOME 原生 58px 毛球路径。左侧接近的终点已经在 JS 中前移 34px；
  * 右侧的跨窗口视觉位置少 33px，因此待机和侧身素材都要补上这段距离。
- * 待机规则使用独立站位侧，而不是会在 settle 后重置的 facingRight，避免误伤左侧待机。
+ * 待机规则使用独立站位侧，而不是会在动作完成后重置的 facingRight，避免误伤左侧待机。
  */
-.neko-idle-return-btn[data-neko-cat1-native-yarn-visual-anchor="true"][data-neko-cat1-native-yarn-side="right"][data-neko-cat1-substate="idle"]:not(.is-cat1-playing):not(.is-cat1-eating):not(.is-drag-action) > .neko-idle-return-art {
+.neko-idle-return-btn[data-neko-cat1-native-yarn-visual-anchor="true"][data-neko-cat1-native-yarn-side="right"][data-neko-cat1-substate="idle"]:not(.is-cat1-playing):not(.is-cat1-eating):not(.is-cat1-stretching):not(.is-drag-action) > .neko-idle-return-art {
     left: 33px;
 }
 
@@ -752,6 +758,38 @@ body.neko-game-active [id$="-lock-icon"] {
 
 .neko-idle-return-btn.is-cat1-edge-peek-bottom-right > .neko-idle-return-art {
     --neko-idle-return-edge-transform: rotate(-60deg);
+}
+
+[data-neko-live2d-peek-anchor$="left"] .neko-idle-return-art {
+    --neko-idle-return-facing-transform: scaleX(-1);
+}
+
+[data-neko-live2d-peek-anchor$="right"] .neko-idle-return-art {
+    --neko-idle-return-facing-transform: scaleX(1);
+}
+
+[data-neko-live2d-peek-anchor="left"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(60deg);
+}
+
+[data-neko-live2d-peek-anchor="right"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(-60deg);
+}
+
+[data-neko-live2d-peek-anchor="top-left"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(45deg);
+}
+
+[data-neko-live2d-peek-anchor="top-right"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(-45deg);
+}
+
+[data-neko-live2d-peek-anchor="bottom-left"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(45deg);
+}
+
+[data-neko-live2d-peek-anchor="bottom-right"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(-45deg);
 }
 
 .neko-idle-thought-bubble {

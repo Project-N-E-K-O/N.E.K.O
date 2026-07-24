@@ -20,6 +20,8 @@ export default {
     minimize: '最小化',
     maximize: '最大化',
     restore: '恢复',
+    pinWindow: '置顶窗口',
+    unpinWindow: '取消置顶',
     toggleSelection: '切换选中状态',
     success: '成功',
     error: '错误',
@@ -61,6 +63,13 @@ export default {
     loginFailed: '授权登录没有完成，请稍后再试',
     loginPending: '授权登录等待时间有点久，请重新发起登录',
     logoutSuccess: '已在本机退出授权登录',
+    logoutFailed: '退出失败，请稍后重试',
+    accountSummary: '账户信息',
+    accountSummaryLoading: '正在更新账户信息…',
+    accountMemberDays: '加入 {days} 天',
+    accountPublished: '已发布 {count} 个插件',
+    logout: '退出登录',
+    logoutConfirm: '确认退出此设备上的插件市场授权登录吗？',
     searchPlaceholder: '搜索插件...',
     notConfigured: '插件市场未配置',
     configHint: '请将 NEKO_MARKET_API_URL 设置为插件市场服务地址',
@@ -384,6 +393,20 @@ export default {
     }
   },
   package: {
+    install: {
+      safeUpgradeHint: '重复导入同一插件时会先检查版本，并通过可回滚的安全升级替换原目录，不会生成带后缀的副本。',
+      planFailed: '无法检查安装包。',
+      upgradeTitle: '升级 {plugin}？',
+      upgradeBody: '版本 {current} 将替换为 {target}。正在运行的插件会短暂重启。',
+      upgradeConfirm: '升级插件',
+      upgradeCancelled: '已取消升级。',
+      upgradeSucceeded: '{plugin} 已成功升级。',
+      blockedBundleConflict: '此整合包包含已安装的插件，请逐个升级其中的插件。',
+      blockedDirectoryConflict: '目标目录属于另一个插件，未进行任何更改。',
+      blockedLegacyPlugin: '仍安装着此插件的旧版本。请先卸载 {plugin} 再继续。',
+      rollbackCompleted: '升级失败，已恢复之前的版本。',
+      rollbackIncomplete: '升级失败且回滚未完整完成，请检查插件状态后再继续。'
+    },
     dialog: {
       title: '包管理执行记录',
       subtitle: '保留最近 {count} 条执行结果'

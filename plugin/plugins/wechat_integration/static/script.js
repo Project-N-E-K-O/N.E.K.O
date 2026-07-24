@@ -6,6 +6,15 @@ function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function pluginErrorMessage(error) {
+    if (!error) return '';
+    if (typeof error === 'string') return error;
+    if (typeof error.message === 'string') return error.message;
+    if (typeof error.detail === 'string') return error.detail;
+    if (typeof error.code === 'string') return error.code;
+    return '';
+}
+
 async function callPlugin(entry, args = {}) {
     const resp = await fetch(RUNS_URL, {
         method: 'POST',
@@ -34,6 +43,9 @@ async function callPlugin(entry, args = {}) {
             let raw = item.json || {};
             while (raw && raw.data && typeof raw.data === 'object' && ('success' in raw.data || 'error' in raw.data)) {
                 raw = raw.data;
+            }
+            if (raw && raw.error) {
+                throw new Error(pluginErrorMessage(raw.error) || '插件调用失败');
             }
             return raw;
         }
@@ -104,6 +116,7 @@ function applyDashboardState(payload) {
     const qrToggle = document.getElementById('qrcode-toggle');
     const btnStart = document.getElementById('btn-start-login');
     const btnRefresh = document.getElementById('btn-refresh-qrcode');
+    const btnLogout = document.getElementById('btn-logout');
     const loginTips = document.getElementById('login-tips');
     const qrcodeHint = document.getElementById('qrcode-hint');
     const accountOverlay = document.getElementById('account-overlay');
@@ -170,6 +183,9 @@ function applyDashboardState(payload) {
             btnStart.style.display = 'inline-block';
             btnRefresh.style.display = 'none';
         }
+    }
+    if (btnLogout) {
+        btnLogout.style.display = state.isLoggedIn ? 'inline-block' : 'none';
     }
     if (qrToggle) {
         qrToggle.textContent = collapsed ? t('ui.qrcode.toggle.show', '显示') : t('ui.qrcode.toggle.hide', '隐藏');
@@ -289,6 +305,22 @@ async function refreshQrcode() {
     }
 }
 
+async function logout() {
+    if (!state.isLoggedIn) return;
+
+    const btnLogout = document.getElementById('btn-logout');
+    if (btnLogout) btnLogout.disabled = true;
+    try {
+        const payload = await callPlugin('logout', {});
+        applyDashboardState(payload);
+        showToast(t('ui.toast.logout_success', '已退出登录'));
+    } catch (error) {
+        showToast(error.message || t('ui.toast.logout_failed', '退出登录失败'));
+    } finally {
+        if (btnLogout) btnLogout.disabled = false;
+    }
+}
+
 function toggleQrcodeCard() {
     const card = document.getElementById('qrcode-card');
     if (!card) return;
@@ -324,6 +356,7 @@ async function reloadDashboard() {
 // ---- Bootstrap ----
 window.startLogin = startLogin;
 window.refreshQrcode = refreshQrcode;
+window.logout = logout;
 window.toggleQrcodeCard = toggleQrcodeCard;
 window.startAutoReply = startAutoReply;
 window.stopAutoReply = stopAutoReply;

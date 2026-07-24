@@ -4,6 +4,7 @@ import {
   AVATAR_TOOL_DEFINITION_IDS,
   AVATAR_TOOL_INTERACTION_INTENSITIES,
   AVATAR_TOOL_RESERVED_PAYLOAD_FIELDS,
+  AVATAR_TOOL_ROUND_CHOICE_GESTURES,
   AVATAR_TOOL_TOUCH_ZONES,
   AVATAR_TOOL_VARIANT_IDS,
   getAvatarToolRegistration,
@@ -204,10 +205,57 @@ const hammerSwingEffectSchema = z.object({
   });
 });
 
+const roundRevealTimelineEntrySchema = z.object({
+  phase: z.enum(['approach', 'impact', 'result', 'recover', 'idle']),
+  delayMs: nonNegativeNumberSchema,
+}).strict();
+
+const roundRevealEffectSchema = z.object({
+  id: identifierSchema,
+  kind: z.literal('round-reveal'),
+  interactionLock: z.literal('effect-lifetime'),
+  separationPx: positiveNumberSchema,
+  resultOffsetY: finiteNumberSchema,
+  timeline: z.array(roundRevealTimelineEntrySchema).length(5),
+}).strict().superRefine((effect, context) => {
+  const expected = ['approach', 'impact', 'result', 'recover', 'idle'] as const;
+  effect.timeline.forEach((entry, index) => {
+    if (entry.phase !== expected[index]) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['timeline', index, 'phase'],
+        message: `must be ${expected[index]}`,
+      });
+    }
+    if (index === 0 && entry.delayMs !== 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['timeline', index, 'delayMs'],
+        message: 'approach must start at 0ms',
+      });
+    }
+    if (index > 0 && entry.delayMs <= effect.timeline[index - 1].delayMs) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['timeline', index, 'delayMs'],
+        message: 'must be strictly increasing',
+      });
+    }
+  });
+  if (effect.timeline[3].delayMs - effect.timeline[2].delayMs < 2000) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['timeline', 3, 'delayMs'],
+      message: 'result must remain visible for at least 2000ms',
+    });
+  }
+});
+
 const effectRecipeSchema = z.union([
   fixedParticlesEffectSchema,
   randomScatterEffectSchema,
   hammerSwingEffectSchema,
+  roundRevealEffectSchema,
 ]);
 
 const progressiveReleaseProfileSchema = z.object({
@@ -316,10 +364,51 @@ const lockedImpactProfileSchema = z.object({
   }
 });
 
+const roundChoiceProfileSchema = z.object({
+  kind: z.literal('round-choice'),
+  choices: z.array(z.object({
+    gesture: z.enum(AVATAR_TOOL_ROUND_CHOICE_GESTURES),
+    variant: avatarToolVariantIdSchema,
+  }).strict()).length(3),
+  cycle: z.object({
+    outsideIntervalMs: positiveNumberSchema,
+    rangeIntervalMs: positiveNumberSchema,
+  }).strict(),
+  confirmation: z.object({
+    sound: identifierSchema,
+  }).strict(),
+  reveal: z.object({
+    effect: identifierSchema,
+    userWinSound: identifierSchema,
+    otherResultSound: identifierSchema,
+  }).strict(),
+}).strict().superRefine((profile, context) => {
+  const gestures = profile.choices.map(choice => choice.gesture);
+  const variants = profile.choices.map(choice => choice.variant);
+  if (
+    new Set(gestures).size !== AVATAR_TOOL_ROUND_CHOICE_GESTURES.length
+    || new Set(variants).size !== AVATAR_TOOL_VARIANT_IDS.length
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['choices'],
+      message: 'must map every gesture and variant exactly once',
+    });
+  }
+  if (profile.cycle.rangeIntervalMs <= profile.cycle.outsideIntervalMs) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['cycle', 'rangeIntervalMs'],
+      message: 'must be greater than outsideIntervalMs',
+    });
+  }
+});
+
 const interactionProfileSchema = z.union([
   progressiveReleaseProfileSchema,
   pressReleaseProfileSchema,
   lockedImpactProfileSchema,
+  roundChoiceProfileSchema,
 ]);
 
 function collectInteractionReferences(profile: z.infer<typeof interactionProfileSchema>) {
@@ -329,6 +418,12 @@ function collectInteractionReferences(profile: z.infer<typeof interactionProfile
   if (profile.kind === 'press-release') {
     return { sounds: [profile.chance.sound], effects: [profile.chance.effect] };
   }
+  if (profile.kind === 'round-choice') {
+    return {
+      sounds: [profile.confirmation.sound, profile.reveal.userWinSound, profile.reveal.otherResultSound],
+      effects: [profile.reveal.effect],
+    };
+  }
   return {
     sounds: [profile.chance.sound, profile.feedback.sound],
     effects: [profile.feedback.effect],
@@ -337,7 +432,7 @@ function collectInteractionReferences(profile: z.infer<typeof interactionProfile
 export const desktopAvatarToolInteractionSchema = z.object({
   profile: interactionProfileSchema,
   sounds: z.array(soundResourceSchema).min(1).max(16),
-  effects: z.array(effectRecipeSchema).min(1).max(16),
+  effects: z.array(effectRecipeSchema).max(16),
 }).strict().superRefine((interaction, context) => {
   const soundIds = interaction.sounds.map(sound => sound.id);
   const effectIds = interaction.effects.map(effect => effect.id);
@@ -519,6 +614,16 @@ function projectEffect(effect: AvatarToolEffectRecipe) {
       delayMs: projectRange(effect.delayMs),
     };
   }
+  if (effect.kind === 'round-reveal') {
+    return {
+      id: effect.id,
+      kind: effect.kind,
+      interactionLock: effect.interactionLock,
+      separationPx: effect.separationPx,
+      resultOffsetY: effect.resultOffsetY,
+      timeline: effect.timeline.map(entry => ({ phase: entry.phase, delayMs: entry.delayMs })),
+    };
+  }
   return {
     id: effect.id,
     kind: effect.kind,
@@ -611,6 +716,27 @@ function projectProfile(profile: AvatarToolInteractionProfile) {
       },
     };
   }
+  if (profile.kind === 'round-choice') {
+    return {
+      kind: profile.kind,
+      choices: profile.choices.map(choice => ({
+        gesture: choice.gesture,
+        variant: choice.variant,
+      })),
+      cycle: {
+        outsideIntervalMs: profile.cycle.outsideIntervalMs,
+        rangeIntervalMs: profile.cycle.rangeIntervalMs,
+      },
+      confirmation: {
+        sound: profile.confirmation.sound,
+      },
+      reveal: {
+        effect: profile.reveal.effect,
+        userWinSound: profile.reveal.userWinSound,
+        otherResultSound: profile.reveal.otherResultSound,
+      },
+    };
+  }
   return {
     kind: profile.kind,
     actionId: profile.actionId,
@@ -647,6 +773,16 @@ function getReferencedResourceIds(profile: AvatarToolInteractionProfile) {
   }
   if (profile.kind === 'press-release') {
     return { sounds: new Set([profile.chance.sound]), effects: new Set([profile.chance.effect]) };
+  }
+  if (profile.kind === 'round-choice') {
+    return {
+      sounds: new Set([
+        profile.confirmation.sound,
+        profile.reveal.userWinSound,
+        profile.reveal.otherResultSound,
+      ]),
+      effects: new Set([profile.reveal.effect]),
+    };
   }
   return {
     sounds: new Set([profile.chance.sound, profile.feedback.sound]),

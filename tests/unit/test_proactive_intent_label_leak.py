@@ -67,6 +67,18 @@ def test_registry_skips_single_common_word_enums() -> None:
         assert common.casefold() not in labels, f"common word wrongly denied: {common!r}"
 
 
+def test_registry_skips_localized_common_activity_labels() -> None:
+    labels = get_proactive_intent_leak_labels()
+    for common in (
+        '聊天中', '口吻', 'アイドル', '評価', '채팅 중', '말투',
+        'scores', 'narrative', 'open threads', 'tone',
+        'ausente', 'jugando', 'ocioso',
+        'puntuaciones', 'narrativa', 'tópicos abertos', 'tom',
+        'отсутствует', 'играет', 'тон',
+    ):
+        assert common.casefold() not in labels, f"common rendered label wrongly denied: {common!r}"
+
+
 def test_common_word_exclusions_cover_all_single_token_enums() -> None:
     # Contract: every single-token ActivityState/Propensity enum must be in the
     # exclusion set, else it would be denied and could scrub a legit English
@@ -138,6 +150,15 @@ def test_strip_same_line_mixed_colon_takes_earliest() -> None:
     ) == "that trip：mentioned?"
 
 
+def test_strip_slash_form_context_label_prefixes() -> None:
+    assert _strip_proactive_intent_label_leak("QQ/ 你好") == "你好"
+    assert _strip_proactive_intent_label_leak("/QQ 你好") == "你好"
+    assert _strip_proactive_intent_label_leak(
+        "聊天中/ 那咱们找小鱼干星的时候，能顺路去摸猫爪星云吗？"
+    ) == "那咱们找小鱼干星的时候，能顺路去摸猫爪星云吗？"
+    assert _strip_proactive_intent_label_leak("QQ/") == ""
+
+
 # ── False-positive guard ────────────────────────────────────────────
 
 
@@ -156,6 +177,19 @@ def test_no_strip_label_words_inside_natural_sentence() -> None:
     # The label words appearing mid-sentence (not as a heading) must survive.
     txt = "我刚刚也在想这个屏幕细节，问你一句话哦"
     assert _strip_proactive_intent_label_leak(txt) == txt
+
+
+def test_no_strip_localized_common_label_openers() -> None:
+    for txt in (
+        "Ausente\npero igual te estoy leyendo.",
+        "Jugando\npero sin perderte de vista.",
+        "Ocioso\nentão podemos pensar com calma.",
+        "Scores\nI still think this round went fine.",
+        "Tone\nLet's keep it softer this time.",
+        "聊天中\n那这轮先慢慢聊。",
+        "口吻\n这次轻一点说就好。",
+    ):
+        assert _strip_proactive_intent_label_leak(txt) == txt
 
 
 def test_empty_input_safe() -> None:

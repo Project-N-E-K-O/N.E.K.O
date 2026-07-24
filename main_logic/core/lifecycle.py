@@ -67,6 +67,17 @@ class LifecycleMixin:
         active = bool(active)
         reason = str(reason or "")[:64]
         was_active = self.is_goodbye_silent()
+        if active and not was_active:
+            self.goodbye_silent_started_monotonic = time.monotonic()
+            self.goodbye_silent_completed_duration = None
+        elif not active and was_active:
+            started_at = float(getattr(self, "goodbye_silent_started_monotonic", 0.0) or 0.0)
+            self.goodbye_silent_completed_duration = (
+                max(0.0, time.monotonic() - started_at)
+                if started_at > 0.0
+                else None
+            )
+            self.goodbye_silent_started_monotonic = 0.0
         self.goodbye_silent = active
         self.goodbye_silent_reason = reason
         self.goodbye_silent_updated_at = time.time()
@@ -74,6 +85,14 @@ class LifecycleMixin:
             self._park_proactive_for_goodbye()
         if was_active != active:
             logger.info("[%s] goodbye_silent=%s reason=%s", self.lanlan_name, active, reason or "-")
+
+    def consume_goodbye_cycle_duration(self) -> float | None:
+        """Return one completed server-observed goodbye duration at most once."""
+        if self.is_goodbye_silent():
+            return None
+        duration = getattr(self, "goodbye_silent_completed_duration", None)
+        self.goodbye_silent_completed_duration = None
+        return duration
 
 
     async def handle_silence_timeout(self, *, expected_session=None):

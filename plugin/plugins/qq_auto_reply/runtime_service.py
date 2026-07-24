@@ -15,7 +15,7 @@ class QQRuntimeService:
         return {
             "plugin_running": True,
             "auto_reply_running": self.plugin._running,
-            "onebot_connected": bool(self.plugin.qq_client and self.plugin.qq_client.ws),
+            "onebot_connected": bool(self.plugin.qq_client and self.plugin.qq_client.is_connected()),
             "napcat_managed": self.plugin._manages_napcat_process,
             "napcat_running": bool(self.plugin._napcat_process and self.plugin._napcat_process.returncode is None),
             "napcat_pid": int(self.plugin._napcat_process.pid) if self.plugin._napcat_process and self.plugin._napcat_process.returncode is None and self.plugin._napcat_process.pid else None,
@@ -283,7 +283,7 @@ class QQRuntimeService:
 
     async def fetch_login_status_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {"status": "offline", "self_id": None, "nickname": None, "last_error": None}
-        if not self.plugin.qq_client or not self.plugin.qq_client.ws:
+        if not self.plugin.qq_client or not self.plugin.qq_client.is_connected():
             return payload
         try:
             login_info = await self.plugin.qq_client.get_login_info()
@@ -304,7 +304,7 @@ class QQRuntimeService:
             raise RuntimeError(self.plugin.i18n.t("errors.invalid_onebot_url", default="请先填写合法的 OneBot 地址，必须以 ws:// 或 wss:// 开头"))
         if not parsed.netloc:
             raise RuntimeError(self.plugin.i18n.t("errors.invalid_onebot_url", default="请先填写合法的 OneBot 地址，必须以 ws:// 或 wss:// 开头"))
-        if not self.plugin.qq_client.ws:
+        if not self.plugin.qq_client.is_connected():
             await self.plugin.qq_client.connect()
         return {
             "friends": await self.plugin.qq_client.get_friend_list(),

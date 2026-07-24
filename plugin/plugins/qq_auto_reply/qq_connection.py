@@ -120,7 +120,7 @@ class QQConnectionBase(ABC):
     @property
     @abstractmethod
     def onebot_url(self) -> str:
-        """连接地址（用于 UI 显示和重连）"""
+        """反向 WebSocket 监听地址（NapCat 作为 WS Client 连接到此地址）"""
         ...
 
     @onebot_url.setter

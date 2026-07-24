@@ -16,7 +16,6 @@ import hashlib
 import json
 import os
 import secrets
-import shutil
 import tempfile
 import time
 import tomllib
@@ -31,6 +30,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field, field_validator
 
 from plugin.logging_config import get_logger
+from plugin.neko_plugin_cli.public import inspect_package
 from plugin.server.application.install_source import (
     InstallSourceError,
     InstallSourceManager,
@@ -41,6 +41,15 @@ from plugin.server.application.install_source import (
 )
 from plugin.server.application.plugin_cli import PluginCliService
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
+from plugin.server.application.plugins.upgrade_support import (
+    backup_path_for,
+    merge_directory_contents,
+    plugin_is_running,
+    remove_directory,
+    restore_directory,
+    start_plugin_after_upgrade,
+    stop_plugin_for_upgrade,
+)
 from plugin.settings import (
     MARKET_API_URL,
     MARKET_WEB_URL,
@@ -75,11 +84,14 @@ _OAUTH_REDIRECT_PATH = "/market/oauth/callback"
 _OAUTH_SESSION_TTL_SECONDS = 5 * 60
 _OAUTH_EXPIRE_SKEW_SECONDS = 60
 _MARKET_USER_STATUS_TTL_SECONDS = 60
+_ACCOUNT_SUMMARY_TTL_SECONDS = 30
 _NEKO_STATE_DIR = Path.home() / ".neko"
 _OAUTH_PENDING_FILE = _NEKO_STATE_DIR / "market_oauth_pending.json"
 _OAUTH_CALLBACK_FILE = _NEKO_STATE_DIR / "oauth_callback.json"
 _OAUTH_TOKEN_FILE = _NEKO_STATE_DIR / "market_auth.json"
 _OAUTH_REFRESH_LOCK = asyncio.Lock()
+_ACCOUNT_SUMMARY_LOCK = asyncio.Lock()
+_ACCOUNT_SUMMARY_CACHE: dict[str, Any] | None = None
 
 # 下载限制
 _DOWNLOAD_MAX_BYTES = 200 * 1024 * 1024  # 200 MB
@@ -314,7 +326,7 @@ class MarketInstallRequest(BaseModel):
             "不一致会拒绝并回滚"
         ),
     )
-    on_conflict: str = Field(default="rename", pattern=r"^(rename|fail)$")
+    on_conflict: str = Field(default="fail", pattern=r"^(rename|fail)$")
     require_confirm: bool = Field(default=True, description="是否需要用户确认（预留）")
 
     @field_validator("package_sha256", mode="before")
@@ -400,6 +412,41 @@ class MarketOAuthCompleteResponse(BaseModel):
 
 class MarketOAuthLogoutResponse(BaseModel):
     message: str
+
+
+class MarketOAuthAccountSource(BaseModel):
+    """A deliberately small availability projection for one account source."""
+
+    status: Literal["ready", "unavailable"]
+
+
+class MarketOAuthAccountProfile(BaseModel):
+    display_name: str | None = None
+    username: str | None = None
+    avatar_url: str | None = None
+    login_method: str | None = None
+
+
+class MarketOAuthAccountMarket(BaseModel):
+    member_days: int | None = None
+    published_plugins: int | None = None
+    installed_plugins: int | None = None
+    total_downloads: int | None = None
+
+
+class MarketOAuthAccountSummaryResponse(BaseModel):
+    """Safe desktop-facing account summary.
+
+    This intentionally excludes bearer tokens, OAuth subjects, email and
+    permissions.  Community profile data is server-to-server only and must
+    never make the desktop client a bearer of a Market service token.
+    """
+
+    authenticated: bool
+    profile: MarketOAuthAccountProfile | None = None
+    market: MarketOAuthAccountMarket | None = None
+    sources: dict[str, MarketOAuthAccountSource]
+    expires_at: float | None = None
 
 
 # ─── 端点 ──────────────────────────────────────────────────────────
@@ -816,6 +863,70 @@ async def market_oauth_status(
     )
 
 
+@router.get("/oauth/account-summary", response_model=MarketOAuthAccountSummaryResponse)
+async def market_oauth_account_summary(
+    token: str | None = Query(
+        None,
+        description="(legacy) Bridge token; prefer Authorization: Bearer header",
+    ),
+    authorization: str | None = Header(None),
+):
+    """Return the local desktop's safe, short-lived account projection.
+
+    The bridge owns OAuth refresh and all remote calls.  The UI only receives
+    a display projection, never a reusable Auth or Market credential.
+    """
+
+    _verify_token(token, authorization=authorization)
+    token_data = await _ensure_valid_oauth_token()
+    if not token_data:
+        return _unauthenticated_account_summary()
+
+    cache_key = _account_summary_cache_key(token_data)
+    cached = _fresh_account_summary(cache_key)
+    if cached is not None:
+        return MarketOAuthAccountSummaryResponse.model_validate(cached)
+
+    async with _ACCOUNT_SUMMARY_LOCK:
+        cached = _fresh_account_summary(cache_key)
+        if cached is not None:
+            return MarketOAuthAccountSummaryResponse.model_validate(cached)
+
+        access_token = token_data.get("access_token")
+        try:
+            auth_user, market_user = await asyncio.gather(
+                _fetch_auth_userinfo(access_token),
+                _fetch_current_market_user(token_data),
+            )
+        except _OAuthAccessTokenRejected:
+            token_data = await _ensure_valid_oauth_token(
+                force_refresh=True,
+                rejected_access_token=(
+                    access_token if isinstance(access_token, str) else None
+                ),
+            )
+            if not token_data:
+                _clear_account_summary_cache()
+                return _unauthenticated_account_summary()
+
+            access_token = token_data.get("access_token")
+            try:
+                auth_user, market_user = await asyncio.gather(
+                    _fetch_auth_userinfo(access_token),
+                    _fetch_current_market_user(token_data),
+                )
+            except _OAuthAccessTokenRejected:
+                logger.info("Refreshed Auth access token was rejected by userinfo")
+                _unlink_if_exists(_OAUTH_TOKEN_FILE)
+                _clear_account_summary_cache()
+                return _unauthenticated_account_summary()
+
+            cache_key = _account_summary_cache_key(token_data)
+        summary = _build_account_summary(token_data, auth_user, market_user)
+        _store_account_summary(cache_key, summary)
+        return summary
+
+
 @router.post("/oauth/complete", response_model=MarketOAuthCompleteResponse)
 async def market_oauth_complete(
     token: str | None = Query(
@@ -888,6 +999,7 @@ async def market_oauth_complete(
         "updated_at": now,
     }
     _write_private_json(_OAUTH_TOKEN_FILE, stored)
+    _clear_account_summary_cache()
     _clear_oauth_session()
 
     return MarketOAuthCompleteResponse(
@@ -911,6 +1023,7 @@ async def market_oauth_logout(
     token_data = _read_json_file(_OAUTH_TOKEN_FILE)
     if token_data:
         await _revoke_oauth_token_best_effort(token_data)
+    _clear_account_summary_cache()
     _unlink_if_exists(_OAUTH_TOKEN_FILE)
     _unlink_if_exists(_OAUTH_PENDING_FILE)
     _unlink_if_exists(_OAUTH_CALLBACK_FILE)
@@ -1090,7 +1203,11 @@ def _extract_subject(user: dict[str, Any] | None) -> str | None:
     return None
 
 
-async def _ensure_valid_oauth_token() -> dict[str, Any] | None:
+async def _ensure_valid_oauth_token(
+    *,
+    force_refresh: bool = False,
+    rejected_access_token: str | None = None,
+) -> dict[str, Any] | None:
     token_data = _read_json_file(_OAUTH_TOKEN_FILE)
     if not token_data or not token_data.get("access_token"):
         return None
@@ -1098,7 +1215,12 @@ async def _ensure_valid_oauth_token() -> dict[str, Any] | None:
         logger.info("Skip saved Auth token: auth_url/client_id provenance mismatch")
         _unlink_if_exists(_OAUTH_TOKEN_FILE)
         return None
-    if not _market_token_expires_soon(token_data):
+    if (
+        rejected_access_token is not None
+        and token_data.get("access_token") != rejected_access_token
+    ):
+        return token_data
+    if not force_refresh and not _market_token_expires_soon(token_data):
         return token_data
     if not token_data.get("refresh_token"):
         logger.info("Saved Auth token is expired and has no refresh token")
@@ -1111,7 +1233,12 @@ async def _ensure_valid_oauth_token() -> dict[str, Any] | None:
             return None
         if not _oauth_token_provenance_matches(current):
             return None
-        if not _market_token_expires_soon(current):
+        if (
+            rejected_access_token is not None
+            and current.get("access_token") != rejected_access_token
+        ):
+            return current
+        if not force_refresh and not _market_token_expires_soon(current):
             return current
         if not current.get("refresh_token"):
             _unlink_if_exists(_OAUTH_TOKEN_FILE)
@@ -1124,6 +1251,8 @@ async def _ensure_valid_oauth_token() -> dict[str, Any] | None:
             if exc.status_code == 401:
                 _unlink_if_exists(_OAUTH_TOKEN_FILE)
                 return None
+            if force_refresh:
+                raise
             if not _market_token_is_expired(current):
                 return current
             return None
@@ -1313,7 +1442,160 @@ async def _revoke_oauth_token_best_effort(token_data: dict[str, Any]) -> None:
                 logger.debug("Auth token revoke failed for {}: {}", token_type_hint, exc)
 
 
-async def _fetch_market_user(access_token: Any) -> dict[str, Any] | None:
+def _unauthenticated_account_summary() -> MarketOAuthAccountSummaryResponse:
+    return MarketOAuthAccountSummaryResponse(
+        authenticated=False,
+        sources={
+            "auth": MarketOAuthAccountSource(status="unavailable"),
+            "market": MarketOAuthAccountSource(status="unavailable"),
+            # Community profile lookup requires a server-only Market token.
+            "community": MarketOAuthAccountSource(status="unavailable"),
+        },
+    )
+
+
+def _account_summary_cache_key(token_data: dict[str, Any]) -> tuple[str, int]:
+    return (
+        str(token_data.get("subject") or ""),
+        int(token_data.get("refresh_generation") or 0),
+    )
+
+
+def _fresh_account_summary(cache_key: tuple[str, int]) -> dict[str, Any] | None:
+    cached = _ACCOUNT_SUMMARY_CACHE
+    if not cached or cached.get("key") != cache_key:
+        return None
+    if float(cached.get("expires_at") or 0) <= time.time():
+        return None
+    payload = cached.get("payload")
+    return payload if isinstance(payload, dict) else None
+
+
+def _store_account_summary(
+    cache_key: tuple[str, int],
+    summary: MarketOAuthAccountSummaryResponse,
+) -> None:
+    global _ACCOUNT_SUMMARY_CACHE
+    _ACCOUNT_SUMMARY_CACHE = {
+        "key": cache_key,
+        "expires_at": time.time() + _ACCOUNT_SUMMARY_TTL_SECONDS,
+        "payload": summary.model_dump(mode="json"),
+    }
+
+
+def _clear_account_summary_cache() -> None:
+    global _ACCOUNT_SUMMARY_CACHE
+    _ACCOUNT_SUMMARY_CACHE = None
+
+
+class _OAuthAccessTokenRejected(Exception):
+    """Auth userinfo rejected a token that may need an early refresh."""
+
+
+async def _fetch_auth_userinfo(access_token: Any) -> dict[str, Any] | None:
+    if not isinstance(access_token, str) or not access_token:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+            res = await client.get(
+                f"{NEKO_AUTH_URL.rstrip('/')}/userinfo",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            if res.status_code in {401, 403}:
+                raise _OAuthAccessTokenRejected
+            if res.status_code != 200:
+                return None
+            data = res.json()
+    except httpx.HTTPError as exc:
+        logger.warning("Failed to fetch Auth userinfo for local Market summary: {}", exc)
+        return None
+    return data if isinstance(data, dict) else None
+
+
+async def _fetch_current_market_user(token_data: dict[str, Any]) -> dict[str, Any] | None:
+    cached = _fresh_cached_market_user(token_data)
+    if cached is not None:
+        return cached
+    return await _fetch_market_user(
+        token_data.get("access_token"),
+        reject_unauthorized=True,
+    )
+
+
+def _optional_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _optional_nonnegative_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number >= 0 else None
+
+
+def _build_account_summary(
+    token_data: dict[str, Any],
+    auth_user: dict[str, Any] | None,
+    market_user: dict[str, Any] | None,
+) -> MarketOAuthAccountSummaryResponse:
+    auth_user = auth_user or {}
+    market_user = market_user or {}
+    account_summary = market_user.get("account_summary")
+    if not isinstance(account_summary, dict):
+        account_summary = {}
+
+    # Market may later project a Community profile server-to-server.  The
+    # desktop only reads that already-sanitized projection and never calls
+    # Community or receives its privileged service credential.
+    profile = MarketOAuthAccountProfile(
+        display_name=(
+            _optional_text(market_user.get("display_name"))
+            or _optional_text(auth_user.get("name"))
+        ),
+        username=(
+            _optional_text(auth_user.get("preferred_username"))
+            or _optional_text(market_user.get("username"))
+        ),
+        avatar_url=(
+            _optional_text(market_user.get("avatar_url"))
+            or _optional_text(auth_user.get("picture"))
+        ),
+        login_method=_optional_text(auth_user.get("login_method_kind")),
+    )
+    market = MarketOAuthAccountMarket(
+        member_days=_optional_nonnegative_int(account_summary.get("member_days")),
+        published_plugins=_optional_nonnegative_int(account_summary.get("published_plugins")),
+        installed_plugins=_optional_nonnegative_int(account_summary.get("installed_plugins")),
+        total_downloads=_optional_nonnegative_int(account_summary.get("total_downloads")),
+    )
+    return MarketOAuthAccountSummaryResponse(
+        authenticated=True,
+        profile=profile,
+        market=market,
+        sources={
+            "auth": MarketOAuthAccountSource(
+                status="ready" if auth_user else "unavailable"
+            ),
+            "market": MarketOAuthAccountSource(
+                status="ready" if market_user else "unavailable"
+            ),
+            "community": MarketOAuthAccountSource(status="unavailable"),
+        },
+        expires_at=token_data.get("expires_at"),
+    )
+
+
+async def _fetch_market_user(
+    access_token: Any,
+    *,
+    reject_unauthorized: bool = False,
+) -> dict[str, Any] | None:
     if not isinstance(access_token, str) or not access_token:
         return None
     try:
@@ -1322,6 +1604,8 @@ async def _fetch_market_user(access_token: Any) -> dict[str, Any] | None:
                 f"{MARKET_API_URL.rstrip('/')}/api/v1/auth/me",
                 headers={"Authorization": f"Bearer {access_token}"},
             )
+            if reject_unauthorized and res.status_code in {401, 403}:
+                raise _OAuthAccessTokenRejected
             if res.status_code != 200:
                 return None
             data = res.json()
@@ -1521,6 +1805,7 @@ def _finalize_task_failure(
 
 _HUMAN_MESSAGES: dict[str, str] = {
     "upgrade_rollback_completed": "升级失败，已回滚到旧版本",
+    "upgrade_rollback_incomplete": "升级失败，回滚未完整完成，请检查插件状态",
     "plugin_not_installed_for_upgrade": "该插件未安装，无法升级",
     "version_already_at_target": "当前已是目标版本",
     "lock_write_failed": "安装记录写入失败",
@@ -1702,12 +1987,11 @@ async def _do_upgrade(
                 ),
             )
 
-    plugin_dir = (PluginCliPathPolicy.from_settings().user_plugins_root / entry.directory_name).resolve()
-    backup_dir = plugin_dir.with_name(
-        f"{entry.directory_name}.bak.{_utc_micro_ts()}"
-    )
+    path_policy = PluginCliPathPolicy.from_settings()
+    plugin_dir = (path_policy.user_plugins_root / entry.directory_name).resolve()
+    backup_dir = backup_path_for(plugin_dir)
     rollback_steps: list[Callable[[], Awaitable[None]]] = []
-    was_running = await _safely_is_running(installed_plugin_id)
+    was_running = await plugin_is_running(installed_plugin_id)
 
     # Step 3: lifecycle stop.
     if was_running:
@@ -1718,7 +2002,7 @@ async def _do_upgrade(
             progress=0.05,
             message="正在停止旧版本插件...",
         )
-        await _safely_stop(installed_plugin_id)
+        await stop_plugin_for_upgrade(installed_plugin_id)
 
     # Step 4: rename old dir → backup.
     try:
@@ -1729,20 +2013,25 @@ async def _do_upgrade(
             progress=0.08,
             message="正在备份旧版本...",
         )
+        await asyncio.to_thread(backup_dir.parent.mkdir, parents=True, exist_ok=True)
         await asyncio.to_thread(os.rename, plugin_dir, backup_dir)
+        rollback_steps.append(_make_restore_dir_step(backup_dir, plugin_dir))
+        task["rollback"] = {
+            "prepared": True,
+            "backup_dir": str(backup_dir),
+            "restored": False,
+        }
     except OSError as exc:
-        if was_running:
-            await _safely_start(installed_plugin_id)
+        rollback_ok = await _run_rollback(
+            task if rollback_steps else None,
+            rollback_steps,
+            was_running,
+            installed_plugin_id,
+        )
         raise _TaskError(
-            code="upgrade_rollback_completed",
+            code=("upgrade_rollback_completed" if rollback_ok else "upgrade_rollback_incomplete"),
             message=f"无法备份旧目录: {exc}",
         ) from exc
-    rollback_steps.append(_make_restore_dir_step(backup_dir, plugin_dir))
-    task["rollback"] = {
-        "prepared": True,
-        "backup_dir": str(backup_dir),
-        "restored": False,
-    }
 
     try:
         # Step 5: download + verify sha256.
@@ -1771,6 +2060,40 @@ async def _do_upgrade(
                     message=str(exc),
                 ) from exc
             log_ctx["package_sha256_check"] = sha_check
+
+            inspected = await asyncio.to_thread(inspect_package, package_path)
+            package_id = str(inspected.package_id).strip()
+            if (
+                not package_id
+                or package_id in {".", ".."}
+                or "/" in package_id
+                or "\\" in package_id
+            ):
+                raise _TaskError(
+                    code="install_failed",
+                    message=f"invalid package id: {package_id!r}",
+                )
+            # Legacy rows have no trustworthy package/profile key. Do not use
+            # an incoming-named directory as proof of ownership: it may be
+            # stale or belong to another package. Historical single-plugin
+            # packages used plugin_id as package_id, so ambiguous renames are
+            # rejected against that conservative baseline.
+            installed_package_id = getattr(entry, "package_id", "") or installed_plugin_id
+            if package_id != installed_package_id:
+                raise _TaskError(
+                    code="package_id_change",
+                    message=(
+                        "plugin identity mismatch: package id changes are not supported during upgrade: "
+                        f"installed={installed_package_id!r} incoming={package_id!r}"
+                    ),
+                )
+            profile_dir = (path_policy.package_profiles_root / package_id).resolve()
+            profile_backup_dir = backup_path_for(profile_dir)
+            if profile_dir.exists():
+                await asyncio.to_thread(profile_backup_dir.parent.mkdir, parents=True, exist_ok=True)
+                await asyncio.to_thread(os.rename, profile_dir, profile_backup_dir)
+                rollback_steps.append(_make_restore_dir_step(profile_backup_dir, profile_dir))
+                task["rollback"]["profile_backup_dir"] = str(profile_backup_dir)
 
             # Step 6: unpack + record_market_upgrade (single atomic call).
             _set_task_stage(
@@ -1807,7 +2130,15 @@ async def _do_upgrade(
         finally:
             _cleanup_download_file(package_path)
 
+        # ``upload_and_install`` has persisted the replacement Market entry.
+        # Rollback steps run in reverse order, so placing this first restores
+        # metadata only after the old plugin/profile directories are back.
+        rollback_steps.insert(0, _make_restore_install_source_step(mgr, entry))
         rollback_steps.append(_make_remove_dir_step(plugin_dir))
+        rollback_steps.append(_make_remove_dir_step(profile_dir))
+
+        if profile_backup_dir.exists():
+            await merge_directory_contents(profile_backup_dir, profile_dir)
 
         # Step 7: lifecycle start.
         if was_running:
@@ -1818,13 +2149,18 @@ async def _do_upgrade(
                 progress=0.92,
                 message="正在启动新版本...",
             )
-            await _safely_start(installed_plugin_id)
+            await start_plugin_after_upgrade(installed_plugin_id, strict=True)
 
         # Step 8: async cleanup of backup.
-        asyncio.create_task(
-            _async_remove_dir(backup_dir),
-            name=f"market-upgrade-cleanup-{installed_plugin_id}",
-        )
+        for cleanup_label, cleanup_dir in (
+            ("plugin", backup_dir),
+            ("profile", profile_backup_dir),
+        ):
+            if cleanup_dir.exists():
+                asyncio.create_task(
+                    _async_remove_dir(cleanup_dir),
+                    name=f"market-upgrade-cleanup-{cleanup_label}-{installed_plugin_id}",
+                )
 
         task["progress"] = 1.0
         task["stage"] = "completed"
@@ -1835,22 +2171,30 @@ async def _do_upgrade(
             task["install_source_warning"] = result["install_source_warning"]
 
     except _TaskError as exc:
-        await _run_rollback(task, rollback_steps, was_running, installed_plugin_id)
+        rollback_ok = await _run_rollback(task, rollback_steps, was_running, installed_plugin_id)
         if rollback_steps and exc.code not in (
             "version_already_at_target",
             "plugin_not_installed_for_upgrade",
         ):
             raise _TaskError(
-                code="upgrade_rollback_completed",
-                message=f"升级失败已回滚: {exc.message}",
+                code=("upgrade_rollback_completed" if rollback_ok else "upgrade_rollback_incomplete"),
+                message=(
+                    f"升级失败已回滚: {exc.message}"
+                    if rollback_ok
+                    else f"升级失败且回滚未完整完成: {exc.message}"
+                ),
             ) from exc
         raise
     except Exception as exc:
         # Other (network / sha256 / unpack) failures collapse into one code.
-        await _run_rollback(task, rollback_steps, was_running, installed_plugin_id)
+        rollback_ok = await _run_rollback(task, rollback_steps, was_running, installed_plugin_id)
         raise _TaskError(
-            code="upgrade_rollback_completed",
-            message=f"升级失败已回滚: {exc}",
+            code=("upgrade_rollback_completed" if rollback_ok else "upgrade_rollback_incomplete"),
+            message=(
+                f"升级失败已回滚: {exc}"
+                if rollback_ok
+                else f"升级失败且回滚未完整完成: {exc}"
+            ),
         ) from exc
 
 
@@ -1975,99 +2319,6 @@ def _post_install_payload_check(
 # ─── lifecycle / rollback helpers ─────────────────────────────────────
 
 
-async def _safely_is_running(plugin_id: str) -> bool:
-    """Probe whether ``plugin_id`` is currently running.
-
-    Reads the plugin host registry directly (lock-protected) instead of
-    going through the lifecycle service — we just need a snapshot of
-    the running set, not a heavy RPC. Failure modes (registry not yet
-    initialized, weird plugin id) collapse to "not running" so the
-    upgrade flow does not try to stop something that isn't there.
-    """
-
-    if not plugin_id:
-        return False
-    try:
-        from plugin.server.application.plugins.lifecycle_service import (
-            _plugin_is_running_sync,
-        )
-        return await asyncio.to_thread(_plugin_is_running_sync, plugin_id)
-    except Exception as exc:  # pragma: no cover — defensive
-        logger.warning(
-            "lifecycle is_running probe failed for plugin_id={}: {}",
-            plugin_id,
-            exc,
-        )
-        return False
-
-
-async def _safely_stop(plugin_id: str) -> None:
-    """Best-effort lifecycle stop wrapping ``PluginLifecycleService.stop_plugin``.
-
-    Bridge upgrade calls this **before** renaming the old plugin
-    directory; failures here aren't necessarily fatal (Linux happily
-    renames a dir even when the process holds open files, Windows
-    won't). We surface any error to bridge so it can choose to abort
-    rather than risk corruption.
-    """
-
-    if not plugin_id:
-        return None
-    from plugin.server.application.plugins import PluginLifecycleService
-    from plugin.server.domain.errors import ServerDomainError
-
-    service = PluginLifecycleService()
-    try:
-        await service.stop_plugin(plugin_id)
-    except ServerDomainError as exc:
-        # PLUGIN_NOT_RUNNING (404) is benign — the plugin was already
-        # stopped between our is_running probe and the stop call.
-        if getattr(exc, "code", None) == "PLUGIN_NOT_RUNNING":
-            logger.debug(
-                "lifecycle stop: plugin already stopped plugin_id={}",
-                plugin_id,
-            )
-            return None
-        logger.error(
-            "lifecycle stop failed for plugin_id={}: {}",
-            plugin_id,
-            exc,
-        )
-        raise
-    except Exception as exc:
-        logger.error(
-            "lifecycle stop unexpected error for plugin_id={}: {}",
-            plugin_id,
-            exc,
-        )
-        raise
-
-
-async def _safely_start(plugin_id: str) -> None:
-    """Best-effort lifecycle start; never raises (R5.4).
-
-    Wraps the start hook in a try/except so that a failure during
-    rollback does not shadow the original error. Logged at ERROR with
-    the underlying cause so the operator can see why the old version
-    didn't come back up.
-    """
-
-    if not plugin_id:
-        return None
-    from plugin.server.application.plugins import PluginLifecycleService
-
-    service = PluginLifecycleService()
-    try:
-        await service.start_plugin(plugin_id)
-    except Exception as exc:
-        logger.error(
-            "lifecycle start failed for plugin_id={}: {}",
-            plugin_id,
-            exc,
-        )
-        return None
-
-
 def _make_restore_dir_step(
     backup_dir: Path,
     target_dir: Path,
@@ -2075,12 +2326,7 @@ def _make_restore_dir_step(
     """Build a rollback step that renames ``backup_dir`` back to ``target_dir``."""
 
     async def _step() -> None:
-        if not backup_dir.exists():
-            return
-        # Make sure target is clear before rename so we don't EEXIST.
-        if target_dir.exists():
-            await asyncio.to_thread(shutil.rmtree, target_dir, ignore_errors=True)
-        await asyncio.to_thread(os.rename, backup_dir, target_dir)
+        await restore_directory(backup_dir, target_dir)
 
     return _step
 
@@ -2094,7 +2340,19 @@ def _make_remove_dir_step(target_dir: Path) -> Callable[[], Awaitable[None]]:
     """
 
     async def _step() -> None:
-        await asyncio.to_thread(shutil.rmtree, target_dir, ignore_errors=True)
+        await remove_directory(target_dir)
+
+    return _step
+
+
+def _make_restore_install_source_step(
+    manager: InstallSourceManager,
+    entry: LockEntry,
+) -> Callable[[], Awaitable[None]]:
+    """Build a rollback step that restores the exact pre-upgrade lock row."""
+
+    async def _step() -> None:
+        await asyncio.to_thread(manager.restore_entry_for_rollback, entry)
 
     return _step
 
@@ -2103,8 +2361,8 @@ async def _async_remove_dir(target_dir: Path) -> None:
     """Async best-effort rmtree for backup cleanup."""
 
     try:
-        await asyncio.to_thread(shutil.rmtree, target_dir, ignore_errors=True)
-    except Exception as exc:  # pragma: no cover — ignore_errors=True swallows
+        await remove_directory(target_dir)
+    except Exception as exc:  # pragma: no cover - platform-specific cleanup failure
         logger.warning("backup cleanup failed for {}: {}", target_dir, exc)
 
 
@@ -2113,11 +2371,13 @@ async def _run_rollback(
     rollback_steps: list[Callable[[], Awaitable[None]]],
     was_running: bool,
     plugin_id: str,
-) -> None:
+) -> bool:
     """Execute rollback steps in reverse order, then re-start old plugin.
 
     Each step is wrapped in try/except so one failure does not stop the
-    rest from running. ``_safely_start`` itself is non-throwing.
+    rest from running. The returned value includes the non-strict restart
+    result so callers never report a complete rollback when the old plugin
+    did not resume running.
     """
 
     if task is not None:
@@ -2145,26 +2405,14 @@ async def _run_rollback(
                 exc,
             )
     if was_running:
-        await _safely_start(plugin_id)
+        restarted = await start_plugin_after_upgrade(plugin_id, strict=False)
+        rollback_ok = rollback_ok and restarted
     if task is not None:
         rollback_info = dict(task.get("rollback") or {})
         rollback_info["running"] = False
         rollback_info["restored"] = rollback_ok
         task["rollback"] = rollback_info
-
-
-def _utc_micro_ts() -> str:
-    """Generate a microsecond-precision UTC timestamp suitable for filenames.
-
-    Format: ``YYYYMMDDTHHMMSS_uuuuuu`` (no colons / slashes so it works on
-    every OS we support). Backup directory names are derived from this
-    so concurrent upgrades on the same plugin can be distinguished —
-    though the InstallSourceManager lock already serialises lock writes,
-    so concurrent upgrades hitting the *same* timestamp are bounded by
-    bridge-level scheduling.
-    """
-
-    return datetime.now(UTC).strftime("%Y%m%dT%H%M%S_%f")
+    return rollback_ok
 
 
 def _utc_iso_now() -> str:

@@ -74,7 +74,19 @@ def assert_no_layout_transition(block: str) -> None:
         assert prop not in transition_section
 
 
-def test_chat_settings_cat_audio_toggle_is_under_auto_cat_and_dependent():
+def test_rps_result_hands_separate_smoothly_and_winner_is_already_above_on_approach():
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+
+    assert ".avatar-tool-round-reveal.is-result .avatar-tool-round-reveal-hand.is-user" in styles
+    assert "animation: avatar-tool-rps-user-separate" in styles
+    assert "animation: avatar-tool-rps-avatar-separate" in styles
+    assert "@keyframes avatar-tool-rps-user-separate" in styles
+    assert "@keyframes avatar-tool-rps-avatar-separate" in styles
+    assert ".avatar-tool-round-reveal.is-user_win.is-approach .avatar-tool-round-reveal-hand.is-user" in styles
+    assert ".avatar-tool-round-reveal.is-avatar_win.is-approach .avatar-tool-round-reveal-hand.is-avatar" in styles
+
+
+def test_chat_settings_auto_cat_and_cat_audio_toggles_are_independent():
     source = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
     chat_settings_block = source.split("const chatToggles = [", 1)[1].split("];", 1)[0]
 
@@ -82,7 +94,8 @@ def test_chat_settings_cat_audio_toggle_is_under_auto_cat_and_dependent():
     assert "id: 'cat-audio'" in chat_settings_block
     assert chat_settings_block.index("id: 'auto-cat'") < chat_settings_block.index("id: 'cat-audio'")
     assert "labelKey: 'settings.toggles.catAudio'" in chat_settings_block
-    assert "dependsOnToggleId: 'auto-cat'" in chat_settings_block
+    cat_audio_config = chat_settings_block.split("{ id: 'cat-audio'", 1)[1].split("}", 1)[0]
+    assert "dependsOnToggleId" not in cat_audio_config
     assert "neko:auto-cat-setting-changed" not in source
 
     cat_audio_init_block = source.split("} else if (toggle.id === 'cat-audio'", 1)[1].split(
@@ -244,6 +257,31 @@ def test_chat_surface_mode_preference_is_shared_with_electron():
     assert "localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, mode)" in persist_block
 
 
+def test_avatar_tool_result_name_tracks_the_current_catgirl():
+    geometry_path = (
+        Path(__file__).resolve().parents[2]
+        / "static"
+        / "app"
+        / "app-react-chat-window"
+        / "geometry-and-messages.js"
+    )
+    source = geometry_path.read_text(encoding="utf-8")
+
+    name_block = source.split("function getConfiguredAssistantName()", 1)[1].split(
+        "function getCurrentAssistantName()",
+        1,
+    )[0]
+    build_render_block = source.split("function buildRenderProps()", 1)[1].split(
+        "function showToast",
+        1,
+    )[0]
+
+    assert name_block.index("window.appState && window.appState.lanlan_name") < name_block.index(
+        "window.lanlan_config && window.lanlan_config.lanlan_name"
+    )
+    assert "assistantName: getConfiguredAssistantName() || undefined" in build_render_block
+
+
 def test_goodbye_composer_hidden_survives_surface_mode_switches():
     source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
@@ -286,6 +324,7 @@ def test_goodbye_composer_hidden_survives_surface_mode_switches():
     assert "function syncComposerAttachmentsVisibility(previousVisible)" in source
     assert "!state.homeTutorialInputLocked" in effective_composer_hidden_block
     assert "state.composerHidden || state.goodbyeComposerHidden" in effective_composer_hidden_block
+    assert "isCatLocalChatActive" in effective_composer_hidden_block
     assert "composerHidden: getEffectiveComposerHidden()" in build_render_block
     assert "state.homeTutorialInteractionLocked" in submit_block
     assert "state.homeTutorialInputLocked" in submit_block
@@ -306,7 +345,11 @@ def test_goodbye_composer_hidden_survives_surface_mode_switches():
     assert "EVENT_PREFIX + 'set-goodbye-composer-hidden'" in source
     assert "window.addEventListener('live2d-goodbye-click'" in source
     assert "setGoodbyeComposerHidden(true, 'live2d-goodbye-click')" in source
-    assert "setGoodbyeComposerHidden(false, 'live2d-return-click')" in source
+    assert "window.addEventListener('neko:cat-return-complete'" in source
+    assert "source !== 'pngtuber-return-click'" in source
+    assert "source !== 'live2d-return-click'" in source
+    assert "setGoodbyeComposerHidden(false, 'return-complete')" in source
+    assert "setGoodbyeComposerHidden(false, 'live2d-return-click')" not in source
 
 
 def test_chat_full_endpoint_uses_chat_template_with_initial_full_surface():
@@ -1754,6 +1797,22 @@ def test_moved_drag_suppresses_trailing_release_click():
     assert "document.addEventListener('click', consumeDragReleaseClickGuard, true);" in listeners_block
 
 
+def test_minimized_yarn_drag_reports_forced_release_as_cancel():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    stop_block = script.split("function stopDrag(options)", 1)[1].split(
+        "function bindDragging()",
+        1,
+    )[0]
+    assert "dispatchMinimizedYarnDragPhase(opts.suppressClick ? 'cancel' : 'end'" in stop_block
+
+    touch_cancel_block = script.split("document.addEventListener('touchcancel'", 1)[1].split(
+        ");",
+        1,
+    )[0]
+    assert "suppressClick: true" in touch_cancel_block
+
+
 def test_compact_minimize_targets_inline_yarn_ball_button_center():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
@@ -1818,6 +1877,104 @@ def test_compact_minimize_collapse_origin_matches_target():
     assert "originY = (targetTop - rect.top) / originDenomY;" in collapse_block
     assert "shell.style.transformOrigin = originX + 'px ' + originY + 'px';" in collapse_block
     assert "shell.style.removeProperty('transform-origin');" in collapse_block
+
+
+def test_compact_minimize_does_not_replay_full_shell_collapse_animation():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    request_block = script.split("function handleCompactMinimizeRequest()", 1)[1].split(
+        "function handleMiniGameInviteChoice(option)",
+        1,
+    )[0]
+    assert request_block.count(
+        "setChatSurfaceMode('minimized', { skipShellCollapseAnimation: true });"
+    ) == 2
+
+    set_mode_block = script.split("function setChatSurfaceMode(nextMode)", 1)[1].split(
+        "function cycleChatSurfaceMode()",
+        1,
+    )[0]
+    assert "if (transitionOptions.skipShellCollapseAnimation === true" in set_mode_block
+    assert "&& previousMode === 'compact'" in set_mode_block
+    assert "&& !isElectronChatWindow()" in set_mode_block
+    assert "&& !window.__LANLAN_IS_ELECTRON_PET__" in set_mode_block
+    assert "setMinimized(nextMinimized, { skipShellCollapseAnimation: true });" in set_mode_block
+    assert "setMinimized(nextMinimized);" in set_mode_block
+
+    minimize_block = script.split("function setMinimized(nextMinimized)", 1)[1].split(
+        "// ---- 展开动画",
+        1,
+    )[0]
+    instant_branch = minimize_block.split(
+        "if (transitionOptions.skipShellCollapseAnimation === true)",
+        1,
+    )[1].split("// 3. 计算缩放比", 1)[0]
+    assert "shell.classList.add('is-minimized');" in instant_branch
+    assert "shell.classList.add('is-collapsing');" not in instant_branch
+    assert "requestAnimationFrame" not in instant_branch
+
+
+def test_web_compact_restore_does_not_replay_full_shell_expand_animation():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+
+    set_mode_block = script.split("function setChatSurfaceMode(nextMode)", 1)[1].split(
+        "function cycleChatSurfaceMode()",
+        1,
+    )[0]
+    assert "previousMinimized" in set_mode_block
+    assert "normalized === 'compact'" in set_mode_block
+    assert "!isElectronChatWindow()" in set_mode_block
+    assert "!window.__LANLAN_IS_ELECTRON_PET__" in set_mode_block
+    assert "setMinimized(nextMinimized, { skipShellExpandAnimation: true });" in set_mode_block
+    assert "setMinimized(nextMinimized);" in set_mode_block
+
+    minimize_block = script.split("function setMinimized(nextMinimized)", 1)[1].split(
+        "// ---- 展开动画",
+        1,
+    )[0]
+    compact_restore = minimize_block.split(
+        "if (!willMinimize && transitionOptions.skipShellExpandAnimation === true)",
+        1,
+    )[1].split("if (willMinimize)", 1)[0]
+    assert "shell.style.visibility = 'hidden';" in compact_restore
+    assert "shell.classList.remove('is-mobile-content-capped', 'is-minimized');" in compact_restore
+    assert "syncCompactSurfaceAnchor();" in compact_restore
+    assert "scheduleMobileContentLayout();" in compact_restore
+    assert "COMPACT_EXPAND_WIPE_MS + COMPACT_EXPAND_TRANSITION_BUFFER_MS" in compact_restore
+    assert "shell.classList.add('is-expanding');" not in compact_restore
+    assert "scale(" not in compact_restore
+
+    host_duration = re.search(r"var COMPACT_EXPAND_WIPE_MS = (\d+);", script)
+    css_duration = re.search(
+        r"\.compact-chat-surface-shell\.neko-compact-expanding\s*\{[^}]*"
+        r"animation:\s*neko-compact-expand-wipe\s+(\d+)ms",
+        styles,
+        re.DOTALL,
+    )
+    assert host_duration is not None
+    assert css_duration is not None
+    assert host_duration.group(1) == css_duration.group(1)
+
+
+def test_queued_surface_mode_preserves_compact_transition_options():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    set_mode_block = script.split("function setChatSurfaceMode(nextMode)", 1)[1].split(
+        "function cycleChatSurfaceMode()",
+        1,
+    )[0]
+    flush_block = script.split("function flushPendingChatSurfaceModeIfNeeded()", 1)[1].split(
+        "function setMinimized(nextMinimized)",
+        1,
+    )[0]
+
+    assert "pendingChatSurfaceMode = {" in set_mode_block
+    assert "mode: normalized," in set_mode_block
+    assert "transitionOptions: transitionOptions" in set_mode_block
+    assert "var pendingSurfaceMode = pendingChatSurfaceMode;" in flush_block
+    assert "var targetMode = pendingSurfaceMode.mode;" in flush_block
+    assert "setChatSurfaceMode(targetMode, pendingSurfaceMode.transitionOptions);" in flush_block
 
 
 def test_desktop_compact_layout_change_resets_anchor_only_when_base_surface_changes():
@@ -2613,7 +2770,10 @@ def test_chat_image_file_drop_uses_import_pipeline_and_blocks_browser_navigation
     assert "e.preventDefault();" in drop_block
     assert "e.stopPropagation();" in drop_block
     assert "showHomeTutorialLockedToast();" in drop_block
-    assert "mod.importImageFilesToPendingList(files, { logPrefix: '[拖放图片]' });" in drop_block
+    assert "mod.importImageFilesToPendingList(imageFiles, { logPrefix: '[拖放图片]' });" in drop_block
+    assert "window.NekoAvatarDropParser" in drop_block
+    assert "parser.parseFiles(otherFiles)" in drop_block
+    assert "mod.sendAvatarDropPayload" in drop_block
 
 
 def test_chat_composer_user_images_use_text_attachment_input_type():

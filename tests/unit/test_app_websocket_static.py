@@ -1,8 +1,10 @@
+import re
 from pathlib import Path
 
 
 APP_WEBSOCKET_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-websocket.js"
 APP_STATE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-state.js"
+WEBSOCKET_ROUTER_PATH = Path(__file__).resolve().parents[2] / "main_routers" / "websocket_router.py"
 
 
 def test_response_discarded_visible_in_react_chat():
@@ -28,6 +30,16 @@ def test_response_discarded_visible_in_react_chat():
     )[0]
     assert "document.createElement('div')" not in response_discarded_block
     assert "appendChild(messageDiv)" not in response_discarded_block
+
+
+def test_websocket_has_no_widget_mode_capability_or_lifecycle_protocol():
+    frontend_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    router_source = WEBSOCKET_ROUTER_PATH.read_text(encoding="utf-8")
+
+    assert "widget_mode_capable" not in frontend_source
+    assert "widget_mode_capable" not in router_source
+    assert "response.type.startsWith('widget_mode_')" not in frontend_source
+    assert "neko:widget-mode-message" not in frontend_source
 
 
 def test_startup_greeting_release_event_replaces_home_tutorial_block_state():

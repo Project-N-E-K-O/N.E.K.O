@@ -265,11 +265,12 @@ class Live2DManager {
 
         this._initPIXIPromise = (async () => {
             try {
-                // 使用 window.screen 全屏尺寸初始化渲染器，画布始终覆盖整个屏幕区域
-                // 任务栏/DevTools/键盘等造成的视口缩小只会裁切画布边缘（overflow:hidden），
-                // 不会导致缝隙或模型位移
-                const initW = Math.max(window.screen.width || 1, 1);
-                const initH = Math.max(window.screen.height || 1, 1);
+                // 桌宠窗口继续按物理屏幕初始化；手机网页必须按真实视口初始化。
+                // 否则窄窗口/停靠 DevTools 下 renderer 仍是整屏宽度，移动端默认位置和
+                // 首次边界检查都会误以为屏外模型仍在“可视范围”内，直到 resize 才回正。
+                const useViewportSize = isMobileWidth();
+                const initW = Math.max((useViewportSize ? window.innerWidth : window.screen.width) || 1, 1);
+                const initH = Math.max((useViewportSize ? window.innerHeight : window.screen.height) || 1, 1);
                 this.pixi_app = new PIXI.Application({
                     view: canvas,
                     width: initW,
@@ -331,6 +332,8 @@ class Live2DManager {
                 // 任务栏、DevTools、输入法等视口变化不会触发（幂等判定跳过）
                 let lastScreenW = window.screen.width;
                 let lastScreenH = window.screen.height;
+                let lastViewportW = window.innerWidth;
+                let lastViewportH = window.innerHeight;
                 let lastDevicePixelRatio = window.devicePixelRatio || 1;
 
                 const doResize = (reason) => {
@@ -352,6 +355,12 @@ class Live2DManager {
                     const sizeChanged = prevW !== newW || prevH !== newH;
                     const resolutionChanged = Math.abs(prevResolution - nextResolution) >= 0.001;
                     if (!sizeChanged && !resolutionChanged) return;
+
+                    if (typeof this.isLive2DPeekActive === 'function' &&
+                        this.isLive2DPeekActive() &&
+                        typeof this.clearLive2DPeek === 'function') {
+                        this.clearLive2DPeek(`viewport-changed:${reason}`);
+                    }
 
                     if (resolutionChanged) {
                         renderer.resolution = nextResolution;
@@ -395,16 +404,21 @@ class Live2DManager {
                 this._screenChangeHandler = () => {
                     const sw = window.screen.width;
                     const sh = window.screen.height;
+                    const vw = window.innerWidth;
+                    const vh = window.innerHeight;
                     const dpr = window.devicePixelRatio || 1;
                     const renderer = this.pixi_app && this.pixi_app.renderer;
                     const shouldRecoverReturnBallRenderer = !!(renderer && renderer.screen &&
                         isLive2DReturnBallViewportSize(renderer.screen.width, renderer.screen.height) &&
                         !isLive2DReturnBallViewportSize(window.innerWidth, window.innerHeight));
                     if (sw === lastScreenW && sh === lastScreenH &&
+                        vw === lastViewportW && vh === lastViewportH &&
                         Math.abs(dpr - lastDevicePixelRatio) < 0.001 &&
                         !shouldRecoverReturnBallRenderer) return;
                     lastScreenW = sw;
                     lastScreenH = sh;
+                    lastViewportW = vw;
+                    lastViewportH = vh;
                     lastDevicePixelRatio = dpr;
                     doResize(shouldRecoverReturnBallRenderer
                         ? 'window.resize:return-ball-renderer-recovery'
@@ -542,7 +556,11 @@ class Live2DManager {
         }
         // 立即按 governor 语义落地，不必等下一次活动周期：有渲染活动升回配置帧率，
         // 否则直接压到静止地板，避免改完设置后空闲态停在未节流的值。
-        if (this._hasRenderActivity()) {
+        if (window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ === true) {
+            // 页面级豁免：直接落配置帧率，不进入空闲地板/低频模式
+            this._exitIdleTickMode();
+            this.pixi_app.ticker.maxFPS = window.targetFrameRate;
+        } else if (this._hasRenderActivity()) {
             this.boostInteractiveFPS();
         } else {
             // 改配置时如果正处于空闲低频 tick 模式，先退出再按新地板重新进入，
@@ -583,7 +601,10 @@ class Live2DManager {
         const originalTicker = ticker;
         if (this._idleFpsRestoreTimer) {
             clearTimeout(this._idleFpsRestoreTimer);
+            this._idleFpsRestoreTimer = null;
         }
+        // 页面级豁免：只升频、不安排衰减——衰减会把预览页压回空闲地板帧率
+        if (window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ === true) return;
         this._idleFpsRestoreTimer = setTimeout(() => {
             this._idleFpsRestoreTimer = null;
             if (this.pixi_app && this.pixi_app.ticker === originalTicker) {
@@ -701,6 +722,8 @@ class Live2DManager {
     // 自适应帧率守护：周期性探测活动状态，有活动就续命满帧，无活动时由衰减计时器回落到地板。
     _startIdleFpsGovernor() {
         this._stopIdleFpsGovernor();
+        // 页面级豁免（demo/模型管理器等预览页）：期望满帧，不启动空闲治理
+        if (window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ === true) return;
         // 启动即视为活动（加载/入场动画期间保持满帧），随后自动衰减。
         this.boostInteractiveFPS();
         this._idleFpsGovernorTimer = setInterval(() => {
@@ -4645,6 +4668,48 @@ class Live2DManager {
      * @returns {Object|null} 边界对象 { left, right, top, bottom, width, height, centerX, centerY } 或 null
      */
     getModelScreenBounds() {
+        const edgePeekState = this._live2DPeekState;
+        if (edgePeekState && edgePeekState.active) {
+            const model = edgePeekState.model || this.currentModel;
+            if (model && !model.destroyed && typeof model.getBounds === 'function') {
+                const bounds = model.getBounds();
+                const left = Number(bounds.left ?? bounds.x);
+                const top = Number(bounds.top ?? bounds.y);
+                const right = Number(bounds.right ?? (left + Number(bounds.width)));
+                const bottom = Number(bounds.bottom ?? (top + Number(bounds.height)));
+                const renderer = this.pixi_app && this.pixi_app.renderer;
+                const screen = renderer && renderer.screen;
+                const rendererW = Number(screen && screen.width);
+                const rendererH = Number(screen && screen.height);
+                const viewportLeft = 0;
+                const viewportTop = 0;
+                const viewportRight = Math.max(0, Number.isFinite(rendererW) && rendererW > 0
+                    ? rendererW
+                    : Number(window.innerWidth) || 0);
+                const viewportBottom = Math.max(0, Number.isFinite(rendererH) && rendererH > 0
+                    ? rendererH
+                    : Number(window.innerHeight) || 0);
+                const visibleLeft = Math.max(left, viewportLeft);
+                const visibleRight = Math.min(right, viewportRight);
+                const visibleTop = Math.max(top, viewportTop);
+                const visibleBottom = Math.min(bottom, viewportBottom);
+                const width = visibleRight - visibleLeft;
+                const height = visibleBottom - visibleTop;
+                if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+                    return {
+                        left: visibleLeft,
+                        right: visibleRight,
+                        top: visibleTop,
+                        bottom: visibleBottom,
+                        width: width,
+                        height: height,
+                        centerX: visibleLeft + width / 2,
+                        centerY: visibleTop + height / 2
+                    };
+                }
+            }
+        }
+
         const model = this.currentModel;
         if (!model) {
             return null;
@@ -4698,22 +4763,29 @@ class Live2DManager {
 
     // 复位模型位置和缩放到初始状态
     async resetModelPosition() {
+        if (typeof this.clearLive2DPeek === 'function') {
+            this.clearLive2DPeek('reset-model-position');
+        }
         if (!this.currentModel || !this.pixi_app) {
             console.warn('无法复位：模型或PIXI应用未初始化');
             return;
         }
 
         try {
+            let resetViewport = null;
             if (isMobileWidth()) {
                 this.currentModel.anchor.set(0.5, 0.1);
+                const viewportWidth = Math.max(window.innerWidth || this.pixi_app.renderer.screen.width || 1, 1);
+                const viewportHeight = Math.max(window.innerHeight || this.pixi_app.renderer.screen.height || 1, 1);
+                resetViewport = { width: viewportWidth, height: viewportHeight };
                 const scale = Math.min(
                     0.5,
-                    window.innerHeight * 1.3 / 4000,
-                    window.innerWidth * 1.2 / 2000
+                    viewportHeight * 1.3 / 4000,
+                    viewportWidth * 1.2 / 2000
                 );
                 this.currentModel.scale.set(scale);
-                this.currentModel.x = this.pixi_app.renderer.screen.width * 0.5;
-                this.currentModel.y = this.pixi_app.renderer.screen.height * 0.28;
+                this.currentModel.x = viewportWidth * 0.5;
+                this.currentModel.y = viewportHeight * 0.28;
             } else {
                 this.currentModel.anchor.set(0.65, 0.75);
                 const scale = Math.min(
@@ -4728,9 +4800,9 @@ class Live2DManager {
 
             console.log('模型位置已复位到初始状态');
 
-            // 复位后自动保存位置（viewport 基准与 applyModelSettings / _savePositionAfterInteraction 一致，使用 renderer.screen）
+            // 复位后自动保存位置；手机端沿用本次复位的 viewport，避免坐标与元数据基准不一致。
             if (this._lastLoadedModelPath) {
-                const viewport = {
+                const viewport = resetViewport || {
                     width: this.pixi_app.renderer.screen.width,
                     height: this.pixi_app.renderer.screen.height
                 };

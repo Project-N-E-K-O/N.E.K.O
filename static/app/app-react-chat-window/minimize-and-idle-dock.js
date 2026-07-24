@@ -21,6 +21,8 @@
     var activeAnimationCleanup = null; // 当前进行中动画的清理函数
     I.pendingChatSurfaceMode = null;
     var pendingMinimizedSurfaceCommit = null;
+    var COMPACT_EXPAND_WIPE_MS = 300;
+    var COMPACT_EXPAND_TRANSITION_BUFFER_MS = 40;
 
     // ── Idle-dock: independent orchestration (Phase 4) ──────────
     // Positions the minimized ball next to CAT2/CAT3 return-ball.
@@ -251,6 +253,34 @@
 
         var now = Date.now();
         var collapsed = isElectronChatWindowCollapsed(bridge);
+
+        // preload 已发布真实毛球矩形（GNOME Wayland 等平台）时，
+        // getElectronChatMinimizedScreenRect 会直接用它、无视 getBounds 结果——
+        // 此时每 500ms 的 getBounds IPC 纯属浪费，直接走同步路径。
+        if (collapsed && normalizeElectronWindowBoundsRect(window.__nekoMinimizedChatBallScreenRect)) {
+            var directRect = getElectronChatMinimizedScreenRect(null);
+            if (directRect) {
+                var directSig = getElectronChatMinimizedStateSignature(true, directRect);
+                if (directSig === I.electronChatMinimizedStateSignature &&
+                    reason === 'poll' &&
+                    now - I.electronChatMinimizedStatePublishedAt < I.ELECTRON_CHAT_MINIMIZED_STATE_HEARTBEAT_MS) {
+                    return;
+                }
+                I.electronChatMinimizedStateSignature = directSig;
+                I.electronChatMinimizedStatePublishedAt = now;
+                window.dispatchEvent(new CustomEvent('neko:idle-chat-minimized-state', {
+                    detail: {
+                        action: 'idle_chat_minimized_state',
+                        source: 'chat-window',
+                        reason: reason || 'sync',
+                        minimized: true,
+                        screenRect: directRect,
+                        timestamp: now
+                    }
+                }));
+                return;
+            }
+        }
         if (!collapsed) {
             if (I.electronChatMinimizedStateSignature === '0' &&
                 reason === 'poll' &&
@@ -300,7 +330,15 @@
     }
 
     function scheduleElectronChatMinimizedState(reason) {
-        if (!I.isElectronChatWindow() || I.electronChatMinimizedStateFrame) return;
+        if (!I.isElectronChatWindow()) return;
+        // 非 poll 触发（pointer/resize/init/sync）说明状态可能真的在变：
+        // 接下来 ~3s 保持 500ms 满频轮询，覆盖拖拽后主进程 snap 动画收尾。
+        // 必须在 pending 帧早退之前设置——否则恰逢 poll 帧待发时，真实触发
+        // 会被整体吞掉、满频窗口也不会打开。
+        if (reason && reason !== 'poll') {
+            I.electronChatMinimizedStateFullRateUntil = Date.now() + 3000;
+        }
+        if (I.electronChatMinimizedStateFrame) return;
         I.electronChatMinimizedStateFrame = window.requestAnimationFrame(function () {
             I.electronChatMinimizedStateFrame = 0;
             dispatchElectronChatMinimizedState(reason || 'sync');
@@ -310,7 +348,16 @@
     I.ensureElectronChatMinimizedStateBridge = function ensureElectronChatMinimizedStateBridge() {
         if (!I.isElectronChatWindow() || I.electronChatMinimizedStateTimer) return;
         scheduleElectronChatMinimizedState('init');
+        I.electronChatMinimizedStatePollTick = 0;
         I.electronChatMinimizedStateTimer = window.setInterval(function () {
+            // 空闲退避：状态签名稳定且 3s 内无 pointer/resize 等真实触发时，
+            // 每 3 跳才做一次带 getBounds IPC 的轮询（500ms→1.5s）。
+            // 上限不能再放：宠物侧消费方 _NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS=2500
+            // 会把超过 2.5s 未刷新的毛球矩形当过期，心跳间隔必须留出安全余量。
+            // 毛球位置的用户拖拽走 mousemove/mouseup 监听（非 poll 路径），不受影响。
+            I.electronChatMinimizedStatePollTick = (I.electronChatMinimizedStatePollTick || 0) + 1;
+            var fullRate = Date.now() < (I.electronChatMinimizedStateFullRateUntil || 0);
+            if (!fullRate && I.electronChatMinimizedStatePollTick % 3 !== 0) return;
             scheduleElectronChatMinimizedState('poll');
         }, 500);
         window.addEventListener('resize', function () {
@@ -486,6 +533,19 @@
         nextBounds = clampElectronDockBounds(nextBounds, I.electronIdleDockWorkArea);
         if (positionSeq !== I.electronIdleDockPositionSeq || !I.electronIdleDockActive || !I.electronIdleDockDesired) return;
 
+        if (typeof bridge.idleDockCommitCollapsedBounds === 'function') {
+            var committedBounds = null;
+            try {
+                committedBounds = await bridge.idleDockCommitCollapsedBounds(nextBounds);
+            } catch (_) {
+                committedBounds = null;
+            }
+            if (positionSeq !== I.electronIdleDockPositionSeq || !I.electronIdleDockActive || !I.electronIdleDockDesired) return;
+            if (committedBounds !== false && committedBounds !== null && committedBounds !== undefined) {
+                rememberElectronIdleDockBounds(committedBounds);
+                return;
+            }
+        }
         bridge.setBounds(nextBounds.x, nextBounds.y, nextBounds.width, nextBounds.height);
         rememberElectronIdleDockBounds(nextBounds);
     }
@@ -513,6 +573,13 @@
 
     function shouldIgnoreElectronIdleDockInactiveViewportResize(detail, activeTier) {
         return !!(detail && detail.reason === 'viewport-resize' && !activeTier);
+    }
+
+    function shouldIgnoreElectronIdleDockTransientDragHide(detail) {
+        if (!detail || detail.visible) return false;
+        return detail.reason === 'return-ball-drag-start'
+            || detail.reason === 'return-ball-drag-active'
+            || detail.reason === 'return-ball-dragging';
     }
 
     function waitElectronIdleDockCommitRetry(delayMs) {
@@ -550,6 +617,7 @@
     }
 
     async function enterElectronIdleDock(screenRect) {
+        if (typeof I.isCatLocalChatActive === 'function' && I.isCatLocalChatActive()) return;
         // full 独立窗口（Electron part B）完全避开 idle-dock —— 与 web 路径 enterIdleDock 的
         // full 守卫对偶：CAT2/CAT3 idle tier 不应把展开的 full 窗口自动折叠/贴猫。full 用旧版
         // 独立窗口折叠机制（preload 物理缩窗），不参与 idle-dock。
@@ -748,10 +816,17 @@
             return;
         }
         if (I.hasElectronIdleDockPendingOrActive()) {
+            // Pet 在把 return-ball 交给原生拖动窗口时会暂时把 DOM 容器设为不可见；
+            // 这是拖动中的中间帧，不是 idle-dock 退出信号，不能在这里恢复旧 bounds。
+            if (shouldIgnoreElectronIdleDockTransientDragHide(detail)) {
+                return;
+            }
             if (shouldIgnoreElectronIdleDockInactiveViewportResize(detail, activeTier)) {
                 return;
             }
-            var shouldPreserveCurrentPosition = activeTier && detail && (
+            // CAT2 拖动结束会先降级成 CAT1；此时 activeTier 已为 false。是否保留落点
+            // 必须由终止事件语义决定，不能再依赖降级后的最终 tier。
+            var shouldPreserveCurrentPosition = detail && !!detail.screenRect && (
                 detail.reason === 'return-ball-drag-demotion'
                 || detail.reason === 'return-ball-drag-end'
             );
@@ -765,6 +840,7 @@
     // Enter idle-dock: minimize if needed, then position next to return-ball.
     // Enters through chatSurfaceMode so compact/full/minimized state stays in sync.
     I.enterIdleDock = function enterIdleDock() {
+        if (typeof I.isCatLocalChatActive === 'function' && I.isCatLocalChatActive()) return;
         if (I.isElectronChatWindow()) return;
         // full 完全避开 idle-dock：CAT2/CAT3 视觉层级不应把展开的 full 窗口自动
         // 最小化成球。这个检查必须在触发最小化之前，而不只在算 dock 位置时
@@ -1153,6 +1229,8 @@
     }
 
     I.setChatSurfaceMode = function setChatSurfaceMode(nextMode) {
+        var options = arguments.length > 1 ? arguments[1] : null;
+        var transitionOptions = options && typeof options === 'object' ? options : {};
         var normalized = I.coerceChatSurfaceModeForHost(nextMode);
         var previousMode = I.getCurrentChatSurfaceMode();
         var nextMinimized = normalized === 'minimized';
@@ -1166,7 +1244,10 @@
         }
 
         if (I.isMinimizeTransitioning) {
-            I.pendingChatSurfaceMode = normalized;
+            I.pendingChatSurfaceMode = {
+                mode: normalized,
+                transitionOptions: transitionOptions
+            };
             return previousMode;
         }
         I.pendingChatSurfaceMode = null;
@@ -1205,11 +1286,31 @@
         I.persistChatSurfaceModePreference(normalized);
         if (normalized === 'compact') {
             I.seedCompactSurfaceAnchorForRender();
+            if (typeof I.isCatLocalChatActive === 'function' && I.isCatLocalChatActive()) {
+                I.setCompactChatState('input');
+            }
         }
         I.renderWindow();
 
         if (nextMinimized !== previousMinimized) {
-            setMinimized(nextMinimized);
+            // compact 按钮路径已在 React surface 内完成毛线球按压与右→左擦除；这里只落到最终球态。
+            // idle dock、公开 API 和 full surface 等其他入口继续走既有调用及整窗缩放路径。
+            if (transitionOptions.skipShellCollapseAnimation === true
+                && nextMinimized
+                && previousMode === 'compact'
+                && !I.isElectronChatWindow()
+                && !window.__LANLAN_IS_ELECTRON_PET__) {
+                setMinimized(nextMinimized, { skipShellCollapseAnimation: true });
+            } else if (previousMinimized
+                && normalized === 'compact'
+                && !I.isElectronChatWindow()
+                && !window.__LANLAN_IS_ELECTRON_PET__) {
+                // React compact surface 自带 minimized→compact 展开擦除；Web 不再叠加 full shell
+                // 的从球放大动画，否则会先按通用左下锚点向上展开、随后再回到 compact 锚点。
+                setMinimized(nextMinimized, { skipShellExpandAnimation: true });
+            } else {
+                setMinimized(nextMinimized);
+            }
         } else {
             I.syncChatSurfaceModeUI();
         }
@@ -1233,15 +1334,18 @@
     function flushPendingChatSurfaceModeIfNeeded() {
         if (I.isMinimizeTransitioning || !I.pendingChatSurfaceMode) return;
 
-        var targetMode = I.pendingChatSurfaceMode;
+        var pendingSurfaceMode = I.pendingChatSurfaceMode;
         I.pendingChatSurfaceMode = null;
+        var targetMode = pendingSurfaceMode.mode;
         if (targetMode === I.getCurrentChatSurfaceMode()) {
             return;
         }
-        I.setChatSurfaceMode(targetMode);
+        I.setChatSurfaceMode(targetMode, pendingSurfaceMode.transitionOptions);
     }
 
     function setMinimized(nextMinimized) {
+        var options = arguments.length > 1 ? arguments[1] : null;
+        var transitionOptions = options && typeof options === 'object' ? options : {};
         var shell = I.getShell();
         if (!shell) return;
 
@@ -1260,6 +1364,65 @@
             shell.style.removeProperty('opacity');
             I.isMinimizeTransitioning = false;
             I.syncChatSurfaceModeUI();
+            return;
+        }
+
+        if (!willMinimize && transitionOptions.skipShellExpandAnimation === true) {
+            // minimized class 仍在时先隐藏并恢复最终 compact 几何；同一任务末尾再显示，
+            // 避免 React 重建 compact surface 与宿主位置校正之间出现一帧错误位置。
+            var previousCompactRestoreVisibility = shell.style.visibility;
+            shell.style.visibility = 'hidden';
+            shell.classList.remove('is-collapsing', 'is-expanding');
+            shell.style.transform = 'none';
+            shell.style.removeProperty('transform-origin');
+            shell.style.removeProperty('width');
+            shell.style.removeProperty('height');
+            shell.style.removeProperty('left');
+            shell.style.removeProperty('top');
+            shell.style.removeProperty('right');
+            shell.style.removeProperty('bottom');
+            shell.classList.remove('is-mobile-content-capped', 'is-minimized');
+            I.savedShellSize = null;
+            I.savedShellPosition = null;
+            I.syncCompactSurfaceAnchor();
+            I.scheduleMobileContentLayout();
+            I.syncChatSurfaceModeUI();
+            if (previousCompactRestoreVisibility) {
+                shell.style.visibility = previousCompactRestoreVisibility;
+            } else {
+                shell.style.removeProperty('visibility');
+            }
+
+            var compactExpandHandled = false;
+            var compactExpandTimer = null;
+            var finishCompactExpand = function () {
+                if (compactExpandHandled) return;
+                compactExpandHandled = true;
+                clearTimeout(compactExpandTimer);
+                activeAnimationCleanup = null;
+                I.isMinimizeTransitioning = false;
+                flushPendingChatSurfaceModeIfNeeded();
+            };
+            var reduceCompactExpandMotion = false;
+            try {
+                reduceCompactExpandMotion = !!(
+                    window.matchMedia
+                    && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+                );
+            } catch (e) {}
+            if (reduceCompactExpandMotion) {
+                finishCompactExpand();
+            } else {
+                // 与 React 的 neko-compact-expand-wipe 保持同步，并多留一帧余量后释放状态锁。
+                compactExpandTimer = window.setTimeout(
+                    finishCompactExpand,
+                    COMPACT_EXPAND_WIPE_MS + COMPACT_EXPAND_TRANSITION_BUFFER_MS
+                );
+                activeAnimationCleanup = function () {
+                    clearTimeout(compactExpandTimer);
+                    compactExpandHandled = true;
+                };
+            }
             return;
         }
 
@@ -1290,6 +1453,27 @@
             var target = getMinimizedTarget(rect);
             var targetLeft = target.left;
             var targetTop = target.top;
+
+            if (transitionOptions.skipShellCollapseAnimation === true) {
+                // compact surface 已经播完自己的擦除动画。直接切换最终几何，避免再播放
+                // full surface 专用的整窗 scale transition（窄屏下尤其明显）。
+                shell.classList.remove('is-collapsing', 'is-expanding');
+                shell.style.transform = 'none';
+                shell.style.removeProperty('transform-origin');
+                shell.style.removeProperty('width');
+                shell.style.removeProperty('height');
+                shell.classList.remove('is-mobile-content-capped');
+                shell.style.removeProperty('right');
+                shell.style.removeProperty('bottom');
+                shell.style.left = targetLeft + 'px';
+                shell.style.top = targetTop + 'px';
+                shell.classList.add('is-minimized');
+                I.applyMinimizedBallSkin(ensureMinimizedBallIcon());
+                I.isMinimizeTransitioning = false;
+                I.syncChatSurfaceModeUI();
+                flushPendingChatSurfaceModeIfNeeded();
+                return;
+            }
 
             // 3. 计算缩放比，并反推 transform-origin，使缩放后的 shell
             //    视觉终点落在 target 上。fallback 的 shell 左下角目标会自然得到

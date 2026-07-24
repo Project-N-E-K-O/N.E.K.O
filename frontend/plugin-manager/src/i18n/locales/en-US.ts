@@ -20,6 +20,8 @@ export default {
     minimize: 'Minimize',
     maximize: 'Maximize',
     restore: 'Restore',
+    pinWindow: 'Pin window',
+    unpinWindow: 'Unpin window',
     toggleSelection: 'Toggle selection',
     success: 'Success',
     error: 'Error',
@@ -61,6 +63,13 @@ export default {
     loginFailed: 'The authorization login was not completed. Please try again later.',
     loginPending: 'The authorization login is taking a little too long. Please start it again.',
     logoutSuccess: "You've signed out of the authorization login on this device",
+    logoutFailed: 'Failed to sign out. Please try again.',
+    accountSummary: 'Account details',
+    accountSummaryLoading: 'Refreshing account details…',
+    accountMemberDays: 'Member for {days} days',
+    accountPublished: '{count} plugins published',
+    logout: 'Sign out',
+    logoutConfirm: 'Sign out of the Plugin Market authorization on this device?',
     searchPlaceholder: 'Search plugins...',
     notConfigured: 'Plugin market not configured',
     configHint: 'Set NEKO_MARKET_API_URL to the plugin market service address',
@@ -384,6 +393,20 @@ export default {
     }
   },
   package: {
+    install: {
+      safeUpgradeHint: 'Importing the same plugin again checks its version and performs a rollback-safe replacement without creating suffixed copies.',
+      planFailed: 'Could not inspect the installation package.',
+      upgradeTitle: 'Upgrade {plugin}?',
+      upgradeBody: 'Version {current} will be replaced by {target}. A running plugin will restart briefly.',
+      upgradeConfirm: 'Upgrade plugin',
+      upgradeCancelled: 'Upgrade cancelled.',
+      upgradeSucceeded: '{plugin} was upgraded successfully.',
+      blockedBundleConflict: 'This bundle contains an installed plugin. Upgrade its plugins one at a time.',
+      blockedDirectoryConflict: 'The destination directory belongs to another plugin and was not changed.',
+      blockedLegacyPlugin: 'An earlier version of this plugin is still installed. Uninstall {plugin} before continuing.',
+      rollbackCompleted: 'The upgrade failed and the previous version was restored.',
+      rollbackIncomplete: 'The upgrade failed and rollback was incomplete. Check the plugin state before continuing.'
+    },
     dialog: {
       title: 'Package operation history',
       subtitle: 'Showing the latest {count} result(s)'

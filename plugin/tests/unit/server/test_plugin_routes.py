@@ -24,7 +24,7 @@ async def test_start_plugin_endpoint_ensures_messaging_before_start(
     monkeypatch.setattr(module, "ensure_plugin_messaging_started", _ensure_messaging, raising=False)
     monkeypatch.setattr(module.lifecycle_service, "start_plugin", _start_plugin)
 
-    result = await module.start_plugin_endpoint("neko_roast", _="test")
+    result = await module.start_plugin_endpoint("sample_plugin", _="test")
 
-    assert result == {"success": True, "plugin_id": "neko_roast"}
-    assert calls == ["ensure", "start:neko_roast:True"]
+    assert result == {"success": True, "plugin_id": "sample_plugin"}
+    assert calls == ["ensure", "start:sample_plugin:True"]

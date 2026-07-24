@@ -5,10 +5,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OpenClaw 接入教程 - N.E.K.O.</title>
-    <script src="/static/i18n-i18next.js"></script>
+    <script src="/static/i18n-i18next.js?v={{ static_asset_version|default('0', true) }}"></script>
     <link rel="stylesheet" href="/static/css/dark-mode.css">
+    <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version|default('0', true) }}">
     <script src="/static/theme-manager.js"></script>
-    <script src="/static/js/window_controls.js"></script>
+    <script src="/static/js/window_controls.js?v={{ static_asset_version|default('0', true) }}"></script>
     <style>
         :root {
             color-scheme: light;
@@ -281,6 +282,22 @@
             background: var(--guide-toolbar-btn-hover);
             border-color: rgba(11, 132, 216, 0.26);
             transform: translateY(-1px);
+        }
+
+        .guide-pin-btn {
+            width: 42px;
+            min-width: 42px;
+            padding: 0;
+        }
+
+        .guide-pin-btn[hidden] {
+            display: none;
+        }
+
+        .guide-pin-btn.is-pinned {
+            color: var(--guide-accent);
+            background: var(--guide-toolbar-btn-hover);
+            border-color: rgba(11, 132, 216, 0.36);
         }
 
         .guide-lang-dropdown {
@@ -632,6 +649,19 @@
                     <button id="themeToggleBtn" class="guide-action-btn" type="button">
                         <span id="themeToggleIcon">◐</span>
                         <span id="themeToggleText">主题切换</span>
+                    </button>
+                    <button id="pinGuideBtn"
+                            class="guide-action-btn guide-pin-btn"
+                            type="button"
+                            data-neko-window-control="pin" hidden
+                            data-i18n-title="common.pinWindow"
+                            data-i18n-aria="common.pinWindow"
+                            data-neko-pin-label="置顶窗口"
+                            data-neko-unpin-label="取消置顶"
+                            title="置顶窗口"
+                            aria-label="置顶窗口"
+                            aria-pressed="false">
+                        <span class="neko-window-pin-icon" aria-hidden="true"></span>
                     </button>
                     <button id="minimizeGuideBtn" class="guide-action-btn" type="button">
                         <span aria-hidden="true">&minus;</span>
@@ -1241,6 +1271,43 @@
                 });
             }
 
+            function initializeGuideExternalLinks() {
+                if (!guideContent) return;
+                guideContent.addEventListener('click', (event) => {
+                    const target = event.target;
+                    const link = target && typeof target.closest === 'function'
+                        ? target.closest('a[href]')
+                        : null;
+                    if (!link || !guideContent.contains(link)) return;
+
+                    let externalUrl;
+                    try {
+                        externalUrl = new URL(link.getAttribute('href'), window.location.href);
+                    } catch (_) {
+                        return;
+                    }
+                    if (!['http:', 'https:'].includes(externalUrl.protocol)) return;
+                    if (externalUrl.origin === window.location.origin) return;
+
+                    event.preventDefault();
+                    const href = externalUrl.toString();
+                    if (window.electronShell && typeof window.electronShell.openExternal === 'function') {
+                        Promise.resolve(window.electronShell.openExternal(href))
+                            .then((result) => {
+                                if (result && result.success === false) {
+                                    console.warn('[OpenClawGuide] Failed to open external link:', result.error || 'Unknown error');
+                                }
+                            })
+                            .catch((error) => {
+                                console.warn('[OpenClawGuide] Failed to open external link:', error);
+                            });
+                        return;
+                    }
+
+                    window.open(href, '_blank', 'noopener,noreferrer');
+                });
+            }
+
             function renderGuideContent() {
                 guideContent.innerHTML = renderMarkdown(guideMarkdown);
                 buildGuideToc();
@@ -1288,6 +1355,7 @@
                 initializeCloseButton();
                 initializeGuideTocScroll();
                 initializeGuideContentScrollbar();
+                initializeGuideExternalLinks();
                 applyLocalizedChrome();
                 await loadGuideContent();
             }

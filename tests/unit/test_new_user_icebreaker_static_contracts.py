@@ -18,7 +18,7 @@ LOCALES_DIR = ROOT / "static" / "tutorial" / "icebreaker" / "locales"
 CHAT_HOST_PATH = ROOT / "static" / "app" / "app-react-chat-window"
 APP_WEBSOCKET_PATH = ROOT / "static" / "app" / "app-websocket.js"
 APP_PROACTIVE_PATH = ROOT / "static" / "app" / "app-proactive.js"
-APP_PROMPT_PATH = ROOT / "static" / "tutorial" / "core" / "app-prompt.js"
+SEVEN_DAY_STATE_PATH = ROOT / "static" / "tutorial" / "core" / "seven-day-state.js"
 UNIVERSAL_TUTORIAL_MANAGER_PATH = ROOT / "static" / "tutorial" / "core" / "universal-manager.js"
 APP_INTERPAGE_PATH = ROOT / "static" / "app" / "app-interpage"
 INDEX_TEMPLATE_PATH = ROOT / "templates" / "index.html"
@@ -363,6 +363,7 @@ def test_day1_icebreaker_fallback_redirect_is_node_agnostic():
 
 def test_icebreaker_runtime_wires_choice_prompt_and_project_tts():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    seven_day_state = SEVEN_DAY_STATE_PATH.read_text(encoding="utf-8")
     chat_host = read_js_parts(CHAT_HOST_PATH)
     app_websocket = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
     index_html = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
@@ -393,7 +394,8 @@ def test_icebreaker_runtime_wires_choice_prompt_and_project_tts():
     assert "day = 1" not in runtime
     assert "playExpression(normalizedEmotion, normalizedExpressionFile)" not in runtime
     assert "bootstrapFromRecentEndState" in runtime
-    assert "neko_avatar_floating_guide_v1" in runtime
+    assert "window.NekoSevenDayTutorialState" in runtime
+    assert "neko_avatar_floating_guide_v1" in seven_day_state
     assert "resolveRecentPersistedEndState" in runtime
     assert "setIcebreakerChoicePrompt" in chat_host
     assert "clearIcebreakerChoicePrompt" in chat_host
@@ -1025,6 +1027,7 @@ def test_home_tutorial_release_events_carry_current_avatar_round_end_state():
     tutorial_manager = UNIVERSAL_TUTORIAL_MANAGER_PATH.read_text(encoding="utf-8")
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
     reset_runtime = (ROOT / "static" / "tutorial" / "avatar" / "floating-guide-reset.js").read_text(encoding="utf-8")
+    seven_day_state = SEVEN_DAY_STATE_PATH.read_text(encoding="utf-8")
 
     assert "avatarFloatingEndState = recordAvatarFloatingGuideEndState(" in tutorial_manager
     assert "day: avatarFloatingEndState ? avatarFloatingEndState.day : undefined" in tutorial_manager
@@ -1033,8 +1036,8 @@ def test_home_tutorial_release_events_carry_current_avatar_round_end_state():
     assert "neko:avatar-floating-guide-complete" in tutorial_manager
     assert "day: avatarFloatingEndState.day" in tutorial_manager
     assert "lastEndState" in tutorial_manager
-    assert "lastEndState" in reset_runtime
-    assert "state.lastEndState" in reset_runtime
+    assert "STATE_API.resetRound" in reset_runtime
+    assert "state.lastEndState" in seven_day_state
     assert "state.lastEndState" in runtime
 
     assert "window.addEventListener('neko:avatar-floating-guide-skip', handleGuideEndEvent)" not in runtime
@@ -1347,14 +1350,16 @@ def test_icebreaker_start_dedupes_pending_tutorial_end_triggers():
 def test_home_tutorial_reset_also_resets_day1_icebreaker_state():
     reset_source = (ROOT / "static" / "tutorial" / "avatar" / "floating-guide-reset.js").read_text(encoding="utf-8")
     memory_browser_source = (ROOT / "static" / "js" / "memory_browser.js").read_text(encoding="utf-8")
+    seven_day_state = SEVEN_DAY_STATE_PATH.read_text(encoding="utf-8")
 
     assert "neko.new_user_icebreaker.v1" in reset_source
     assert "resetIcebreakerDay(round)" in reset_source
     assert "delete store.days[key]" in reset_source
     assert "function resetAllIcebreakerDays()" in reset_source
     assert "resetAllAvatarFloatingGuideDays" in reset_source
-    assert "state.completedRounds = []" in reset_source
-    assert "state.skippedRounds = []" in reset_source
+    assert "STATE_API.resetAll" in reset_source
+    assert "state.completedRounds = []" in seven_day_state
+    assert "state.skippedRounds = []" in seven_day_state
     assert "selection.pageKey === 'all'" in memory_browser_source
     assert "resetAllAvatarFloatingGuideDays({" in memory_browser_source
     home_all_block = memory_browser_source.split("if (selection.type === 'home-all') {", 1)[1].split(
@@ -1365,15 +1370,9 @@ def test_home_tutorial_reset_also_resets_day1_icebreaker_state():
         "if (selection.type === 'home-all'",
         1,
     )[0]
-    prompt_reset_helper = memory_browser_source.split("async function resetHomeTutorialPromptState(", 1)[1].split(
-        "async function resetSelectedTutorial()",
-        1,
-    )[0]
-    assert "resetHomeTutorialPromptState('memory_browser_home_day_reset')" in home_day_block
-    assert "resetHomeTutorialPromptState('memory_browser_home_all_reset')" in home_all_block
-    assert "window.universalTutorialManager.resetHomeTutorialPromptState(" in prompt_reset_helper
-    assert "resetHomeTutorialPromptStateViaApi(" in prompt_reset_helper
-    assert "'/api/tutorial-prompt/reset'" in memory_browser_source
+    assert "resetAvatarFloatingGuideDay" in home_day_block
+    assert "resetAllAvatarFloatingGuideDays" in home_all_block
+    assert "/api/tutorial-prompt/" not in memory_browser_source
 
 
 def test_react_chat_fallback_sort_key_stays_after_existing_timestamped_messages():

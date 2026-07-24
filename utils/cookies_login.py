@@ -45,12 +45,16 @@ CONFIG_DIR = Path("config")
 COOKIE_FILES = {
     'netease': CONFIG_DIR / 'netease_cookies.json',
     'bilibili': CONFIG_DIR / 'bilibili_cookies.json',
+    'xhh': CONFIG_DIR / 'xhh_cookies.json',
     "douyin": CONFIG_DIR / 'douyin_cookies.json',
     "kuaishou": CONFIG_DIR / 'kuaishou_cookies.json', 
     'weibo': CONFIG_DIR / 'weibo_cookies.json',
     'reddit': CONFIG_DIR / 'reddit_cookies.json',
     'twitter': CONFIG_DIR / 'twitter_cookies.json',
-    'youtube': CONFIG_DIR / 'youtube_cookies.json'
+    'youtube': CONFIG_DIR / 'youtube_cookies.json',
+    # Twitch stores OAuth credentials here, not browser cookies.  Reuse the
+    # existing encrypted, permission-restricted credential store.
+    'twitch': CONFIG_DIR / 'twitch_credentials.json',
 }
 
 class LoginStatus:
@@ -77,9 +81,17 @@ def validate_cookies(platform: str, cookies: Dict[str, str]) -> bool:
             return False
         return True
 
+    if platform == 'twitch':
+        required = ('access_token', 'refresh_token', 'client_id')
+        if not all(cookies.get(key) for key in required):
+            logger.warning("⚠️ 安全拦截：Twitch OAuth 凭证缺少必要字段！")
+            return False
+        return True
+
     required_keys = {
         'netease': ['MUSIC_U'],
         'bilibili': ['SESSDATA'],
+        'xhh': ['user_heybox_id', 'user_pkey'],
         "douyin": ['sessionid', 'ttwid'],
         "kuaishou": ['kuaishou.server.web_st', 'userId'], 
         'weibo': ['SUB'],
@@ -93,6 +105,21 @@ def validate_cookies(platform: str, cookies: Dict[str, str]) -> bool:
                 logger.warning(f"⚠️ 安全拦截：提取的 Cookie 中缺失核心字段 '{key}'！")
                 return False
     return True
+
+
+def get_cookie_key_file(platform: str) -> Path:
+    return CONFIG_DIR / f"{platform}_key.key"
+
+
+def _read_encryption_key(platform: str, key_file: Path) -> bytes:
+    return key_file.read_bytes()
+
+
+def _write_encryption_key(platform: str, key_file: Path, key: bytes) -> None:
+    key_file.write_bytes(key)
+
+    if sys.platform != 'win32':
+        os.chmod(key_file, 0o600)
 
 def save_cookies_to_file(platform: str, cookies: Dict[str, Any], encrypt: bool = True) -> bool:
     """Save cookies, with normalization checks and encryption logic"""
@@ -120,17 +147,12 @@ def save_cookies_to_file(platform: str, cookies: Dict[str, Any], encrypt: bool =
             from cryptography.fernet import Fernet
             
             # 生成或加载加密密钥
-            key_file = CONFIG_DIR / f"{platform}_key.key"
+            key_file = get_cookie_key_file(platform)
             if key_file.exists():
-                with open(key_file, 'rb') as f:
-                    key = f.read()
+                key = _read_encryption_key(platform, key_file)
             else:
                 key = Fernet.generate_key()
-                with open(key_file, 'wb') as f:
-                    f.write(key)
-                # 设置密钥文件权限
-                if sys.platform != 'win32':
-                    os.chmod(key_file, 0o600)
+                _write_encryption_key(platform, key_file, key)
             
             # 加密Cookie数据
             fernet = Fernet(key)
@@ -156,9 +178,12 @@ def save_cookies_to_file(platform: str, cookies: Dict[str, Any], encrypt: bool =
             
             logger.info(f"✅ 已明文保存 {platform} 凭证到: {cookie_file}")
         
-        logger.info(f"🔐 【{platform.capitalize()} 凭证摘要】:")
-        for k, v in list(cookies.items())[:3]: # 仅展示前三个键
-            logger.info(f"   - {k}: {mask_string(v)}")
+        # OAuth bearer material must never enter logs, even in partially masked
+        # form. Cookie-based platforms retain the existing diagnostic summary.
+        if platform != 'twitch':
+            logger.info(f"🔐 【{platform.capitalize()} 凭证摘要】:")
+            for k, v in list(cookies.items())[:3]: # 仅展示前三个键
+                logger.info(f"   - {k}: {mask_string(v)}")
         return True
         
     except Exception as e:
@@ -205,10 +230,9 @@ def load_cookies_from_file(platform: str) -> Dict[str, str]:
             from cryptography.fernet import Fernet
             
             # 加载加密密钥
-            key_file = CONFIG_DIR / f"{platform}_key.key"
+            key_file = get_cookie_key_file(platform)
             if key_file.exists():
-                with open(key_file, 'rb') as f:
-                    key = f.read()
+                key = _read_encryption_key(platform, key_file)
                 
                 # 解密Cookie数据
                 with open(cookie_file, 'rb') as f:
@@ -298,6 +322,17 @@ def get_bilibili_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
         save_cookies_to_file('bilibili', cookies)  # noqa: ASYNC_BLOCK — CLI-only path; outer fn already blocks on input()
     return cookies
 
+
+def get_xhh_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
+    print("\n" + "-" * 40)
+    print("【小黑盒手动导入】(需包含 user_heybox_id 和 user_pkey 字段)")
+    cookie_string = input("👉 请粘贴 Cookie: ").strip()
+    print("\033[F\033[K" + "👉 请粘贴 Cookie: [已接收，已脱敏掩码]")
+    cookies = parse_cookie_string(cookie_string)
+    if cookies:
+        save_cookies_to_file('xhh', cookies)
+    return cookies
+
 # ==========================================
 # 其他平台登录逻辑 (纯手工导入)
 # ==========================================
@@ -379,18 +414,34 @@ class PlatformLoginManager:
         self.platforms = {
             'netease': {'name': '网易云音乐', 'methods': ['manual'], 'func': get_netease_cookies},
             'bilibili': {'name': 'Bilibili', 'methods': ['manual'], 'func': get_bilibili_cookies},
+            'xhh': {'name': '小黑盒', 'methods': ['manual'], 'func': get_xhh_cookies},
             "douyin": {'name': '抖音', 'methods': ['manual'], 'func': get_douyin_cookies},
             "kuaishou": {'name': '快手', 'methods': ['manual'], 'func': get_kuaishou_cookies},
             'weibo': {'name': '微博', 'methods': ['manual'], 'func': get_weibo_cookies},
             'reddit': {'name': 'Reddit', 'methods': ['manual'], 'func': get_reddit_cookies},
             'twitter': {'name': 'Twitter/X', 'methods': ['manual'], 'func': get_twitter_cookies},
-            'youtube': {'name': 'YouTube', 'methods': ['manual'], 'func': get_youtube_cookies}
+            'youtube': {'name': 'YouTube', 'methods': ['manual'], 'func': get_youtube_cookies},
+            'twitch': {'name': 'Twitch', 'methods': ['device_code'], 'func': lambda _method: None},
         }
     
     def login_platform(self, platform: str, method: str) -> Optional[Dict[str, str]]:
         if platform in self.platforms:
             return self.platforms[platform]['func'](method)
         return None
+
+    def build_request_params(
+        self,
+        platform: str,
+        path: str,
+        *,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Build platform-specific request parameters through one login entry point."""
+        if platform == 'xhh':
+            from utils.web_scraper.platform_helpers import build_xhh_request_params
+
+            return build_xhh_request_params(path, extra=extra)
+        return dict(extra or {})
     
     def get_supported_platforms(self) -> Dict[str, Dict[str, Any]]:
         """Get supported platforms and their login methods"""

@@ -19,7 +19,9 @@ YUI_GUIDE_COMMON_PATH = Path(__file__).resolve().parents[2] / "static" / "tutori
 COMMON_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "common_ui.js"
 APP_AUDIO_CAPTURE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-audio-capture.js"
 CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "chat.html"
-APP_PROMPT_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/core/app-prompt.js"
+HOME_TUTORIAL_RUNTIME_PATH = (
+    Path(__file__).resolve().parents[2] / "static" / "tutorial/core/home-tutorial-runtime.js"
+)
 AVATAR_FLOATING_BOOT_PREDICTOR_PATH = (
     Path(__file__).resolve().parents[2] / "static" / "tutorial/core/avatar-floating-boot-predictor.js"
 )
@@ -72,8 +74,8 @@ def _read_chat_template() -> str:
     return CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
 
 
-def _read_app_prompt() -> str:
-    return APP_PROMPT_PATH.read_text(encoding="utf-8")
+def _read_home_tutorial_runtime() -> str:
+    return HOME_TUTORIAL_RUNTIME_PATH.read_text(encoding="utf-8")
 
 
 def _read_avatar_floating_boot_predictor() -> str:
@@ -114,7 +116,7 @@ def test_universal_tutorial_manager_excludes_legacy_driver_tutorial_system():
 def test_home_tutorial_runtime_no_longer_uses_legacy_home_storage_key():
     for source in (
         _read_manager(),
-        _read_app_prompt(),
+        _read_home_tutorial_runtime(),
         _read_avatar_floating_boot_predictor(),
         _read_floating_guide_reset(),
         _read_character_personality_onboarding(),
@@ -470,7 +472,7 @@ def test_universal_tutorial_manager_starts_day1_through_yui_round_directly():
         1,
     )[0]
     i18n_block = source.split("    startTutorialWhenI18nReady(delayMs = 0) {", 1)[1].split(
-        "    shouldSkipAutomaticHomeTutorialStart() {",
+        "    shouldSkipAutomaticHomeTutorialStart(round = null) {",
         1,
     )[0]
 
@@ -487,8 +489,8 @@ def test_universal_tutorial_manager_starts_day1_through_yui_round_directly():
         "this.startAvatarFloatingGuideRound(round, {"
     )
     assert "this.startAvatarFloatingGuideRound(round, {" in start_block
-    assert "const round = this.getHomeAvatarFloatingGuideLaunchRound();" in i18n_block
-    assert "this.startAvatarFloatingGuideRound(round, { source })" in i18n_block
+    assert "const homeRound = this.currentPage === 'home'" in i18n_block
+    assert "this.startAvatarFloatingGuideRound(homeRound, { source })" in i18n_block
     assert "this.startAvatarFloatingGuideRound(1, {" not in source
     assert "this.startAvatarFloatingGuideRound(1, { source })" not in source
     assert "this.startYuiGuideSceneSequence(sceneIds" not in source
@@ -892,8 +894,9 @@ def test_avatar_floating_guide_waits_for_compact_chat_before_fixing_layout_and_r
         "this.syncYuiGuideCompactChatFixedLayout(true, 'avatar-floating-guide-start')"
     )
     assert start_round_block.index("this.syncYuiGuideCompactChatFixedLayout(true, 'avatar-floating-guide-start')") < start_round_block.index(
-        "this.emitTutorialStarted('home', source, { lifecycleAlreadyStarted: true })"
+        "this.emitTutorialStarted('home', source, {"
     )
+    assert "day: round" in start_round_block
     assert "action: 'yui_guide_prepare_compact_chat'" in source
     assert "tutorialRunId: tutorialRunId" in source
     assert "neko:yui-guide:compact-chat-ready" in source

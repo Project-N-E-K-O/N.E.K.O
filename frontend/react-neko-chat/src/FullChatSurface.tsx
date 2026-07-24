@@ -27,7 +27,7 @@ import { useFocusGlow } from './useFocusGlow';
 import AvatarToolVisuals from './avatar-tools/presentation';
 import { useAvatarToolRuntime } from './avatar-tools/runtime';
 import {
-  AVAILABLE_AVATAR_TOOLS,
+  AVAILABLE_FULL_AVATAR_TOOLS,
   resolveAvatarToolMenuIconVisual,
   type AvatarToolItem,
 } from './avatarTools';
@@ -370,7 +370,7 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
 
 type ToolIconItem = AvatarToolItem;
 
-const toolIconItems = AVAILABLE_AVATAR_TOOLS;
+const toolIconItems = AVAILABLE_FULL_AVATAR_TOOLS;
 
 function getToolItemLabel(item: ToolIconItem): string {
   return i18n(item.labelKey, item.labelFallback);
@@ -426,6 +426,7 @@ export default function FullChatSurface({
   composerToolsAriaLabel = i18n('chat.composerToolsAriaLabel', 'Composer tools'),
   composerHidden = false,
   composerDisabled = false,
+  catLocalTextOnly = false,
   chatSurfaceMode = 'full',
   compactChatState = 'default',
   composerAttachments = [],
@@ -469,6 +470,8 @@ export default function FullChatSurface({
   useCompactToolWheelAudioPreload();
 
   const [draft, setDraft] = useState('');
+  const [catDraft, setCatDraft] = useState('');
+  const visibleDraft = catLocalTextOnly ? catDraft : draft;
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   // Collapse the right-side tools into an overflow menu when the composer gets
   // narrow, while preserving the exit and re-entry animations for the tool row.
@@ -501,7 +504,7 @@ export default function FullChatSurface({
   const composerLayoutRef = useRef<ComposerLayout>('expanded');
   const overflowMenuRef = useRef<HTMLDivElement | null>(null);
   const compactHistoryDesktopDropTargetRef = useRef<{ sessionId?: string; overTarget: boolean; timestamp: number } | null>(null);
-  const draftRef = useRef(draft);
+  const draftRef = useRef(visibleDraft);
   const compactPreviewTextVisibleRef = useRef('');
   const previousCompactPreviewTextRef = useRef('');
   const compactPreviewTextRef = useRef<HTMLSpanElement | null>(null);
@@ -539,7 +542,8 @@ export default function FullChatSurface({
   const compactSurfaceResizeStateRef = useRef<CompactSurfaceResizeState | null>(null);
   const submittingRef = useRef(false);
   const lastRollbackKeyRef = useRef('');
-  const compactInputHasPayload = draft.trim().length > 0 || composerAttachments.length > 0;
+  const compactInputHasPayload = visibleDraft.trim().length > 0
+    || (!catLocalTextOnly && composerAttachments.length > 0);
   const composerInteractionsDisabled = composerDisabled || composerHidden;
   const canSubmit = !composerInteractionsDisabled && compactInputHasPayload;
   const guideChatButtonsLocked = useGuideChatButtonLock();
@@ -620,7 +624,7 @@ export default function FullChatSurface({
   // ChoicePrompt and galgame options share the same composer-anchored slot.
   // The transient invite should win when both are present so we do not stack
   // two button groups in the same compact surface.
-  const compactChoiceInteractionsAllowed = !composerHidden;
+  const compactChoiceInteractionsAllowed = !composerHidden && !catLocalTextOnly;
   const choicePromptHasOptions = compactChoiceInteractionsAllowed
     && !!(choicePrompt && choicePrompt.options.length > 0);
   const galgameOptionsVisible =
@@ -892,8 +896,8 @@ export default function FullChatSurface({
     : emojiButtonAriaLabel;
 
   useEffect(() => {
-    draftRef.current = draft;
-  }, [draft]);
+    draftRef.current = visibleDraft;
+  }, [visibleDraft]);
 
   useEffect(() => {
     compactPreviewTextVisibleRef.current = compactPreviewTextVisible;
@@ -1639,7 +1643,7 @@ export default function FullChatSurface({
   }, [clearCompactInputToolFanCloseTimer, closeCompactInputToolFan]);
 
   const openCompactInputToolFan = useCallback((intent: 'click' | 'hover') => {
-    if (composerInteractionsDisabled || compactInputHasPayload) return;
+    if (catLocalTextOnly || composerInteractionsDisabled || compactInputHasPayload) return;
     clearCompactInputToolFanCloseTimer();
     clearCompactInputToolFanInteractiveTimer();
     compactInputToolFanOpenIntentRef.current = intent;
@@ -1655,6 +1659,7 @@ export default function FullChatSurface({
   }, [
     clearCompactInputToolFanCloseTimer,
     clearCompactInputToolFanInteractiveTimer,
+    catLocalTextOnly,
     compactInputHasPayload,
     composerInteractionsDisabled,
     setCompactInputToolFanInteractiveState,
@@ -1950,6 +1955,19 @@ export default function FullChatSurface({
   ]);
 
   useEffect(() => {
+    if (!catLocalTextOnly) return;
+    closeCompactInputToolFan();
+    setToolMenuOpen(false);
+    setOverflowMenuOpen(false);
+    setCompactExportPreviewOpen(false);
+    clearAvatarTool();
+  }, [catLocalTextOnly, clearAvatarTool, closeCompactInputToolFan]);
+
+  useEffect(() => {
+    if (!catLocalTextOnly) setCatDraft('');
+  }, [catLocalTextOnly]);
+
+  useEffect(() => {
     if (compactInputToolFanOpen) return;
     clearCompactInputToolFanCloseTimer();
     compactInputToolFanOpenIntentRef.current = null;
@@ -2194,15 +2212,21 @@ export default function FullChatSurface({
   function submitDraft() {
     if (composerInteractionsDisabled) return;
     if (submittingRef.current) return;
-    const text = draft.trim();
-    if (!text && composerAttachments.length === 0) return;
+    const text = visibleDraft.trim();
+    if (!text && (catLocalTextOnly || composerAttachments.length === 0)) return;
     closeCompactInputToolFan();
     submittingRef.current = true;
     try {
       onComposerSubmit?.({ text });
-      setDraft('');
+      if (catLocalTextOnly) {
+        setCatDraft('');
+      } else {
+        setDraft('');
+      }
       restoreCompactExportHistoryToBottomForOutgoingMessage();
-      requestCompactChatState('default');
+      if (!catLocalTextOnly) {
+        requestCompactChatState('default');
+      }
     } finally {
       requestAnimationFrame(() => { submittingRef.current = false; });
     }
@@ -2423,7 +2447,9 @@ export default function FullChatSurface({
     '--compact-tool-wheel-drag-counter-angle': `${-compactInputToolWheelDragAngle}deg`,
   } as CSSProperties;
 
-  const compactInputToolFanNode = isCompactSurface && effectiveCompactChatState === 'input' ? (
+  const compactInputToolFanNode = !catLocalTextOnly
+    && isCompactSurface
+    && effectiveCompactChatState === 'input' ? (
     <div
       ref={compactInputToolFanRef}
       className="compact-input-tool-fan"
@@ -2918,7 +2944,7 @@ export default function FullChatSurface({
       ) : null}
     </div>
   );
-  const compactChoiceLayerNode = isCompactSurface
+  const compactChoiceLayerNode = isCompactSurface && !catLocalTextOnly
     ? (typeof document !== 'undefined' ? createPortal(choiceLayerNode, document.body) : choiceLayerNode)
     : null;
 
@@ -3040,7 +3066,7 @@ export default function FullChatSurface({
           data-compact-chat-state={effectiveCompactChatState}
         >
           <div id="music-player-mount" />
-          {composerAttachments.length > 0 ? (
+          {!catLocalTextOnly && composerAttachments.length > 0 ? (
             <div className="composer-attachments" aria-label={composerAttachmentsAriaLabel}>
               {composerAttachments.map((attachment) => (
                 <figure key={attachment.id} className="composer-attachment-card">
@@ -3061,9 +3087,7 @@ export default function FullChatSurface({
                         onComposerRemoveAttachment?.(attachment.id);
                       }
                     }}
-                  >
-                    ×
-                  </button>
+                  />
                 </figure>
               ))}
             </div>
@@ -3130,11 +3154,15 @@ export default function FullChatSurface({
                         placeholder={inputPlaceholder}
                         aria-label={inputPlaceholder}
                         rows={1}
-                        value={draft}
+                        value={visibleDraft}
                         readOnly={composerInteractionsDisabled}
                         disabled={composerInteractionsDisabled}
                         onChange={(event) => {
-                          setDraft(event.target.value);
+                          if (catLocalTextOnly) {
+                            setCatDraft(event.target.value);
+                          } else {
+                            setDraft(event.target.value);
+                          }
                           if (event.target.value.trim().length > 0) {
                             closeCompactInputToolFan();
                           }
@@ -3148,7 +3176,7 @@ export default function FullChatSurface({
                           }
                         }}
                       />
-                      <button
+                      {(!catLocalTextOnly || compactInputHasPayload) ? <button
                         className={`send-button-circle compact-input-tool-toggle${compactInputToolFanOpen ? ' is-open' : ''}`}
                         ref={compactInputToolToggleRef}
                         type={compactInputHasPayload ? 'submit' : 'button'}
@@ -3185,7 +3213,7 @@ export default function FullChatSurface({
                           alt=""
                           aria-hidden="true"
                         />
-                      </button>
+                      </button> : null}
                     </>
                   ) : (
                     <button
@@ -3219,10 +3247,16 @@ export default function FullChatSurface({
                 placeholder={inputPlaceholder}
                 aria-label={inputPlaceholder}
                 rows={1}
-                value={draft}
+                value={visibleDraft}
                 readOnly={composerInteractionsDisabled}
                 disabled={composerInteractionsDisabled}
-                onChange={(event) => { setDraft(event.target.value); }}
+                onChange={(event) => {
+                  if (catLocalTextOnly) {
+                    setCatDraft(event.target.value);
+                  } else {
+                    setDraft(event.target.value);
+                  }
+                }}
                 onKeyDown={(event) => {
                   if (event.nativeEvent.isComposing) return;
                   if (event.key === 'Enter' && !event.shiftKey) {
@@ -3231,12 +3265,12 @@ export default function FullChatSurface({
                   }
                 }}
               />
-              {!isCompactSurface ? choiceLayerNode : null}
+              {!isCompactSurface && !catLocalTextOnly ? choiceLayerNode : null}
               <div
                 className="composer-bottom-bar"
                 ref={handleComposerBottomBarRef}
               >
-                <div className="composer-bottom-tools" aria-label={composerToolsAriaLabel}>
+                {!catLocalTextOnly ? <div className="composer-bottom-tools" aria-label={composerToolsAriaLabel}>
                   <button
                     className="composer-tool-btn"
                     type="button"
@@ -3322,7 +3356,7 @@ export default function FullChatSurface({
                       ) : null}
                     </div>
                   )}
-                </div>
+                </div> : null}
                 <button className="send-button-circle" type="submit" aria-label={sendButtonLabel} disabled={!canSubmit}>
                   <img src="/static/icons/send_new_icon.png" alt="" aria-hidden="true" />
                 </button>

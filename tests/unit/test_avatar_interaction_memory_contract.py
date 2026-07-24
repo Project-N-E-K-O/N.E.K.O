@@ -81,6 +81,36 @@ def test_avatar_interaction_memory_window_allows_rank_upgrade_within_window():
 
 
 @pytest.mark.unit
+def test_rps_memory_window_dedupes_different_round_results_under_one_key():
+    cache: dict[str, dict[str, int | str]] = {}
+    user_win = _build_avatar_interaction_memory_meta("zh", {
+        "tool_id": "rps",
+        "user_gesture": "rock",
+        "avatar_gesture": "scissors",
+        "round_result": "user_win",
+    }, MASTER)
+    avatar_win = _build_avatar_interaction_memory_meta("zh", {
+        "tool_id": "rps",
+        "user_gesture": "rock",
+        "avatar_gesture": "paper",
+        "round_result": "avatar_win",
+    }, MASTER)
+
+    assert _should_persist_avatar_interaction_memory(
+        cache,
+        user_win["memory_note"],
+        user_win["memory_dedupe_key"],
+        user_win["memory_dedupe_rank"],
+    ) is True
+    assert _should_persist_avatar_interaction_memory(
+        cache,
+        avatar_win["memory_note"],
+        avatar_win["memory_dedupe_key"],
+        avatar_win["memory_dedupe_rank"],
+    ) is False
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("tool_id", ["fist", "hammer"])
 def test_avatar_prompt_and_memory_preserve_touch_zone_facts_in_all_locales(tool_id):
     locales = ("zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")

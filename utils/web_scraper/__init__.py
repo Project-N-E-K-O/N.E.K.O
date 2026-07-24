@@ -60,6 +60,7 @@ from .trending_content import (
     _fetch_weibo_trending_fallback,
     _format_bilibili_videos,
     _format_reddit_posts,
+    _format_twitch_live_streams,
     _format_youtube_videos,
     _format_score,
     _format_twitter_trending,
@@ -72,11 +73,15 @@ from .trending_content import (
     fetch_twitter_trending,
     fetch_video_content,
     fetch_weibo_trending,
+    fetch_xhh_feed_content,
     format_news_content,
     format_tieba_content,
     format_trending_content,
     format_video_content,
+    format_xhh_feed,
+    normalize_xhh_feed,
 )
+from .twitch_feed import fetch_twitch_live_streams
 from .youtube_feed import fetch_youtube_home_feed
 from .window_context import (
     _SEARCH_TEXT_WS_RE,

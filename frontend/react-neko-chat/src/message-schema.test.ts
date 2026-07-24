@@ -54,6 +54,11 @@ describe('message-schema', () => {
     expect(props).toEqual({});
   });
 
+  it('accepts only a real non-empty assistant name for localized tool results', () => {
+    expect(parseChatWindowProps({ assistantName: ' Yui ' }).assistantName).toBe('Yui');
+    expect(() => parseChatWindowProps({ assistantName: '   ' })).toThrow();
+  });
+
   it('accepts new user icebreaker choice prompts', () => {
     const onChoiceSelect = vi.fn();
     const props = parseChatWindowProps({
@@ -72,6 +77,10 @@ describe('message-schema', () => {
     props.onChoiceSelect?.(props.choicePrompt!.options[0]!, 'new_user_icebreaker');
     expect(onChoiceSelect).toHaveBeenCalledTimes(1);
     expect(onChoiceSelect).toHaveBeenCalledWith(props.choicePrompt!.options[0]!, 'new_user_icebreaker');
+  });
+
+  it('preserves the cat local text-only presentation flag', () => {
+    expect(parseChatWindowProps({ catLocalTextOnly: true }).catLocalTextOnly).toBe(true);
   });
 
   it('accepts chat surface mode props', () => {

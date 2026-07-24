@@ -32,7 +32,7 @@ def test_idle_dock_is_limited_to_cat2_and_cat3_tiers():
     goodbye_click_block = _between(
         source,
         "window.addEventListener('live2d-goodbye-click'",
-        "window.addEventListener('live2d-return-click'",
+        "window.addEventListener('neko:cat-return-complete'",
     )
     assert "setGoodbyeComposerHidden(true, 'live2d-goodbye-click')" in goodbye_click_block
     assert "enterIdleDock" not in goodbye_click_block
@@ -125,8 +125,47 @@ def test_electron_idle_dock_uses_desktop_return_ball_bridge():
     assert "idle-dock-exit-preserve" in source
     assert "preserveScreenRect" in source
     assert "idleDockCommitCollapsedBounds" in source
+    assert "await bridge.idleDockCommitCollapsedBounds(nextBounds)" in source
+    apply_position_block = _between(
+        source,
+        "async function applyElectronIdleDockPosition() {",
+        "function clearElectronIdleDockRetry() {",
+    )
+    assert "committedBounds !== false && committedBounds !== null && committedBounds !== undefined" in apply_position_block
+    assert "rememberElectronIdleDockBounds(committedBounds);" in apply_position_block
+    assert "rememberElectronIdleDockBounds(committedBounds || nextBounds);" not in apply_position_block
+    assert apply_position_block.index("bridge.setBounds(nextBounds.x") > apply_position_block.index(
+        "committedBounds !== false"
+    )
     assert "clampElectronDockBounds(preserveBounds, workArea)" in source
     assert "HOME_IDLE_DOCK_GAP" in source
+
+    handler_block = _between(
+        source,
+        "handleElectronIdleReturnBallState = function handleElectronIdleReturnBallState(detail) {",
+        "// Enter idle-dock: minimize if needed, then position next to return-ball.",
+    )
+    assert "shouldIgnoreElectronIdleDockTransientDragHide(detail)" in handler_block
+    assert "var shouldPreserveCurrentPosition = detail && !!detail.screenRect && (" in handler_block
+    assert "var shouldPreserveCurrentPosition = activeTier && detail" not in handler_block
+
+    transient_drag_block = _between(
+        source,
+        "function shouldIgnoreElectronIdleDockTransientDragHide(detail) {",
+        "function waitElectronIdleDockCommitRetry(delayMs) {",
+    )
+    assert "detail.reason === 'return-ball-drag-start'" in transient_drag_block
+    assert "detail.reason === 'return-ball-drag-active'" in transient_drag_block
+    assert "detail.reason === 'return-ball-dragging'" in transient_drag_block
+
+
+def test_full_chat_min_height_guard_recognizes_native_88px_collapsed_window():
+    source = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
+
+    assert "var ELECTRON_COLLAPSED_MAX_SIZE = 90;" in source
+    assert "b.width <= ELECTRON_COLLAPSED_MAX_SIZE" in source
+    assert "b.height <= ELECTRON_COLLAPSED_MAX_SIZE" in source
+    assert "b.width <= BALL + 4 && b.height <= BALL + 4" not in source
 
 
 def test_app_ui_broadcasts_return_ball_screen_rect_for_desktop_idle_dock():
@@ -580,7 +619,8 @@ def test_idle_dock_exit_clears_cat2_to_cat1_drag_binding():
     assert "async function commitElectronIdleDockCollapsedBounds(bridge, bounds, generation)" in source
     assert "result !== false && result !== null && result !== undefined" in source
     assert "await waitElectronIdleDockCommitRetry(80)" in source
-    assert "activeTier && detail && (" in source
+    assert "var shouldPreserveCurrentPosition = detail && !!detail.screenRect && (" in source
+    assert "activeTier && detail && (" not in source
     assert "preserveScreenRect: shouldPreserveCurrentPosition ? detail.screenRect : null" in source
     assert "await commitElectronIdleDockCollapsedBounds(bridge, preserveBounds, exitGeneration)" in source
     assert "wasActive && saved && !preserveCurrentPosition" in source

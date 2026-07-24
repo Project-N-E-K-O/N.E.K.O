@@ -7,7 +7,7 @@
  * the *server*, not the user. PR #1015 left
  * ``UserActivityTracker.push_external_system_signal()`` as the documented
  * way to feed them from outside; this file POSTs there from the renderer
- * on a 5s heartbeat, sourcing the data through the Electron preload
+ * on a 6s heartbeat, sourcing the data through the Electron preload
  * bridge (``window.nekoActivitySignal`` — exposed by the NEKO-PC
  * companion PR, defined in NEKO-PC ``src/main.js`` +
  * ``src/preload-*.js``).
@@ -20,8 +20,9 @@
  *
  * Pairs with backend endpoint ``POST /api/activity_signal`` defined in
  * ``main_routers/system_router.py``. Endpoint enforces a 5s rate limit
- * per lanlan_name (matches our heartbeat) and a 30s TTL on each push
- * (so a stalled heartbeat triggers fallback to the local collector).
+ * per lanlan_name; this client intentionally waits 6s to leave room for
+ * timer / transport jitter. The tracker uses a 15s TTL on each accepted
+ * push, so a stalled heartbeat still falls back to the local collector.
  *
  * Single-window invariant: load this script only from the always-on
  * desktop UI (``templates/index.html``), not from the chat popup —
@@ -31,19 +32,23 @@
     'use strict';
 
     // ── tuning ──────────────────────────────────────────────────────
-    // Match backend ``_EXTERNAL_SIGNAL_MIN_INTERVAL`` (5.0s). Faster
-    // bumps the rate limit and wastes bridge calls; slower lets the
-    // 30s TTL expire if anything blips.
-    var HEARTBEAT_INTERVAL_MS = 5000;
+    // Stay above backend ``_EXTERNAL_SIGNAL_MIN_INTERVAL`` (5.0s).
+    // Using the exact same 5s boundary caused normal timer / transport
+    // jitter to produce repeated 429 responses. At 6s, one dropped push
+    // still leaves about 12s between accepted updates, inside the
+    // tracker's 15s freshness TTL. A second consecutive miss may expire
+    // the snapshot and use the documented collector fallback instead of
+    // extending how long stale OS activity remains authoritative.
+    var HEARTBEAT_INTERVAL_MS = 6000;
     // After this many consecutive failures, throttle the log spam (we
     // keep retrying, just stop printing every time).
     var LOG_FAILURE_QUIET_THRESHOLD = 3;
     // After this many consecutive 403s (CSRF/Origin rejections), STOP
     // the heartbeat — not throttle it, stop it. Issue #1479 / wehos:
-    // a 5s heartbeat that 403s forever is a silent permanent
+    // a 6s heartbeat that 403s forever is a silent permanent
     // degradation (tracker falls back to local collector but nothing
     // visible alerts the user, and we're burning HTTP cycles for
-    // nothing). 6 ticks × 5s = 30s = 2× the tracker TTL — enough room
+    // nothing). 6 ticks × 6s = 36s > 2× the 15s tracker TTL — enough room
     // for the page_config token bootstrap to win any boot-time race
     // before we give up.
     var MAX_CONSECUTIVE_CSRF_FAILURES = 6;
@@ -217,7 +222,7 @@
             var payload = await readSignalsFromBridge();
             if (payload === null) {
                 // Bridge read failed or returned nothing usable. Skip
-                // silently — tracker's 30s TTL will expire and the
+                // silently — tracker's 15s TTL will expire and the
                 // local collector takes over, which is the documented
                 // fallback for this case. ``readSignalsFromBridge``
                 // already incremented ``consecutiveFailures`` if the
@@ -230,7 +235,7 @@
             // — the tracker's ``push_external_system_signal`` defaults
             // absent numerics to 0.0 and flips ``os_signals_available``
             // to true, silently overwriting real state with "idle=0,
-            // cpu=0, no window". Skip and let the 30s TTL hand back to
+            // cpu=0, no window". Skip and let the 15s TTL hand back to
             // the local collector. Backend also rejects empty payloads
             // as a defence-in-depth, but skipping client-side saves an
             // HTTP roundtrip and a rate-limit hit.
@@ -466,7 +471,7 @@
     }
 
     // Pause on tab hide to avoid burning bridge IPC + network for a
-    // hidden window. Resume on visible. The 30s TTL covers brief tab
+    // hidden window. Resume on visible. The 15s TTL covers brief tab
     // switches, so the user won't see stale data on resume — the next
     // tick fires within HEARTBEAT_INTERVAL_MS.
     document.addEventListener('visibilitychange', function () {

@@ -28,7 +28,8 @@ def test_startup_default_cat_retry_is_deferred_and_user_actions_cancel_it():
     assert "window.isNekoHomeTutorialPending === true" in source
     assert "cancelStartupDefaultCatRequest(false);" in source
     assert "detail.startupDefaultForm !== 'cat' && state.startupDefaultCatRequested" in source
-    assert "const handleReturn = () => {\n            // Returning" in source
+    assert "const handleReturnCommit = (event) => {" in source
+    assert "const handleReturnComplete = (event) => {" in source
     assert "cancelStartupDefaultCatRequest(true);" in source
     assert "function consumeStartupDefaultCatRequest()" in source
     assert "consumeStartupDefaultCatRequest: consumeStartupDefaultCatRequest" in source

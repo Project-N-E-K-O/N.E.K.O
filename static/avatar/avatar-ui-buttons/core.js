@@ -118,6 +118,7 @@ function _removeFloatingButtonsElement(el) {
         const returnButton = el.querySelector('.neko-idle-return-btn');
         if (returnButton) {
             _cancelNekoIdleCat1EatAction(returnButton, { restoreArt: false });
+            _cancelNekoIdleCat1StretchAction(returnButton, { restoreArt: false });
             _cancelNekoIdleCat1PlayAction(returnButton, { restoreArt: false });
             _finishNekoIdleReturnDragAction(returnButton, { restoreArt: false });
             _cancelNekoIdleCat1Journey(returnButton);
@@ -265,6 +266,8 @@ const _NEKO_CAT_IDLE_OBSERVATION_TYPES = Object.freeze({
     CAT_HOVER_REACTION: 'cat_hover_reaction',
     CAT1_WALK_DONE_NEAR_CHAT: 'cat1_walk_done_near_chat',
     CAT1_STRETCH_DONE_NEAR_CHAT: 'cat1_stretch_done_near_chat',
+    CAT1_LOCAL_PLAY_DONE: 'cat1_local_play_done',
+    CAT1_LOCAL_PLAY_CANCELLED: 'cat1_local_play_cancelled',
     CAT1_COMPACT_TOP_EDGE_DONE: 'cat1_compact_top_edge_done',
     CAT1_COMPACT_TOP_EDGE_DROP: 'cat1_compact_top_edge_drop',
     EDGE_PEEK_AFTER_DRAG: 'edge_peek_after_drag'
@@ -279,7 +282,6 @@ const _NEKO_IDLE_RETURN_GIF_DURATION_CACHE = new Map();
 const _NEKO_IDLE_RETURN_GIF_PLAYBACK_SOURCE_CACHE = new Map();
 const _NEKO_IDLE_CAT1_SUBSTATE_IDLE = 'idle';
 const _NEKO_IDLE_CAT1_SUBSTATE_WALKING = 'walking-to-chat';
-const _NEKO_IDLE_CAT1_SUBSTATE_STRETCH = 'stretch-near-chat';
 const _NEKO_IDLE_CAT1_CHAT_GAP_PX = 24;
 const _NEKO_IDLE_CHAT_MINIMIZED_SIZE_PX = 51;
 const _NEKO_IDLE_CAT1_MINIMIZED_RIGHT_TO_LEFT_APPROACH_PX = 0;
@@ -461,6 +463,8 @@ const _NEKO_IDLE_CAT1_EAT_SOUND_FALLBACK_MS = 5000;
 const _NEKO_IDLE_CAT1_PLAY_ASSET_URL = '/static/assets/neko-idle/cat-idle-cat-play-1.gif';
 const _NEKO_IDLE_CAT1_PLAY_SOUND_URL = '/static/assets/neko-idle/cat1-voice3.mp3';
 const _NEKO_IDLE_CAT1_PLAY_SOUND_VOLUME = 0.10;
+const _NEKO_IDLE_CAT1_CHAT_HISS_SOUND_URL = '/static/assets/neko-idle/cat1-voice-chat-angry.mp3';
+const _NEKO_IDLE_CAT1_CHAT_HISS_SOUND_VOLUME = 0.12;
 const _NEKO_IDLE_THOUGHT_BUBBLE_VISIBLE_MS = 5000;
 const _NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_FALLBACK_VISIBLE_MS = 8000;
 const _NEKO_IDLE_THOUGHT_BUBBLE_POP_VISIBLE_MS = 540;
@@ -576,6 +580,7 @@ function _stopNekoIdleCat1ActionSounds() {
     _forEachNekoIdleReturnButton((button) => {
         _stopNekoIdleSoundAudio(button.__nekoIdleCat1EatActionState);
         _stopNekoIdleSoundAudio(button.__nekoIdleCat1PlayActionState);
+        _stopNekoIdleSoundAudio(button.__nekoIdleCat1StretchActionState);
     });
 }
 let _nekoIdleThoughtBubblePopPreloadImage = null;

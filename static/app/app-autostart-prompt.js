@@ -482,7 +482,7 @@
             // 只在真有 replay-sensitive delta 时带 heartbeat_token：
             // 断线/超时/响应解析失败时前端会把 delta 加回 pending（Lines 364-367），
             // 后端按 token 幂等 dedupe，避免同一批 foreground_ms 被阈值重复计入
-            // 而误弹自启动提示。和 tutorial heartbeat (tutorial/core/app-prompt.js) 同构。
+            // 而误弹自启动提示。
             const hasReplaySensitiveDelta = (
                 foregroundDelta > 0
                 || homeInteractionsDelta > 0

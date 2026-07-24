@@ -231,9 +231,9 @@
 
     window.addEventListener('neko:config-injected', function (event) {
         var detail = (event && event.detail) || {};
-        I.consumePendingVoiceChatComposerHiddenMessage(
-            I.getCurrentLanlanName() || detail.lanlan_name || ''
-        );
+        var lanlanName = I.getCurrentLanlanName() || detail.lanlan_name || '';
+        I.consumePendingVoiceChatComposerHiddenMessage(lanlanName);
+        I.consumePendingGoodbyeChatComposerHiddenMessage(lanlanName);
     });
 
     window.addEventListener('message', function (event) {
@@ -381,6 +381,7 @@
     I.mod.handleGoodbyeChatComposerHiddenMessage = I.handleGoodbyeChatComposerHiddenMessage;
     I.mod.postGoodbyeChatComposerHiddenState = I.postGoodbyeChatComposerHiddenState;
     I.mod.requestGoodbyeChatComposerHiddenState = I.requestGoodbyeChatComposerHiddenState;
+    I.mod.postCatLocalTextSubmit = I.postCatLocalTextSubmit;
     I.mod.postIcebreakerBridgeEvent = I.postIcebreakerBridgeEvent;
     I.mod.postIcebreakerChoiceSelected = I.postIcebreakerChoiceSelected;
     I.mod.postIcebreakerFreeTextSubmitted = I.postIcebreakerFreeTextSubmitted;
@@ -403,6 +404,7 @@
     window.applyGoodbyeChatComposerHidden = I.applyGoodbyeChatComposerHidden;
     window.postGoodbyeChatComposerHiddenState = I.postGoodbyeChatComposerHiddenState;
     window.requestGoodbyeChatComposerHiddenState = I.requestGoodbyeChatComposerHiddenState;
+    window.postCatLocalTextSubmit = I.postCatLocalTextSubmit;
     window.isVoiceConfigSwitching = I.isVoiceConfigSwitching;
     window.waitForVoiceConfigSwitchReady = I.waitForVoiceConfigSwitchReady;
 

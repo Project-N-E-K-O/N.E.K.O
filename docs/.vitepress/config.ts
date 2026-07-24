@@ -2,10 +2,29 @@ import { defineConfig } from 'vitepress'
 import { readdirSync } from 'node:fs'
 import { dirname, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isNoindexRoute } from './indexing-policy.mjs'
+import { buildSeoHead, buildSeoPageData, SITE_ORIGIN } from './seo'
 
 const DOCS_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const SRC_EXCLUDE = new Set(['README_en.md', 'README_ja.md', 'README_ru.md'])
+const SRC_EXCLUDE = new Set([
+  'README_en.md',
+  'README_ja.md',
+  'README_ru.md',
+  'zh-CN/guide/openclaw_guide.md',
+  'zh-CN/guide/openclaw_guide.en.md',
+  'zh-CN/guide/openclaw_guide.ja.md',
+  'zh-CN/guide/openclaw_guide.ko.md',
+  'zh-CN/guide/openclaw_guide.ru.md',
+  'zh-CN/guide/openclaw_guide.zh-TW.md',
+])
 const SOURCE_DIR_EXCLUDE = new Set(['.vitepress', 'node_modules', 'public'])
+
+function filterSitemapItems<T extends { url: string }>(items: T[]): T[] {
+  return items.filter((item) => {
+    const route = new URL(item.url, `${SITE_ORIGIN}/`).pathname
+    return !isNoindexRoute(route)
+  })
+}
 
 function collectPageRoutes(directory = DOCS_ROOT): string[] {
   const routes: string[] = []
@@ -33,6 +52,7 @@ function collectPageRoutes(directory = DOCS_ROOT): string[] {
 }
 
 const availablePageRoutes = collectPageRoutes()
+const availablePageRouteSet = new Set(availablePageRoutes)
 
 /* ------------------------------------------------------------------ */
 /*  Shared sidebar definitions (reused across locales)                */
@@ -241,6 +261,7 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
       entries: 'Entries & Parameters', router: 'Router (Code Splitting)', lifecycleCfg: 'Lifecycle',
       sdk: 'SDK Reference', migration: 'v0.9 Migration', dec: 'Decorators', ex: 'Examples', adv: 'Advanced Topics',
       hosted: 'Hosted UI', tool: 'LLM Tool Calling', claw: 'Agent Automation & QwenPaw', best: 'Best Practices',
+      upgrade: 'Rollback-safe Local Upgrades',
     },
     'zh-CN': {
       group: '插件开发', overview: '概览',
@@ -249,6 +270,7 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
       entries: '入口与参数', router: 'Router（代码拆分）', lifecycleCfg: '生命周期',
       sdk: 'SDK 参考', migration: 'v0.9 迁移', dec: '装饰器', ex: '示例', adv: '进阶话题',
       hosted: 'Hosted UI', tool: 'LLM Tool Calling', claw: 'Agent 自动化与 QwenPaw', best: '最佳实践',
+      upgrade: '可回滚的本地插件升级',
     },
     ja: {
       group: 'プラグイン開発', overview: '概要',
@@ -257,6 +279,7 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
       entries: 'エントリーとパラメータ', router: 'Router（コード分割）', lifecycleCfg: 'ライフサイクル',
       sdk: 'SDK リファレンス', migration: 'v0.9 移行', dec: 'デコレーター', ex: 'サンプル', adv: '高度なトピック',
       hosted: 'Hosted UI', tool: 'LLM ツール呼び出し', claw: 'Agent Automation & QwenPaw', best: 'ベストプラクティス',
+      upgrade: 'ロールバック可能なローカル更新',
     },
   }[lang]
   const p = lang === 'en' ? '' : `/${lang}`
@@ -278,6 +301,7 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
           ],
         },
         { text: t.migration, link: `${p}/plugins/migration-v0.9` },
+        { text: t.upgrade, link: `${p}/plugins/safe-local-upgrades` },
         { text: t.sdk, link: `${p}/plugins/sdk-reference` },
         { text: t.dec, link: `${p}/plugins/decorators` },
         { text: t.tool, link: `${p}/plugins/tool-calling` },
@@ -399,20 +423,29 @@ function contributingSidebar(lang: 'en' | 'zh-CN' | 'ja') {
     en: {
       group: 'Contributing', overview: 'Overview', dev: 'Developer Notes',
       test: 'Testing', code: 'Code Style', road: 'Roadmap', ai: 'AI-Assisted Dev',
-      nuitka: 'Nuitka Packaging',
+      nuitka: 'Nuitka Packaging', docs: 'Documentation Maintenance', miner: 'Natural-Expression Miner',
+      dataforseo: 'DataForSEO SEO Monitoring',
     },
     'zh-CN': {
       group: '贡献指南', overview: '概览', dev: '开发者须知',
       test: '测试', code: '代码风格', road: '路线图', ai: 'AI 辅助开发',
-      nuitka: 'Nuitka 打包注意事项',
+      nuitka: 'Nuitka 打包注意事项', docs: '文档维护规范', miner: '自然表达候选挖掘器',
+      dataforseo: 'DataForSEO SEO 监控',
     },
     ja: {
       group: 'コントリビュート', overview: '概要', dev: '開発者ノート',
       test: 'テスト', code: 'コードスタイル', road: 'ロードマップ', ai: 'AI支援開発',
-      nuitka: 'Nuitka パッケージング',
+      nuitka: 'Nuitka パッケージング', docs: 'ドキュメント保守', miner: '自然表現候補マイナー',
+      dataforseo: 'DataForSEO SEO モニタリング',
     },
   }[lang]
   const p = lang === 'en' ? '' : `/${lang}`
+  const maintainerTools = lang === 'en'
+    ? [
+        { text: t.miner, link: '/contributing/natural-expression-candidate-miner' },
+        { text: t.dataforseo, link: '/contributing/dataforseo-seo-monitoring' },
+      ]
+    : []
   return [
     {
       text: t.group,
@@ -422,8 +455,39 @@ function contributingSidebar(lang: 'en' | 'zh-CN' | 'ja') {
         { text: t.ai, link: `${p}/contributing/ai-assisted-dev` },
         { text: t.test, link: `${p}/contributing/testing` },
         { text: t.code, link: `${p}/contributing/code-style` },
+        { text: t.docs, link: `${p}/contributing/documentation` },
         { text: t.nuitka, link: `${p}/contributing/nuitka-packaging` },
+        ...maintainerTools,
         { text: t.road, link: `${p}/contributing/roadmap` },
+      ],
+    },
+  ]
+}
+
+function recordsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
+  const t = {
+    en: {
+      group: 'Project Records', overview: 'Overview', design: 'Design Records',
+      benchmarks: 'Benchmarks', changelog: 'Plugin SDK Changes',
+    },
+    'zh-CN': {
+      group: '项目记录', overview: '概览', design: '设计记录',
+      benchmarks: '基准记录', changelog: '插件 SDK 变更',
+    },
+    ja: {
+      group: 'プロジェクト記録', overview: '概要', design: '設計記録',
+      benchmarks: 'ベンチマーク', changelog: 'Plugin SDK 変更',
+    },
+  }[lang]
+  const p = lang === 'en' ? '' : `/${lang}`
+  return [
+    {
+      text: t.group,
+      items: [
+        { text: t.overview, link: `${p}/records/` },
+        { text: t.design, link: '/design/' },
+        { text: t.benchmarks, link: '/benchmarks/' },
+        { text: t.changelog, link: '/changelog/' },
       ],
     },
   ]
@@ -445,6 +509,7 @@ function buildSidebar(lang: 'en' | 'zh-CN' | 'ja') {
     [`${p}/frontend/`]: frontendSidebar(lang),
     [`${p}/deployment/`]: deploymentSidebar(lang),
     [`${p}/contributing/`]: contributingSidebar(lang),
+    [`${p}/records/`]: recordsSidebar(lang),
   }
 }
 
@@ -457,17 +522,17 @@ function buildNav(lang: 'en' | 'zh-CN' | 'ja') {
     en: {
       guide: 'Guide', arch: 'Architecture', api: 'API', plugins: 'Plugins',
       config: 'Config', more: 'More', modules: 'Core Modules', frontend: 'Frontend',
-      deploy: 'Deployment', contrib: 'Contributing',
+      deploy: 'Deployment', contrib: 'Contributing', records: 'Project Records',
     },
     'zh-CN': {
       guide: '指南', arch: '架构', api: 'API', plugins: '插件',
       config: '配置', more: '更多', modules: '核心模块', frontend: '前端',
-      deploy: '部署', contrib: '贡献',
+      deploy: '部署', contrib: '贡献', records: '项目记录',
     },
     ja: {
       guide: 'ガイド', arch: 'アーキテクチャ', api: 'API', plugins: 'プラグイン',
       config: '設定', more: 'その他', modules: 'コアモジュール', frontend: 'フロントエンド',
-      deploy: 'デプロイ', contrib: 'コントリビュート',
+      deploy: 'デプロイ', contrib: 'コントリビュート', records: 'プロジェクト記録',
     },
   }[lang]
   const p = lang === 'en' ? '' : `/${lang}`
@@ -484,6 +549,7 @@ function buildNav(lang: 'en' | 'zh-CN' | 'ja') {
         { text: t.frontend, link: `${p}/frontend/` },
         { text: t.deploy, link: `${p}/deployment/` },
         { text: t.contrib, link: `${p}/contributing/` },
+        { text: t.records, link: `${p}/records/` },
       ],
     },
   ]
@@ -507,6 +573,16 @@ export default defineConfig({
 
   lastUpdated: true,
   cleanUrls: true,
+  sitemap: {
+    hostname: SITE_ORIGIN,
+    transformItems: filterSitemapItems,
+  },
+  transformPageData(pageData) {
+    return buildSeoPageData(pageData, DOCS_ROOT)
+  },
+  transformHead(context) {
+    return buildSeoHead(context, availablePageRouteSet)
+  },
 
   // Keep this list in sync with SRC_EXCLUDE in
   // scripts/check_docs_no_relative_paths.py.

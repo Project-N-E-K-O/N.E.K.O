@@ -18,7 +18,6 @@ The selected root's `config/` directory can contain:
 | --- | --- |
 | `core_config.json` | Provider selection, credentials, role overrides, feature settings |
 | `characters.json` | Character definitions and reserved avatar data |
-| `tutorial_prompt_config.json` | Tutorial prompt state |
 | `user_preferences.json` | User/UI preferences |
 | `voice_storage.json` | Saved voice metadata |
 | `workshop_config.json` | Workshop settings |

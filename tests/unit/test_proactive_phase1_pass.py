@@ -136,6 +136,41 @@ def test_strip_proactive_screen_tag_leak_ignores_unknown_bracket_tags():
     assert tag == ""
 
 
+def test_strip_proactive_screen_tag_leak_removes_known_prefix_leaks():
+    cases = [
+        ("/chat\n你好", "你好", "CHAT"),
+        ("/CHAT\n你好", "你好", "CHAT"),
+        ("CHAT/你好", "你好", "CHAT"),
+        ("/music\n听这个", "听这个", "MUSIC"),
+        ("/MUSIC\n听这个", "听这个", "MUSIC"),
+        ("MUSIC/听这个", "听这个", "MUSIC"),
+        ("屏幕/\n这个窗口有点怪", "这个窗口有点怪", "CHAT"),
+        ("/chat你好", "你好", "CHAT"),
+        ("/music听这个", "听这个", "MUSIC"),
+        ("/屏幕这个窗口有点怪", "这个窗口有点怪", "CHAT"),
+        ("/屏幕观察这个窗口有点怪", "这个窗口有点怪", "CHAT"),
+        ("chat/你好", "你好", "CHAT"),
+        ("music/听这个", "听这个", "MUSIC"),
+        ("聊天中/那咱们找小鱼干星的时候，能顺路去摸猫爪星云吗？", "那咱们找小鱼干星的时候，能顺路去摸猫爪星云吗？", "CHAT"),
+        ("聊天中\n那咱们找小鱼干星的时候，能顺路去摸猫爪星云吗？", "那咱们找小鱼干星的时候，能顺路去摸猫爪星云吗？", "CHAT"),
+        ("屏幕/这个窗口有点怪", "这个窗口有点怪", "CHAT"),
+        ("屏幕 / 这个空文件是要写和项目相关的内容吗？", "这个空文件是要写和项目相关的内容吗？", "CHAT"),
+        ("屏幕观察/这个窗口有点怪", "这个窗口有点怪", "CHAT"),
+    ]
+
+    for raw, expected_text, expected_tag in cases:
+        cleaned, tag = sr_parsing._strip_proactive_screen_tag_leak(raw)
+        assert cleaned == expected_text
+        assert tag == expected_tag
+
+
+def test_strip_proactive_screen_tag_leak_preserves_inline_known_prefix_words():
+    for raw in ("我刚才看了 /chat 路由", "music/chat 模块需要重构", "/chatbot 路由"):
+        cleaned, tag = sr_parsing._strip_proactive_screen_tag_leak(raw)
+        assert cleaned == raw
+        assert tag == ""
+
+
 def test_recent_proactive_prompt_has_strong_paired_boundaries():
     lanlan = "测试娘"
     snapshot = sr._proactive_chat_history.get(lanlan)

@@ -2673,11 +2673,6 @@ def test_memory_browser_home_all_reset_restarts_avatar_guide_from_day_one(
             window.resetTutorialForPage = async (pageKey) => {
                 window.__tutorialResetCalls.push({ type: 'legacy', pageKey });
             };
-            window.universalTutorialManager = Object.assign({}, window.universalTutorialManager || {}, {
-                resetHomeTutorialPromptState: async (reason) => {
-                    window.__tutorialResetCalls.push({ type: 'prompt', reason });
-                }
-            });
         }
         """
     )
@@ -2690,11 +2685,10 @@ def test_memory_browser_home_all_reset_restarts_avatar_guide_from_day_one(
     expect(mock_page.locator("#tutorial-reset-btn")).to_be_enabled()
 
     mock_page.locator("#tutorial-reset-btn").click()
-    mock_page.wait_for_function("window.__tutorialResetCalls.length === 2")
+    mock_page.wait_for_function("window.__tutorialResetCalls.length === 1")
 
     assert mock_page.evaluate("window.__tutorialResetCalls") == [
         {"type": "avatar", "options": {"source": "memory_browser_reset_home_all"}},
-        {"type": "prompt", "reason": "memory_browser_home_all_reset"},
     ]
     _assert_tutorial_reset_notice(mock_page, "已重置主页 7 天新手教程，请重新加载 Neko 后从第 1 天开始。")
 
@@ -2749,67 +2743,12 @@ def test_avatar_guide_all_reset_refreshes_first_seen_date(
 
 
 @pytest.mark.frontend
-def test_memory_browser_home_all_reset_falls_back_to_prompt_reset_api_without_manager(
+def test_memory_browser_home_day_reset_uses_unified_avatar_reset_only(
     mock_page: Page,
     running_server: str,
     seed_memory_file,
 ):
-    prompt_reset_payloads = []
-
-    def handle_prompt_reset(route):
-        prompt_reset_payloads.append(_request_json(route))
-        route.fulfill(status=200, content_type="application/json", json={"ok": True})
-
     _install_ready_memory_browser_routes(mock_page, seed_memory_file)
-    mock_page.route("**/api/tutorial-prompt/reset", handle_prompt_reset)
-    mock_page.goto(f"{running_server}/memory_browser")
-    _open_auxiliary_panel(mock_page, "guide")
-    tutorial = mock_page.locator("#tutorial-reset-cascader")
-    tutorial.locator(":scope > .tutorial-cascader-trigger").wait_for(timeout=10000)
-    mock_page.evaluate(
-        """
-        () => {
-            window.__tutorialResetCalls = [];
-            window.AvatarFloatingGuideReset = Object.assign({}, window.AvatarFloatingGuideReset || {}, {
-                resetAllAvatarFloatingGuideDays: async (options) => {
-                    window.__tutorialResetCalls.push({ type: 'avatar', options });
-                }
-            });
-            delete window.universalTutorialManager;
-        }
-        """
-    )
-
-    tutorial.locator(":scope > .tutorial-cascader-trigger").click()
-    tutorial.locator(".tutorial-cascader-option[data-tutorial-page='home']").click()
-    tutorial.locator(".tutorial-cascader-option[data-tutorial-home-all='true']").click()
-
-    with mock_page.expect_response("**/api/tutorial-prompt/reset"):
-        mock_page.locator("#tutorial-reset-btn").click()
-
-    mock_page.wait_for_function("window.__tutorialResetCalls.length === 1")
-
-    assert mock_page.evaluate("window.__tutorialResetCalls") == [
-        {"type": "avatar", "options": {"source": "memory_browser_reset_home_all"}},
-    ]
-    assert prompt_reset_payloads == [{"reason": "memory_browser_home_all_reset"}]
-    _assert_tutorial_reset_notice(mock_page, "已重置主页 7 天新手教程，请重新加载 Neko 后从第 1 天开始。")
-
-
-@pytest.mark.frontend
-def test_memory_browser_home_day_reset_also_resets_prompt_backend_without_manager(
-    mock_page: Page,
-    running_server: str,
-    seed_memory_file,
-):
-    prompt_reset_payloads = []
-
-    def handle_prompt_reset(route):
-        prompt_reset_payloads.append(_request_json(route))
-        route.fulfill(status=200, content_type="application/json", json={"ok": True})
-
-    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
-    mock_page.route("**/api/tutorial-prompt/reset", handle_prompt_reset)
     mock_page.goto(f"{running_server}/memory_browser")
     _open_auxiliary_panel(mock_page, "guide")
     tutorial = mock_page.locator("#tutorial-reset-cascader")
@@ -2821,58 +2760,6 @@ def test_memory_browser_home_day_reset_also_resets_prompt_backend_without_manage
             window.AvatarFloatingGuideReset = Object.assign({}, window.AvatarFloatingGuideReset || {}, {
                 resetAvatarFloatingGuideDay: async (day, options) => {
                     window.__tutorialResetCalls.push({ type: 'avatar-day', day, options });
-                }
-            });
-            delete window.universalTutorialManager;
-        }
-        """
-    )
-
-    tutorial.locator(":scope > .tutorial-cascader-trigger").click()
-    tutorial.locator(".tutorial-cascader-option[data-tutorial-page='home']").click()
-    tutorial.locator(".tutorial-cascader-option[data-tutorial-day='1']").click()
-
-    with mock_page.expect_response("**/api/tutorial-prompt/reset"):
-        mock_page.locator("#tutorial-reset-btn").click()
-
-    mock_page.wait_for_function("window.__tutorialResetCalls.length === 1")
-    assert mock_page.evaluate("window.__tutorialResetCalls") == [
-        {"type": "avatar-day", "day": 1, "options": {"source": "memory_browser_reset_select"}},
-    ]
-    assert prompt_reset_payloads == [{"reason": "memory_browser_home_day_reset"}]
-
-
-@pytest.mark.frontend
-def test_memory_browser_home_day_reset_uses_manager_after_avatar_day_reset(
-    mock_page: Page,
-    running_server: str,
-    seed_memory_file,
-):
-    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
-    prompt_reset_requests = []
-
-    def handle_prompt_reset(route):
-        prompt_reset_requests.append(_request_json(route))
-        route.fulfill(status=200, content_type="application/json", json={"ok": True})
-
-    mock_page.route("**/api/tutorial-prompt/reset", handle_prompt_reset)
-
-    mock_page.goto(f"{running_server}/memory_browser")
-    _open_auxiliary_panel(mock_page, "guide")
-    tutorial = mock_page.locator("#tutorial-reset-cascader")
-    tutorial.locator(":scope > .tutorial-cascader-trigger").wait_for(timeout=10000)
-    mock_page.evaluate(
-        """
-        () => {
-            window.__tutorialResetCalls = [];
-            window.AvatarFloatingGuideReset = Object.assign({}, window.AvatarFloatingGuideReset || {}, {
-                resetAvatarFloatingGuideDay: async (day, options) => {
-                    window.__tutorialResetCalls.push({ type: 'avatar-day', day, options });
-                }
-            });
-            window.universalTutorialManager = Object.assign({}, window.universalTutorialManager || {}, {
-                resetHomeTutorialPromptState: async (reason) => {
-                    window.__tutorialResetCalls.push({ type: 'prompt', reason });
                 }
             });
         }
@@ -2884,12 +2771,10 @@ def test_memory_browser_home_day_reset_uses_manager_after_avatar_day_reset(
     tutorial.locator(".tutorial-cascader-option[data-tutorial-day='1']").click()
     mock_page.locator("#tutorial-reset-btn").click()
 
-    mock_page.wait_for_function("window.__tutorialResetCalls.length === 2")
+    mock_page.wait_for_function("window.__tutorialResetCalls.length === 1")
     assert mock_page.evaluate("window.__tutorialResetCalls") == [
         {"type": "avatar-day", "day": 1, "options": {"source": "memory_browser_reset_select"}},
-        {"type": "prompt", "reason": "memory_browser_home_day_reset"},
     ]
-    assert prompt_reset_requests == []
 
 
 @pytest.mark.frontend
