@@ -11,16 +11,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from ...core.contracts import BattleEvent, BattleState
+from ...core.contracts import END_MISSION_STATUSES, BattleEvent, BattleState
 from .._base import DiscreteDetector
 from .free_text import FreeTextActivityDetector
 from .notices import HudNoticeDetector
 from .proximity import ProximityDetector
 from .radio import RadioCommandDetector
 from .situation import AirSituationDetector, GroundTargetDetector
-
-_END_STATUSES = frozenset({"win", "won", "victory", "fail", "failed", "lost", "defeat", "left", "ended", "finished"})
-
 
 def _alive(s: BattleState) -> bool:
     return s.is_alive()
@@ -120,7 +117,7 @@ class BattleEndDetector(DiscreteDetector):
     id = "battle_end"
 
     def _ended(self, s: BattleState) -> bool:
-        return (s.mission_status or "").lower() in _END_STATUSES
+        return (s.mission_status or "").lower() in END_MISSION_STATUSES
 
     def detect(self, prev: BattleState, cur: BattleState) -> BattleEvent | None:
         if self._ended(cur) and not self._ended(prev):

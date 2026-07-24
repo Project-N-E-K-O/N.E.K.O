@@ -13,23 +13,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""System status, token usage and pending-notice endpoints.
+"""System status, social bootstrap, token usage and pending-notice endpoints.
 
 Split out of the former monolithic ``main_routers/system_router.py``.
 """
 
+import os
+from typing import Any
+
+from fastapi import Request
+from fastapi.responses import Response
+from utils.storage_location_bootstrap import build_storage_location_bootstrap_payload
+
 from ._shared import (
     _get_system_config_manager,
+    _json_no_store_response,
     _read_json_object,
     _set_no_store_headers,
     _validate_local_mutation_request,
     logger,
     router,
 )
-from typing import Any
-from fastapi import Request
-from fastapi.responses import Response
-from utils.storage_location_bootstrap import build_storage_location_bootstrap_payload
 
 
 def _derive_system_lifecycle_state(storage_bootstrap: dict[str, Any]) -> str:
@@ -88,6 +92,49 @@ async def get_system_status(response: Response):
         }
 
 
+@router.get("/system/client-id")
+async def get_system_client_id(response: Response):
+    """Return the persistent client ID used by N.E.K.O.Servers."""
+    _set_no_store_headers(response)
+    try:
+        config_manager = _get_system_config_manager()
+        state_path = config_manager.cloudsave_local_state_path
+        needs_persist = not state_path.exists()
+        state = config_manager.load_cloudsave_local_state()
+        client_id = state.get("client_id") if isinstance(state, dict) else None
+        if not isinstance(client_id, str) or not client_id:
+            state = config_manager.build_default_cloudsave_local_state()
+            client_id = state.get("client_id")
+            needs_persist = True
+        if not isinstance(client_id, str) or not client_id:
+            raise ValueError("cloudsave state did not provide a client_id")
+        if needs_persist and isinstance(state, dict):
+            config_manager.save_cloudsave_local_state(state)
+        return {"ok": True, "client_id": client_id}
+    except Exception as exc:
+        logger.warning("system client-id endpoint failed: %s", exc)
+        return _json_no_store_response(
+            {"ok": False, "error": "internal_error"},
+            status_code=500,
+        )
+
+
+_DEFAULT_NEKO_SOCIAL_BASE_URL = "https://community.project-neko.cn"
+
+
+@router.get("/system/social/config")
+async def get_system_social_config(response: Response):
+    """Return the configured N.E.K.O.Servers base URL."""
+    _set_no_store_headers(response)
+    raw = os.environ.get("NEKO_SOCIAL_BASE_URL", "")
+    base_url = raw.strip().rstrip("/") or _DEFAULT_NEKO_SOCIAL_BASE_URL
+    return {
+        "ok": True,
+        "social_base_url": base_url,
+        "enabled": True,
+    }
+
+
 @router.get("/token-usage")
 async def get_token_usage(days: int = 7):
     """Return LLM token usage statistics for the last N days."""
@@ -98,7 +145,7 @@ async def get_token_usage(days: int = 7):
 @router.get("/pending-notices")
 async def get_pending_notices():
     """Fetch pending pop-up notices on frontend page load (read-only snapshot; does not clear the queue).
-    
+
     Returns {"notices": [...], "cursor": N}; after display the frontend must pass the
     cursor back to the ack endpoint, ensuring only the notices shown this time are
     deleted and entries enqueued between the two requests are never lost.

@@ -13,6 +13,11 @@
     let activeCaptureToken = 0;
     let activeCaptureCardVisible = false;
     let cachedPreview = null;
+    let cachedCharacterReference = null;
+    let pendingCharacterReference = null;
+    let characterReferenceRetryTimer = null;
+    let characterReferenceRetryAttempts = 0;
+    let characterReferenceRetryCacheKey = '';
     let autoCaptureTimer = null;
     let lastScheduledCacheKey = '';
     // 多窗口模式：由 IPC 从 Pet 窗口注入的头像（/chat 页面无本地模型）
@@ -23,6 +28,18 @@
     let tutorialAvatarOverrideModelType = '';
 
     const STORAGE_PREFIX = 'neko_avatar:';
+    const CHARACTER_REFERENCE_CAPTURE_OPTIONS = {
+        width: 768,
+        height: 1024,
+        padding: 0.08,
+        shape: 'square',
+        background: 'transparent',
+        cropMode: 'portrait',
+        includeDataUrl: true
+    };
+    const CHARACTER_REFERENCE_RETRY_LIMIT = 30;
+    const CHARACTER_REFERENCE_RETRY_BASE_MS = 1200;
+    const CHARACTER_REFERENCE_RETRY_MAX_MS = 8000;
 
     function translateLabel(key, fallback) {
         if (typeof window.safeT === 'function') {
@@ -351,6 +368,277 @@
         );
     }
 
+    function isRasterImageDataUrl(value) {
+        return typeof value === 'string' && /^data:image\/(?:png|jpe?g|webp);/i.test(value);
+    }
+
+    function getCharacterReferenceCacheKey() {
+        return getCurrentModelCacheKey() + ':card-forge-character-reference:v1';
+    }
+
+    function getActiveLanlanName() {
+        return (typeof lanlan_config !== 'undefined' && lanlan_config.lanlan_name)
+            ? lanlan_config.lanlan_name
+            : '';
+    }
+
+    function hasUsableCachedCharacterReference() {
+        var cacheKey = getCharacterReferenceCacheKey();
+        return !!(
+            cachedCharacterReference &&
+            cachedCharacterReference.cacheKey === cacheKey &&
+            isRasterImageDataUrl(cachedCharacterReference.dataUrl)
+        );
+    }
+
+    function ensureCharacterReferenceRetryCacheKey(cacheKey) {
+        if (characterReferenceRetryCacheKey === cacheKey) return;
+        characterReferenceRetryCacheKey = cacheKey || '';
+        characterReferenceRetryAttempts = 0;
+        if (characterReferenceRetryTimer) {
+            clearTimeout(characterReferenceRetryTimer);
+            characterReferenceRetryTimer = null;
+        }
+    }
+
+    function postCharacterReferenceToCardForge(characterReferenceDataUrl) {
+        if (!characterReferenceDataUrl) return Promise.resolve(false);
+        var _nekoName = getActiveLanlanName();
+        var referenceBody = { characterReferenceDataUrl: characterReferenceDataUrl };
+        if (_nekoName) referenceBody.name = _nekoName;
+        return fetch('/card-forge/active-character', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(referenceBody)
+        }).then(function (response) {
+            if (!response.ok) {
+                console.warn(
+                    '[chat-avatar] card-forge character reference sync returned HTTP',
+                    response.status
+                );
+                return false;
+            }
+            return true;
+        }).catch(function (err) {
+            console.warn('[chat-avatar] card-forge character reference sync failed:', err);
+            return false;
+        });
+    }
+
+    function queueCharacterReferenceRetry(reason) {
+        var modelCacheKey = getCurrentModelCacheKey();
+        if (!modelCacheKey || modelCacheKey.endsWith(':')) return;
+        var cacheKey = getCharacterReferenceCacheKey();
+        ensureCharacterReferenceRetryCacheKey(cacheKey);
+        if (characterReferenceRetryAttempts >= CHARACTER_REFERENCE_RETRY_LIMIT) {
+            console.warn('[chat-avatar] card-forge character reference sync gave up:', reason || 'retry-limit');
+            return;
+        }
+        if (characterReferenceRetryTimer) return;
+        var delay = Math.min(
+            CHARACTER_REFERENCE_RETRY_MAX_MS,
+            CHARACTER_REFERENCE_RETRY_BASE_MS * Math.max(1, characterReferenceRetryAttempts)
+        );
+        characterReferenceRetryTimer = setTimeout(function () {
+            characterReferenceRetryTimer = null;
+            syncCharacterReferenceToCardForge(reason || 'retry');
+        }, delay);
+    }
+
+    function syncCharacterReferenceToCardForge(reason) {
+        var modelCacheKey = getCurrentModelCacheKey();
+        if (!modelCacheKey || modelCacheKey.endsWith(':')) return Promise.resolve(false);
+        var cacheKey = getCharacterReferenceCacheKey();
+        ensureCharacterReferenceRetryCacheKey(cacheKey);
+        characterReferenceRetryAttempts += 1;
+        return captureCharacterReferenceDataUrl()
+            .then(function (characterReferenceDataUrl) {
+                if (!characterReferenceDataUrl) {
+                    queueCharacterReferenceRetry(reason || 'empty-capture');
+                    return false;
+                }
+                return postCharacterReferenceToCardForge(characterReferenceDataUrl)
+                    .then(function (posted) {
+                        if (posted) {
+                            characterReferenceRetryAttempts = 0;
+                            if (characterReferenceRetryTimer) {
+                                clearTimeout(characterReferenceRetryTimer);
+                                characterReferenceRetryTimer = null;
+                            }
+                            return true;
+                        }
+                        queueCharacterReferenceRetry(reason || 'post-failed');
+                        return false;
+                    });
+            });
+    }
+
+    function scheduleCharacterReferenceSync(reason) {
+        var modelCacheKey = getCurrentModelCacheKey();
+        if (!modelCacheKey || modelCacheKey.endsWith(':')) return;
+        var cacheKey = getCharacterReferenceCacheKey();
+        ensureCharacterReferenceRetryCacheKey(cacheKey);
+        if (characterReferenceRetryTimer) return;
+        characterReferenceRetryTimer = setTimeout(function () {
+            characterReferenceRetryTimer = null;
+            syncCharacterReferenceToCardForge(reason || 'scheduled');
+        }, hasUsableCachedCharacterReference() ? 0 : 240);
+    }
+
+    function rememberCharacterReferenceResult(result, cacheKey) {
+        var dataUrl = result && result.dataUrl ? result.dataUrl : '';
+        if (isRasterImageDataUrl(dataUrl)) {
+            cachedCharacterReference = {
+                cacheKey: cacheKey,
+                dataUrl: dataUrl,
+                modelType: result.modelType || getCurrentModelType(),
+                capturedAt: Date.now()
+            };
+            return dataUrl;
+        }
+        return '';
+    }
+
+    function captureCharacterReferenceViaBroadcast() {
+        return new Promise(function (resolve) {
+            var bc = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
+            if (!bc) {
+                resolve(null);
+                return;
+            }
+            var requestId = 'char_ref_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+            var finished = false;
+            var timerId = null;
+            function cleanup() {
+                bc.removeEventListener('message', onMessage);
+                if (timerId) { clearTimeout(timerId); timerId = null; }
+            }
+            function finish(result) {
+                if (finished) return;
+                finished = true;
+                cleanup();
+                resolve(result || null);
+            }
+            function onMessage(event) {
+                if (!event.data || event.data.action !== 'avatar_capture_result') return;
+                if (event.data.requestId !== requestId) return;
+                if (event.data.error) {
+                    finish(null);
+                    return;
+                }
+                finish({
+                    dataUrl: event.data.dataUrl || '',
+                    modelType: event.data.modelType || ''
+                });
+            }
+            bc.addEventListener('message', onMessage);
+            timerId = setTimeout(function () { finish(null); }, 15000);
+            bc.postMessage({
+                action: 'request_avatar_capture',
+                requestId: requestId,
+                captureMode: 'character_reference',
+                lanlan_name: (window.lanlan_config && window.lanlan_config.lanlan_name) || '',
+                timestamp: Date.now()
+            });
+        });
+    }
+
+    function captureCharacterReferenceViaIpc() {
+        return new Promise(function (resolve) {
+            var finished = false;
+            var timerId = null;
+            function cleanup() {
+                window.removeEventListener('neko:character-reference-ipc-result', onResult);
+                if (timerId) { clearTimeout(timerId); timerId = null; }
+            }
+            function finish(result) {
+                if (finished) return;
+                finished = true;
+                cleanup();
+                resolve(result || null);
+            }
+            function onResult(event) {
+                var detail = event && event.detail;
+                if (detail && detail.dataUrl) {
+                    finish({ dataUrl: detail.dataUrl, modelType: detail.modelType || '' });
+                    return;
+                }
+                finish(null);
+            }
+            window.addEventListener('neko:character-reference-ipc-result', onResult);
+            timerId = setTimeout(function () { finish(null); }, 15000);
+            try {
+                window.__nekoRequestCharacterReference();
+            } catch (_) {
+                finish(null);
+            }
+        });
+    }
+
+    function captureCharacterReferenceDataUrl() {
+        var cacheKey = getCharacterReferenceCacheKey();
+        if (
+            cachedCharacterReference &&
+            cachedCharacterReference.cacheKey === cacheKey &&
+            isRasterImageDataUrl(cachedCharacterReference.dataUrl)
+        ) {
+            return Promise.resolve(cachedCharacterReference.dataUrl);
+        }
+        if (pendingCharacterReference) return pendingCharacterReference;
+
+        pendingCharacterReference = Promise.resolve()
+            .then(function () {
+                if (window.avatarPortrait && typeof window.avatarPortrait.capture === 'function') {
+                    return window.avatarPortrait.capture(CHARACTER_REFERENCE_CAPTURE_OPTIONS);
+                }
+                if (window.__NEKO_MULTI_WINDOW__) {
+                    if (typeof window.__nekoRequestCharacterReference === 'function') {
+                        return captureCharacterReferenceViaIpc().then(function (result) {
+                            return result || captureCharacterReferenceViaBroadcast();
+                        });
+                    }
+                    return captureCharacterReferenceViaBroadcast();
+                }
+                return null;
+            })
+            .then(function (result) {
+                return rememberCharacterReferenceResult(result, cacheKey);
+            })
+            .catch(function (err) {
+                console.warn('[chat-avatar] card-forge character reference capture failed:', err);
+                return '';
+            })
+            .finally(function () {
+                pendingCharacterReference = null;
+            });
+        return pendingCharacterReference;
+    }
+
+    /**
+     * 把当前头像 dataUrl、全身角色参考图和猫娘名推送到 card-forge 后端（非关键，静默失败）。
+     * 用于"奇遇铸造机" (card-forge) 前端读取当前猫娘名作为 runtime_character_hint。
+     * 上游未运行 card-forge 时本接口仍存在，POST 只是空写无副作用。
+     *
+     * 只把有值的字段塞进 body：服务端的 POST handler 用 in-payload 语义区分
+     * "省略字段（不动）" vs "显式空串（清空）"，所以不要无脑发空串，避免把
+     * 上一次同步过来的猫娘名覆盖掉。当 dataUrl 暂不可用但 name 仍有效时，
+     * 仍然走一次 name-only 同步。
+     */
+    function syncAvatarToCardForge(dataUrl) {
+        var _nekoName = getActiveLanlanName();
+        if (!dataUrl && !_nekoName) return;
+        var body = {};
+        if (dataUrl) body.dataUrl = dataUrl;
+        if (_nekoName) body.name = _nekoName;
+        fetch('/card-forge/active-character', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        }).catch(function () { /* card-forge 未运行时静默失败 */ });
+
+        scheduleCharacterReferenceSync('avatar-sync');
+    }
+
     function applyPreviewResult(result, cacheKey) {
         cachedPreview = {
             cacheKey,
@@ -359,6 +647,7 @@
             capturedAt: Date.now()
         };
         saveToStorage(cachedPreview);
+        syncAvatarToCardForge(cachedPreview.dataUrl);
 
         setPreviewImage(cachedPreview.dataUrl);
         setPreviewStatus(
@@ -997,6 +1286,7 @@
             return;
         }
         if (hasUsableCachedPreview()) {
+            scheduleCharacterReferenceSync(reason || 'cached-preview');
             return;
         }
         if (lastScheduledCacheKey === cacheKey && isCapturing) {
@@ -1029,8 +1319,14 @@
     function handleModelLoaded(reason) {
         var newCacheKey = getCurrentModelCacheKey();
         if (cachedPreview && cachedPreview.dataUrl && cachedPreview.cacheKey === newCacheKey) {
+            // 不同猫娘可能复用同一模型/cache key；即使头像无需重抓，也要把当前名称
+            // 和缓存预览重新 POST 给 Card Forge。该函数内部也会安排参考图同步。
+            syncAvatarToCardForge(cachedPreview.dataUrl);
             return;
         }
+        // 头像捕获失败或尚未完成时，也先同步已知角色名，避免 Card Forge
+        // 因 activeCharacterName 为空而跳过真实记忆加载。
+        syncAvatarToCardForge('');
         invalidateCachedPreview();
         scheduleAutoCapture(reason);
     }
@@ -1133,6 +1429,7 @@
             // （加载时 lanlan_config.lanlan_name 可能尚未就绪，保存会静默失败）。
             cachedPreview.cacheKey = getCurrentModelCacheKey();
             saveToStorage(cachedPreview);
+            syncAvatarToCardForge(cachedPreview.dataUrl);
             setPreviewImage(cachedPreview.dataUrl);
             setPreviewStatus(
                 translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(cachedPreview.modelType)
@@ -1145,6 +1442,7 @@
                 modelType: stored.modelType,
                 capturedAt: stored.capturedAt
             };
+            syncAvatarToCardForge(cachedPreview.dataUrl);
             setPreviewImage(cachedPreview.dataUrl);
             setPreviewStatus(
                 translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(cachedPreview.modelType)
@@ -1160,6 +1458,8 @@
             }));
         } else {
             cachedPreview = null;
+            // 首次运行没有缓存头像时，角色身份不应被头像捕获阻塞。
+            syncAvatarToCardForge('');
             setPreviewImage('');
             setPreviewStatus(translateLabel('chat.avatarPreviewWaiting', '等待当前模型头像缓存生成'));
             setPreviewNote(translateLabel('chat.avatarPreviewCardNote', '将基于当前显示中的 Live2D / VRM / MMD 模型生成头像。'));
@@ -1296,6 +1596,7 @@
                 capturedAt: Date.now()
             };
             saveToStorage(cachedPreview);
+            syncAvatarToCardForge(cachedPreview.dataUrl);
         }
 
         // 如果弹窗已打开且本地没有本窗口可采集的模型，就直接把 IPC 数据显示出来。

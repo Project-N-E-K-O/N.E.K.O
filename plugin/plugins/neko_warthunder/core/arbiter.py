@@ -73,7 +73,8 @@ class Arbiter:
                 cd *= broadcast_frequency_multiplier(self.safety.config.broadcast_frequency)
             last_at, last_level = self._last_fired.get(c.event_id, (-1e9, ""))
             critical_upgrade = c.level == "critical" and last_level != "critical"
-            if cd > 0 and (now - last_at) < cd and not critical_upgrade:
+            coalesced_kill = c.event_id == "you_killed" and kill_coalesce_window > 0
+            if cd > 0 and (now - last_at) < cd and not critical_upgrade and not coalesced_kill:
                 chain.append(_rec(c, "dropped", "cooldown"))
                 continue
             survivors.append(c)

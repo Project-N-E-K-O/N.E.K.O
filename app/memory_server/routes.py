@@ -39,7 +39,13 @@ from config.prompts.prompts_memory import (
     RECENT_HISTORY_INTRO, NO_RECENT_HISTORY,
 )
 from utils.frontend_utils import get_timestamp
-from utils.language_utils import get_global_language
+from utils.language_utils import (
+    get_global_language,
+    get_global_language_full,
+    is_supported_language_code,
+    normalize_language_code,
+    refresh_global_language,
+)
 from utils.llm_client import convert_to_messages
 from utils.time_format import format_elapsed as _format_elapsed
 from utils.cloudsave_runtime import assert_cloudsave_writable
@@ -54,6 +60,15 @@ from .runtime import app
 
 class HistoryRequest(BaseModel):
     input_history: str
+    language: str | None = None
+
+
+def _activate_request_language(language: str | None) -> str:
+    """Apply main_server's Steam/system locale and return a replay-safe full code."""
+    if is_supported_language_code(language):
+        refresh_global_language(str(language))
+        return normalize_language_code(language, format='full')
+    return get_global_language_full()
 
 
 class ExternalMemoryImportRequest(BaseModel):
@@ -501,6 +516,7 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
     LLM waste is fully gone.
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
+    memory_language = _activate_request_language(request.language)
     gates._touch_activity()
     try:
         input_history = convert_to_messages(json.loads(request.input_history))
@@ -517,7 +533,9 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
             await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
         # outbox 登记走锁外——它会 spawn background task 跑 LLM，长持锁会
         # 阻塞下一轮 /cache 写盘。
-        await post_turn._spawn_outbox_post_turn_signals(lanlan_name, input_history)
+        await post_turn._spawn_outbox_post_turn_signals(
+            lanlan_name, input_history, language=memory_language,
+        )
         return {"status": "cached", "count": len(input_history)}
     except Exception as e:
         logger.error(f"[MemoryServer] cache 失败: {e}", exc_info=True)
@@ -527,6 +545,7 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
 @app.post("/process/{lanlan_name}")
 async def process_conversation(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
+    memory_language = _activate_request_language(request.language)
     gates._touch_activity()
     # P2 vector warmup: first /process is the cheapest "frontend ready"
     # signal we have — by the time the user sends a real conversation
@@ -556,7 +575,9 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
         await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
 
         # 异步事实提取（不阻塞返回，失败静默跳过）
-        await post_turn._spawn_outbox_post_turn_signals(lanlan_name, input_history)
+        await post_turn._spawn_outbox_post_turn_signals(
+            lanlan_name, input_history, language=memory_language,
+        )
 
         # Phase C: 不再 cancel-and-restart review；让 maybe_spawn_review 在新消息
         # 门 + min_interval + in-flight 多重 gate 后决定起或不起。在跑的 review
@@ -571,6 +592,7 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
 @app.post("/renew/{lanlan_name}")
 async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
+    memory_language = _activate_request_language(request.language)
     gates._touch_activity()
     # Same warmup hint as /process: /renew is also a "user actively
     # using the app" signal, so it counts as the unblock event.
@@ -598,7 +620,9 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
 
         # 以下操作在锁外执行，不阻塞 /new_dialog
         # 异步事实提取
-        await post_turn._spawn_outbox_post_turn_signals(lanlan_name, input_history)
+        await post_turn._spawn_outbox_post_turn_signals(
+            lanlan_name, input_history, language=memory_language,
+        )
 
         # Phase C: 见 /process 的注释——不再 cancel-and-restart。
         await review.maybe_spawn_review(lanlan_name)
@@ -618,6 +642,7 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
     completes those operations.
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
+    memory_language = _activate_request_language(request.language)
     gates._touch_activity()
     try:
         uid = str(uuid4())
@@ -632,7 +657,9 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
             await runtime.recent_history_manager.update_history([], lanlan_name, detailed=True, on_compress_done=review._on_compress_done)
 
         if input_history:
-            await post_turn._spawn_outbox_post_turn_signals(lanlan_name, input_history)
+            await post_turn._spawn_outbox_post_turn_signals(
+                lanlan_name, input_history, language=memory_language,
+            )
 
         # Phase C: 见 /process 的注释——不再 cancel-and-restart。
         await review.maybe_spawn_review(lanlan_name)

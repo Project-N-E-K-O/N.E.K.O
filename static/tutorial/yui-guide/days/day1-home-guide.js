@@ -151,7 +151,7 @@
                     text: '在跟我通语音电话的时候，再点亮这个小按钮，你就能把屏幕分享给我啦！',
                     voiceKey: 'day1_screen_entry',
                     emotion: 'happy',
-                    target: '#${p}-btn-screen',
+                    target: '#${p}-btn-mic',
                     cursorAction: 'move'
                 },
                 {
@@ -161,7 +161,7 @@
                     text: '快让我也看看你眼前的世界，不管好玩的还是好看的，都想和你一起看，快点点开嘛~',
                     voiceKey: 'day1_screen_entry_invite',
                     emotion: 'happy',
-                    target: '#${p}-btn-screen',
+                    target: '#${p}-btn-mic',
                     cursorAction: 'move'
                 },
                 {

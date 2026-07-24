@@ -4416,6 +4416,10 @@ async def test_cross_server_post_memory_server_success_and_url_encoding(monkeypa
             capture=calls,
         )(),
     )
+    monkeypatch.setattr(
+        "main_logic.cross_server.get_global_language_full",
+        lambda: "zh-CN",
+    )
 
     ok, err_detail, payload = await _post_memory_server(
         "cache",
@@ -4430,6 +4434,7 @@ async def test_cross_server_post_memory_server_success_and_url_encoding(monkeypa
     assert calls
     assert calls[0]["url"].endswith("/cache/%E5%B0%8F%E5%A4%A9%2F%E6%B5%8B%E8%AF%95")
     assert "input_history" in calls[0]["json"]
+    assert calls[0]["json"]["language"] == "zh-CN"
 
 
 async def test_cross_server_post_memory_server_handles_http_non_2xx(monkeypatch):

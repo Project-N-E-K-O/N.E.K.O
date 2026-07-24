@@ -28,9 +28,79 @@
         const screenshotButton = I.S.dom.screenshotButton;
 
         // 麦克风按钮（toggle模式） — Live2D / VRM 浮动按钮共用
+        function isScreenSharingActive() {
+            return !!(screenButton && screenButton.classList.contains('active'));
+        }
+
+        let screenSharingStartedByVoice = false;
+
+        async function startScreenSharingFromVoiceButton() {
+            if (isScreenSharingActive()) {
+                return;
+            }
+            if (typeof window.startScreenSharing !== 'function') {
+                console.error('startScreenSharing function not found');
+                return;
+            }
+            await window.startScreenSharing();
+            // startScreenSharing handles user cancellation internally, so a
+            // resolved Promise alone does not prove capture actually started.
+            screenSharingStartedByVoice = isScreenSharingActive();
+        }
+
+        async function stopScreenSharingFromVoiceButton() {
+            if (!screenSharingStartedByVoice) {
+                return;
+            }
+            if (!isScreenSharingActive()) {
+                screenSharingStartedByVoice = false;
+                return;
+            }
+            if (typeof window.stopScreenSharing !== 'function') {
+                console.error('stopScreenSharing function not found');
+                return;
+            }
+            await window.stopScreenSharing();
+            screenSharingStartedByVoice = false;
+        }
+
+        // 「语音时自动共享屏幕」开关：默认关（隐私安全）——只想开麦的用户不会被静默录屏
+        // （Electron 下若存过采集源，startScreenSharing 会无提示直接续采）。想要旧的
+        // 「语音=顺带共享屏幕」统一体验的人可显式打开；localStorage 持久化，可被设置项同步覆盖。
+        function voiceAutoScreenEnabled() {
+            try { return localStorage.getItem('neko_voice_auto_screen') === '1'; }
+            catch (_) { return false; }
+        }
+        try {
+            window.nekoVoiceAutoScreen = {
+                get: voiceAutoScreenEnabled,
+                set: function (on) {
+                    try { localStorage.setItem('neko_voice_auto_screen', on ? '1' : '0'); } catch (_) {}
+                },
+            };
+        } catch (_) {}
+
+        function waitForVoiceRecordingReady(timeoutMs) {
+            const startedAt = Date.now();
+            return new Promise((resolve) => {
+                const check = () => {
+                    if (I.S.isRecording || Date.now() - startedAt >= timeoutMs) {
+                        resolve(!!I.S.isRecording);
+                        return;
+                    }
+                    setTimeout(check, 50);
+                };
+                check();
+            });
+        }
+
         window.addEventListener('live2d-mic-toggle', async (e) => {
             if (e.detail.active) {
                 if (I.S.isRecording) {
+                    // 已在录音：仅按需联动自动共享屏幕
+                    if (voiceAutoScreenEnabled()) {
+                        await startScreenSharingFromVoiceButton();
+                    }
                     return;
                 }
                 if (I.S.voiceStartPending || window.isMicStarting) {
@@ -38,14 +108,23 @@
                 }
                 if (!micButton.classList.contains('active')) {
                     micButton.click();
-                    return;
+                    await waitForVoiceRecordingReady(5000);
+                } else {
+                    // 按钮卡在 active 但未真正录音：清状态后重试
+                    micButton.classList.remove('active');
+                    micButton.classList.remove('recording');
+                    micButton.disabled = false;
+                    micButton.click();
+                    await waitForVoiceRecordingReady(5000);
                 }
-                micButton.classList.remove('active');
-                micButton.classList.remove('recording');
-                micButton.disabled = false;
-                micButton.click();
-                return;
+                // 仅当用户显式开启「语音时自动共享屏幕」才联动起屏；默认关 = 开麦只开麦。
+                if (I.S.isRecording && voiceAutoScreenEnabled()) {
+                    await startScreenSharingFromVoiceButton();
+                }
             } else {
+                // 只清理由本次语音流程自动开启的共享；用户之后即使关掉了自动共享
+                // 设置，也仍需释放此前由语音开启的采集。
+                await stopScreenSharingFromVoiceButton();
                 if (!I.S.isRecording) {
                     return;
                 }
@@ -66,6 +145,7 @@
             } else {
                 if (typeof window.stopScreenSharing === 'function') {
                     await window.stopScreenSharing();
+                    screenSharingStartedByVoice = false;
                 } else {
                     console.error('stopScreenSharing function not found');
                 }
@@ -75,6 +155,223 @@
         // Agent工具按钮
         window.addEventListener('live2d-agent-click', () => {
             console.log('Agent工具按钮被点击，显示弹出框');
+        });
+
+        const SOCIAL_OPEN_DEDUPE_MS = 1200;
+        const SOCIAL_OPEN_RELEASE_DELAY_MS = 800;
+
+        function getSocialOpenState() {
+            if (!window.__nekoSocialOpenState || typeof window.__nekoSocialOpenState !== 'object') {
+                window.__nekoSocialOpenState = {
+                    inFlight: false,
+                    lastStartedAt: 0,
+                    releaseTimer: null
+                };
+            }
+            return window.__nekoSocialOpenState;
+        }
+
+        function shouldIgnoreSocialOpenRequest() {
+            const now = Date.now();
+            const state = getSocialOpenState();
+            if (state.inFlight || (now - (state.lastStartedAt || 0)) < SOCIAL_OPEN_DEDUPE_MS) {
+                console.debug('[social] duplicate open request ignored');
+                return true;
+            }
+            if (state.releaseTimer) {
+                clearTimeout(state.releaseTimer);
+                state.releaseTimer = null;
+            }
+            state.inFlight = true;
+            state.lastStartedAt = now;
+            return false;
+        }
+
+        function releaseSocialOpenRequest() {
+            const state = getSocialOpenState();
+            if (state.releaseTimer) {
+                clearTimeout(state.releaseTimer);
+            }
+            state.releaseTimer = setTimeout(() => {
+                const latestState = getSocialOpenState();
+                latestState.inFlight = false;
+                latestState.releaseTimer = null;
+            }, SOCIAL_OPEN_RELEASE_DELAY_MS);
+        }
+
+        // 猫娘网络（社交平台）按钮：占用原 screen 槽位。
+        // 从 /api/system/social/config 拿云端 base URL，从 /api/system/client-id 拿 device 身份。
+        // Electron：window.open → setWindowOpenHandler 识别 social feed，以带 OS chrome 的内置
+        // framed 子窗口打开（见 NEKO-PC pet-window-lifecycle）。浏览器：预开 about:blank 保手势。
+        // Desktop OAuth 仍走系统浏览器（loopback 回调 + 文案提示在浏览器完成登录）。
+        window.addEventListener('live2d-social-click', async () => {
+            if (shouldIgnoreSocialOpenRequest()) {
+                return;
+            }
+            const isElectron = !!(window.electronShell && typeof window.electronShell.openExternal === 'function');
+            let popupRef = null;
+            const closePopup = () => {
+                if (!popupRef) {
+                    return;
+                }
+                try {
+                    if (!popupRef.closed) {
+                        popupRef.close();
+                    }
+                } catch (_) { /* ignore */ }
+                popupRef = null;
+            };
+            try {
+                if (!isElectron) {
+                    // 这里必须先保留 WindowProxy，异步拿到配置/票据后才能导航预开的 tab。
+                    // Chromium 在 windowFeatures 里指定 noopener 时可能直接返回 null。
+                    popupRef = window.open('about:blank', '_blank');
+                    if (!popupRef) {
+                        if (typeof window.showStatusToast === 'function') {
+                            window.showStatusToast(
+                                (window.t && window.t('app.socialOpenFailed', { error: 'popup blocked' }))
+                                    || '社交窗口打开失败：请允许弹窗',
+                                4000
+                            );
+                        }
+                        return;
+                    }
+                }
+                const cfgRes = await fetch('/api/system/social/config');
+                if (!cfgRes.ok) {
+                    if (typeof window.showStatusToast === 'function') {
+                        window.showStatusToast(
+                            (window.t && window.t('app.socialUnavailable')) || '社交服务不可用 (config fetch failed)',
+                            3000
+                        );
+                    }
+                    closePopup();
+                    return;
+                }
+                const cfg = await cfgRes.json();
+                if (cfg && cfg.enabled === false) {
+                    if (typeof window.showStatusToast === 'function') {
+                        window.showStatusToast(
+                            (window.t && window.t('app.socialDisabled')) || '社交服务已禁用',
+                            3000
+                        );
+                    }
+                    closePopup();
+                    return;
+                }
+                let url = (cfg && cfg.social_base_url) ? cfg.social_base_url.replace(/\/+$/, '') + '/feed' : null;
+                if (!url) {
+                    console.warn('[social] no social_base_url from /api/system/social/config');
+                    closePopup();
+                    return;
+                }
+                const targetUrl = new URL(url, window.location.href);
+                if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {
+                    throw new Error('unsupported social URL protocol');
+                }
+                // 只有从本体按钮打开的页面才能拿到一次性同步票据。票据放 fragment，
+                // 不进入社区服务器 access log / Referer；社区页读取后会立即从地址栏移除。
+                try {
+                    const ticketRes = await fetch('/api/card-drop/sync-ticket', { cache: 'no-store' });
+                    if (ticketRes.ok) {
+                        const ticketJson = await ticketRes.json();
+                        if (ticketJson && ticketJson.sync_ticket) {
+                            targetUrl.hash = new URLSearchParams({
+                                native_sync: String(ticketJson.sync_ticket)
+                            }).toString();
+                        }
+                    }
+                } catch (ticketErr) {
+                    console.warn('[social] native session sync ticket fetch failed (non-fatal):', ticketErr);
+                }
+                // 顺手把 client_id 拼进 URL（仅关联游客身份，不构成登录态同步授权）。
+                try {
+                    const cidRes = await fetch('/api/system/client-id');
+                    if (cidRes.ok) {
+                        const cidJson = await cidRes.json();
+                        if (cidJson && cidJson.client_id) {
+                            targetUrl.searchParams.set('cid', cidJson.client_id);
+                        }
+                    }
+                } catch (cidErr) {
+                    console.warn('[social] client_id fetch failed (non-fatal):', cidErr);
+                }
+                url = targetUrl.toString();
+                // 先打开猫娘社区；Desktop 未登录时再额外拉起平台 Desktop OAuth（不挡社区）。
+                if (isElectron) {
+                    // 目标 URL 直接交给 setWindowOpenHandler，才能命中 isSocialFeedUrl → framed 内置窗。
+                    // 复用 'neko-social' 名：已开则聚焦/导航同一窗口，避免叠多个社区窗。
+                    const socialWin = window.open(url, 'neko-social');
+                    if (!socialWin) {
+                        throw new Error('popup blocked');
+                    }
+                    try { socialWin.focus && socialWin.focus(); } catch (_) { /* ignore */ }
+                } else {
+                    // about:blank 仍与 opener 同源，可在跨站导航前主动切断反向引用。
+                    popupRef.opener = null;
+                    popupRef.location.replace(url);
+                    try { popupRef.focus && popupRef.focus(); } catch (_) { /* ignore */ }
+                    popupRef = null;
+                }
+                let communityLoggedIn = false;
+                try {
+                    const statusRes = await fetch('/api/card-drop/auth-status', { cache: 'no-store' });
+                    if (statusRes.ok) {
+                        const statusJson = await statusRes.json();
+                        communityLoggedIn = !!(statusJson && statusJson.logged_in);
+                    }
+                } catch (statusErr) {
+                    console.warn('[social] auth-status fetch failed (non-fatal):', statusErr);
+                }
+                if (!communityLoggedIn) {
+                    try {
+                        const oauthRes = await fetch('/api/card-drop/oauth/start', {
+                            method: 'POST',
+                            cache: 'no-store',
+                        });
+                        if (oauthRes.ok) {
+                            const oauthJson = await oauthRes.json();
+                            const authUrl = oauthJson && oauthJson.auth_url
+                                ? String(oauthJson.auth_url)
+                                : '';
+                            if (authUrl) {
+                                if (window.electronShell && typeof window.electronShell.openExternal === 'function') {
+                                    await window.electronShell.openExternal(authUrl);
+                                } else {
+                                    window.open(authUrl, '_blank', 'noopener,noreferrer');
+                                }
+                                if (typeof window.showStatusToast === 'function') {
+                                    const oauthPromptKey = 'app.socialOAuthPrompt';
+                                    const oauthPrompt = (typeof window.t === 'function')
+                                        ? window.t(oauthPromptKey)
+                                        : '';
+                                    window.showStatusToast(
+                                        (oauthPrompt && oauthPrompt !== oauthPromptKey)
+                                            ? oauthPrompt
+                                            : '请在浏览器完成统一账号登录',
+                                        4000
+                                    );
+                                }
+                            }
+                        }
+                    } catch (oauthErr) {
+                        console.warn('[social] oauth/start failed (non-fatal):', oauthErr);
+                    }
+                }
+                return;
+            } catch (err) {
+                closePopup();
+                console.error('[social] open failed:', err);
+                if (typeof window.showStatusToast === 'function') {
+                    window.showStatusToast(
+                        (window.t && window.t('app.socialOpenFailed', { error: err.message }))
+                            || `社交窗口打开失败：${err.message}`,
+                        4000
+                    );
+                }
+            } finally {
+                releaseSocialOpenRequest();
+            }
         });
 
         // 睡觉按钮（请她离开）

@@ -190,13 +190,22 @@ class FakeButton {{
 }}
 
 const micButton = new FakeButton();
+const screenButton = new FakeButton();
 const stopCalls = [];
+const startScreenCalls = [];
+const stopScreenCalls = [];
+
+global.localStorage = {{
+  value: null,
+  getItem() {{ return this.value; }},
+  setItem(_key, value) {{ this.value = String(value); }},
+}};
 
 global.window = {{
   appState: {{
     dom: {{
       micButton,
-      screenButton: new FakeButton(),
+      screenButton,
       resetSessionButton: new FakeButton(),
       muteButton: new FakeButton(),
       stopButton: new FakeButton(),
@@ -220,11 +229,25 @@ global.window = {{
       await handler({{ detail: {{ active }} }});
     }}
   }},
+  async dispatchScreenToggle(active) {{
+    const handlers = this._listeners.get('live2d-screen-toggle') || [];
+    for (const handler of handlers) {{
+      await handler({{ detail: {{ active }} }});
+    }}
+  }},
   stopMicCapture: async function () {{
     stopCalls.push('stop');
   }},
   startMicCapture: async function () {{
     throw new Error('floating mic toggle must not call startMicCapture directly');
+  }},
+  startScreenSharing: async function () {{
+    startScreenCalls.push('start');
+    screenButton.classList.add('active');
+  }},
+  stopScreenSharing: async function () {{
+    stopScreenCalls.push('stop');
+    screenButton.classList.remove('active');
   }},
 }};
 
@@ -246,6 +269,9 @@ runScenario()
         classes: micButton.classList.toArray(),
       }},
       stopCalls,
+      startScreenCalls,
+      stopScreenCalls,
+      screenClasses: screenButton.classList.toArray(),
     }}));
   }})
   .catch((error) => {{
@@ -297,16 +323,49 @@ def test_floating_mic_popup_keeps_speaker_volume_without_microphone_devices():
     render = source[render_start:render_end]
 
     assert "var hasMicrophoneDevices = audioInputs.length > 0;" in render
+    permission_refresh = "audioInputs = await ensureMicrophonePermission();"
+    assert "if (!audioInputs || audioInputs.length === 0 || !micPermissionGranted)" in render
+    assert permission_refresh in render
+    assert render.index(permission_refresh) < render.index(
+        "var hasMicrophoneDevices = audioInputs.length > 0;"
+    )
     assert "micPopup.appendChild(noMicItem);\n                return true;" not in render
 
     layout_index = render.index("// ===== 双栏布局 =====")
     speaker_index = render.index("speakerContainer.className = 'speaker-volume-container';")
-    devices_guard_index = render.index("if (hasMicrophoneDevices) {")
+    gain_guard_index = render.index("if (!hasMicrophoneDevices) {")
     no_devices_index = render.index("noMicItem.textContent = window.t ? window.t('microphone.noDevices')")
 
-    assert layout_index < speaker_index < devices_guard_index < no_devices_index
+    assert layout_index < speaker_index < gain_guard_index < no_devices_index
+    assert "leftColumn.appendChild(speakerContainer);" in render
     assert "gainSlider.disabled = true;" in render
-    assert "rightColumn.appendChild(noMicItem);" in render
+    assert "listBody.appendChild(noMicItem);" in render
+
+
+def test_floating_mic_popup_exposes_screen_share_start_and_stop_action():
+    source = _read(APP_AUDIO_CAPTURE_PATH)
+    screen_panel = _js_function_block(source, "openScreenSourceSubwindow")
+
+    assert "shareToggleButton.dataset.nekoScreenShareAction = 'toggle';" in screen_panel
+    assert "window.startScreenSharing" in screen_panel
+    assert "window.stopScreenSharing" in screen_panel
+    assert "window.t('buttons.stopShare')" in screen_panel
+    assert "panelBody.appendChild(shareToggleButton);" in screen_panel
+    voice_guard = "if (!window.isRecording) {"
+    start_call = "await window.startScreenSharing();"
+    assert voice_guard in screen_panel
+    assert "window.t('app.screenShareRequiresVoice')" in screen_panel
+    assert screen_panel.index(voice_guard) < screen_panel.index(start_call)
+
+
+def test_mic_device_subwindow_retries_permission_when_device_cache_is_empty():
+    source = _read(APP_AUDIO_CAPTURE_PATH)
+    permission = _js_function_block(source, "ensureMicrophonePermission")
+    device_panel = _js_function_block(source, "openMicDeviceSubwindow")
+
+    assert "micPermissionGranted && cachedMicDevices && cachedMicDevices.length > 0" in permission
+    assert "if (!devices || devices.length === 0 || !micPermissionGranted)" in device_panel
+    assert "devices = await ensureMicrophonePermission();" in device_panel
 
 
 def test_outer_voice_start_failure_clears_pending_flags_before_composer_restore():
@@ -463,3 +522,73 @@ def test_floating_mic_toggle_actual_state_matrix(name, script_body, expected):
     assert result["mic"]["disabled"] is expected["disabled"], name
     assert result["mic"]["classes"] == expected["classes"], name
     assert result["stopCalls"] == expected["stopCalls"], name
+
+
+def test_voice_auto_screen_stops_owned_share_even_after_setting_is_disabled():
+    result = _run_floating_mic_toggle_scenario(
+        """
+    localStorage.value = '1';
+    S.isRecording = true;
+    await window.dispatchMicToggle(true);
+    localStorage.value = '0';
+    await window.dispatchMicToggle(false);
+    return {};
+        """
+    )
+
+    assert result["startScreenCalls"] == ["start"]
+    assert result["stopScreenCalls"] == ["stop"]
+    assert result["screenClasses"] == []
+
+
+def test_voice_auto_screen_does_not_own_cancelled_start():
+    result = _run_floating_mic_toggle_scenario(
+        """
+    localStorage.value = '1';
+    window.startScreenSharing = async function () {
+      startScreenCalls.push('start');
+    };
+    S.isRecording = true;
+    await window.dispatchMicToggle(true);
+    await window.dispatchMicToggle(false);
+    return {};
+        """
+    )
+
+    assert result["startScreenCalls"] == ["start"]
+    assert result["stopScreenCalls"] == []
+    assert result["screenClasses"] == []
+
+
+def test_voice_auto_screen_never_stops_user_owned_share():
+    result = _run_floating_mic_toggle_scenario(
+        """
+    localStorage.value = '1';
+    await window.dispatchScreenToggle(true);
+    S.isRecording = true;
+    await window.dispatchMicToggle(true);
+    await window.dispatchMicToggle(false);
+    return {};
+        """
+    )
+
+    assert result["startScreenCalls"] == ["start"]
+    assert result["stopScreenCalls"] == []
+    assert result["screenClasses"] == ["active"]
+
+
+def test_manual_screen_stop_clears_voice_share_ownership():
+    result = _run_floating_mic_toggle_scenario(
+        """
+    localStorage.value = '1';
+    S.isRecording = true;
+    await window.dispatchMicToggle(true);
+    await window.dispatchScreenToggle(false);
+    await window.dispatchMicToggle(false);
+    return {};
+        """
+    )
+
+    assert result["startScreenCalls"] == ["start"]
+    assert result["stopScreenCalls"] == ["stop"]
+    assert result["screenClasses"] == []

@@ -58,7 +58,9 @@ async def test_spawn_outbox_happy_path_marks_done(tmp_path):
         clear=False,
     ):
         msgs = [HumanMessage(content="喵"), AIMessage(content="mrrp")]
-        task = await memory_server._spawn_outbox_post_turn_signals("小天", msgs)
+        task = await memory_server._spawn_outbox_post_turn_signals(
+            "小天", msgs, language="zh-TW",
+        )
         await task
 
     assert len(calls) == 1
@@ -67,10 +69,31 @@ async def test_spawn_outbox_happy_path_marks_done(tmp_path):
     # payload serialized via messages_to_dict → round-trippable
     assert isinstance(payload.get("messages"), list)
     assert len(payload["messages"]) == 2
+    assert payload["language"] == "zh-TW"
 
     # Outbox should show no pending ops after success
     pending = await ob.apending_ops("小天")
     assert pending == []
+
+
+@pytest.mark.asyncio
+async def test_post_turn_outbox_replay_restores_recorded_language():
+    """Replay the language recorded at enqueue time instead of the server locale."""
+    from app import memory_server
+    from utils.llm_client import messages_to_dict
+
+    runner = AsyncMock(return_value=None)
+    payload = {
+        "messages": messages_to_dict([HumanMessage(content="请记住我喜欢草莓")]),
+        "language": "zh-CN",
+    }
+
+    with patch("app.memory_server.post_turn._run_post_turn_signals", runner):
+        await memory_server._outbox_post_turn_signals_handler("小天", payload)
+
+    runner.assert_awaited_once()
+    assert runner.await_args.args[1] == "小天"
+    assert runner.await_args.kwargs["language"] == "zh-CN"
 
 
 @pytest.mark.asyncio

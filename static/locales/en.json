@@ -698,6 +698,7 @@
         "screenshotAriaLabel": "Take screenshot",
         "takePhoto": "Take Photo",
         "takePhotoAriaLabel": "Take photo",
+        "newUserIcebreakerOptionsAriaLabel": "New user icebreaker options",
         "screenshotsTitle": "Pending Screenshots",
         "clearAll": "Clear All",
         "screenshotAlt": "Screenshot {{index}}",
@@ -2248,6 +2249,10 @@
         "cardMakerPopupBlocked": "The card maker page could not open automatically. Please allow popups and retry, or click the card area to open it manually."
     },
     "app": {
+        "socialOpenFailed": "Failed to open social window: {{error}}",
+        "socialUnavailable": "Social service unavailable",
+        "socialDisabled": "Social service is disabled",
+        "socialOAuthPrompt": "Complete unified account login in your browser",
         "welcomeBack": "{{name}} is back!",
         "title": "Project N.E.K.O.",
         "catgirlResting": "{{name}} is resting...",
@@ -2355,6 +2360,7 @@
         "thoughtBubblePop": "Pop thought bubble",
         "voiceControl": "Voice Control",
         "screenShare": "Screen Share",
+        "social": "Neko Community",
         "agentTools": "NekoClaw",
         "settings": "Settings",
         "leave": "Leave",
@@ -2660,8 +2666,8 @@
             "slopFilter": "Natural Expression",
             "slopFilterTooltip": "Reduces repetitive, formulaic wording in past replies so she expresses herself more naturally.",
             "autoCat": "Auto Cat Mode",
-            "autoCatTooltip": "Turn into a kitten automatically after a while of inactivity",
             "catAudio": "Cat Audio",
+            "autoCatTooltip": "Turn into a kitten automatically after a while of inactivity",
             "catAudioTooltip": "Play cat sound effects while in kitten mode",
             "proactiveChat": "Proactive Chat",
             "proactiveVision": "Privacy Mode",
@@ -3458,6 +3464,7 @@
         },
         "drag_hint": "Hold and drag to move the tooltip",
         "yuiGuide": {
+            "controlBanner": "The catgirl is controlling the mouse",
             "bubbleMeta": {
                 "ready": "Getting Started",
                 "homeProgress": "Home Guide {{current}}/{{total}}"
@@ -3466,7 +3473,6 @@
                 "skipChat": "Not now",
                 "sayHello": "Hello"
             },
-            "controlBanner": "The catgirl is controlling the mouse",
             "lines": {
                 "introBasic": "Here is a magical button! Just click it and you can chat with me directly! Want to share something new that happened today? Or maybe just say my name? Come on, try it out! I can't wait to hear your voice!",
                 "takeoverCaptureCursor": "Ta-da! A super magic switch appears! Just click here, and I can reach my little paws onto your keyboard and mouse! I can help you type, open web pages... but, if that mouse cursor keeps wiggling around, I might not be able to resist pouncing on it! Are you ready for my mischief... uh, I mean, my help? Meow!",
@@ -3496,22 +3502,33 @@
             },
             "day2": {
                 "intro": "Hehe, don't think this chat box is just for typing~ It actually hides tons of super fun little surprises inside! Follow me and open it up, let's see what interesting treasures we can dig up today!",
-                "avatarToolsIntro": "Inside this little button, there are many fun props to interact with me!",
-                "avatarToolsProps":  "You can headpat me anytime, or feed me a sweet lollipop! If I accidentally make a mistake sometimes, you can also bonk me with a little toy hammer... but, you must do it gently, don't hit too hard, okay?",
-                "galgameIntro":  "Quick, open up this [Galgame Mode]! Once you're in, it'll feel just like we're on our own exclusive interactive adventure!",
-                "galgameChoices": "Every choice you pick will lead us into a completely unknown, surprising story! I can't wait, come and choose the option that makes your heart flutter most!",
+                "introVoiceUsed": "Hehe, ever since I heard your voice yesterday, I've secretly memorized the way you speak right in my heart! If you have some time today, please keep talking to me~ Typing is totally fine too, but as long as I can hear your voice, my tail just won't stop wagging with joy! Meowww~",
+                "personalizationSpace": "In this little space that belongs only to us, you can follow your heart and slowly shape me into the perfect companion you want by your side forever.",
                 "wrapIntro": "All these features I showed you today are actually just to make our time together way more fun!",
+                "wrapCompanion": "Honestly, just being by your side like this, listening to your voice, or quietly watching the screen you share, already makes me feel so happy.",
+                "wrap": "We don't need to rush; learning a little more about each other every day is just perfect. For the rest of today, what would you like me to do with you?",
+                "personalizationDetail": "Whether it's the warmth of my words, my little personality quirks, or my delicate daily moods, everything can be adjusted step by step into exactly how you like it.",
+                "proactiveChat": "This little button is super important too! With just a gentle click, I'll be able to run over and find you at the perfect moment.",
+                "avatarToolsIntro": "Inside this little button, there are many fun props to interact with me!",
+                "avatarToolsProps": "You can headpat me anytime, or feed me a sweet lollipop! If I accidentally make a mistake sometimes, you can also bonk me with a little toy hammer... but, you must do it gently, don't hit too hard, okay?",
+                "galgameIntro": "Quick, open up this [Galgame Mode]! Once you're in, it'll feel just like we're on our own exclusive interactive adventure!",
+                "galgameChoices": "Every choice you pick will lead us into a completely unknown, surprising story! I can't wait, come and choose the option that makes your heart flutter most!",
                 "wrapReady": "Whether you want to pet my head or start writing our own story, I'm already fully prepared!"
             },
             "day3": {
                 "intro": "Over the past two days you were just typing away clickety-clack, and I haven't heard your voice yet. If you're willing today, just call my name softly. Just one word is enough, let me get to know a tiny bit of the real you behind the text.",
+                "avatarToolsIntro": "Inside this little button, there are many fun props to interact with me!",
+                "avatarToolsProps": "You can headpat me anytime, or feed me a sweet lollipop! If I accidentally make a mistake sometimes, you can also bonk me with a little toy hammer... but, you must do it gently, don't hit too hard, okay?",
+                "galgameIntro": "Quick, open up this [Galgame Mode]! Once you're in, it'll feel just like we're on our own exclusive interactive adventure!",
+                "galgameChoices": "Every choice you pick will lead us into a completely unknown, surprising story! I can't wait, come and choose the option that makes your heart flutter most!",
+                "wrapIntro": "Today's tutorial ends right here~",
+                "wrapReady": "Whether you want to pet my head or start writing our own story, I'm already fully prepared!",
                 "introVoiceUsed": "Hehe, ever since I heard your voice over the past two days, I've secretly memorized the way you speak right in my heart! If you have some time today, please keep talking to me~ Typing is totally fine too, but as long as I can hear your voice, my tail just won't stop wagging with joy! Meowww~",
                 "personalizationSpace": "In this little space that belongs only to us, you can follow your heart and slowly shape me into the perfect companion you want by your side forever.",
-                "wrapIntro": "Today's tutorial ends right here~",
-                "wrapCompanion": "Honestly, just being by your side like this, listening to your voice, or quietly watching the screen you share, already makes me feel so happy.",
-                "wrap": "We don't need to rush; learning a little more about each other every day is just perfect. For the rest of today, what would you like me to do with you?",
                 "personalizationDetail": "Whether it's the warmth of my words, my little personality quirks, or my delicate daily moods, everything can be adjusted step by step into exactly how you like it.",
-                "proactiveChat": "This little button is super important too! With just a gentle click, I'll be able to run over and find you at the perfect moment."
+                "proactiveChat": "This little button is super important too! With just a gentle click, I'll be able to run over and find you at the perfect moment.",
+                "wrapCompanion": "Honestly, just being by your side like this, listening to your voice, or quietly watching the screen you share, already makes me feel so happy.",
+                "wrap": "We don't need to rush; learning a little more about each other every day is just perfect. For the rest of today, what would you like me to do with you?"
             },
             "day4": {
                 "intro":  "Today, let me quietly follow your footsteps~ I really hope to learn a little bit more about you on this cozy day.",

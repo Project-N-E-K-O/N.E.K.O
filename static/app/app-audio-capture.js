@@ -1464,9 +1464,78 @@
     var micPermissionGranted = false;
     var cachedMicDevices = null;
 
+    function ensureMicPopupScrollbarStyle() {
+        if (document.getElementById('neko-mic-popup-scrollbar-style')) return;
+        var style = document.createElement('style');
+        style.id = 'neko-mic-popup-scrollbar-style';
+        style.textContent = [
+            '#live2d-popup-mic.neko-mic-popup-surface,',
+            '#vrm-popup-mic.neko-mic-popup-surface,',
+            '#mmd-popup-mic.neko-mic-popup-surface{overflow-y:hidden!important;scrollbar-width:none;}',
+            '#live2d-popup-mic.neko-mic-popup-surface::-webkit-scrollbar,',
+            '#vrm-popup-mic.neko-mic-popup-surface::-webkit-scrollbar,',
+            '#mmd-popup-mic.neko-mic-popup-surface::-webkit-scrollbar,',
+            '.neko-mic-popup-scroll::-webkit-scrollbar{width:0;height:0;}',
+            '.neko-mic-popup-scroll{scrollbar-width:none;-ms-overflow-style:none;}',
+            '.neko-mic-popup-scrollbar-thumb{position:absolute;right:3px;top:0;width:4px;min-height:18px;border-radius:999px;background:rgba(128,128,128,0.55);opacity:0;transition:opacity 120ms ease;pointer-events:none;z-index:2;}',
+            '.neko-mic-popup-scrollbar-thumb.is-visible{opacity:1;}'
+        ].join('');
+        document.head.appendChild(style);
+    }
+
+    function attachTransientMicPopupScrollbar(scrollNode, hostNode) {
+        var thumb = document.createElement('div');
+        thumb.className = 'neko-mic-popup-scrollbar-thumb';
+        hostNode.appendChild(thumb);
+        var hideTimer = null;
+        var frameId = null;
+        var updateThumb = function () {
+            frameId = null;
+            var maxScroll = Math.max(0, scrollNode.scrollHeight - scrollNode.clientHeight);
+            if (maxScroll <= 0) {
+                thumb.classList.remove('is-visible');
+                return;
+            }
+            var scrollRect = scrollNode.getBoundingClientRect();
+            var hostRect = hostNode.getBoundingClientRect();
+            var trackTop = scrollRect.top - hostRect.top;
+            var trackHeight = scrollNode.clientHeight;
+            var thumbHeight = Math.max(18, Math.round((scrollNode.clientHeight / scrollNode.scrollHeight) * trackHeight));
+            var thumbTop = trackTop + Math.round((scrollNode.scrollTop / maxScroll) * Math.max(0, trackHeight - thumbHeight));
+            thumb.style.height = thumbHeight + 'px';
+            thumb.style.transform = 'translateY(' + thumbTop + 'px)';
+        };
+        var showScrollbar = function () {
+            thumb.classList.add('is-visible');
+            if (!frameId) frameId = window.requestAnimationFrame(updateThumb);
+            if (hideTimer) window.clearTimeout(hideTimer);
+            hideTimer = window.setTimeout(function () {
+                thumb.classList.remove('is-visible');
+                hideTimer = null;
+            }, 850);
+        };
+        scrollNode.addEventListener('scroll', showScrollbar, { passive: true });
+        scrollNode.addEventListener('wheel', showScrollbar, { passive: true });
+        scrollNode.addEventListener('touchmove', showScrollbar, { passive: true });
+        return function cleanupTransientMicPopupScrollbar() {
+            if (hideTimer) {
+                window.clearTimeout(hideTimer);
+                hideTimer = null;
+            }
+            if (frameId) {
+                window.cancelAnimationFrame(frameId);
+                frameId = null;
+            }
+            scrollNode.removeEventListener('scroll', showScrollbar);
+            scrollNode.removeEventListener('wheel', showScrollbar);
+            scrollNode.removeEventListener('touchmove', showScrollbar);
+            if (thumb.parentNode) thumb.parentNode.removeChild(thumb);
+        };
+    }
+
     /** 请求麦克风权限并缓存设备列表 */
     async function ensureMicrophonePermission() {
-        if (micPermissionGranted && cachedMicDevices) {
+        if (micPermissionGranted && cachedMicDevices && cachedMicDevices.length > 0) {
             return cachedMicDevices;
         }
         try {
@@ -1520,18 +1589,37 @@
         if (!isPopupAvailable()) return false;
 
         try {
-            var audioInputs = await ensureMicrophonePermission();
+            ensureMicPopupScrollbarStyle();
+            micPopup.classList.add('neko-mic-popup-surface');
+            micPopup.style.minWidth = '220px';
+            micPopup.style.width = '220px';
+            micPopup.style.maxWidth = '220px';
+            micPopup.style.boxSizing = 'border-box';
+            micPopup.style.overflowY = 'hidden';
+            var audioInputs = cachedMicDevices;
+            if (!audioInputs || audioInputs.length === 0 || !micPermissionGranted) {
+                audioInputs = await ensureMicrophonePermission();
+            }
             if (!isPopupAvailable()) return false;
+if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
+                micPopup.__nekoMicScrollbarCleanup();
+                micPopup.__nekoMicScrollbarCleanup = null;
+            }
             micPopup.innerHTML = '';
 
             var hasMicrophoneDevices = audioInputs.length > 0;
 
             // ===== 双栏布局 =====
             var leftColumn = document.createElement('div');
-            Object.assign(leftColumn.style, { flex: '1', minWidth: '180px', display: 'flex', flexDirection: 'column', overflowY: 'auto' });
+            leftColumn.className = 'neko-mic-popup-scroll';
+            Object.assign(leftColumn.style, { flex: '0 0 100%', width: '100%', minWidth: '0', minHeight: '0', maxWidth: '100%', display: 'flex', flexDirection: 'column', overflowY: 'auto' });
+            micPopup.__nekoMicScrollbarCleanup = attachTransientMicPopupScrollbar(leftColumn, micPopup);
 
-            var rightColumn = document.createElement('div');
-            Object.assign(rightColumn.style, { flex: '1', minWidth: '160px', display: 'flex', flexDirection: 'column', overflowY: 'auto' });
+            if (micPopup.id) {
+                document.querySelectorAll('[data-neko-sidepanel-owner="' + micPopup.id + '"].neko-mic-subwindow').forEach(function (panel) {
+                    panel.remove();
+                });
+            }
 
             // ===== 左栏 1. 扬声器音量 =====
             var speakerContainer = document.createElement('div');
@@ -1872,61 +1960,336 @@
             volumeContainer.appendChild(volumeHint);
             leftColumn.appendChild(volumeContainer);
 
-            // ===== 右栏：设备列表 =====
-            var deviceTitle = document.createElement('div');
-            Object.assign(deviceTitle.style, { padding: '8px 12px 6px', fontSize: '13px', fontWeight: '600', color: '#4f8cff', display: 'flex', alignItems: 'center', gap: '6px', borderBottom: '1px solid var(--neko-popup-separator)', marginBottom: '4px' });
-            var deviceTitleIcon = document.createElement('span');
-            deviceTitleIcon.textContent = '🎙️';
-            deviceTitleIcon.style.fontSize = '14px';
-            var deviceTitleText = document.createElement('span');
-            deviceTitleText.textContent = window.t ? window.t('microphone.deviceTitle') : '选择麦克风设备';
-            deviceTitleText.setAttribute('data-i18n', 'microphone.deviceTitle');
-            deviceTitle.appendChild(deviceTitleIcon);
-            deviceTitle.appendChild(deviceTitleText);
-            rightColumn.appendChild(deviceTitle);
-
-            // 默认麦克风选项
-            if (hasMicrophoneDevices) {
-                var defaultOption = document.createElement('button');
-                defaultOption.className = 'mic-option';
-                defaultOption.textContent = window.t ? window.t('microphone.defaultDevice') : '系统默认麦克风';
-                if (S.selectedMicrophoneId === null) defaultOption.classList.add('selected');
-                Object.assign(defaultOption.style, { padding: '8px 12px', cursor: 'pointer', border: 'none', background: S.selectedMicrophoneId === null ? 'var(--neko-popup-selected-bg)' : 'transparent', borderRadius: '6px', transition: 'background 0.2s ease', fontSize: '13px', width: '100%', textAlign: 'left', color: S.selectedMicrophoneId === null ? '#4f8cff' : 'var(--neko-popup-text)', fontWeight: S.selectedMicrophoneId === null ? '500' : '400' });
-                defaultOption.addEventListener('mouseenter', function () { if (S.selectedMicrophoneId !== null) defaultOption.style.background = 'var(--neko-popup-hover)'; });
-                defaultOption.addEventListener('mouseleave', function () { if (S.selectedMicrophoneId !== null) defaultOption.style.background = 'transparent'; });
-                defaultOption.addEventListener('click', async function () { await selectMicrophone(null); updateMicListSelection(); });
-                rightColumn.appendChild(defaultOption);
-
-                var sep3 = document.createElement('div');
-                Object.assign(sep3.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '5px 0' });
-                rightColumn.appendChild(sep3);
-
-                // 各个设备选项
-                audioInputs.forEach(function (device, idx) {
-                    var option = document.createElement('button');
-                    option.className = 'mic-option';
-                    option.dataset.deviceId = device.deviceId;
-                    option.textContent = device.label || (window.t ? window.t('microphone.deviceLabel', { index: idx + 1 }) : '麦克风 ' + (idx + 1));
-                    if (S.selectedMicrophoneId === device.deviceId) option.classList.add('selected');
-                    Object.assign(option.style, { padding: '8px 12px', cursor: 'pointer', border: 'none', background: S.selectedMicrophoneId === device.deviceId ? 'var(--neko-popup-selected-bg)' : 'transparent', borderRadius: '6px', transition: 'background 0.2s ease', fontSize: '13px', width: '100%', textAlign: 'left', color: S.selectedMicrophoneId === device.deviceId ? '#4f8cff' : 'var(--neko-popup-text)', fontWeight: S.selectedMicrophoneId === device.deviceId ? '500' : '400' });
-                    option.addEventListener('mouseenter', function () { if (S.selectedMicrophoneId !== device.deviceId) option.style.background = 'var(--neko-popup-hover)'; });
-                    option.addEventListener('mouseleave', function () { if (S.selectedMicrophoneId !== device.deviceId) option.style.background = 'transparent'; });
-                    option.addEventListener('click', async function () { await selectMicrophone(device.deviceId); updateMicListSelection(); });
-                    rightColumn.appendChild(option);
+            function closeMicSubwindow() {
+                var ownerSelector = micPopup.id ? '[data-neko-sidepanel-owner="' + micPopup.id + '"]' : '.neko-mic-subwindow';
+                document.querySelectorAll(ownerSelector + '.neko-mic-subwindow').forEach(function (panel) {
+                    panel.remove();
                 });
-            } else {
-                var noMicItem = document.createElement('div');
-                noMicItem.textContent = window.t ? window.t('microphone.noDevices') : '没有检测到麦克风设备';
-                Object.assign(noMicItem.style, { padding: '8px 12px', color: 'var(--neko-popup-text-sub)', fontSize: '13px' });
-                rightColumn.appendChild(noMicItem);
             }
+
+            function positionMicSubwindow(panel) {
+                if (!panel || !micPopup || !micPopup.isConnected) return;
+                var rect = micPopup.getBoundingClientRect();
+                var panelWidth = panel.offsetWidth || 320;
+                var panelHeight = panel.offsetHeight || 360;
+                var gap = 8;
+                var left = rect.right + gap;
+                var opensLeft = micPopup.dataset && micPopup.dataset.opensLeft === 'true';
+                if (opensLeft || left + panelWidth > window.innerWidth - gap) {
+                    left = rect.left - panelWidth - gap;
+                }
+                left = Math.max(gap, Math.min(left, window.innerWidth - panelWidth - gap));
+                var top = Math.max(gap, Math.min(rect.top, window.innerHeight - panelHeight - gap));
+                panel.style.left = left + 'px';
+                panel.style.top = top + 'px';
+            }
+
+            function createMicSubwindow(title, iconText, width) {
+                closeMicSubwindow();
+                var panel = document.createElement('div');
+                panel.className = 'neko-mic-subwindow';
+                if (micPopup.id) panel.setAttribute('data-neko-sidepanel-owner', micPopup.id);
+                panel.setAttribute('data-neko-sidepanel', '');
+                Object.assign(panel.style, {
+                    position: 'fixed',
+                    zIndex: '100003',
+                    width: width || '320px',
+                    maxHeight: 'min(420px, calc(100vh - 16px))',
+                    overflowY: 'hidden',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px',
+                    padding: '8px',
+                    boxSizing: 'border-box',
+                    background: 'var(--neko-popup-bg, rgba(255, 255, 255, 0.82))',
+                    backdropFilter: 'saturate(180%) blur(20px)',
+                    border: 'var(--neko-popup-border, 1px solid rgba(255, 255, 255, 0.18))',
+                    borderRadius: '8px',
+                    boxShadow: 'var(--neko-popup-shadow, 0 8px 24px rgba(0,0,0,0.16))',
+                    pointerEvents: 'auto',
+                    cursor: 'default',
+                    color: 'var(--neko-popup-text)'
+                });
+
+                var stopSubwindowEvent = function (e) {
+                    if (document.body.classList.contains('neko-model-dragging')) return;
+                    e.stopPropagation();
+                };
+                ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend'].forEach(function (evt) {
+                    panel.addEventListener(evt, stopSubwindowEvent, true);
+                });
+                panel.addEventListener('click', stopSubwindowEvent);
+
+                var header = document.createElement('div');
+                Object.assign(header.style, {
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: '8px',
+                    padding: '4px 6px 8px',
+                    borderBottom: '1px solid var(--neko-popup-separator)',
+                    marginBottom: '4px',
+                    flexShrink: '0'
+                });
+
+                var titleWrap = document.createElement('div');
+                Object.assign(titleWrap.style, { display: 'flex', alignItems: 'center', gap: '6px', minWidth: '0', color: '#4f8cff', fontSize: '13px', fontWeight: '600' });
+                var icon = document.createElement('span');
+                icon.textContent = iconText;
+                icon.style.fontSize = '14px';
+                var titleEl = document.createElement('span');
+                titleEl.textContent = title;
+                Object.assign(titleEl.style, { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
+                titleWrap.appendChild(icon);
+                titleWrap.appendChild(titleEl);
+
+                var closeBtn = document.createElement('button');
+                closeBtn.type = 'button';
+                closeBtn.textContent = 'x';
+                closeBtn.setAttribute('aria-label', 'Close');
+                Object.assign(closeBtn.style, {
+                    width: '24px',
+                    height: '24px',
+                    border: 'none',
+                    borderRadius: '6px',
+                    background: 'transparent',
+                    color: 'var(--neko-popup-text-sub)',
+                    cursor: 'pointer',
+                    flexShrink: '0'
+                });
+                closeBtn.addEventListener('mouseenter', function () { closeBtn.style.background = 'var(--neko-popup-hover)'; });
+                closeBtn.addEventListener('mouseleave', function () { closeBtn.style.background = 'transparent'; });
+                closeBtn.addEventListener('click', function (e) { e.stopPropagation(); panel.remove(); });
+
+                header.appendChild(titleWrap);
+                header.appendChild(closeBtn);
+                panel.appendChild(header);
+
+                var body = document.createElement('div');
+                body.className = 'neko-mic-popup-scroll neko-mic-subwindow-body';
+                Object.assign(body.style, {
+                    display: 'flex',
+                    flex: '1 1 auto',
+                    flexDirection: 'column',
+                    gap: '4px',
+                    minHeight: '0',
+                    overflowY: 'auto'
+                });
+                panel.appendChild(body);
+                panel._nekoMicSubwindowBody = body;
+                attachTransientMicPopupScrollbar(body, panel);
+
+                document.body.appendChild(panel);
+                requestAnimationFrame(function () { positionMicSubwindow(panel); });
+                return panel;
+            }
+
+            function createMainActionButton(iconText, label, subLabel, onClick) {
+                var button = document.createElement('button');
+                button.type = 'button';
+                Object.assign(button.style, {
+                    width: '100%',
+                    minWidth: '0',
+                    maxWidth: '100%',
+                    boxSizing: 'border-box',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    padding: '9px 10px',
+                    border: 'none',
+                    borderRadius: '6px',
+                    background: 'transparent',
+                    color: 'var(--neko-popup-text)',
+                    cursor: 'pointer',
+                    textAlign: 'left',
+                    transition: 'background 0.2s ease'
+                });
+                var icon = document.createElement('span');
+                icon.textContent = iconText;
+                icon.style.fontSize = '15px';
+                var textWrap = document.createElement('span');
+                Object.assign(textWrap.style, { display: 'flex', flexDirection: 'column', minWidth: '0', width: '0', maxWidth: '100%', flex: '1 1 0%', overflow: 'hidden' });
+                var labelEl = document.createElement('span');
+                labelEl.textContent = label;
+                Object.assign(labelEl.style, { display: 'block', maxWidth: '100%', fontSize: '13px', fontWeight: '600', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
+                var subEl = document.createElement('span');
+                subEl.className = 'neko-mic-action-sub-label';
+                subEl.textContent = subLabel || '';
+                Object.assign(subEl.style, { display: 'block', maxWidth: '100%', fontSize: '11px', color: 'var(--neko-popup-text-sub)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
+                var arrow = document.createElement('span');
+                arrow.textContent = '>';
+                Object.assign(arrow.style, { color: 'var(--neko-popup-text-sub)', flexShrink: '0' });
+                textWrap.appendChild(labelEl);
+                if (subLabel) textWrap.appendChild(subEl);
+                button.appendChild(icon);
+                button.appendChild(textWrap);
+                button.appendChild(arrow);
+                button.addEventListener('mouseenter', function () { button.style.background = 'var(--neko-popup-hover)'; });
+                button.addEventListener('mouseleave', function () { button.style.background = 'transparent'; });
+                button.addEventListener('click', function (e) {
+                    e.stopPropagation();
+                    Promise.resolve(onClick()).catch(function (error) {
+                        console.error('[麦克风弹窗] 子窗口打开失败:', error);
+                    });
+                });
+                return button;
+            }
+
+            function createMicDeviceOption(label, deviceId) {
+                var option = document.createElement('button');
+                option.type = 'button';
+                option.className = 'mic-option';
+                if (deviceId !== null) option.dataset.deviceId = deviceId;
+                option.textContent = label;
+                var isSelected = (deviceId === null && S.selectedMicrophoneId === null) || deviceId === S.selectedMicrophoneId;
+                if (isSelected) option.classList.add('selected');
+                Object.assign(option.style, { padding: '8px 12px', cursor: 'pointer', border: 'none', background: isSelected ? 'var(--neko-popup-selected-bg)' : 'transparent', borderRadius: '6px', transition: 'background 0.2s ease', fontSize: '13px', width: '100%', textAlign: 'left', color: isSelected ? '#4f8cff' : 'var(--neko-popup-text)', fontWeight: isSelected ? '500' : '400' });
+                option.addEventListener('mouseenter', function () { if (!option.classList.contains('selected')) option.style.background = 'var(--neko-popup-hover)'; });
+                option.addEventListener('mouseleave', function () { if (!option.classList.contains('selected')) option.style.background = 'transparent'; });
+                option.addEventListener('click', async function (e) {
+                    e.stopPropagation();
+                    await selectMicrophone(deviceId);
+                    updateMicListSelection();
+                    document.querySelectorAll('[data-neko-mic-action="device"] .neko-mic-action-sub-label').forEach(function (labelEl) {
+                        labelEl.textContent = label;
+                    });
+                });
+                return option;
+            }
+
+            async function openMicDeviceSubwindow() {
+                var panel = createMicSubwindow(
+                    window.t ? window.t('microphone.deviceTitle') : 'Select Microphone',
+                    '\uD83C\uDFA4',
+                    '280px'
+                );
+                panel.classList.add('neko-mic-device-subwindow');
+                var panelBody = panel._nekoMicSubwindowBody || panel;
+                var listBody = document.createElement('div');
+                Object.assign(listBody.style, { display: 'flex', flexDirection: 'column', gap: '4px' });
+                panelBody.appendChild(listBody);
+
+                var loadingItem = document.createElement('div');
+                loadingItem.textContent = window.t ? window.t('app.screenSource.loading') : 'Loading...';
+                Object.assign(loadingItem.style, { padding: '8px 12px', color: 'var(--neko-popup-text-sub)', fontSize: '13px' });
+                listBody.appendChild(loadingItem);
+                positionMicSubwindow(panel);
+
+                var devices = cachedMicDevices;
+                if (!devices || devices.length === 0 || !micPermissionGranted) {
+                    devices = await ensureMicrophonePermission();
+                }
+                listBody.innerHTML = '';
+
+                var defaultLabel = window.t ? window.t('microphone.defaultDevice') : 'System Default Microphone';
+                listBody.appendChild(createMicDeviceOption(defaultLabel, null));
+
+                if (!devices || devices.length === 0) {
+                    var noMicItem = document.createElement('div');
+                    noMicItem.textContent = window.t ? window.t('microphone.noDevices') : 'No microphone devices detected';
+                    Object.assign(noMicItem.style, { padding: '8px 12px', color: 'var(--neko-popup-text-sub)', fontSize: '13px' });
+                    listBody.appendChild(noMicItem);
+                    requestAnimationFrame(function () { positionMicSubwindow(panel); });
+                    return;
+                }
+
+                var sep = document.createElement('div');
+                Object.assign(sep.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '5px 0' });
+                listBody.appendChild(sep);
+
+                devices.forEach(function (device, idx) {
+                    var label = device.label || (window.t ? window.t('microphone.deviceLabel', { index: idx + 1 }) : 'Microphone ' + (idx + 1));
+                    listBody.appendChild(createMicDeviceOption(label, device.deviceId));
+                });
+                requestAnimationFrame(function () { positionMicSubwindow(panel); });
+            }
+
+            async function openScreenSourceSubwindow() {
+                var panel = createMicSubwindow(
+                    window.t ? window.t('buttons.screenShare') : 'Screen Share',
+                    '\uD83D\uDDA5\uFE0F',
+                    '360px'
+                );
+                var panelBody = panel._nekoMicSubwindowBody || panel;
+                var screenSourceList = document.createElement('div');
+                screenSourceList.id = micPopup.id ? micPopup.id + '-screen-sources' : 'neko-mic-popup-screen-sources';
+                screenSourceList.className = 'neko-mic-popup-screen-sources';
+                Object.assign(screenSourceList.style, {
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '2px',
+                    minHeight: '80px'
+                });
+                panelBody.appendChild(screenSourceList);
+                var shareToggleButton = document.createElement('button');
+                shareToggleButton.type = 'button';
+                shareToggleButton.dataset.nekoScreenShareAction = 'toggle';
+                Object.assign(shareToggleButton.style, {
+                    width: '100%',
+                    padding: '9px 12px',
+                    marginTop: '4px',
+                    border: 'none',
+                    borderRadius: '6px',
+                    background: '#4f8cff',
+                    color: '#fff',
+                    cursor: 'pointer',
+                    fontSize: '13px',
+                    fontWeight: '600'
+                });
+                function updateShareToggleLabel() {
+                    var active = !!(S.dom.screenButton && S.dom.screenButton.classList.contains('active'));
+                    shareToggleButton.textContent = active
+                        ? (window.t ? window.t('buttons.stopShare') : 'Stop Sharing')
+                        : screenButtonLabel;
+                }
+                shareToggleButton.addEventListener('click', async function (event) {
+                    event.stopPropagation();
+                    var active = !!(S.dom.screenButton && S.dom.screenButton.classList.contains('active'));
+                    shareToggleButton.disabled = true;
+                    try {
+                        if (active && typeof window.stopScreenSharing === 'function') {
+                            await window.stopScreenSharing();
+                        } else if (!active && typeof window.startScreenSharing === 'function') {
+                            if (!window.isRecording) {
+                                if (typeof window.showStatusToast === 'function') {
+                                    window.showStatusToast(
+                                        window.t ? window.t('app.screenShareRequiresVoice') : '屏幕分享仅用于音视频通话',
+                                        3000
+                                    );
+                                }
+                                return;
+                            }
+                            await window.startScreenSharing();
+                        }
+                    } finally {
+                        shareToggleButton.disabled = false;
+                        updateShareToggleLabel();
+                    }
+                });
+                updateShareToggleLabel();
+                panelBody.appendChild(shareToggleButton);
+                positionMicSubwindow(panel);
+                if (typeof window.renderFloatingScreenSourceList === 'function') {
+                    await window.renderFloatingScreenSourceList(screenSourceList, { requireVisible: false });
+                    positionMicSubwindow(panel);
+                }
+            }
+
+            var deviceButtonLabel = window.t ? window.t('microphone.deviceTitle') : 'Select Microphone';
+            var currentMicLabel = S.selectedMicrophoneId === null
+                ? (window.t ? window.t('microphone.defaultDevice') : 'System Default Microphone')
+                : (audioInputs.find(function (device) { return device.deviceId === S.selectedMicrophoneId; }) || {}).label || deviceButtonLabel;
+            var screenButtonLabel = window.t ? window.t('buttons.screenShare') : 'Screen Share';
+
+            var firstContent = leftColumn.firstChild;
+            var screenActionButton = createMainActionButton('\uD83D\uDDA5\uFE0F', screenButtonLabel, window.t ? window.t('app.screenSource.screens') : 'Screens', openScreenSourceSubwindow);
+            leftColumn.insertBefore(screenActionButton, firstContent);
+            var micActionButton = createMainActionButton('\uD83C\uDFA4', deviceButtonLabel, currentMicLabel, openMicDeviceSubwindow);
+            micActionButton.dataset.nekoMicAction = 'device';
+            leftColumn.insertBefore(micActionButton, firstContent);
 
             // 组装
             micPopup.appendChild(leftColumn);
-            var verticalDivider = document.createElement('div');
-            Object.assign(verticalDivider.style, { width: '1px', backgroundColor: 'var(--neko-popup-separator)', alignSelf: 'stretch', margin: '8px 0' });
-            micPopup.appendChild(verticalDivider);
-            micPopup.appendChild(rightColumn);
 
             startMicVolumeVisualization();
             return true;
@@ -1944,9 +2307,7 @@
 
     /** 轻量级更新：仅更新选中状态 */
     function updateMicListSelection() {
-        var micPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
-        if (!micPopup) return;
-        var options = micPopup.querySelectorAll('.mic-option');
+        var options = document.querySelectorAll('#live2d-popup-mic .mic-option, #vrm-popup-mic .mic-option, #mmd-popup-mic .mic-option, .neko-mic-device-subwindow .mic-option');
         options.forEach(function (option) {
             var deviceId = option.dataset.deviceId;
             var isSelected = (deviceId === undefined && S.selectedMicrophoneId === null) ||

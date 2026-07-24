@@ -1,0 +1,34 @@
+# quota_rules.yaml — N.E.K.O.Servers 社交平台配额掉落规则（NEKO 本地）。
+#
+# 规则只触发"UX 掉落动画"和"调云端 drop-hint"两件事；真实配额由 Servers 仲裁。
+# 详见 N.E.K.O.Servers/.claude/contracts/quota-rules.md。
+#
+# M2-j v1 只实现 word_count + keywords 两类规则；emotion 留待后续真接情感判定模块。
+
+ux_daily_show: 5
+
+rules:
+  # 累计字数达阈值触发
+  word_count:
+    enabled: true
+    threshold: 800           # 字符数（中英文都按字符计，简化）
+    cooldown_sec: 600        # 同 trigger 两次掉落之间至少隔 10 分钟
+
+  # 关键词触发（用户主动表达想要"纪念"这一刻）
+  keywords:
+    enabled: true
+    list:
+      - 铸卡
+      - 铸造
+      - 奇遇
+      - 纪念
+      - 留念
+    cooldown_sec: 1800       # 30 分钟
+
+  # 情感强度阈值触发（M2-j v2 接入；暂禁用）
+  emotion:
+    enabled: false
+    window_minutes: 15
+    intensity_min: 0.75
+    count: 3
+    cooldown_sec: 900

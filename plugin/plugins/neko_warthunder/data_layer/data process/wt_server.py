@@ -53,6 +53,7 @@ import argparse
 import ipaddress
 import json
 import os
+import platform
 import socket
 import sys
 import threading
@@ -86,6 +87,72 @@ from wt_telemetry import (
 
 _CONTENT_TYPE_BY_EXT = {"jpg": "image/jpeg", "png": "image/png"}
 DEFAULT_BIND_HOST = "127.0.0.1"
+
+
+def _read_port_config() -> dict[str, Any]:
+    """Read the Electron port overrides without importing the main application."""
+    try:
+        system = platform.system()
+        home = os.environ.get("HOME") or os.path.expanduser("~")
+        if system == "Windows":
+            appdata = os.environ.get("APPDATA") or os.path.join(
+                home, "AppData", "Roaming"
+            )
+            base = os.path.join(appdata, "N.E.K.O")
+        elif system == "Darwin":
+            base = os.path.join(home, "Library", "Application Support", "N.E.K.O")
+        else:
+            base = os.path.join(
+                os.environ.get("XDG_CONFIG_HOME", os.path.join(home, ".config")),
+                "N.E.K.O",
+            )
+        with open(os.path.join(base, "port_config.json"), encoding="utf-8") as config_file:
+            config = json.load(config_file)
+        return config if isinstance(config, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _read_main_server_port() -> int:
+    """Mirror the root config's port precedence without importing the application."""
+    for key in ("NEKO_MAIN_SERVER_PORT", "MAIN_SERVER_PORT"):
+        raw = os.getenv(key)
+        if not raw:
+            continue
+        try:
+            port = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= port <= 65535:
+            return port
+    try:
+        port = int(_read_port_config().get("MAIN_SERVER_PORT"))
+    except (TypeError, ValueError):
+        pass
+    else:
+        if 1 <= port <= 65535:
+            return port
+    return 48911
+
+
+def _build_allowed_cors_origins(port: int) -> frozenset[str]:
+    origins = {
+        f"http://127.0.0.1:{port}",
+        f"http://localhost:{port}",
+        f"http://[::1]:{port}",
+    }
+    if port == 80:
+        origins.update(
+            {
+                "http://127.0.0.1",
+                "http://localhost",
+                "http://[::1]",
+            }
+        )
+    return frozenset(origins)
+
+
+_ALLOWED_CORS_ORIGINS = _build_allowed_cors_origins(_read_main_server_port())
 
 _HUD_BUFFER = 200   # HUD 事件累积上限
 _CHAT_BUFFER = 200  # 聊天累积上限
@@ -646,7 +713,11 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _cors(self) -> None:
         origin = str(self.headers.get("Origin") or "").strip()
-        allowed_origins = getattr(self.server, "cors_origins", frozenset())
+        server = getattr(self, "server", None)
+        allowed_origins = getattr(server, "cors_origins", frozenset()) if server else frozenset()
+        # 兼容本地开发：未显式配置 cors_origins 时，回退到主服务端口的 loopback Origin 集合。
+        if not allowed_origins:
+            allowed_origins = _ALLOWED_CORS_ORIGINS
         if origin and origin in allowed_origins:
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
@@ -693,6 +764,8 @@ class _Handler(BaseHTTPRequestHandler):
             return
         origin = str(self.headers.get("Origin") or "").strip()
         allowed_origins = getattr(self.server, "cors_origins", frozenset())
+        if not allowed_origins:
+            allowed_origins = _ALLOWED_CORS_ORIGINS
         if origin and origin not in allowed_origins:
             self._send_json({"error": "origin_not_allowed"}, 403)
             return

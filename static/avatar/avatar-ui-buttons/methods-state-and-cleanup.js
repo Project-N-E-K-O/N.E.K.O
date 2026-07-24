@@ -224,18 +224,8 @@ Object.assign(AvatarButtonMixin.methods, {
                 this.setButtonActive('mic', isRecording);
             }
 
-            // 屏幕分享状态
-            let isScreenSharing = false;
-            const screenButton = document.getElementById('screenButton');
-            const stopButton = document.getElementById('stopButton');
-            if (screenButton && screenButton.classList.contains('active')) {
-                isScreenSharing = true;
-            } else if (stopButton && !stopButton.disabled) {
-                isScreenSharing = true;
-            }
-            if (this._floatingButtons.screen) {
-                this.setButtonActive('screen', isScreenSharing);
-            }
+            // 旧 screen 浮动按钮已被 social 取代；屏幕分享状态由隐藏的
+            // #screenButton 作为内部锚点维护，不再暴露独立按钮。
         };
 
         /**

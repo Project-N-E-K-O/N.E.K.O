@@ -179,6 +179,15 @@ from main_routers.websocket_router import router as websocket_router  # noqa
 from main_routers.workshop_router import router as workshop_router  # noqa
 from main_routers.cookies_login_router import router as cookies_login_router  # noqa
 from main_routers.game_router import router as game_router  # noqa
+from main_routers.card_drop_router import (  # noqa
+    _facts_cors_headers as _card_forge_cors_headers,
+    _local_mutation_origin_allowed as _card_forge_mutation_origin_allowed,
+    router as card_drop_router,
+)
+from main_routers.community_oauth import (  # noqa
+    callback_router as community_oauth_callback_router,
+    router as community_oauth_router,
+)
 from main_routers.debug_router import (
     router as debug_router,
     start_watchdog as _start_debug_health_watchdog,
@@ -195,6 +204,70 @@ async def health():
     from config import INSTANCE_ID
 
     return build_health_response("main", instance_id=INSTANCE_ID)
+
+
+# ── Card-Forge cross-process active-character snapshot ─────────────────────
+# The forge frontend polls this endpoint for the current character name and
+# uses it as the runtime character hint for private fact reads.
+_card_forge_active_character: dict[str, str] = {}
+
+
+def _active_character_cors_headers(request: Request) -> dict[str, str] | None:
+    """Preserve native local reads; restrict browser reads to the social origin."""
+    if not (request.headers.get("origin") or "").strip():
+        return {}
+    return _card_forge_cors_headers(request)
+
+
+@app.post("/card-forge/active-character")
+async def set_card_forge_active_character(request: Request, payload: dict):
+    """Apply supplied fields, dropping avatar payloads that belong to a prior name."""
+    if not _card_forge_mutation_origin_allowed(request):
+        return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
+    if not isinstance(payload, dict):
+        return {"ok": True}
+    if "name" in payload:
+        next_name = str(payload.get("name") or "")
+        if next_name != _card_forge_active_character.get("name", ""):
+            for avatar_field in ("dataUrl", "characterReferenceDataUrl"):
+                if avatar_field not in payload:
+                    _card_forge_active_character.pop(avatar_field, None)
+        _card_forge_active_character["name"] = next_name
+    if "dataUrl" in payload:
+        _card_forge_active_character["dataUrl"] = str(payload.get("dataUrl") or "")
+    if "characterReferenceDataUrl" in payload:
+        _card_forge_active_character["characterReferenceDataUrl"] = str(
+            payload.get("characterReferenceDataUrl") or ""
+        )
+    return {"ok": True}
+
+
+@app.options("/card-forge/active-character")
+async def active_character_options(request: Request):
+    """Allow only the configured community origin to read the local snapshot."""
+    cors = _active_character_cors_headers(request)
+    if cors is None:
+        return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
+    return JSONResponse({"ok": True}, headers=cors)
+
+
+@app.get("/card-forge/active-character")
+async def get_card_forge_active_character(
+    request: Request, include_avatar: bool = False
+):
+    """Return the active name and optionally the larger avatar payloads."""
+    cors = _active_character_cors_headers(request)
+    if cors is None:
+        return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
+    payload: dict[str, str] = {
+        "name": _card_forge_active_character.get("name", ""),
+    }
+    if include_avatar:
+        payload["dataUrl"] = _card_forge_active_character.get("dataUrl", "")
+        payload["characterReferenceDataUrl"] = _card_forge_active_character.get(
+            "characterReferenceDataUrl", ""
+        )
+    return JSONResponse(payload, headers=cors)
 
 
 @app.post("/api/beacon/shutdown")
@@ -397,6 +470,9 @@ app.include_router(icebreaker_router)
 app.include_router(game_router)
 app.include_router(card_assist_router)
 app.include_router(capture_router)
+app.include_router(card_drop_router)  # Must precede the pages fallback router.
+app.include_router(community_oauth_router)
+app.include_router(community_oauth_callback_router)  # Exact /oauth/callback before pages.
 app.include_router(
     cookies_login_router
 )  # Cookies登录相关路由，放在最后以避免与其他API路由冲突

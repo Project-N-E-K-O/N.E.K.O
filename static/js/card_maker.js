@@ -115,6 +115,10 @@
     // ====== maker 模式检测 ======
     const _urlParams = new URLSearchParams(window.location.search);
     const isMakerMode = _urlParams.get('mode') === 'maker';
+    const isEmbedMode = _urlParams.get('mode') === 'embed';
+    const EMBED_MODEL_HEIGHT_RATIO = 1.34;
+    const EMBED_MODEL_CENTER_X_RATIO = 0.22;
+    const EMBED_MODEL_CENTER_Y_RATIO = 0.67;
     const autoSaveDefaultCardFace = _urlParams.get('auto_save_default') === '1';
     const closeAfterAutoSave = _urlParams.get('close_on_save') === '1';
     const fallbackDefaultOnClose = _urlParams.get('fallback_default_on_close') === '1';
@@ -126,6 +130,14 @@
     let fallbackEventChannel = null;
     let pendingFallbackDefaultSave = false;
     let fallbackDefaultListenersRegistered = false;
+
+    function notifyEmbedHost(status) {
+        if (!isEmbedMode || window.parent === window) return;
+        window.parent.postMessage({
+            type: 'neko-card-maker-embed',
+            status
+        }, '*');
+    }
 
     initModelSaveFallbackDefaultCardFace();
 
@@ -164,6 +176,7 @@
         const params = new URLSearchParams(window.location.search);
         const name = params.get('name') || params.get('lanlan_name');
         if (name) {
+            notifyEmbedHost('loading');
             await onCharacterSelected(name);
             if (consumeFallbackCloseMark(name)) {
                 pendingFallbackDefaultSave = true;
@@ -177,6 +190,7 @@
             }
         } else {
             showLoading(false);
+            notifyEmbedHost('error');
         }
     });
 
@@ -491,7 +505,6 @@
         isModelLoaded = false;
         showLoading(true);
         resetComposition();
-
         try {
             // 获取该角色的页面配置（包含模型类型和路径）
             const resp = await fetch(`/api/config/page_config?lanlan_name=${encodeURIComponent(name)}`);
@@ -529,6 +542,7 @@
             console.error('[CardExport] 加载角色模型失败:', e);
             showLoading(false);
             updatePrimaryActionAvailability();
+            notifyEmbedHost('error');
         }
     }
 
@@ -572,12 +586,17 @@
             // 确保模型加载后鼠标跟踪仍然禁用
             disableMouseTracking();
 
-            // 启动持续预览循环
-            startPreviewLoop();
+            // 普通制卡模式持续复制到 2D 卡面；嵌入模式直接展示原生渲染层。
+            if (!isEmbedMode) {
+                startPreviewLoop();
+                refreshPreview();
+            }
+            notifyEmbedHost('ready');
         } catch (e) {
             console.error('[CardExport] 模型加载异常:', e);
             showLoading(false);
             updatePrimaryActionAvailability();
+            notifyEmbedHost('error');
         }
     }
 
@@ -596,9 +615,11 @@
         resizeModelRendererForCard('live2d');
         await window.live2dManager.loadModel(modelPath);
 
-        // 将模型居中（默认布局放在右下角，导出页面需要居中）
+        // 制卡页居中；嵌入页使用适合社区锻造页的左侧半身构图。
         const model = window.live2dManager.currentModel;
-        if (model) {
+        if (model && isEmbedMode) {
+            frameLive2DModelForEmbed(window.live2dManager);
+        } else if (model) {
             const screen = window.live2dManager.pixi_app.renderer.screen;
             model.anchor.set(0.5, 0.5);
             model.x = screen.width / 2;
@@ -627,9 +648,10 @@
             window.lanlan_config.lighting = lighting;
         }
         await window.vrmManager.loadModel(modelPath);
-        // 重置相机：让模型居中填满画布（忽略主页面保存的相机位置）
+        // 制卡页居中；嵌入页使用与 Live2D 对称的左侧半身构图。
         resizeModelRendererForCard('vrm');
-        centerThreeCamera(window.vrmManager);
+        if (isEmbedMode) frameThreeModelForEmbed(window.vrmManager);
+        else centerThreeCamera(window.vrmManager);
     }
 
     async function loadMMDModel(modelPath) {
@@ -648,14 +670,15 @@
         }
         resizeModelRendererForCard('mmd');
         await window.mmdManager.loadModel(modelPath);
-        // 重置相机：让模型居中填满画布
+        // 制卡页居中；嵌入页使用与 Live2D/VRM 对称的左侧半身构图。
         const mmdProxy = {
             scene: window.mmdManager.core?.scene,
             camera: window.mmdManager.core?.camera,
             renderer: window.mmdManager.core?.renderer
         };
         resizeModelRendererForCard('mmd');
-        centerThreeCamera(mmdProxy);
+        if (isEmbedMode) frameThreeModelForEmbed(mmdProxy);
+        else centerThreeCamera(mmdProxy);
     }
 
     async function loadPNGTuberModel(cfg) {
@@ -712,11 +735,75 @@
         }
         resizeModelRendererForCard('pngtuber');
         await waitForPNGTuberDrawable(mgr);
+        if (isEmbedMode) framePNGTuberForEmbed(mgr);
+    }
+
+    function frameLive2DModelForEmbed(mgr) {
+        const renderer = mgr?.pixi_app?.renderer;
+        const model = mgr?.currentModel;
+        if (!renderer || !model) return;
+        const screen = renderer.screen;
+        const currentHeight = Math.max(1, Math.abs(Number(model.height) || 0));
+        const targetHeight = screen.height * EMBED_MODEL_HEIGHT_RATIO;
+        const factor = targetHeight / currentHeight;
+        if (Number.isFinite(factor) && factor > 0) {
+            model.scale.set(model.scale.x * factor, model.scale.y * factor);
+        }
+        model.anchor?.set?.(0.5, 0.5);
+        model.x = screen.width * EMBED_MODEL_CENTER_X_RATIO;
+        model.y = screen.height * EMBED_MODEL_CENTER_Y_RATIO;
+    }
+
+    function frameThreeModelForEmbed(mgr) {
+        const THREE = window.THREE;
+        if (!THREE || !mgr?.scene || !mgr?.camera || !mgr?.renderer) return;
+        try {
+            const box = new THREE.Box3().setFromObject(mgr.scene);
+            if (box.isEmpty()) return;
+            const center = box.getCenter(new THREE.Vector3());
+            const size = box.getSize(new THREE.Vector3());
+            const modelHeight = size.y > 0 ? size.y : 1.5;
+            const fov = mgr.camera.fov * (Math.PI / 180);
+            const distance = (modelHeight / 2) / Math.tan(fov / 2) / EMBED_MODEL_HEIGHT_RATIO;
+            const horizontalShift = Math.max(size.x, modelHeight * 0.35) * 0.72;
+            const target = new THREE.Vector3(
+                center.x + horizontalShift,
+                center.y + modelHeight * 0.1,
+                center.z
+            );
+            mgr.camera.position.set(target.x, target.y, center.z + Math.abs(distance));
+            mgr.camera.lookAt(target);
+            mgr.camera.updateProjectionMatrix();
+            mgr._cameraTarget?.copy?.(target);
+            if (mgr.controls) {
+                mgr.controls.target.copy(target);
+                mgr.controls.update();
+            }
+        } catch (e) {
+            console.warn('[CardExport] 嵌入构图失败:', e);
+        }
+    }
+
+    function framePNGTuberForEmbed(mgr) {
+        const source = getPNGTuberDrawableSource(mgr);
+        if (!source?.style) return;
+        source.style.objectPosition = '22% 64%';
+        source.style.transformOrigin = '22% 64%';
+        source.style.transform = `scale(${EMBED_MODEL_HEIGHT_RATIO})`;
     }
 
     function prepareHiddenModelViewport() {
         const viewport = $('#model-viewport');
         if (!viewport) return;
+        if (isEmbedMode) {
+            viewport.style.inset = '0';
+            viewport.style.left = '0';
+            viewport.style.top = '0';
+            viewport.style.width = '100vw';
+            viewport.style.height = '100vh';
+            viewport.style.opacity = '1';
+            return;
+        }
         viewport.style.inset = 'auto';
         viewport.style.left = '-10000px';
         viewport.style.top = '0';
@@ -725,8 +812,8 @@
     }
 
     function resizeModelRendererForCard(type = currentModelType, sourceScale = MODEL_PREVIEW_SOURCE_SCALE) {
-        const w = CARD_BASE_WIDTH;
-        const h = CARD_BASE_HEIGHT;
+        const w = isEmbedMode ? Math.max(1, window.innerWidth) : CARD_BASE_WIDTH;
+        const h = isEmbedMode ? Math.max(1, window.innerHeight) : CARD_BASE_HEIGHT;
         const ratio = sourceScale;
         activeModelSourceScale = sourceScale;
 
@@ -742,7 +829,9 @@
                 view.style.height = h + 'px';
             }
             const model = mgr.currentModel;
-            if (model) {
+            if (model && isEmbedMode) {
+                frameLive2DModelForEmbed(mgr);
+            } else if (model) {
                 model.anchor?.set?.(0.5, 0.5);
                 model.x = renderer.screen.width / 2;
                 model.y = renderer.screen.height / 2;
@@ -763,6 +852,7 @@
                 source.style.height = h + 'px';
                 source.style.objectFit = 'contain';
             }
+            if (isEmbedMode) framePNGTuberForEmbed(mgr);
             return;
         }
 
@@ -786,6 +876,7 @@
             mgr.camera.updateProjectionMatrix?.();
         }
         mgr.effect?.setSize?.(w, h);
+        if (isEmbedMode) frameThreeModelForEmbed(mgr);
     }
 
     function getZoomFactor(compositionOverride = composition) {

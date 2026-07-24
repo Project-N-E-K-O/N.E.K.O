@@ -163,6 +163,10 @@ MMDManager.prototype.setupFloatingButtons = function() {
             } else if (config.id === 'goodbye') {
                 window.dispatchEvent(new CustomEvent('live2d-goodbye-click'));
                 return;
+            } else if (config.id === 'social') {
+                // 与 Live2D 共用 opener（app-ui.js 监听 live2d-social-click）
+                window.dispatchEvent(new CustomEvent('live2d-social-click'));
+                return;
             }
 
             btn.style.background = targetActive ? 'var(--neko-btn-bg-active, rgba(255,255,255,0.75))' : 'var(--neko-btn-bg-hover, rgba(255,255,255,0.8))';
@@ -490,7 +494,7 @@ MMDManager.prototype._startUIUpdateLoop = function() {
 
     const getVisibleButtonCount = () => {
         const mobile = window.isMobileWidth && window.isMobileWidth();
-        return [{ id: 'mic' }, { id: 'screen' }, { id: 'agent' }, { id: 'settings' }, { id: 'goodbye' }]
+        return [{ id: 'mic' }, { id: 'agent' }, { id: 'social' }, { id: 'settings' }, { id: 'goodbye' }]
             .filter(c => !(mobile && (c.id === 'agent' || c.id === 'goodbye'))).length;
     };
     const baseButtonSize = 48;

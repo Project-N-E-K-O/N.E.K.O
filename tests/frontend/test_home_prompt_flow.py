@@ -13118,7 +13118,7 @@ def test_day1_screen_entry_starts_from_intro_basic_voice_anchor(mock_page: Page)
         setup_js="""
             window.history.pushState({}, '', '/');
             document.body.innerHTML = `
-                <button id="live2d-btn-screen" style="position:absolute; left:320px; top:180px; width:44px; height:44px;"></button>
+                <button id="live2d-btn-mic" style="position:absolute; left:320px; top:180px; width:44px; height:44px;"></button>
             `;
         """,
         script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
@@ -13128,11 +13128,14 @@ def test_day1_screen_entry_starts_from_intro_basic_voice_anchor(mock_page: Page)
         """
         () => {
             const director = window.createYuiGuideDirector({ page: 'home' });
-            director.avatarFloatingSceneCursorAnchorPoints.day1_intro_basic_voice = { x: 242, y: 202 };
-            const screenButton = document.getElementById('live2d-btn-screen');
+            director.rememberAvatarFloatingSceneCursorAnchorPoint(
+                'day1_intro_basic_voice',
+                { x: 242, y: 202 }
+            );
+            const micButton = document.getElementById('live2d-btn-mic');
             return director.resolveAvatarFloatingCursorStartPoint(
                 { id: 'day1_screen_entry' },
-                [screenButton],
+                [micButton],
                 'day1_intro_basic_voice'
             );
         }

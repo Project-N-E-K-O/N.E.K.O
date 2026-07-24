@@ -38,7 +38,12 @@ from ._shared import logger
 from .rows import _extract_ai_response, _extract_user_messages
 
 
-async def _spawn_outbox_post_turn_signals(lanlan_name: str, messages: list) -> asyncio.Task:
+async def _spawn_outbox_post_turn_signals(
+    lanlan_name: str,
+    messages: list,
+    *,
+    language: str | None = None,
+) -> asyncio.Task:
     """Register the per-turn signals background task in the outbox and spawn it.
 
     "per-turn signals" = counter bump (for the batch loop's counting) + repetition
@@ -49,6 +54,11 @@ async def _spawn_outbox_post_turn_signals(lanlan_name: str, messages: list) -> a
     from utils.llm_client import messages_to_dict
 
     payload = {'messages': messages_to_dict(messages)}
+    if language:
+        # Persist the locale with the work item: after a memory_server restart,
+        # replay must not re-resolve from a neutral process locale and switch
+        # the same conversation window back to English.
+        payload['language'] = language
     try:
         op_id = await runtime.outbox.aappend_pending(lanlan_name, OP_POST_TURN_SIGNALS, payload)
     except Exception as e:
@@ -58,13 +68,18 @@ async def _spawn_outbox_post_turn_signals(lanlan_name: str, messages: list) -> a
             f"{type(e).__name__}: {e}"
         )
         return runtime._spawn_background_task(
-            _run_post_turn_signals(messages, lanlan_name)
+            _run_post_turn_signals(messages, lanlan_name, language=language)
         )
     op = {'op_id': op_id, 'type': OP_POST_TURN_SIGNALS, 'payload': payload}
     return runtime._spawn_background_task(outbox_infra._run_outbox_op(lanlan_name, op))
 
 
-async def _run_post_turn_signals(messages: list, lanlan_name: str):
+async def _run_post_turn_signals(
+    messages: list,
+    lanlan_name: str,
+    *,
+    language: str | None = None,
+):
     """Background async: per-turn signals at every turn end. Failures are skipped silently.
 
     Responsibilities (in step order):
@@ -89,6 +104,12 @@ async def _run_post_turn_signals(messages: list, lanlan_name: str):
     semantics. The **string value** of ``OP_POST_TURN_SIGNALS`` remains
     ``"extract_facts"`` (the outbox.ndjson wire format is immutable).
     """
+    if language:
+        from utils.language_utils import is_supported_language_code, refresh_global_language
+
+        if is_supported_language_code(language):
+            refresh_global_language(language)
+
     user_msgs = _extract_user_messages(messages)
 
     # 本轮算入 signal-extraction 触发计数器（RFC §3.4.3）—— batch loop
@@ -263,8 +284,11 @@ async def _outbox_post_turn_signals_handler(lanlan_name: str, payload: dict) -> 
     messages = messages_from_dict(raw)
     if not messages:
         return
-    await _run_post_turn_signals(messages, lanlan_name)
+    await _run_post_turn_signals(
+        messages,
+        lanlan_name,
+        language=payload.get('language'),
+    )
 
 
 outbox_infra.register_outbox_handler(OP_POST_TURN_SIGNALS, _outbox_post_turn_signals_handler)
-

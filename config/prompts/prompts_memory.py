@@ -1166,6 +1166,28 @@ def _normalize_memory_prompt_lang(lang: str | None) -> str:
     return "en"
 
 
+_FACT_OUTPUT_LANGUAGE_RULE = {
+    "zh": "输出语言要求：JSON 中所有 `text` 字段必须使用简体中文，即使输入对话包含其他语言。",
+    "zh-TW": "輸出語言要求：JSON 中所有 `text` 欄位必須使用繁體中文，即使輸入對話包含其他語言。",
+    "en": "Output language requirement: every `text` field in the JSON must be written in English, even if the conversation contains other languages.",
+    "ja": "出力言語要件：会話に他の言語が含まれていても、JSON のすべての `text` フィールドは日本語で記述してください。",
+    "ko": "출력 언어 요구사항: 대화에 다른 언어가 포함되어 있어도 JSON의 모든 `text` 필드는 한국어로 작성하세요.",
+    "ru": "Требование к языку вывода: все поля `text` в JSON должны быть написаны на русском языке, даже если диалог содержит другие языки.",
+    "es": "Requisito de idioma de salida: todos los campos `text` del JSON deben estar escritos en español, aunque la conversación contenga otros idiomas.",
+    "pt": "Requisito de idioma de saída: todos os campos `text` do JSON devem ser escritos em português, mesmo que a conversa contenha outros idiomas.",
+}
+
+
+def _localized_fact_extraction_prompt(templates: dict[str, str], lang: str | None) -> str:
+    """Resolve a fact prompt and pin its generated ``text`` language explicitly."""
+    lang_key = _normalize_memory_prompt_lang(lang)
+    # Fact extraction predates a full Traditional-Chinese template. Reuse the
+    # Chinese instructions while the stronger output rule preserves zh-TW.
+    template_key = "zh" if lang_key == "zh-TW" else lang_key
+    rule = _FACT_OUTPUT_LANGUAGE_RULE.get(lang_key, _FACT_OUTPUT_LANGUAGE_RULE["en"])
+    return f"{rule}\n\n{_loc(templates, template_key)}"
+
+
 def render_profile_rename_event_context(
     lang: str | None,
     old_name: str,
@@ -1442,7 +1464,7 @@ Retorne um array JSON (se não houver fatos a extrair, retorne []):
 
 
 def get_fact_extraction_prompt(lang: str = "zh") -> str:
-    return _loc(FACT_EXTRACTION_PROMPT, lang)
+    return _localized_fact_extraction_prompt(FACT_EXTRACTION_PROMPT, lang)
 
 
 # ---------- fact_extraction_ai_aware_prompt → i18n dict ----------
@@ -1681,7 +1703,7 @@ Retorne um array JSON (se não houver fatos adicionais a extrair, retorne []):
 
 
 def get_fact_extraction_ai_aware_prompt(lang: str = "zh") -> str:
-    return _loc(FACT_EXTRACTION_AI_AWARE_PROMPT, lang)
+    return _localized_fact_extraction_prompt(FACT_EXTRACTION_AI_AWARE_PROMPT, lang)
 
 
 # backward compat

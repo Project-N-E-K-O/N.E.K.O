@@ -371,20 +371,31 @@
                         var captureLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                         if (event.data.lanlan_name && (!captureLanlanName || event.data.lanlan_name !== captureLanlanName)) break;
                         var captureRequestId = event.data.requestId || '';
+                        var captureMode = event.data.captureMode || 'avatar';
                         var includeSource = !!event.data.includeSourceDataUrl;
                         if (window.avatarPortrait && typeof window.avatarPortrait.capture === 'function') {
-                            window.avatarPortrait.capture({
-                                width: 320, height: 320, padding: 0.035,
-                                shape: 'rounded', radius: 40,
-                                background: 'rgba(255, 255, 255, 0.96)',
-                                includeDataUrl: true,
-                                includeSourceDataUrl: includeSource
-	                            }).then(function (result) {
+                            var captureOptions = captureMode === 'character_reference'
+                                ? {
+                                    width: 768, height: 1024, padding: 0.08,
+                                    shape: 'square',
+                                    background: 'transparent',
+                                    cropMode: 'portrait',
+                                    includeDataUrl: true,
+                                    includeSourceDataUrl: false
+                                }
+                                : {
+                                    width: 320, height: 320, padding: 0.035,
+                                    shape: 'rounded', radius: 40,
+                                    background: 'rgba(255, 255, 255, 0.96)',
+                                    includeDataUrl: true,
+                                    includeSourceDataUrl: includeSource
+                                };
+                            window.avatarPortrait.capture(captureOptions).then(function (result) {
 	                                I.postYuiGuideMessageToChat('avatar_capture_result', {
 	                                    requestId: captureRequestId,
 	                                    dataUrl: result.dataUrl || '',
 	                                    modelType: result.modelType || '',
-	                                    sourceDataUrl: includeSource ? (result.sourceDataUrl || '') : '',
+	                                    sourceDataUrl: captureOptions.includeSourceDataUrl ? (result.sourceDataUrl || '') : '',
 	                                    cropRectPixels: result.cropRectPixels || null
 	                                });
 	                            }).catch(function (err) {

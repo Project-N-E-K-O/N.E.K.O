@@ -423,21 +423,19 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
                 }
             }
 
-            if (config.id === 'screen') {
-                const isRecording = window.isRecording || false;
-                const wantToActivate = btn.dataset.active !== 'true';
-                if (wantToActivate && !isRecording) {
-                    if (typeof window.showStatusToast === 'function') {
-                        window.showStatusToast(
-                            window.t ? window.t('app.screenShareRequiresVoice') : '屏幕分享仅用于音视频通话',
-                            3000
-                        );
-                    }
-                    return;
-                }
-            }
+            // 旧 screen 按钮已被 social 取代；屏幕分享跟随语音控制按钮启停。
 
             if (config.popupToggle) {
+                return;
+            }
+
+            // 点击型按钮（非 toggle）：社区入口 / 请她离开
+            if (config.id === 'social') {
+                window.dispatchEvent(new CustomEvent('live2d-social-click'));
+                return;
+            }
+            if (config.id === 'goodbye') {
+                window.dispatchEvent(new CustomEvent('live2d-goodbye-click'));
                 return;
             }
 

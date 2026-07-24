@@ -1186,15 +1186,14 @@ window.toggleVoiceSession = function () {
 
 /**
  * 切换屏幕分享状态（开始/结束）
- * Electron 调用此接口来触发屏幕分享按钮的切换
+ * Electron 兼容入口；可见 UI 已并入语音控制按钮。
  */
 window.toggleScreenShare = function () {
     if (blockNekoShortcutDuringTutorial('toggleScreenShare')) return;
-    // 获取浮动按钮的当前状态（Live2D / VRM / MMD）
-    const screenBtn = window.live2dManager?._floatingButtons?.screen?.button
-        || window.vrmManager?._floatingButtons?.screen?.button
-        || window.mmdManager?._floatingButtons?.screen?.button;
-    const isActive = screenBtn?.dataset.active === 'true';
+    // 屏幕共享浮动按钮槽位已被社交按钮顶替；可见入口并入语音控制按钮。
+    // 当前共享状态以隐藏的 #screenButton 的 .active class 为准。
+    const screenBtn = document.getElementById('screenButton');
+    const isActive = !!(screenBtn && screenBtn.classList.contains('active'));
     const isRecording = window.isRecording || false;
 
     // 屏幕分享仅在语音会话中有效

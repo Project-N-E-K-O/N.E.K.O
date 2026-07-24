@@ -14,6 +14,8 @@ from utils.storage_policy import save_storage_policy
 
 
 SYSTEM_STATUS_ENDPOINT = "/api/system/status"
+SYSTEM_CLIENT_ID_ENDPOINT = "/api/system/client-id"
+SYSTEM_SOCIAL_CONFIG_ENDPOINT = "/api/system/social/config"
 
 
 @pytest.fixture(autouse=True)
@@ -64,6 +66,74 @@ def _build_client(config_manager):
     app = FastAPI()
     app.include_router(system_router_module.router)
     return TestClient(app)
+
+
+@pytest.mark.unit
+def test_system_client_id_fails_closed_when_fresh_id_cannot_be_persisted(tmp_path):
+    class _UnsavableClientIdConfigManager(_DummyConfigManager):
+        cloudsave_local_state_path = tmp_path / "state" / "cloudsave_local_state.json"
+
+        def load_cloudsave_local_state(self):
+            return {"client_id": "volatile-client-id"}
+
+        def build_default_cloudsave_local_state(self):
+            raise AssertionError("loaded default already contains a client_id")
+
+        def save_cloudsave_local_state(self, _state):
+            raise OSError("disk unavailable")
+
+    with _build_client(_UnsavableClientIdConfigManager(tmp_path)) as client:
+        response = client.get(SYSTEM_CLIENT_ID_ENDPOINT)
+
+    assert response.status_code == 500
+    assert response.json() == {"ok": False, "error": "internal_error"}
+    assert "disk unavailable" not in response.text
+    assert "no-store" in response.headers["Cache-Control"]
+
+
+@pytest.mark.unit
+def test_system_client_id_persists_fresh_identity_before_returning(tmp_path):
+    class _FreshClientIdConfigManager(_DummyConfigManager):
+        cloudsave_local_state_path = tmp_path / "state" / "cloudsave_local_state.json"
+
+        def __init__(self, root):
+            super().__init__(root)
+            self.saved_states = []
+
+        def load_cloudsave_local_state(self):
+            return {"client_id": "fresh-client-id"}
+
+        def save_cloudsave_local_state(self, state):
+            self.saved_states.append(state)
+
+    config_manager = _FreshClientIdConfigManager(tmp_path)
+    with _build_client(config_manager) as client:
+        response = client.get(SYSTEM_CLIENT_ID_ENDPOINT)
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "client_id": "fresh-client-id"}
+    assert config_manager.saved_states == [{"client_id": "fresh-client-id"}]
+    assert "no-store" in response.headers["Cache-Control"]
+
+
+@pytest.mark.unit
+def test_system_social_config_trims_override_and_falls_back(monkeypatch, tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "  https://social.example.test/api/  ")
+
+    with _build_client(config_manager) as client:
+        configured = client.get(SYSTEM_SOCIAL_CONFIG_ENDPOINT)
+        monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "   ")
+        fallback = client.get(SYSTEM_SOCIAL_CONFIG_ENDPOINT)
+
+    assert configured.status_code == 200
+    assert configured.json() == {
+        "ok": True,
+        "social_base_url": "https://social.example.test/api",
+        "enabled": True,
+    }
+    assert fallback.json()["social_base_url"] == "https://community.project-neko.cn"
+    assert "no-store" in configured.headers["Cache-Control"]
 
 
 @pytest.mark.unit

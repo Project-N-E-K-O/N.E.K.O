@@ -15,17 +15,6 @@ Object.assign(AvatarButtonMixin.methods, {
                     iconOn: `/static/icons/mic_icon_on.png${iconVersion}`
                 },
                 {
-                    id: 'screen',
-                    emoji: '🖥️',
-                    title: window.t ? window.t('buttons.screenShare') : '屏幕分享',
-                    titleKey: 'buttons.screenShare',
-                    hasPopup: true,
-                    toggle: true,
-                    separatePopupTrigger: true,
-                    iconOff: `/static/icons/screen_icon_off.png${iconVersion}`,
-                    iconOn: `/static/icons/screen_icon_on.png${iconVersion}`
-                },
-                {
                     id: 'agent',
                     emoji: '🔨',
                     title: window.t ? window.t('buttons.agentTools') : 'Agent工具',
@@ -35,6 +24,17 @@ Object.assign(AvatarButtonMixin.methods, {
                     exclusive: 'settings',
                     iconOff: `/static/icons/Agent_off.png${iconVersion}`,
                     iconOn: `/static/icons/Agent_on.png${iconVersion}`
+                },
+                {
+                    // N.E.K.O.Servers 社交平台入口（替代原 screen 槽位）。
+                    // 屏幕分享不再暴露独立按钮，改为跟随语音控制按钮启停。
+                    id: 'social',
+                    title: window.t ? window.t('buttons.social') : '猫娘社区',
+                    titleKey: 'buttons.social',
+                    hasPopup: false,
+                    iconOff: `/static/icons/neko_community_off.png${iconVersion}`,
+                    iconOn: `/static/icons/neko_community_on.png${iconVersion}`,
+                    imageRendering: 'auto'
                 },
                 {
                     id: 'settings',
@@ -126,7 +126,7 @@ Object.assign(AvatarButtonMixin.methods, {
                     transition: 'opacity 0.3s ease',
                     transform: 'translate(-50%, -50%)',
                     transformOrigin: 'center center',
-                    imageRendering: 'crisp-edges'
+                    imageRendering: config.imageRendering || 'crisp-edges'
                 });
 
                 imgOn = document.createElement('img');
@@ -145,7 +145,7 @@ Object.assign(AvatarButtonMixin.methods, {
                     transition: 'opacity 0.3s ease',
                     transform: 'translate(-50%, -50%)',
                     transformOrigin: 'center center',
-                    imageRendering: 'crisp-edges'
+                    imageRendering: config.imageRendering || 'crisp-edges'
                 });
 
                 imgContainer.appendChild(imgOff);

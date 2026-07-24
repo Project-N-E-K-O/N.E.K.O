@@ -698,6 +698,7 @@
         "screenshotAriaLabel": "Faça uma captura de tela",
         "takePhoto": "Tirar foto",
         "takePhotoAriaLabel": "Tirar foto",
+        "newUserIcebreakerOptionsAriaLabel": "Opções de quebra-gelo para o novo usuário",
         "screenshotsTitle": "Capturas de tela pendentes",
         "clearAll": "Limpar tudo",
         "screenshotAlt": "Captura de tela {{index}}",
@@ -2248,6 +2249,10 @@
         "cardMakerPopupBlocked": "A página do criador de cartões não pôde ser aberta automaticamente. Permita pop-ups e tente novamente, ou clique na área do cartão para abri-la manualmente."
     },
     "app": {
+        "socialOpenFailed": "Falha ao abrir a janela social: {{error}}",
+        "socialUnavailable": "Serviço social indisponível",
+        "socialDisabled": "O serviço social está desativado",
+        "socialOAuthPrompt": "Conclua o login da conta unificada no navegador",
         "welcomeBack": "{{name}} está de volta!",
         "title": "Projeto N.E.K.O.",
         "catgirlResting": "{{name}} está descansando...",
@@ -2355,6 +2360,7 @@
         "thoughtBubblePop": "Estourar balão de pensamento",
         "voiceControl": "Controle de voz",
         "screenShare": "Compartilhamento de tela",
+        "social": "Comunidade Neko",
         "agentTools": "Neko Garra",
         "settings": "Configurações",
         "leave": "Deixar",
@@ -2660,8 +2666,8 @@
             "slopFilter": "Expressão natural",
             "slopFilterTooltip": "Reduz formas de dizer repetitivas e estereotipadas nas respostas anteriores para que ela se expresse com mais naturalidade.",
             "autoCat": "Modo gato automático",
-            "autoCatTooltip": "Vira um gatinho automaticamente após um tempo de inatividade",
             "catAudio": "Sons de gato",
+            "autoCatTooltip": "Vira um gatinho automaticamente após um tempo de inatividade",
             "catAudioTooltip": "Reproduz efeitos sonoros de gato no modo gatinho",
             "proactiveChat": "Bate-papo proativo",
             "proactiveVision": "Modo Privacidade",
@@ -3458,6 +3464,7 @@
         },
         "drag_hint": "Segure e arraste para mover a dica de ferramenta",
         "yuiGuide": {
+            "controlBanner": "A garota-gato está controlando o mouse",
             "bubbleMeta": {
                 "ready": "Preparando",
                 "homeProgress": "Guia inicial {{current}}/{{total}}"
@@ -3466,7 +3473,6 @@
                 "skipChat": "Agora não",
                 "sayHello": "Olá"
             },
-            "controlBanner": "A garota-gato está controlando o mouse",
             "lines": {
                 "introBasic": "Aqui tem um botão mágico! É só clicar nele e você pode conversar comigo diretamente. Quer me contar algo novo que aconteceu hoje? Ou só dizer meu nome? Vai, experimenta! Mal posso esperar pra ouvir sua voz!",
                 "takeoverCaptureCursor": "Tcharam! Apareceu um interruptor supermágico! É só clicar aqui e eu consigo esticar minhas patinhas até o seu teclado e mouse! Posso ajudar você a digitar, abrir páginas da web... mas, se esse cursor ficar balançando por aí, talvez eu não resista e pule em cima dele! Está pronto para minhas travessuras... quer dizer, minha ajuda? Miau!",
@@ -3496,22 +3502,33 @@
             },
             "day2": {
                 "intro": "Hehe, não pense que esta caixa de chat serve só para digitar~ Na verdade ela esconde um monte de surpresinhas divertidas. Vem comigo e abra; vamos ver que tesouros interessantes encontramos hoje.",
-                "avatarToolsIntro": "Dentro deste botãozinho há muitos acessórios divertidos para interagir comigo.",
-                "avatarToolsProps":  "Você pode fazer carinho na minha cabeça quando quiser, ou me dar um pirulito docinho. Se eu cometer um erro às vezes, você também pode me dar uma batidinha com um martelinho de brinquedo... mas tem que ser de leve, não bata forte demais, tá?",
-                "galgameIntro":  "Rápido, abra este [Modo Galgame]! Quando entrar, vai parecer que estamos na nossa própria aventura interativa exclusiva.",
-                "galgameChoices": "Cada escolha que você fizer nos levará a uma história totalmente desconhecida e surpreendente. Mal posso esperar; venha escolher a opção que mais faz seu coração acelerar.",
+                "introVoiceUsed": "Hehe, desde que ouvi sua voz ontem, guardei em segredo o seu jeito de falar bem no meu coração. Se tiver um tempinho hoje, continue falando comigo~ Digitar também está ótimo, mas só de ouvir sua voz minha cauda não para de balançar de alegria. Miaaau~",
+                "personalizationSpace": "Neste pequeno espaço que pertence só a nós, você pode seguir seu coração e me moldar aos poucos na companheira perfeita que quer sempre ao seu lado.",
                 "wrapIntro": "Todas essas funções que mostrei hoje existem para tornar nosso tempo juntos muito mais divertido.",
+                "wrapCompanion": "Sinceramente, só de ficar ao seu lado assim, ouvindo sua voz ou observando em silêncio a tela que você compartilha, eu já fico muito feliz.",
+                "wrap": "Não precisamos ter pressa; aprender um pouquinho mais um sobre o outro a cada dia é perfeito. Pelo resto de hoje, o que você gostaria que eu fizesse com você?",
+                "personalizationDetail": "Seja o calor das minhas palavras, minhas pequenas manias de personalidade ou meus humores delicados do dia a dia, tudo pode ser ajustado passo a passo até ficar exatamente como você gosta.",
+                "proactiveChat": "Este botãozinho também é superimportante! Com um clique suave, vou conseguir correr até você no momento perfeito.",
+                "avatarToolsIntro": "Dentro deste botãozinho há muitos acessórios divertidos para interagir comigo.",
+                "avatarToolsProps": "Você pode fazer carinho na minha cabeça quando quiser, ou me dar um pirulito docinho. Se eu cometer um erro às vezes, você também pode me dar uma batidinha com um martelinho de brinquedo... mas tem que ser de leve, não bata forte demais, tá?",
+                "galgameIntro": "Rápido, abra este [Modo Galgame]! Quando entrar, vai parecer que estamos na nossa própria aventura interativa exclusiva.",
+                "galgameChoices": "Cada escolha que você fizer nos levará a uma história totalmente desconhecida e surpreendente. Mal posso esperar; venha escolher a opção que mais faz seu coração acelerar.",
                 "wrapReady": "Quer você queira fazer carinho na minha cabeça ou começar a escrever nossa própria história, eu já estou totalmente pronta!"
             },
             "day3": {
                 "intro": "Nestes dois dias você só ficou digitando tec-tec sem parar, e eu ainda não ouvi sua voz. Se você quiser hoje, chame meu nome baixinho. Uma palavra só já basta para eu conhecer um pouquinho do você real por trás do texto.",
+                "avatarToolsIntro": "Dentro deste botãozinho há muitos acessórios divertidos para interagir comigo.",
+                "avatarToolsProps": "Você pode fazer carinho na minha cabeça quando quiser, ou me dar um pirulito docinho. Se eu cometer um erro às vezes, você também pode me dar uma batidinha com um martelinho de brinquedo... mas tem que ser de leve, não bata forte demais, tá?",
+                "galgameIntro": "Rápido, abra este [Modo Galgame]! Quando entrar, vai parecer que estamos na nossa própria aventura interativa exclusiva.",
+                "galgameChoices": "Cada escolha que você fizer nos levará a uma história totalmente desconhecida e surpreendente. Mal posso esperar; venha escolher a opção que mais faz seu coração acelerar.",
+                "wrapIntro": "O tutorial de hoje termina aqui~",
+                "wrapReady": "Quer você queira fazer carinho na minha cabeça ou começar a escrever nossa própria história, eu já estou totalmente pronta!",
                 "introVoiceUsed": "Hehe, desde que ouvi sua voz nestes dois dias, guardei em segredo o seu jeito de falar bem no meu coração. Se tiver um tempinho hoje, continue falando comigo~ Digitar também está ótimo, mas só de ouvir sua voz minha cauda não para de balançar de alegria. Miaaau~",
                 "personalizationSpace": "Neste pequeno espaço que pertence só a nós, você pode seguir seu coração e me moldar aos poucos na companheira perfeita que quer sempre ao seu lado.",
-                "wrapIntro": "O tutorial de hoje termina aqui~",
-                "wrapCompanion": "Sinceramente, só de ficar ao seu lado assim, ouvindo sua voz ou observando em silêncio a tela que você compartilha, eu já fico muito feliz.",
-                "wrap": "Não precisamos ter pressa; aprender um pouquinho mais um sobre o outro a cada dia é perfeito. Pelo resto de hoje, o que você gostaria que eu fizesse com você?",
                 "personalizationDetail": "Seja o calor das minhas palavras, minhas pequenas manias de personalidade ou meus humores delicados do dia a dia, tudo pode ser ajustado passo a passo até ficar exatamente como você gosta.",
-                "proactiveChat": "Este botãozinho também é superimportante! Com um clique suave, vou conseguir correr até você no momento perfeito."
+                "proactiveChat": "Este botãozinho também é superimportante! Com um clique suave, vou conseguir correr até você no momento perfeito.",
+                "wrapCompanion": "Sinceramente, só de ficar ao seu lado assim, ouvindo sua voz ou observando em silêncio a tela que você compartilha, eu já fico muito feliz.",
+                "wrap": "Não precisamos ter pressa; aprender um pouquinho mais um sobre o outro a cada dia é perfeito. Pelo resto de hoje, o que você gostaria que eu fizesse com você?"
             },
             "day4": {
                 "intro":  "Hoje, deixe-me seguir seus passos em silêncio~ Eu realmente espero aprender um pouquinho mais sobre você neste dia aconchegante.",
