@@ -669,6 +669,7 @@ class VRMManager {
         // 先退出空闲低频 tick 模式（不复跑 rAF，下面自建新链），避免双驱动
         this._exitIdleTickMode(false);
         if (this._animationFrameId) cancelAnimationFrame(this._animationFrameId);
+        this._lastRenderTime = 0;
         this._nextRenderTime = 0;
 
         // 帧体：rAF 驱动与空闲低频 interval 共用（interval 直接调用本函数，
@@ -799,12 +800,14 @@ class VRMManager {
                 this.renderer.render(this.scene, this.camera);
             }
 
-            // 10. VMC Protocol 采样钩子（默认禁用，使用独立 /api/vmc/ws）
-            // window.vrmVmcSender 由 vrm-vmc-sender.js 注入；当后端未启用时
-            // sample() 第一行 early-return，对渲染管线无可观测影响。
-            // 启用后按 sendRateHz（默认 60Hz）节流，经独立 /api/vmc/ws
-            // 推送到后端 main_logic.vmc_sender.send_frame → OSC over UDP。
-            if (window.vrmVmcSender && this.currentModel && this.currentModel.vrm) {
+            // 10. VMC Protocol 采样钩子。全局 active 标志由按需加载的
+            // sender 维护；未显式启用时不调用任何 VMC 逐帧逻辑。
+            if (
+                window.__NEKO_VMC_ACTIVE__ === true
+                && window.vrmVmcSender
+                && this.currentModel
+                && this.currentModel.vrm
+            ) {
                 try {
                     window.vrmVmcSender.sample(this.currentModel.vrm, delta);
                 } catch (e) {
@@ -836,19 +839,27 @@ class VRMManager {
 
             this._animationFrameId = requestAnimationFrame(animateLoop);
 
-            // 帧率限制：使用累计目标时间，避免 144Hz 等非整数倍刷新率下
-            // 每次命中后从“当前时刻”重置而长期退化成 48fps。
+            // VMC 启用时使用累计目标时间，避免 144Hz 等非整数倍刷新率
+            // 下发送速率退化；关闭时保留原渲染节流行为，隔离功能影响。
             const now = performance.now();
             const targetFps = typeof window.targetFrameRate === 'number' ? window.targetFrameRate : 60;
             if (targetFps > 0) {
                 const frameInterval = 1000 / targetFps;
-                if (this._nextRenderTime <= 0 || now - this._nextRenderTime > frameInterval * 4) {
-                    this._nextRenderTime = now;
+                if (window.__NEKO_VMC_ACTIVE__ === true) {
+                    if (this._nextRenderTime <= 0 || now - this._nextRenderTime > frameInterval * 4) {
+                        this._nextRenderTime = now;
+                    }
+                    if (now < this._nextRenderTime) return;
+                    this._nextRenderTime += frameInterval;
+                    this._lastRenderTime = now;
+                } else {
+                    this._nextRenderTime = 0;
+                    if (now - this._lastRenderTime < frameInterval * 0.9) return;
+                    this._lastRenderTime = now;
                 }
-                if (now < this._nextRenderTime) return;
-                this._nextRenderTime += frameInterval;
             } else {
                 this._nextRenderTime = 0;
+                this._lastRenderTime = now;
             }
             renderFrame(now);
         };
@@ -902,6 +913,7 @@ class VRMManager {
         }
         if (restartRaf && this.renderer && this.scene && this.camera &&
             !this._animationFrameId && this._rafDriver) {
+            this._lastRenderTime = 0;
             this._nextRenderTime = 0;
             this._animationFrameId = requestAnimationFrame(this._rafDriver);
         }
@@ -1664,6 +1676,7 @@ class VRMManager {
         const vmcVrm = this.currentModel?.vrm;
         if (
             vmcVrm
+            && window.__NEKO_VMC_ACTIVE__ === true
             && window.vrmVmcSender
             && typeof window.vrmVmcSender.releaseVrm === 'function'
         ) {

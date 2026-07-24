@@ -52,7 +52,7 @@ VRM 激活时，`window.LanLan1.setEmotion(name)` 委派给 `window.vrmManager.e
 
 `vrm-vmc-sender.js` 会在动画、视线、弹簧骨和表情更新后采样当前 VRM，并通过独立的 `/api/vmc/ws` 通道发送姿态。后端负责坐标转换，再通过 OSC/UDP 发送给兼容 VMC Protocol 的接收端。
 
-该功能默认关闭。在主页面使用默认本机目标启用：
+该功能默认关闭。关闭状态只保留轻量代理，不进行状态轮询、VMC 定时任务或逐帧采样。在主页面使用默认本机目标启用：
 
 ```js
 await window.vrmVmcSender.enable('127.0.0.1', 39539, 60)

@@ -27,11 +27,10 @@
             '/static/vrm/vrm-interaction.js',
             '/static/vrm/vrm-cursor-follow.js',
             '/static/vrm/vrm-manager.js',
-            // VMC Protocol sender: samples humanoid bones each frame and
-            // uses its own /api/vmc/ws data channel. Loaded in parallel —
-            // it is idempotent and hooks into renderFrame via
-            // window.vrmVmcSender (read by vrm-manager.js).
-            '/static/vrm/vrm-vmc-sender.js'
+            // Only install the lightweight API facade here. The full VMC
+            // sender is loaded after an explicit enable/control call so the
+            // disabled path has no polling, timers, or frame sampling.
+            '/static/vrm/vrm-vmc-loader.js'
         ];
 
         // 必须顺序加载的 UI 模块（公共定位 → 公共 mixin → 统一配置 → buttons）

@@ -52,7 +52,7 @@ The server stores per-model maps under `static/vrm/configs/`. `vrm-expression.js
 
 `vrm-vmc-sender.js` can sample the active VRM after animation, look-at, spring-bone, and expression updates, then publish the resulting humanoid pose through the dedicated `/api/vmc/ws` channel. The backend converts coordinates and sends OSC/UDP to a VMC-compatible receiver.
 
-Output is disabled by default. From the main page, enable the default local destination with:
+Output is disabled by default. The disabled path uses only a lightweight facade and performs no status polling, VMC timers, or frame sampling. From the main page, enable the default local destination with:
 
 ```js
 await window.vrmVmcSender.enable('127.0.0.1', 39539, 60)

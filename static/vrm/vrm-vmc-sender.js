@@ -8,7 +8,12 @@
 (function () {
     'use strict';
 
-    if (window.vrmVmcSender) return;
+    if (
+        window.vrmVmcSender
+        && window.vrmVmcSender.__isVmcLazyLoader !== true
+    ) {
+        return;
+    }
 
     const HUMANOID_BONE_NAMES = Object.freeze([
         'hips', 'spine', 'chest', 'upperChest', 'neck', 'head',
@@ -157,6 +162,19 @@
         }
     }
 
+    function clearSourceState() {
+        state.sourceActive = false;
+        state.lastSourceSampleMs = 0;
+        if (state.sourceIdleTimer) {
+            clearTimeout(state.sourceIdleTimer);
+            state.sourceIdleTimer = null;
+        }
+        state.currentVrm = null;
+        state.knownExpressionNames.clear();
+        state.retiringExpressionNames.clear();
+        state.tPoseDeadline = 0;
+    }
+
     function releaseSource(vrm) {
         if (vrm && state.currentVrm && vrm !== state.currentVrm) return false;
 
@@ -198,16 +216,7 @@
             })();
         }
 
-        state.sourceActive = false;
-        state.lastSourceSampleMs = 0;
-        if (state.sourceIdleTimer) {
-            clearTimeout(state.sourceIdleTimer);
-            state.sourceIdleTimer = null;
-        }
-        state.currentVrm = null;
-        state.knownExpressionNames.clear();
-        state.retiringExpressionNames.clear();
-        state.tPoseDeadline = 0;
+        clearSourceState();
         if (releaseAck) {
             state.releaseInProgress = true;
             releaseAck.finally(function () {
@@ -452,6 +461,22 @@
         }
     }
 
+    function updateStatusPolling() {
+        if (!state.enabled) {
+            if (state.statusPollTimer) {
+                clearInterval(state.statusPollTimer);
+                state.statusPollTimer = null;
+            }
+            return;
+        }
+        if (!state.statusPollTimer) {
+            state.statusPollTimer = setInterval(
+                syncStatusFromBackend,
+                STATUS_POLL_INTERVAL_MS
+            );
+        }
+    }
+
     async function syncStatusFromBackend() {
         const controlGeneration = state.controlGeneration;
         const requestSequence = ++state.statusRequestSequence;
@@ -472,6 +497,9 @@
             }
 
             state.enabled = !!data.enabled;
+            window.__NEKO_VMC_ACTIVE__ = state.enabled;
+            updateStatusPolling();
+            if (!state.enabled) clearSourceState();
             applySendRate(data.send_rate_hz);
             if (
                 state.enabled
@@ -533,8 +561,8 @@
     function sample(vrm) {
         if (state.samplingSuspended) return;
         if (!vrm || !vrm.humanoid) return;
-        markSourceActive();
         if (!state.enabled) return;
+        markSourceActive();
         const nowMs = performance.now();
         const nowSeconds = nowMs / 1000;
         if (
@@ -653,6 +681,10 @@
                 }
                 if (!finishControlMutation(generation)) return data;
                 state.enabled = true;
+                window.__NEKO_VMC_ACTIVE__ = true;
+                updateStatusPolling();
+                state.samplingSuspended = false;
+                resetSampleSchedule();
                 applySendRate(data.send_rate_hz);
                 if (state.sourceActive) await ensureWebSocket();
                 return data;
@@ -674,6 +706,9 @@
                 }
                 if (!finishControlMutation(generation)) return data;
                 state.enabled = false;
+                window.__NEKO_VMC_ACTIVE__ = false;
+                updateStatusPolling();
+                clearSourceState();
                 closeWebSocket();
                 return data;
             } catch (error) {
@@ -709,9 +744,13 @@
         },
     };
 
+    window.__NEKO_VMC_ACTIVE__ = false;
     window.vrmVmcSender = api;
-    state.statusPollTimer = setInterval(syncStatusFromBackend, STATUS_POLL_INTERVAL_MS);
-    window.addEventListener('beforeunload', closeWebSocket, { once: true });
-    syncStatusFromBackend();
-    console.info('[VRM-VMC] dedicated sender module loaded (default disabled)');
+    window.addEventListener('beforeunload', function () {
+        state.enabled = false;
+        window.__NEKO_VMC_ACTIVE__ = false;
+        updateStatusPolling();
+        closeWebSocket();
+    }, { once: true });
+    console.info('[VRM-VMC] dedicated sender module loaded on demand');
 })();

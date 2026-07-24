@@ -313,8 +313,37 @@ def test_frontend_status_and_expression_state_have_race_guards():
     ) in source
     assert "state.nextSampleTs += state.minIntervalSec" in source
     assert "this._nextRenderTime += frameInterval" in manager_source
-    assert "this._lastRenderTime" not in manager_source
+    assert "this._lastRenderTime" in manager_source
+    assert "window.__NEKO_VMC_ACTIVE__ === true" in manager_source
     assert "t_pose_generation: state.tPoseGeneration" in source
+
+
+@pytest.mark.unit
+def test_vmc_disabled_path_is_lazy_and_has_no_background_work():
+    init_source = Path("static/vrm/vrm-init.js").read_text(encoding="utf-8")
+    loader_source = Path("static/vrm/vrm-vmc-loader.js").read_text(
+        encoding="utf-8"
+    )
+    sender_source = Path("static/vrm/vrm-vmc-sender.js").read_text(
+        encoding="utf-8"
+    )
+    manager_source = Path("static/vrm/vrm-manager.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "'/static/vrm/vrm-vmc-loader.js'" in init_source
+    assert "'/static/vrm/vrm-vmc-sender.js'" not in init_source
+    assert "/static/vrm/vrm-vmc-sender.js?v=" in loader_source
+    assert "fetch(" not in loader_source
+    assert "setInterval(" not in loader_source
+    assert "setTimeout(" not in loader_source
+    assert "syncStatusFromBackend();" not in sender_source
+    assert (
+        sender_source.index("if (!state.enabled) return;")
+        < sender_source.index("markSourceActive();")
+    )
+    assert "window.__NEKO_VMC_ACTIVE__ === true" in manager_source
+    assert "&& window.__NEKO_VMC_ACTIVE__ === true" in manager_source
 
 
 class _FakeSender:

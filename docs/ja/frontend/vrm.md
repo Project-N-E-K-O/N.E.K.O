@@ -52,7 +52,7 @@ VRM が有効なとき、`window.LanLan1.setEmotion(name)` は `window.vrmManage
 
 `vrm-vmc-sender.js` は animation、look-at、spring-bone、expression 更新後の active VRM を sample し、専用 `/api/vmc/ws` channel へ pose を送信します。backend が座標を変換し、VMC Protocol 対応 receiver へ OSC/UDP で出力します。
 
-既定では無効です。main page から既定の local destination を有効にします。
+既定では無効です。無効時は軽量 facade のみを保持し、status poll、VMC timer、per-frame sampling は行いません。main page から既定の local destination を有効にします。
 
 ```js
 await window.vrmVmcSender.enable('127.0.0.1', 39539, 60)

@@ -6,6 +6,8 @@ N.E.K.O. can publish the active VRM avatar's humanoid bones and expressions to a
 
 The preferred first-party integration is `window.vrmVmcSender`. The raw REST and WebSocket contracts below are implementation-facing and may evolve with the VRM runtime.
 
+The browser initially loads only a lightweight API facade. Until a control method such as `enable()` or `syncStatusFromBackend()` is called, it does not load the full sender, poll status, create VMC timers, enter the per-frame sampling path, or change the existing VRM frame limiter.
+
 ## Quick start
 
 1. Start a VMC receiver such as VSeeFace, Warudo, or a Unity/Unreal VMC integration.
@@ -129,4 +131,3 @@ Close codes:
 - **About 48 Hz on a 144 Hz display:** update both `vrm-manager.js` and `vrm-vmc-sender.js`; current builds use cumulative scheduling and average approximately the configured rate.
 - **Publisher busy:** close the other N.E.K.O. page or wait for its 10-second lease timeout.
 - **Sampling error:** sampling is suspended to protect rendering and retried after a later backend status poll.
-

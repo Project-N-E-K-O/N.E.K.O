@@ -6,6 +6,8 @@ N.E.K.O. は、アクティブな VRM アバターの humanoid bone と expressi
 
 first-party UI では `window.vrmVmcSender` を使用してください。以下の REST/WebSocket は実装向けで、VRM runtime とともに変更される可能性があります。
 
+browser は最初に軽量 API facade だけを読み込みます。`enable()` や `syncStatusFromBackend()` などの control method を呼ぶまでは、full sender の load、status poll、VMC timer、per-frame sampling、既存 VRM frame limiter の変更を行いません。
+
 ## クイックスタート
 
 1. VSeeFace、Warudo、Unity/Unreal の VMC integration などを起動します。
@@ -90,4 +92,3 @@ process-wide publisher は 1 つだけです。server は最新の pending norma
 - motion が届かない場合は、VRM が active か、送信先 port と receiver の listen port が一致するか、firewall を確認します。
 - 開発環境では `uv sync` で locked `python-osc` dependency を導入します。
 - sampling error 時は render を保護するため送信を一時停止し、後続の backend status poll 後に再試行します。
-
