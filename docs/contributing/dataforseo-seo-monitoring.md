@@ -11,13 +11,18 @@ It is not browser code and is never bundled into VitePress. DataForSEO credentia
 
 ## Safety contract
 
-DataForSEO bills by request. The repository therefore has no scheduled run:
+DataForSEO bills by request. The repository therefore keeps scheduled billing behind an explicit repository variable:
 
 - `dry-run` is the default workflow mode and sends no request;
+- the 07:30 Asia/Shanghai schedule is skipped unless `ENABLE_PAID_DATAFORSEO_SCHEDULE` is exactly `true`;
+- the scheduled mode is fixed to SERP depth 10 with AI Overview loading disabled;
 - SERP depth defaults to 10; increasing it may bill another result page per 10 results;
 - each SERP request sets `max_crawl_pages` from that depth, making the displayed page count a hard crawl limit;
 - asynchronous AI Overview loading is disabled by default and can add a charge to every SERP request;
-- Live SERP allows one task per request, so tracking eight keywords means eight paid SERP requests;
+- Live SERP allows one task per request, so the committed 19-keyword set means 19 paid SERP requests per SERP run;
+- transient zero-cost SERP failures retry only the failed keyword, at most three attempts with backoff;
+- a failed response reporting any nonzero cost is never retried automatically, preventing an accidental duplicate charge;
+- one keyword failure does not discard successful results; the artifact records `partial` or `failed` status and per-keyword diagnostics;
 - generated reports live under `docs/.seo-reports/`, are ignored by Git, and are retained as workflow artifacts for 14 days.
 
 The request plan always states the request count, maximum SERP pages, and number of AIO-enabled calls before execution. A completed paid report records the costs returned by DataForSEO.
@@ -48,6 +53,8 @@ Edit `docs/seo/dataforseo.config.json`. The committed starter set is derived fro
 ```
 
 Keep each keyword unique and mapped to one primary landing page. Missing Volume or KD remains `null`; the tool does not invent a replacement value.
+
+The committed US/English baseline contains 19 phrases. Twelve are strict AI desktop-pet or desktop-companion category terms; the remaining seven measure supporting capabilities such as memory, plugins, and self-hosting. Chinese and Japanese phrases remain locale content targets and are not mixed into this US/English API request.
 
 Because the default `all` and `keywords` modes call Google Ads Search Volume, each tracked phrase is validated against that endpoint's limit of 80 characters and 10 words before any paid request is sent.
 
@@ -95,12 +102,16 @@ Use `--output <path>` for a different report path and `--config <path>` for an a
 
 1. In the target repository, open **Settings → Secrets and variables → Actions**.
 2. Add `DATAFORSEO_LOGIN` and `DATAFORSEO_PASSWORD` as secrets. Do not combine them into one public variable.
-3. Open **Actions → DataForSEO SEO Report → Run workflow**.
-4. Run `dry-run` first and inspect the plan artifact.
-5. Choose `keywords`, `serp`, or `all`; leave depth at 10 and AIO disabled unless the extra paid data is required.
-6. Download the `dataforseo-report-<run-id>` artifact.
+3. Keep the repository variable `ENABLE_PAID_DATAFORSEO_SCHEDULE` set to `false` while validating manually.
+4. Open **Actions → DataForSEO SEO Report → Run workflow**.
+5. Run `dry-run` first and inspect the plan artifact.
+6. Choose `keywords`, `serp`, or `all`; leave depth at 10 and AIO disabled unless the extra paid data is required.
+7. Download the `dataforseo-report-<run-id>` artifact.
+8. Only after a successful manual SERP baseline, set `ENABLE_PAID_DATAFORSEO_SCHEDULE=true` to enable the daily paid run.
 
 Pull requests run the unit tests and committed-config dry-run only. They never receive DataForSEO secrets and never execute a paid request.
+
+The workflow also writes a unified GSC/GA4 Markdown and JSON summary. See [SEO/GEO daily monitoring](./seo-geo-daily-monitoring) for its read-only Google setup and `N/A` behavior.
 
 ## Report fields
 
@@ -113,6 +124,8 @@ Pull requests run the unit tests and committed-config dry-run only. They never r
 | `serp[].landingPageMatched` | Whether Google ranked the configured primary page |
 | `serp[].aiOverviewTriggered` | Whether an AIO item appeared |
 | `serp[].aiOverviewCitedTarget` | Whether AIO referenced `project-neko.online` or a subdomain |
+| `status` | `planned`, `complete`, `partial`, or `failed` |
+| `errors[]` | Sanitized per-keyword error, attempts, incurred cost, and cost-guard decision |
 | `costs.totalUsd` | Sum of costs returned by the API responses |
 
 SERP crawling stops only when the target is found in an `organic` result. Appearances in other result types do not stop the crawl before the natural ranking can be recorded.

@@ -1,7 +1,9 @@
-import { DATAFORSEO_ENDPOINTS } from './client.mjs'
+import { DATAFORSEO_ENDPOINTS, DataForSeoApiError } from './client.mjs'
 
 const MODES = new Set(['all', 'keywords', 'serp'])
 const DEVICES = new Set(['desktop', 'mobile'])
+const DEFAULT_SERP_RETRY_ATTEMPTS = 3
+const DEFAULT_SERP_RETRY_DELAY_MS = 1_000
 
 function canonicalKeyword(value) {
   return value.trim().toLocaleLowerCase('en-US')
@@ -117,6 +119,30 @@ function normalizeMode(mode) {
     throw new TypeError(`mode must be one of: ${[...MODES].join(', ')}`)
   }
   return mode
+}
+
+function normalizeRetryOptions(options = {}) {
+  const maxAttempts = Number(options.maxAttempts ?? DEFAULT_SERP_RETRY_ATTEMPTS)
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 5) {
+    throw new TypeError('retryOptions.maxAttempts must be an integer from 1 to 5')
+  }
+
+  const baseDelayMs = Number(options.baseDelayMs ?? DEFAULT_SERP_RETRY_DELAY_MS)
+  if (!Number.isInteger(baseDelayMs) || baseDelayMs < 0 || baseDelayMs > 60_000) {
+    throw new TypeError('retryOptions.baseDelayMs must be an integer from 0 to 60000')
+  }
+
+  const sleep = options.sleep ?? (delayMs => new Promise(resolve => setTimeout(resolve, delayMs)))
+  const onRetry = options.onRetry ?? (details => {
+    console.warn(
+      `Retrying DataForSEO SERP for "${details.keyword}" after status ${details.statusCode ?? 'unknown'} `
+      + `(attempt ${details.nextAttempt}/${details.maxAttempts}, delay ${details.delayMs}ms).`,
+    )
+  })
+  if (typeof sleep !== 'function') throw new TypeError('retryOptions.sleep must be a function')
+  if (typeof onRetry !== 'function') throw new TypeError('retryOptions.onRetry must be a function')
+
+  return { maxAttempts, baseDelayMs, sleep, onRetry }
 }
 
 export function buildPlan(config, { mode = 'all', includeAiOverview = false, depth } = {}) {
@@ -294,8 +320,60 @@ async function collectKeywordMetrics(client, config) {
   }
 }
 
-async function collectSerp(client, config, { depth, includeAiOverview }) {
+function serpErrorDetails(entry, error, attempts, incurredCostUsd) {
+  return {
+    phase: 'serp',
+    keyword: entry.keyword,
+    endpoint: error.endpoint ?? DATAFORSEO_ENDPOINTS.organicSerp,
+    statusCode: error.statusCode ?? null,
+    message: error.message,
+    retryable: error.retryable,
+    attempts,
+    incurredCostUsd,
+    retrySkippedDueToReportedCost: error.retryable && error.costUsd > 0,
+  }
+}
+
+async function requestSerpWithRetries(client, entry, task, retryOptions) {
+  let attempts = 0
+  let costUsd = 0
+
+  while (attempts < retryOptions.maxAttempts) {
+    attempts += 1
+    try {
+      const payload = await client.post(DATAFORSEO_ENDPOINTS.organicSerp, [task])
+      costUsd += payloadCost(payload)
+      return { payload, error: null, attempts, costUsd }
+    } catch (error) {
+      if (!(error instanceof DataForSeoApiError)) throw error
+      costUsd += Number.isFinite(error.costUsd) ? error.costUsd : 0
+      if (error.fatal) throw error
+
+      const mayRetryWithoutDuplicateCharge = error.retryable && error.costUsd <= 0
+      if (mayRetryWithoutDuplicateCharge && attempts < retryOptions.maxAttempts) {
+        const delayMs = retryOptions.baseDelayMs * (2 ** (attempts - 1))
+        retryOptions.onRetry({
+          keyword: entry.keyword,
+          statusCode: error.statusCode,
+          attempt: attempts,
+          nextAttempt: attempts + 1,
+          maxAttempts: retryOptions.maxAttempts,
+          delayMs,
+        })
+        await retryOptions.sleep(delayMs)
+        continue
+      }
+
+      return { payload: null, error, attempts, costUsd }
+    }
+  }
+
+  throw new Error('Unreachable DataForSEO retry state')
+}
+
+async function collectSerp(client, config, { depth, includeAiOverview, retryOptions }) {
   const items = []
+  const errors = []
   let costUsd = 0
 
   for (const entry of config.keywords) {
@@ -314,13 +392,28 @@ async function collectSerp(client, config, { depth, includeAiOverview }) {
     }
     if (includeAiOverview) task.load_async_ai_overview = true
 
-    const payload = await client.post(DATAFORSEO_ENDPOINTS.organicSerp, [task])
-    costUsd += payloadCost(payload)
-    const result = taskResults(payload)[0] ?? null
-    items.push(summarizeSerpResult(entry, config.targetDomain, result))
+    const request = await requestSerpWithRetries(client, entry, task, retryOptions)
+    costUsd += request.costUsd
+    if (request.error) {
+      const details = serpErrorDetails(entry, request.error, request.attempts, request.costUsd)
+      errors.push(details)
+      items.push({
+        ...summarizeSerpResult(entry, config.targetDomain, null),
+        requestAttempts: request.attempts,
+        error: details,
+      })
+      continue
+    }
+
+    const result = taskResults(request.payload)[0] ?? null
+    items.push({
+      ...summarizeSerpResult(entry, config.targetDomain, result),
+      requestAttempts: request.attempts,
+      error: null,
+    })
   }
 
-  return { items, costUsd }
+  return { items, costUsd, errors }
 }
 
 export async function createDataForSeoReport({
@@ -331,12 +424,14 @@ export async function createDataForSeoReport({
   depth,
   dryRun = false,
   generatedAt = new Date().toISOString(),
+  retryOptions,
 }) {
   const plan = buildPlan(config, { mode, includeAiOverview, depth })
   const report = {
     schemaVersion: 1,
     generatedAt,
     dryRun,
+    status: dryRun ? 'planned' : 'complete',
     target: {
       domain: config.targetDomain,
       locationCode: config.locationCode,
@@ -347,6 +442,7 @@ export async function createDataForSeoReport({
     keywordMetrics: null,
     serp: null,
     costs: null,
+    errors: [],
   }
 
   if (dryRun) return report
@@ -366,12 +462,21 @@ export async function createDataForSeoReport({
   }
 
   if (plan.mode === 'all' || plan.mode === 'serp') {
+    const normalizedRetryOptions = normalizeRetryOptions(retryOptions)
     const serp = await collectSerp(client, config, {
       depth: plan.serpDepth,
       includeAiOverview: plan.includeAiOverview,
+      retryOptions: normalizedRetryOptions,
     })
     report.serp = serp.items
+    report.errors.push(...serp.errors)
     costs.organicSerpUsd = serp.costUsd
+    if (serp.errors.length > 0) {
+      const successfulSerpRequests = serp.items.length - serp.errors.length
+      report.status = plan.mode === 'serp' && successfulSerpRequests === 0
+        ? 'failed'
+        : 'partial'
+    }
   }
 
   costs.totalUsd = costs.searchVolumeUsd + costs.keywordDifficultyUsd + costs.organicSerpUsd

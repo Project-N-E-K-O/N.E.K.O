@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "timezone": "Asia/Shanghai",
+  "site": {
+    "origin": "https://project-neko.online",
+    "hostname": "project-neko.online",
+    "sitemapUrl": "https://project-neko.online/sitemap.xml"
+  },
+  "gsc": {
+    "siteUrlEnv": "GSC_SITE_URL",
+    "defaultSiteUrl": "https://project-neko.online/",
+    "categoryQueryRegex": "(?:ai\\s+desktop\\s+pet|desktop\\s+ai\\s+companion|ai\\s+desktop\\s+companion|desktop\\s+companion|desktop\\s+pet|ai桌宠|开源ai桌宠|ai桌面伴侣|桌面ai伴侣)"
+  },
+  "ga4": {
+    "propertyIdEnv": "GA4_PROPERTY_ID",
+    "ctaEvent": "steam_cta_click",
+    "aiReferralRegex": ".*(chatgpt|openai|perplexity|claude|anthropic|copilot|gemini).*"
+  },
+  "desktopPetKeywords": [
+    "local ai desktop companion",
+    "ai desktop pet",
+    "open source ai desktop pet",
+    "virtual ai desktop pet",
+    "desktop ai companion",
+    "ai desktop companion",
+    "proactive desktop companion",
+    "open source desktop companion",
+    "desktop companion app",
+    "interactive ai desktop pet",
+    "customizable ai desktop pet",
+    "live2d ai desktop pet"
+  ]
+}

@@ -155,6 +155,58 @@ test('client rejects failed tasks even when the response envelope succeeded', as
   )
 })
 
+test('client classifies transient task failures and retains their reported cost', async () => {
+  const client = new DataForSeoClient({
+    login: 'login',
+    password: 'password',
+    fetchImpl: async () => jsonResponse({
+      status_code: 20000,
+      status_message: 'Ok.',
+      tasks_error: 1,
+      tasks: [{
+        status_code: 40101,
+        status_message: 'Internal SE Server Error.',
+        cost: 0.004,
+      }],
+    }),
+  })
+
+  await assert.rejects(
+    client.post(DATAFORSEO_ENDPOINTS.organicSerp, [{}]),
+    error => {
+      assert.ok(error instanceof DataForSeoApiError)
+      assert.equal(error.statusCode, 40101)
+      assert.equal(error.retryable, true)
+      assert.equal(error.fatal, false)
+      assert.equal(error.costUsd, 0.004)
+      return true
+    },
+  )
+})
+
+test('client marks account-wide authorization failures as fatal', async () => {
+  const client = new DataForSeoClient({
+    login: 'login',
+    password: 'password',
+    fetchImpl: async () => jsonResponse({
+      status_code: 40100,
+      status_message: 'Authentication failed.',
+      tasks_error: 0,
+      tasks: [],
+    }),
+  })
+
+  await assert.rejects(
+    client.post(DATAFORSEO_ENDPOINTS.organicSerp, [{}]),
+    error => {
+      assert.ok(error instanceof DataForSeoApiError)
+      assert.equal(error.retryable, false)
+      assert.equal(error.fatal, true)
+      return true
+    },
+  )
+})
+
 test('client rejects missing credentials before sending a request', () => {
   assert.throws(
     () => new DataForSeoClient({ login: '', password: 'password' }),

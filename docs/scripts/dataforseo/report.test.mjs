@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { DATAFORSEO_ENDPOINTS } from './client.mjs'
+import { DATAFORSEO_ENDPOINTS, DataForSeoApiError } from './client.mjs'
 import {
   buildPlan,
   createDataForSeoReport,
@@ -249,4 +249,250 @@ test('SERP mode sends one organic-targeted task per keyword', async () => {
     find_targets_in: ['organic'],
   }])
   assert.equal(report.costs.organicSerpUsd, 0.02)
+  assert.equal(report.status, 'complete')
+  assert.deepEqual(report.errors, [])
+  assert.equal(report.serp[0].requestAttempts, 1)
+  assert.equal(report.serp[0].error, null)
+})
+
+test('SERP mode retries transient zero-cost failures with bounded exponential backoff', async () => {
+  const config = validateConfig({ ...rawConfig, keywords: [rawConfig.keywords[0]] })
+  const delays = []
+  let calls = 0
+  const client = {
+    async post() {
+      calls += 1
+      if (calls < 3) {
+        throw new DataForSeoApiError('temporary search engine failure', {
+          endpoint: DATAFORSEO_ENDPOINTS.organicSerp,
+          statusCode: 40101,
+          retryable: true,
+          costUsd: 0,
+        })
+      }
+      return {
+        cost: 0.01,
+        tasks: [{ result: [{ items: [], item_types: [] }] }],
+      }
+    },
+  }
+
+  const report = await createDataForSeoReport({
+    client,
+    config,
+    mode: 'serp',
+    retryOptions: {
+      maxAttempts: 3,
+      baseDelayMs: 100,
+      sleep: async delayMs => delays.push(delayMs),
+      onRetry: () => {},
+    },
+  })
+
+  assert.equal(calls, 3)
+  assert.deepEqual(delays, [100, 200])
+  assert.equal(report.status, 'complete')
+  assert.deepEqual(report.errors, [])
+  assert.equal(report.serp[0].requestAttempts, 3)
+  assert.equal(report.costs.organicSerpUsd, 0.01)
+})
+
+test('SERP mode does not retry when a failed response reports a nonzero cost', async () => {
+  const config = validateConfig({ ...rawConfig, keywords: [rawConfig.keywords[0]] })
+  let calls = 0
+  const client = {
+    async post() {
+      calls += 1
+      throw new DataForSeoApiError('temporary but billed search engine failure', {
+        endpoint: DATAFORSEO_ENDPOINTS.organicSerp,
+        statusCode: 40101,
+        retryable: true,
+        costUsd: 0.004,
+      })
+    },
+  }
+
+  const report = await createDataForSeoReport({
+    client,
+    config,
+    mode: 'serp',
+    retryOptions: {
+      maxAttempts: 3,
+      baseDelayMs: 0,
+      sleep: async () => {},
+      onRetry: () => {},
+    },
+  })
+
+  assert.equal(calls, 1)
+  assert.equal(report.status, 'failed')
+  assert.equal(report.errors.length, 1)
+  assert.equal(report.errors[0].attempts, 1)
+  assert.equal(report.errors[0].incurredCostUsd, 0.004)
+  assert.equal(report.errors[0].retrySkippedDueToReportedCost, true)
+  assert.equal(report.costs.organicSerpUsd, 0.004)
+})
+
+test('SERP mode records an exhausted zero-cost keyword error and continues', async () => {
+  const config = validateConfig(rawConfig)
+  const calls = []
+  const client = {
+    async post(_endpoint, tasks) {
+      const keyword = tasks[0].keyword
+      calls.push(keyword)
+      if (keyword === config.keywords[0].keyword) {
+        throw new DataForSeoApiError('temporary search engine failure', {
+          endpoint: DATAFORSEO_ENDPOINTS.organicSerp,
+          statusCode: 40101,
+          retryable: true,
+          costUsd: 0,
+        })
+      }
+      return {
+        cost: 0.01,
+        tasks: [{ result: [{ items: [], item_types: [] }] }],
+      }
+    },
+  }
+
+  const report = await createDataForSeoReport({
+    client,
+    config,
+    mode: 'serp',
+    retryOptions: {
+      maxAttempts: 2,
+      baseDelayMs: 0,
+      sleep: async () => {},
+      onRetry: () => {},
+    },
+  })
+
+  assert.deepEqual(calls, [
+    config.keywords[0].keyword,
+    config.keywords[0].keyword,
+    config.keywords[1].keyword,
+  ])
+  assert.equal(report.status, 'partial')
+  assert.equal(report.errors.length, 1)
+  assert.equal(report.errors[0].keyword, config.keywords[0].keyword)
+  assert.equal(report.errors[0].statusCode, 40101)
+  assert.equal(report.errors[0].attempts, 2)
+  assert.equal(report.errors[0].incurredCostUsd, 0)
+  assert.equal(report.errors[0].retrySkippedDueToReportedCost, false)
+  assert.equal(report.serp[0].organicRank, null)
+  assert.equal(report.serp[0].requestAttempts, 2)
+  assert.equal(report.serp[0].error.statusCode, 40101)
+  assert.equal(report.serp[1].error, null)
+  assert.equal(report.costs.organicSerpUsd, 0.01)
+})
+
+test('SERP mode marks an all-keyword outage as failed while retaining diagnostics', async () => {
+  const config = validateConfig(rawConfig)
+  const client = {
+    async post() {
+      throw new DataForSeoApiError('temporary search engine failure', {
+        endpoint: DATAFORSEO_ENDPOINTS.organicSerp,
+        statusCode: 40101,
+        retryable: true,
+      })
+    },
+  }
+
+  const report = await createDataForSeoReport({
+    client,
+    config,
+    mode: 'serp',
+    retryOptions: {
+      maxAttempts: 1,
+      baseDelayMs: 0,
+      sleep: async () => {},
+      onRetry: () => {},
+    },
+  })
+
+  assert.equal(report.status, 'failed')
+  assert.equal(report.serp.length, config.keywords.length)
+  assert.equal(report.errors.length, config.keywords.length)
+  assert.ok(report.serp.every(item => item.error?.statusCode === 40101))
+})
+
+test('all mode preserves keyword metrics when every SERP request fails', async () => {
+  const config = validateConfig(rawConfig)
+  const client = {
+    async post(endpoint) {
+      if (endpoint === DATAFORSEO_ENDPOINTS.searchVolume) {
+        return {
+          cost: 0.01,
+          tasks: [{ result: config.keywords.map(entry => ({
+            keyword: entry.keyword,
+            search_volume: 10,
+          })) }],
+        }
+      }
+      if (endpoint === DATAFORSEO_ENDPOINTS.keywordDifficulty) {
+        return {
+          cost: 0.02,
+          tasks: [{ result: [{ items: config.keywords.map(entry => ({
+            keyword: entry.keyword,
+            keyword_difficulty: 20,
+          })) }] }],
+        }
+      }
+      throw new DataForSeoApiError('temporary search engine failure', {
+        endpoint: DATAFORSEO_ENDPOINTS.organicSerp,
+        statusCode: 40101,
+        retryable: true,
+      })
+    },
+  }
+
+  const report = await createDataForSeoReport({
+    client,
+    config,
+    mode: 'all',
+    retryOptions: {
+      maxAttempts: 1,
+      baseDelayMs: 0,
+      sleep: async () => {},
+      onRetry: () => {},
+    },
+  })
+
+  assert.equal(report.status, 'partial')
+  assert.equal(report.keywordMetrics.length, config.keywords.length)
+  assert.ok(report.keywordMetrics.every(item => item.searchVolume === 10))
+  assert.equal(report.serp.length, config.keywords.length)
+  assert.equal(report.errors.length, config.keywords.length)
+  assert.equal(report.costs.totalUsd, 0.03)
+})
+
+test('SERP mode still aborts immediately for account-wide fatal failures', async () => {
+  const config = validateConfig(rawConfig)
+  let calls = 0
+  const client = {
+    async post() {
+      calls += 1
+      throw new DataForSeoApiError('authentication failed', {
+        endpoint: DATAFORSEO_ENDPOINTS.organicSerp,
+        statusCode: 40100,
+        fatal: true,
+      })
+    },
+  }
+
+  await assert.rejects(
+    createDataForSeoReport({
+      client,
+      config,
+      mode: 'serp',
+      retryOptions: {
+        maxAttempts: 3,
+        baseDelayMs: 0,
+        sleep: async () => {},
+        onRetry: () => {},
+      },
+    }),
+    /authentication failed/,
+  )
+  assert.equal(calls, 1)
 })
