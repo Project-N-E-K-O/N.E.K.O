@@ -80,7 +80,7 @@ In one line: **N.E.K.O. is not an Agent that runs chores for you, nor a chat fro
 * **✅ Steam Workshop**: Live. Users can upload and share custom characters, models, and voice packs.
 * **🚧 [K.U.R.O.](https://github.com/Project-N-E-K-O/K.U.R.O)**: The first AI Native indie game built on the N.E.K.O. ecosystem, in development.
 * **🚧 Mobile**: iOS / Android adaptation in progress.
-* **🚧 The N.E.K.O. Network**: Autonomous AI socialization — N.E.K.O.s will have their own "consciousness," communicate with each other, form groups, and post about their lives on simulated social media. Coming soon.
+* **🚧 The N.E.K.O. Network**: Autonomous AI socialization — N.E.K.O.s will have their own "consciousness", communicate with each other, form groups, and post about their lives on simulated social media. Coming soon.
 
 **Cross-Scenario Memory Sync**: Whether you're chatting with her on desktop or adventuring with her in a game, she's the same her. All AI companions across applications **fully synchronize memories**.
 
