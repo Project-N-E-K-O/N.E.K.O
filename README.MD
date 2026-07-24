@@ -79,7 +79,7 @@
 
 ## 🐱 我们是——**猫娘计划 (Project N.E.K.O.)**
 
-`N.E.K.O.` 是一个以开源为驱动的AI伙伴平台。核心驱动器基于Apache 2.0许可证 **始终开源**，你的每一次贡献都将有机会实装到Steam和App商店的正式版本中。
+`N.E.K.O.` 是一个以开源为驱动的AI伙伴平台。核心驱动器基于 Apache 2.0 许可证**始终开源**，你的每一次贡献都将有机会实装到Steam和App商店的正式版本中。
 
 #### 🚀 项目现状 & 近期计划
 
@@ -495,9 +495,9 @@ uv sync
 
 # 3. 构建前端项目（需要 Node.js >= 20.19，首次运行或前端代码变更后需要）
 #    推荐：使用一键脚本（这是官方支持的构建方式）
-#      Windows：      
+#      Windows：
 build_frontend.bat
-#      Linux/macOS：  
+#      Linux/macOS：
 ./build_frontend.sh
 #    如需手动构建（命令须与脚本保持一致）：
 # cd frontend/react-neko-chat && npm install && npm run build && cd ../..
@@ -577,7 +577,7 @@ N.E.K.O/
 │   ├── openfang_adapter.py      # OpenFang 无头执行后端
 │   ├── task_executor.py         # 任务执行引擎
 │   └── 📁 cua/                  # Computer Use Agent 子系统
-├── 📁 config/                   # ⚙️ 配置管理模块 
+├── 📁 config/                   # ⚙️ 配置管理模块
 │   ├── api_providers.json       # API服务商配置
 │   └── 📁 prompts/              # 角色、系统和功能提示词
 │       ├── prompts_chara.py     # 角色提示词
