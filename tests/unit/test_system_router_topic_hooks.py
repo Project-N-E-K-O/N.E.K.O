@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -120,5 +121,5 @@ def test_open_threads_compute_uses_topic_hook_locale():
     source = Path(proactive_service.__file__).read_text(encoding="utf-8")
 
     assert "topic_hook_lang = _resolve_topic_hook_locale(" in source
-    assert "            command," in source
+    assert re.search(r"_resolve_topic_hook_locale\(\s*command\s*,", source)
     assert "kickoff_open_threads_compute(lang=topic_hook_lang)" in source
