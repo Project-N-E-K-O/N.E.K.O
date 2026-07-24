@@ -1780,3 +1780,21 @@ async def test_takeover_response_complete_clears_interrupted_ordinary_turn():
     assert mgr._current_ai_turn_text == ""
     assert mgr.tts_pending_chunks == []
     assert mgr.sync_message_queue.messages == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_input_transcript_reports_acceptance_for_asr_bridge():
+    ordinary = _make_transcript_manager()
+    assert await core_module.LLMSessionManager.handle_input_transcript(
+        ordinary,
+        "ordinary voice input",
+        is_voice_source=True,
+    ) is True
+
+    empty = _make_transcript_manager()
+    assert await core_module.LLMSessionManager.handle_input_transcript(
+        empty,
+        "   ",
+        is_voice_source=True,
+    ) is False

@@ -1,10 +1,139 @@
+import json
 import re
 from pathlib import Path
 
 
 APP_WEBSOCKET_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-websocket.js"
 APP_STATE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-state.js"
+LOCALES_PATH = Path(__file__).resolve().parents[2] / "static" / "locales"
 WEBSOCKET_ROUTER_PATH = Path(__file__).resolve().parents[2] / "main_routers" / "websocket_router.py"
+
+
+def test_independent_asr_injection_failure_does_not_show_fallback_toast():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    status_block = source.split(
+        "if (statusCode && statusCode.indexOf('ASR_INDEPENDENT_') === 0)",
+        1,
+    )[1].split("if (statusCode === 'TTS_CONNECTION_FAILED')", 1)[0]
+    injection_branch = status_block.split(
+        "if (statusCode === 'ASR_INDEPENDENT_INJECTION_FAILED')",
+        1,
+    )[1].split("S.independentAsrActive = false;", 1)[0]
+
+    assert "return;" in injection_branch
+    assert "independentAsrFallback" not in injection_branch
+
+
+def test_disabled_independent_asr_is_a_normal_native_status_without_failure_toast():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    status_block = source.split(
+        "if (statusCode && statusCode.indexOf('ASR_INDEPENDENT_') === 0)",
+        1,
+    )[1].split("if (statusCode === 'TTS_CONNECTION_FAILED')", 1)[0]
+    disabled_branch = status_block.split(
+        "if (statusCode === 'ASR_INDEPENDENT_DISABLED')",
+        1,
+    )[1].split("if (statusCode === 'ASR_INDEPENDENT_INJECTION_FAILED')", 1)[0]
+
+    assert "S.independentAsrActive = false;" in disabled_branch
+    assert "return;" in disabled_branch
+    assert "independentAsrFallback" not in disabled_branch
+
+
+def test_independent_asr_terminal_status_clears_partial_preview():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    status_block = source.split(
+        "if (statusCode && statusCode.indexOf('ASR_INDEPENDENT_') === 0)",
+        1,
+    )[1].split("if (statusCode === 'TTS_CONNECTION_FAILED')", 1)[0]
+    terminal_branch = status_block.split(
+        "if (statusCode === 'ASR_INDEPENDENT_INJECTION_FAILED')",
+        1,
+    )[1]
+
+    assert terminal_branch.index("removeExternalAsrPreview();") < terminal_branch.index(
+        "S.independentAsrActive = false;"
+    )
+
+
+def test_independent_asr_terminal_status_reports_stopped_voice_input():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    assert "Independent ASR unavailable; using Omni native recognition" not in source
+    assert "Voice input has stopped for this session" in source
+
+
+def test_provider_unavailable_status_names_provider_and_denies_silent_switch():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    assert "ASR_INDEPENDENT_PROVIDER_UNAVAILABLE" in source
+    assert "microphone.independentAsrProviderUnavailable" in source
+    assert "{ provider: asrProvider }" in source
+    assert "It did not switch to another speech recognition service" in source
+
+
+def test_voice_lifecycle_status_is_validated_and_exposed_to_ui():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    assert "statusCode === 'ASR_LIFECYCLE_STATE'" in source
+    assert "voiceInputLifecycleState" in source
+    assert "voice-input-lifecycle-changed" in source
+    assert "data-voice-input-state" in source
+
+
+def test_independent_asr_failure_copy_matches_hard_route_in_all_locales():
+    expected = {
+        "en.json": (
+            "Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.",
+            "Enabled for the next voice session; it will not automatically switch to Omni if unavailable.",
+            "{{provider}} is temporarily unavailable. Voice input has stopped for this session. It did not switch to another speech recognition service. Please start a new voice session later.",
+        ),
+        "es.json": (
+            "El ASR independiente no está disponible. La entrada de voz se ha detenido para esta sesión. Revisa la configuración del ASR independiente y después inicia una nueva sesión de voz.",
+            "Se activará en la próxima sesión de voz; no cambiará automáticamente a Omni si no está disponible.",
+            "{{provider}} no está disponible temporalmente. La entrada de voz se ha detenido para esta sesión. No se cambió a otro servicio de reconocimiento de voz. Inicia una nueva sesión de voz más tarde.",
+        ),
+        "ja.json": (
+            "独立 ASR を利用できないため、この音声セッションの入力を停止しました。独立 ASR の設定を確認してから、新しい音声セッションを開始してください。",
+            "次の音声セッションから有効になります。利用できない場合も Omni へ自動的に切り替わりません。",
+            "{{provider}} は一時的に利用できません。この音声セッションの入力を停止しました。別の音声認識サービスには切り替えていません。後でもう一度音声セッションを開始してください。",
+        ),
+        "ko.json": (
+            "독립 ASR을 사용할 수 없어 이번 음성 세션의 입력을 중지했습니다. 독립 ASR 설정을 확인한 다음 새 음성 세션을 시작하세요.",
+            "다음 음성 세션부터 활성화되며, 사용할 수 없어도 Omni로 자동 전환되지 않습니다.",
+            "{{provider}}을(를) 일시적으로 사용할 수 없어 이번 음성 세션의 입력을 중지했습니다. 다른 음성 인식 서비스로 전환하지 않았습니다. 나중에 새 음성 세션을 시작하세요.",
+        ),
+        "pt.json": (
+            "O ASR independente não está disponível. A entrada de voz foi interrompida nesta sessão. Verifique a configuração do ASR independente e depois inicie uma nova sessão de voz.",
+            "Será ativado na próxima sessão de voz; não mudará automaticamente para o Omni se estiver indisponível.",
+            "{{provider}} está temporariamente indisponível. A entrada de voz foi interrompida nesta sessão. O sistema não mudou para outro serviço de reconhecimento de voz. Inicie uma nova sessão de voz mais tarde.",
+        ),
+        "ru.json": (
+            "Независимый ASR недоступен. Голосовой ввод в этом сеансе остановлен. Проверьте настройки независимого ASR, затем начните новый голосовой сеанс.",
+            "Будет включён в следующем голосовом сеансе; при недоступности автоматического переключения на Omni не произойдёт.",
+            "{{provider}} временно недоступен. Голосовой ввод в этом сеансе остановлен. Переключения на другую службу распознавания речи не произошло. Начните новый голосовой сеанс позже.",
+        ),
+        "zh-CN.json": (
+            "独立 ASR 不可用，本次语音输入已停止。请检查独立 ASR 配置，然后重新开始语音会话。",
+            "将在下次语音会话启用；不可用时不会自动切换到 Omni。",
+            "{{provider}} 暂时不可用，本次语音输入已停止。未切换到其他语音识别服务，请稍后重新开始语音会话。",
+        ),
+        "zh-TW.json": (
+            "獨立 ASR 無法使用，本次語音輸入已停止。請檢查獨立 ASR 設定，然後重新開始語音會話。",
+            "將於下次語音會話啟用；無法使用時不會自動切換到 Omni。",
+            "{{provider}} 暫時無法使用，本次語音輸入已停止。未切換到其他語音辨識服務，請稍後重新開始語音會話。",
+        ),
+    }
+
+    for locale_name, copy in expected.items():
+        locale = json.loads((LOCALES_PATH / locale_name).read_text(encoding="utf-8"))
+        microphone = locale["microphone"]
+        assert microphone["independentAsrFallback"] == copy[0]
+        assert microphone["independentAsrNextSession"] == copy[1]
+        assert microphone["independentAsrProviderUnavailable"] == copy[2]
 
 
 def test_response_discarded_visible_in_react_chat():
@@ -40,6 +169,58 @@ def test_websocket_has_no_widget_mode_capability_or_lifecycle_protocol():
     assert "widget_mode_capable" not in router_source
     assert "response.type.startsWith('widget_mode_')" not in frontend_source
     assert "neko:widget-mode-message" not in frontend_source
+
+
+def test_external_asr_preview_uses_owned_react_message_id():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    preview_helper = source.split("function upsertExternalAsrPreview(text)", 1)[1].split(
+        "function removeExternalAsrPreview()", 1
+    )[0]
+    remove_helper = source.split("function removeExternalAsrPreview()", 1)[1].split(
+        "function websocketTraceEnabled()", 1
+    )[0]
+    event_block = source.split("// -------- user_transcript_preview", 1)[1].split(
+        "// -------- user_transcript --------", 1
+    )[0]
+    final_block = source.split("// -------- user_transcript --------", 1)[1].split(
+        "// --------", 1
+    )[0]
+
+    assert "reactChatWindowHost" in preview_helper
+    assert "host.appendMessage({" in preview_helper
+    assert "host.updateMessage(existingId" in preview_helper
+    assert "querySelectorAll" not in event_block
+    assert "window.appendMessage" not in event_block
+    assert "host.removeMessage(messageId)" in remove_helper
+    assert "removeExternalAsrPreview();" in final_block
+
+
+def test_external_asr_preview_clears_only_on_current_session_terminals():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    final_block = source.split("// -------- user_transcript --------", 1)[1].split(
+        "// --------", 1
+    )[0]
+    session_ended_block = source.split(
+        "// -------- session_ended_by_server --------", 1
+    )[1].split("// -------- reload_page --------", 1)[0]
+    onclose_block = source.split("// ---- onclose ----", 1)[1].split(
+        "// ---- onerror ----", 1
+    )[0]
+    stale_guard, current_close = onclose_block.split(
+        "console.log(window.t('console.websocketClosed'));", 1
+    )
+    onerror_block = source.split("// ---- onerror ----", 1)[1].split(
+        "mod.connectWebSocket = connectWebSocket;", 1
+    )[0]
+
+    assert "removeExternalAsrPreview();" in final_block
+    assert "removeExternalAsrPreview();" in session_ended_block
+    assert "if (S.socket !== _thisSocket)" in stale_guard
+    assert "removeExternalAsrPreview();" not in stale_guard
+    assert "removeExternalAsrPreview();" in current_close
+    assert "removeExternalAsrPreview();" not in onerror_block
 
 
 def test_startup_greeting_release_event_replaces_home_tutorial_block_state():

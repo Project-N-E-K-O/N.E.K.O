@@ -743,6 +743,65 @@
         return true;
     }
 
+    function upsertExternalAsrPreview(text) {
+        var host = window.reactChatWindowHost;
+        if (!host || typeof host.appendMessage !== 'function' ||
+            typeof host.updateMessage !== 'function') {
+            return null;
+        }
+        var cleanText = String(text || '');
+        var preview = S.externalAsrPreviewMessage;
+        var existingId = preview && preview.dataset
+            ? preview.dataset.reactChatMessageId
+            : '';
+        if (existingId) {
+            host.updateMessage(existingId, {
+                blocks: [{ type: 'text', text: cleanText }],
+                status: 'streaming'
+            });
+            preview.textContent = cleanText;
+            return preview;
+        }
+
+        var messageId = 'external-asr-preview-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+        host.appendMessage({
+            id: messageId,
+            role: 'user',
+            author: '',
+            time: (typeof window.getCurrentTimeString === 'function')
+                ? window.getCurrentTimeString()
+                : '',
+            createdAt: Date.now(),
+            blocks: [{ type: 'text', text: cleanText }],
+            status: 'streaming'
+        });
+        return {
+            dataset: { reactChatMessageId: messageId },
+            parentNode: null,
+            isConnected: true,
+            textContent: cleanText,
+            nodeType: 1
+        };
+    }
+
+    function removeExternalAsrPreview() {
+        var preview = S.externalAsrPreviewMessage;
+        if (!preview) return;
+        var messageId = preview.dataset && preview.dataset.reactChatMessageId;
+        var host = window.reactChatWindowHost;
+        if (messageId && host && typeof host.removeMessage === 'function') {
+            host.removeMessage(messageId);
+        }
+        if (preview.parentNode && typeof preview.parentNode.removeChild === 'function') {
+            preview.parentNode.removeChild(preview);
+        }
+        if (S.lastVoiceUserMessage === preview) {
+            S.lastVoiceUserMessage = null;
+            S.lastVoiceUserMessageTime = 0;
+        }
+        S.externalAsrPreviewMessage = null;
+    }
+
     function websocketTraceEnabled() {
         return window.NEKO_DEBUG_BUBBLE_LIFECYCLE === true;
     }
@@ -1379,7 +1438,12 @@
 
         // ---- onopen ----
         S.socket.onopen = function () {
+            if (S.socket !== _thisSocket) return;
             console.log(window.t('console.websocketConnected'));
+
+            window.dispatchEvent(new CustomEvent('voice-input-socket-open', {
+                detail: { socket: _thisSocket }
+            }));
 
             // Warm up Agent snapshot once websocket is ready.
             Promise.all([
@@ -1858,8 +1922,13 @@
                         }
                     }
 
+                // -------- user_transcript_preview (independent ASR only) --------
+                } else if (response.type === 'user_transcript_preview') {
+                    S.externalAsrPreviewMessage = upsertExternalAsrPreview(response.text || '');
+
                 // -------- user_transcript --------
                 } else if (response.type === 'user_transcript') {
+                    removeExternalAsrPreview();
                     // 语音转写也属于用户首次输入；这里只标记，成就仍等 AI 首次可见回复时触发
                     if (window.appChat && typeof window.appChat.isFirstUserInput === 'function' && window.appChat.isFirstUserInput()) {
                         window.appChat.markFirstUserInput();
@@ -2084,6 +2153,68 @@
                             statusDetails = statusPayload.details;
                         }
                     } catch (_) { }
+
+                    if (statusCode === 'ASR_LIFECYCLE_STATE') {
+                        var lifecycleState = (statusDetails && statusDetails.state) || '';
+                        var allowedLifecycleStates = [
+                            'off', 'local_listen', 'prewarming', 'active',
+                            'draining', 'warm_idle', 'deep_sleep', 'backoff',
+                            'blocked', 'suspended'
+                        ];
+                        if (allowedLifecycleStates.indexOf(lifecycleState) !== -1) {
+                            S.voiceInputLifecycleState = lifecycleState;
+                            document.documentElement.setAttribute(
+                                'data-voice-input-state',
+                                lifecycleState
+                            );
+                            window.dispatchEvent(new CustomEvent(
+                                'voice-input-lifecycle-changed',
+                                { detail: statusDetails }
+                            ));
+                        }
+                        return;
+                    }
+
+                    if (statusCode && statusCode.indexOf('ASR_INDEPENDENT_') === 0) {
+                        var asrProvider = (statusDetails && statusDetails.provider) || '';
+                        S.independentAsrProvider = asrProvider;
+                        if (statusCode === 'ASR_INDEPENDENT_READY') {
+                            S.independentAsrActive = true;
+                            if (typeof window.showStatusToast === 'function') {
+                                window.showStatusToast(
+                                    window.t ? window.t('microphone.independentAsrActive', { provider: asrProvider }) : ('Independent ASR active: ' + asrProvider),
+                                    3000
+                                );
+                            }
+                            return;
+                        }
+                        if (statusCode === 'ASR_INDEPENDENT_DISABLED') {
+                            removeExternalAsrPreview();
+                            S.independentAsrActive = false;
+                            return;
+                        }
+                        if (statusCode === 'ASR_INDEPENDENT_INJECTION_FAILED') {
+                            return;
+                        }
+                        removeExternalAsrPreview();
+                        S.independentAsrActive = false;
+                        if (typeof window.showStatusToast === 'function') {
+                            if (statusCode === 'ASR_INDEPENDENT_PROVIDER_UNAVAILABLE') {
+                                window.showStatusToast(
+                                    window.t
+                                        ? window.t('microphone.independentAsrProviderUnavailable', { provider: asrProvider })
+                                        : ((asrProvider || 'ASR') + ' is temporarily unavailable. Voice input has stopped for this session. It did not switch to another speech recognition service. Please start a new voice session later.'),
+                                    5000
+                                );
+                                return;
+                            }
+                            window.showStatusToast(
+                                window.t ? window.t('microphone.independentAsrFallback') : 'Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.',
+                                5000
+                            );
+                        }
+                        return;
+                    }
 
                     if (statusCode === 'TTS_CONNECTION_FAILED') {
                         emitAssistantLifecycleEvent('neko-assistant-speech-unavailable', {
@@ -2972,6 +3103,7 @@
                 } else if (response.type === 'session_ended_by_server') {
                     console.log('[App] Session ended by server, input_mode:', response.input_mode);
                     window.dispatchEvent(new CustomEvent('neko:session-ended-by-server', { detail: response }));
+                    removeExternalAsrPreview();
                     S.isTextSessionActive = false;
                     S.voiceChatActive = false;
                     S.voiceStartPending = false;
@@ -3253,6 +3385,7 @@
                 return;
             }
             console.log(window.t('console.websocketClosed'));
+            removeExternalAsrPreview();
             clearAssistantLifecycleOnDisconnect('socket_close');
 
             // Clear heartbeat

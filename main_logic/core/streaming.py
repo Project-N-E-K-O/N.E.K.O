@@ -21,7 +21,6 @@ Method-only mixin: every instance attribute is assigned in
 
 import asyncio
 import json
-import struct
 import time
 from websockets import exceptions as web_exceptions
 from utils.screenshot_utils import overlay_avatar_annotation
@@ -109,76 +108,6 @@ class StreamingMixin:
             # 清空缓存
             self.pending_input_data.clear()
     
-    async def _flush_hot_swap_audio_cache(self):
-        """After hot-swap completes, push cached audio data to the new session in a loop until the cache is stably empty"""
-        # 设置标志，让新的音频继续缓存而不是直接发送
-        self.is_flushing_hot_swap_cache = True
-        
-        try:
-            # 检查session是否可用
-            if not self.session or not self.is_active:
-                logger.warning("⚠️ 热切换音频缓存刷新时session不可用，丢弃缓存")
-                async with self.hot_swap_cache_lock:
-                    self.hot_swap_audio_cache.clear()
-                return
-            
-            # 检查session类型
-            if not isinstance(self.session, OmniRealtimeClient):
-                logger.debug("热切换音频缓存仅适用于语音模式，当前session类型不匹配，跳过flush")
-                async with self.hot_swap_cache_lock:
-                    self.hot_swap_audio_cache.clear()
-                return
-            
-            max_iterations = 20  # 最多迭代20次，防止无限循环
-            iteration = 0
-            total_chunks_sent = 0
-            
-            logger.info("🔄 开始循环推送热切换音频缓存...")
-            
-            while iteration < max_iterations:
-                # 检查并取出当前缓存
-                async with self.hot_swap_cache_lock:
-                    cache_len = len(self.hot_swap_audio_cache)
-                    
-                    if cache_len == 0:
-                        break
-                    else:
-                        audio_chunks = self.hot_swap_audio_cache.copy()
-                        self.hot_swap_audio_cache.clear()
-                
-                # 如果有缓存，合并并发送
-                if cache_len > 0:
-                    logger.info(f"🔄 推送第{iteration+1}批音频缓存: {cache_len} 个chunk")
-                    
-                    # 合并小chunk成大chunk（节流）
-                    combined_audio = b''.join(audio_chunks)
-                    
-                    # 计算每个大chunk的大小（16kHz，约10ms = 160 samples = 320 bytes）
-                    original_chunk_size = 320  # 16kHz: 160 samples × 2 bytes
-                    large_chunk_size = original_chunk_size * self.HOT_SWAP_FLUSH_CHUNK_MULTIPLIER
-                    
-                    # 分批发送
-                    for i in range(0, len(combined_audio), large_chunk_size):
-                        chunk = combined_audio[i:i + large_chunk_size]
-                        try:
-                            await self.session.stream_audio(chunk)
-                            await asyncio.sleep(0.025)
-                            total_chunks_sent += 1
-                        except Exception as e:
-                            logger.error(f"💥 推送音频缓存失败: {e}")
-                            return  # 推送失败，放弃
-                
-                iteration += 1
-                
-            if iteration >= max_iterations:
-                logger.warning(f"⚠️ 达到最大迭代次数({max_iterations})，停止推送")
-            
-            logger.info(f"✅ 热切换音频缓存推送完成，共推送约 {total_chunks_sent} 个大chunk，迭代 {iteration} 次")
-            
-        finally:
-            # 无论如何都要清除flag，恢复正常音频输入
-            self.is_flushing_hot_swap_cache = False
-    
     def _should_drop_live_vision_stream(self, input_type: str | None) -> bool:
         """Deliberately checked at each stream boundary; callers may enter below stream_data."""
         return input_type in _LIVE_VISION_STREAM_INPUT_TYPES and self.is_goodbye_silent()
@@ -243,7 +172,11 @@ class StreamingMixin:
         if self._should_drop_live_vision_stream(input_type):
             return
         # 检查session是否发生致命错误（如1011错误、Response timeout）
-        if self.session and isinstance(self.session, OmniRealtimeClient):
+        if (
+            input_type != "audio"
+            and self.session
+            and isinstance(self.session, OmniRealtimeClient)
+        ):
             if hasattr(self.session, '_fatal_error_occurred') and self.session._fatal_error_occurred:
                 logger.warning("⚠️ Session已发生致命错误，忽略新的输入数据")
                 return
@@ -527,142 +460,7 @@ class StreamingMixin:
                     logger.error(f"💥 Stream: Invalid text data type: {type(data)}")
                 return
             
-            # Audio输入：只有OmniRealtimeClient能处理
-            if input_type == 'audio':
-                # 检查 session 类型
-                if not isinstance(self.session, OmniRealtimeClient):
-                    # 检查是否允许重建session
-                    if self.session_start_failure_count >= self.session_start_max_failures:
-                        logger.error("💥 Session类型不匹配，但失败次数过多，已停止自动重建")
-                        return
-                    
-                    logger.info(f"语音模式需要 OmniRealtimeClient，但当前是 {type(self.session).__name__}. 自动重建 session。")
-                    # 与上面 text 重建路径对偶：先置 session_ready=False 让 cache
-                    # 路径接住窗口期内的输入，再占用 guard 跨过 end_session，防止
-                    # 并发 _stream_data_now 抢跑 start_session(text) 造成本路径
-                    # 命中 2776 guard 静默失败（ERROR "💥 语音模式Session重建失败"）
-                    # 或落到 _process_stream_data_internal 4975 早退被 silent drop。
-                    async with self.input_cache_lock:
-                        self.session_ready = False
-                    self._starting_session_count += 1
-                    self._starting_input_mode = 'audio'
-                    try:
-                        if self.session:
-                            await self.end_session(reset_starting_count=False)
-                    finally:
-                        self._starting_session_count = max(0, self._starting_session_count - 1)
-                        if self._starting_session_count == 0:
-                            self._starting_input_mode = None
-                    await self.start_session(self.websocket, new=False, input_mode='audio')
-
-                    # 检查重建是否成功
-                    if not self.session or not self.is_active or not isinstance(self.session, OmniRealtimeClient):
-                        logger.error("💥 语音模式Session重建失败，放弃本次数据流")
-                        return
-                
-                # 检查WebSocket连接
-                session_ref = self.session
-                audio_epoch = self._audio_stream_epoch
-                if not hasattr(session_ref, 'ws') or not session_ref.ws:
-                    logger.error("💥 Stream: Session websocket not available")
-                    return
-                try:
-                    if isinstance(data, list):
-                        audio_bytes = struct.pack(f'<{len(data)}h', *data)
-                        
-                        # 🔧 音频预处理：RNNoise降噪 + 降采样到16kHz（在缓存之前）
-                        # 检查是否为48kHz输入（480 samples = 960 bytes per 10ms chunk）
-                        num_samples = len(audio_bytes) // 2
-                        is_48khz = (num_samples == 480)
-                        
-                        processed_audio = audio_bytes  # 默认使用原始音频
-                        if is_48khz and isinstance(session_ref, OmniRealtimeClient):
-                            # 使用session的AudioProcessor处理音频
-                            if hasattr(session_ref, '_audio_processor') and session_ref._audio_processor:
-                                try:
-                                    # Use async wrapper to avoid blocking main loop
-                                    if hasattr(session_ref, 'process_audio_chunk_async'):
-                                        processed_audio = await session_ref.process_audio_chunk_async(audio_bytes)
-                                    else:
-                                        # Fallback (should not happen if client updated)
-                                        processed_audio = session_ref._audio_processor.process_chunk(audio_bytes)
-                                        
-                                    # RNNoise可能返回空字节（缓冲中），跳过
-                                    if len(processed_audio) == 0:
-                                        return
-                                except Exception as e:
-                                    logger.error(f"💥 音频预处理失败: {e}")
-                                    return
-                        if (
-                            self.session is not session_ref
-                            or not self.is_active
-                            or self._audio_stream_epoch != audio_epoch
-                        ):
-                            return
-                        
-                        # 热切换期间或推送缓存期间，缓存处理后的音频（16kHz，已降噪）
-                        if self.is_hot_swap_imminent or self.is_flushing_hot_swap_cache:
-                            async with self.hot_swap_cache_lock:
-                                self.hot_swap_audio_cache.append(processed_audio)
-                                if len(self.hot_swap_audio_cache) == 1:
-                                    logger.info("🔄 热切换进行中，开始缓存处理后的音频（16kHz）...")
-                            return
-                        
-                        # 检查session是否被服务器关闭（防刷屏）
-                        if self.session_closed_by_server:
-                            return  # 静默拒绝，不记录log
-                        
-                        # 再次检查session状态（防止在处理过程中session被关闭）
-                        if not session_ref or not hasattr(session_ref, 'ws') or not session_ref.ws:
-                            # 限流log：2秒内只记录一次
-                            current_time = asyncio.get_event_loop().time()
-                            if current_time - self.last_audio_send_error_time > self.audio_error_log_interval:
-                                logger.warning("⚠️ Session已关闭，跳过音频数据发送")
-                                self.last_audio_send_error_time = current_time
-                            return
-                        
-                        # 检查致命错误状态
-                        if hasattr(session_ref, '_fatal_error_occurred') and session_ref._fatal_error_occurred:
-                            current_time = asyncio.get_event_loop().time()
-                            if current_time - self.last_audio_send_error_time > self.audio_error_log_interval:
-                                logger.warning("⚠️ Session已发生致命错误，跳过音频数据发送")
-                                self.last_audio_send_error_time = current_time
-                            return
-                        
-                        # 发送音频到session（stream_audio会检测是否48kHz，16kHz不会再处理）
-                        await session_ref.stream_audio(processed_audio)
-                    else:
-                        logger.error(f"💥 Stream: Invalid audio data type: {type(data)}")
-                        return
-
-                except struct.error as se:
-                    logger.error(f"💥 Stream: Struct packing error (audio): {se}")
-                    return
-                except web_exceptions.ConnectionClosedOK:
-                    self.session_closed_by_server = True  # 标记连接已关闭
-                    return
-                except AttributeError as ae:
-                    # 捕获 'NoneType' object has no attribute 'send' 等错误
-                    self.session_closed_by_server = True
-                    current_time = asyncio.get_event_loop().time()
-                    if current_time - self.last_audio_send_error_time > self.audio_error_log_interval:
-                        logger.error(f"💥 Stream: Session已关闭或不可用: {ae}")
-                        self.last_audio_send_error_time = current_time
-                    return
-                except Exception as e:
-                    # 检测连接关闭错误
-                    error_str = str(e)
-                    if 'no close frame' in error_str or 'Connection closed' in error_str:
-                        self.session_closed_by_server = True
-                    
-                    # 限流log
-                    current_time = asyncio.get_event_loop().time()
-                    if current_time - self.last_audio_send_error_time > self.audio_error_log_interval:
-                        logger.error(f"💥 Stream: Error processing audio data: {e}")
-                        self.last_audio_send_error_time = current_time
-                    return
-
-            elif input_type in _IMAGE_INPUT_TYPES:
+            if input_type in _IMAGE_INPUT_TYPES:
                 try:
                     if self._should_drop_magic_command_image(message.get("request_id")):
                         return

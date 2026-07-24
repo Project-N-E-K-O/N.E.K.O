@@ -928,7 +928,13 @@
         "volumeWaiting": "待機中",
         "volumeHintWaiting": "マイクが入力を待っています、話してください",
         "noiseReduction": "ノイズリダクション",
-        "noiseReductionHint": "RNNoise AI ノイズリダクションで音声をクリアに"
+        "noiseReductionHint": "RNNoise AI ノイズリダクションで音声をクリアに",
+        "independentAsr": "独立音声認識",
+        "independentAsrActive": "独立 ASR を使用中：{{provider}}",
+        "independentAsrFallback": "独立 ASR を利用できないため、この音声セッションの入力を停止しました。独立 ASR の設定を確認してから、新しい音声セッションを開始してください。",
+        "independentAsrProviderUnavailable": "{{provider}} は一時的に利用できません。この音声セッションの入力を停止しました。別の音声認識サービスには切り替えていません。後でもう一度音声セッションを開始してください。",
+        "independentAsrNextSession": "次の音声セッションから有効になります。利用できない場合も Omni へ自動的に切り替わりません。",
+        "independentAsrNative": "Omni 標準音声認識を使用中"
     },
     "speaker": {
         "volumeLabel": "スピーカー音量",

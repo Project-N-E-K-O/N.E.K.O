@@ -11,6 +11,111 @@
     const mod = {};
     const S = window.appState;
     const C = window.appConst;
+    const MIC_LEASE = Object.freeze({
+        NONE: 'none',
+        GAME: 'game',
+        CORE: 'core'
+    });
+    let voiceLeaseGeneration = 0;
+    let lastVoiceLeaseFingerprint = '';
+
+    function currentVoiceInputControlState() {
+        return {
+            owner: resolveMicLeaseOwner(),
+            hard_muted: S.isMicMuted === true,
+            focus_suppressed: (
+                S.focusModeEnabled === true
+                && S.isPlaying === true
+            )
+        };
+    }
+
+    function sendVoiceInputControlState(force) {
+        if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return false;
+        const state = currentVoiceInputControlState();
+        const fingerprint = JSON.stringify(state);
+        if (force !== true && fingerprint === lastVoiceLeaseFingerprint) return true;
+        voiceLeaseGeneration += 1;
+        S.socket.send(JSON.stringify({
+            action: 'voice_input_control',
+            event: 'lease_sync',
+            owner: state.owner,
+            hard_muted: state.hard_muted,
+            focus_suppressed: state.focus_suppressed,
+            lease_generation: voiceLeaseGeneration
+        }));
+        lastVoiceLeaseFingerprint = fingerprint;
+        return true;
+    }
+
+    function syncVoiceInputControlState(socket) {
+        if (socket && socket !== S.socket) return false;
+        if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return false;
+
+        // 每条 WebSocket 都有独立的 generation scope；第一条消息就是完整状态。
+        voiceLeaseGeneration = 0;
+        lastVoiceLeaseFingerprint = '';
+        return sendVoiceInputControlState(true);
+    }
+
+    function setVoiceInputLifecycleState(state) {
+        const allowed = new Set([
+            'off', 'local_listen', 'prewarming', 'active', 'draining',
+            'warm_idle', 'deep_sleep', 'backoff', 'blocked', 'suspended'
+        ]);
+        if (!allowed.has(state) || S.voiceInputLifecycleState === state) return;
+        S.voiceInputLifecycleState = state;
+        document.documentElement.setAttribute('data-voice-input-state', state);
+        window.dispatchEvent(new CustomEvent('voice-input-lifecycle-changed', {
+            detail: { state, route_mode: S.independentAsrActive ? 'independent' : 'blocked' }
+        }));
+    }
+
+    window.addEventListener('voice-input-socket-open', function (event) {
+        syncVoiceInputControlState(event && event.detail && event.detail.socket);
+    });
+
+    function setMicLeaseOwner(owner) {
+        if (!Object.values(MIC_LEASE).includes(owner)) {
+            throw new Error(`Invalid microphone lease owner: ${owner}`);
+        }
+        if (S.micLeaseOwner !== owner) {
+            S.micLeaseOwner = owner;
+            window.dispatchEvent(new CustomEvent('mic-lease-changed', {
+                detail: { owner }
+            }));
+        }
+        if (owner === MIC_LEASE.NONE || S.isMicMuted === true) {
+            setVoiceInputLifecycleState('off');
+        } else if (owner === MIC_LEASE.GAME) {
+            setVoiceInputLifecycleState('suspended');
+        } else if (
+            S.voiceInputLifecycleState === 'off'
+            || S.voiceInputLifecycleState === 'suspended'
+        ) {
+            setVoiceInputLifecycleState('local_listen');
+        }
+        sendVoiceInputControlState(false);
+        return owner;
+    }
+
+    function resolveMicLeaseOwner() {
+        if (!S.isRecording) return MIC_LEASE.NONE;
+        if (S.gameVoiceSttGateActive) return MIC_LEASE.GAME;
+        return MIC_LEASE.CORE;
+    }
+
+    function refreshMicLease() {
+        const owner = setMicLeaseOwner(resolveMicLeaseOwner());
+        sendVoiceInputControlState(false);
+        return owner;
+    }
+
+    function canUploadOrdinaryMicFrame() {
+        if (refreshMicLease() !== MIC_LEASE.CORE) return false;
+        const state = currentVoiceInputControlState();
+        return !state.hard_muted && !state.focus_suppressed;
+    }
 
     // ======================== DOM 辅助 ========================
 
@@ -184,6 +289,7 @@
         if (!S.gameVoiceSttGateActive || !S.isRecording || S.isMicMuted) {
             return false;
         }
+        setMicLeaseOwner(MIC_LEASE.GAME);
         if (S.gameVoiceSttListening) {
             releaseOrdinaryMicCaptureForGameVoiceSttGate();
             return true;
@@ -345,6 +451,7 @@
         if (!keepActive && restoreOrdinaryMic) {
             restoreOrdinaryMicCaptureAfterGameVoiceSttStop('gate stop');
         }
+        refreshMicLease();
     }
 
     // ======================== 麦克风设备选择 ========================
@@ -835,24 +942,29 @@
             S.workletNode.port.onmessage = (event) => {
                 const audioData = event.data;
 
-                if (S.isMicMuted) {
-                    return;
-                }
-
-                if (S.focusModeEnabled === true && S.isPlaying === true) {
-                    return;
-                }
-
-                if (S.gameVoiceSttGateActive) {
+                if (!canUploadOrdinaryMicFrame()) {
                     return;
                 }
 
                 if (S.isRecording && S.socket && S.socket.readyState === WebSocket.OPEN) {
-                    S.socket.send(JSON.stringify({
-                        action: 'stream_data',
-                        data: Array.from(audioData),
-                        input_type: 'audio'
-                    }));
+                    // 8-byte header: ASCII "NEKO" + little-endian sample rate，
+                    // 后续直接附 PCM16，避免每帧 JSON 数组的带宽与 GC 开销。
+                    const pcm16 = audioData instanceof Int16Array
+                        ? audioData
+                        : new Int16Array(audioData);
+                    const frame = new ArrayBuffer(8 + pcm16.byteLength);
+                    const header = new DataView(frame);
+                    header.setUint8(0, 0x4E);
+                    header.setUint8(1, 0x45);
+                    header.setUint8(2, 0x4B);
+                    header.setUint8(3, 0x4F);
+                    header.setUint32(4, targetSampleRate, true);
+                    new Uint8Array(frame, 8).set(new Uint8Array(
+                        pcm16.buffer,
+                        pcm16.byteOffset,
+                        pcm16.byteLength
+                    ));
+                    S.socket.send(frame);
                 }
             };
 
@@ -869,6 +981,7 @@
             // 所有初始化成功后，才标记为录音状态
             S.isRecording = true;
             window.isRecording = true;
+            refreshMicLease();
 
         } catch (err) {
             console.error('加载AudioWorklet失败:', err);
@@ -1105,6 +1218,7 @@
 
         S.isRecording = false;
         window.isRecording = false;
+        refreshMicLease();
         window.currentGeminiMessage = null;
 
         // 重置语音模式用户转录合并追踪
@@ -1376,6 +1490,7 @@
             return S.isMicMuted;
         }
         S.isMicMuted = !S.isMicMuted;
+        refreshMicLease();
         if (S.isMicMuted) {
             stopSilenceDetection();
             // 立刻清掉"用户最近在说话"的时间戳。否则 mute 前最后一帧
@@ -1407,6 +1522,7 @@
 
     window.setMicMuted = function(muted, showToast = false) {
         S.isMicMuted = muted;
+        refreshMicLease();
         if (S.isMicMuted) {
             stopSilenceDetection();
             // 与 toggleMicMute 对齐：进入 muted 时清掉时间戳，避免拖尾。
@@ -1458,6 +1574,9 @@
     mod.updateMicVolumeStatusNow = updateMicVolumeStatusNow;
     mod.startGameVoiceSttGate = startGameVoiceSttGate;
     mod.stopGameVoiceSttGate = stopGameVoiceSttGate;
+    mod.refreshMicLease = refreshMicLease;
+    mod.canUploadOrdinaryMicFrame = canUploadOrdinaryMicFrame;
+    mod.setVoiceInputLifecycleState = setVoiceInputLifecycleState;
 
     // ======================== 麦克风设备列表 UI ========================
 
@@ -1770,6 +1889,57 @@
             Object.assign(nrHint.style, { fontSize: '11px', color: 'var(--neko-popup-text-sub)', marginTop: '6px' });
             nrContainer.appendChild(nrHint);
             leftColumn.appendChild(nrContainer);
+
+            // ===== 独立 ASR 开关（下次语音 session 生效） =====
+            var asrContainer = document.createElement('div');
+            asrContainer.style.padding = '8px 12px';
+
+            var asrRow = document.createElement('div');
+            Object.assign(asrRow.style, { display: 'flex', justifyContent: 'space-between', alignItems: 'center' });
+
+            var asrLabel = document.createElement('span');
+            asrLabel.textContent = window.t ? window.t('microphone.independentAsr') : 'Independent ASR';
+            asrLabel.setAttribute('data-i18n', 'microphone.independentAsr');
+            Object.assign(asrLabel.style, { fontSize: '13px', color: 'var(--neko-popup-text)', fontWeight: '500' });
+
+            var asrToggle = document.createElement('label');
+            Object.assign(asrToggle.style, { position: 'relative', display: 'inline-block', width: '36px', height: '20px', flexShrink: '0' });
+            var asrInput = document.createElement('input');
+            asrInput.type = 'checkbox';
+            asrInput.checked = S.independentAsrEnabled === true;
+            Object.assign(asrInput.style, { opacity: '0', width: '0', height: '0' });
+            var asrSlider = document.createElement('span');
+            Object.assign(asrSlider.style, { position: 'absolute', cursor: 'pointer', top: '0', left: '0', right: '0', bottom: '0', backgroundColor: asrInput.checked ? '#4f8cff' : '#ccc', borderRadius: '10px', transition: 'background-color 0.2s' });
+            var asrKnob = document.createElement('span');
+            Object.assign(asrKnob.style, { position: 'absolute', content: '""', height: '16px', width: '16px', left: asrInput.checked ? '18px' : '2px', bottom: '2px', backgroundColor: 'white', borderRadius: '50%', transition: 'left 0.2s' });
+            asrSlider.appendChild(asrKnob);
+            asrToggle.appendChild(asrInput);
+            asrToggle.appendChild(asrSlider);
+
+            asrInput.addEventListener('change', function () {
+                S.independentAsrEnabled = asrInput.checked;
+                asrSlider.style.backgroundColor = asrInput.checked ? '#4f8cff' : '#ccc';
+                asrKnob.style.left = asrInput.checked ? '18px' : '2px';
+                if (window.appSettings && typeof window.appSettings.saveSettings === 'function') {
+                    window.appSettings.saveSettings();
+                }
+            });
+
+            asrRow.appendChild(asrLabel);
+            asrRow.appendChild(asrToggle);
+            asrContainer.appendChild(asrRow);
+
+            var asrHint = document.createElement('div');
+            var asrHintKey = S.independentAsrActive
+                ? 'microphone.independentAsrActive'
+                : (S.independentAsrEnabled ? 'microphone.independentAsrNextSession' : 'microphone.independentAsrNative');
+            asrHint.textContent = window.t
+                ? window.t(asrHintKey, { provider: S.independentAsrProvider || '' })
+                : (S.independentAsrActive ? 'Independent ASR active' : (S.independentAsrEnabled ? 'Takes effect next voice session' : 'Using Omni native recognition'));
+            asrHint.setAttribute('data-i18n', asrHintKey);
+            Object.assign(asrHint.style, { fontSize: '11px', color: 'var(--neko-popup-text-sub)', marginTop: '6px' });
+            asrContainer.appendChild(asrHint);
+            leftColumn.appendChild(asrContainer);
 
             var sep1b = document.createElement('div');
             Object.assign(sep1b.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '8px 0' });

@@ -108,38 +108,19 @@ class LifecycleMixin:
                     return
             logger.warning(f"[{self.lanlan_name}] 检测到长时间无语音输入，自动关闭session")
             
-            # 清空热切换音频缓存的最后4秒数据（静默期间的音频主要是噪音）
+            # 静默关闭是权威抑制边界；不能保留一段残缺候选音频。
             async with self.hot_swap_cache_lock:
                 # Re-check: a hot-swap could have completed while we waited for the lock.
                 if expected_session is not None and expected_session is not self.session and expected_session is not self.pending_session:
                     logger.info("⏭️ handle_silence_timeout: expected_session stale after acquiring cache lock, skipping")
                     return
                 if self.hot_swap_audio_cache:
-                    SILENCE_DURATION_BYTES = 120000
-                    total_bytes = sum(len(chunk) for chunk in self.hot_swap_audio_cache)
-                    
-                    if total_bytes > SILENCE_DURATION_BYTES:
-                        bytes_to_remove = SILENCE_DURATION_BYTES
-                        removed_bytes = 0
-                        
-                        while bytes_to_remove > 0 and self.hot_swap_audio_cache:
-                            last_chunk = self.hot_swap_audio_cache[-1]
-                            chunk_size = len(last_chunk)
-                            
-                            if chunk_size <= bytes_to_remove:
-                                self.hot_swap_audio_cache.pop()
-                                bytes_to_remove -= chunk_size
-                                removed_bytes += chunk_size
-                            else:
-                                keep_size = chunk_size - bytes_to_remove
-                                self.hot_swap_audio_cache[-1] = last_chunk[:keep_size]
-                                removed_bytes += bytes_to_remove
-                                bytes_to_remove = 0
-                        
-                        logger.info(f"🗑️ 静默超时：已清空音频缓存的最后 {removed_bytes} 字节（约{removed_bytes/32000:.1f}秒）")
-                    else:
-                        logger.info(f"🗑️ 静默超时：缓存总量不足4秒，全部清空（{total_bytes} 字节）")
-                        self.hot_swap_audio_cache.clear()
+                    cached_duration_ms = self.hot_swap_audio_cache.duration_ms
+                    self.hot_swap_audio_cache.clear()
+                    logger.info(
+                        "🗑️ 静默超时：已清空 %s ms 热切换音频缓存",
+                        cached_duration_ms,
+                    )
             
             # Re-check before websocket side-effects
             if expected_session is not None and expected_session is not self.session and expected_session is not self.pending_session:
@@ -1374,6 +1355,11 @@ class LifecycleMixin:
         # 启动消息处理任务
         self.message_handler_task = asyncio.create_task(self.session.handle_messages())
 
+        # Resolve the microphone route before session_started opens the frontend
+        # input path. When independent ASR is required, failure is non-fatal to
+        # the Core session but keeps microphone input blocked instead of using Omni.
+        await self._start_independent_asr_if_enabled(input_mode)
+
         # 启动成功，重置失败计数器和熔断
         self.session_start_failure_count = 0
         self.session_start_last_failure_time = None
@@ -1947,6 +1933,10 @@ class LifecycleMixin:
             self._require_context_append_current_delivery = True
             next_context_count_at_promote = len(self._snapshot_next_session_context_messages())
             await self._apply_pending_tts_route_after_swap()
+            # The pending Omni session is now the active session. If its Core
+            # provider changed, replace the independent ASR before replaying
+            # cached microphone audio so one frame can never cross providers.
+            await self._reconcile_independent_asr_after_core_change()
             self.current_speech_id = str(uuid4())
             self._tts_done_queued_for_turn = False
             self._tts_done_pending_until_ready = False
@@ -2143,6 +2133,10 @@ class LifecycleMixin:
         # duplicate end_session callback can't reset the CURRENT live session's
         # gate or drop its queued cues (Codex P1).
         self._reset_proactive_gate()
+
+        # Stale expected_session callbacks have already returned above. Invalidate
+        # ASR callbacks before any remaining teardown awaits can yield.
+        await self._close_independent_asr(next_route_mode="blocked")
 
         if _inactive_early:
             if reset_starting_count:
