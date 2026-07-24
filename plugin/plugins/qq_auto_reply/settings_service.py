@@ -144,7 +144,33 @@ class QQSettingsService:
         retroactive_review_max_reply = kwargs.get("retroactive_review_max_reply")
         if retroactive_review_max_reply is not None:
             self.plugin._qq_settings["retroactive_review_max_reply"] = max(1, int(retroactive_review_max_reply))
-        # 猫娘动态策略配置
+        # ── 注意力参数 ──
+        enable_group_attention = kwargs.get("enable_group_attention")
+        if enable_group_attention is not None:
+            self.plugin._qq_settings["enable_group_attention"] = bool(enable_group_attention)
+        for key in (
+            "group_attention_decay_per_second",
+            "group_attention_message_recovery",
+            "group_attention_reply_penalty",
+            "group_attention_keyword_boost_scale",
+            "group_attention_max_score",
+            "group_attention_focus_threshold",
+            "group_attention_min_threshold",
+            "group_attention_message_gain",
+        ):
+            val = kwargs.get(key)
+            if val is not None:
+                self.plugin._qq_settings[key] = max(0.001, float(val))
+        for key in (
+            "group_attention_focus_lock_seconds",
+            "group_attention_focus_rise_seconds",
+            "group_attention_focus_cooldown_seconds",
+            "icebreaker_cold_threshold",
+        ):
+            val = kwargs.get(key)
+            if val is not None:
+                self.plugin._qq_settings[key] = max(1, int(val))
+        # ── 猫娘动态策略配置 ──
         strategy_mode = kwargs.get("strategy_mode")
         if strategy_mode is not None:
             self.plugin._qq_settings["strategy_mode"] = self.plugin.config_store._normalize_strategy_mode(strategy_mode)

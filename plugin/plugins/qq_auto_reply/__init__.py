@@ -928,7 +928,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         return Ok({"stickers": items, "total": len(items)})
 
     @ui.action(id="save_settings", label=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), refresh_context=True)
-    @plugin_entry(id="save_settings", name=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), description=tr("entries.save_settings.description", default="保存 QQ 插件当前的 OneBot 地址、Token、NapCat 路径、回复概率和 backlog 标签等设置。"), input_schema={"type": "object", "properties": {"onebot_url": {"type": "string"}, "token": {"type": "string"}, "napcat_directory": {"type": "string"}, "show_napcat_window": {"type": "boolean"}, "reply_mode": {"type": "string", "enum": ["text", "voice", "both"]}, "show_onboarding": {"type": "boolean"}, "guide_step_napcat_done": {"type": "boolean"}, "guide_step_config_done": {"type": "boolean"}, "guide_step_runtime_done": {"type": "boolean"}, "normal_relay_probability": {"type": "number"}, "truth_reply_probability": {"type": "number"}, "backlog_labels": {"type": "array", "items": {"type": "object"}}, "strategy_mode": {"type": "string", "enum": ["neko_dynamic", "neko_scene"]}, "qq_connection_mode": {"type": "string", "enum": ["napcat", "open_platform"]}, "qq_open_app_id": {"type": "string"}, "qq_open_client_secret": {"type": "string"}, "sticker_cooldown_messages": {"type": "integer"}, "retroactive_review_max_messages": {"type": "integer"}, "retroactive_review_max_reply": {"type": "integer"}}, "additionalProperties": False})
+    @plugin_entry(id="save_settings", name=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), description=tr("entries.save_settings.description", default="保存 QQ 插件当前的 OneBot 地址、Token、NapCat 路径、回复概率和 backlog 标签等设置。"), input_schema={"type": "object", "properties": {"onebot_url": {"type": "string"}, "token": {"type": "string"}, "napcat_directory": {"type": "string"}, "show_napcat_window": {"type": "boolean"}, "reply_mode": {"type": "string", "enum": ["text", "voice", "both"]}, "show_onboarding": {"type": "boolean"}, "guide_step_napcat_done": {"type": "boolean"}, "guide_step_config_done": {"type": "boolean"}, "guide_step_runtime_done": {"type": "boolean"}, "normal_relay_probability": {"type": "number"}, "truth_reply_probability": {"type": "number"}, "backlog_labels": {"type": "array", "items": {"type": "object"}}, "strategy_mode": {"type": "string", "enum": ["neko_dynamic", "neko_scene"]}, "qq_connection_mode": {"type": "string", "enum": ["napcat", "open_platform"]}, "qq_open_app_id": {"type": "string"}, "qq_open_client_secret": {"type": "string"}, "sticker_cooldown_messages": {"type": "integer"}, "retroactive_review_max_messages": {"type": "integer"}, "retroactive_review_max_reply": {"type": "integer"}, "enable_group_attention": {"type": "boolean"}, "group_attention_decay_per_second": {"type": "number"}, "group_attention_message_recovery": {"type": "number"}, "group_attention_reply_penalty": {"type": "number"}, "group_attention_keyword_boost_scale": {"type": "number"}, "group_attention_focus_lock_seconds": {"type": "integer"}, "group_attention_focus_rise_seconds": {"type": "integer"}, "group_attention_focus_cooldown_seconds": {"type": "integer"}, "group_attention_max_score": {"type": "number"}, "group_attention_focus_threshold": {"type": "number"}, "group_attention_min_threshold": {"type": "number"}, "group_attention_message_gain": {"type": "number"}, "icebreaker_cold_threshold": {"type": "integer"}}, "additionalProperties": False})
     async def save_settings(
         self,
         onebot_url: Optional[str] = None,
@@ -950,6 +950,19 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         qq_connection_mode: Optional[str] = None,
         qq_open_app_id: Optional[str] = None,
         qq_open_client_secret: Optional[str] = None,
+        enable_group_attention: Optional[bool] = None,
+        group_attention_decay_per_second: Optional[float] = None,
+        group_attention_message_recovery: Optional[float] = None,
+        group_attention_reply_penalty: Optional[float] = None,
+        group_attention_keyword_boost_scale: Optional[float] = None,
+        group_attention_focus_lock_seconds: Optional[int] = None,
+        group_attention_focus_rise_seconds: Optional[int] = None,
+        group_attention_focus_cooldown_seconds: Optional[int] = None,
+        group_attention_max_score: Optional[float] = None,
+        group_attention_focus_threshold: Optional[float] = None,
+        group_attention_min_threshold: Optional[float] = None,
+        group_attention_message_gain: Optional[float] = None,
+        icebreaker_cold_threshold: Optional[int] = None,
         **_,
     ):
         return await self.dashboard_service.save_settings(
@@ -972,6 +985,19 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             qq_connection_mode=qq_connection_mode,
             qq_open_app_id=qq_open_app_id,
             qq_open_client_secret=qq_open_client_secret,
+            enable_group_attention=enable_group_attention,
+            group_attention_decay_per_second=group_attention_decay_per_second,
+            group_attention_message_recovery=group_attention_message_recovery,
+            group_attention_reply_penalty=group_attention_reply_penalty,
+            group_attention_keyword_boost_scale=group_attention_keyword_boost_scale,
+            group_attention_focus_lock_seconds=group_attention_focus_lock_seconds,
+            group_attention_focus_rise_seconds=group_attention_focus_rise_seconds,
+            group_attention_focus_cooldown_seconds=group_attention_focus_cooldown_seconds,
+            group_attention_max_score=group_attention_max_score,
+            group_attention_focus_threshold=group_attention_focus_threshold,
+            group_attention_min_threshold=group_attention_min_threshold,
+            group_attention_message_gain=group_attention_message_gain,
+            icebreaker_cold_threshold=icebreaker_cold_threshold,
         )
 
     @ui.action(id="add_trusted_user", label=tr("entries.add_trusted_user.name", default="添加信任用户"), refresh_context=True)

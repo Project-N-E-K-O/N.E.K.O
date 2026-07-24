@@ -180,6 +180,19 @@ class QQDashboardService:
         qq_connection_mode: Optional[str] = None,
         qq_open_app_id: Optional[str] = None,
         qq_open_client_secret: Optional[str] = None,
+        enable_group_attention: Optional[bool] = None,
+        group_attention_decay_per_second: Optional[float] = None,
+        group_attention_message_recovery: Optional[float] = None,
+        group_attention_reply_penalty: Optional[float] = None,
+        group_attention_keyword_boost_scale: Optional[float] = None,
+        group_attention_focus_lock_seconds: Optional[int] = None,
+        group_attention_focus_rise_seconds: Optional[int] = None,
+        group_attention_focus_cooldown_seconds: Optional[int] = None,
+        group_attention_max_score: Optional[float] = None,
+        group_attention_focus_threshold: Optional[float] = None,
+        group_attention_min_threshold: Optional[float] = None,
+        group_attention_message_gain: Optional[float] = None,
+        icebreaker_cold_threshold: Optional[int] = None,
     ):
         try:
             result = await self.plugin.settings_service.save_settings(
@@ -202,6 +215,19 @@ class QQDashboardService:
                 qq_connection_mode=qq_connection_mode,
                 qq_open_app_id=qq_open_app_id,
                 qq_open_client_secret=qq_open_client_secret,
+                enable_group_attention=enable_group_attention,
+                group_attention_decay_per_second=group_attention_decay_per_second,
+                group_attention_message_recovery=group_attention_message_recovery,
+                group_attention_reply_penalty=group_attention_reply_penalty,
+                group_attention_keyword_boost_scale=group_attention_keyword_boost_scale,
+                group_attention_focus_lock_seconds=group_attention_focus_lock_seconds,
+                group_attention_focus_rise_seconds=group_attention_focus_rise_seconds,
+                group_attention_focus_cooldown_seconds=group_attention_focus_cooldown_seconds,
+                group_attention_max_score=group_attention_max_score,
+                group_attention_focus_threshold=group_attention_focus_threshold,
+                group_attention_min_threshold=group_attention_min_threshold,
+                group_attention_message_gain=group_attention_message_gain,
+                icebreaker_cold_threshold=icebreaker_cold_threshold,
             )
         except ValueError as exc:
             message = str(exc)

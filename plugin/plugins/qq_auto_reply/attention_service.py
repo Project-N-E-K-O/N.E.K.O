@@ -289,7 +289,7 @@ class QQAttentionService:
         return max(10, int((self.plugin._qq_settings or {}).get("group_attention_focus_cooldown_seconds", 60) or 60))
 
     def _focus_rise_seconds(self) -> int:
-        return max(0, int((self.plugin._qq_settings or {}).get("group_attention_focus_rise_seconds", 120) or 120))
+        return max(0, int((self.plugin._qq_settings or {}).get("group_attention_focus_rise_seconds", 30) or 30))
 
     def _normalize_state(self, state: QQGroupAttentionState) -> QQGroupAttentionState:
         max_attention = self._max_attention()

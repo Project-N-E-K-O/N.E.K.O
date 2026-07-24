@@ -73,6 +73,7 @@ class QQAttentionGateService:
         self._focus_shifting: bool = False
         self._retroactive_lock = asyncio.Lock()
         self._digest_tasks: set[asyncio.Task] = set()
+        self._cold_focus_count: dict[str, int] = {}  # 群 → 连续冷场切换次数（无未审消息的焦点切换）
         self._logger = plugin.logger
 
     # ==========================================
@@ -255,36 +256,33 @@ class QQAttentionGateService:
         unreviewed = await self.plugin.backlog_store.get_unreviewed_messages_since(group_id, since_timestamp=since, limit=max_messages)
         if not unreviewed:
             self._logger.info(f"[RetroReview] 群 {group_id} 无未审核消息，跳过回溯")
+            # 多次焦点切到此群都没有未审消息 → 群可能冷场，尝试破冰
+            count = self._cold_focus_count.get(group_id, 0) + 1
+            self._cold_focus_count[group_id] = count
+            threshold = max(1, int((self.plugin._qq_settings or {}).get("icebreaker_cold_threshold", 3) or 3))
+            if count >= threshold:
+                self._logger.info(f"[RetroReview] 群 {group_id} 连续 {count} 次冷场切换，尝试破冰")
+                await self._try_icebreaker(group_id)
+                self._cold_focus_count[group_id] = 0
             try:
                 await self.plugin.backlog_service.mark_group_reviewed_payload(group_id)
             except Exception:
                 pass
             return []
 
-        max_messages = int((self.plugin._qq_settings or {}).get("retroactive_review_max_messages", 30) or 30)
+        # 有未审消息 → 群有活动，重置冷场计数
+        self._cold_focus_count.pop(group_id, None)
 
         self._logger.info(f"[RetroReview] 群 {group_id} 有 {len(unreviewed)} 条未审核消息，开始回溯")
 
-        # 2. 生成摘要 → LLM 挑选（走 OmniOfflineClient 兼容 Lanlan）
+        # 2. 生成摘要 → LLM 挑选
         summary = self._build_ignored_summary(unreviewed)
         pick_indices = await self._ask_llm_pick_messages(summary, len(unreviewed))
+        if pick_indices is None:
+            self._logger.warning("[RetroReview] LLM 挑选不可用，保留 backlog 等待下次回溯")
+            return []
         if not pick_indices:
             self._logger.info(f"[RetroReview] LLM 判定无需补回任何消息")
-            # 焦点切换但无遗漏消息时，用主动话题破冰
-            topic = self._pick_proactive_topic()
-            if topic:
-                # 检查疲劳和睡眠，避免休眠中发破冰消息
-                fatigue = getattr(self.plugin, "fatigue_service", None)
-                if fatigue and fatigue.check_sleeping(f"group:{group_id}"):
-                    self._logger.info("[RetroReview] 睡眠中，跳过破冰")
-                elif fatigue and fatigue.calculate_fatigue(f"group:{group_id}") > 60:
-                    self._logger.info("[RetroReview] 疲劳过高，跳过破冰")
-                else:
-                    self._logger.info(f"[RetroReview] 发送破冰话题: {topic[:40]}")
-                    try:
-                        await self._send_proactive_opening(group_id, topic)
-                    except Exception as e:
-                        self._logger.warning(f"[RetroReview] 破冰话题发送失败: {e}")
             attention.mark_focus(group_id)
             try:
                 await self.plugin.backlog_service.mark_group_reviewed_payload(group_id)
@@ -336,6 +334,33 @@ class QQAttentionGateService:
         self._last_proactive_topic_idx = topics.index(topic)
         return topic
 
+    async def _try_icebreaker(self, group_id: str) -> bool:
+        """尝试对冷场群发送破冰话题。返回 True 表示已发送。"""
+        # 若该群已有缓冲回复待交付，跳过——避免和正常回复撞车
+        if getattr(self.plugin, "reply_buffer_service", None):
+            gkey = self.plugin._build_session_key(sender_id=group_id, is_group=True, group_id=group_id)
+            if self.plugin.reply_buffer_service.has_pending(gkey):
+                self._logger.info("[RetroReview] 群有缓冲回复待交付，跳过破冰")
+                return False
+        # 检查疲劳和睡眠
+        fatigue = getattr(self.plugin, "fatigue_service", None)
+        if fatigue and fatigue.check_sleeping(f"group:{group_id}"):
+            self._logger.info("[RetroReview] 睡眠中，跳过破冰")
+            return False
+        if fatigue and fatigue.calculate_fatigue(f"group:{group_id}") > 60:
+            self._logger.info("[RetroReview] 疲劳过高，跳过破冰")
+            return False
+        topic = self._pick_proactive_topic()
+        if not topic:
+            return False
+        self._logger.info(f"[RetroReview] 发送破冰话题: {topic[:40]}")
+        try:
+            await self._send_proactive_opening(group_id, topic)
+            return True
+        except Exception as e:
+            self._logger.warning(f"[RetroReview] 破冰话题发送失败: {e}")
+            return False
+
     async def _send_proactive_opening(self, group_id: str, topic: str) -> bool:
         """焦点切换后用主动话题破冰。"""
         from .pipeline_models import QQReplyRequest
@@ -373,8 +398,9 @@ class QQAttentionGateService:
             lines.append(f"[{i}] {nickname}: {text}")
         return "\n".join(lines)
 
-    async def _ask_llm_pick_messages(self, summary: str, total_count: int) -> list[int]:
-        """让 LLM 从摘要中挑选需要回复的消息编号"""
+    async def _ask_llm_pick_messages(self, summary: str, total_count: int) -> list[int] | None:
+        """让 LLM 从摘要中挑选需要回复的消息编号。
+        返回 None 表示调用失败（保留 backlog 等下次回溯），返回 [] 表示 LLM 判定无需回复。"""
         import json
 
         prompt = self._RETROACTIVE_PICK_PROMPT.format(summary=summary)
@@ -387,19 +413,21 @@ class QQAttentionGateService:
             api_key = str(_mc.get("api_key") or "").strip()
             if not base_url or not model:
                 self._logger.warning("[RetroReview] agent 模型未配置，跳过回溯挑选")
-                return []
+                return None
 
-            # 走 OmniOfflineClient（兼容 Lanlan 协议）
+            # 使用项目统一 LLM 客户端（create_chat_llm_async），避免 OmniOfflineClient 的 Lanlan 兼容问题
             raw = ""
             try:
-                from main_logic.omni_offline_client import OmniOfflineClient
-                resp_text = ""
-                async def _on_text(t: str, _first: bool = False) -> None:
-                    nonlocal resp_text
-                    resp_text += t
-                client = OmniOfflineClient(base_url=base_url, api_key=api_key, model=model, on_text_delta=_on_text)
-                await asyncio.wait_for(client.stream_text(prompt), timeout=10.0)
-                raw = resp_text.strip()
+                from utils.llm_client import create_chat_llm_async
+                llm = await create_chat_llm_async(
+                    model=model, base_url=base_url, api_key=api_key,
+                    max_completion_tokens=80, timeout=10.0, provider_type=_mc.get("provider_type"),
+                )
+                resp = await asyncio.wait_for(
+                    llm.ainvoke([{"role": "user", "content": prompt}]),
+                    timeout=10.0,
+                )
+                raw = str(getattr(resp, "content", "") or "").strip()
             except Exception:
                 raw = ""
 
@@ -410,10 +438,13 @@ class QQAttentionGateService:
                 picks = json.loads(json_str)
                 if isinstance(picks, list):
                     return [int(p) for p in picks if isinstance(p, (int, float)) and 1 <= int(p) <= total_count]
-            return []
+                self._logger.warning("[RetroReview] LLM 挑选结果不是 JSON 数组")
+                return None
+            self._logger.warning("[RetroReview] LLM 挑选返回为空")
+            return None
         except Exception as e:
             self._logger.warning(f"[RetroReview] LLM 挑选失败: {e}")
-            return []
+            return None
 
     async def _reply_to_ignored_message(self, group_id: str, msg: dict[str, Any]) -> bool:
         """对单条被忽略的消息生成回复 — 传给 LLM 让它自己决定用 <reply> 还是直接回复。"""
@@ -518,6 +549,7 @@ class QQAttentionGateService:
     async def shutdown(self) -> None:
         self._last_focus_group = ""
         self._focus_shifting = False
+        self._cold_focus_count.clear()
         digest_tasks = list(self._digest_tasks)
         for task in digest_tasks:
             if not task.done():

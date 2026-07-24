@@ -220,6 +220,14 @@ class QQReplyPipelineRunner:
                 for b in (delivery_plan.blocks or [])
             )
             if not has_content:
+                # 空回复（如 <msg></msg>）→ 取消对应缓冲桶，避免 _flush 空等 30 次
+                buf_sid = request.group_id if request.is_group else request.sender_id
+                session_key = self.plugin._build_session_key(sender_id=buf_sid, is_group=request.is_group, group_id=request.group_id)
+                p = self.plugin.reply_buffer_service._pending.get(session_key)
+                if p and p.task and not p.task.done():
+                    p.task.cancel()
+                self.plugin.reply_buffer_service._pending.pop(session_key, None)
+                self.plugin._emit_log("DEBUG", f"[Buffer] 空回复，取消缓冲 key={session_key}")
                 from .pipeline_models import QQDeliveryResult
                 return QQDeliveryResult(delivered=False, target_type=delivery_plan.target_type, target_id=delivery_plan.target_id, reply_text=None)
             buf_sid = request.group_id if request.is_group else request.sender_id

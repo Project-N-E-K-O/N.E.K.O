@@ -102,7 +102,7 @@ class QQAutoReplyConfigStore:
             "group_attention_reply_penalty": 1.3,
             "group_attention_keyword_boost_scale": 2.5,
             "group_attention_focus_lock_seconds": 120,
-            "group_attention_focus_rise_seconds": 120,
+            "group_attention_focus_rise_seconds": 30,
             "group_attention_max_score": 10.0,
             "group_attention_focus_threshold": 4.0,
             "group_attention_min_threshold": 1.0,
