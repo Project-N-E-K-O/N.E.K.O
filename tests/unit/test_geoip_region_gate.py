@@ -400,11 +400,16 @@ def test_session_start_does_not_wait_when_no_probe_is_running():
 
 
 @pytest.mark.unit
-def test_session_start_logs_when_the_wait_expires(monkeypatch, caplog):
+def test_session_start_logs_when_the_wait_expires(monkeypatch):
     """Waiting forever is not an option, so the give-up must at least be diagnosable.
 
     Without this line, "an overseas user is occasionally slow for a whole session"
     leaves no trace in the logs at all.
+
+    Records straight off the module logger rather than via ``caplog``: the app's own
+    logging setup puts ``propagate=False`` on the ``N.E.K.O`` parent, so caplog's
+    root handler sees nothing once any test has pulled that setup in — which made
+    the first version of this test pass or fail purely on import order.
     """
     release = threading.Event()
 
@@ -416,12 +421,18 @@ def test_session_start_logs_when_the_wait_expires(monkeypatch, caplog):
     import urllib.request
     monkeypatch.setattr(urllib.request, 'build_opener', lambda *a, **kw: _HangingOpener())
 
+    warnings = []
+    monkeypatch.setattr(
+        core_config_mod.logger,
+        'warning',
+        lambda msg, *a, **kw: warnings.append(str(msg) % a if a else str(msg)),
+    )
+
     probe = _Probe()
     ConfigManager._check_ip_non_mainland_http()
     try:
-        with caplog.at_level('WARNING'):
-            assert asyncio.run(probe.aensure_region_resolved(timeout=0.1)) is False
-        assert any('GeoIP' in r.message for r in caplog.records), '放弃等待必须留下日志'
+        assert asyncio.run(probe.aensure_region_resolved(timeout=0.1)) is False
+        assert any('GeoIP' in w for w in warnings), f'放弃等待必须留下日志，实际: {warnings}'
     finally:
         release.set()
         thread = ConfigManager._ip_probe_thread
