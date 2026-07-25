@@ -169,8 +169,19 @@ async def ensure_default_yui_voice_for_free_api(config_manager, core_cfg: dict |
     # 要求每个调用方（含测试替身）都实现它。
     from utils.config_manager import ConfigManager
 
+    # needs_region 这道门必须拿**组装后**的配置判，不能拿调用方传进来的那份：保存
+    # 路径传的是持久化的 raw 配置，里面只有 coreApi / assistApi 这类选择字段，压根
+    # 没有 *_URL（URL 是 get_core_config 按 profile 组装时才填的）。拿 raw 判会恒为
+    # False，于是跳过区域判定、把**所有**海外免费用户永久绑成大陆 yui_cn——正好是
+    # 这个函数最不能出错的地方。provisional 守卫用的也是组装配置，两边就此一致。
+    try:
+        assembled_cfg = await config_manager.aget_core_config() or {}
+    except Exception:
+        logger.debug("[GeoIP] 读取组装后的核心配置失败，跳过本轮默认音色绑定", exc_info=True)
+        return False
+
     overseas = False
-    if ConfigManager._config_needs_region(core_cfg or {}, ConfigManager._REGION_HOSTS_ADJUSTED):
+    if ConfigManager._config_needs_region(assembled_cfg, ConfigManager._REGION_HOSTS_ADJUSTED):
         try:
             overseas = bool(config_manager._check_non_mainland())
         except Exception:

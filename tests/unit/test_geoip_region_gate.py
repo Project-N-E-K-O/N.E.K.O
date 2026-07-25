@@ -1491,7 +1491,7 @@ def test_region_sensitive_voice_endpoints_settle_first():
     assert not missing, f'这些端点按区域出音色目录却未先落定: {missing}'
 
 
-def _yui_binding_manager(authoritative_cfg, saved, probe_calls=None):
+def _yui_binding_manager(authoritative_cfg, saved, probe_calls=None, non_mainland=False):
     """A minimal manager for ``ensure_default_yui_voice_for_free_api``."""
 
     class _CM:
@@ -1521,7 +1521,7 @@ def _yui_binding_manager(authoritative_cfg, saved, probe_calls=None):
             # 结果完全一样——抛异常的断言测不出差别（变异实测漏过）。
             if probe_calls is not None:
                 probe_calls['n'] += 1
-            return False
+            return non_mainland
 
     return _CM()
 
@@ -1612,3 +1612,93 @@ def test_newly_selected_free_route_wakes_a_backed_off_probe(config_manager, monk
     _read('qwen')
     _read('free')
     assert kicks['n'] == 2, '切走再切回是新的一次边沿，应再催一次'
+
+
+@pytest.mark.unit
+def test_yui_binding_survives_a_raw_config_without_urls():
+    """The config-save caller passes the *persisted* config, which has no URLs.
+
+    core_config.json holds only route-selection fields (coreApi / assistApi);
+    every ``*_URL`` is assembled by ``get_core_config`` from the profile. Gating
+    the region check on that raw dict makes it look like nothing depends on the
+    region, which binds every overseas user to the mainland voice — permanently,
+    since a nonempty voice is never overwritten.
+    """
+    saved = {}
+    raw = {'coreApi': 'free', 'assistApi': 'free'}       # 持久化形态：一个 URL 都没有
+    assembled = {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.app/core'}
+    cm = _yui_binding_manager(assembled, saved, non_mainland=True)
+
+    ok = asyncio.run(config_manager_pkg.ensure_default_yui_voice_for_free_api(cm, raw))
+    assert ok is True
+    assert saved.get('voice_id') == 'yui',         f'拿没有 URL 的 raw 配置判「是否依赖区域」，把海外用户绑成了大陆音色: {saved}'
+
+
+@pytest.mark.unit
+def test_paths_that_pick_a_voice_and_build_a_tts_url_settle_first():
+    """One operation reading the region twice must pin it once, up front.
+
+    Picking the voice reads the region-dependent catalog; building the TTS
+    endpoint reads the region again. A verdict landing between them sends a
+    mainland ``free_voices`` id to ``lanlan.app`` (or the reverse), and the two
+    catalogs are disjoint, so that synthesis simply fails. Discovered from the
+    pair of calls rather than a hardcoded file list.
+    """
+    import ast
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    missing = []
+    checked = []
+    for base in ('plugin', 'main_routers'):
+        for source in (root / base).rglob('*.py'):
+            try:
+                tree = ast.parse(source.read_text(encoding='utf-8'))
+            except (SyntaxError, UnicodeDecodeError):
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                calls = {getattr(c.func, 'attr', None) or getattr(c.func, 'id', None)
+                         for c in ast.walk(node) if isinstance(c, ast.Call)}
+                if not ({'get_voices_for_current_api', '_adjust_free_tts_url'} <= calls):
+                    continue
+                rel = source.relative_to(root).as_posix()
+                checked.append(f'{rel}::{node.name}')
+                if 'aensure_region_resolved' not in calls:
+                    missing.append(f'{rel}::{node.name} (line {node.lineno})')
+
+    assert checked, '未找到任何「挑音色 + 拼 TTS 端点」的路径，断言失效'
+    assert not missing, f'这些路径在一次操作里两次读区域却未先落定: {missing}'
+
+
+@pytest.mark.unit
+def test_agent_deduper_is_built_after_the_region_settles():
+    """``TaskDeduper`` freezes the ``summary`` base URL in ``__init__`` forever.
+
+    It caches the built client on ``self.llm``, so a transient mainland answer
+    pins every later duplicate check for the whole process. agent_server running
+    as its own process never sees the main server's warmup. Distinct from the
+    Agent proxy, which is deliberately exempt from the region rewrite.
+    """
+    import ast
+    import pathlib
+
+    source = (pathlib.Path(__file__).resolve().parents[2]
+              / 'app' / 'agent_server' / 'api_runtime.py')
+    tree = ast.parse(source.read_text(encoding='utf-8'))
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.AsyncFunctionDef) or node.name != 'startup':
+            continue
+        settles = [c.lineno for c in ast.walk(node)
+                   if isinstance(c, ast.Call) and getattr(c.func, 'attr', None) == 'aensure_region_resolved']
+        builds = [c.lineno for c in ast.walk(node)
+                  if isinstance(c, ast.Call) and getattr(c.func, 'id', None) == 'TaskDeduper']
+        assert builds, '未找到 TaskDeduper 构造，断言失效'
+        assert settles, 'agent_server 启动未落定区域判定'
+        assert min(settles) < min(builds), \
+            f'落定(line {min(settles)}) 必须早于 TaskDeduper 构造(line {min(builds)})'
+        break
+    else:
+        pytest.fail('未找到 agent_server startup，断言失效')

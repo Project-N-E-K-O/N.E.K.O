@@ -541,6 +541,16 @@ async def startup():
         browser_use=None,
         openclaw=Modules.openclaw,
     )
+    # TaskDeduper 在 __init__ 里就把 summary 路由的 base_url 定死并缓存 client，整
+    # 个进程生命周期不再复议。agent_server 作为独立进程跑时不经过 main_server 的
+    # GeoIP 预热，海外用户于是被那一瞬的大陆兜底钉住——而 summary 是区域敏感路由
+    # （不同于有意豁免改写的 agent 专用 URL）。构造前先落定。
+    try:
+        from utils.config_manager import get_config_manager as _get_cm
+        if not await _get_cm().aensure_region_resolved():
+            logger.warning("[GeoIP] Agent 去重器构造前区域判定仍未落定，本进程按大陆线路构造")
+    except Exception as e:
+        logger.warning(f"[GeoIP] Agent 去重器构造前区域落定失败，按当前配置继续: {e}")
     Modules.deduper = TaskDeduper()
     Modules.throttled_logger = ThrottledLogger(logger, interval=30.0)
     _rewire_computer_use_dependents()

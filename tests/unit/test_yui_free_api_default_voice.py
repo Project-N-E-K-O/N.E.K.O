@@ -15,7 +15,20 @@ YUI_FREE_VOICE_ID = "voice-tone-RcH2svtsrw"
 class _FakeConfigManager:
     def __init__(self, characters: dict, core_config: dict | None = None, non_mainland: bool = False):
         self.characters = deepcopy(characters)
-        self.core_config = deepcopy(core_config or {})
+        # 生产里 aget_core_config() 返回的是**组装后**的配置——URL 由 get_core_config
+        # 按 profile 填，持久化的 raw 里只有 coreApi / assistApi。替身默认也给一份带
+        # URL 的免费快照，否则「这条线路是否依赖区域判定」那道门会失真（拿不到 URL
+        # 就恒判为不依赖，把海外用户绑成大陆音色）。
+        if core_config is None:
+            core_config = {
+                'coreApi': 'free',
+                'assistApi': 'free',
+                'CORE_URL': (
+                    'wss://www.lanlan.app/core' if non_mainland
+                    else 'wss://www.lanlan.tech/core'
+                ),
+            }
+        self.core_config = deepcopy(core_config)
         self.saved_characters = None
         self._non_mainland = non_mainland
 
