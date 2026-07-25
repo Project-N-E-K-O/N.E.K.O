@@ -1264,9 +1264,9 @@ class CoreConfigMixin:
         # 时退化成对 ip-api.com 的请求风暴。进程首次读到免费路由时同样是边沿，但那时
         # 探测线程还没起（_ensure_ip_probe_started 在下面的 _check_non_mainland 里），
         # _kick_ip_probe 见 thread is None 直接 no-op，不会平白吃掉首轮退避。
-        from utils.config_manager import ConfigManager as _CM
-        if needs_region != _CM._free_route_selected:
-            _CM._free_route_selected = needs_region
+        from utils.config_manager import ConfigManager
+        if needs_region != ConfigManager._free_route_selected:
+            ConfigManager._free_route_selected = needs_region
             if needs_region:
                 self._kick_ip_probe()
         snapshot_non_mainland = False

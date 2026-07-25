@@ -1538,8 +1538,6 @@ def test_yui_binding_ignores_a_stale_caller_snapshot(monkeypatch):
     no later session could correct it. The two free catalogs are disjoint, so
     that card would simply never get its voice.
     """
-    from utils.config_manager import ensure_default_yui_voice_for_free_api
-
     monkeypatch.setattr(ConfigManager, '_region_cache', False)      # 权威结论：大陆
     saved = {}
     stale = {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.app/core'}
@@ -1547,7 +1545,7 @@ def test_yui_binding_ignores_a_stale_caller_snapshot(monkeypatch):
     cm = _yui_binding_manager(authoritative, saved)
     cm._check_non_mainland = lambda: ConfigManager._region_cache
 
-    assert asyncio.run(ensure_default_yui_voice_for_free_api(cm, stale)) is True
+    assert asyncio.run(config_manager_pkg.ensure_default_yui_voice_for_free_api(cm, stale)) is True
     assert saved.get('voice_id') and saved['voice_id'] != 'yui', \
         f'用了调用方的陈旧 .app 快照，给大陆用户绑了海外音色: {saved}'
 
@@ -1561,8 +1559,6 @@ def test_yui_binding_does_not_probe_for_a_livestream_derived_route():
     is exactly what invariant #2 forbids. They bind the mainland free voice:
     what livestream derives is the equivalent of the ``lanlan.tech`` layout.
     """
-    from utils.config_manager import ensure_default_yui_voice_for_free_api
-
     saved = {}
     derived = {
         'coreApi': 'free',
@@ -1572,7 +1568,7 @@ def test_yui_binding_does_not_probe_for_a_livestream_derived_route():
     probe_calls = {'n': 0}
     cm = _yui_binding_manager(derived, saved, probe_calls)
 
-    assert asyncio.run(ensure_default_yui_voice_for_free_api(cm, dict(derived))) is True
+    assert asyncio.run(config_manager_pkg.ensure_default_yui_voice_for_free_api(cm, dict(derived))) is True
     assert probe_calls['n'] == 0, '_check_non_mainland 内部会起探测，这条线路不该问它'
     assert saved.get('voice_id') and saved['voice_id'] != 'yui'
     assert ConfigManager._ip_probe_thread is None, '不该为绑音色起 GeoIP 探测'
