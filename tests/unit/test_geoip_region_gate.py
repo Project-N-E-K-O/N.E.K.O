@@ -67,8 +67,7 @@ class _JsonResp:
 @pytest.fixture()
 def config_manager(clean_user_data_dir):
     """Real ConfigManager on a temp config dir (mirrors test_api_config_manager)."""
-    from utils.config_manager import get_config_manager
-    cm = get_config_manager('N.E.K.O')
+    cm = config_manager_pkg.get_config_manager('N.E.K.O')
     cm.config_dir.mkdir(parents=True, exist_ok=True)
     return cm
 
