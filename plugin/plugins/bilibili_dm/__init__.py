@@ -979,8 +979,8 @@ class BiliDMPlugin(NekoPluginBase):
             if session_key not in self._user_sessions:
                 try:
                     await config_manager.aensure_region_resolved()
-                except Exception:
-                    logger.warning("[GeoIP] 插件会话区域落定失败，退化到当前配置继续", exc_info=True)
+                except Exception as _geo_err:
+                    self.logger.warning(f"[GeoIP] 插件会话区域落定失败，退化到当前配置继续: {_geo_err}")
 
             # 获取对话模型配置
             conversation_config = config_manager.get_model_api_config("conversation")

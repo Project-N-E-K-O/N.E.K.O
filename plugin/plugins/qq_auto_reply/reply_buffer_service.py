@@ -348,7 +348,7 @@ class QQReplyBufferService:
             try:
                 await _cm.aensure_region_resolved()
             except Exception as _geo_err:
-                self.logger.warning(f"[GeoIP] 区域落定失败，退化到当前配置继续: {_geo_err}")
+                self.plugin._emit_log("WARN", f"[GeoIP] 区域落定失败，退化到当前配置继续: {_geo_err}")
             _mc = _cm.get_model_api_config("conversation")
             resp_text = ""
             async def _on_text(t: str, _first: bool = False) -> None:

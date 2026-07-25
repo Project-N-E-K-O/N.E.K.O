@@ -1077,3 +1077,58 @@ def test_malformed_livestream_prefix_still_needs_the_region(monkeypatch):
         config_manager_pkg, 'get_livestream_config',
         lambda: {'server_prefix': 'https://live.example/tok'})
     assert ConfigManager._config_needs_region(cfg) is False
+
+
+@pytest.mark.unit
+def test_plugin_geoip_fallback_logging_uses_a_real_facility():
+    """The fail-open handler must not raise on its own.
+
+    These handlers exist so a probe error cannot stop a plugin session. Logging
+    through an attribute the class does not define turns that inside out: the
+    ``except`` raises ``AttributeError``, the original error is lost, and fail-open
+    becomes fail-closed. Copying a logging idiom between plugin files is exactly how
+    that slipped in twice, so check each site against its own class.
+    """
+    import ast
+
+    problems = []
+    for path in _plugin_files_constructing_offline_clients():
+        source = path.read_text(encoding='utf-8')
+        tree = ast.parse(source)
+        lines = source.split('\n')
+
+        for lineno, line in enumerate(lines, 1):
+            if 'GeoIP' not in line or ('warning' not in line and '_emit_log' not in line):
+                continue
+            owner = None
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.ClassDef)
+                        and node.lineno <= lineno <= node.end_lineno):
+                    owner = node
+            if owner is None:
+                problems.append(f'{path.name}:{lineno} 不在任何类内')
+                continue
+
+            body = lines[owner.lineno - 1:owner.end_lineno]
+            expr = line.strip()
+            if 'self.plugin.' in expr:
+                attr = expr.split('self.plugin.')[1].split('(')[0]
+                # 同类里别处也这么用 → 是该插件的既有惯例
+                ok = sum(1 for x in body if f'self.plugin.{attr}' in x) > 1
+                what = f'self.plugin.{attr}'
+            elif 'self.logger' in expr:
+                ok = 'logger' in {
+                    t.attr for n in ast.walk(owner) if isinstance(n, ast.Assign)
+                    for t in n.targets if isinstance(t, ast.Attribute)
+                    and isinstance(t.value, ast.Name) and t.value.id == 'self'
+                }
+                what = 'self.logger'
+            else:
+                ok, what = False, expr[:40]
+            if not ok:
+                problems.append(f'{path.name}:{lineno} [{owner.name}] 用了 {what}')
+
+    assert not problems, (
+        'GeoIP fail-open 处理器用了该类不存在的日志设施（会在 except 里再抛）: '
+        + '; '.join(problems)
+    )
