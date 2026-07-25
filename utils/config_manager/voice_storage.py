@@ -932,12 +932,11 @@ class VoiceStorageMixin:
             # get_core_config() 返回的是已改写快照，Steam 临时判海外时 URL 已经变成
             # lanlan.app，按 URL host 判会得出「这是自配线路」而放行清理——恰好在这个
             # 守卫最该生效的场景下失效。
-            provider = cfg.get('CORE_API_TYPE') or cfg.get('coreApi')
-            if not provider:
-                # 读不到路由选择（配置残缺）：这是要删用户数据的路径，宁可不删。
-                # 正常 get_core_config() 一定带这个字段，所以不会平白推迟清理。
+            if not (cfg.get('CORE_API_TYPE') or cfg.get('coreApi') or cfg.get('assistApi')):
+                # 读不到任何路由选择（配置残缺）：这是要删用户数据的路径，宁可不删。
+                # 正常 get_core_config() 一定带这些字段，所以不会平白推迟清理。
                 return True
-            return str(provider) == 'free'
+            return ConfigManager._any_free_provider(cfg)
         except Exception:
             logger.debug("[GeoIP] 区域落定状态判断失败，保守视为未落定", exc_info=True)
             return True         # 判断不了就别删——保守方向是不动用户数据

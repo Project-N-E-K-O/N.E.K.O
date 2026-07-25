@@ -107,6 +107,26 @@ class CoreConfigMixin:
     _REGION_HOSTS_RAW = ('lanlan.tech',)
     _REGION_HOSTS_ADJUSTED = ('lanlan.tech', 'lanlan.app')
 
+    @staticmethod
+    def _any_free_provider(config) -> bool:
+        """Whether any provider slot selects the free route.
+
+        Region rewriting runs over *every* ``*_URL`` key, so a paid core with
+        ``assistApi='free'`` still has a lanlan.tech assist URL that depends on the
+        verdict. Looking at the core slot alone would stop the probe for those users
+        and leave that URL on the mainland endpoint.
+
+        These fields are not touched by the rewrite, which is what makes them usable
+        for telling "free URL rewritten to .app" apart from "custom endpoint the user
+        happened to host at .app".
+        """
+        cfg = config or {}
+        return 'free' in {
+            str(cfg.get('CORE_API_TYPE') or ''),
+            str(cfg.get('coreApi') or ''),
+            str(cfg.get('assistApi') or ''),
+        }
+
     @classmethod
     def _config_needs_region(cls, config, hosts=None) -> bool:
         """Whether this config actually has a URL whose route depends on the region.
@@ -240,10 +260,10 @@ class CoreConfigMixin:
 
         try:
             cfg = get_config_manager().get_core_config() or {}
-            # 先看**路由选择**：这个字段不会被区域改写，所以能区分「免费线路被改写成
+            # 先看**路由选择**：这些字段不会被区域改写，所以能区分「免费线路被改写成
             # lanlan.app」和「用户自己就把自配端点配在 lanlan.app」。只靠 URL host 判
             # 会把后者也当成免费路由，用户切走了却还在敲 ip-api.com。
-            if str(cfg.get('CORE_API_TYPE') or cfg.get('coreApi') or '') != 'free':
+            if not ConfigManager._any_free_provider(cfg):
                 return False
             # 仍是免费路由：再确认确实有 URL 需要区域判定（livestream 可能已全接管）。
             # 这里读到的是**已改写**的快照，故用 ADJUSTED 集合。

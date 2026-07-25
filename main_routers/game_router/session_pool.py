@@ -177,6 +177,16 @@ async def _get_or_create_session(
             # 落定可能改变线路（lanlan.tech → lanlan.app），而上面那份 char_info 是
             # 落定之前读的。重读一次，确保建出来的 client 用的是最终线路。
             char_info = _get_character_info(lanlan_name)
+            # 等待期间当前角色也可能被切换，重读会带回不同的 lanlan_name——那 key 就
+            # 变了。必须跟着重算并复查缓存，否则会把新角色的 client 挂到旧 key 上。
+            canonical_lanlan = str(char_info.get("lanlan_name") or lanlan_name or "").strip()
+            refreshed_key = _game_session_key(canonical_lanlan, game_type, session_id)
+            if refreshed_key != canonical_key:
+                canonical_key = refreshed_key
+                if canonical_key in _game_sessions:
+                    entry = _game_sessions[canonical_key]
+                    entry['last_activity'] = time.time()
+                    return entry
     except Exception:
         logger.warning("[GeoIP] 游戏会话区域落定失败，退化到当前配置继续", exc_info=True)
 

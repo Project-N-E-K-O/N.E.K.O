@@ -853,35 +853,6 @@ def test_startup_warmup_runs_after_runtime_config_is_finalized():
         'GeoIP 预热必须早于解除 limited mode，否则会话可在区域未落定时进来'
 
 
-@pytest.mark.unit
-def test_custom_url_merely_containing_the_brand_string_is_not_a_free_route():
-    """Eligibility keys on hostname, not substring.
-
-    A custom endpoint like ``https://custom.example/v1/lanlan.tech`` is not the
-    official free route; treating it as one starts the probe and discloses the
-    user's IP for nothing.
-    """
-    assert ConfigManager._config_needs_region(
-        {'CORE_URL': 'https://custom.example/v1/lanlan.tech'}) is False
-    assert ConfigManager._config_needs_region(
-        {'CORE_URL': 'https://lanlan.tech.evil.example/core'}) is False
-    assert ConfigManager._config_needs_region(
-        {'CORE_URL': 'wss://www.lanlan.tech/core'}) is True
-
-
-@pytest.mark.unit
-def test_eligibility_recheck_survives_the_overseas_rewrite():
-    """The loop re-checks against an *already adjusted* snapshot.
-
-    Once the region resolves overseas, ``get_core_config`` hands back ``lanlan.app``
-    URLs. If eligibility only recognised ``lanlan.tech``, a Steam-overseas user with
-    the IP probe still unresolved would look like "no longer on the free route" and
-    the probe would quit after its first failure.
-    """
-    assert ConfigManager._config_needs_region(
-        {'CORE_URL': 'wss://www.lanlan.app/core'}) is True
-
-
 def _plugin_files_constructing_offline_clients():
     """Every plugin file that builds an OmniOfflineClient — discovered, not listed.
 
@@ -1219,9 +1190,8 @@ def test_voice_cleanup_is_skipped_while_the_region_is_provisional(monkeypatch):
     characters.json. The verdict landing a second later fixes the endpoint but
     cannot restore the user's choice — so cleanup waits instead.
     """
-    from utils.config_manager import voice_storage as vs_mod
 
-    class _CM(vs_mod.VoiceStorageMixin):
+    class _CM(config_manager_pkg.voice_storage.VoiceStorageMixin):
         def __init__(self, cfg):
             self._cfg = cfg
 
@@ -1256,9 +1226,8 @@ def test_voice_cleanup_is_skipped_while_the_region_is_provisional(monkeypatch):
     (None, {'CORE_URL': 'wss://www.lanlan.tech/core'}, True),
 ])
 def test_provisional_region_predicate(monkeypatch, region, cfg, provisional):
-    from utils.config_manager import voice_storage as vs_mod
 
-    class _CM(vs_mod.VoiceStorageMixin):
+    class _CM(config_manager_pkg.voice_storage.VoiceStorageMixin):
         def get_core_config(self):
             return dict(cfg)
 
@@ -1266,3 +1235,38 @@ def test_provisional_region_predicate(monkeypatch, region, cfg, provisional):
     cm._config_needs_region = ConfigManager._config_needs_region
     monkeypatch.setattr(ConfigManager, '_region_cache', region)
     assert cm._region_verdict_is_provisional() is provisional
+
+
+@pytest.mark.unit
+def test_this_file_has_no_duplicate_test_names():
+    """A redefined test silently replaces the earlier one — it simply never runs.
+
+    This file has grown by repeated appends and hit that twice already; both times a
+    whole block of assertions was quietly dead until a reviewer noticed. Cheap to
+    check, and it fails loudly instead.
+    """
+    import ast
+    import collections
+    import pathlib
+
+    tree = ast.parse(pathlib.Path(__file__).read_text(encoding='utf-8'))
+    names = [
+        node.name for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    dupes = {n: c for n, c in collections.Counter(names).items() if c > 1}
+    assert not dupes, f'重名的测试函数（早先定义从未运行）: {dupes}'
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('cfg, expected', [
+    ({'coreApi': 'free'}, True),
+    ({'CORE_API_TYPE': 'free'}, True),
+    # 付费 core + 免费 assist：assist 的 lanlan.tech URL 同样要区域改写，
+    # 只看 core 会让这些用户的探测提前收工、assist 线路停在国内。
+    ({'coreApi': 'openai', 'assistApi': 'free'}, True),
+    ({'coreApi': 'openai', 'assistApi': 'qwen'}, False),
+    ({}, False),
+])
+def test_free_provider_detection_covers_every_slot(cfg, expected):
+    assert ConfigManager._any_free_provider(cfg) is expected
