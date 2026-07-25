@@ -103,13 +103,16 @@ async def test_free_api_bind_can_use_current_core_config_when_reader_entry_calls
 
 @pytest.mark.asyncio
 async def test_overseas_free_binds_yui_sentinel_voice(monkeypatch):
-    """海外免费（free + *.lanlan.app）默认音色绑定品牌 yui（下发字面量 "yui"），
-    而非国内的 free_voices 阶跃音色。
+    """Overseas free (free + *.lanlan.app) binds the branded ``yui`` voice.
 
-    non_mainland=True 是后补的：原来这里的替身状态自相矛盾——CORE_URL 已被按海外
-    改写成 .app，_check_non_mainland() 却说大陆。生产里不存在这种组合（.app 只可能
-    由「判海外」产生），而正是这个矛盾掩盖了 PR #2454 修的那个 bug：Steam 临时判海外
-    让快照变成 .app、权威 IP 结论随后判大陆时，照 URL 反推会把 yui 永久绑给大陆用户。
+    ``non_mainland=True`` was added later: the fake used to hold a self
+    contradictory state — ``CORE_URL`` already rewritten to ``.app`` while
+    ``_check_non_mainland()`` reported mainland. Production cannot produce that
+    combination (``.app`` only ever comes from an overseas verdict), and the
+    contradiction is exactly what hid the bug PR #2454 fixes: when Steam
+    provisionally says overseas the snapshot already carries ``.app``, and if the
+    authoritative IP verdict then resolves mainland, inferring the region from
+    that URL would bind ``yui`` to a mainland user forever.
     """
     monkeypatch.setattr(
         "utils.api_config_loader.get_free_voices",
