@@ -190,6 +190,7 @@ class AsrRuntimeMixin:
         self._voice_lease_connection_id = ""
         self._voice_lease_synchronized = False
         self._voice_lease_control_seen = False
+        self._voice_input_transition_generation = 0
         self._voice_lease_owner = "none"
         self._voice_lease_hard_muted = False
         self._voice_lease_focus_suppressed = False
@@ -245,6 +246,8 @@ class AsrRuntimeMixin:
             self._asr_route_operation_generation = 0
         if not hasattr(self, "_asr_notification_lock"):
             self._asr_notification_lock = asyncio.Lock()
+        if not hasattr(self, "_voice_input_transition_generation"):
+            self._voice_input_transition_generation = 0
 
     def _begin_asr_route_operation(self) -> int:
         self._asr_route_operation_generation += 1
@@ -1009,6 +1012,8 @@ class AsrRuntimeMixin:
         reason: str,
         force_abort: bool,
     ) -> None:
+        self._ensure_asr_runtime_state()
+        self._voice_input_transition_generation += 1
         previous = (
             self._voice_lease_owner,
             self._voice_lease_hard_muted,
@@ -1189,7 +1194,19 @@ class AsrRuntimeMixin:
             return False
         if self._voice_lease_owner == "game":
             return self._current_voice_input_consumer() is not None
+        if self._voice_lease_owner != "core":
+            return False
         session_ref = self.session
+        transition_generation = self._voice_input_transition_generation
+
+        def operation_is_current() -> bool:
+            return bool(
+                transition_generation == self._voice_input_transition_generation
+                and self._voice_lease_owner == "core"
+                and session_ref is self.session
+                and self._ingress_token_matches(token.ingress)
+            )
+
         prepare = getattr(session_ref, "prepare_external_voice_turn", None)
         try:
             if callable(prepare):
@@ -1198,13 +1215,15 @@ class AsrRuntimeMixin:
                 interrupt = getattr(session_ref, "handle_interruption", None)
                 if callable(interrupt):
                     await interrupt()
-            if session_ref is not self.session:
+            if not operation_is_current():
                 return False
             await self.handle_new_message()
-            return self._ingress_token_matches(token.ingress)
+            return operation_is_current()
         except asyncio.CancelledError:
             raise
         except Exception:
+            if not operation_is_current():
+                return False
             logger.warning(
                 "[%s] independent ASR turn preparation failed",
                 self.lanlan_name,
@@ -1240,6 +1259,7 @@ class AsrRuntimeMixin:
         if self._voice_lease_owner != "core":
             return
         session_ref = self.session
+        transition_generation = self._voice_input_transition_generation
         accepted = await self.handle_input_transcript(
             event.text,
             is_voice_source=True,
@@ -1249,6 +1269,8 @@ class AsrRuntimeMixin:
         if (
             not accepted
             or self.session is not session_ref
+            or transition_generation != self._voice_input_transition_generation
+            or self._voice_lease_owner != "core"
             or not self._ingress_token_matches(token)
         ):
             return

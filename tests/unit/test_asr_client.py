@@ -1957,8 +1957,7 @@ async def test_stale_prepare_unwind_only_releases_old_reservation(raises) -> Non
     assert runtime._asr_transcript_dispatcher is new_dispatcher
     assert runtime._asr_reserved_final_key == new_final_key
     assert runtime._asr_turn_prepared is True
-    assert old_dispatcher.try_reserve(old_final_key) is True
-    old_dispatcher.release(old_final_key)
+    assert old_final_key not in old_dispatcher._reservations
 
 
 @pytest.mark.parametrize("raises", [False, True])
@@ -1980,5 +1979,4 @@ async def test_current_prepare_failure_releases_current_reservation(raises) -> N
 
     assert runtime._asr_reserved_final_key is None
     assert runtime._asr_turn_prepared is False
-    assert dispatcher.try_reserve(final_key) is True
-    dispatcher.release(final_key)
+    assert final_key not in dispatcher._reservations

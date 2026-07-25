@@ -14,10 +14,11 @@ Client text frames use `action`; server text frames use `type`. The lists below 
 
 Valid `input_type`: `audio`, `screen`, `camera`, `text`, `avatar_drop_image`, `user_image`.
 
-For an ordinary audio session, send the complete `voice_input_control`
-snapshot below before `start_session`. A legacy client that has sent no control
-message receives a one-time generation-0 Core lease when the ordinary audio
-session starts. Game audio never uses that compatibility path.
+For an ordinary audio session, new clients are strongly encouraged to send the
+complete `voice_input_control` snapshot below before `start_session`. A legacy
+client that has sent no control message receives a one-time generation-0 Core
+lease when the ordinary audio session starts. Game audio never uses that
+compatibility path.
 
 #### `voice_input_control`
 

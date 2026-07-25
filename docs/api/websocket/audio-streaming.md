@@ -13,8 +13,9 @@ The application route does **not** accept base64 microphone audio and does not c
 
 ## Synchronize the microphone lease
 
-New clients should send a complete microphone-control snapshot immediately
-after the WebSocket opens and before starting an audio session:
+New clients are strongly encouraged to send a complete microphone-control
+snapshot immediately after the WebSocket opens and before starting an audio
+session:
 
 ```json
 {

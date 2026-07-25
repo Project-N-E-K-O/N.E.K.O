@@ -817,6 +817,29 @@ async def test_speech_started_prepares_external_voice_turn() -> None:
     runtime.handle_new_message.assert_awaited_once_with()
 
 
+async def test_game_takeover_during_core_prepare_drops_stale_message() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime)
+    prepare_started = asyncio.Event()
+    release_prepare = asyncio.Event()
+
+    async def block_prepare() -> None:
+        prepare_started.set()
+        await release_prepare.wait()
+
+    runtime.session.prepare_external_voice_turn = AsyncMock(side_effect=block_prepare)
+    runtime._asr_runtime.suspend = AsyncMock()
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    prepare_task = asyncio.create_task(runtime._prepare_core_voice_turn(token))
+    await asyncio.wait_for(prepare_started.wait(), 1)
+
+    await runtime._suspend_independent_voice_input_for_game()
+    release_prepare.set()
+
+    assert await asyncio.wait_for(prepare_task, 1) is False
+    runtime.handle_new_message.assert_not_awaited()
+
+
 async def test_turn_endpoint_seals_immediately_before_provider_final() -> None:
     runtime = _Runtime()
     runtime._asr_session = type("Asr", (), {"is_ready": True})()
@@ -3600,15 +3623,56 @@ async def test_session_swap_during_transcript_drops_old_final_injection() -> Non
     new_session.create_response.assert_not_awaited()
 
 
+async def test_game_takeover_during_transcript_drops_stale_core_final() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "glm")
+    transcript_started = asyncio.Event()
+    release_transcript = asyncio.Event()
+
+    async def block_transcript(*_args, **_kwargs) -> bool:
+        transcript_started.set()
+        await release_transcript.wait()
+        return True
+
+    runtime.handle_input_transcript.side_effect = block_transcript
+    runtime.session.submit_external_voice_turn = AsyncMock()
+    runtime._asr_runtime.suspend = AsyncMock()
+    turn_token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    event = VoiceTranscriptEvent(
+        turn_token=turn_token,
+        provider="glm",
+        text="belongs to Core",
+    )
+    dispatch_task = asyncio.create_task(runtime._dispatch_core_asr_transcript(event))
+    await asyncio.wait_for(transcript_started.wait(), 1)
+
+    await runtime._suspend_independent_voice_input_for_game()
+    release_transcript.set()
+    await asyncio.wait_for(dispatch_task, 1)
+
+    runtime.session.submit_external_voice_turn.assert_not_awaited()
+    runtime.session.create_response.assert_not_awaited()
+
+
 async def test_status_delivery_failure_never_breaks_audio_runtime() -> None:
     runtime = _Runtime()
     runtime.send_status.side_effect = RuntimeError("socket closed")
+    runtime._set_microphone_route("native")
+    runtime.session.stream_audio = AsyncMock()
 
     await runtime._send_asr_status(
         "ASR_INDEPENDENT_READY",
         "glm",
         session_epoch=runtime._asr_session_epoch,
     )
+    await runtime._route_microphone_audio(
+        b"\x01\x00" * 160,
+        sample_rate_hz=16_000,
+    )
+
+    runtime.send_status.assert_awaited_once()
+    runtime.session.stream_audio.assert_awaited_once()
+    assert runtime._voice_input_pipeline_failed is False
 
 
 async def test_old_core_close_cannot_clear_new_pipeline_or_provider() -> None:

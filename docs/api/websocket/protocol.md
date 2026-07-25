@@ -61,11 +61,12 @@ socket open
 
 Accepted `input_type` values are `audio`, `screen`, `camera`, `text`, `avatar_drop_image`, and `user_image`. `text` and the two one-shot image types start the text/offline mode; `audio`, `screen`, and `camera` select the realtime/audio mode. `new_session` is a provider-session hint, not the WebSocket connection UUID.
 
-For a new audio client, first send a complete `voice_input_control` snapshot
-with `event: "lease_sync"`. Its `lease_generation` must increase monotonically
-within the current WebSocket and restarts after reconnecting. Invalid or stale
-control messages produce `VOICE_INPUT_CONTROL_REJECTED` and permanently disable
-legacy fallback for that connection.
+New audio clients are strongly encouraged to first send a complete
+`voice_input_control` snapshot with `event: "lease_sync"`. Its
+`lease_generation` must increase monotonically within the current WebSocket and
+restarts after reconnecting. Invalid or stale control messages produce
+`VOICE_INPUT_CONTROL_REJECTED` and permanently disable legacy fallback for that
+connection.
 
 For compatibility, a connection that has sent no control message can acquire a
 generation-0 Core lease immediately before its first ordinary audio session
