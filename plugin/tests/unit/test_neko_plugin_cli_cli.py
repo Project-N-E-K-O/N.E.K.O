@@ -709,6 +709,23 @@ def test_init_repo_documents_and_exposes_dependency_sync(tmp_path: Path) -> None
     assert sync_command in tasks
 
 
+def test_sync_without_pyproject_is_successful_noop(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path, "no_pyproject")
+    vendor_file = plugin_dir / "vendor" / "legacy_dependency.py"
+    vendor_file.parent.mkdir()
+    vendor_file.write_text("value = 1\n", encoding="utf-8")
+
+    exit_code = neko_plugin_cli.main(["sync", str(plugin_dir), "--clean"])
+
+    assert exit_code == 0
+    assert vendor_file.is_file()
+    captured = capsys.readouterr()
+    assert "[OK] no_pyproject: no external dependencies to sync" in captured.out
+
+
 def test_market_release_check_enforces_repo_and_tag_conventions(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
