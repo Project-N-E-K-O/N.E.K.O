@@ -14,6 +14,7 @@ from main_logic.asr_client.detector_runtime import DetectorFeedResult, DetectorR
 from main_logic.asr_client.lifecycle import (
     VoiceLifecycleEvent,
     VoiceLifecycleState,
+    VoiceTurnToken,
     VoiceRouteMode,
 )
 from main_logic.asr_client.lifecycle import VoiceInputLifecycleController
@@ -28,7 +29,9 @@ from main_logic.voice_turn.contracts import EvaluationStatus, TurnDecision
 from main_logic.voice_turn.coordinator import CoordinatorState
 from main_logic.asr_client.detector import (
     CoreDetectorEventEnvelope,
+    DetectorCandidateKey,
     DetectorIngressIdentity,
+    DetectorRuntimeEvent,
     DetectorSubmitResult,
     DetectorSubmitStatus,
 )
@@ -1371,6 +1374,83 @@ async def test_hard_mute_during_detector_await_invalidates_inflight_pcm() -> Non
     asr.stream_audio.assert_not_awaited()
     assert runtime._asr_audio_bytes == 0
     assert runtime._omni_mic_audio_bytes == 0
+
+
+async def test_hard_mute_suppresses_stale_audio_dispatcher_failure() -> None:
+    runtime = _Runtime()
+    asr = type("Asr", (), {})()
+    asr.is_ready = True
+    asr.close = AsyncMock()
+    runtime._asr_session = asr
+    _install_ready_lifecycle(runtime, "qwen")
+    runtime._asr_detector = _ReadyDetector()
+    lifecycle = runtime._asr_lifecycle
+    assert lifecycle is not None
+    turn_token = VoiceTurnToken(
+        ingress=runtime._capture_ingress_token(lifecycle),
+        turn_id=lifecycle.snapshot.turn_id,
+    )
+
+    assert await runtime._handle_voice_input_control(
+        "lease_sync",
+        1,
+        owner="core",
+        hard_muted=True,
+        focus_suppressed=False,
+    )
+    runtime.send_status.reset_mock()
+    await runtime._handle_asr_audio_dispatcher_failure(
+        turn_token,
+        RuntimeError("old provider write failed after hard mute"),
+    )
+
+    assert runtime._asr_route_mode == "independent"
+    assert runtime._asr_lifecycle is lifecycle
+    runtime.send_status.assert_not_awaited()
+
+
+async def test_game_takeover_suppresses_stale_detector_dispatcher_failure() -> None:
+    runtime = _Runtime()
+    asr = type("Asr", (), {})()
+    asr.is_ready = True
+    asr.close = AsyncMock()
+    runtime._asr_session = asr
+    _install_ready_lifecycle(runtime, "qwen")
+    detector = _ReadyDetector()
+    detector.detector_epoch = 1
+    runtime._asr_detector = detector
+    lifecycle = runtime._asr_lifecycle
+    assert lifecycle is not None
+    ingress_token = runtime._capture_ingress_token(lifecycle)
+    envelope = CoreDetectorEventEnvelope(
+        event=DetectorRuntimeEvent(
+            ingress=DetectorIngressIdentity(
+                ingress_token=ingress_token,
+                detector_epoch=detector.detector_epoch,
+                sequence_no=1,
+            ),
+            candidate=DetectorCandidateKey(detector.detector_epoch, 1),
+            kind="control_lane_failed",
+        ),
+        detector_ref=detector,
+        lifecycle_ref=lifecycle,
+        session_epoch=runtime._asr_session_epoch,
+    )
+
+    assert await runtime._handle_voice_input_control(
+        "game_takeover",
+        1,
+    )
+    runtime.send_status.reset_mock()
+    await runtime._handle_asr_detector_dispatcher_failure(
+        envelope,
+        RuntimeError("old detector callback failed after game takeover"),
+    )
+
+    assert runtime._asr_route_mode == "independent"
+    assert runtime._asr_lifecycle is lifecycle
+    assert lifecycle.snapshot.state is VoiceLifecycleState.SUSPENDED
+    runtime.send_status.assert_not_awaited()
 
 
 async def test_new_websocket_connection_resets_mic_lease_generation_once() -> None:

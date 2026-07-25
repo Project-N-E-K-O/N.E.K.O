@@ -352,6 +352,8 @@ class AsrDetectorDispatcher:
             except asyncio.CancelledError:
                 raise
             except Exception as error:
+                if generation != self._generation:
+                    continue
                 self._failed = True
                 self.invalidate_all()
                 try:

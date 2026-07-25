@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
@@ -48,4 +49,35 @@ async def test_handler_failure_fails_closed_without_stranding_wait_idle() -> Non
 
     on_failure.assert_awaited_once()
     assert dispatcher.submit_nowait(envelope) is False
+    await dispatcher.close()
+
+
+async def test_invalidation_suppresses_inflight_handler_failure() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    handled: list[CoreDetectorEventEnvelope] = []
+    on_failure = AsyncMock()
+
+    async def handler(envelope: CoreDetectorEventEnvelope) -> None:
+        handled.append(envelope)
+        if len(handled) == 1:
+            started.set()
+            await release.wait()
+            raise RuntimeError("stale handler failed after invalidation")
+
+    dispatcher = AsrDetectorDispatcher(handler, on_failure=on_failure)
+    envelope = _envelope()
+    assert dispatcher.submit_nowait(envelope)
+    await asyncio.wait_for(started.wait(), 1)
+
+    dispatcher.invalidate_all()
+    release.set()
+    await dispatcher.wait_idle()
+
+    assert dispatcher._failed is False
+    on_failure.assert_not_awaited()
+    assert dispatcher.submit_nowait(envelope)
+    await dispatcher.wait_idle()
+    assert handled == [envelope, envelope]
+    on_failure.assert_not_awaited()
     await dispatcher.close()

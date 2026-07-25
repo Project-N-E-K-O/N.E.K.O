@@ -514,11 +514,20 @@ async def soniox_asr_worker(
                     continue
             request_deferred = False
             try:
-                request_utterance_id = (
-                    request.utterance_id
-                    if request.utterance_id is not None
-                    else state.utterance_id
-                )
+                if request.kind == "clear" and request.utterance_id is not None:
+                    request_utterance_id = request.utterance_id
+                elif config.endpointing_mode == "provider":
+                    # Provider endpointing owns the logical utterance counter.
+                    # Session requests retain one placeholder ID until clear,
+                    # so letting ordinary audio overwrite this state would
+                    # reuse the first turn's key after every <end>.
+                    request_utterance_id = state.utterance_id
+                else:
+                    request_utterance_id = (
+                        request.utterance_id
+                        if request.utterance_id is not None
+                        else state.utterance_id
+                    )
                 request_identity = _PendingFinalize(
                     generation=request.generation,
                     buffer_epoch=request.buffer_epoch,

@@ -335,7 +335,7 @@ class IndependentAsrRuntime:
         turn_token: VoiceTurnToken,
         error: BaseException,
     ) -> None:
-        if turn_token.ingress.session_epoch != self._asr_session_epoch:
+        if not self._ingress_token_matches(turn_token.ingress):
             return
         status_code = (
             "ASR_STREAM_BACKPRESSURE"
@@ -353,6 +353,19 @@ class IndependentAsrRuntime:
         envelope: CoreDetectorEventEnvelope,
         error: BaseException,
     ) -> None:
+        detector = self._asr_detector
+        lifecycle = self._asr_lifecycle
+        event = envelope.event
+        if (
+            envelope.session_epoch != self._asr_session_epoch
+            or detector is not envelope.detector_ref
+            or lifecycle is not envelope.lifecycle_ref
+            or detector is None
+            or lifecycle is None
+            or event.ingress.detector_epoch != detector.detector_epoch
+            or not self._ingress_token_matches(event.ingress.ingress_token)
+        ):
+            return
         logger.error(
             "[%s] detector event dispatcher failed epoch=%s",
             self.display_name,

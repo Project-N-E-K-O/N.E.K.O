@@ -127,6 +127,60 @@ async def test_dispatcher_records_wire_sequence_and_abort_discards() -> None:
     await dispatcher.close()
 
 
+async def test_abort_suppresses_failure_from_inflight_audio_command() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    session = type("Session", (), {})()
+
+    async def stream_audio(_pcm16: bytes, *, sample_rate_hz: int) -> None:
+        assert sample_rate_hz == 16_000
+        started.set()
+        await release.wait()
+        raise RuntimeError("session closed during intentional abort")
+
+    session.stream_audio = stream_audio
+    session.signal_user_activity_end = AsyncMock()
+    on_failure = AsyncMock()
+    dispatcher = AsrAudioDispatcher(
+        validator=lambda _token, ref: ref is session,
+        on_wire_audio=AsyncMock(),
+        on_failure=on_failure,
+    )
+    turn = _turn()
+    assert dispatcher.activate(turn, session, b"\x01\x00")
+    await asyncio.wait_for(started.wait(), 1)
+
+    dispatcher.abort(turn)
+    release.set()
+    await dispatcher.wait_idle()
+
+    on_failure.assert_not_awaited()
+    await dispatcher.close()
+
+
+async def test_current_audio_command_failure_still_fails_closed() -> None:
+    session = type("Session", (), {})()
+
+    async def stream_audio(_pcm16: bytes, *, sample_rate_hz: int) -> None:
+        assert sample_rate_hz == 16_000
+        raise RuntimeError("current provider write failed")
+
+    session.stream_audio = stream_audio
+    session.signal_user_activity_end = AsyncMock()
+    on_failure = AsyncMock()
+    dispatcher = AsrAudioDispatcher(
+        validator=lambda _token, ref: ref is session,
+        on_wire_audio=AsyncMock(),
+        on_failure=on_failure,
+    )
+    turn = _turn()
+    assert dispatcher.activate(turn, session, b"\x01\x00")
+    await dispatcher.wait_idle()
+
+    on_failure.assert_awaited_once()
+    await dispatcher.close()
+
+
 async def test_backpressure_failure_task_is_retained_until_completion() -> None:
     failure_started = asyncio.Event()
     release_failure = asyncio.Event()

@@ -314,6 +314,8 @@ class AsrAudioDispatcher:
             except asyncio.CancelledError:
                 raise
             except BaseException as exc:
+                if not self._command_is_current(command):
+                    continue
                 self.abort(command.turn_token)
                 await self._on_failure(command.turn_token, exc)
             finally:

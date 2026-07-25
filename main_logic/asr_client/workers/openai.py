@@ -36,6 +36,7 @@ _OPENAI_VAD_THRESHOLD = 0.5
 _OPENAI_PREFIX_PADDING_MS = 300
 _OPENAI_SILENCE_DURATION_MS = 1_000
 _CLOSE_TIMEOUT_SECONDS = 0.5
+_CLEAR_TIMEOUT_SECONDS = 3.0
 
 _UtteranceKey = tuple[int, int, int]
 
@@ -96,6 +97,9 @@ async def openai_asr_worker(
     failure_sent = False
     ready_sent = False
     shutdown_requested = asyncio.Event()
+    clear_acknowledged = asyncio.Event()
+    clear_applied = asyncio.Event()
+    clear_applied.set()
     receiver_task: asyncio.Task[None] | None = None
     sender_task: asyncio.Task[None] | None = None
     websocket = None
@@ -237,6 +241,7 @@ async def openai_asr_worker(
                     "input_audio_buffer.speech_started",
                     "input_audio_buffer.speech_stopped",
                     "input_audio_buffer.committed",
+                    "input_audio_buffer.cleared",
                     "conversation.item.input_audio_transcription.completed",
                 }:
                     _diagnose(event_type, item_id=event.get("item_id"))
@@ -276,6 +281,10 @@ async def openai_asr_worker(
                     continue
                 if event_type == "input_audio_buffer.committed":
                     await _ensure_item_key(event.get("item_id"))
+                    continue
+                if event_type == "input_audio_buffer.cleared":
+                    clear_acknowledged.set()
+                    await clear_applied.wait()
                     continue
                 if event_type in {
                     "conversation.item.input_audio_transcription.delta",
@@ -333,12 +342,13 @@ async def openai_asr_worker(
             )
 
     async def _send_requests() -> None:
-        nonlocal current_buffer_epoch, last_generation, resampler
+        nonlocal current_buffer_epoch, last_generation, next_utterance_id, resampler
         while True:
             request = await request_queue.get()
             try:
-                last_generation = request.generation
-                current_buffer_epoch = request.buffer_epoch
+                if request.kind != "clear":
+                    last_generation = request.generation
+                    current_buffer_epoch = request.buffer_epoch
 
                 if request.kind == "audio":
                     wire_audio = _resample_pcm_16k_to_24k(resampler, request.audio)
@@ -364,6 +374,30 @@ async def openai_asr_worker(
 
                 if request.kind == "clear":
                     item_keys.clear()
+                    clear_acknowledged.clear()
+                    clear_applied.clear()
+                    await websocket.send(
+                        json.dumps({"type": "input_audio_buffer.clear"})
+                    )
+                    try:
+                        await asyncio.wait_for(
+                            clear_acknowledged.wait(),
+                            timeout=_CLEAR_TIMEOUT_SECONDS,
+                        )
+                    except asyncio.CancelledError:
+                        clear_applied.set()
+                        raise
+                    except asyncio.TimeoutError:
+                        clear_applied.set()
+                        await _emit_error(
+                            "ASR_OPENAI_CLEAR_TIMEOUT",
+                            "OpenAI did not acknowledge the audio buffer clear",
+                        )
+                        return
+                    last_generation = request.generation
+                    current_buffer_epoch = request.buffer_epoch
+                    next_utterance_id = request.utterance_id or next_utterance_id
+                    item_keys.clear()
                     resampler.clear()
                     resampler = soxr.ResampleStream(
                         16_000,
@@ -372,9 +406,7 @@ async def openai_asr_worker(
                         dtype="float32",
                         quality="HQ",
                     )
-                    await websocket.send(
-                        json.dumps({"type": "input_audio_buffer.clear"})
-                    )
+                    clear_applied.set()
                     continue
 
                 if request.kind == "shutdown":
