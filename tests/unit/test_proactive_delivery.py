@@ -282,21 +282,27 @@ def _passive_cb(summary, *, coalesce_key="", **extra):
         "summary": summary,
         "detail": summary,
         "status": "completed",
+        "delivery_mode": "passive",
         "coalesce_key": coalesce_key,
     }
     cb.update(extra)
     return cb
 
 
+def _proactive_cb(summary, *, coalesce_key="", **extra):
+    cb = _passive_cb(summary, coalesce_key=coalesce_key, **extra)
+    cb["delivery_mode"] = "proactive"
+    return cb
+
+
 def test_enqueue_coalesce_same_key_newest_replaces():
-    # Same explicit key → newest collapses the older queued cue, on BOTH the
-    # LLM-inject queue and its voice-mode mirror (which drift, so the mirror is
-    # evicted by delivery_id, not by position).
+    # Same explicit key → newest collapses the older passive cue in the
+    # LLM-inject queue. Passive cues never create a voice hot-swap mirror.
     mgr = _make_session_mgr()
     mgr.enqueue_agent_callback(_passive_cb("old snapshot", coalesce_key="gamestate"))
     mgr.enqueue_agent_callback(_passive_cb("new snapshot", coalesce_key="gamestate"))
     assert [c["summary"] for c in mgr.pending_agent_callbacks] == ["new snapshot"]
-    assert [r["summary"] for r in mgr.pending_extra_replies] == ["new snapshot"]
+    assert mgr.pending_extra_replies == []
 
 
 def test_enqueue_coalesce_empty_key_never_collapses():
@@ -307,7 +313,7 @@ def test_enqueue_coalesce_empty_key_never_collapses():
     mgr.enqueue_agent_callback(_passive_cb("b"))                    # no key
     mgr.enqueue_agent_callback(_passive_cb("c", coalesce_key=""))   # explicit empty
     assert [c["summary"] for c in mgr.pending_agent_callbacks] == ["a", "b", "c"]
-    assert len(mgr.pending_extra_replies) == 3
+    assert mgr.pending_extra_replies == []
 
 
 def test_enqueue_coalesce_distinct_keys_independent():
@@ -317,7 +323,51 @@ def test_enqueue_coalesce_distinct_keys_independent():
     mgr.enqueue_agent_callback(_passive_cb("y1", coalesce_key="y"))
     mgr.enqueue_agent_callback(_passive_cb("x2", coalesce_key="x"))
     assert [c["summary"] for c in mgr.pending_agent_callbacks] == ["y1", "x2"]
-    assert [r["summary"] for r in mgr.pending_extra_replies] == ["y1", "x2"]
+    assert mgr.pending_extra_replies == []
+
+
+def test_enqueue_proactive_still_creates_voice_mirror():
+    mgr = _make_session_mgr()
+    mgr.enqueue_agent_callback(_proactive_cb("respond now", coalesce_key="notice"))
+    assert [c["summary"] for c in mgr.pending_agent_callbacks] == ["respond now"]
+    assert [r["summary"] for r in mgr.pending_extra_replies] == ["respond now"]
+
+
+def test_enqueue_newer_proactive_replaces_passive_and_creates_mirror():
+    mgr = _make_session_mgr()
+    mgr.enqueue_agent_callback(_passive_cb("context", coalesce_key="shared"))
+    mgr.enqueue_agent_callback(_proactive_cb("respond", coalesce_key="shared"))
+    assert [c["summary"] for c in mgr.pending_agent_callbacks] == ["respond"]
+    assert [r["summary"] for r in mgr.pending_extra_replies] == ["respond"]
+
+
+def test_enqueue_unknown_delivery_mode_keeps_legacy_proactive_behavior():
+    mgr = _make_session_mgr()
+    callback = _passive_cb("legacy")
+    callback["delivery_mode"] = "PASSIVE"
+    mgr.enqueue_agent_callback(callback)
+    assert [c["summary"] for c in mgr.pending_agent_callbacks] == ["legacy"]
+    assert [r["summary"] for r in mgr.pending_extra_replies] == ["legacy"]
+
+
+def test_passive_flood_guard_bounds_callback_queue_without_extras(monkeypatch):
+    import config
+
+    monkeypatch.setattr(config, "AGENT_CALLBACK_QUEUE_MAX_ITEMS", 2)
+    mgr = _make_session_mgr()
+    dropped_ack = _FakeAckFuture()
+    oldest = _passive_cb("oldest")
+    oldest[DELIVERY_ACK_FUTURE_KEY] = dropped_ack
+    mgr.enqueue_agent_callback(oldest)
+    mgr.enqueue_agent_callback(_passive_cb("middle"))
+    mgr.enqueue_agent_callback(_passive_cb("newest"))
+
+    assert [c["summary"] for c in mgr.pending_agent_callbacks] == [
+        "middle",
+        "newest",
+    ]
+    assert mgr.pending_extra_replies == []
+    assert dropped_ack.done() and dropped_ack.result is False
 
 
 def test_enqueue_coalesce_resolves_superseded_ack_false():
@@ -356,7 +406,7 @@ def test_enqueue_coalesce_older_manager_release_loses_to_newer_read():
     # release from a genuinely newer cue.
     mgr = _make_session_mgr()
     # A respond cue stamped early, then held by the manager during playback.
-    respond = _passive_cb("respond held", coalesce_key="k")
+    respond = _proactive_cb("respond held", coalesce_key="k")
     respond["_coalesce_submit_seq"] = 1
     # A newer read cue enqueued directly gets a later seq.
     mgr._coalesce_seq_counter = 5  # next direct-enqueue seq = 6 > 1
@@ -413,14 +463,14 @@ def test_pull_model_manager_held_window():
     assert mgr._coalesce_entry_is_stale(newer) is False
 
 
-def test_pull_model_stale_extra_is_detected():
+def test_pull_model_stale_proactive_extra_is_detected():
     # _coalesce_entry_is_stale works on pending_extra_replies mirrors too (the
     # hot-swap prime guard filters its selection with it). Legacy plain-string
     # extras are never stale.
     mgr = _make_session_mgr()
-    mgr.enqueue_agent_callback(_passive_cb("old", coalesce_key="k"))
+    mgr.enqueue_agent_callback(_proactive_cb("old", coalesce_key="k"))
     old_extra = mgr.pending_extra_replies[0]
-    mgr.enqueue_agent_callback(_passive_cb("new", coalesce_key="k"))
+    mgr.enqueue_agent_callback(_proactive_cb("new", coalesce_key="k"))
     assert mgr._coalesce_entry_is_stale(old_extra) is True
     assert mgr._coalesce_entry_is_stale(mgr.pending_extra_replies[-1]) is False
     assert mgr._coalesce_entry_is_stale("legacy plain string") is False
@@ -447,7 +497,7 @@ async def test_deliver_batch_releases_inflight_when_all_superseded():
     mgr._coalesce_seq_counter = 5
     mgr.enqueue_agent_callback(_passive_cb("newer read", coalesce_key="k"))
     # Manager releases the OLDER respond cue (stamped seq=1 at submit time).
-    stale = _passive_cb("older respond", coalesce_key="k")
+    stale = _proactive_cb("older respond", coalesce_key="k")
     stale["_coalesce_submit_seq"] = 1
     await core_module.LLMSessionManager._deliver_proactive_batch(mgr, [stale])
     assert released == [True]   # inflight slot freed immediately
@@ -490,13 +540,13 @@ def test_enqueue_coalesce_evicts_legacy_mirror_by_delivery_id():
     # callback half is retracted by a same-key enqueue — key-only matching
     # would orphan it for the hot-swap path.
     mgr = _make_session_mgr()
-    old = _passive_cb("old", coalesce_key="k")
+    old = _proactive_cb("old", coalesce_key="k")
     mgr.enqueue_agent_callback(old)
     # Strip the key/seq stamps from the mirror to simulate the legacy shape.
     legacy_mirror = mgr.pending_extra_replies[0]
     legacy_mirror.pop("coalesce_key", None)
     legacy_mirror.pop("_coalesce_submit_seq", None)
-    mgr.enqueue_agent_callback(_passive_cb("new", coalesce_key="k"))
+    mgr.enqueue_agent_callback(_proactive_cb("new", coalesce_key="k"))
     assert [r["summary"] for r in mgr.pending_extra_replies] == ["new"]
 
 
@@ -515,13 +565,12 @@ def test_enqueue_coalesce_guards_legacy_string_extra():
 
 
 def test_enqueue_coalesce_evicts_drained_extras_orphan():
-    # After a text user turn, drain_agent_callbacks_for_llm clears the callback
-    # side but KEEPS the paired voice mirror in pending_extra_replies. A later
-    # same-key cue has no callback half to match by id, so eviction must be by
-    # the stamped coalesce_key — otherwise hot-swap injects BOTH snapshots.
+    # A proactive callback can be drained by a text turn after its proactive
+    # claim was deferred, leaving a paired voice mirror. A later same-key cue
+    # must evict that orphan by its stamped key.
     mgr = _make_session_mgr()
-    mgr.enqueue_agent_callback(_passive_cb("old snapshot", coalesce_key="gs"))
+    mgr.enqueue_agent_callback(_proactive_cb("old snapshot", coalesce_key="gs"))
     mgr.pending_agent_callbacks.clear()  # simulate drain (callback side only)
     assert [r["summary"] for r in mgr.pending_extra_replies] == ["old snapshot"]
-    mgr.enqueue_agent_callback(_passive_cb("new snapshot", coalesce_key="gs"))
+    mgr.enqueue_agent_callback(_proactive_cb("new snapshot", coalesce_key="gs"))
     assert [r["summary"] for r in mgr.pending_extra_replies] == ["new snapshot"]
