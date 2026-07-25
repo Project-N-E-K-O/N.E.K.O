@@ -343,6 +343,20 @@ def _build_free_intl_voice_pins(native_catalog: dict, voice_id_exists=None) -> l
 async def get_voices():
     """Get all registered voices for the current API key."""
     _config_manager = get_config_manager()
+    # 与 /voice_preview 同理：本请求内区域判定会被读三次（get_voices_for_current_api、
+    # 下面的 aget_core_config、以及 get_active_realtime_native_provider_for_ui）。判定
+    # 尚未落定时那几次可能拿到不同结果，一份响应就会把海外 free_intl 原生目录和大陆
+    # free_voices 拼在一起（或反过来）——两者不相交，用户选中的音色到运行时必被拒。
+    # 先落定，让整个目录出自同一结论。已落定时零开销；自配 API 用户不会因此发起探测。
+    try:
+        if not await _config_manager.aensure_region_resolved():
+            logger.warning(
+                "[GeoIP] 音色列表开始时区域判定仍未落定；若结论恰在本请求中途到达，"
+                "目录可能混用两个区域的音色，刷新即可"
+            )
+    except Exception:
+        logger.debug("[GeoIP] 音色列表区域落定失败，按当前配置继续", exc_info=True)
+
     result = {"voices": _config_manager.get_voices_for_current_api(for_listing=True)}
 
     core_config = await _config_manager.aget_core_config()

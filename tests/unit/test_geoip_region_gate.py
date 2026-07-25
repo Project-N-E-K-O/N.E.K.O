@@ -1430,3 +1430,62 @@ def test_every_voice_cleanup_path_also_retries_the_deferred_binding():
 
     assert len(checked) >= 2, f'未找到足够的音色清理路径，断言失效: {checked}'
     assert not missing, f'这些路径清理了音色却没补上被推迟的默认音色绑定: {missing}'
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('url', [
+    'https://www.lanlan.tech/text/v1',
+    'https://www.lanlan.app/text/v1',
+])
+def test_agent_url_is_exempt_from_the_region_rewrite(config_manager, url):
+    """``AGENT_MODEL_URL`` deliberately never follows the region switch.
+
+    free-agent-model is pinned to the CN text entry, so ``_normalize_agent_url``
+    is an identity function and the Agent route carries no region dependency at
+    all. Pinned because the exemption is easy to mistake for a missing rewrite —
+    a review already read it that way — and because turning it into a real
+    rewrite would silently move every Agent request to a different endpoint.
+    """
+    assert config_manager._normalize_agent_url(url) == url
+
+
+@pytest.mark.unit
+def test_region_sensitive_voice_endpoints_settle_first():
+    """Endpoints serving the voice catalog settle the region before reading it.
+
+    The mainland ``free`` and overseas ``free_intl`` catalogs are disjoint, so a
+    response assembled across a landing verdict can offer a voice the runtime
+    route then refuses. Discovered from the catalog readers rather than a
+    hardcoded endpoint list, so a third endpoint cannot quietly skip it.
+    """
+    import ast
+    import pathlib
+
+    source = (pathlib.Path(__file__).resolve().parents[2]
+              / 'main_routers' / 'characters_router' / 'voice_preview.py')
+    tree = ast.parse(source.read_text(encoding='utf-8'))
+
+    readers = {'get_voices_for_current_api', 'get_active_realtime_native_provider_for_ui'}
+    missing = []
+    checked = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        # 只管 HTTP 端点：helper 由端点调用，落定在端点入口做一次即可
+        is_endpoint = any(
+            isinstance(d, ast.Call) and getattr(d.func, 'attr', None) in {'get', 'post'}
+            and getattr(getattr(d.func, 'value', None), 'id', None) == 'router'
+            for d in node.decorator_list
+        )
+        if not is_endpoint:
+            continue
+        calls = {getattr(c.func, 'attr', None) or getattr(c.func, 'id', None)
+                 for c in ast.walk(node) if isinstance(c, ast.Call)}
+        if not (calls & readers):
+            continue
+        checked.append(node.name)
+        if 'aensure_region_resolved' not in calls:
+            missing.append(f'{node.name} (line {node.lineno})')
+
+    assert len(checked) >= 2, f'未找到足够的音色目录端点，断言失效: {checked}'
+    assert not missing, f'这些端点按区域出音色目录却未先落定: {missing}'

@@ -1475,8 +1475,10 @@ class CoreConfigMixin:
             if not treat_as_custom or provider == 'follow_summary':
                 return self.get_model_api_config('summary')
         
-        # agent 始终走专用字段（AGENT_MODEL_URL 有 lanlan.app 归一化），
-        # 但 is_custom 仅在 enableCustomApi 开启时为 True。
+        # agent 始终走专用字段 AGENT_MODEL_URL，但 is_custom 仅在 enableCustomApi 开启
+        # 时为 True。注意 AGENT_MODEL_URL **不**参与区域改写：它走 _normalize_agent_url，
+        # 而那是个恒等函数（free-agent-model 有意固定用 CN 的 text 入口）。此处原本写着
+        # 「有 lanlan.app 归一化」，与实现相反，已让 review 据此误判过一次。
         if treat_as_custom or model_type == 'agent':
             custom_model = core_config.get(mapping['custom_model'], '')
             custom_url = core_config.get(mapping['custom_url'], '')
