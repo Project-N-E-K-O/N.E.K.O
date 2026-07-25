@@ -34,7 +34,9 @@ async def test_starting_session_audio_does_not_enter_pending_input_data():
     mgr.pending_input_data = []
     mgr.input_cache_lock = asyncio.Lock()
 
-    await LLMSessionManager._stream_data_now(mgr, {"input_type": "audio", "data": [0] * 480})
+    await LLMSessionManager._stream_data_now(
+        mgr, {"input_type": "audio", "data": [0] * 480}
+    )
 
     assert mgr.pending_input_data == []
 
@@ -285,6 +287,8 @@ async def test_audio_worker_leaves_runtime_generation_validation_to_submit():
     mgr._process_microphone_stream_data.assert_awaited_once_with(
         frame.message,
         ingress_token=frame.token,
+        audio_stream_epoch=frame.audio_stream_epoch,
+        ingress_sequence=frame.ingress_sequence,
     )
     assert mgr._audio_stream_dropped_total == 0
 
@@ -327,6 +331,8 @@ async def test_audio_worker_does_not_wait_for_core_session_readiness():
     mgr._process_microphone_stream_data.assert_awaited_once_with(
         frame.message,
         ingress_token=frame.token,
+        audio_stream_epoch=frame.audio_stream_epoch,
+        ingress_sequence=frame.ingress_sequence,
     )
 
 
@@ -640,9 +646,7 @@ async def test_hot_swap_rebinds_queued_raw_and_processed_cache_in_order():
     mgr._audio_stream_queue.put_nowait(
         QueuedMicFrame.from_message(message, token=old_token)
     )
-    worker = asyncio.create_task(
-        LLMSessionManager._audio_stream_worker_loop(mgr)
-    )
+    worker = asyncio.create_task(LLMSessionManager._audio_stream_worker_loop(mgr))
     try:
         deadline = asyncio.get_running_loop().time() + 1
         while len(mgr.hot_swap_audio_cache) < 2:
@@ -778,18 +782,36 @@ async def test_hot_swap_queue_full_retry_rebinds_without_silent_drop():
 
 @pytest.mark.parametrize(
     "stale_reason",
-    ["lease", "hard_mute", "focus_suppressed", "game"],
+    [
+        "session_epoch",
+        "audio_generation",
+        "audio_stream_epoch",
+        "connection",
+        "lease",
+        "hard_mute",
+        "focus_suppressed",
+        "game",
+    ],
 )
 def test_hot_swap_never_rebinds_lease_mute_or_game_identity(
     stale_reason: str,
 ):
     mgr = _make_routable_audio_manager(True)
     old_token = mgr._capture_ingress_token()
+    old_audio_stream_epoch = mgr._audio_stream_epoch
     mgr.is_hot_swap_imminent = True
     mgr._set_microphone_route("blocked")
     mgr._set_microphone_route("independent")
 
-    if stale_reason == "lease":
+    if stale_reason == "session_epoch":
+        mgr._asr_runtime._asr_session_epoch += 1
+    elif stale_reason == "audio_generation":
+        mgr._asr_runtime._asr_audio_generation += 1
+    elif stale_reason == "audio_stream_epoch":
+        mgr._audio_stream_epoch += 1
+    elif stale_reason == "connection":
+        mgr._voice_lease_connection_id = "replacement"
+    elif stale_reason == "lease":
         mgr._voice_lease_generation += 1
     elif stale_reason == "hard_mute":
         mgr._voice_lease_hard_muted = True
@@ -799,7 +821,103 @@ def test_hot_swap_never_rebinds_lease_mute_or_game_identity(
         mgr._voice_lease_owner = "game"
         mgr._voice_input_consumer_bindings["game"] = object()
 
-    assert mgr._rebind_hot_swap_ingress_token(old_token) is None
+    assert (
+        mgr._rebind_hot_swap_ingress_token(
+            old_token,
+            audio_stream_epoch=old_audio_stream_epoch,
+        )
+        is None
+    )
+
+
+def test_hot_swap_rebind_changes_only_route_generation():
+    mgr = _make_routable_audio_manager(True)
+    old_token = mgr._capture_ingress_token()
+    audio_stream_epoch = mgr._audio_stream_epoch
+    mgr.is_hot_swap_imminent = True
+    mgr._set_microphone_route("blocked")
+
+    rebound = mgr._rebind_hot_swap_ingress_token(
+        old_token,
+        audio_stream_epoch=audio_stream_epoch,
+    )
+
+    assert rebound == mgr._capture_ingress_token()
+    assert rebound is not None
+    assert rebound.session_epoch == old_token.session_epoch
+    assert rebound.audio_generation == old_token.audio_generation
+    assert rebound.connection_id == old_token.connection_id
+    assert rebound.lease_generation == old_token.lease_generation
+    assert rebound.route_generation != old_token.route_generation
+
+
+async def test_hot_swap_flush_rechecks_cutoff_after_event_edge():
+    mgr = _make_routable_audio_manager(True)
+    mgr._asr_runtime.abort = AsyncMock()
+    mgr.is_hot_swap_imminent = True
+    token = mgr._capture_ingress_token()
+    started = [asyncio.Event() for _ in range(3)]
+    release = [asyncio.Event() for _ in range(3)]
+    call_index = 0
+
+    async def process(*_args, **_kwargs):
+        nonlocal call_index
+        index = call_index
+        call_index += 1
+        started[index].set()
+        await release[index].wait()
+        return ProcessedVoiceFrame(
+            bytes([index + 1, 0]) * 160,
+            16_000,
+            0.8,
+            True,
+        )
+
+    mgr._voice_input_audio_pipeline.process = AsyncMock(side_effect=process)
+    first = asyncio.create_task(
+        LLMSessionManager._process_microphone_stream_data(
+            mgr,
+            {"input_type": "audio", "sample_rate_hz": 16_000, "data": [1] * 160},
+            ingress_token=token,
+        )
+    )
+    second = asyncio.create_task(
+        LLMSessionManager._process_microphone_stream_data(
+            mgr,
+            {"input_type": "audio", "sample_rate_hz": 16_000, "data": [2] * 160},
+            ingress_token=token,
+        )
+    )
+    await asyncio.wait_for(
+        asyncio.gather(started[0].wait(), started[1].wait()),
+        1,
+    )
+    flush = asyncio.create_task(LLMSessionManager._flush_hot_swap_audio_cache(mgr))
+    await asyncio.sleep(0)
+
+    release[0].set()
+    await first
+    third = asyncio.create_task(
+        LLMSessionManager._process_microphone_stream_data(
+            mgr,
+            {"input_type": "audio", "sample_rate_hz": 16_000, "data": [3] * 160},
+            ingress_token=token,
+        )
+    )
+    await asyncio.wait_for(started[2].wait(), 1)
+    assert not flush.done()
+
+    release[1].set()
+    await second
+    await asyncio.wait_for(flush, 1)
+    assert not third.done()
+    assert not mgr.is_hot_swap_imminent
+    assert not mgr.is_flushing_hot_swap_cache
+
+    release[2].set()
+    await asyncio.wait_for(third, 1)
+    assert mgr._route_microphone_audio.await_count == 3
+    mgr._asr_runtime.abort.assert_not_awaited()
 
 
 async def test_hot_swap_overflow_blocks_whole_candidate():

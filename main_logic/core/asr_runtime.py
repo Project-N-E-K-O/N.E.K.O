@@ -55,6 +55,8 @@ class _QueuedMicFrame:
     source_rate_hz: int
     token: VoiceIngressToken
     received_at: float
+    audio_stream_epoch: int = 0
+    ingress_sequence: int = 0
 
     @classmethod
     def from_message(
@@ -63,6 +65,8 @@ class _QueuedMicFrame:
         *,
         token: VoiceIngressToken,
         received_at: float | None = None,
+        audio_stream_epoch: int = 0,
+        ingress_sequence: int = 0,
     ) -> "_QueuedMicFrame":
         samples = message.get("data")
         if not isinstance(samples, list):
@@ -74,15 +78,15 @@ class _QueuedMicFrame:
             source_rate_hz = int(declared_rate_hz)
         else:
             raise ValueError("MIC_SAMPLE_RATE_UNSUPPORTED")
-        duration_us = (
-            len(samples) * 1_000_000 + source_rate_hz - 1
-        ) // source_rate_hz
+        duration_us = (len(samples) * 1_000_000 + source_rate_hz - 1) // source_rate_hz
         return cls(
             message=message,
             duration_us=duration_us,
             source_rate_hz=source_rate_hz,
             token=token,
             received_at=time.monotonic() if received_at is None else received_at,
+            audio_stream_epoch=audio_stream_epoch,
+            ingress_sequence=ingress_sequence,
         )
 
 
@@ -95,9 +99,7 @@ class _AudioDurationQueue:
         self.capacity_us = capacity_us
         self.maxsize = max_frames
         self._duration_us = 0
-        self._queue: asyncio.Queue[_QueuedMicFrame] = asyncio.Queue(
-            maxsize=max_frames
-        )
+        self._queue: asyncio.Queue[_QueuedMicFrame] = asyncio.Queue(maxsize=max_frames)
 
     @property
     def duration_us(self) -> int:
@@ -138,6 +140,8 @@ class _HotSwapAudioFrame:
     token: VoiceIngressToken
     speech_probability: float | None = None
     rnnoise_available: bool = False
+    audio_stream_epoch: int = 0
+    ingress_sequence: int = 0
 
 
 class _HotSwapAudioBuffer:
@@ -209,6 +213,10 @@ class AsrRuntimeMixin:
         self._hot_swap_live_audio_inflight = 0
         self._hot_swap_live_audio_idle = asyncio.Event()
         self._hot_swap_live_audio_idle.set()
+        self._hot_swap_ingress_sequence = 0
+        self._hot_swap_pending_sequences: set[int] = set()
+        self._hot_swap_sequence_progress = asyncio.Event()
+        self._hot_swap_sequence_progress.set()
         self._omni_mic_audio_bytes = 0
         self._asr_route_mode = "blocked"
         self._microphone_route_generation = 0
@@ -416,16 +424,16 @@ class AsrRuntimeMixin:
         dropped = 0
         while True:
             try:
-                self._audio_stream_queue.get_nowait()
+                frame = self._audio_stream_queue.get_nowait()
                 self._audio_stream_queue.task_done()
+                self._complete_hot_swap_ingress_sequence(frame.ingress_sequence)
                 dropped += 1
             except asyncio.QueueEmpty:
                 break
         if dropped:
             self._audio_stream_dropped_total += dropped
             logger.info(
-                "[%s] audio stream queue cleared reason=%s dropped=%d "
-                "total_dropped=%d",
+                "[%s] audio stream queue cleared reason=%s dropped=%d total_dropped=%d",
                 self.lanlan_name,
                 reason,
                 dropped,
@@ -454,28 +462,45 @@ class AsrRuntimeMixin:
         if not self._voice_input_accepts_pcm():
             return
         token = self._capture_ingress_token()
+        ingress_sequence = self._reserve_hot_swap_ingress_sequence()
+        sequence_owned = True
         try:
-            frame = _QueuedMicFrame.from_message(message, token=token)
+            frame = _QueuedMicFrame.from_message(
+                message,
+                token=token,
+                audio_stream_epoch=self._audio_stream_epoch,
+                ingress_sequence=ingress_sequence,
+            )
         except ValueError:
+            self._complete_hot_swap_ingress_sequence(ingress_sequence)
             logger.warning("[%s] invalid microphone ingress frame", self.lanlan_name)
             return
         self._ensure_audio_stream_worker()
         try:
             self._audio_stream_queue.put_nowait(frame)
+            sequence_owned = False
         except asyncio.QueueFull:
-            await asyncio.sleep(0)
-            if not self._ingress_token_matches(frame.token):
-                rebound = self._rebind_hot_swap_ingress_token(frame.token)
-                if rebound is None:
-                    return
-                frame = replace(frame, token=rebound)
             try:
-                self._audio_stream_queue.put_nowait(frame)
-            except asyncio.QueueFull:
-                self._clear_audio_stream_queue("ingress_backpressure")
-                self._audio_stream_dropped_total += 1
-                await self._asr_runtime.abort("ingress_backpressure")
-                return
+                await asyncio.sleep(0)
+                if not self._ingress_token_matches(frame.token):
+                    rebound = self._rebind_hot_swap_ingress_token(
+                        frame.token,
+                        audio_stream_epoch=frame.audio_stream_epoch,
+                    )
+                    if rebound is None:
+                        return
+                    frame = replace(frame, token=rebound)
+                try:
+                    self._audio_stream_queue.put_nowait(frame)
+                    sequence_owned = False
+                except asyncio.QueueFull:
+                    self._clear_audio_stream_queue("ingress_backpressure")
+                    self._audio_stream_dropped_total += 1
+                    await self._asr_runtime.abort("ingress_backpressure")
+                    return
+            finally:
+                if sequence_owned:
+                    self._complete_hot_swap_ingress_sequence(ingress_sequence)
         now = time.time()
         queued_duration_us = self._audio_stream_queue.duration_us
         if (
@@ -499,7 +524,10 @@ class AsrRuntimeMixin:
             try:
                 token = frame.token
                 if not self._ingress_token_matches(token):
-                    rebound = self._rebind_hot_swap_ingress_token(token)
+                    rebound = self._rebind_hot_swap_ingress_token(
+                        token,
+                        audio_stream_epoch=frame.audio_stream_epoch,
+                    )
                     if rebound is None:
                         self._audio_stream_dropped_total += 1
                         continue
@@ -507,6 +535,8 @@ class AsrRuntimeMixin:
                 await self._process_microphone_stream_data(
                     frame.message,
                     ingress_token=token,
+                    audio_stream_epoch=frame.audio_stream_epoch,
+                    ingress_sequence=frame.ingress_sequence,
                 )
             except asyncio.CancelledError:
                 raise
@@ -518,22 +548,47 @@ class AsrRuntimeMixin:
                 )
             finally:
                 self._audio_stream_queue.task_done()
+                self._complete_hot_swap_ingress_sequence(frame.ingress_sequence)
+
+    def _reserve_hot_swap_ingress_sequence(self) -> int:
+        self._hot_swap_ingress_sequence += 1
+        sequence = self._hot_swap_ingress_sequence
+        self._hot_swap_pending_sequences.add(sequence)
+        self._hot_swap_sequence_progress.clear()
+        return sequence
+
+    def _complete_hot_swap_ingress_sequence(self, sequence: int) -> None:
+        if sequence <= 0:
+            return
+        self._hot_swap_pending_sequences.discard(sequence)
+        self._hot_swap_sequence_progress.set()
+
+    def _hot_swap_cutoff_complete(self, cutoff: int) -> bool:
+        return not any(
+            sequence <= cutoff for sequence in self._hot_swap_pending_sequences
+        )
 
     def _rebind_hot_swap_ingress_token(
         self,
         token: VoiceIngressToken,
+        *,
+        audio_stream_epoch: int,
     ) -> VoiceIngressToken | None:
         if not (self.is_hot_swap_imminent or self.is_flushing_hot_swap_cache):
             return None
+        current = self._capture_ingress_token()
         if (
-            token.connection_id != self._voice_lease_connection_id
-            or token.lease_generation != self._voice_lease_generation
-            or token.route_generation == self._microphone_route_generation
+            token.session_epoch != current.session_epoch
+            or token.audio_generation != current.audio_generation
+            or audio_stream_epoch != self._audio_stream_epoch
+            or token.connection_id != current.connection_id
+            or token.lease_generation != current.lease_generation
+            or token.route_generation == current.route_generation
             or self._voice_lease_owner != "core"
             or not self._voice_input_accepts_pcm()
         ):
             return None
-        return self._capture_ingress_token()
+        return current
 
     async def _fail_voice_input_pipeline(
         self,
@@ -591,15 +646,31 @@ class AsrRuntimeMixin:
         message: dict,
         *,
         ingress_token: VoiceIngressToken,
+        audio_stream_epoch: int | None = None,
+        ingress_sequence: int | None = None,
     ) -> None:
-        if (
-            self._voice_input_pipeline_failed
-            or not self._ingress_token_matches(ingress_token)
-        ):
+        sequence_owned = ingress_sequence is None
+        if ingress_sequence is None:
+            ingress_sequence = self._reserve_hot_swap_ingress_sequence()
+        if audio_stream_epoch is None:
+            audio_stream_epoch = self._audio_stream_epoch
+        if self._voice_input_pipeline_failed:
+            if sequence_owned:
+                self._complete_hot_swap_ingress_sequence(ingress_sequence)
             return
+        if not self._ingress_token_matches(ingress_token):
+            rebound = self._rebind_hot_swap_ingress_token(
+                ingress_token,
+                audio_stream_epoch=audio_stream_epoch,
+            )
+            if rebound is None:
+                if sequence_owned:
+                    self._complete_hot_swap_ingress_sequence(ingress_sequence)
+                return
+            ingress_token = rebound
         data = message.get("data")
         session_ref = self.session
-        audio_epoch = self._audio_stream_epoch
+        audio_epoch = audio_stream_epoch
         pipeline_ref = self._voice_input_audio_pipeline
         processing_reserved = False
         try:
@@ -647,7 +718,10 @@ class AsrRuntimeMixin:
             ):
                 return
             if not self._ingress_token_matches(ingress_token):
-                rebound = self._rebind_hot_swap_ingress_token(ingress_token)
+                rebound = self._rebind_hot_swap_ingress_token(
+                    ingress_token,
+                    audio_stream_epoch=audio_epoch,
+                )
                 if rebound is None:
                     return
                 ingress_token = rebound
@@ -658,8 +732,7 @@ class AsrRuntimeMixin:
             cache_for_hot_swap = False
             async with self.hot_swap_cache_lock:
                 hot_swap_barrier = (
-                    self.is_hot_swap_imminent
-                    or self.is_flushing_hot_swap_cache
+                    self.is_hot_swap_imminent or self.is_flushing_hot_swap_cache
                 )
                 if refs_changed and not hot_swap_barrier:
                     return
@@ -671,6 +744,8 @@ class AsrRuntimeMixin:
                             token=ingress_token,
                             speech_probability=processed_frame.speech_probability,
                             rnnoise_available=processed_frame.rnnoise_available,
+                            audio_stream_epoch=audio_epoch,
+                            ingress_sequence=ingress_sequence,
                         )
                     )
             if cache_for_hot_swap:
@@ -701,6 +776,8 @@ class AsrRuntimeMixin:
                     )
                     if self._hot_swap_live_audio_inflight == 0:
                         self._hot_swap_live_audio_idle.set()
+            if sequence_owned:
+                self._complete_hot_swap_ingress_sequence(ingress_sequence)
 
     async def _route_microphone_audio(
         self,
@@ -730,9 +807,8 @@ class AsrRuntimeMixin:
             except (web_exceptions.ConnectionClosed, AttributeError) as exc:
                 self.session_closed_by_server = True
                 now = time.monotonic()
-                if (
-                    now - getattr(self, "last_audio_send_error_time", 0.0)
-                    > getattr(self, "audio_error_log_interval", 2.0)
+                if now - getattr(self, "last_audio_send_error_time", 0.0) > getattr(
+                    self, "audio_error_log_interval", 2.0
                 ):
                     logger.warning(
                         "[%s] Omni native microphone connection closed: %s",
@@ -745,9 +821,8 @@ class AsrRuntimeMixin:
                 if "no close frame" in message or "connection closed" in message:
                     self.session_closed_by_server = True
                 now = time.monotonic()
-                if (
-                    now - getattr(self, "last_audio_send_error_time", 0.0)
-                    > getattr(self, "audio_error_log_interval", 2.0)
+                if now - getattr(self, "last_audio_send_error_time", 0.0) > getattr(
+                    self, "audio_error_log_interval", 2.0
                 ):
                     logger.error(
                         "[%s] Omni native microphone routing failed: %s",
@@ -790,12 +865,15 @@ class AsrRuntimeMixin:
         flush_complete = False
         async with self.hot_swap_cache_lock:
             self.is_flushing_hot_swap_cache = True
-            if self._hot_swap_live_audio_inflight == 0:
-                self._hot_swap_live_audio_idle.set()
-            else:
-                self._hot_swap_live_audio_idle.clear()
+            cutoff = self._hot_swap_ingress_sequence
         try:
-            await self._hot_swap_live_audio_idle.wait()
+            while True:
+                if self._hot_swap_cutoff_complete(cutoff):
+                    break
+                self._hot_swap_sequence_progress.clear()
+                if self._hot_swap_cutoff_complete(cutoff):
+                    continue
+                await self._hot_swap_sequence_progress.wait()
             if not self.session or not self.is_active:
                 async with self.hot_swap_cache_lock:
                     damaged_frames.extend(self.hot_swap_audio_cache.drain())
@@ -809,7 +887,10 @@ class AsrRuntimeMixin:
                 for index, frame in enumerate(audio_frames):
                     token = frame.token
                     if not self._ingress_token_matches(token):
-                        rebound = self._rebind_hot_swap_ingress_token(token)
+                        rebound = self._rebind_hot_swap_ingress_token(
+                            token,
+                            audio_stream_epoch=frame.audio_stream_epoch,
+                        )
                         if rebound is None:
                             continue
                         token = rebound
@@ -887,9 +968,7 @@ class AsrRuntimeMixin:
         self._invalidate_voice_pcm_sync(reason)
         current = (owner, hard_muted, focus_suppressed)
         should_abort = (
-            force_abort
-            or self._voice_lease_requires_abort
-            or previous != current
+            force_abort or self._voice_lease_requires_abort or previous != current
         )
         self._voice_lease_requires_abort = False
         if reason == "game_takeover" or (
@@ -1073,9 +1152,7 @@ class AsrRuntimeMixin:
             return
         await self._submit_core_voice_turn(
             event.text,
-            turn_id=(
-                f"asr-{token.session_epoch}-{event.turn_token.turn_id}"
-            ),
+            turn_id=(f"asr-{token.session_epoch}-{event.turn_token.turn_id}"),
         )
 
     async def _send_core_asr_preview(self, event: VoicePartialEvent) -> None:
@@ -1103,9 +1180,7 @@ class AsrRuntimeMixin:
 
     async def _send_core_asr_status(self, event: AsrStatusEvent) -> None:
         await self.send_status(
-            json.dumps(
-                {"code": event.code, "details": {"provider": event.provider}}
-            )
+            json.dumps({"code": event.code, "details": {"provider": event.provider}})
         )
 
     async def _send_core_asr_lifecycle(

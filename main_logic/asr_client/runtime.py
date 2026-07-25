@@ -81,6 +81,22 @@ class AsrRuntimeCallbacks:
     on_lifecycle: Callable[[AsrLifecycleNotification], Awaitable[None]]
 
 
+@dataclass(frozen=True, slots=True)
+class _AsrRuntimeIdentity:
+    session_epoch: int
+    audio_generation: int
+    lifecycle: VoiceInputLifecycleController | None
+    transport_generation: int | None
+    detector: DetectorRuntime | None
+    session: Any
+    provider: str | None
+    session_factory: Any
+    transport_selection: Any
+    transport_task: asyncio.Task[None] | None
+    ingress_token: VoiceIngressToken | None = None
+    turn_token: VoiceTurnToken | None = None
+
+
 class IndependentAsrRuntime:
     """Own one independent ASR session without reading Core manager state."""
 
@@ -141,6 +157,67 @@ class IndependentAsrRuntime:
             and self._asr_detector is detector
         )
 
+    def _capture_runtime_identity(
+        self,
+        *,
+        ingress_token: VoiceIngressToken | None = None,
+        turn_token: VoiceTurnToken | None = None,
+    ) -> _AsrRuntimeIdentity:
+        lifecycle = self._asr_lifecycle
+        return _AsrRuntimeIdentity(
+            session_epoch=self._asr_session_epoch,
+            audio_generation=self._asr_audio_generation,
+            lifecycle=lifecycle,
+            transport_generation=(
+                lifecycle.snapshot.transport_generation
+                if lifecycle is not None
+                else None
+            ),
+            detector=self._asr_detector,
+            session=self._asr_session,
+            provider=self._asr_provider,
+            session_factory=self._asr_session_factory,
+            transport_selection=self._asr_transport_selection,
+            transport_task=self._asr_transport_task,
+            ingress_token=ingress_token,
+            turn_token=turn_token,
+        )
+
+    def _runtime_identity_matches(
+        self,
+        identity: _AsrRuntimeIdentity,
+    ) -> bool:
+        lifecycle = self._asr_lifecycle
+        if (
+            identity.session_epoch != self._asr_session_epoch
+            or identity.audio_generation != self._asr_audio_generation
+            or lifecycle is not identity.lifecycle
+            or self._asr_detector is not identity.detector
+            or self._asr_session is not identity.session
+            or self._asr_provider != identity.provider
+            or self._asr_session_factory is not identity.session_factory
+            or self._asr_transport_selection is not identity.transport_selection
+            or self._asr_transport_task is not identity.transport_task
+        ):
+            return False
+        transport_generation = (
+            lifecycle.snapshot.transport_generation if lifecycle is not None else None
+        )
+        if transport_generation != identity.transport_generation:
+            return False
+        if identity.ingress_token is not None and (
+            self._asr_current_ingress_token != identity.ingress_token
+            or not self._ingress_token_matches(identity.ingress_token)
+        ):
+            return False
+        if identity.turn_token is not None and (
+            lifecycle is None
+            or identity.turn_token.ingress != identity.ingress_token
+            or lifecycle.snapshot.turn_id != identity.turn_token.turn_id
+        ):
+            return False
+        return True
+
     async def abort(self, reason: str) -> None:
         if reason == "ingress_backpressure":
             token = self._asr_current_ingress_token
@@ -153,8 +230,12 @@ class IndependentAsrRuntime:
         provider = self._asr_provider or "unknown"
         if lifecycle is not None:
             lifecycle.invalidate_audio()
-        await self._abort_transport(reason)
-        if not self._asr_runtime_refs_match(epoch, lifecycle, detector):
+        post_detach = await self._abort_transport(reason)
+        if (
+            post_detach is None
+            or not self._runtime_identity_matches(post_detach)
+            or not self._asr_runtime_refs_match(epoch, lifecycle, detector)
+        ):
             return
         if reason == "ingress_backpressure":
             await self._send_asr_status(
@@ -169,7 +250,9 @@ class IndependentAsrRuntime:
                     "[%s] detector reset failed during voice abort",
                     self.display_name,
                 )
-            if not self._asr_runtime_refs_match(epoch, lifecycle, detector):
+            if not self._runtime_identity_matches(
+                post_detach
+            ) or not self._asr_runtime_refs_match(epoch, lifecycle, detector):
                 return
         if lifecycle is not None:
             await self._send_asr_lifecycle_state(lifecycle.snapshot.state)
@@ -354,15 +437,20 @@ class IndependentAsrRuntime:
     ) -> None:
         if not self._ingress_token_matches(turn_token.ingress):
             return
+        identity = self._capture_runtime_identity(
+            ingress_token=turn_token.ingress,
+            turn_token=turn_token,
+        )
         status_code = (
             "ASR_STREAM_BACKPRESSURE"
             if "BACKPRESSURE" in str(error)
             else "ASR_INDEPENDENT_STREAM_FAILED"
         )
         await self._handle_independent_asr_error(
-            self._asr_session_epoch,
-            self._asr_provider or "unknown",
+            identity.session_epoch,
+            identity.provider or "unknown",
             status_code=status_code,
+            expected_identity=identity,
         )
 
     async def _handle_asr_detector_dispatcher_failure(
@@ -389,10 +477,14 @@ class IndependentAsrRuntime:
             envelope.session_epoch,
             exc_info=(type(error), error, error.__traceback__),
         )
+        identity = self._capture_runtime_identity(
+            ingress_token=event.ingress.ingress_token,
+        )
         await self._handle_independent_asr_error(
-            self._asr_session_epoch,
-            self._asr_provider or "unknown",
+            identity.session_epoch,
+            identity.provider or "unknown",
             status_code="ASR_ENDPOINTING_FAILED",
+            expected_identity=identity,
         )
 
     def _detector_envelope_is_current(
@@ -426,9 +518,7 @@ class IndependentAsrRuntime:
             return
         assert detector is not None
         assert lifecycle is not None
-        lifecycle.metrics.smart_turn_inference_ms = (
-            detector.smart_turn_evaluation_ms
-        )
+        lifecycle.metrics.smart_turn_inference_ms = detector.smart_turn_evaluation_ms
         lifecycle.metrics.smart_turn_stale_result_count = (
             detector.smart_turn_stale_result_count
         )
@@ -436,14 +526,18 @@ class IndependentAsrRuntime:
             detector.smart_turn_coalesced_evaluation_count
         )
         if isinstance(event, DetectorRuntimeEvent):
+            identity = self._capture_runtime_identity(
+                ingress_token=event.ingress.ingress_token,
+            )
             await self._handle_independent_asr_error(
                 envelope.session_epoch,
-                self._asr_provider or "unknown",
+                identity.provider or "unknown",
                 status_code=(
                     "ASR_INGRESS_BACKPRESSURE"
                     if event.kind == "audio_backpressure"
                     else "ASR_ENDPOINTING_FAILED"
                 ),
+                expected_identity=identity,
             )
             return
         if isinstance(event, DetectorActivityEvent):
@@ -497,10 +591,15 @@ class IndependentAsrRuntime:
             session_ref,
             after_sequence=self._asr_audio_sequence,
         ):
+            identity = self._capture_runtime_identity(
+                ingress_token=turn_token.ingress,
+                turn_token=turn_token,
+            )
             await self._handle_independent_asr_error(
                 envelope.session_epoch,
-                self._asr_provider or "unknown",
+                identity.provider or "unknown",
                 status_code="ASR_AUDIO_ORDERING_FAILED",
+                expected_identity=identity,
             )
 
     def _activate_asr_audio_dispatcher(
@@ -544,11 +643,16 @@ class IndependentAsrRuntime:
             return True
         turn_token = self._capture_turn_token(lifecycle)
         detector = self._asr_detector
+        identity = self._capture_runtime_identity(
+            ingress_token=turn_token.ingress,
+            turn_token=turn_token,
+        )
         if detector is None:
             await self._handle_independent_asr_error(
                 epoch,
-                self._asr_provider or "unknown",
+                identity.provider or "unknown",
                 status_code="ASR_BLOCKED_ENDPOINTING",
+                expected_identity=identity,
             )
             return False
         lease = self._asr_smart_turn_lease
@@ -560,34 +664,30 @@ class IndependentAsrRuntime:
             return True
         if lease is not None:
             await lease.release()
-            if self._asr_smart_turn_lease is lease:
-                self._asr_smart_turn_lease = None
-            if (
-                epoch != self._asr_session_epoch
-                or self._asr_lifecycle is not lifecycle
-                or self._asr_detector is not detector
-            ):
+            if self._asr_smart_turn_lease is not lease:
+                return False
+            self._asr_smart_turn_lease = None
+            if not self._runtime_identity_matches(identity):
                 return False
         lease = await detector.prepare_endpointing(turn_token)
         if (
-            lease is None
-            or epoch != self._asr_session_epoch
-            or self._asr_lifecycle is not lifecycle
-            or self._asr_detector is not detector
-            or not detector.endpointing_ready(turn_token)
+            not self._runtime_identity_matches(identity)
+            or self._asr_smart_turn_lease is not None
         ):
             if lease is not None:
                 await lease.release()
-            if (
-                epoch == self._asr_session_epoch
-                and self._asr_lifecycle is lifecycle
-                and self._asr_detector is detector
-            ):
-                await self._handle_independent_asr_error(
-                    epoch,
-                    self._asr_provider or "unknown",
-                    status_code="ASR_BLOCKED_ENDPOINTING",
-                )
+            return False
+        if lease is None or not detector.endpointing_ready(turn_token):
+            if lease is not None:
+                await lease.release()
+                if not self._runtime_identity_matches(identity):
+                    return False
+            await self._handle_independent_asr_error(
+                epoch,
+                identity.provider or "unknown",
+                status_code="ASR_BLOCKED_ENDPOINTING",
+                expected_identity=identity,
+            )
             return False
         self._asr_smart_turn_lease = lease
         return True
@@ -610,8 +710,11 @@ class IndependentAsrRuntime:
             self._asr_pending_speech_confirmed = False
             self._asr_pending_detector_candidate = None
             if detector is not None:
+                identity = self._capture_runtime_identity(ingress_token=token)
                 await detector.reset()
-                if not self._asr_runtime_refs_match(
+                if not self._runtime_identity_matches(
+                    identity
+                ) or not self._asr_runtime_refs_match(
                     epoch,
                     lifecycle,
                     detector,
@@ -630,6 +733,7 @@ class IndependentAsrRuntime:
             self._asr_audio_generation += 1
             lifecycle.invalidate_audio()
             if detector is not None:
+                identity = self._capture_runtime_identity()
                 try:
                     await detector.reset()
                 except Exception:
@@ -637,7 +741,9 @@ class IndependentAsrRuntime:
                         "[%s] detector reset failed after ingress backpressure",
                         self.display_name,
                     )
-                if not self._asr_runtime_refs_match(
+                if not self._runtime_identity_matches(
+                    identity
+                ) or not self._asr_runtime_refs_match(
                     epoch,
                     lifecycle,
                     detector,
@@ -654,12 +760,20 @@ class IndependentAsrRuntime:
             VoiceLifecycleState.ACTIVE,
         }:
             lifecycle.invalidate_audio()
-            await self._abort_transport("detector_audio_backpressure")
-            if not self._asr_runtime_refs_match(epoch, lifecycle, detector):
+            post_detach = await self._abort_transport("detector_audio_backpressure")
+            if not self._runtime_identity_matches(
+                post_detach
+            ) or not self._asr_runtime_refs_match(
+                epoch,
+                lifecycle,
+                detector,
+            ):
                 return
             if detector is not None:
                 await detector.reset()
-                if not self._asr_runtime_refs_match(
+                if not self._runtime_identity_matches(
+                    post_detach
+                ) or not self._asr_runtime_refs_match(
                     epoch,
                     lifecycle,
                     detector,
@@ -862,6 +976,7 @@ class IndependentAsrRuntime:
             self._asr_lifecycle.metrics.connect_latency_ms = int(
                 (time.monotonic() - connect_started_at) * 1_000
             )
+
             async def on_detector_endpointing_failure() -> None:
                 await self._handle_independent_asr_error(
                     epoch,
@@ -950,52 +1065,12 @@ class IndependentAsrRuntime:
         self._ensure_asr_runtime_state()
         self._asr_session_epoch += 1
         self._asr_audio_generation += 1
-        self._asr_transcript_dispatcher.invalidate_all()
-        self._asr_detector_dispatcher.invalidate_all()
-        self._asr_audio_dispatcher.abort()
-        asr_session = self._asr_session
-        self._asr_session = None
-        self._asr_provider = None
-        self._asr_core_type = None
-        lifecycle = self._asr_lifecycle
-        self._asr_lifecycle = None
-        if lifecycle is not None:
-            lifecycle.stop()
-        detector, self._asr_detector = self._asr_detector, None
-        self._asr_smart_turn_lease = None
-        if detector is not None:
-            await detector.close()
-        self._asr_current_ingress_token = None
-        self._asr_received_audio = False
-        self._asr_turn_prepared = False
-        self._asr_accepted_final_keys.clear()
-        self._asr_reserved_final_key = None
-        for task_name in (
-            "_asr_transport_task",
-            "_asr_warm_expiry_task",
-            "_asr_final_watchdog_task",
-        ):
-            task = getattr(self, task_name, None)
-            setattr(self, task_name, None)
-            if task is not None and task is not asyncio.current_task():
-                task.cancel()
-        self._asr_session_factory = None
-        self._asr_transport_selection = None
-        self._asr_pending_speech_confirmed = False
-        self._asr_pending_detector_candidate = None
-        self._asr_audio_sequence = 0
-        self._asr_sealed_turn_token = None
-        if asr_session is not None:
-            try:
-                await asr_session.close()
-            except Exception:
-                logger.warning("[%s] independent ASR close failed", self.display_name)
-        close_tasks = tuple(self._asr_close_tasks)
-        if close_tasks:
-            await asyncio.gather(*close_tasks, return_exceptions=True)
-        await self._asr_detector_dispatcher.close()
-        await self._asr_audio_dispatcher.close()
-        self._asr_transcript_dispatcher.invalidate_all()
+        transcript_dispatcher = self._asr_transcript_dispatcher
+        detector_dispatcher = self._asr_detector_dispatcher
+        audio_dispatcher = self._asr_audio_dispatcher
+        transcript_dispatcher.invalidate_all()
+        detector_dispatcher.invalidate_all()
+        audio_dispatcher.abort()
         self._asr_transcript_dispatcher = TranscriptDispatcher(
             self._dispatch_asr_transcript_envelope,
         )
@@ -1008,6 +1083,60 @@ class IndependentAsrRuntime:
             on_wire_audio=self._record_asr_dispatcher_wire_audio,
             on_failure=self._handle_asr_audio_dispatcher_failure,
         )
+        asr_session, self._asr_session = self._asr_session, None
+        lifecycle, self._asr_lifecycle = self._asr_lifecycle, None
+        detector, self._asr_detector = self._asr_detector, None
+        lease, self._asr_smart_turn_lease = self._asr_smart_turn_lease, None
+        detached_tasks: list[asyncio.Task[Any]] = []
+        for task_name in (
+            "_asr_transport_task",
+            "_asr_warm_expiry_task",
+            "_asr_final_watchdog_task",
+        ):
+            task = getattr(self, task_name, None)
+            setattr(self, task_name, None)
+            if task is not None and task is not asyncio.current_task():
+                task.cancel()
+                detached_tasks.append(task)
+        close_tasks = tuple(self._asr_close_tasks)
+        self._asr_close_tasks = set()
+        self._asr_provider = None
+        self._asr_core_type = None
+        if lifecycle is not None:
+            lifecycle.stop()
+        self._asr_current_ingress_token = None
+        self._asr_received_audio = False
+        self._asr_turn_prepared = False
+        self._asr_accepted_final_keys.clear()
+        self._asr_reserved_final_key = None
+        self._asr_session_factory = None
+        self._asr_transport_selection = None
+        self._asr_pending_speech_confirmed = False
+        self._asr_pending_detector_candidate = None
+        self._asr_audio_sequence = 0
+        self._asr_sealed_turn_token = None
+        if detector is not None:
+            await detector.close()
+        if lease is not None:
+            try:
+                await lease.release()
+            except Exception:
+                logger.warning(
+                    "[%s] SmartTurn lease release failed during ASR close",
+                    self.display_name,
+                )
+        if asr_session is not None:
+            try:
+                await asr_session.close()
+            except Exception:
+                logger.warning("[%s] independent ASR close failed", self.display_name)
+        wait_tasks = (*detached_tasks, *close_tasks)
+        if wait_tasks:
+            await asyncio.gather(*wait_tasks, return_exceptions=True)
+        await detector_dispatcher.close()
+        await audio_dispatcher.close()
+        transcript_dispatcher.invalidate_all()
+
     async def submit(
         self,
         frame: ProcessedVoiceFrame,
@@ -1022,6 +1151,7 @@ class IndependentAsrRuntime:
         if not self._ingress_token_matches(ingress_token):
             return AsrSubmitResult(AsrSubmitStatus.STALE)
         self._asr_current_ingress_token = ingress_token
+        identity = self._capture_runtime_identity(ingress_token=ingress_token)
 
         pcm16 = frame.pcm16
         sample_rate_hz = frame.sample_rate_hz
@@ -1029,25 +1159,18 @@ class IndependentAsrRuntime:
         rnnoise_available = frame.rnnoise_available
 
         try:
-            lifecycle = self._asr_lifecycle
-            detector = self._asr_detector
+            lifecycle = identity.lifecycle
+            detector = identity.detector
 
             def ingress_is_current() -> bool:
-                return bool(
-                    lifecycle is not None
-                    and self._asr_lifecycle is lifecycle
-                    and self._ingress_token_matches(ingress_token)
-                )
+                return self._runtime_identity_matches(identity)
 
             if lifecycle is not None and detector is not None:
                 submit_audio = getattr(detector, "submit_audio", None)
                 uses_smart_turn = (
                     lifecycle.provider_policy.endpoint_authority == "smart_turn"
                 )
-                if (
-                    uses_smart_turn
-                    and callable(submit_audio)
-                ):
+                if uses_smart_turn and callable(submit_audio):
                     detector_submit_started_at = time.perf_counter()
                     submitted = await submit_audio(
                         pcm16,
@@ -1056,12 +1179,12 @@ class IndependentAsrRuntime:
                         speech_probability=speech_probability,
                         rnnoise_available=bool(rnnoise_available),
                     )
+                    if not ingress_is_current():
+                        return AsrSubmitResult(AsrSubmitStatus.STALE)
                     lifecycle.metrics.detector_submit_latency_ms = int(
                         (time.perf_counter() - detector_submit_started_at) * 1_000
                     )
-                    lifecycle.metrics.detector_queue_audio_ms = (
-                        detector.queued_audio_ms
-                    )
+                    lifecycle.metrics.detector_queue_audio_ms = detector.queued_audio_ms
                     lifecycle.metrics.detector_queue_high_water_ms = max(
                         lifecycle.metrics.detector_queue_high_water_ms,
                         detector.queued_audio_ms,
@@ -1075,8 +1198,6 @@ class IndependentAsrRuntime:
                     lifecycle.metrics.smart_turn_coalesced_evaluation_count = (
                         detector.smart_turn_coalesced_evaluation_count
                     )
-                    if not ingress_is_current():
-                        return AsrSubmitResult(AsrSubmitStatus.STALE)
                     if submitted.status is DetectorSubmitStatus.BACKPRESSURE:
                         lifecycle.metrics.detector_overflow_count += 1
                         await self._handle_audio_ingress_backpressure(ingress_token)
@@ -1087,9 +1208,10 @@ class IndependentAsrRuntime:
                         or not submitted.endpointing_available
                     ):
                         await self._handle_independent_asr_error(
-                            self._asr_session_epoch,
-                            self._asr_provider or "unknown",
+                            identity.session_epoch,
+                            identity.provider or "unknown",
                             status_code="ASR_ENDPOINTING_FAILED",
+                            expected_identity=identity,
                         )
                         return AsrSubmitResult(AsrSubmitStatus.UNAVAILABLE)
                     if not submitted.throttle_available:
@@ -1107,9 +1229,9 @@ class IndependentAsrRuntime:
                             VoiceLifecycleState.DEEP_SLEEP,
                         }
                     ):
-                        forced = await detector.force_speech_started(
-                            submitted.identity
-                        )
+                        forced = await detector.force_speech_started(submitted.identity)
+                        if not ingress_is_current():
+                            return AsrSubmitResult(AsrSubmitStatus.STALE)
                         if forced:
                             # The detector callback is queued through the
                             # session-owned dispatcher. Advance the lifecycle
@@ -1118,7 +1240,7 @@ class IndependentAsrRuntime:
                             # session before that queued event runs.
                             await self._handle_independent_asr_activity(
                                 SpeechActivityEvent.SPEECH_STARTED,
-                                self._asr_session_epoch,
+                                identity.session_epoch,
                             )
                             if not ingress_is_current():
                                 return AsrSubmitResult(AsrSubmitStatus.STALE)
@@ -1132,9 +1254,10 @@ class IndependentAsrRuntime:
                         return AsrSubmitResult(AsrSubmitStatus.STALE)
                     if not detector_result.endpointing_available:
                         await self._handle_independent_asr_error(
-                            self._asr_session_epoch,
-                            self._asr_provider or "unknown",
+                            identity.session_epoch,
+                            identity.provider or "unknown",
                             status_code="ASR_ENDPOINTING_FAILED",
+                            expected_identity=identity,
                         )
                         return AsrSubmitResult(AsrSubmitStatus.UNAVAILABLE)
                     if not detector_result.throttle_available:
@@ -1143,7 +1266,7 @@ class IndependentAsrRuntime:
                         for event in detector_result.events:
                             await self._handle_independent_asr_activity(
                                 event,
-                                self._asr_session_epoch,
+                                identity.session_epoch,
                             )
                             if not ingress_is_current():
                                 return AsrSubmitResult(AsrSubmitStatus.STALE)
@@ -1157,7 +1280,7 @@ class IndependentAsrRuntime:
                     }:
                         await self._handle_independent_asr_activity(
                             SpeechActivityEvent.SPEECH_STARTED,
-                            self._asr_session_epoch,
+                            identity.session_epoch,
                         )
                         if not ingress_is_current():
                             return AsrSubmitResult(AsrSubmitStatus.STALE)
@@ -1192,9 +1315,10 @@ class IndependentAsrRuntime:
                 return AsrSubmitResult(AsrSubmitStatus.ACCEPTED)
             if lifecycle is None or detector is None:
                 await self._handle_independent_asr_error(
-                    self._asr_session_epoch,
-                    self._asr_provider or "unknown",
+                    identity.session_epoch,
+                    identity.provider or "unknown",
                     status_code="ASR_BLOCKED_ENDPOINTING",
+                    expected_identity=identity,
                 )
                 return AsrSubmitResult(AsrSubmitStatus.UNAVAILABLE)
             turn_token = self._capture_turn_token(lifecycle)
@@ -1203,17 +1327,19 @@ class IndependentAsrRuntime:
                 or not self._asr_endpointing_ready(lifecycle, detector, turn_token)
             ):
                 await self._handle_independent_asr_error(
-                    self._asr_session_epoch,
-                    self._asr_provider or "unknown",
+                    identity.session_epoch,
+                    identity.provider or "unknown",
                     status_code="ASR_BLOCKED_ENDPOINTING",
+                    expected_identity=identity,
                 )
                 return AsrSubmitResult(AsrSubmitStatus.UNAVAILABLE)
             asr_session = self._asr_session
             if asr_session is None or not getattr(asr_session, "is_ready", True):
                 if lifecycle is None:
                     await self._handle_independent_asr_error(
-                        self._asr_session_epoch,
-                        self._asr_provider or "unknown",
+                        identity.session_epoch,
+                        identity.provider or "unknown",
+                        expected_identity=identity,
                     )
                     return AsrSubmitResult(AsrSubmitStatus.UNAVAILABLE)
                 self._ensure_transport_restart_task()
@@ -1231,9 +1357,10 @@ class IndependentAsrRuntime:
             if self._asr_audio_dispatcher.active_turn != turn_token:
                 if not self._activate_asr_audio_dispatcher(lifecycle, turn_token):
                     await self._handle_independent_asr_error(
-                        self._asr_session_epoch,
-                        self._asr_provider or "unknown",
+                        identity.session_epoch,
+                        identity.provider or "unknown",
                         status_code="ASR_AUDIO_ORDERING_FAILED",
+                        expected_identity=identity,
                     )
                     return AsrSubmitResult(AsrSubmitStatus.UNAVAILABLE)
             self._asr_audio_sequence += 1
@@ -1245,14 +1372,17 @@ class IndependentAsrRuntime:
                 sequence_no=self._asr_audio_sequence,
             ):
                 await self._handle_independent_asr_error(
-                    self._asr_session_epoch,
-                    self._asr_provider or "unknown",
+                    identity.session_epoch,
+                    identity.provider or "unknown",
                     status_code="ASR_AUDIO_ORDERING_FAILED",
+                    expected_identity=identity,
                 )
                 return AsrSubmitResult(AsrSubmitStatus.UNAVAILABLE)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            if not self._runtime_identity_matches(identity):
+                return AsrSubmitResult(AsrSubmitStatus.STALE)
             self._asr_received_audio = True
             status_code = (
                 "ASR_STREAM_BACKPRESSURE"
@@ -1261,13 +1391,14 @@ class IndependentAsrRuntime:
             )
             if (
                 status_code == "ASR_STREAM_BACKPRESSURE"
-                and self._asr_lifecycle is not None
+                and identity.lifecycle is not None
             ):
-                self._asr_lifecycle.metrics.queue_backpressure_count += 1
+                identity.lifecycle.metrics.queue_backpressure_count += 1
             await self._handle_independent_asr_error(
-                self._asr_session_epoch,
-                self._asr_provider or "unknown",
+                identity.session_epoch,
+                identity.provider or "unknown",
                 status_code=status_code,
+                expected_identity=identity,
             )
             return AsrSubmitResult(AsrSubmitStatus.UNAVAILABLE)
 
@@ -1300,29 +1431,36 @@ class IndependentAsrRuntime:
                 return
             factory = self._asr_session_factory
             selection = self._asr_transport_selection
+            identity = self._capture_runtime_identity()
             if factory is None or selection is None or lifecycle is None:
                 await self._handle_independent_asr_error(
-                    self._asr_session_epoch,
-                    self._asr_provider or "unknown",
+                    identity.session_epoch,
+                    identity.provider or "unknown",
+                    expected_identity=identity,
                 )
                 return
 
             for attempt in range(max_attempts):
+                if not self._runtime_identity_matches(identity):
+                    return
                 if lifecycle.snapshot.state is VoiceLifecycleState.BACKOFF:
                     lifecycle.transition(VoiceLifecycleEvent.RETRY)
                     lifecycle.metrics.reconnect_count += 1
                     await self._send_asr_lifecycle_state(VoiceLifecycleState.PREWARMING)
+                    if not self._runtime_identity_matches(identity):
+                        return
                 candidate = None
                 try:
                     connect_started_at = time.monotonic()
                     candidate = factory(selection)
                     await candidate.connect()
-                    if self._asr_lifecycle is not lifecycle:
+                    if not self._runtime_identity_matches(identity):
                         await candidate.close()
                         return
                     self._asr_session = candidate
                     self._asr_last_provider_wire_audio_ms = 0
                     lifecycle.invalidate_transport()
+                    connected_identity = self._capture_runtime_identity()
                     lifecycle.metrics.connect_latency_ms = int(
                         (time.monotonic() - connect_started_at) * 1_000
                     )
@@ -1332,18 +1470,16 @@ class IndependentAsrRuntime:
                     ):
                         detector = self._asr_detector
                         turn_token = self._capture_turn_token(lifecycle)
-                        if (
-                            detector is None
-                            or not self._asr_endpointing_ready(
-                                lifecycle,
-                                detector,
-                                turn_token,
-                            )
+                        if detector is None or not self._asr_endpointing_ready(
+                            lifecycle,
+                            detector,
+                            turn_token,
                         ):
                             await self._handle_independent_asr_error(
-                                self._asr_session_epoch,
-                                self._asr_provider or "unknown",
+                                connected_identity.session_epoch,
+                                connected_identity.provider or "unknown",
                                 status_code="ASR_BLOCKED_ENDPOINTING",
+                                expected_identity=connected_identity,
                             )
                             return
                         lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
@@ -1351,19 +1487,24 @@ class IndependentAsrRuntime:
                         self._asr_turn_audio_started_at = time.monotonic()
                         self._asr_first_partial_recorded = False
                         await self._send_asr_lifecycle_state(VoiceLifecycleState.ACTIVE)
+                        if not self._runtime_identity_matches(connected_identity):
+                            return
                         payload = lifecycle.drain_active_start_audio()
                         await self._prepare_independent_asr_turn(
-                            self._asr_session_epoch
+                            connected_identity.session_epoch
                         )
+                        if not self._runtime_identity_matches(connected_identity):
+                            return
                         if not self._activate_asr_audio_dispatcher(
                             lifecycle,
                             turn_token,
                             buffered_pcm16=payload,
                         ):
                             await self._handle_independent_asr_error(
-                                self._asr_session_epoch,
-                                self._asr_provider or "unknown",
+                                connected_identity.session_epoch,
+                                connected_identity.provider or "unknown",
                                 status_code="ASR_AUDIO_ORDERING_FAILED",
+                                expected_identity=connected_identity,
                             )
                             return
                     return
@@ -1377,21 +1518,36 @@ class IndependentAsrRuntime:
                             await candidate.close()
                         except Exception:
                             pass
+                    if not self._runtime_identity_matches(identity):
+                        return
                     if lifecycle.snapshot.state is VoiceLifecycleState.PREWARMING:
                         lifecycle.transition(VoiceLifecycleEvent.CONNECT_FAILED)
-                        await self._send_asr_lifecycle_state(VoiceLifecycleState.BACKOFF)
+                        identity = self._capture_runtime_identity()
+                        await self._send_asr_lifecycle_state(
+                            VoiceLifecycleState.BACKOFF
+                        )
+                        if not self._runtime_identity_matches(identity):
+                            return
                     if attempt + 1 < max_attempts:
                         await asyncio.sleep(min(1.0, 0.25 * (2**attempt)))
+                        if not self._runtime_identity_matches(identity):
+                            return
                         continue
+            if not self._runtime_identity_matches(identity):
+                return
             if lifecycle.snapshot.state is VoiceLifecycleState.BACKOFF:
                 lifecycle.transition(VoiceLifecycleEvent.RETRIES_EXHAUSTED)
             await self._handle_independent_asr_error(
-                self._asr_session_epoch,
-                self._asr_provider or "unknown",
+                identity.session_epoch,
+                identity.provider or "unknown",
                 status_code="ASR_INDEPENDENT_FAILED",
+                expected_identity=identity,
             )
 
-    async def _abort_transport(self, reason: str) -> None:
+    async def _abort_transport(
+        self,
+        reason: str,
+    ) -> _AsrRuntimeIdentity:
         """Invalidate provider I/O before closing a live transport."""
 
         self._asr_audio_generation += 1
@@ -1425,6 +1581,7 @@ class IndependentAsrRuntime:
                 self._asr_audio_dispatcher.asr_abort_discarded_command_count
             )
             lifecycle.invalidate_transport()
+        post_detach = self._capture_runtime_identity()
         if lease is not None:
             await lease.release()
         if asr_session is not None:
@@ -1436,6 +1593,7 @@ class IndependentAsrRuntime:
                     self.display_name,
                     reason,
                 )
+        return post_detach
 
     async def _close_transport_only(self) -> None:
         """Enter deep sleep while preserving microphone detection."""
@@ -1478,14 +1636,10 @@ class IndependentAsrRuntime:
                 if epoch != self._asr_session_epoch:
                     return
                 current = self._asr_lifecycle
-                if (
-                    current is not None
-                    and current.snapshot.state
-                    in {
-                        VoiceLifecycleState.LOCAL_LISTEN,
-                        VoiceLifecycleState.WARM_IDLE,
-                    }
-                ):
+                if current is not None and current.snapshot.state in {
+                    VoiceLifecycleState.LOCAL_LISTEN,
+                    VoiceLifecycleState.WARM_IDLE,
+                }:
                     await self._close_transport_only()
             except asyncio.CancelledError:
                 return
@@ -1610,10 +1764,14 @@ class IndependentAsrRuntime:
             ):
                 self._asr_turn_audio_started_at = time.monotonic()
                 self._asr_first_partial_recorded = False
-        if event not in {
-            SpeechActivityEvent.SPEECH_STARTED,
-            SpeechActivityEvent.SPEECH_RESUMED,
-        } or self._asr_turn_prepared:
+        if (
+            event
+            not in {
+                SpeechActivityEvent.SPEECH_STARTED,
+                SpeechActivityEvent.SPEECH_RESUMED,
+            }
+            or self._asr_turn_prepared
+        ):
             return
         if (
             lifecycle is not None
@@ -1630,7 +1788,10 @@ class IndependentAsrRuntime:
             return
 
         lifecycle = self._asr_lifecycle
-        if lifecycle is None or lifecycle.snapshot.state is not VoiceLifecycleState.ACTIVE:
+        if (
+            lifecycle is None
+            or lifecycle.snapshot.state is not VoiceLifecycleState.ACTIVE
+        ):
             return
         turn_token = self._capture_turn_token(lifecycle)
         final_key = FinalKey.from_turn(turn_token)
@@ -1903,29 +2064,57 @@ class IndependentAsrRuntime:
         provider: str,
         *,
         status_code: str = "ASR_INDEPENDENT_FAILED",
+        expected_identity: _AsrRuntimeIdentity | None = None,
     ) -> None:
-        if epoch != self._asr_session_epoch:
+        if epoch != self._asr_session_epoch or (
+            expected_identity is not None
+            and not self._runtime_identity_matches(expected_identity)
+        ):
             return
         # The provider callback that reported failure must not be allowed to
         # deliver a queued final into the surviving Omni session.
         self._asr_session_epoch += 1
         failure_epoch = self._asr_session_epoch
         self._asr_audio_generation += 1
-        self._asr_transcript_dispatcher.invalidate_all()
-        self._asr_detector_dispatcher.invalidate_all()
-        self._asr_audio_dispatcher.abort()
+        transcript_dispatcher = self._asr_transcript_dispatcher
+        detector_dispatcher = self._asr_detector_dispatcher
+        audio_dispatcher = self._asr_audio_dispatcher
+        transcript_dispatcher.invalidate_all()
+        detector_dispatcher.invalidate_all()
+        audio_dispatcher.abort()
+        self._asr_transcript_dispatcher = TranscriptDispatcher(
+            self._dispatch_asr_transcript_envelope,
+        )
+        self._asr_detector_dispatcher = AsrDetectorDispatcher(
+            self._dispatch_asr_detector_event,
+            on_failure=self._handle_asr_detector_dispatcher_failure,
+        )
+        self._asr_audio_dispatcher = AsrAudioDispatcher(
+            validator=self._asr_audio_command_is_valid,
+            on_wire_audio=self._record_asr_dispatcher_wire_audio,
+            on_failure=self._handle_asr_audio_dispatcher_failure,
+        )
         asr_session, self._asr_session = self._asr_session, None
         lifecycle, self._asr_lifecycle = self._asr_lifecycle, None
         detector, self._asr_detector = self._asr_detector, None
         lease, self._asr_smart_turn_lease = self._asr_smart_turn_lease, None
         self._asr_provider = None
+        self._asr_session_factory = None
+        self._asr_transport_selection = None
         self._asr_current_ingress_token = None
-        watchdog, self._asr_final_watchdog_task = (
-            self._asr_final_watchdog_task,
-            None,
-        )
-        if watchdog is not None and watchdog is not asyncio.current_task():
-            watchdog.cancel()
+        self._asr_pending_speech_confirmed = False
+        self._asr_pending_detector_candidate = None
+        self._asr_audio_sequence = 0
+        self._asr_turn_endpointed_at = None
+        for task_name in (
+            "_asr_transport_task",
+            "_asr_warm_expiry_task",
+            "_asr_final_watchdog_task",
+        ):
+            task = getattr(self, task_name, None)
+            setattr(self, task_name, None)
+            if task is not None and task is not asyncio.current_task():
+                task.cancel()
         if lifecycle is not None:
             lifecycle.stop()
         if detector is not None:
@@ -1945,7 +2134,15 @@ class IndependentAsrRuntime:
             task = asyncio.create_task(self._close_asr_session(asr_session))
             self._asr_close_tasks.add(task)
             task.add_done_callback(self._asr_close_tasks.discard)
-        await self._send_asr_lifecycle_state(VoiceLifecycleState.BLOCKED)
+        for dispatcher in (detector_dispatcher, audio_dispatcher):
+            task = asyncio.create_task(dispatcher.close())
+            self._asr_close_tasks.add(task)
+            task.add_done_callback(self._asr_close_tasks.discard)
+        await self._send_asr_lifecycle_state(
+            VoiceLifecycleState.BLOCKED,
+            provider=provider,
+            session_epoch=failure_epoch,
+        )
         if self._asr_session_epoch != failure_epoch:
             return
         try:
@@ -1985,13 +2182,25 @@ class IndependentAsrRuntime:
                 self.display_name,
             )
 
-    async def _send_asr_lifecycle_state(self, state: VoiceLifecycleState) -> None:
+    async def _send_asr_lifecycle_state(
+        self,
+        state: VoiceLifecycleState,
+        *,
+        provider: str | None = None,
+        session_epoch: int | None = None,
+    ) -> None:
         try:
             await self._callbacks.on_lifecycle(
                 AsrLifecycleNotification(
                     state=state.value,
-                    provider=self._asr_provider or "",
-                    session_epoch=self._asr_session_epoch,
+                    provider=(
+                        self._asr_provider or "" if provider is None else provider
+                    ),
+                    session_epoch=(
+                        self._asr_session_epoch
+                        if session_epoch is None
+                        else session_epoch
+                    ),
                 )
             )
         except Exception:
