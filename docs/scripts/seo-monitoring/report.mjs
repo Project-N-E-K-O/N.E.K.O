@@ -172,6 +172,7 @@ export function renderMarkdown(report) {
     `- Overall: ${statusLine(report.gsc, value => `${value.overall.impressions} impressions, ${value.overall.clicks} clicks, CTR ${percentage(value.overall.ctr)}, average position ${display(value.overall.position, 2)}`)}`,
     `- Desktop-pet category: ${statusLine(report.gsc, value => `${value.desktopPetCategory.impressions} impressions, ${value.desktopPetCategory.clicks} clicks, CTR ${percentage(value.desktopPetCategory.ctr)}, average position ${display(value.desktopPetCategory.position, 2)}`)}`,
     `- GSC query-page rows: ${statusLine(report.gsc, value => `${value.overall.rows} rows across ${value.pagination?.requestCount ?? 1} API page(s)`)}`,
+    `- GSC API coverage: ${statusLine(report.gsc, value => `${value.pagination?.pageTraversalComplete ? 'page traversal complete' : 'page traversal status unknown'}; ${value.pagination?.coverage === 'api_top_rows_may_be_limited' ? 'query-page dimensions may still be limited to API top rows' : 'coverage limitation unknown'}`)}`,
     `- GSC sitemap: ${statusLine(report.gsc, value => `${value.sitemap.errors} errors, ${value.sitemap.warnings} warnings, pending=${value.sitemap.isPending}`)}`,
     '',
     '## GA4 acquisition and conversion',

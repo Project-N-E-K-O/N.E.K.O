@@ -76,7 +76,11 @@ test('partial DataForSEO results remain non-blocking and expose failed coverage'
       overall: { rows: 0, impressions: 0, clicks: 0, ctr: 0, position: null },
       desktopPetCategory: { impressions: 0, clicks: 0, ctr: 0, position: null },
       sitemap: { errors: 0, warnings: 0, isPending: false },
-      pagination: { requestCount: 1 },
+      pagination: {
+        requestCount: 1,
+        pageTraversalComplete: true,
+        coverage: 'api_top_rows_may_be_limited',
+      },
     },
     ga4: { status: 'ok', organicSessions: 0, organicPageViews: 0, aiReferralSessions: 0, organicSteamCtaClicks: 0 },
   })
@@ -89,6 +93,7 @@ test('partial DataForSEO results remain non-blocking and expose failed coverage'
   assert.match(markdown, /1\/2 observed, 1 failed/)
   assert.match(markdown, /Top 30 \*\*N\/A\*\* \(SERP depth 10\)/)
   assert.match(markdown, /failed \(40101\)/)
+  assert.match(markdown, /page traversal complete; query-page dimensions may still be limited to API top rows/)
 })
 
 test('Markdown uses N/A with reasons when Google read-only credentials are missing', () => {

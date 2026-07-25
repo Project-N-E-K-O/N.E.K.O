@@ -59,7 +59,8 @@ test('GSC collector separates desktop-pet queries and reads sitemap state', asyn
     rowLimit: 25_000,
     requestCount: 1,
     rows: 2,
-    exhausted: true,
+    pageTraversalComplete: true,
+    coverage: 'api_top_rows_may_be_limited',
   })
   assert.equal(requests.length, 2)
   assert.match(requests[0].options.headers.authorization, /Bearer token/)
@@ -94,6 +95,8 @@ test('GSC collector paginates query-page rows until the final short page', async
   assert.equal(result.overall.rows, 3)
   assert.equal(result.desktopPetCategory.rows, 2)
   assert.equal(result.pagination.requestCount, 2)
+  assert.equal(result.pagination.pageTraversalComplete, true)
+  assert.equal(result.pagination.coverage, 'api_top_rows_may_be_limited')
   assert.deepEqual(analyticsBodies.map(body => body.startRow), [0, 2])
 })
 
