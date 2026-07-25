@@ -72,7 +72,13 @@ def _compute_retry_wait_seconds(retry_not_before: str) -> int:
     """
     try:
         target_dt = datetime.fromisoformat(retry_not_before)
-        now_dt = datetime.now()
+        # 处理时区感知和 naive datetime 的混合情况
+        if target_dt.tzinfo is not None:
+            # target 是 timezone-aware，使用 timezone-aware 的 now
+            now_dt = datetime.now(target_dt.tzinfo)
+        else:
+            # target 是 naive datetime，使用 naive 的 now
+            now_dt = datetime.now()
         delta = (target_dt - now_dt).total_seconds()
         return max(0, int(delta))
     except Exception:
@@ -358,6 +364,14 @@ class CodexAdapterPlugin(NekoPluginBase):
                 )
 
             # 可重试 — 退避后继续下一轮
+            is_last_attempt = (attempt + 1) >= max_attempts
+            if is_last_attempt:
+                # 最后一次尝试失败，跳过退避等待
+                self.logger.info(
+                    "Last attempt failed, skipping backoff"
+                )
+                break
+            
             if exec_err.retry_not_before:
                 # 有明确的重试时间戳 — 等待到该时间
                 wait_sec = _compute_retry_wait_seconds(exec_err.retry_not_before)
