@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import random
 from datetime import datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 

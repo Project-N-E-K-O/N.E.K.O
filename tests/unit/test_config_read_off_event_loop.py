@@ -148,44 +148,86 @@ async def test_a_single_call_reads_core_config_once_even_when_it_recurses():
     assert config["base_url"] == "https://assist.example/v1"
 
 
-def _sync_config_reads_inside_async_defs(path: Path) -> list[tuple[int, str, str]]:
-    """Return (lineno, called name, enclosing async def) for un-awaited sync config reads.
+# Offload helpers: a sync callable handed to one of these is SUPPOSED to be sync.
+_OFFLOAD_FUNCS = frozenset({"to_thread", "run_in_executor", "run_sync"})
 
-    Uses the AST rather than line matching: a call split across lines is invisible to grep,
-    and only the AST tells us whether the nearest enclosing function is an ``async def``.
+
+def _is_offload_call(node: ast.AST) -> bool:
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    name = func.attr if isinstance(func, ast.Attribute) else (
+        func.id if isinstance(func, ast.Name) else None
+    )
+    return name in _OFFLOAD_FUNCS
+
+
+def _offloaded_callable_names(tree: ast.AST) -> set[str]:
+    """Names passed bare to to_thread/run_in_executor anywhere in the module.
+
+    ``await asyncio.to_thread(self._blocking_helper)`` means _blocking_helper is
+    meant to run on a worker thread, so a sync config read inside it is correct.
+    """
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if not _is_offload_call(node):
+            continue
+        for arg in node.args:
+            if isinstance(arg, ast.Name):
+                names.add(arg.id)
+            elif isinstance(arg, ast.Attribute):
+                names.add(arg.attr)
+    return names
+
+
+def _sync_config_reads_inside_async_defs(path: Path) -> list[tuple[int, str, str]]:
+    """Return (lineno, called name, enclosing function) for sync config reads on the loop.
+
+    Uses the AST rather than line matching: a call split across lines is invisible to
+    grep, and only the AST can tell whether the call actually executes on the event loop.
+
+    A nested sync ``def`` / ``lambda`` defined inside an ``async def`` still runs on the
+    loop when it is called there, so it INHERITS the async context rather than clearing
+    it. The one exception is a callable handed to ``to_thread`` / ``run_in_executor``:
+    that one genuinely runs on a worker thread, and a sync read inside it is correct.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    offloaded = _offloaded_callable_names(tree)
     hits: list[tuple[int, str, str]] = []
-    # 栈里同时压 def / async def / lambda：lambda 体是同步可调用对象，
-    # 里面的调用并不发生在 async def 的执行流上。
-    stack: list[tuple[ast.AST, bool]] = []
 
-    def walk(node: ast.AST) -> None:
-        if isinstance(node, ast.AsyncFunctionDef):
-            stack.append((node, True))
+    def walk(node: ast.AST, on_loop: bool, enclosing: str) -> None:
+        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef, ast.Lambda)):
+            name = getattr(node, "name", "<lambda>")
+            if isinstance(node, ast.AsyncFunctionDef):
+                inner = True
+            elif name in offloaded:
+                inner = False
+            else:
+                inner = on_loop
             for child in ast.iter_child_nodes(node):
-                walk(child)
-            stack.pop()
+                walk(child, inner, name)
             return
-        if isinstance(node, (ast.FunctionDef, ast.Lambda)):
-            stack.append((node, False))
-            for child in ast.iter_child_nodes(node):
-                walk(child)
-            stack.pop()
-            return
+
         if isinstance(node, ast.Call):
             func = node.func
-            name = func.attr if isinstance(func, ast.Attribute) else (
+            called = func.attr if isinstance(func, ast.Attribute) else (
                 func.id if isinstance(func, ast.Name) else None
             )
-            enclosing = getattr(stack[-1][0], "name", "<lambda>") if stack else ""
-            # aget_model_api_config 在拿到快照时直接同步解析（无 IO），那是它的实现本体，不是违规。
-            if name in SYNC_CONFIG_READERS and stack and stack[-1][1] and enclosing not in ASYNC_DUALS:
-                hits.append((node.lineno, name, enclosing))
-        for child in ast.iter_child_nodes(node):
-            walk(child)
+            # aget_model_api_config 拿到快照后直接同步解析（无 IO），那是它的实现本体，不是违规。
+            if called in SYNC_CONFIG_READERS and on_loop and enclosing not in ASYNC_DUALS:
+                hits.append((node.lineno, called, enclosing))
+            offload = _is_offload_call(node)
+            for arg in node.args:
+                walk(arg, False if (offload and isinstance(arg, ast.Lambda)) else on_loop, enclosing)
+            for kw in node.keywords:
+                walk(kw.value, on_loop, enclosing)
+            walk(node.func, on_loop, enclosing)
+            return
 
-    walk(tree)
+        for child in ast.iter_child_nodes(node):
+            walk(child, on_loop, enclosing)
+
+    walk(tree, False, "<module>")
     return hits
 
 
@@ -200,10 +242,11 @@ def test_async_code_never_calls_the_sync_config_readers():
             for lineno, name, enclosing in _sync_config_reads_inside_async_defs(path):
                 offenders.append(
                     f"{path.relative_to(REPO_ROOT).as_posix()}:{lineno} "
-                    f"async def {enclosing} -> {name}()"
+                    f"in {enclosing}() -> {name}()"
                 )
 
     assert not offenders, (
-        "以下 async def 里直接调用了同步配置读，请改用 aget_core_config / "
-        "aget_model_api_config:\n  " + "\n  ".join(offenders)
+        "以下位置在事件循环上直接调用了同步配置读（async def 本体，或它内部会被同步"
+        "调用的嵌套闭包），请改用 aget_core_config / aget_model_api_config；确实要在"
+        "工作线程里同步读的，走 asyncio.to_thread:\n  " + "\n  ".join(offenders)
     )
