@@ -650,9 +650,18 @@ class AsrRuntimeMixin:
             or not self.is_active
         ):
             return
+        source_session_epoch = ingress_token.session_epoch
+        source_connection_id = ingress_token.connection_id
+        source_lease_generation = ingress_token.lease_generation
+        voice_transition_generation = self._voice_input_transition_generation
+        route_operation_generation = self._asr_route_operation_generation
+        source_session_ref = session_ref
+        source_audio_epoch = audio_epoch
+        source_pipeline_ref = pipeline_ref
+        source_route_mode = self._asr_route_mode
         self._voice_input_pipeline_failed = True
-        independent_route = self._asr_route_mode == "independent"
-        provider = (
+        independent_route = source_route_mode == "independent"
+        source_provider = (
             self._independent_asr_provider
             or self._independent_asr_route_key
             or "unknown"
@@ -664,9 +673,14 @@ class AsrRuntimeMixin:
             await self._asr_runtime.abort("audio_preprocessing_failed")
         if (
             not self._voice_input_pipeline_failed
-            or self.session is not session_ref
-            or self._audio_stream_epoch != audio_epoch
-            or self._voice_input_audio_pipeline is not pipeline_ref
+            or self._voice_lease_connection_id != source_connection_id
+            or self._voice_lease_generation != source_lease_generation
+            or (self._voice_input_transition_generation != voice_transition_generation)
+            or self._asr_route_operation_generation != route_operation_generation
+            or self._capture_ingress_token().session_epoch != source_session_epoch
+            or self.session is not source_session_ref
+            or self._audio_stream_epoch != source_audio_epoch
+            or self._voice_input_audio_pipeline is not source_pipeline_ref
             or not self.is_active
             or self._asr_route_mode != "blocked"
             or (
@@ -674,14 +688,14 @@ class AsrRuntimeMixin:
                 or self._independent_asr_route_key
                 or "unknown"
             )
-            != provider
+            != source_provider
         ):
             return
         await self._send_core_asr_status(
             AsrStatusEvent(
                 code="ASR_AUDIO_PREPROCESSING_FAILED",
-                provider=provider,
-                session_epoch=ingress_token.session_epoch,
+                provider=source_provider,
+                session_epoch=source_session_epoch,
             )
         )
 
@@ -903,6 +917,11 @@ class AsrRuntimeMixin:
         token = ingress_token or self._capture_ingress_token()
         if not self._ingress_token_matches(token):
             return True
+        route_mode = self._asr_route_mode
+        voice_transition_generation = self._voice_input_transition_generation
+        route_operation_generation = self._asr_route_operation_generation
+        provider = self._independent_asr_provider
+        owner = self._voice_lease_owner
         result = await self._asr_runtime.submit(
             ProcessedVoiceFrame(
                 pcm16=pcm16,
@@ -912,6 +931,19 @@ class AsrRuntimeMixin:
             ),
             ingress_token=token,
         )
+        submit_is_current = bool(
+            token == self._capture_ingress_token()
+            and route_mode == "independent"
+            and self._asr_route_mode == "independent"
+            and (route_operation_generation == self._asr_route_operation_generation)
+            and (voice_transition_generation == self._voice_input_transition_generation)
+            and owner == "core"
+            and self._voice_lease_owner == "core"
+            and self._voice_input_accepts_pcm()
+            and self._independent_asr_provider == provider
+        )
+        if not submit_is_current:
+            return True
         if result.status is AsrSubmitStatus.UNAVAILABLE:
             self._set_microphone_route("blocked")
             self._clear_audio_stream_queue("independent_asr_unavailable")
@@ -1093,10 +1125,7 @@ class AsrRuntimeMixin:
 
         self._ensure_asr_runtime_state()
         normalized = str(connection_id or "").strip()
-        if (
-            not normalized
-            or normalized != self._voice_lease_connection_id
-        ):
+        if not normalized or normalized != self._voice_lease_connection_id:
             return False
         if self._voice_lease_synchronized:
             return True

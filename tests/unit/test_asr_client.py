@@ -4,6 +4,7 @@ import asyncio
 import gc
 import weakref
 from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -35,6 +36,7 @@ from main_logic.asr_client.runtime import (
     IndependentAsrRuntime,
 )
 from main_logic.asr_client.transcript import TranscriptDispatcher
+from main_logic.voice_turn.contracts import SpeechActivityEvent
 
 
 async def _scripted_worker(request_queue, response_queue, api_key, config):
@@ -1757,9 +1759,14 @@ def _runtime_callbacks(
     *,
     on_prepare_turn=None,
     on_lifecycle=None,
+    failures: list | None = None,
     statuses: list | None = None,
 ) -> AsrRuntimeCallbacks:
+    captured_failures = failures if failures is not None else []
     captured_statuses = statuses if statuses is not None else []
+
+    async def capture_failure(event) -> None:
+        captured_failures.append(event)
 
     async def capture_status(event) -> None:
         captured_statuses.append(event)
@@ -1769,7 +1776,7 @@ def _runtime_callbacks(
         on_prepare_turn=on_prepare_turn or AsyncMock(return_value=True),
         on_partial=AsyncMock(),
         on_final=AsyncMock(),
-        on_failure=AsyncMock(),
+        on_failure=capture_failure,
         on_status=capture_status,
         on_lifecycle=on_lifecycle or AsyncMock(),
     )
@@ -1934,9 +1941,7 @@ async def test_stale_prepare_unwind_only_releases_old_reservation(raises) -> Non
             raise RuntimeError("old prepare failed")
         return False
 
-    runtime = IndependentAsrRuntime(
-        _runtime_callbacks(on_prepare_turn=delayed_prepare)
-    )
+    runtime = IndependentAsrRuntime(_runtime_callbacks(on_prepare_turn=delayed_prepare))
     _install_runtime_prepare_state(runtime)
     old_dispatcher = runtime._asr_transcript_dispatcher
     prepare_task = asyncio.create_task(
@@ -1967,9 +1972,7 @@ async def test_current_prepare_failure_releases_current_reservation(raises) -> N
             raise RuntimeError("current prepare failed")
         return False
 
-    runtime = IndependentAsrRuntime(
-        _runtime_callbacks(on_prepare_turn=reject_prepare)
-    )
+    runtime = IndependentAsrRuntime(_runtime_callbacks(on_prepare_turn=reject_prepare))
     _install_runtime_prepare_state(runtime)
     dispatcher = runtime._asr_transcript_dispatcher
     turn_token = runtime._capture_turn_token(runtime._asr_lifecycle)
@@ -1980,3 +1983,307 @@ async def test_current_prepare_failure_releases_current_reservation(raises) -> N
     assert runtime._asr_reserved_final_key is None
     assert runtime._asr_turn_prepared is False
     assert final_key not in dispatcher._reservations
+
+
+class _RuntimeDetectorStub:
+    def __init__(
+        self,
+        *,
+        on_endpointing_failure=None,
+        bind_candidate=None,
+        release_deferred_turn=None,
+    ) -> None:
+        self.on_endpointing_failure = on_endpointing_failure
+        self.close = AsyncMock()
+        self.reset = AsyncMock()
+        self.bind_candidate = bind_candidate or AsyncMock(return_value=object())
+        self.release_deferred_turn = release_deferred_turn or AsyncMock()
+        self._turn_token = None
+
+    async def prepare_endpointing(self, turn_token):
+        self._turn_token = turn_token
+        return SimpleNamespace(token=turn_token, release=AsyncMock())
+
+    def endpointing_ready(self, turn_token) -> bool:
+        return self._turn_token == turn_token
+
+
+def _patch_runtime_detector_start(
+    monkeypatch,
+    candidates: list[_RuntimeStartCandidate],
+) -> list[_RuntimeDetectorStub]:
+    detectors: list[_RuntimeDetectorStub] = []
+    selection = SimpleNamespace(provider_key="qwen", endpointing_mode="manual")
+    monkeypatch.setattr(
+        asr_runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=selection),
+    )
+    monkeypatch.setattr(
+        asr_runtime_module,
+        "_create_asr_session_from_selection",
+        MagicMock(side_effect=candidates),
+    )
+
+    def create_detector(**kwargs):
+        detector = _RuntimeDetectorStub(
+            on_endpointing_failure=kwargs.get("on_endpointing_failure"),
+        )
+        detectors.append(detector)
+        return detector
+
+    monkeypatch.setattr(asr_runtime_module, "DetectorRuntime", create_detector)
+    return detectors
+
+
+def _install_pending_runtime_state(
+    runtime: IndependentAsrRuntime,
+    detector: _RuntimeDetectorStub,
+) -> None:
+    lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("qwen", "manual"),
+        shadow_mode=False,
+    )
+    lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    lifecycle.transition(VoiceLifecycleEvent.SOFT_WAKE)
+    lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+    lifecycle.transition(VoiceLifecycleEvent.TURN_SEALED)
+    lifecycle.mark_pending_turn_speech()
+    lifecycle.accept_audio(b"\x01\x00" * 160, sample_rate_hz=16_000)
+    lifecycle.transition(VoiceLifecycleEvent.PROVIDER_FINAL)
+    runtime._asr_session = SimpleNamespace(is_ready=True, close=AsyncMock())
+    runtime._asr_provider = "qwen"
+    runtime._asr_lifecycle = lifecycle
+    runtime._asr_detector = detector
+    runtime._asr_current_ingress_token = runtime.capture_ingress_token(
+        connection_id="connection",
+        lease_generation=1,
+        route_generation=1,
+    )
+    runtime._asr_pending_detector_candidate = object()
+
+
+def _install_active_runtime_state(
+    runtime: IndependentAsrRuntime,
+    detector: _RuntimeDetectorStub,
+) -> None:
+    lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("qwen", "manual"),
+        shadow_mode=False,
+    )
+    lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    runtime._asr_session = SimpleNamespace(is_ready=True, close=AsyncMock())
+    runtime._asr_provider = "qwen"
+    runtime._asr_lifecycle = lifecycle
+    runtime._asr_detector = detector
+    runtime._asr_current_ingress_token = runtime.capture_ingress_token(
+        connection_id="connection",
+        lease_generation=1,
+        route_generation=1,
+    )
+
+
+def _replace_runtime_identity_same_epoch(
+    runtime: IndependentAsrRuntime,
+) -> tuple[object, VoiceInputLifecycleController, _RuntimeDetectorStub]:
+    runtime._asr_audio_generation += 1
+    session = SimpleNamespace(is_ready=True, close=AsyncMock())
+    lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("qwen", "manual"),
+        shadow_mode=False,
+    )
+    lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    detector = _RuntimeDetectorStub()
+    runtime._asr_session = session
+    runtime._asr_provider = "qwen"
+    runtime._asr_lifecycle = lifecycle
+    runtime._asr_detector = detector
+    runtime._asr_current_ingress_token = runtime.capture_ingress_token(
+        connection_id="connection",
+        lease_generation=1,
+        route_generation=2,
+    )
+    return session, lifecycle, detector
+
+
+async def test_stale_detector_failure_callback_cannot_close_new_runtime(
+    monkeypatch,
+) -> None:
+    failures = []
+    statuses = []
+    first = _RuntimeStartCandidate()
+    second = _RuntimeStartCandidate()
+    detectors = _patch_runtime_detector_start(monkeypatch, [first, second])
+    runtime = IndependentAsrRuntime(
+        _runtime_callbacks(failures=failures, statuses=statuses)
+    )
+    await runtime.start(route_key="qwen", resource_optimization_enabled=True)
+    old_detector = detectors[0]
+    callback = old_detector.on_endpointing_failure
+    assert callback is not None
+    await runtime.start(route_key="qwen", resource_optimization_enabled=True)
+    new_session = runtime._asr_session
+    new_lifecycle = runtime._asr_lifecycle
+    new_detector = runtime._asr_detector
+    current_epoch = runtime._asr_session_epoch
+
+    await callback()
+
+    assert runtime._asr_session_epoch == current_epoch
+    assert runtime._asr_session is new_session
+    assert runtime._asr_lifecycle is new_lifecycle
+    assert runtime._asr_detector is new_detector
+    assert failures == []
+    assert [event.code for event in statuses].count("ASR_ENDPOINTING_FAILED") == 0
+    old_detector.close.assert_awaited_once_with()
+    await runtime.close()
+
+
+async def test_current_detector_failure_callback_fails_closed_once(monkeypatch) -> None:
+    failures = []
+    statuses = []
+    detectors = _patch_runtime_detector_start(
+        monkeypatch,
+        [_RuntimeStartCandidate()],
+    )
+    runtime = IndependentAsrRuntime(
+        _runtime_callbacks(failures=failures, statuses=statuses)
+    )
+    await runtime.start(route_key="qwen", resource_optimization_enabled=True)
+    callback = detectors[0].on_endpointing_failure
+    assert callback is not None
+
+    await callback()
+    await asyncio.sleep(0)
+
+    assert runtime._asr_session is None
+    assert runtime._asr_lifecycle is None
+    assert runtime._asr_detector is None
+    assert [event.code for event in failures] == ["ASR_ENDPOINTING_FAILED"]
+    assert [event.code for event in statuses].count("ASR_ENDPOINTING_FAILED") == 1
+
+
+async def test_stale_pending_candidate_bind_none_cannot_fail_new_runtime() -> None:
+    bind_entered = asyncio.Event()
+    release_bind = asyncio.Event()
+
+    async def bind_none(_candidate, _turn_token):
+        bind_entered.set()
+        await release_bind.wait()
+        return None
+
+    failures = []
+    statuses = []
+    runtime = IndependentAsrRuntime(
+        _runtime_callbacks(failures=failures, statuses=statuses)
+    )
+    detector = _RuntimeDetectorStub(
+        bind_candidate=AsyncMock(side_effect=bind_none),
+    )
+    _install_pending_runtime_state(runtime, detector)
+    activate = asyncio.create_task(
+        runtime._activate_pending_independent_turn(runtime._asr_session_epoch)
+    )
+    await asyncio.wait_for(bind_entered.wait(), 1)
+    new_session, new_lifecycle, new_detector = _replace_runtime_identity_same_epoch(
+        runtime
+    )
+
+    release_bind.set()
+    await asyncio.wait_for(activate, 1)
+
+    assert runtime._asr_session is new_session
+    assert runtime._asr_lifecycle is new_lifecycle
+    assert runtime._asr_detector is new_detector
+    assert failures == []
+    assert statuses == []
+
+
+async def test_current_pending_candidate_bind_none_fails_closed_once() -> None:
+    failures = []
+    statuses = []
+    runtime = IndependentAsrRuntime(
+        _runtime_callbacks(failures=failures, statuses=statuses)
+    )
+    detector = _RuntimeDetectorStub(
+        bind_candidate=AsyncMock(return_value=None),
+    )
+    _install_pending_runtime_state(runtime, detector)
+
+    await runtime._activate_pending_independent_turn(runtime._asr_session_epoch)
+
+    assert runtime._asr_session is None
+    assert runtime._asr_lifecycle is None
+    assert runtime._asr_detector is None
+    assert [event.code for event in failures] == ["ASR_ENDPOINTING_FAILED"]
+    assert [event.code for event in statuses] == ["ASR_ENDPOINTING_FAILED"]
+
+
+async def test_stale_deferred_turn_release_error_cannot_fail_new_runtime() -> None:
+    release_entered = asyncio.Event()
+    release_error = asyncio.Event()
+
+    async def fail_release() -> None:
+        release_entered.set()
+        await release_error.wait()
+        raise RuntimeError("old detector release failed")
+
+    failures = []
+    statuses = []
+    runtime = IndependentAsrRuntime(
+        _runtime_callbacks(failures=failures, statuses=statuses)
+    )
+    detector = _RuntimeDetectorStub(
+        release_deferred_turn=AsyncMock(side_effect=fail_release),
+    )
+    _install_active_runtime_state(runtime, detector)
+    epoch = runtime._asr_session_epoch
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_endpoint(epoch)
+    final = asyncio.create_task(
+        runtime._handle_independent_asr_final("final", epoch, "qwen")
+    )
+    await asyncio.wait_for(release_entered.wait(), 1)
+    new_session, new_lifecycle, new_detector = _replace_runtime_identity_same_epoch(
+        runtime
+    )
+
+    release_error.set()
+    await asyncio.wait_for(final, 1)
+
+    assert runtime._asr_session is new_session
+    assert runtime._asr_lifecycle is new_lifecycle
+    assert runtime._asr_detector is new_detector
+    assert failures == []
+    assert statuses == []
+
+
+async def test_current_deferred_turn_release_error_fails_closed_once() -> None:
+    failures = []
+    statuses = []
+    runtime = IndependentAsrRuntime(
+        _runtime_callbacks(failures=failures, statuses=statuses)
+    )
+    detector = _RuntimeDetectorStub(
+        release_deferred_turn=AsyncMock(
+            side_effect=RuntimeError("current detector release failed")
+        ),
+    )
+    _install_active_runtime_state(runtime, detector)
+    epoch = runtime._asr_session_epoch
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_endpoint(epoch)
+
+    await runtime._handle_independent_asr_final("final", epoch, "qwen")
+
+    assert runtime._asr_session is None
+    assert runtime._asr_lifecycle is None
+    assert runtime._asr_detector is None
+    assert [event.code for event in failures] == ["ASR_ENDPOINTING_FAILED"]
+    assert [event.code for event in statuses] == ["ASR_ENDPOINTING_FAILED"]

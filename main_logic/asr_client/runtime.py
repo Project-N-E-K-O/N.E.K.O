@@ -1052,21 +1052,31 @@ class IndependentAsrRuntime:
             self._asr_lifecycle.metrics.connect_latency_ms = int(
                 (time.monotonic() - connect_started_at) * 1_000
             )
+            lifecycle_ref = self._asr_lifecycle
+            detector_ref: DetectorRuntime | None = None
 
             async def on_detector_endpointing_failure() -> None:
+                if not self._asr_runtime_refs_match(
+                    epoch,
+                    lifecycle_ref,
+                    detector_ref,
+                ):
+                    return
+                identity = self._capture_runtime_identity(
+                    ingress_token=self._asr_current_ingress_token,
+                )
                 await self._handle_independent_asr_error(
                     epoch,
                     provider,
                     status_code="ASR_ENDPOINTING_FAILED",
+                    expected_identity=identity,
                 )
 
-            detector_ref: DetectorRuntime | None = None
-
             async def on_detector_event(event) -> None:
-                lifecycle_ref = self._asr_lifecycle
+                current_lifecycle_ref = self._asr_lifecycle
                 if (
                     detector_ref is None
-                    or lifecycle_ref is None
+                    or current_lifecycle_ref is None
                     or epoch != self._asr_session_epoch
                 ):
                     return
@@ -1074,7 +1084,7 @@ class IndependentAsrRuntime:
                     CoreDetectorEventEnvelope(
                         event=event,
                         detector_ref=detector_ref,
-                        lifecycle_ref=lifecycle_ref,
+                        lifecycle_ref=current_lifecycle_ref,
                         session_epoch=epoch,
                     )
                 )
@@ -2047,24 +2057,34 @@ class IndependentAsrRuntime:
             return
         pending_candidate = self._asr_pending_detector_candidate
         self._asr_pending_detector_candidate = None
+        identity = self._capture_runtime_identity(
+            ingress_token=turn_token.ingress,
+            turn_token=turn_token,
+        )
         if pending_candidate is not None:
             bound = await detector.bind_candidate(pending_candidate, turn_token)
+            if not self._runtime_identity_matches(identity):
+                return
             if bound is None:
                 await self._handle_independent_asr_error(
-                    epoch,
-                    self._asr_provider or "unknown",
+                    identity.session_epoch,
+                    identity.provider or "unknown",
                     status_code="ASR_ENDPOINTING_FAILED",
+                    expected_identity=identity,
                 )
                 return
+        elif not self._runtime_identity_matches(identity):
+            return
         if not self._activate_asr_audio_dispatcher(
             lifecycle,
             turn_token,
             buffered_pcm16=payload,
         ):
             await self._handle_independent_asr_error(
-                epoch,
-                self._asr_provider or "unknown",
+                identity.session_epoch,
+                identity.provider or "unknown",
                 status_code="ASR_AUDIO_ORDERING_FAILED",
+                expected_identity=identity,
             )
             return
         self._asr_received_audio = True
@@ -2177,14 +2197,23 @@ class IndependentAsrRuntime:
             and self._asr_lifecycle is lifecycle_ref
             and self._asr_detector is detector_ref
         ):
+            identity = self._capture_runtime_identity(
+                ingress_token=self._asr_current_ingress_token,
+            )
             try:
                 await detector_ref.release_deferred_turn()
             except Exception:
+                if not self._runtime_identity_matches(identity):
+                    return
                 await self._handle_independent_asr_error(
-                    epoch,
-                    self._asr_provider or provider,
+                    identity.session_epoch,
+                    identity.provider or "unknown",
                     status_code="ASR_ENDPOINTING_FAILED",
+                    expected_identity=identity,
                 )
+                return
+            if not self._runtime_identity_matches(identity):
+                return
 
     async def _dispatch_asr_transcript_envelope(
         self,

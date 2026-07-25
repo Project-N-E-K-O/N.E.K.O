@@ -290,9 +290,14 @@ async def test_stale_submit_drops_only_current_frame() -> None:
 async def test_unavailable_submit_blocks_core_route() -> None:
     runtime = _Runtime()
     runtime._set_microphone_route("independent")
+    runtime._independent_asr_provider = "qwen"
     runtime._asr_runtime.submit = AsyncMock(
         return_value=AsrSubmitResult(AsrSubmitStatus.UNAVAILABLE)
     )
+    clear_queue = MagicMock(wraps=runtime._clear_audio_stream_queue)
+    clear_cache = MagicMock(wraps=runtime.hot_swap_audio_cache.clear)
+    runtime._clear_audio_stream_queue = clear_queue
+    runtime.hot_swap_audio_cache.clear = clear_cache
 
     await runtime._route_microphone_audio(
         b"\x01\x00" * 160,
@@ -300,6 +305,51 @@ async def test_unavailable_submit_blocks_core_route() -> None:
     )
 
     assert runtime._asr_route_mode == "blocked"
+    clear_queue.assert_called_once_with("independent_asr_unavailable")
+    clear_cache.assert_called_once_with()
+
+
+async def test_stale_unavailable_submit_cannot_block_replacement_route() -> None:
+    runtime = _Runtime()
+    runtime._set_microphone_route("independent")
+    runtime._independent_asr_provider = "provider-a"
+    submit_started = asyncio.Event()
+    release_submit = asyncio.Event()
+
+    async def unavailable_after_replacement(*_args, **_kwargs):
+        submit_started.set()
+        await release_submit.wait()
+        return AsrSubmitResult(AsrSubmitStatus.UNAVAILABLE)
+
+    runtime._asr_runtime.submit = AsyncMock(side_effect=unavailable_after_replacement)
+    clear_queue = MagicMock(wraps=runtime._clear_audio_stream_queue)
+    clear_cache = MagicMock(wraps=runtime.hot_swap_audio_cache.clear)
+    runtime._clear_audio_stream_queue = clear_queue
+    runtime.hot_swap_audio_cache.clear = clear_cache
+    routed = asyncio.create_task(
+        runtime._route_microphone_audio(
+            b"\x01\x00" * 160,
+            sample_rate_hz=16_000,
+        )
+    )
+    await asyncio.wait_for(submit_started.wait(), 1)
+
+    new_core_session = SimpleNamespace(stream_audio=AsyncMock())
+    new_asr_session = SimpleNamespace(is_ready=True, close=AsyncMock())
+    runtime.session = new_core_session
+    runtime._asr_runtime._asr_audio_generation += 1
+    runtime._asr_session = new_asr_session
+    runtime._independent_asr_provider = "provider-b"
+    runtime._asr_runtime._asr_current_ingress_token = runtime._capture_ingress_token()
+    release_submit.set()
+    await asyncio.wait_for(routed, 1)
+
+    assert runtime._asr_route_mode == "independent"
+    assert runtime._independent_asr_provider == "provider-b"
+    assert runtime.session is new_core_session
+    assert runtime._asr_session is new_asr_session
+    clear_queue.assert_not_called()
+    clear_cache.assert_not_called()
 
 
 async def test_async_detector_orders_pre_roll_before_smart_turn_seal() -> None:
@@ -1595,10 +1645,7 @@ async def test_legacy_audio_session_authorization_is_one_shot() -> None:
     runtime._asr_runtime.abort = AsyncMock()
 
     assert runtime._begin_voice_input_connection("legacy-socket") is True
-    assert (
-        await runtime._ensure_voice_input_session_authorized("legacy-socket")
-        is True
-    )
+    assert await runtime._ensure_voice_input_session_authorized("legacy-socket") is True
     assert runtime._voice_lease_generation == 0
     assert runtime._voice_lease_synchronized is True
     assert runtime._voice_lease_owner == "core"
@@ -1608,15 +1655,14 @@ async def test_legacy_audio_session_authorization_is_one_shot() -> None:
     runtime._asr_runtime.abort.assert_awaited_once_with("legacy_session_start")
 
     runtime._asr_runtime.abort.reset_mock()
-    assert (
-        await runtime._ensure_voice_input_session_authorized("legacy-socket")
-        is True
-    )
+    assert await runtime._ensure_voice_input_session_authorized("legacy-socket") is True
     assert runtime._voice_lease_generation == 0
     runtime._asr_runtime.abort.assert_not_awaited()
 
 
-async def test_explicit_owner_none_cannot_be_overridden_by_legacy_authorization() -> None:
+async def test_explicit_owner_none_cannot_be_overridden_by_legacy_authorization() -> (
+    None
+):
     runtime = _Runtime()
     runtime._asr_runtime.abort = AsyncMock()
 
@@ -1634,8 +1680,7 @@ async def test_explicit_owner_none_cannot_be_overridden_by_legacy_authorization(
     runtime._asr_runtime.abort.reset_mock()
 
     assert (
-        await runtime._ensure_voice_input_session_authorized("explicit-socket")
-        is True
+        await runtime._ensure_voice_input_session_authorized("explicit-socket") is True
     )
     assert runtime._voice_lease_generation == 1
     assert runtime._voice_lease_owner == "none"
@@ -1670,8 +1715,7 @@ async def test_rejected_explicit_control_permanently_disables_legacy_fallback(
     )
     assert runtime._voice_lease_control_seen is True
     assert (
-        await runtime._ensure_voice_input_session_authorized("explicit-socket")
-        is False
+        await runtime._ensure_voice_input_session_authorized("explicit-socket") is False
     )
     await runtime._enqueue_audio_stream_data(
         {
@@ -2940,6 +2984,124 @@ async def test_current_audio_pipeline_failure_blocks_once_without_pcm() -> None:
     ]
 
 
+async def test_pipeline_failure_from_replaced_connection_is_silent() -> None:
+    runtime = _Runtime()
+    runtime.is_active = True
+    runtime._set_microphone_route("independent")
+    runtime._independent_asr_provider = "glm"
+    abort_started = asyncio.Event()
+    release_abort = asyncio.Event()
+
+    async def delayed_abort(_reason: str) -> None:
+        abort_started.set()
+        await release_abort.wait()
+
+    runtime._asr_runtime.abort = AsyncMock(side_effect=delayed_abort)
+    token = runtime._capture_ingress_token()
+    failure = asyncio.create_task(
+        runtime._fail_voice_input_pipeline(
+            ingress_token=token,
+            session_ref=runtime.session,
+            audio_epoch=runtime._audio_stream_epoch,
+            pipeline_ref=runtime._voice_input_audio_pipeline,
+        )
+    )
+    await asyncio.wait_for(abort_started.wait(), 1)
+
+    assert runtime._begin_voice_input_connection("replacement-connection")
+    replacement_lease_state = (
+        runtime._voice_lease_connection_id,
+        runtime._voice_lease_generation,
+        runtime._voice_lease_owner,
+        runtime._voice_lease_synchronized,
+    )
+    release_abort.set()
+    await asyncio.wait_for(failure, 1)
+
+    assert (
+        runtime._voice_lease_connection_id,
+        runtime._voice_lease_generation,
+        runtime._voice_lease_owner,
+        runtime._voice_lease_synchronized,
+    ) == replacement_lease_state
+    runtime.send_status.assert_not_awaited()
+    runtime._asr_runtime.abort.assert_awaited_once_with("audio_preprocessing_failed")
+
+
+@pytest.mark.parametrize(
+    "changed_identity",
+    [
+        "lease_generation",
+        "hard_mute",
+        "focus_suppression",
+        "game_takeover",
+        "route_operation",
+        "pipeline",
+        "core_session",
+    ],
+)
+async def test_stale_pipeline_failure_never_reports_to_current_identity(
+    changed_identity: str,
+) -> None:
+    runtime = _Runtime()
+    runtime.is_active = True
+    runtime._set_microphone_route("independent")
+    runtime._independent_asr_provider = "glm"
+    abort_started = asyncio.Event()
+    release_abort = asyncio.Event()
+
+    async def delayed_abort(_reason: str) -> None:
+        abort_started.set()
+        await release_abort.wait()
+
+    runtime._asr_runtime.abort = AsyncMock(side_effect=delayed_abort)
+    token = runtime._capture_ingress_token()
+    source_pipeline = runtime._voice_input_audio_pipeline
+    failure = asyncio.create_task(
+        runtime._fail_voice_input_pipeline(
+            ingress_token=token,
+            session_ref=runtime.session,
+            audio_epoch=runtime._audio_stream_epoch,
+            pipeline_ref=source_pipeline,
+        )
+    )
+    await asyncio.wait_for(abort_started.wait(), 1)
+
+    if changed_identity == "lease_generation":
+        runtime._voice_lease_generation += 1
+    elif changed_identity == "hard_mute":
+        runtime._voice_lease_hard_muted = True
+        runtime._voice_input_transition_generation += 1
+    elif changed_identity == "focus_suppression":
+        runtime._voice_lease_focus_suppressed = True
+        runtime._voice_input_transition_generation += 1
+    elif changed_identity == "game_takeover":
+        runtime._voice_lease_owner = "game"
+        runtime._voice_input_transition_generation += 1
+    elif changed_identity == "route_operation":
+        object.__setattr__(
+            runtime,
+            "_asr_route_operation_generation",
+            runtime._asr_route_operation_generation + 1,
+        )
+    elif changed_identity == "pipeline":
+        runtime._voice_input_audio_pipeline = SimpleNamespace(
+            process=AsyncMock(),
+            close=AsyncMock(),
+        )
+        runtime._voice_input_pipeline_failed = False
+    elif changed_identity == "core_session":
+        runtime.session = SimpleNamespace(stream_audio=AsyncMock())
+    else:
+        raise AssertionError(changed_identity)
+
+    release_abort.set()
+    await asyncio.wait_for(failure, 1)
+
+    runtime.send_status.assert_not_awaited()
+    runtime._asr_runtime.abort.assert_awaited_once_with("audio_preprocessing_failed")
+
+
 async def test_replaced_audio_pipeline_late_failure_is_silent() -> None:
     runtime = _Runtime()
     runtime.is_active = True
@@ -3762,9 +3924,7 @@ async def test_stale_runtime_ready_result_cannot_replace_new_route(
         AsyncMock(return_value={"independentAsrEnabled": True}),
     )
 
-    starting = asyncio.create_task(
-        runtime._start_independent_asr_if_enabled("audio")
-    )
+    starting = asyncio.create_task(runtime._start_independent_asr_if_enabled("audio"))
     await asyncio.wait_for(start_entered.wait(), 1)
     runtime._begin_asr_route_operation()
     bridge.session_epoch += 1
