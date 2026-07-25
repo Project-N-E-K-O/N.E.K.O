@@ -1257,6 +1257,18 @@ class CoreConfigMixin:
         # 探测，而免费路由门原本就长在 _adjust_free_api_url 的首行早退里
         # （不变量 #2）。无条件判定 = 自配 API 用户也把 IP 发给第三方。
         needs_region = self._config_needs_region(config)
+        # 运行时从自配/付费切到免费路由：探测可能正睡在上一轮失败留下的退避里（最长
+        # 600 秒），而这条路径没有任何催醒点——只有启动预热调 _kick_ip_probe。用户刚
+        # 切过来就开会话，线路一冻结整场不再复议，等于被钉在大陆兜底最长 600 秒。
+        # 只在「未选中 → 选中」这个边沿催一次：每次读配置都催会让退避形同虚设，被墙
+        # 时退化成对 ip-api.com 的请求风暴。进程首次读到免费路由时同样是边沿，但那时
+        # 探测线程还没起（_ensure_ip_probe_started 在下面的 _check_non_mainland 里），
+        # _kick_ip_probe 见 thread is None 直接 no-op，不会平白吃掉首轮退避。
+        from utils.config_manager import ConfigManager as _CM
+        if needs_region != _CM._free_route_selected:
+            _CM._free_route_selected = needs_region
+            if needs_region:
+                self._kick_ip_probe()
         snapshot_non_mainland = False
         if needs_region:
             try:

@@ -186,6 +186,11 @@ class ConfigManager(
     _ip_probe_in_flight = threading.Event()
     # 与 _ip_probe_wake 配套：唤醒时若为 True 则循环退出，否则只是「立刻重试」。
     _ip_probe_stopping = False
+    # 上一次读配置时免费路由是否被选中。用来识别「运行时新选中免费路由」这个边沿，
+    # 好催醒可能正在长退避里睡觉的探测循环——退避最长 600 秒，而用户刚切过来就要
+    # 开会话，会话线路一旦冻结整场不再复议。只在边沿催一次：每次读配置都催等于
+    # 让退避形同虚设，被墙时会退化成对 ip-api.com 的请求风暴。
+    _free_route_selected = False
 
 
 # 全局配置管理器实例

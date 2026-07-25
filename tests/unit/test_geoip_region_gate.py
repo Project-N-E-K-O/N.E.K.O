@@ -1489,3 +1489,130 @@ def test_region_sensitive_voice_endpoints_settle_first():
 
     assert len(checked) >= 2, f'未找到足够的音色目录端点，断言失效: {checked}'
     assert not missing, f'这些端点按区域出音色目录却未先落定: {missing}'
+
+
+def _yui_binding_manager(authoritative_cfg, saved, probe_calls=None):
+    """A minimal manager for ``ensure_default_yui_voice_for_free_api``."""
+
+    class _CM:
+        def __init__(self):
+            self._region_verdict_is_provisional = lambda: False
+
+        async def aget_core_config(self):
+            return dict(authoritative_cfg)
+
+        async def aload_characters(self):
+            model_path = config_manager_pkg.persona_payload.DEFAULT_YUI_LIVE2D_MODEL_PATH
+            return {
+                '当前猫娘': 'YUI',
+                '猫娘': {'YUI': {'昵称': 'YUI', 'live2d': model_path, 'voice_id': ''}},
+            }
+
+        async def asave_characters(self, characters):
+            # set_reserved 写的是 reserved 结构，不是扁平键——按生产的读法取回
+            from utils.config_manager.reserved_schema import get_reserved
+            from utils.voice_config import read_legacy_voice_id
+            saved['voice_id'] = read_legacy_voice_id(get_reserved(
+                characters['猫娘']['YUI'], 'voice_id', default='', legacy_keys=('voice_id',),
+            ))
+
+        def _check_non_mainland(self):
+            # 计数而不是抛：helper 把这里的异常吞成 overseas=False，与「压根没调用」
+            # 结果完全一样——抛异常的断言测不出差别（变异实测漏过）。
+            if probe_calls is not None:
+                probe_calls['n'] += 1
+            return False
+
+    return _CM()
+
+
+@pytest.mark.unit
+def test_yui_binding_ignores_a_stale_caller_snapshot(monkeypatch):
+    """The binding is permanent, so it must read the verdict as of *now*.
+
+    ``start_session`` assembles its core-config snapshot before this helper runs.
+    If Steam provisionally said overseas, that snapshot already carries the
+    ``.app`` URL — and the authoritative probe may resolve mainland right after.
+    Trusting the caller's snapshot would write literal ``yui`` into a mainland
+    user's character card, and the helper never overwrites a nonempty voice, so
+    no later session could correct it. The two free catalogs are disjoint, so
+    that card would simply never get its voice.
+    """
+    from utils.config_manager import ensure_default_yui_voice_for_free_api
+
+    monkeypatch.setattr(ConfigManager, '_region_cache', False)      # 权威结论：大陆
+    saved = {}
+    stale = {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.app/core'}
+    authoritative = {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.tech/core'}
+    cm = _yui_binding_manager(authoritative, saved)
+    cm._check_non_mainland = lambda: ConfigManager._region_cache
+
+    assert asyncio.run(ensure_default_yui_voice_for_free_api(cm, stale)) is True
+    assert saved.get('voice_id') and saved['voice_id'] != 'yui', \
+        f'用了调用方的陈旧 .app 快照，给大陆用户绑了海外音色: {saved}'
+
+
+@pytest.mark.unit
+def test_yui_binding_does_not_probe_for_a_livestream_derived_route():
+    """A fully livestream-derived route is deterministic — it needs no GeoIP.
+
+    ``_check_non_mainland()`` starts the probe internally, so falling through to
+    it here would hand these users' IP to ip-api.com just to pick a voice, which
+    is exactly what invariant #2 forbids. They bind the mainland free voice:
+    what livestream derives is the equivalent of the ``lanlan.tech`` layout.
+    """
+    from utils.config_manager import ensure_default_yui_voice_for_free_api
+
+    saved = {}
+    derived = {
+        'coreApi': 'free',
+        'CORE_URL': 'ws://192.168.1.9:8000/tok/core',
+        'livestream_server_prefix': 'http://192.168.1.9:8000/tok',
+    }
+    probe_calls = {'n': 0}
+    cm = _yui_binding_manager(derived, saved, probe_calls)
+
+    assert asyncio.run(ensure_default_yui_voice_for_free_api(cm, dict(derived))) is True
+    assert probe_calls['n'] == 0, '_check_non_mainland 内部会起探测，这条线路不该问它'
+    assert saved.get('voice_id') and saved['voice_id'] != 'yui'
+    assert ConfigManager._ip_probe_thread is None, '不该为绑音色起 GeoIP 探测'
+
+
+@pytest.mark.unit
+def test_newly_selected_free_route_wakes_a_backed_off_probe(config_manager, monkeypatch):
+    """Switching to the free route at runtime must not wait out a long backoff.
+
+    Only startup warmup called ``_kick_ip_probe``; the config-save and session
+    paths never did. A user who switches to the free provider while the probe
+    sleeps off an earlier failure would otherwise start a session pinned to the
+    mainland fallback for up to the remaining 600s — and a session freezes its
+    route for its whole lifetime.
+    """
+    import json as _json
+
+    kicks = {'n': 0}
+    monkeypatch.setattr(ConfigManager, '_kick_ip_probe',
+                        staticmethod(lambda: kicks.__setitem__('n', kicks['n'] + 1)))
+    monkeypatch.setattr(ConfigManager, '_check_non_mainland', lambda self: False)
+    monkeypatch.setattr(ConfigManager, '_free_route_selected', False)
+
+    path = config_manager.get_config_path('core_config.json')
+
+    def _read(provider):
+        with open(str(path), 'w', encoding='utf-8') as fh:
+            _json.dump({'coreApi': provider}, fh)
+        config_manager._core_config_cache = None
+        config_manager.get_core_config()
+
+    _read('qwen')
+    assert kicks['n'] == 0, '没选中免费路由时不该催醒'
+
+    _read('free')
+    assert kicks['n'] == 1, '新选中免费路由应催醒一次'
+
+    _read('free')
+    assert kicks['n'] == 1, '每次读配置都催会让退避形同虚设，被墙时变成请求风暴'
+
+    _read('qwen')
+    _read('free')
+    assert kicks['n'] == 2, '切走再切回是新的一次边沿，应再催一次'

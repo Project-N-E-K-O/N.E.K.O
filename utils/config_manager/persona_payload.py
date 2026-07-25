@@ -23,7 +23,6 @@ import re
 from copy import deepcopy
 
 from config.prompts.prompts_chara import get_lanlan_prompt, is_default_prompt
-from utils.tts.native_voice_registry import is_free_lanlan_app_route
 from utils.persona_presets import PERSONA_OVERRIDE_FIELDS
 from utils.voice_config import read_legacy_voice_id
 
@@ -150,16 +149,33 @@ async def ensure_default_yui_voice_for_free_api(config_manager, core_cfg: dict |
     # 海外免费（free + *.lanlan.app）：默认音色是品牌 yui（free_intl 的 default_voice），
     # 下发字面量 "yui"。国内免费（lanlan.tech）仍按语言绑定 free_voices 里的 yui 音色。
     #
-    # 注意：update_core_config 传进来的 raw core_cfg 里 CORE_URL 还是 lanlan.tech，
-    # get_core_config() 才会按非大陆改写成 lanlan.app，直接判 URL 会漏判海外。
-    # 故 URL 命中 lanlan.app 走快路，否则用 _check_non_mainland 兜底判海外。
-    core_url = str((core_cfg or {}).get("CORE_URL") or "")
-    overseas = is_free_lanlan_app_route("free", core_url)
-    if not overseas:
+    # 区域结论直接问权威源，**不从 URL 反推**。从 URL 反推曾是这里的做法，也是它
+    # 出错的原因：两个调用方传进来的快照语义根本不同——保存路径传刚写盘的 raw 配置
+    # （CORE_URL 仍是 lanlan.tech），会话路径传更早组装的已改写快照。后者要命：Steam
+    # 临时判海外时快照已是 .app，而权威 IP 结论随后可能判大陆，照 URL 反推就会把
+    # "yui" 永久写进大陆用户的角色卡（本函数不覆盖非空 voice_id），而 free 与
+    # free_intl 两套目录不相交——这是「yui 必须配国外、国内音色必须配国内」那条不许
+    # 出意外的线。改问 _check_non_mainland 后，两个调用方拿到的是同一个结论。
+    #
+    # needs_region 那道门有两个作用：
+    #  - livestream 已派生掉全部免费端点的用户线路是确定的、不需要区域判定，而
+    #    _check_non_mainland 内部会 _ensure_ip_probe_started——不该为绑个音色把他们
+    #    的 IP 发给 ip-api.com（不变量 #2）。他们绑国内 free 音色，正确：派生出来的
+    #    就是 lanlan.tech 那套路径结构的等价物。
+    #  - 门放行时，上面的 provisional 守卫已保证 _region_cache 必已落定，所以这次
+    #    _check_non_mainland 是纯读缓存，不会真的起探测。
+    #
+    # 走 classmethod 而不是 config_manager 实例：这是个纯判据，从实例上取只会白白
+    # 要求每个调用方（含测试替身）都实现它。
+    from utils.config_manager import ConfigManager
+
+    overseas = False
+    if ConfigManager._config_needs_region(core_cfg or {}, ConfigManager._REGION_HOSTS_ADJUSTED):
         try:
             overseas = bool(config_manager._check_non_mainland())
         except Exception:
             overseas = False
+
     yui_voice_id = "yui" if overseas else _get_default_yui_free_voice_id()
     if not yui_voice_id:
         return False
