@@ -114,14 +114,15 @@ class CoreConfigMixin:
         livestream user needs no verdict for them and must not be probed on their
         account.
         """
-        from utils.config_manager import is_livestream_active
+        from utils.config_manager import get_livestream_config, is_livestream_active
 
         try:
             livestream = is_livestream_active()
+            livestream_prefix = get_livestream_config()['server_prefix'] if livestream else ''
         except Exception:
             # 读不到 livestream 配置时按「未启用」处理：那只会让判定更保守
             # （不排除任何 URL），不会漏掉需要区域判定的路由。
-            livestream = False
+            livestream, livestream_prefix = False, ''
 
         for key, value in (config or {}).items():
             if not (key.endswith('_URL') and isinstance(value, str)):
@@ -144,8 +145,13 @@ class CoreConfigMixin:
             if not (host == 'lanlan.tech' or host.endswith('.lanlan.tech')
                     or host == 'lanlan.app' or host.endswith('.lanlan.app')):
                 continue
+            # 该 URL 会被 livestream 前缀接管时用不到区域判定——但必须确认派生**真能
+            # 成功**再排除：server_prefix 非空却畸形（比如缺 scheme 的
+            # "localhost:8080/tok"）时 _derive_livestream_url 会返回空串、回落到区域
+            # 改写，此时若已判定「不需要区域」，海外用户就被钉在 lanlan.tech 了。
             if livestream and path in cls._LIVESTREAM_DERIVE_PATHS:
-                continue    # 该 URL 会被 livestream 前缀接管，用不到区域判定
+                if cls._derive_livestream_url(value, livestream_prefix):
+                    continue
             return True
         return False
 

@@ -783,6 +783,9 @@ def test_livestream_derived_urls_do_not_trigger_the_probe(monkeypatch):
         'ASSIST_URL': 'https://www.lanlan.tech/text/v1',
     }
     monkeypatch.setattr(config_manager_pkg, 'is_livestream_active', lambda: True)
+    monkeypatch.setattr(
+        config_manager_pkg, 'get_livestream_config',
+        lambda: {'server_prefix': 'https://live.example/tok'})
     assert ConfigManager._config_needs_region(cfg) is False
 
     # 非派生路径仍然需要判定（livestream 只接管那三个端点）
@@ -960,3 +963,32 @@ def test_waiter_stops_when_the_attempt_fails_mid_wait(monkeypatch):
     waited = real_time.monotonic() - started
     assert waited < 2.0, f'本次尝试已失败仍等了 {waited:.2f}s（应在转入退避时立刻返回）'
     assert ConfigManager._ip_probe_thread.is_alive(), '循环应仍在退避中（并未结束）'
+
+
+@pytest.mark.unit
+def test_malformed_livestream_prefix_still_needs_the_region(monkeypatch):
+    """Excluding a URL is only safe when its livestream derivation actually succeeds.
+
+    ``_derive_livestream_url`` rejects a prefix without scheme/netloc and falls back
+    to the regional rewrite. Excluding on ``is_livestream_active()`` alone would then
+    say "no region needed", start no probe, and pin an overseas user to lanlan.tech.
+    """
+    cfg = {'CORE_URL': 'wss://www.lanlan.tech/core'}
+    monkeypatch.setattr(config_manager_pkg, 'is_livestream_active', lambda: True)
+
+    # 畸形 prefix（缺 scheme）：派生会失败 → 仍然需要区域判定
+    monkeypatch.setattr(
+        config_manager_pkg, 'get_livestream_config',
+        lambda: {'server_prefix': 'localhost:8080/tok'})
+    assert ConfigManager._config_needs_region(cfg) is True
+
+    # 空 prefix 同理
+    monkeypatch.setattr(
+        config_manager_pkg, 'get_livestream_config', lambda: {'server_prefix': ''})
+    assert ConfigManager._config_needs_region(cfg) is True
+
+    # 合法 prefix：派生成功 → 用不到区域判定
+    monkeypatch.setattr(
+        config_manager_pkg, 'get_livestream_config',
+        lambda: {'server_prefix': 'https://live.example/tok'})
+    assert ConfigManager._config_needs_region(cfg) is False
