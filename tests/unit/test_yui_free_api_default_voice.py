@@ -250,3 +250,25 @@ async def test_clear_voice_ids_rebinds_default_yui_for_free_api(monkeypatch):
     other = config_manager.characters["猫娘"]["别的角色"]
     assert get_reserved(yui, "voice_id", default="") == YUI_FREE_VOICE_ID
     assert get_reserved(other, "voice_id", default="") == ""
+
+
+@pytest.mark.asyncio
+async def test_provisional_region_defers_default_voice_binding():
+    """Binding on a guessed region writes data that later cannot be corrected.
+
+    The mainland binding is ``yui_cn`` and the overseas one the literal ``yui``; the
+    two are not interchangeable, and this helper refuses to overwrite any nonempty
+    voice afterwards. So while the verdict is provisional it must not bind at all —
+    not even read the character data. Waiting one round costs nothing.
+    """
+    mgr = _FakeConfigManager({"猫娘": {"YUI": {"昵称": "YUI", "_reserved": {"voice_id": ""}}}},
+                             core_config={"coreApi": "free"})
+    mgr._region_verdict_is_provisional = lambda: True
+
+    async def _boom():
+        raise AssertionError('区域未落定时不应读取角色数据')
+
+    mgr.aload_characters = _boom
+
+    assert await ensure_default_yui_voice_for_free_api(mgr) is False
+    assert mgr.saved_characters is None, '未落定时不应写入任何角色数据'
