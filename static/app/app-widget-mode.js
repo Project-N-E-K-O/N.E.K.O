@@ -6,9 +6,11 @@
 
     const API_STATE = '/api/widget-mode/state';
     const API_ENABLED = '/api/widget-mode/enabled';
+    const API_STEALTH_ENABLED = '/api/widget-mode/stealth-enabled';
 
     const clientState = {
         enabled: false,
+        stealthEnabled: false,
         backendState: null,
     };
 
@@ -37,6 +39,7 @@
     function getState() {
         return {
             enabled: clientState.enabled,
+            stealthEnabled: clientState.stealthEnabled,
             backendState: clientState.backendState,
         };
     }
@@ -47,25 +50,13 @@
                 detail: getState(),
             }));
         } catch (_) {}
-        try {
-            document.querySelectorAll('input[id$="-widget-mode"]').forEach(function (checkbox) {
-                const item = checkbox && checkbox.closest('[role="switch"]');
-                if (item && typeof item._nekoUpdateWidgetModeStatus === 'function') {
-                    item._nekoUpdateWidgetModeStatus();
-                }
-                if (!checkbox || checkbox.checked === clientState.enabled) return;
-                checkbox.checked = clientState.enabled;
-                if (item && typeof item._nekoUpdateSettingsToggleStyle === 'function') {
-                    item._nekoUpdateSettingsToggleStyle();
-                }
-            });
-        } catch (_) {}
     }
 
     function applyBackendState(state) {
         if (!state || typeof state !== 'object') return;
         clientState.backendState = state;
         clientState.enabled = state.enabled === true;
+        clientState.stealthEnabled = state.stealthEnabled === true;
         dispatchState();
     }
 
@@ -115,19 +106,47 @@
         return null;
     }
 
-    async function setEnabled(enabled) {
+    async function setEnabled(enabled, options) {
         const next = enabled === true;
+        const silent = !!(options && options.silent === true);
         try {
             const data = await postJson(API_ENABLED, { enabled: next });
             if (!data || data.success !== true) throw new Error('invalid response');
             applyBackendState(data.state);
-            showNotice(next
-                ? t('settings.widgetMode.enabledNotice', '挂边模式 Beta 已开启。')
-                : t('settings.widgetMode.disabledNotice', '挂边模式 Beta 已关闭。'));
+            if (!silent) {
+                showNotice(next
+                    ? t('settings.widgetMode.enabledNotice', '贴边探身已开启。')
+                    : t('settings.widgetMode.disabledNotice', '贴边探身已关闭。'));
+            }
             return true;
         } catch (error) {
             console.warn('[WidgetMode] toggle failed:', error);
-            showNotice(t('settings.widgetMode.toggleFailed', '挂边模式 Beta 切换失败，请稍后重试。'));
+            if (!silent) {
+                showNotice(t('settings.widgetMode.toggleFailed', '贴边探身切换失败，请稍后重试。'));
+            }
+            await refreshState();
+            return false;
+        }
+    }
+
+    async function setStealthEnabled(enabled, options) {
+        const next = enabled === true;
+        const silent = !!(options && options.silent === true);
+        try {
+            const data = await postJson(API_STEALTH_ENABLED, { enabled: next });
+            if (!data || data.success !== true) throw new Error('invalid response');
+            applyBackendState(data.state);
+            if (!silent) {
+                showNotice(next
+                    ? t('settings.widgetMode.stealthEnabledNotice', '隐身模式已开启。')
+                    : t('settings.widgetMode.stealthDisabledNotice', '隐身模式已关闭。'));
+            }
+            return true;
+        } catch (error) {
+            console.warn('[WidgetMode] stealth toggle failed:', error);
+            if (!silent) {
+                showNotice(t('settings.widgetMode.toggleFailed', '贴边探身切换失败，请稍后重试。'));
+            }
             await refreshState();
             return false;
         }
@@ -136,7 +155,9 @@
     window.nekoWidgetMode = {
         refreshState: refreshState,
         setEnabled: setEnabled,
+        setStealthEnabled: setStealthEnabled,
         isEnabled: function () { return clientState.enabled === true; },
+        isStealthEnabled: function () { return clientState.stealthEnabled === true; },
         getState: getState,
     };
 

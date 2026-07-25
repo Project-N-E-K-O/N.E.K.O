@@ -47,3 +47,14 @@ async def set_widget_mode_enabled(request: Request, payload: dict[str, Any]) -> 
         return validation_error
     state = await widget_mode_coordinator.set_enabled(_coerce_enabled_flag(payload.get("enabled")))
     return {"success": True, "state": state}
+
+
+@router.post("/api/widget-mode/stealth-enabled")
+async def set_widget_mode_stealth_enabled(request: Request, payload: dict[str, Any]) -> Any:
+    validation_error = _validate_widget_mode_mutation(request, payload)
+    if validation_error is not None:
+        return validation_error
+    state = await widget_mode_coordinator.set_stealth_enabled(
+        _coerce_enabled_flag(payload.get("enabled"))
+    )
+    return {"success": True, "state": state}

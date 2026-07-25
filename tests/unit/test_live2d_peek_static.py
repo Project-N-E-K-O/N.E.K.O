@@ -28,6 +28,7 @@ def test_live2d_widget_mode_edge_peek_is_widget_mode_gated_and_uses_six_anchors(
     assert "LIVE2D_PEEK_CORNER_ROTATION_DEGREES = 45" in source
     assert "LIVE2D_PEEK_HEAD_Y_RATIO = 0.24" in source
     assert "function isLive2DPeekEnabled()" in source
+    assert "isLive2DPeekDesktopRuntime()" in source
     assert "window.nekoWidgetMode.isEnabled()" in source
     assert "function getLive2DPeekAnchor(bounds, viewport)" in edge_peek_source
     assert "nearLeft" in edge_peek_source
@@ -119,7 +120,7 @@ def test_live2d_widget_mode_edge_peek_prefers_head_anchor_and_preserves_vertical
     assert "getLive2DPeekVerticalCorrection" in edge_peek_source
 
 
-def test_live2d_widget_mode_edge_peek_click_restores_and_drag_exits_without_click_action():
+def test_live2d_widget_mode_edge_peek_click_keeps_anchor_and_explicit_drag_exits():
     source = _source(LIVE2D_INTERACTION_PATH)
     drag_source = source.split("Live2DManager.prototype.setupDragAndDrop = function", 1)[1]
     drag_source = drag_source.split("Live2DManager.prototype.setupWheelZoom", 1)[0]
@@ -129,9 +130,8 @@ def test_live2d_widget_mode_edge_peek_click_restores_and_drag_exits_without_clic
     touch_source = touch_source.split("Live2DManager.prototype.enableMouseTracking", 1)[0]
 
     assert "const edgePeekOnPointerDown = this.isLive2DPeekActive();" in drag_source
-    assert "await this.restoreLive2DPeek('click-restore');" in drag_source
+    assert "await this.restoreLive2DPeek('click-restore');" not in drag_source
     assert "this.clearLive2DPeek('drag-start', { restore: false });" in drag_source
-    assert "return; // edge peek click restores instead of triggering touch motions" in drag_source
     assert "if (this.isLive2DPeekActive()) {" in wheel_source
     assert "return; // edge peek ignores wheel zoom" in wheel_source
     assert "this._debouncedSnapCheck();" not in wheel_source.split("if (this.isLive2DPeekActive()) {", 1)[1].split("return; // edge peek ignores wheel zoom", 1)[0]
@@ -153,6 +153,8 @@ def test_live2d_widget_mode_edge_peek_reports_viewport_intersection_bounds():
 
     assert "const edgePeekState = this._live2DPeekState;" in bounds_source
     assert "edgePeekState.active" in bounds_source
+    assert "edgePeekState.phase === 'hidden' || edgePeekState.phase === 'hiding'" in bounds_source
+    assert "return null;" in bounds_source
     assert "model.getBounds()" in bounds_source
     assert "const viewportLeft = 0;" in bounds_source
     assert "const viewportTop = 0;" in bounds_source
@@ -198,6 +200,8 @@ def test_live2d_widget_mode_edge_peek_does_not_persist_peek_position():
     assert "baseY" in edge_peek_source
     assert "peekX" in edge_peek_source
     assert "peekY" in edge_peek_source
+    assert "hiddenX" in edge_peek_source
+    assert "hiddenY" in edge_peek_source
     assert "await this._savePositionAfterInteraction();" in drag_source
     assert "await this._tryApplyLive2DPeek(model);" in drag_source
     assert (
@@ -224,6 +228,8 @@ def test_live2d_widget_mode_edge_peek_clears_on_disable_goodbye_reset_and_auto_c
     core_source = _source(LIVE2D_CORE_PATH)
 
     assert "window.addEventListener('neko:widget-mode-state-changed', clearLive2DPeekOnDisabled)" in interaction_source
+    assert "window.addEventListener('neko:widget-interaction-state-changed', syncLive2DPeekWithInteraction)" in interaction_source
+    assert "clearLive2DPeek('display-changed')" in interaction_source
     assert "window.addEventListener('live2d-goodbye-click', clearLive2DPeekOnGoodbye)" in interaction_source
     assert "clearLive2DPeek('widget-mode-disabled')" in interaction_source
     assert "clearLive2DPeek('live2d-goodbye')" in interaction_source

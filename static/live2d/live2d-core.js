@@ -4670,6 +4670,9 @@ class Live2DManager {
     getModelScreenBounds() {
         const edgePeekState = this._live2DPeekState;
         if (edgePeekState && edgePeekState.active) {
+            if (edgePeekState.phase === 'hidden' || edgePeekState.phase === 'hiding') {
+                return null;
+            }
             const model = edgePeekState.model || this.currentModel;
             if (model && !model.destroyed && typeof model.getBounds === 'function') {
                 const bounds = model.getBounds();

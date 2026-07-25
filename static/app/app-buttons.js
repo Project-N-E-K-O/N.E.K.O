@@ -1740,6 +1740,13 @@
                 throw new Error('WEBSOCKET_NOT_CONNECTED');
             }
             S.socket.send(JSON.stringify(normalized));
+            window.dispatchEvent(new CustomEvent('neko:avatar-interaction-sent', {
+                detail: {
+                    requestId: normalized.interaction_id,
+                    interactionId: normalized.interaction_id,
+                    source: 'avatar-tool'
+                }
+            }));
             setActiveAvatarInteractionDispatch(normalized.interaction_id, Date.now());
             return true;
         } catch (error) {
@@ -2933,7 +2940,12 @@
                     if (sentUserContent) {
                         // 覆盖纯截图/图片首轮输入：没有 text 分支时也要标记用户已交互
                         markFirstUserInputForAchievement();
-                        window.dispatchEvent(new CustomEvent('neko:user-content-sent'));
+                        window.dispatchEvent(new CustomEvent('neko:user-content-sent', {
+                            detail: {
+                                requestId: requestId,
+                                source: messageSource || 'text'
+                            }
+                        }));
                         // 标记"WS 已发、还没收到首 chunk"窗口，给 isAssistantTextResponseInFlight 用。
                         // 首 chunk 进来后会被 clearPendingAssistantTurnStart 在 turn-end 路径清零；
                         // 同时有 15s freshness ceiling 防止漏清永远卡 true。
