@@ -249,7 +249,7 @@ async def _build_assist_llm():
     from utils.llm_client import create_chat_llm_async
     try:
         cm = get_config_manager()
-        api_cfg = cm.get_model_api_config("agent")
+        api_cfg = await cm.aget_model_api_config("agent")
     except Exception as exc:
         logger.warning("card-assist: failed to read agent API config: %s", exc)
         return None, {"success": False, "error": "assist_api_not_configured",

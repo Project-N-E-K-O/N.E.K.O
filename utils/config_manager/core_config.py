@@ -45,6 +45,20 @@ class CoreConfigMixin:
         async endpoints must offload it to avoid blocking the event loop."""
         return await asyncio.to_thread(self.get_core_config)
 
+    async def aget_model_api_config(self, model_type: str, *, core_config: dict | None = None) -> dict:
+        """Async wrapper for get_model_api_config, dual of aget_core_config.
+
+        get_model_api_config resolves everything on top of get_core_config, so it inherits
+        the same open()+json.load() on core_config.json; async callers must offload it to
+        avoid blocking the event loop.
+
+        Pass ``core_config`` to reuse a snapshot the caller already read (e.g. right after
+        aget_core_config): resolution is then pure dict work and needs no thread hop.
+        """
+        if core_config is not None:
+            return self.get_model_api_config(model_type, _core_config=core_config)
+        return await asyncio.to_thread(self.get_model_api_config, model_type)
+
     # --- Core config helpers ---
 
     @staticmethod
@@ -845,10 +859,10 @@ class CoreConfigMixin:
 
         return config
 
-    def get_model_api_config(self, model_type: str) -> dict:
+    def get_model_api_config(self, model_type: str, *, _core_config: dict | None = None) -> dict:
         """
         Get the API config for the given model type (automatically handling custom API priority)
-        
+
         Args:
             model_type: model type, one of:
                 - 'summary': summary model (falls back to assist API)
@@ -858,7 +872,10 @@ class CoreConfigMixin:
                 - 'realtime': realtime speech model (falls back to core API)
                 - 'tts_default': default TTS (falls back to core API, used by OmniOfflineClient)
                 - 'tts_custom': custom TTS (falls back to assist API, used for voice_id scenarios)
-                
+            _core_config: optional pre-read get_core_config snapshot, so a caller that already
+                holds one does not pay a second core_config.json read. Private: async callers
+                reach it through aget_model_api_config(core_config=...).
+
         Returns:
             dict: config containing:
                 - 'model': model name
@@ -872,7 +889,7 @@ class CoreConfigMixin:
         # resolvers and the tts_custom Qwen-profile fallback below).
         from utils.config_manager import get_assist_api_profiles, get_core_api_profiles
 
-        core_config = self.get_core_config()
+        core_config = self.get_core_config() if _core_config is None else _core_config
         enable_custom_api = core_config.get('ENABLE_CUSTOM_API', False)
 
         # GPT-SoVITS 启用时，tts_custom slot 视为自定义 API：UI 上勾 GSV 在产品语义上
@@ -1039,11 +1056,11 @@ class CoreConfigMixin:
         if model_type == 'game_main':
             provider = str(core_config.get('gameMainModelProvider') or 'follow_conversation').strip()
             if not treat_as_custom or provider == 'follow_conversation':
-                return self.get_model_api_config('conversation')
+                return self.get_model_api_config('conversation', _core_config=core_config)
         elif model_type == 'game_summary':
             provider = str(core_config.get('gameSummaryModelProvider') or 'follow_summary').strip()
             if not treat_as_custom or provider == 'follow_summary':
-                return self.get_model_api_config('summary')
+                return self.get_model_api_config('summary', _core_config=core_config)
         
         # agent 始终走专用字段（AGENT_MODEL_URL 有 lanlan.app 归一化），
         # 但 is_custom 仅在 enableCustomApi 开启时为 True。
@@ -1138,9 +1155,9 @@ class CoreConfigMixin:
                 'api_type': core_config.get('CORE_API_TYPE', '') if model_type == 'realtime' else None,
             }
         elif mapping['fallback_type'] == 'conversation':
-            return self.get_model_api_config('conversation')
+            return self.get_model_api_config('conversation', _core_config=core_config)
         elif mapping['fallback_type'] == 'summary':
-            return self.get_model_api_config('summary')
+            return self.get_model_api_config('summary', _core_config=core_config)
         else:
             # 回退到辅助 API 配置
             return {

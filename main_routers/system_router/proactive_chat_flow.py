@@ -1417,7 +1417,7 @@ async def proactive_chat(request: Request):
         # "第一行写来源标签" 的格式，容易把人设约束块当正文吐出来；conversation
         # 是主对话主力模型，格式遵循更稳。仍保持 disable_thinking（vision+思考必超时）。
         try:
-            conversation_config = _config_manager.get_model_api_config('conversation')
+            conversation_config = await _config_manager.aget_model_api_config('conversation')
             conversation_model = conversation_config.get('model')
             conversation_base_url = conversation_config.get('base_url')
             conversation_api_key = conversation_config.get('api_key')
@@ -1432,7 +1432,7 @@ async def proactive_chat(request: Request):
                     "detail": "请在设置中配置对话模型的model和api_key"
                 }, status_code=500))
 
-            vision_config = _config_manager.get_model_api_config('vision')
+            vision_config = await _config_manager.aget_model_api_config('vision')
             vision_model_name = vision_config.get('model', '')
             vision_base_url = vision_config.get('base_url', '')
             vision_api_key = vision_config.get('api_key', '')

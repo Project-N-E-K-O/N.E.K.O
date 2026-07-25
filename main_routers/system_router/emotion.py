@@ -491,7 +491,7 @@ async def emotion_analysis(request: Request):
         model = data.get('model')
         
         # 使用参数或默认配置，使用 .get() 安全获取避免 KeyError
-        emotion_config = _config_manager.get_model_api_config('emotion')
+        emotion_config = await _config_manager.aget_model_api_config('emotion')
         emotion_api_key = emotion_config.get('api_key')
         emotion_model = emotion_config.get('model')
         emotion_base_url = emotion_config.get('base_url')

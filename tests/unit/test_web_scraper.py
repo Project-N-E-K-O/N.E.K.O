@@ -26,6 +26,9 @@ async def test_generate_diverse_queries_sends_user_message(monkeypatch):
     captured = {}
 
     class FakeConfigManager:
+        async def aget_model_api_config(self, model_type, *, core_config=None):
+            return self.get_model_api_config(model_type)
+
         def get_model_api_config(self, model_type):
             assert model_type == "summary"
             return {

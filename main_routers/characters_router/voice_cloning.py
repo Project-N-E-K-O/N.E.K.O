@@ -354,7 +354,7 @@ async def voice_clone(
 
     # 检测是否使用本地 TTS（ws/wss 协议）
     _config_manager = get_config_manager()
-    tts_config = _config_manager.get_model_api_config('tts_custom')
+    tts_config = await _config_manager.aget_model_api_config('tts_custom')
     try:
         core_config = await _config_manager.aget_core_config() or {}
     except Exception:

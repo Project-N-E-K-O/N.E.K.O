@@ -189,7 +189,7 @@ async def openfang_llm_proxy(request: Request, path: str):
     """
     # 获取真实 API 地址
     cm = get_config_manager()
-    agent_cfg = cm.get_model_api_config('agent')
+    agent_cfg = await cm.aget_model_api_config('agent')
     real_base_url = (agent_cfg.get("base_url") or "").strip().rstrip("/")
     real_api_key = (agent_cfg.get("api_key") or "").strip()
 

@@ -300,7 +300,7 @@ async def list_custom_tts_voices_for_characters(provider: str = ''):
     try:
         _config_manager = get_config_manager()
         core_config = await _config_manager.aget_core_config()
-        tts_config = _config_manager.get_model_api_config('tts_custom')
+        tts_config = await _config_manager.aget_model_api_config('tts_custom')
 
         base_url = (
             tts_config.get('base_url')

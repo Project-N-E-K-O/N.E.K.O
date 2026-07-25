@@ -446,7 +446,7 @@ async def get_voice_preview(
 
         # 优先尝试从 tts_custom 获取 API Key
         try:
-            tts_custom_config = _config_manager.get_model_api_config('tts_custom')
+            tts_custom_config = await _config_manager.aget_model_api_config('tts_custom')
             audio_api_key = tts_custom_config.get('api_key', '')
         except Exception:
             audio_api_key = ''
@@ -829,7 +829,7 @@ async def get_voice_preview(
                     # free_intl（海外免费 Gemini 代理）预览同 free，走 www.lanlan.app/tts
                     # 流式合成（StepFun-shape，proxy 把 voice_id 透传给 Gemini）。
                     try:
-                        native_tts_config = _config_manager.get_model_api_config('tts_default')
+                        native_tts_config = await _config_manager.aget_model_api_config('tts_default')
                         native_audio_api_key = native_tts_config.get('api_key', '') or ''
                     except Exception:
                         native_audio_api_key = ''
@@ -979,7 +979,7 @@ async def get_voice_preview(
 
         # 生成音频
         try:
-            tts_api_config = _config_manager.get_model_api_config('tts_custom')
+            tts_api_config = await _config_manager.aget_model_api_config('tts_custom')
         except Exception as e:
             logger.warning("DashScope 预览地域 URL 读取失败，回退到默认地域: %s", e, exc_info=True)
             tts_api_config = {}
