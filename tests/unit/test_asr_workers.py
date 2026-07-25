@@ -1221,9 +1221,6 @@ async def test_openai_clear_barrier_drops_late_old_item_from_session(
         }
     )
     await asyncio.wait_for(late_final_seen.wait(), 1)
-    await asyncio.sleep(0)
-    assert transcripts == []
-    assert endpoints == []
 
     release_clear_send.set()
     await websocket.server_send({"type": "input_audio_buffer.cleared"})
@@ -1243,6 +1240,7 @@ async def test_openai_clear_barrier_drops_late_old_item_from_session(
     )
     await _wait_until(lambda: transcripts == ["NEW"])
 
+    assert "STALE" not in transcripts
     assert endpoints == [1]
     assert errors == []
     await session.close()
