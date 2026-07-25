@@ -44,7 +44,6 @@ concurrency:
 
 jobs:
   test:
-    if: github.event_name != 'schedule' || vars.ENABLE_PAID_DATAFORSEO_SCHEDULE == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -77,11 +76,12 @@ jobs:
   report:
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'schedule' && vars.ENABLE_PAID_DATAFORSEO_SCHEDULE == 'true')
+      github.event_name == 'schedule'
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
+      RUN_DATAFORSEO: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && vars.ENABLE_PAID_DATAFORSEO_SCHEDULE == 'true') }}
       REPORT_MODE: ${{ github.event_name == 'schedule' && 'serp' || inputs.mode }}
       SERP_DEPTH: ${{ github.event_name == 'schedule' && '10' || inputs.serp_depth }}
       INCLUDE_AI_OVERVIEW: ${{ github.event_name == 'schedule' && 'false' || inputs.include_ai_overview }}
@@ -100,8 +100,16 @@ jobs:
         run: npm ci
         working-directory: docs
 
+      - name: Restore SEO/GEO history
+        uses: actions/cache/restore@v4
+        with:
+          path: docs/.seo-history
+          key: seo-monitoring-history-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            seo-monitoring-history-${{ github.ref_name }}-
+
       - name: Require credentials for paid modes
-        if: env.REPORT_MODE != 'dry-run'
+        if: env.RUN_DATAFORSEO == 'true' && env.REPORT_MODE != 'dry-run'
         shell: bash
         env:
           DATAFORSEO_LOGIN: ${{ secrets.DATAFORSEO_LOGIN }}
@@ -113,7 +121,7 @@ jobs:
           fi
 
       - name: Generate dry-run report
-        if: env.REPORT_MODE == 'dry-run'
+        if: env.RUN_DATAFORSEO == 'true' && env.REPORT_MODE == 'dry-run'
         shell: bash
         working-directory: docs
         run: |
@@ -124,7 +132,7 @@ jobs:
           npm run seo:dataforseo -- "${args[@]}"
 
       - name: Generate paid report
-        if: env.REPORT_MODE != 'dry-run'
+        if: env.RUN_DATAFORSEO == 'true' && env.REPORT_MODE != 'dry-run'
         shell: bash
         working-directory: docs
         env:
@@ -158,6 +166,13 @@ jobs:
           report="docs/.seo-reports/seo-monitoring-${GITHUB_RUN_ID}.md"
           if [[ -f "$report" ]]; then cat "$report" >> "$GITHUB_STEP_SUMMARY"; fi
 
+      - name: Save SEO/GEO history
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: docs/.seo-history
+          key: seo-monitoring-history-${{ github.ref_name }}-${{ github.run_id }}
+
       - name: Upload report artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -166,4 +181,4 @@ jobs:
           path: docs/.seo-reports/**
           if-no-files-found: error
           include-hidden-files: true
-          retention-days: 14
+          retention-days: 90

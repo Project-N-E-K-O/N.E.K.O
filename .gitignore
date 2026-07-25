@@ -101,6 +101,7 @@ build/
 *.tsbuildinfo
 docs/.vitepress/cache/
 docs/.seo-reports/
+docs/.seo-history/
 static/react/neko-chat/
 
 # Python venvs and wheels

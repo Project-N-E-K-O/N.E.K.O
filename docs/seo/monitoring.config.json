@@ -1,20 +1,28 @@
 {
   "schemaVersion": 1,
   "timezone": "Asia/Shanghai",
+  "dataForSeoConfigPath": "seo/dataforseo.config.json",
   "site": {
     "origin": "https://project-neko.online",
     "hostname": "project-neko.online",
-    "sitemapUrl": "https://project-neko.online/sitemap.xml"
+    "sitemapUrl": "https://project-neko.online/sitemap.xml",
+    "ctaGoal": "Steam download"
   },
   "gsc": {
     "siteUrlEnv": "GSC_SITE_URL",
     "defaultSiteUrl": "https://project-neko.online/",
-    "categoryQueryRegex": "(?:ai\\s+desktop\\s+pet|desktop\\s+ai\\s+companion|ai\\s+desktop\\s+companion|desktop\\s+companion|desktop\\s+pet|ai桌宠|开源ai桌宠|ai桌面伴侣|桌面ai伴侣)"
+    "categoryQueryRegex": "(?:ai\\s+desktop\\s+pet|desktop\\s+ai\\s+companion|ai\\s+desktop\\s+companion|desktop\\s+companion|desktop\\s+pet|ai桌宠|开源ai桌宠|ai桌面伴侣|桌面ai伴侣)",
+    "opportunities": {
+      "minImpressions": 10,
+      "maxCtr": 0.03,
+      "strikingDistanceStart": 10,
+      "strikingDistanceEnd": 20
+    }
   },
   "ga4": {
     "propertyIdEnv": "GA4_PROPERTY_ID",
     "ctaEvent": "steam_cta_click",
-    "aiReferralRegex": ".*(chatgpt|openai|perplexity|claude|anthropic|copilot|gemini).*"
+    "aiReferralRegex": ".*(?:chatgpt|openai|perplexity|claude|anthropic|copilot|gemini|deepseek|qwen|tongyi|doubao|poe|edgeservices\\.bing\\.com).*"
   },
   "desktopPetKeywords": [
     "local ai desktop companion",

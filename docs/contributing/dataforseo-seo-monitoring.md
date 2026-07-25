@@ -14,7 +14,7 @@ It is not browser code and is never bundled into VitePress. DataForSEO credentia
 DataForSEO bills by request. The repository therefore keeps scheduled billing behind an explicit repository variable:
 
 - `dry-run` is the default workflow mode and sends no request;
-- the 07:30 Asia/Shanghai schedule is skipped unless `ENABLE_PAID_DATAFORSEO_SCHEDULE` is exactly `true`;
+- the paid DataForSEO step at 07:30 Asia/Shanghai is skipped unless `ENABLE_PAID_DATAFORSEO_SCHEDULE` is exactly `true`; the free GSC/GA4/sitemap report still runs;
 - the scheduled mode is fixed to SERP depth 10 with AI Overview loading disabled;
 - SERP depth defaults to 10; increasing it may bill another result page per 10 results;
 - each SERP request sets `max_crawl_pages` from that depth, making the displayed page count a hard crawl limit;
@@ -25,7 +25,8 @@ DataForSEO bills by request. The repository therefore keeps scheduled billing be
 - a failed response reporting any nonzero cost is never retried automatically, preventing an accidental duplicate charge;
 - recoverable keyword failures do not discard successful results; the artifact records `partial` or `failed` status and per-keyword diagnostics;
 - account-wide fatal failures stop the run immediately and do not produce an artifact; the sanitized fatal diagnostic includes attempts and any cost reported for the current keyword;
-- generated reports live under `docs/.seo-reports/`, are ignored by Git, and are retained as workflow artifacts for 14 days.
+- generated reports live under `docs/.seo-reports/`, are ignored by Git, and are retained as workflow artifacts for 90 days;
+- non-secret metric/rank snapshots live under ignored `docs/.seo-history/` and are persisted with GitHub Actions Cache for dated fallback plus rolling weekly/monthly comparisons.
 
 The request plan always states the request count, maximum SERP pages, and number of AIO-enabled calls before execution. A completed paid report records the costs returned by DataForSEO.
 
@@ -109,11 +110,11 @@ Use `--output <path>` for a different report path and `--config <path>` for an a
 5. Run `dry-run` first and inspect the plan artifact.
 6. Choose `keywords`, `serp`, or `all`; leave depth at 10 and AIO disabled unless the extra paid data is required.
 7. Download the `dataforseo-report-<run-id>` artifact.
-8. Only after a successful manual SERP baseline, set `ENABLE_PAID_DATAFORSEO_SCHEDULE=true` to enable the daily paid run.
+8. Only after a successful manual SERP baseline, set `ENABLE_PAID_DATAFORSEO_SCHEDULE=true` to enable the daily paid run. Leaving it `false` still produces the free Google report and reuses the dated last-known DataForSEO baseline without issuing a paid request.
 
 Pull requests run the unit tests and committed-config dry-run only. They never receive DataForSEO secrets and never execute a paid request.
 
-The workflow also writes a unified GSC/GA4 Markdown and JSON summary. See [SEO/GEO daily monitoring](./seo-geo-daily-monitoring) for its read-only Google setup and `N/A` behavior.
+The workflow also writes a unified GSC/GA4 Markdown and JSON summary plus rolling weekly/monthly reviews. See [SEO/GEO daily monitoring](./seo-geo-daily-monitoring) for its read-only Google setup, field semantics, and `N/A` behavior.
 
 ## Report fields
 

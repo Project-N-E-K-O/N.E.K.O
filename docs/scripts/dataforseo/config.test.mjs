@@ -69,3 +69,30 @@ test('GSC category matching retains English and Chinese desktop-pet terms', asyn
 
   assert.equal(categoryPattern.test('python api framework'), false)
 })
+
+test('unified monitoring keeps the keyword source, opportunity thresholds, and AI sources explicit', async () => {
+  const config = await readMonitoringConfig()
+  const aiPattern = new RegExp(config.ga4.aiReferralRegex, 'iu')
+
+  assert.equal(config.dataForSeoConfigPath, 'seo/dataforseo.config.json')
+  assert.equal(config.site.ctaGoal, 'Steam download')
+  assert.deepEqual(config.gsc.opportunities, {
+    minImpressions: 10,
+    maxCtr: 0.03,
+    strikingDistanceStart: 10,
+    strikingDistanceEnd: 20,
+  })
+  for (const source of [
+    'chatgpt.com',
+    'perplexity.ai',
+    'claude.ai',
+    'gemini.google.com',
+    'deepseek.com',
+    'qwen.ai',
+    'doubao.com',
+    'poe.com',
+    'edgeservices.bing.com',
+  ]) {
+    assert.equal(aiPattern.test(source), true, `${source} must be tracked as an AI referral`)
+  }
+})
