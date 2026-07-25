@@ -1,0 +1,68 @@
+[plugin]
+name = "Claude Code Adapter"
+type = "plugin"
+description = "通过 @llm_tool 将 Claude Code CLI 注册为猫娘可调用的工具集。猫娘可以直接调用 Claude Code 执行项目开发任务：写代码、改 bug、跑测试、查文档。支持会话恢复、技能注入、流式输出解析和错误自动恢复。"
+short_description = "Expose Claude Code CLI as catgirl-callable LLM tools. Run Claude Code tasks from the main project."
+keywords = [
+    "claude",
+    "claude-code",
+    "cli",
+    "agent",
+    "coding",
+    "developer",
+    "llm_tool",
+    "adapter",
+    "catgirl",
+    "猫娘",
+]
+version = "0.1.0"
+id = "claude_code_adapter"
+entry = "plugins.claude_code_adapter:ClaudeCodeAdapterPlugin"
+
+[plugin.author]
+name = "N.E.K.O Community"
+
+[plugin.i18n]
+default_locale = "zh-CN"
+locales_dir = "i18n"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin_runtime]
+enabled = true
+auto_start = true
+
+[plugin_state]
+backend = "file"
+persist_mode = "auto"
+
+# 启用 PluginStore（SQLite KV 存储），用于持久化会话记录
+[plugin.store]
+enabled = true
+
+# ---------------------------------------------------------------------------
+# Claude Code Adapter 配置
+# ---------------------------------------------------------------------------
+[claude_code]
+# Claude CLI 可执行文件路径。留空则自动检测（PATH 上的 `claude`）。
+command = ""
+# 默认模型（留空使用 Claude CLI 默认值）。例如 "sonnet" / "opus" / "claude-sonnet-4-5-20250929"。
+model = ""
+# 推理努力级别："" | "low" | "medium" | "high"。
+effort = ""
+# 单次执行最大轮次（0 = 使用 CLI 默认值）。
+max_turns_per_run = 0
+# 跳过权限提示（与 Paperclip 行为一致；仅用于受信任的本地开发场景）。
+dangerously_skip_permissions = true
+# 单次执行超时（秒）。main_server 上限 300s，这里取上限。
+timeout_sec = 300
+# 默认工作目录（留空 = 当前插件进程 cwd）。猫娘调用时可覆盖。
+cwd = ""
+# 附加系统提示文件路径（留空则不附加）。
+append_system_prompt_file = ""
+# 技能目录（留空则不注入 --add-dir）。
+skills_dir = ""
+# 失败后自动重试新会话的次数。
+max_retries = 1
