@@ -17,7 +17,7 @@ keywords = [
 ]
 version = "0.1.0"
 id = "codex_adapter"
-entry = "plugins.codex_adapter:CodexAdapterPlugin"
+entry = "plugin.plugins.codex_adapter:CodexAdapterPlugin"
 
 [plugin.author]
 name = "N.E.K.O Community"
