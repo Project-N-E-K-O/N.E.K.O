@@ -1711,7 +1711,7 @@
             // 对内部代理路径直接放行（后端已做安全检查）
             if (url.startsWith('/api/')) return true;
             const parsed = new URL(url);
-            if (!['http:', 'https:'].includes(parsed.protocol)) return false;
+            if (parsed.protocol !== 'https:') return false;
             const hostname = parsed.hostname;
             return MUSIC_CONFIG.allowlist.some(d => hostname === d || hostname.endsWith('.' + d));
         } catch { return false; }
@@ -1727,7 +1727,7 @@
         if (!url || typeof url !== 'string' || url.startsWith('/api/')) return url;
         try {
             const parsed = new URL(url);
-            if (!['http:', 'https:'].includes(parsed.protocol)) return url;
+            if (parsed.protocol !== 'https:') return url;
             const hostname = parsed.hostname;
             const proxyAllowed = Array.from(backendProxyDomains)
                 .some(domain => hostname === domain || hostname.endsWith('.' + domain));
