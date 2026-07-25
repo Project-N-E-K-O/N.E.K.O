@@ -968,16 +968,21 @@ class BiliDMPlugin(NekoPluginBase):
                     if isinstance(value, (str, int, float, bool)) and value:
                         character_card_fields[key] = value
 
-            # 获取对话模型配置
-            # 会话的线路会连 base_url 一起冻进 OmniOfflineClient 并缓存整场，所以先给
-            # 仍在飞的区域探测一个收尾窗口（与 core/lifecycle、游戏会话池对偶）。已落定时
-            # 零开销；自配 API 用户不会因此发起探测。fail-open：插件不该因区域探测出错而
-            # 起不了会话。
-            try:
-                await config_manager.aensure_region_resolved()
-            except Exception:
-                logger.warning("[GeoIP] 插件会话区域落定失败，退化到当前配置继续", exc_info=True)
+            # 会话 key 提前算：只有「要新建会话」时才需要等区域落定，已有会话的线路
+            # 早就冻好了，再等只会给每条消息平白加最多 1.5 秒。
+            session_key = self._build_session_key(sender_uid)
 
+            # 新会话的线路会连 base_url 一起冻进 OmniOfflineClient 并缓存整场，所以
+            # 先给仍在飞的区域探测一个收尾窗口（与 core/lifecycle、游戏会话池对偶）。
+            # 已落定时零开销；自配 API 用户不会因此发起探测。fail-open：插件不该因
+            # 区域探测本身出错而起不了会话。
+            if session_key not in self._user_sessions:
+                try:
+                    await config_manager.aensure_region_resolved()
+                except Exception:
+                    logger.warning("[GeoIP] 插件会话区域落定失败，退化到当前配置继续", exc_info=True)
+
+            # 获取对话模型配置
             conversation_config = config_manager.get_model_api_config("conversation")
             base_url = conversation_config.get("base_url", "")
             api_key = conversation_config.get("api_key", "")
@@ -988,9 +993,7 @@ class BiliDMPlugin(NekoPluginBase):
                 should_use_memory if persist_memory is None else bool(persist_memory)
             )
 
-            # 会话管理
-            session_key = self._build_session_key(sender_uid)
-
+            # 会话管理（session_key 已在上面为区域落定判断算过）
             if session_key not in self._user_sessions:
                 self.logger.info(f"为 B站用户 {sender_uid} 创建新的 AI 会话")
 
