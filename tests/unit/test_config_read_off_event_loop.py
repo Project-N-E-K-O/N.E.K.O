@@ -167,6 +167,11 @@ def _offloaded_callable_names(tree: ast.AST) -> set[str]:
 
     ``await asyncio.to_thread(self._blocking_helper)`` means _blocking_helper is
     meant to run on a worker thread, so a sync config read inside it is correct.
+
+    A bare name is not an identity: two same-named ``def``s in one module cannot be
+    told apart statically, so exempting by name would let the NON-offloaded twin
+    through. Such ambiguous names are therefore dropped from the exemption set --
+    fail closed, so the gate reports and a human decides, rather than going quiet.
     """
     names: set[str] = set()
     for node in ast.walk(tree):
@@ -177,7 +182,12 @@ def _offloaded_callable_names(tree: ast.AST) -> set[str]:
                 names.add(arg.id)
             elif isinstance(arg, ast.Attribute):
                 names.add(arg.attr)
-    return names
+
+    counts: dict[str, int] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            counts[node.name] = counts.get(node.name, 0) + 1
+    return {n for n in names if counts.get(n, 0) <= 1}
 
 
 def _sync_config_reads_inside_async_defs(path: Path) -> list[tuple[int, str, str]]:
@@ -250,3 +260,101 @@ def test_async_code_never_calls_the_sync_config_readers():
         "调用的嵌套闭包），请改用 aget_core_config / aget_model_api_config；确实要在"
         "工作线程里同步读的，走 asyncio.to_thread:\n  " + "\n  ".join(offenders)
     )
+
+
+@pytest.mark.unit
+def test_offload_exemption_is_dropped_for_ambiguous_names(tmp_path):
+    """Two same-named nested defs, one offloaded: the other must NOT inherit the exemption.
+
+    A bare name is not an identity. Exempting by name alone would let the twin that
+    really is called on the loop hide a sync config read behind its offloaded sibling.
+    """
+    src = '''
+import asyncio
+
+async def offloads_it():
+    def _resolve():
+        return cm.get_model_api_config('summary')
+    return await asyncio.to_thread(_resolve)
+
+async def calls_it_on_the_loop():
+    def _resolve():
+        return cm.get_model_api_config('summary')
+    return _resolve()
+'''
+    path = tmp_path / "ambiguous.py"
+    path.write_text(src, encoding="utf-8")
+
+    hits = _sync_config_reads_inside_async_defs(path)
+
+    assert hits, "同名双胞胎里未卸载的那个被静默豁免了（按名字豁免的假绿）"
+
+
+@pytest.mark.unit
+def test_offload_exemption_still_holds_for_an_unambiguous_name(tmp_path):
+    """Control: the ordinary single-definition offload must stay exempt."""
+    src = '''
+import asyncio
+
+async def offloads_it():
+    def _resolve():
+        return cm.get_model_api_config('summary')
+    return await asyncio.to_thread(_resolve)
+'''
+    path = tmp_path / "unambiguous.py"
+    path.write_text(src, encoding="utf-8")
+
+    assert _sync_config_reads_inside_async_defs(path) == [], "合法的 to_thread 卸载被误报"
+
+
+class _MigratingManager(CoreConfigMixin):
+    """Exercises only the openclawUrl 8089 -> 8088 write-back inside get_core_config."""
+
+    def __init__(self, stored: dict, on_read=None):
+        self.stored = stored
+        self._on_read = on_read
+        self.saved: list[dict] = []
+
+    def load_json_config(self, filename, default_value=None):
+        # 先让并发保存落地，再返回内容：模拟「worker 原始读已陈旧 → /core_api 保存
+        # 落盘 → 迁移在锁内重读」这条时序，也正是重读能救回来的那条。
+        if self._on_read is not None:
+            self._on_read()
+        return dict(self.stored)
+
+    def save_json_config(self, filename, data):
+        self.stored = dict(data)
+        self.saved.append(dict(data))
+
+
+@pytest.mark.unit
+def test_openclaw_migration_does_not_clobber_a_concurrent_save():
+    """The read-path migration must patch fresh content, not write back a stale snapshot.
+
+    get_core_config is the only read that also writes (one-shot legacy port migration).
+    Now that it runs under to_thread, a /core_api save can land between this worker's
+    read and its write; saving the stale snapshot would silently drop the user's update.
+    """
+    manager = _MigratingManager({"openclawUrl": "http://127.0.0.1:8089"})
+
+    # 模拟并发保存：worker 重读配置文件的那一刻，用户刚存下新的 API key
+    def _concurrent_save():
+        manager.stored = dict(manager.stored, coreApiKey="freshly-saved-key")
+
+    manager._on_read = _concurrent_save
+    manager._persist_openclaw_port_migration("http://127.0.0.1:8088")
+
+    assert manager.stored["openclawUrl"] == "http://127.0.0.1:8088", "迁移没有落盘"
+    assert manager.stored.get("coreApiKey") == "freshly-saved-key", (
+        "并发保存的 coreApiKey 被陈旧快照顶掉了"
+    )
+
+
+@pytest.mark.unit
+def test_openclaw_migration_skips_when_another_worker_already_migrated():
+    """Double-checked under the lock: a second worker must not rewrite the file."""
+    manager = _MigratingManager({"openclawUrl": "http://127.0.0.1:8088"})
+
+    manager._persist_openclaw_port_migration("http://127.0.0.1:8088")
+
+    assert manager.saved == [], "端口已是 8088 仍然又写了一次盘"

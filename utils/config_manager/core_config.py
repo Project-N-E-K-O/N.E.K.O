@@ -61,6 +61,39 @@ class CoreConfigMixin:
 
     # --- Core config helpers ---
 
+    def _persist_openclaw_port_migration(self, migrated_openclaw_url: str) -> None:
+        """Write back only the migrated openclawUrl, never a whole stale snapshot.
+
+        get_core_config is a read for every caller except this one-shot 8089 -> 8088
+        legacy migration, which makes it a read-modify-write. Callers now reach it
+        through asyncio.to_thread, so that write can interleave with a /core_api save
+        on the loop; saving the snapshot this worker read minutes-old would silently
+        discard whatever the user just saved.
+
+        So: take the lock, re-read the file, re-check the port (another worker may
+        have migrated already), and patch the single field onto the FRESH content.
+        """
+        from utils.config_manager import ConfigManager
+
+        with ConfigManager._openclaw_migration_lock:
+            try:
+                fresh = self.load_json_config('core_config.json', {})
+                if not isinstance(fresh, dict):
+                    fresh = {}
+                current = str(fresh.get('openclawUrl') or '').strip()
+                if current:
+                    try:
+                        if urlparse(current.rstrip('/')).port != 8089:
+                            # 已被其他 worker 迁移，或用户自己改掉了，不再覆盖
+                            return
+                    except ValueError:
+                        return
+                fresh['openclawUrl'] = migrated_openclaw_url
+                self.save_json_config('core_config.json', fresh)
+                logger.info("已自动将 openclawUrl 从 8089 迁移到 8088: %s", migrated_openclaw_url)
+            except Exception as exc:
+                logger.warning("自动迁移 openclawUrl 到 8088 失败: %s", exc)
+
     @staticmethod
     def _check_ip_non_mainland_http():
         """Independent IP geolocation via China-fast HTTP API (ip-api.com over HTTP)."""
@@ -490,11 +523,7 @@ class CoreConfigMixin:
                         )
                         core_cfg['openclawUrl'] = migrated_openclaw_url
                         openclaw_url = migrated_openclaw_url
-                        try:
-                            self.save_json_config('core_config.json', core_cfg)
-                            logger.info("已自动将 openclawUrl 从 8089 迁移到 8088: %s", migrated_openclaw_url)
-                        except Exception as exc:
-                            logger.warning("自动迁移 openclawUrl 到 8088 失败: %s", exc)
+                        self._persist_openclaw_port_migration(migrated_openclaw_url)
                 except ValueError:
                     pass
         if isinstance(openclaw_url, str) and openclaw_url.strip():
