@@ -370,7 +370,7 @@ class CodexAdapterPlugin(NekoPluginBase):
                     await asyncio.sleep(wait_sec)
             elif exec_err.kind == TRANSIENT_UPSTREAM:
                 # 瞬态错误无明确时间戳 — 指数退避（2s, 4s, 8s...）
-                backoff = min(2 ** attempt, 16)
+                backoff = min(2 ** (attempt + 1), 16)
                 self.logger.info(
                     "Transient error, backing off %ds before retry", backoff
                 )

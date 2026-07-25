@@ -132,23 +132,41 @@ def write_api_key_auth_json(home: str, api_key: str) -> str:
                 os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
                 0o600,
             )
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(json.dumps(payload, indent=2))
-            except Exception:
-                # fdopen 失败时 fd 仍需手动关闭
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
-                raise
         except OSError:
-            # 回退到 write_text（权限可能短暂放宽）
+            # os.open 失败，回退到 write_text
             target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
             try:
                 os.chmod(target, 0o600)
             except OSError:
                 pass
+        else:
+            # os.open 成功，尝试 fdopen
+            try:
+                f = os.fdopen(fd, "w", encoding="utf-8")
+            except Exception:
+                # os.fdopen 失败，fd 未被接管，需要手动关闭
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                # 回退到 write_text
+                target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+                try:
+                    os.chmod(target, 0o600)
+                except OSError:
+                    pass
+            else:
+                # os.fdopen 成功，fd 已被接管，由 with 块管理
+                try:
+                    with f:
+                        f.write(json.dumps(payload, indent=2))
+                except Exception:
+                    # f.write 失败，fd 已被 with 关闭，回退到 write_text
+                    target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+                    try:
+                        os.chmod(target, 0o600)
+                    except OSError:
+                        pass
     else:
         target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
