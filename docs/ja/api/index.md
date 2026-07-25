@@ -44,6 +44,7 @@ http://127.0.0.1:48911
 | [キャラクター](/ja/api/rest/characters) | `/api/characters` | キャラクター、ペルソナ、カード、音声、アバター操作 |
 | [Live2D](/ja/api/rest/live2d) | `/api/live2d` | Live2D モデルと感情マッピング |
 | [VRM](/ja/api/rest/vrm) | `/api/model/vrm` | VRM モデル、設定、アニメーション、表情 |
+| [VMC モーション出力](/ja/api/rest/vmc) | `/api/vmc` | active VRM motion の local OSC/UDP 出力 |
 | [MMD](/ja/api/rest/mmd) | `/api/model/mmd` | MMD モデルとモーション管理 |
 | [PNGTuber](/ja/api/rest/pngtuber) | `/api/model/pngtuber` | PNGTuber モデル管理 |
 | [メモリ](/ja/api/rest/memory) | `/api/memory` | 直近メモリファイル、レビュー/設定、名前変更、旧ストレージ整理。recall は内部 `/query_memory` route を使用 |

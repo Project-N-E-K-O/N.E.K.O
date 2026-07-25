@@ -19,6 +19,8 @@ def assemble_runtime_modules(runtime: Any) -> None:
     runtime.bili_identity = _create_module("bili_identity", "BiliIdentityModule", "Bilibili identity")
     runtime.douyin_live_ingest = _create_module("douyin_live_ingest", "DouyinLiveIngestModule", "Douyin live ingest")
     runtime.douyin_identity = _create_module("douyin_identity", "DouyinIdentityModule", "Douyin identity")
+    runtime.twitch_live_ingest = _create_module("twitch_live_ingest", "TwitchLiveIngestModule", "Twitch live ingest")
+    runtime.twitch_identity = _create_module("twitch_identity", "TwitchIdentityModule", "Twitch identity")
     runtime.live_provider = LiveProviderRouter(runtime)
     runtime.live_audience_session = _create_module(
         "live_audience_session",
@@ -45,8 +47,10 @@ def registered_modules(runtime: Any) -> tuple[Any, ...]:
     return (
         runtime.bili_live_ingest,
         runtime.douyin_live_ingest,
+        runtime.twitch_live_ingest,
         runtime.bili_identity,
         runtime.douyin_identity,
+        runtime.twitch_identity,
         runtime.live_audience_session,
         runtime.viewer_profile,
         runtime.avatar_roast,

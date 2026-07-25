@@ -46,6 +46,8 @@ def normalize_live_platform(value: Any) -> str:
         return "bilibili"
     if platform in {"douyin", "dy"}:
         return "douyin"
+    if platform in {"twitch", "tv"}:
+        return "twitch"
     return "bilibili"
 
 
@@ -54,6 +56,7 @@ class LiveConfig:
     live_platform: str = "bilibili"
     live_room_ref: str = ""
     live_room_id: int = 0
+    twitch_client_id: str = ""
     live_mode: LiveMode = "co_stream"
     live_enabled: bool = False
     avatar_roast_enabled: bool = True
@@ -116,6 +119,7 @@ class LiveConfig:
             live_platform=live_platform,
             live_room_ref=live_room_ref,
             live_room_id=live_room_id,
+            twitch_client_id=_safe_optional_text(raw.get("twitch_client_id"), max_len=80),
             live_mode=live_mode,  # type: ignore[arg-type]
             live_enabled=_safe_bool(raw.get("live_enabled"), default=False),
             avatar_roast_enabled=_safe_bool(raw.get("avatar_roast_enabled"), default=True),
@@ -214,6 +218,7 @@ class LiveConfig:
             "live_platform": live_platform,
             "live_room_ref": live_room_ref,
             "live_room_id": live_room_id,
+            "twitch_client_id": public_text(self.twitch_client_id, max_len=80),
             "live_mode": self.live_mode if isinstance(self.live_mode, str) and self.live_mode in {"co_stream", "solo_stream"} else "co_stream",
             "live_enabled": public_bool(self.live_enabled),
             "avatar_roast_enabled": public_bool(self.avatar_roast_enabled, default=True),
