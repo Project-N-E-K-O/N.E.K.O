@@ -434,6 +434,30 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     # 传递input_mode参数，告知session manager使用何种模式
                     # 注意：音频模块由 main_server 后台预加载，Python import lock 会自动等待首次导入完成
                     mode = 'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio'
+                    if mode == "audio":
+                        ensure_voice_input_authorized = getattr(
+                            session_manager[lanlan_name],
+                            "_ensure_voice_input_session_authorized",
+                            None,
+                        )
+                        if callable(ensure_voice_input_authorized):
+                            authorized = await ensure_voice_input_authorized(
+                                str(this_session_id)
+                            )
+                            if not authorized:
+                                await session_manager[lanlan_name].send_status(
+                                    json.dumps(
+                                        {
+                                            "code": "VOICE_INPUT_LEASE_REQUIRED",
+                                            "details": {
+                                                "reason": (
+                                                    "voice_input_control_required"
+                                                )
+                                            },
+                                        }
+                                    )
+                                )
+                                continue
                     # 用户显式 start_session（刷新页面 / 点重试）= 清熔断。
                     # 内部 recovery 路径不会走到这里，熔断只能从这条路被清。
                     # 但要避开"上一轮 start_session 还在跑"的 race：那时清零会让
@@ -494,13 +518,26 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             elif action == "voice_input_control":
                 # MicLease 是音频路由的后端权威控制面；按 websocket 消息顺序
                 # 同步处理，避免控制事件之后的 PCM 抢先进入旧 turn。
-                await session_manager[lanlan_name]._handle_voice_input_control(
+                control_applied = await session_manager[
+                    lanlan_name
+                ]._handle_voice_input_control(
                     message.get("event", ""),
                     message.get("lease_generation", -1),
                     owner=message.get("owner"),
                     hard_muted=message.get("hard_muted"),
                     focus_suppressed=message.get("focus_suppressed"),
                 )
+                if not control_applied:
+                    await session_manager[lanlan_name].send_status(
+                        json.dumps(
+                            {
+                                "code": "VOICE_INPUT_CONTROL_REJECTED",
+                                "details": {
+                                    "reason": "invalid_or_stale_control"
+                                },
+                            }
+                        )
+                    )
 
             elif action == "capture_bridge_status":
                 from utils.capture_bridge import mark_capture_client

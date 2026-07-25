@@ -10,6 +10,7 @@ import pytest
 
 import main_logic.asr_client as asr_client
 import main_logic.asr_client._infra as asr_infra
+import main_logic.asr_client.runtime as asr_runtime_module
 from main_logic.asr_client import AsrSessionConfig, create_asr_session
 from main_logic.asr_client._infra import (
     _AsrRequestQueue,
@@ -22,6 +23,18 @@ from main_logic.asr_client._registry_meta import (
     CORE_ASR_ROUTES,
 )
 from main_logic.asr_client.workers.dummy import dummy_asr_worker
+from main_logic.asr_client.lifecycle import (
+    VoiceInputLifecycleController,
+    VoiceLifecycleEvent,
+    VoiceRouteMode,
+)
+from main_logic.asr_client.provider_policy import resolve_provider_policy
+from main_logic.asr_client.runtime import (
+    AsrRuntimeCallbacks,
+    AsrStartStatus,
+    IndependentAsrRuntime,
+)
+from main_logic.asr_client.transcript import TranscriptDispatcher
 
 
 async def _scripted_worker(request_queue, response_queue, api_key, config):
@@ -1706,3 +1719,266 @@ async def test_worker_exception_during_close_is_not_reported():
 
     assert session.is_ready is False
     errors.assert_not_awaited()
+
+
+class _RuntimeStartCandidate:
+    def __init__(
+        self,
+        *,
+        connect_gate: asyncio.Event | None = None,
+        connect_error: Exception | None = None,
+    ) -> None:
+        self.connect_started = asyncio.Event()
+        self._connect_gate = connect_gate
+        self._connect_error = connect_error
+        self.is_ready = True
+        self.close = AsyncMock()
+
+    async def connect(self) -> None:
+        self.connect_started.set()
+        if self._connect_gate is not None:
+            await self._connect_gate.wait()
+        if self._connect_error is not None:
+            raise self._connect_error
+
+
+def _runtime_selection():
+    return type(
+        "Selection",
+        (),
+        {
+            "provider_key": "qwen",
+            "endpointing_mode": "provider",
+        },
+    )()
+
+
+def _runtime_callbacks(
+    *,
+    on_prepare_turn=None,
+    on_lifecycle=None,
+    statuses: list | None = None,
+) -> AsrRuntimeCallbacks:
+    captured_statuses = statuses if statuses is not None else []
+
+    async def capture_status(event) -> None:
+        captured_statuses.append(event)
+
+    return AsrRuntimeCallbacks(
+        display_name=lambda: "runtime-test",
+        on_prepare_turn=on_prepare_turn or AsyncMock(return_value=True),
+        on_partial=AsyncMock(),
+        on_final=AsyncMock(),
+        on_failure=AsyncMock(),
+        on_status=capture_status,
+        on_lifecycle=on_lifecycle or AsyncMock(),
+    )
+
+
+def _patch_runtime_start(
+    monkeypatch,
+    candidates: list[_RuntimeStartCandidate],
+) -> None:
+    selection = _runtime_selection()
+    monkeypatch.setattr(
+        asr_runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=selection),
+    )
+    monkeypatch.setattr(
+        asr_runtime_module,
+        "_create_asr_session_from_selection",
+        MagicMock(side_effect=candidates),
+    )
+
+
+async def test_runtime_start_closed_during_lifecycle_returns_stale_without_ready(
+    monkeypatch,
+) -> None:
+    lifecycle_entered = asyncio.Event()
+    release_lifecycle = asyncio.Event()
+    statuses = []
+
+    async def block_lifecycle(_event) -> None:
+        lifecycle_entered.set()
+        await release_lifecycle.wait()
+
+    candidate = _RuntimeStartCandidate()
+    _patch_runtime_start(monkeypatch, [candidate])
+    runtime = IndependentAsrRuntime(
+        _runtime_callbacks(
+            on_lifecycle=block_lifecycle,
+            statuses=statuses,
+        )
+    )
+
+    start_task = asyncio.create_task(
+        runtime.start(
+            route_key="qwen",
+            resource_optimization_enabled=True,
+        )
+    )
+    await asyncio.wait_for(lifecycle_entered.wait(), 1)
+    await asyncio.wait_for(runtime.close(), 1)
+    release_lifecycle.set()
+    result = await asyncio.wait_for(start_task, 1)
+
+    assert result.status is AsrStartStatus.FAILED
+    assert result.failure_code == "ASR_START_STALE"
+    assert runtime._asr_session is None
+    assert [event.code for event in statuses] == []
+    candidate.close.assert_awaited_once_with()
+
+
+async def test_new_runtime_start_survives_old_connect_success(monkeypatch) -> None:
+    first_release = asyncio.Event()
+    first = _RuntimeStartCandidate(connect_gate=first_release)
+    second = _RuntimeStartCandidate()
+    statuses = []
+    _patch_runtime_start(monkeypatch, [first, second])
+    runtime = IndependentAsrRuntime(_runtime_callbacks(statuses=statuses))
+
+    old_start = asyncio.create_task(
+        runtime.start(
+            route_key="qwen",
+            resource_optimization_enabled=True,
+        )
+    )
+    await asyncio.wait_for(first.connect_started.wait(), 1)
+    current_result = await runtime.start(
+        route_key="qwen",
+        resource_optimization_enabled=True,
+    )
+    first_release.set()
+    old_result = await asyncio.wait_for(old_start, 1)
+
+    assert current_result.status is AsrStartStatus.READY
+    assert old_result.failure_code == "ASR_START_STALE"
+    assert runtime._asr_session is second
+    assert runtime._asr_provider == "qwen"
+    assert runtime._asr_lifecycle is not None
+    assert runtime._asr_session_factory is not None
+    assert runtime._asr_transport_selection is not None
+    assert [event.code for event in statuses] == ["ASR_INDEPENDENT_READY"]
+    first.close.assert_awaited_once_with()
+    second.close.assert_not_awaited()
+    await runtime.close()
+
+
+async def test_old_connect_failure_after_new_start_has_no_failure_status(
+    monkeypatch,
+) -> None:
+    first_release = asyncio.Event()
+    first = _RuntimeStartCandidate(
+        connect_gate=first_release,
+        connect_error=RuntimeError("old connect failed"),
+    )
+    second = _RuntimeStartCandidate()
+    statuses = []
+    _patch_runtime_start(monkeypatch, [first, second])
+    runtime = IndependentAsrRuntime(_runtime_callbacks(statuses=statuses))
+
+    old_start = asyncio.create_task(
+        runtime.start(
+            route_key="qwen",
+            resource_optimization_enabled=True,
+        )
+    )
+    await asyncio.wait_for(first.connect_started.wait(), 1)
+    current_result = await runtime.start(
+        route_key="qwen",
+        resource_optimization_enabled=True,
+    )
+    first_release.set()
+    old_result = await asyncio.wait_for(old_start, 1)
+
+    assert current_result.status is AsrStartStatus.READY
+    assert old_result.failure_code == "ASR_START_STALE"
+    assert runtime._asr_session is second
+    assert [event.code for event in statuses] == ["ASR_INDEPENDENT_READY"]
+    first.close.assert_awaited_once_with()
+    second.close.assert_not_awaited()
+    await runtime.close()
+
+
+def _install_runtime_prepare_state(
+    runtime: IndependentAsrRuntime,
+) -> None:
+    lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("qwen", "provider"),
+        shadow_mode=False,
+    )
+    lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    lifecycle.transition(VoiceLifecycleEvent.SOFT_WAKE)
+    lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+    runtime._asr_session = type("Session", (), {"is_ready": True})()
+    runtime._asr_provider = "qwen"
+    runtime._asr_lifecycle = lifecycle
+    runtime._asr_detector = object()
+    runtime._asr_current_ingress_token = runtime.capture_ingress_token(
+        connection_id="connection",
+        lease_generation=1,
+        route_generation=1,
+    )
+
+
+@pytest.mark.parametrize("raises", [False, True])
+async def test_stale_prepare_unwind_only_releases_old_reservation(raises) -> None:
+    prepare_entered = asyncio.Event()
+    release_prepare = asyncio.Event()
+
+    async def delayed_prepare(_token) -> bool:
+        prepare_entered.set()
+        await release_prepare.wait()
+        if raises:
+            raise RuntimeError("old prepare failed")
+        return False
+
+    runtime = IndependentAsrRuntime(
+        _runtime_callbacks(on_prepare_turn=delayed_prepare)
+    )
+    _install_runtime_prepare_state(runtime)
+    old_dispatcher = runtime._asr_transcript_dispatcher
+    prepare_task = asyncio.create_task(
+        runtime._prepare_independent_asr_turn(runtime._asr_session_epoch)
+    )
+    await asyncio.wait_for(prepare_entered.wait(), 1)
+    old_final_key = runtime._asr_reserved_final_key
+    assert old_final_key is not None
+
+    new_dispatcher = TranscriptDispatcher(runtime._dispatch_asr_transcript_envelope)
+    runtime._asr_transcript_dispatcher = new_dispatcher
+    new_final_key = replace(old_final_key, turn_id=old_final_key.turn_id + 1)
+    runtime._asr_reserved_final_key = new_final_key
+    runtime._asr_turn_prepared = True
+    release_prepare.set()
+    await asyncio.wait_for(prepare_task, 1)
+
+    assert runtime._asr_transcript_dispatcher is new_dispatcher
+    assert runtime._asr_reserved_final_key == new_final_key
+    assert runtime._asr_turn_prepared is True
+    assert old_dispatcher.try_reserve(old_final_key) is True
+    old_dispatcher.release(old_final_key)
+
+
+@pytest.mark.parametrize("raises", [False, True])
+async def test_current_prepare_failure_releases_current_reservation(raises) -> None:
+    async def reject_prepare(_token) -> bool:
+        if raises:
+            raise RuntimeError("current prepare failed")
+        return False
+
+    runtime = IndependentAsrRuntime(
+        _runtime_callbacks(on_prepare_turn=reject_prepare)
+    )
+    _install_runtime_prepare_state(runtime)
+    dispatcher = runtime._asr_transcript_dispatcher
+    turn_token = runtime._capture_turn_token(runtime._asr_lifecycle)
+    final_key = asr_runtime_module.FinalKey.from_turn(turn_token)
+
+    await runtime._prepare_independent_asr_turn(runtime._asr_session_epoch)
+
+    assert runtime._asr_reserved_final_key is None
+    assert runtime._asr_turn_prepared is False
+    assert dispatcher.try_reserve(final_key) is True
+    dispatcher.release(final_key)

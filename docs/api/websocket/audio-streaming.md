@@ -11,6 +11,34 @@ Audio is asymmetric on the application WebSocket: microphone input is JSON sampl
 
 The application route does **not** accept base64 microphone audio and does not call `receive_bytes()` for client input.
 
+## Synchronize the microphone lease
+
+New clients should send a complete microphone-control snapshot immediately
+after the WebSocket opens and before starting an audio session:
+
+```json
+{
+  "action": "voice_input_control",
+  "event": "lease_sync",
+  "owner": "core",
+  "hard_muted": false,
+  "focus_suppressed": false,
+  "lease_generation": 1
+}
+```
+
+`lease_generation` is scoped to one WebSocket and must increase monotonically.
+Start a fresh sequence after reconnecting. The server rejects invalid or stale
+control messages with status code `VOICE_INPUT_CONTROL_REJECTED`.
+
+For compatibility, an older client that sends no `voice_input_control` message
+can still start one ordinary `audio` session. Immediately before that session
+starts, the server installs a generation-0 Core lease for the current
+connection. This fallback does not apply to a game route. Once the connection
+has sent any explicit control message—even an invalid one—the fallback is
+permanently disabled for that connection. A start that remains unauthorized
+returns `VOICE_INPUT_LEASE_REQUIRED`.
+
 ## Start the voice session first
 
 ```json
@@ -23,7 +51,11 @@ Wait for:
 { "type": "session_started", "input_mode": "audio" }
 ```
 
-before sending samples. `session_preparing` is not readiness. If startup fails, handle both the machine-readable `status` event and `session_failed`.
+before sending samples. `session_preparing` is not readiness. If startup fails,
+handle both the machine-readable `status` event and `session_failed`.
+`session_started` means the Provider session is ready; it does not override the
+current microphone owner, mute, focus, game, connection, or lease-generation
+checks.
 
 ## Microphone input
 

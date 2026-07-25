@@ -34,8 +34,11 @@ The WebSocket connection and provider session have separate lifetimes:
 ```text
 socket open
     │
-    ├─ start_session ─> session_preparing ─> session_started
-    │                                      └> session_failed
+    ├─ voice_input_control(lease_sync) [recommended for audio]
+    │
+    ├─ start_session ─> lease authorized ─> session_preparing ─> session_started
+    │                         │                                  └> session_failed
+    │                         └> VOICE_INPUT_LEASE_REQUIRED
     │
     ├─ stream_data / avatar_interaction / control events
     │
@@ -58,7 +61,25 @@ socket open
 
 Accepted `input_type` values are `audio`, `screen`, `camera`, `text`, `avatar_drop_image`, and `user_image`. `text` and the two one-shot image types start the text/offline mode; `audio`, `screen`, and `camera` select the realtime/audio mode. `new_session` is a provider-session hint, not the WebSocket connection UUID.
 
-Session startup runs asynchronously. Wait for the matching `session_started.input_mode` before streaming microphone samples. `session_preparing` is progress only, and `session_failed` means the requested mode did not start. A `status` event often precedes a failure with the machine-readable cause.
+For a new audio client, first send a complete `voice_input_control` snapshot
+with `event: "lease_sync"`. Its `lease_generation` must increase monotonically
+within the current WebSocket and restarts after reconnecting. Invalid or stale
+control messages produce `VOICE_INPUT_CONTROL_REJECTED` and permanently disable
+legacy fallback for that connection.
+
+For compatibility, a connection that has sent no control message can acquire a
+generation-0 Core lease immediately before its first ordinary audio session
+starts. This does not run on the game route and cannot override an explicit
+owner, hard mute, focus suppression, connection replacement, or newer lease
+generation. If authorization fails, the server sends
+`VOICE_INPUT_LEASE_REQUIRED` and does not start the Provider session.
+
+Session startup runs asynchronously. Wait for the matching
+`session_started.input_mode` before streaming microphone samples.
+`session_preparing` is progress only, and `session_failed` means the requested
+mode did not start. A `status` event often precedes a failure with the
+machine-readable cause. `session_started` reports Provider readiness only; it
+does not bypass MicLease checks.
 
 When a game route is active, text/image inputs may be acknowledged or routed to the game controller, and an audio session can be used as the game's realtime STT provider. That behavior is part of the first-party game integration.
 
@@ -103,7 +124,11 @@ Status is a nested JSON envelope for historical frontend compatibility:
 }
 ```
 
-Parse `message` once more as JSON. Known examples include `INVALID_INPUT_TYPE`, `UNKNOWN_ACTION`, `SERVER_ERROR`, provider/auth/quota codes, and `CHARACTER_SWITCHING_TERMINAL`. The set can grow; clients should provide a generic fallback for unknown codes.
+Parse `message` once more as JSON. Known examples include
+`INVALID_INPUT_TYPE`, `UNKNOWN_ACTION`, `SERVER_ERROR`,
+`VOICE_INPUT_CONTROL_REJECTED`, `VOICE_INPUT_LEASE_REQUIRED`,
+provider/auth/quota codes, and `CHARACTER_SWITCHING_TERMINAL`. The set can grow;
+clients should provide a generic fallback for unknown codes.
 
 Unknown actions do not close the socket: they produce `UNKNOWN_ACTION`. In contrast, invalid JSON, superseded connections, character deletion/rename, or transport disconnect lead to cleanup.
 

@@ -22,9 +22,13 @@ from main_logic.asr_client.lifecycle import VoiceInputLifecycleController
 from main_logic.asr_client.provider_policy import resolve_provider_policy
 from main_logic.voice_turn.audio_input import ProcessedVoiceFrame
 from main_logic.voice_turn.contracts import (
+    AsrFailureEvent,
+    AsrLifecycleNotification,
+    AsrStatusEvent,
     AsrSubmitResult,
     AsrSubmitStatus,
     SpeechActivityEvent,
+    VoicePartialEvent,
     VoiceTranscriptEvent,
 )
 from main_logic.voice_turn.contracts import EvaluationStatus, TurnDecision
@@ -1520,6 +1524,7 @@ async def test_new_websocket_connection_resets_mic_lease_generation_once() -> No
 
     assert runtime._begin_voice_input_connection("socket-a") is True
     assert runtime._voice_lease_generation == -1
+    assert runtime._voice_lease_control_seen is False
     assert runtime._voice_input_accepts_pcm() is False
     assert (
         await runtime._handle_voice_input_control(
@@ -1531,6 +1536,7 @@ async def test_new_websocket_connection_resets_mic_lease_generation_once() -> No
         )
         is True
     )
+    assert runtime._voice_lease_control_seen is True
     assert runtime._voice_input_accepts_pcm() is False
 
     assert runtime._begin_voice_input_connection("socket-a") is False
@@ -1546,6 +1552,7 @@ async def test_new_websocket_connection_resets_mic_lease_generation_once() -> No
     )
 
     assert runtime._begin_voice_input_connection("socket-b") is True
+    assert runtime._voice_lease_control_seen is False
     assert runtime._voice_input_accepts_pcm() is False
     assert (
         await runtime._handle_voice_input_control(
@@ -1558,6 +1565,145 @@ async def test_new_websocket_connection_resets_mic_lease_generation_once() -> No
         is True
     )
     assert runtime._voice_input_accepts_pcm() is True
+
+
+async def test_legacy_audio_session_authorization_is_one_shot() -> None:
+    runtime = _Runtime()
+    runtime._asr_runtime.abort = AsyncMock()
+
+    assert runtime._begin_voice_input_connection("legacy-socket") is True
+    assert (
+        await runtime._ensure_voice_input_session_authorized("legacy-socket")
+        is True
+    )
+    assert runtime._voice_lease_generation == 0
+    assert runtime._voice_lease_synchronized is True
+    assert runtime._voice_lease_owner == "core"
+    assert runtime._voice_lease_hard_muted is False
+    assert runtime._voice_lease_focus_suppressed is False
+    assert runtime._voice_input_accepts_pcm() is True
+    runtime._asr_runtime.abort.assert_awaited_once_with("legacy_session_start")
+
+    runtime._asr_runtime.abort.reset_mock()
+    assert (
+        await runtime._ensure_voice_input_session_authorized("legacy-socket")
+        is True
+    )
+    assert runtime._voice_lease_generation == 0
+    runtime._asr_runtime.abort.assert_not_awaited()
+
+
+async def test_explicit_owner_none_cannot_be_overridden_by_legacy_authorization() -> None:
+    runtime = _Runtime()
+    runtime._asr_runtime.abort = AsyncMock()
+
+    assert runtime._begin_voice_input_connection("explicit-socket") is True
+    assert (
+        await runtime._handle_voice_input_control(
+            "lease_sync",
+            1,
+            owner="none",
+            hard_muted=False,
+            focus_suppressed=False,
+        )
+        is True
+    )
+    runtime._asr_runtime.abort.reset_mock()
+
+    assert (
+        await runtime._ensure_voice_input_session_authorized("explicit-socket")
+        is True
+    )
+    assert runtime._voice_lease_generation == 1
+    assert runtime._voice_lease_owner == "none"
+    assert runtime._voice_input_accepts_pcm() is False
+    runtime._asr_runtime.abort.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("event", "generation"),
+    [
+        ("invalid-control", 0),
+        ("lease_sync", -1),
+    ],
+)
+async def test_rejected_explicit_control_permanently_disables_legacy_fallback(
+    event: str,
+    generation: int,
+) -> None:
+    runtime = _Runtime()
+    runtime._asr_runtime.abort = AsyncMock()
+
+    assert runtime._begin_voice_input_connection("explicit-socket") is True
+    assert (
+        await runtime._handle_voice_input_control(
+            event,
+            generation,
+            owner="core",
+            hard_muted=False,
+            focus_suppressed=False,
+        )
+        is False
+    )
+    assert runtime._voice_lease_control_seen is True
+    assert (
+        await runtime._ensure_voice_input_session_authorized("explicit-socket")
+        is False
+    )
+    await runtime._enqueue_audio_stream_data(
+        {
+            "input_type": "audio",
+            "sample_rate_hz": 16_000,
+            "data": [1] * 160,
+        }
+    )
+
+    assert runtime._voice_lease_synchronized is False
+    assert runtime._voice_lease_owner == "none"
+    assert runtime._voice_input_accepts_pcm() is False
+    assert runtime._audio_stream_queue.empty()
+    runtime._asr_runtime.abort.assert_not_awaited()
+
+
+async def test_legacy_authorization_loses_race_to_new_connection_identity() -> None:
+    runtime = _Runtime()
+    abort_started = asyncio.Event()
+    release_abort = asyncio.Event()
+
+    async def _block_old_abort(_reason: str) -> None:
+        abort_started.set()
+        await release_abort.wait()
+
+    old_abort = AsyncMock(side_effect=_block_old_abort)
+    runtime._asr_runtime.abort = old_abort
+    assert runtime._begin_voice_input_connection("socket-a") is True
+
+    authorize_task = asyncio.create_task(
+        runtime._ensure_voice_input_session_authorized("socket-a")
+    )
+    await asyncio.wait_for(abort_started.wait(), 1)
+
+    assert runtime._begin_voice_input_connection("socket-b") is True
+    runtime._asr_runtime.abort = AsyncMock()
+    assert (
+        await runtime._handle_voice_input_control(
+            "lease_sync",
+            1,
+            owner="none",
+            hard_muted=False,
+            focus_suppressed=False,
+        )
+        is True
+    )
+    release_abort.set()
+
+    assert await authorize_task is False
+    assert runtime._voice_lease_connection_id == "socket-b"
+    assert runtime._voice_lease_generation == 1
+    assert runtime._voice_lease_control_seen is True
+    assert runtime._voice_lease_owner == "none"
+    assert runtime._voice_input_accepts_pcm() is False
+    old_abort.assert_awaited_once_with("legacy_session_start")
 
 
 async def test_game_owner_and_hard_mute_remain_simultaneously_authoritative() -> None:
@@ -2207,7 +2353,10 @@ async def test_soniox_connect_retries_exhausted_blocks_without_provider_fallback
     ]
     assert statuses[-1] == {
         "code": "ASR_INDEPENDENT_PROVIDER_UNAVAILABLE",
-        "details": {"provider": "soniox"},
+        "details": {
+            "provider": "soniox",
+            "session_epoch": runtime._asr_session_epoch,
+        },
     }
     assert "private provider detail" not in str(runtime.send_status.await_args_list)
 
@@ -2412,6 +2561,7 @@ async def test_partial_preview_is_display_only_and_epoch_guarded() -> None:
     websocket.send_json = AsyncMock()
     runtime.websocket = websocket
     runtime.current_speech_id = "speech-current"
+    runtime._set_microphone_route("independent")
     epoch = runtime._asr_session_epoch
 
     await runtime._send_independent_asr_preview(" draft ", epoch)
@@ -2638,7 +2788,11 @@ class _HotSwapRuntimeStub:
         self.active_provider = (
             "provider-b" if self.start_status is AsrStartStatus.READY else None
         )
-        return AsrStartResult(self.start_status, provider="provider-b")
+        return AsrStartResult(
+            self.start_status,
+            provider="provider-b",
+            session_epoch=self.session_epoch,
+        )
 
     async def submit(self, frame, *, ingress_token) -> AsrSubmitResult:
         self.submissions.append((self.active_provider, frame.pcm16, ingress_token))
@@ -2758,7 +2912,7 @@ async def test_current_audio_pipeline_failure_blocks_once_without_pcm() -> None:
     assert statuses == [
         {
             "code": "ASR_AUDIO_PREPROCESSING_FAILED",
-            "details": {"provider": "glm"},
+            "details": {"provider": "glm", "session_epoch": 0},
         }
     ]
 
@@ -3450,4 +3604,304 @@ async def test_status_delivery_failure_never_breaks_audio_runtime() -> None:
     runtime = _Runtime()
     runtime.send_status.side_effect = RuntimeError("socket closed")
 
-    await runtime._send_asr_status("ASR_INDEPENDENT_READY", "glm")
+    await runtime._send_asr_status(
+        "ASR_INDEPENDENT_READY",
+        "glm",
+        session_epoch=runtime._asr_session_epoch,
+    )
+
+
+async def test_old_core_close_cannot_clear_new_pipeline_or_provider() -> None:
+    runtime = _Runtime()
+    runtime_close_entered = asyncio.Event()
+    release_runtime_close = asyncio.Event()
+
+    async def block_runtime_close() -> None:
+        runtime_close_entered.set()
+        await release_runtime_close.wait()
+
+    runtime._asr_runtime.close = AsyncMock(side_effect=block_runtime_close)
+    old_pipeline = runtime._voice_input_audio_pipeline
+    old_pipeline.close = AsyncMock()
+    runtime._independent_asr_provider = "old-provider"
+    runtime._independent_asr_route_key = "old-core"
+    runtime._set_microphone_route("independent")
+
+    closing = asyncio.create_task(
+        runtime._close_independent_asr(next_route_mode="blocked")
+    )
+    await asyncio.wait_for(runtime_close_entered.wait(), 1)
+    new_pipeline = runtime._voice_input_audio_pipeline
+    runtime._begin_asr_route_operation()
+    runtime._independent_asr_provider = "new-provider"
+    runtime._independent_asr_route_key = "new-core"
+    runtime._set_microphone_route("independent")
+    release_runtime_close.set()
+    await asyncio.wait_for(closing, 1)
+
+    old_pipeline.close.assert_awaited_once_with()
+    assert runtime._voice_input_audio_pipeline is new_pipeline
+    assert runtime._independent_asr_provider == "new-provider"
+    assert runtime._independent_asr_route_key == "new-core"
+    assert runtime._asr_route_mode == "independent"
+
+
+async def test_stale_runtime_ready_result_cannot_replace_new_route(
+    monkeypatch,
+) -> None:
+    start_entered = asyncio.Event()
+    release_start = asyncio.Event()
+
+    class BlockingBridge:
+        def __init__(self) -> None:
+            self.session_epoch = 0
+            self.audio_generation = 0
+
+        def capture_ingress_token(
+            self,
+            *,
+            connection_id,
+            lease_generation,
+            route_generation,
+        ):
+            from main_logic.voice_turn.contracts import VoiceIngressToken
+
+            return VoiceIngressToken(
+                self.session_epoch,
+                connection_id,
+                lease_generation,
+                route_generation,
+                self.audio_generation,
+            )
+
+        async def close(self) -> None:
+            self.session_epoch += 1
+            self.audio_generation += 1
+
+        async def start(self, **_kwargs) -> AsrStartResult:
+            source_epoch = self.session_epoch
+            start_entered.set()
+            await release_start.wait()
+            return AsrStartResult(
+                AsrStartStatus.READY,
+                provider="old-provider",
+                session_epoch=source_epoch,
+            )
+
+    runtime = _Runtime()
+    bridge = BlockingBridge()
+    object.__setattr__(runtime, "_asr_runtime", bridge)
+    runtime.core_api_type = "old-core"
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+
+    starting = asyncio.create_task(
+        runtime._start_independent_asr_if_enabled("audio")
+    )
+    await asyncio.wait_for(start_entered.wait(), 1)
+    runtime._begin_asr_route_operation()
+    bridge.session_epoch += 1
+    runtime.core_api_type = "new-core"
+    runtime._independent_asr_provider = "new-provider"
+    runtime._independent_asr_route_key = "new-core"
+    runtime._set_microphone_route("independent")
+    release_start.set()
+    await asyncio.wait_for(starting, 1)
+
+    assert runtime._independent_asr_provider == "new-provider"
+    assert runtime._independent_asr_route_key == "new-core"
+    assert runtime._asr_route_mode == "independent"
+
+
+async def test_old_native_send_failure_cannot_close_new_session() -> None:
+    runtime = _Runtime()
+    runtime._set_microphone_route("native")
+    runtime.session_closed_by_server = False
+    send_entered = asyncio.Event()
+    release_send = asyncio.Event()
+
+    async def fail_old_send(_pcm16) -> None:
+        send_entered.set()
+        await release_send.wait()
+        raise RuntimeError("connection closed")
+
+    old_session = type("OldOmni", (), {})()
+    old_session.stream_audio = AsyncMock(side_effect=fail_old_send)
+    runtime.session = old_session
+    old_token = runtime._capture_native_ingress_token()
+    old_send = asyncio.create_task(
+        runtime._route_microphone_audio(
+            b"\x01\x00",
+            sample_rate_hz=16_000,
+            ingress_token=old_token,
+        )
+    )
+    await asyncio.wait_for(send_entered.wait(), 1)
+
+    new_session = type("NewOmni", (), {})()
+    new_session.stream_audio = AsyncMock()
+    runtime.session = new_session
+    release_send.set()
+    await asyncio.wait_for(old_send, 1)
+
+    assert runtime.session_closed_by_server is False
+    assert runtime._omni_mic_audio_bytes == 0
+    await runtime._route_microphone_audio(
+        b"\x02\x00",
+        sample_rate_hz=16_000,
+        ingress_token=runtime._capture_native_ingress_token(),
+    )
+    new_session.stream_audio.assert_awaited_once_with(b"\x02\x00")
+    assert runtime._omni_mic_audio_bytes == 2
+
+
+async def test_current_native_send_failure_still_closes_route_once() -> None:
+    runtime = _Runtime()
+    runtime._set_microphone_route("native")
+    runtime.session_closed_by_server = False
+    runtime.session.stream_audio = AsyncMock(
+        side_effect=RuntimeError("connection closed")
+    )
+
+    await runtime._route_microphone_audio(
+        b"\x01\x00",
+        sample_rate_hz=16_000,
+        ingress_token=runtime._capture_native_ingress_token(),
+    )
+
+    runtime.session.stream_audio.assert_awaited_once_with(b"\x01\x00")
+    assert runtime.session_closed_by_server is True
+    assert runtime._omni_mic_audio_bytes == 0
+
+
+async def test_partial_preview_requires_current_core_lease() -> None:
+    runtime = _Runtime()
+    websocket = type("WebSocket", (), {})()
+    websocket.send_json = AsyncMock()
+    runtime.websocket = websocket
+    runtime._set_microphone_route("independent")
+    epoch = runtime._asr_session_epoch
+
+    runtime._voice_lease_owner = "game"
+    await runtime._send_core_asr_preview(
+        VoicePartialEvent(text="game", session_epoch=epoch)
+    )
+    runtime._voice_lease_owner = "core"
+    runtime._voice_lease_hard_muted = True
+    await runtime._send_core_asr_preview(
+        VoicePartialEvent(text="muted", session_epoch=epoch)
+    )
+    runtime._voice_lease_hard_muted = False
+    runtime._voice_lease_focus_suppressed = True
+    await runtime._send_core_asr_preview(
+        VoicePartialEvent(text="focused", session_epoch=epoch)
+    )
+    runtime._voice_lease_focus_suppressed = False
+    await runtime._send_core_asr_preview(
+        VoicePartialEvent(text="stale", session_epoch=epoch + 1)
+    )
+    await runtime._send_core_asr_preview(
+        VoicePartialEvent(text="current", session_epoch=epoch)
+    )
+
+    websocket.send_json.assert_awaited_once_with(
+        {
+            "type": "user_transcript_preview",
+            "text": "current",
+            "turn_id": f"asr-preview-{epoch}",
+        }
+    )
+
+
+async def test_old_notifications_cannot_override_new_generation() -> None:
+    runtime = _Runtime()
+    runtime._set_microphone_route("independent")
+    first_send_entered = asyncio.Event()
+    release_first_send = asyncio.Event()
+    payloads = []
+
+    async def ordered_send_status(payload: str) -> None:
+        payloads.append(json.loads(payload))
+        if len(payloads) == 1:
+            first_send_entered.set()
+            await release_first_send.wait()
+
+    runtime.send_status = AsyncMock(side_effect=ordered_send_status)
+    old_epoch = runtime._asr_session_epoch
+    old_event = AsrLifecycleNotification(
+        state="local_listen",
+        provider="old-provider",
+        session_epoch=old_epoch,
+    )
+    old_delivery = asyncio.create_task(runtime._send_core_asr_lifecycle(old_event))
+    await asyncio.wait_for(first_send_entered.wait(), 1)
+
+    runtime._asr_session_epoch += 1
+    new_epoch = runtime._asr_session_epoch
+    new_event = AsrLifecycleNotification(
+        state="blocked",
+        provider="new-provider",
+        session_epoch=new_epoch,
+    )
+    new_delivery = asyncio.create_task(runtime._send_core_asr_lifecycle(new_event))
+    release_first_send.set()
+    await asyncio.wait_for(
+        asyncio.gather(old_delivery, new_delivery),
+        1,
+    )
+    await runtime._send_core_asr_lifecycle(old_event)
+    await runtime._send_core_asr_status(
+        AsrStatusEvent(
+            code="ASR_OLD_READY",
+            provider="old-provider",
+            session_epoch=old_epoch,
+        )
+    )
+    await runtime._send_core_asr_status(
+        AsrStatusEvent(
+            code="ASR_NEW_READY",
+            provider="new-provider",
+            session_epoch=new_epoch,
+        )
+    )
+
+    assert [
+        payload["details"]["state"]
+        for payload in payloads
+        if payload["code"] == "ASR_LIFECYCLE_STATE"
+    ] == ["local_listen", "blocked"]
+    assert payloads[-1] == {
+        "code": "ASR_NEW_READY",
+        "details": {
+            "provider": "new-provider",
+            "session_epoch": new_epoch,
+        },
+    }
+    assert payloads[1]["details"]["session_epoch"] == new_epoch
+
+
+async def test_failure_event_only_blocks_current_generation() -> None:
+    runtime = _Runtime()
+    runtime._set_microphone_route("independent")
+    current_epoch = runtime._asr_session_epoch
+
+    await runtime._handle_core_asr_failure(
+        AsrFailureEvent(
+            code="ASR_INDEPENDENT_FAILED",
+            provider="old-provider",
+            session_epoch=current_epoch - 1,
+        )
+    )
+    assert runtime._asr_route_mode == "independent"
+
+    await runtime._handle_core_asr_failure(
+        AsrFailureEvent(
+            code="ASR_INDEPENDENT_FAILED",
+            provider="current-provider",
+            session_epoch=current_epoch,
+        )
+    )
+    assert runtime._asr_route_mode == "blocked"

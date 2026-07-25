@@ -122,6 +122,9 @@ class AsrStatusEvent:
 
     code: str
     provider: str
+    # Default keeps narrow legacy test doubles constructible; production
+    # runtime call sites always provide the captured source epoch explicitly.
+    session_epoch: int = -1
 
 
 @dataclass(frozen=True, slots=True)
