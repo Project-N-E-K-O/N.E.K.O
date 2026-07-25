@@ -1713,8 +1713,11 @@ class ProactiveMixin:
 
         Text mode: drained before the next stream_text call and injected via
         prompt_ephemeral(), OR proactively via trigger_agent_callbacks().
-        Voice mode: also appended to pending_extra_replies for hot-swap
-        injection via prime_context().
+        Non-passive callbacks are also appended to pending_extra_replies for
+        voice-mode hot-swap fallback injection via prime_context(). Passive
+        callbacks deliberately stay only in pending_agent_callbacks: mirroring
+        them into pending_extra_replies would let a context-only ``read`` cue
+        trigger session preparation and an unsolicited response.
 
         Voice queue element shape is structured (not flat text) so the
         hot-swap renderer can:
@@ -1729,8 +1732,8 @@ class ProactiveMixin:
         ``summary`` doesn't shadow a real ``detail`` via the legacy
         ``summary or detail`` chain.
 
-        The two queues stay independent (text-mode drain and voice-mode
-        hot-swap fire at different lifecycle points).
+        For non-passive callbacks the two queues stay independent (text-mode
+        drain and voice-mode hot-swap fire at different lifecycle points).
         """
         try:
             from config import (
@@ -1763,17 +1766,16 @@ class ProactiveMixin:
                 # hot-swap renderer does not fabricate "我完成了任务" for what
                 # may actually be an external event push.
                 origin = "event"
-            # Skip enqueue (BOTH queues) only when there is *truly* nothing
+            is_passive = callback.get("delivery_mode") == "passive"
+            # Skip enqueue entirely only when there is *truly* nothing
             # to convey: no body text, no error context, no identifiable
             # source, and a benign completed status. Anything else
             # (failed/cancelled/blocked, an error message, or a named source)
             # carries meaning even with empty summary/detail and must survive
             # into the hot-swap output.
             #
-            # The two queues must filter consistently — otherwise text mode
-            # (which drains pending_agent_callbacks) would inject a garbage
-            # header-only block for callbacks the voice mode already
-            # discarded.
+            # Apply this before either queue is touched so text mode cannot
+            # inject a garbage header-only block that voice mode discarded.
             if not summary and not detail and not error_message and not source_name and status == "completed":
                 return
             # Stable delivery id so the voice inject success path can
@@ -1847,14 +1849,10 @@ class ProactiveMixin:
                         self.lanlan_name, dropped, new_key, new_seq,
                     )
                     self.pending_agent_callbacks = surviving
-                # Evict OLDER same-key voice mirrors by key, covering the extras-only
-                # orphan: drain_agent_callbacks_for_llm clears pending_agent_callbacks
-                # on a text user turn but keeps the paired pending_extra_replies for
-                # the hot-swap path, so a superseded cue can survive as an
-                # extras-only entry whose callback half is gone — id-matching misses
-                # it. The isinstance guard also skips legacy plain-string extras that
-                # _render_pending_extra_replies_by_origin tolerates (calling .get()
-                # on a str would raise into the broad except and lose the enqueue).
+                # Evict OLDER same-key voice mirrors by key, covering an
+                # extras-only orphan left by a non-passive callback drained on
+                # a text user turn. The isinstance guard also skips legacy
+                # plain-string extras that the renderer tolerates.
                 if self.pending_extra_replies:
                     kept_extras: list = []
                     for _extra in self.pending_extra_replies:
@@ -1880,28 +1878,29 @@ class ProactiveMixin:
                     if len(kept_extras) != len(self.pending_extra_replies):
                         self.pending_extra_replies = kept_extras
                 if incoming_superseded:
-                    # A newer same-key cue already won on both queues; don't enqueue
-                    # this stale one (ack it False so any waiter unblocks).
+                    # A newer same-key cue already won in the live queues; don't
+                    # enqueue this stale one (ack it False so any waiter unblocks).
                     resolve_callback_delivery_ack(callback, False)
                     callback[DELIVERY_RETRACTED_KEY] = True
                     return
             self.pending_agent_callbacks.append(callback)
-            self.pending_extra_replies.append({
-                "_callback_delivery_id": delivery_id,
-                # Stamp the coalesce_key + submission seq so a later same-key cue
-                # can evict this voice mirror even after its callback half is
-                # drained, and only when the incoming cue is actually newer.
-                "coalesce_key": new_key,
-                "_coalesce_submit_seq": callback.get("_coalesce_submit_seq"),
-                "origin": origin,
-                "summary": summary,
-                "detail": detail,
-                "status": status,
-                "context_source": context_source,
-                "source_kind": callback.get("source_kind") or "unknown",
-                "source_name": source_name,
-                "error_message": error_message,
-            })
+            if not is_passive:
+                self.pending_extra_replies.append({
+                    "_callback_delivery_id": delivery_id,
+                    # Stamp the coalesce_key + submission seq so a later same-key cue
+                    # can evict this voice mirror even after its callback half is
+                    # drained, and only when the incoming cue is actually newer.
+                    "coalesce_key": new_key,
+                    "_coalesce_submit_seq": callback.get("_coalesce_submit_seq"),
+                    "origin": origin,
+                    "summary": summary,
+                    "detail": detail,
+                    "status": status,
+                    "context_source": context_source,
+                    "source_kind": callback.get("source_kind") or "unknown",
+                    "source_name": source_name,
+                    "error_message": error_message,
+                })
             # Flood guard: a runaway plugin event stream must not grow either
             # queue without bound. Keep the most recent N (newest = most
             # relevant); drop-oldest.
