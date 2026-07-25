@@ -26,6 +26,15 @@ class QQSessionBootstrapService:
             return existing_session
 
         try:
+            # 会话的线路会连 base_url 一起冻进 OmniOfflineClient 并缓存整场，所以先给
+            # 仍在飞的区域探测一个收尾窗口（与 core/lifecycle、游戏会话池对偶）。已落定时
+            # 零开销；自配 API 用户不会因此发起探测。fail-open：插件不该因区域探测出错而
+            # 起不了会话。
+            try:
+                await get_config_manager().aensure_region_resolved()
+            except Exception as _geo_err:
+                self.plugin.logger.warning(f"[GeoIP] 插件会话区域落定失败，退化到当前配置继续: {_geo_err}")
+
             conversation_config = get_config_manager().get_model_api_config("conversation")
             base_url = conversation_config.get("base_url", "")
             api_key = conversation_config.get("api_key", "")
@@ -127,6 +136,15 @@ class QQSessionBootstrapService:
                 self.plugin.i18n.t("prompts.default_ai_assistant", default="你是一个友好的AI助手"),
             )
             character_card_fields = self.plugin._build_character_card_fields(current_character)
+
+            # 会话的线路会连 base_url 一起冻进 OmniOfflineClient 并缓存整场，所以先给
+            # 仍在飞的区域探测一个收尾窗口（与 core/lifecycle、游戏会话池对偶）。已落定时
+            # 零开销；自配 API 用户不会因此发起探测。fail-open：插件不该因区域探测出错而
+            # 起不了会话。
+            try:
+                await config_manager.aensure_region_resolved()
+            except Exception as _geo_err:
+                self.plugin.logger.warning(f"[GeoIP] 插件会话区域落定失败，退化到当前配置继续: {_geo_err}")
 
             conversation_config = config_manager.get_model_api_config("conversation")
             base_url = conversation_config.get("base_url", "")

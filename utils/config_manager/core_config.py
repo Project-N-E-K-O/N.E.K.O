@@ -129,6 +129,8 @@ class CoreConfigMixin:
                 host = (urlparse(value).hostname or '').lower()
                 path = urlparse(value).path or ''
             except Exception:
+                # URL 解析不了 → 不可能是我们那两个官方 host，按「不需要区域」跳过。
+                # 保守方向正确：宁可不探测，也不为一个畸形 URL 暴露用户 IP。
                 continue
             # 按 hostname 判而不是子串包含：自配用户把 URL 写成
             # https://custom.example/v1/lanlan.tech 时，子串检查会把它误当官方免费

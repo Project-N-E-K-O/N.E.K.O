@@ -866,3 +866,47 @@ def test_eligibility_recheck_survives_the_overseas_rewrite():
     """
     assert ConfigManager._config_needs_region(
         {'CORE_URL': 'wss://www.lanlan.app/core'}) is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('rel_path, func_name', [
+    ('plugin/plugins/qq_auto_reply/session_bootstrap_service.py', None),
+    ('plugin/plugins/bilibili_dm/__init__.py', None),
+])
+def test_plugin_session_paths_settle_the_region(rel_path, func_name):
+    """Plugin sessions cache an OmniOfflineClient too — same base-URL freeze.
+
+    Both plugins keep the client in a session-keyed dict, so a route picked before
+    the verdict lands sticks for the life of that session. Structural, and paired
+    with the conversation-config read it guards: if someone adds another
+    ``get_model_api_config("conversation")`` site, this fails until it settles too.
+    """
+    import ast
+    import pathlib
+
+    source = pathlib.Path(__file__).resolve().parents[2] / rel_path
+    tree = ast.parse(source.read_text(encoding='utf-8'))
+
+    def _conversation_reads(node):
+        n = 0
+        for call in ast.walk(node):
+            if not isinstance(call, ast.Call):
+                continue
+            if (getattr(call.func, 'attr', None) == 'get_model_api_config'
+                    and call.args
+                    and isinstance(call.args[0], ast.Constant)
+                    and call.args[0].value == 'conversation'):
+                n += 1
+        return n
+
+    total_reads = _conversation_reads(tree)
+    assert total_reads, f'{rel_path} 里没找到 conversation 配置读取，断言已失效'
+
+    settles = sum(
+        1 for call in ast.walk(tree)
+        if isinstance(call, ast.Call)
+        and getattr(call.func, 'attr', None) == 'aensure_region_resolved'
+    )
+    assert settles >= total_reads, (
+        f'{rel_path}: {total_reads} 处会冻结会话线路的配置读取，只有 {settles} 处先落定区域'
+    )

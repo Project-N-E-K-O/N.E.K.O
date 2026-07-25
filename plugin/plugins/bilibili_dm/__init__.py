@@ -969,6 +969,15 @@ class BiliDMPlugin(NekoPluginBase):
                         character_card_fields[key] = value
 
             # 获取对话模型配置
+            # 会话的线路会连 base_url 一起冻进 OmniOfflineClient 并缓存整场，所以先给
+            # 仍在飞的区域探测一个收尾窗口（与 core/lifecycle、游戏会话池对偶）。已落定时
+            # 零开销；自配 API 用户不会因此发起探测。fail-open：插件不该因区域探测出错而
+            # 起不了会话。
+            try:
+                await config_manager.aensure_region_resolved()
+            except Exception:
+                logger.warning("[GeoIP] 插件会话区域落定失败，退化到当前配置继续", exc_info=True)
+
             conversation_config = config_manager.get_model_api_config("conversation")
             base_url = conversation_config.get("base_url", "")
             api_key = conversation_config.get("api_key", "")
