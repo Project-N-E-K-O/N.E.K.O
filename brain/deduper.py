@@ -32,16 +32,38 @@ class TaskDeduper:
     """
 
     def __init__(self):
-        config_manager = get_config_manager()
-        api_config = config_manager.get_model_api_config('summary')
+        self._llm = None
+        self._llm_route = None
+        # 构造时先建一次，保持原有「启动即就绪」的行为；真正的权威判定在 _get_llm。
+        self._get_llm()
+
+    def _get_llm(self):
+        """Return the summary LLM, rebuilding it if its route changed.
+
+        ``summary`` is a region-dependent route, and the region verdict is not
+        final at construction time: a Steam answer is deliberately treated as a
+        usable-but-not-latched vote, so the authoritative IP probe can still
+        overturn it seconds later. Freezing the client in ``__init__`` would pin
+        every later dedup call to whichever endpoint happened to be selected in
+        that instant, for the lifetime of the process. Comparing the resolved
+        route on each use costs a string compare and also makes an ordinary
+        config change take effect without a restart.
+        """
+        api_config = get_config_manager().get_model_api_config('summary')
+        route = (api_config.get('base_url'), api_config.get('model'),
+                 api_config.get('api_key'), api_config.get('provider_type'))
+        if self._llm is not None and route == self._llm_route:
+            return self._llm
         from config import LLM_OUTPUT_GUARD_MAX_TOKENS
-        self.llm = create_chat_llm(
+        self._llm = create_chat_llm(
             api_config['model'], api_config['base_url'],
             api_config['api_key'], temperature=0, max_retries=0,
             timeout=30,
             max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; tiny JSON normally, but a thinking model's reasoning is covered too
             provider_type=api_config.get('provider_type'),
         )
+        self._llm_route = route
+        return self._llm
 
     def _build_prompt(self, new_task: str, candidates: List[Tuple[str, str]]) -> str:
         # Input budget: cap each component so the dedup prompt can't blow up on a
@@ -91,7 +113,7 @@ class TaskDeduper:
         for attempt in range(max_retries):
             try:
                 set_call_type("dedup")
-                resp = await self.llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # each prompt component truncated to TASK_SUMMARY/DETAIL_MAX_TOKENS in _build_prompt (truncation lives in the builder, not here).
+                resp = await self._get_llm().ainvoke([  # noqa: LLM_INPUT_BUDGET  # each prompt component truncated to TASK_SUMMARY/DETAIL_MAX_TOKENS in _build_prompt (truncation lives in the builder, not here).
                     {"role": "system", "content": "You are a careful deduplication judge."},
                     {"role": "user", "content": prompt},
                 ])

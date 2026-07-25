@@ -1659,14 +1659,30 @@ def test_paths_that_pick_a_voice_and_build_a_tts_url_settle_first():
             for node in ast.walk(tree):
                 if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     continue
-                calls = {getattr(c.func, 'attr', None) or getattr(c.func, 'id', None)
-                         for c in ast.walk(node) if isinstance(c, ast.Call)}
-                if not ({'get_voices_for_current_api', '_adjust_free_tts_url'} <= calls):
+                # 留行号，别压成集合：只断言「调用存在」的话，落定被挪到两个读取
+                # **之后**测试照样绿——那正是这道护栏要防的东西。
+                lines = {}
+                for c in ast.walk(node):
+                    if not isinstance(c, ast.Call):
+                        continue
+                    name = getattr(c.func, 'attr', None) or getattr(c.func, 'id', None)
+                    if name:
+                        lines.setdefault(name, []).append(c.lineno)
+                if not ({'get_voices_for_current_api', '_adjust_free_tts_url'} <= lines.keys()):
                     continue
                 rel = source.relative_to(root).as_posix()
                 checked.append(f'{rel}::{node.name}')
-                if 'aensure_region_resolved' not in calls:
-                    missing.append(f'{rel}::{node.name} (line {node.lineno})')
+                settles = lines.get('aensure_region_resolved')
+                if not settles:
+                    missing.append(f'{rel}::{node.name} (line {node.lineno}) 未落定')
+                    continue
+                first_read = min(min(lines['get_voices_for_current_api']),
+                                 min(lines['_adjust_free_tts_url']))
+                if min(settles) >= first_read:
+                    missing.append(
+                        f'{rel}::{node.name} 落定在 line {min(settles)}，'
+                        f'晚于第一次区域敏感读取 line {first_read}'
+                    )
 
     assert checked, '未找到任何「挑音色 + 拼 TTS 端点」的路径，断言失效'
     assert not missing, f'这些路径在一次操作里两次读区域却未先落定: {missing}'
@@ -1702,3 +1718,44 @@ def test_agent_deduper_is_built_after_the_region_settles():
         break
     else:
         pytest.fail('未找到 agent_server startup，断言失效')
+
+
+@pytest.mark.unit
+def test_deduper_rebuilds_its_client_when_the_route_changes(monkeypatch):
+    """The ``summary`` route can change after construction — the client must follow.
+
+    A Steam answer is deliberately usable-but-not-latched, so the authoritative
+    IP probe can overturn it seconds after ``agent_server`` starts. Freezing the
+    client in ``__init__`` pinned every later dedup call to whichever endpoint
+    happened to win that instant, for the whole process lifetime. Waiting longer
+    at startup cannot fix that — only rechecking the route on use can.
+    """
+    from brain import deduper as deduper_mod
+
+    cfg = {'model': 'm', 'base_url': 'https://www.lanlan.tech/text/v1', 'api_key': 'k'}
+
+    class _CM:
+        def get_model_api_config(self, kind):
+            assert kind == 'summary'
+            return dict(cfg)
+
+    monkeypatch.setattr(deduper_mod, 'get_config_manager', lambda *a, **kw: _CM())
+
+    built = []
+
+    def _fake_create(model, base_url, api_key, **kwargs):
+        built.append(base_url)
+        return object()
+
+    monkeypatch.setattr(deduper_mod, 'create_chat_llm', _fake_create)
+
+    d = deduper_mod.TaskDeduper()
+    assert built == ['https://www.lanlan.tech/text/v1']
+
+    d._get_llm()
+    assert len(built) == 1, '路由没变不该重建'
+
+    cfg['base_url'] = 'https://www.lanlan.app/text/v1'
+    d._get_llm()
+    assert built[-1] == 'https://www.lanlan.app/text/v1', \
+        'IP 结论推翻 Steam 兜底后，去重器必须跟着换端点'
