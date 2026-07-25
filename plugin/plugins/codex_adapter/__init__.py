@@ -74,8 +74,11 @@ def _compute_retry_wait_seconds(retry_not_before: str) -> int:
         target_dt = datetime.fromisoformat(retry_not_before)
         # 处理时区感知和 naive datetime 的混合情况
         if target_dt.tzinfo is not None:
-            # target 是 timezone-aware，使用 timezone-aware 的 now
-            now_dt = datetime.now(target_dt.tzinfo)
+            # target 是 timezone-aware，使用 UTC 的 now
+            from datetime import timezone
+            now_dt = datetime.now(timezone.utc)
+            # 确保 target_dt 也是 UTC
+            target_dt = target_dt.astimezone(timezone.utc)
         else:
             # target 是 naive datetime，使用 naive 的 now
             now_dt = datetime.now()
