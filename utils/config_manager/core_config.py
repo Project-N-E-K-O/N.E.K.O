@@ -63,6 +63,7 @@ import json
 import math
 import sys
 import threading
+import time
 from copy import deepcopy
 from urllib.parse import urlparse, urlunparse
 
@@ -280,12 +281,18 @@ class CoreConfigMixin:
         # 只在探测「真的在发请求」时才值得等。循环在退避 sleep 里同样是 alive，
         # 但那段时间不可能有结论到达——照等就是每个会话白付一次 join 超时，
         # 而 GeoIP 被墙时退避可长达 10 分钟，等于每场会话都固定慢 1.5 秒。
-        if not ConfigManager._ip_probe_in_flight.is_set():
-            return ConfigManager._ip_check_cache is not None
-        thread = ConfigManager._ip_probe_thread
-        if thread is not None:
-            thread.join(timeout)
-        return ConfigManager._ip_check_cache is not None
+        # 等的是「本次请求」，不是线程。join(thread) 会一直等到循环整个结束，可循环
+        # 在一次失败后就进入 30~600 秒退避且仍然 alive——那段时间不可能有结论到达，
+        # 却要白白等满 timeout。所以盯 in_flight：它一落下就说明本次尝试已收工。
+        deadline = time.monotonic() + max(timeout, 0.0)
+        while True:
+            if ConfigManager._ip_check_cache is not None:
+                return True
+            if not ConfigManager._ip_probe_in_flight.is_set():
+                return False    # 已进入退避（或探测没在跑）：再等也等不到
+            if time.monotonic() >= deadline:
+                return ConfigManager._ip_check_cache is not None
+            time.sleep(0.02)
 
     async def aensure_region_resolved(self, timeout: float = 1.5) -> bool:
         """Last chance for an in-flight probe before a session freezes its route.

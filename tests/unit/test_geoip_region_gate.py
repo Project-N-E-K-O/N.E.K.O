@@ -32,9 +32,12 @@ import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 
+# 只用一种导入形式：既要 monkeypatch 包属性（is_livestream_active），又要拿到
+# ConfigManager / core_config，混用 import 与 from-import 会被静态检查判为风格问题。
 import utils.config_manager as config_manager_pkg  # noqa: E402
-from utils.config_manager import ConfigManager  # noqa: E402
-from utils.config_manager import core_config as core_config_mod  # noqa: E402
+
+ConfigManager = config_manager_pkg.ConfigManager
+core_config_mod = config_manager_pkg.core_config
 
 
 class _Probe(core_config_mod.CoreConfigMixin):
@@ -917,3 +920,43 @@ def test_plugin_session_paths_settle_the_region(rel_path):
             )
 
     assert checked, f'{rel_path} 里没找到 conversation 配置读取，本断言已失效'
+
+
+@pytest.mark.unit
+def test_waiter_stops_when_the_attempt_fails_mid_wait(monkeypatch):
+    """The wait tracks the current attempt, not the thread's lifetime.
+
+    Joining the loop thread would block for the whole timeout whenever an attempt
+    fails while someone is waiting: the loop stays alive in its 30-600s backoff,
+    during which no verdict can possibly arrive. Startup and every session would
+    pay the full timeout for nothing.
+    """
+    monkeypatch.setattr(ConfigManager, '_IP_CHECK_RETRY_BASE_S', 30.0)
+    monkeypatch.setattr(ConfigManager, '_IP_CHECK_RETRY_MAX_S', 30.0)
+
+    entered = threading.Event()
+    fail_now = threading.Event()
+
+    def _once():
+        entered.set()
+        fail_now.wait(10)          # 等测试发话再失败
+        raise OSError('down')
+
+    monkeypatch.setattr(ConfigManager, '_ip_probe_once', staticmethod(_once))
+
+    _Probe()._ensure_ip_probe_started()
+    assert entered.wait(5), '探测未进入请求阶段'
+    assert ConfigManager._ip_probe_in_flight.is_set()
+
+    # 在等待过程中让本次尝试失败：循环转入长退避但线程仍 alive
+    def _fail_soon():
+        real_time.sleep(0.15)
+        fail_now.set()
+
+    threading.Thread(target=_fail_soon, daemon=True).start()
+
+    started = real_time.monotonic()
+    assert ConfigManager.join_ip_probe(timeout=5) is False
+    waited = real_time.monotonic() - started
+    assert waited < 2.0, f'本次尝试已失败仍等了 {waited:.2f}s（应在转入退避时立刻返回）'
+    assert ConfigManager._ip_probe_thread.is_alive(), '循环应仍在退避中（并未结束）'
