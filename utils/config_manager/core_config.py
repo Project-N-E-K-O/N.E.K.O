@@ -239,11 +239,16 @@ class CoreConfigMixin:
         from utils.config_manager import ConfigManager, get_config_manager
 
         try:
-            # 这里读到的是**已改写**的快照（判海外后免费 URL 已成 lanlan.app），
-            # 所以要用 ADJUSTED 集合；get_core_config 那边用的是原始配置，默认 RAW。
+            cfg = get_config_manager().get_core_config() or {}
+            # 先看**路由选择**：这个字段不会被区域改写，所以能区分「免费线路被改写成
+            # lanlan.app」和「用户自己就把自配端点配在 lanlan.app」。只靠 URL host 判
+            # 会把后者也当成免费路由，用户切走了却还在敲 ip-api.com。
+            if str(cfg.get('CORE_API_TYPE') or cfg.get('coreApi') or '') != 'free':
+                return False
+            # 仍是免费路由：再确认确实有 URL 需要区域判定（livestream 可能已全接管）。
+            # 这里读到的是**已改写**的快照，故用 ADJUSTED 集合。
             return ConfigManager._config_needs_region(
-                get_config_manager().get_core_config(),
-                ConfigManager._REGION_HOSTS_ADJUSTED,
+                cfg, ConfigManager._REGION_HOSTS_ADJUSTED,
             )
         except Exception:
             return True    # 读不到配置时保守continue，别因为一次读失败放弃探测

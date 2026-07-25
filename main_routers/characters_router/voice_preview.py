@@ -439,6 +439,15 @@ async def get_voice_preview(
     """Get the voice preview audio."""
     try:
         _config_manager = get_config_manager()
+        # 本请求内区域判定会被读两次（先选 provider 目录，后拼 TTS URL）。判定尚未
+        # 落定时那两次可能拿到不同结果——按大陆 free 归一化的音色被发去 lanlan.app，
+        # 而 free_intl 目录与之不相交，预览直接失败。先落定，让整个请求用同一结论。
+        # 已落定时零开销；自配 API 用户不会因此发起探测。
+        try:
+            await _config_manager.aensure_region_resolved()
+        except Exception:
+            logger.debug("[GeoIP] 音色预览区域落定失败，按当前配置继续", exc_info=True)
+
         voices = _config_manager.get_voices_for_current_api()
         voice_data = voices.get(voice_id) if isinstance(voices, dict) else None
         provider = (voice_data or {}).get('provider', '')

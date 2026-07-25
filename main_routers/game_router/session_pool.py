@@ -153,20 +153,6 @@ async def _get_or_create_session(
         entry['last_activity'] = time.time()
         return entry
 
-    # 与 core/lifecycle.py 的会话准备路径对偶：下面建出来的 OmniOfflineClient 会连
-    # base_url 一起缓存进会话池、整场不再复议，所以要先给仍在飞的区域探测一个收尾
-    # 窗口。已落定时零开销；自配 API 用户不会因此发起探测（内部按免费路由设门）。
-    #
-    # 刻意 fail-open 并 warning（区别于主会话/热切换路径的异常传播）：小游戏是轻量
-    # 入口，不该因区域探测本身出错而开不了；落定失败时退化到当前配置（最坏用国内
-    # 兜底线路）仍可用，比 fail-closed 更符合游戏场景。warning 而非静默，便于诊断
-    # 「海外用户偶尔一整场走国内线路」。
-    from ..shared_state import get_config_manager as _get_cm
-    try:
-        await _get_cm().aensure_region_resolved()
-    except Exception:
-        logger.warning("[GeoIP] 游戏会话区域落定失败，退化到当前配置继续", exc_info=True)
-
     char_info = _get_character_info(lanlan_name)
     canonical_lanlan = str(char_info.get("lanlan_name") or lanlan_name or "").strip()
     canonical_key = _game_session_key(canonical_lanlan, game_type, session_id)
@@ -177,6 +163,22 @@ async def _get_or_create_session(
         entry = _game_sessions[canonical_key]
         entry['last_activity'] = time.time()
         return entry
+
+    # 只有确定要新建会话时才等区域落定。游戏事件的常规调用不传 lanlan_name，上面第
+    # 一个 key 必然 miss、要到 canonical_key 才命中，所以等待放在两次检查之间会让
+    # 每个事件都白付一次超时——而那种会话的线路早冻好了，根本用不上新结论。
+    #
+    # 刻意 fail-open 并 warning（区别于主会话/热切换路径的异常传播）：小游戏是轻量
+    # 入口，不该因区域探测本身出错而开不了；落定失败时退化到当前配置（最坏用国内
+    # 兜底线路）仍可用。warning 而非静默，便于诊断「海外用户偶尔一整场走国内线路」。
+    from ..shared_state import get_config_manager as _get_cm
+    try:
+        if await _get_cm().aensure_region_resolved():
+            # 落定可能改变线路（lanlan.tech → lanlan.app），而上面那份 char_info 是
+            # 落定之前读的。重读一次，确保建出来的 client 用的是最终线路。
+            char_info = _get_character_info(lanlan_name)
+    except Exception:
+        logger.warning("[GeoIP] 游戏会话区域落定失败，退化到当前配置继续", exc_info=True)
 
     create_lock = _get_session_create_lock(canonical_key)
     async with create_lock:

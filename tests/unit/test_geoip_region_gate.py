@@ -1195,6 +1195,16 @@ def test_loop_eligibility_reads_the_rewritten_snapshot_correctly(monkeypatch):
     monkeypatch.setattr(config_manager_pkg, 'get_config_manager', lambda *a, **kw: _CustomCM())
     assert ConfigManager._free_route_still_needs_region() is False
 
+    # 自配端点恰好也在 lanlan.app：只看 host 分不清它和「被改写的免费 URL」，
+    # 会让切走免费线路的用户继续被探测。路由选择字段不受改写影响，能区分。
+    class _CustomAppCM:
+        @staticmethod
+        def get_core_config():
+            return {'CORE_URL': 'wss://www.lanlan.app/core', 'coreApi': 'openai'}
+
+    monkeypatch.setattr(config_manager_pkg, 'get_config_manager', lambda *a, **kw: _CustomAppCM())
+    assert ConfigManager._free_route_still_needs_region() is False,         '显式配在 lanlan.app 的自配线路不应让探测继续'
+
 
 # ---------------------------------------------------------------------------
 # Voice cleanup must not act on a guessed region (it writes to characters.json)
