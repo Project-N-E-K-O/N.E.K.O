@@ -184,6 +184,8 @@ class ConfigManager(
     # 探测是否「正在发请求」。退避 sleep 期间为 False：线程仍 alive，但那段时间不会
     # 有结论到达，等待方据此跳过 join，避免每个会话白付一次超时。
     _ip_probe_in_flight = threading.Event()
+    # 与 _ip_probe_wake 配套：唤醒时若为 True 则循环退出，否则只是「立刻重试」。
+    _ip_probe_stopping = False
 
 
 # 全局配置管理器实例

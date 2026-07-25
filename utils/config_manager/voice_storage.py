@@ -936,7 +936,14 @@ class VoiceStorageMixin:
                 # 读不到任何路由选择（配置残缺）：这是要删用户数据的路径，宁可不删。
                 # 正常 get_core_config() 一定带这些字段，所以不会平白推迟清理。
                 return True
-            return ConfigManager._any_free_provider(cfg)
+            # 两个条件都要：选了免费路由，**且**确实还有 URL 依赖区域判定。
+            # 只看前者会把「livestream 已把所有免费端点派生掉」的用户永远判成未落定
+            # ——那种配置根本不起探测，_region_cache 永不落定，于是清理与默认音色
+            # 绑定被永久禁用。后者（用 ADJUSTED，认得改写后的 .app）正好排除这种。
+            return (
+                ConfigManager._any_free_provider(cfg)
+                and self._config_needs_region(cfg, ConfigManager._REGION_HOSTS_ADJUSTED)
+            )
         except Exception:
             logger.debug("[GeoIP] 区域落定状态判断失败，保守视为未落定", exc_info=True)
             return True         # 判断不了就别删——保守方向是不动用户数据

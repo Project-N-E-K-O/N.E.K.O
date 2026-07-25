@@ -246,10 +246,15 @@ class CoreConfigMixin:
                 failures += 1
                 wait = ConfigManager._ip_check_backoff_s(failures)
                 print(f"[GeoIP] HTTP IP check will retry in {wait:.0f}s", file=sys.stderr)
-                # 可中断退避：进程 shutdown / 测试清理 set 这个 event 即让循环干净退出。
-                # 生产从不 set 它，行为等同 time.sleep(wait)。
+                # 可中断退避。唤醒有两种含义，靠 _ip_probe_stopping 区分：
+                #   stopping=True  → shutdown / 测试清理，干净退出；
+                #   stopping=False → 「别等了，现在就重试」（启动预热用，见
+                #                     _kick_ip_probe），跳过剩余退避进入下一轮。
+                # 生产正常运行时两者都不发生，行为等同 time.sleep(wait)。
                 if ConfigManager._ip_probe_wake.wait(wait):
-                    return
+                    if ConfigManager._ip_probe_stopping:
+                        return
+                    ConfigManager._ip_probe_wake.clear()
         finally:
             ConfigManager._ip_probe_in_flight.clear()
 
@@ -310,7 +315,21 @@ class CoreConfigMixin:
             thread.start()
 
     @staticmethod
-    def join_ip_probe(timeout: float = 5.0) -> bool:
+    def _kick_ip_probe() -> None:
+        """Ask a backing-off probe to retry now instead of waiting out its backoff.
+
+        Startup needs this: the first attempt often fails before the network stack is
+        up, and the resulting 30s backoff is far longer than the warmup is willing to
+        wait — so without a kick the warmup would admit sessions with no verdict.
+        """
+        from utils.config_manager import ConfigManager
+
+        thread = ConfigManager._ip_probe_thread
+        if thread is not None and thread.is_alive() and not ConfigManager._ip_probe_stopping:
+            ConfigManager._ip_probe_wake.set()
+
+    @staticmethod
+    def join_ip_probe(timeout: float = 5.0, through_backoff: bool = False) -> bool:
         """Block until the in-flight GeoIP probe finishes. Returns whether a verdict landed.
 
         Only for startup and session setup, and only from a worker thread (see
@@ -334,11 +353,15 @@ class CoreConfigMixin:
         # 等的是「本次请求」，不是线程。join(thread) 会一直等到循环整个结束，可循环
         # 在一次失败后就进入 30~600 秒退避且仍然 alive——那段时间不可能有结论到达，
         # 却要白白等满 timeout。所以盯 in_flight：它一落下就说明本次尝试已收工。
+        # through_backoff 是给启动预热的：那里的目的就是「拿到结论再放开会话准入」，
+        # 而首探常常在网络栈就绪前失败并转入退避——若照会话路径那样一见退避就返回，
+        # 预热等于没做（这正是把探测起点提前到启动期清理之后暴露出来的）。
+        # 会话路径保持 False：那 1.5 秒是为了不让会话钉错线路，不值得为退避空等。
         deadline = time.monotonic() + max(timeout, 0.0)
         while True:
             if ConfigManager._ip_check_cache is not None:
                 return True
-            if not ConfigManager._ip_probe_in_flight.is_set():
+            if not through_backoff and not ConfigManager._ip_probe_in_flight.is_set():
                 return False    # 已进入退避（或探测没在跑）：再等也等不到
             if time.monotonic() >= deadline:
                 return ConfigManager._ip_check_cache is not None
@@ -394,7 +417,8 @@ class CoreConfigMixin:
         geolocation service), then waits for that probe off the event loop.
         """
         await self.aget_core_config()
-        return await asyncio.to_thread(self.join_ip_probe, timeout)
+        self._kick_ip_probe()
+        return await asyncio.to_thread(self.join_ip_probe, timeout, True)
 
     @staticmethod
     def _check_ip_non_mainland_http():

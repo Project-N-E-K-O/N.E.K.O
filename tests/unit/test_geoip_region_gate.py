@@ -86,6 +86,7 @@ def reset_geo_state(monkeypatch):
     monkeypatch.setattr(core_config_mod, 'GEOIP_FORCE_NON_MAINLAND', None)
     monkeypatch.setattr(ConfigManager, '_ip_probe_wake', threading.Event())
     monkeypatch.setattr(ConfigManager, '_ip_probe_in_flight', threading.Event())
+    monkeypatch.setattr(ConfigManager, '_ip_probe_stopping', False)
     # 默认「仍在免费路由」，否则探测循环每轮都会去读真实配置并提前收工。
     # 专测「切走免费路由」的用例自行覆盖它。
     monkeypatch.setattr(
@@ -107,6 +108,7 @@ def reset_geo_state(monkeypatch):
     if thread is not None:
         if ConfigManager._ip_check_cache is None:
             ConfigManager._ip_check_cache = False
+        ConfigManager._ip_probe_stopping = True
         ConfigManager._ip_probe_wake.set()
         thread.join(5)
         assert not thread.is_alive(), '探测线程泄漏，会污染后续用例'
@@ -1270,3 +1272,65 @@ def test_this_file_has_no_duplicate_test_names():
 ])
 def test_free_provider_detection_covers_every_slot(cfg, expected):
     assert ConfigManager._any_free_provider(cfg) is expected
+
+
+@pytest.mark.unit
+def test_livestream_derived_route_is_not_provisional_forever(monkeypatch):
+    """Livestream that derives every free endpoint needs no verdict — so never wait.
+
+    Those configs deliberately start no probe, so ``_region_cache`` stays ``None``
+    for the life of the process. Judging provisional on the provider slot alone would
+    therefore disable voice cleanup and default-voice binding permanently for them.
+    """
+    monkeypatch.setattr(ConfigManager, '_region_cache', None)
+    monkeypatch.setattr(config_manager_pkg, 'is_livestream_active', lambda: True)
+    monkeypatch.setattr(
+        config_manager_pkg, 'get_livestream_config',
+        lambda: {'server_prefix': 'https://live.example/tok'})
+
+    cfg = {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.tech/core'}
+
+    class _CM(config_manager_pkg.voice_storage.VoiceStorageMixin):
+        def get_core_config(self):
+            return dict(cfg)
+
+    cm = _CM()
+    cm._config_needs_region = ConfigManager._config_needs_region
+    assert cm._region_verdict_is_provisional() is False, \
+        'livestream 已派生掉全部免费端点，不该被永远判成未落定'
+
+    # 而 livestream 没接管的路径仍然需要判定
+    monkeypatch.setattr(
+        config_manager_pkg, 'get_livestream_config', lambda: {'server_prefix': ''})
+    assert cm._region_verdict_is_provisional() is True
+
+
+@pytest.mark.unit
+def test_startup_warmup_retries_a_backed_off_probe(monkeypatch):
+    """Startup must get a verdict, even if the first attempt already failed.
+
+    Voice cleanup now reads the config (and thus starts the probe) before warmup
+    runs, so by warmup time the first attempt has often already failed on a
+    not-yet-ready network and entered a 30s backoff. Returning immediately there
+    would make warmup a no-op and admit sessions with no verdict.
+    """
+    monkeypatch.setattr(ConfigManager, '_IP_CHECK_RETRY_BASE_S', 30.0)
+    monkeypatch.setattr(ConfigManager, '_IP_CHECK_RETRY_MAX_S', 30.0)
+    calls = _patch_probe_once(monkeypatch, [OSError('network not up'), 'US'])
+
+    probe = _Probe()
+    probe.aget_core_config = _async_return(None)
+
+    # 首探失败并进入 30 秒退避（远长于预热愿意等的时间）
+    ConfigManager._ensure_ip_probe_started()
+    for _ in range(500):
+        if calls['n'] >= 1 and not ConfigManager._ip_probe_in_flight.is_set():
+            break
+        real_time.sleep(0.01)
+    assert calls['n'] == 1 and ConfigManager._ip_check_cache is None
+
+    started = real_time.monotonic()
+    assert asyncio.run(probe.awarmup_region_check(timeout=5)) is True, \
+        '预热应当催重试并拿到结论，而不是因为在退避就立刻返回'
+    assert real_time.monotonic() - started < 5, '不应等满 30 秒退避'
+    assert calls['n'] == 2
