@@ -65,10 +65,19 @@ class _JsonResp:
 
 
 @pytest.fixture()
-def config_manager(clean_user_data_dir):
-    """Real ConfigManager on a temp config dir (mirrors test_api_config_manager)."""
+def config_manager(clean_user_data_dir, monkeypatch):
+    """Real ConfigManager on a temp config dir.
+
+    ``get_config_manager`` hands back a process-wide singleton, so whichever test
+    file ran first leaves it bound to *its* (now deleted) temp dir — these tests then
+    read a stale config and fail only when run alongside that file. Rebuild the
+    singleton here so the instance actually belongs to this test's directory.
+    """
+    monkeypatch.setattr(config_manager_pkg, '_config_manager', None, raising=False)
+    monkeypatch.setattr(config_manager_pkg, '_config_manager_migrated', False, raising=False)
     cm = config_manager_pkg.get_config_manager('N.E.K.O')
     cm.config_dir.mkdir(parents=True, exist_ok=True)
+    cm._core_config_cache = None
     return cm
 
 
@@ -1185,3 +1194,57 @@ def test_loop_eligibility_reads_the_rewritten_snapshot_correctly(monkeypatch):
 
     monkeypatch.setattr(config_manager_pkg, 'get_config_manager', lambda *a, **kw: _CustomCM())
     assert ConfigManager._free_route_still_needs_region() is False
+
+
+# ---------------------------------------------------------------------------
+# Voice cleanup must not act on a guessed region (it writes to characters.json)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_voice_cleanup_is_skipped_while_the_region_is_provisional(monkeypatch):
+    """Clearing a voice is a permanent write; a provisional region is a guess.
+
+    On the transient mainland fallback an overseas-only voice (``yui``, Gemini
+    voices) is absent from the mainland catalog, so cleanup would strip it from
+    characters.json. The verdict landing a second later fixes the endpoint but
+    cannot restore the user's choice — so cleanup waits instead.
+    """
+    from utils.config_manager import voice_storage as vs_mod
+
+    class _CM(vs_mod.VoiceStorageMixin):
+        def __init__(self, cfg):
+            self._cfg = cfg
+
+        def get_core_config(self):
+            return dict(self._cfg)
+
+        def load_characters(self):
+            raise AssertionError('区域未落定时不应读取/改写角色数据')
+
+    free_cfg = {'CORE_URL': 'wss://www.lanlan.tech/core', 'coreApi': 'free'}
+    cm = _CM(free_cfg)
+    cm._config_needs_region = ConfigManager._config_needs_region
+
+    monkeypatch.setattr(ConfigManager, '_region_cache', None)
+    assert cm._region_verdict_is_provisional() is True
+    assert cm.cleanup_invalid_voice_ids() == (0, []), '未落定时应整体跳过清理'
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('region, cfg, provisional', [
+    (True, {'CORE_URL': 'wss://www.lanlan.tech/core'}, False),   # 已落定 → 可清理
+    (False, {'CORE_URL': 'wss://www.lanlan.tech/core'}, False),  # 已落定 → 可清理
+    (None, {'CORE_URL': 'https://api.openai.com/v1'}, False),    # 自配线路与区域无关
+    (None, {'CORE_URL': 'wss://www.lanlan.tech/core'}, True),    # 免费 + 未落定 → 跳过
+])
+def test_provisional_region_predicate(monkeypatch, region, cfg, provisional):
+    from utils.config_manager import voice_storage as vs_mod
+
+    class _CM(vs_mod.VoiceStorageMixin):
+        def get_core_config(self):
+            return dict(cfg)
+
+    cm = _CM()
+    cm._config_needs_region = ConfigManager._config_needs_region
+    monkeypatch.setattr(ConfigManager, '_region_cache', region)
+    assert cm._region_verdict_is_provisional() is provisional

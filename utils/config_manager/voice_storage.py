@@ -914,6 +914,26 @@ class VoiceStorageMixin:
             return s
         return vc.to_dict()
 
+    def _region_verdict_is_provisional(self) -> bool:
+        """Whether voice validity would currently be judged on a guessed region.
+
+        Only free routes are region-dependent, so a custom/paid config is never
+        provisional here. On a free route it is provisional until the IP probe has
+        landed: ``_check_non_mainland`` falls back to Steam (deliberately uncached)
+        or to the mainland default, and neither is a verdict to delete data on.
+        """
+        from utils.config_manager import ConfigManager
+
+        try:
+            if ConfigManager._region_cache is not None:
+                return False
+            if not self._config_needs_region(self.get_core_config()):
+                return False    # 自配/付费线路：音色有效性与区域无关
+            return True
+        except Exception:
+            logger.debug("[GeoIP] 区域落定状态判断失败，保守视为未落定", exc_info=True)
+            return True         # 判断不了就别删——保守方向是不动用户数据
+
     def cleanup_invalid_voice_ids(self):
         """Clean up invalid voice_ids in characters.json.
         
@@ -926,9 +946,21 @@ class VoiceStorageMixin:
         and silently dropped to the generic default voice due to the YUI voice ID change.
         A migration hit also triggers a save.
 
+        Skipped entirely while the region verdict is still provisional on a free
+        route. Validity there is route-dependent: an overseas-only voice such as
+        ``yui`` is absent from the mainland ``free`` catalog, so running this during
+        the transient mainland fallback would clear it from characters.json — and
+        that write is permanent. The IP verdict landing a moment later fixes the
+        endpoint but cannot bring the user's voice choice back. Waiting one session
+        costs nothing; clearing on a guess costs data.
+
         Returns:
             (cleaned_count, legacy_cosyvoice_names): total cleaned, and the list of character names still using legacy CosyVoice voices
         """
+        if self._region_verdict_is_provisional():
+            logger.info("[GeoIP] 区域判定尚未落定，跳过本轮无效 voice_id 清理，避免误删海外音色")
+            return 0, []
+
         character_data = self.load_characters()
         cleaned_count = 0
         migrated_count = 0

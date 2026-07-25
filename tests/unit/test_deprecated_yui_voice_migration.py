@@ -33,6 +33,10 @@ def _make_manager(character_data: dict, core_config: dict | None = None,
     mgr.save_characters = _save
     mgr.get_core_config = lambda: dict(core_config if core_config is not None else _DOMESTIC_FREE)
     mgr._check_non_mainland = lambda: non_mainland
+    # 这些用例考的是清理/迁移逻辑本身，前提是区域判定已落定——未落定时
+    # cleanup_invalid_voice_ids 会整体跳过（避免在猜测的区域上删掉海外音色，
+    # 见 test_geoip_region_gate.py 的 provisional 用例）。这里把该前提写明。
+    mgr._region_verdict_is_provisional = lambda: False
     return mgr
 
 
