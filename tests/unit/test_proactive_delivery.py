@@ -341,6 +341,14 @@ def test_enqueue_newer_proactive_replaces_passive_and_creates_mirror():
     assert [r["summary"] for r in mgr.pending_extra_replies] == ["respond"]
 
 
+def test_enqueue_newer_passive_replaces_proactive_and_removes_mirror():
+    mgr = _make_session_mgr()
+    mgr.enqueue_agent_callback(_proactive_cb("respond", coalesce_key="shared"))
+    mgr.enqueue_agent_callback(_passive_cb("context", coalesce_key="shared"))
+    assert [c["summary"] for c in mgr.pending_agent_callbacks] == ["context"]
+    assert mgr.pending_extra_replies == []
+
+
 def test_enqueue_unknown_delivery_mode_keeps_legacy_proactive_behavior():
     mgr = _make_session_mgr()
     callback = _passive_cb("legacy")
