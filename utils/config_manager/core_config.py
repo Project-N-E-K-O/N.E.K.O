@@ -164,6 +164,11 @@ class CoreConfigMixin:
                 return
             thread = ConfigManager._ip_probe_thread
             if thread is not None and thread.is_alive():
+                # 活着 == 重试计划正在运行，所以这里返回是对的，不需要「替代探测」。
+                # 该线程是 _ip_probe_loop 的循环体，不是一次性探测：卡在 getaddrinfo
+                # 的那次迭代等到 OS 解析超时后抛异常，循环 except → 退避 → 下一次重试。
+                # 反过来，起一个替代线程调的还是同一个 getaddrinfo、一样卡，只换来
+                # 多写者和线程泄漏——那正是本结构要消除的（见模块 docstring）。
                 return
             thread = threading.Thread(
                 target=ConfigManager._ip_probe_loop,

@@ -611,3 +611,48 @@ def test_steam_country_writeback_only_on_real_data(monkeypatch, country, expect_
 
     assert result['success'] is True
     assert ConfigManager._steam_check_cache is expect_cache
+
+
+@pytest.mark.unit
+def test_dns_wedged_iteration_recovers_without_a_replacement_thread(monkeypatch):
+    """A DNS-wedged iteration must not stall recovery — and must not need a replacement.
+
+    ``getaddrinfo`` ignores the socket timeout, so one iteration can hang far longer
+    than 3s. That is survivable precisely because the thread is a *loop*: the wedged
+    call eventually raises (OS resolver timeout), the loop backs off and retries.
+    Spawning a "replacement" would call the same ``getaddrinfo``, hang identically,
+    and only buy multi-writer races plus a thread leak — which is what this design
+    exists to remove. Asserted as behaviour so the point is not re-litigated.
+    """
+    monkeypatch.setattr(ConfigManager, '_IP_CHECK_RETRY_BASE_S', 0.0)
+    monkeypatch.setattr(ConfigManager, '_IP_CHECK_RETRY_MAX_S', 0.0)
+
+    wedged_entered = threading.Event()
+    unwedge = threading.Event()
+    calls = {'n': 0}
+
+    def _once():
+        calls['n'] += 1
+        if calls['n'] == 1:
+            wedged_entered.set()
+            unwedge.wait(10)          # 模拟卡在 getaddrinfo 里
+            raise OSError('resolver timed out')
+        return True                    # 网络恢复
+
+    monkeypatch.setattr(ConfigManager, '_ip_probe_once', staticmethod(_once))
+
+    _Probe()._ensure_ip_probe_started()
+    thread = ConfigManager._ip_probe_thread
+    assert wedged_entered.wait(5), '第一次探测未进入卡死状态'
+
+    # 卡死期间反复触发启动：不得另起线程（活着 == 重试计划在跑）
+    for _ in range(5):
+        _Probe()._ensure_ip_probe_started()
+        assert ConfigManager._ip_probe_thread is thread, '卡死期间不应另起替代探测'
+    assert ConfigManager._ip_check_cache is None
+
+    # 解析超时返回后，同一个循环自行重试并拿到结论——无需任何外部干预
+    unwedge.set()
+    thread.join(5)
+    assert ConfigManager._ip_check_cache is True, '卡死迭代后循环应自行恢复'
+    assert calls['n'] == 2
