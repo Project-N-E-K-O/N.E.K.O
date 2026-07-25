@@ -32,6 +32,7 @@ import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 
+import utils.config_manager as config_manager_pkg  # noqa: E402
 from utils.config_manager import ConfigManager  # noqa: E402
 from utils.config_manager import core_config as core_config_mod  # noqa: E402
 
@@ -664,25 +665,50 @@ def test_dns_wedged_iteration_recovers_without_a_replacement_thread(monkeypatch)
 
 
 @pytest.mark.unit
-def test_probe_stops_when_user_leaves_the_free_route(monkeypatch):
-    """Switching to a paid/custom provider mid-backoff must stop the probe.
+def test_probe_stops_when_user_leaves_the_free_route_mid_backoff(monkeypatch):
+    """Switching to a paid/custom provider *while backing off* must stop the probe.
 
-    Otherwise the loop keeps hitting ip-api.com until it lands a verdict nobody
-    needs — a user who no longer uses regional routing would go on disclosing
-    their public IP to a third party for the life of the process.
+    Two things this must not do, both of which make the test vacuous:
+    - fix eligibility to False before the thread starts (only proves "exits after
+      the first failure", never exercises the mid-backoff switch);
+    - use ``_ip_probe_wake`` to wake the sleeper — that event *also* terminates the
+      loop, so the thread would exit even with the eligibility check deleted.
+    So: let the backoff expire naturally and assert no second request goes out.
     """
-    monkeypatch.setattr(ConfigManager, '_IP_CHECK_RETRY_BASE_S', 0.0)
-    monkeypatch.setattr(ConfigManager, '_IP_CHECK_RETRY_MAX_S', 0.0)
-    calls = _patch_probe_once(monkeypatch, [OSError('down')])
-    # 第一次探测后用户切走免费线路
+    monkeypatch.setattr(ConfigManager, '_IP_CHECK_RETRY_BASE_S', 0.3)
+    monkeypatch.setattr(ConfigManager, '_IP_CHECK_RETRY_MAX_S', 0.3)
+    eligible = {'v': True}
     monkeypatch.setattr(
-        ConfigManager, '_free_route_still_needs_region', staticmethod(lambda: False))
+        ConfigManager, '_free_route_still_needs_region',
+        staticmethod(lambda: eligible['v']))
+
+    probed = threading.Event()
+    calls = {'n': 0}
+
+    def _once():
+        calls['n'] += 1
+        probed.set()
+        raise OSError('down')
+
+    monkeypatch.setattr(ConfigManager, '_ip_probe_once', staticmethod(_once))
 
     _Probe()._ensure_ip_probe_started()
-    ConfigManager._ip_probe_thread.join(5)
+    thread = ConfigManager._ip_probe_thread
+    assert probed.wait(5), '首次探测未发生'
 
-    assert not ConfigManager._ip_probe_thread.is_alive(), '切走免费线路后循环应收工'
-    assert calls['n'] == 1, f'切走后不应继续探测，实际探了 {calls["n"]} 次'
+    # 等它真正进入退避 sleep，再模拟用户切走免费线路
+    for _ in range(200):
+        if not ConfigManager._ip_probe_in_flight.is_set():
+            break
+        real_time.sleep(0.005)
+    assert not ConfigManager._ip_probe_in_flight.is_set(), '前置条件：应已进入退避'
+    assert thread.is_alive(), '前置条件：循环仍在退避中'
+    eligible['v'] = False
+
+    # 退避自然到期后循环回到顶部，应当据资格判定收工——而不是再敲一次
+    thread.join(5)
+    assert not thread.is_alive(), '切走免费线路后循环应收工'
+    assert calls['n'] == 1, f'退避到期后不应再探测，实际探了 {calls["n"]} 次'
     assert ConfigManager._ip_check_cache is None
 
 
@@ -753,15 +779,14 @@ def test_livestream_derived_urls_do_not_trigger_the_probe(monkeypatch):
         'TTS_URL': 'wss://www.lanlan.tech/tts',
         'ASSIST_URL': 'https://www.lanlan.tech/text/v1',
     }
-    import utils.config_manager as cm_pkg
-    monkeypatch.setattr(cm_pkg, 'is_livestream_active', lambda: True)
+    monkeypatch.setattr(config_manager_pkg, 'is_livestream_active', lambda: True)
     assert ConfigManager._config_needs_region(cfg) is False
 
     # 非派生路径仍然需要判定（livestream 只接管那三个端点）
     cfg['OTHER_URL'] = 'https://www.lanlan.tech/something-else'
     assert ConfigManager._config_needs_region(cfg) is True
 
-    monkeypatch.setattr(cm_pkg, 'is_livestream_active', lambda: False)
+    monkeypatch.setattr(config_manager_pkg, 'is_livestream_active', lambda: False)
     assert ConfigManager._config_needs_region(
         {'CORE_URL': 'wss://www.lanlan.tech/core'}) is True
 
@@ -784,9 +809,60 @@ def test_startup_warmup_runs_after_runtime_config_is_finalized():
     for node in ast.walk(tree):
         if (isinstance(node, ast.AsyncFunctionDef)
                 and node.name == '_ensure_main_server_runtime_initialized'):
-            calls = {getattr(c.func, 'attr', None) for c in ast.walk(node) if isinstance(c, ast.Call)}
-            assert 'awarmup_region_check' in calls, \
-                'GeoIP 预热必须在运行时配置最终成型之后（本函数内）执行'
             break
     else:
         pytest.fail('未找到 _ensure_main_server_runtime_initialized，断言失效')
+
+    # 只断言「在这个函数里」是不够的：预热被挪到 Cloud Save 导入或 Steamworks
+    # 初始化之前时那样仍会通过，而那正是本 PR 要防的时序回归。比行号。
+    seen = {}
+    for call in ast.walk(node):
+        if not isinstance(call, ast.Call):
+            continue
+        name = getattr(call.func, 'attr', None) or getattr(call.func, 'id', None)
+        if name in ('awarmup_region_check', 'initialize_steamworks',
+                    '_sync_memory_server_after_startup_import',
+                    '_disable_main_storage_limited_mode'):
+            seen.setdefault(name, call.lineno)
+
+    assert 'awarmup_region_check' in seen, 'GeoIP 预热必须在本函数内执行'
+    for anchor, what in (('_sync_memory_server_after_startup_import', 'Cloud Save 导入'),
+                         ('initialize_steamworks', 'Steamworks 初始化')):
+        assert anchor in seen, f'锚点 {anchor} 不见了，本断言已失效'
+        assert seen['awarmup_region_check'] > seen[anchor], \
+            f'GeoIP 预热必须晚于{what}，否则可能读到成型前的配置'
+
+    # 另一侧的边界：也不能晚于「放开会话准入」。那之后请求就能进来，若预热尚未
+    # 落地，首个会话会整场钉在兜底线路——预热必须夹在「配置成型」与「准入」之间。
+    assert '_disable_main_storage_limited_mode' in seen, '准入锚点不见了，本断言已失效'
+    assert seen['awarmup_region_check'] < seen['_disable_main_storage_limited_mode'], \
+        'GeoIP 预热必须早于解除 limited mode，否则会话可在区域未落定时进来'
+
+
+@pytest.mark.unit
+def test_custom_url_merely_containing_the_brand_string_is_not_a_free_route():
+    """Eligibility keys on hostname, not substring.
+
+    A custom endpoint like ``https://custom.example/v1/lanlan.tech`` is not the
+    official free route; treating it as one starts the probe and discloses the
+    user's IP for nothing.
+    """
+    assert ConfigManager._config_needs_region(
+        {'CORE_URL': 'https://custom.example/v1/lanlan.tech'}) is False
+    assert ConfigManager._config_needs_region(
+        {'CORE_URL': 'https://lanlan.tech.evil.example/core'}) is False
+    assert ConfigManager._config_needs_region(
+        {'CORE_URL': 'wss://www.lanlan.tech/core'}) is True
+
+
+@pytest.mark.unit
+def test_eligibility_recheck_survives_the_overseas_rewrite():
+    """The loop re-checks against an *already adjusted* snapshot.
+
+    Once the region resolves overseas, ``get_core_config`` hands back ``lanlan.app``
+    URLs. If eligibility only recognised ``lanlan.tech``, a Steam-overseas user with
+    the IP probe still unresolved would look like "no longer on the free route" and
+    the probe would quit after its first failure.
+    """
+    assert ConfigManager._config_needs_region(
+        {'CORE_URL': 'wss://www.lanlan.app/core'}) is True

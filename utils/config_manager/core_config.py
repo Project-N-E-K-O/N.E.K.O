@@ -118,19 +118,31 @@ class CoreConfigMixin:
         try:
             livestream = is_livestream_active()
         except Exception:
+            # 读不到 livestream 配置时按「未启用」处理：那只会让判定更保守
+            # （不排除任何 URL），不会漏掉需要区域判定的路由。
             livestream = False
 
         for key, value in (config or {}).items():
             if not (key.endswith('_URL') and isinstance(value, str)):
                 continue
-            if 'lanlan.tech' not in value:
+            try:
+                host = (urlparse(value).hostname or '').lower()
+                path = urlparse(value).path or ''
+            except Exception:
                 continue
-            if livestream:
-                try:
-                    if (urlparse(value).path or '') in cls._LIVESTREAM_DERIVE_PATHS:
-                        continue    # 该 URL 会被 livestream 前缀接管，用不到区域判定
-                except Exception:
-                    pass
+            # 按 hostname 判而不是子串包含：自配用户把 URL 写成
+            # https://custom.example/v1/lanlan.tech 时，子串检查会把它误当官方免费
+            # 路由并因此探测 IP——纯属白白暴露。
+            #
+            # 两个 host 都要算：本函数既用于 get_core_config 的原始配置（此时是
+            # lanlan.tech），也用于探测循环复查资格时读到的**已改写**快照（判海外
+            # 后是 lanlan.app）。只认 lanlan.tech 会让「Steam 判海外 + IP 未定」的
+            # 用户在第一次失败后就被判定为「不再需要区域」而停掉探测。
+            if not (host == 'lanlan.tech' or host.endswith('.lanlan.tech')
+                    or host == 'lanlan.app' or host.endswith('.lanlan.app')):
+                continue
+            if livestream and path in cls._LIVESTREAM_DERIVE_PATHS:
+                continue    # 该 URL 会被 livestream 前缀接管，用不到区域判定
             return True
         return False
 
@@ -166,6 +178,14 @@ class CoreConfigMixin:
         failures = 0
         try:
             while ConfigManager._ip_check_cache is None:
+                # 资格复查放在「发请求之前」而不是之后：用户可能在退避期间切走免费
+                # 线路（改用自配 API），放在之后会让循环醒来先白敲一次 ip-api.com
+                # 才收工——那一次正是本该省掉的 IP 暴露。首轮跳过：调用方刚刚才据
+                # needs_region 授权过，没必要再读一次配置。判据走共享的
+                # _config_needs_region，不在这里另立一套（不变量 #2）。
+                if failures and not ConfigManager._free_route_still_needs_region():
+                    print("[GeoIP] free route no longer selected, stopping probe", file=sys.stderr)
+                    return
                 try:
                     ConfigManager._ip_probe_in_flight.set()
                     result = ConfigManager._ip_probe_once()
@@ -179,13 +199,6 @@ class CoreConfigMixin:
                     # 退避期间不算「在飞」：此时不可能有结论到达，等待方据此直接跳过
                     # join，免得每个会话白付一次 join 超时（见 join_ip_probe）。
                     ConfigManager._ip_probe_in_flight.clear()
-
-                # 用户可能在探测退避期间切走免费线路（改用自配 API）。此时继续敲
-                # ip-api.com 既无用又是白白暴露 IP，收工。判据走共享的
-                # _config_needs_region，不在这里另立一套（不变量 #2）。
-                if not ConfigManager._free_route_still_needs_region():
-                    print("[GeoIP] free route no longer selected, stopping probe", file=sys.stderr)
-                    return
 
                 failures += 1
                 wait = ConfigManager._ip_check_backoff_s(failures)
