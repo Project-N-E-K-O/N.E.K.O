@@ -343,6 +343,12 @@ class QQReplyBufferService:
             from utils.config_manager import get_config_manager as _gcm
             import asyncio as _asyncio
             _cm = _gcm()
+            # 线路会连 base_url 一起冻进下面的 OmniOfflineClient，先给仍在飞的区域
+            # 探测一个收尾窗口。已落定时零开销；fail-open，不因探测出错而不回消息。
+            try:
+                await _cm.aensure_region_resolved()
+            except Exception as _geo_err:
+                self.logger.warning(f"[GeoIP] 区域落定失败，退化到当前配置继续: {_geo_err}")
             _mc = _cm.get_model_api_config("conversation")
             resp_text = ""
             async def _on_text(t: str, _first: bool = False) -> None:

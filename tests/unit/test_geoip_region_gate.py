@@ -873,6 +873,92 @@ def test_eligibility_recheck_survives_the_overseas_rewrite():
         {'CORE_URL': 'wss://www.lanlan.app/core'}) is True
 
 
+def _plugin_files_constructing_offline_clients():
+    """Every plugin file that builds an OmniOfflineClient — discovered, not listed.
+
+    A hardcoded list is exactly how bilibili_danmaku and reply_buffer_service were
+    missed: two plugins had the same freeze and the test only knew about the other
+    two. Discovery makes a newly added plugin fail this test instead of shipping
+    an unsettled route.
+    """
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[2] / 'plugin'
+    return sorted(
+        p for p in root.rglob('*.py')
+        if 'OmniOfflineClient(' in p.read_text(encoding='utf-8')
+    )
+
+
+@pytest.mark.unit
+def test_every_plugin_offline_client_settles_the_region():
+    """Any plugin building an OmniOfflineClient must settle the region first.
+
+    The client captures base_url at construction, so a route picked before the
+    verdict lands is what that client keeps using. Checked per enclosing function
+    and by line order: a settle call in some other function, or after the client is
+    built, would satisfy a naive count while guaranteeing nothing.
+    """
+    import ast
+
+    files = _plugin_files_constructing_offline_clients()
+    assert files, '未发现任何构造 OmniOfflineClient 的插件文件，本断言已失效'
+
+    problems = []
+    for path in files:
+        tree = ast.parse(path.read_text(encoding='utf-8'))
+        for func in ast.walk(tree):
+            if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            builds, settles = [], []
+            for call in ast.walk(func):
+                if not isinstance(call, ast.Call):
+                    continue
+                name = getattr(call.func, 'attr', None) or getattr(call.func, 'id', None)
+                if name == 'OmniOfflineClient':
+                    builds.append(call.lineno)
+                elif name == 'aensure_region_resolved':
+                    settles.append(call.lineno)
+            for build_line in builds:
+                if not [x for x in settles if x < build_line]:
+                    problems.append(
+                        f'{path.name}:{build_line} in {func.name}()'
+                        f'（该函数内的落定调用: {settles or "无"}）'
+                    )
+
+    assert not problems, (
+        '这些插件在构造 OmniOfflineClient 前没有先落定区域判定: ' + '; '.join(problems)
+    )
+
+
+@pytest.mark.unit
+def test_custom_url_merely_containing_the_brand_string_is_not_a_free_route():
+    """Eligibility keys on hostname, not substring.
+
+    A custom endpoint like ``https://custom.example/v1/lanlan.tech`` is not the
+    official free route; treating it as one starts the probe and discloses the
+    user's IP for nothing.
+    """
+    assert ConfigManager._config_needs_region(
+        {'CORE_URL': 'https://custom.example/v1/lanlan.tech'}) is False
+    assert ConfigManager._config_needs_region(
+        {'CORE_URL': 'https://lanlan.tech.evil.example/core'}) is False
+    assert ConfigManager._config_needs_region(
+        {'CORE_URL': 'wss://www.lanlan.tech/core'}) is True
+
+
+@pytest.mark.unit
+def test_eligibility_recheck_survives_the_overseas_rewrite():
+    """The loop re-checks against an *already adjusted* snapshot.
+
+    Once the region resolves overseas, ``get_core_config`` hands back ``lanlan.app``
+    URLs. If eligibility only recognised ``lanlan.tech``, a Steam-overseas user with
+    the IP probe still unresolved would look like "no longer on the free route" and
+    the probe would quit after its first failure.
+    """
+    assert ConfigManager._config_needs_region(
+        {'CORE_URL': 'wss://www.lanlan.app/core'}) is True
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize('rel_path', [
     'plugin/plugins/qq_auto_reply/session_bootstrap_service.py',
