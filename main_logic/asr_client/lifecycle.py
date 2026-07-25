@@ -545,8 +545,6 @@ class VoiceInputLifecycleController:
         return self._turn_sequence
 
     def _target_disposition(self) -> AudioDisposition:
-        if self._independent_asr_fail_open:
-            return AudioDisposition.FORWARD
         if self._state in {
             VoiceLifecycleState.LOCAL_LISTEN,
             VoiceLifecycleState.PREWARMING,
@@ -555,8 +553,6 @@ class VoiceInputLifecycleController:
             VoiceLifecycleState.BACKOFF,
         }:
             return AudioDisposition.BUFFER
-        if self._state in {
-            VoiceLifecycleState.ACTIVE,
-        }:
+        if self._state is VoiceLifecycleState.ACTIVE:
             return AudioDisposition.FORWARD
         return AudioDisposition.BLOCK

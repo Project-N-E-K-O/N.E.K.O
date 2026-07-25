@@ -1169,6 +1169,98 @@ async def test_deep_sleep_speech_reconnects_and_flushes_pending_audio() -> None:
     )
 
 
+@pytest.mark.parametrize("provider", ["glm", "gemini"])
+async def test_smart_turn_fail_open_buffers_until_deep_sleep_transport_reconnects(
+    provider: str,
+) -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    runtime._asr_provider = provider
+    runtime._asr_lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy(provider, "manual"),
+        shadow_mode=False,
+    )
+    runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    runtime._asr_lifecycle.transition(VoiceLifecycleEvent.SOFT_WAKE)
+    runtime._asr_lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+    runtime._asr_lifecycle.transition(VoiceLifecycleEvent.TURN_SEALED)
+    runtime._asr_lifecycle.transition(VoiceLifecycleEvent.PROVIDER_FINAL)
+    runtime._asr_lifecycle.transition(VoiceLifecycleEvent.WARM_EXPIRED)
+    runtime._asr_detector = _QueuedSmartTurnDetector()
+    new_asr = type("Asr", (), {})()
+    new_asr.is_ready = True
+    new_asr.connect = AsyncMock()
+    new_asr.stream_audio = AsyncMock()
+    runtime._asr_session_factory = MagicMock(return_value=new_asr)
+    runtime._asr_transport_selection = _selection(provider)
+    pcm16 = b"\x03\x00" * 160
+
+    await runtime._route_microphone_audio(
+        pcm16,
+        sample_rate_hz=16_000,
+        rnnoise_available=False,
+    )
+
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.PREWARMING
+    assert runtime._asr_route_mode == "independent"
+    assert runtime._asr_transport_task is not None
+    await runtime._asr_transport_task
+
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+    assert runtime._asr_route_mode == "independent"
+    assert runtime._omni_mic_audio_bytes == 0
+    new_asr.connect.assert_awaited_once_with()
+    new_asr.stream_audio.assert_awaited_once_with(
+        pcm16,
+        sample_rate_hz=16_000,
+    )
+    statuses = [json.loads(call.args[0]) for call in runtime.send_status.await_args_list]
+    assert all(status.get("code") != "ASR_BLOCKED_ENDPOINTING" for status in statuses)
+
+
+async def test_optimization_disabled_buffers_until_initial_transport_is_ready() -> None:
+    runtime = _Runtime()
+    runtime._voice_input_resource_optimization_enabled = False
+    runtime._asr_route_mode = "independent"
+    runtime._asr_provider = "glm"
+    runtime._asr_lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("glm", "manual"),
+        shadow_mode=False,
+        resource_optimization_enabled=False,
+    )
+    runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    runtime._asr_detector = _QueuedSmartTurnDetector()
+    new_asr = type("Asr", (), {})()
+    new_asr.is_ready = True
+    new_asr.connect = AsyncMock()
+    new_asr.stream_audio = AsyncMock()
+    runtime._asr_session_factory = MagicMock(return_value=new_asr)
+    runtime._asr_transport_selection = _selection("glm")
+    pcm16 = b"\x04\x00" * 160
+
+    await runtime._route_microphone_audio(
+        pcm16,
+        sample_rate_hz=16_000,
+        rnnoise_available=False,
+    )
+
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.PREWARMING
+    assert runtime._asr_route_mode == "independent"
+    assert runtime._asr_transport_task is not None
+    await runtime._asr_transport_task
+
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+    assert runtime._asr_route_mode == "independent"
+    assert runtime._omni_mic_audio_bytes == 0
+    new_asr.connect.assert_awaited_once_with()
+    new_asr.stream_audio.assert_awaited_once_with(
+        pcm16,
+        sample_rate_hz=16_000,
+    )
+    statuses = [json.loads(call.args[0]) for call in runtime.send_status.await_args_list]
+    assert all(status.get("code") != "ASR_BLOCKED_ENDPOINTING" for status in statuses)
+
+
 async def test_hard_mute_is_backend_authoritative_and_rejects_stale_lease_events() -> None:
     runtime = _Runtime()
     asr = type("Asr", (), {})()
