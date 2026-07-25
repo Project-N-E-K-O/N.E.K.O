@@ -1334,3 +1334,99 @@ def test_startup_warmup_retries_a_backed_off_probe(monkeypatch):
         '预热应当催重试并拿到结论，而不是因为在退避就立刻返回'
     assert real_time.monotonic() - started < 5, '不应等满 30 秒退避'
     assert calls['n'] == 2
+
+
+@pytest.mark.unit
+def test_warmup_does_not_wait_when_no_probe_is_running():
+    """``through_backoff`` means "wait through a backoff", not "always wait".
+
+    A paid/custom provider (or a fully livestream-derived route) never starts a
+    probe at all. Startup warmup is the only ``through_backoff=True`` caller, so
+    treating "no probe" like "backing off" made every such user pay the full
+    timeout on every boot before session admission opened.
+    """
+    assert ConfigManager._ip_probe_thread is None or not ConfigManager._ip_probe_thread.is_alive()
+    assert ConfigManager._ip_check_cache is None and ConfigManager._steam_check_cache is None
+
+    started = real_time.monotonic()
+    assert ConfigManager.join_ip_probe(timeout=5, through_backoff=True) is False
+    elapsed = real_time.monotonic() - started
+    assert elapsed < 1.0, f'没有探测在跑却等了 {elapsed:.2f}s'
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('settled', [True, False])
+def test_game_session_refreshes_the_character_after_the_wait(monkeypatch, settled):
+    """The character can change while we wait — regardless of the wait's outcome.
+
+    Re-reading only inside ``if settled:`` covered the route-rewrite reason but
+    not this one: on a fail-open timeout the pool would build the client from the
+    pre-wait character and cache it under the stale key, so the event runs the
+    wrong persona and leaves an entry no later event can hit.
+    """
+    from main_routers.game_router import session_pool as sp
+    from main_routers import shared_state as sp_shared
+
+    sp._game_sessions.clear()
+    names = iter(['旧角色', '新角色'])
+    monkeypatch.setattr(sp, '_get_character_info', lambda n=None: {'lanlan_name': next(names)})
+
+    class _CM:
+        async def aensure_region_resolved(self, timeout=1.5):
+            return settled
+
+    monkeypatch.setattr(sp_shared, 'get_config_manager', lambda: _CM())
+
+    built = {}
+
+    async def _fake_build(key, game_type, session_id, char_info, *, postgame_snapshot=None):
+        built['key'] = key
+        built['name'] = char_info.get('lanlan_name')
+        return {'last_activity': 0.0}
+
+    monkeypatch.setattr(sp, '_build_and_register_game_session', _fake_build)
+
+    asyncio.run(sp._get_or_create_session('mc', 'sid'))
+
+    assert built['name'] == '新角色', '等待期间角色已切换，必须用切换后的角色建会话'
+    assert '新角色' in built['key'], f'会话被挂到了等待前的 key 上: {built["key"]}'
+
+
+@pytest.mark.unit
+def test_every_voice_cleanup_path_also_retries_the_deferred_binding():
+    """A deferred default-voice binding needs a path that comes back for it.
+
+    ``ensure_default_yui_voice_for_free_api`` skips binding while the region is
+    provisional, promising "next round". Its only original callers were the
+    config-save route and ``clear_voice_ids`` — neither of which runs again on
+    its own, so switching to the free API left the default card permanently
+    unbound. Session preparation is that next round; discovered automatically
+    from the voice-cleanup call sites so a third path cannot silently skip it.
+    """
+    import ast
+    import pathlib
+
+    source = pathlib.Path(__file__).resolve().parents[2] / 'main_logic' / 'core' / 'lifecycle.py'
+    tree = ast.parse(source.read_text(encoding='utf-8'))
+
+    missing = []
+    checked = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        calls = set()
+        for call in (c for c in ast.walk(node) if isinstance(c, ast.Call)):
+            # 清理走 to_thread(方法引用)，绑定是直接函数调用——两种形态都要收
+            for sub in ast.walk(call):
+                if isinstance(sub, ast.Attribute):
+                    calls.add(sub.attr)
+                elif isinstance(sub, ast.Name):
+                    calls.add(sub.id)
+        if 'cleanup_invalid_voice_ids' not in calls:
+            continue
+        checked.append(node.name)
+        if 'ensure_default_yui_voice_for_free_api' not in calls:
+            missing.append(f'{node.name} (line {node.lineno})')
+
+    assert len(checked) >= 2, f'未找到足够的音色清理路径，断言失效: {checked}'
+    assert not missing, f'这些路径清理了音色却没补上被推迟的默认音色绑定: {missing}'

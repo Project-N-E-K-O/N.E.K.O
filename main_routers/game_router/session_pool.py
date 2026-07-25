@@ -173,22 +173,29 @@ async def _get_or_create_session(
     # 兜底线路）仍可用。warning 而非静默，便于诊断「海外用户偶尔一整场走国内线路」。
     from ..shared_state import get_config_manager as _get_cm
     try:
-        if await _get_cm().aensure_region_resolved():
-            # 落定可能改变线路（lanlan.tech → lanlan.app），而上面那份 char_info 是
-            # 落定之前读的。重读一次，确保建出来的 client 用的是最终线路。
-            char_info = _get_character_info(lanlan_name)
-            # 等待期间当前角色也可能被切换，重读会带回不同的 lanlan_name——那 key 就
-            # 变了。必须跟着重算并复查缓存，否则会把新角色的 client 挂到旧 key 上。
-            canonical_lanlan = str(char_info.get("lanlan_name") or lanlan_name or "").strip()
-            refreshed_key = _game_session_key(canonical_lanlan, game_type, session_id)
-            if refreshed_key != canonical_key:
-                canonical_key = refreshed_key
-                if canonical_key in _game_sessions:
-                    entry = _game_sessions[canonical_key]
-                    entry['last_activity'] = time.time()
-                    return entry
+        await _get_cm().aensure_region_resolved()
     except Exception:
         logger.warning("[GeoIP] 游戏会话区域落定失败，退化到当前配置继续", exc_info=True)
+
+    # 无条件重读，不看落定成功与否。两个理由只有第一个跟落定结果相关：
+    # 1) 落定可能改变线路（lanlan.tech → lanlan.app），而上面那份 char_info 是落定
+    #    之前读的——只有落定成功时才需要为此重读；
+    # 2) 只要**等过**，等待期间当前角色就可能被切换，重读会带回不同的 lanlan_name
+    #    ——那 key 就变了。这一条与落定成功与否无关，超时 fail-open 和抛异常两条路
+    #    径同样成立。曾经把重读写在 `if settled:` 里，等于只修了第一个理由：超时后
+    #    会拿等待前的角色建 client，既用错人格，又在旧 key 下留一份后续事件永远不
+    #    会再命中的缓存会话。
+    # 走到这里说明确定要新建会话（常规游戏事件在上面 canonical_key 命中处就返回
+    # 了），多读一次角色配置的代价可以忽略。
+    char_info = _get_character_info(lanlan_name)
+    canonical_lanlan = str(char_info.get("lanlan_name") or lanlan_name or "").strip()
+    refreshed_key = _game_session_key(canonical_lanlan, game_type, session_id)
+    if refreshed_key != canonical_key:
+        canonical_key = refreshed_key
+        if canonical_key in _game_sessions:
+            entry = _game_sessions[canonical_key]
+            entry['last_activity'] = time.time()
+            return entry
 
     create_lock = _get_session_create_lock(canonical_key)
     async with create_lock:

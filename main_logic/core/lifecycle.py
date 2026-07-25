@@ -30,7 +30,7 @@ from main_logic.omni_offline_client import OmniOfflineClient, _is_safety_violati
 from main_logic.proactive_delivery import DELIVERY_RETRACTED_KEY
 from utils.gptsovits_config import is_gsv_disabled_voice_id
 from config.prompts.prompts_sys import _loc, CONTEXT_SUMMARY_READY
-from utils.config_manager import _as_bool
+from utils.config_manager import _as_bool, ensure_default_yui_voice_for_free_api
 from utils.language_utils import normalize_language_code, get_global_language_full
 from queue import Empty
 from uuid import uuid4
@@ -928,6 +928,17 @@ class LifecycleMixin:
         except Exception as e:
             logger.warning(f"⚠️ start_session 清理无效 voice_id 失败，继续启动会话: {e}")
 
+        # 默认 YUI 卡的免费音色绑定在区域未落定时会主动推迟（绑错了纠正不回来），
+        # 而它原本只有两个调用点——保存核心配置与 clear_voice_ids。用户在设置里切到
+        # 免费 API 时，保存路径紧接着就调它，此时探测刚起、必然还是未落定，于是推迟；
+        # 之后再没有任何路径调它，"等下一轮"永远等不到。这里就是那一轮：紧跟上面的
+        # aensure_region_resolved，区域已尽力落定；每场会话都跑一次，幂等（只在默认
+        # YUI 卡且 voice_id 为空时写入）；放在下面读 voice_id 之前，绑上本场即生效。
+        try:
+            await ensure_default_yui_voice_for_free_api(self._config_manager, core_config_snapshot)
+        except Exception as e:
+            logger.warning(f"⚠️ start_session 绑定默认 YUI 音色失败，继续启动会话: {e}")
+
         # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
         _, _, _, self.lanlan_basic_config, _, _, _, _, _ = await self._config_manager.aget_character_data()
         old_voice_id = self.voice_id
@@ -1417,6 +1428,13 @@ class LifecycleMixin:
                 self._enqueue_voice_migration_notice(legacy_names)
             except Exception as e:
                 logger.warning(f"⚠️ 热切换准备: 清理无效 voice_id 失败，继续准备会话: {e}")
+
+            # 与 _start_session_prepare_runtime 对偶：补上被区域未落定推迟的默认 YUI
+            # 音色绑定（那次推迟没有其它路径会回来补）。
+            try:
+                await ensure_default_yui_voice_for_free_api(self._config_manager, core_config_snapshot)
+            except Exception as e:
+                logger.warning(f"⚠️ 热切换准备: 绑定默认 YUI 音色失败，继续准备会话: {e}")
 
             # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
             _, _, _, self.lanlan_basic_config, _, _, _, _, _ = await self._config_manager.aget_character_data()

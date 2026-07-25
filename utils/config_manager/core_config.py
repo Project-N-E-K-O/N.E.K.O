@@ -361,8 +361,19 @@ class CoreConfigMixin:
         while True:
             if ConfigManager._ip_check_cache is not None:
                 return True
-            if not through_backoff and not ConfigManager._ip_probe_in_flight.is_set():
-                return False    # 已进入退避（或探测没在跑）：再等也等不到
+            if not ConfigManager._ip_probe_in_flight.is_set():
+                # through_backoff 的含义是「等穿退避」，不是「无论如何等满 timeout」。
+                # 压根没有探测在跑（自配 API / livestream 全派生 → 免费路由门根本没起
+                # 探测；或循环已因切走免费线路收摊）时，等到天荒地老也不会有结论——
+                # 而启动预热正是 through_backoff=True 的唯一调用方，照等就是让每个
+                # 非 Steam 的自配 API 用户白等满 5 秒才开放会话准入。
+                # 靠 in_flight 先筛：_ensure_ip_probe_started 在 start() 前就预置了
+                # in_flight，所以「刚起还没跑起来」的线程不会被误判成不存在。
+                thread = ConfigManager._ip_probe_thread
+                if thread is None or not thread.is_alive():
+                    return False
+                if not through_backoff:
+                    return False    # 已进入退避：本次尝试已收工，再等也等不到
             if time.monotonic() >= deadline:
                 return ConfigManager._ip_check_cache is not None
             time.sleep(0.02)
