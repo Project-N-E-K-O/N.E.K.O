@@ -2817,11 +2817,9 @@
                                 var msg = {
                                     action: 'stream_data',
                                     data: img.src,
-                                    input_type: getPendingAttachmentInputType(screenshotItems[i])
+                                    input_type: getPendingAttachmentInputType(screenshotItems[i]),
+                                    request_id: requestId
                                 };
-                                if (text) {
-                                    msg.request_id = requestId;
-                                }
                                 // Attach paired avatar position metadata (captured at screenshot time)
                                 var storedPos = screenshotItems[i].dataset.avatarPosition;
                                 if (storedPos) {
