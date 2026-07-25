@@ -101,20 +101,35 @@ class CoreConfigMixin:
 
     # --- Core config helpers ---
 
+    # 原始配置里只有 lanlan.tech 会被区域改写；lanlan.app 只在「循环复查自己读到的
+    # 已改写快照」时才算数。两者不能混：把 .app 也算进原始配置的判据，会让显式配了
+    # lanlan.app 的自配用户被当成免费路由而白白探测 IP（不变量 #2）。
+    _REGION_HOSTS_RAW = ('lanlan.tech',)
+    _REGION_HOSTS_ADJUSTED = ('lanlan.tech', 'lanlan.app')
+
     @classmethod
-    def _config_needs_region(cls, config) -> bool:
+    def _config_needs_region(cls, config, hosts=None) -> bool:
         """Whether this config actually has a URL whose route depends on the region.
 
         The single source of truth for probe eligibility (invariant #2). Deriving it
         separately at each call site is exactly how the privacy gate regressed three
         times, so both ``get_core_config`` and the probe loop go through here.
 
+        ``hosts`` says which lanlan hosts count. Callers must pick deliberately:
+        ``_REGION_HOSTS_RAW`` for a config as the user wrote it (only ``lanlan.tech``
+        is ever rewritten, so an explicitly configured ``lanlan.app`` endpoint is a
+        custom route and must not trigger a probe), and ``_REGION_HOSTS_ADJUSTED``
+        for the retry loop, which re-reads a snapshot whose free URLs may already
+        have been rewritten to ``lanlan.app``.
+
         Livestream is excluded for the paths it takes over: ``_adjust_free_api_url``
         derives those from the livestream prefix *before* consulting the region, so a
         livestream user needs no verdict for them and must not be probed on their
-        account.
+        account — but only when the derivation can actually succeed.
         """
         from utils.config_manager import get_livestream_config, is_livestream_active
+
+        hosts = tuple(hosts) if hosts else cls._REGION_HOSTS_RAW
 
         try:
             livestream = is_livestream_active()
@@ -142,8 +157,7 @@ class CoreConfigMixin:
             # lanlan.tech），也用于探测循环复查资格时读到的**已改写**快照（判海外
             # 后是 lanlan.app）。只认 lanlan.tech 会让「Steam 判海外 + IP 未定」的
             # 用户在第一次失败后就被判定为「不再需要区域」而停掉探测。
-            if not (host == 'lanlan.tech' or host.endswith('.lanlan.tech')
-                    or host == 'lanlan.app' or host.endswith('.lanlan.app')):
+            if not any(host == h or host.endswith('.' + h) for h in hosts):
                 continue
             # 该 URL 会被 livestream 前缀接管时用不到区域判定——但必须确认派生**真能
             # 成功**再排除：server_prefix 非空却畸形（比如缺 scheme 的
@@ -225,7 +239,12 @@ class CoreConfigMixin:
         from utils.config_manager import ConfigManager, get_config_manager
 
         try:
-            return ConfigManager._config_needs_region(get_config_manager().get_core_config())
+            # 这里读到的是**已改写**的快照（判海外后免费 URL 已成 lanlan.app），
+            # 所以要用 ADJUSTED 集合；get_core_config 那边用的是原始配置，默认 RAW。
+            return ConfigManager._config_needs_region(
+                get_config_manager().get_core_config(),
+                ConfigManager._REGION_HOSTS_ADJUSTED,
+            )
         except Exception:
             return True    # 读不到配置时保守continue，别因为一次读失败放弃探测
 

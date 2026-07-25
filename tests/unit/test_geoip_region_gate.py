@@ -955,8 +955,27 @@ def test_eligibility_recheck_survives_the_overseas_rewrite():
     the IP probe still unresolved would look like "no longer on the free route" and
     the probe would quit after its first failure.
     """
+    cfg = {'CORE_URL': 'wss://www.lanlan.app/core'}
     assert ConfigManager._config_needs_region(
-        {'CORE_URL': 'wss://www.lanlan.app/core'}) is True
+        cfg, ConfigManager._REGION_HOSTS_ADJUSTED) is True
+
+
+@pytest.mark.unit
+def test_raw_config_gate_ignores_an_explicit_lanlan_app_endpoint():
+    """Only ``lanlan.tech`` is ever rewritten, so a raw ``lanlan.app`` is a custom route.
+
+    Accepting ``.app`` for raw user config — needed only when the loop inspects its
+    own rewritten snapshot — would probe on behalf of someone whose URLs no region
+    decision will ever touch. That is a privacy-gate violation, not a wasted request,
+    which is why the two questions now take different host sets.
+    """
+    cfg = {'CORE_URL': 'wss://www.lanlan.app/core'}
+    assert ConfigManager._config_needs_region(cfg) is False              # 默认 = RAW
+    assert ConfigManager._config_needs_region(
+        cfg, ConfigManager._REGION_HOSTS_RAW) is False
+    # 免费路由本身不受影响
+    assert ConfigManager._config_needs_region(
+        {'CORE_URL': 'wss://www.lanlan.tech/core'}) is True
 
 
 @pytest.mark.unit
@@ -1132,3 +1151,37 @@ def test_plugin_geoip_fallback_logging_uses_a_real_facility():
         'GeoIP fail-open 处理器用了该类不存在的日志设施（会在 except 里再抛）: '
         + '; '.join(problems)
     )
+
+
+@pytest.mark.unit
+def test_loop_eligibility_reads_the_rewritten_snapshot_correctly(monkeypatch):
+    """Exercises the call site, not just the predicate.
+
+    ``_free_route_still_needs_region`` re-reads ``get_core_config()``, whose free URLs
+    are already rewritten to ``lanlan.app`` once the region resolves overseas. Passing
+    the raw host set there would read "user left the free route" and kill the probe
+    after one failure — a mistake a predicate-only test cannot see.
+    """
+    class _FakeCM:
+        @staticmethod
+        def get_core_config():
+            return {'CORE_URL': 'wss://www.lanlan.app/core', 'coreApi': 'free'}
+
+    # autouse fixture 把这个方法桩成了恒 True（供其它用例用），本用例要测真实实现
+    monkeypatch.setattr(
+        ConfigManager, '_free_route_still_needs_region',
+        core_config_mod.CoreConfigMixin.__dict__['_free_route_still_needs_region'])
+    monkeypatch.setattr(config_manager_pkg, 'get_config_manager', lambda *a, **kw: _FakeCM())
+    monkeypatch.setattr(config_manager_pkg, 'is_livestream_active', lambda: False)
+
+    assert ConfigManager._free_route_still_needs_region() is True, \
+        '海外改写后的快照仍属免费路由，探测不应因此收工'
+
+    # 真正切走免费线路时才该收工
+    class _CustomCM:
+        @staticmethod
+        def get_core_config():
+            return {'CORE_URL': 'https://api.openai.com/v1', 'coreApi': 'openai'}
+
+    monkeypatch.setattr(config_manager_pkg, 'get_config_manager', lambda *a, **kw: _CustomCM())
+    assert ConfigManager._free_route_still_needs_region() is False
