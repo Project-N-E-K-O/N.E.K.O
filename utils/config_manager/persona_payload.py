@@ -114,6 +114,17 @@ async def ensure_default_yui_voice_for_free_api(config_manager, core_cfg: dict |
     if (core_cfg.get("coreApi") or core_cfg.get("CORE_API_TYPE")) != "free":
         return False
 
+    # 区域判定还没落定时不要绑：国内绑 yui_cn、海外绑字面量 "yui"，两者不通用，而
+    # 本函数一旦写入非空 voice_id 就不会再覆盖——猜错了，稍后拿到的权威结论也纠正
+    # 不回来。等下一次（判定落定后）再绑，代价只是晚一轮。
+    try:
+        if config_manager._region_verdict_is_provisional():
+            logger.info("[GeoIP] 区域判定尚未落定，暂不绑定默认 YUI 音色，等落定后再绑")
+            return False
+    except Exception:
+        logger.debug("[GeoIP] 区域落定状态判断失败，跳过本轮默认音色绑定", exc_info=True)
+        return False
+
     characters = await config_manager.aload_characters()
     if not isinstance(characters, dict):
         return False

@@ -22,6 +22,12 @@ class _FakeConfigManager:
     def _check_non_mainland(self) -> bool:
         return self._non_mainland
 
+    def _region_verdict_is_provisional(self) -> bool:
+        # 这些用例考的是绑定逻辑本身，前提是区域判定已落定——未落定时
+        # ensure_default_yui_voice_for_free_api 会跳过绑定（避免把猜出来的区域
+        # 写成持久音色，之后不会被覆盖）。这里把该前提写明。
+        return False
+
     async def aload_characters(self):
         return deepcopy(self.characters)
 

@@ -1231,7 +1231,7 @@ def test_voice_cleanup_is_skipped_while_the_region_is_provisional(monkeypatch):
         def load_characters(self):
             raise AssertionError('区域未落定时不应读取/改写角色数据')
 
-    free_cfg = {'CORE_URL': 'wss://www.lanlan.tech/core', 'coreApi': 'free'}
+    free_cfg = {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.tech/core'}
     cm = _CM(free_cfg)
     cm._config_needs_region = ConfigManager._config_needs_region
 
@@ -1242,10 +1242,18 @@ def test_voice_cleanup_is_skipped_while_the_region_is_provisional(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.parametrize('region, cfg, provisional', [
-    (True, {'CORE_URL': 'wss://www.lanlan.tech/core'}, False),   # 已落定 → 可清理
-    (False, {'CORE_URL': 'wss://www.lanlan.tech/core'}, False),  # 已落定 → 可清理
-    (None, {'CORE_URL': 'https://api.openai.com/v1'}, False),    # 自配线路与区域无关
-    (None, {'CORE_URL': 'wss://www.lanlan.tech/core'}, True),    # 免费 + 未落定 → 跳过
+    # 已落定 → 可清理
+    (True, {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.tech/core'}, False),
+    (False, {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.tech/core'}, False),
+    # 自配线路与区域无关 → 可清理（否则它们的区域永不落定，清理会被永久禁用）
+    (None, {'coreApi': 'openai', 'CORE_URL': 'https://api.openai.com/v1'}, False),
+    (None, {'coreApi': 'openai', 'CORE_URL': 'wss://www.lanlan.app/core'}, False),
+    # 免费 + 未落定 → 跳过。第二格是关键：Steam 临时判海外时快照已被改写成
+    # lanlan.app，按 URL host 判会误判成自配线路而放行清理。
+    (None, {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.tech/core'}, True),
+    (None, {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.app/core'}, True),
+    # 配置残缺读不到路由选择 → 保守不删
+    (None, {'CORE_URL': 'wss://www.lanlan.tech/core'}, True),
 ])
 def test_provisional_region_predicate(monkeypatch, region, cfg, provisional):
     from utils.config_manager import voice_storage as vs_mod

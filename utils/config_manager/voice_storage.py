@@ -927,9 +927,17 @@ class VoiceStorageMixin:
         try:
             if ConfigManager._region_cache is not None:
                 return False
-            if not self._config_needs_region(self.get_core_config()):
-                return False    # 自配/付费线路：音色有效性与区域无关
-            return True
+            cfg = self.get_core_config() or {}
+            # 判「是不是免费路由」必须用**不受区域改写影响**的路由选择字段：
+            # get_core_config() 返回的是已改写快照，Steam 临时判海外时 URL 已经变成
+            # lanlan.app，按 URL host 判会得出「这是自配线路」而放行清理——恰好在这个
+            # 守卫最该生效的场景下失效。
+            provider = cfg.get('CORE_API_TYPE') or cfg.get('coreApi')
+            if not provider:
+                # 读不到路由选择（配置残缺）：这是要删用户数据的路径，宁可不删。
+                # 正常 get_core_config() 一定带这个字段，所以不会平白推迟清理。
+                return True
+            return str(provider) == 'free'
         except Exception:
             logger.debug("[GeoIP] 区域落定状态判断失败，保守视为未落定", exc_info=True)
             return True         # 判断不了就别删——保守方向是不动用户数据

@@ -443,8 +443,16 @@ async def get_voice_preview(
         # 落定时那两次可能拿到不同结果——按大陆 free 归一化的音色被发去 lanlan.app，
         # 而 free_intl 目录与之不相交，预览直接失败。先落定，让整个请求用同一结论。
         # 已落定时零开销；自配 API 用户不会因此发起探测。
+        # 等满仍未落定时残留一个窗口：结论恰在本请求中途到达，则 provider 目录与
+        # TTS URL 分属两个区域，预览失败。不做「把判定结果一路传参」的彻底修复——
+        # 那要穿透 native voice registry 的多个 cross-cutting 函数，而代价只是一次
+        # 预览失败、重试即好（届时判定已落定）。这里记 warning 让它可诊断。
         try:
-            await _config_manager.aensure_region_resolved()
+            if not await _config_manager.aensure_region_resolved():
+                logger.warning(
+                    "[GeoIP] 音色预览开始时区域判定仍未落定；若结论恰在本请求中途到达，"
+                    "预览可能因线路与音色目录不匹配而失败，重试即可"
+                )
         except Exception:
             logger.debug("[GeoIP] 音色预览区域落定失败，按当前配置继续", exc_info=True)
 
