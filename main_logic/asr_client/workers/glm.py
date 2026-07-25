@@ -160,15 +160,25 @@ async def glm_asr_worker(
     client: _HttpClient | None = http_client
     failure_sent = False
 
-    async def emit_error(code: str, message: str) -> None:
+    async def emit_error(
+        code: str,
+        message: str,
+        *,
+        item_key: _UtteranceKey | None = None,
+    ) -> None:
         nonlocal failure_sent
         if failure_sent:
             return
         failure_sent = True
+        generation, buffer_epoch, utterance_id = (
+            item_key if item_key is not None else (last_generation, 0, None)
+        )
         await response_queue.put(
             _AsrWorkerEvent(
                 kind="error",
-                generation=last_generation,
+                generation=generation,
+                buffer_epoch=buffer_epoch,
+                utterance_id=utterance_id,
                 error_code=code,
                 error_message=message,
             )
@@ -216,27 +226,12 @@ async def glm_asr_worker(
                 return_when=asyncio.FIRST_COMPLETED,
             )
 
-            completed_transcriptions = [
-                task for task in done if task is not request_task and task in pending
-            ]
-            for task in completed_transcriptions:
-                key = pending.pop(task)
-                try:
-                    event = task.result()
-                except asyncio.CancelledError:
-                    continue
-                except _GlmRequestFailure as exc:
-                    if key[:2] != (current_generation, current_buffer_epoch):
-                        continue
-                    await emit_error(exc.code, exc.message)
-                    return
-                if key[:2] == (current_generation, current_buffer_epoch):
-                    await response_queue.put(event)
-
+            should_stop = False
             if request_task in done:
-                request = request_task.result()
+                completed_request_task = request_task
+                request_task = None
+                request = completed_request_task.result()
                 last_generation = request.generation
-                should_stop = False
                 try:
                     if request.kind == "shutdown":
                         current_generation = request.generation
@@ -325,6 +320,23 @@ async def glm_asr_worker(
                     request_queue.get(),  # noqa: ASYNC_BLOCK - asyncio.Queue.
                     name="glm-asr-request",
                 )
+
+            completed_transcriptions = [
+                task for task in done if task in pending
+            ]
+            for task in completed_transcriptions:
+                key = pending.pop(task)
+                try:
+                    event = task.result()
+                except asyncio.CancelledError:
+                    continue
+                except _GlmRequestFailure as exc:
+                    if key[:2] != (current_generation, current_buffer_epoch):
+                        continue
+                    await emit_error(exc.code, exc.message, item_key=key)
+                    return
+                if key[:2] == (current_generation, current_buffer_epoch):
+                    await response_queue.put(event)
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -333,9 +345,17 @@ async def glm_asr_worker(
             "GLM transcription worker failed",
         )
     finally:
-        if request_task is not None and not request_task.done():
-            request_task.cancel()
-            await asyncio.gather(request_task, return_exceptions=True)
+        if request_task is not None:
+            if not request_task.done():
+                request_task.cancel()
+                await asyncio.gather(request_task, return_exceptions=True)
+            if not request_task.cancelled():
+                try:
+                    request_task.result()
+                except Exception:
+                    pass
+                else:
+                    request_queue.task_done()
         await cancel_pending()
         buffers.clear()
         if owned_client and client is not None:

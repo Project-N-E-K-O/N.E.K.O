@@ -71,6 +71,34 @@ class _BlockingClient:
         return _FakeResponse({"text": "stale"})
 
 
+class _RacingTimeoutClient:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.calls = 0
+
+    async def post(self, url: str, **kwargs: Any) -> _FakeResponse:
+        _ = (url, kwargs)
+        self.calls += 1
+        if self.calls == 1:
+            self.started.set()
+            await self.release.wait()
+            raise httpx.ReadTimeout(
+                "old epoch timed out",
+                request=httpx.Request("POST", glm.GLM_ASR_URL),
+            )
+        return _FakeResponse({"text": "fresh"})
+
+
+class _TimeoutClient:
+    async def post(self, url: str, **kwargs: Any) -> _FakeResponse:
+        _ = (url, kwargs)
+        raise httpx.ReadTimeout(
+            "current epoch timed out",
+            request=httpx.Request("POST", glm.GLM_ASR_URL),
+        )
+
+
 async def _next_event(
     queue: asyncio.Queue[_AsrWorkerEvent],
     kind: str | None = None,
@@ -342,14 +370,102 @@ async def test_glm_delivers_transcription_completed_with_shutdown_cycle() -> Non
     await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=1))
     await asyncio.wait_for(client.started.wait(), 1)
 
-    await requests.put(_AsrWorkerRequest(kind="shutdown", generation=1, utterance_id=2))
     client.release.set()
-    await asyncio.sleep(0)
-
     final = await _next_event(responses, "final")
     assert (final.generation, final.utterance_id, final.text) == (0, 1, "stale")
+    await requests.put(_AsrWorkerRequest(kind="shutdown", generation=1, utterance_id=2))
     assert (await _next_event(responses, "closed")).generation == 1
     await asyncio.wait_for(task, 1)
+
+
+async def test_glm_clear_wins_same_batch_old_timeout_and_queue_joins() -> None:
+    client = _RacingTimeoutClient()
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        glm.glm_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(),
+            http_client=client,
+        )
+    )
+    await _next_event(responses, "ready")
+    old_key = {"generation": 3, "buffer_epoch": 4, "utterance_id": 5}
+    await requests.put(
+        _AsrWorkerRequest(kind="audio", audio=b"\0\0", **old_key)
+    )
+    await requests.put(_AsrWorkerRequest(kind="commit", **old_key))
+    await asyncio.wait_for(client.started.wait(), 1)
+
+    await requests.put(
+        _AsrWorkerRequest(
+            kind="clear",
+            generation=3,
+            buffer_epoch=5,
+            utterance_id=6,
+        )
+    )
+    client.release.set()
+    await asyncio.wait_for(requests.join(), 1)
+    assert responses.empty()
+
+    new_key = {"generation": 3, "buffer_epoch": 5, "utterance_id": 6}
+    await requests.put(
+        _AsrWorkerRequest(kind="audio", audio=b"\x01\x02", **new_key)
+    )
+    await requests.put(_AsrWorkerRequest(kind="commit", **new_key))
+    final = await _next_event(responses, "final")
+    assert (
+        final.text,
+        final.generation,
+        final.buffer_epoch,
+        final.utterance_id,
+    ) == ("fresh", 3, 5, 6)
+
+    await _stop_worker(
+        task,
+        requests,
+        responses,
+        generation=3,
+        buffer_epoch=5,
+        utterance_id=7,
+    )
+    assert requests._unfinished_tasks == 0
+
+
+async def test_glm_current_timeout_emits_one_fully_keyed_fatal_error() -> None:
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        glm.glm_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(),
+            http_client=_TimeoutClient(),
+        )
+    )
+    await _next_event(responses, "ready")
+    key = {"generation": 8, "buffer_epoch": 2, "utterance_id": 11}
+    await requests.put(
+        _AsrWorkerRequest(kind="audio", audio=b"\0\0", **key)
+    )
+    await requests.put(_AsrWorkerRequest(kind="commit", **key))
+
+    error = await _next_event(responses, "error")
+    assert (
+        error.error_code,
+        error.generation,
+        error.buffer_epoch,
+        error.utterance_id,
+    ) == ("ASR_GLM_TIMEOUT", 8, 2, 11)
+    assert (await _next_event(responses, "closed")).kind == "closed"
+    await asyncio.wait_for(task, 1)
+    await asyncio.wait_for(requests.join(), 1)
+    assert responses.empty()
+    assert requests._unfinished_tasks == 0
 
 
 @pytest.mark.parametrize(

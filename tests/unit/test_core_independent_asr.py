@@ -9,7 +9,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from main_logic.core import LLMSessionManager
-from main_logic.core.asr_runtime import AsrRuntimeMixin
+from main_logic.core.asr_runtime import AsrRuntimeMixin, _HotSwapAudioFrame
+from main_logic.asr_client.runtime import AsrStartResult, AsrStartStatus
 from main_logic.asr_client.detector_runtime import DetectorFeedResult, DetectorRuntime
 from main_logic.asr_client.lifecycle import (
     VoiceLifecycleEvent,
@@ -2439,7 +2440,10 @@ async def test_hot_swap_replaces_asr_before_cached_audio_for_new_core() -> None:
 
     await runtime._reconcile_independent_asr_after_core_change()
 
-    runtime._start_independent_asr_if_enabled.assert_awaited_once_with("audio")
+    runtime._start_independent_asr_if_enabled.assert_awaited_once_with(
+        "audio",
+        preserve_hot_swap_audio=True,
+    )
 
 
 @pytest.mark.parametrize("core_type", ["openai", "glm", "gemini"])
@@ -2455,7 +2459,10 @@ async def test_hot_swap_starts_independent_asr_after_core_route_change(
 
     await runtime._reconcile_independent_asr_after_core_change()
 
-    runtime._start_independent_asr_if_enabled.assert_awaited_once_with("audio")
+    runtime._start_independent_asr_if_enabled.assert_awaited_once_with(
+        "audio",
+        preserve_hot_swap_audio=True,
+    )
 
 
 async def test_hot_swap_does_not_retry_failed_same_core_route() -> None:
@@ -2469,6 +2476,252 @@ async def test_hot_swap_does_not_retry_failed_same_core_route() -> None:
     await runtime._reconcile_independent_asr_after_core_change()
 
     runtime._start_independent_asr_if_enabled.assert_not_awaited()
+
+
+async def test_disabled_native_route_key_prevents_same_core_reconcile(
+    monkeypatch,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    runtime.input_mode = "audio"
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": False}),
+    )
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    assert runtime._asr_route_mode == "native"
+    assert runtime._independent_asr_route_key == "gemini"
+    runtime.is_active = True
+    runtime.is_hot_swap_imminent = True
+    runtime.session.stream_audio = AsyncMock()
+    old_token = runtime._capture_ingress_token()
+    assert runtime.hot_swap_audio_cache.append(
+        _HotSwapAudioFrame(pcm16=b"\x01\x00" * 160, token=old_token)
+    )
+    runtime._set_microphone_route("blocked")
+    runtime._set_microphone_route("native")
+    runtime._start_independent_asr_if_enabled = AsyncMock()
+    await runtime._reconcile_independent_asr_after_core_change()
+    runtime._start_independent_asr_if_enabled.assert_not_awaited()
+    await runtime._flush_hot_swap_audio_cache()
+    runtime.session.stream_audio.assert_awaited_once_with(b"\x01\x00" * 160)
+    assert runtime._omni_mic_audio_bytes == 320
+
+
+class _HotSwapRuntimeStub:
+    def __init__(self, *, start_status: AsrStartStatus) -> None:
+        self.session_epoch = 1
+        self.audio_generation = 1
+        self.active_provider: str | None = "provider-a"
+        self.start_status = start_status
+        self.submissions: list[tuple[str | None, bytes, object]] = []
+        self.abort = AsyncMock()
+
+    def capture_ingress_token(
+        self,
+        *,
+        connection_id: str,
+        lease_generation: int,
+        route_generation: int,
+    ):
+        from main_logic.voice_turn.contracts import VoiceIngressToken
+
+        return VoiceIngressToken(
+            self.session_epoch,
+            connection_id,
+            lease_generation,
+            route_generation,
+            self.audio_generation,
+        )
+
+    async def close(self) -> None:
+        self.session_epoch += 1
+        self.audio_generation += 1
+        self.active_provider = None
+
+    async def start(
+        self,
+        *,
+        route_key: str,
+        resource_optimization_enabled: bool,
+    ) -> AsrStartResult:
+        _ = (route_key, resource_optimization_enabled)
+        self.active_provider = (
+            "provider-b" if self.start_status is AsrStartStatus.READY else None
+        )
+        return AsrStartResult(self.start_status, provider="provider-b")
+
+    async def submit(self, frame, *, ingress_token) -> AsrSubmitResult:
+        self.submissions.append(
+            (self.active_provider, frame.pcm16, ingress_token)
+        )
+        return AsrSubmitResult(AsrSubmitStatus.ACCEPTED)
+
+
+async def test_provider_hot_swap_preserves_and_rebinds_cached_pcm_once(
+    monkeypatch,
+) -> None:
+    runtime = _Runtime()
+    bridge = _HotSwapRuntimeStub(start_status=AsrStartStatus.READY)
+    object.__setattr__(runtime, "_asr_runtime", bridge)
+    runtime.core_api_type = "glm"
+    runtime.input_mode = "audio"
+    runtime.is_active = True
+    runtime.is_hot_swap_imminent = True
+    runtime.session.stream_audio = AsyncMock()
+    runtime._set_microphone_route("independent")
+    runtime._independent_asr_provider = "provider-a"
+    runtime._independent_asr_route_key = "gemini"
+    old_token = runtime._capture_ingress_token()
+    assert runtime.hot_swap_audio_cache.append(
+        _HotSwapAudioFrame(pcm16=b"\x01\x00" * 160, token=old_token)
+    )
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+
+    await runtime._reconcile_independent_asr_after_core_change()
+
+    assert len(runtime.hot_swap_audio_cache) == 1
+    assert runtime._asr_route_mode == "independent"
+    await runtime._flush_hot_swap_audio_cache()
+
+    assert len(bridge.submissions) == 1
+    provider, pcm16, token = bridge.submissions[0]
+    assert provider == "provider-b"
+    assert pcm16 == b"\x01\x00" * 160
+    assert token == runtime._capture_ingress_token()
+    runtime.session.stream_audio.assert_not_awaited()
+
+
+async def test_failed_provider_hot_swap_blocks_and_discards_cached_pcm(
+    monkeypatch,
+) -> None:
+    runtime = _Runtime()
+    bridge = _HotSwapRuntimeStub(start_status=AsrStartStatus.UNAVAILABLE)
+    object.__setattr__(runtime, "_asr_runtime", bridge)
+    runtime.core_api_type = "glm"
+    runtime.input_mode = "audio"
+    runtime.is_active = True
+    runtime.is_hot_swap_imminent = True
+    runtime.session.stream_audio = AsyncMock()
+    runtime._set_microphone_route("independent")
+    runtime._independent_asr_provider = "provider-a"
+    runtime._independent_asr_route_key = "gemini"
+    assert runtime.hot_swap_audio_cache.append(
+        _HotSwapAudioFrame(
+            pcm16=b"\x01\x00" * 160,
+            token=runtime._capture_ingress_token(),
+        )
+    )
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+
+    await runtime._reconcile_independent_asr_after_core_change()
+    assert runtime._asr_route_mode == "blocked"
+    await runtime._flush_hot_swap_audio_cache()
+
+    assert bridge.submissions == []
+    assert not runtime.hot_swap_audio_cache
+    runtime.session.stream_audio.assert_not_awaited()
+
+
+async def test_current_audio_pipeline_failure_blocks_once_without_pcm() -> None:
+    runtime = _Runtime()
+    runtime.is_active = True
+    runtime.is_hot_swap_imminent = False
+    runtime.is_flushing_hot_swap_cache = False
+    runtime.session.stream_audio = AsyncMock()
+    runtime._set_microphone_route("independent")
+    runtime._independent_asr_provider = "glm"
+    runtime._asr_runtime.abort = AsyncMock()
+    runtime._asr_runtime.submit = AsyncMock()
+    runtime._voice_input_audio_pipeline.process = AsyncMock(
+        side_effect=RuntimeError("soxr failed")
+    )
+    token = runtime._capture_ingress_token()
+    message = {
+        "input_type": "audio",
+        "sample_rate_hz": 48_000,
+        "data": [1] * 480,
+    }
+
+    await runtime._process_microphone_stream_data(
+        message,
+        ingress_token=token,
+    )
+    await runtime._process_microphone_stream_data(
+        message,
+        ingress_token=token,
+    )
+
+    assert runtime._asr_route_mode == "blocked"
+    runtime._asr_runtime.abort.assert_awaited_once_with(
+        "audio_preprocessing_failed"
+    )
+    runtime._asr_runtime.submit.assert_not_awaited()
+    runtime.session.stream_audio.assert_not_awaited()
+    statuses = [json.loads(call.args[0]) for call in runtime.send_status.await_args_list]
+    assert statuses == [
+        {
+            "code": "ASR_AUDIO_PREPROCESSING_FAILED",
+            "details": {"provider": "glm"},
+        }
+    ]
+
+
+async def test_replaced_audio_pipeline_late_failure_is_silent() -> None:
+    runtime = _Runtime()
+    runtime.is_active = True
+    runtime.is_hot_swap_imminent = True
+    runtime.is_flushing_hot_swap_cache = False
+    runtime.session.stream_audio = AsyncMock()
+    runtime._set_microphone_route("independent")
+    runtime._asr_runtime.abort = AsyncMock()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fail_late(*_args, **_kwargs):
+        started.set()
+        await release.wait()
+        raise RuntimeError("old pipeline failed")
+
+    old_pipeline = runtime._voice_input_audio_pipeline
+    old_pipeline.process = AsyncMock(side_effect=fail_late)
+    token = runtime._capture_ingress_token()
+    processing = asyncio.create_task(
+        runtime._process_microphone_stream_data(
+            {
+                "input_type": "audio",
+                "sample_rate_hz": 48_000,
+                "data": [1] * 480,
+            },
+            ingress_token=token,
+        )
+    )
+    await asyncio.wait_for(started.wait(), 1)
+    runtime._voice_input_audio_pipeline = type(
+        "ReplacementPipeline",
+        (),
+        {"process": AsyncMock(), "close": AsyncMock()},
+    )()
+    runtime._set_microphone_route("blocked")
+    runtime._set_microphone_route("independent")
+    release.set()
+    await asyncio.wait_for(processing, 1)
+
+    runtime._asr_runtime.abort.assert_not_awaited()
+    runtime.session.stream_audio.assert_not_awaited()
+    runtime.send_status.assert_not_awaited()
+    assert runtime._voice_input_pipeline_failed is False
 
 
 async def test_session_activation_resolves_asr_before_frontend_ack() -> None:

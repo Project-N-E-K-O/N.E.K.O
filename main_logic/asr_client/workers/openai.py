@@ -124,15 +124,27 @@ async def openai_asr_worker(
             # Diagnostics are smoke-only and must never affect transcription.
             return
 
-    async def _emit_error(error_code: str, error_message: str) -> None:
+    async def _emit_error(
+        error_code: str,
+        error_message: str,
+        *,
+        item_key: _UtteranceKey | None = None,
+    ) -> None:
         nonlocal failure_sent
         if failure_sent:
             return
         failure_sent = True
+        generation, buffer_epoch, utterance_id = (
+            item_key
+            if item_key is not None
+            else (last_generation, 0, None)
+        )
         await response_queue.put(
             _AsrWorkerEvent(
                 kind="error",
-                generation=last_generation,
+                generation=generation,
+                buffer_epoch=buffer_epoch,
+                utterance_id=utterance_id,
                 error_code=error_code,
                 error_message=error_message,
             )
@@ -297,11 +309,20 @@ async def openai_asr_worker(
                     == "conversation.item.input_audio_transcription.failed"
                 ):
                     item_id = event.get("item_id")
-                    if isinstance(item_id, str):
-                        item_keys.pop(item_id, None)
+                    if not isinstance(item_id, str) or not item_id:
+                        await _emit_error(
+                            "ASR_OPENAI_PROTOCOL_ERROR",
+                            "OpenAI transcription failure omitted its audio item ID",
+                        )
+                        return
+                    item_key = item_keys.pop(item_id, None)
+                    if item_key is None:
+                        # A cleared epoch may still deliver a late failure.
+                        continue
                     await _emit_error(
                         "ASR_OPENAI_TRANSCRIPTION_FAILED",
                         "OpenAI failed to transcribe a committed audio item",
+                        item_key=item_key,
                     )
                     return
                 if event_type == "error":

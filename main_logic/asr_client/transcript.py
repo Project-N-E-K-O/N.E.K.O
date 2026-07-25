@@ -260,6 +260,7 @@ class TranscriptDispatcher:
         )
 
     async def _run(self) -> None:
+        worker_task = asyncio.current_task()
         try:
             while True:
                 envelope = await self._queue.get()
@@ -273,9 +274,13 @@ class TranscriptDispatcher:
                     # worker alive if a defensive caller still leaks an error.
                     pass
                 finally:
-                    self._active = None
                     self._queue.task_done()
-                    self._set_idle_if_empty()
+                    if (
+                        self._worker is worker_task
+                        and self._active is envelope
+                    ):
+                        self._active = None
+                        self._set_idle_if_empty()
         except asyncio.CancelledError:
             return
 

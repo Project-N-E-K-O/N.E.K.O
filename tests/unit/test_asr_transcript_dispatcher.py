@@ -70,3 +70,53 @@ async def test_dispatcher_invalidation_cancels_old_core_work() -> None:
     await dispatcher.wait_idle()
 
     assert dispatch.await_count == 1
+
+
+async def test_old_worker_unwind_cannot_clear_new_active_dispatch() -> None:
+    old_cancelled = asyncio.Event()
+    release_old = asyncio.Event()
+    new_started = asyncio.Event()
+    release_new = asyncio.Event()
+
+    async def dispatch(envelope: TranscriptEnvelope) -> None:
+        if envelope.turn_token.turn_id == 1:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                old_cancelled.set()
+                await release_old.wait()
+                raise
+        new_started.set()
+        await release_new.wait()
+
+    dispatcher = TranscriptDispatcher(dispatch, capacity=1)
+    old_envelope = _envelope(1)
+    new_envelope = _envelope(2)
+    third_envelope = _envelope(3)
+
+    assert dispatcher.try_reserve(old_envelope.final_key) is True
+    dispatcher.submit(old_envelope)
+    await asyncio.sleep(0)
+    old_worker = dispatcher._worker
+
+    dispatcher.invalidate_all()
+    assert dispatcher.try_reserve(new_envelope.final_key) is True
+    dispatcher.submit(new_envelope)
+    await asyncio.wait_for(old_cancelled.wait(), 1)
+    await asyncio.wait_for(new_started.wait(), 1)
+    assert dispatcher._active is new_envelope
+
+    wait_idle = asyncio.create_task(dispatcher.wait_idle())
+    await asyncio.sleep(0)
+    assert wait_idle.done() is False
+    assert dispatcher.try_reserve(third_envelope.final_key) is False
+
+    release_old.set()
+    assert old_worker is not None
+    await asyncio.wait_for(old_worker, 1)
+    assert dispatcher._active is new_envelope
+    assert wait_idle.done() is False
+
+    release_new.set()
+    await asyncio.wait_for(wait_idle, 1)
+    assert dispatcher._active is None

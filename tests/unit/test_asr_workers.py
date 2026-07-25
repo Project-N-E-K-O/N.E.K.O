@@ -1005,6 +1005,7 @@ async def test_openai_transcription_failure_terminates_item_and_worker(
 
     error = await _next_event(responses, "error")
     assert error.error_code == "ASR_OPENAI_TRANSCRIPTION_FAILED"
+    assert (error.generation, error.buffer_epoch, error.utterance_id) == (0, 0, 1)
     await _next_event(responses, "closed")
     await asyncio.wait_for(task, 1)
     assert responses.empty()
@@ -1351,6 +1352,129 @@ async def test_openai_consecutive_clears_require_distinct_acknowledgements(
         buffer_epoch=2,
         utterance_id=3,
     )
+
+
+async def test_openai_clear_ignores_old_failed_item_and_keys_current_failure(
+    monkeypatch,
+) -> None:
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        assert isinstance(payload, str)
+        message = json.loads(payload)
+        if message["type"] == "session.update":
+            await ws.server_send(
+                {"type": "session.updated", "session": message["session"]}
+            )
+
+    websocket = _FakeWebSocket(on_send=on_send)
+    monkeypatch.setattr(openai.websockets, "connect", _FakeConnector(websocket))
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        openai.openai_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+        )
+    )
+    await _next_event(responses, "ready")
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_started", "item_id": "old"}
+    )
+    assert (await _next_event(responses, "utterance_started")).utterance_id == 1
+
+    await requests.put(
+        _AsrWorkerRequest(
+            kind="clear",
+            generation=4,
+            buffer_epoch=2,
+            utterance_id=7,
+        )
+    )
+    await _wait_until(
+        lambda: any(
+            isinstance(payload, str)
+            and json.loads(payload).get("type") == "input_audio_buffer.clear"
+            for payload in websocket.sent
+        )
+    )
+    await websocket.server_send({"type": "input_audio_buffer.cleared"})
+    await asyncio.wait_for(requests.join(), 1)
+
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.failed",
+            "item_id": "old",
+        }
+    )
+    await asyncio.sleep(0)
+    assert responses.empty()
+    assert task.done() is False
+
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_started", "item_id": "current"}
+    )
+    started = await _next_event(responses, "utterance_started")
+    assert (started.generation, started.buffer_epoch, started.utterance_id) == (
+        4,
+        2,
+        7,
+    )
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.failed",
+            "item_id": "current",
+        }
+    )
+    error = await _next_event(responses, "error")
+    assert (
+        error.error_code,
+        error.generation,
+        error.buffer_epoch,
+        error.utterance_id,
+    ) == ("ASR_OPENAI_TRANSCRIPTION_FAILED", 4, 2, 7)
+    await _next_event(responses, "closed")
+    await asyncio.wait_for(task, 1)
+    assert responses.empty()
+
+
+@pytest.mark.parametrize("item_id", [None, 3])
+async def test_openai_failed_event_without_valid_item_id_fails_closed(
+    monkeypatch,
+    item_id: object,
+) -> None:
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        assert isinstance(payload, str)
+        message = json.loads(payload)
+        if message["type"] == "session.update":
+            await ws.server_send(
+                {"type": "session.updated", "session": message["session"]}
+            )
+
+    websocket = _FakeWebSocket(on_send=on_send)
+    monkeypatch.setattr(openai.websockets, "connect", _FakeConnector(websocket))
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        openai.openai_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+        )
+    )
+    await _next_event(responses, "ready")
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.failed",
+            "item_id": item_id,
+        }
+    )
+
+    error = await _next_event(responses, "error")
+    assert error.error_code == "ASR_OPENAI_PROTOCOL_ERROR"
+    await _next_event(responses, "closed")
+    await asyncio.wait_for(task, 1)
 
 
 @pytest.mark.parametrize(
