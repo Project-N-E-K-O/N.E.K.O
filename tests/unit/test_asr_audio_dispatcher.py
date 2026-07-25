@@ -89,7 +89,7 @@ async def test_abort_discards_queued_writes_before_they_start() -> None:
     await dispatcher.close()
 
 
-async def test_dispatcher_records_wire_sequence_and_abort_discards() -> None:
+async def test_abort_invalidates_inflight_success_side_effects() -> None:
     release = asyncio.Event()
     started = asyncio.Event()
     session = type("Session", (), {})()
@@ -101,9 +101,10 @@ async def test_dispatcher_records_wire_sequence_and_abort_discards() -> None:
 
     session.stream_audio = stream_audio
     session.signal_user_activity_end = AsyncMock()
+    on_wire_audio = AsyncMock()
     dispatcher = AsrAudioDispatcher(
         validator=lambda _token, ref: ref is session,
-        on_wire_audio=AsyncMock(),
+        on_wire_audio=on_wire_audio,
         on_failure=AsyncMock(),
     )
     turn = _turn()
@@ -121,9 +122,30 @@ async def test_dispatcher_records_wire_sequence_and_abort_discards() -> None:
     release.set()
     await dispatcher.wait_idle()
 
-    assert dispatcher.provider_wire_sequence == 1
+    assert dispatcher.provider_wire_sequence == 0
+    on_wire_audio.assert_not_awaited()
     assert dispatcher.asr_abort_discarded_command_count >= 1
     assert dispatcher.asr_audio_command_queue_ms >= 0
+    await dispatcher.close()
+
+
+async def test_current_success_records_wire_side_effects_once() -> None:
+    session = type("Session", (), {})()
+    session.stream_audio = AsyncMock()
+    session.signal_user_activity_end = AsyncMock()
+    on_wire_audio = AsyncMock()
+    dispatcher = AsrAudioDispatcher(
+        validator=lambda _token, ref: ref is session,
+        on_wire_audio=on_wire_audio,
+        on_failure=AsyncMock(),
+    )
+    turn = _turn()
+
+    assert dispatcher.activate(turn, session, b"\x01\x00")
+    await dispatcher.wait_idle()
+
+    assert dispatcher.provider_wire_sequence == 1
+    on_wire_audio.assert_awaited_once_with(turn, session, 2)
     await dispatcher.close()
 
 

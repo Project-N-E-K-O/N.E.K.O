@@ -305,6 +305,8 @@ class AsrAudioDispatcher:
                         chunk,
                         sample_rate_hz=command.sample_rate_hz,
                     )
+                    if not self._command_is_current(command):
+                        break
                     self.provider_wire_sequence += 1
                     await self._on_wire_audio(
                         command.turn_token,

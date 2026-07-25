@@ -11,7 +11,7 @@ import asyncio
 import json
 import struct
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 from websockets import exceptions as web_exceptions
@@ -465,7 +465,10 @@ class AsrRuntimeMixin:
         except asyncio.QueueFull:
             await asyncio.sleep(0)
             if not self._ingress_token_matches(frame.token):
-                return
+                rebound = self._rebind_hot_swap_ingress_token(frame.token)
+                if rebound is None:
+                    return
+                frame = replace(frame, token=rebound)
             try:
                 self._audio_stream_queue.put_nowait(frame)
             except asyncio.QueueFull:
@@ -528,7 +531,6 @@ class AsrRuntimeMixin:
             or token.route_generation == self._microphone_route_generation
             or self._voice_lease_owner != "core"
             or not self._voice_input_accepts_pcm()
-            or self._asr_route_mode == "blocked"
         ):
             return None
         return self._capture_ingress_token()
@@ -552,17 +554,35 @@ class AsrRuntimeMixin:
             return
         self._voice_input_pipeline_failed = True
         independent_route = self._asr_route_mode == "independent"
+        provider = (
+            self._independent_asr_provider
+            or self._independent_asr_route_key
+            or "unknown"
+        )
         self._set_microphone_route("blocked")
         self._clear_audio_stream_queue("audio_preprocessing_failed")
         self.hot_swap_audio_cache.clear()
         if independent_route:
             await self._asr_runtime.abort("audio_preprocessing_failed")
+        if (
+            not self._voice_input_pipeline_failed
+            or self.session is not session_ref
+            or self._audio_stream_epoch != audio_epoch
+            or self._voice_input_audio_pipeline is not pipeline_ref
+            or not self.is_active
+            or self._asr_route_mode != "blocked"
+            or (
+                self._independent_asr_provider
+                or self._independent_asr_route_key
+                or "unknown"
+            )
+            != provider
+        ):
+            return
         await self._send_core_asr_status(
             AsrStatusEvent(
                 code="ASR_AUDIO_PREPROCESSING_FAILED",
-                provider=self._independent_asr_provider
-                or self._independent_asr_route_key
-                or "unknown",
+                provider=provider,
             )
         )
 
@@ -581,6 +601,7 @@ class AsrRuntimeMixin:
         session_ref = self.session
         audio_epoch = self._audio_stream_epoch
         pipeline_ref = self._voice_input_audio_pipeline
+        processing_reserved = False
         try:
             if not isinstance(data, list):
                 logger.error("Microphone input rejected: expected a PCM sample list")
@@ -597,6 +618,10 @@ class AsrRuntimeMixin:
                     declared_rate_hz,
                 )
                 return
+            async with self.hot_swap_cache_lock:
+                self._hot_swap_live_audio_inflight += 1
+                self._hot_swap_live_audio_idle.clear()
+                processing_reserved = True
             try:
                 processed_frame = await pipeline_ref.process(
                     audio_bytes,
@@ -615,16 +640,30 @@ class AsrRuntimeMixin:
             if not processed_frame.pcm16:
                 return
             if (
-                not self._ingress_token_matches(ingress_token)
-                or self.session is not session_ref
-                or not self.is_active
+                not self.is_active
                 or self._audio_stream_epoch != audio_epoch
+                or self._voice_lease_owner != "core"
+                or not self._voice_input_accepts_pcm()
             ):
                 return
+            if not self._ingress_token_matches(ingress_token):
+                rebound = self._rebind_hot_swap_ingress_token(ingress_token)
+                if rebound is None:
+                    return
+                ingress_token = rebound
+            refs_changed = (
+                self.session is not session_ref
+                or self._voice_input_audio_pipeline is not pipeline_ref
+            )
             cache_for_hot_swap = False
-            live_route_reserved = False
             async with self.hot_swap_cache_lock:
-                if self.is_hot_swap_imminent or self.is_flushing_hot_swap_cache:
+                hot_swap_barrier = (
+                    self.is_hot_swap_imminent
+                    or self.is_flushing_hot_swap_cache
+                )
+                if refs_changed and not hot_swap_barrier:
+                    return
+                if hot_swap_barrier:
                     cache_for_hot_swap = True
                     accepted = self.hot_swap_audio_cache.append(
                         _HotSwapAudioFrame(
@@ -634,39 +673,34 @@ class AsrRuntimeMixin:
                             rnnoise_available=processed_frame.rnnoise_available,
                         )
                     )
-                else:
-                    self._hot_swap_live_audio_inflight += 1
-                    self._hot_swap_live_audio_idle.clear()
-                    live_route_reserved = True
             if cache_for_hot_swap:
                 if not accepted:
                     await self._asr_runtime.abort("ingress_backpressure")
                 return
-            try:
-                if not self._ingress_token_matches(ingress_token):
-                    return
-                await self._route_microphone_audio(
-                    processed_frame.pcm16,
-                    sample_rate_hz=processed_frame.sample_rate_hz,
-                    speech_probability=processed_frame.speech_probability,
-                    rnnoise_available=processed_frame.rnnoise_available,
-                    ingress_token=ingress_token,
-                )
-            finally:
-                if live_route_reserved:
-                    async with self.hot_swap_cache_lock:
-                        self._hot_swap_live_audio_inflight = max(
-                            0,
-                            self._hot_swap_live_audio_inflight - 1,
-                        )
-                        if self._hot_swap_live_audio_inflight == 0:
-                            self._hot_swap_live_audio_idle.set()
+            if not self._ingress_token_matches(ingress_token):
+                return
+            await self._route_microphone_audio(
+                processed_frame.pcm16,
+                sample_rate_hz=processed_frame.sample_rate_hz,
+                speech_probability=processed_frame.speech_probability,
+                rnnoise_available=processed_frame.rnnoise_available,
+                ingress_token=ingress_token,
+            )
         except struct.error:
             logger.error("Microphone input rejected: invalid PCM samples")
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.error("Microphone preprocessing or ASR routing failed")
+        finally:
+            if processing_reserved:
+                async with self.hot_swap_cache_lock:
+                    self._hot_swap_live_audio_inflight = max(
+                        0,
+                        self._hot_swap_live_audio_inflight - 1,
+                    )
+                    if self._hot_swap_live_audio_inflight == 0:
+                        self._hot_swap_live_audio_idle.set()
 
     async def _route_microphone_audio(
         self,

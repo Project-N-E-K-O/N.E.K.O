@@ -29,10 +29,12 @@ from main_logic.voice_turn.contracts import (
 from main_logic.voice_turn.contracts import EvaluationStatus, TurnDecision
 from main_logic.voice_turn.coordinator import CoordinatorState
 from main_logic.asr_client.detector import (
+    BoundDetectorTurn,
     CoreDetectorEventEnvelope,
     DetectorCandidateKey,
     DetectorIngressIdentity,
     DetectorRuntimeEvent,
+    DetectorTurnEvent,
     DetectorSubmitResult,
     DetectorSubmitStatus,
 )
@@ -189,6 +191,37 @@ def _install_ready_lifecycle(
     runtime._asr_runtime._asr_current_ingress_token = (
         runtime._capture_ingress_token()
     )
+
+
+def _install_replacement_runtime_generation(
+    runtime: _Runtime,
+    provider: str = "qwen",
+):
+    component = runtime._asr_runtime
+    component._asr_session_epoch += 1
+    component._asr_audio_generation += 1
+    component._asr_transcript_dispatcher.invalidate_all()
+    component._asr_detector_dispatcher.invalidate_all()
+    component._asr_audio_dispatcher.abort()
+    session = SimpleNamespace(
+        is_ready=True,
+        close=AsyncMock(),
+        signal_user_activity_end=AsyncMock(),
+    )
+    lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy(provider, "manual"),
+        shadow_mode=False,
+    )
+    lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    detector = _QueuedSmartTurnDetector()
+    detector.detector_epoch = 1
+    component._asr_session = session
+    component._asr_provider = provider
+    component._asr_lifecycle = lifecycle
+    component._asr_detector = detector
+    runtime._set_microphone_route("independent")
+    component._asr_current_ingress_token = runtime._capture_ingress_token()
+    return session, lifecycle, detector
 
 
 async def _install_active_smart_turn(runtime: _Runtime, provider: str = "qwen") -> None:
@@ -2722,6 +2755,246 @@ async def test_replaced_audio_pipeline_late_failure_is_silent() -> None:
     runtime.session.stream_audio.assert_not_awaited()
     runtime.send_status.assert_not_awaited()
     assert runtime._voice_input_pipeline_failed is False
+
+
+async def test_old_abort_release_cannot_close_replacement_session() -> None:
+    runtime = _Runtime()
+    old_session = SimpleNamespace(is_ready=True, close=AsyncMock())
+    runtime._asr_session = old_session
+    _install_ready_lifecycle(runtime, "qwen")
+    old_lifecycle = runtime._asr_lifecycle
+    old_detector = runtime._asr_detector
+    release_started = asyncio.Event()
+    release_old_lease = asyncio.Event()
+
+    class BlockingLease:
+        async def release(self) -> None:
+            release_started.set()
+            await release_old_lease.wait()
+
+    runtime._asr_smart_turn_lease = BlockingLease()
+    abort_task = asyncio.create_task(runtime._asr_runtime.abort("test_abort"))
+    await asyncio.wait_for(release_started.wait(), 1)
+
+    new_session, new_lifecycle, new_detector = (
+        _install_replacement_runtime_generation(runtime, "qwen")
+    )
+    release_old_lease.set()
+    await asyncio.wait_for(abort_task, 1)
+
+    assert runtime._asr_session is new_session
+    assert runtime._asr_lifecycle is new_lifecycle
+    assert runtime._asr_detector is new_detector
+    assert runtime._asr_lifecycle is not old_lifecycle
+    assert runtime._asr_detector is not old_detector
+    old_session.close.assert_awaited_once_with()
+    new_session.close.assert_not_awaited()
+
+
+async def test_old_failure_callback_cannot_detach_replacement_runtime() -> None:
+    runtime = _Runtime()
+    old_session = SimpleNamespace(is_ready=True, close=AsyncMock())
+    runtime._asr_session = old_session
+    _install_ready_lifecycle(runtime, "qwen")
+    old_lifecycle = runtime._asr_lifecycle
+    old_detector = runtime._asr_detector
+    blocked_started = asyncio.Event()
+    release_blocked = asyncio.Event()
+
+    async def block_old_lifecycle(payload: str) -> None:
+        status = json.loads(payload)
+        if (
+            status.get("code") == "ASR_LIFECYCLE_STATE"
+            and status.get("details", {}).get("state") == "blocked"
+        ):
+            blocked_started.set()
+            await release_blocked.wait()
+
+    runtime.send_status.side_effect = block_old_lifecycle
+    old_epoch = runtime._asr_session_epoch
+    failure_task = asyncio.create_task(
+        runtime._handle_independent_asr_error(old_epoch, "qwen")
+    )
+    await asyncio.wait_for(blocked_started.wait(), 1)
+
+    new_session, new_lifecycle, new_detector = (
+        _install_replacement_runtime_generation(runtime, "qwen")
+    )
+    release_blocked.set()
+    await asyncio.wait_for(failure_task, 1)
+    await asyncio.sleep(0)
+
+    assert runtime._asr_session is new_session
+    assert runtime._asr_lifecycle is new_lifecycle
+    assert runtime._asr_detector is new_detector
+    assert old_lifecycle.snapshot.state is VoiceLifecycleState.OFF
+    old_detector.close.assert_awaited_once_with()
+    new_session.close.assert_not_awaited()
+    new_detector.close.assert_not_awaited()
+    assert runtime._asr_route_mode == "independent"
+
+
+async def test_old_detector_endpoint_cannot_seal_replacement_runtime() -> None:
+    runtime = _Runtime()
+    old_session = SimpleNamespace(is_ready=True, close=AsyncMock())
+    runtime._asr_session = old_session
+    _install_ready_lifecycle(runtime, "qwen")
+    lifecycle = runtime._asr_lifecycle
+    assert lifecycle is not None
+    lifecycle.transition(VoiceLifecycleEvent.SOFT_WAKE)
+    lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+    detector = _QueuedSmartTurnDetector()
+    detector.detector_epoch = 1
+    runtime._asr_detector = detector
+    runtime._asr_runtime._asr_current_ingress_token = (
+        runtime._capture_ingress_token()
+    )
+    turn_token = runtime._asr_runtime._capture_turn_token(lifecycle)
+    detector._token = turn_token
+    candidate = DetectorCandidateKey(detector.detector_epoch, 1)
+    envelope = CoreDetectorEventEnvelope(
+        event=DetectorTurnEvent(
+            ingress=DetectorIngressIdentity(
+                ingress_token=turn_token.ingress,
+                detector_epoch=detector.detector_epoch,
+                sequence_no=1,
+            ),
+            bound_turn=BoundDetectorTurn(
+                candidate=candidate,
+                turn_token=turn_token,
+            ),
+            kind="complete",
+        ),
+        detector_ref=detector,
+        lifecycle_ref=lifecycle,
+        session_epoch=runtime._asr_session_epoch,
+    )
+    draining_started = asyncio.Event()
+    release_draining = asyncio.Event()
+
+    async def block_old_lifecycle(payload: str) -> None:
+        status = json.loads(payload)
+        if (
+            status.get("code") == "ASR_LIFECYCLE_STATE"
+            and status.get("details", {}).get("state") == "draining"
+        ):
+            draining_started.set()
+            await release_draining.wait()
+
+    runtime.send_status.side_effect = block_old_lifecycle
+    endpoint_task = asyncio.create_task(
+        runtime._asr_runtime._dispatch_asr_detector_event(envelope)
+    )
+    await asyncio.wait_for(draining_started.wait(), 1)
+
+    new_session, new_lifecycle, new_detector = (
+        _install_replacement_runtime_generation(runtime, "qwen")
+    )
+    release_draining.set()
+    await asyncio.wait_for(endpoint_task, 1)
+
+    assert runtime._asr_session is new_session
+    assert runtime._asr_lifecycle is new_lifecycle
+    assert runtime._asr_detector is new_detector
+    new_session.close.assert_not_awaited()
+    assert runtime._asr_route_mode == "independent"
+    statuses = [
+        json.loads(call.args[0]).get("code")
+        for call in runtime.send_status.await_args_list
+    ]
+    assert "ASR_AUDIO_ORDERING_FAILED" not in statuses
+
+
+async def test_old_smart_turn_release_cannot_clear_replacement_lease() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "qwen")
+    lifecycle = runtime._asr_lifecycle
+    detector = runtime._asr_detector
+    assert lifecycle is not None
+    assert detector is not None
+    release_started = asyncio.Event()
+    release_old_lease = asyncio.Event()
+
+    class BlockingLease:
+        token = object()
+
+        async def release(self) -> None:
+            release_started.set()
+            await release_old_lease.wait()
+
+    old_lease = BlockingLease()
+    runtime._asr_smart_turn_lease = old_lease
+    prepare_task = asyncio.create_task(
+        runtime._asr_runtime._ensure_smart_turn_ready(
+            lifecycle,
+            runtime._asr_session_epoch,
+        )
+    )
+    await asyncio.wait_for(release_started.wait(), 1)
+
+    new_session, new_lifecycle, new_detector = (
+        _install_replacement_runtime_generation(runtime, "qwen")
+    )
+    new_lease = _TestSmartTurnLease(
+        runtime._asr_runtime._capture_turn_token(new_lifecycle)
+    )
+    runtime._asr_smart_turn_lease = new_lease
+    release_old_lease.set()
+
+    assert await asyncio.wait_for(prepare_task, 1) is False
+    assert runtime._asr_smart_turn_lease is new_lease
+    assert runtime._asr_session is new_session
+    assert runtime._asr_lifecycle is new_lifecycle
+    assert runtime._asr_detector is new_detector
+    assert new_lease.released is False
+
+
+async def test_old_pipeline_failure_does_not_report_replacement_provider() -> None:
+    runtime = _Runtime()
+    runtime.is_active = True
+    runtime.is_hot_swap_imminent = True
+    runtime.is_flushing_hot_swap_cache = False
+    runtime._set_microphone_route("independent")
+    runtime._independent_asr_provider = "provider-a"
+    abort_started = asyncio.Event()
+    release_abort = asyncio.Event()
+
+    async def block_abort(_reason: str) -> None:
+        abort_started.set()
+        await release_abort.wait()
+
+    runtime._asr_runtime.abort = AsyncMock(side_effect=block_abort)
+    old_pipeline = runtime._voice_input_audio_pipeline
+    old_pipeline.process = AsyncMock(side_effect=RuntimeError("soxr failed"))
+    processing = asyncio.create_task(
+        runtime._process_microphone_stream_data(
+            {
+                "input_type": "audio",
+                "sample_rate_hz": 48_000,
+                "data": [1] * 480,
+            },
+            ingress_token=runtime._capture_ingress_token(),
+        )
+    )
+    await asyncio.wait_for(abort_started.wait(), 1)
+
+    runtime._voice_input_audio_pipeline = SimpleNamespace(
+        process=AsyncMock(),
+        close=AsyncMock(),
+    )
+    runtime._voice_input_pipeline_failed = False
+    runtime._independent_asr_provider = "provider-b"
+    runtime._set_microphone_route("independent")
+    release_abort.set()
+    await asyncio.wait_for(processing, 1)
+
+    assert runtime._asr_route_mode == "independent"
+    assert runtime._independent_asr_provider == "provider-b"
+    assert runtime._voice_input_pipeline_failed is False
+    runtime.send_status.assert_not_awaited()
+    runtime._asr_runtime.abort.assert_awaited_once_with(
+        "audio_preprocessing_failed"
+    )
 
 
 async def test_session_activation_resolves_asr_before_frontend_ack() -> None:
