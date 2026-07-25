@@ -2287,3 +2287,183 @@ async def test_current_deferred_turn_release_error_fails_closed_once() -> None:
     assert runtime._asr_detector is None
     assert [event.code for event in failures] == ["ASR_ENDPOINTING_FAILED"]
     assert [event.code for event in statuses] == ["ASR_ENDPOINTING_FAILED"]
+
+
+@pytest.mark.parametrize("teardown", ["abort", "suspend"])
+async def test_runtime_start_transport_teardown_returns_stale_without_ready(
+    monkeypatch,
+    teardown: str,
+) -> None:
+    release_connect = asyncio.Event()
+    candidate = _RuntimeStartCandidate(connect_gate=release_connect)
+    statuses = []
+    _patch_runtime_start(monkeypatch, [candidate])
+    runtime = IndependentAsrRuntime(_runtime_callbacks(statuses=statuses))
+
+    start_task = asyncio.create_task(
+        runtime.start(
+            route_key="qwen",
+            resource_optimization_enabled=True,
+        )
+    )
+    await asyncio.wait_for(candidate.connect_started.wait(), 1)
+    if teardown == "suspend":
+        await runtime.suspend("game_takeover")
+    else:
+        await runtime.abort("hard_mute")
+    release_connect.set()
+    result = await asyncio.wait_for(start_task, 1)
+
+    assert result.status is AsrStartStatus.FAILED
+    assert result.failure_code == "ASR_START_STALE"
+    assert runtime._asr_session is None
+    assert runtime._asr_lifecycle is None
+    assert runtime._asr_detector is None
+    assert [event.code for event in statuses] == []
+    candidate.close.assert_awaited_once_with()
+
+
+async def test_stale_pending_lifecycle_callback_cannot_fail_reconnected_runtime() -> (
+    None
+):
+    lifecycle_entered = asyncio.Event()
+    release_lifecycle = asyncio.Event()
+    failures = []
+    statuses = []
+
+    async def block_active_lifecycle(_event) -> None:
+        lifecycle_entered.set()
+        await release_lifecycle.wait()
+
+    runtime = IndependentAsrRuntime(
+        _runtime_callbacks(
+            on_lifecycle=block_active_lifecycle,
+            failures=failures,
+            statuses=statuses,
+        )
+    )
+    detector = _RuntimeDetectorStub()
+    _install_pending_runtime_state(runtime, detector)
+    runtime._asr_lifecycle.provider_policy = resolve_provider_policy(
+        "qwen",
+        "provider",
+    )
+    runtime._ensure_smart_turn_ready = AsyncMock(return_value=True)
+    activate = asyncio.create_task(
+        runtime._activate_pending_independent_turn(runtime._asr_session_epoch)
+    )
+    await asyncio.wait_for(lifecycle_entered.wait(), 1)
+    new_session, new_lifecycle, new_detector = _replace_runtime_identity_same_epoch(
+        runtime
+    )
+
+    release_lifecycle.set()
+    await asyncio.wait_for(activate, 1)
+
+    assert runtime._asr_session is new_session
+    assert runtime._asr_lifecycle is new_lifecycle
+    assert runtime._asr_detector is new_detector
+    assert runtime._asr_audio_bytes == 0
+    assert failures == []
+    assert statuses == []
+
+
+async def test_stale_pending_prepare_callback_cannot_fail_reconnected_runtime() -> None:
+    prepare_entered = asyncio.Event()
+    release_prepare = asyncio.Event()
+    failures = []
+    statuses = []
+
+    async def block_prepare(_token) -> bool:
+        prepare_entered.set()
+        await release_prepare.wait()
+        return True
+
+    runtime = IndependentAsrRuntime(
+        _runtime_callbacks(
+            on_prepare_turn=block_prepare,
+            failures=failures,
+            statuses=statuses,
+        )
+    )
+    detector = _RuntimeDetectorStub()
+    _install_pending_runtime_state(runtime, detector)
+    runtime._asr_lifecycle.provider_policy = resolve_provider_policy(
+        "qwen",
+        "provider",
+    )
+    activate = asyncio.create_task(
+        runtime._activate_pending_independent_turn(runtime._asr_session_epoch)
+    )
+    await asyncio.wait_for(prepare_entered.wait(), 1)
+    new_session, new_lifecycle, new_detector = _replace_runtime_identity_same_epoch(
+        runtime
+    )
+
+    release_prepare.set()
+    await asyncio.wait_for(activate, 1)
+
+    assert runtime._asr_session is new_session
+    assert runtime._asr_lifecycle is new_lifecycle
+    assert runtime._asr_detector is new_detector
+    assert runtime._asr_audio_bytes == 0
+    assert failures == []
+    assert statuses == []
+
+
+async def test_stale_final_lease_unwind_uses_old_dispatcher_only() -> None:
+    lifecycle_callback = AsyncMock()
+    failures = []
+    statuses = []
+    runtime = IndependentAsrRuntime(
+        _runtime_callbacks(
+            on_lifecycle=lifecycle_callback,
+            failures=failures,
+            statuses=statuses,
+        )
+    )
+    detector = _RuntimeDetectorStub()
+    _install_active_runtime_state(runtime, detector)
+    epoch = runtime._asr_session_epoch
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_endpoint(epoch)
+    old_dispatcher = runtime._asr_transcript_dispatcher
+    old_final_key = runtime._asr_reserved_final_key
+    old_lease = runtime._asr_smart_turn_lease
+    assert old_final_key is not None
+    assert old_lease is not None
+    release_started = asyncio.Event()
+    release_lease = asyncio.Event()
+
+    async def block_release() -> None:
+        release_started.set()
+        await release_lease.wait()
+
+    old_lease.release = AsyncMock(side_effect=block_release)
+    final = asyncio.create_task(
+        runtime._handle_independent_asr_final("final", epoch, "qwen")
+    )
+    await asyncio.wait_for(release_started.wait(), 1)
+    await runtime.abort("hard_mute")
+    new_session, new_lifecycle, new_detector = _replace_runtime_identity_same_epoch(
+        runtime
+    )
+    new_dispatcher = TranscriptDispatcher(runtime._dispatch_asr_transcript_envelope)
+    new_dispatcher.submit = MagicMock(wraps=new_dispatcher.submit)
+    runtime._asr_transcript_dispatcher = new_dispatcher
+    lifecycle_callback.reset_mock()
+
+    release_lease.set()
+    await asyncio.wait_for(final, 1)
+
+    assert runtime._asr_session is new_session
+    assert runtime._asr_lifecycle is new_lifecycle
+    assert runtime._asr_detector is new_detector
+    assert old_final_key not in old_dispatcher._reservations
+    new_dispatcher.submit.assert_not_called()
+    lifecycle_callback.assert_not_awaited()
+    assert failures == []
+    assert statuses == []

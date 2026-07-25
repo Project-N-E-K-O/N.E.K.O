@@ -3821,11 +3821,13 @@ async def test_status_delivery_failure_never_breaks_audio_runtime() -> None:
     runtime.send_status.side_effect = RuntimeError("socket closed")
     runtime._set_microphone_route("native")
     runtime.session.stream_audio = AsyncMock()
+    identity = runtime._asr_runtime._capture_runtime_identity()
 
     await runtime._send_asr_status(
         "ASR_INDEPENDENT_READY",
         "glm",
         session_epoch=runtime._asr_session_epoch,
+        expected_identity=identity,
     )
     await runtime._route_microphone_audio(
         b"\x01\x00" * 160,
@@ -4129,3 +4131,250 @@ async def test_failure_event_only_blocks_current_generation() -> None:
         )
     )
     assert runtime._asr_route_mode == "blocked"
+
+
+@pytest.mark.parametrize(
+    "transition",
+    [
+        "hard_mute",
+        "focus_suppress",
+        "game_takeover",
+        "lease_sync",
+        "connection_replacement",
+    ],
+)
+async def test_core_start_is_invalidated_by_mic_lease_transition(
+    monkeypatch,
+    transition: str,
+) -> None:
+    import main_logic.asr_client.runtime as runtime_module
+
+    release_connect = asyncio.Event()
+
+    class Candidate:
+        def __init__(self) -> None:
+            self.connect_started = asyncio.Event()
+            self.is_ready = True
+            self.close = AsyncMock()
+
+        async def connect(self) -> None:
+            self.connect_started.set()
+            await release_connect.wait()
+
+    candidate = Candidate()
+    selection = SimpleNamespace(
+        provider_key="qwen",
+        endpointing_mode="provider",
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=selection),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_create_asr_session_from_selection",
+        MagicMock(return_value=candidate),
+    )
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+    runtime = _Runtime()
+    runtime.core_api_type = "qwen"
+    runtime._voice_lease_connection_id = "connection"
+    runtime._voice_lease_generation = 0
+
+    starting = asyncio.create_task(runtime._start_independent_asr_if_enabled("audio"))
+    await asyncio.wait_for(candidate.connect_started.wait(), 1)
+    if transition == "connection_replacement":
+        runtime._begin_voice_input_connection("replacement")
+    elif transition == "lease_sync":
+        await runtime._handle_voice_input_control(
+            "lease_sync",
+            1,
+            owner="core",
+            hard_muted=False,
+            focus_suppressed=False,
+        )
+    else:
+        await runtime._handle_voice_input_control(transition, 1)
+    release_connect.set()
+    await asyncio.wait_for(starting, 1)
+
+    assert runtime._asr_route_mode == "blocked"
+    assert runtime._independent_asr_provider is None
+    assert "ASR_INDEPENDENT_READY" not in str(runtime.send_status.await_args_list)
+    candidate.close.assert_awaited_once_with()
+
+
+async def test_settings_result_is_stale_after_connection_replacement(
+    monkeypatch,
+) -> None:
+    settings_started = asyncio.Event()
+    release_settings = asyncio.Event()
+
+    async def load_settings():
+        settings_started.set()
+        await release_settings.wait()
+        return {"independentAsrEnabled": True}
+
+    runtime = _Runtime()
+    runtime.core_api_type = "qwen"
+    runtime._voice_lease_connection_id = "connection"
+    runtime._voice_lease_generation = 0
+    runtime._asr_runtime.start = AsyncMock(
+        return_value=AsrStartResult(
+            AsrStartStatus.READY,
+            provider="qwen",
+            session_epoch=runtime._asr_session_epoch,
+        )
+    )
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        load_settings,
+    )
+
+    starting = asyncio.create_task(runtime._start_independent_asr_if_enabled("audio"))
+    await asyncio.wait_for(settings_started.wait(), 1)
+    runtime._begin_voice_input_connection("replacement")
+    release_settings.set()
+    await asyncio.wait_for(starting, 1)
+
+    runtime._asr_runtime.start.assert_not_awaited()
+    assert runtime._asr_route_mode == "blocked"
+    assert runtime._independent_asr_provider is None
+
+
+@pytest.mark.parametrize(
+    "newer_transition",
+    [
+        "game_takeover",
+        "hard_mute",
+        "focus_suppress",
+        "lease_generation",
+        "connection_replacement",
+    ],
+)
+async def test_old_game_release_cannot_resume_after_newer_transition(
+    newer_transition: str,
+) -> None:
+    runtime = _Runtime()
+    runtime._voice_lease_connection_id = "connection"
+    runtime._voice_lease_generation = 1
+    runtime._voice_lease_owner = "game"
+    abort_started = asyncio.Event()
+    release_abort = asyncio.Event()
+
+    async def abort(reason: str) -> None:
+        if reason == "game_release":
+            abort_started.set()
+            await release_abort.wait()
+
+    runtime._asr_runtime.abort = AsyncMock(side_effect=abort)
+    runtime._asr_runtime.resume = AsyncMock()
+    runtime._asr_runtime.suspend = AsyncMock()
+    releasing = asyncio.create_task(
+        runtime._apply_voice_lease_state(
+            owner="core",
+            hard_muted=False,
+            focus_suppressed=False,
+            reason="game_release",
+            force_abort=True,
+        )
+    )
+    await asyncio.wait_for(abort_started.wait(), 1)
+
+    if newer_transition == "connection_replacement":
+        runtime._begin_voice_input_connection("replacement")
+    elif newer_transition == "lease_generation":
+        runtime._voice_lease_generation += 1
+    elif newer_transition == "game_takeover":
+        await runtime._apply_voice_lease_state(
+            owner="game",
+            hard_muted=False,
+            focus_suppressed=False,
+            reason="game_takeover",
+            force_abort=True,
+        )
+    elif newer_transition == "hard_mute":
+        await runtime._apply_voice_lease_state(
+            owner="core",
+            hard_muted=True,
+            focus_suppressed=False,
+            reason="hard_mute",
+            force_abort=True,
+        )
+    else:
+        await runtime._apply_voice_lease_state(
+            owner="core",
+            hard_muted=False,
+            focus_suppressed=True,
+            reason="focus_suppress",
+            force_abort=True,
+        )
+    release_abort.set()
+    await asyncio.wait_for(releasing, 1)
+
+    runtime._asr_runtime.resume.assert_not_awaited()
+
+
+async def test_current_game_release_still_aborts_and_resumes_once() -> None:
+    runtime = _Runtime()
+    runtime._voice_lease_connection_id = "connection"
+    runtime._voice_lease_generation = 1
+    runtime._voice_lease_owner = "game"
+    runtime._asr_runtime.abort = AsyncMock()
+    runtime._asr_runtime.resume = AsyncMock()
+
+    await runtime._apply_voice_lease_state(
+        owner="core",
+        hard_muted=False,
+        focus_suppressed=False,
+        reason="game_release",
+        force_abort=True,
+    )
+
+    runtime._asr_runtime.abort.assert_awaited_once_with("game_release")
+    runtime._asr_runtime.resume.assert_awaited_once_with("game_release")
+
+
+@pytest.mark.parametrize("notification", ["status", "lifecycle", "failure"])
+async def test_notification_waiting_on_lock_drops_same_epoch_stale_identity(
+    notification: str,
+) -> None:
+    runtime = _Runtime()
+    runtime._set_microphone_route("independent")
+    current_epoch = runtime._asr_session_epoch
+    await runtime._asr_notification_lock.acquire()
+    if notification == "status":
+        event = AsrStatusEvent(
+            code="ASR_OLD_READY",
+            provider="old-provider",
+            session_epoch=current_epoch,
+        )
+        delivery = asyncio.create_task(runtime._send_core_asr_status(event))
+    elif notification == "lifecycle":
+        event = AsrLifecycleNotification(
+            state="local_listen",
+            provider="old-provider",
+            session_epoch=current_epoch,
+        )
+        delivery = asyncio.create_task(runtime._send_core_asr_lifecycle(event))
+    else:
+        event = AsrFailureEvent(
+            code="ASR_INDEPENDENT_FAILED",
+            provider="old-provider",
+            session_epoch=current_epoch,
+        )
+        delivery = asyncio.create_task(runtime._handle_core_asr_failure(event))
+    await asyncio.sleep(0)
+
+    runtime._asr_audio_generation += 1
+    runtime._asr_notification_lock.release()
+    await asyncio.wait_for(delivery, 1)
+
+    runtime.send_status.assert_not_awaited()
+    assert runtime._asr_route_mode == "independent"

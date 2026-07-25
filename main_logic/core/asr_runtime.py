@@ -276,6 +276,73 @@ class AsrRuntimeMixin:
     def _capture_native_ingress_token(self) -> VoiceIngressToken:
         return self._capture_ingress_token()
 
+    def _capture_core_asr_operation_identity(self) -> tuple[object, ...]:
+        return (
+            self._asr_route_operation_generation,
+            self._voice_input_transition_generation,
+            self._voice_lease_connection_id,
+            self._voice_lease_generation,
+            self._voice_lease_owner,
+            self._voice_lease_hard_muted,
+            self._voice_lease_focus_suppressed,
+            getattr(self, "session", None),
+            self._capture_ingress_token(),
+            self._asr_route_mode,
+            str(getattr(self, "core_api_type", "") or "").strip().lower(),
+            self._independent_asr_route_key,
+            self._independent_asr_provider,
+        )
+
+    @staticmethod
+    def _core_asr_identity_ingress_token(
+        identity: tuple[object, ...],
+    ) -> VoiceIngressToken:
+        token = identity[8]
+        assert isinstance(token, VoiceIngressToken)
+        return token
+
+    def _core_asr_operation_identity_matches(
+        self,
+        identity: tuple[object, ...],
+        *,
+        include_runtime_identity: bool = True,
+    ) -> bool:
+        (
+            route_operation_generation,
+            voice_transition_generation,
+            connection_id,
+            lease_generation,
+            owner,
+            hard_muted,
+            focus_suppressed,
+            session_ref,
+            ingress_token,
+            route_mode,
+            core_type,
+            route_key,
+            provider,
+        ) = identity
+        if (
+            route_operation_generation != self._asr_route_operation_generation
+            or voice_transition_generation != self._voice_input_transition_generation
+            or connection_id != self._voice_lease_connection_id
+            or lease_generation != self._voice_lease_generation
+            or owner != self._voice_lease_owner
+            or hard_muted != self._voice_lease_hard_muted
+            or focus_suppressed != self._voice_lease_focus_suppressed
+            or session_ref is not getattr(self, "session", None)
+            or route_mode != self._asr_route_mode
+            or core_type
+            != str(getattr(self, "core_api_type", "") or "").strip().lower()
+            or route_key != self._independent_asr_route_key
+            or provider != self._independent_asr_provider
+        ):
+            return False
+        return bool(
+            not include_runtime_identity
+            or ingress_token == self._capture_ingress_token()
+        )
+
     def _ingress_token_matches(self, token: VoiceIngressToken) -> bool:
         return bool(
             token.connection_id == self._voice_lease_connection_id
@@ -352,13 +419,29 @@ class AsrRuntimeMixin:
         self._omni_mic_audio_bytes = 0
         core_type = str(getattr(self, "core_api_type", "") or "").strip().lower()
         self._independent_asr_route_key = core_type
-        session_epoch = self._capture_ingress_token().session_epoch
+        start_identity = self._capture_core_asr_operation_identity()
+        session_epoch = self._core_asr_identity_ingress_token(
+            start_identity
+        ).session_epoch
+
+        def core_start_is_current(*, include_runtime_identity: bool = True) -> bool:
+            return bool(
+                self._core_asr_operation_identity_matches(
+                    start_identity,
+                    include_runtime_identity=include_runtime_identity,
+                )
+                and self._voice_lease_owner == "core"
+                and self._voice_input_accepts_pcm()
+            )
+
         if input_mode != "audio":
             self._set_microphone_route("blocked")
             return
         try:
             settings = await _core_facade.aload_global_conversation_settings()
         except Exception:
+            if not core_start_is_current():
+                return
             await self._send_core_asr_status(
                 AsrStatusEvent(
                     code="ASR_INDEPENDENT_FAILED",
@@ -367,10 +450,7 @@ class AsrRuntimeMixin:
                 )
             )
             return
-        if (
-            not self._asr_route_operation_matches(operation_generation)
-            or session_epoch != self._capture_ingress_token().session_epoch
-        ):
+        if not core_start_is_current():
             return
         enabled = bool(settings.get("independentAsrEnabled", False))
         optimization_value = settings.get(
@@ -392,13 +472,15 @@ class AsrRuntimeMixin:
             resource_optimization_enabled=optimization_value is not False,
         )
         current_epoch = self._capture_ingress_token().session_epoch
-        if (
-            not self._asr_route_operation_matches(operation_generation)
-            or core_type
-            != str(getattr(self, "core_api_type", "") or "").strip().lower()
-            or self._independent_asr_route_key != core_type
-            or result.session_epoch != current_epoch
-        ):
+        if not core_start_is_current(include_runtime_identity=False):
+            if self._asr_route_operation_matches(operation_generation):
+                abort = getattr(self._asr_runtime, "abort", None)
+                if callable(abort):
+                    await abort("stale_core_start")
+            return
+        if result.failure_code == "ASR_START_STALE":
+            return
+        if result.session_epoch != current_epoch:
             return
         self._independent_asr_provider = result.provider
         if result.status is AsrStartStatus.READY:
@@ -1067,6 +1149,7 @@ class AsrRuntimeMixin:
         self._voice_input_suppressed = bool(reasons)
         self._invalidate_voice_pcm_sync(reason)
         current = (owner, hard_muted, focus_suppressed)
+        transition_identity = self._capture_core_asr_operation_identity()
         should_abort = (
             force_abort or self._voice_lease_requires_abort or previous != current
         )
@@ -1078,6 +1161,13 @@ class AsrRuntimeMixin:
         elif reason == "game_release":
             if should_abort:
                 await self._asr_runtime.abort(reason)
+                if not self._core_asr_operation_identity_matches(
+                    transition_identity,
+                    include_runtime_identity=False,
+                ):
+                    return
+            if self._voice_lease_owner != "core" or not self._voice_input_accepts_pcm():
+                return
             await self._asr_runtime.resume(reason)
         elif should_abort:
             await self._asr_runtime.abort(reason)
@@ -1104,6 +1194,9 @@ class AsrRuntimeMixin:
         normalized = str(connection_id or "").strip()
         if not normalized or normalized == self._voice_lease_connection_id:
             return False
+        invalidate_start = getattr(self._asr_runtime, "_invalidate_asr_start", None)
+        if callable(invalidate_start):
+            invalidate_start()
         self._voice_lease_connection_id = normalized
         self._voice_lease_generation = -1
         self._voice_lease_synchronized = False
@@ -1339,16 +1432,26 @@ class AsrRuntimeMixin:
         )
 
     async def _handle_core_asr_failure(self, event: AsrFailureEvent) -> None:
+        source_identity = self._capture_core_asr_operation_identity()
         async with self._asr_notification_lock:
-            if event.session_epoch != self._capture_ingress_token().session_epoch:
+            if (
+                not self._core_asr_operation_identity_matches(source_identity)
+                or event.session_epoch
+                != self._core_asr_identity_ingress_token(source_identity).session_epoch
+            ):
                 return
             self._set_microphone_route("blocked")
             self._clear_audio_stream_queue("independent_asr_failure")
             self.hot_swap_audio_cache.clear()
 
     async def _send_core_asr_status(self, event: AsrStatusEvent) -> None:
+        source_identity = self._capture_core_asr_operation_identity()
         async with self._asr_notification_lock:
-            if event.session_epoch != self._capture_ingress_token().session_epoch:
+            if (
+                not self._core_asr_operation_identity_matches(source_identity)
+                or event.session_epoch
+                != self._core_asr_identity_ingress_token(source_identity).session_epoch
+            ):
                 return
             await self.send_status(
                 json.dumps(
@@ -1366,8 +1469,13 @@ class AsrRuntimeMixin:
         self,
         event: AsrLifecycleNotification,
     ) -> None:
+        source_identity = self._capture_core_asr_operation_identity()
         async with self._asr_notification_lock:
-            if event.session_epoch != self._capture_ingress_token().session_epoch:
+            if (
+                not self._core_asr_operation_identity_matches(source_identity)
+                or event.session_epoch
+                != self._core_asr_identity_ingress_token(source_identity).session_epoch
+            ):
                 return
             await self.send_status(
                 json.dumps(
