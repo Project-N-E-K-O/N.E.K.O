@@ -181,6 +181,9 @@ class ConfigManager(
     # 可中断退避：set 它让探测循环从退避 sleep 中醒来并退出（进程 shutdown / 测试
     # 清理）。生产从不 set，退避行为等同 time.sleep。
     _ip_probe_wake = threading.Event()
+    # 探测是否「正在发请求」。退避 sleep 期间为 False：线程仍 alive，但那段时间不会
+    # 有结论到达，等待方据此跳过 join，避免每个会话白付一次超时。
+    _ip_probe_in_flight = threading.Event()
 
 
 # 全局配置管理器实例

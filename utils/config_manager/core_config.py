@@ -100,6 +100,40 @@ class CoreConfigMixin:
 
     # --- Core config helpers ---
 
+    @classmethod
+    def _config_needs_region(cls, config) -> bool:
+        """Whether this config actually has a URL whose route depends on the region.
+
+        The single source of truth for probe eligibility (invariant #2). Deriving it
+        separately at each call site is exactly how the privacy gate regressed three
+        times, so both ``get_core_config`` and the probe loop go through here.
+
+        Livestream is excluded for the paths it takes over: ``_adjust_free_api_url``
+        derives those from the livestream prefix *before* consulting the region, so a
+        livestream user needs no verdict for them and must not be probed on their
+        account.
+        """
+        from utils.config_manager import is_livestream_active
+
+        try:
+            livestream = is_livestream_active()
+        except Exception:
+            livestream = False
+
+        for key, value in (config or {}).items():
+            if not (key.endswith('_URL') and isinstance(value, str)):
+                continue
+            if 'lanlan.tech' not in value:
+                continue
+            if livestream:
+                try:
+                    if (urlparse(value).path or '') in cls._LIVESTREAM_DERIVE_PATHS:
+                        continue    # 该 URL 会被 livestream 前缀接管，用不到区域判定
+                except Exception:
+                    pass
+            return True
+        return False
+
     @staticmethod
     def _ip_probe_once():
         """One ip-api.com lookup. Returns True/False on a verdict, None on failure."""
@@ -130,22 +164,48 @@ class CoreConfigMixin:
         from utils.config_manager import ConfigManager
 
         failures = 0
-        while ConfigManager._ip_check_cache is None:
-            try:
-                result = ConfigManager._ip_probe_once()
-                if result is not None:
-                    ConfigManager._ip_check_cache = result
-                    print(f"[GeoIP] HTTP IP check: non_mainland={result}", file=sys.stderr)
+        try:
+            while ConfigManager._ip_check_cache is None:
+                try:
+                    ConfigManager._ip_probe_in_flight.set()
+                    result = ConfigManager._ip_probe_once()
+                    if result is not None:
+                        ConfigManager._ip_check_cache = result
+                        print(f"[GeoIP] HTTP IP check: non_mainland={result}", file=sys.stderr)
+                        return
+                except Exception as e:
+                    print(f"[GeoIP] HTTP IP check failed: {e}", file=sys.stderr)
+                finally:
+                    # 退避期间不算「在飞」：此时不可能有结论到达，等待方据此直接跳过
+                    # join，免得每个会话白付一次 join 超时（见 join_ip_probe）。
+                    ConfigManager._ip_probe_in_flight.clear()
+
+                # 用户可能在探测退避期间切走免费线路（改用自配 API）。此时继续敲
+                # ip-api.com 既无用又是白白暴露 IP，收工。判据走共享的
+                # _config_needs_region，不在这里另立一套（不变量 #2）。
+                if not ConfigManager._free_route_still_needs_region():
+                    print("[GeoIP] free route no longer selected, stopping probe", file=sys.stderr)
                     return
-            except Exception as e:
-                print(f"[GeoIP] HTTP IP check failed: {e}", file=sys.stderr)
-            failures += 1
-            wait = ConfigManager._ip_check_backoff_s(failures)
-            print(f"[GeoIP] HTTP IP check will retry in {wait:.0f}s", file=sys.stderr)
-            # 可中断退避：进程 shutdown / 测试清理 set 这个 event 即让循环干净退出。
-            # 生产从不 set 它，行为等同 time.sleep(wait)。
-            if ConfigManager._ip_probe_wake.wait(wait):
-                return
+
+                failures += 1
+                wait = ConfigManager._ip_check_backoff_s(failures)
+                print(f"[GeoIP] HTTP IP check will retry in {wait:.0f}s", file=sys.stderr)
+                # 可中断退避：进程 shutdown / 测试清理 set 这个 event 即让循环干净退出。
+                # 生产从不 set 它，行为等同 time.sleep(wait)。
+                if ConfigManager._ip_probe_wake.wait(wait):
+                    return
+        finally:
+            ConfigManager._ip_probe_in_flight.clear()
+
+    @staticmethod
+    def _free_route_still_needs_region() -> bool:
+        """Re-check probe eligibility from the current config, for the retry loop."""
+        from utils.config_manager import ConfigManager, get_config_manager
+
+        try:
+            return ConfigManager._config_needs_region(get_config_manager().get_core_config())
+        except Exception:
+            return True    # 读不到配置时保守continue，别因为一次读失败放弃探测
 
     @staticmethod
     def _ensure_ip_probe_started():
@@ -175,6 +235,11 @@ class CoreConfigMixin:
                 name="geoip-probe",
                 daemon=True,
             )
+            # 起新循环前清掉停止信号（上一轮可能因切走免费线路而 set 过），
+            # 并预置 in-flight——线程还没来得及进入 lookup 时也应被视为在飞，
+            # 否则紧随其后的 join 会误判成「只是在退避」而直接跳过。
+            ConfigManager._ip_probe_wake.clear()
+            ConfigManager._ip_probe_in_flight.set()
             ConfigManager._ip_probe_thread = thread
             thread.start()
 
@@ -197,6 +262,11 @@ class CoreConfigMixin:
 
         if ConfigManager._steam_check_cache is not None:
             return True
+        # 只在探测「真的在发请求」时才值得等。循环在退避 sleep 里同样是 alive，
+        # 但那段时间不可能有结论到达——照等就是每个会话白付一次 join 超时，
+        # 而 GeoIP 被墙时退避可长达 10 分钟，等于每场会话都固定慢 1.5 秒。
+        if not ConfigManager._ip_probe_in_flight.is_set():
+            return ConfigManager._ip_check_cache is not None
         thread = ConfigManager._ip_probe_thread
         if thread is not None:
             thread.join(timeout)
@@ -344,6 +414,16 @@ class CoreConfigMixin:
             return ip_result
 
         steam_result = self._check_steam_non_mainland()
+        # 探测在后台跑，可能恰好在上面这次 Steam 查询期间落地。不复查就会让兜底票
+        # 压过刚到手的权威结论；而 get_core_config 对每个 URL 各判一次，同一份快照
+        # 里就可能一半按 IP、一半按 Steam（挂代理时两者方向相反）。
+        ip_result = self._check_ip_non_mainland_http()
+        if ip_result is not None:
+            ConfigManager._region_cache = ip_result
+            ConfigManager._geo_indeterminate_logged = False
+            print(f"[GeoIP] IP decides (landed during Steam check): non_mainland={ip_result}", file=sys.stderr)
+            return ip_result
+
         if steam_result is not None:
             # IP 探测无结论时才轮到 Steam。它反映的是 Steam 服务端看到的出口 IP，
             # 挂代理时同样会跟着代理走，所以只当兜底票、**永不落定** _region_cache：
@@ -1069,10 +1149,7 @@ class CoreConfigMixin:
         # 但提到循环外之前必须先确认「确实有 URL 需要它」：区域判定会发起 GeoIP
         # 探测，而免费路由门原本就长在 _adjust_free_api_url 的首行早退里
         # （不变量 #2）。无条件判定 = 自配 API 用户也把 IP 发给第三方。
-        needs_region = any(
-            key.endswith('_URL') and isinstance(value, str) and 'lanlan.tech' in value
-            for key, value in config.items()
-        )
+        needs_region = self._config_needs_region(config)
         snapshot_non_mainland = False
         if needs_region:
             try:

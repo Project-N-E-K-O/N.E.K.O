@@ -73,6 +73,11 @@ def config_manager(clean_user_data_dir):
 def reset_geo_state(monkeypatch):
     monkeypatch.setattr(core_config_mod, 'GEOIP_FORCE_NON_MAINLAND', None)
     monkeypatch.setattr(ConfigManager, '_ip_probe_wake', threading.Event())
+    monkeypatch.setattr(ConfigManager, '_ip_probe_in_flight', threading.Event())
+    # 默认「仍在免费路由」，否则探测循环每轮都会去读真实配置并提前收工。
+    # 专测「切走免费路由」的用例自行覆盖它。
+    monkeypatch.setattr(
+        ConfigManager, '_free_route_still_needs_region', staticmethod(lambda: True))
     for name, value in (
         ('_region_cache', None),
         ('_ip_check_cache', None),
@@ -656,3 +661,132 @@ def test_dns_wedged_iteration_recovers_without_a_replacement_thread(monkeypatch)
     thread.join(5)
     assert ConfigManager._ip_check_cache is True, '卡死迭代后循环应自行恢复'
     assert calls['n'] == 2
+
+
+@pytest.mark.unit
+def test_probe_stops_when_user_leaves_the_free_route(monkeypatch):
+    """Switching to a paid/custom provider mid-backoff must stop the probe.
+
+    Otherwise the loop keeps hitting ip-api.com until it lands a verdict nobody
+    needs — a user who no longer uses regional routing would go on disclosing
+    their public IP to a third party for the life of the process.
+    """
+    monkeypatch.setattr(ConfigManager, '_IP_CHECK_RETRY_BASE_S', 0.0)
+    monkeypatch.setattr(ConfigManager, '_IP_CHECK_RETRY_MAX_S', 0.0)
+    calls = _patch_probe_once(monkeypatch, [OSError('down')])
+    # 第一次探测后用户切走免费线路
+    monkeypatch.setattr(
+        ConfigManager, '_free_route_still_needs_region', staticmethod(lambda: False))
+
+    _Probe()._ensure_ip_probe_started()
+    ConfigManager._ip_probe_thread.join(5)
+
+    assert not ConfigManager._ip_probe_thread.is_alive(), '切走免费线路后循环应收工'
+    assert calls['n'] == 1, f'切走后不应继续探测，实际探了 {calls["n"]} 次'
+    assert ConfigManager._ip_check_cache is None
+
+
+@pytest.mark.unit
+def test_waiters_skip_a_probe_that_is_only_backing_off(monkeypatch):
+    """Backoff sleep is not in-flight: no verdict can arrive, so do not pay the join.
+
+    The loop stays alive while sleeping 30-600s. Treating that as "in flight" makes
+    every session pay the full join timeout for the whole duration of a GeoIP outage.
+    """
+    monkeypatch.setattr(ConfigManager, '_IP_CHECK_RETRY_BASE_S', 30.0)
+    backing_off = threading.Event()
+
+    def _once():
+        backing_off.set()
+        raise OSError('down')
+
+    monkeypatch.setattr(ConfigManager, '_ip_probe_once', staticmethod(_once))
+
+    _Probe()._ensure_ip_probe_started()
+    assert backing_off.wait(5)
+    # 等它进入退避 sleep（in_flight 被清掉）
+    for _ in range(200):
+        if not ConfigManager._ip_probe_in_flight.is_set():
+            break
+        real_time.sleep(0.01)
+    assert not ConfigManager._ip_probe_in_flight.is_set(), '退避期间不应标记为在飞'
+    assert ConfigManager._ip_probe_thread.is_alive(), '前置条件：线程仍活着（在退避）'
+
+    started = real_time.monotonic()
+    assert ConfigManager.join_ip_probe(timeout=5) is False
+    waited = real_time.monotonic() - started
+    assert waited < 0.5, f'退避期间不应等待，实际等了 {waited:.2f}s'
+
+
+@pytest.mark.unit
+def test_ip_verdict_landing_during_the_steam_check_still_wins():
+    """The probe can publish while ``_check_steam_non_mainland`` is running.
+
+    Returning Steam anyway would let the fallback outrank the authoritative verdict,
+    and since ``get_core_config`` decides per URL, one snapshot could mix
+    ``lanlan.tech`` and ``lanlan.app`` — they disagree exactly when a proxy is in play.
+    """
+    probe = _Probe()
+    probe._ensure_ip_probe_started = lambda: None
+    probe._check_ip_non_mainland_http = staticmethod(
+        lambda: ConfigManager._ip_check_cache)
+
+    def _steam_then_verdict_lands():
+        ConfigManager._ip_check_cache = True     # 探测恰在此刻落地
+        return False                             # Steam 说大陆（代理出口）
+
+    probe._check_steam_non_mainland = _steam_then_verdict_lands
+    assert probe._check_non_mainland() is True, 'IP 权威结论应压过 Steam 兜底票'
+    assert ConfigManager._region_cache is True
+
+
+@pytest.mark.unit
+def test_livestream_derived_urls_do_not_trigger_the_probe(monkeypatch):
+    """Livestream takes those routes over before the region is consulted.
+
+    ``_adjust_free_api_url`` derives /core, /text/v1 and /tts from the livestream
+    prefix without asking for a verdict, so a livestream user needs no probe for
+    them and must not have their IP sent to ip-api.com on their account.
+    """
+    cfg = {
+        'CORE_URL': 'wss://www.lanlan.tech/core',
+        'TTS_URL': 'wss://www.lanlan.tech/tts',
+        'ASSIST_URL': 'https://www.lanlan.tech/text/v1',
+    }
+    import utils.config_manager as cm_pkg
+    monkeypatch.setattr(cm_pkg, 'is_livestream_active', lambda: True)
+    assert ConfigManager._config_needs_region(cfg) is False
+
+    # 非派生路径仍然需要判定（livestream 只接管那三个端点）
+    cfg['OTHER_URL'] = 'https://www.lanlan.tech/something-else'
+    assert ConfigManager._config_needs_region(cfg) is True
+
+    monkeypatch.setattr(cm_pkg, 'is_livestream_active', lambda: False)
+    assert ConfigManager._config_needs_region(
+        {'CORE_URL': 'wss://www.lanlan.tech/core'}) is True
+
+
+@pytest.mark.unit
+def test_startup_warmup_runs_after_runtime_config_is_finalized():
+    """Warmup must sit after the Cloud Save import / Steamworks init.
+
+    Reading config before that can see the pre-import values, conclude "no region
+    needed", and never start the probe — leaving the first session on the fallback.
+    Structural because the ordering, not the call itself, is the invariant.
+    """
+    import ast
+    import pathlib
+
+    source = (pathlib.Path(__file__).resolve().parents[2]
+              / 'app' / 'main_server' / '__init__.py')
+    tree = ast.parse(source.read_text(encoding='utf-8'))
+
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.AsyncFunctionDef)
+                and node.name == '_ensure_main_server_runtime_initialized'):
+            calls = {getattr(c.func, 'attr', None) for c in ast.walk(node) if isinstance(c, ast.Call)}
+            assert 'awarmup_region_check' in calls, \
+                'GeoIP 预热必须在运行时配置最终成型之后（本函数内）执行'
+            break
+    else:
+        pytest.fail('未找到 _ensure_main_server_runtime_initialized，断言失效')
