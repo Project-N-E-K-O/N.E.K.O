@@ -1220,11 +1220,17 @@ class LifecycleMixin:
         # later mutations.
         _initial_tool_defs = self.tool_registry.all()
         if input_mode == 'text':
-            # 这里不能复用 prepare_runtime 的快照：上面 await 过 /new_dialog 的记忆
-            # 拉取（可达数秒），期间用户可能刚在 /core_api 存了新凭证。构造 client 前
-            # 重新读一次，与本 PR 之前的读点保持一致。
-            conversation_config = await self._config_manager.aget_model_api_config('conversation')
-            vision_config = await self._config_manager.aget_model_api_config('vision')
+            # 不复用 prepare_runtime 的快照：上面 await 过 /new_dialog 的记忆拉取
+            # （可达数秒），期间用户可能刚在 /core_api 存了新凭证。构造 client 前重新
+            # 读一份**新鲜快照**，conversation 与 vision 都从它解析——两次独立的读会
+            # 让保存恰好落在中间时拿到撕裂的一对（旧 conversation + 新 vision）。
+            _fresh_core_config = await self._config_manager.aget_core_config()
+            conversation_config = await self._config_manager.aget_model_api_config(
+                'conversation', core_config=_fresh_core_config
+            )
+            vision_config = await self._config_manager.aget_model_api_config(
+                'vision', core_config=_fresh_core_config
+            )
             new_session = OmniOfflineClient(
                 base_url=conversation_config['base_url'],
                 api_key=conversation_config['api_key'],
@@ -1482,9 +1488,14 @@ class LifecycleMixin:
             if self.input_mode == 'text':
                 # 文本模式：使用 OmniOfflineClient
                 # 与主会话构造点对偶：顶部快照与此处之间隔着角色数据读取等 await，
-                # 不复用，保持本 PR 之前的读点
-                conversation_config = await self._config_manager.aget_model_api_config('conversation')
-                vision_config = await self._config_manager.aget_model_api_config('vision')
+                # 故重新读一份新鲜快照，并让 conversation / vision 共用它，避免撕裂
+                _fresh_core_config = await self._config_manager.aget_core_config()
+                conversation_config = await self._config_manager.aget_model_api_config(
+                    'conversation', core_config=_fresh_core_config
+                )
+                vision_config = await self._config_manager.aget_model_api_config(
+                    'vision', core_config=_fresh_core_config
+                )
                 guard_max_length = self._get_text_guard_max_length()
                 self.pending_session = OmniOfflineClient(
                     base_url=conversation_config['base_url'],

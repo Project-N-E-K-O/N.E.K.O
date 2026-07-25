@@ -389,3 +389,48 @@ def test_legacy_port_rewrite_preserves_host_and_userinfo():
     assert rewrite("http://127.0.0.1:8088") == ""
     assert rewrite("") == ""
     assert rewrite(None) == ""
+
+
+@pytest.mark.unit
+def test_session_construction_resolves_paired_configs_from_one_snapshot():
+    """conversation / vision must come from a SINGLE fresh read, never two.
+
+    Two independently offloaded reads let a /core_api save land between them, so the
+    client would be built from a torn pair (pre-save conversation + post-save vision).
+    Pinned statically: each construction site takes one aget_core_config() and threads
+    it into both resolver calls.
+    """
+    source = (REPO_ROOT / "main_logic" / "core" / "lifecycle.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    checked = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.AsyncFunctionDef):
+            continue
+        if node.name not in ("_start_session_start_llm", "_background_prepare_pending_session"):
+            continue
+        paired = []
+        for call in ast.walk(node):
+            if not isinstance(call, ast.Call):
+                continue
+            func = call.func
+            name = func.attr if isinstance(func, ast.Attribute) else None
+            if name != "aget_model_api_config":
+                continue
+            target = call.args[0].value if call.args and isinstance(call.args[0], ast.Constant) else None
+            if target not in ("conversation", "vision"):
+                continue
+            snapshot = next(
+                (kw.value.id for kw in call.keywords
+                 if kw.arg == "core_config" and isinstance(kw.value, ast.Name)),
+                None,
+            )
+            paired.append((target, snapshot))
+
+        assert len(paired) == 2, f"{node.name}: 预期 conversation/vision 各一次，实得 {paired}"
+        snapshots = {snap for _, snap in paired}
+        assert None not in snapshots, f"{node.name}: 有解析没有共用快照，会撕裂 -> {paired}"
+        assert len(snapshots) == 1, f"{node.name}: 两者用了不同快照 -> {paired}"
+        checked += 1
+
+    assert checked == 2, f"只检查到 {checked} 个构造点，用例的目标函数名可能已过时"
