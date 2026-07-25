@@ -9,6 +9,7 @@ read stalls all three.
 """
 import ast
 import asyncio
+import json
 import time as real_time
 from pathlib import Path
 
@@ -308,18 +309,13 @@ async def offloads_it():
 
 
 class _MigratingManager(CoreConfigMixin):
-    """Exercises only the openclawUrl 8089 -> 8088 write-back inside get_core_config."""
+    """Exercises the openclawUrl 8089 -> 8088 migration against an in-memory file."""
 
-    def __init__(self, stored: dict, on_read=None):
+    def __init__(self, stored: dict):
         self.stored = stored
-        self._on_read = on_read
         self.saved: list[dict] = []
 
     def load_json_config(self, filename, default_value=None):
-        # 先让并发保存落地，再返回内容：模拟「worker 原始读已陈旧 → /core_api 保存
-        # 落盘 → 迁移在锁内重读」这条时序，也正是重读能救回来的那条。
-        if self._on_read is not None:
-            self._on_read()
         return dict(self.stored)
 
     def save_json_config(self, filename, data):
@@ -327,34 +323,69 @@ class _MigratingManager(CoreConfigMixin):
         self.saved.append(dict(data))
 
 
-@pytest.mark.unit
-def test_openclaw_migration_does_not_clobber_a_concurrent_save():
-    """The read-path migration must patch fresh content, not write back a stale snapshot.
+class _ReadOnlyMigrationManager(CoreConfigMixin):
+    """Serves a REAL core_config.json file; fails the test if the read path writes."""
 
-    get_core_config is the only read that also writes (one-shot legacy port migration).
-    Now that it runs under to_thread, a /core_api save can land between this worker's
-    read and its write; saving the stale snapshot would silently drop the user's update.
+    def __init__(self, config_path: Path):
+        self._config_path = config_path
+
+    def get_config_path(self, filename):
+        return self._config_path
+
+    def save_json_config(self, filename, data):
+        raise AssertionError("get_core_config 是读操作，不允许写盘")
+
+
+@pytest.mark.unit
+def test_get_core_config_never_writes_while_normalizing_a_legacy_port(tmp_path):
+    """The read path normalizes 8089 -> 8088 in memory only.
+
+    It runs under to_thread for ~55 async callers now; a write here would race the
+    /core_api save handler and could replace the user's just-saved keys.
     """
-    manager = _MigratingManager({"openclawUrl": "http://127.0.0.1:8089"})
-
-    # 模拟并发保存：worker 重读配置文件的那一刻，用户刚存下新的 API key
-    def _concurrent_save():
-        manager.stored = dict(manager.stored, coreApiKey="freshly-saved-key")
-
-    manager._on_read = _concurrent_save
-    manager._persist_openclaw_port_migration("http://127.0.0.1:8088")
-
-    assert manager.stored["openclawUrl"] == "http://127.0.0.1:8088", "迁移没有落盘"
-    assert manager.stored.get("coreApiKey") == "freshly-saved-key", (
-        "并发保存的 coreApiKey 被陈旧快照顶掉了"
+    path = tmp_path / "core_config.json"
+    path.write_text(
+        json.dumps({"openclawUrl": "http://127.0.0.1:8089"}), encoding="utf-8"
     )
+    manager = _ReadOnlyMigrationManager(path)
+
+    # save_json_config raises if touched -> 用例过即证明读路径没有写盘
+    config = manager.get_core_config()
+
+    assert config["OPENCLAW_URL"] == "http://127.0.0.1:8088", "内存归一化没有生效"
+    # 前置条件：文件里必须仍是 8089，否则说明根本没走到迁移分支（假绿）
+    assert "8089" in path.read_text(encoding="utf-8"), "读路径把迁移落盘了"
 
 
 @pytest.mark.unit
-def test_openclaw_migration_skips_when_another_worker_already_migrated():
-    """Double-checked under the lock: a second worker must not rewrite the file."""
+def test_startup_migration_persists_the_legacy_port_rewrite():
+    """Persistence moved to startup, where no concurrent writer exists."""
+    manager = _MigratingManager({
+        "openclawUrl": "http://127.0.0.1:8089",
+        "coreApiKey": "user-key",
+    })
+
+    assert manager.migrate_openclaw_url_port() is True
+    assert manager.stored["openclawUrl"] == "http://127.0.0.1:8088"
+    assert manager.stored["coreApiKey"] == "user-key", "迁移把其他字段弄丢了"
+
+
+@pytest.mark.unit
+def test_startup_migration_is_a_noop_when_the_port_is_already_current():
     manager = _MigratingManager({"openclawUrl": "http://127.0.0.1:8088"})
 
-    manager._persist_openclaw_port_migration("http://127.0.0.1:8088")
+    assert manager.migrate_openclaw_url_port() is False
+    assert manager.saved == [], "端口已是 8088 仍然写了一次盘"
 
-    assert manager.saved == [], "端口已是 8088 仍然又写了一次盘"
+
+@pytest.mark.unit
+def test_legacy_port_rewrite_preserves_host_and_userinfo():
+    """The pure helper must keep credentials / IPv6 brackets intact."""
+    rewrite = CoreConfigMixin._migrated_openclaw_url
+
+    assert rewrite("http://user:pw@example.test:8089") == "http://user:pw@example.test:8088"
+    assert rewrite("http://[::1]:8089") == "http://[::1]:8088"
+    # 非 8089、空值、垃圾输入一律不改写
+    assert rewrite("http://127.0.0.1:8088") == ""
+    assert rewrite("") == ""
+    assert rewrite(None) == ""

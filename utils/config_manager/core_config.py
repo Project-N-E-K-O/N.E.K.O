@@ -61,38 +61,64 @@ class CoreConfigMixin:
 
     # --- Core config helpers ---
 
-    def _persist_openclaw_port_migration(self, migrated_openclaw_url: str) -> None:
-        """Write back only the migrated openclawUrl, never a whole stale snapshot.
+    @staticmethod
+    def _migrated_openclaw_url(raw_url: object) -> str:
+        """Return the 8088 equivalent of a legacy 8089 openclawUrl, or '' if not applicable.
 
-        get_core_config is a read for every caller except this one-shot 8089 -> 8088
-        legacy migration, which makes it a read-modify-write. Callers now reach it
-        through asyncio.to_thread, so that write can interleave with a /core_api save
-        on the loop; saving the snapshot this worker read minutes-old would silently
-        discard whatever the user just saved.
-
-        So: take the lock, re-read the file, re-check the port (another worker may
-        have migrated already), and patch the single field onto the FRESH content.
+        Pure: no file access, no side effects. Both the read path (in-memory only) and the
+        startup migration (which persists) derive the new URL from here.
         """
-        from utils.config_manager import ConfigManager
+        if not isinstance(raw_url, str) or not raw_url.strip():
+            return ''
+        normalized = raw_url.strip().rstrip('/')
+        try:
+            parsed = urlparse(normalized)
+        except Exception:
+            return ''
+        if not parsed.netloc:
+            return ''
+        try:
+            if parsed.port != 8089:
+                return ''
+        except ValueError:
+            return ''
+        host = parsed.hostname or ""
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        userinfo = ""
+        if parsed.username:
+            userinfo = parsed.username
+            if parsed.password:
+                userinfo += f":{parsed.password}"
+            userinfo += "@"
+        return urlunparse(parsed._replace(netloc=f"{userinfo}{host}:8088"))
 
-        with ConfigManager._openclaw_migration_lock:
-            try:
-                fresh = self.load_json_config('core_config.json', {})
-                if not isinstance(fresh, dict):
-                    fresh = {}
-                current = str(fresh.get('openclawUrl') or '').strip()
-                if current:
-                    try:
-                        if urlparse(current.rstrip('/')).port != 8089:
-                            # 已被其他 worker 迁移，或用户自己改掉了，不再覆盖
-                            return
-                    except ValueError:
-                        return
-                fresh['openclawUrl'] = migrated_openclaw_url
-                self.save_json_config('core_config.json', fresh)
-                logger.info("已自动将 openclawUrl 从 8089 迁移到 8088: %s", migrated_openclaw_url)
-            except Exception as exc:
-                logger.warning("自动迁移 openclawUrl 到 8088 失败: %s", exc)
+    def migrate_openclaw_url_port(self) -> bool:
+        """Persist the legacy openclawUrl 8089 -> 8088 rewrite, once, at startup.
+
+        This used to live inside get_core_config, which made that method a
+        read-modify-write. Every async caller now reaches it through asyncio.to_thread,
+        so the write could interleave with a /core_api save on the loop and replace the
+        user's just-saved keys with the worker's older snapshot. Startup runs before the
+        server accepts requests, so there is no writer to race here.
+
+        get_core_config still normalizes in memory (see _migrated_openclaw_url) so a
+        config that somehow arrives with 8089 later is routed correctly regardless.
+        """
+        try:
+            core_cfg = self.load_json_config('core_config.json', {})
+            if not isinstance(core_cfg, dict):
+                return False
+            migrated = self._migrated_openclaw_url(core_cfg.get('openclawUrl'))
+            if not migrated:
+                return False
+            core_cfg['openclawUrl'] = migrated
+            self.save_json_config('core_config.json', core_cfg)
+            logger.info("已自动将 openclawUrl 从 8089 迁移到 8088: %s", migrated)
+            return True
+        except Exception as exc:
+            logger.warning("自动迁移 openclawUrl 到 8088 失败: %s", exc)
+            return False
 
     @staticmethod
     def _check_ip_non_mainland_http():
@@ -500,32 +526,13 @@ class CoreConfigMixin:
             config['MCP_ROUTER_API_KEY'] = core_cfg['mcpToken']
 
         openclaw_url = core_cfg.get('openclawUrl')
-        if isinstance(openclaw_url, str) and openclaw_url.strip():
-            normalized_openclaw_url = openclaw_url.strip().rstrip('/')
-            try:
-                parsed_openclaw_url = urlparse(normalized_openclaw_url)
-            except Exception:
-                parsed_openclaw_url = None
-            if parsed_openclaw_url and parsed_openclaw_url.netloc:
-                try:
-                    if parsed_openclaw_url.port == 8089:
-                        host = parsed_openclaw_url.hostname or ""
-                        if ":" in host and not host.startswith("["):
-                            host = f"[{host}]"
-                        userinfo = ""
-                        if parsed_openclaw_url.username:
-                            userinfo = parsed_openclaw_url.username
-                            if parsed_openclaw_url.password:
-                                userinfo += f":{parsed_openclaw_url.password}"
-                            userinfo += "@"
-                        migrated_openclaw_url = urlunparse(
-                            parsed_openclaw_url._replace(netloc=f"{userinfo}{host}:8088")
-                        )
-                        core_cfg['openclawUrl'] = migrated_openclaw_url
-                        openclaw_url = migrated_openclaw_url
-                        self._persist_openclaw_port_migration(migrated_openclaw_url)
-                except ValueError:
-                    pass
+        # 只在内存里归一化 8089→8088，绝不落盘：get_core_config 现在普遍跑在 to_thread
+        # 里，读路径写盘会和 /core_api 的保存互相顶掉。持久化交给启动期的
+        # migrate_openclaw_url_port（那时还没有并发写者）。
+        _migrated_openclaw_url = self._migrated_openclaw_url(openclaw_url)
+        if _migrated_openclaw_url:
+            core_cfg['openclawUrl'] = _migrated_openclaw_url
+            openclaw_url = _migrated_openclaw_url
         if isinstance(openclaw_url, str) and openclaw_url.strip():
             config['OPENCLAW_URL'] = openclaw_url.strip()
         try:

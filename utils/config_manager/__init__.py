@@ -157,10 +157,6 @@ class ConfigManager(
     # 配额耗尽时给前端弹提示的节流：与 _agent_quota_lock 不同的锁，避免在持有配额锁时重入。
     # notifier 由 agent_server 在启动时注册（进程级），收到耗尽信号最多每 _quota_notify_interval_s 秒触发一次。
     _quota_notify_lock = threading.Lock()
-    # get_core_config 现在普遍跑在 to_thread 里，其中的 openclawUrl 8089→8088 一次性
-    # 迁移是这个方法唯一的写路径。用它串行化「重读 + 只补该字段 + 落盘」，避免并发
-    # worker 之间互相覆盖，也避免把陈旧快照写回去顶掉用户刚保存的配置。
-    _openclaw_migration_lock = threading.Lock()
     _quota_notify_interval_s = 10.0
     _quota_notify_last_monotonic = 0.0
     _quota_exceeded_notifier = None
@@ -196,6 +192,13 @@ def _ensure_config_manager_migrated():
     _config_manager.migrate_config_files()
     _config_manager.migrate_default_card_faces()
     _config_manager.migrate_memory_files()
+    # openclawUrl 8089→8088 的落盘迁移。必须在这里而不是 get_core_config 里：那个方法
+    # 现在普遍经 asyncio.to_thread 调用，读路径写盘会和 /core_api 的保存互相顶掉。
+    # 失败只打日志，绝不阻塞启动（读路径仍会在内存里归一化）。
+    try:
+        _config_manager.migrate_openclaw_url_port()
+    except Exception:
+        pass
     # 在 config/memory 基础迁移完成后，对遗留 Documents/AppData 路径下的
     # N.E.K.O/memory 做一次性软迁移：只迁移已关联角色的条目，未关联条目
     # 留给前端 legacy cleanup UI 手动清理（不在启动时自动清除）。

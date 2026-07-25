@@ -1220,12 +1220,11 @@ class LifecycleMixin:
         # later mutations.
         _initial_tool_defs = self.tool_registry.all()
         if input_mode == 'text':
-            conversation_config = await self._config_manager.aget_model_api_config(
-                'conversation', core_config=core_config_snapshot
-            )
-            vision_config = await self._config_manager.aget_model_api_config(
-                'vision', core_config=core_config_snapshot
-            )
+            # 这里不能复用 prepare_runtime 的快照：上面 await 过 /new_dialog 的记忆
+            # 拉取（可达数秒），期间用户可能刚在 /core_api 存了新凭证。构造 client 前
+            # 重新读一次，与本 PR 之前的读点保持一致。
+            conversation_config = await self._config_manager.aget_model_api_config('conversation')
+            vision_config = await self._config_manager.aget_model_api_config('vision')
             new_session = OmniOfflineClient(
                 base_url=conversation_config['base_url'],
                 api_key=conversation_config['api_key'],
@@ -1268,9 +1267,8 @@ class LifecycleMixin:
             new_session.on_proactive_done = self.handle_proactive_complete
             new_session.on_thinking_active = self._make_thinking_active_callback(new_session)
         else:
-            realtime_config = await self._config_manager.aget_model_api_config(
-                'realtime', core_config=core_config_snapshot
-            )
+            # 同上：await 记忆拉取之后必须重读，不复用 prepare_runtime 的快照
+            realtime_config = await self._config_manager.aget_model_api_config('realtime')
             nr_enabled = (await _core_facade.aload_global_conversation_settings()).get('noiseReductionEnabled', True)
             new_session = OmniRealtimeClient(
                 base_url=realtime_config.get('base_url', ''),
@@ -1483,12 +1481,10 @@ class LifecycleMixin:
             _pending_tool_defs = self.tool_registry.all()
             if self.input_mode == 'text':
                 # 文本模式：使用 OmniOfflineClient
-                conversation_config = await self._config_manager.aget_model_api_config(
-                    'conversation', core_config=core_config_snapshot
-                )
-                vision_config = await self._config_manager.aget_model_api_config(
-                    'vision', core_config=core_config_snapshot
-                )
+                # 与主会话构造点对偶：顶部快照与此处之间隔着角色数据读取等 await，
+                # 不复用，保持本 PR 之前的读点
+                conversation_config = await self._config_manager.aget_model_api_config('conversation')
+                vision_config = await self._config_manager.aget_model_api_config('vision')
                 guard_max_length = self._get_text_guard_max_length()
                 self.pending_session = OmniOfflineClient(
                     base_url=conversation_config['base_url'],
@@ -1529,9 +1525,8 @@ class LifecycleMixin:
                 logger.info("🔄 热切换准备: 创建文本模式 OmniOfflineClient")
             else:
                 # 语音模式：使用 OmniRealtimeClient
-                realtime_config = await self._config_manager.aget_model_api_config(
-                    'realtime', core_config=core_config_snapshot
-                )
+                # 同上：不复用顶部快照
+                realtime_config = await self._config_manager.aget_model_api_config('realtime')
                 nr_enabled = (await _core_facade.aload_global_conversation_settings()).get('noiseReductionEnabled', True)
                 self.pending_session = OmniRealtimeClient(
                     base_url=realtime_config.get('base_url', ''),
