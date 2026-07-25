@@ -1,4 +1,4 @@
-import { DATAFORSEO_ENDPOINTS, DataForSeoApiError } from './client.mjs'
+import { DATAFORSEO_ENDPOINTS, DataForSeoApiError, payloadCost } from './client.mjs'
 
 const MODES = new Set(['all', 'keywords', 'serp'])
 const DEVICES = new Set(['desktop', 'mobile'])
@@ -181,15 +181,6 @@ export function buildPlan(config, { mode = 'all', includeAiOverview = false, dep
 
 function taskResults(payload) {
   return (payload.tasks ?? []).flatMap(task => Array.isArray(task?.result) ? task.result : [])
-}
-
-function payloadCost(payload) {
-  const topLevelCost = Number(payload?.cost)
-  if (Number.isFinite(topLevelCost)) return topLevelCost
-  return (payload?.tasks ?? []).reduce((sum, task) => {
-    const cost = Number(task?.cost)
-    return sum + (Number.isFinite(cost) ? cost : 0)
-  }, 0)
 }
 
 export function mergeKeywordMetrics(config, searchVolumePayload, difficultyPayload) {

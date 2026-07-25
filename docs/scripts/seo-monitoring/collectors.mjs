@@ -1,6 +1,7 @@
 export const GSC_SCOPE = 'https://www.googleapis.com/auth/webmasters.readonly'
 export const GA4_SCOPE = 'https://www.googleapis.com/auth/analytics.readonly'
 const DEFAULT_GSC_ROW_LIMIT = 25_000
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 
 function isoDate(value) {
   return value.toISOString().slice(0, 10)
@@ -21,7 +22,13 @@ export function reportingWindow(now = new Date()) {
   }
 }
 
-async function jsonRequest(url, { accessToken, fetchImpl = globalThis.fetch, ...options } = {}) {
+async function jsonRequest(url, {
+  accessToken,
+  fetchImpl = globalThis.fetch,
+  signal,
+  timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+  ...options
+} = {}) {
   const response = await fetchImpl(url, {
     ...options,
     headers: {
@@ -30,6 +37,7 @@ async function jsonRequest(url, { accessToken, fetchImpl = globalThis.fetch, ...
       ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
       ...options.headers,
     },
+    signal: signal ?? AbortSignal.timeout(timeoutMs),
   })
   const source = await response.text()
   let payload = {}
@@ -44,8 +52,15 @@ async function jsonRequest(url, { accessToken, fetchImpl = globalThis.fetch, ...
   return payload
 }
 
-export async function collectSitemap(sitemapUrl, { fetchImpl = globalThis.fetch } = {}) {
-  const response = await fetchImpl(sitemapUrl, { redirect: 'follow' })
+export async function collectSitemap(sitemapUrl, {
+  fetchImpl = globalThis.fetch,
+  signal,
+  timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+} = {}) {
+  const response = await fetchImpl(sitemapUrl, {
+    redirect: 'follow',
+    signal: signal ?? AbortSignal.timeout(timeoutMs),
+  })
   const source = await response.text()
   if (!response.ok) throw new Error(`sitemap returned HTTP ${response.status}`)
   return {

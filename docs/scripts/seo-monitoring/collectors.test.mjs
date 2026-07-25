@@ -20,14 +20,19 @@ test('reporting window accounts for GSC final-data delay', () => {
 })
 
 test('public sitemap collector counts submitted URLs', async () => {
+  let requestOptions
   const result = await collectSitemap('https://project-neko.online/sitemap.xml', {
-    fetchImpl: async () => new Response(
-      '<urlset><url><loc>https://project-neko.online/</loc></url><url><loc>https://project-neko.online/guide/</loc></url></urlset>',
-      { status: 200 },
-    ),
+    fetchImpl: async (_url, options) => {
+      requestOptions = options
+      return new Response(
+        '<urlset><url><loc>https://project-neko.online/</loc></url><url><loc>https://project-neko.online/guide/</loc></url></urlset>',
+        { status: 200 },
+      )
+    },
   })
   assert.equal(result.status, 'ok')
   assert.equal(result.urlCount, 2)
+  assert.ok(requestOptions.signal instanceof AbortSignal)
 })
 
 test('GSC collector separates desktop-pet queries and reads sitemap state', async () => {
@@ -64,6 +69,7 @@ test('GSC collector separates desktop-pet queries and reads sitemap state', asyn
   })
   assert.equal(requests.length, 2)
   assert.match(requests[0].options.headers.authorization, /Bearer token/)
+  assert.ok(requests[0].options.signal instanceof AbortSignal)
   assert.equal(JSON.parse(requests[0].options.body).startRow, 0)
 })
 
