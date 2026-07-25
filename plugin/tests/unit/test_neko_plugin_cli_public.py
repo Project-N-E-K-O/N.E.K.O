@@ -575,6 +575,12 @@ def test_build_bundle_writes_multi_plugin_archive_and_installs(tmp_path: Path) -
         on_conflict="rename",
     )
     assert install_result.package_type == "bundle"
+    assert install_result.package_id == "demo_bundle"
+    assert install_result.package_type == inspect_result.package_type
+    assert install_result.package_id == inspect_result.package_id
+    assert install_result.metadata_found == inspect_result.metadata_found
+    assert install_result.payload_hash == inspect_result.payload_hash
+    assert install_result.payload_hash_verified == inspect_result.payload_hash_verified
     assert install_result.installed_plugin_count == 2
     assert (tmp_path / "plugins" / "bundle_one" / "plugin.toml").is_file()
     assert (tmp_path / "plugins" / "bundle_two" / "plugin.toml").is_file()
