@@ -144,19 +144,16 @@ def build_cli_invocation(
     fast_mode_applied = effective_fast_mode and is_fast_mode_supported(effective_model)
 
     # 3. 构建参数列表（顺序参考 paperclip codex-args.ts）
-    cmd: list[str] = [exe_path, "exec", "--json"]
+    cmd: list[str] = [exe_path]
+
+    # --search 在 paperclip 中是 unshift 到最前面（在 exec 之前）
+    if effective_search:
+        cmd.append("--search")
+
+    cmd.extend(["exec", "--json"])
 
     if skip_git_repo_check:
         cmd.append("--skip-git-repo-check")
-
-    # --search 在 paperclip 中是 unshift 到最前面（在 exec 之前），
-    # 但实际测试中放在 exec 之后也能工作，且更清晰。
-    # 为保持与 paperclip 一致，放在 exec --json 之前。
-    if effective_search:
-        # 移除已添加的 "exec", "--json"，重新构建
-        cmd = [exe_path, "--search", "exec", "--json"]
-        if skip_git_repo_check:
-            cmd.append("--skip-git-repo-check")
 
     if config.dangerously_bypass_approvals_and_sandbox:
         cmd.append("--dangerously-bypass-approvals-and-sandbox")
@@ -189,11 +186,27 @@ def build_cli_invocation(
     effective_codex_home = resolve_effective_codex_home(config.codex_home)
     env_overrides = build_codex_home_env(effective_codex_home)
 
-    # 6. 构建 invocation
+    # 6. 处理 instructions_file_path：读取文件内容并前置到 prompt
+    final_prompt = prompt
+    instructions_path = (config.instructions_file_path or "").strip()
+    if instructions_path:
+        try:
+            with open(instructions_path, "r", encoding="utf-8") as f:
+                instructions_content = f.read()
+            # 前置指令文件内容，后接用户 prompt
+            final_prompt = f"{instructions_content}\n\n---\n\nUser Task:\n{prompt}"
+        except Exception as e:
+            # 读取失败时记录日志并降级使用原始 prompt
+            import logging
+            logging.getLogger(__name__).warning(
+                "Failed to read instructions_file_path %s: %s", instructions_path, e
+            )
+
+    # 7. 构建 invocation
     invocation = CLIInvocation(
         cmd=cmd,
         cwd=effective_cwd,
-        stdin_data=prompt.encode("utf-8"),
+        stdin_data=final_prompt.encode("utf-8"),
         timeout=float(config.timeout_sec),
         env_overrides=env_overrides,
     )

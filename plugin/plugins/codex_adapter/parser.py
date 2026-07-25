@@ -187,6 +187,8 @@ class CodexOutputParser:
         self._turn_failed: Optional[TurnFailedEvent] = None
         self._error: Optional[ErrorEvent] = None
         self._parse_errors: list[str] = []
+        self._unknown_types: set[str] = set()  # 已知的未知事件类型（仅记录类型名，不记录完整内容）
+        self._max_parse_errors = 100  # parse_errors 上限，防止长会话无限膨胀
 
     # ------------------------------------------------------------------
     # 逐行解析
@@ -231,8 +233,12 @@ class CodexOutputParser:
         if event_type == "error":
             return self._handle_error(payload)
 
-        # 未知事件类型 — 记录但不报错（前向兼容）
-        self._parse_errors.append(f"unknown type {event_type!r}: {line[:200]}")
+        # 未知事件类型 — 仅记录类型名（前向兼容），避免长会话无限膨胀
+        if event_type:
+            self._unknown_types.add(str(event_type))
+        # parse_errors 仅记录真正的解析失败（非 JSON 或非对象），且有上限
+        if len(self._parse_errors) < self._max_parse_errors:
+            self._parse_errors.append(f"unknown type {event_type!r}: {line[:200]}")
         return None
 
     def _handle_thread_started(self, payload: dict[str, Any]) -> ThreadStartedEvent:

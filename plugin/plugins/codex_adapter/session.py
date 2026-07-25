@@ -100,6 +100,10 @@ class SessionManager:
         self._sessions: dict[str, SessionRecord] = {}
         """key = cwd（绝对路径），value = SessionRecord。"""
 
+    def __len__(self) -> int:
+        """返回当前内存中的会话记录数量。"""
+        return len(self._sessions)
+
     # ------------------------------------------------------------------
     # 加载 / 保存
     # ------------------------------------------------------------------

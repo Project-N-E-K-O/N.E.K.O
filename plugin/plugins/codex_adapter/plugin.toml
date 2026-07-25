@@ -62,7 +62,16 @@ search = false
 # 仅对 gpt-5.5 / gpt-5.4 及手动指定的未知模型 ID 生效。
 fast_mode = false
 # 绕过审批和沙箱（--dangerously-bypass-approvals-and-sandbox）。
-# 仅用于受信任的本地开发场景。
+# 
+# 重要：本插件设计用于非交互式环境（通过 @llm_tool 调用，stdin 是管道）。
+# 如果设置为 false，Codex CLI 在执行敏感操作时会要求用户确认，导致：
+# - 执行挂起等待用户输入（但无交互界面）
+# - 最终超时失败
+# - 无法保存 thread_id，破坏会话连续性
+#
+# 因此默认值为 true，确保在非交互式环境中正常工作。
+# 安全风险：启用后 Codex 将跳过所有安全审批和沙箱隔离，可能执行任意文件操作和命令。
+# 仅在受信任的环境中使用本插件。
 dangerously_bypass_approvals_and_sandbox = true
 # 单次执行超时（秒）。main_server LLM 工具上限 300s。
 timeout_sec = 300

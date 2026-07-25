@@ -92,7 +92,7 @@ async def path_exists_async(candidate: str) -> bool:
     """
     import asyncio
 
-    return await asyncio.get_event_loop().run_in_executor(None, os.path.exists, candidate)
+    return await asyncio.get_running_loop().run_in_executor(None, os.path.exists, candidate)
 
 
 # ---------------------------------------------------------------------------
@@ -123,14 +123,34 @@ def write_api_key_auth_json(home: str, api_key: str) -> str:
             pass
 
     payload = {"OPENAI_API_KEY": api_key}
-    target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
-    # 设置文件权限（Unix only，Windows 忽略）
+    # 以 0600 权限直接创建文件，避免先创建世界可读文件再 chmod 的权限窗口期
     if not is_windows():
         try:
-            os.chmod(target, 0o600)
+            fd = os.open(
+                str(target),
+                os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                0o600,
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(json.dumps(payload, indent=2))
+            except Exception:
+                # fdopen 失败时 fd 仍需手动关闭
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                raise
         except OSError:
-            pass
+            # 回退到 write_text（权限可能短暂放宽）
+            target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            try:
+                os.chmod(target, 0o600)
+            except OSError:
+                pass
+    else:
+        target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     return str(target)
 
@@ -323,7 +343,7 @@ async def prepare_managed_codex_home_async(
     """
     import asyncio
 
-    return await asyncio.get_event_loop().run_in_executor(
+    return await asyncio.get_running_loop().run_in_executor(
         None,
         lambda: prepare_managed_codex_home(
             target_home,

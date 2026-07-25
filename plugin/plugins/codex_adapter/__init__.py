@@ -48,7 +48,9 @@ from .models import AdapterConfig, ExecuteResult
 from .errors import (
     ClassifiedError,
     is_retryable,
+    TRANSIENT_UPSTREAM,
 )
+from datetime import datetime
 from .executor import (
     CodexCLIExecutor,
     build_cli_invocation,
@@ -60,6 +62,21 @@ from .codex_home import (
     prepare_managed_codex_home_async,
     resolve_effective_codex_home,
 )
+
+
+def _compute_retry_wait_seconds(retry_not_before: str) -> int:
+    """计算从当前时间到 retry_not_before 的等待秒数。
+
+    retry_not_before 是 ISO 格式的时间字符串。
+    返回 0 表示无需等待，正数表示需要等待的秒数。
+    """
+    try:
+        target_dt = datetime.fromisoformat(retry_not_before)
+        now_dt = datetime.now()
+        delta = (target_dt - now_dt).total_seconds()
+        return max(0, int(delta))
+    except Exception:
+        return 0
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +151,7 @@ class CodexAdapterPlugin(NekoPluginBase):
                     "cli_path": cli_path or "",
                     "model": self._config.model,
                     "codex_home": resolve_effective_codex_home(self._config.codex_home),
-                    "sessions_loaded": len(self._session_mgr._sessions)
+                    "sessions_loaded": len(self._session_mgr)
                     if self._session_mgr
                     else 0,
                 }
@@ -340,7 +357,24 @@ class CodexAdapterPlugin(NekoPluginBase):
                     duration_ms=duration_ms,
                 )
 
-            # 可重试 — 继续下一轮
+            # 可重试 — 退避后继续下一轮
+            if exec_err.retry_not_before:
+                # 有明确的重试时间戳 — 等待到该时间
+                wait_sec = _compute_retry_wait_seconds(exec_err.retry_not_before)
+                if wait_sec > 0:
+                    self.logger.info(
+                        "Waiting %ds until retry_not_before=%s",
+                        wait_sec,
+                        exec_err.retry_not_before,
+                    )
+                    await asyncio.sleep(wait_sec)
+            elif exec_err.kind == TRANSIENT_UPSTREAM:
+                # 瞬态错误无明确时间戳 — 指数退避（2s, 4s, 8s...）
+                backoff = min(2 ** attempt, 16)
+                self.logger.info(
+                    "Transient error, backing off %ds before retry", backoff
+                )
+                await asyncio.sleep(backoff)
             continue
 
         # 所有重试都失败
@@ -481,6 +515,7 @@ class CodexAdapterPlugin(NekoPluginBase):
                     except _asyncio.TimeoutError:
                         try:
                             proc.kill()
+                            await proc.wait()
                         except Exception:
                             pass
                 except Exception as e:

@@ -82,7 +82,7 @@ class AdapterConfig:
     """启用快速模式。仅对 gpt-5.5 / gpt-5.4 及手动模型 ID 生效。"""
 
     dangerously_bypass_approvals_and_sandbox: bool = True
-    """绕过审批和沙箱。仅用于受信任的本地开发场景。"""
+    """绕过审批和沙箱。本插件用于非交互式环境，必须默认为 true 以确保正常工作。"""
 
     timeout_sec: int = 300
     """单次执行超时（秒）。main_server LLM 工具上限 300s。"""

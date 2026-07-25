@@ -263,8 +263,11 @@ def classify_error(
             raw=raw,
         )
 
-    # 超时（返回码 -1 通常表示被 kill）
-    if return_code == -1 or re.search(r"timed?\s*out", haystack, re.IGNORECASE):
+    # 超时（明确的 SIGKILL/SIGTERM 返回码或超时文本）
+    # 注意：return_code == -1 在 Windows 上可能是正常退出，不应一律视为超时
+    is_kill_signal = return_code in (-9, -15)  # SIGKILL / SIGTERM
+    has_timeout_text = bool(re.search(r"timed?\s*out", haystack, re.IGNORECASE))
+    if is_kill_signal or has_timeout_text:
         return ClassifiedError(
             kind=TIMEOUT,
             message=text or "execution timed out",
@@ -290,18 +293,8 @@ def classify_error(
             raw=raw,
         )
 
-    # 瞬态上游错误（可重试）
-    if is_transient_upstream_error(stdout, stderr, text):
-        retry_not_before = extract_retry_not_before(stdout, stderr, text)
-        return ClassifiedError(
-            kind=TRANSIENT_UPSTREAM,
-            message=text,
-            retryable=True,
-            retry_not_before=retry_not_before,
-            raw=raw,
-        )
-
-    # 用量限制（可重试，有 retry_not_before）
+    # 用量限制（可重试，有 retry_not_before）— 优先于瞬态错误判断
+    # 因为 is_transient_upstream_error 内部也会检查 retry_not_before
     retry_not_before = extract_retry_not_before(stdout, stderr, text)
     if retry_not_before:
         return ClassifiedError(
@@ -309,6 +302,16 @@ def classify_error(
             message=text,
             retryable=True,
             retry_not_before=retry_not_before,
+            raw=raw,
+        )
+
+    # 瞬态上游错误（可重试）
+    if is_transient_upstream_error(stdout, stderr, text):
+        return ClassifiedError(
+            kind=TRANSIENT_UPSTREAM,
+            message=text,
+            retryable=True,
+            retry_not_before="",
             raw=raw,
         )
 
