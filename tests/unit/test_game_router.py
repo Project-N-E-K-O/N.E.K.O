@@ -4483,6 +4483,110 @@ async def test_finalize_continues_when_voice_input_resume_fails(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_finalize_skips_voice_resume_when_lease_stayed_with_core(monkeypatch):
+    # realtime-STT 游戏：前端保持普通麦克风上传，租约 owner 全程停留在
+    # core。退出时不得调用 resume——core->core 空转换会 bump transition
+    # generation 并清空在途麦克风 PCM（codex P2）。
+    mgr = _FakeGameRouteManager()
+    mgr._voice_lease_owner = "core"
+    mgr._resume_independent_voice_input_after_game = AsyncMock()
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
+    _gr_patch_all(
+        monkeypatch,
+        "_submit_game_archive_to_memory",
+        AsyncMock(return_value={"ok": True, "status": "cached"}),
+    )
+    state = gr_runtime._activate_game_route("soccer", "match_1", "Lan")
+    _set_soccer_game_memory_policy(state, enabled=True)
+    _mark_game_started(state)
+
+    result = await gr_runtime._finalize_game_route_state(
+        state,
+        reason="route_end",
+        close_game_session=False,
+    )
+
+    mgr._resume_independent_voice_input_after_game.assert_not_awaited()
+    assert result["realtime_restore"] == {
+        "attempted": False,
+        "ok": True,
+        "reason": "voice_lease_not_taken",
+    }
+    status = json.loads(mgr.statuses[-1])
+    assert status["code"] == "GAME_ROUTE_ENDED"
+    assert status["details"]["realtime_restore"] == result["realtime_restore"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lease_owner", ["game", "none"])
+async def test_finalize_resumes_voice_when_lease_left_core(monkeypatch, lease_owner):
+    # 浏览器 STT gate 游戏：租约被游戏接管（或接管后玩家中途关麦变 none）。
+    # 只有 game_release 能把 SUSPENDED 的 runtime 拉回来，退出时必须 resume。
+    mgr = _FakeGameRouteManager()
+    mgr._voice_lease_owner = lease_owner
+    mgr._resume_independent_voice_input_after_game = AsyncMock()
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
+    _gr_patch_all(
+        monkeypatch,
+        "_submit_game_archive_to_memory",
+        AsyncMock(return_value={"ok": True, "status": "cached"}),
+    )
+    state = gr_runtime._activate_game_route("soccer", "match_1", "Lan")
+    _set_soccer_game_memory_policy(state, enabled=True)
+    _mark_game_started(state)
+
+    result = await gr_runtime._finalize_game_route_state(
+        state,
+        reason="route_end",
+        close_game_session=False,
+    )
+
+    mgr._resume_independent_voice_input_after_game.assert_awaited_once()
+    assert result["realtime_restore"] == {
+        "attempted": True,
+        "ok": True,
+        "reason": "voice_input_resumed",
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_finalize_resumes_voice_when_core_owner_but_lifecycle_suspended(monkeypatch):
+    # 边界：浏览器 STT gate 中途失败回退普通麦克风，owner 已回 core 但
+    # lifecycle 仍卡在 SUSPENDED（lease_sync 不触发 resume）。退出时仍要
+    # 补一次 game_release，否则本会话语音永久失效。
+    mgr = _FakeGameRouteManager()
+    mgr._voice_lease_owner = "core"
+    mgr._asr_runtime = SimpleNamespace(
+        _asr_lifecycle=SimpleNamespace(
+            snapshot=SimpleNamespace(state=SimpleNamespace(value="suspended")),
+        ),
+    )
+    mgr._resume_independent_voice_input_after_game = AsyncMock()
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
+    _gr_patch_all(
+        monkeypatch,
+        "_submit_game_archive_to_memory",
+        AsyncMock(return_value={"ok": True, "status": "cached"}),
+    )
+    state = gr_runtime._activate_game_route("soccer", "match_1", "Lan")
+    _set_soccer_game_memory_policy(state, enabled=True)
+    _mark_game_started(state)
+
+    result = await gr_runtime._finalize_game_route_state(
+        state,
+        reason="route_end",
+        close_game_session=False,
+    )
+
+    mgr._resume_independent_voice_input_after_game.assert_awaited_once()
+    assert result["realtime_restore"]["attempted"] is True
+    assert result["realtime_restore"]["reason"] == "voice_input_resumed"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_heartbeat_timeout_ignores_recent_activity_and_finalizes(monkeypatch):
     _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
     now = gr_runtime.time.time()

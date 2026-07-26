@@ -934,6 +934,38 @@ def _build_postgame_context_snapshot(state: dict) -> dict:
     }
 
 
+def _game_voice_lease_release_needed(mgr: Any) -> bool:
+    """判断游戏退出时是否需要调 ``_resume_independent_voice_input_after_game``。
+
+    realtime-STT 游戏从不移动麦克风租约：前端保持普通麦克风上传
+    （app-websocket.js 的 ``stt_provider === 'realtime'`` 分支立即停掉 STT
+    gate），后端租约 owner 全程停留在 ``core``。此时再走 resume 会在
+    ``_apply_voice_lease_state`` 里做一次 core->core 的空转换——空转换仍会
+    bump ``_voice_input_transition_generation`` 并清空麦克风队列 / 热切换
+    缓存，把横跨游戏退出瞬间的在途语音 PCM 掐断（codex P2）。
+
+    仅当租约确实离开过 Core 时才需要 game_release：
+
+    - owner == "game"：游戏仍握着租约（浏览器 STT gate 场景）；
+    - owner == "none"：接管后玩家中途关麦（lease_sync owner=none 只 abort、
+      不 resume），SUSPENDED 只能靠 game_release 退出；
+    - owner == "core" 但 lifecycle 仍是 SUSPENDED：浏览器 STT gate 中途失败
+      回退普通麦克风时 owner 先回 core（lease_sync 不触发 resume），此时同样
+      只能靠这里补一次 game_release，否则 runtime 卡死在 SUSPENDED。
+
+    lifecycle 探测是只读的、全程 ``getattr`` 防御，避免 import asr_client
+    内部类型；缺失 MicLease 状态的旧式 / 降级 manager 维持历史行为照常 resume。
+    """
+    owner = getattr(mgr, "_voice_lease_owner", None)
+    if owner is None:
+        return True
+    if owner != "core":
+        return True
+    lifecycle = getattr(getattr(mgr, "_asr_runtime", None), "_asr_lifecycle", None)
+    lifecycle_state = getattr(getattr(lifecycle, "snapshot", None), "state", None)
+    return getattr(lifecycle_state, "value", None) == "suspended"
+
+
 async def _finalize_game_route_state_inner(
     state: dict,
     *,
@@ -975,7 +1007,11 @@ async def _finalize_game_route_state_inner(
         "_resume_independent_voice_input_after_game",
         None,
     )
-    if callable(resume_voice):
+    if callable(resume_voice) and not _game_voice_lease_release_needed(mgr):
+        # realtime-STT 游戏租约从未离开 Core：跳过 resume，避免 core->core
+        # 空转换清掉在途麦克风 PCM（见 ``_game_voice_lease_release_needed``）。
+        realtime_restore["reason"] = "voice_lease_not_taken"
+    elif callable(resume_voice):
         realtime_restore["attempted"] = True
         try:
             await resume_voice()
