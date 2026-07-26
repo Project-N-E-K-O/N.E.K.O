@@ -119,6 +119,10 @@ async def mini_game_invite_respond(request: Request):
     try:
         mgr = get_session_manager().get(lanlan_name)
         if mgr is not None:
+            # A button choice is genuine user engagement even though it does not
+            # create a chat message. Reset silence-aware proactive evidence before
+            # any best-effort WebSocket notification can fail.
+            mgr.note_user_engagement()
             # Button caller opens the game from the HTTP response. This WS only
             # dismisses prompts; game_url/game_type here would open it twice.
             await _push_mini_game_invite_resolved(

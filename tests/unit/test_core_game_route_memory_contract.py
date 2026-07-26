@@ -175,6 +175,7 @@ def _make_manager():
     mgr.user_activity = []
     mgr.last_user_activity_time = None
     mgr.last_user_message_time = None
+    mgr.last_user_engagement_time = None
 
     async def send_user_activity(interrupted_speech_id):
         mgr.user_activity.append(interrupted_speech_id)
@@ -355,6 +356,7 @@ async def test_takeover_dispatcher_handles_voice_transcript_and_skips_ordinary_u
     assert mgr._activity_tracker.voice_rms_count == 1
     assert mgr._activity_tracker.user_messages == []
     assert mgr._session_turn_count == 0
+    assert mgr.last_user_engagement_time is not None
     mgr._publish_user_utterance_to_plugin_bus.assert_not_called()
     assert mgr.sync_message_queue.messages == []
 
@@ -387,6 +389,7 @@ async def test_takeover_dispatcher_receives_voice_echo_match_before_suppression(
     assert mgr._activity_tracker.voice_rms_count == 1
     assert mgr._activity_tracker.user_messages == []
     assert mgr._session_turn_count == 0
+    assert mgr.last_user_engagement_time == FIXED_TS
     mgr._publish_user_utterance_to_plugin_bus.assert_not_called()
     assert mgr.sync_message_queue.messages == []
 
@@ -1228,6 +1231,7 @@ async def test_genuine_voice_transcript_stamps_last_user_message_time(monkeypatc
 
     assert mgr.last_user_activity_time == FIXED_TS
     assert mgr.last_user_message_time == FIXED_TS
+    assert mgr.last_user_engagement_time == FIXED_TS
 
 
 @pytest.mark.unit
@@ -1251,6 +1255,7 @@ async def test_ai_echo_transcript_does_not_stamp_last_user_message_time(monkeypa
     assert mgr.last_user_activity_time == FIXED_TS
     # 但真消息时间戳保持干净
     assert mgr.last_user_message_time is None
+    assert mgr.last_user_engagement_time is None
 
 
 @pytest.mark.unit
@@ -1266,6 +1271,7 @@ async def test_empty_voice_transcript_does_not_stamp_last_user_message_time(monk
 
     assert mgr.last_user_activity_time == FIXED_TS
     assert mgr.last_user_message_time is None
+    assert mgr.last_user_engagement_time is None
 
 
 @pytest.mark.unit
@@ -1298,6 +1304,7 @@ async def test_last_user_message_time_uses_transcript_arrival_not_post_await(mon
 
     assert mgr.last_user_activity_time == 101.0
     assert mgr.last_user_message_time == 101.0
+    assert mgr.last_user_engagement_time == 101.0
 
 
 @pytest.mark.unit

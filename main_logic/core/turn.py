@@ -1003,6 +1003,7 @@ class TurnMixin:
                     self.lanlan_name, handled, len(transcript_text),
                 )
                 if handled:
+                    self.note_user_engagement(at=_transcript_arrival_ts)
                     if isinstance(self.session, OmniRealtimeClient):
                         try:
                             await self.session.cancel_response()
@@ -1044,6 +1045,7 @@ class TurnMixin:
                 # 用顶部捕获的到达时刻而非此处 time.time()：takeover dispatcher 的
                 # await 不会把它推迟到 await 之后（codex P2）。
                 self.last_user_message_time = _transcript_arrival_ts
+                self.note_user_engagement(at=_transcript_arrival_ts)
                 self._session_turn_count += 1
                 # Telemetry：D1 漏斗——本进程首条用户消息（语音路径）。
                 try:
@@ -1297,7 +1299,9 @@ class TurnMixin:
             return
         resolved_input_type = input_type or MIRROR_USER_TEXT_INPUT_TYPE
         source = str(metadata.get("source") or "mirror") if isinstance(metadata, dict) else "mirror"
-        self.last_user_activity_time = time.time()
+        _user_input_time = time.time()
+        self.last_user_activity_time = _user_input_time
+        self.note_user_engagement(at=_user_input_time)
         self.sync_message_queue.put({
             "type": "user",
             "data": {

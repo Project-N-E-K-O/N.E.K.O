@@ -312,6 +312,10 @@ class LLMSessionManager(
         # 隐式 dismiss 在用户还没点按钮前就把 pending 邀请清掉、按钮撤走，用户随后
         # 点「现在不想玩」落到 expired、真正的 decline 冷却起不来、邀请反复重来。
         self.last_user_message_time = None  # float timestamp or None
+        # 用户真实互动时间戳：覆盖真实文本/语音，以及不产生消息的显式 UI
+        # 回应（例如 mini-game 邀请按钮）。仅供主动搭话的“持续无回应”窗口
+        # 使用；与 last_user_message_time 的邀请状态机语义保持分离。
+        self.last_user_engagement_time = None  # float timestamp or None
         # 长窗口主动搭话反馈的本进程观察起点。anti-repeat corpus 会跨重启持久化，
         # 但用户真实消息时间戳不会；用 manager 创建时刻兜底，避免重启后把上一次
         # 运行里可能已经得到回应的旧搭话误算成「持续无互动」。
@@ -469,3 +473,7 @@ class LLMSessionManager(
         # 真正进 session 前会再 refresh 一次，把 description 对齐到当时
         # 已知的 user_language。
         self._register_builtin_tools()
+
+    def note_user_engagement(self, *, at: float | None = None) -> None:
+        """Record a genuine user interaction for silence-aware proactive guards."""
+        self.last_user_engagement_time = float(time.time() if at is None else at)

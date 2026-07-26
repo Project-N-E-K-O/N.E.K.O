@@ -83,15 +83,13 @@ _PROACTIVE_LLM_RETRY_ERROR_TYPES: tuple[type[BaseException], ...] | None = None
 
 def _proactive_silence_since(mgr: Any) -> float | None:
     """Return the trustworthy start of the current no-response streak."""
-    last_user_message = getattr(mgr, "last_user_message_time", None)
-    if last_user_message is not None:
-        return float(last_user_message)
-    observation_started = getattr(
-        mgr,
-        "proactive_engagement_observation_started_at",
-        None,
+    timestamps = (
+        getattr(mgr, "proactive_engagement_observation_started_at", None),
+        getattr(mgr, "last_user_message_time", None),
+        getattr(mgr, "last_user_engagement_time", None),
     )
-    return float(observation_started) if observation_started is not None else None
+    valid = [float(value) for value in timestamps if value is not None]
+    return max(valid) if valid else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1141,13 +1139,14 @@ async def _guard_phase2_output(
         from memory.anti_repeat import get_anti_repeat_corpus
 
         anti_repeat_corpus = get_anti_repeat_corpus()
-        unanswered_repeat_signal = (
-            anti_repeat_corpus.score_unanswered_proactive_draft(
-                lanlan_name,
-                response_text,
-                silence_since=silence_since,
+        if not exempt_text_dedup:
+            unanswered_repeat_signal = (
+                anti_repeat_corpus.score_unanswered_proactive_draft(
+                    lanlan_name,
+                    response_text,
+                    silence_since=silence_since,
+                )
             )
-        )
     except Exception as exc:  # pragma: no cover - defensive
         active_logger.debug(
             "[AntiRepeat] unanswered proactive score skipped: %s",
@@ -1340,7 +1339,7 @@ async def _guard_phase2_output(
                 )
             )
         regen_unanswered_repeat_signal = None
-        if anti_repeat_corpus is not None:
+        if not exempt_text_dedup and anti_repeat_corpus is not None:
             try:
                 regen_unanswered_repeat_signal = (
                     anti_repeat_corpus.score_unanswered_proactive_draft(
