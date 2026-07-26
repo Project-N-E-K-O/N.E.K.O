@@ -105,6 +105,11 @@ _SPAWN_SUPPRESS_SEC = 10.0
 #   2) 进局 grace 秒后 mission_status 始终未出现 'running'，却已是终局/未定义态。
 _REPLAY_TIME_BACK_SEC = 5.0
 _REPLAY_MISSION_GRACE_SEC = 8.0
+_TERMINAL_MISSION_STATUSES = frozenset({
+    "win", "won", "victory", "success",
+    "fail", "failed", "lost", "defeat",
+    "left", "ended", "finished",
+})
 
 # 8111/本地 HTTP 单次延迟不等于离开战局。战局内探针失败在此窗口内保留上一帧，
 # 只有持续失败才切到 offline；真实的 map_info.valid=false 响应仍立即判定离局。
@@ -483,6 +488,7 @@ class TelemetryService:
         cursors_before = self.client.incremental_cursor_state()
         hud_ok, hud = self.client.get_hud_with_status() if poll_hud else (False, [])
         chat_ok, chat = self.client.get_chat_with_status() if poll_chat else (False, [])
+        terminal_status = str(status or "").strip().lower() in _TERMINAL_MISSION_STATUSES
         with self._lock:
             if generation != self._battle_generation:
                 return
@@ -496,8 +502,12 @@ class TelemetryService:
                 self._combat = combat
                 self._notices = notices
                 self._awards = awards
-            self._mission_status = status
-            self._mission_objectives = objectives
+            # battle_end is edge-triggered and consumes the current K/D once. Keep a
+            # terminal mission result private until the matching HUD channel succeeds,
+            # so the result and final combat summary become visible atomically.
+            if hud_ok or not terminal_status:
+                self._mission_status = status
+                self._mission_objectives = objectives
             for ev in hud:
                 self._hud_events.append(ev)
             for msg in chat:

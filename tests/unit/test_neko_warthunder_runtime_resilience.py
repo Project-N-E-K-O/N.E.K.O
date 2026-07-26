@@ -158,6 +158,60 @@ def test_failed_chat_drain_does_not_block_hud_incremental_polling() -> None:
     assert client.chat_calls == 2
 
 
+def test_terminal_mission_waits_for_successful_hud_catchup() -> None:
+    class DrainClient:
+        def __init__(self) -> None:
+            self.hud_calls = 0
+
+        def incremental_cursor_state(self):
+            return {}
+
+        def reset_hud_cursors(self):
+            return None
+
+        def reset_chat_cursor(self):
+            return None
+
+        def get_hud_with_status(self):
+            self.hud_calls += 1
+            return self.hud_calls != 1, []
+
+        def get_chat_with_status(self):
+            return True, []
+
+        def get_mission(self):
+            return "success", {"completed": True}
+
+    class SummaryTracker:
+        def reset(self):
+            return None
+
+        def feed(self, _hud):
+            return None
+
+        def get_summary(self):
+            return {"player_name": "pilot", "my": {"kills": 3, "deaths": 1}}
+
+    client = DrainClient()
+    service = TelemetryService(client)
+    service.tracker = SummaryTracker()
+    service._mission_status = "running"
+    service._mission_objectives = {"completed": False}
+    service._combat = {"player_name": "pilot", "my": {"kills": 1, "deaths": 1}}
+
+    service._poll_events(service._battle_generation)
+    assert service._hud_drain_pending is True
+    assert service._mission_status == "running"
+    assert service._mission_objectives == {"completed": False}
+    assert service._combat["my"] == {"kills": 1, "deaths": 1}
+
+    service._poll_events(service._battle_generation)
+    assert service._hud_drain_pending is False
+    assert service._mission_status == "success"
+    assert service._mission_objectives == {"completed": True}
+    assert service._combat["my"] == {"kills": 3, "deaths": 1}
+
+
 def test_user_context_refresh_cannot_move_chat_activity_backwards() -> None:
     plugin = object.__new__(NekoWarthunderPlugin)
     record = SimpleNamespace(
