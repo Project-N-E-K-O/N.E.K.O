@@ -118,6 +118,7 @@ class _BlockingSemanticCoordinator(_SemanticCoordinator):
         return await super().evaluate_buffered()
 
     async def prepare_predictor(self) -> bool:
+        self.prepare_calls += 1
         self.prepare_started.set()
         await self.prepare_release.wait()
         return True
@@ -674,6 +675,95 @@ async def test_close_cancels_prepare_after_cleanup() -> None:
 
     with pytest.raises(asyncio.CancelledError):
         await prepare
+    assert detector._prepare_task is None
+    assert detector._prepare_token is None
+    assert detector._semantic_adapter._smart_turn_pin_count == 0
+    assert detector.smart_turn_readiness is SmartTurnReadiness.UNLOADED
+
+
+async def test_reset_during_inflight_prepare_does_not_block_next_turn() -> None:
+    coordinator = _BlockingSemanticCoordinator(block_prepare=True)
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_smart_turn_policy(),
+        coordinator=coordinator,
+        on_turn_complete=AsyncMock(),
+    )
+    first_token = VoiceTurnToken(_ingress_token(), turn_id=1)
+    first = asyncio.create_task(detector.prepare_endpointing(first_token))
+    await asyncio.wait_for(coordinator.prepare_started.wait(), 1)
+
+    await detector.reset()
+    assert detector._prepare_task is not None
+    assert detector._prepare_token is None
+
+    next_token = VoiceTurnToken(_ingress_token(), turn_id=2)
+    second = asyncio.create_task(detector.prepare_endpointing(next_token))
+    await asyncio.sleep(0)
+    coordinator.prepare_release.set()
+
+    lease = await asyncio.wait_for(second, 1)
+    assert lease is not None
+    assert detector.smart_turn_readiness is SmartTurnReadiness.READY
+    assert detector.endpointing_ready(next_token) is True
+    # The superseded waiter loses its turn without raising or going fatal.
+    assert await asyncio.wait_for(first, 1) is None
+    assert detector._semantic_adapter._smart_turn_pin_count == 1
+    await lease.release()
+    assert detector._semantic_adapter._smart_turn_pin_count == 0
+    await detector.close()
+
+
+async def test_concurrent_same_token_prepare_calls_coalesce() -> None:
+    coordinator = _BlockingSemanticCoordinator(block_prepare=True)
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_smart_turn_policy(),
+        coordinator=coordinator,
+        on_turn_complete=AsyncMock(),
+    )
+    token = VoiceTurnToken(_ingress_token(), turn_id=1)
+    first = asyncio.create_task(detector.prepare_endpointing(token))
+    await asyncio.wait_for(coordinator.prepare_started.wait(), 1)
+    second = asyncio.create_task(detector.prepare_endpointing(token))
+    await asyncio.sleep(0)
+    coordinator.prepare_release.set()
+
+    first_lease = await asyncio.wait_for(first, 1)
+    second_lease = await asyncio.wait_for(second, 1)
+    assert first_lease is not None
+    assert second_lease is not None
+    assert coordinator.prepare_calls == 1
+    await first_lease.release()
+    await detector.close()
+
+
+async def test_close_while_waiting_for_stale_prepare_cleans_up() -> None:
+    coordinator = _BlockingSemanticCoordinator(block_prepare=True)
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_smart_turn_policy(),
+        coordinator=coordinator,
+        on_turn_complete=AsyncMock(),
+    )
+    first_token = VoiceTurnToken(_ingress_token(), turn_id=1)
+    first = asyncio.create_task(detector.prepare_endpointing(first_token))
+    await asyncio.wait_for(coordinator.prepare_started.wait(), 1)
+    await detector.reset()
+    next_token = VoiceTurnToken(_ingress_token(), turn_id=2)
+    second = asyncio.create_task(detector.prepare_endpointing(next_token))
+    await asyncio.sleep(0)
+
+    await detector.close()
+
+    results = await asyncio.gather(first, second, return_exceptions=True)
+    assert all(
+        result is None or isinstance(result, asyncio.CancelledError)
+        for result in results
+    )
     assert detector._prepare_task is None
     assert detector._prepare_token is None
     assert detector._semantic_adapter._smart_turn_pin_count == 0

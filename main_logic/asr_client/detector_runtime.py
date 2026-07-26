@@ -1160,43 +1160,56 @@ class DetectorRuntime:
             return None
         await self._ensure_semantic_started(adapter)
         prepare_task: asyncio.Task[bool] | None = None
-        async with self._lock:
-            if self._closed or adapter.failed:
-                self._smart_turn_readiness = SmartTurnReadiness.FAILED
-                return None
-            if (
-                self._smart_turn_token == token
-                and self._smart_turn_readiness is SmartTurnReadiness.READY
-            ):
-                return SmartTurnLease(token, self)
-            if self._smart_turn_token is not None:
-                return None
-            if (
-                self._smart_turn_readiness is SmartTurnReadiness.READY
-                and self._prepare_task is None
-            ):
-                adapter.pin_smart_turn()
-                self._smart_turn_token = token
-                return SmartTurnLease(token, self)
-            if self._prepare_task is not None:
-                if self._prepare_token != token:
+        while True:
+            stale_task: asyncio.Task[bool] | None = None
+            async with self._lock:
+                if self._closed or adapter.failed:
+                    self._smart_turn_readiness = SmartTurnReadiness.FAILED
                     return None
-                prepare_task = self._prepare_task
-            else:
-                self._smart_turn_readiness = SmartTurnReadiness.LOADING
-                self._prepare_token = token
-                self._prepare_epoch = self._detector_epoch
-                adapter.pin_smart_turn()
-                prepare_task = asyncio.create_task(
-                    self._prepare_endpointing_task(
-                        adapter,
-                        coordinator,
-                        token,
-                        self._detector_epoch,
-                    ),
-                    name="detector-runtime-smart-turn-prepare",
-                )
-                self._prepare_task = prepare_task
+                if (
+                    self._smart_turn_token == token
+                    and self._smart_turn_readiness is SmartTurnReadiness.READY
+                ):
+                    return SmartTurnLease(token, self)
+                if self._smart_turn_token is not None:
+                    return None
+                if (
+                    self._smart_turn_readiness is SmartTurnReadiness.READY
+                    and self._prepare_task is None
+                ):
+                    adapter.pin_smart_turn()
+                    self._smart_turn_token = token
+                    return SmartTurnLease(token, self)
+                if self._prepare_task is not None:
+                    if self._prepare_token == token:
+                        prepare_task = self._prepare_task
+                    elif self._prepare_token is not None:
+                        return None
+                    else:
+                        # _prepare_task alive with _prepare_token cleared means
+                        # a reset/release/invalidate orphaned an in-flight
+                        # model load.  Wait for its cleanup outside the lock
+                        # and retry instead of failing the new turn; the task
+                        # stays registered so close() can still cancel it.
+                        stale_task = self._prepare_task
+                else:
+                    self._smart_turn_readiness = SmartTurnReadiness.LOADING
+                    self._prepare_token = token
+                    self._prepare_epoch = self._detector_epoch
+                    adapter.pin_smart_turn()
+                    prepare_task = asyncio.create_task(
+                        self._prepare_endpointing_task(
+                            adapter,
+                            coordinator,
+                            token,
+                            self._detector_epoch,
+                        ),
+                        name="detector-runtime-smart-turn-prepare",
+                    )
+                    self._prepare_task = prepare_task
+            if stale_task is None:
+                break
+            await asyncio.gather(stale_task, return_exceptions=True)
         if prepare_task is None or not await asyncio.shield(prepare_task):
             return None
         if self.endpointing_ready(token):
@@ -1231,8 +1244,11 @@ class DetectorRuntime:
                 and self._prepare_epoch == detector_epoch
                 and self._detector_epoch == detector_epoch
             )
-            self._prepare_token = None
-            self._prepare_epoch = None
+            if owns_prepare:
+                # Only the registered single-flight owner may clear these; a
+                # detached task must not clobber a successor's fields.
+                self._prepare_token = None
+                self._prepare_epoch = None
             if valid and loaded and prepare_error is None:
                 self._smart_turn_token = token
                 self._smart_turn_readiness = SmartTurnReadiness.READY
