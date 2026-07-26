@@ -289,7 +289,8 @@ class PromotionMixin:
                 transitions += 1
                 logger.info(
                     f"[Reflection] {lanlan_name}: pending→confirmed "
-                    f"(time-driven, {int(age_days)}d): {r.get('text', '')[:50]}..."
+                    f"(time-driven, {int(age_days)}d): "
+                    + (f"{rid}" if subj is not None else f"{r.get('text', '')[:50]}...")
                 )
 
             # Pass 2: confirmed → promoted/denied by confirmed_at age
@@ -350,7 +351,10 @@ class PromotionMixin:
                     logger.info(
                         f"[Reflection] {lanlan_name}: confirmed→promoted "
                         f"(time-driven, {int(age_days)}d, no LLM): "
-                        f"{r.get('text', '')[:50]}..."
+                        + (
+                            f"{rid}" if promote_subject is not None
+                            else f"{r.get('text', '')[:50]}..."
+                        )
                     )
                 elif code == PersonaManager.FACT_REJECTED_CARD:
                     r['status'] = 'denied'

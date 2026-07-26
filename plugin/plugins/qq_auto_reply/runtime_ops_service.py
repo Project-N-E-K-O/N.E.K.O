@@ -14,6 +14,13 @@ class QQRuntimeOpsService:
         self.plugin = plugin
 
     async def start_auto_reply(self):
+        housekeeping = getattr(self.plugin, "_session_housekeeping_task", None)
+        if housekeeping is None or housekeeping.done():
+            # 交互式 stop 会取消 housekeeping；重启必须把它拉起来，否则
+            # idle flush/attention decay 全部停摆直到进程重启。
+            self.plugin._session_housekeeping_task = asyncio.create_task(
+                self.plugin._session_housekeeping_loop()
+            )
         if self.plugin._running:
             return Ok({"status": "already_running"})
         # 确保连接类型与当前配置一致

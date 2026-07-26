@@ -52,7 +52,26 @@ class QQSessionMemoryService:
                 current = self.plugin._user_sessions.get(session_key)
                 if not current or not current.get("memory_enabled"):
                     return False
-                return await self.finalize_user_memory_session(session_key, reason=reason)
+                # 关机只有一次机会：撞上每轮批次上限（返回 False 但游标有
+                # 进展）就继续排，零进展才停——上限是防饥饿，不是弃数据。
+                prev_cursor = int(
+                    current.get("last_group_digest_index", 0) or 0
+                )
+                while True:
+                    finalized = await self.finalize_user_memory_session(
+                        session_key, reason=reason,
+                    )
+                    if finalized:
+                        return True
+                    survivor = self.plugin._user_sessions.get(session_key)
+                    if not survivor:
+                        return finalized
+                    new_cursor = int(
+                        survivor.get("last_group_digest_index", 0) or 0
+                    )
+                    if new_cursor <= prev_cursor:
+                        return finalized
+                    prev_cursor = new_cursor
 
             await self.plugin._run_with_session_lock(session_key, _finalize_existing)
 
