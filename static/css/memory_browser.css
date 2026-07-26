@@ -2170,9 +2170,16 @@ html.neko-window-maximized .chat-item + .chat-item::before {
 }
 
 .tips-container img {
-    width: 28px;
-    height: 28px;
-    flex: 0 0 28px;
+    width: 36px;
+    height: 36px;
+    flex: 0 0 36px;
+}
+
+.memory-tip-copy {
+    display: grid;
+    flex: 1;
+    min-width: 0;
+    gap: 2px;
 }
 
 .tip-text {
@@ -2183,6 +2190,11 @@ html.neko-window-maximized .chat-item + .chat-item::before {
     line-height: 20px;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.memory-tip-scope {
+    color: var(--memory-text-tertiary);
+    font-size: 13px;
 }
 
 .memory-utility-bar {
@@ -2203,7 +2215,9 @@ html.neko-window-maximized .chat-item + .chat-item::before {
 
 .memory-global-actions {
     position: relative;
-    display: flex;
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(100px, 1fr);
     align-items: center;
     flex: 0 0 auto;
     gap: 8px;
@@ -2244,8 +2258,8 @@ html.neko-window-maximized .chat-item + .chat-item::before {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    flex: 0 0 auto;
-    width: 100px;
+    width: 100%;
+    min-width: 100px;
     box-sizing: border-box;
     white-space: nowrap;
 }
@@ -2253,9 +2267,8 @@ html.neko-window-maximized .chat-item + .chat-item::before {
 .memory-header-action > span {
     display: block;
     min-width: 0;
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    overflow: visible;
+    text-overflow: clip;
     white-space: nowrap;
 }
 

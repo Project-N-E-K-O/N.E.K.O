@@ -657,7 +657,7 @@
         const trigger = document.getElementById('memory-role-panel-trigger');
         const node = document.getElementById('memory-compact-current-role-name');
         if (!trigger) return;
-        const libraryLabel = translate('memory.compactLibraryLabel', '记忆库');
+        const libraryLabel = translate('memory.compactLibraryLabel', '角色列表');
         const roleName = node ? String(node.textContent || '').trim() : '';
         const label = roleName ? `${libraryLabel} · ${roleName}` : libraryLabel;
         trigger.setAttribute('aria-label', label);

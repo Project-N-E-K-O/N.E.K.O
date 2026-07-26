@@ -326,6 +326,9 @@ def test_memory_browser_page_load(mock_page: Page, running_server: str, seed_mem
 
     # Navigate to the memory browser page
     mock_page.goto(f"{running_server}/memory_browser")
+    expect(mock_page.locator(".memory-tip-scope")).to_have_text(
+        "仅展示近期记忆；长期记忆已融入猫娘内核，无法浏览。"
+    )
 
     # Wait for the file list to populate (the JS fetches /api/memory/recent_files on load)
     # We should see a button with the catgirl name in the list
@@ -617,7 +620,9 @@ def test_memory_browser_export_logs_header_fits_and_keyboard_focus_is_visible(
                     && barStyle.boxShadow !== 'none',
                 actionsSingleRow: Math.round(actionRect.height) <= 36,
                 actionsEqualSize: actionSizes.length === 3
-                    && actionSizes.every(size => size[0] === 100 && size[1] === 36),
+                    && actionSizes.every(size =>
+                        size[0] === actionSizes[0][0] && size[1] === 36
+                    ),
                 actionsInsideBar: actionRect.top >= barRect.top && actionRect.bottom <= barRect.bottom,
                 noticeBelowBar: noticeRect.top >= barRect.bottom,
                 noticeContentsInside: tipIconRect.top >= noticeRect.top
@@ -649,8 +654,8 @@ def test_memory_browser_export_logs_header_fits_and_keyboard_focus_is_visible(
 
     role_trigger = mock_page.locator("#memory-role-panel-trigger")
     expect(role_trigger).to_be_visible()
-    expect(role_trigger).to_have_text("记忆库 · 测试猫娘")
-    expect(role_trigger).to_have_attribute("aria-label", "记忆库 · 测试猫娘")
+    expect(role_trigger).to_have_text("角色列表 · 测试猫娘")
+    expect(role_trigger).to_have_attribute("aria-label", "角色列表 · 测试猫娘")
     expect(role_trigger).not_to_have_attribute("title", re.compile(r".+"))
     role_icon = role_trigger.locator(".memory-role-panel-trigger-icon")
     expect(role_icon).to_be_visible()
@@ -799,7 +804,7 @@ def test_memory_browser_header_controls_do_not_jump_at_layout_boundary(
 
 
 @pytest.mark.frontend
-def test_memory_browser_header_actions_clip_long_localized_labels(
+def test_memory_browser_header_actions_fit_all_localized_labels_without_clipping(
     mock_page: Page,
     running_server: str,
     seed_memory_file,
@@ -809,39 +814,68 @@ def test_memory_browser_header_actions_clip_long_localized_labels(
     mock_page.goto(f"{running_server}/memory_browser")
     mock_page.wait_for_function("window.i18next && window.i18next.isInitialized")
 
-    mock_page.evaluate("window.i18next.changeLanguage('es')")
-    settings = mock_page.locator("#memory-settings-trigger")
-    expect(settings).to_have_attribute("title", "Configuración de memoria")
-    expect(settings.locator("span")).to_have_text("Configuración de memoria")
-    role_trigger = mock_page.locator("#memory-role-panel-trigger")
-    expect(role_trigger).to_have_attribute("aria-label", "Memoria · 测试猫娘")
-    expect(role_trigger).not_to_have_attribute("title", re.compile(r".+"))
+    expected_labels = {
+        "en": ["Guide", "Export logs", "Settings"],
+        "es": ["Guía", "Exportar logs", "Configuración"],
+        "ja": ["ガイド", "ログ出力", "設定"],
+        "ko": ["가이드", "로그 내보내기", "설정"],
+        "pt": ["Guia", "Exportar logs", "Configurações"],
+        "ru": ["Справка", "Экспорт логов", "Настройки"],
+        "zh-CN": ["新手引导", "导出日志", "记忆设置"],
+        "zh-TW": ["新手引導", "匯出日誌", "記憶設定"],
+    }
+    geometry_by_locale = {}
+    for locale in expected_labels:
+        mock_page.evaluate("(locale) => window.i18next.changeLanguage(locale)", locale)
+        mock_page.wait_for_function(
+            "(locale) => window.i18next.language === locale",
+            arg=locale,
+        )
+        geometry_by_locale[locale] = mock_page.evaluate(
+            """
+            () => {
+                const actions = document.querySelector('.memory-global-actions');
+                const buttons = Array.from(
+                    actions.querySelectorAll('.memory-header-action')
+                );
+                const widths = buttons.map(
+                    button => Math.round(button.getBoundingClientRect().width)
+                );
+                return {
+                    labels: buttons.map(button => button.textContent.trim()),
+                    equalWidths:
+                        widths.length === 3
+                        && widths.every(width => width === widths[0]),
+                    labelsFit: buttons.every(button => {
+                        const label = button.querySelector('span');
+                        const buttonRect = button.getBoundingClientRect();
+                        const labelRect = label.getBoundingClientRect();
+                        return labelRect.left >= buttonRect.left
+                            && labelRect.right <= buttonRect.right
+                            && label.scrollWidth <= label.clientWidth;
+                    }),
+                    singleRow:
+                        Math.round(actions.getBoundingClientRect().height) === 36,
+                    noActionOverflow:
+                        actions.scrollWidth <= actions.clientWidth,
+                    noPageOverflow:
+                        document.documentElement.scrollWidth
+                        <= document.documentElement.clientWidth,
+                };
+            }
+            """
+        )
 
-    geometry = settings.evaluate(
-        """
-        button => {
-            const label = button.querySelector('span');
-            const buttonRect = button.getBoundingClientRect();
-            const labelRect = label.getBoundingClientRect();
-            const labelStyle = getComputedStyle(label);
-            return {
-                buttonWidth: Math.round(buttonRect.width),
-                labelInsideButton:
-                    labelRect.left >= buttonRect.left
-                    && labelRect.right <= buttonRect.right,
-                overflow: labelStyle.overflow,
-                textOverflow: labelStyle.textOverflow,
-                whiteSpace: labelStyle.whiteSpace,
-            };
+    assert geometry_by_locale == {
+        locale: {
+            "labels": expected_labels[locale],
+            "equalWidths": True,
+            "labelsFit": True,
+            "singleRow": True,
+            "noActionOverflow": True,
+            "noPageOverflow": True,
         }
-        """
-    )
-    assert geometry == {
-        "buttonWidth": 100,
-        "labelInsideButton": True,
-        "overflow": "hidden",
-        "textOverflow": "ellipsis",
-        "whiteSpace": "nowrap",
+        for locale in geometry_by_locale
     }
 
 
@@ -1268,7 +1302,7 @@ def test_memory_browser_wide_workspace_keeps_roles_and_save_actions_in_view(
     role_trigger = mock_page.locator("#memory-role-panel-trigger")
     expect(role_trigger).to_be_visible()
     expect(role_trigger).to_have_attribute("aria-expanded", "true")
-    expect(role_trigger).to_have_text("记忆库 · 测试猫娘")
+    expect(role_trigger).to_have_text("角色列表 · 测试猫娘")
     expect(mock_page.locator("#memory-file-list button.cat-btn[aria-current='true']")).to_have_count(
         1,
         timeout=10000,
@@ -1690,7 +1724,7 @@ def test_memory_browser_manual_wide_sidebar_toggle_uses_live_layout_transition(
     )
 
     trigger = mock_page.locator("#memory-role-panel-trigger")
-    expect(trigger).to_contain_text("记忆库")
+    expect(trigger).to_contain_text("角色列表")
     expect(trigger).to_contain_text("测试猫娘")
     collapse_start = mock_page.evaluate(
         """
@@ -1726,7 +1760,7 @@ def test_memory_browser_manual_wide_sidebar_toggle_uses_live_layout_transition(
     )
     expect(mock_page.locator("#memory-role-sidebar")).to_be_hidden()
     expect(trigger).to_have_attribute("aria-expanded", "false")
-    expect(trigger).to_contain_text("记忆库")
+    expect(trigger).to_contain_text("角色列表")
     expect(trigger).to_contain_text("测试猫娘")
 
     trigger.click()
@@ -1736,7 +1770,7 @@ def test_memory_browser_manual_wide_sidebar_toggle_uses_live_layout_transition(
     )
     expect(mock_page.locator("#memory-role-sidebar")).to_be_visible()
     expect(trigger).to_have_attribute("aria-expanded", "true")
-    expect(trigger).to_contain_text("记忆库")
+    expect(trigger).to_contain_text("角色列表")
     expect(trigger).to_contain_text("测试猫娘")
     expect(mock_page.locator("body.memory-browser-page")).not_to_have_class(
         re.compile(r"\bis-memory-manual-sidebar-transitioning\b")

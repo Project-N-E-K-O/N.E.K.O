@@ -45,25 +45,25 @@
         </div>
         <div class="container-content">
             <div class="memory-utility-bar">
-                <button type="button" id="memory-role-panel-trigger" aria-controls="memory-role-panel" aria-expanded="false" aria-label="记忆库" data-i18n-aria="memory.compactLibraryLabel">
+                <button type="button" id="memory-role-panel-trigger" aria-controls="memory-role-panel" aria-expanded="false" aria-label="角色列表" data-i18n-aria="memory.compactLibraryLabel">
                     <svg class="memory-role-panel-trigger-icon" viewBox="0 0 20 20" aria-hidden="true">
                         <path class="memory-role-panel-trigger-frame" fill-rule="evenodd" clip-rule="evenodd" d="M5.5 2.75h9A3.25 3.25 0 0 1 17.75 6v8a3.25 3.25 0 0 1-3.25 3.25h-9A3.25 3.25 0 0 1 2.25 14V6A3.25 3.25 0 0 1 5.5 2.75Zm.1 1.35a2 2 0 0 0-2 2v7.8a2 2 0 0 0 2 2h8.8a2 2 0 0 0 2-2V6.1a2 2 0 0 0-2-2H5.6Z"></path>
                         <rect class="memory-role-panel-trigger-divider" x="7.4" y="2.75" width="1.35" height="14.5" rx="0.675"></rect>
                     </svg>
                     <span class="memory-role-panel-trigger-label" aria-hidden="true">
-                        <span data-i18n="memory.compactLibraryLabel">记忆库</span>
+                        <span data-i18n="memory.compactLibraryLabel">角色列表</span>
                         <span> · </span>
                         <span id="memory-compact-current-role-name"></span>
                     </span>
                 </button>
                 <div class="memory-global-actions" aria-label="Memory actions" data-i18n-aria="memory.globalActionsAria">
-                    <button type="button" id="memory-guide-trigger" class="memory-header-action" data-memory-panel-trigger="guide" aria-controls="memory-guide-panel" aria-expanded="false" title="新手引导" data-i18n-title="memory.openTutorialManager">
+                    <button type="button" id="memory-guide-trigger" class="memory-header-action" data-memory-panel-trigger="guide" aria-controls="memory-guide-panel" aria-expanded="false" title="新手引导" data-i18n-title="memory.tutorialDialogTitle">
                         <span data-i18n="memory.openTutorialManager">新手引导</span>
                     </button>
                     <button type="button" id="memory-export-logs-trigger" class="memory-header-action" title="日志会自动脱敏，分享前仍建议确认" aria-label="导出日志">
                         <span data-memory-export-label>导出日志</span>
                     </button>
-                    <button type="button" id="memory-settings-trigger" class="memory-header-action" data-memory-panel-trigger="settings" aria-controls="memory-settings-panel" aria-expanded="false" title="记忆设置" data-i18n-title="memory.memorySettings">
+                    <button type="button" id="memory-settings-trigger" class="memory-header-action" data-memory-panel-trigger="settings" aria-controls="memory-settings-panel" aria-expanded="false" title="记忆设置" data-i18n-title="memory.settingsDialogTitle">
                         <span data-i18n="memory.memorySettings">记忆设置</span>
                     </button>
                     <span id="memory-export-logs-status" class="memory-export-logs-status" role="status" aria-live="polite" aria-atomic="true"></span>
@@ -71,7 +71,10 @@
             </div>
             <div class="tips-container">
                 <img src="/static/icons/exclamation.png" alt="">
-                <span class="tip-text" data-i18n="memory.tip1">刚刚结束的对话内容要稍等片刻才会载入，可以重新点击猫娘名称刷新。</span>
+                <div class="memory-tip-copy">
+                    <span class="tip-text" data-i18n="memory.tip1">刚刚结束的对话内容要稍等片刻才会载入，可以重新点击猫娘名称刷新。</span>
+                    <span class="tip-text memory-tip-scope" data-i18n="memory.tip2">仅展示近期记忆；长期记忆已融入猫娘内核，无法浏览。</span>
+                </div>
             </div>
             <div class="main">
                 <div id="memory-role-hover-target" aria-hidden="true"></div>
@@ -79,7 +82,7 @@
                     <div class="file-list" id="memory-role-library">
                         <div id="memory-role-sidebar">
                             <div id="memory-role-panel" aria-labelledby="memory-role-panel-title" hidden>
-                                <div class="file-list-title" id="memory-role-panel-title" data-i18n="memory.catgirlMemory">猫娘记忆库</div>
+                                <div class="file-list-title" id="memory-role-panel-title" data-i18n="memory.catgirlMemory">角色</div>
                                 <ul id="memory-file-list"></ul>
                             </div>
                         </div>
