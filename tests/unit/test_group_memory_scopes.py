@@ -329,10 +329,14 @@ def test_persona_view_only_exposes_authorized_scoped_sections():
     persona = {
         "master": {"facts": [{"text": "private"}]},
         group_a.persona_section_key: {
-            **group_a.as_entry_fields(), "facts": [{"text": "group a"}],
+            # Entries carry subject stamps exactly like the real writer
+            # (add_fact) produces them — authorization is per entry.
+            **group_a.as_entry_fields(),
+            "facts": [{"text": "group a", **group_a.as_entry_fields()}],
         },
         group_b.persona_section_key: {
-            **group_b.as_entry_fields(), "facts": [{"text": "group b"}],
+            **group_b.as_entry_fields(),
+            "facts": [{"text": "group b", **group_b.as_entry_fields()}],
         },
     }
 
@@ -1964,3 +1968,168 @@ async def test_group_reply_success_records_scoped_mentions_best_effort():
         context=context,
         reply_text="再次回复",
     )
+
+
+@pytest.mark.asyncio
+async def test_group_digest_batches_never_skip_backlog():
+    """A backlog larger than the digest window must drain oldest-first in
+    multiple batches with an exact cursor — the previous newest-N slice
+    permanently skipped the middle of an active group's history. A batch
+    failure keeps the cursor at the last successful batch so the remainder
+    is retried on the next flush."""
+    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    history = [SimpleNamespace(type="human", content=f"msg {i}") for i in range(8)]
+    session = SimpleNamespace(_conversation_history=history, close=AsyncMock())
+    bridge = MagicMock()
+    bridge.group_subject.side_effect = QQMemoryBridge.group_subject
+    bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
+    user_data = {
+        "memory_enabled": True, "is_group": True, "group_id": "7788",
+        "her_name": "Neko", "session": session,
+    }
+    plugin = SimpleNamespace(
+        _user_sessions={"group:7788": user_data},
+        _qq_settings={},
+        memory_bridge=bridge,
+        logger=MagicMock(),
+    )
+    service = QQSessionMemoryService(plugin)
+    service.GROUP_HISTORY_MAX_MESSAGES = 3
+
+    completed = await service.finalize_user_memory_session(
+        "group:7788", reason="test",
+    )
+
+    assert completed is True
+    sent = [
+        [m["content"][0]["text"] for m in call.args[1]]
+        for call in bridge.post_scoped_memory_history.await_args_list
+    ]
+    assert sent == [
+        ["msg 0", "msg 1", "msg 2"],
+        ["msg 3", "msg 4", "msg 5"],
+        ["msg 6", "msg 7"],
+    ]
+
+    # Mid-drain failure: cursor stays at the last successful batch and the
+    # session survives for the next flush to retry the remainder.
+    history2 = [SimpleNamespace(type="human", content=f"m{i}") for i in range(6)]
+    session2 = SimpleNamespace(_conversation_history=history2, close=AsyncMock())
+    user_data2 = {
+        "memory_enabled": True, "is_group": True, "group_id": "7788",
+        "her_name": "Neko", "session": session2,
+    }
+    plugin._user_sessions["group:7788"] = user_data2
+    bridge.post_scoped_memory_history = AsyncMock(side_effect=[
+        {"status": "ok"}, {"status": "error", "message": "down"},
+    ])
+    completed = await service.finalize_user_memory_session(
+        "group:7788", reason="retry",
+    )
+    assert completed is False
+    assert user_data2["last_group_digest_index"] == 3
+    assert "group:7788" in plugin._user_sessions
+
+
+@pytest.mark.asyncio
+async def test_generation_timeout_salvages_group_buffers_before_discard():
+    """Group sessions have no per-turn /cache: a timeout discard destroys the
+    only copy of unflushed scoped history and member buckets. The timeout
+    path must attempt a settle before discarding (and never for private or
+    memory-disabled sessions)."""
+    import asyncio as _asyncio
+
+    from plugin.plugins.qq_auto_reply.reply_generation_service import (
+        QQReplyGenerationService,
+    )
+
+    calls = []
+    finalize = AsyncMock(side_effect=lambda *a, **k: calls.append("finalize"))
+    discard = AsyncMock(side_effect=lambda *a, **k: calls.append("discard"))
+    user_data = {
+        "is_group": True, "memory_enabled": True, "lock": _asyncio.Lock(),
+    }
+
+    async def _hang(message):
+        await _asyncio.sleep(10)
+
+    session = SimpleNamespace(stream_text=_hang, _conversation_history=[])
+    plugin = SimpleNamespace(
+        logger=MagicMock(),
+        session_bootstrap_service=SimpleNamespace(
+            ensure_generation_session=AsyncMock(return_value=user_data),
+        ),
+        session_runtime_service=SimpleNamespace(
+            build_generation_session_key=lambda context: "group:7788",
+            prime_generation_session_state=MagicMock(return_value=(session, [])),
+            discard_session=discard,
+        ),
+        session_memory_service=SimpleNamespace(
+            finalize_user_memory_session=finalize,
+        ),
+        _user_sessions={"group:7788": user_data},
+        _queue_attachment_images=AsyncMock(return_value=0),
+        _ai_turn_timeout_seconds=0.05,
+        _wait_session_response_complete=AsyncMock(return_value=True),
+    )
+    service = QQReplyGenerationService(plugin)
+    context = SimpleNamespace(
+        is_group=True, group_id="7788", sender_id="1", her_name="Neko",
+        ephemeral_session=False, group_scene_mode="", attachments=None,
+        prompt_message="hi", system_prompt="sys", recalled_memory_text="",
+        recalled_memory_used=False, permission_level="user",
+    )
+
+    result = await service.run_primary_session_call(context)
+
+    assert result.timed_out is True
+    assert calls == ["finalize", "discard"]
+
+    # Private / memory-disabled sessions skip the salvage entirely.
+    calls.clear()
+    user_data["is_group"] = False
+    await service._salvage_group_buffers_before_discard("group:7788")
+    assert calls == []
+
+
+def test_persona_view_authorizes_scoped_entries_per_entry():
+    """persona_section_key omits the scope, so two subjects with the same
+    kind/id but different custom scopes share one section whose metadata is
+    last-writer-wins. Authorization must therefore be per entry: requesting
+    scope B must never render entries stamped with scope A, and unstamped
+    entries in a scoped section fail closed."""
+    from memory.persona.rendering import RenderingMixin
+
+    subject_a = MemorySubject.create("group_chat", "qq:123", scope="tenant-a")
+    subject_b = MemorySubject.create("group_chat", "qq:123", scope="tenant-b")
+    assert subject_a.persona_section_key == subject_b.persona_section_key
+
+    section = {
+        # Metadata is whatever the LAST writer stamped — here scope B.
+        **subject_b.as_entry_fields(),
+        "facts": [
+            {"text": "secret of tenant A", **subject_a.as_entry_fields()},
+            {"text": "note of tenant B", **subject_b.as_entry_fields()},
+            {"text": "unstamped stray"},
+        ],
+    }
+    persona = {subject_a.persona_section_key: section}
+
+    view_b = RenderingMixin._persona_view_for_subjects(persona, [subject_b])
+    facts_b = view_b[subject_a.persona_section_key]["facts"]
+    assert [f["text"] for f in facts_b] == ["note of tenant B"]
+
+    # The symmetric flip-flop: scope A must still see its own entries even
+    # though the section metadata currently says scope B.
+    view_a = RenderingMixin._persona_view_for_subjects(persona, [subject_a])
+    facts_a = view_a[subject_a.persona_section_key]["facts"]
+    assert [f["text"] for f in facts_a] == ["secret of tenant A"]
+
+    # Mutating a returned entry must reach the underlying persona object
+    # (mention recording depends on shared entry identity).
+    facts_b[0]["recent_mentions"] = ["now"]
+    assert section["facts"][1]["recent_mentions"] == ["now"]

@@ -206,7 +206,17 @@ class FactsMixin:
         )
         stop_names = self._get_entity_stop_names(name)
 
-        code, old_text = self._evaluate_fact_contradiction(name, text, section_facts, stop_names)
+        # 同 section 可能混着不同自定义 scope 的条目（section key 不含
+        # scope）：矛盾扫描只看本 subject 的条目，跨 scope 文本不得互相
+        # 否决/触发 correction。
+        scan_facts = section_facts
+        if memory_subject is not None:
+            from memory.scopes import entry_matches_subject
+            scan_facts = [
+                e for e in section_facts
+                if isinstance(e, dict) and entry_matches_subject(e, memory_subject)
+            ]
+        code, old_text = self._evaluate_fact_contradiction(name, text, scan_facts, stop_names)
         if code == self.FACT_REJECTED_CARD:
             return self.FACT_REJECTED_CARD
         if code == self.FACT_QUEUED_CORRECTION:
@@ -244,7 +254,15 @@ class FactsMixin:
             )
             stop_names = await self._aget_entity_stop_names(name)
 
-            code, old_text = self._evaluate_fact_contradiction(name, text, section_facts, stop_names)
+            # 对偶同步版 add_fact：矛盾扫描按 subject 逐条过滤。
+            scan_facts = section_facts
+            if memory_subject is not None:
+                from memory.scopes import entry_matches_subject
+                scan_facts = [
+                    e for e in section_facts
+                    if isinstance(e, dict) and entry_matches_subject(e, memory_subject)
+                ]
+            code, old_text = self._evaluate_fact_contradiction(name, text, scan_facts, stop_names)
             if code == self.FACT_REJECTED_CARD:
                 return self.FACT_REJECTED_CARD
             if code == self.FACT_QUEUED_CORRECTION:

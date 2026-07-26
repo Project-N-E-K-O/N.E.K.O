@@ -87,6 +87,28 @@ class QQSessionMemoryService:
     async def post_memory_history(self, endpoint: str, her_name: str, messages: list[dict[str, Any]], timeout: float = 5.0) -> dict[str, Any]:
         return await self.plugin.memory_bridge.post_memory_history(endpoint, her_name, messages, timeout=timeout)
 
+    def _slice_group_history_batch(
+        self, conversation_history: list, start_index: int, max_messages: int,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Oldest-first digest batch with an exact cursor.
+
+        Collect up to max_messages eligible messages starting at start_index
+        and return them with the raw index just past the last row consumed.
+        Filtered-out rows (non human/ai, empty text) advance the cursor but
+        produce no messages, so the caller never skips a stretch of history
+        the way a newest-N slice would."""
+        messages: list[dict[str, Any]] = []
+        next_index = max(0, start_index)
+        for raw_index in range(next_index, len(conversation_history)):
+            converted = self.conversation_slice_to_memory_messages(
+                conversation_history[raw_index:raw_index + 1],
+            )
+            if converted and len(messages) + len(converted) > max_messages:
+                break
+            messages.extend(converted)
+            next_index = raw_index + 1
+        return messages, next_index
+
     def record_group_member_turn(self, user_data: dict[str, Any], context: Any) -> None:
         """Keep bounded, actor-attributed user turns for optional member memory."""
         settings = getattr(self.plugin, "_qq_settings", {}) or {}
@@ -161,13 +183,21 @@ class QQSessionMemoryService:
                 last_group_digest_index = max(
                     0, int(user_data.get("last_group_digest_index", 0)),
                 )
-                scoped_messages = self.conversation_slice_to_memory_messages(
-                    conversation_history, last_group_digest_index,
-                )[-self.GROUP_HISTORY_MAX_MESSAGES:]
-                if (
-                    group_id
-                    and scoped_messages
-                ):
+                # 先旧后新分批结算，游标只推进到本批实际覆盖的原始下标。
+                # 旧写法单发 `[-200:]` 会把超过窗口的中段永久跳过（游标却
+                # 直接跳到 len(history)）——活跃群完全可复现的数据丢失。
+                # 每批一次 scoped 提取，失败即停：已成功批次的游标推进
+                # 保留，剩余留给下一轮 flush 重试。
+                while group_id:
+                    scoped_messages, next_index = self._slice_group_history_batch(
+                        conversation_history, last_group_digest_index,
+                        self.GROUP_HISTORY_MAX_MESSAGES,
+                    )
+                    if not scoped_messages:
+                        if next_index > last_group_digest_index:
+                            # 尾部全是被过滤的行：推进游标即可，无须发送。
+                            user_data["last_group_digest_index"] = next_index
+                        break
                     result = await self.plugin.memory_bridge.post_scoped_memory_history(
                         her_name,
                         scoped_messages,
@@ -180,7 +210,8 @@ class QQSessionMemoryService:
                         f"[{reason}] 已为群 {group_id} 完成 scoped 记忆结算，"
                         f"消息数: {len(scoped_messages)}"
                     )
-                    user_data["last_group_digest_index"] = len(conversation_history)
+                    user_data["last_group_digest_index"] = next_index
+                    last_group_digest_index = next_index
                     user_data["group_memory_flushed"] = True
                 member_memory_enabled = bool(
                     (getattr(self.plugin, "_qq_settings", {}) or {}).get(
@@ -192,36 +223,55 @@ class QQSessionMemoryService:
                     if member_memory_enabled else {}
                 )
                 member_labels = user_data.get("group_member_memory_labels") or {}
-                failed_member_ids: list[str] = []
-                for sender_id, member_messages in list(member_buckets.items()):
-                    if not group_id or not sender_id or not member_messages:
-                        continue
-                    try:
-                        result = await self.plugin.memory_bridge.post_scoped_memory_history(
-                            her_name,
-                            member_messages,
-                            subject=self.plugin.memory_bridge.group_participant_subject(
-                                group_id, sender_id,
-                            ),
-                            speaker_label=(
-                                str(member_labels.get(sender_id) or sender_id)[:64]
-                            ),
-                            timeout=30.0,
-                        )
-                        if result.get("status") == "error":
-                            raise RuntimeError(
-                                result.get(
-                                    "message", "scoped participant history failed",
-                                )
+                # 并发冲成员 bucket（限流 4）：串行 8×30s 最坏把本会话锁
+                # 持 4 分钟，期间该群 ≥3 条消息就会耗尽全局 Semaphore(3)、
+                # 冻结所有会话的消息处理；关机 flush 也挤不进宿主 1.5s 的
+                # kill 窗口。每任务自 catch：成功即弹出 bucket、失败留队
+                # 下轮重试，逐 bucket 语义与串行版一致。
+                member_flush_sem = asyncio.Semaphore(4)
+
+                async def _flush_one_member(
+                    sender_id: str, member_messages: list,
+                ) -> str | None:
+                    async with member_flush_sem:
+                        try:
+                            result = await self.plugin.memory_bridge.post_scoped_memory_history(
+                                her_name,
+                                member_messages,
+                                subject=self.plugin.memory_bridge.group_participant_subject(
+                                    group_id, sender_id,
+                                ),
+                                speaker_label=(
+                                    str(member_labels.get(sender_id) or sender_id)[:64]
+                                ),
+                                timeout=30.0,
                             )
-                    except Exception as exc:
-                        failed_member_ids.append(sender_id)
-                        self.plugin.logger.error(
-                            f"[{reason}] 群 {group_id} 成员 {sender_id} "
-                            f"记忆结算失败: {exc}"
-                        )
-                        continue
-                    member_buckets.pop(sender_id, None)
+                            if result.get("status") == "error":
+                                raise RuntimeError(
+                                    result.get(
+                                        "message",
+                                        "scoped participant history failed",
+                                    )
+                                )
+                        except Exception as exc:
+                            self.plugin.logger.error(
+                                f"[{reason}] 群 {group_id} 成员 {sender_id} "
+                                f"记忆结算失败: {exc}"
+                            )
+                            return sender_id
+                        member_buckets.pop(sender_id, None)
+                        return None
+
+                flush_jobs = [
+                    _flush_one_member(sender_id, member_messages)
+                    for sender_id, member_messages in list(member_buckets.items())
+                    if group_id and sender_id and member_messages
+                ]
+                failed_member_ids: list[str] = [
+                    sid for sid in (
+                        await asyncio.gather(*flush_jobs) if flush_jobs else []
+                    ) if sid
+                ]
                 if failed_member_ids:
                     self.plugin.logger.error(
                         f"[{reason}] 群 {group_id} 仍有 "

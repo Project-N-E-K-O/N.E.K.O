@@ -74,7 +74,28 @@ class RenderingMixin:
                 if include_legacy_private:
                     view[section_key] = section
                 continue
-            if (scoped_subject.key, scoped_subject.scope) in allowed_keys:
+            # 逐条授权而非按 section metadata 整段放行：section key 只含
+            # kind:subject_id 不含 scope，同 kind/id 不同自定义 scope 的两个
+            # 隔离域共享同一个 section，metadata 是"最后写入者"的 scope——
+            # 按它放行会把 A 域条目渲染给 B（泄漏），按它拒绝会让 A 自己的
+            # 条目随最后写入者隐身（对称翻转）。entry 写入时都带 subject 戳，
+            # 以戳为准；无戳/损坏条目 fail-closed 掉队。metadata 仅保留上面
+            # persona_subject_from_section 的损坏检查职责。
+            if not allowed_keys:
+                continue
+            from memory.scopes import filter_entries_for_subjects
+
+            facts = section.get('facts')
+            if isinstance(facts, list):
+                scoped_facts = filter_entries_for_subjects(
+                    facts, allowed, include_legacy_private=False,
+                )
+                if not scoped_facts:
+                    continue
+                filtered = dict(section)
+                filtered['facts'] = scoped_facts
+                view[section_key] = filtered
+            elif (scoped_subject.key, scoped_subject.scope) in allowed_keys:
                 view[section_key] = section
         return view
 

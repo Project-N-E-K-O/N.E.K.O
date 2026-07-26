@@ -116,6 +116,7 @@ class QQReplyGenerationService:
 
         except asyncio.TimeoutError:
             self.plugin.logger.warning(f"会话 {session_key} 处理超时，关闭并丢弃该会话")
+            await self._salvage_group_buffers_before_discard(session_key)
             await self.plugin.session_runtime_service.discard_session(session_key, reason="generation_timeout")
             stage_trace.status = "timeout"
             return QQModelResult(reply_text=None, source="session", timed_out=True, traces=[stage_trace])
@@ -161,8 +162,10 @@ class QQReplyGenerationService:
 
                 completed = await self.plugin._wait_session_response_complete(user_session)
                 if not completed:
+                    # 只 raise 不在这里 discard：外层 except TimeoutError 会
+                    # 统一走"先抢救群缓冲再丢弃"，这里先 pop 会让 user_data
+                    # 在抢救前就没了（原本也是双重 discard）。
                     self.plugin.logger.warning(f"会话 {session_key} 响应超时，关闭并丢弃该会话")
-                    await self.plugin.session_runtime_service.discard_session(session_key, reason="session_timeout")
                     raise asyncio.TimeoutError
             finally:
                 restore_session_prompt()
@@ -227,6 +230,28 @@ class QQReplyGenerationService:
             self.plugin.logger.info(f"[群聊] 跳过记忆同步 (群: {context.group_id}, 用户: {context.sender_id})")
             return
         self.plugin.logger.info(f"[非管理员] 跳过记忆同步 (用户: {context.sender_id}, 权限: {context.permission_level})")
+
+    async def _salvage_group_buffers_before_discard(self, session_key: str) -> None:
+        """Group sessions keep scoped history and member buckets only in
+        memory (no per-turn /cache); a timeout discard would destroy the only
+        copy of every unflushed consented turn. Best-effort settle first —
+        the memory server is independent of the wedged LLM session; on any
+        failure fall through to the plain discard (never worse than today)."""
+        user_data = self.plugin._user_sessions.get(session_key)
+        if (
+            not user_data
+            or not user_data.get("is_group")
+            or not user_data.get("memory_enabled")
+        ):
+            return
+        try:
+            await self.plugin.session_memory_service.finalize_user_memory_session(
+                session_key, reason="generation_timeout",
+            )
+        except Exception as exc:
+            self.plugin.logger.error(
+                f"超时丢弃前的群记忆抢救失败 ({session_key}): {exc}"
+            )
 
     async def _record_scoped_mentions_best_effort(
         self, context: QQReplyContext, reply_text: str,

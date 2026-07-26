@@ -165,12 +165,20 @@ class QQSettingsService:
             # _invalidate_private_session）：ON→OFF 结清 opt-in 期间的缓冲、
             # 失败则 fail-closed 清空；OFF→ON 推进 digest 游标，opt-out
             # 期间的对话绝不追溯入库。放后台跑，settings 保存不被
-            # per-group 结算（每群最多 30s）拖住。
-            asyncio.create_task(
+            # per-group 结算（digest 分批 + 成员并发，仍可达数十秒）拖住。
+            task = asyncio.create_task(
                 self.plugin.session_memory_service.invalidate_group_sessions(
                     enabled=group_memory_after,
                 )
             )
+            # event loop 对 task 只持弱引用——这是隐私关键操作，必须强引用
+            # 到跑完，否则可能在结算/清理中途被 GC 打断（CodeRabbit Major）。
+            sync_tasks = getattr(self.plugin, "_group_memory_sync_tasks", None)
+            if sync_tasks is None:
+                sync_tasks = set()
+                self.plugin._group_memory_sync_tasks = sync_tasks
+            sync_tasks.add(task)
+            task.add_done_callback(sync_tasks.discard)
         # 猫娘动态策略配置
         strategy_mode = kwargs.get("strategy_mode")
         if strategy_mode is not None:
