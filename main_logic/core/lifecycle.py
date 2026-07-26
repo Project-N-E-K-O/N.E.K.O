@@ -1719,10 +1719,17 @@ class LifecycleMixin:
         Passive (``delivery_mode="passive"`` / ai_behavior="read") callbacks
         never mirror into ``pending_extra_replies`` (PR #2469), so a pure
         voice session has no user-turn drain to carry them. Their delivery
-        point is HERE: the next NATURALLY-occurring hot swap folds them into
-        the new session's prime text as background context — rendered with
-        the PASSIVE templates, and never flipping ``skipped`` to False, so
-        they cannot cause an unsolicited response.
+        point is HERE: the next NATURALLY-occurring hot swap hands them to
+        the new session as background context via a DEDICATED
+        ``prime_context(skipped=True)`` call — physically separate from the
+        (possibly ``skipped=False``) announce prime, so read content can
+        never become part of the user turn that triggers a spoken response.
+
+        Deliberate trade-off (owner decision): an ACTIVE voice session gets
+        no mid-session context push for passive cues — they wait for the
+        next natural swap, even if that is several user turns away. Pushing
+        into a live session would reopen the interruption/session-churn
+        surface this design exists to close.
 
         Returns ``(selected, rendered_text)``. Selection shares the
         ``AGENT_CALLBACK_TOTAL_MAX_TOKENS`` budget with the already-selected
@@ -1893,11 +1900,15 @@ class LifecycleMixin:
             _prime_selected_extras: list = []
             _removed_extras: list = []
             _removed_cb_backed_ids: set = set()
-            # Passive callbacks riding this swap's prime text (voice pending
-            # session only). Same deferred-removal bookkeeping as
-            # _prime_selected_extras: queue untouched until promote succeeds.
+            # Passive callbacks riding this swap (voice pending session only).
+            # Same deferred-removal bookkeeping as _prime_selected_extras:
+            # queue untouched until promote succeeds. Injection goes through
+            # its OWN prime_context(skipped=True) call below — never merged
+            # into the announce prime text.
             _prime_selected_passive_cbs: list = []
             _removed_passive_cbs: list = []
+            _passive_sel: list = []
+            _passive_swap_text = ""
             next_session_context_messages = getattr(self, "next_session_context_messages", []) or []
             incremental_next_session_context = next_session_context_messages[
                 self.initial_next_session_context_snapshot_len:
@@ -1942,19 +1953,17 @@ class LifecycleMixin:
                     lanlan_name=self.lanlan_name,
                     master_name=self.master_name,
                 )
-                # Passive（read）回调搭车：PASSIVE 渲染块排在播报文本之后，模型
-                # 把它当背景上下文；本分支 skipped=False 由 proactive extras
-                # 决定，passive 只共享同一次注入，不改变触发语义。预算上
-                # passive 只吃 extras 选剩的份额。
+                # Passive（read）回调搭车：只在这里做选取（预算吃 extras 选剩
+                # 的份额）。注入不混进本分支 skipped=False 的播报 prime——那会
+                # 让 read 内容成为主动发言那一轮 user turn 的一部分、被当场说
+                # 出来（Codex review P2）。统一走 if/else 之后的独立
+                # skipped=True 注入。
                 if isinstance(self.pending_session, OmniRealtimeClient):
                     _passive_sel, _passive_swap_text = (
                         self._select_passive_callbacks_for_swap_prime(
                             extras_selected=_selected,
                         )
                     )
-                    if _passive_swap_text:
-                        final_prime_text += "\n" + _passive_swap_text
-                        _prime_selected_passive_cbs = _passive_sel
                 try:
                     await self.pending_session.prime_context(final_prime_text, skipped=False)
                 except (web_exceptions.ConnectionClosed, AttributeError) as e:
@@ -1977,16 +1986,12 @@ class LifecycleMixin:
                 _lang = normalize_language_code(self.user_language, format='short')
                 final_prime_text += _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
                 # Passive（read）回调搭车：本分支没有 proactive extras，
-                # skipped 保持 True——内容只进 session instructions（Qwen 同路；
-                # Gemini 走 skip-guard 丢弃响应），绝不触发主动发言。这就是
-                # 语音场景 passive 的唯一投递点。
+                # passive 吃满整个预算。注入同样走 if/else 之后的统一
+                # skipped=True 通道。
                 if isinstance(self.pending_session, OmniRealtimeClient):
                     _passive_sel, _passive_swap_text = (
                         self._select_passive_callbacks_for_swap_prime()
                     )
-                    if _passive_swap_text:
-                        final_prime_text += "\n" + _passive_swap_text
-                        _prime_selected_passive_cbs = _passive_sel
                 try:
                     await self.pending_session.prime_context(final_prime_text, skipped=True)
                 except (web_exceptions.ConnectionClosed, AttributeError) as e:
@@ -1996,6 +2001,23 @@ class LifecycleMixin:
                     await self._reset_preparation_state(clear_main_cache=True)
                     self.is_hot_swap_imminent = False
                     return
+
+            # Passive（read）搭车条目的统一注入点：独立的 skipped=True 调用
+            # ——非 Qwen/Gemini 走 session instructions，Qwen 同路，Gemini 走
+            # skip-guard 丢弃响应——与上面可能 skipped=False 的播报 prime 物理
+            # 隔离，read 内容永远不会成为触发主动发言那一轮的 user turn 的一
+            # 部分。失败是 best-effort：不中止 swap（主 prime 已成功，中止丢
+            # 更多）；_prime_selected_passive_cbs 不赋值 → promote 不出队，
+            # 条目留在队列等下一次热切换；pending session 若真死了，promote
+            # 后的 ws 校验会兜住。
+            if _passive_swap_text:
+                try:
+                    await self.pending_session.prime_context(_passive_swap_text, skipped=True)
+                    _prime_selected_passive_cbs = _passive_sel
+                except (web_exceptions.ConnectionClosed, AttributeError) as e:
+                    logger.warning(
+                        f"Final Swap Sequence: passive ride-along prime failed (kept queued): {e}"
+                    )
 
             print(final_prime_text) #只在控制台显示，不输出到日志文件
 
