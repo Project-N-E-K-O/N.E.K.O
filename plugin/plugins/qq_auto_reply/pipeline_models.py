@@ -94,6 +94,9 @@ class QQReplyContext:
     current_message_id: str = ""
     force_reply: bool = False
     source_kind: str = ""
+    # 轮次构建时刻的 group_member_memory_enabled 快照：成员发言入 bucket
+    # 与否绑定发言时刻的授权状态——生成期间才切 ON 的轮不得回溯收集。
+    member_memory_enabled: bool = False
     traces: list[QQPipelineStageTrace] = field(default_factory=list)
 
 

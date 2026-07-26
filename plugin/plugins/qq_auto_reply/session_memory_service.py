@@ -133,6 +133,12 @@ class QQSessionMemoryService:
         settings = getattr(self.plugin, "_qq_settings", {}) or {}
         if not settings.get("group_member_memory_enabled"):
             return
+        if not getattr(context, "member_memory_enabled", False):
+            # 完成时刻（上一行）与发言时刻（context 快照）都要有授权：
+            # 生成期间才切 ON 的轮，发言人说话时并无成员记忆 consent，
+            # 不得回溯入 bucket；反向（说话时 ON、完成时 OFF）由上一行
+            # 挡住。缺字段的合成调用方 fail-closed。
+            return
         if not getattr(context, "is_group", False):
             return
         if (
@@ -294,7 +300,9 @@ class QQSessionMemoryService:
 
             await self.plugin._run_with_session_lock(session_key, _settle_one)
 
-    async def finalize_user_memory_session(self, session_key: str, reason: str) -> bool:
+    async def finalize_user_memory_session(
+        self, session_key: str, reason: str, *, retain_session: bool = False,
+    ) -> bool:
         user_data = self.plugin._user_sessions.get(session_key)
         if not user_data or not user_data.get("memory_enabled"):
             return False
@@ -429,6 +437,13 @@ class QQSessionMemoryService:
             self.plugin.logger.error(f"[{reason}] 用户 {session_key} 的记忆结算失败: {e}")
             return False
 
+        if retain_session:
+            # 快速 OFF→ON：ON 任务已排队等着 rebase 本会话——旧时代结算
+            # 完毕后保留会话，pop+close 会把 ON 之后追加的已授权轮次连带
+            # 销毁（共享上下文与群记忆双双丢失）。cutoff 已随本次结算消费
+            # 完毕，留着会让后续 finalize 永远截断在旧时代边界。
+            user_data.pop("group_opt_out_cutoff", None)
+            return True
         self.plugin._user_sessions.pop(session_key, None)
         try:
             await session.close()
@@ -489,9 +504,15 @@ class QQSessionMemoryService:
                     current.get("last_group_digest_index", 0) or 0
                 )
                 while True:
+                    # 每次迭代重读：ON 章由 settings 写入路径同步盖下，可能
+                    # 落在本任务运行中途。有 ON 章 = 新时代已开启、rebase 任
+                    # 务已排队——结算旧时代但保留会话，销毁会把 ON 之后追加
+                    # 的已授权轮次一并丢掉，rebase 任务随后也找不到会话。
+                    retain = current.get("pending_enable_rebase") is not None
                     try:
                         finalized = await self.finalize_user_memory_session(
                             session_key, reason="group_memory_disabled",
+                            retain_session=retain,
                         )
                     except Exception as exc:
                         self.plugin.logger.error(
@@ -512,8 +533,10 @@ class QQSessionMemoryService:
                         # 理由。
                         break
                     prev_cursor = new_cursor
-                # 成功路径 session 已被 finalize 弹出；仍把本地引用的 flag
-                # 置 False——任何持有旧引用的路径都不得再当它 opt-in。
+                # 成功路径 session 已被 finalize 弹出（retain 场景除外——
+                # 会话保留待 rebase）；仍把 flag 置 False：rebase 任务接手
+                # 前的窗口里，idle flush 不得把 OFF 期间的行当 opt-in 入库，
+                # rebase 任务会在推进游标越过它们之后再置回 True。
                 current["memory_enabled"] = False
                 if not finalized:
                     current["last_group_digest_index"] = len(history)

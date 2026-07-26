@@ -294,5 +294,11 @@ class QQReplyContextNode:
             current_message_id=current_message_id,
             force_reply=force_reply,
             source_kind=source_kind,
+            member_memory_enabled=bool(
+                is_group
+                and (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                    "group_member_memory_enabled", False,
+                )
+            ),
             traces=traces,
         )

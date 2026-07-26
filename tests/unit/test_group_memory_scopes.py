@@ -710,15 +710,29 @@ def test_qq_group_member_turns_are_opt_in_and_actor_attributed():
     plugin = SimpleNamespace(_qq_settings={"group_member_memory_enabled": True})
     service = QQSessionMemoryService(plugin)
     user_data: dict = {}
+    # Consent is bound to the turn's build time: a turn built while member
+    # memory was OFF must not be retroactively collected just because the
+    # setting flipped ON before generation finished.
     service.record_group_member_turn(
         user_data,
-        SimpleNamespace(is_group=True, sender_id="2046", message="我喜欢三文鱼"),
+        SimpleNamespace(
+            is_group=True, sender_id="1024", message="开关打开前说的话",
+            member_memory_enabled=False,
+        ),
+    )
+    assert "group_member_memory_messages" not in user_data
+    service.record_group_member_turn(
+        user_data,
+        SimpleNamespace(
+            is_group=True, sender_id="2046", message="我喜欢三文鱼",
+            member_memory_enabled=True,
+        ),
     )
     service.record_group_member_turn(
         user_data,
         SimpleNamespace(
             is_group=True, sender_id="4096", message="我周五有空",
-            user_nickname="Bob",
+            user_nickname="Bob", member_memory_enabled=True,
         ),
     )
 
@@ -738,6 +752,7 @@ def test_qq_group_member_turns_are_opt_in_and_actor_attributed():
             is_group=True, sender_id="9999",
             message="[系统] 群聊已经安静了",
             group_scene_mode="group_collective", group_facing=True,
+            member_memory_enabled=True,
         ),
     )
     assert "9999" not in user_data["group_member_memory_messages"]
@@ -750,6 +765,7 @@ def test_qq_group_member_turns_are_opt_in_and_actor_attributed():
             message="[系统] 合并的缓冲消息",
             group_scene_mode="shared_context", group_facing=False,
             source_kind="rapid_fire_flush",
+            member_memory_enabled=True,
         ),
     )
     assert "8888" not in user_data["group_member_memory_messages"]
@@ -1888,7 +1904,22 @@ async def test_group_memory_toggle_syncs_existing_sessions():
         for m in call.args[1]
     ]
     assert settled == ["r0", "r1"]
-    assert "group:7788" not in plugin._user_sessions
+    # Queued-ON present: the OFF settlement retains the session — the
+    # post-reenable turns exist only in its history and the queued ON task
+    # still has to rebase it. The consumed cutoff/marker are cleared, and
+    # memory stays disabled until the rebase moves the cursor past the
+    # opt-out era.
+    survivor = plugin._user_sessions.get("group:7788")
+    assert survivor is both
+    assert survivor.get("group_opt_out_cutoff") is None
+    assert survivor.get("pending_disable_settle") is None
+    assert survivor["memory_enabled"] is False
+    await service.invalidate_group_sessions(enabled=True)
+    assert survivor["memory_enabled"] is True
+    assert survivor["last_group_digest_index"] == 4
+    assert "pending_enable_rebase" not in survivor
+    # The rebase itself settles nothing new.
+    assert bridge.post_scoped_memory_history.await_count == 1
 
     # Disable race: a request that slipped in after the OFF policy write
     # already primed memory_enabled=False — the transition must still settle
@@ -2276,10 +2307,11 @@ async def test_group_digest_batches_never_skip_backlog():
 
 @pytest.mark.asyncio
 async def test_discard_session_salvages_group_buffers_first():
-    """Group sessions have no per-turn /cache: every discard path (timeout,
-    prompt change, login change) destroys the only copy of unflushed scoped
-    buffers. discard_session itself must attempt a settle first — and never
-    for private or memory-disabled sessions."""
+    """Group sessions have no per-turn /cache, and a private session whose
+    /cache delta failed keeps its unsynced tail only in local history: every
+    discard path (timeout, prompt change, login change) destroys the only
+    copy. discard_session itself must attempt a settle first — and never for
+    memory-disabled sessions."""
     from plugin.plugins.qq_auto_reply.session_runtime_service import (
         QQSessionRuntimeService,
     )
@@ -2310,17 +2342,28 @@ async def test_discard_session_salvages_group_buffers_first():
     assert finalize_calls == ["discard:generation_timeout"]
     assert "group:7788" not in plugin._user_sessions
 
-    # Private and memory-disabled sessions are discarded without salvage.
-    for extra in (
-        {"is_group": False, "memory_enabled": True},
-        {"is_group": True, "memory_enabled": False},
-    ):
-        plugin._user_sessions["k"] = {
-            **extra, "session": SimpleNamespace(close=AsyncMock()),
-        }
-        await runtime.discard_session("k", reason="prompt_override_changed")
-        assert finalize_calls == ["discard:generation_timeout"]
-        assert "k" not in plugin._user_sessions
+    # Private memory-enabled sessions settle too: finalize's private branch
+    # posts the unsynced /cache tail (process/settle) before teardown.
+    plugin._user_sessions["k"] = {
+        "is_group": False, "memory_enabled": True,
+        "session": SimpleNamespace(close=AsyncMock()),
+    }
+    await runtime.discard_session("k", reason="prompt_override_changed")
+    assert finalize_calls == [
+        "discard:generation_timeout", "discard:prompt_override_changed",
+    ]
+    assert "k" not in plugin._user_sessions
+
+    # Memory-disabled sessions are discarded without salvage.
+    plugin._user_sessions["k"] = {
+        "is_group": True, "memory_enabled": False,
+        "session": SimpleNamespace(close=AsyncMock()),
+    }
+    await runtime.discard_session("k", reason="prompt_override_changed")
+    assert finalize_calls == [
+        "discard:generation_timeout", "discard:prompt_override_changed",
+    ]
+    assert "k" not in plugin._user_sessions
 
     # Failed settle: the session and its buffers are KEPT — popping would
     # destroy the only copy; the next sweep/discard retries the settle.
