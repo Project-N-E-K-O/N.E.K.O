@@ -50,6 +50,17 @@ def test_stop_and_game_takeover_update_mic_lease() -> None:
     assert "refreshMicLease();" in stop
 
 
+def test_stop_recording_removes_external_asr_preview_before_early_return() -> None:
+    source = CAPTURE.read_text(encoding="utf-8")
+    stop = source.split("function stopRecording(options)", 1)[1].split(
+        "function startMicVolumeVisualization", 1
+    )[0]
+
+    assert stop.index("window.removeExternalAsrPreview();") < stop.index(
+        "if (!S.isRecording) return;"
+    )
+
+
 def test_mic_lease_projects_local_off_and_suspended_lifecycle_states() -> None:
     source = CAPTURE.read_text(encoding="utf-8")
     setter = source.split("function setMicLeaseOwner(owner)", 1)[1].split(

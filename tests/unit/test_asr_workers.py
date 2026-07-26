@@ -615,7 +615,9 @@ async def test_step_server_vad_correlates_distinct_item_ids_and_tombstones(
     await _stop_worker(task, requests, responses)
 
 
-async def test_step_server_vad_correlates_two_interleaved_turns(monkeypatch) -> None:
+async def test_step_server_vad_fails_closed_on_ambiguous_unbound_turns(
+    monkeypatch,
+) -> None:
     async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
         if isinstance(payload, str) and json.loads(payload)["type"] == "session.update":
             await ws.server_send({"type": "session.updated"})
@@ -649,35 +651,39 @@ async def test_step_server_vad_correlates_two_interleaved_turns(monkeypatch) -> 
                 "item_id": audio_item_id,
             }
         )
-    for transcript_item_id, text in (
-        ("step-transcript-1", "first"),
-        ("step-transcript-2", "second"),
-    ):
-        await websocket.server_send(
-            {
-                "type": "conversation.item.input_audio_transcription.delta",
-                "item_id": transcript_item_id,
-                "text": text[:2],
-            }
-        )
-        await websocket.server_send(
-            {
-                "type": "conversation.item.input_audio_transcription.completed",
-                "item_id": transcript_item_id,
-                "transcript": text,
-            }
-        )
+    started = await _next_event(responses, "utterance_started")
+    error = await _next_event(responses, "error")
+    assert started.utterance_id == 1
+    assert error.error_code == "ASR_STEP_PROTOCOL_ERROR"
+    await asyncio.wait_for(task, 1)
 
-    observed = [await _next_event(responses) for _ in range(6)]
-    assert [(event.kind, event.utterance_id, event.text) for event in observed] == [
-        ("utterance_started", 1, ""),
-        ("utterance_started", 2, ""),
-        ("partial", 1, "fi"),
-        ("final", 1, "first"),
-        ("partial", 2, "se"),
-        ("final", 2, "second"),
-    ]
-    await _stop_worker(task, requests, responses, utterance_id=3)
+
+async def test_step_manual_fails_closed_on_ambiguous_second_commit(
+    monkeypatch,
+) -> None:
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        if isinstance(payload, str) and json.loads(payload)["type"] == "session.update":
+            await ws.server_send({"type": "session.updated"})
+
+    websocket = _FakeWebSocket(on_send=on_send)
+    monkeypatch.setattr(step.websockets, "connect", _FakeConnector(websocket))
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        step.step_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="manual"),
+        )
+    )
+    await _next_event(responses, "ready")
+    await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=1))
+    await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=2))
+
+    error = await _next_event(responses, "error")
+    assert error.error_code == "ASR_STEP_PROTOCOL_ERROR"
+    await asyncio.wait_for(task, 1)
 
 
 async def test_step_server_vad_reconnect_isolates_item_bindings(monkeypatch) -> None:

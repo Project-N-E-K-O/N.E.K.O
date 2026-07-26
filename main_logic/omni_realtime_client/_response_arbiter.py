@@ -179,21 +179,15 @@ class RealtimeResponseArbiter:
         current.interrupted = True
         current.interrupt_event.set()
         if not current.ticket.sent.done():
-            was_paused = not self._dispatch_allowed.is_set()
             self._wake_current_with_error(
                 current,
                 RuntimeError("response dispatch interrupted before response.create"),
             )
-            if was_paused:
-                self._dispatch_allowed.set()
         else:
-            was_paused = False
             await self._send_event({"type": "response.cancel"})
         assert current.completed is not None
         try:
             await asyncio.wait_for(asyncio.shield(current.completed), timeout)
-            if was_paused and self._connection_available:
-                self._dispatch_allowed.clear()
         except asyncio.TimeoutError as original_timeout:
             await self._fail_closed("response cancellation terminal event timed out")
             raise original_timeout
@@ -204,6 +198,16 @@ class RealtimeResponseArbiter:
             await waiter
         else:
             await asyncio.wait_for(waiter, timeout)
+
+    async def shutdown(self, reason: str = "response arbiter shut down") -> None:
+        """Fail pending work and stop the queue consumer."""
+
+        self._mark_connection_lost(reason, fail_current_tickets=True)
+        worker, self._worker = self._worker, None
+        if worker is None or worker is asyncio.current_task():
+            return
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
 
     def notify_item_created(self, event: dict[str, Any]) -> None:
         current = self._current
@@ -376,13 +380,32 @@ class RealtimeResponseArbiter:
             )
 
     async def _run(self) -> None:
-        while True:
+        while self._connection_available:
             await self._dispatch_allowed.wait()
+            if not self._connection_available:
+                return
             queued = await self._next_queued()
             try:
                 await self._process(queued)
             finally:
                 self._queue.task_done()
+
+    async def _wait_for_dispatch_or_interrupt(
+        self,
+        queued: _QueuedResponse,
+    ) -> None:
+        if self._dispatch_allowed.is_set() or queued.interrupt_event.is_set():
+            return
+        dispatch_waiter = asyncio.create_task(self._dispatch_allowed.wait())
+        interrupt_waiter = asyncio.create_task(queued.interrupt_event.wait())
+        waiters = (dispatch_waiter, interrupt_waiter)
+        try:
+            await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for waiter in waiters:
+                if not waiter.done():
+                    waiter.cancel()
+            await asyncio.gather(*waiters, return_exceptions=True)
 
     async def _wait_for_idle_or_interrupt(self, queued: _QueuedResponse) -> None:
         if self._idle.is_set() or queued.interrupt_event.is_set():
@@ -391,7 +414,14 @@ class RealtimeResponseArbiter:
         interrupt_waiter = asyncio.create_task(queued.interrupt_event.wait())
         waiters = (idle_waiter, interrupt_waiter)
         try:
-            await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+            done, _ = await asyncio.wait(
+                waiters,
+                timeout=queued.response_done_timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                await self._fail_closed("realtime response idle wait timed out")
+                raise asyncio.TimeoutError("realtime response idle wait timed out")
         finally:
             for waiter in waiters:
                 if not waiter.done():
@@ -405,7 +435,7 @@ class RealtimeResponseArbiter:
         requeued = False
 
         try:
-            await self._dispatch_allowed.wait()
+            await self._wait_for_dispatch_or_interrupt(queued)
             if queued.interrupted:
                 raise RuntimeError("response dispatch interrupted")
             if not self._connection_available:

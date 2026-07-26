@@ -2110,8 +2110,12 @@ async def test_asr_backpressure_reports_specific_blocking_status() -> None:
 async def test_independent_asr_setting_is_persisted_as_a_boolean() -> None:
     assert "independentAsrEnabled" in preferences._ALLOWED_CONVERSATION_SETTINGS
     assert (
-        "voice_input_resource_optimization_enabled"
+        "voiceInputResourceOptimizationEnabled"
         in preferences._ALLOWED_CONVERSATION_SETTINGS
+    )
+    assert (
+        "voice_input_resource_optimization_enabled"
+        not in preferences._ALLOWED_CONVERSATION_SETTINGS
     )
 
 

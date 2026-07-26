@@ -768,6 +768,69 @@ async def test_external_text_turn_response_create_has_no_per_response_instructio
     assert response_events[0]["event_id"].startswith("event_asr_response_")
 
 
+@pytest.mark.asyncio
+async def test_idless_response_created_accepts_id_bearing_done_event():
+    response_done = AsyncMock()
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="qwen-omni-turbo-realtime",
+        api_type="qwen",
+        on_response_done=response_done,
+    )
+    client.ws = AsyncMock()
+    client.ws.__aiter__.return_value = [
+        json.dumps({"type": "response.created", "response": {}}),
+        json.dumps({"type": "response.done", "response": {"id": "resp-late"}}),
+    ]
+
+    await client.handle_messages()
+
+    response_done.assert_awaited_once()
+    await client._response_arbiter.wait_until_idle(timeout=0.2)
+
+
+@pytest.mark.asyncio
+async def test_cancel_paused_current_does_not_open_dispatch_gate():
+    sent = []
+
+    async def send(event):
+        sent.append(dict(event))
+
+    arbiter = RealtimeResponseArbiter(send)
+    arbiter.notify_response_created({"type": "response.created"})
+    first = await arbiter.enqueue(source="first")
+    await _wait_for_arbiter_source(arbiter, "first")
+    arbiter.pause_dispatch()
+    second = await arbiter.enqueue(source="second")
+
+    await arbiter.cancel_current(timeout=0.2)
+    await asyncio.sleep(0.01)
+
+    assert sent == []
+    assert second.sent.done() is False
+    for future in (first.sent, first.started, first.done):
+        with pytest.raises(RuntimeError, match="interrupted"):
+            await future
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_response_arbiter_shutdown_stops_idle_worker():
+    async def send(_event):
+        raise AssertionError("shutdown must not send")
+
+    arbiter = RealtimeResponseArbiter(send)
+    arbiter._ensure_worker()
+    worker = arbiter._worker
+    assert worker is not None
+
+    await arbiter.shutdown()
+
+    assert worker.done()
+    assert arbiter._worker is None
+
+
 
 
 

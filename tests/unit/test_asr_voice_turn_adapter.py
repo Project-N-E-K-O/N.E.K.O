@@ -672,6 +672,24 @@ async def test_reset_invalidates_scoped_commit_before_core_callback() -> None:
     await adapter.close()
 
 
+async def test_stale_reset_cannot_regress_adapter_identity() -> None:
+    gate = _FakeGate()
+    coordinator = _FakeCoordinator()
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=gate,
+        coordinator=coordinator,
+        on_commit=lambda *_args: None,
+    )
+    adapter._identity = (3, 4, 5)
+
+    await adapter._process_reset((3, 4, 4))
+
+    assert adapter._identity == (3, 4, 5)
+    assert coordinator.reset_calls == 0
+    assert gate.reset_calls == 0
+
+
 async def test_incomplete_waits_for_continuation_and_resume_cancels_fallback() -> None:
     commits: list[tuple[int, int, int]] = []
 

@@ -121,8 +121,13 @@ def resolve_verified_assets(
     required_filenames: Iterable[str], override: Path | None = None
 ) -> tuple[Path, AssetManifest, dict[str, Path]]:
     required = tuple(required_filenames)
+    directories = (
+        (override.resolve(),)
+        if override is not None
+        else candidate_asset_dirs(None)
+    )
     failures: list[str] = []
-    for directory in candidate_asset_dirs(override):
+    for directory in directories:
         try:
             manifest = load_manifest(directory)
             paths = {

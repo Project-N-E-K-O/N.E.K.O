@@ -1214,6 +1214,9 @@
             window.stopScreening();
         }
         stopGameVoiceSttGate({ restoreOrdinaryMic: false });
+        if (typeof window.removeExternalAsrPreview === 'function') {
+            window.removeExternalAsrPreview();
+        }
         if (!S.isRecording) return;
 
         S.isRecording = false;

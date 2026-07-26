@@ -293,12 +293,20 @@ async def _step_sender(
                             "Step ASR commit is missing an utterance identifier",
                         )
                         return "error", request
+                    await _step_expire_stalled_pending_turns(response_queue, state)
+                    if state.pending_manual_commits:
+                        await _emit_step_error_once(
+                            response_queue,
+                            state,
+                            "ASR_STEP_PROTOCOL_ERROR",
+                            "Step ASR cannot safely bind overlapping manual commits",
+                        )
+                        return "error", request
                     key = (
                         request.generation,
                         request.buffer_epoch,
                         request.utterance_id,
                     )
-                    await _step_expire_stalled_pending_turns(response_queue, state)
                     state.pending_manual_commits.append((key, state.clock()))
                     _step_bind_pending_manual_items(state)
                     await ws.send(
@@ -423,6 +431,14 @@ async def _step_receiver(
                 item_id = str(event.get("item_id") or "")
                 if not item_id or item_id in state.provider_audio_item_keys:
                     continue
+                if state.pending_provider_turns:
+                    await _emit_step_error_once(
+                        response_queue,
+                        state,
+                        "ASR_STEP_PROTOCOL_ERROR",
+                        "Step ASR cannot safely bind overlapping provider turns",
+                    )
+                    return "error"
                 key = (
                     state.generation,
                     state.buffer_epoch,

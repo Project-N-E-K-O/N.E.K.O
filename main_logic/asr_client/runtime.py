@@ -1901,6 +1901,18 @@ class IndependentAsrRuntime:
         ):
             lifecycle.mark_pending_turn_speech()
             return
+        if (
+            lifecycle is not None
+            and lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+            and lifecycle.has_pending_turn
+            and event
+            in {
+                SpeechActivityEvent.SPEECH_STARTED,
+                SpeechActivityEvent.SPEECH_RESUMED,
+            }
+        ):
+            lifecycle.mark_pending_turn_speech()
+            return
         if lifecycle is not None and event in {
             SpeechActivityEvent.SPEECH_STARTED,
             SpeechActivityEvent.SPEECH_RESUMED,
@@ -2068,6 +2080,10 @@ class IndependentAsrRuntime:
         if lifecycle is None or not lifecycle.has_pending_turn:
             if lifecycle is not None:
                 lifecycle.discard_unconfirmed_pending_audio()
+            return
+        if lifecycle.snapshot.state is not VoiceLifecycleState.WARM_IDLE:
+            lifecycle.discard_unconfirmed_pending_audio()
+            self._asr_pending_detector_candidate = None
             return
         payload = lifecycle.begin_pending_turn()
         if not payload:
@@ -2421,40 +2437,45 @@ class IndependentAsrRuntime:
             task = asyncio.create_task(self._close_asr_session(asr_session))
             self._asr_close_tasks.add(task)
             task.add_done_callback(self._asr_close_tasks.discard)
-        for dispatcher in (detector_dispatcher, audio_dispatcher):
-            task = asyncio.create_task(dispatcher.close())
-            self._asr_close_tasks.add(task)
-            task.add_done_callback(self._asr_close_tasks.discard)
         failure_identity = self._capture_runtime_identity()
-        delivered = await self._send_asr_lifecycle_state(
-            VoiceLifecycleState.BLOCKED,
-            provider=provider,
-            session_epoch=failure_epoch,
-            expected_identity=failure_identity,
-        )
-        if not delivered or not self._runtime_identity_matches(failure_identity):
-            return
         try:
-            await self._callbacks.on_failure(
-                AsrFailureEvent(
-                    code=status_code,
-                    provider=provider,
-                    session_epoch=failure_epoch,
+            delivered = await self._send_asr_lifecycle_state(
+                VoiceLifecycleState.BLOCKED,
+                provider=provider,
+                session_epoch=failure_epoch,
+                expected_identity=failure_identity,
+            )
+            if not delivered or not self._runtime_identity_matches(failure_identity):
+                return
+            try:
+                await self._callbacks.on_failure(
+                    AsrFailureEvent(
+                        code=status_code,
+                        provider=provider,
+                        session_epoch=failure_epoch,
+                    )
                 )
+            except Exception:
+                logger.debug(
+                    "[%s] independent ASR failure callback failed",
+                    self.display_name,
+                )
+            if not self._runtime_identity_matches(failure_identity):
+                return
+            await self._send_asr_status(
+                status_code,
+                provider,
+                session_epoch=failure_epoch,
+                expected_identity=failure_identity,
             )
-        except Exception:
-            logger.debug(
-                "[%s] independent ASR failure callback failed",
-                self.display_name,
-            )
-        if not self._runtime_identity_matches(failure_identity):
-            return
-        await self._send_asr_status(
-            status_code,
-            provider,
-            session_epoch=failure_epoch,
-            expected_identity=failure_identity,
-        )
+        finally:
+            # A dispatcher can report its own failure from inside its worker.
+            # Let lifecycle/failure/status delivery finish before closing that
+            # worker, otherwise close() can cancel the authoritative callback.
+            for dispatcher in (detector_dispatcher, audio_dispatcher):
+                task = asyncio.create_task(dispatcher.close())
+                self._asr_close_tasks.add(task)
+                task.add_done_callback(self._asr_close_tasks.discard)
 
     async def _close_asr_session(self, asr_session: Any) -> None:
         try:

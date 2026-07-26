@@ -327,6 +327,52 @@ def _resolve_relative(pkg: str, level: int, module) -> str | None:
     return ".".join(anchor)
 
 
+def _imported_paths(node: ast.AST, pkg: str) -> tuple[str, ...]:
+    """Return absolute module paths represented by one import statement."""
+
+    if isinstance(node, ast.Import):
+        return tuple(alias.name for alias in node.names)
+    if not isinstance(node, ast.ImportFrom):
+        return ()
+    base = (
+        node.module
+        if node.level == 0
+        else _resolve_relative(pkg, node.level, node.module)
+    )
+    if not base:
+        return ()
+    members = tuple(
+        f"{base}.{alias.name}"
+        for alias in node.names
+        if alias.name != "*"
+    )
+    return (base, *members)
+
+
+def _registry_provider_keys(path: Path) -> frozenset[str]:
+    """Extract ASR provider keys from the registry without importing runtime code."""
+
+    for node in parse(path).body:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if not any(
+            isinstance(target, ast.Name)
+            and target.id == "ASR_PROVIDER_REGISTRY"
+            for target in targets
+        ):
+            continue
+        value = node.value
+        if not isinstance(value, ast.Dict):
+            return frozenset()
+        return frozenset(
+            key.value
+            for key in value.keys
+            if isinstance(key, ast.Constant) and isinstance(key.value, str)
+        )
+    return frozenset()
+
+
 def module_alias_paths(tree: ast.Module, pkg: str) -> dict[str, str]:
     """Module/name bindings at top level → ABSOLUTE dotted path.
 
@@ -631,6 +677,7 @@ def run(root: Path) -> list[Violation]:
     asr_client_dir = root / "main_logic" / "asr_client"
     asr_component_path = asr_client_dir / "runtime.py"
     asr_audio_path = asr_client_dir / "audio.py"
+    asr_registry_path = asr_client_dir / "_registry_meta.py"
     voice_input_path = root / "main_logic" / "voice_turn" / "audio_input.py"
     for required in (
         asr_bridge_path,
@@ -639,6 +686,7 @@ def run(root: Path) -> list[Violation]:
         asr_client_dir,
         asr_component_path,
         asr_audio_path,
+        asr_registry_path,
         voice_input_path,
     ):
         if not required.exists():
@@ -652,6 +700,7 @@ def run(root: Path) -> list[Violation]:
 
     if tts_path.exists():
         tts_tree = parse(tts_path)
+        tts_pkg = ".".join(tts_path.relative_to(root).parts[:-1])
         forbidden_ingress_methods = {
             "_ensure_audio_stream_worker",
             "_clear_audio_stream_queue",
@@ -660,15 +709,11 @@ def run(root: Path) -> list[Violation]:
             "_audio_stream_worker_loop",
         }
         for node in ast.walk(tts_tree):
-            imported = None
-            if isinstance(node, ast.Import):
-                imported = next(
-                    (a.name for a in node.names if a.name.startswith("main_logic.asr_client")),
-                    None,
-                )
-            elif isinstance(node, ast.ImportFrom):
-                imported = node.module
-            if imported and imported.startswith("main_logic.asr_client"):
+            if any(
+                imported == "main_logic.asr_client"
+                or imported.startswith("main_logic.asr_client.")
+                for imported in _imported_paths(node, tts_pkg)
+            ):
                 violations.append(Violation(
                     tts_path,
                     node.lineno,
@@ -692,21 +737,10 @@ def run(root: Path) -> list[Violation]:
             tree = parse(path)
             pkg = ".".join(path.relative_to(root).parts[:-1])
             for node in ast.walk(tree):
-                modules: list[str] = []
-                if isinstance(node, ast.Import):
-                    modules.extend(alias.name for alias in node.names)
-                elif isinstance(node, ast.ImportFrom):
-                    resolved = (
-                        node.module
-                        if node.level == 0
-                        else _resolve_relative(pkg, node.level, node.module)
-                    )
-                    if resolved:
-                        modules.append(resolved)
                 if any(
                     module == "main_logic.core"
                     or module.startswith("main_logic.core.")
-                    for module in modules
+                    for module in _imported_paths(node, pkg)
                 ):
                     violations.append(Violation(
                         path,
@@ -718,13 +752,18 @@ def run(root: Path) -> list[Violation]:
 
     if asr_bridge_path.exists():
         bridge_tree = parse(asr_bridge_path)
+        provider_literals = (
+            _registry_provider_keys(asr_registry_path)
+            if asr_registry_path.exists()
+            else frozenset()
+        )
         route_setter_found = False
         forbidden_runtime_reads = {"lifecycle", "route_mode", "required"}
         for node in ast.walk(bridge_tree):
             if (
                 isinstance(node, ast.Constant)
                 and isinstance(node.value, str)
-                and node.value.strip().lower() in {"soniox", "gemini", "free"}
+                and node.value.strip().lower() in provider_literals
             ):
                 violations.append(Violation(
                     asr_bridge_path,

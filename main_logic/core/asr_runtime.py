@@ -494,8 +494,8 @@ class AsrRuntimeMixin:
                 return
         enabled = bool(settings.get("independentAsrEnabled", False))
         optimization_value = settings.get(
-            "voice_input_resource_optimization_enabled",
-            settings.get("voiceInputResourceOptimizationEnabled", True),
+            "voiceInputResourceOptimizationEnabled",
+            True,
         )
         if not enabled:
             self._set_microphone_route("native")

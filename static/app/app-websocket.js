@@ -801,6 +801,7 @@
         }
         S.externalAsrPreviewMessage = null;
     }
+    window.removeExternalAsrPreview = removeExternalAsrPreview;
 
     function websocketTraceEnabled() {
         return window.NEKO_DEBUG_BUBBLE_LIFECYCLE === true;

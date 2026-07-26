@@ -888,6 +888,7 @@ class _TransportMixin:
                             event_response_id = response.get("id")
                     if (
                         event_response_id
+                        and self._current_response_id
                         and event_response_id != self._current_response_id
                     ):
                         logger.info(
@@ -1222,7 +1223,7 @@ class _TransportMixin:
 
         response_arbiter = getattr(self, "_response_arbiter", None)
         if response_arbiter is not None:
-            response_arbiter.notify_connection_lost(reason)
+            await response_arbiter.shutdown(reason)
         await self._abort_failed_transport(reason)
 
     async def _abort_failed_transport(self, reason: str) -> None:
@@ -1244,7 +1245,7 @@ class _TransportMixin:
         """Close the WebSocket connection."""
         response_arbiter = getattr(self, "_response_arbiter", None)
         if response_arbiter is not None:
-            response_arbiter.notify_connection_lost("realtime client closed")
+            await response_arbiter.shutdown("realtime client closed")
 
         # 取消静默检测任务
         if self._silence_check_task:

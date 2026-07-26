@@ -69,3 +69,18 @@ def test_generator_required_filenames_survive_candidate_fallback(monkeypatch, tm
     directory, _, paths = resolve_verified_assets(required)
     assert directory == valid
     assert paths == {"model.onnx": valid / "model.onnx"}
+
+
+def test_explicit_asset_override_never_falls_back(monkeypatch, tmp_path):
+    invalid = tmp_path / "invalid"
+    valid = tmp_path / "valid"
+    invalid.mkdir()
+    valid.mkdir()
+    content = b"model"
+    _write_manifest(invalid, digest=hashlib.sha256(content).hexdigest())
+    (valid / "model.onnx").write_bytes(content)
+    _write_manifest(valid, digest=hashlib.sha256(content).hexdigest())
+    monkeypatch.setattr(asset_manifest, "candidate_asset_dirs", lambda _override: (valid,))
+
+    with pytest.raises(AssetManifestError, match="asset is missing"):
+        resolve_verified_assets(["model.onnx"], override=invalid)
