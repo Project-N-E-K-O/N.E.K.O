@@ -822,6 +822,15 @@ class BiliDanmakuPlugin(NekoPluginBase):
             from utils.config_manager import get_config_manager
 
             config_manager = get_config_manager()
+            # 会话的线路会连 base_url 一起冻进 OmniOfflineClient，所以先给仍在飞的
+            # 区域探测一个收尾窗口（与主会话 / 游戏会话池 / 其它插件对偶）。已落定时
+            # 零开销；自配 API 用户不会因此发起探测。fail-open：插件不该因区域探测
+            # 本身出错而起不了会话。
+            try:
+                await config_manager.aensure_region_resolved()
+            except Exception as _geo_err:
+                self.logger.warning(f"[GeoIP] 插件会话区域落定失败，退化到当前配置继续: {_geo_err}")
+
             conversation_config = config_manager.get_model_api_config('conversation')
             reply_chunks = []
 

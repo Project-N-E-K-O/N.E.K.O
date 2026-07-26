@@ -167,16 +167,33 @@ class ConfigManager(
     CLOUDSAVE_LOCAL_STATE_VERSION = 1
     CHARACTER_TOMBSTONES_STATE_VERSION = 1
 
-    # Combined region cache (None = not checked, True = non-mainland, False = mainland)
+    # 区域判定的三个缓存（None=未定，True=非大陆，False=大陆）：
+    #  - _region_cache：最终裁决，只由 IP 结论写（Steam 兜底票从不落定它）
+    #  - _ip_check_cache：背景探测线程的产物，唯一写者是 _ip_probe_loop
+    #  - _steam_check_cache：Steam SDK 的国家码
     _region_cache = None
-    # Individual caches for dual check (None = not yet tried, True/False = result,
-    # _GEO_INDETERMINATE = tried but got no usable answer → do not retry)
     _ip_check_cache = None
     _steam_check_cache = None
-    # Sentinel stored in _ip_check_cache when the HTTP probe fails, so we never
-    # re-attempt it (and never pay the timeout again) within the same process.
-    _GEO_INDETERMINATE = object()
     _geo_indeterminate_logged = False
+    _geo_steam_fallback_logged = False
+    # 保护背景探测线程的幂等启动（_ensure_ip_probe_started 的 check-and-set）。
+    _geo_probe_lock = threading.Lock()
+    # 背景探测线程：单个 daemon 循环，内部退避重试到成功即退出，是 _ip_check_cache
+    # 的唯一写者。单线程单写者 → 无需票号 / 卡死顶替 / 泄漏封顶那套并发管理。
+    _ip_probe_thread = None
+    # 可中断退避：set 它让探测循环从退避 sleep 中醒来并退出（进程 shutdown / 测试
+    # 清理）。生产从不 set，退避行为等同 time.sleep。
+    _ip_probe_wake = threading.Event()
+    # 探测是否「正在发请求」。退避 sleep 期间为 False：线程仍 alive，但那段时间不会
+    # 有结论到达，等待方据此跳过 join，避免每个会话白付一次超时。
+    _ip_probe_in_flight = threading.Event()
+    # 与 _ip_probe_wake 配套：唤醒时若为 True 则循环退出，否则只是「立刻重试」。
+    _ip_probe_stopping = False
+    # 上一次读配置时免费路由是否被选中。用来识别「运行时新选中免费路由」这个边沿，
+    # 好催醒可能正在长退避里睡觉的探测循环——退避最长 600 秒，而用户刚切过来就要
+    # 开会话，会话线路一旦冻结整场不再复议。只在边沿催一次：每次读配置都催等于
+    # 让退避形同虚设，被墙时会退化成对 ip-api.com 的请求风暴。
+    _free_route_selected = False
 
 
 # 全局配置管理器实例
