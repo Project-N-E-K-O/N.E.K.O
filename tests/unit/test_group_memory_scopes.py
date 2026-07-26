@@ -1868,6 +1868,28 @@ async def test_group_memory_toggle_syncs_existing_sessions():
     assert user_data["memory_enabled"] is False
     assert "group:7788" not in plugin._user_sessions
 
+    # Rapid OFF->ON: the enable stamp must NOT erase the queued disable
+    # settlement — the OFF task settles to its cutoff first, then the ON
+    # task rebases to the re-enable boundary.
+    hist4 = [SimpleNamespace(type="human", content=f"r{i}") for i in range(4)]
+    both = {
+        "memory_enabled": True, "is_group": True, "group_id": "7788",
+        "her_name": "Neko", "last_group_digest_index": 0,
+        "session": SimpleNamespace(_conversation_history=hist4, close=AsyncMock()),
+        "pending_disable_settle": True, "group_opt_out_cutoff": 2,
+        "pending_enable_rebase": 4,
+    }
+    plugin._user_sessions["group:7788"] = both
+    bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
+    await service.invalidate_group_sessions(enabled=False)
+    settled = [
+        m["content"][0]["text"]
+        for call in bridge.post_scoped_memory_history.await_args_list
+        for m in call.args[1]
+    ]
+    assert settled == ["r0", "r1"]
+    assert "group:7788" not in plugin._user_sessions
+
     # Disable race: a request that slipped in after the OFF policy write
     # already primed memory_enabled=False — the transition must still settle
     # the opt-in-era buffer instead of trusting the cached flag.
@@ -2658,6 +2680,13 @@ async def test_correction_domains_and_apply_respect_custom_scope(tmp_path):
     assert ("旧观点", "tenant-b") in survivors
     assert ("旧观点", "tenant-a") not in survivors
     assert ("A 的新观点", "tenant-a") in survivors
+    # Correction-created entries carry a real, domain-salted id — empty ids
+    # are skipped by every ID-indexed operation and collide with each other.
+    new_ids = [
+        f.get("id") for f in facts
+        if isinstance(f, dict) and f.get("text") == "A 的新观点"
+    ]
+    assert new_ids and all(new_ids)
 
 
 @pytest.mark.asyncio

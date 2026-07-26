@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 
 
 import json
@@ -405,6 +406,19 @@ class CorrectionsMixin:
                 )
                 if _subj is not None:
                     new_entry.update(_subj.as_entry_fields())
+                if not new_entry.get('id'):
+                    # correction 新建条目必须有 ID（掺域盐，对齐
+                    # _build_fact_entry）：空 ID 会被 ID 索引的 refine/
+                    # signal/archive 全部跳过，且多条互相撞空串。
+                    salt = (
+                        f"{_subj.key}|{_subj.scope}|" if _subj is not None else ""
+                    )
+                    digest = hashlib.sha256(
+                        (salt + str(text_value)).encode()
+                    ).hexdigest()[:8]
+                    new_entry['id'] = (
+                        f"corr_{datetime.now().strftime('%Y%m%d%H%M%S')}_{digest}"
+                    )
                 return new_entry
 
             if action == 'merge':

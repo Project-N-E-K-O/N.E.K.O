@@ -230,8 +230,10 @@ class QQSettingsService:
                 sess = ud.get("session")
                 hist_len = len(getattr(sess, "_conversation_history", []) or [])
                 if group_memory_after:
-                    ud.pop("group_opt_out_cutoff", None)
-                    ud.pop("pending_disable_settle", None)
+                    # 不清 disable 标记/cutoff：快速 OFF→ON 时排队中的 OFF
+                    # 结算还没消费它们——转变锁保证 OFF 任务先跑（结算到
+                    # cutoff 并弹掉自己的标记），随后 ON 任务再按本边界
+                    # rebase，两个时代各自成立。
                     # 存转变时刻的边界：后台任务若用运行时 len(history)，
                     # enable 之后到达的正当轮次会被一并跳过。
                     ud["pending_enable_rebase"] = hist_len

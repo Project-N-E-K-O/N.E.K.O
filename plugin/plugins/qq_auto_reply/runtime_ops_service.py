@@ -123,10 +123,17 @@ class QQRuntimeOpsService:
         # discard，限 1s）：否则 stop→立刻 start 会给同一会话建新锁，旧
         # 任务与新 handler 并发改写、甚至中途弹掉活跃会话。
         gate = getattr(self.plugin, "attention_gate_service", None)
+        buffer_service = getattr(self.plugin, "reply_buffer_service", None)
+        buffer_tasks = [
+            p.task
+            for p in dict(getattr(buffer_service, "_pending", {}) or {}).values()
+            if getattr(p, "task", None) is not None and not p.task.done()
+        ]
         pending_tasks = (
             list(getattr(self.plugin, "_group_memory_sync_tasks", ()) or ())
             + list(getattr(self.plugin, "_prompt_change_discard_tasks", ()) or ())
             + list(getattr(gate, "_digest_tasks", ()) or ())
+            + buffer_tasks
         )
         stragglers: set = set()
         if pending_tasks:
