@@ -45,7 +45,7 @@ class QQReplyBufferService:
 
     def _mark_latest_draft_undelivered(
         self, session_key: str, pending: "PendingReply | None" = None,
-    ) -> None:
+    ) -> Any | None:
         """截停时把共享历史尾部的草稿 ai 行记入 user_data 的未投递名单。
 
         多条合并场景只投递新生成的 summary，被取代的草稿从未离开进程，
@@ -61,7 +61,7 @@ class QQReplyBufferService:
             session_key
         )
         if not isinstance(user_data, dict):
-            return
+            return None
         session = user_data.get("session")
         history = getattr(session, "_conversation_history", None) or []
         for msg in reversed(history):
@@ -74,7 +74,49 @@ class QQReplyBufferService:
                 existing is msg for existing in pending.draft_rows
             ):
                 pending.draft_rows.append(msg)
+            return msg
+        return None
+
+    @staticmethod
+    def _bind_draft_to_pending(draft_row: Any, pending: "PendingReply") -> None:
+        """把开头选中的草稿行绑到 pending——绝不重扫历史：10-16 条分支的
+        rapid_fire_flush 确认回复在 schedule_reply 中途真实投出并追加进
+        历史，重扫会把这条已发出的 ack 误抓进未投递名单、永久漏出记忆。"""
+        if draft_row is None:
             return
+        if not any(existing is draft_row for existing in pending.draft_rows):
+            pending.draft_rows.append(draft_row)
+
+    def _session_history_len(self, session_key: str) -> int:
+        user_data = (getattr(self.plugin, "_user_sessions", {}) or {}).get(
+            session_key
+        )
+        if not isinstance(user_data, dict):
+            return 0
+        session = user_data.get("session")
+        return len(getattr(session, "_conversation_history", None) or [])
+
+    def _record_synthetic_prompt_rows(
+        self, session_key: str, history_len_before: int,
+    ) -> None:
+        """合成控制轮（rapid_fire_flush 的"[系统]…"指令）跑完 pipeline 后，
+        把新追加的 human 行记入排除名单：这些文本带着未投递草稿的副本，
+        不是任何参与者说过的话，不得进 digest/cache 提取。真投递的 ai
+        回复行（ack/总结）不记、照常入库。调用方必须在会话锁内取
+        history_len_before，否则窗口里插入的真实用户行会被误记。"""
+        user_data = (getattr(self.plugin, "_user_sessions", {}) or {}).get(
+            session_key
+        )
+        if not isinstance(user_data, dict):
+            return
+        session = user_data.get("session")
+        history = getattr(session, "_conversation_history", None) or []
+        rows = user_data.setdefault("undelivered_draft_rows", [])
+        for msg in history[max(0, history_len_before):]:
+            if getattr(msg, "type", "") != "human":
+                continue
+            if not any(existing is msg for existing in rows):
+                rows.append(msg)
 
     def _clear_undelivered_marks(
         self, session_key: str, pending: "PendingReply",
@@ -197,8 +239,8 @@ class QQReplyBufferService:
             clean_text = str(reply_text or raw_text or "").strip()
         # 这条回复被截停进缓冲、尚未投递——历史尾部的 ai 行先记入未投递
         # 名单；单条路径真正送出后只撤本次 pending 的行，多条合并路径草稿
-        # 永不投递、记录留存。pending 解析后再补一次关联（幂等）。
-        self._mark_latest_draft_undelivered(session_key)
+        # 永不投递、记录留存。pending 解析后用同一引用补关联，不重扫。
+        draft_row = self._mark_latest_draft_undelivered(session_key)
         existing = self._pending.get(session_key)
 
         if existing and existing.task and not existing.task.done():
@@ -225,6 +267,7 @@ class QQReplyBufferService:
             # 10-16 条 → 走 pipeline 发简短确认
             if 10 <= n < 17 and not getattr(existing, "_acked", False):
                 existing._acked = True
+                hist_before = self._session_history_len(session_key)
                 try:
                     from .pipeline_models import QQReplyRequest
                     combined = "\n".join(f"[{i+1}] {t[:100]}" for i, t in enumerate(existing.buffered_texts[-5:]))
@@ -240,11 +283,14 @@ class QQReplyBufferService:
                     await self.plugin.reply_pipeline.run(request)  # handler 已持本会话锁，重取会自锁死
                 except Exception as e:
                     self.plugin._emit_log("WARN", f"[Buffer] 简短确认失败: {e}")
+                finally:
+                    self._record_synthetic_prompt_rows(session_key, hist_before)
 
             # 17+ 条 → 走 pipeline 强制总结 + 清空缓冲
             if n >= 17:
                 existing.task.cancel()
                 self._pending.pop(session_key, None)
+                hist_before = self._session_history_len(session_key)
                 try:
                     from .pipeline_models import QQReplyRequest
                     combined = "\n".join(f"[{i+1}] {t[:150]}" for i, t in enumerate(existing.buffered_texts))
@@ -260,6 +306,8 @@ class QQReplyBufferService:
                     await self.plugin.reply_pipeline.run(request)  # handler 已持本会话锁，重取会自锁死
                 except Exception as e:
                     self.plugin._emit_log("WARN", f"[Buffer] 强制总结失败: {e}")
+                finally:
+                    self._record_synthetic_prompt_rows(session_key, hist_before)
                 return
         else:
             # 新缓冲：pre_buffer 可能已创建了占位 pending
@@ -291,8 +339,9 @@ class QQReplyBufferService:
         existing.sender_id = sender_id  # 更新（可能变化）
         existing.is_group = is_group
         existing.group_id = group_id
-        # 幂等补关联：把刚记入名单的草稿行绑到本 pending，单条投递后可精确撤销。
-        self._mark_latest_draft_undelivered(session_key, existing)
+        # 补关联：把开头选中的草稿行绑到本 pending（复用引用，不重扫历史），
+        # 单条投递后可精确撤销。
+        self._bind_draft_to_pending(draft_row, existing)
         existing.task = asyncio.create_task(self._deliver_after_wait(session_key, existing))
 
     async def _deliver_after_wait(self, session_key: str, pending: PendingReply) -> None:
@@ -345,10 +394,16 @@ class QQReplyBufferService:
                 source_kind="rapid_fire_flush",
                 fallback_to_text_on_voice_failure=True,
             )
-            await self.plugin._run_with_session_lock(
-                        session_key,
-                        lambda: self.plugin.reply_pipeline.run(request),
-                    )
+            async def _run_flush() -> Any:
+                # before 必须在会话锁内取：锁外窗口插入的真实用户行会落进
+                # [before:] 切片、被当成合成 prompt 误排除出记忆。
+                hist_before = self._session_history_len(session_key)
+                try:
+                    return await self.plugin.reply_pipeline.run(request)
+                finally:
+                    self._record_synthetic_prompt_rows(session_key, hist_before)
+
+            await self.plugin._run_with_session_lock(session_key, _run_flush)
             self._pending.pop(session_key, None)
         except Exception as e:
             self.plugin._emit_log("WARN", f"[Buffer] 总结pipeline失败: {e}")

@@ -80,10 +80,11 @@ class QQSessionMemoryService:
         *, user_data: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         memory_messages = []
-        # 被 rapid-fire 合并取代的未投递草稿：没人见过的话不得被提取成
-        # 持久记忆（群 digest 与私聊 /cache 同源过滤）。名单在 user_data
-        # 上（buffer 记入，插件自有 dict 无"打标失败"模式），按对象身份
-        # 比对——名单持强引用保活，id 稳定。
+        # 排除名单：被 rapid-fire 合并取代的未投递草稿（ai 行）与合成
+        # flush 控制 prompt（human 行，内含草稿副本）——没人说过/没人见过
+        # 的文本不得被提取成持久记忆（群 digest 与私聊 /cache 同源过滤）。
+        # 名单在 user_data 上（buffer 记入，插件自有 dict 无"打标失败"
+        # 模式），按对象身份比对——名单持强引用保活，id 稳定。
         undelivered_ids = {
             id(row)
             for row in ((user_data or {}).get("undelivered_draft_rows") or [])
@@ -92,7 +93,7 @@ class QQSessionMemoryService:
             msg_type = getattr(msg, "type", "")
             if msg_type not in ("human", "ai"):
                 continue
-            if msg_type == "ai" and id(msg) in undelivered_ids:
+            if id(msg) in undelivered_ids:
                 continue
             role = "user" if msg_type == "human" else "assistant"
             content = getattr(msg, "content", "")

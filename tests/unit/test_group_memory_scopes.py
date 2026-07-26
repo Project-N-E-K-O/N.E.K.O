@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1895,6 +1896,86 @@ async def test_undelivered_buffer_drafts_stay_out_of_memory():
     await service._deliver_after_wait("group:7788", single)
     plugin.reply_delivery_node.deliver.assert_awaited_once()
     assert user_data["undelivered_draft_rows"] == [history[1], history[3]]
+
+
+@pytest.mark.asyncio
+async def test_flush_prompt_excluded_but_delivered_ack_kept():
+    """Two edges of the exclusion list around synthetic flush turns:
+    (a) the mid-flight ack reply in the 10-16 branch IS delivered — a
+    re-scan of history after the pipeline run would wrongly exclude it
+    from memory forever; the draft binding must reuse the row captured
+    before the run. (b) the synthetic system-instruction prompt row
+    carries copies of undelivered drafts and must be excluded."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import QQMessageBlock
+    from plugin.plugins.qq_auto_reply.reply_buffer_service import (
+        PendingReply,
+        QQReplyBufferService,
+    )
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    def _msg(msg_type, text):
+        return SimpleNamespace(type=msg_type, content=text)
+
+    draft_new = _msg("ai", "第十条的草稿")
+    history = [_msg("human", "u1"), draft_new]
+    user_data = {"session": SimpleNamespace(_conversation_history=history)}
+
+    sys_prompt_row = _msg("human", "[系统] 对方连续发了多条消息……")
+    ack_row = _msg("ai", "嗯嗯，听着呢")
+
+    async def _run_ack(request):
+        history.append(sys_prompt_row)
+        history.append(ack_row)
+        return SimpleNamespace(action="reply", reply_text="嗯嗯，听着呢")
+
+    plugin = SimpleNamespace(
+        _user_sessions={"group:7788": user_data},
+        _emit_log=lambda *a, **k: None,
+        reply_pipeline=SimpleNamespace(run=AsyncMock(side_effect=_run_ack)),
+        reply_delivery_node=SimpleNamespace(deliver=AsyncMock()),
+    )
+    service = QQReplyBufferService.__new__(QQReplyBufferService)
+    service.plugin = plugin
+    service._pending = {}
+
+    waiting = PendingReply(
+        first_text="旧草稿", wait_seconds=999, sender_id="1",
+        is_group=True, group_id="7788",
+    )
+    waiting.message_count = 9
+    waiting.buffered_texts = [f"旧{i}" for i in range(9)]
+    waiting.task = asyncio.create_task(asyncio.sleep(999))
+    service._pending["group:7788"] = waiting
+
+    await service.schedule_reply(
+        session_key="group:7788", reply_text="第十条的草稿",
+        raw_text="第十条的草稿", blocks=[QQMessageBlock(text="x")],
+        wait_seconds=999, sender_id="1", is_group=True, group_id="7788",
+    )
+    if waiting.task:
+        waiting.task.cancel()
+    service._pending.pop("group:7788", None)
+
+    rows = user_data["undelivered_draft_rows"]
+    assert draft_new in rows
+    assert sys_prompt_row in rows
+    assert not any(row is ack_row for row in rows)
+    # The pending is bound to the pre-run draft only.
+    assert waiting.draft_rows == [draft_new]
+
+    # Serializer: the synthetic prompt (human) and the draft (ai) are both
+    # excluded; the delivered ack row survives.
+    memory_service = QQSessionMemoryService.__new__(QQSessionMemoryService)
+    memory_service.plugin = plugin
+    texts = [
+        m["content"][0]["text"]
+        for m in memory_service.conversation_slice_to_memory_messages(
+            history, 0, user_data=user_data,
+        )
+    ]
+    assert texts == ["u1", "嗯嗯，听着呢"]
 
 
 @pytest.mark.asyncio

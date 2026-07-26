@@ -901,9 +901,18 @@ class FactStore:
                 f"[FactStore] {lanlan_name}: 提取了 {len(new_facts)} 条新事实"
             )
             for nf in new_facts:
-                logger.debug(
-                    f"   - [{nf.get('entity','?')}/{nf.get('source','?')}] {nf.get('text','')[:80]}"
-                )
+                if nf.get('subject_kind') or nf.get('subject_id') or nf.get('scope'):
+                    # scoped（群/成员衍生）事实原文不进日志：只打域标识与
+                    # 长度，对齐 scoped 反思/correction dead-letter 的口径。
+                    logger.debug(
+                        f"   - [scoped {nf.get('subject_kind','?')}"
+                        f"/{nf.get('subject_id','?')}] "
+                        f"len={len(nf.get('text','') or '')}"
+                    )
+                else:
+                    logger.debug(
+                        f"   - [{nf.get('entity','?')}/{nf.get('source','?')}] {nf.get('text','')[:80]}"
+                    )
         if upgraded_count:
             logger.info(
                 f"[FactStore] {lanlan_name}: 升级 {upgraded_count} 条 ai_disclosure → user_observation "
