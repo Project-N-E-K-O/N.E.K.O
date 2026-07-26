@@ -481,6 +481,7 @@ class QQSessionInstructionService:
     ) -> str:
         if not should_use_memory_context:
             return ""
+        group_id = str(group_id or "").strip()
         if is_group and not group_id:
             return ""
         try:

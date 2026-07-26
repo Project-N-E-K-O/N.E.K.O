@@ -30,7 +30,9 @@ class QQReplyContextNode:
         normalized_message = str(message or "").strip()
         if not normalized_message:
             return ""
+        group_id = str(group_id or "").strip()
         if is_group and not group_id:
+            # 先标准化再判：空白串不得越界生成 subject_id="qq:" 无效 subject。
             # Fail-closed（与 session_instruction_service._build_core_memory_
             # section 对齐）：畸形群事件缺 group_id 时不能让 subjects 退化成
             # None——bridge 侧 None 的语义是「legacy 私聊调用方」，会把主人的
