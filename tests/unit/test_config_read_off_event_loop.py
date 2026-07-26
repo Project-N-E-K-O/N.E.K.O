@@ -163,32 +163,40 @@ def _is_offload_call(node: ast.AST) -> bool:
     return name in _OFFLOAD_FUNCS
 
 
-def _offloaded_callable_names(tree: ast.AST) -> set[str]:
-    """Names passed bare to to_thread/run_in_executor anywhere in the module.
+def _scope_offload_facts(fn: ast.AST) -> tuple[set[str], set[str]]:
+    """Within ONE function body: names handed to an offload helper, and names called directly.
 
-    ``await asyncio.to_thread(self._blocking_helper)`` means _blocking_helper is
-    meant to run on a worker thread, so a sync config read inside it is correct.
+    Scoped deliberately. A bare name is not an identity — two modules, or even two
+    functions, can each have a ``_resolve``. Pairing the offload with the definition
+    inside the same body is what makes the exemption refer to a specific def.
 
-    A bare name is not an identity: two same-named ``def``s in one module cannot be
-    told apart statically, so exempting by name would let the NON-offloaded twin
-    through. Such ambiguous names are therefore dropped from the exemption set --
-    fail closed, so the gate reports and a human decides, rather than going quiet.
+    Nested function bodies are not descended into: their own offloads belong to their
+    own scope, and are collected when the walker reaches them.
     """
-    names: set[str] = set()
-    for node in ast.walk(tree):
-        if not _is_offload_call(node):
-            continue
-        for arg in node.args:
-            if isinstance(arg, ast.Name):
-                names.add(arg.id)
-            elif isinstance(arg, ast.Attribute):
-                names.add(arg.attr)
+    offloaded: set[str] = set()
+    called: set[str] = set()
 
-    counts: dict[str, int] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            counts[node.name] = counts.get(node.name, 0) + 1
-    return {n for n in names if counts.get(n, 0) <= 1}
+    def scan(node: ast.AST, top: bool) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                continue  # 子作用域自己算
+            if isinstance(child, ast.Call):
+                func = child.func
+                name = func.attr if isinstance(func, ast.Attribute) else (
+                    func.id if isinstance(func, ast.Name) else None
+                )
+                if name in _OFFLOAD_FUNCS:
+                    for arg in child.args:
+                        if isinstance(arg, ast.Name):
+                            offloaded.add(arg.id)
+                        elif isinstance(arg, ast.Attribute):
+                            offloaded.add(arg.attr)
+                elif name:
+                    called.add(name)
+            scan(child, False)
+
+    scan(fn, True)
+    return offloaded, called
 
 
 def _sync_config_reads_inside_async_defs(path: Path) -> list[tuple[int, str, str]]:
@@ -203,42 +211,47 @@ def _sync_config_reads_inside_async_defs(path: Path) -> list[tuple[int, str, str
     that one genuinely runs on a worker thread, and a sync read inside it is correct.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    offloaded = _offloaded_callable_names(tree)
     hits: list[tuple[int, str, str]] = []
 
-    def walk(node: ast.AST, on_loop: bool, enclosing: str) -> None:
+    def walk(node: ast.AST, on_loop: bool, enclosing: str, exempt: frozenset[str]) -> None:
         if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef, ast.Lambda)):
             name = getattr(node, "name", "<lambda>")
             if isinstance(node, ast.AsyncFunctionDef):
                 inner = True
-            elif name in offloaded:
+            elif name in exempt:
                 inner = False
             else:
                 inner = on_loop
+            # 本作用域自己的卸载事实：同名同时被直调的，豁免撤销（fail-closed）——
+            # 一个 _resolve 既能 to_thread(_resolve) 又能在协程里 _resolve()。
+            offloaded, called = _scope_offload_facts(node)
+            child_exempt = frozenset(offloaded - called)
             for child in ast.iter_child_nodes(node):
-                walk(child, inner, name)
+                walk(child, inner, name, child_exempt)
             return
 
         if isinstance(node, ast.Call):
             func = node.func
-            called = func.attr if isinstance(func, ast.Attribute) else (
+            called_name = func.attr if isinstance(func, ast.Attribute) else (
                 func.id if isinstance(func, ast.Name) else None
             )
             # aget_model_api_config 拿到快照后直接同步解析（无 IO），那是它的实现本体，不是违规。
-            if called in SYNC_CONFIG_READERS and on_loop and enclosing not in ASYNC_DUALS:
-                hits.append((node.lineno, called, enclosing))
+            if called_name in SYNC_CONFIG_READERS and on_loop and enclosing not in ASYNC_DUALS:
+                hits.append((node.lineno, called_name, enclosing))
             offload = _is_offload_call(node)
             for arg in node.args:
-                walk(arg, False if (offload and isinstance(arg, ast.Lambda)) else on_loop, enclosing)
+                # lambda 直接作实参时按节点身份豁免，不经名字
+                walk(arg, False if (offload and isinstance(arg, ast.Lambda)) else on_loop,
+                     enclosing, exempt)
             for kw in node.keywords:
-                walk(kw.value, on_loop, enclosing)
-            walk(node.func, on_loop, enclosing)
+                walk(kw.value, on_loop, enclosing, exempt)
+            walk(node.func, on_loop, enclosing, exempt)
             return
 
         for child in ast.iter_child_nodes(node):
-            walk(child, on_loop, enclosing)
+            walk(child, on_loop, enclosing, exempt)
 
-    walk(tree, False, "<module>")
+    walk(tree, False, "<module>", frozenset())
     return hits
 
 
@@ -264,11 +277,11 @@ def test_async_code_never_calls_the_sync_config_readers():
 
 
 @pytest.mark.unit
-def test_offload_exemption_is_dropped_for_ambiguous_names(tmp_path):
-    """Two same-named nested defs, one offloaded: the other must NOT inherit the exemption.
+def test_offload_exemption_is_scoped_to_the_defining_function(tmp_path):
+    """A same-named nested def in ANOTHER coroutine must not inherit the exemption.
 
-    A bare name is not an identity. Exempting by name alone would let the twin that
-    really is called on the loop hide a sync config read behind its offloaded sibling.
+    The exemption is paired with the definition inside one function body; a bare name
+    is not an identity, so two coroutines can each have their own ``_resolve``.
     """
     src = '''
 import asyncio
@@ -283,17 +296,71 @@ async def calls_it_on_the_loop():
         return cm.get_model_api_config('summary')
     return _resolve()
 '''
-    path = tmp_path / "ambiguous.py"
+    path = tmp_path / "scoped.py"
     path.write_text(src, encoding="utf-8")
 
     hits = _sync_config_reads_inside_async_defs(path)
 
-    assert hits, "同名双胞胎里未卸载的那个被静默豁免了（按名字豁免的假绿）"
+    assert [h[2] for h in hits] == ["_resolve"], f"应只报直调那个 _resolve，实得 {hits}"
+    assert hits[0][0] == 11, f"报错行应指向直调那侧的读，实得 {hits}"
 
 
 @pytest.mark.unit
-def test_offload_exemption_still_holds_for_an_unambiguous_name(tmp_path):
-    """Control: the ordinary single-definition offload must stay exempt."""
+def test_offload_exemption_does_not_leak_into_a_nested_scope(tmp_path):
+    """An inner coroutine's own same-named def must not ride the outer scope's exemption."""
+    src = '''
+import asyncio
+
+async def outer():
+    def _resolve():
+        return cm.get_model_api_config('summary')
+
+    async def inner():
+        def _resolve():
+            return cm.get_model_api_config('vision')
+        return _resolve()
+
+    await inner()
+    return await asyncio.to_thread(_resolve)
+'''
+    path = tmp_path / "nested.py"
+    path.write_text(src, encoding="utf-8")
+
+    hits = _sync_config_reads_inside_async_defs(path)
+
+    # 只该报内层那次（第 10 行 vision）；外层 _resolve 是纯卸载，仍豁免
+    assert len(hits) == 1, f"外层豁免泄漏进内层作用域了：{hits}"
+    assert hits[0][0] == 10, f"应报内层那次读，实得 {hits}"
+
+
+@pytest.mark.unit
+def test_offload_exemption_is_revoked_on_mixed_use(tmp_path):
+    """One def both offloaded AND invoked directly: the direct call still blocks the loop.
+
+    Exempting on the strength of the to_thread hand-off alone would hide the sync read
+    that the direct invocation performs on the event loop.
+    """
+    src = '''
+import asyncio
+
+async def both_ways(fast_path):
+    def _resolve():
+        return cm.get_model_api_config('summary')
+    if fast_path:
+        return _resolve()
+    return await asyncio.to_thread(_resolve)
+'''
+    path = tmp_path / "mixed.py"
+    path.write_text(src, encoding="utf-8")
+
+    assert _sync_config_reads_inside_async_defs(path), (
+        "同一个 def 既卸载又直调时豁免必须撤销，否则直调那次的同步读被静默放过"
+    )
+
+
+@pytest.mark.unit
+def test_offload_exemption_still_holds_for_a_pure_offload(tmp_path):
+    """Control: hand a def to to_thread and never call it directly -> stays exempt."""
     src = '''
 import asyncio
 
@@ -301,8 +368,11 @@ async def offloads_it():
     def _resolve():
         return cm.get_model_api_config('summary')
     return await asyncio.to_thread(_resolve)
+
+async def uses_a_lambda():
+    return await asyncio.to_thread(lambda: cm.get_model_api_config('summary'))
 '''
-    path = tmp_path / "unambiguous.py"
+    path = tmp_path / "pure_offload.py"
     path.write_text(src, encoding="utf-8")
 
     assert _sync_config_reads_inside_async_defs(path) == [], "合法的 to_thread 卸载被误报"
