@@ -31,7 +31,7 @@ class SileroVad(OnnxModelRuntime):
         self._session = self._make_session(paths["silero_vad.onnx"], ort)
 
     def reset_stream(self) -> None:
-        with getattr(self, "_stream_lock", Lock()):
+        with self._stream_lock:
             self._lstm_state = np.zeros((2, 1, 128), dtype=np.float32)
             self._context = np.zeros(self.CONTEXT_SAMPLES, dtype=np.float32)
             self._pending = np.empty(0, dtype=np.float32)

@@ -728,6 +728,98 @@ async def test_overflow_reset_rejects_audio_until_barrier_finishes() -> None:
     await detector.close()
 
 
+async def test_overflow_epoch_bump_clears_deferred_completion_flags() -> None:
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_smart_turn_policy(),
+        coordinator=_SemanticCoordinator(),
+        on_turn_complete=AsyncMock(),
+    )
+    adapter = _OverflowAdapter()
+    adapter.reset_release.set()
+    detector._semantic_adapter = adapter
+    detector._semantic_started = True
+    # A sealed turn is waiting for the provider final when the queue overflows.
+    detector._defer_turn_complete = True
+    detector._deferred_turn_complete = True
+
+    result = await detector.submit_audio(
+        b"\x01\x00" * 160,
+        ingress_token=_ingress_token(),
+        sample_rate_hz=16_000,
+        speech_probability=0.9,
+        rnnoise_available=True,
+    )
+
+    assert result.status is DetectorSubmitStatus.BACKPRESSURE
+    assert detector._defer_turn_complete is False
+    assert detector._deferred_turn_complete is False
+    overflow_reset = detector._overflow_reset_task
+    assert overflow_reset is not None
+    await asyncio.wait_for(overflow_reset, 1)
+
+    # The stale deferred flag must not let release_deferred_turn advance the
+    # fresh epoch's first candidate or generation.
+    semantic_generation = detector._semantic_generation
+    await detector.release_deferred_turn()
+    assert detector._candidate_generation == 0
+    assert detector._semantic_generation == semantic_generation
+    await detector.close()
+
+
+async def test_invalidate_clears_deferred_completion_flags() -> None:
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_smart_turn_policy(),
+        coordinator=_SemanticCoordinator(),
+        on_turn_complete=AsyncMock(),
+    )
+    token = VoiceTurnToken(_ingress_token(), turn_id=1)
+    lease = await detector.prepare_endpointing(token)
+    assert lease is not None
+    detector._defer_turn_complete = True
+    detector._deferred_turn_complete = True
+    epoch_before = detector.detector_epoch
+
+    await detector.invalidate(token)
+
+    assert detector.detector_epoch == epoch_before + 1
+    assert detector._defer_turn_complete is False
+    assert detector._deferred_turn_complete is False
+    semantic_generation = detector._semantic_generation
+    await detector.release_deferred_turn()
+    assert detector._candidate_generation == 0
+    assert detector._semantic_generation == semantic_generation
+    await detector.close()
+
+
+async def test_gate_reset_serializes_with_concurrent_feed() -> None:
+    reset_started = threading.Event()
+    reset_release = threading.Event()
+
+    class _BlockingResetGate(_Gate):
+        def reset(self) -> None:
+            reset_started.set()
+            reset_release.wait(timeout=5)
+
+    gate = _BlockingResetGate()
+    detector = DetectorRuntime(vad=_Vad(), gate=gate)
+    reset_task = asyncio.create_task(detector.reset())
+    await asyncio.to_thread(reset_started.wait, 1)
+    feed_task = asyncio.create_task(detector.feed(b"\x01\x00" * 160))
+    await asyncio.sleep(0.05)
+
+    # The gate counters are unlocked, so feed must not run while reset is
+    # still inside the gate.
+    assert gate.inputs == []
+    reset_release.set()
+    await asyncio.wait_for(asyncio.gather(reset_task, feed_task), 1)
+    assert gate.inputs == [b"\x01\x00" * 160]
+    await detector.close()
+
+
 async def test_stale_reset_consumed_after_newer_reset_keeps_new_identity() -> None:
     gate = _Gate()
     adapter = _VoiceTurnAdapter(

@@ -1095,6 +1095,54 @@ async def test_each_session_owns_independent_lazy_runtime_lifecycle() -> None:
     assert (vad_b.close_calls, coordinator_b.close_calls) == (1, 1)
 
 
+async def test_wait_idle_resolves_when_consumer_fails_with_queued_audio() -> None:
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FailingGate(),
+        coordinator=_FakeCoordinator(),
+        on_commit=_noop_commit,
+    )
+    await adapter.start()
+    # Enqueue several frames before the consumer runs so the failure on the
+    # first frame leaves items behind that must not deadlock join().
+    for frame in (b"\x01\x00", b"\x02\x00", b"\x03\x00"):
+        await adapter.push_audio(
+            generation=0, buffer_epoch=0, utterance_id=1, pcm16=frame
+        )
+
+    await asyncio.wait_for(adapter.wait_idle(), 1)
+
+    assert adapter.failed is True
+    await adapter.close()
+
+
+async def test_tiny_frames_advance_periodic_evaluation_without_vad() -> None:
+    commits: list[tuple[int, int, int]] = []
+
+    async def commit(generation: int, buffer_epoch: int, utterance_id: int) -> None:
+        commits.append((generation, buffer_epoch, utterance_id))
+
+    adapter = _VoiceTurnAdapter(
+        vad=_UnavailableVad(),
+        gate=_FakeGate(),
+        coordinator=_FakeCoordinator([_complete()]),
+        on_commit=commit,
+        smart_turn_required=True,
+        fallback_evaluation_interval_ms=1,
+    )
+    await adapter.start()
+    # 16-byte frames are 0.5 ms each; a per-frame integer millisecond count
+    # would floor to zero and never trigger the periodic evaluation.
+    for _ in range(2):
+        await adapter.push_audio(
+            generation=0, buffer_epoch=0, utterance_id=1, pcm16=b"\x01\x00" * 8
+        )
+    await asyncio.wait_for(adapter.wait_idle(), 1)
+
+    assert commits == [(0, 0, 1)]
+    await adapter.close()
+
+
 async def test_close_cleans_up_after_consumer_failure() -> None:
     vad = _FakeVad()
     coordinator = _FakeCoordinator()

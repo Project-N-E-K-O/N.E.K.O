@@ -41,8 +41,6 @@ logger = logging.getLogger(__name__)
 _Identity: TypeAlias = tuple[int, int, int]
 _FallbackReason: TypeAlias = Literal["semantic_incomplete", "semantic_degraded"]
 
-logger = logging.getLogger(__name__)
-
 
 @dataclass(frozen=True, slots=True)
 class _VoiceTurnFailure:
@@ -167,7 +165,7 @@ class _VoiceTurnAdapter:
         self._vad_available = False
         self._vad_degraded = False
         self._fallback_speech_started = False
-        self._fallback_audio_ms = 0
+        self._fallback_audio_bytes = 0
         self._semantic_degraded = False
         self._failed = False
         self._failure_future: asyncio.Future[_VoiceTurnFailure] | None = None
@@ -361,6 +359,7 @@ class _VoiceTurnAdapter:
                 if isinstance(item, _AudioItem):
                     await self._process_audio(item)
                     if self._failed:
+                        await self._drain_queue_on_failure_exit()
                         return
                     continue
                 if isinstance(item, _ResetItem):
@@ -371,6 +370,7 @@ class _VoiceTurnAdapter:
                 if isinstance(item, _EvaluationResultItem):
                     await self._process_evaluation_result(item)
                     if self._failed:
+                        await self._drain_queue_on_failure_exit()
                         return
                     continue
                 await self._process_close()
@@ -385,8 +385,39 @@ class _VoiceTurnAdapter:
                     completed.set_exception(exc)
                 if not isinstance(item, _CloseItem):
                     self._report_failure("runtime_error", "consumer")
+                    await self._drain_queue_on_failure_exit()
                     return
                 raise
+            finally:
+                self._queue.task_done()
+
+    async def _drain_queue_on_failure_exit(self) -> None:
+        """Unblock join()/reset() waiters when a failure stops the consumer."""
+
+        evaluation_task, self._evaluation_task = self._evaluation_task, None
+        if evaluation_task is not None:
+            evaluation_task.cancel()
+        while True:
+            try:
+                item = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            try:
+                if isinstance(item, _CloseItem):
+                    try:
+                        await self._process_close()
+                    except Exception:
+                        logger.exception(
+                            "ASR voice turn close failed after consumer failure"
+                        )
+                    if not item.completed.done():
+                        item.completed.set_result(None)
+                    continue
+                completed = getattr(item, "completed", None)
+                if completed is not None and not completed.done():
+                    completed.set_exception(
+                        RuntimeError("ASR_VOICE_TURN_FAILED: adapter has failed")
+                    )
             finally:
                 self._queue.task_done()
 
@@ -476,12 +507,14 @@ class _VoiceTurnAdapter:
             if self._on_scoped_activity is not None and item.detector_identity is not None:
                 await self._on_scoped_activity(event, item.detector_identity)
             await self._coordinator.on_activity_event(event)
-        self._fallback_audio_ms += len(item.pcm16) * 1_000 // (16_000 * 2)
+        self._fallback_audio_bytes += len(item.pcm16)
         if started_now:
             return
-        if self._fallback_audio_ms < self._fallback_evaluation_interval_ms:
+        # 16 kHz PCM16 mono is 32 bytes per millisecond; accumulate bytes so
+        # sub-millisecond frames still advance the periodic-evaluation clock.
+        if self._fallback_audio_bytes < self._fallback_evaluation_interval_ms * 32:
             return
-        self._fallback_audio_ms = 0
+        self._fallback_audio_bytes = 0
         self._request_evaluation(
             item.identity,
             "periodic_no_vad",
@@ -639,7 +672,7 @@ class _VoiceTurnAdapter:
         await asyncio.to_thread(self._gate.reset)
         self._commit_dispatched.clear()
         self._fallback_speech_started = False
-        self._fallback_audio_ms = 0
+        self._fallback_audio_bytes = 0
         if self._smart_turn_pin_count == 0:
             self._schedule_smart_turn_unload(identity)
 
@@ -1257,6 +1290,11 @@ class DetectorRuntime:
             self._ingress_token = None
             self._bound_turns.clear()
             self._deferred_completions.clear()
+            # A deferred completion belongs to the invalidated epoch; keeping
+            # the flags would let release_deferred_turn spuriously advance the
+            # fresh epoch's first candidate.
+            self._defer_turn_complete = False
+            self._deferred_turn_complete = False
             adapter = self._semantic_adapter
             if adapter is not None:
                 adapter.unpin_smart_turn()
@@ -1460,6 +1498,10 @@ class DetectorRuntime:
             self._ingress_token = None
             self._bound_turns.clear()
             self._deferred_completions.clear()
+            # Mirror reset(): a deferred completion from the overflowed epoch
+            # must not leak into the fresh epoch via release_deferred_turn.
+            self._defer_turn_complete = False
+            self._deferred_turn_complete = False
             self._semantic_generation += 1
             self._semantic_turn_id += 1
             overflow_reset_task = asyncio.create_task(
@@ -1546,14 +1588,17 @@ class DetectorRuntime:
                     0,
                     self._semantic_turn_id,
                 )
+            else:
+                # feed() runs gate.feed in a thread while holding self._lock;
+                # the gate counters are unlocked, so the reset must run under
+                # the same lock to avoid interleaving with an in-flight feed.
+                await asyncio.to_thread(self._gate.reset)
         if adapter is not None and semantic_identity is not None:
             await adapter.reset(
                 generation=semantic_identity[0],
                 buffer_epoch=semantic_identity[1],
                 utterance_id=semantic_identity[2],
             )
-            return
-        await asyncio.to_thread(self._gate.reset)
 
     async def release_deferred_turn(self) -> None:
         """Release a deferred SmartTurn completion after the prior final."""

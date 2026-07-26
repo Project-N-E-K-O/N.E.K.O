@@ -102,15 +102,6 @@ class DetectorAudioItem:
         return cls(identity=identity, pcm16=pcm16, duration_us=duration_us)
 
 
-@dataclass(frozen=True, slots=True)
-class DetectorEvaluationResultItem:
-    ingress: DetectorIngressIdentity
-    candidate: DetectorCandidateKey
-    coordinator_generation: int
-    activity_seq: int
-    result: TurnEvaluation
-
-
 class DetectorSubmitStatus(Enum):
     ACCEPTED = "accepted"
     SKIPPED_QUIET = "skipped_quiet"
@@ -125,9 +116,6 @@ class DetectorSubmitResult:
     throttle_available: bool
     endpointing_available: bool
     identity: DetectorIngressIdentity | None
-
-
-DetectorQueueItem: TypeAlias = DetectorAudioItem | DetectorEvaluationResultItem | object
 
 
 _ControlItem = TypeVar("_ControlItem")
