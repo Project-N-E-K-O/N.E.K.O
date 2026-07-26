@@ -922,9 +922,15 @@ class VoiceStorageMixin:
         landed: ``_check_non_mainland`` falls back to Steam (deliberately uncached)
         or to the mainland default, and neither is a verdict to delete data on.
         """
-        from utils.config_manager import ConfigManager
+        from utils.config_manager import ConfigManager, core_config as _core_config_mod
 
         try:
+            # 调试开关强制区域 = 结论确定非猜测（_check_non_mainland 恒返回强制
+            # 值），不认它会让 override 下的免费路由永久禁用清理与默认音色绑定。
+            # 经模块属性读取而非 from-import，保证测试对 core_config 的 monkeypatch
+            # 在这里同样可见。
+            if _core_config_mod.GEOIP_FORCE_NON_MAINLAND is not None:
+                return False
             if ConfigManager._region_cache is not None:
                 return False
             cfg = self.get_core_config() or {}

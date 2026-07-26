@@ -437,6 +437,12 @@ class CoreConfigMixin:
 
         thread = ConfigManager._ip_probe_thread
         if thread is not None and thread.is_alive() and not ConfigManager._ip_probe_stopping:
+            # 先预置 in-flight 再唤醒，与 _ensure_ip_probe_started 同一习语：被唤醒
+            # 的循环要等 OS 调度后才自己 set in_flight，若调用方（典型序列：切回
+            # 免费路由后立刻开会话）在那之前到达 join，会把这次**刻意唤醒**的尝试
+            # 误判成普通退避而直接放弃等待，整场冻结在大陆兜底。循环若醒来后因
+            # 资格复查收工，outer finally 会清掉这个预置位，不会悬挂。
+            ConfigManager._ip_probe_in_flight.set()
             ConfigManager._ip_probe_wake.set()
 
     @staticmethod
@@ -456,6 +462,11 @@ class CoreConfigMixin:
         """
         from utils.config_manager import ConfigManager
 
+        # 调试开关强制区域时判定即刻可用（_check_non_mainland 直接返回强制值、
+        # 不写缓存不起探测）——只认缓存会让免费路由在 override 下永远报「未落定」，
+        # 启动预热每次白等满 timeout。
+        if GEOIP_FORCE_NON_MAINLAND is not None:
+            return True
         if ConfigManager._steam_check_cache is not None:
             return True
         # 只在探测「真的在发请求」时才值得等。循环在退避 sleep 里同样是 alive，
@@ -503,6 +514,10 @@ class CoreConfigMixin:
         """
         from utils.config_manager import ConfigManager
 
+        # 调试开关强制区域 = 判定已定（_check_non_mainland 恒返回强制值），
+        # 不写缓存也不起探测，等待没有意义。
+        if GEOIP_FORCE_NON_MAINLAND is not None:
+            return True
         if ConfigManager._region_cache is not None or ConfigManager._ip_check_cache is not None:
             return True
         # Steam 已经给出结论：足够选线路了，不必再为 IP 付等待。IP 落地后照样接管

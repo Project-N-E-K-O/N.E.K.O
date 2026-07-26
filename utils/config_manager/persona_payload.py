@@ -124,28 +124,6 @@ async def ensure_default_yui_voice_for_free_api(config_manager, core_cfg: dict |
         logger.debug("[GeoIP] 区域落定状态判断失败，跳过本轮默认音色绑定", exc_info=True)
         return False
 
-    characters = await config_manager.aload_characters()
-    if not isinstance(characters, dict):
-        return False
-
-    current_name = str(characters.get("当前猫娘") or "").strip()
-    catgirls = characters.get("猫娘")
-    if not current_name or not isinstance(catgirls, dict):
-        return False
-
-    current_character = catgirls.get(current_name)
-    if not _is_default_yui_character(current_name, current_character):
-        return False
-
-    current_voice_id = read_legacy_voice_id(get_reserved(
-        current_character,
-        "voice_id",
-        default="",
-        legacy_keys=("voice_id",),
-    ))
-    if current_voice_id:
-        return False
-
     # 海外免费（free + *.lanlan.app）：默认音色是品牌 yui（free_intl 的 default_voice），
     # 下发字面量 "yui"。国内免费（lanlan.tech）仍按语言绑定 free_voices 里的 yui 音色。
     #
@@ -189,6 +167,33 @@ async def ensure_default_yui_voice_for_free_api(config_manager, core_cfg: dict |
 
     yui_voice_id = "yui" if overseas else _get_default_yui_free_voice_id()
     if not yui_voice_id:
+        return False
+
+    # 角色数据放到**最后**才读：load 与 save 之间隔的 await 越多，与并发角色编辑
+    # 互相覆盖（本函数是全量 load→save，last-writer-wins）的窗口越大。区域/配置
+    # 判定全部就绪后再 load，改写是纯内存操作、紧跟着 save，窗口缩到最小。彻底
+    # 消除竞态需要 characters 写路径统一的原子更新原语——所有 save_characters
+    # 调用点共有的问题，不在本函数单点修。
+    characters = await config_manager.aload_characters()
+    if not isinstance(characters, dict):
+        return False
+
+    current_name = str(characters.get("当前猫娘") or "").strip()
+    catgirls = characters.get("猫娘")
+    if not current_name or not isinstance(catgirls, dict):
+        return False
+
+    current_character = catgirls.get(current_name)
+    if not _is_default_yui_character(current_name, current_character):
+        return False
+
+    current_voice_id = read_legacy_voice_id(get_reserved(
+        current_character,
+        "voice_id",
+        default="",
+        legacy_keys=("voice_id",),
+    ))
+    if current_voice_id:
         return False
 
     changed = set_reserved(current_character, "voice_id", yui_voice_id)

@@ -2127,3 +2127,65 @@ def test_agent_url_survives_the_overseas_rewrite_end_to_end(config_manager, monk
                  if k.endswith('_URL') and k != 'AGENT_MODEL_URL'
                  and isinstance(v, str) and 'lanlan.app' in v]
     assert rewritten, '前置条件：海外判定下其它免费 URL 应已改写为 lanlan.app'
+
+
+@pytest.mark.unit
+def test_kicked_probe_counts_as_in_flight_immediately(monkeypatch):
+    """A kicked (deliberately awakened) attempt must be waitable before it is scheduled.
+
+    ``_kick_ip_probe`` used to only set the wake event; until the OS scheduled
+    the sleeping loop, ``_ip_probe_in_flight`` stayed clear, so a join arriving
+    in that window (switch back to the free route, immediately start a session)
+    treated the deliberately awakened attempt as ordinary backoff and gave up
+    instantly — freezing that session on the mainland fallback while the
+    awakened HTTP attempt started moments later.
+    """
+    monkeypatch.setattr(ConfigManager, '_IP_CHECK_RETRY_BASE_S', 30.0)
+    monkeypatch.setattr(ConfigManager, '_IP_CHECK_RETRY_MAX_S', 30.0)
+    calls = _patch_probe_once(monkeypatch, [OSError('down'), 'US'])
+
+    _Probe()._ensure_ip_probe_started()
+    for _ in range(500):
+        if calls['n'] >= 1 and not ConfigManager._ip_probe_in_flight.is_set():
+            break
+        real_time.sleep(0.01)
+    assert calls['n'] == 1 and not ConfigManager._ip_probe_in_flight.is_set(), \
+        '前置条件：首探已失败并进入退避'
+
+    # kick 后立刻 join——不给被唤醒的线程任何调度先机
+    ConfigManager._kick_ip_probe()
+    assert ConfigManager._ip_probe_in_flight.is_set(), 'kick 必须同步预置 in-flight'
+    assert ConfigManager.join_ip_probe(timeout=5) is True, \
+        '被刻意唤醒的尝试应当被等到，而不是被当成普通退避直接放弃'
+    assert ConfigManager._ip_check_cache is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('forced', [True, False])
+def test_forced_override_counts_as_settled(monkeypatch, forced):
+    """``GEOIP_FORCE_NON_MAINLAND`` bypasses probing entirely — nothing is pending.
+
+    The override populates no cache and starts no probe, so cache-only
+    settlement predicates reported "unresolved" forever: startup warmup burned
+    its full timeout every boot, and the provisional gate permanently
+    suppressed voice cleanup and default-YUI binding on free routes.
+    """
+    monkeypatch.setattr(core_config_mod, 'GEOIP_FORCE_NON_MAINLAND', forced)
+
+    probe = _Probe()
+    probe.aget_core_config = _async_return(
+        {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.tech/core'})
+    started = real_time.monotonic()
+    assert asyncio.run(probe.aensure_region_resolved(timeout=5)) is True
+    assert asyncio.run(probe.awarmup_region_check(timeout=5)) is True
+    assert real_time.monotonic() - started < 1.0, 'override 下不应发生任何等待'
+    assert ConfigManager._ip_probe_thread is None, 'override 下不应起探测'
+
+    class _CM(config_manager_pkg.voice_storage.VoiceStorageMixin):
+        def get_core_config(self):
+            return {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.tech/core'}
+
+    cm = _CM()
+    cm._config_needs_region = ConfigManager._config_needs_region
+    assert cm._region_verdict_is_provisional() is False, \
+        'override 是确定结论，不该判成 provisional（会永久禁用清理与默认音色绑定）'
