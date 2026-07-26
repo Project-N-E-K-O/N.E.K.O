@@ -281,7 +281,7 @@ async def test_shutdown_cancels_inflight_without_late_final() -> None:
     [
         SimpleNamespace(parsed={"answer": "这不是转写"}),
         SimpleNamespace(text="not-json"),
-        SimpleNamespace(parsed={"transcript": "   "}),
+        SimpleNamespace(parsed={"transcript": 42}),
     ],
 )
 async def test_invalid_structured_response_emits_scoped_error(response: Any) -> None:
@@ -304,6 +304,38 @@ async def test_invalid_structured_response_emits_scoped_error(response: Any) -> 
     error = await _next_event(responses, "error")
     assert error.error_code == "ASR_GEMINI_INVALID_RESPONSE"
     assert (error.generation, error.buffer_epoch, error.utterance_id) == (0, 0, 7)
+    await _shutdown(task, requests, responses)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        SimpleNamespace(parsed={"transcript": ""}),
+        SimpleNamespace(parsed={"transcript": "   "}),
+        SimpleNamespace(text='{"transcript": ""}'),
+    ],
+)
+async def test_empty_transcript_is_delivered_as_empty_final(response: Any) -> None:
+    client = _FakeClient(response)
+    task, requests, responses = await _start_worker(client)
+    await _next_event(responses, "ready")
+    await requests.put(
+        _AsrWorkerRequest(
+            kind="audio",
+            generation=0,
+            buffer_epoch=0,
+            utterance_id=7,
+            audio=b"\x01\x00" * 160,
+        )
+    )
+    await requests.put(
+        _AsrWorkerRequest(kind="commit", generation=0, buffer_epoch=0, utterance_id=7)
+    )
+
+    final = await _next_event(responses, "final")
+    assert final.text == ""
+    assert (final.generation, final.buffer_epoch, final.utterance_id) == (0, 0, 7)
+    assert responses.empty()
     await _shutdown(task, requests, responses)
 
 

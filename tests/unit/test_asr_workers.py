@@ -825,6 +825,103 @@ async def test_step_manual_late_completed_does_not_consume_next_commit(
     await _stop_worker(task, requests, responses, utterance_id=3)
 
 
+async def test_step_server_vad_expires_stalled_turn_with_empty_final(
+    monkeypatch,
+) -> None:
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        if isinstance(payload, str) and json.loads(payload)["type"] == "session.update":
+            await ws.server_send({"type": "session.updated"})
+
+    now = {"seconds": 0.0}
+    websocket = _FakeWebSocket(on_send=on_send)
+    monkeypatch.setattr(step.websockets, "connect", _FakeConnector(websocket))
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        step.step_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+            clock=lambda: now["seconds"],
+        )
+    )
+    await _next_event(responses, "ready")
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_started", "item_id": "step-audio-1"}
+    )
+    assert (await _next_event(responses, "utterance_started")).utterance_id == 1
+
+    now["seconds"] = step._STEP_PENDING_TURN_TIMEOUT_SECONDS + 1.0
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_started", "item_id": "step-audio-2"}
+    )
+    stalled_final = await _next_event(responses, "final")
+    assert (stalled_final.utterance_id, stalled_final.text) == (1, "")
+    assert (await _next_event(responses, "utterance_started")).utterance_id == 2
+
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "step-transcript-2",
+            "transcript": "second",
+        }
+    )
+    final = await _next_event(responses, "final")
+    assert (final.utterance_id, final.text) == (2, "second")
+    await _stop_worker(task, requests, responses, utterance_id=3)
+
+
+async def test_step_manual_expires_stalled_commit_with_empty_final(
+    monkeypatch,
+) -> None:
+    commit_count = 0
+
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        nonlocal commit_count
+        assert isinstance(payload, str)
+        message = json.loads(payload)
+        if message["type"] == "session.update":
+            await ws.server_send({"type": "session.updated"})
+        elif message["type"] == "input_audio_buffer.commit":
+            commit_count += 1
+            if commit_count == 2:
+                await ws.server_send(
+                    {
+                        "type": "conversation.item.input_audio_transcription.completed",
+                        "item_id": "step-transcript-next",
+                        "transcript": "second",
+                    }
+                )
+
+    now = {"seconds": 0.0}
+    websocket = _FakeWebSocket(on_send=on_send)
+    monkeypatch.setattr(step.websockets, "connect", _FakeConnector(websocket))
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        step.step_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="manual"),
+            clock=lambda: now["seconds"],
+        )
+    )
+    await _next_event(responses, "ready")
+    await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=1))
+    await _wait_until(lambda: commit_count == 1)
+
+    now["seconds"] = step._STEP_PENDING_TURN_TIMEOUT_SECONDS + 1.0
+    await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=2))
+    stalled_final = await _next_event(responses, "final")
+    assert (stalled_final.utterance_id, stalled_final.text) == (1, "")
+    final = await _next_event(responses, "final")
+    assert (final.utterance_id, final.text) == (2, "second")
+    assert responses.empty()
+    await _stop_worker(task, requests, responses, utterance_id=3)
+
+
 async def test_openai_transcription_resampling_and_out_of_order_finals(
     monkeypatch,
 ) -> None:
@@ -2808,3 +2905,46 @@ async def test_soniox_rate_limit_backs_off_and_reconnects_only_once(
     await _next_event(responses, "closed")
     await asyncio.wait_for(task, 1)
     assert len(connector.calls) == 2
+
+
+async def test_soniox_rate_limit_backoff_is_capped(monkeypatch) -> None:
+    rate_limit_event = {
+        "error_code": 429,
+        "error_message": "rate limited",
+        "request_id": "request-rate-limit",
+    }
+    connector = _FakeConnector(
+        _FakeWebSocket(initial=[rate_limit_event]),
+        _FakeWebSocket(initial=[rate_limit_event]),
+    )
+    monkeypatch.setattr(soniox.websockets, "connect", connector)
+    monkeypatch.setattr(
+        soniox,
+        "_RETRY_BACKOFF_BASE_SECONDS",
+        soniox._RETRY_BACKOFF_CAP_SECONDS * 128,
+    )
+    observed_delays: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def recording_sleep(delay: float) -> None:
+        observed_delays.append(delay)
+        await real_sleep(0)
+
+    monkeypatch.setattr(soniox.asyncio, "sleep", recording_sleep)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        soniox.soniox_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+        )
+    )
+    await _next_event(responses, "ready")
+    error = await _next_event(responses, "error")
+    assert error.error_code == "ASR_RATE_LIMITED"
+    await _next_event(responses, "closed")
+    await asyncio.wait_for(task, 1)
+    assert observed_delays
+    assert max(observed_delays) <= soniox._RETRY_BACKOFF_CAP_SECONDS

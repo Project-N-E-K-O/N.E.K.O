@@ -19,8 +19,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import time
 import uuid
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, TypeAlias
 
@@ -34,8 +36,10 @@ _STEP_URL = "wss://api.stepfun.com/v1/realtime/asr/stream"
 _STEP_MODEL = "stepaudio-2.5-asr-stream"
 _STEP_SUPPORTED_LANGUAGES = frozenset({"en", "zh"})
 _STEP_FINALIZED_ITEM_LIMIT = 1024
+_STEP_PENDING_TURN_TIMEOUT_SECONDS = 30.0
 
 _ItemKey: TypeAlias = tuple[int, int, int]
+_PendingTurn: TypeAlias = tuple[_ItemKey, float]
 
 
 @dataclass(slots=True)
@@ -44,11 +48,12 @@ class _StepConnectionState:
     buffer_epoch: int
     next_utterance_id: int
     emit_ready: bool
+    clock: Callable[[], float] = time.monotonic
     provider_audio_item_keys: dict[str, _ItemKey] = field(default_factory=dict)
     provider_audio_ids_by_key: dict[_ItemKey, str] = field(default_factory=dict)
     transcription_item_keys: dict[str, _ItemKey] = field(default_factory=dict)
-    pending_provider_turns: deque[_ItemKey] = field(default_factory=deque)
-    pending_manual_commits: deque[_ItemKey] = field(default_factory=deque)
+    pending_provider_turns: deque[_PendingTurn] = field(default_factory=deque)
+    pending_manual_commits: deque[_PendingTurn] = field(default_factory=deque)
     unbound_manual_item_ids: deque[str] = field(default_factory=deque)
     unbound_manual_item_id_set: set[str] = field(default_factory=set)
     finalized_item_ids: set[str] = field(default_factory=set)
@@ -71,7 +76,8 @@ def _step_bind_pending_manual_items(state: _StepConnectionState) -> None:
             or item_id in state.transcription_item_keys
         ):
             continue
-        state.transcription_item_keys[item_id] = state.pending_manual_commits.popleft()
+        key, _ = state.pending_manual_commits.popleft()
+        state.transcription_item_keys[item_id] = key
 
 
 def _step_manual_item_key(
@@ -101,9 +107,40 @@ def _step_provider_item_key(
         return key
     if not state.pending_provider_turns:
         return None
-    key = state.pending_provider_turns.popleft()
+    key, _ = state.pending_provider_turns.popleft()
     state.transcription_item_keys[item_id] = key
     return key
+
+
+async def _step_expire_stalled_pending_turns(
+    response_queue: asyncio.Queue[_AsrWorkerEvent],
+    state: _StepConnectionState,
+) -> None:
+    """Complete pending turns whose transcription never arrived.
+
+    Step correlates transcription item ids to turns purely by FIFO order. A
+    turn that never receives a transcription event would pin the queue head
+    forever and shift every later binding by one slot, so a stalled head is
+    evicted after a bounded age and completed with an empty final to let the
+    upstream utterance lifecycle converge.
+    """
+
+    now = state.clock()
+    for pending in (state.pending_provider_turns, state.pending_manual_commits):
+        while pending and now - pending[0][1] >= _STEP_PENDING_TURN_TIMEOUT_SECONDS:
+            key, _ = pending.popleft()
+            audio_item_id = state.provider_audio_ids_by_key.pop(key, None)
+            if audio_item_id is not None:
+                state.provider_audio_item_keys.pop(audio_item_id, None)
+            await response_queue.put(
+                _AsrWorkerEvent(
+                    kind="final",
+                    generation=key[0],
+                    buffer_epoch=key[1],
+                    utterance_id=key[2],
+                    text="",
+                )
+            )
 
 
 def _step_remember_finalized_item(
@@ -261,7 +298,8 @@ async def _step_sender(
                         request.buffer_epoch,
                         request.utterance_id,
                     )
-                    state.pending_manual_commits.append(key)
+                    await _step_expire_stalled_pending_turns(response_queue, state)
+                    state.pending_manual_commits.append((key, state.clock()))
                     _step_bind_pending_manual_items(state)
                     await ws.send(
                         json.dumps(
@@ -348,6 +386,7 @@ async def _step_receiver(
                 )
                 return "error"
 
+            await _step_expire_stalled_pending_turns(response_queue, state)
             event_type = event.get("type")
             if event_type == "session.updated":
                 if not state.configured.is_set():
@@ -393,7 +432,7 @@ async def _step_receiver(
                 state.last_utterance_id = key[2]
                 state.provider_audio_item_keys[item_id] = key
                 state.provider_audio_ids_by_key[key] = item_id
-                state.pending_provider_turns.append(key)
+                state.pending_provider_turns.append((key, state.clock()))
                 await response_queue.put(
                     _AsrWorkerEvent(
                         kind="utterance_started",
@@ -494,6 +533,8 @@ async def step_asr_worker(
     response_queue: asyncio.Queue[_AsrWorkerEvent],
     api_key: str,
     config: AsrSessionConfig,
+    *,
+    clock: Callable[[], float] = time.monotonic,
 ) -> None:
     """Stream normalized PCM to StepFun and normalize provider events."""
 
@@ -516,6 +557,7 @@ async def step_asr_worker(
                 buffer_epoch=buffer_epoch,
                 next_utterance_id=next_utterance_id,
                 emit_ready=first_connection,
+                clock=clock,
             )
             active_state = state
             ws: Any | None = None

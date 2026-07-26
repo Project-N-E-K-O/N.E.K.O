@@ -101,7 +101,7 @@ def _response_transcript(response: Any) -> str:
     if not isinstance(payload, Mapping):
         raise ValueError("Gemini response is not an object")
     transcript = payload.get("transcript")
-    if not isinstance(transcript, str) or not transcript.strip():
+    if not isinstance(transcript, str):
         raise ValueError("Gemini response has no transcript")
     return transcript.strip()
 

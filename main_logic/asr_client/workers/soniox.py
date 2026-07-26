@@ -52,6 +52,7 @@ _CLOSE_TIMEOUT_SECONDS = 0.5
 _SAFE_ROTATION_SECONDS = 295 * 60
 _MAX_REPLAY_BYTES = 16_000 * 2 * 30
 _RETRY_BACKOFF_BASE_SECONDS = 0.5
+_RETRY_BACKOFF_CAP_SECONDS = 8.0
 
 _ConnectionAction = Literal["shutdown", "reconnect", "reset", "rotate", "failed"]
 
@@ -362,7 +363,10 @@ async def soniox_asr_worker(
                     if retryable and not reconnect_attempted:
                         if code == "ASR_RATE_LIMITED":
                             await asyncio.sleep(
-                                _RETRY_BACKOFF_BASE_SECONDS * (2**reconnect_count)
+                                min(
+                                    _RETRY_BACKOFF_CAP_SECONDS,
+                                    _RETRY_BACKOFF_BASE_SECONDS * (2**reconnect_count),
+                                )
                             )
                         return "reconnect"
                     await emit_error(code, "Soniox realtime transcription failed")
