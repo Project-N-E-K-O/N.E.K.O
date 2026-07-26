@@ -750,6 +750,32 @@ class TtsRuntimeMixin:
         """Backward-compatible wrapper for older callers/tests."""
         return self._resolve_realtime_voice(realtime_config)
 
+    def _drop_free_voice_on_route_flip(self, old_core_url: str, new_core_url: str) -> bool:
+        """Clear a free-catalog voice when the regional route flipped between snapshots.
+
+        The domestic ``free`` and overseas ``free_intl`` catalogs are disjoint,
+        so a voice resolved against the pre-flip region is guaranteed invalid on
+        the post-flip route. Realtime already fails safe at delivery time
+        (``_resolve_realtime_voice`` keys on the snapshot's base_url), but the
+        text-mode TTS path synthesizes with ``self.voice_id`` directly — this
+        applies the same fail-safe there: deliver nothing and let the server
+        pick its default for the session. Custom voices are region-independent
+        and left untouched.
+        """
+        if str(old_core_url or '') == str(new_core_url or ''):
+            return False
+        # 'yui' is the overseas free default written by
+        # ensure_default_yui_voice_for_free_api (same literal there); the
+        # domestic presets are covered by _is_free_preset_voice.
+        if not (self._is_free_preset_voice or self.voice_id == 'yui'):
+            return False
+        logger.info(
+            "[GeoIP] 区域翻转后清空旧区域免费音色 '%s'，本场使用服务端默认", self.voice_id,
+        )
+        self.voice_id = ''
+        self._is_free_preset_voice = False
+        return True
+
     def _enqueue_voice_migration_notice(self, legacy_names: list) -> None:
         """Push the voice migration notice into the buffer pool, delegating to the module-level function for unified dedup."""
         enqueue_voice_migration_notice(legacy_names)

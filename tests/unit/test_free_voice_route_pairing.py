@@ -118,3 +118,50 @@ def test_every_mainland_preset_is_blocked_overseas():
 @pytest.mark.parametrize('url, saveable', [(OVERSEAS_URL, True), (MAINLAND_URL, False)])
 def test_overseas_voice_saveable_only_on_overseas_route(url, saveable):
     assert is_saveable_native_voice(_fake_cm(url), OVERSEAS_VOICE) is saveable
+
+
+# ---------------------------------------------------------------------------
+# Route flip between snapshots: same fail-safe, applied to the session's voice
+# ---------------------------------------------------------------------------
+
+def _flip_mgr(voice_id, is_free_preset):
+    mgr = object.__new__(LLMSessionManager)
+    mgr.voice_id = voice_id
+    mgr._is_free_preset_voice = is_free_preset
+    return mgr
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('voice, preset', [
+    ('voice-tone-RcH2svtsrw', True),   # 大陆免费预设
+    ('yui', False),                    # 海外免费默认（persona_payload 写入的字面量）
+])
+def test_route_flip_clears_free_catalog_voice(voice, preset):
+    """A free-catalog voice resolved pre-flip is invalid post-flip — deliver nothing.
+
+    The two free catalogs are disjoint; realtime already fails safe at delivery
+    (the pairing gate above), and this applies the same rule to the text-mode
+    TTS path, which synthesizes with ``self.voice_id`` directly.
+    """
+    mgr = _flip_mgr(voice, preset)
+    assert LLMSessionManager._drop_free_voice_on_route_flip(
+        mgr, MAINLAND_URL, OVERSEAS_URL) is True
+    assert mgr.voice_id == '' and mgr._is_free_preset_voice is False
+
+
+@pytest.mark.unit
+def test_route_flip_leaves_custom_voice_alone():
+    """Custom voices are region-independent — the flip must not touch them."""
+    mgr = _flip_mgr('my-cloned-voice', False)
+    assert LLMSessionManager._drop_free_voice_on_route_flip(
+        mgr, MAINLAND_URL, OVERSEAS_URL) is False
+    assert mgr.voice_id == 'my-cloned-voice'
+
+
+@pytest.mark.unit
+def test_no_flip_keeps_the_free_voice():
+    """Same route on both snapshots: the resolved voice stays."""
+    mgr = _flip_mgr('yui', False)
+    assert LLMSessionManager._drop_free_voice_on_route_flip(
+        mgr, OVERSEAS_URL, OVERSEAS_URL) is False
+    assert mgr.voice_id == 'yui'
