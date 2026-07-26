@@ -389,7 +389,7 @@ class OpenClawAdapter:
 
     async def _classify_magic_intent_with_llm(self, user_text: str) -> Optional[Dict[str, Any]]:
         try:
-            cfg = get_config_manager().get_model_api_config("summary")
+            cfg = await get_config_manager().aget_model_api_config("summary")
         except Exception as exc:
             logger.debug("[OpenClaw] Failed to load summary model config for magic intent: %s", exc)
             return None

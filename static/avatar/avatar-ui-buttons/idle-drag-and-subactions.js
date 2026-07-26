@@ -3,10 +3,8 @@ const _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW = Object.freeze({
     tier: _NEKO_IDLE_TIER_CAT1,
     idleSubstate: _NEKO_IDLE_CAT1_SUBSTATE_IDLE,
     walkingSubstate: _NEKO_IDLE_CAT1_SUBSTATE_WALKING,
-    finishingSubstate: _NEKO_IDLE_CAT1_SUBSTATE_STRETCH,
     classNames: Object.freeze({
         walking: 'is-cat1-walking',
-        finishing: 'is-cat1-stretching',
         facingRight: 'is-cat1-facing-right',
         paused: 'is-cat1-hover-paused',
         compactTopEdge: 'is-cat1-on-compact-top-edge'
@@ -19,7 +17,6 @@ const _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW = Object.freeze({
     assets: Object.freeze({
         idle: () => _getNekoIdleReturnAssetUrl(_NEKO_IDLE_TIER_CAT1),
         walking: _getNekoIdleCat1WalkingAssetUrl,
-        finishing: _getNekoIdleCat1StretchAssetUrl,
         interactive: _getNekoIdleCat1InteractiveAssetUrl
     }),
     target: Object.freeze({
@@ -32,10 +29,6 @@ const _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW = Object.freeze({
         distanceGrowthForMaxRatePx: _NEKO_IDLE_CAT1_WALK_DISTANCE_GROWTH_FOR_MAX_RATE_PX,
         minStepMs: _NEKO_IDLE_CAT1_WALK_MIN_STEP_MS,
         maxStepMs: _NEKO_IDLE_CAT1_WALK_MAX_STEP_MS
-    }),
-    settle: Object.freeze({
-        finalHoldMs: _NEKO_IDLE_CAT1_STRETCH_FINAL_HOLD_MS,
-        resetFacingAfterMs: _NEKO_IDLE_RETURN_TRANSITION_MS
     }),
     startDelay: Object.freeze({
         choices: Object.freeze([
@@ -407,6 +400,9 @@ function _getNekoIdleReturnCurrentArtUrl(button, tier) {
     }
     if (normalizedTier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1EatActionActive(button)) {
         return _NEKO_IDLE_CAT1_EAT_ASSET_URL;
+    }
+    if (normalizedTier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1StretchActionActive(button)) {
+        return _getNekoIdleCat1StretchAssetUrl();
     }
     return normalizedTier === _NEKO_IDLE_TIER_CAT1
         ? _getNekoIdleCat1ArtSource(button)
@@ -927,6 +923,10 @@ function _startNekoIdleReturnDragActionForContainer(container) {
         restoreArt: false,
         reason: 'return-ball-drag-active'
     });
+    _cancelNekoIdleCat1StretchAction(button, {
+        restoreArt: false,
+        reason: 'return-ball-drag-active'
+    });
     _cancelNekoIdleCat1PlayAction(button, {
         restoreArt: false,
         reason: 'return-ball-drag-active'
@@ -1023,8 +1023,7 @@ function _getNekoIdleReturnSubactionState(button, profile) {
         lastStepAt: 0,
         facingRight: false,
         targetKind: '',
-        settleTimer: 0,
-        settleToken: 0,
+        compactTopEdgeSettleToken: 0,
         pendingWalkTimer: 0,
         pendingWalkToken: 0,
         pendingWalkDelayMs: 0,
@@ -1061,13 +1060,13 @@ function _getNekoIdleCat1Journey(button) {
 
 function _getNekoIdleCat1ArtSource(button) {
     const profile = _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
+    if (_isNekoIdleCat1StretchActionActive(button)) {
+        return _getNekoIdleCat1StretchAssetUrl();
+    }
     const state = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
     if (!state) return profile.assets.idle();
     if (state.substate === profile.walkingSubstate) {
         return profile.assets.walking();
-    }
-    if (state.substate === profile.finishingSubstate) {
-        return profile.assets.finishing();
     }
     return profile.assets.idle();
 }
@@ -1300,7 +1299,6 @@ function _setNekoIdleCat1Classes(button, state) {
     const targetKind = state && state.targetKind ? state.targetKind : '';
     const onCompactTopEdge = targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE;
     button.classList.toggle(profile.classNames.walking, substate === profile.walkingSubstate);
-    button.classList.toggle(profile.classNames.finishing, substate === profile.finishingSubstate);
     button.classList.toggle(profile.classNames.facingRight, facingRight);
     button.classList.toggle(profile.classNames.paused, paused);
     button.classList.toggle(profile.classNames.compactTopEdge, onCompactTopEdge);
@@ -1360,7 +1358,6 @@ function _setNekoIdleCat1Classes(button, state) {
             container.removeAttribute(profile.dataAttributes.targetKind);
         }
         container.classList.toggle(profile.classNames.walking, substate === profile.walkingSubstate);
-        container.classList.toggle(profile.classNames.finishing, substate === profile.finishingSubstate);
         container.classList.toggle(profile.classNames.paused, paused);
         container.classList.toggle(profile.classNames.compactTopEdge, onCompactTopEdge);
         container.style.setProperty(
@@ -1414,13 +1411,9 @@ function _disconnectNekoIdleCat1Observer(state) {
     }
 }
 
-function _cancelNekoIdleReturnSubactionSettleTimer(state) {
+function _invalidateNekoIdleCat1CompactTopEdgeSettle(state) {
     if (!state) return;
-    if (state.settleTimer) {
-        clearTimeout(state.settleTimer);
-        state.settleTimer = 0;
-    }
-    state.settleToken = (state.settleToken || 0) + 1;
+    state.compactTopEdgeSettleToken = (state.compactTopEdgeSettleToken || 0) + 1;
 }
 
 function _cancelNekoIdleReturnPendingWalk(state) {
@@ -1637,7 +1630,7 @@ function _cancelNekoIdleReturnSubactionState(state, options = {}) {
     _cancelNekoIdleCat1Frame(state);
     _settleNekoIdleCat1CancelledWalkActivity(state, options.reason);
     _cancelNekoIdleCat1SyncFrame(state);
-    _cancelNekoIdleReturnSubactionSettleTimer(state);
+    _invalidateNekoIdleCat1CompactTopEdgeSettle(state);
     _cancelNekoIdleReturnPendingWalk(state);
     _cancelNekoIdleCat1PairMove(state, { reason: options.reason });
     _resetNekoIdleCat1WalkSpeed(state);
@@ -1855,7 +1848,7 @@ function _dropNekoIdleCat1FromCompactTopEdge(button, target, nowMs) {
 
     _clearNekoIdleCat1CompactTopEdgeDropTimers(state);
     _cancelNekoIdleCat1Frame(state);
-    _cancelNekoIdleReturnSubactionSettleTimer(state);
+    _invalidateNekoIdleCat1CompactTopEdgeSettle(state);
     _cancelNekoIdleReturnPendingWalk(state);
     _cancelNekoIdleCat1PairMove(state);
     state.substate = profile.idleSubstate;

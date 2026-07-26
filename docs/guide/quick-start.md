@@ -1,5 +1,7 @@
 # Quick Start
 
+If you are choosing between Steam, a standalone release, and a source checkout, read [Install options](./install-options) first.
+
 Complete [Development Setup](./dev-setup) first.
 
 ## 1. Launch

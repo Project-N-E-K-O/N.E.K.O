@@ -4,9 +4,9 @@ from collections import deque
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
-from main_routers.system_router import proactive_history as sr
-from main_routers.system_router import proactive_sources as sr_sources
-from main_routers.system_router import proactive_parsing as sr_parsing
+from main_logic.proactive_chat import decisions as sr_sources
+from main_logic.proactive_chat import generation as sr_parsing
+from main_logic.proactive_chat import state as sr
 from config.prompts.prompts_proactive import get_proactive_format_sections
 
 

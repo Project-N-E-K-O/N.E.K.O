@@ -40,6 +40,9 @@ async def test_card_assist_uses_agent_model_config_without_watermark(monkeypatch
             self.model_types = []
             self.quota_sources = []
 
+        async def aget_model_api_config(self, model_type, *, core_config=None):
+            return self.get_model_api_config(model_type)
+
         def get_model_api_config(self, model_type):
             self.model_types.append(model_type)
             return {
@@ -94,6 +97,9 @@ async def test_card_assist_quota_exceeded_skips_llm_call(monkeypatch):
     captured = {"ainvoke": 0, "closed": 0}
 
     class FakeConfigManager:
+        async def aget_model_api_config(self, model_type, *, core_config=None):
+            return self.get_model_api_config(model_type)
+
         def get_model_api_config(self, model_type):
             assert model_type == "agent"
             return {

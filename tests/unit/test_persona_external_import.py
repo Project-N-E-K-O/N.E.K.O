@@ -329,6 +329,9 @@ async def test_fusion_llm_client_construction_failure_returns_none():
         async def aget_character_data(self):
             return (None, None, None, None, {}, None, None, None, None)
 
+        async def aget_model_api_config(self, _tier, *, core_config=None):
+            return self.get_model_api_config(_tier)
+
         def get_model_api_config(self, _tier):
             raise RuntimeError("invalid correction model config")
 
@@ -365,6 +368,9 @@ async def test_fusion_llm_close_failure_does_not_mask_result(monkeypatch):
     class _CfgMgr:
         async def aget_character_data(self):
             return (None, None, None, None, {}, None, None, None, None)
+
+        async def aget_model_api_config(self, _tier, *, core_config=None):
+            return self.get_model_api_config(_tier)
 
         def get_model_api_config(self, _tier):
             return {"model": "m", "base_url": "u", "api_key": "k", "provider_type": None}
@@ -478,6 +484,9 @@ async def test_fusion_input_bounds_breadcrumb_prefix(monkeypatch):
         async def aget_character_data(self):
             return (None, None, None, None, {}, None, None, None, None)
 
+        async def aget_model_api_config(self, _tier, *, core_config=None):
+            return self.get_model_api_config(_tier)
+
         def get_model_api_config(self, _tier):
             return {"model": "m", "base_url": "u", "api_key": "k", "provider_type": None}
 
@@ -526,6 +535,9 @@ async def test_fusion_input_exceeding_budget_raises():
     class _CfgMgr:
         async def aget_character_data(self):
             return (None, None, None, None, {}, None, None, None, None)
+
+        async def aget_model_api_config(self, _tier, *, core_config=None):
+            return self.get_model_api_config(_tier)
 
         def get_model_api_config(self, _tier):
             return {"model": "m", "base_url": "u", "api_key": "k", "provider_type": None}

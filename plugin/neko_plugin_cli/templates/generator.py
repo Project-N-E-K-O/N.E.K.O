@@ -472,9 +472,17 @@ dependencies = []
 # Repository support files
 # ---------------------------------------------------------------------------
 
+def _dependency_sync_command(plugin: str) -> str:
+    return (
+        "uv run --with pip python -m plugin.neko_plugin_cli.cli "
+        f"sync {plugin} --clean"
+    )
+
+
 def _render_readme_md(spec: PluginSpec) -> str:
     name = spec.name or spec.plugin_id
     description = spec.description or "Describe what this plugin does and how to configure it."
+    sync_command = _dependency_sync_command(spec.plugin_id)
     return f'''# {name}
 
 {description}
@@ -496,9 +504,14 @@ When publishing to the plugin market, use this GitHub repository name:
 From the N.E.K.O repository root:
 
 ```bash
+{sync_command}
 uv run python -m plugin.neko_plugin_cli.cli check {spec.plugin_id}
 uv run python -m plugin.neko_plugin_cli.cli check -r {spec.plugin_id}
 ```
+
+Python runtime dependencies are declared in `pyproject.toml` and synced into
+`vendor/` for packaging. The generated `vendor/` directory is not committed;
+local builds and CI recreate it before release checks.
 
 ## Market release
 
@@ -542,6 +555,7 @@ def _render_gitignore() -> str:
 .ruff_cache/
 .venv/
 venv/
+vendor/
 dist/
 build/
 *.egg-info/
@@ -562,6 +576,7 @@ def _render_vscode_settings() -> str:
 
 
 def _render_vscode_tasks(spec: PluginSpec) -> str:
+    sync_command = _dependency_sync_command(spec.plugin_id)
     return f'''{{
   "version": "2.0.0",
   "tasks": [
@@ -569,6 +584,15 @@ def _render_vscode_tasks(spec: PluginSpec) -> str:
       "label": "N.E.K.O: check {spec.plugin_id}",
       "type": "shell",
       "command": "uv run python -m plugin.neko_plugin_cli.cli check {spec.plugin_id}",
+      "options": {{
+        "cwd": "${{config:nekoPlugin.repoRoot}}"
+      }},
+      "problemMatcher": []
+    }},
+    {{
+      "label": "N.E.K.O: sync {spec.plugin_id}",
+      "type": "shell",
+      "command": "{sync_command}",
       "options": {{
         "cwd": "${{config:nekoPlugin.repoRoot}}"
       }},
@@ -598,6 +622,7 @@ def _render_vscode_tasks(spec: PluginSpec) -> str:
 
 
 def _render_verify_workflow(spec: PluginSpec) -> str:
+    sync_command = _dependency_sync_command('"${PLUGIN_ID}"')
     return f'''name: Verify N.E.K.O Plugin
 
 on:
@@ -634,6 +659,10 @@ jobs:
           rm -rf "neko/plugin/plugins/${{PLUGIN_ID}}"
           mkdir -p neko/plugin/plugins
           cp -R plugin-repo "neko/plugin/plugins/${{PLUGIN_ID}}"
+
+      - name: Sync plugin dependencies
+        working-directory: neko
+        run: {sync_command}
 
       - name: Release check
         working-directory: neko
@@ -680,6 +709,7 @@ jobs:
 
 
 def _render_release_workflow(spec: PluginSpec) -> str:
+    sync_command = _dependency_sync_command('"${PLUGIN_ID}"')
     return f'''name: Release N.E.K.O Plugin
 
 on:
@@ -720,6 +750,10 @@ jobs:
           rm -rf "neko/plugin/plugins/${{PLUGIN_ID}}"
           mkdir -p neko/plugin/plugins
           cp -R plugin-repo "neko/plugin/plugins/${{PLUGIN_ID}}"
+
+      - name: Sync plugin dependencies
+        working-directory: neko
+        run: {sync_command}
 
       - name: Market release check
         working-directory: neko

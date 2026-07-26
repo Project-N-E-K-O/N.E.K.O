@@ -17,7 +17,7 @@ hero:
       link: /ja/guide/
     - theme: brand
       text: Steamで入手
-      link: https://store.steampowered.com/app/4099310/__NEKO/
+      link: 'https://store.steampowered.com/app/4099310/__NEKO/?utm_source=project-neko.online&utm_medium=referral&utm_campaign=docs_home&utm_content=hero_ja'
     - theme: alt
       text: APIリファレンス
       link: /ja/api/
@@ -29,7 +29,7 @@ features:
   - icon: 🎮
     title: Steamワークショップ & コミュニティ
     details: Steamで配信中。ワークショップでは、キャラクターカード、対応アバター素材、プレビュー、任意の参照音声を共有できます。
-    link: https://store.steampowered.com/app/4099310/__NEKO/
+    link: 'https://store.steampowered.com/app/4099310/__NEKO/?utm_source=project-neko.online&utm_medium=referral&utm_campaign=docs_home&utm_content=feature_ja'
     linkText: Steamで見る
   - icon: 🎙️
     title: オムニモーダル対話

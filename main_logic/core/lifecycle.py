@@ -67,6 +67,17 @@ class LifecycleMixin:
         active = bool(active)
         reason = str(reason or "")[:64]
         was_active = self.is_goodbye_silent()
+        if active and not was_active:
+            self.goodbye_silent_started_monotonic = time.monotonic()
+            self.goodbye_silent_completed_duration = None
+        elif not active and was_active:
+            started_at = float(getattr(self, "goodbye_silent_started_monotonic", 0.0) or 0.0)
+            self.goodbye_silent_completed_duration = (
+                max(0.0, time.monotonic() - started_at)
+                if started_at > 0.0
+                else None
+            )
+            self.goodbye_silent_started_monotonic = 0.0
         self.goodbye_silent = active
         self.goodbye_silent_reason = reason
         self.goodbye_silent_updated_at = time.time()
@@ -74,6 +85,14 @@ class LifecycleMixin:
             self._park_proactive_for_goodbye()
         if was_active != active:
             logger.info("[%s] goodbye_silent=%s reason=%s", self.lanlan_name, active, reason or "-")
+
+    def consume_goodbye_cycle_duration(self) -> float | None:
+        """Return one completed server-observed goodbye duration at most once."""
+        if self.is_goodbye_silent():
+            return None
+        duration = getattr(self, "goodbye_silent_completed_duration", None)
+        self.goodbye_silent_completed_duration = None
+        return duration
 
 
     async def handle_silence_timeout(self, *, expected_session=None):
@@ -913,9 +932,11 @@ class LifecycleMixin:
 
         # 重新读取配置以支持热重载
         # core_api_type 从 realtime 配置获取，支持自定义 realtime API 时自动设为 'local'
-        realtime_config = self._config_manager.get_model_api_config('realtime')
-        # 合并两次同步 IO：core_config 一次 read 即可，avoid 双倍 json.load
+        # 合并两次同步 IO：core_config.json 只 read 一次，realtime 解析复用同一份快照
         core_config_snapshot = await self._config_manager.aget_core_config()
+        realtime_config = await self._config_manager.aget_model_api_config(
+            'realtime', core_config=core_config_snapshot
+        )
         self.core_api_type = realtime_config.get('api_type', '') or core_config_snapshot.get('CORE_API_TYPE', '')
         self.audio_api_key = core_config_snapshot['AUDIO_API_KEY']
 
@@ -968,8 +989,12 @@ class LifecycleMixin:
 
         # 日志输出模型配置（直接从配置读取，避免创建不必要的实例变量）
         _realtime_model = realtime_config.get('model', '')
-        _conversation_model = self._config_manager.get_model_api_config('conversation').get('model', '')
-        _vision_model = self._config_manager.get_model_api_config('vision').get('model', '')
+        _conversation_model = (await self._config_manager.aget_model_api_config(
+            'conversation', core_config=core_config_snapshot
+        )).get('model', '')
+        _vision_model = (await self._config_manager.aget_model_api_config(
+            'vision', core_config=core_config_snapshot
+        )).get('model', '')
         logger.info(f"📌 已重新加载配置: core_api={self.core_api_type}, realtime_model={_realtime_model}, text_model={_conversation_model}, vision_model={_vision_model}, voice_id={self.voice_id}")
         logger.info(f"[语音会话诊断] 配置加载完成 (耗时: {time.time() - diag_start:.2f}秒)")
         return realtime_config, core_config_snapshot
@@ -1210,9 +1235,26 @@ class LifecycleMixin:
         # held at connect time. ``set_tools`` keeps it live for
         # later mutations.
         _initial_tool_defs = self.tool_registry.all()
+
+        # 下面两个分支都会在此刻重读配置并把 base_url 冻进 client（text 分支的
+        # OmniOfflineClient / realtime 分支的连接配置）。prepare_runtime 虽已落定
+        # 过一次，但上面 await 记忆拉取可达数秒——若那次落定是 Steam 兜底或超时
+        # fail-open，权威 IP 结论可能恰在这几秒内落地，这里再给一个收尾窗口，
+        # 让冻结用的快照与最终结论一致。已落定时零开销。
+        await self._config_manager.aensure_region_resolved()
+
         if input_mode == 'text':
-            conversation_config = self._config_manager.get_model_api_config('conversation')
-            vision_config = self._config_manager.get_model_api_config('vision')
+            # 不复用 prepare_runtime 的快照：上面 await 过 /new_dialog 的记忆拉取
+            # （可达数秒），期间用户可能刚在 /core_api 存了新凭证。构造 client 前重新
+            # 读一份**新鲜快照**，conversation 与 vision 都从它解析——两次独立的读会
+            # 让保存恰好落在中间时拿到撕裂的一对（旧 conversation + 新 vision）。
+            _fresh_core_config = await self._config_manager.aget_core_config()
+            conversation_config = await self._config_manager.aget_model_api_config(
+                'conversation', core_config=_fresh_core_config
+            )
+            vision_config = await self._config_manager.aget_model_api_config(
+                'vision', core_config=_fresh_core_config
+            )
             new_session = OmniOfflineClient(
                 base_url=conversation_config['base_url'],
                 api_key=conversation_config['api_key'],
@@ -1255,7 +1297,8 @@ class LifecycleMixin:
             new_session.on_proactive_done = self.handle_proactive_complete
             new_session.on_thinking_active = self._make_thinking_active_callback(new_session)
         else:
-            realtime_config = self._config_manager.get_model_api_config('realtime')
+            # 同上：await 记忆拉取之后必须重读，不复用 prepare_runtime 的快照
+            realtime_config = await self._config_manager.aget_model_api_config('realtime')
             nr_enabled = (await _core_facade.aload_global_conversation_settings()).get('noiseReductionEnabled', True)
             new_session = OmniRealtimeClient(
                 base_url=realtime_config.get('base_url', ''),
@@ -1414,9 +1457,11 @@ class LifecycleMixin:
 
             # 重新读取配置以支持热重载
             # core_api_type 从 realtime 配置获取，支持自定义 realtime API 时自动设为 'local'
-            realtime_config = self._config_manager.get_model_api_config('realtime')
-            # 合并两次同步 IO：core_config 一次 read 即可
+            # 合并两次同步 IO：core_config.json 只 read 一次，realtime 解析复用同一份快照
             core_config_snapshot = await self._config_manager.aget_core_config()
+            realtime_config = await self._config_manager.aget_model_api_config(
+                'realtime', core_config=core_config_snapshot
+            )
             self.core_api_type = realtime_config.get('api_type', '') or core_config_snapshot.get('CORE_API_TYPE', '')
             self.audio_api_key = core_config_snapshot['AUDIO_API_KEY']
 
@@ -1477,8 +1522,15 @@ class LifecycleMixin:
             _pending_tool_defs = self.tool_registry.all()
             if self.input_mode == 'text':
                 # 文本模式：使用 OmniOfflineClient
-                conversation_config = self._config_manager.get_model_api_config('conversation')
-                vision_config = self._config_manager.get_model_api_config('vision')
+                # 与主会话构造点对偶：顶部快照与此处之间隔着角色数据读取等 await，
+                # 故重新读一份新鲜快照，并让 conversation / vision 共用它，避免撕裂
+                _fresh_core_config = await self._config_manager.aget_core_config()
+                conversation_config = await self._config_manager.aget_model_api_config(
+                    'conversation', core_config=_fresh_core_config
+                )
+                vision_config = await self._config_manager.aget_model_api_config(
+                    'vision', core_config=_fresh_core_config
+                )
                 guard_max_length = self._get_text_guard_max_length()
                 self.pending_session = OmniOfflineClient(
                     base_url=conversation_config['base_url'],
@@ -1519,7 +1571,8 @@ class LifecycleMixin:
                 logger.info("🔄 热切换准备: 创建文本模式 OmniOfflineClient")
             else:
                 # 语音模式：使用 OmniRealtimeClient
-                realtime_config = self._config_manager.get_model_api_config('realtime')
+                # 同上：不复用顶部快照
+                realtime_config = await self._config_manager.aget_model_api_config('realtime')
                 nr_enabled = (await _core_facade.aload_global_conversation_settings()).get('noiseReductionEnabled', True)
                 self.pending_session = OmniRealtimeClient(
                     base_url=realtime_config.get('base_url', ''),

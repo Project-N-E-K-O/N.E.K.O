@@ -480,7 +480,7 @@ class PromotionMixin:
         try:
             from utils.llm_client import create_chat_llm_async
             set_call_type("memory_recheck_reflection")
-            api_config = self._config_manager.get_model_api_config('summary')
+            api_config = await self._config_manager.aget_model_api_config('summary')
             from config import LLM_OUTPUT_GUARD_MAX_TOKENS
             llm = await create_chat_llm_async(
                 api_config['model'],

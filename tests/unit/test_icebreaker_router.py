@@ -75,6 +75,9 @@ class _FakeConfigManager:
     def load_characters(self):
         return self._characters
 
+    async def aget_model_api_config(self, model_type, *, core_config=None):
+        return self.get_model_api_config(model_type)
+
     def get_model_api_config(self, model_type):
         assert model_type == "emotion"
         return {

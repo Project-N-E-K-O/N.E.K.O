@@ -21,6 +21,24 @@ function sourceBetween(startMarker, endMarker) {
     return source.slice(start, end);
 }
 
+test('desktop compact chat surface preserves solo small-move capability', () => {
+    let desktopCompactRect = { left: 20, top: 40, width: 408, height: 58 };
+    const context = vm.createContext({
+        _getNekoIdleReactChatExpandedShell: () => null,
+        _getNekoIdleDesktopCompactSurfaceRect: () => desktopCompactRect,
+        _isNekoIdleDesktopChatExpandedRecent: () => false,
+    });
+
+    vm.runInContext(sourceBetween(
+        'function _canNekoIdleCat1MoveSoloWithExpandedChat',
+        'function _getNekoIdleChatMinimizedRect'
+    ), context, { filename: JOURNEY_PATH });
+
+    assert.equal(context._canNekoIdleCat1MoveSoloWithExpandedChat(), true);
+    desktopCompactRect = null;
+    assert.equal(context._canNekoIdleCat1MoveSoloWithExpandedChat(), false);
+});
+
 test('small_move capability check is pure while actual start owns hover preparation', () => {
     let finishCalls = 0;
     let geometryReads = 0;
@@ -41,7 +59,6 @@ test('small_move capability check is pure while actual start owns hover preparat
         pendingWalkTimer: 0,
         pendingWalkReady: false,
         frame: 0,
-        settleTimer: 0,
     };
     const art = {
         __nekoIdleHoverSrc: 'hover.gif',
@@ -107,4 +124,10 @@ test('small_move capability check is pure while actual start owns hover preparat
     art.__nekoIdleHoverTimer = 73;
     assert.equal(context._startNekoIdleCat1PairMove(button, { source: 'cat_mind' }), false);
     assert.equal(finishCalls, 1, 'an existing hover completion timer must not be duplicated');
+
+    art.__nekoIdleHoverSrc = '';
+    art.__nekoIdleHoverTimer = 0;
+    assert.equal(context._canScheduleNekoIdleCat1PairMove(button, state), true,
+        'expanded and compact chat must retain the existing solo cat move capability');
+    assert.ok(geometryReads > 0, 'solo capability must validate the available cat movement space');
 });

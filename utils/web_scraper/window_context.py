@@ -107,7 +107,7 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
         config_manager = ConfigManager()
         
         # 使用summary模型配置
-        summary_config = config_manager.get_model_api_config('summary')
+        summary_config = await config_manager.aget_model_api_config('summary')
         
         from config import LLM_OUTPUT_GUARD_MAX_TOKENS
         llm = await create_chat_llm_async(

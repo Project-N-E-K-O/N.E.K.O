@@ -1227,7 +1227,7 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
     try:
         config_manager = get_config_manager()
         # 复用emotion模型配置
-        emotion_config = config_manager.get_model_api_config('emotion')
+        emotion_config = await config_manager.aget_model_api_config('emotion')
         
         from config.prompts.prompts_sys import (
             _loc, TRANSLATION_WATERMARK_START, TRANSLATION_WATERMARK_END,
@@ -1348,10 +1348,7 @@ class TranslationService:
         additionally keeps construction single-flight.
         """
         try:
-            # 同步 open()+json.load() 的配置读不该跑在共享事件循环上（与
-            # aget_core_config 必须 offload 同一条理由）。
-            config = await asyncio.to_thread(
-                self.config_manager.get_model_api_config, 'emotion')
+            config = await self.config_manager.aget_model_api_config('emotion')
 
             if not config.get('api_key') or not config.get('model') or not config.get('base_url'):
                 logger.warning("翻译服务：API配置不完整（缺少 api_key、model 或 base_url），无法进行翻译")

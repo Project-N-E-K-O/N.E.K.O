@@ -6,7 +6,7 @@ seoSchemaType: WebPage
 
 # Analytics and Cookie Notice
 
-Last updated: July 21, 2026.
+Last updated: July 23, 2026.
 
 This notice applies to the Project N.E.K.O. documentation site at `project-neko.online`.
 
@@ -16,7 +16,7 @@ Google Analytics is not loaded and the site does not send requests to Google Ana
 
 ## If you accept analytics
 
-The site loads Google Analytics 4 using measurement ID `G-N4QZK4PHE3`. It sends page-view events so we can understand which documentation pages are useful and how visitors find the documentation.
+The site loads Google Analytics 4 using measurement ID `G-N4QZK4PHE3`. It sends page-view events so we can understand which documentation pages are useful and how visitors find the documentation. When a visitor selects a link to the N.E.K.O. Steam page, it also sends a `steam_cta_click` event containing the destination URL, link text, CTA placement, page URL, and page title.
 
 Google Analytics may process information such as the page URL and title, referrer, browser and device information, and approximate location. We disable advertising storage, ad user data, ad personalization, Google Signals, and advertising-personalization signals in the site configuration.
 

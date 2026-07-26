@@ -168,7 +168,7 @@ class SynthesisMixin:
 
         try:
             set_call_type("memory_reflection")
-            api_config = self._config_manager.get_model_api_config('summary')
+            api_config = await self._config_manager.aget_model_api_config('summary')
             # timeout: 见 MEMORY_LLM_HARD_TIMEOUT_SECONDS 注释（上游转发
             # 120s hard cap，client 必须 ≤110s）。开 thinking 后输出多字段
             # JSON ontology 比简单分类长，吃满 110 也算合理。LLM 在锁外

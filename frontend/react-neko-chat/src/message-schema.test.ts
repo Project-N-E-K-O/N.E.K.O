@@ -79,6 +79,10 @@ describe('message-schema', () => {
     expect(onChoiceSelect).toHaveBeenCalledWith(props.choicePrompt!.options[0]!, 'new_user_icebreaker');
   });
 
+  it('preserves the cat local text-only presentation flag', () => {
+    expect(parseChatWindowProps({ catLocalTextOnly: true }).catLocalTextOnly).toBe(true);
+  });
+
   it('accepts chat surface mode props', () => {
     const props = parseChatWindowProps({
       chatSurfaceMode: 'compact',

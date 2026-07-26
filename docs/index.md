@@ -17,7 +17,7 @@ hero:
       link: /guide/
     - theme: brand
       text: Get on Steam
-      link: https://store.steampowered.com/app/4099310/__NEKO/
+      link: 'https://store.steampowered.com/app/4099310/__NEKO/?utm_source=project-neko.online&utm_medium=referral&utm_campaign=docs_home&utm_content=hero_en'
     - theme: alt
       text: API Reference
       link: /api/
@@ -29,7 +29,7 @@ features:
   - icon: 🎮
     title: Steam Workshop & Community
     details: Available on Steam with Workshop support for sharing character cards, supported avatar assets, previews, and optional reference voice samples.
-    link: https://store.steampowered.com/app/4099310/__NEKO/
+    link: 'https://store.steampowered.com/app/4099310/__NEKO/?utm_source=project-neko.online&utm_medium=referral&utm_campaign=docs_home&utm_content=feature_en'
     linkText: View on Steam
   - icon: 🎙️
     title: Omni-Modal Dialogue
