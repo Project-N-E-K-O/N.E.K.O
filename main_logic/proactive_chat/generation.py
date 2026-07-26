@@ -1269,6 +1269,7 @@ async def _guard_phase2_output(
                     )
                 )
             )
+        silence_since_before_regen = _proactive_silence_since(mgr)
         try:
             async with asyncio.timeout(20.0):
                 async with (
@@ -1292,6 +1293,29 @@ async def _guard_phase2_output(
                 exc,
             )
             regen_text = ""
+
+        silence_since_after_regen = _proactive_silence_since(mgr)
+        if (
+            silence_since_after_regen is not None
+            and (
+                silence_since_before_regen is None
+                or silence_since_after_regen > silence_since_before_regen
+            )
+        ):
+            active_logger.info(
+                "[%s] proactive regen abandoned after user interaction",
+                lanlan_name,
+            )
+            if not mgr.state.is_proactive_preempted(proactive_sid):
+                await mgr.handle_new_message()
+            return _output(
+                result=ProactiveChatResult(
+                    body=_proactive_pass_body(
+                        PROACTIVE_REASON_DELIVERY_PREEMPTED,
+                        message="主动搭话改写期间用户已互动，取消投递",
+                    )
+                )
+            )
 
         cleaned = (regen_text or "").strip()
         regen_source_tag = ""

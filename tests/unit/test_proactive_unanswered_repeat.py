@@ -10,7 +10,10 @@ import pytest
 
 import memory.anti_repeat as anti_repeat_module
 from config import ANTI_REPEAT_INJECT_TOP_K
-from main_logic.proactive_chat.contracts import PROACTIVE_REASON_PASS_DUPLICATE
+from main_logic.proactive_chat.contracts import (
+    PROACTIVE_REASON_DELIVERY_PREEMPTED,
+    PROACTIVE_REASON_PASS_DUPLICATE,
+)
 from main_logic.proactive_chat.generation import (
     _guard_phase2_output,
     _merge_regen_avoid_terms,
@@ -530,8 +533,10 @@ async def test_regenerated_fresh_music_recomputes_text_exemption(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_regenerated_score_refreshes_silence_cutoff(monkeypatch):
-    """Engagement during the rewrite invalidates the old unanswered window."""
+async def test_regenerated_delivery_aborts_when_engagement_cutoff_advances(
+    monkeypatch,
+):
+    """Engagement during the rewrite cancels the now-stale delivery."""
     initial_signal = anti_repeat_module.UnansweredProactiveRepeatSignal(
         triggered=True,
         match_count=2,
@@ -599,13 +604,18 @@ async def test_regenerated_score_refreshes_silence_cutoff(monkeypatch):
         master_name="博士",
     )
 
-    silence_cutoffs = [
-        call.kwargs["silence_since"]
-        for call in corpus.score_unanswered_proactive_draft.call_args_list
-    ]
-    assert silence_cutoffs == [100.0, 250.0]
-    mgr.handle_new_message.assert_not_awaited()
-    assert output.result is None
+    corpus.score_unanswered_proactive_draft.assert_called_once()
+    assert (
+        corpus.score_unanswered_proactive_draft.call_args.kwargs["silence_since"]
+        == 100.0
+    )
+    mgr.handle_new_message.assert_awaited_once_with()
+    assert output.result is not None
+    assert output.result.body["action"] == "pass"
+    assert (
+        output.result.body["reason_code"]
+        == PROACTIVE_REASON_DELIVERY_PREEMPTED
+    )
 
 
 @pytest.mark.asyncio
