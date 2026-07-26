@@ -687,7 +687,7 @@ async def test_one_shot_user_image_records_engagement(
     monkeypatch,
     input_type,
 ):
-    """Accepted one-shot user images reset unanswered proactive evidence."""
+    """Accepted user images preserve arrival time across asynchronous staging."""
     mgr = _make_manager()
     mgr.session = object.__new__(core_module.OmniOfflineClient)
     mgr.session.stream_image = AsyncMock()
@@ -695,8 +695,14 @@ async def test_one_shot_user_image_records_engagement(
     mgr._starting_session_count = 0
     mgr._session_start_circuit_open = False
     mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
-    monkeypatch.setattr(core_module, "process_screen_data", AsyncMock(return_value="img-b64"))
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    clock = {"now": FIXED_TS}
+
+    async def _process_after_clock_advance(_data):
+        clock["now"] = FIXED_TS + 50.0
+        return "img-b64"
+
+    monkeypatch.setattr(core_module, "process_screen_data", _process_after_clock_advance)
+    monkeypatch.setattr(core_module.time, "time", lambda: clock["now"])
 
     await core_module.LLMSessionManager._process_stream_data_internal(
         mgr,

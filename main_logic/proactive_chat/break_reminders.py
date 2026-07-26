@@ -18,14 +18,17 @@
 import asyncio
 
 from config import (
+    ANTI_REPEAT_INJECT_TOP_K,
     PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
 )
 from config import (
     PROACTIVE_PHASE2_OUTPUT_MAX_TOKENS as PHASE2_OUTPUT_MAX_TOKENS,
 )
+from config.prompts.prompts_activity import BREAK_REMINDER_REGEN_INSTRUCTION
 from config.prompts.prompts_proactive import BEGIN_GENERATE
 from config.prompts.prompts_sys import _loc
 from main_logic.proactive_chat.state import _record_proactive_chat
+from memory.anti_repeat import get_anti_repeat_corpus
 from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
 from utils.logger_config import get_module_logger
 from utils.tokenize import count_tokens
@@ -72,6 +75,43 @@ def _resolve_break_reminder_label(
     if label:
         return label
     return fallback_table.get(lang, fallback_table.get("en", ""))
+
+
+def _render_break_reminder_regen_instruction(
+    repeated_terms: tuple[str, ...],
+    lang: str,
+) -> str:
+    """Render a bounded rewrite request for a repeatedly ignored reminder."""
+    template = BREAK_REMINDER_REGEN_INSTRUCTION.get(
+        lang,
+        BREAK_REMINDER_REGEN_INSTRUCTION["en"],
+    )
+    terms = ", ".join(repeated_terms[:ANTI_REPEAT_INJECT_TOP_K])
+    return template.format(terms=terms)
+
+
+def _score_unanswered_break_reminder(
+    *,
+    corpus,
+    lanlan_name: str,
+    text: str,
+    mgr,
+):
+    """Best-effort long-window score for a direct break-reminder draft."""
+    try:
+        from main_logic.proactive_chat.generation import _proactive_silence_since
+
+        return corpus.score_unanswered_proactive_draft(
+            lanlan_name,
+            text,
+            silence_since=_proactive_silence_since(mgr),
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug(
+            "[AntiRepeat] break-reminder unanswered score skipped: %s",
+            exc,
+        )
+        return None
 
 
 def _render_work_break_prompt(
@@ -317,17 +357,9 @@ async def _deliver_break_reminder_via_llm(
                             aborted = True
                             break
                         full_text += safe_text
-                        await mgr.feed_tts_chunk(
-                            safe_text,
-                            expected_speech_id=proactive_sid,
-                        )
         # Flush remaining pass_probe (if it doesn't itself contain [PASS]).
         if not aborted and pass_probe and "[PASS]" not in pass_probe.upper():
             full_text += pass_probe
-            await mgr.feed_tts_chunk(
-                pass_probe,
-                expected_speech_id=proactive_sid,
-            )
     except (asyncio.TimeoutError, Exception) as exc:
         logger.warning(
             "[%s] break reminder LLM stream failed (channel=%s): %s: %s",
@@ -344,6 +376,94 @@ async def _deliver_break_reminder_via_llm(
         return None, None
 
     text = full_text.strip()
+    anti_repeat_corpus = None
+    unanswered_repeat_signal = None
+    try:
+        anti_repeat_corpus = get_anti_repeat_corpus()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("[AntiRepeat] break-reminder corpus unavailable: %s", exc)
+    if anti_repeat_corpus is not None:
+        unanswered_repeat_signal = _score_unanswered_break_reminder(
+            corpus=anti_repeat_corpus,
+            lanlan_name=lanlan_name,
+            text=text,
+            mgr=mgr,
+        )
+
+    if (
+        unanswered_repeat_signal is not None
+        and unanswered_repeat_signal.triggered
+    ):
+        instruction = _render_break_reminder_regen_instruction(
+            unanswered_repeat_signal.repeated_terms,
+            lang,
+        )
+        regen_messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=f"{instruction}\n\n{begin_text}"),
+        ]
+        if mgr.state.is_proactive_preempted(proactive_sid):
+            return None, None
+        regen_text = ""
+        try:
+            async with asyncio.timeout(20.0):
+                async with await create_chat_llm_async(
+                    correction_model,
+                    correction_base_url,
+                    correction_api_key,
+                    provider_type=correction_provider_type,
+                    temperature=1.0,
+                    max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
+                    timeout=timeout_seconds,
+                ) as regen_llm:
+                    regen_response = await regen_llm.ainvoke(regen_messages)
+                    regen_text = (
+                        regen_response.content
+                        if hasattr(regen_response, "content")
+                        else ""
+                    ) or ""
+        except Exception as exc:
+            logger.warning(
+                "[%s] break reminder regen failed (channel=%s): %s",
+                lanlan_name,
+                channel,
+                exc,
+            )
+
+        if mgr.state.is_proactive_preempted(proactive_sid):
+            return None, None
+        cleaned = regen_text.strip()
+        if (
+            not cleaned
+            or "[PASS]" in cleaned.upper()
+            or count_tokens(cleaned) > PHASE2_OUTPUT_MAX_TOKENS
+        ):
+            if not mgr.state.is_proactive_preempted(proactive_sid):
+                await mgr.handle_new_message()
+            return None, None
+
+        regen_signal = _score_unanswered_break_reminder(
+            corpus=anti_repeat_corpus,
+            lanlan_name=lanlan_name,
+            text=cleaned,
+            mgr=mgr,
+        )
+        if regen_signal is not None and regen_signal.triggered:
+            logger.info(
+                "[%s] break reminder regen still repeats unanswered content; drop",
+                lanlan_name,
+            )
+            if not mgr.state.is_proactive_preempted(proactive_sid):
+                await mgr.handle_new_message()
+            return None, None
+        text = cleaned
+
+    # Withhold TTS until all repeat checks finish; otherwise a rejected initial
+    # draft can already be audible while the long-window guard is still running.
+    await mgr.feed_tts_chunk(
+        text,
+        expected_speech_id=proactive_sid,
+    )
     committed = await mgr.finish_proactive_delivery(
         text,
         expected_speech_id=proactive_sid,

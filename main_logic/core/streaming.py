@@ -668,6 +668,11 @@ class StreamingMixin:
                 try:
                     if self._should_drop_magic_command_image(message.get("request_id")):
                         return
+                    image_arrival_time = (
+                        time.time()
+                        if input_type in {"avatar_drop_image", "user_image"}
+                        else None
+                    )
                     # 使用统一的图像工具处理数据（只验证，不缩放）
                     image_b64 = await _core_facade.process_screen_data(data)
 
@@ -726,9 +731,9 @@ class StreamingMixin:
                             image_accepted = True
                         if (
                             image_accepted
-                            and input_type in {"avatar_drop_image", "user_image"}
+                            and image_arrival_time is not None
                         ):
-                            self.note_user_engagement()
+                            self.note_user_engagement(at=image_arrival_time)
                     else:
                         logger.error("💥 Stream: 图像数据验证失败")
                         return

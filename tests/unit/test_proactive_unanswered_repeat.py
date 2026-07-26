@@ -42,6 +42,21 @@ class _FakeRegenLlm:
         return SimpleNamespace(content=self.content)
 
 
+class _FakeStreamingLlm:
+    def __init__(self, *chunks: str):
+        self.chunks = chunks
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    async def astream(self, _messages):
+        for chunk in self.chunks:
+            yield SimpleNamespace(content=chunk)
+
+
 def test_proactive_silence_since_uses_latest_engagement_signal():
     mgr = SimpleNamespace(
         last_user_message_time=200.0,
@@ -75,6 +90,106 @@ def test_merge_regen_avoid_terms_preserves_both_repeat_signals():
     ]
     assert merged == expected[:ANTI_REPEAT_INJECT_TOP_K]
     assert len(merged) == min(ANTI_REPEAT_INJECT_TOP_K, len(expected))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("regen_still_repeats", [False, True])
+async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
+    monkeypatch,
+    regen_still_repeats,
+):
+    from main_logic.proactive_chat import break_reminders
+
+    initial_text = "记得起来喝水休息一下。"
+    regenerated_text = "先望望远处，让眼睛放松一会儿吧。"
+    make_llm = AsyncMock(
+        side_effect=[
+            _FakeStreamingLlm(initial_text),
+            _FakeRegenLlm(regenerated_text),
+        ]
+    )
+    monkeypatch.setattr(break_reminders, "create_chat_llm_async", make_llm)
+    monkeypatch.setattr(
+        break_reminders,
+        "_record_proactive_chat",
+        MagicMock(),
+    )
+
+    first_signal = anti_repeat_module.UnansweredProactiveRepeatSignal(
+        triggered=True,
+        match_count=2,
+        considered_count=2,
+        best_similarity=0.92,
+        repeated_terms=("喝水休息",),
+    )
+    regen_signal = anti_repeat_module.UnansweredProactiveRepeatSignal(
+        triggered=regen_still_repeats,
+        match_count=2 if regen_still_repeats else 0,
+        considered_count=2,
+        best_similarity=0.91 if regen_still_repeats else 0.1,
+    )
+    corpus = MagicMock()
+    corpus.score_unanswered_proactive_draft.side_effect = [
+        first_signal,
+        regen_signal,
+    ]
+    monkeypatch.setattr(
+        break_reminders,
+        "get_anti_repeat_corpus",
+        lambda: corpus,
+    )
+
+    state = SimpleNamespace(
+        fire=AsyncMock(),
+        is_proactive_preempted=MagicMock(return_value=False),
+    )
+    mgr = SimpleNamespace(
+        prepare_proactive_delivery=AsyncMock(return_value=True),
+        current_speech_id="break-sid",
+        state=state,
+        feed_tts_chunk=AsyncMock(),
+        finish_proactive_delivery=AsyncMock(return_value=True),
+        handle_new_message=AsyncMock(),
+        proactive_engagement_observation_started_at=100.0,
+        last_user_message_time=None,
+        last_user_engagement_time=None,
+    )
+    config_manager = SimpleNamespace(
+        aget_model_api_config=AsyncMock(
+            return_value={
+                "model": "fake-model",
+                "base_url": "http://127.0.0.1:9/v1",
+                "api_key": "fake-key",
+                "provider_type": "openai_compatible",
+            }
+        )
+    )
+
+    result = await break_reminders._deliver_break_reminder_via_llm(
+        lanlan_name="Neko",
+        mgr=mgr,
+        config_manager=config_manager,
+        system_prompt="Generate one concise water-break reminder.",
+        channel="work_break",
+        lang="en",
+    )
+
+    assert corpus.score_unanswered_proactive_draft.call_count == 2
+    if regen_still_repeats:
+        assert result == (None, None)
+        mgr.feed_tts_chunk.assert_not_awaited()
+        mgr.finish_proactive_delivery.assert_not_awaited()
+        mgr.handle_new_message.assert_awaited_once_with()
+    else:
+        assert result == (regenerated_text, "break-sid")
+        mgr.feed_tts_chunk.assert_awaited_once_with(
+            regenerated_text,
+            expected_speech_id="break-sid",
+        )
+        mgr.finish_proactive_delivery.assert_awaited_once_with(
+            regenerated_text,
+            expected_speech_id="break-sid",
+        )
 
 
 @pytest.mark.asyncio
