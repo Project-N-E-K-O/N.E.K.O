@@ -978,10 +978,12 @@ async def test_abandon_external_voice_turn_does_not_release_newer_pause():
 
 
 @pytest.mark.asyncio
-async def test_external_text_enqueue_resumes_dispatch_without_clearing_newer_pause():
+async def test_old_external_text_turn_rearms_newer_pause_after_dispatch():
     arbiter = None
+    sent = []
 
     async def send(event):
+        sent.append(dict(event))
         if event["type"] == "conversation.item.create":
             arbiter.notify_item_created(
                 {"item": {"id": event["item"]["id"], "role": "user"}}
@@ -996,13 +998,23 @@ async def test_external_text_enqueue_resumes_dispatch_without_clearing_newer_pau
     client._response_arbiter = arbiter
     client._external_voice_turn_pause_id = "turn-new"
     arbiter.pause_dispatch()
+    proactive = await arbiter.enqueue(source="proactive")
 
     ticket = await client.submit_external_text_turn("hello", turn_id="turn-old")
     await ticket.done
 
     assert client._external_voice_turn_pause_id == "turn-new"
-    assert arbiter._dispatch_allowed.is_set()
-    client.abandon_external_voice_turn()
+    assert not arbiter._dispatch_allowed.is_set()
+    assert proactive.sent.done() is False
+    assert [event["type"] for event in sent] == [
+        "conversation.item.create",
+        "response.create",
+    ]
+
+    client.abandon_external_voice_turn("turn-new")
+
+    await proactive.done
+    assert sent[-1]["type"] == "response.create"
     await arbiter.shutdown()
 
 

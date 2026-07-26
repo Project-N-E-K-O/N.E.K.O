@@ -432,6 +432,62 @@ async def test_scoped_detector_events_bind_before_logical_complete() -> None:
     complete = events[-1]
     assert isinstance(complete, DetectorTurnEvent)
     assert complete.bound_turn.turn_token == turn_token
+    assert not detector._bound_turns
+    await lease.release()
+    await detector.close()
+
+
+async def test_late_candidate_binding_retires_deferred_completion() -> None:
+    events: list[DetectorActivityEvent | DetectorTurnEvent] = []
+    candidate = None
+    turn_token = VoiceTurnToken(_ingress_token(), turn_id=8)
+
+    async def on_event(event) -> None:
+        nonlocal candidate
+        events.append(event)
+        if (
+            isinstance(event, DetectorActivityEvent)
+            and event.activity is SpeechActivityEvent.SPEECH_STARTED
+        ):
+            candidate = event.candidate
+
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(
+            (
+                SpeechActivityEvent.SPEECH_STARTED,
+                SpeechActivityEvent.CANDIDATE_PAUSE,
+            )
+        ),
+        provider_policy=_smart_turn_policy(),
+        coordinator=_SemanticCoordinator(),
+        on_event=on_event,
+    )
+    lease = await detector.prepare_endpointing(turn_token)
+    assert lease is not None
+
+    submitted = await detector.submit_audio(
+        b"\x01\x00" * 160,
+        ingress_token=_ingress_token(),
+        sample_rate_hz=16_000,
+        speech_probability=0.9,
+        rnnoise_available=True,
+    )
+    assert submitted.status is DetectorSubmitStatus.ACCEPTED
+    for _ in range(100):
+        if candidate is not None and candidate in detector._deferred_completions:
+            break
+        await asyncio.sleep(0.001)
+
+    assert candidate is not None
+    assert candidate in detector._deferred_completions
+    bound = await detector.bind_candidate(candidate, turn_token)
+
+    assert bound is not None
+    assert bound.turn_token == turn_token
+    assert candidate not in detector._bound_turns
+    assert candidate not in detector._deferred_completions
+    assert sum(isinstance(event, DetectorTurnEvent) for event in events) == 1
     await lease.release()
     await detector.close()
 
@@ -476,7 +532,7 @@ async def test_deferred_completion_retires_candidate_before_third_turn() -> None
     await detector.feed(b"\x02\x00" * 160)
     deferred_candidate = candidates[1]
     assert detector._candidate_generation == 1
-    assert deferred_candidate in detector._bound_turns
+    assert deferred_candidate not in detector._bound_turns
 
     await detector.release_deferred_turn()
     assert detector._candidate_generation == 2

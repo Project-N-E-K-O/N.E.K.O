@@ -245,11 +245,22 @@ class _ResponseMixin:
             priority=0,
         )
         # Speech-start pauses dispatch. Resume only after this priority-0 user
-        # turn is present, so queued proactive work cannot win the race.
-        if getattr(self, "_external_voice_turn_pause_id", None) == stable_turn_id:
+        # turn is present, so queued proactive work cannot win the race. An
+        # older completed turn may still be ahead of a newer paused turn in
+        # the serial transcript dispatcher; let that ticket through, then
+        # restore the newer pause before lower-priority work can run.
+        active_pause_id = getattr(self, "_external_voice_turn_pause_id", None)
+        if active_pause_id == stable_turn_id:
             self._external_voice_turn_pause_id = None
         arbiter.resume_dispatch()
         await ticket.sent
+        if (
+            active_pause_id is not None
+            and active_pause_id != stable_turn_id
+            and getattr(self, "_external_voice_turn_pause_id", None)
+            == active_pause_id
+        ):
+            arbiter.pause_dispatch()
         return ticket
 
     async def prepare_external_voice_turn(self, *, turn_id: str) -> None:

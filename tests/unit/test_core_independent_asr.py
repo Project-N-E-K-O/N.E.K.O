@@ -3014,6 +3014,145 @@ async def test_reconnected_start_callback_survives_abort_start_generation_change
     sessions[1].close.assert_not_awaited()
 
 
+async def test_restart_closes_not_ready_session_before_replacement() -> None:
+    runtime = _Runtime()
+    events: list[str] = []
+
+    async def close_old() -> None:
+        events.append("old.close")
+
+    async def connect_new() -> None:
+        events.append("new.connect")
+
+    old_session = SimpleNamespace(
+        is_ready=False,
+        close=AsyncMock(side_effect=close_old),
+    )
+    candidate = SimpleNamespace(
+        is_ready=True,
+        connect=AsyncMock(side_effect=connect_new),
+        close=AsyncMock(),
+    )
+    runtime._asr_session = old_session
+    _install_ready_lifecycle(runtime, "qwen")
+    runtime._asr_session_factory = MagicMock(return_value=candidate)
+    runtime._asr_transport_selection = _selection("qwen")
+
+    await runtime._restart_transport(max_attempts=1)
+
+    assert events == ["old.close", "new.connect"]
+    old_session.close.assert_awaited_once_with()
+    candidate.connect.assert_awaited_once_with()
+    candidate.close.assert_not_awaited()
+    assert runtime._asr_session is candidate
+
+
+async def test_not_ready_close_cannot_overwrite_replacement_generation() -> None:
+    runtime = _Runtime()
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+
+    async def close_old() -> None:
+        close_started.set()
+        await release_close.wait()
+
+    old_session = SimpleNamespace(
+        is_ready=False,
+        close=AsyncMock(side_effect=close_old),
+    )
+    old_factory = MagicMock()
+    runtime._asr_session = old_session
+    _install_ready_lifecycle(runtime, "qwen")
+    runtime._asr_session_factory = old_factory
+    runtime._asr_transport_selection = _selection("qwen")
+
+    restarting = asyncio.create_task(runtime._restart_transport(max_attempts=1))
+    await asyncio.wait_for(close_started.wait(), 1)
+    assert runtime._asr_session is None
+
+    new_session, new_lifecycle, new_detector = _install_replacement_runtime_generation(
+        runtime, "qwen"
+    )
+    new_factory = object()
+    new_selection = object()
+    runtime._asr_session_factory = new_factory
+    runtime._asr_transport_selection = new_selection
+    release_close.set()
+    await asyncio.wait_for(restarting, 1)
+
+    old_session.close.assert_awaited_once_with()
+    old_factory.assert_not_called()
+    assert runtime._asr_session is new_session
+    assert runtime._asr_lifecycle is new_lifecycle
+    assert runtime._asr_detector is new_detector
+    assert runtime._asr_session_factory is new_factory
+    assert runtime._asr_transport_selection is new_selection
+    new_session.close.assert_not_awaited()
+
+
+async def test_adopted_restart_cancellation_fails_closed_and_propagates(
+    monkeypatch,
+) -> None:
+    runtime, sessions, _callbacks, detector = (
+        await _start_runtime_with_callback_candidates(monkeypatch)
+    )
+    component = runtime._asr_runtime
+    lifecycle = component._asr_lifecycle
+    assert lifecycle is not None
+    started_epoch = component._asr_session_epoch
+    on_failure = AsyncMock(side_effect=component._callbacks.on_failure)
+    component._callbacks = replace(component._callbacks, on_failure=on_failure)
+
+    await component._close_transport_only()
+    lifecycle.transition(VoiceLifecycleEvent.SOFT_WAKE)
+    component._asr_pending_speech_confirmed = True
+    component._asr_current_ingress_token = runtime._capture_ingress_token()
+    prepare_started = asyncio.Event()
+    keep_preparing = asyncio.Event()
+
+    async def block_prepare(_epoch: int) -> None:
+        prepare_started.set()
+        await keep_preparing.wait()
+
+    component._prepare_independent_asr_turn = AsyncMock(side_effect=block_prepare)
+    restarting = asyncio.create_task(component._restart_transport(max_attempts=3))
+    await asyncio.wait_for(prepare_started.wait(), 1)
+    assert component._asr_session is sessions[1]
+
+    restarting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await restarting
+    while component._asr_close_tasks:
+        await asyncio.gather(
+            *tuple(component._asr_close_tasks),
+            return_exceptions=True,
+        )
+
+    on_failure.assert_awaited_once()
+    failure = on_failure.await_args.args[0]
+    assert failure.code == "ASR_INDEPENDENT_FAILED"
+    assert failure.session_epoch == started_epoch + 1
+    sessions[1].close.assert_awaited_once_with()
+    detector.close.assert_awaited_once_with()
+    assert component._asr_session is None
+    assert component._asr_lifecycle is None
+    assert component._asr_detector is None
+    assert component._asr_session_factory is None
+    assert component._asr_transport_selection is None
+    assert component._asr_session_epoch == started_epoch + 1
+    assert runtime._asr_route_mode == "blocked"
+    statuses = [
+        json.loads(call.args[0]) for call in runtime.send_status.await_args_list
+    ]
+    assert {
+        "code": "ASR_INDEPENDENT_FAILED",
+        "details": {
+            "provider": "qwen",
+            "session_epoch": started_epoch + 1,
+        },
+    } in statuses
+
+
 async def test_adopted_restart_exception_fails_closed_without_retry(
     monkeypatch,
 ) -> None:

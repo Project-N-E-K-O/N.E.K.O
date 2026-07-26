@@ -1595,6 +1595,13 @@ class IndependentAsrRuntime:
             existing = self._asr_session
             if existing is not None and getattr(existing, "is_ready", True):
                 return
+            if existing is not None:
+                self._asr_session = None
+                detached_identity = self._capture_runtime_identity()
+                await self._close_asr_session(existing)
+                if not self._runtime_identity_matches(detached_identity):
+                    return
+            lifecycle = self._asr_lifecycle
             factory = self._asr_session_factory
             selection = self._asr_transport_selection
             identity = self._capture_runtime_identity()
@@ -1686,7 +1693,15 @@ class IndependentAsrRuntime:
                             return
                     return
                 except asyncio.CancelledError:
-                    if candidate is not None:
+                    if candidate is not None and self._asr_session is candidate:
+                        adopted_identity = self._capture_runtime_identity()
+                        await self._handle_independent_asr_error(
+                            adopted_identity.session_epoch,
+                            adopted_identity.provider or "unknown",
+                            status_code="ASR_INDEPENDENT_FAILED",
+                            expected_identity=adopted_identity,
+                        )
+                    elif candidate is not None:
                         await candidate.close()
                     raise
                 except Exception:

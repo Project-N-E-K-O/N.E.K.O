@@ -28,5 +28,8 @@ def test_nuitka_workflows_prepare_bundle_and_verify_voice_turn_assets():
         assert "--include-data-dir=data/vad_models=data/vad_models" in workflow
         assert "hashFiles('data/vad_models/manifest.json')" in workflow
 
-    assert '"$NEKO_NUITKA_RUNTIME_DIR"/data/vad_models --offline' in desktop_workflow
+    assert (
+        '--asset-dir "$NEKO_NUITKA_RUNTIME_DIR"/data/vad_models --offline'
+        in desktop_workflow
+    )
     assert "--asset-dir dist/Xiao8/data/vad_models --offline" in linux_workflow

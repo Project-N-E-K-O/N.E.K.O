@@ -114,6 +114,11 @@ def _step_provider_item_key(
         return None
     # Some Step deployments use a distinct transcription item ID. Preserve
     # FIFO fallback for those events after preferring an exact audio item ID.
+    # Once a pending audio turn has timed out, however, the protocol exposes
+    # no correlation field that can link a late distinct transcription ID to
+    # that evicted turn. Such a late event is inherently ambiguous and may
+    # consume the next FIFO entry; do not invent a heuristic association.
+    # Exact audio IDs remain fail-closed through finalized_item_ids above.
     key, _ = state.pending_provider_turns.popleft()
     state.transcription_item_keys[item_id] = key
     return key
