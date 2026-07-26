@@ -186,6 +186,20 @@ def _validate_icebreaker_local_mutation(request: Request, data: dict) -> Any:
     )
 
 
+def _note_icebreaker_user_engagement(mgr: Any, lanlan_name: str) -> None:
+    note_engagement = getattr(mgr, "note_user_engagement", None)
+    if not callable(note_engagement):
+        return
+    try:
+        note_engagement()
+    except Exception:
+        logger.debug(
+            "icebreaker engagement record failed lanlan=%s",
+            lanlan_name,
+            exc_info=True,
+        )
+
+
 async def _speak_icebreaker_line_via_project_tts(
     mgr: Any,
     line: str,
@@ -331,6 +345,11 @@ async def icebreaker_context(request: Request):
     mgr = get_session_manager().get(lanlan_name)
     if not mgr:
         return {"ok": False, "reason": "no_session_manager", "lanlan_name": lanlan_name}
+
+    if role == "user":
+        # The input is valid for the active tutorial route even if a downstream
+        # context or memory write later fails.
+        _note_icebreaker_user_engagement(mgr, lanlan_name)
 
     append_context = getattr(mgr, "append_context", None)
     try:
@@ -582,6 +601,18 @@ async def icebreaker_choice(request: Request):
             "source": ICEBREAKER_SOURCE,
         }
     result.setdefault("source", ICEBREAKER_SOURCE)
+    if result.get("ok"):
+        try:
+            mgr = get_session_manager().get(lanlan_name)
+        except Exception:
+            logger.debug(
+                "icebreaker choice manager lookup failed lanlan=%s",
+                lanlan_name,
+                exc_info=True,
+            )
+        else:
+            if mgr is not None:
+                _note_icebreaker_user_engagement(mgr, lanlan_name)
     return result
 
 

@@ -45,6 +45,7 @@ class _FakeAppendContextManager:
     def __init__(self, result=None, error=None, speech_error=None):
         self.calls = []
         self.spoken = []
+        self.engagement_calls = 0
         self.language_updates = []
         self.user_language = "zh-CN"
         self.result = result or SimpleNamespace(appended=True, deduped=False, reason=None)
@@ -54,6 +55,9 @@ class _FakeAppendContextManager:
     def set_user_language(self, language):
         self.language_updates.append(language)
         self.user_language = language
+
+    def note_user_engagement(self):
+        self.engagement_calls += 1
 
     async def append_context(self, **kwargs):
         self.calls.append(kwargs)
@@ -203,6 +207,7 @@ async def test_icebreaker_context_endpoint_appends_session_history(monkeypatch):
         "role": "assistant",
         "text": "教程看完啦？",
     }]
+    assert mgr.engagement_calls == 0
 
 
 @pytest.mark.asyncio
@@ -236,6 +241,41 @@ async def test_icebreaker_context_caches_user_choice_to_recent_memory(monkeypatc
         "role": "user",
         "text": "可以，多陪一会儿",
     }]
+    assert mgr.engagement_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_icebreaker_choice_records_user_engagement(monkeypatch):
+    mgr = _FakeAppendContextManager()
+
+    monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+    monkeypatch.setattr(
+        icebreaker_router,
+        "record_tutorial_choice",
+        lambda payload: {
+            "ok": True,
+            "lanlan_name": payload["lanlan_name"],
+            "day": payload["day"],
+        },
+    )
+    icebreaker_route_state.activate_icebreaker_route("Lan", "icebreaker-day1-test")
+
+    result = await icebreaker_router.icebreaker_choice(
+        _FakeRequest(
+            {
+                "lanlan_name": "Lan",
+                "session_id": "icebreaker-day1-test",
+                "day": "day1",
+                "node_id": "welcome",
+                "choice": "stay",
+            },
+            path="/api/icebreaker/choice",
+        )
+    )
+
+    assert result["ok"] is True
+    assert mgr.engagement_calls == 1
 
 
 @pytest.mark.asyncio

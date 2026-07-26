@@ -503,3 +503,85 @@ async def test_mini_game_button_response_records_user_engagement(monkeypatch):
     assert response.status_code == 200
     mgr.note_user_engagement.assert_called_once_with()
     push_resolved.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("pending_session_id", "choice_result"),
+    [
+        ("newer-invite-session", {"action": "later"}),
+        ("invite-session", {"action": "ignored", "reason": "no pending invite"}),
+    ],
+)
+async def test_rejected_mini_game_button_response_records_user_engagement(
+    monkeypatch,
+    pending_session_id,
+    choice_result,
+):
+    """A valid stale or ignored button click still resets silence evidence."""
+    import importlib
+
+    router_module = importlib.import_module(
+        "main_routers.system_router.mini_game_invite"
+    )
+    monkeypatch.setattr(
+        router_module,
+        "_read_json_object",
+        AsyncMock(
+            return_value={
+                "lanlan_name": "button-engagement-test",
+                "choice": "later",
+                "session_id": "invite-session",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        router_module,
+        "_validate_local_mutation_request",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        router_module,
+        "get_config_manager",
+        lambda: SimpleNamespace(
+            aget_character_data=AsyncMock(
+                return_value=(
+                    None,
+                    "fallback",
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            )
+        ),
+    )
+    monkeypatch.setitem(
+        router_module._mini_game_invite_state,
+        "button-engagement-test",
+        {"pending_session_id": pending_session_id},
+    )
+    apply_choice = MagicMock(return_value=choice_result)
+    monkeypatch.setattr(
+        router_module,
+        "_apply_mini_game_invite_choice",
+        apply_choice,
+    )
+    mgr = SimpleNamespace(note_user_engagement=MagicMock())
+    monkeypatch.setattr(
+        router_module,
+        "get_session_manager",
+        lambda: SimpleNamespace(get=lambda _name: mgr),
+    )
+
+    response = await router_module.mini_game_invite_respond(object())
+
+    assert response.status_code == 200
+    mgr.note_user_engagement.assert_called_once_with()
+    if pending_session_id == "invite-session":
+        apply_choice.assert_called_once()
+    else:
+        apply_choice.assert_not_called()
