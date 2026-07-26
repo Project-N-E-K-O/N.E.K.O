@@ -17,7 +17,18 @@ class QQRuntimeOpsService:
         housekeeping = getattr(self.plugin, "_session_housekeeping_task", None)
         if housekeeping is None or housekeeping.done():
             # 交互式 stop 会取消 housekeeping；重启必须把它拉起来，否则
-            # idle flush/attention decay 全部停摆直到进程重启。
+            # idle flush/attention decay 全部停摆直到进程重启。覆盖引用前
+            # 先读取旧任务的异常，避免"exception never retrieved"且让
+            # 失败可观测。
+            if housekeeping is not None and housekeeping.done():
+                if housekeeping.cancelled():
+                    pass
+                else:
+                    exc = housekeeping.exception()
+                    if exc is not None:
+                        self.plugin.logger.error(
+                            f"housekeeping 循环曾异常退出: {exc}"
+                        )
             self.plugin._session_housekeeping_task = asyncio.create_task(
                 self.plugin._session_housekeeping_loop()
             )
