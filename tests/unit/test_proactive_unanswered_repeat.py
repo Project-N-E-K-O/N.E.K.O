@@ -14,7 +14,6 @@ from main_logic.proactive_chat.generation import (
     _guard_phase2_output,
     _proactive_silence_since,
 )
-from memory.anti_repeat import UnansweredProactiveRepeatSignal
 from utils.llm_client import HumanMessage, SystemMessage
 
 
@@ -56,14 +55,14 @@ def test_proactive_silence_since_prefers_last_real_user_message():
 @pytest.mark.asyncio
 async def test_guard_regenerates_then_drops_still_unanswered_repeat(monkeypatch):
     """The third ignored repeat gets one rewrite before a still-repetitive drop."""
-    initial_signal = UnansweredProactiveRepeatSignal(
+    initial_signal = anti_repeat_module.UnansweredProactiveRepeatSignal(
         triggered=True,
         match_count=2,
         considered_count=8,
         best_similarity=0.72,
         repeated_terms=("屏幕", "按钮", "快点"),
     )
-    regen_signal = UnansweredProactiveRepeatSignal(
+    regen_signal = anti_repeat_module.UnansweredProactiveRepeatSignal(
         triggered=True,
         match_count=2,
         considered_count=8,
@@ -138,7 +137,7 @@ async def test_fresh_music_material_skips_unanswered_text_scoring(monkeypatch):
     """Fresh material keeps its established exemption from every text repeat guard."""
     corpus = MagicMock()
     corpus.score_unanswered_proactive_draft.return_value = (
-        UnansweredProactiveRepeatSignal(
+        anti_repeat_module.UnansweredProactiveRepeatSignal(
             triggered=True,
             match_count=2,
             considered_count=8,
