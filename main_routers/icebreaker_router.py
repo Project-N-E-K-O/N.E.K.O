@@ -305,6 +305,7 @@ async def icebreaker_route_state(lanlan_name: str = ""):
 
 @router.post("/context")
 async def icebreaker_context(request: Request):
+    request_arrival_time = time.time()
     try:
         data = await request.json()
     except Exception:
@@ -358,7 +359,11 @@ async def icebreaker_context(request: Request):
     if role == "user":
         # The input is valid for the active tutorial route even if a downstream
         # context or memory write later fails.
-        _note_icebreaker_user_engagement(mgr, lanlan_name)
+        _note_icebreaker_user_engagement(
+            mgr,
+            lanlan_name,
+            at=request_arrival_time,
+        )
 
     append_context = getattr(mgr, "append_context", None)
     try:

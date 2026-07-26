@@ -59,8 +59,10 @@ Design notes
 
 Not extracted
 ------
-- Too-short drafts (< ``ANTI_REPEAT_MIN_DRAFT_TOKENS`` ngrams): the BM25 signal is
-  unstable there, and short replies don't naturally "repeat"; pass with ``score=0``
+- Too-short regular drafts (< ``ANTI_REPEAT_MIN_DRAFT_TOKENS`` ngrams): the BM25
+  signal is unstable there, and short replies don't naturally "repeat"; pass
+  with ``score=0``. The separate unanswered-proactive scorer uses its lower
+  proactive-only threshold so concise reminders remain detectable.
 - Empty corpus: BM25 degrades to 0; every draft passes
 """  # noqa: DOCSTRING_CJK
 from __future__ import annotations
@@ -82,6 +84,7 @@ from config import (
     ANTI_REPEAT_INJECT_TOP_K,
     ANTI_REPEAT_MIN_DRAFT_TOKENS,
     ANTI_REPEAT_UNANSWERED_MAX_AGE_SECONDS,
+    ANTI_REPEAT_UNANSWERED_MIN_DRAFT_TOKENS,
     ANTI_REPEAT_UNANSWERED_MIN_MATCHES,
     ANTI_REPEAT_UNANSWERED_SIMILARITY_THRESHOLD,
     ANTI_REPEAT_UNANSWERED_WINDOW,
@@ -362,8 +365,11 @@ class AntiRepeatCorpus:
     ) -> None:
         """Register one AI output (written into the background corpus and used in later scoring).
 
-        - Too-short text (ngrams < ``ANTI_REPEAT_MIN_DRAFT_TOKENS``) is not stored —
-          keeps utterances like "嗯" / "好" from diluting DF
+        - Regular outputs shorter than ``ANTI_REPEAT_MIN_DRAFT_TOKENS`` are not
+          stored. Proactive outputs use the lower
+          ``ANTI_REPEAT_UNANSWERED_MIN_DRAFT_TOKENS`` threshold so concise
+          whitespace-delimited reminders remain available to the long-window
+          unanswered scorer while "嗯" / "好" still cannot dilute DF.
         - After insertion, pop the oldest once the window exceeds ``ANTI_REPEAT_BG_WINDOW``
         - Empty names normalize to ``_DEFAULT_KEY`` (consistent with the
           user_directives sink / injection path); otherwise BM25 / soft hints would
@@ -373,7 +379,12 @@ class AntiRepeatCorpus:
             return
         name = _resolve_name(name)
         ngrams = _ngrams(text)
-        if len(ngrams) < ANTI_REPEAT_MIN_DRAFT_TOKENS:
+        min_tokens = (
+            ANTI_REPEAT_UNANSWERED_MIN_DRAFT_TOKENS
+            if is_proactive
+            else ANTI_REPEAT_MIN_DRAFT_TOKENS
+        )
+        if len(ngrams) < min_tokens:
             return
         ts = float(now if now is not None else _now())
         entry = {
@@ -491,7 +502,7 @@ class AntiRepeatCorpus:
 
         name = _resolve_name(name)
         draft_ngrams = set(_ngrams(draft_text))
-        if len(draft_ngrams) < ANTI_REPEAT_MIN_DRAFT_TOKENS:
+        if len(draft_ngrams) < ANTI_REPEAT_UNANSWERED_MIN_DRAFT_TOKENS:
             return UnansweredProactiveRepeatSignal()
 
         ref = float(now if now is not None else _now())

@@ -366,14 +366,32 @@ class StreamingMixin:
                     # 对偶）。idle reset loop 依赖该字段判断静默时长，文本路径不补的话
                     # 纯文本会话永远满足"静默 ≥ 30 min"被误重置。
                     _user_input_time = self._user_input_ingress_time(message)
-                    self.last_user_activity_time = _user_input_time
+                    _last_activity_time = getattr(
+                        self,
+                        "last_user_activity_time",
+                        None,
+                    )
+                    self.last_user_activity_time = (
+                        max(float(_last_activity_time), _user_input_time)
+                        if isinstance(_last_activity_time, (int, float))
+                        else _user_input_time
+                    )
                     # 「真消息」时间戳：strip 后非空才刷，与语音路径
                     # `if transcript_text:` 对偶——空白输入不算真实回应，否则会误
                     # 推进 mini-game 邀请隐式 dismiss 判定（CodeRabbit）。注意
                     # last_user_activity_time 仍无条件刷（服务 idle reset，语义是
                     # 「有没有发请求」，与「是不是真消息」不同）。
                     if record_data.strip():
-                        self.last_user_message_time = _user_input_time
+                        _last_message_time = getattr(
+                            self,
+                            "last_user_message_time",
+                            None,
+                        )
+                        self.last_user_message_time = (
+                            max(float(_last_message_time), _user_input_time)
+                            if isinstance(_last_message_time, (int, float))
+                            else _user_input_time
+                        )
                         self.note_user_engagement(at=_user_input_time)
 
                     # 更新字数限制（可能用户在对话期间修改了设置）

@@ -68,6 +68,45 @@ def test_service_has_no_http_or_router_dependency() -> None:
 
 
 @pytest.mark.parametrize(
+    ("channel", "expected_marker"),
+    (
+        ("anti_slack", "mark_anti_slack_used"),
+        ("work_break", "mark_work_break_used"),
+        ("work_break_game_invite", "mark_work_break_used"),
+    ),
+)
+def test_repeat_suppressed_break_reminder_consumes_pending_source(
+    channel: str,
+    expected_marker: str,
+) -> None:
+    tracker = SimpleNamespace(
+        mark_anti_slack_used=MagicMock(),
+        mark_work_break_used=MagicMock(),
+    )
+    mgr = SimpleNamespace(_activity_tracker=tracker)
+
+    service._consume_repeat_suppressed_break_reminder(
+        mgr,
+        lanlan_name="Neko",
+        channel=channel,
+    )
+
+    getattr(tracker, expected_marker).assert_called_once_with()
+    other_marker = (
+        "mark_work_break_used"
+        if expected_marker == "mark_anti_slack_used"
+        else "mark_anti_slack_used"
+    )
+    getattr(tracker, other_marker).assert_not_called()
+
+
+def test_all_break_reminder_branches_consume_repeat_suppression() -> None:
+    source = inspect.getsource(service.handle_proactive_chat)
+    assert source.count("if reminder_delivery.repeat_suppressed:") == 3
+    assert source.count("_consume_repeat_suppressed_break_reminder(") == 3
+
+
+@pytest.mark.parametrize(
     "module",
     (
         break_reminders,

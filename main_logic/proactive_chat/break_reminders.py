@@ -16,6 +16,7 @@
 """Work-break / anti-slack reminder prompts and LLM delivery."""
 
 import asyncio
+from dataclasses import dataclass
 
 from config import (
     ANTI_REPEAT_INJECT_TOP_K,
@@ -38,6 +39,17 @@ logger = get_module_logger(__name__, "Main")
 
 # ---------- Break-reminder rendering + minimal-Phase-2 delivery ----------
 # Two reminder paths emitted by ``main_logic/activity/tracker.py``:
+
+
+@dataclass(frozen=True, slots=True)
+class BreakReminderDeliveryResult:
+    """Outcome of one direct break-reminder delivery attempt."""
+
+    delivered_text: str | None = None
+    proactive_sid: str | None = None
+    repeat_suppressed: bool = False
+
+
 #   * Anti-slack — fired when state transitions focused_work → leisure
 #     after a real focus session. Higher priority (transition is more
 #     time-sensitive than the cumulative water-break trigger).
@@ -238,15 +250,17 @@ async def _deliver_break_reminder_via_llm(
     channel: str,  # 'work_break' | 'anti_slack' | 'work_break_game_invite'
     lang: str,
     timeout_seconds: float = 25.0,
-) -> tuple[str | None, str | None]:
+) -> BreakReminderDeliveryResult:
     """Minimal Phase 2 LLM stream delivery for break reminders.
 
     No Phase 1, no sources, no full activity_state_section in the prompt — just
     ``character_prompt`` (already baked into ``system_prompt`` by the caller) +
     the env-notice block, so the model puts all attention on the single nudge.
 
-    Returns ``(delivered_text, proactive_sid)`` on success.
-    Returns ``(None, None)`` on:
+    Returns a result with text/SID on success. ``repeat_suppressed`` is true
+    only when the long-window guard deliberately consumes a still-repetitive
+    rewrite; callers must consume that reminder source instead of retrying it.
+    An empty default result means:
       * ``prepare_proactive_delivery`` rejection (user just spoke / WS offline /
         etc — leave the source pending alone, next round can retry)
       * LLM error / timeout / preempt
@@ -271,19 +285,19 @@ async def _deliver_break_reminder_via_llm(
                 "[%s] break reminder skipped: correction model misconfigured",
                 lanlan_name,
             )
-            return None, None
+            return BreakReminderDeliveryResult()
     except Exception as cfg_err:
         logger.warning(
             "[%s] break reminder skipped: model config fetch failed: %s",
             lanlan_name,
             cfg_err,
         )
-        return None, None
+        return BreakReminderDeliveryResult()
 
     # Idle gate (10s) — same threshold mini-game invite uses. If the user just
     # typed/spoke, don't interrupt.
     if not await mgr.prepare_proactive_delivery(min_idle_secs=10.0):
-        return None, None
+        return BreakReminderDeliveryResult()
 
     proactive_sid = mgr.current_speech_id
     from main_logic.session_state import SessionEvent as _SE
@@ -370,7 +384,7 @@ async def _deliver_break_reminder_via_llm(
     if aborted or not full_text.strip():
         if not mgr.state.is_proactive_preempted(proactive_sid):
             await mgr.handle_new_message()
-        return None, None
+        return BreakReminderDeliveryResult()
 
     text = full_text.strip()
     anti_repeat_corpus = None
@@ -400,7 +414,7 @@ async def _deliver_break_reminder_via_llm(
             HumanMessage(content=f"{instruction}\n\n{begin_text}"),
         ]
         if mgr.state.is_proactive_preempted(proactive_sid):
-            return None, None
+            return BreakReminderDeliveryResult()
         regen_text = ""
         regen_timeout = min(20.0, timeout_seconds)
         try:
@@ -429,7 +443,7 @@ async def _deliver_break_reminder_via_llm(
             )
 
         if mgr.state.is_proactive_preempted(proactive_sid):
-            return None, None
+            return BreakReminderDeliveryResult()
         cleaned = regen_text.strip()
         if (
             not cleaned
@@ -438,7 +452,7 @@ async def _deliver_break_reminder_via_llm(
         ):
             if not mgr.state.is_proactive_preempted(proactive_sid):
                 await mgr.handle_new_message()
-            return None, None
+            return BreakReminderDeliveryResult()
 
         regen_signal = _score_unanswered_break_reminder(
             corpus=anti_repeat_corpus,
@@ -453,7 +467,7 @@ async def _deliver_break_reminder_via_llm(
             )
             if not mgr.state.is_proactive_preempted(proactive_sid):
                 await mgr.handle_new_message()
-            return None, None
+            return BreakReminderDeliveryResult(repeat_suppressed=True)
         text = cleaned
 
     # Withhold TTS until all repeat checks finish; otherwise a rejected initial
@@ -473,20 +487,24 @@ async def _deliver_break_reminder_via_llm(
         )
         if not mgr.state.is_proactive_preempted(proactive_sid):
             await mgr.handle_new_message()
-        return None, None
+        return BreakReminderDeliveryResult()
     committed = await mgr.finish_proactive_delivery(
         text,
         expected_speech_id=proactive_sid,
     )
     if not committed:
-        return None, None
+        return BreakReminderDeliveryResult()
 
     _record_proactive_chat(lanlan_name, text, channel=channel)
     print(f"[{lanlan_name}] break reminder delivered (channel={channel}): {text[:80]}…")
-    return text, proactive_sid
+    return BreakReminderDeliveryResult(
+        delivered_text=text,
+        proactive_sid=proactive_sid,
+    )
 
 
 __all__ = (
+    "BreakReminderDeliveryResult",
     "_deliver_break_reminder_via_llm",
     "_render_anti_slack_prompt",
     "_render_work_break_game_invite_prompt",

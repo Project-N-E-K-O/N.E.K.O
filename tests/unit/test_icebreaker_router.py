@@ -247,6 +247,45 @@ async def test_icebreaker_context_caches_user_choice_to_recent_memory(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_icebreaker_context_preserves_user_request_ingress_time(monkeypatch):
+    mgr = _FakeAppendContextManager()
+    clock = {"now": 100.0}
+
+    class _DelayedJsonRequest(_FakeRequest):
+        async def json(self):
+            clock["now"] = 200.0
+            return self._payload
+
+    monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+    monkeypatch.setattr(icebreaker_router.time, "time", lambda: clock["now"])
+
+    async def fake_cache_memory(**_kwargs):
+        return True, ""
+
+    monkeypatch.setattr(
+        icebreaker_router,
+        "_cache_icebreaker_context_memory",
+        fake_cache_memory,
+    )
+    icebreaker_route_state.activate_icebreaker_route("Lan", "icebreaker-day1-test")
+
+    result = await icebreaker_router.icebreaker_context(
+        _DelayedJsonRequest(
+            {
+                "lanlan_name": "Lan",
+                "role": "user",
+                "text": "可以，多陪一会儿",
+                "session_id": "icebreaker-day1-test",
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    assert mgr.engagement_times == [100.0]
+
+
+@pytest.mark.asyncio
 async def test_icebreaker_choice_records_user_engagement(monkeypatch):
     mgr = _FakeAppendContextManager()
     clock = {"now": 100.0}

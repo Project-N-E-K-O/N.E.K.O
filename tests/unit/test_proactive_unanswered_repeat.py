@@ -176,12 +176,16 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
 
     assert corpus.score_unanswered_proactive_draft.call_count == 2
     if regen_still_repeats:
-        assert result == (None, None)
+        assert result.delivered_text is None
+        assert result.proactive_sid is None
+        assert result.repeat_suppressed is True
         mgr.feed_tts_chunk.assert_not_awaited()
         mgr.finish_proactive_delivery.assert_not_awaited()
         mgr.handle_new_message.assert_awaited_once_with()
     else:
-        assert result == (regenerated_text, "break-sid")
+        assert result.delivered_text == regenerated_text
+        assert result.proactive_sid == "break-sid"
+        assert result.repeat_suppressed is False
         mgr.feed_tts_chunk.assert_awaited_once_with(
             regenerated_text,
             expected_speech_id="break-sid",
@@ -245,7 +249,7 @@ async def test_break_reminder_tts_failure_restores_message_handling(monkeypatch)
         lang="en",
     )
 
-    assert result == (None, None)
+    assert result == break_reminders.BreakReminderDeliveryResult()
     mgr.handle_new_message.assert_awaited_once_with()
     mgr.finish_proactive_delivery.assert_not_awaited()
     record_proactive.assert_not_called()

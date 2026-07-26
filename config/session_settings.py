@@ -94,6 +94,12 @@ ANTI_REPEAT_UNANSWERED_MIN_MATCHES = 2
 - 2 条历史命中意味着当前草稿是同类内容的第三次出现；
   单次撞题只作为弱信号，不触发 regen / drop。"""
 
+ANTI_REPEAT_UNANSWERED_MIN_DRAFT_TOKENS = 4
+"""长窗口主动搭话内容形状评分的最小 ngram 数。
+- 与通用 BM25 的 12-token 门槛分离：休息提醒按设计很短，英文、西语、葡语、
+  俄语等空格分词语言常只有 4~10 个关键词，仍需进入未回应证据窗口。
+- 保留 4-token 下限，避免“嗯”“好”等极短输出污染持久化语料。"""
+
 ANTI_REPEAT_INJECT_TOP_K = 6
 """注入 system prompt 的 "最近高频 topic 词" 数量。
 - 用途：build_recent_topics_block 取 BM25 排名前 K 的 ngram。

@@ -822,6 +822,22 @@ async def test_cached_text_preserves_server_ingress_time(monkeypatch):
     assert mgr.last_user_message_time == FIXED_TS
     assert mgr.last_user_engagement_time == FIXED_TS
 
+    mgr.last_user_activity_time = FIXED_TS + 100.0
+    mgr.last_user_message_time = FIXED_TS + 100.0
+    mgr.last_user_engagement_time = FIXED_TS + 100.0
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {
+            "input_type": "text",
+            "data": "older request resumed",
+            "_user_input_ingress_time": FIXED_TS,
+        },
+    )
+
+    assert mgr.last_user_activity_time == FIXED_TS + 100.0
+    assert mgr.last_user_message_time == FIXED_TS + 100.0
+    assert mgr.last_user_engagement_time == FIXED_TS + 100.0
+
 
 @pytest.mark.unit
 @pytest.mark.asyncio

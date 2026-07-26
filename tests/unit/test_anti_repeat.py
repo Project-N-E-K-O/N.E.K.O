@@ -75,6 +75,7 @@ def test_record_output_skips_short_text(tmp_path):
     name = "Neko"
     s.record_output(name, "嗯。", is_proactive=False, now=1000.0)
     s.record_output(name, "好的", is_proactive=False, now=1001.0)
+    s.record_output(name, "嗯。", is_proactive=True, now=1002.0)
     # corpus 仍然为空（落盘前后都一致）
     with s._get_lock(name):
         assert s._load_unlocked(name) == []
@@ -353,6 +354,29 @@ def test_unanswered_proactive_repeat_needs_multiple_matches(tmp_path):
     assert signal.triggered is False
     assert signal.match_count == 1
     assert signal.considered_count == 1
+
+
+def test_unanswered_proactive_repeat_scores_short_latin_reminders(tmp_path):
+    """Concise proactive reminders bypass only the stricter generic BM25 floor."""
+    s = _build_store(tmp_path)
+    name = "Neko"
+    base = 2_500_000.0
+    text = "Recuerda levantarte, estirarte y beber agua."
+    assert len(_ngrams(text)) < 12
+
+    s.record_output(name, text, is_proactive=True, now=base)
+    s.record_output(name, text, is_proactive=True, now=base + 60.0)
+
+    signal = s.score_unanswered_proactive_draft(
+        name,
+        text,
+        silence_since=base - 1.0,
+        now=base + 120.0,
+    )
+
+    assert signal.triggered is True
+    assert signal.match_count == 2
+    assert signal.considered_count == 2
 
 
 def test_unanswered_proactive_repeat_resets_after_real_user_message(tmp_path):
