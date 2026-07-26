@@ -68,6 +68,10 @@ class QQSessionRuntimeService:
         )
         if int(user_data.get("last_group_digest_index", 0) or 0) > history_len:
             user_data["last_group_digest_index"] = history_len
+        if int(user_data.get("nonconsent_history_end", 0) or 0) > history_len:
+            # 历史被重置后旧的未授权边界同样越界：不钳的话 max() 地板会
+            # 把重置后新授权轮当成已处理丢弃。
+            user_data["nonconsent_history_end"] = history_len
         return user_session, reply_chunks
 
     async def get_session_lock(self, session_key: str) -> asyncio.Lock:

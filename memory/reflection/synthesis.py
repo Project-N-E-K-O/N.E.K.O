@@ -442,9 +442,12 @@ class SynthesisMixin:
             # 未持久化、可能与磁盘版文本不同的"幽灵反思"，违反"返回值
             # = 本调用真正新建的反思"语义。
             return []
-        # reflection 原文不写 logger（隐私）；本地 print 兜底
+        # reflection 原文不写 logger（隐私）；本地 print 兜底——但 scoped
+        # 反思（群/成员）原文一个字符都不出 stdout：部署环境 stdout 常被
+        # 采集为应用日志，等于把成员隐私带出 scoped 存储。
         logger.info(f"[Reflection] {lanlan_name}: 合成了新反思 {rid} (len={len(reflection_text)} chars)")
-        print(f"[Reflection] {lanlan_name}: 新反思 {rid}: {reflection_text[:50]}...")
+        if memory_subject is None:
+            print(f"[Reflection] {lanlan_name}: 新反思 {rid}: {reflection_text[:50]}...")
         return [reflection]
 
     async def _build_related_context_block(

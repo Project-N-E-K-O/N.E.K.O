@@ -303,9 +303,16 @@ class QQSessionMemoryService:
                 # 未授权边界地板：session 可能由"OFF 期间已解析 persist=
                 # False 的请求"在转变盖章之后才创建（无 enable 标记），其
                 # 未授权轮位于游标 0 之后——digest 起点不得低于该边界。
+                # 但 opt-out 结算窗口（cutoff 之前）是更早的授权区间：
+                # cutoff 之后记下的未授权边界属于下一个时代，套到本窗口
+                # 会把整段已授权前缀当作已处理而丢弃。
+                nonconsent_floor = int(
+                    user_data.get("nonconsent_history_end", 0) or 0
+                )
+                if cutoff is not None and nonconsent_floor > int(cutoff):
+                    nonconsent_floor = 0
                 last_group_digest_index = max(
-                    last_group_digest_index,
-                    int(user_data.get("nonconsent_history_end", 0) or 0),
+                    last_group_digest_index, nonconsent_floor,
                 )
                 if last_group_digest_index > len(conversation_history):
                     # 会话历史被重复守卫重置/收缩后旧游标越界：钳到当前
@@ -459,14 +466,33 @@ class QQSessionMemoryService:
                 # 有标会话按转变结算，不信可变的 per-request flag。
                 current["memory_enabled"] = True
                 finalized = False
-                try:
-                    finalized = await self.finalize_user_memory_session(
-                        session_key, reason="group_memory_disabled",
+                prev_cursor = int(
+                    current.get("last_group_digest_index", 0) or 0
+                )
+                while True:
+                    try:
+                        finalized = await self.finalize_user_memory_session(
+                            session_key, reason="group_memory_disabled",
+                        )
+                    except Exception as exc:
+                        self.plugin.logger.error(
+                            f"群记忆关闭时结算失败 ({session_key}): {exc}"
+                        )
+                        break
+                    if finalized:
+                        break
+                    survivor = self.plugin._user_sessions.get(session_key)
+                    if not survivor:
+                        break
+                    new_cursor = int(
+                        survivor.get("last_group_digest_index", 0) or 0
                     )
-                except Exception as exc:
-                    self.plugin.logger.error(
-                        f"群记忆关闭时结算失败 ({session_key}): {exc}"
-                    )
+                    if new_cursor <= prev_cursor:
+                        # 无进展 = 真失败；有进展 = 只是撞上每轮批次上限，
+                        # 继续排——上限是防锁饥饿的，不是放弃已授权数据的
+                        # 理由。
+                        break
+                    prev_cursor = new_cursor
                 # 成功路径 session 已被 finalize 弹出；仍把本地引用的 flag
                 # 置 False——任何持有旧引用的路径都不得再当它 opt-in。
                 current["memory_enabled"] = False

@@ -284,6 +284,17 @@ class QQReplyGenerationService:
                     metadata={"reply_length": len(fallback_reply), "group_scene_mode": context.group_scene_mode},
                 )
             )
+            # fallback 成功也要跑 scoped 记忆钩子：成员发言入 bucket、
+            # 被展示的 scoped 条目计 mention——主会话空回复不代表这轮
+            # 没发生。会话可能已被超时丢弃（user_data 不在了则跳过）。
+            if context.is_group:
+                session_key = self.plugin.session_runtime_service.build_generation_session_key(context)
+                user_data = self.plugin._user_sessions.get(session_key)
+                if user_data is not None:
+                    await self._sync_memory_after_success(
+                        session_key=session_key, user_data=user_data,
+                        context=context, reply_text=fallback_reply,
+                    )
             return QQModelResult(reply_text=fallback_reply, source="direct_llm_fallback", used_fallback=True, traces=primary_result.traces)
         primary_result.traces.append(
             QQPipelineStageTrace(

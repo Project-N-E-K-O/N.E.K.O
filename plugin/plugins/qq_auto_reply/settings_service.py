@@ -210,12 +210,14 @@ class QQSettingsService:
                     # 快照分离：OFF 时代的 bucket 挪进 pending 槽。快速
                     # re-enable 后新授权轮写全新的活 bucket，迟到的结算
                     # 任务只消费快照，绝不吞新轮。
-                    ud["pending_settle_buckets"] = ud.pop(
-                        "group_member_memory_messages",
-                    )
-                    ud["pending_settle_labels"] = ud.pop(
-                        "group_member_memory_labels", {},
-                    )
+                    fresh_buckets = ud.pop("group_member_memory_messages")
+                    fresh_labels = ud.pop("group_member_memory_labels", {})
+                    pending = ud.setdefault("pending_settle_buckets", {})
+                    for sender, msgs in fresh_buckets.items():
+                        # OFF→ON→OFF 连续切换时旧快照可能还没被结算：合并
+                        # 而非覆盖，先前授权的轮次不得被孤儿化。
+                        pending.setdefault(sender, []).extend(msgs)
+                    ud.setdefault("pending_settle_labels", {}).update(fresh_labels)
                     ud["pending_member_settle"] = True
         if group_memory_before != group_memory_after:
             # 同步（无 await）给"转变时刻已存在"的群会话打标：后台任务只

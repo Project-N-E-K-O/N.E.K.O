@@ -104,9 +104,11 @@ class QQRuntimeOpsService:
         # 清锁表前 join 隐私关键的后台任务（开关转变结算 + prompt 变更
         # discard，限 1s）：否则 stop→立刻 start 会给同一会话建新锁，旧
         # 任务与新 handler 并发改写、甚至中途弹掉活跃会话。
+        gate = getattr(self.plugin, "attention_gate_service", None)
         pending_tasks = (
             list(getattr(self.plugin, "_group_memory_sync_tasks", ()) or ())
             + list(getattr(self.plugin, "_prompt_change_discard_tasks", ()) or ())
+            + list(getattr(gate, "_digest_tasks", ()) or ())
         )
         stragglers: set = set()
         if pending_tasks:
