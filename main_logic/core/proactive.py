@@ -266,7 +266,12 @@ class ProactiveMixin:
         await self.state.fire(SessionEvent.PROACTIVE_CLAIM, sid=claim_sid)
         return True
 
-    async def feed_tts_chunk(self, text: str, expected_speech_id: str | None = None):
+    async def feed_tts_chunk(
+        self,
+        text: str,
+        expected_speech_id: str | None = None,
+        expected_user_engagement_time: Any = Ellipsis,
+    ) -> bool:
         """Feed text to the TTS pipeline only, without sending it to the frontend display.
 
         expected_speech_id: if not None and it doesn't match the current
@@ -275,26 +280,46 @@ class ProactiveMixin:
         chunk and return. The check happens inside the lock to stay atomic with
         the enqueue, so proactive text can't be mislabeled with the new turn's
         speech_id and flow into the user's normal reply audio.
+
+        expected_user_engagement_time: when supplied (including an expected
+        ``None``), drop if genuine UI engagement advanced while this call waited
+        for the TTS lock. Returns whether the chunk was accepted.
         """
         if not self.use_tts:
-            return
+            return True
         async with self.tts_cache_lock:
             if expected_speech_id is not None and self.current_speech_id != expected_speech_id:
                 logger.debug(
                     "feed_tts_chunk drop: expected_sid=%s current_sid=%s len=%d",
                     expected_speech_id, self.current_speech_id, len(text),
                 )
-                return
+                return False
+            if (
+                expected_user_engagement_time
+                is not Ellipsis
+                and self.last_user_engagement_time
+                != expected_user_engagement_time
+            ):
+                logger.debug(
+                    "feed_tts_chunk drop: user engagement advanced "
+                    "expected=%s current=%s len=%d",
+                    expected_user_engagement_time,
+                    self.last_user_engagement_time,
+                    len(text),
+                )
+                return False
             if self.tts_ready and self.tts_thread and self.tts_thread.is_alive():
                 try:
                     self._enqueue_tts_text_chunk(self.current_speech_id, text)
                 except Exception as e:
                     logger.warning(f"⚠️ feed_tts_chunk 失败: {e}")
+                    return False
             else:
                 self.tts_pending_chunks.append((self.current_speech_id, text))
                 # Worker 已死亡则尝试拉起（受 12 秒冷却限制，不会风暴重连）
                 if self.tts_thread and not self.tts_thread.is_alive():
                     self._respawn_tts_worker()
+            return True
 
     async def finish_proactive_delivery(
         self,

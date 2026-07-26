@@ -106,14 +106,16 @@ def test_merge_regen_avoid_terms_preserves_both_repeat_signals():
         "interaction_during_initial",
         "regen_returns_pass",
         "preempted_after_initial",
+        "tts_feed_rejected",
     ),
     (
-        (False, False, False, False, False),
-        (True, False, False, False, False),
-        (False, True, False, False, False),
-        (False, False, True, False, False),
-        (False, False, False, True, False),
-        (False, False, True, False, True),
+        (False, False, False, False, False, False),
+        (True, False, False, False, False, False),
+        (False, True, False, False, False, False),
+        (False, False, True, False, False, False),
+        (False, False, False, True, False, False),
+        (False, False, True, False, True, False),
+        (False, False, False, False, False, True),
     ),
 )
 async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
@@ -123,6 +125,7 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
     interaction_during_initial,
     regen_returns_pass,
     preempted_after_initial,
+    tts_feed_rejected,
 ):
     from main_logic.proactive_chat import break_reminders
 
@@ -189,7 +192,7 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
         prepare_proactive_delivery=AsyncMock(return_value=True),
         current_speech_id="break-sid",
         state=state,
-        feed_tts_chunk=AsyncMock(),
+        feed_tts_chunk=AsyncMock(return_value=not tts_feed_rejected),
         finish_proactive_delivery=AsyncMock(return_value=True),
         handle_new_message=AsyncMock(),
         proactive_engagement_observation_started_at=100.0,
@@ -248,6 +251,15 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
         mgr.feed_tts_chunk.assert_not_awaited()
         mgr.finish_proactive_delivery.assert_not_awaited()
         mgr.handle_new_message.assert_awaited_once_with()
+    elif tts_feed_rejected:
+        assert result == break_reminders.BreakReminderDeliveryResult()
+        mgr.feed_tts_chunk.assert_awaited_once_with(
+            regenerated_text,
+            expected_speech_id="break-sid",
+            expected_user_engagement_time=None,
+        )
+        mgr.finish_proactive_delivery.assert_not_awaited()
+        mgr.handle_new_message.assert_awaited_once_with()
     else:
         assert corpus.score_unanswered_proactive_draft.call_count == 2
         assert result.delivered_text == regenerated_text
@@ -256,6 +268,7 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
         mgr.feed_tts_chunk.assert_awaited_once_with(
             regenerated_text,
             expected_speech_id="break-sid",
+            expected_user_engagement_time=None,
         )
         mgr.finish_proactive_delivery.assert_awaited_once_with(
             regenerated_text,

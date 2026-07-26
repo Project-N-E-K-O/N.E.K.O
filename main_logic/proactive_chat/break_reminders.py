@@ -511,9 +511,15 @@ async def _deliver_break_reminder_via_llm(
     # Withhold TTS until all repeat checks finish; otherwise a rejected initial
     # draft can already be audible while the long-window guard is still running.
     try:
-        await mgr.feed_tts_chunk(
+        expected_user_engagement_time = getattr(
+            mgr,
+            "last_user_engagement_time",
+            None,
+        )
+        tts_accepted = await mgr.feed_tts_chunk(
             text,
             expected_speech_id=proactive_sid,
+            expected_user_engagement_time=expected_user_engagement_time,
         )
     except Exception as exc:
         logger.warning(
@@ -522,6 +528,14 @@ async def _deliver_break_reminder_via_llm(
             channel,
             type(exc).__name__,
             exc,
+        )
+        if not mgr.state.is_proactive_preempted(proactive_sid):
+            await mgr.handle_new_message()
+        return BreakReminderDeliveryResult()
+    if tts_accepted is False:
+        logger.info(
+            "[%s] break reminder TTS dropped after user interaction or takeover",
+            lanlan_name,
         )
         if not mgr.state.is_proactive_preempted(proactive_sid):
             await mgr.handle_new_message()

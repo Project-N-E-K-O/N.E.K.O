@@ -98,6 +98,31 @@ async def test_feed_tts_chunk_drops_when_sid_mismatches():
     assert mgr.tts_pending_chunks == []
 
 
+async def test_feed_tts_chunk_drops_when_engagement_advances_while_waiting():
+    mgr = _make_mgr()
+    mgr.current_speech_id = "s_proactive"
+    mgr.last_user_engagement_time = 100.0
+
+    await mgr.tts_cache_lock.acquire()
+    feed_task = asyncio.create_task(
+        LLMSessionManager.feed_tts_chunk(
+            mgr,
+            "stale reminder",
+            expected_speech_id="s_proactive",
+            expected_user_engagement_time=100.0,
+        )
+    )
+    await asyncio.sleep(0)
+    mgr.last_user_engagement_time = 200.0
+    mgr.tts_cache_lock.release()
+
+    accepted = await feed_task
+
+    assert accepted is False
+    mgr._enqueue_tts_text_chunk.assert_not_called()
+    assert mgr.tts_pending_chunks == []
+
+
 async def test_feed_tts_chunk_drop_is_atomic_with_enqueue():
     """lock 内判定：保证 check 和 enqueue 不会被交错。"""
     mgr = _make_mgr()
