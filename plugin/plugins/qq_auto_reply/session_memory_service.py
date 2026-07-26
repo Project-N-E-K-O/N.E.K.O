@@ -397,11 +397,18 @@ class QQSessionMemoryService:
                 session = current.get("session")
                 history = getattr(session, "_conversation_history", []) or []
                 if enabled:
-                    if not current.pop("pending_enable_rebase", None):
+                    boundary = current.pop("pending_enable_rebase", None)
+                    if boundary is None:
                         # 无标 = 转变之后才创建的会话，全程 opt-in，
                         # rebase 会误跳其正当轮次——不碰。
                         return
-                    current["last_group_digest_index"] = len(history)
+                    # rebase 到 enable 时刻的边界（同步盖章），之后到达的
+                    # 轮次全部保留；boundary=True 兼容旧标记取当前长度。
+                    if boundary is True:
+                        boundary = len(history)
+                    current["last_group_digest_index"] = min(
+                        int(boundary), len(history),
+                    )
                     current["memory_enabled"] = True
                     return
                 if not current.pop("pending_disable_settle", None):

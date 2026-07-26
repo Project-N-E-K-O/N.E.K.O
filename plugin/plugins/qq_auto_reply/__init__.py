@@ -362,7 +362,10 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         if self.attention_gate_service:
             await self.attention_gate_service.stop_proactive_loop()
         await self._stop_auto_reply_runtime(stop_napcat=True)
-        sync_tasks = list(getattr(self, "_group_memory_sync_tasks", ()) or ())
+        sync_tasks = (
+            list(getattr(self, "_group_memory_sync_tasks", ()) or ())
+            + list(getattr(self, "_prompt_change_discard_tasks", ()) or ())
+        )
         if sync_tasks:
             # 隐私关键的开关转变任务在关机 flush 前 join（限 1s），避免
             # 结算做到一半被进程退出截断。

@@ -88,7 +88,11 @@ class MemorySubject:
     ) -> "MemorySubject":
         clean_kind = _clean_component(kind, field="subject_kind")
         clean_id = _clean_component(subject_id, field="subject_id")
-        return cls(clean_kind, clean_id, scope or f"{clean_kind}:{clean_id}")
+        if scope is None:
+            scope = f"{clean_kind}:{clean_id}"
+        # 显式空串不是"省略"：静默归一到默认 scope 会把畸形请求并进
+        # 默认隔离域，必须走 _clean_component 的空值拒绝。
+        return cls(clean_kind, clean_id, scope)
 
     @classmethod
     def group_chat(cls, platform: str, conversation_id: str) -> "MemorySubject":

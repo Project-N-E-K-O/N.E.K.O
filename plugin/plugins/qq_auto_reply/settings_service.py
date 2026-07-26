@@ -215,7 +215,9 @@ class QQSettingsService:
                 if group_memory_after:
                     ud.pop("group_opt_out_cutoff", None)
                     ud.pop("pending_disable_settle", None)
-                    ud["pending_enable_rebase"] = True
+                    # 存转变时刻的边界：后台任务若用运行时 len(history)，
+                    # enable 之后到达的正当轮次会被一并跳过。
+                    ud["pending_enable_rebase"] = hist_len
                 else:
                     # cutoff：结算只到 opt-out 时刻，竞态窗口内的新轮次不入库。
                     ud["group_opt_out_cutoff"] = hist_len

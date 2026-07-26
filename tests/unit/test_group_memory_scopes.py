@@ -768,6 +768,15 @@ def test_entry_missing_scope_fails_closed():
     group = MemorySubject.group_chat("qq", "1")
     assert filter_entries_for_subjects([partial], [group]) == []
     assert filter_entries_for_subjects([partial]) == []
+    # An explicitly EMPTY scope in a request is malformed, not omitted:
+    # silently normalizing it into the default domain would merge a
+    # malformed caller into the default isolation boundary.
+    import pytest as _pytest
+
+    from memory.scopes import MemoryScopeError
+
+    with _pytest.raises(MemoryScopeError):
+        MemorySubject.create("group_chat", "qq:1", scope="")
 
 
 @pytest.mark.asyncio
@@ -1768,6 +1777,13 @@ async def test_group_memory_toggle_syncs_existing_sessions():
     user_data["pending_enable_rebase"] = True
     await service.invalidate_group_sessions(enabled=True)
     assert user_data["last_group_digest_index"] == len(history)
+
+    # The rebase honors the boundary stamped at the policy write: turns
+    # arriving after the enable stay digestible.
+    user_data["last_group_digest_index"] = 0
+    user_data["pending_enable_rebase"] = 1
+    await service.invalidate_group_sessions(enabled=True)
+    assert user_data["last_group_digest_index"] == 1
 
     # Unmarked session (created AFTER the transition): untouched in both
     # directions — no bogus rebase, no bogus settle.
