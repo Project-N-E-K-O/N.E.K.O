@@ -799,8 +799,11 @@ class CoreConfigMixin:
                 # voice 字段到 Gemini，支持 Gemini 全量 + yui。早期把 /tts 降级到
                 # 裸 lanlan.app（硬覆盖 Leda 的旧端点）的 .replace 已移除。
                 # 只换 netloc（host 已确认命中官方域），path/query 原样保留。
+                # 先 lower 再替换：host 门用的是归一化小写 hostname，netloc 里的
+                # 大小写变体（WWW.LANLAN.TECH）大小写敏感替换会静默不生效，海外
+                # 用户被留在大陆端点。netloc 大小写对 DNS 无语义，lower 无损。
                 return urlunparse(parsed._replace(
-                    netloc=parsed.netloc.replace('lanlan.tech', 'lanlan.app')))
+                    netloc=parsed.netloc.lower().replace('lanlan.tech', 'lanlan.app')))
         except Exception:
             pass
 

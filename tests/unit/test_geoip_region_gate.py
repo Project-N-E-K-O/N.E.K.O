@@ -1757,8 +1757,12 @@ def test_agent_deduper_is_built_after_the_region_settles():
     for node in ast.walk(tree):
         if not isinstance(node, ast.AsyncFunctionDef) or node.name != 'startup':
             continue
+        # 必须是启动预热原语，会话级 aensure 不够：上游 ComputerUseAdapter 构造时
+        # 已读配置起了探测，首探在网络未就绪时快速失败进 30s 退避——aensure 不
+        # kick、不穿退避，撞上退避就放弃，本进程照旧按大陆兜底构造 deduper。
         settles = [c.lineno for c in ast.walk(node)
-                   if isinstance(c, ast.Call) and getattr(c.func, 'attr', None) == 'aensure_region_resolved']
+                   if isinstance(c, ast.Call)
+                   and getattr(c.func, 'attr', None) == 'awarmup_region_check']
         builds = [c.lineno for c in ast.walk(node)
                   if isinstance(c, ast.Call) and getattr(c.func, 'id', None) == 'TaskDeduper']
         assert builds, '未找到 TaskDeduper 构造，断言失效'
@@ -2516,3 +2520,60 @@ def test_leaving_the_free_route_bypasses_a_wedged_probe(monkeypatch):
         assert real_time.monotonic() - started < 0.5
     finally:
         release.set()
+
+
+@pytest.mark.unit
+def test_case_variant_official_hostname_still_rewrites(config_manager):
+    """A case-variant official hostname must still follow the region switch.
+
+    The host gate normalizes case (``parsed.hostname``), but a case-sensitive
+    netloc replace would silently no-op on ``WWW.LANLAN.TECH`` — the recognized
+    free route would stay pinned to the mainland endpoint after an overseas
+    verdict.
+    """
+    out = config_manager._adjust_free_api_url(
+        'https://WWW.LANLAN.TECH/text/v1', True, non_mainland=True)
+    assert 'lanlan.app' in out, f'大小写变体的官方 host 未被改写: {out}'
+    assert out.endswith('/text/v1')
+
+
+@pytest.mark.unit
+def test_every_offline_client_constructor_in_lifecycle_applies_the_flip_failsafe():
+    """Both lifecycle paths that build an OmniOfflineClient run the flip fail-safe.
+
+    The normal-session and hot-swap branches are duals; guarding only one lets
+    the other freeze a voice from the pre-flip catalog into the pending client.
+    Discovered from the constructor sites, line-ordered, so a third path added
+    later cannot silently skip it.
+    """
+    import ast
+    import pathlib
+
+    source = pathlib.Path(__file__).resolve().parents[2] / 'main_logic' / 'core' / 'lifecycle.py'
+    tree = ast.parse(source.read_text(encoding='utf-8'))
+
+    checked = []
+    problems = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        builds, drops = [], []
+        for c in ast.walk(node):
+            if not isinstance(c, ast.Call):
+                continue
+            name = getattr(c.func, 'attr', None) or getattr(c.func, 'id', None)
+            if name == 'OmniOfflineClient':
+                builds.append(c.lineno)
+            elif name == '_drop_free_voice_on_route_flip':
+                drops.append(c.lineno)
+        if not builds:
+            continue
+        checked.append(node.name)
+        if not drops:
+            problems.append(f'{node.name} (line {node.lineno}) 未做翻转 fail-safe')
+        elif min(drops) >= min(builds):
+            problems.append(
+                f'{node.name}: fail-safe 在 line {min(drops)}，晚于 client 构造 line {min(builds)}')
+
+    assert len(checked) >= 2, f'未找到足够的 OmniOfflineClient 构造点，断言失效: {checked}'
+    assert not problems, f'这些构造点缺少区域翻转音色 fail-safe: {problems}'

@@ -1550,6 +1550,20 @@ class LifecycleMixin:
                 # 与主会话构造点对偶：顶部快照与此处之间隔着角色数据读取等 await，
                 # 故重新读一份新鲜快照，并让 conversation / vision 共用它，避免撕裂
                 _fresh_core_config = await self._config_manager.aget_core_config()
+                # 与主会话构造点对偶：区域可能恰在上面的 cleanup / 角色读取等
+                # await 期间翻转（顶部落定是 Steam 兜底时不落 _region_cache），
+                # self.voice_id 解析自旧区域目录——同一条 fail-safe：清空免费
+                # 音色落服务端默认，promotion 后的 TTS 不拿旧区域 ID 去新端点。
+                if (str(core_config_snapshot.get('CORE_URL') or '')
+                        != str(_fresh_core_config.get('CORE_URL') or '')):
+                    logger.warning(
+                        "[GeoIP] 热切换准备: 区域结论在准备与连接创建之间发生变化"
+                        "（%s → %s），本场音色可能落到服务端默认",
+                        core_config_snapshot.get('CORE_URL'), _fresh_core_config.get('CORE_URL'),
+                    )
+                    self._drop_free_voice_on_route_flip(
+                        core_config_snapshot.get('CORE_URL'), _fresh_core_config.get('CORE_URL'),
+                    )
                 conversation_config = await self._config_manager.aget_model_api_config(
                     'conversation', core_config=_fresh_core_config
                 )
