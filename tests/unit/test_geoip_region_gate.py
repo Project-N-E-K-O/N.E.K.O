@@ -467,8 +467,10 @@ def test_session_start_is_free_when_already_resolved(monkeypatch):
     def _boom(*a, **kw):
         raise AssertionError('已落定时不应等待探测')
 
-    monkeypatch.setattr(ConfigManager, 'join_ip_probe', staticmethod(_boom))
     probe = _Probe()
+    # 桩在实例上：_Probe 不经过 ConfigManager，patch 类属性是死桩（见
+    # test_custom_route_settle_is_vacuously_true 的同款说明）。
+    probe.join_ip_probe = _boom
     started = real_time.monotonic()
     assert asyncio.run(probe.aensure_region_resolved()) is True
     assert real_time.monotonic() - started < 0.2
@@ -1759,3 +1761,167 @@ def test_deduper_rebuilds_its_client_when_the_route_changes(monkeypatch):
     d._get_llm()
     assert built[-1] == 'https://www.lanlan.app/text/v1', \
         'IP 结论推翻 Steam 兜底后，去重器必须跟着换端点'
+
+
+# ---------------------------------------------------------------------------
+# "Settled" is vacuously true when nothing in the config depends on the region
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_custom_route_settle_is_vacuously_true(monkeypatch):
+    """A config with no region-dependent URL has nothing to settle — that is success.
+
+    Returning False there made every voice-catalog / voice-reply request from a
+    custom-API, non-Steam user log a spurious "region still unresolved" warning
+    — burying the one signal those warnings exist for (a free-route user whose
+    probe has not landed).
+    """
+    def _boom(*a, **kw):
+        raise AssertionError('自配 API 不该为落定发起任何等待')
+
+    probe = _Probe()
+    # 桩在实例上而不是 ConfigManager 上：_Probe 只继承 CoreConfigMixin，
+    # self.join_ip_probe 解析不到 ConfigManager 的类属性，patch 那边是死桩。
+    probe.join_ip_probe = _boom
+    probe._check_steam_non_mainland = lambda: None
+    probe.aget_core_config = _async_return(
+        {'coreApi': 'openai', 'CORE_URL': 'https://api.openai.com/v1'})
+
+    started = real_time.monotonic()
+    assert asyncio.run(probe.aensure_region_resolved(timeout=5)) is True, \
+        '无区域敏感 URL 的配置没有什么可落定，应当视为已落定'
+    assert real_time.monotonic() - started < 0.5
+    assert ConfigManager._ip_probe_thread is None, '自配 API 不该起探测'
+
+
+@pytest.mark.unit
+def test_free_route_without_a_probe_still_reports_unsettled(monkeypatch):
+    """The False branch must survive: free route + no verdict is the real alarm case.
+
+    The vacuous-truth carve-out above is keyed on ``_config_needs_region``; a
+    free-route snapshot (either host form — the loop may already have rewritten
+    it) with no probe running and no verdict must keep returning False so the
+    voice endpoints' warning still fires when it should.
+    """
+    probe = _Probe()
+    probe._check_steam_non_mainland = lambda: None
+    probe.aget_core_config = _async_return(
+        {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.app/core'})
+
+    assert ConfigManager._ip_probe_thread is None, '前置条件：没有探测在跑'
+    assert asyncio.run(probe.aensure_region_resolved(timeout=0.1)) is False
+
+
+@pytest.mark.unit
+def test_warmup_reports_success_when_no_region_is_needed():
+    """Startup warmup on a custom/paid route: nothing to resolve is not a failure.
+
+    Returning False there made ``_ensure_main_server_runtime_initialized`` log
+    "后续调用按退避重试" on every boot for users whose config never starts a
+    probe — there is no retry coming, and nothing was missing.
+    """
+    probe = _Probe()
+    probe.aget_core_config = _async_return(
+        {'coreApi': 'openai', 'CORE_URL': 'https://api.openai.com/v1'})
+
+    started = real_time.monotonic()
+    assert asyncio.run(probe.awarmup_region_check(timeout=5)) is True
+    assert real_time.monotonic() - started < 1.0, '无需区域判定时预热不应等待'
+    assert ConfigManager._ip_probe_thread is None
+
+
+@pytest.mark.unit
+def test_warmup_still_reports_failure_on_the_free_route(monkeypatch):
+    """Free route with an unreachable probe: warmup must still say "no verdict"."""
+    monkeypatch.setattr(ConfigManager, '_IP_CHECK_RETRY_BASE_S', 30.0)
+    monkeypatch.setattr(ConfigManager, '_IP_CHECK_RETRY_MAX_S', 30.0)
+    _patch_probe_once(monkeypatch, [OSError('down')])
+
+    probe = _Probe()
+    probe.aget_core_config = _async_return(
+        {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.tech/core'})
+
+    ConfigManager._ensure_ip_probe_started()
+    assert asyncio.run(probe.awarmup_region_check(timeout=0.3)) is False, \
+        '免费路由拿不到结论时预热必须如实报 False（启动日志靠它区分场景）'
+
+
+# ---------------------------------------------------------------------------
+# Restarting the probe must not inherit a leftover stop signal
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_probe_restart_clears_a_leftover_stop_signal(monkeypatch):
+    """A stop signal belongs to the loop it was aimed at, not to later restarts.
+
+    ``_ip_probe_stopping`` is set by shutdown/test cleanup to kill the current
+    loop. If a restart (user switches away from the free route and back) does
+    not reset it, the new loop dies on its first wake-up and ``_kick_ip_probe``
+    refuses to kick — the startup warmup can then never shorten a backoff.
+    """
+    monkeypatch.setattr(ConfigManager, '_IP_CHECK_RETRY_BASE_S', 30.0)
+    monkeypatch.setattr(ConfigManager, '_IP_CHECK_RETRY_MAX_S', 30.0)
+    monkeypatch.setattr(ConfigManager, '_ip_probe_stopping', True)   # 上一轮的残留
+    calls = _patch_probe_once(monkeypatch, [OSError('down'), 'US'])
+
+    _Probe()._ensure_ip_probe_started()
+    assert ConfigManager._ip_probe_stopping is False, '重启探测必须复位停止位'
+
+    # 等首探失败、进入 30s 退避
+    for _ in range(500):
+        if calls['n'] >= 1 and not ConfigManager._ip_probe_in_flight.is_set():
+            break
+        real_time.sleep(0.01)
+    assert calls['n'] == 1 and ConfigManager._ip_check_cache is None
+
+    # 停止位已清 → kick 必须能催醒退避中的循环并让它重试成功，
+    # 而不是被拒绝（kick 检查 stopping）或把循环误杀（循环唤醒时检查 stopping）
+    ConfigManager._kick_ip_probe()
+    thread = ConfigManager._ip_probe_thread
+    thread.join(5)
+    assert ConfigManager._ip_check_cache is True, \
+        '催醒后的循环应重试并落地结论，而不是因残留停止位退出'
+    assert calls['n'] == 2
+
+
+@pytest.mark.unit
+def test_explicit_lanlan_app_custom_endpoint_settles_vacuously():
+    """A custom provider explicitly hosted at lanlan.app is not a free route.
+
+    The vacuous-truth predicate must be the conjunction the codebase already
+    uses (``_any_free_provider`` AND ``_config_needs_region``, matching
+    ``_free_route_still_needs_region``): keying on the host alone would judge
+    these users "unresolved" — the RAW gate never probes for them and their
+    URLs are never rewritten, so no probe would ever end that false warning.
+    """
+    cfg = {'coreApi': 'openai', 'CORE_URL': 'wss://www.lanlan.app/core'}
+
+    probe = _Probe()
+    probe._check_steam_non_mainland = lambda: None
+    probe.aget_core_config = _async_return(dict(cfg))
+    assert asyncio.run(probe.aensure_region_resolved(timeout=5)) is True, \
+        '显式配在 lanlan.app 的自配线路不依赖区域判定，应视为已落定'
+
+    warm = _Probe()
+    warm.aget_core_config = _async_return(dict(cfg))
+    assert asyncio.run(warm.awarmup_region_check(timeout=5)) is True
+    assert ConfigManager._ip_probe_thread is None, '自配线路不该起探测'
+
+
+@pytest.mark.unit
+def test_warmup_recognises_the_rewritten_free_snapshot_as_unsettled():
+    """The warmup fallback must judge the *adjusted* snapshot with ADJUSTED hosts.
+
+    A free-route snapshot can already carry ``lanlan.app`` URLs when warmup
+    reads it. With RAW hosts the fallback would call that "nothing depends on
+    the region" and report success — hiding exactly the free-route-unsettled
+    case the startup log message exists for. Mirror of
+    ``test_free_route_without_a_probe_still_reports_unsettled`` on the warmup
+    side (a RAW mutation here survived the rest of the suite).
+    """
+    probe = _Probe()
+    probe.aget_core_config = _async_return(
+        {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.app/core'})
+
+    assert ConfigManager._ip_probe_thread is None, '前置条件：没有探测在跑'
+    assert asyncio.run(probe.awarmup_region_check(timeout=0.3)) is False

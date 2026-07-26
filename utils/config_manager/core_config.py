@@ -309,6 +309,10 @@ class CoreConfigMixin:
             # 起新循环前清掉停止信号（上一轮可能因切走免费线路而 set 过），
             # 并预置 in-flight——线程还没来得及进入 lookup 时也应被视为在飞，
             # 否则紧随其后的 join 会误判成「只是在退避」而直接跳过。
+            # _ip_probe_stopping 同样要复位：它是留给 shutdown / 测试清理的停止位，
+            # 一旦设过而不清，重启的新循环会在第一次唤醒时误退出，且 _kick_ip_probe
+            # 会拒绝催醒——停止位只该管它被设置时的那一个循环。
+            ConfigManager._ip_probe_stopping = False
             ConfigManager._ip_probe_wake.clear()
             ConfigManager._ip_probe_in_flight.set()
             ConfigManager._ip_probe_thread = thread
@@ -403,12 +407,35 @@ class CoreConfigMixin:
         # 直接戳 _ensure_ip_probe_started：免费路由门在 get_core_config 里
         # （needs_region + _check_non_mainland），直接戳会让自配 API / livestream
         # 用户也启动探测、把 IP 发给 ip-api.com——他们的线路根本不经过区域改写。
-        await self.aget_core_config()
+        cfg = await self.aget_core_config()
         if ConfigManager._ip_check_cache is not None:
             return True
         thread = ConfigManager._ip_probe_thread
-        if thread is None or not thread.is_alive():
-            return False
+        if ((thread is None or not thread.is_alive())
+                and not ConfigManager._ip_probe_in_flight.is_set()):
+            # 没有探测在跑。in_flight 同查：_ensure_ip_probe_started 先预置
+            # in-flight 再 start()，「已赋值未启动」的线程不该被误判成不存在——
+            # 与 join_ip_probe 里的护栏同一习语，那种窗口该落到下面的 join 去等。
+            # 先复查一次结论：循环可能恰在上面读配置之后落地退出（写完 cache
+            # 线程即结束），这窗口里 thread 已死但结论其实已有。
+            if ConfigManager._ip_check_cache is not None:
+                return True
+            # 配置里压根没有区域敏感 URL（自配 API / livestream 全派生）时，
+            # 「已落定」是空真——没有什么可落定的，返回 True。返回 False 会让
+            # 检查返回值的调用方（音色目录、语音合成）对着一个不存在的风险每次
+            # 请求都告警，把这些 warning 本来要抓的真信号（免费路由用户探测未
+            # 落地）淹掉。
+            # 判据与 _free_route_still_needs_region / _region_verdict_is_provisional
+            # 对偶：_any_free_provider 合取 + ADJUSTED 集合，不另立一套（不变量 #2）。
+            # 只看 host 会把「显式把自配端点配在 lanlan.app」的用户误判成未落定
+            # ——他们的 provider 字段不是 free、URL 不参与区域改写，区域对其无
+            # 意义，永远不会有探测来终止那个假警告。
+            return not (
+                ConfigManager._any_free_provider(cfg)
+                and ConfigManager._config_needs_region(
+                    cfg, ConfigManager._REGION_HOSTS_ADJUSTED,
+                )
+            )
         resolved = await asyncio.to_thread(self.join_ip_probe, timeout)
         if not resolved:
             # 等满仍无结论：这一场会话会用大陆兜底线路，且中途不会改。无限等不是
@@ -426,10 +453,27 @@ class CoreConfigMixin:
         Reads the config (which kicks the probe only on the free ``lanlan.tech``
         route, so users on their own API keys never hand their IP to a third-party
         geolocation service), then waits for that probe off the event loop.
+
+        Returns ``True`` when a verdict is in hand *or* nothing in the config
+        depends on one; ``False`` means a region-dependent route is still waiting
+        on the probe — the only case the startup log should mention.
         """
-        await self.aget_core_config()
+        from utils.config_manager import ConfigManager
+
+        cfg = await self.aget_core_config()
         self._kick_ip_probe()
-        return await asyncio.to_thread(self.join_ip_probe, timeout, True)
+        if await asyncio.to_thread(self.join_ip_probe, timeout, True):
+            return True
+        # join 拿不到结论时区分「等不到」和「无需等」：自配 API / livestream 全派生
+        # 的配置根本不起探测（隐私门），对它们返回 False 只会让启动日志报一条不存
+        # 在的「后续按退避重试」。语义与 aensure_region_resolved 对偶，判据同样取
+        # _any_free_provider 合取（显式自配在 lanlan.app 的端点不是免费路由）。
+        return not (
+            ConfigManager._any_free_provider(cfg)
+            and ConfigManager._config_needs_region(
+                cfg, ConfigManager._REGION_HOSTS_ADJUSTED,
+            )
+        )
 
     @staticmethod
     def _check_ip_non_mainland_http():
