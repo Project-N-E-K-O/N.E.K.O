@@ -1161,20 +1161,20 @@
             "title": "Уведомление об API Alibaba в США",
             "message": "Сейчас используется API Alibaba в США. Он не поддерживает TTS и голос в реальном времени. Рекомендуется перейти на API Alibaba в Сингапуре."
         },
-        "conversationModelConfig": "Конфигурация модели текстового диалога",
-        "summaryModelConfig": "Конфигурация модели сводки",
-        "gameModelsConfig": "Конфигурация моделей мини-игры",
+        "conversationModelConfig": "Модель текстового чата",
+        "summaryModelConfig": "Модель сводки",
+        "gameModelsConfig": "Модель мини-игры",
         "gameMainModelConfig": "Конфигурация основной модели мини-игры",
         "gameSummaryModelConfig": "Конфигурация модели сводки мини-игры",
-        "correctionModelConfig": "Конфигурация модели коррекции",
-        "emotionModelConfig": "Конфигурация модели эмоций",
-        "visionModelConfig": "Конфигурация модели визуального распознавания",
-        "realtimeModelConfig": "Realtime API (Локальный режим)",
-        "ttsModelConfig": "Конфигурация модели TTS (Дуплексная потоковая передача)",
+        "correctionModelConfig": "Модель коррекции",
+        "emotionModelConfig": "Модель эмоций",
+        "visionModelConfig": "Модель визуального чата",
+        "realtimeModelConfig": "Мультимодальная модель реального времени (Локальный режим)",
+        "ttsModelConfig": "Модель TTS",
         "apiUrl": "URL API",
         "apiKey": "API Key",
         "modelId": "ID модели",
-        "agentApiConfigTitle": "Конфигурация API Агента (нужна поддержка зрения)",
+        "agentApiConfigTitle": "API Агента (нужна поддержка зрения)",
         "providerPlaceholder": "например, openai, azure, local",
         "apiUrlPlaceholder": "например, https://api.openai.com/v1",
         "modelIdPlaceholder": "например, gpt-5.1-chat-latest, qwen-flash",
@@ -3386,7 +3386,7 @@
                 "desc": "Check to enable custom API configuration. Then configure independent APIs for different modules like summarization, correction, emotion analysis, etc."
             },
             "step9": {
-                "title": "📝 Summary Model Configuration",
+                "title": "📝 Модель сводки",
                 "desc": "Summary model generates conversation summaries and manages memory. Configure independent API service for summary tasks."
             }
         },

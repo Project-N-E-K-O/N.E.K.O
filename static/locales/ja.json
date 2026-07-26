@@ -1161,20 +1161,20 @@
             "title": "Alibaba 米国 API の注意",
             "message": "現在 Alibaba の米国 API を使用しています。この API は TTS とリアルタイム音声に対応していません。Alibaba のシンガポール API への切り替えをおすすめします。"
         },
-        "conversationModelConfig": "テキスト対話モデル設定",
-        "summaryModelConfig": "要約モデル設定",
-        "gameModelsConfig": "ミニゲームモデル設定",
+        "conversationModelConfig": "テキストチャットモデル",
+        "summaryModelConfig": "要約モデル",
+        "gameModelsConfig": "ミニゲームモデル",
         "gameMainModelConfig": "ミニゲーム主モデル設定",
         "gameSummaryModelConfig": "ミニゲーム要約モデル設定",
-        "correctionModelConfig": "修正モデル設定",
-        "emotionModelConfig": "感情モデル設定",
-        "visionModelConfig": "視覚モデル設定",
-        "realtimeModelConfig": "リアルタイムAPI（ローカルモード）",
-        "ttsModelConfig": "TTSモデル設定（全二重ストリーミング）",
+        "correctionModelConfig": "修正モデル",
+        "emotionModelConfig": "感情モデル",
+        "visionModelConfig": "視覚チャットモデル",
+        "realtimeModelConfig": "リアルタイムマルチモーダルモデル（ローカルモード）",
+        "ttsModelConfig": "TTSモデル",
         "apiUrl": "API URL",
         "apiKey": "APIキー",
         "modelId": "モデルID",
-        "agentApiConfigTitle": "Agent API 設定（視覚機能対応が必要）",
+        "agentApiConfigTitle": "Agent API（視覚機能対応が必要）",
         "providerPlaceholder": "例: openai, azure, local",
         "apiUrlPlaceholder": "例: https://api.openai.com/v1",
         "modelIdPlaceholder": "例: gpt-5.1-chat-latest",
@@ -3386,7 +3386,7 @@
                 "desc": "このオプションをチェックしてカスタムAPI設定を有効にしてください。有効にすると、要約、修正、感情分析など、異なるモジュール用に独立したAPIを設定できます。"
             },
             "step9": {
-                "title": "📝 要約モデル設定",
+                "title": "📝 要約モデル",
                 "desc": "要約モデルは会話要約を生成し、メモリを管理します。要約生成タスク用に独立したAPIサービスを設定できます。"
             }
         },

@@ -252,7 +252,15 @@ async def update_core_config(request: Request):
         if 'mcpToken' in data:
             core_cfg['mcpToken'] = data['mcpToken']
         if 'openclawUrl' in data:
-            core_cfg['openclawUrl'] = data['openclawUrl']
+            # 前端表单回填的是文件里的原始值。若启动期迁移曾写盘失败（Windows 上
+            # os.replace 可能被杀软占用），这里收到的就还是旧的 8089，原样落盘等于把
+            # 旧端口重新固化一遍、迁移永远不收敛。在这个 save choke point 再归一化一次：
+            # 用户任何一次保存都能替启动期把迁移补上。
+            _submitted_openclaw_url = data['openclawUrl']
+            core_cfg['openclawUrl'] = (
+                config_manager._migrated_openclaw_url(_submitted_openclaw_url)
+                or _submitted_openclaw_url
+            )
         if 'openclawTimeout' in data:
             core_cfg['openclawTimeout'] = data['openclawTimeout']
         if 'openclawDefaultSenderId' in data:

@@ -1161,20 +1161,20 @@
             "title": "Aviso de API de Alibaba en EE. UU.",
             "message": "Actualmente está usando la API de Alibaba en EE. UU., que no admite TTS ni voz en tiempo real. Se recomienda cambiar a la API de Alibaba en Singapur."
         },
-        "conversationModelConfig": "Configuración del modelo de diálogo de texto",
-        "summaryModelConfig": "Configuración del modelo resumido",
-        "gameModelsConfig": "Configuración de modelos del minijuego",
+        "conversationModelConfig": "Modelo de chat de texto",
+        "summaryModelConfig": "Modelo de resumen",
+        "gameModelsConfig": "Modelo de minijuego",
         "gameMainModelConfig": "Configuración del modelo principal del minijuego",
         "gameSummaryModelConfig": "Configuración del modelo de resumen del minijuego",
-        "correctionModelConfig": "Configuración del modelo de corrección",
-        "emotionModelConfig": "Configuración del modelo de emoción",
-        "visionModelConfig": "Configuración del modelo de visión",
-        "realtimeModelConfig": "API en tiempo real (modo local)",
-        "ttsModelConfig": "Configuración del modelo TTS (transmisión dúplex)",
+        "correctionModelConfig": "Modelo de corrección",
+        "emotionModelConfig": "Modelo de emociones",
+        "visionModelConfig": "Modelo de chat visual",
+        "realtimeModelConfig": "Modelo multimodal en tiempo real (modo local)",
+        "ttsModelConfig": "Modelo TTS",
         "apiUrl": "URL de la API",
         "apiKey": "Clave API",
         "modelId": "ID del modelo",
-        "agentApiConfigTitle": "Configuración de API del agente (se requiere compatibilidad con Vision)",
+        "agentApiConfigTitle": "API del agente (se requiere compatibilidad con Vision)",
         "providerPlaceholder": "por ejemplo, openai, azure, local",
         "apiUrlPlaceholder": "por ejemplo, https://api.openai.com/v1",
         "modelIdPlaceholder": "por ejemplo, gpt-5.1-chat-latest, qwen-flash",
@@ -3386,7 +3386,7 @@
                 "desc": "Marque para habilitar la configuración de API personalizada. Luego configure API independientes para diferentes módulos como resumen, corrección, análisis de emociones, etc."
             },
             "step9": {
-                "title": "📝 Configuración del modelo resumido",
+                "title": "📝 Modelo de resumen",
                 "desc": "El modelo de resumen genera resúmenes de conversaciones y gestiona la memoria. Configure el servicio API independiente para tareas de resumen."
             }
         },

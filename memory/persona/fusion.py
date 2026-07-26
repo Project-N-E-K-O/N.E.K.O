@@ -336,7 +336,7 @@ class ExternalFusionMixin:
         # entity 上（第一个已落盘）会让端点返 generic 500 而非 external_import_partial，
         # 丢掉前端重试所需的 partial 元数据（Codex P2）。
         try:
-            api_config = self._config_manager.get_model_api_config("correction")
+            api_config = await self._config_manager.aget_model_api_config("correction")
             llm = await create_chat_llm_async(
                 api_config["model"],
                 api_config["base_url"],

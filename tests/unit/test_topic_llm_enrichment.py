@@ -264,6 +264,9 @@ async def test_invoke_emotion_tier_uses_project_message_classes(monkeypatch):
     captured = {}
 
     class FakeConfigManager:
+        async def aget_model_api_config(self, name, *, core_config=None):
+            return self.get_model_api_config(name)
+
         def get_model_api_config(self, name):
             assert name == "emotion"
             return {

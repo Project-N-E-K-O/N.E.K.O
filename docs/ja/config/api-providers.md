@@ -7,4 +7,4 @@ Provider は data-driven です。同梱定義は `config/api_providers.json`、
 
 すべての Provider が全 role を実装するわけではありません。`utils/api_config_loader.py` は JSON を cache/convert し、Assist JSON を同 key の code defaults に重ね、欠損/不正時は fallback を使います。`assist_api_key_fields` が credential field を対応付けます。
 
-同じ JSON の keybook、API-key registry、native TTS/voice、livestream、moderation は個別 consumer/schema です。変更時は key を安定させ、secret を入れず、表示文言は 8 locale を同期し、tests/docs build を実行してください。詳細は [API Provider fields](/api_providers_fields)。
+同じ JSON の keybook、API-key registry、native TTS/voice、livestream、moderation は個別 consumer/schema です。変更時は key を安定させ、secret を入れず、表示文言は 8 locale を同期し、tests/docs build を実行してください。詳細は [API Provider fields](/api_providers_fields)。同梱の無料経路、自分の Key、ローカルコンポーネントの違いは[料金と Provider](/ja/guide/cost-and-providers)を参照してください。

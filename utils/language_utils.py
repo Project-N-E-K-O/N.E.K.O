@@ -1227,7 +1227,7 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
     try:
         config_manager = get_config_manager()
         # 复用emotion模型配置
-        emotion_config = config_manager.get_model_api_config('emotion')
+        emotion_config = await config_manager.aget_model_api_config('emotion')
         
         from config.prompts.prompts_sys import (
             _loc, TRANSLATION_WATERMARK_START, TRANSLATION_WATERMARK_END,
@@ -1336,7 +1336,7 @@ class TranslationService:
     async def _get_llm_client(self):
         """Get the LLM client (for translation, reusing the emotion model config)"""
         try:
-            config = self.config_manager.get_model_api_config('emotion')
+            config = await self.config_manager.aget_model_api_config('emotion')
             
             if not config.get('api_key') or not config.get('model') or not config.get('base_url'):
                 logger.warning("翻译服务：API配置不完整（缺少 api_key、model 或 base_url），无法进行翻译")

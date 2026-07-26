@@ -370,7 +370,7 @@ class PromotionMergeMixin:
         )
 
         set_call_type("memory_promote_merge")
-        api_config = self._config_manager.get_model_api_config(
+        api_config = await self._config_manager.aget_model_api_config(
             EVIDENCE_PROMOTION_MERGE_MODEL_TIER,
         )
         # timeout=90: 开 thinking 后 promote merge 决策（merge_into / promote_fresh /
