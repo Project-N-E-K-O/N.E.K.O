@@ -82,10 +82,7 @@ def _render_break_reminder_regen_instruction(
     lang: str,
 ) -> str:
     """Render a bounded rewrite request for a repeatedly ignored reminder."""
-    template = BREAK_REMINDER_REGEN_INSTRUCTION.get(
-        lang,
-        BREAK_REMINDER_REGEN_INSTRUCTION["en"],
-    )
+    template = _loc(BREAK_REMINDER_REGEN_INSTRUCTION, lang)
     terms = ", ".join(repeated_terms[:ANTI_REPEAT_INJECT_TOP_K])
     return template.format(terms=terms)
 
@@ -405,8 +402,9 @@ async def _deliver_break_reminder_via_llm(
         if mgr.state.is_proactive_preempted(proactive_sid):
             return None, None
         regen_text = ""
+        regen_timeout = min(20.0, timeout_seconds)
         try:
-            async with asyncio.timeout(20.0):
+            async with asyncio.timeout(regen_timeout):
                 async with await create_chat_llm_async(
                     correction_model,
                     correction_base_url,
@@ -414,7 +412,7 @@ async def _deliver_break_reminder_via_llm(
                     provider_type=correction_provider_type,
                     temperature=1.0,
                     max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
-                    timeout=timeout_seconds,
+                    timeout=regen_timeout,
                 ) as regen_llm:
                     regen_response = await regen_llm.ainvoke(regen_messages)
                     regen_text = (
