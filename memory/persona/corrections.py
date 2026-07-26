@@ -548,10 +548,27 @@ class CorrectionsMixin:
                     new_attempts = safe_int_field(c, 'resolve_attempts') + 1
                     if new_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
                         dropped += 1
+                        if (
+                            c.get('subject_kind')
+                            or c.get('subject_id')
+                            or c.get('scope')
+                        ):
+                            # scoped（成员/群衍生）内容不进日志：只打域标识
+                            # 与长度，对齐 scoped 反思原文不进 stdout 的口径。
+                            detail = (
+                                f"(scoped {c.get('subject_kind', '')!s}"
+                                f"/{c.get('subject_id', '')!s}"
+                                f" old_len={len(c.get('old_text', '') or '')}"
+                                f" new_len={len(c.get('new_text', '') or '')})"
+                            )
+                        else:
+                            detail = (
+                                f"(old={(c.get('old_text', '') or '')[:30]!r} "
+                                f"new={(c.get('new_text', '') or '')[:30]!r})"
+                            )
                         logger.warning(
                             f"[Persona] {name}: correction dead-letter "
-                            f"(old={(c.get('old_text', '') or '')[:30]!r} "
-                            f"new={(c.get('new_text', '') or '')[:30]!r}) "
+                            f"{detail} "
                             f"resolve {new_attempts} 次失败 ≥ "
                             f"{MEMORY_LIVENESS_MAX_ATTEMPTS}，丢弃"
                         )

@@ -416,7 +416,10 @@ async def test_qq_group_bootstrap_never_reads_legacy_private_memory():
     )
     bridge.fetch_scoped_bootstrap_memory = AsyncMock(return_value="群聊长期记忆")
     bridge.fetch_bootstrap_memory = AsyncMock(return_value="私人长期记忆")
-    plugin = SimpleNamespace(memory_bridge=bridge, logger=MagicMock())
+    plugin = SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(),
+        _qq_settings={"group_memory_enabled": True},
+    )
     service = QQSessionInstructionService(plugin)
 
     rendered = await service._build_core_memory_section(
@@ -484,6 +487,7 @@ async def test_qq_group_recall_passes_group_and_member_subjects():
     plugin = SimpleNamespace(
         memory_bridge=bridge,
         logger=MagicMock(),
+        _qq_settings={"group_memory_enabled": True},
         _should_skip_direct_llm_fallback_for_images=lambda **kwargs: False,
     )
 
@@ -525,6 +529,7 @@ async def test_qq_group_recall_omits_phantom_member_for_empty_sender():
     plugin = SimpleNamespace(
         memory_bridge=bridge,
         logger=MagicMock(),
+        _qq_settings={"group_memory_enabled": True},
         _should_skip_direct_llm_fallback_for_images=lambda **kwargs: False,
     )
 
@@ -1787,6 +1792,146 @@ async def test_group_turns_always_refresh_session_prompt():
     # Private path unchanged: empty recall without the flag is a no-op.
     service._apply_turn_memory_context(session, "whatever", "")
     assert session._conversation_history[0] is original
+
+
+@pytest.mark.asyncio
+async def test_correction_dead_letter_redacts_scoped_text(tmp_path):
+    """Dead-lettered corrections carrying subject fields hold participant-
+    derived persona content: the WARN must log only domain identifiers and
+    lengths, never the text itself. Legacy items keep the truncated preview
+    (owner content in owner logs)."""
+    import json as _json
+
+    from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+    from memory.persona import PersonaManager
+
+    subject = MemorySubject.create("group_chat", "qq:123", scope="tenant-a")
+    pm = PersonaManager()
+    pm._config_manager = _build_scope_mock_cm(str(tmp_path))
+    name = "neko_dead_letter"
+    corr_path = tmp_path / f"{name}_corrections.json"
+    items = [
+        {
+            "old_text": "成员的私密旧观点", "new_text": "成员的私密新观点",
+            "entity": subject.persona_section_key,
+            "created_at": "2026-07-27T00:00:01",
+            "resolve_attempts": MEMORY_LIVENESS_MAX_ATTEMPTS - 1,
+            **subject.as_entry_fields(),
+        },
+        {
+            "old_text": "主人的旧观点", "new_text": "主人的新观点",
+            "entity": "master",
+            "created_at": "2026-07-27T00:00:02",
+            "resolve_attempts": MEMORY_LIVENESS_MAX_ATTEMPTS - 1,
+        },
+    ]
+    corr_path.write_text(
+        _json.dumps(items, ensure_ascii=False), encoding="utf-8",
+    )
+    with patch.object(pm, "_corrections_path", return_value=str(corr_path)), \
+         patch("memory.persona.corrections.logger") as mock_logger:
+        await pm._abump_correction_attempts_and_dead_letter(name, items)
+    warn_text = " ".join(
+        str(c.args[0]) for c in mock_logger.warning.call_args_list
+    )
+    assert "成员的私密旧观点" not in warn_text
+    assert "成员的私密新观点" not in warn_text
+    assert "qq:123" in warn_text
+    assert "主人的旧观点" in warn_text
+    remaining = _json.loads(corr_path.read_text(encoding="utf-8"))
+    assert remaining == []
+
+
+def test_double_off_stamp_preserves_first_epoch_cutoff():
+    """OFF -> ON -> OFF while the first settlement is still queued: the
+    second OFF stamp must not overwrite the unconsumed cutoff. Overwriting
+    skews finalize's floor exemption (floor > cutoff resets to 0): the
+    first epoch's nonconsent floor then sits below the new cutoff and
+    permanently skips consented backlog from before the first opt-out."""
+    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
+
+    history = [SimpleNamespace(type="human", content=f"m{i}") for i in range(4)]
+    ud = {
+        "is_group": True,
+        "session": SimpleNamespace(_conversation_history=history),
+    }
+    plugin = SimpleNamespace(_user_sessions={"group:1": ud})
+    service = QQSettingsService.__new__(QQSettingsService)
+    service.plugin = plugin
+
+    service._stamp_group_memory_transition(enabled_after=False)
+    assert ud["group_opt_out_cutoff"] == 4
+    assert ud["pending_disable_settle"] is True
+
+    history.extend(
+        SimpleNamespace(type="human", content=f"m{i}") for i in range(4, 6)
+    )
+    service._stamp_group_memory_transition(enabled_after=True)
+    assert ud["pending_enable_rebase"] == 6
+    assert ud["group_opt_out_cutoff"] == 4  # queued OFF settle keeps its fence
+
+    history.extend(
+        SimpleNamespace(type="human", content=f"m{i}") for i in range(6, 8)
+    )
+    service._stamp_group_memory_transition(enabled_after=False)
+    assert ud["group_opt_out_cutoff"] == 4  # NOT overwritten to 8
+    assert ud["pending_disable_settle"] is True
+    assert "pending_enable_rebase" not in ud
+
+    # Once the first settlement consumed its markers, a later OFF stamps a
+    # fresh fence at the current boundary.
+    ud.pop("pending_disable_settle")
+    ud.pop("group_opt_out_cutoff")
+    service._stamp_group_memory_transition(enabled_after=False)
+    assert ud["group_opt_out_cutoff"] == 8
+
+
+@pytest.mark.asyncio
+async def test_scoped_reads_recheck_live_policy_before_fetch():
+    """A group request can capture use_memory_context=True and then await
+    (login fetch, first memory call) while the admin opts the group out:
+    both scoped read points must recheck the live setting immediately
+    before fetching — persistence is already re-gated at prime time, reads
+    must not inject scoped context into a reply after opt-out."""
+    from plugin.plugins.qq_auto_reply.reply_context_node import (
+        QQReplyContextNode,
+    )
+    from plugin.plugins.qq_auto_reply.session_instruction_service import (
+        QQSessionInstructionService,
+    )
+
+    bridge = MagicMock()
+    bridge.query_relevant_memory = AsyncMock()
+    bridge.fetch_scoped_bootstrap_memory = AsyncMock()
+    plugin = SimpleNamespace(
+        _qq_settings={"group_memory_enabled": False},
+        memory_bridge=bridge,
+        logger=MagicMock(),
+    )
+    node = QQReplyContextNode.__new__(QQReplyContextNode)
+    node.plugin = plugin
+    assert await node._build_recalled_memory_text(
+        her_name="Neko", message="hello",
+        should_use_memory_context=True, attachments=None,
+        is_group=True, group_id="7788", sender_id="1",
+    ) == ""
+    bridge.query_relevant_memory.assert_not_awaited()
+
+    instruction = QQSessionInstructionService.__new__(QQSessionInstructionService)
+    instruction.plugin = plugin
+    assert await instruction._build_core_memory_section(
+        should_use_memory_context=True, her_name="Neko", master_name="M",
+        context_ready_template="{name}/{master}", is_group=True,
+        group_id="7788", sender_id="1",
+    ) == ""
+    bridge.fetch_scoped_bootstrap_memory.assert_not_awaited()
+
+    # Private paths are untouched by the group recheck.
+    bridge.fetch_bootstrap_memory = AsyncMock(return_value="ctx")
+    assert await instruction._build_core_memory_section(
+        should_use_memory_context=True, her_name="Neko", master_name="M",
+        context_ready_template="{name}/{master}", is_group=False,
+    ) != ""
 
 
 @pytest.mark.asyncio

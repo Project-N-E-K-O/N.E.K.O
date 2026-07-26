@@ -25,6 +25,15 @@ class QQReplyContextNode:
     ) -> str:
         if not should_use_memory_context:
             return ""
+        if is_group and not bool(
+            (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                "group_memory_enabled", False,
+            )
+        ):
+            # 读点前复检实时策略：请求构造时捕获的 use=True 在上下文构建的
+            # await 窗口里可能已被 opt-out 反超——persist 侧有 prime 门控，
+            # 读侧也不得在 OFF 之后把 scoped 召回注入群回复。
+            return ""
         if self.plugin._should_skip_direct_llm_fallback_for_images(message=message, attachments=attachments):
             return ""
         normalized_message = str(message or "").strip()

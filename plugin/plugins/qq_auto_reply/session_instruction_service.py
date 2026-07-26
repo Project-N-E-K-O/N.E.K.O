@@ -481,6 +481,14 @@ class QQSessionInstructionService:
     ) -> str:
         if not should_use_memory_context:
             return ""
+        if is_group and not bool(
+            (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                "group_memory_enabled", False,
+            )
+        ):
+            # 读点前复检实时策略（对偶 _build_recalled_memory_text）：构建
+            # 期间 opt-out 的群，不得再拉 scoped bootstrap 上下文。
+            return ""
         group_id = str(group_id or "").strip()
         if is_group and not group_id:
             return ""

@@ -12,6 +12,39 @@ class QQSettingsService:
     def __init__(self, plugin: Any):
         self.plugin = plugin
 
+    def _stamp_group_memory_transition(self, *, enabled_after: bool) -> None:
+        """同步（无 await）给"转变时刻已存在"的群会话打标：后台任务只处理
+        带标会话——转变之后新建的会话天然无标、不被误结算/误 rebase（结构
+        性保证，取代按可变 memory_enabled flag 猜测的启发式）。快速反向切换
+        保留未消费的对向标记（ON 不清 disable 章，OFF 不覆写未消费的
+        cutoff），排队中的各时代结算任务按转变锁次序各自消费。"""
+        for ud in list(getattr(self.plugin, "_user_sessions", {}).values()):
+            if not ud.get("is_group"):
+                continue
+            sess = ud.get("session")
+            hist_len = len(getattr(sess, "_conversation_history", []) or [])
+            if enabled_after:
+                # 不清 disable 标记/cutoff：快速 OFF→ON 时排队中的 OFF
+                # 结算还没消费它们——转变锁保证 OFF 任务先跑（结算到
+                # cutoff 并弹掉自己的标记），随后 ON 任务再按本边界
+                # rebase，两个时代各自成立。
+                # 存转变时刻的边界：后台任务若用运行时 len(history)，
+                # enable 之后到达的正当轮次会被一并跳过。
+                ud["pending_enable_rebase"] = hist_len
+            else:
+                if not ud.get("pending_disable_settle"):
+                    # cutoff：结算只到 opt-out 时刻，竞态窗口内的新轮次
+                    # 不入库。
+                    ud["group_opt_out_cutoff"] = hist_len
+                # else：上一次 OFF 的结算还没消费其 cutoff（OFF→ON→OFF
+                # 且首个结算被别的群拖延）——保留更早的界。覆写会把
+                # finalize 的 floor 豁免判据（floor>cutoff 才归零）打
+                # 歪：第一 OFF 时代记下的 nonconsent floor 落在新 cutoff
+                # 之下，反过来盖掉第一时代之前尚未 digest 的已授权积压。
+                # 保守代价=中间短暂 ON 时代的行按未授权丢弃。
+                ud["pending_disable_settle"] = True
+                ud.pop("pending_enable_rebase", None)
+
     async def _sync_memory_transitions(
         self, *, settle_members: bool, group_transition: bool,
         group_enabled_after: bool,
@@ -220,28 +253,7 @@ class QQSettingsService:
                     ud.setdefault("pending_settle_labels", {}).update(fresh_labels)
                     ud["pending_member_settle"] = True
         if group_memory_before != group_memory_after:
-            # 同步（无 await）给"转变时刻已存在"的群会话打标：后台任务只
-            # 处理带标会话——转变之后新建的会话天然无标、不被误结算/误
-            # rebase（结构性保证，取代按可变 memory_enabled flag 猜测的
-            # 启发式）。反向快速切换会覆盖前一次的标记，天然幂等。
-            for ud in list(getattr(self.plugin, "_user_sessions", {}).values()):
-                if not ud.get("is_group"):
-                    continue
-                sess = ud.get("session")
-                hist_len = len(getattr(sess, "_conversation_history", []) or [])
-                if group_memory_after:
-                    # 不清 disable 标记/cutoff：快速 OFF→ON 时排队中的 OFF
-                    # 结算还没消费它们——转变锁保证 OFF 任务先跑（结算到
-                    # cutoff 并弹掉自己的标记），随后 ON 任务再按本边界
-                    # rebase，两个时代各自成立。
-                    # 存转变时刻的边界：后台任务若用运行时 len(history)，
-                    # enable 之后到达的正当轮次会被一并跳过。
-                    ud["pending_enable_rebase"] = hist_len
-                else:
-                    # cutoff：结算只到 opt-out 时刻，竞态窗口内的新轮次不入库。
-                    ud["group_opt_out_cutoff"] = hist_len
-                    ud["pending_disable_settle"] = True
-                    ud.pop("pending_enable_rebase", None)
+            self._stamp_group_memory_transition(enabled_after=group_memory_after)
         if member_turning_off or group_memory_after != group_memory_before:
             # 记忆开关转变必须同步既有群会话（对偶私聊权限切换的
             # _invalidate_private_session）。单协程顺序执行保证次序：
