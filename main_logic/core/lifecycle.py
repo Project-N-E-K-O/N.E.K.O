@@ -27,7 +27,10 @@ from websockets import exceptions as web_exceptions
 from fastapi import WebSocket
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient, _is_safety_violation_signal
-from main_logic.proactive_delivery import DELIVERY_RETRACTED_KEY
+from main_logic.proactive_delivery import (
+    DELIVERY_RETRACTED_KEY,
+    resolve_callback_delivery_ack,
+)
 from utils.gptsovits_config import is_gsv_disabled_voice_id
 from config.prompts.prompts_sys import _loc, CONTEXT_SUMMARY_READY
 from utils.config_manager import _as_bool
@@ -44,6 +47,7 @@ from ._shared import (
     _ORPHAN_SESSION_REAPER_TASKS,
 )
 from .callback_render import (
+    _build_callback_instruction,
     _render_pending_extra_replies_by_origin,
     _select_callbacks_within_token_budget,
 )
@@ -1709,6 +1713,148 @@ class LifecycleMixin:
             # 塞回是尽力而为：绝不能让队列簿记反过来打断中止清理流程。
             logger.warning(f"Final Swap Sequence: failed to restore undelivered extras: {e}")
 
+    def _select_passive_callbacks_for_swap_prime(self, extras_selected: list = None) -> tuple:
+        """[Hot-swap related] Pick queued passive callbacks to ride the swap prime.
+
+        Passive (``delivery_mode="passive"`` / ai_behavior="read") callbacks
+        never mirror into ``pending_extra_replies`` (PR #2469), so a pure
+        voice session has no user-turn drain to carry them. Their delivery
+        point is HERE: the next NATURALLY-occurring hot swap folds them into
+        the new session's prime text as background context — rendered with
+        the PASSIVE templates, and never flipping ``skipped`` to False, so
+        they cannot cause an unsolicited response.
+
+        Returns ``(selected, rendered_text)``. Selection shares the
+        ``AGENT_CALLBACK_TOTAL_MAX_TOKENS`` budget with the already-selected
+        proactive extras: ``extras_selected`` is prepended to the candidate
+        list before the budget walk, so passive only takes what the extras
+        left over. Over-budget passive callbacks stay queued for the next
+        swap (same semantics as the extras ``_deferred``).
+
+        The queue is NOT drained here — removal is deferred to promote
+        success via :meth:`_remove_swap_delivered_passive_cbs`, mirroring the
+        ``_prime_selected_extras`` bookkeeping, so every pre-promote abort
+        keeps the queue intact with zero restore code. Topic-hook snapshots
+        are excluded: they have their own ack/retry lifecycle and delivery
+        gates that this path must not bypass.
+        """
+        try:
+            candidates = [
+                cb for cb in (self.pending_agent_callbacks or [])
+                if isinstance(cb, dict)
+                and cb.get("delivery_mode") == "passive"
+                and not cb.get(DELIVERY_RETRACTED_KEY)
+                and cb.get("channel") != "topic_hook"
+            ]
+            if not candidates:
+                return [], ""
+            # Same staleness hygiene as the text-mode drain: a same-key
+            # superseded cue must not deliver, and gets purged from the live
+            # queue (ack False) rather than lingering until the next drain.
+            self._retract_stale_coalesced(candidates)
+            self._purge_retracted_agent_callbacks()
+            candidates = [
+                cb for cb in candidates if not cb.get(DELIVERY_RETRACTED_KEY)
+            ]
+            if not candidates:
+                return [], ""
+            from config import AGENT_CALLBACK_TOTAL_MAX_TOKENS
+            _extras = list(extras_selected or [])
+            selected_all, _ = _select_callbacks_within_token_budget(
+                _extras + candidates, AGENT_CALLBACK_TOTAL_MAX_TOKENS
+            )
+            selected = selected_all[len(_extras):]
+            if not selected:
+                return [], ""
+            _lang = normalize_language_code(self.user_language, format='short')
+            rendered = _build_callback_instruction(
+                selected,
+                lang=_lang,
+                lanlan_name=getattr(self, "lanlan_name", "") or "",
+                master_name=getattr(self, "master_name", "") or "",
+                passive=True,
+            )
+            return selected, rendered
+        except Exception as e:
+            # 选取/渲染失败绝不能打断 swap：这批 passive 留在队列等下一轮。
+            logger.warning(f"Final Swap Sequence: passive callback selection failed: {e}")
+            return [], ""
+
+    def _remove_swap_delivered_passive_cbs(self, selected: list) -> list:
+        """[Hot-swap related] Dequeue prime-injected passive callbacks at
+        promote success; returns the actually-removed subset (ack'd True).
+
+        Identity-based removal, same as the extras counterpart: entries a
+        concurrent path consumed inside the prime→promote window (text-turn
+        drain, retraction purge, flood cap) no-op here instead of deleting a
+        re-queued same-id newcomer.
+        """
+        if not selected:
+            return []
+        try:
+            selected_obj_ids = {id(cb) for cb in selected}
+            removed = [
+                cb for cb in self.pending_agent_callbacks
+                if id(cb) in selected_obj_ids
+            ]
+            if not removed:
+                return []
+            self.pending_agent_callbacks = [
+                cb for cb in self.pending_agent_callbacks
+                if id(cb) not in selected_obj_ids
+            ]
+            for cb in removed:
+                resolve_callback_delivery_ack(cb, True)
+            return removed
+        except Exception as e:
+            logger.warning(f"Final Swap Sequence: passive callback dequeue failed: {e}")
+            return []
+
+    def _restore_undelivered_swap_passive_cbs(self, removed_cbs: list) -> None:
+        """[Hot-swap related] Mirror of :meth:`_restore_undelivered_swap_extras`
+        for prime-injected passive callbacks.
+
+        Only the post-promote death exits call this (promoted session dies
+        before its next reply, so the primed context is lost): put the
+        removed entries back at the queue head for the next swap. Staleness
+        is deliberately NOT re-checked here — every delivery point
+        (text-turn drain / next swap's selection) re-runs
+        ``_retract_stale_coalesced`` anyway. Topic-hook snapshots and entries
+        whose delivery id is already back in the queue (a newer re-enqueue
+        won) are skipped, matching the extras restore guards.
+        """
+        if not removed_cbs:
+            return
+        try:
+            from config import AGENT_CALLBACK_QUEUE_MAX_ITEMS
+            queued_ids = {
+                cb.get("_callback_delivery_id")
+                for cb in (self.pending_agent_callbacks or [])
+                if isinstance(cb, dict) and cb.get("_callback_delivery_id")
+            }
+            restored = [
+                cb for cb in removed_cbs
+                if isinstance(cb, dict)
+                and not cb.get(DELIVERY_RETRACTED_KEY)
+                and cb.get("channel") != "topic_hook"
+                and cb.get("_callback_delivery_id") not in queued_ids
+            ]
+            if not restored:
+                return
+            self.pending_agent_callbacks = restored + self.pending_agent_callbacks
+            # flood guard 与 enqueue_agent_callback 对齐：drop-oldest。
+            if len(self.pending_agent_callbacks) > AGENT_CALLBACK_QUEUE_MAX_ITEMS:
+                self.pending_agent_callbacks = (
+                    self.pending_agent_callbacks[-AGENT_CALLBACK_QUEUE_MAX_ITEMS:]
+                )
+            logger.info(
+                "Final Swap Sequence: %d undelivered passive callback(s) restored to queue head after aborted swap",
+                len(restored),
+            )
+        except Exception as e:
+            # 塞回是尽力而为：绝不能让队列簿记反过来打断中止清理流程。
+            logger.warning(f"Final Swap Sequence: failed to restore undelivered passive callbacks: {e}")
+
     async def _perform_final_swap_sequence(self):
         """[Hot-swap related] Perform the final swap sequence"""
         logger.info("Final Swap Sequence: Starting...")
@@ -1747,6 +1893,11 @@ class LifecycleMixin:
             _prime_selected_extras: list = []
             _removed_extras: list = []
             _removed_cb_backed_ids: set = set()
+            # Passive callbacks riding this swap's prime text (voice pending
+            # session only). Same deferred-removal bookkeeping as
+            # _prime_selected_extras: queue untouched until promote succeeds.
+            _prime_selected_passive_cbs: list = []
+            _removed_passive_cbs: list = []
             next_session_context_messages = getattr(self, "next_session_context_messages", []) or []
             incremental_next_session_context = next_session_context_messages[
                 self.initial_next_session_context_snapshot_len:
@@ -1791,6 +1942,19 @@ class LifecycleMixin:
                     lanlan_name=self.lanlan_name,
                     master_name=self.master_name,
                 )
+                # Passive（read）回调搭车：PASSIVE 渲染块排在播报文本之后，模型
+                # 把它当背景上下文；本分支 skipped=False 由 proactive extras
+                # 决定，passive 只共享同一次注入，不改变触发语义。预算上
+                # passive 只吃 extras 选剩的份额。
+                if isinstance(self.pending_session, OmniRealtimeClient):
+                    _passive_sel, _passive_swap_text = (
+                        self._select_passive_callbacks_for_swap_prime(
+                            extras_selected=_selected,
+                        )
+                    )
+                    if _passive_swap_text:
+                        final_prime_text += "\n" + _passive_swap_text
+                        _prime_selected_passive_cbs = _passive_sel
                 try:
                     await self.pending_session.prime_context(final_prime_text, skipped=False)
                 except (web_exceptions.ConnectionClosed, AttributeError) as e:
@@ -1812,6 +1976,17 @@ class LifecycleMixin:
             else:
                 _lang = normalize_language_code(self.user_language, format='short')
                 final_prime_text += _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
+                # Passive（read）回调搭车：本分支没有 proactive extras，
+                # skipped 保持 True——内容只进 session instructions（Qwen 同路；
+                # Gemini 走 skip-guard 丢弃响应），绝不触发主动发言。这就是
+                # 语音场景 passive 的唯一投递点。
+                if isinstance(self.pending_session, OmniRealtimeClient):
+                    _passive_sel, _passive_swap_text = (
+                        self._select_passive_callbacks_for_swap_prime()
+                    )
+                    if _passive_swap_text:
+                        final_prime_text += "\n" + _passive_swap_text
+                        _prime_selected_passive_cbs = _passive_sel
                 try:
                     await self.pending_session.prime_context(final_prime_text, skipped=True)
                 except (web_exceptions.ConnectionClosed, AttributeError) as e:
@@ -1944,6 +2119,11 @@ class LifecycleMixin:
                         if isinstance(cb, dict)
                         and cb.get("_callback_delivery_id") in _removed_ids
                     }
+            # Passive 搭车条目的对偶出队：同样按对象身份、同样只在 promote
+            # 成功后。窗口期被 drain/清扫抢先消费的条目在此 no-op。
+            _removed_passive_cbs = self._remove_swap_delivered_passive_cbs(
+                _prime_selected_passive_cbs
+            )
             self._require_context_append_current_delivery = True
             next_context_count_at_promote = len(self._snapshot_next_session_context_messages())
             await self._apply_pending_tts_route_after_swap()
@@ -2020,11 +2200,13 @@ class LifecycleMixin:
             # prelude，它们随后都会关闭 promoted 会话，注入内容不会再投递——把
             # promote 时移除的条目塞回队首等下一次 hot-swap。
             self._restore_undelivered_swap_extras(_removed_extras, _removed_cb_backed_ids)
-            # post-promote 取消（_removed_extras 非空）不重启 listener：promoted
-            # 会话即将被 canceller 关闭，重启会让它在关闭前把已 prime 的内容
-            # 播出来，与刚塞回的队列形成双投；没有 listener，服务器响应不会被
-            # 消费播出。重启只服务 promote 前取消后"老会话失去 listener"的恢复。
-            if self.is_active and self.session and hasattr(self.session, 'handle_messages') and not _removed_extras and (not self.message_handler_task or self.message_handler_task.done()):
+            self._restore_undelivered_swap_passive_cbs(_removed_passive_cbs)
+            # post-promote 取消（_removed_extras / _removed_passive_cbs 非空）不
+            # 重启 listener：promoted 会话即将被 canceller 关闭，重启会让它在
+            # 关闭前把已 prime 的内容播出来，与刚塞回的队列形成双投；没有
+            # listener，服务器响应不会被消费播出。重启只服务 promote 前取消后
+            # "老会话失去 listener"的恢复。
+            if self.is_active and self.session and hasattr(self.session, 'handle_messages') and not _removed_extras and not _removed_passive_cbs and (not self.message_handler_task or self.message_handler_task.done()):
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
 
         except Exception as e:
@@ -2081,6 +2263,7 @@ class LifecycleMixin:
                 self.session = None
                 self.is_active = False
                 self._restore_undelivered_swap_extras(_removed_extras, _removed_cb_backed_ids)
+                self._restore_undelivered_swap_passive_cbs(_removed_passive_cbs)
             if self.is_active and self.session and hasattr(self.session, 'handle_messages') and (not self.message_handler_task or self.message_handler_task.done()):
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
         finally:

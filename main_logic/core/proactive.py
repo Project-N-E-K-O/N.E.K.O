@@ -1717,7 +1717,11 @@ class ProactiveMixin:
         voice-mode hot-swap fallback injection via prime_context(). Passive
         callbacks deliberately stay only in pending_agent_callbacks: mirroring
         them into pending_extra_replies would let a context-only ``read`` cue
-        trigger session preparation and an unsolicited response.
+        trigger session preparation and an unsolicited response. Their
+        voice-mode delivery point is instead the next NATURALLY-occurring hot
+        swap, which folds them into the new session's prime text as background
+        context (``_select_passive_callbacks_for_swap_prime``) without ever
+        triggering a response.
 
         Voice queue element shape is structured (not flat text) so the
         hot-swap renderer can:
