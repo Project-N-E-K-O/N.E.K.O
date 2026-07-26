@@ -270,8 +270,9 @@ class CoreConfigMixin:
             if not (key.endswith('_URL') and isinstance(value, str)):
                 continue
             try:
-                host = (urlparse(value).hostname or '').lower()
-                path = urlparse(value).path or ''
+                parsed = urlparse(value)
+                host = (parsed.hostname or '').lower()
+                path = parsed.path or ''
             except Exception:
                 # URL 解析不了 → 不可能是我们那两个官方 host，按「不需要区域」跳过。
                 # 保守方向正确：宁可不探测，也不为一个畸形 URL 暴露用户 IP。
