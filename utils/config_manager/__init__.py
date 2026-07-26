@@ -197,8 +197,15 @@ def _ensure_config_manager_migrated():
     # 失败只打日志，绝不阻塞启动（读路径仍会在内存里归一化）。
     try:
         _config_manager.migrate_openclaw_url_port()
-    except Exception:
-        pass
+    except Exception as exc:
+        # "shouldn't happen"：该方法内部已吞掉并记录所有异常，这层只是兜住它自身
+        # 意外抛出的情况（例如 logger 配置坏掉）。不能让一次可选的落盘迁移拦住启动，
+        # 读路径无论如何都会在内存里归一化，功能不受影响。只打类名，避免 OSError 的
+        # str(exc) 带上 filename 泄露用户名。
+        logger.warning(
+            "[ConfigManager] migrate_openclaw_url_port 抛异常（已忽略）: %s",
+            type(exc).__name__,
+        )
     # 在 config/memory 基础迁移完成后，对遗留 Documents/AppData 路径下的
     # N.E.K.O/memory 做一次性软迁移：只迁移已关联角色的条目，未关联条目
     # 留给前端 legacy cleanup UI 手动清理（不在启动时自动清除）。
