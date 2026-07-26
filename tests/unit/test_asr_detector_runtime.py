@@ -12,6 +12,8 @@ from main_logic.asr_client.detector_runtime import (
     DetectorRuntime,
     SmartTurnLease,
     SmartTurnReadiness,
+    _ResetItem,
+    _VoiceTurnAdapter,
 )
 from main_logic.asr_client.detector import (
     DetectorActivityEvent,
@@ -610,6 +612,44 @@ async def test_overflow_reset_rejects_audio_until_barrier_finishes() -> None:
     assert third.status is DetectorSubmitStatus.ACCEPTED
     assert adapter.push_calls == 2
     await detector.close()
+
+
+async def test_stale_reset_consumed_after_newer_reset_keeps_new_identity() -> None:
+    gate = _Gate()
+    adapter = _VoiceTurnAdapter(
+        vad=_Vad(),
+        gate=gate,
+        coordinator=_SemanticCoordinator(),
+        on_commit=AsyncMock(),
+    )
+    await adapter.start()
+    await adapter.push_audio(
+        generation=1, buffer_epoch=0, utterance_id=1, pcm16=b"\x01\x00" * 160
+    )
+    await adapter.wait_idle()
+    assert adapter._identity == (1, 0, 1)
+
+    loop = asyncio.get_running_loop()
+    stale_completed: asyncio.Future[None] = loop.create_future()
+    newer_completed: asyncio.Future[None] = loop.create_future()
+    # Racing resets both enqueue with priority, so the later-enqueued newer
+    # reset is consumed first and the stale one afterwards.
+    adapter._queue.put_control_nowait(
+        _ResetItem((2, 0, 2), stale_completed), priority=True
+    )
+    adapter._queue.put_control_nowait(
+        _ResetItem((3, 0, 3), newer_completed), priority=True
+    )
+    await asyncio.wait_for(asyncio.gather(newer_completed, stale_completed), 1)
+
+    assert adapter._identity == (3, 0, 3)
+    gate.inputs.clear()
+    await adapter.push_audio(
+        generation=3, buffer_epoch=0, utterance_id=3, pcm16=b"\x02\x00" * 160
+    )
+    await adapter.wait_idle()
+    assert gate.inputs == [b"\x02\x00" * 160]
+    await adapter.close()
 
 
 async def test_silero_unavailable_keeps_periodic_smart_turn_authority() -> None:

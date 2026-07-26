@@ -611,6 +611,11 @@ class _VoiceTurnAdapter:
         *,
         requester: asyncio.Task[object] | None = None,
     ) -> None:
+        if self._identity is not None and identity < self._identity:
+            # A newer reset already jumped the control queue and owns the
+            # current turn; a stale one must not roll the identity back or
+            # cancel the newer turn's work.
+            return
         self._cancel_fallback()
         self._cancel_smart_turn_unload()
         # Invalidate callbacks before awaiting their cancellation. A callback

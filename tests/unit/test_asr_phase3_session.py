@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Awaitable, Callable
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -11,7 +12,33 @@ from main_logic.asr_client._infra import (
     _CallbackItem,
     _RealtimeAsrSessionImpl,
 )
-from main_logic.asr_client.provider_policy import AsrProviderPolicy
+from main_logic.asr_client.detector import (
+    AsrDetectorDispatcher,
+    CoreDetectorEventEnvelope,
+    DetectorActivityEvent,
+    DetectorCandidateKey,
+    DetectorIngressIdentity,
+)
+from main_logic.asr_client.lifecycle import (
+    VoiceInputLifecycleController,
+    VoiceLifecycleState,
+    VoiceRouteMode,
+    VoiceTurnToken,
+)
+from main_logic.asr_client.provider_policy import (
+    AsrProviderPolicy,
+    resolve_provider_policy,
+)
+from main_logic.asr_client.runtime import (
+    AsrRuntimeCallbacks,
+    IndependentAsrRuntime,
+)
+from main_logic.voice_turn.contracts import (
+    AsrFailureEvent,
+    AsrLifecycleNotification,
+    AsrStatusEvent,
+    SpeechActivityEvent,
+)
 
 
 pytestmark = pytest.mark.asyncio
@@ -825,6 +852,145 @@ async def test_close_waits_for_managed_voice_turn_reset_before_adapter_close():
 
     assert adapter.closed is True
     assert session._voice_turn_reset_task is None
+
+
+def _build_fail_closed_runtime() -> tuple[
+    IndependentAsrRuntime,
+    list[str],
+    list[AsrFailureEvent],
+    list[AsrStatusEvent],
+]:
+    lifecycle_states: list[str] = []
+    failures: list[AsrFailureEvent] = []
+    statuses: list[AsrStatusEvent] = []
+
+    async def on_lifecycle(notification: AsrLifecycleNotification) -> None:
+        # Yield so concurrently scheduled dispatcher teardown runs mid-delivery.
+        await asyncio.sleep(0)
+        lifecycle_states.append(notification.state)
+
+    async def on_failure(event: AsrFailureEvent) -> None:
+        failures.append(event)
+
+    async def on_status(event: AsrStatusEvent) -> None:
+        statuses.append(event)
+
+    runtime = IndependentAsrRuntime(
+        AsrRuntimeCallbacks(
+            display_name=lambda: "Test",
+            on_prepare_turn=AsyncMock(return_value=True),
+            on_partial=AsyncMock(),
+            on_final=AsyncMock(),
+            on_failure=on_failure,
+            on_status=on_status,
+            on_lifecycle=on_lifecycle,
+        )
+    )
+    return runtime, lifecycle_states, failures, statuses
+
+
+def _install_independent_asr_turn(
+    runtime: IndependentAsrRuntime,
+    session: SimpleNamespace,
+) -> tuple[VoiceTurnToken, VoiceInputLifecycleController]:
+    lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("qwen", "manual"),
+        shadow_mode=False,
+    )
+    lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    detector = SimpleNamespace(
+        detector_epoch=1,
+        endpointing_ready=lambda _token: True,
+        close=AsyncMock(),
+    )
+    runtime._asr_session = session
+    runtime._asr_provider = "qwen"
+    runtime._asr_lifecycle = lifecycle
+    runtime._asr_detector = detector
+    ingress = runtime.capture_ingress_token(
+        connection_id="socket",
+        lease_generation=1,
+        route_generation=1,
+    )
+    runtime._asr_current_ingress_token = ingress
+    turn_token = VoiceTurnToken(
+        ingress=ingress,
+        turn_id=lifecycle.snapshot.turn_id,
+    )
+    return turn_token, lifecycle
+
+
+async def _drain_fail_closed_teardown(runtime: IndependentAsrRuntime) -> None:
+    if runtime._asr_close_tasks:
+        await asyncio.gather(*runtime._asr_close_tasks, return_exceptions=True)
+    await runtime._asr_audio_dispatcher.close()
+    await runtime._asr_detector_dispatcher.close()
+
+
+async def test_provider_stream_failure_still_delivers_fail_closed_notifications():
+    runtime, lifecycle_states, failures, statuses = _build_fail_closed_runtime()
+    session = SimpleNamespace(
+        is_ready=True,
+        stream_audio=AsyncMock(side_effect=RuntimeError("provider write failed")),
+        signal_user_activity_end=AsyncMock(),
+        close=AsyncMock(),
+    )
+    turn_token, _lifecycle = _install_independent_asr_turn(runtime, session)
+    audio_dispatcher = runtime._asr_audio_dispatcher
+
+    assert audio_dispatcher.activate(turn_token, session, b"\x01\x00" * 160)
+    await asyncio.wait_for(_wait_until(lambda: len(statuses) == 1), 1)
+
+    assert lifecycle_states == [VoiceLifecycleState.BLOCKED.value]
+    assert [event.code for event in failures] == ["ASR_INDEPENDENT_STREAM_FAILED"]
+    assert [event.code for event in statuses] == ["ASR_INDEPENDENT_STREAM_FAILED"]
+    assert statuses[0].session_epoch == runtime._asr_session_epoch
+    assert runtime._asr_session is None
+    for task in list(audio_dispatcher._failure_tasks):
+        await task
+    await _drain_fail_closed_teardown(runtime)
+
+
+async def test_detector_handler_failure_still_delivers_fail_closed_notifications():
+    runtime, lifecycle_states, failures, statuses = _build_fail_closed_runtime()
+    session = SimpleNamespace(
+        is_ready=True,
+        signal_user_activity_end=AsyncMock(),
+        close=AsyncMock(),
+    )
+    turn_token, lifecycle = _install_independent_asr_turn(runtime, session)
+    detector = runtime._asr_detector
+    detector_dispatcher = AsrDetectorDispatcher(
+        AsyncMock(side_effect=RuntimeError("detector handler failed")),
+        on_failure=runtime._handle_asr_detector_dispatcher_failure,
+    )
+    runtime._asr_detector_dispatcher = detector_dispatcher
+    envelope = CoreDetectorEventEnvelope(
+        event=DetectorActivityEvent(
+            ingress=DetectorIngressIdentity(
+                ingress_token=turn_token.ingress,
+                detector_epoch=detector.detector_epoch,
+                sequence_no=1,
+            ),
+            candidate=DetectorCandidateKey(detector.detector_epoch, 1),
+            activity=SpeechActivityEvent.SPEECH_STARTED,
+        ),
+        detector_ref=detector,
+        lifecycle_ref=lifecycle,
+        session_epoch=runtime._asr_session_epoch,
+    )
+
+    assert detector_dispatcher.submit_nowait(envelope)
+    await asyncio.wait_for(_wait_until(lambda: len(statuses) == 1), 1)
+
+    assert lifecycle_states == [VoiceLifecycleState.BLOCKED.value]
+    assert [event.code for event in failures] == ["ASR_ENDPOINTING_FAILED"]
+    assert [event.code for event in statuses] == ["ASR_ENDPOINTING_FAILED"]
+    assert statuses[0].session_epoch == runtime._asr_session_epoch
+    assert runtime._asr_session is None
+    for task in list(detector_dispatcher._failure_tasks):
+        await task
+    await _drain_fail_closed_teardown(runtime)
 
 
 async def _wait_until(predicate) -> None:

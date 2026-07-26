@@ -254,18 +254,29 @@ class AsrAudioDispatcher:
             self._queue.put_nowait(command)
         except asyncio.QueueFull:
             self.abort(command.turn_token)
-            failure_task = asyncio.create_task(
-                self._on_failure(
-                    command.turn_token,
-                    RuntimeError("ASR_AUDIO_COMMAND_BACKPRESSURE"),
-                ),
+            self._dispatch_failure(
+                command.turn_token,
+                RuntimeError("ASR_AUDIO_COMMAND_BACKPRESSURE"),
                 name="asr-audio-command-backpressure",
             )
-            self._failure_tasks.add(failure_task)
-            failure_task.add_done_callback(self._failure_tasks.discard)
             return False
         self._enqueued_at[id(command)] = time.monotonic()
         return True
+
+    def _dispatch_failure(
+        self,
+        turn_token: VoiceTurnToken,
+        error: BaseException,
+        *,
+        name: str,
+    ) -> None:
+        """Run the failure callback outside the worker task it may tear down."""
+        failure_task = asyncio.create_task(
+            self._on_failure(turn_token, error),
+            name=name,
+        )
+        self._failure_tasks.add(failure_task)
+        failure_task.add_done_callback(self._failure_tasks.discard)
 
     def _ensure_worker(self) -> None:
         if self._worker is None or self._worker.done():
@@ -319,7 +330,11 @@ class AsrAudioDispatcher:
                 if not self._command_is_current(command):
                     continue
                 self.abort(command.turn_token)
-                await self._on_failure(command.turn_token, exc)
+                self._dispatch_failure(
+                    command.turn_token,
+                    exc,
+                    name="asr-audio-dispatch-failure",
+                )
             finally:
                 self._queue.task_done()
 

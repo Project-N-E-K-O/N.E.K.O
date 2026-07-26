@@ -306,6 +306,7 @@ class AsrDetectorDispatcher:
         self._generation = 0
         self._failed = False
         self._worker: asyncio.Task[None] | None = None
+        self._failure_tasks: set[asyncio.Task[None]] = set()
 
     def submit_nowait(self, envelope: CoreDetectorEventEnvelope) -> bool:
         if self._failed:
@@ -356,11 +357,24 @@ class AsrDetectorDispatcher:
                     continue
                 self._failed = True
                 self.invalidate_all()
-                try:
-                    await self._on_failure(envelope, error)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    logger.exception("ASR detector fail-closed callback failed")
+                failure_task = asyncio.create_task(
+                    self._deliver_failure(envelope, error),
+                    name="core-asr-detector-fail-closed",
+                )
+                self._failure_tasks.add(failure_task)
+                failure_task.add_done_callback(self._failure_tasks.discard)
             finally:
                 self._queue.task_done()
+
+    async def _deliver_failure(
+        self,
+        envelope: CoreDetectorEventEnvelope,
+        error: BaseException,
+    ) -> None:
+        """Run the fail-closed callback outside the worker task it may tear down."""
+        try:
+            await self._on_failure(envelope, error)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("ASR detector fail-closed callback failed")
