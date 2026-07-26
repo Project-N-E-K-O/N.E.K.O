@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from utils.config_manager import core_config as core_config_module
 from utils.config_manager.core_config import CoreConfigMixin
 
 
@@ -504,3 +505,91 @@ def test_session_construction_resolves_paired_configs_from_one_snapshot():
         checked += 1
 
     assert checked == 2, f"只检查到 {checked} 个构造点，用例的目标函数名可能已过时"
+
+
+class _FlakyWriteManager(CoreConfigMixin):
+    """Fails os.replace-style writes the first N times, like AV holding the target."""
+
+    def __init__(self, stored: dict, fail_times: int):
+        self.stored = stored
+        self._left = fail_times
+        self.attempts = 0
+
+    def load_json_config(self, filename, default_value=None):
+        return dict(self.stored)
+
+    def save_json_config(self, filename, data):
+        self.attempts += 1
+        if self._left > 0:
+            self._left -= 1
+            raise PermissionError(5, "Access is denied")
+        self.stored = dict(data)
+
+
+@pytest.mark.unit
+def test_startup_migration_retries_a_transient_write_failure(monkeypatch):
+    """Windows os.replace can lose to an antivirus scan; one attempt must not give up.
+
+    Losing the retry would leave openclawUrl at 8089 for the whole run, and the settings
+    form would then post that stale value straight back -- the migration never converges.
+    """
+    monkeypatch.setattr(core_config_module.time, "sleep", lambda _s: None)
+    manager = _FlakyWriteManager({"openclawUrl": "http://127.0.0.1:8089"}, fail_times=2)
+
+    assert manager.migrate_openclaw_url_port() is True
+    assert manager.attempts == 3, f"应重试到成功，实际尝试 {manager.attempts} 次"
+    assert manager.stored["openclawUrl"] == "http://127.0.0.1:8088"
+
+
+@pytest.mark.unit
+def test_startup_migration_gives_up_after_the_attempt_budget(monkeypatch):
+    """Bounded, not infinite: a permanently unwritable config must not hang startup."""
+    monkeypatch.setattr(core_config_module.time, "sleep", lambda _s: None)
+    manager = _FlakyWriteManager({"openclawUrl": "http://127.0.0.1:8089"}, fail_times=99)
+
+    assert manager.migrate_openclaw_url_port() is False
+    assert manager.attempts == core_config_module._OPENCLAW_MIGRATION_ATTEMPTS
+    # 预算本身必须小：只断言 attempts==常量 是自指的，把常量调到 50 也照样过，
+    # 而那会让一个可选迁移在启动路径上退避好几秒。这里钉死量级。
+    assert core_config_module._OPENCLAW_MIGRATION_ATTEMPTS <= 5, "重试预算过大，会拖慢启动"
+    worst_case_delay = sum(
+        core_config_module._OPENCLAW_MIGRATION_RETRY_DELAY_S * (i + 1)
+        for i in range(core_config_module._OPENCLAW_MIGRATION_ATTEMPTS - 1)
+    )
+    assert worst_case_delay <= 1.0, f"最坏退避累计 {worst_case_delay:.1f}s，启动不该为可选迁移等这么久"
+    # 读路径仍会在内存里归一化，所以运行时不受影响
+    assert manager.stored["openclawUrl"] == "http://127.0.0.1:8089"
+
+
+@pytest.mark.unit
+def test_save_choke_point_normalizes_a_resubmitted_legacy_port():
+    """The settings form echoes the raw file value back; saving it must not re-entrench 8089.
+
+    Startup migration can fail (see above). Without normalizing here, every later save
+    would write the legacy port straight back and the migration would never converge.
+    """
+    source = (
+        REPO_ROOT / "main_routers" / "config_router" / "core_config.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    # 静态钉住：openclawUrl 的落盘赋值必须经过 _migrated_openclaw_url
+    assigns = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(t, ast.Subscript)
+            and isinstance(t.slice, ast.Constant)
+            and t.slice.value == "openclawUrl"
+            for t in node.targets
+        )
+    ]
+    assert assigns, "没找到 openclawUrl 的落盘赋值，用例可能已过时"
+    for node in assigns:
+        called = {
+            c.func.attr for c in ast.walk(node)
+            if isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
+        }
+        assert "_migrated_openclaw_url" in called, (
+            "保存路径直接落了用户提交的 openclawUrl，旧的 8089 会被重新固化"
+        )

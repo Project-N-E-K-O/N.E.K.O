@@ -27,6 +27,7 @@ import asyncio
 import json
 import math
 import sys
+import time
 from copy import deepcopy
 from urllib.parse import urlparse, urlunparse
 
@@ -35,6 +36,12 @@ from utils.gptsovits_config import normalize_gsv_api_url
 from utils.steam_state import get_steamworks
 
 from ._shared import _as_bool, logger
+
+
+# 启动期迁移的写盘重试：Windows 上 os.replace 会被杀软扫描短暂占用而抛
+# PermissionError(WinError 5)，一次就放弃会让旧端口留到下次启动。
+_OPENCLAW_MIGRATION_ATTEMPTS = 3
+_OPENCLAW_MIGRATION_RETRY_DELAY_S = 0.1
 
 
 class CoreConfigMixin:
@@ -105,20 +112,31 @@ class CoreConfigMixin:
         get_core_config still normalizes in memory (see _migrated_openclaw_url) so a
         config that somehow arrives with 8089 later is routed correctly regardless.
         """
-        try:
-            core_cfg = self.load_json_config('core_config.json', {})
-            if not isinstance(core_cfg, dict):
-                return False
-            migrated = self._migrated_openclaw_url(core_cfg.get('openclawUrl'))
-            if not migrated:
-                return False
-            core_cfg['openclawUrl'] = migrated
-            self.save_json_config('core_config.json', core_cfg)
-            logger.info("已自动将 openclawUrl 从 8089 迁移到 8088: %s", migrated)
-            return True
-        except Exception as exc:
-            logger.warning("自动迁移 openclawUrl 到 8088 失败: %s", exc)
-            return False
+        for attempt in range(_OPENCLAW_MIGRATION_ATTEMPTS):
+            try:
+                core_cfg = self.load_json_config('core_config.json', {})
+                if not isinstance(core_cfg, dict):
+                    return False
+                migrated = self._migrated_openclaw_url(core_cfg.get('openclawUrl'))
+                if not migrated:
+                    return False
+                core_cfg['openclawUrl'] = migrated
+                self.save_json_config('core_config.json', core_cfg)
+                logger.info("已自动将 openclawUrl 从 8089 迁移到 8088: %s", migrated)
+                return True
+            except Exception as exc:
+                last = attempt == _OPENCLAW_MIGRATION_ATTEMPTS - 1
+                logger.warning(
+                    "自动迁移 openclawUrl 到 8088 失败（第 %d/%d 次）: %s",
+                    attempt + 1, _OPENCLAW_MIGRATION_ATTEMPTS, exc,
+                )
+                if last:
+                    return False
+                # Windows: os.replace 撞上杀软/资源管理器占用会抛 PermissionError(WinError 5)，
+                # 扫描通常几十毫秒内结束，短暂退避后重试即可越过。POSIX 的 rename(2) 不受此限，
+                # 这里的重试对它是无害空转。
+                time.sleep(_OPENCLAW_MIGRATION_RETRY_DELAY_S * (attempt + 1))
+        return False
 
     @staticmethod
     def _check_ip_non_mainland_http():
