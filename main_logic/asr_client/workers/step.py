@@ -156,6 +156,26 @@ async def _step_expire_stalled_pending_turns(
             )
 
 
+def _step_receive_timeout(state: _StepConnectionState) -> float | None:
+    """Return seconds until the earliest pending-turn deadline, or None.
+
+    The stalled-turn sweep otherwise runs only when another inbound frame
+    arrives (or a manual commit is sent), so an unbounded receive wait would
+    let a provider that goes silent after speech_started pin the FIFO queue
+    forever. Bounding the wait with this value guarantees the sweep runs at
+    the deadline even with no further provider events.
+    """
+
+    earliest: float | None = None
+    for pending in (state.pending_provider_turns, state.pending_manual_commits):
+        if pending and (earliest is None or pending[0][1] < earliest):
+            earliest = pending[0][1]
+    if earliest is None:
+        return None
+    remaining = earliest + _STEP_PENDING_TURN_TIMEOUT_SECONDS - state.clock()
+    return max(0.0, remaining)
+
+
 def _step_remember_finalized_item(
     state: _StepConnectionState,
     item_id: str,
@@ -394,7 +414,20 @@ async def _step_receiver(
     state: _StepConnectionState,
 ) -> str:
     try:
-        async for raw_message in ws:
+        while True:
+            # Bound the wait by the earliest pending-turn deadline so the
+            # stalled-turn sweep runs even when the provider sends nothing
+            # more. ws.recv() is used instead of async iteration because
+            # wait_for cancels the awaited call on timeout, and cancelling
+            # the iterator's __anext__ would finalize the underlying async
+            # generator and end the stream; recv() is cancellation-safe.
+            try:
+                raw_message = await asyncio.wait_for(
+                    ws.recv(), timeout=_step_receive_timeout(state)
+                )
+            except asyncio.TimeoutError:
+                await _step_expire_stalled_pending_turns(response_queue, state)
+                continue
             try:
                 event = json.loads(raw_message)
             except (TypeError, ValueError):
@@ -518,19 +551,11 @@ async def _step_receiver(
                     # a future provider turn or manual commit.
                     _step_remember_finalized_item(state, item_id)
                 continue
-
-        if not state.intentional_close.is_set():
-            await _emit_step_error_once(
-                response_queue,
-                state,
-                "ASR_STEP_CONNECTION_CLOSED",
-                "Step ASR connection closed unexpectedly",
-            )
-            return "error"
-        return "closed"
     except asyncio.CancelledError:
         raise
     except ConnectionClosed:
+        # ConnectionClosedOK is included: recv() raises it on a graceful
+        # close where async iteration used to end the loop silently.
         if not state.intentional_close.is_set():
             await _emit_step_error_once(
                 response_queue,
