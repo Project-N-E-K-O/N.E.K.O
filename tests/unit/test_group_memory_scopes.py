@@ -2553,6 +2553,20 @@ async def test_digest_cursor_rebases_after_history_reset():
     )
     assert stale["last_group_digest_index"] == len(history)
 
+    # The cached flag is gated by the LIVE policy: a request that resolved
+    # persist=True before an OFF write cannot mint an opted-in session
+    # after the transition stamped existing ones.
+    runtime_plugin._qq_settings = {"group_memory_enabled": False}
+    runtime.prime_generation_session_state(
+        stale, session_key="group:7788", context=context,
+    )
+    assert stale["memory_enabled"] is False
+    runtime_plugin._qq_settings = {"group_memory_enabled": True}
+    runtime.prime_generation_session_state(
+        stale, session_key="group:7788", context=context,
+    )
+    assert stale["memory_enabled"] is True
+
     # Finalize-time clamp (defensive): oversized cursor never blocks the
     # rest of finalization and is persisted back at len(history).
     completed = await service.finalize_user_memory_session(

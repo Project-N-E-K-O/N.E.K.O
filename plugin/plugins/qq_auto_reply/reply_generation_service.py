@@ -97,15 +97,6 @@ class QQReplyGenerationService:
                 user_session=user_session,
                 reply_chunks=reply_chunks,
             )
-            if context.is_group and not user_data.get("memory_enabled"):
-                # 每次生成尝试后都记未授权边界（含空回复/后续 fallback 的
-                # 情况）——只在成功同步路径记会漏掉空回复轮，其 human 行
-                # 已进历史、可能落在 enable 时间戳之后。
-                session_obj = user_data.get("session")
-                if session_obj is not None:
-                    user_data["nonconsent_history_end"] = len(
-                        getattr(session_obj, "_conversation_history", []) or []
-                    )
             stage_trace.metadata["recalled_memory_used"] = context.recalled_memory_used
             stage_trace.metadata["recalled_memory_length"] = len(context.recalled_memory_text)
             if not ai_reply:
@@ -178,6 +169,13 @@ class QQReplyGenerationService:
                     raise asyncio.TimeoutError
             finally:
                 restore_session_prompt()
+                if context.is_group and not user_data.get("memory_enabled"):
+                    # 未授权边界在 finally 记：异常/空回复的 human 行也已
+                    # 进历史，只在成功路径记会漏（超时路径会话随后被弃，
+                    # 多记无害）。
+                    user_data["nonconsent_history_end"] = len(
+                        getattr(user_session, "_conversation_history", []) or []
+                    )
 
             return "".join(reply_chunks)
 

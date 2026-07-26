@@ -53,7 +53,17 @@ class QQSessionRuntimeService:
         user_data["group_id"] = context.group_id
         user_data["user_title"] = context.user_title
         user_data["user_nickname"] = context.user_nickname
-        user_data["memory_enabled"] = context.persist_memory
+        persist = context.persist_memory
+        if context.is_group and persist:
+            # 以实时策略门控：请求可能在 OFF 写入前解析出 persist=True、
+            # 会话在转变盖章循环之后才插入——陈旧的 True 会让 opt-out 后
+            # 的历史被 idle flush 入库。显式 False（proactive 等）不受影响。
+            persist = bool(
+                (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                    "group_memory_enabled", False,
+                )
+            )
+        user_data["memory_enabled"] = persist
         user_data["memory_context_used"] = context.memory_context_used
         user_data["ephemeral_session"] = context.ephemeral_session
         user_data["login_status"] = context.login_status
