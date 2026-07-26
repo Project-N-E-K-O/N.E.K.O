@@ -2,6 +2,7 @@ export type LiveConfig = {
   live_platform?: string
   live_room_ref?: string
   live_room_id?: number
+  twitch_client_id?: string
   live_enabled?: boolean
   avatar_roast_enabled?: boolean
   avatar_analysis_enabled?: boolean
@@ -54,6 +55,7 @@ export const configDefaults = {
   live_platform: "bilibili",
   live_room_ref: "",
   live_room_id: "0",
+  twitch_client_id: "",
   douyin_cookie: "",
   douyin_uid: "",
   douyin_nickname: "",

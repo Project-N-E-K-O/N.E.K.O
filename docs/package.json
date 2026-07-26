@@ -16,7 +16,8 @@
     "test:dataforseo": "node --test scripts/dataforseo/*.test.mjs",
     "test:indexnow": "node --test scripts/submit-indexnow.test.mjs",
     "test:analytics": "node --test scripts/analytics-consent.test.mjs",
-    "test": "npm run test:indexnow && npm run test:analytics && npm run test:dataforseo"
+    "test:steam-cta": "node --test scripts/steam-cta.test.mjs",
+    "test": "npm run test:indexnow && npm run test:analytics && npm run test:steam-cta && npm run test:dataforseo"
   },
   "devDependencies": {
     "vitepress": "^1.6.3",

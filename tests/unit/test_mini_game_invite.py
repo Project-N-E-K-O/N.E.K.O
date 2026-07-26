@@ -21,9 +21,9 @@ import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
-import main_routers.system_router.mini_game_invite as sr  # noqa: E402
-import main_routers.system_router.proactive_history as sr_history  # noqa: E402
-import main_routers.system_router.proactive_parsing as sr_parsing  # noqa: E402
+import main_logic.proactive_chat.mini_game_invite as sr  # noqa: E402
+import main_logic.proactive_chat.state as sr_history  # noqa: E402
+import main_logic.proactive_chat.contracts as sr_parsing  # noqa: E402
 
 LANLAN = "test_lanlan"
 MASTER = "小明"
@@ -1511,8 +1511,8 @@ def test_advance_response_returns_outcome_for_caller_ws_push():
 # ─────────────────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_invite_delivery_pushes_options_via_websocket(monkeypatch):
-    """Successful invite delivery pushes mini_game_invite_options to the client."""
+async def test_invite_short_circuit_returns_options_for_router(monkeypatch):
+    """Successful delivery returns options; the Router owns WebSocket sending."""
     monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
     mgr = _make_mgr()
     mgr.websocket = MagicMock()
@@ -1522,20 +1522,50 @@ async def test_invite_delivery_pushes_options_via_websocket(monkeypatch):
     fake_state.CONNECTED = fake_state
     mgr.websocket.client_state = fake_state
 
-    out = await sr._maybe_deliver_mini_game_invite(
+    short_circuit = await sr._run_mini_game_invite_short_circuit(
         lanlan_name=LANLAN, mgr=mgr,
         activity_snapshot=_make_snapshot(),
         invite_lang='zh', master_name=MASTER,
     )
+    assert short_circuit is not None
+    out = short_circuit.result.body
     assert out is not None and out['action'] == 'chat'
-    mgr.websocket.send_json.assert_awaited_once()
-    payload = mgr.websocket.send_json.await_args.args[0]
+    mgr.websocket.send_json.assert_not_awaited()
+    payload = short_circuit.options_payload
+    assert payload is not None
     assert payload['type'] == 'mini_game_invite_options'
     assert payload['session_id'] == out['invite_session_id']
     assert payload['game_type'] in ('soccer', 'badminton')
     assert isinstance(payload['options'], list) and len(payload['options']) == 3
     choices = [opt['choice'] for opt in payload['options']]
     assert choices == ['accept', 'decline', 'later']
+
+
+@pytest.mark.asyncio
+async def test_direct_invite_delivery_preserves_options_websocket_compat(monkeypatch):
+    """The pre-5.5 direct helper still pushes its options event exactly once."""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+    mgr = _make_mgr()
+    mgr.websocket = MagicMock()
+    mgr.websocket.send_json = AsyncMock()
+    fake_state = MagicMock()
+    fake_state.CONNECTED = fake_state
+    mgr.websocket.client_state = fake_state
+
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN,
+        mgr=mgr,
+        activity_snapshot=_make_snapshot(),
+        invite_lang='zh',
+        master_name=MASTER,
+    )
+
+    assert out is not None and out['action'] == 'chat'
+    mgr.websocket.send_json.assert_awaited_once()
+    payload = mgr.websocket.send_json.await_args.args[0]
+    assert payload['type'] == 'mini_game_invite_options'
+    assert payload['session_id'] == out['invite_session_id']
+    assert payload['game_type'] == out['game_type']
     # state 同步存了 pending_session_id
     state = sr._mini_game_invite_state[LANLAN]
     assert state['pending_session_id'] == out['invite_session_id']
