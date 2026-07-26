@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import memory.anti_repeat as anti_repeat_module
+from config import ANTI_REPEAT_INJECT_TOP_K
 from main_logic.proactive_chat.contracts import PROACTIVE_REASON_PASS_DUPLICATE
 from main_logic.proactive_chat.generation import (
     _guard_phase2_output,
@@ -41,7 +42,7 @@ class _FakeRegenLlm:
         return SimpleNamespace(content=self.content)
 
 
-def test_proactive_silence_since_prefers_last_real_user_message():
+def test_proactive_silence_since_uses_latest_engagement_signal():
     mgr = SimpleNamespace(
         last_user_message_time=200.0,
         last_user_engagement_time=250.0,
@@ -58,17 +59,22 @@ def test_proactive_silence_since_prefers_last_real_user_message():
 
 def test_merge_regen_avoid_terms_preserves_both_repeat_signals():
     """BM25 and long-window shape terms share the bounded rewrite instruction."""
-    assert _merge_regen_avoid_terms(
+    merged = _merge_regen_avoid_terms(
         ("rare-topic-a", "rare-topic-b", "rare-topic-c", "rare-topic-d"),
         ("screen-shape", "button-shape", "click-shape", "prompt-shape"),
-    ) == [
+    )
+    expected = [
         "rare-topic-a",
         "screen-shape",
         "rare-topic-b",
         "button-shape",
         "rare-topic-c",
         "click-shape",
+        "rare-topic-d",
+        "prompt-shape",
     ]
+    assert merged == expected[:ANTI_REPEAT_INJECT_TOP_K]
+    assert len(merged) == min(ANTI_REPEAT_INJECT_TOP_K, len(expected))
 
 
 @pytest.mark.asyncio

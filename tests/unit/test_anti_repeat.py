@@ -376,6 +376,27 @@ def test_unanswered_proactive_repeat_resets_after_real_user_message(tmp_path):
     assert signal.considered_count == 0
 
 
+def test_unanswered_proactive_repeat_drops_entries_beyond_max_age(tmp_path):
+    """Proactive outputs older than the configured window are not evidence."""
+    s = _build_store(tmp_path)
+    name = "Neko"
+    base = 5_000_000.0
+    text = "屏幕上这个新的小猫按钮好好看啊，快点点一下看看吧。"
+    s.record_output(name, text, is_proactive=True, now=base)
+    s.record_output(name, text + "真的很可爱。", is_proactive=True, now=base + 60.0)
+
+    signal = s.score_unanswered_proactive_draft(
+        name,
+        text,
+        silence_since=base - 1_000_000.0,
+        max_age_seconds=86_400.0,
+        now=base + 90_000.0,
+    )
+
+    assert signal.triggered is False
+    assert signal.considered_count == 0
+
+
 def test_unanswered_proactive_repeat_ignores_regular_ai_outputs(tmp_path):
     """Regular AI replies cannot fabricate an ignored-proactive signal."""
     s = _build_store(tmp_path)
