@@ -753,7 +753,13 @@ class FactStore:
                                             r.get('id'): r for r in data
                                             if isinstance(r, dict)
                                         }
-                                except (json.JSONDecodeError, OSError):
+                                except (
+                                    json.JSONDecodeError,
+                                    UnicodeDecodeError,
+                                    OSError,
+                                ):
+                                    # 损坏归档降级为"仅活跃数据"（对齐
+                                    # load_facts_full），不得阻断本次写入。
                                     pass
                             return {}
                         archived_by_id = await asyncio.to_thread(_read)
@@ -1415,16 +1421,18 @@ class FactStore:
                 f"Stage-1 LLM call failed for {lanlan_name!r} (fail_closed caller)"
             )
         if fail_closed and isinstance(extracted, list) and extracted:
-            # 非空但全是畸形元素（如字符串数组）：persist 会逐条跳过、返回
-            # []，调用方误当"确认为空"推进游标——按可重试失败处理（对齐
-            # daily import 的 malformed 语义）。
-            if not any(
-                isinstance(f, dict) and str(f.get('text') or '').strip()
-                for f in extracted
-            ):
+            # 任一畸形元素都判整批可重试失败：persist 会静默跳过畸形项，
+            # 调用方推进游标后该元素承载的内容永久丢失；重试换一次完整
+            # 提取，去重机制兜住有效项的重复（对齐 daily import 语义）。
+            malformed = [
+                f for f in extracted
+                if not (isinstance(f, dict) and str(f.get('text') or '').strip())
+            ]
+            if malformed:
                 raise FactExtractionFailed(
-                    f"Stage-1 returned {len(extracted)} malformed fact "
-                    f"entries for {lanlan_name!r} (fail_closed caller)"
+                    f"Stage-1 returned {len(malformed)}/{len(extracted)} "
+                    f"malformed fact entries for {lanlan_name!r} "
+                    f"(fail_closed caller)"
                 )
         if not extracted:
             return []

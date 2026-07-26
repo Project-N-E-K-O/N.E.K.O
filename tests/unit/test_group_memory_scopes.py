@@ -1575,6 +1575,17 @@ async def test_extract_facts_fail_closed_raises_on_terminal_failure(tmp_path):
             await fs.extract_facts([msg], "Neko", fail_closed=True)
         assert await fs.extract_facts([msg], "Neko") == []
 
+        # Mixed arrays fail the whole batch too: persist would silently
+        # drop the malformed element and the advanced cursor would lose
+        # whatever it carried; a retry re-extracts and dedup absorbs the
+        # valid duplicates.
+        async def _mixed(prompt, lanlan_name, **kwargs):
+            return [{"text": "有效条目", "importance": 5}, "畸形"]
+
+        fs._allm_call_with_retries = _mixed
+        with pytest.raises(FactExtractionFailed):
+            await fs.extract_facts([msg], "Neko", fail_closed=True)
+
 
 @pytest.mark.asyncio
 async def test_correction_batches_partition_by_isolation_domain(tmp_path):

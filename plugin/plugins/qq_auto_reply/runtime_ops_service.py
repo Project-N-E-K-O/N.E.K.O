@@ -73,6 +73,10 @@ class QQRuntimeOpsService:
                 await housekeeping
             except asyncio.CancelledError:
                 pass
+            except Exception as exc:
+                # 循环早先因普通异常死亡：await 会重抛——不能让它跳过
+                # 后续的 handler 取消 / 断连 / 锁表决策。
+                self.plugin.logger.error(f"housekeeping 循环异常退出: {exc}")
             self.plugin._session_housekeeping_task = None
         if self.plugin._message_task:
             self.plugin._message_task.cancel()
