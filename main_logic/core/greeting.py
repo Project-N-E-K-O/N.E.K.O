@@ -68,6 +68,8 @@ class GreetingMixin:
             await self.send_avatar_interaction_ack(interaction_id, False, "duplicate")
             return {"accepted": False, "reason": "duplicate", "interaction_id": interaction_id}
 
+        self.note_user_engagement(at=now_ms / 1000)
+
         if now_ms - self._last_avatar_interaction_at < self.avatar_interaction_cooldown_ms:
             logger.debug("[%s] handle_avatar_interaction: cooldown skip interaction_id=%s", self.lanlan_name, interaction_id)
             self._remember_avatar_interaction_id(interaction_id)
@@ -183,7 +185,6 @@ class GreetingMixin:
             if interrupted:
                 self._pending_turn_meta = None
             if accepted:
-                self.note_user_engagement(at=now_ms / 1000)
                 self._last_avatar_interaction_speak_at = int(time.time() * 1000)
             ack_reason = "delivered" if accepted else ("interrupted" if interrupted else "empty_response")
             await self.send_avatar_interaction_ack(

@@ -207,6 +207,24 @@ async def test_rps_payload_reaches_the_runtime_delivered_result_without_action_f
     )]
     assert runtime.engagement_times == [123.456]
 
+    runtime.avatar_interaction_cooldown_ms = 1
+    cooldown_result = await runtime.handle_avatar_interaction({
+        "interactionId": "rps-runtime-cooldown",
+        "toolId": "rps",
+        "target": "avatar",
+        "timestamp": 2,
+        "userGesture": "paper",
+        "avatarGesture": "rock",
+        "roundResult": "user_win",
+    })
+
+    assert cooldown_result == {
+        "accepted": False,
+        "reason": "cooldown",
+        "interaction_id": "rps-runtime-cooldown",
+    }
+    assert runtime.engagement_times == [123.456, 123.456]
+
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
