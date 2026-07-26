@@ -934,3 +934,99 @@ async def test_image_description_item_cannot_ack_external_asr_item():
     arbiter.notify_item_created({"item": {"id": "item-asr", "role": "user"}})
     result = await ticket.done
     assert result.item_acknowledged is True
+
+
+@pytest.mark.asyncio
+async def test_prepare_external_voice_turn_failure_reopens_dispatch_gate():
+    async def send(_event):
+        raise AssertionError("preparation failure must not dispatch work")
+
+    client = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    client._is_gemini = False
+    client._response_arbiter = RealtimeResponseArbiter(send)
+    client.handle_interruption = AsyncMock(side_effect=RuntimeError("interrupt failed"))
+
+    with pytest.raises(RuntimeError, match="interrupt failed"):
+        await client.prepare_external_voice_turn(turn_id="turn-failed")
+
+    assert client._external_voice_turn_pause_id is None
+    assert client._response_arbiter._dispatch_allowed.is_set()
+    await client._response_arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_abandon_external_voice_turn_does_not_release_newer_pause():
+    async def send(_event):
+        raise AssertionError("abandon must not dispatch work")
+
+    client = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    client._is_gemini = False
+    client._response_arbiter = RealtimeResponseArbiter(send)
+    client._external_voice_turn_pause_id = "turn-new"
+    client._response_arbiter.pause_dispatch()
+
+    client.abandon_external_voice_turn("turn-old")
+
+    assert client._external_voice_turn_pause_id == "turn-new"
+    assert not client._response_arbiter._dispatch_allowed.is_set()
+
+    client.abandon_external_voice_turn("turn-new")
+
+    assert client._external_voice_turn_pause_id is None
+    assert client._response_arbiter._dispatch_allowed.is_set()
+    await client._response_arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_external_text_enqueue_resumes_dispatch_without_clearing_newer_pause():
+    arbiter = None
+
+    async def send(event):
+        if event["type"] == "conversation.item.create":
+            arbiter.notify_item_created(
+                {"item": {"id": event["item"]["id"], "role": "user"}}
+            )
+        elif event["type"] == "response.create":
+            arbiter.notify_response_created({})
+            arbiter.notify_response_terminal({})
+
+    client = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    client._is_gemini = False
+    arbiter = RealtimeResponseArbiter(send)
+    client._response_arbiter = arbiter
+    client._external_voice_turn_pause_id = "turn-new"
+    arbiter.pause_dispatch()
+
+    ticket = await client.submit_external_text_turn("hello", turn_id="turn-old")
+    await ticket.done
+
+    assert client._external_voice_turn_pause_id == "turn-new"
+    assert arbiter._dispatch_allowed.is_set()
+    client.abandon_external_voice_turn()
+    await arbiter.shutdown()
+
+
+def test_abandon_without_active_pause_does_not_create_arbiter():
+    client = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    client._is_gemini = False
+    client._response_arbiter = None
+
+    client.abandon_external_voice_turn()
+
+    assert client._response_arbiter is None
+
+
+@pytest.mark.asyncio
+async def test_force_abandon_without_record_reopens_existing_gate():
+    async def send(_event):
+        raise AssertionError("force resume must not dispatch work")
+
+    client = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    client._is_gemini = False
+    client._response_arbiter = RealtimeResponseArbiter(send)
+    client._response_arbiter.pause_dispatch()
+
+    client.abandon_external_voice_turn()
+
+    assert client._response_arbiter._dispatch_allowed.is_set()
+    await client._response_arbiter.shutdown()

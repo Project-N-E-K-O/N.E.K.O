@@ -436,6 +436,64 @@ async def test_scoped_detector_events_bind_before_logical_complete() -> None:
     await detector.close()
 
 
+async def test_deferred_completion_retires_candidate_before_third_turn() -> None:
+    events: list[DetectorActivityEvent | DetectorTurnEvent] = []
+    candidates = []
+    detector: DetectorRuntime
+    turn_tokens = [
+        VoiceTurnToken(_ingress_token(), turn_id=turn_id)
+        for turn_id in range(1, 4)
+    ]
+
+    async def on_event(event) -> None:
+        events.append(event)
+        if (
+            isinstance(event, DetectorActivityEvent)
+            and event.activity is SpeechActivityEvent.SPEECH_STARTED
+        ):
+            turn_token = turn_tokens[len(candidates)]
+            candidates.append(event.candidate)
+            bound = await detector.bind_candidate(event.candidate, turn_token)
+            assert bound is not None
+            assert bound.turn_token == turn_token
+
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(
+            (
+                SpeechActivityEvent.SPEECH_STARTED,
+                SpeechActivityEvent.CANDIDATE_PAUSE,
+            )
+        ),
+        provider_policy=_smart_turn_policy(),
+        coordinator=_SemanticCoordinator(),
+        on_event=on_event,
+    )
+
+    await detector.feed(b"\x01\x00" * 160)
+    assert detector._candidate_generation == 1
+
+    await detector.feed(b"\x02\x00" * 160)
+    deferred_candidate = candidates[1]
+    assert detector._candidate_generation == 1
+    assert deferred_candidate in detector._bound_turns
+
+    await detector.release_deferred_turn()
+    assert detector._candidate_generation == 2
+    assert deferred_candidate not in detector._bound_turns
+    assert deferred_candidate not in detector._deferred_completions
+
+    await detector.feed(b"\x03\x00" * 160)
+
+    assert [candidate.candidate_generation for candidate in candidates] == [0, 1, 2]
+    assert [
+        event.bound_turn.turn_token.turn_id
+        for event in events
+        if isinstance(event, DetectorTurnEvent)
+    ] == [1, 2, 3]
+    await detector.close()
+
+
 async def test_smart_turn_readiness_is_pinned_to_one_logical_turn() -> None:
     coordinator = _SemanticCoordinator()
     detector = DetectorRuntime(

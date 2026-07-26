@@ -138,6 +138,7 @@ async def _step_expire_stalled_pending_turns(
             key, _ = pending.popleft()
             audio_item_id = state.provider_audio_ids_by_key.pop(key, None)
             if audio_item_id is not None:
+                _step_remember_finalized_item(state, audio_item_id)
                 state.provider_audio_item_keys.pop(audio_item_id, None)
             await response_queue.put(
                 _AsrWorkerEvent(

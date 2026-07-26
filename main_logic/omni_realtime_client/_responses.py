@@ -246,18 +246,44 @@ class _ResponseMixin:
         )
         # Speech-start pauses dispatch. Resume only after this priority-0 user
         # turn is present, so queued proactive work cannot win the race.
+        if getattr(self, "_external_voice_turn_pause_id", None) == stable_turn_id:
+            self._external_voice_turn_pause_id = None
         arbiter.resume_dispatch()
         await ticket.sent
         return ticket
 
-    async def prepare_external_voice_turn(self) -> None:
+    async def prepare_external_voice_turn(self, *, turn_id: str) -> None:
         """Prepare the active Provider session for one external ASR turn."""
 
-        if not self._is_gemini:
+        stable_turn_id = str(turn_id or "").strip()
+        if not stable_turn_id:
+            raise ValueError("external voice turn_id must not be empty")
+        try:
+            if not self._is_gemini:
+                arbiter = self._ensure_response_arbiter()
+                self._external_voice_turn_pause_id = stable_turn_id
+                arbiter.pause_dispatch()
+                await arbiter.cancel_current()
+            await self.handle_interruption()
+        except BaseException:
+            self.abandon_external_voice_turn(stable_turn_id)
+            raise
+
+    def abandon_external_voice_turn(self, turn_id: str | None = None) -> None:
+        """Release an external-ASR dispatch pause, optionally by turn key."""
+
+        if self._is_gemini:
+            return
+        current_turn_id = getattr(self, "_external_voice_turn_pause_id", None)
+        if turn_id is not None and str(turn_id).strip() != current_turn_id:
+            return
+        self._external_voice_turn_pause_id = None
+        arbiter = getattr(self, "_response_arbiter", None)
+        if arbiter is None:
+            if current_turn_id is None:
+                return
             arbiter = self._ensure_response_arbiter()
-            arbiter.pause_dispatch()
-            await arbiter.cancel_current()
-        await self.handle_interruption()
+        arbiter.resume_dispatch()
 
     async def submit_external_voice_turn(self, text: str, *, turn_id: str) -> None:
         """Submit external ASR text through the Provider-appropriate path."""

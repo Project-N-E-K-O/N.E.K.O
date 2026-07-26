@@ -944,6 +944,16 @@ async def test_step_server_vad_expires_stalled_turn_with_empty_final(
     await websocket.server_send(
         {
             "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "step-audio-1",
+            "transcript": "late first",
+        }
+    )
+    await _wait_until(lambda: websocket.incoming.empty())
+    assert responses.empty()
+
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
             "item_id": "step-transcript-2",
             "transcript": "second",
         }

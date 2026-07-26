@@ -77,6 +77,7 @@ class AsrRuntimeCallbacks:
     on_prepare_turn: Callable[[VoiceTurnToken], Awaitable[bool]]
     on_partial: Callable[[VoicePartialEvent], Awaitable[None]]
     on_final: Callable[[VoiceTranscriptEvent], Awaitable[None]]
+    on_turn_abandoned: Callable[[VoiceTurnToken], Awaitable[None]]
     on_failure: Callable[[AsrFailureEvent], Awaitable[None]]
     on_status: Callable[[AsrStatusEvent], Awaitable[None]]
     on_lifecycle: Callable[[AsrLifecycleNotification], Awaitable[None]]
@@ -800,18 +801,16 @@ class IndependentAsrRuntime:
             VoiceLifecycleState.BACKOFF,
             VoiceLifecycleState.ACTIVE,
         }:
-            lifecycle.invalidate_audio()
-            post_detach = await self._abort_transport("detector_audio_backpressure")
-            if not self._runtime_identity_matches(
-                post_detach
-            ) or not self._asr_runtime_refs_match(
-                epoch,
-                lifecycle,
-                detector,
-            ):
-                return
-            if detector is not None:
-                await detector.reset()
+            abandoned_turn = (
+                self._capture_turn_token(lifecycle)
+                if state is VoiceLifecycleState.ACTIVE and self._asr_turn_prepared
+                else None
+            )
+            try:
+                lifecycle.invalidate_audio()
+                post_detach = await self._abort_transport(
+                    "detector_audio_backpressure"
+                )
                 if not self._runtime_identity_matches(
                     post_detach
                 ) or not self._asr_runtime_refs_match(
@@ -820,21 +819,40 @@ class IndependentAsrRuntime:
                     detector,
                 ):
                     return
-            await self._send_asr_status(
-                "ASR_INGRESS_BACKPRESSURE",
-                provider,
-                session_epoch=epoch,
-                expected_identity=post_detach,
-            )
-            if not self._runtime_identity_matches(post_detach):
+                if detector is not None:
+                    await detector.reset()
+                    if not self._runtime_identity_matches(
+                        post_detach
+                    ) or not self._asr_runtime_refs_match(
+                        epoch,
+                        lifecycle,
+                        detector,
+                    ):
+                        return
+                await self._send_asr_status(
+                    "ASR_INGRESS_BACKPRESSURE",
+                    provider,
+                    session_epoch=epoch,
+                    expected_identity=post_detach,
+                )
+                if not self._runtime_identity_matches(post_detach):
+                    return
+                await self._send_asr_lifecycle_state(
+                    VoiceLifecycleState.LOCAL_LISTEN,
+                    provider=provider,
+                    session_epoch=epoch,
+                    expected_identity=post_detach,
+                )
                 return
-            await self._send_asr_lifecycle_state(
-                VoiceLifecycleState.LOCAL_LISTEN,
-                provider=provider,
-                session_epoch=epoch,
-                expected_identity=post_detach,
-            )
-            return
+            finally:
+                if abandoned_turn is not None:
+                    try:
+                        await self._callbacks.on_turn_abandoned(abandoned_turn)
+                    except Exception:
+                        logger.debug(
+                            "[%s] independent ASR turn abandonment callback failed",
+                            self.display_name,
+                        )
         identity = self._capture_runtime_identity()
         await self._send_asr_status(
             "ASR_INGRESS_BACKPRESSURE",
@@ -970,7 +988,7 @@ class IndependentAsrRuntime:
                 return (
                     candidate_session is not None
                     and self._asr_session is candidate_session
-                    and operation_is_current()
+                    and epoch == self._asr_session_epoch
                 )
 
             async def on_final(text: str) -> None:
@@ -1672,6 +1690,15 @@ class IndependentAsrRuntime:
                         await candidate.close()
                     raise
                 except Exception:
+                    if candidate is not None and self._asr_session is candidate:
+                        adopted_identity = self._capture_runtime_identity()
+                        await self._handle_independent_asr_error(
+                            adopted_identity.session_epoch,
+                            adopted_identity.provider or "unknown",
+                            status_code="ASR_INDEPENDENT_FAILED",
+                            expected_identity=adopted_identity,
+                        )
+                        return
                     if candidate is not None:
                         try:
                             await candidate.close()
@@ -2247,15 +2274,13 @@ class IndependentAsrRuntime:
                 self._asr_final_watchdog_task = None
                 if watchdog is not None and watchdog is not asyncio.current_task():
                     watchdog.cancel()
-                if clean:
-                    envelope = TranscriptEnvelope(
-                        turn_token=sealed_token.turn,
-                        provider=provider,
-                        text=clean,
-                    )
-                else:
+                envelope = TranscriptEnvelope(
+                    turn_token=sealed_token.turn,
+                    provider=provider,
+                    text=clean,
+                )
+                if not clean:
                     lifecycle_ref.metrics.false_wake_count += 1
-                    transcript_dispatcher.release(final_key)
                 if not has_pending_turn:
                     self._schedule_transport_warm_expiry(epoch)
                 final_identity = self._capture_runtime_identity(

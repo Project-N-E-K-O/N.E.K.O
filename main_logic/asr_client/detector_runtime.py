@@ -1561,8 +1561,15 @@ class DetectorRuntime:
                 return
             self._defer_turn_complete = False
             if self._deferred_turn_complete:
+                completed_candidate = DetectorCandidateKey(
+                    self._detector_epoch,
+                    self._candidate_generation,
+                )
                 self._deferred_turn_complete = False
                 self._defer_turn_complete = True
+                self._bound_turns.pop(completed_candidate, None)
+                self._deferred_completions.pop(completed_candidate, None)
+                self._candidate_generation += 1
                 self._semantic_generation += 1
                 self._semantic_turn_id += 1
                 await self._semantic_adapter.reset(

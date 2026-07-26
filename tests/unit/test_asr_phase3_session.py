@@ -881,6 +881,7 @@ def _build_fail_closed_runtime() -> tuple[
             on_prepare_turn=AsyncMock(return_value=True),
             on_partial=AsyncMock(),
             on_final=AsyncMock(),
+            on_turn_abandoned=AsyncMock(),
             on_failure=on_failure,
             on_status=on_status,
             on_lifecycle=on_lifecycle,

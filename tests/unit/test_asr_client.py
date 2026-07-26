@@ -1776,6 +1776,7 @@ def _runtime_callbacks(
         on_prepare_turn=on_prepare_turn or AsyncMock(return_value=True),
         on_partial=AsyncMock(),
         on_final=AsyncMock(),
+        on_turn_abandoned=AsyncMock(),
         on_failure=capture_failure,
         on_status=capture_status,
         on_lifecycle=on_lifecycle or AsyncMock(),

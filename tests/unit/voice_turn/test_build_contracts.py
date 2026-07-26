@@ -16,12 +16,17 @@ def test_pyinstaller_bundles_voice_turn_assets():
 
 
 def test_nuitka_workflows_prepare_bundle_and_verify_voice_turn_assets():
-    for relative in (
-        ".github/workflows/build-desktop.yml",
-        ".github/workflows/build-desktop-linux.yml",
-    ):
-        workflow = (ROOT / relative).read_text(encoding="utf-8")
+    desktop_workflow = (ROOT / ".github/workflows/build-desktop.yml").read_text(
+        encoding="utf-8"
+    )
+    linux_workflow = (ROOT / ".github/workflows/build-desktop-linux.yml").read_text(
+        encoding="utf-8"
+    )
+
+    for workflow in (desktop_workflow, linux_workflow):
         assert "tools/voice_eval/prepare_voice_turn_assets.py" in workflow
         assert "--include-data-dir=data/vad_models=data/vad_models" in workflow
-        assert "--asset-dir dist/Xiao8/data/vad_models --offline" in workflow
         assert "hashFiles('data/vad_models/manifest.json')" in workflow
+
+    assert '"$NEKO_NUITKA_RUNTIME_DIR"/data/vad_models --offline' in desktop_workflow
+    assert "--asset-dir dist/Xiao8/data/vad_models --offline" in linux_workflow

@@ -239,6 +239,7 @@ class AsrRuntimeMixin:
             on_prepare_turn=self._prepare_core_voice_turn,
             on_partial=self._send_core_asr_preview,
             on_final=self._dispatch_core_asr_transcript,
+            on_turn_abandoned=self._handle_core_asr_turn_abandoned,
             on_failure=self._handle_core_asr_failure,
             on_status=self._send_core_asr_status,
             on_lifecycle=self._send_core_asr_lifecycle,
@@ -524,9 +525,7 @@ class AsrRuntimeMixin:
                 # route operation: nobody else owns the runtime, so close the
                 # candidate and clear the route key so a later reconcile
                 # retries.
-                abort = getattr(self._asr_runtime, "abort", None)
-                if callable(abort):
-                    await abort("stale_core_start")
+                await self._abort_independent_asr("stale_core_start")
                 # Re-check after the abort await: a competing start may have
                 # installed its own blocked placeholder meanwhile, and
                 # clearing that key would silently kill it before it even
@@ -551,6 +550,34 @@ class AsrRuntimeMixin:
             self._set_microphone_route("independent")
         else:
             self._set_microphone_route("blocked")
+
+    def _abandon_core_voice_turn(
+        self,
+        turn_id: str | None = None,
+        *,
+        session_ref: object | None = None,
+    ) -> None:
+        target_session = (
+            session_ref if session_ref is not None else getattr(self, "session", None)
+        )
+        abandon = getattr(target_session, "abandon_external_voice_turn", None)
+        if not callable(abandon):
+            return
+        try:
+            abandon(turn_id)
+        except Exception:
+            logger.warning(
+                "[%s] external ASR dispatch pause release failed",
+                self.lanlan_name,
+            )
+
+    async def _abort_independent_asr(self, reason: str) -> None:
+        self._abandon_core_voice_turn()
+        await self._asr_runtime.abort(reason)
+
+    async def _suspend_independent_asr(self, reason: str) -> None:
+        self._abandon_core_voice_turn()
+        await self._asr_runtime.suspend(reason)
 
     async def _close_independent_asr(
         self,
@@ -577,6 +604,7 @@ class AsrRuntimeMixin:
         self._voice_input_pipeline_failed = False
         self._independent_asr_provider = None
         self._independent_asr_route_key = None
+        self._abandon_core_voice_turn()
         await self._asr_runtime.close()
         try:
             await pipeline.close()
@@ -730,7 +758,7 @@ class AsrRuntimeMixin:
                 except asyncio.QueueFull:
                     self._clear_audio_stream_queue("ingress_backpressure")
                     self._audio_stream_dropped_total += 1
-                    await self._asr_runtime.abort("ingress_backpressure")
+                    await self._abort_independent_asr("ingress_backpressure")
                     return
             finally:
                 if sequence_owned:
@@ -861,7 +889,7 @@ class AsrRuntimeMixin:
         self._clear_audio_stream_queue("audio_preprocessing_failed")
         self.hot_swap_audio_cache.clear()
         if independent_route:
-            await self._asr_runtime.abort("audio_preprocessing_failed")
+            await self._abort_independent_asr("audio_preprocessing_failed")
         if (
             not self._voice_input_pipeline_failed
             or self._voice_lease_connection_id != source_connection_id
@@ -1000,7 +1028,7 @@ class AsrRuntimeMixin:
                     )
             if cache_for_hot_swap:
                 if not accepted:
-                    await self._asr_runtime.abort("ingress_backpressure")
+                    await self._abort_independent_asr("ingress_backpressure")
                 return
             if not self._ingress_token_matches(ingress_token):
                 return
@@ -1220,7 +1248,7 @@ class AsrRuntimeMixin:
                 ):
                     damaged_tokens.append(frame.token)
             for token in damaged_tokens:
-                await self._asr_runtime.abort("ingress_backpressure")
+                await self._abort_independent_asr("ingress_backpressure")
 
     def _invalidate_voice_pcm_sync(self, reason: str) -> None:
         self._clear_audio_stream_queue(reason)
@@ -1265,11 +1293,11 @@ class AsrRuntimeMixin:
         if reason == "game_takeover" or (
             owner == "game" and self._current_voice_input_consumer() is None
         ):
-            await self._asr_runtime.suspend(reason)
+            await self._suspend_independent_asr(reason)
         elif reason == "game_release":
             if should_abort:
                 route_operation_snapshot = self._asr_route_operation_generation
-                await self._asr_runtime.abort(reason)
+                await self._abort_independent_asr(reason)
                 if (
                     self._asr_route_operation_generation != route_operation_snapshot
                     or self._voice_lease_owner != "core"
@@ -1283,7 +1311,7 @@ class AsrRuntimeMixin:
             # the rest of the session.
             await self._asr_runtime.resume(reason)
         elif should_abort:
-            await self._asr_runtime.abort(reason)
+            await self._abort_independent_asr(reason)
 
     async def _suspend_independent_voice_input_for_game(self) -> None:
         await self._apply_voice_lease_state(
@@ -1424,6 +1452,10 @@ class AsrRuntimeMixin:
         )
         return True
 
+    async def _handle_core_asr_turn_abandoned(self, token: VoiceTurnToken) -> None:
+        external_turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+        self._abandon_core_voice_turn(external_turn_id)
+
     async def _prepare_core_voice_turn(self, token: VoiceTurnToken) -> bool:
         if not self._ingress_token_matches(token.ingress):
             return False
@@ -1433,6 +1465,7 @@ class AsrRuntimeMixin:
             return False
         session_ref = self.session
         transition_generation = self._voice_input_transition_generation
+        external_turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
 
         def operation_is_current() -> bool:
             return bool(
@@ -1445,18 +1478,36 @@ class AsrRuntimeMixin:
         prepare = getattr(session_ref, "prepare_external_voice_turn", None)
         try:
             if callable(prepare):
-                await prepare()
+                await prepare(turn_id=external_turn_id)
             else:
                 interrupt = getattr(session_ref, "handle_interruption", None)
                 if callable(interrupt):
                     await interrupt()
             if not operation_is_current():
+                self._abandon_core_voice_turn(
+                    external_turn_id,
+                    session_ref=session_ref,
+                )
                 return False
             await self.handle_new_message()
-            return operation_is_current()
+            if operation_is_current():
+                return True
+            self._abandon_core_voice_turn(
+                external_turn_id,
+                session_ref=session_ref,
+            )
+            return False
         except asyncio.CancelledError:
+            self._abandon_core_voice_turn(
+                external_turn_id,
+                session_ref=session_ref,
+            )
             raise
         except Exception:
+            self._abandon_core_voice_turn(
+                external_turn_id,
+                session_ref=session_ref,
+            )
             if not operation_is_current():
                 return False
             logger.warning(
@@ -1489,30 +1540,41 @@ class AsrRuntimeMixin:
         if binding is not None:
             if self._voice_input_consumer_bindings.get(binding.owner) is not binding:
                 return
+            if not event.text.strip():
+                return
             await binding.on_final(event)
             return
         if self._voice_lease_owner != "core":
             return
         session_ref = self.session
         transition_generation = self._voice_input_transition_generation
-        accepted = await self.handle_input_transcript(
-            event.text,
-            is_voice_source=True,
-            source="independent_asr",
-            metadata={"provider": event.provider},
-        )
-        if (
-            not accepted
-            or self.session is not session_ref
-            or transition_generation != self._voice_input_transition_generation
-            or self._voice_lease_owner != "core"
-            or not self._ingress_token_matches(token)
-        ):
-            return
-        await self._submit_core_voice_turn(
-            event.text,
-            turn_id=(f"asr-{token.session_epoch}-{event.turn_token.turn_id}"),
-        )
+        external_turn_id = f"asr-{token.session_epoch}-{event.turn_token.turn_id}"
+        try:
+            if not event.text.strip():
+                return
+            accepted = await self.handle_input_transcript(
+                event.text,
+                is_voice_source=True,
+                source="independent_asr",
+                metadata={"provider": event.provider},
+            )
+            if (
+                not accepted
+                or self.session is not session_ref
+                or transition_generation != self._voice_input_transition_generation
+                or self._voice_lease_owner != "core"
+                or not self._ingress_token_matches(token)
+            ):
+                return
+            await self._submit_core_voice_turn(
+                event.text,
+                turn_id=external_turn_id,
+            )
+        finally:
+            self._abandon_core_voice_turn(
+                external_turn_id,
+                session_ref=session_ref,
+            )
 
     async def _send_core_asr_preview(self, event: VoicePartialEvent) -> None:
         if (
@@ -1553,6 +1615,7 @@ class AsrRuntimeMixin:
                 != self._core_asr_identity_ingress_token(source_identity).session_epoch
             ):
                 return
+            self._abandon_core_voice_turn()
             self._set_microphone_route("blocked")
             self._clear_audio_stream_queue("independent_asr_failure")
             self.hot_swap_audio_cache.clear()
