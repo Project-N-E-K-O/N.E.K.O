@@ -672,6 +672,7 @@ class StreamingMixin:
                     image_b64 = await _core_facade.process_screen_data(data)
 
                     if image_b64:
+                        image_accepted = False
                         # 叠加 Avatar 文字注解（仅当本条消息携带了位置元数据时）
                         # 不回退到 self._avatar_position：前端未附带位置说明该截图不应叠加
                         # （如窗口截图、手机相机等场景）
@@ -691,6 +692,7 @@ class StreamingMixin:
                         if isinstance(self.session, OmniOfflineClient):
                             # 只添加到待发送队列，等待与文本一起发送
                             await self.session.stream_image(image_b64)
+                            image_accepted = True
                             image_data = (
                                 ""
                                 if input_type in {"avatar_drop_image", "user_image"}
@@ -721,6 +723,12 @@ class StreamingMixin:
 
                             # 语音模式直接发送图片
                             await self.session.stream_image(image_b64)
+                            image_accepted = True
+                        if (
+                            image_accepted
+                            and input_type in {"avatar_drop_image", "user_image"}
+                        ):
+                            self.note_user_engagement()
                     else:
                         logger.error("💥 Stream: 图像数据验证失败")
                         return

@@ -39,7 +39,13 @@ class ProactiveMixin:
 
     def note_user_engagement(self, *, at: float | None = None) -> None:
         """Record a genuine user interaction for silence-aware proactive guards."""
-        self.last_user_engagement_time = float(time.time() if at is None else at)
+        engagement_at = float(time.time() if at is None else at)
+        previous = self.last_user_engagement_time
+        self.last_user_engagement_time = (
+            engagement_at
+            if previous is None
+            else max(float(previous), engagement_at)
+        )
 
     def _park_proactive_for_goodbye(self) -> None:
         """While cat-mode silent, move the manager's pending-release callbacks into the persistent queue, so nothing is dropped or released on timeout during the silence."""

@@ -647,8 +647,12 @@ async def test_text_input_transcript_callback_uses_non_voice_path(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_text_mode_image_input_is_mirrored_to_analyzer_queue(monkeypatch):
-    """Text-mode screenshots must stay available to turn-end analysis."""
+@pytest.mark.parametrize("input_type", ["screen", "camera"])
+async def test_text_mode_live_vision_input_is_mirrored_without_engagement(
+    monkeypatch,
+    input_type,
+):
+    """Automatic vision frames remain analyzable but are not user engagement."""
     mgr = _make_manager()
     mgr.session = object.__new__(core_module.OmniOfflineClient)
     mgr.session.stream_image = AsyncMock()
@@ -660,19 +664,47 @@ async def test_text_mode_image_input_is_mirrored_to_analyzer_queue(monkeypatch):
 
     await core_module.LLMSessionManager._process_stream_data_internal(
         mgr,
-        {"input_type": "screen", "data": "raw-image"},
+        {"input_type": input_type, "data": "raw-image"},
     )
 
     mgr.session.stream_image.assert_awaited_once_with("img-b64")
     assert mgr.sync_message_queue.messages == [{
         "type": "user",
         "data": {
-            "input_type": "screen",
+            "input_type": input_type,
             "data": "data:image/jpeg;base64,img-b64",
             "has_image": True,
             "mime_type": "image/jpeg",
         },
     }]
+    assert mgr.last_user_engagement_time is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("input_type", ["avatar_drop_image", "user_image"])
+async def test_one_shot_user_image_records_engagement(
+    monkeypatch,
+    input_type,
+):
+    """Accepted one-shot user images reset unanswered proactive evidence."""
+    mgr = _make_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session.stream_image = AsyncMock()
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    monkeypatch.setattr(core_module, "process_screen_data", AsyncMock(return_value="img-b64"))
+    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": input_type, "data": "raw-image"},
+    )
+
+    mgr.session.stream_image.assert_awaited_once_with("img-b64")
+    assert mgr.last_user_engagement_time == FIXED_TS
 
 
 @pytest.mark.unit
@@ -1237,10 +1269,7 @@ async def test_genuine_voice_transcript_stamps_last_user_message_time(monkeypatc
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_ai_echo_transcript_does_not_stamp_last_user_message_time(monkeypatch):
-    """关键回归：AI 念邀请台词被麦克风录回的回声会刷 last_user_activity_time
-    （顶部无条件），但**不能**刷 last_user_message_time——否则语音模式下用户还
-    没点「现在不想玩」按钮，隐式 dismiss 就因回声误判用户已回应、把 pending 邀请
-    清掉撤按钮，用户随后点击落到 expired、邀请 5min 后反复重来。"""
+    """An AI voice echo is activity, but never a genuine user response."""
     mgr = _make_transcript_manager()
     monkeypatch.setattr(core_module, "HIDE_DIRTY_VOICE_TRANSCRIPTS", True)
     monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
@@ -1261,7 +1290,7 @@ async def test_ai_echo_transcript_does_not_stamp_last_user_message_time(monkeypa
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_empty_voice_transcript_does_not_stamp_last_user_message_time(monkeypatch):
-    """空转录（VAD 误触发 / 转录失败）刷 activity 但不刷真消息时间戳。"""
+    """An empty voice transcript is activity, but not a genuine user response."""
     mgr = _make_transcript_manager()
     monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
 
@@ -1277,10 +1306,12 @@ async def test_empty_voice_transcript_does_not_stamp_last_user_message_time(monk
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_last_user_message_time_uses_transcript_arrival_not_post_await(monkeypatch):
-    """takeover dispatcher 注册但未消费该转写时，last_user_message_time 必须用转写
-    到达时刻（await 之前），不能用 await 之后的 time.time()——否则 await 期间投递的
-    invite 会把 invite 之前的发言误记成之后的回应、提前清掉 pending invite（codex
-    P2）。time.time() 每次递增，断言两个时间戳都锁在首次（到达）取值 101。"""
+    """Use transcript arrival time without regressing newer engagement.
+
+    A takeover dispatcher may delay normal transcript processing. The message
+    timestamp must retain the pre-await arrival time, while a newer interaction
+    recorded during that await must remain the latest engagement signal.
+    """
     mgr = _make_transcript_manager()
     calls = {"n": 0}
 
@@ -1293,6 +1324,7 @@ async def test_last_user_message_time_uses_transcript_arrival_not_post_await(mon
 
     async def _dispatcher(name, text, request_id=None):
         core_module.time.time()  # 模拟 await 期间时钟流逝
+        mgr.note_user_engagement(at=200.0)
         return False             # 未处理 → 继续普通流程走到真消息块
 
     mgr._takeover_input_dispatcher = _dispatcher
@@ -1304,7 +1336,7 @@ async def test_last_user_message_time_uses_transcript_arrival_not_post_await(mon
 
     assert mgr.last_user_activity_time == 101.0
     assert mgr.last_user_message_time == 101.0
-    assert mgr.last_user_engagement_time == 101.0
+    assert mgr.last_user_engagement_time == 200.0
 
 
 @pytest.mark.unit
