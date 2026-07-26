@@ -2034,6 +2034,21 @@ async def test_group_digest_batches_never_skip_backlog():
     assert user_data2["last_group_digest_index"] == 3
     assert "group:7788" in plugin._user_sessions
 
+    # The retry after a mid-drain failure resumes from the cursor: only the
+    # remaining messages are sent, the already-flushed first batch is not
+    # replayed, and the session completes.
+    bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
+    completed = await service.finalize_user_memory_session(
+        "group:7788", reason="retry2",
+    )
+    assert completed is True
+    retried = [
+        [m["content"][0]["text"] for m in call.args[1]]
+        for call in bridge.post_scoped_memory_history.await_args_list
+    ]
+    assert retried == [["m3", "m4", "m5"]]
+    assert "group:7788" not in plugin._user_sessions
+
 
 @pytest.mark.asyncio
 async def test_generation_timeout_salvages_group_buffers_before_discard():
@@ -2092,6 +2107,10 @@ async def test_generation_timeout_salvages_group_buffers_before_discard():
     # Private / memory-disabled sessions skip the salvage entirely.
     calls.clear()
     user_data["is_group"] = False
+    await service._salvage_group_buffers_before_discard("group:7788")
+    assert calls == []
+    user_data["is_group"] = True
+    user_data["memory_enabled"] = False
     await service._salvage_group_buffers_before_discard("group:7788")
     assert calls == []
 
