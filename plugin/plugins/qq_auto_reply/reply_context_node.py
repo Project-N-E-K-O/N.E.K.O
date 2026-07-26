@@ -61,6 +61,19 @@ class QQReplyContextNode:
     ) -> QQReplyContext:
         traces: list[QQPipelineStageTrace] = []
         config_manager = get_config_manager()
+
+        # context 里的人格（角色名 / character card / system prompt）会随会话一起
+        # 冻进 OmniOfflineClient 缓存整场，而下游 ensure_generation_session 只在
+        # 新建会话时才等区域落定——等待发生在 context 组装**之后**，等待期间用户
+        # 切换角色的话，冻结的就是切换前的人格。所以组装 context 前先落定一次。
+        # 已落定 / 无需区域时零开销；未落定窗口只存在于进程冷启动头几秒，那时
+        # _user_sessions（进程内存）必为空、这条消息本来就要新建会话，等待不冤枉。
+        # fail-open：与其它插件路径对偶，探测出错不阻塞回复。
+        try:
+            await config_manager.aensure_region_resolved()
+        except Exception as _geo_err:
+            self.plugin.logger.warning(f"[GeoIP] 区域落定失败，按当前配置组装上下文: {_geo_err}")
+
         master_name, her_name, _, catgirl_data, _, lanlan_prompt_map, _, _, _ = config_manager.get_character_data()
         traces.append(
             QQPipelineStageTrace(

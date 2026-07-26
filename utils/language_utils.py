@@ -1328,36 +1328,55 @@ class TranslationService:
             config_manager: config manager instance, used to obtain API config
         """
         self.config_manager = config_manager
+        # (route, client) 元组或 None——收在一个属性里原子发布，见 _get_llm_client。
         self._llm_client = None
         self._cache = OrderedDict()
         self._cache_lock = None  # 懒加载：在首次使用时创建异步锁
         self._cache_lock_init_lock = threading.Lock()  # 用于保护异步锁的创建过程
 
     async def _get_llm_client(self):
-        """Get the LLM client (for translation, reusing the emotion model config)"""
+        """Get the LLM client (for translation, reusing the emotion model config).
+
+        Rebuilt whenever the resolved emotion route changes, exactly like
+        ``TaskDeduper._get_llm`` / ``computer_use``'s ``_llm_client_sig``: the
+        emotion route is region-dependent, and a client built while Steam's
+        provisional fallback was in effect would otherwise pin every persona
+        translation to the wrong regional endpoint for the process lifetime
+        once the authoritative IP verdict lands the other way. The
+        (route, client) pair lives in ONE attribute so a concurrent rebuild can
+        never pair an old client with the new route fingerprint; the cache lock
+        additionally keeps construction single-flight.
+        """
         try:
-            config = self.config_manager.get_model_api_config('emotion')
-            
+            # 同步 open()+json.load() 的配置读不该跑在共享事件循环上（与
+            # aget_core_config 必须 offload 同一条理由）。
+            config = await asyncio.to_thread(
+                self.config_manager.get_model_api_config, 'emotion')
+
             if not config.get('api_key') or not config.get('model') or not config.get('base_url'):
                 logger.warning("翻译服务：API配置不完整（缺少 api_key、model 或 base_url），无法进行翻译")
                 return None
-            
-            if self._llm_client is not None:
-                return self._llm_client
+
+            route = (config.get('base_url'), config.get('model'),
+                     config.get('api_key'), config.get('provider_type'))
+            cached = self._llm_client
+            if cached is not None and cached[0] == route:
+                return cached[1]
 
             async with self._get_cache_lock():
-                if self._llm_client is not None:
-                    return self._llm_client
+                cached = self._llm_client
+                if cached is not None and cached[0] == route:
+                    return cached[1]
 
                 from config import TRANSLATION_OUTPUT_MAX_TOKENS
-                self._llm_client = await create_chat_llm_async(
+                client = await create_chat_llm_async(
                     config['model'], config['base_url'], config['api_key'],
                     max_completion_tokens=TRANSLATION_OUTPUT_MAX_TOKENS,
                     timeout=30.0,
                     provider_type=config.get('provider_type'),
                 )
-
-                return self._llm_client
+                self._llm_client = (route, client)
+                return client
         except Exception as e:
             logger.error(f"翻译服务：初始化LLM客户端失败: {e}")
             return None

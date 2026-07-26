@@ -1965,15 +1965,21 @@ def test_deduper_concurrent_refresh_never_mismatches_route_and_client(monkeypatc
     sys.setswitchinterval(1e-6)      # 放大线程抢占，让相邻两次属性写之间可被插队
     stop = threading.Event()
     seen_mismatch = []
+    worker_errors = []
 
     def _hammer():
-        while not stop.is_set():
-            d._get_llm()
-            cached = d._llm_cache
-            # 不变量：任何时刻读到的缓存对都必须自洽（client 按 route 构建）。
-            # 分离写的实现在两次赋值之间必然暴露不自洽窗口，高频读能撞到。
-            if cached is not None and cached[1].built_for != cached[0][0]:
-                seen_mismatch.append((cached[1].built_for, cached[0][0]))
+        # 异常必须收集：worker 静默死掉的话 seen_mismatch 恒空、终态断言又被
+        # __init__ 的首次发布兜住，测试会假绿。
+        try:
+            while not stop.is_set():
+                d._get_llm()
+                cached = d._llm_cache
+                # 不变量：任何时刻读到的缓存对都必须自洽（client 按 route 构建）。
+                # 分离写的实现在两次赋值之间必然暴露不自洽窗口，高频读能撞到。
+                if cached is not None and cached[1].built_for != cached[0][0]:
+                    seen_mismatch.append((cached[1].built_for, cached[0][0]))
+        except Exception as e:      # noqa: BLE001
+            worker_errors.append(repr(e))
 
     workers = [threading.Thread(target=_hammer, daemon=True) for _ in range(4)]
     try:
@@ -1989,6 +1995,7 @@ def test_deduper_concurrent_refresh_never_mismatches_route_and_client(monkeypatc
             w.join(5)
         sys.setswitchinterval(old_interval)
 
+    assert not worker_errors, f'压测线程异常退出（压测未真正执行）: {worker_errors[:3]}'
     assert not seen_mismatch, f'缓存出现过 route/client 错配: {seen_mismatch[:3]}'
     route, client = d._llm_cache
     assert client.built_for == route[0], \
@@ -2036,14 +2043,18 @@ def test_deduper_cache_is_published_atomically():
     assert cache_writes, '未找到 _llm_cache 发布点，断言失效'
     for n in cache_writes:
         v = n.value
-        reuses_old_cache = isinstance(v, ast.Tuple) and any(
-            isinstance(e, ast.Attribute) and getattr(e.value, 'id', None) == 'self'
-            for elt in v.elts for e in ast.walk(elt)
-        )
+        # 合法发布只有两种形态：None 初始化，或两个**裸局部名**组成的二元组
+        # （route, llm）。收得比「不含 self.xxx」更紧：旧缓存分量可以先存进局部
+        # （cached = self._llm_cache）再以 cached[1] / cached[1].x 之类的表达式
+        # 混进元组，属性检查拦不住——裸 Name 白名单把下标/属性/调用/条件表达式
+        # 一律拒绝。启发式护栏：Name 的**数据流**来源不做深度分析（x = cached[1]
+        # 再放 x 仍可绕过），那一步交给 review；这里挡住所有直接形态。
         whole = (isinstance(v, ast.Constant) and v.value is None) or (
-            isinstance(v, ast.Tuple) and len(v.elts) == 2 and not reuses_old_cache
+            isinstance(v, ast.Tuple) and len(v.elts) == 2
+            and all(isinstance(e, ast.Name) for e in v.elts)
         )
         assert whole, (
-            f'deduper.py:{n.lineno}: _llm_cache 的发布必须是不引用旧缓存分量的'
-            '完整二元组（部分更新会重新引入交错错配）'
+            f'deduper.py:{n.lineno}: _llm_cache 的发布必须是「两个裸局部名的'
+            '二元组」或 None 初始化——任何引用旧缓存分量的表达式都会重新引入'
+            '交错错配'
         )
