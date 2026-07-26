@@ -695,7 +695,7 @@ async def test_one_shot_user_image_records_engagement(
     mgr._starting_session_count = 0
     mgr._session_start_circuit_open = False
     mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
-    clock = {"now": FIXED_TS}
+    clock = {"now": FIXED_TS + 25.0}
 
     async def _process_after_clock_advance(_data):
         clock["now"] = FIXED_TS + 50.0
@@ -706,7 +706,11 @@ async def test_one_shot_user_image_records_engagement(
 
     await core_module.LLMSessionManager._process_stream_data_internal(
         mgr,
-        {"input_type": input_type, "data": "raw-image"},
+        {
+            "input_type": input_type,
+            "data": "raw-image",
+            "_user_input_ingress_time": FIXED_TS,
+        },
     )
 
     mgr.session.stream_image.assert_awaited_once_with("img-b64")
@@ -773,6 +777,50 @@ async def test_non_voice_transcript_reuse_preserves_avatar_drop_source():
             "metadata": {"source": "avatar-drop"},
         },
     }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cached_text_preserves_server_ingress_time(monkeypatch):
+    """Session-start caching must not move engagement past later proactive output."""
+    mgr = _make_transcript_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session._pending_images = []
+    mgr.session.update_max_response_length = Mock()
+    mgr.session.stream_text = AsyncMock()
+    mgr.is_active = True
+    mgr.session_ready = False
+    mgr._starting_session_count = 1
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = []
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=True)
+    mgr.agent_flags = {"openclaw_enabled": True, "openclaw_ready": False}
+    mgr.pending_agent_callbacks = []
+    mgr._fire_task = Mock()
+    clock = {"now": FIXED_TS}
+    monkeypatch.setattr(core_module.time, "time", lambda: clock["now"])
+    monkeypatch.setattr(
+        core_module,
+        "dispatch_text_user_message",
+        lambda name, text: None,
+    )
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr,
+        {"input_type": "text", "data": "/openclaw stop", "request_id": "req-1"},
+    )
+
+    assert mgr.pending_input_data[0]["_user_input_ingress_time"] == FIXED_TS
+    clock["now"] = FIXED_TS + 50.0
+    mgr._starting_session_count = 0
+    mgr.session_ready = True
+    await core_module.LLMSessionManager._flush_pending_input_data(mgr)
+
+    assert mgr.last_user_activity_time == FIXED_TS
+    assert mgr.last_user_message_time == FIXED_TS
+    assert mgr.last_user_engagement_time == FIXED_TS
 
 
 @pytest.mark.unit
