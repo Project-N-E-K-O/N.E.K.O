@@ -202,16 +202,25 @@ class QQSettingsService:
             self.plugin._qq_settings.get("group_member_memory_enabled", False)
         )
         member_turning_off = member_memory_before and not member_memory_after
-        if group_memory_before and not group_memory_after:
-            # 同步（无 await）盖 opt-out 截止点：后台结算任务拿到锁之前
-            # 到达的消息仍会追加进共享历史，finalize 若不设界会把
-            # opt-out 之后的轮次一并入库。
+        if group_memory_before != group_memory_after:
+            # 同步（无 await）给"转变时刻已存在"的群会话打标：后台任务只
+            # 处理带标会话——转变之后新建的会话天然无标、不被误结算/误
+            # rebase（结构性保证，取代按可变 memory_enabled flag 猜测的
+            # 启发式）。反向快速切换会覆盖前一次的标记，天然幂等。
             for ud in list(getattr(self.plugin, "_user_sessions", {}).values()):
-                if ud.get("is_group"):
-                    sess = ud.get("session")
-                    ud["group_opt_out_cutoff"] = len(
-                        getattr(sess, "_conversation_history", []) or []
-                    )
+                if not ud.get("is_group"):
+                    continue
+                sess = ud.get("session")
+                hist_len = len(getattr(sess, "_conversation_history", []) or [])
+                if group_memory_after:
+                    ud.pop("group_opt_out_cutoff", None)
+                    ud.pop("pending_disable_settle", None)
+                    ud["pending_enable_rebase"] = True
+                else:
+                    # cutoff：结算只到 opt-out 时刻，竞态窗口内的新轮次不入库。
+                    ud["group_opt_out_cutoff"] = hist_len
+                    ud["pending_disable_settle"] = True
+                    ud.pop("pending_enable_rebase", None)
         if member_turning_off or group_memory_after != group_memory_before:
             # 记忆开关转变必须同步既有群会话（对偶私聊权限切换的
             # _invalidate_private_session）。单协程顺序执行保证次序：

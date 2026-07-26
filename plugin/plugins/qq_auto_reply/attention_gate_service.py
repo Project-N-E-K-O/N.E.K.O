@@ -509,6 +509,10 @@ class QQAttentionGateService:
                     "group_memory_enabled", False,
                 )):
                     return 0
+                if s.get("pending_disable_settle"):
+                    # opt-out 结算未完成（快速 re-enable 会让上面的 setting
+                    # 检查重新通过）：digest 不碰，交转变任务按 cutoff 结算。
+                    return 0
                 session = s.get("session")
                 if not session or not hasattr(session, "_conversation_history"):
                     return 0

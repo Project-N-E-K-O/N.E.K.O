@@ -1740,7 +1740,9 @@ async def test_group_memory_toggle_syncs_existing_sessions():
     )
     service = QQSessionMemoryService(plugin)
 
-    # ON->OFF with a failing settle: fail closed.
+    # ON->OFF with a failing settle: fail closed. Transitions act only on
+    # sessions marked synchronously at the policy write.
+    user_data["pending_disable_settle"] = True
     await service.invalidate_group_sessions(enabled=False)
     assert user_data["memory_enabled"] is False
     assert user_data["last_group_digest_index"] == len(history)
@@ -1752,6 +1754,7 @@ async def test_group_memory_toggle_syncs_existing_sessions():
     # OFF->ON on a session that accumulated turns while opted out.
     history.append(SimpleNamespace(type="human", content="opted-out turn"))
     user_data["last_group_digest_index"] = 0
+    user_data["pending_enable_rebase"] = True
     await service.invalidate_group_sessions(enabled=True)
     assert user_data["memory_enabled"] is True
     assert user_data["last_group_digest_index"] == len(history)
@@ -1762,13 +1765,24 @@ async def test_group_memory_toggle_syncs_existing_sessions():
     # per-request flag).
     user_data["last_group_digest_index"] = 0
     user_data["memory_enabled"] = True
+    user_data["pending_enable_rebase"] = True
     await service.invalidate_group_sessions(enabled=True)
     assert user_data["last_group_digest_index"] == len(history)
+
+    # Unmarked session (created AFTER the transition): untouched in both
+    # directions — no bogus rebase, no bogus settle.
+    user_data["last_group_digest_index"] = 1
+    await service.invalidate_group_sessions(enabled=True)
+    assert user_data["last_group_digest_index"] == 1
+    await service.invalidate_group_sessions(enabled=False)
+    assert "group:7788" in plugin._user_sessions
+    assert user_data["last_group_digest_index"] == 1
 
     # ON->OFF success path: settle succeeds, session pops, and the orphaned
     # dict's flag is still cleared so stale references cannot re-flush it.
     bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
     user_data["last_group_digest_index"] = 0
+    user_data["pending_disable_settle"] = True
     await service.invalidate_group_sessions(enabled=False)
     assert user_data["memory_enabled"] is False
     assert "group:7788" not in plugin._user_sessions
@@ -1784,6 +1798,7 @@ async def test_group_memory_toggle_syncs_existing_sessions():
             _conversation_history=history3, close=AsyncMock(),
         ),
     }
+    raced["pending_disable_settle"] = True
     plugin._user_sessions["group:7788"] = raced
     bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
     await service.invalidate_group_sessions(enabled=False)

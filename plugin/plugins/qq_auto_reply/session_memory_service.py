@@ -397,20 +397,19 @@ class QQSessionMemoryService:
                 session = current.get("session")
                 history = getattr(session, "_conversation_history", []) or []
                 if enabled:
-                    # 无条件重定位游标：settings 写入与本任务异步执行之间，
-                    # 抢先到达的群消息会把 memory_enabled 先置 True——按
-                    # flag 跳过会让 opt-out 期间积累的历史被下一次 flush
-                    # 追溯提取。以"策略转变"为准，不信 per-request 缓存；
-                    # 竞态窗口内的少量新轮次被一并跳过，属 fail-closed。
+                    if not current.pop("pending_enable_rebase", None):
+                        # 无标 = 转变之后才创建的会话，全程 opt-in，
+                        # rebase 会误跳其正当轮次——不碰。
+                        return
                     current["last_group_digest_index"] = len(history)
                     current["memory_enabled"] = True
                     return
-                if not current.get("memory_enabled"):
-                    # 竞态：settings 写 OFF 后、本任务运行前，抢先请求已把
-                    # 缓存 flag 刷成 False——buffer 里仍是 opt-in 期间的
-                    # 轮次。转变权威在策略不在 per-request 缓存：恢复 flag
-                    # 让 finalize 得以结算（对偶 enable 分支的无条件重定位）。
-                    current["memory_enabled"] = True
+                if not current.pop("pending_disable_settle", None):
+                    # 无标 = opt-out 之后才创建（memory_enabled 本就 False），
+                    # 结算它会把 opt-out 后的内容入库——不碰。
+                    return
+                # 有标会话按转变结算，不信可变的 per-request flag。
+                current["memory_enabled"] = True
                 finalized = False
                 try:
                     finalized = await self.finalize_user_memory_session(
