@@ -2029,17 +2029,26 @@ def test_deduper_cache_is_published_atomically():
 
     assigns = {}
     for n in ast.walk(cls):
+        # AnnAssign（self.x: T = ...）也要收：分离属性用带类型注解的赋值形式
+        # 写，只遍历 ast.Assign 的话会漏检。
         if isinstance(n, ast.Assign):
-            for t in n.targets:
-                if (isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name)
-                        and t.value.id == 'self'):
-                    assigns.setdefault(t.attr, []).append(n)
+            targets = n.targets
+        elif isinstance(n, ast.AnnAssign):
+            targets = [n.target]
+        else:
+            continue
+        for t in targets:
+            if (isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name)
+                    and t.value.id == 'self'):
+                assigns.setdefault(t.attr, []).append(n)
 
     banned = {'_llm', '_llm_route'} & assigns.keys()
     assert not banned, \
         f'route 与 client 必须收在一个元组属性里原子发布，发现分离属性: {sorted(banned)}'
 
-    cache_writes = assigns.get('_llm_cache', [])
+    # AnnAssign 允许无值的纯声明（self.x: T），那不是一次发布，发布形态检查
+    # 只看带值的赋值；banned 检查在上面，声明形式的分离属性照拦。
+    cache_writes = [n for n in assigns.get('_llm_cache', []) if n.value is not None]
     assert cache_writes, '未找到 _llm_cache 发布点，断言失效'
     for n in cache_writes:
         v = n.value
