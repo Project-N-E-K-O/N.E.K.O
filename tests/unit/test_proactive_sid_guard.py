@@ -12,11 +12,13 @@ import asyncio
 import os
 import sys
 from queue import Queue
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 from main_logic.core import LLMSessionManager, _proactive_expected_sid
+from main_logic.core import proactive as proactive_core
 from main_logic.session_state import SessionStateMachine
 
 
@@ -152,6 +154,49 @@ def test_cannot_preserve_tts_ready_when_runtime_identity_changed():
     mgr.voice_id = "voice-b"
 
     assert LLMSessionManager._can_preserve_tts_ready_for_session_start(mgr) is False
+
+
+async def test_prepare_proactive_delivery_counts_recent_ui_engagement(
+    monkeypatch,
+):
+    mgr = _make_mgr()
+    mgr.is_goodbye_silent = MagicMock(return_value=False)
+    mgr.last_user_activity_time = 10.0
+    mgr.last_user_engagement_time = 95.0
+    monkeypatch.setattr(proactive_core.time, "time", lambda: 100.0)
+
+    prepared = await LLMSessionManager.prepare_proactive_delivery(
+        mgr,
+        min_idle_secs=10.0,
+    )
+
+    assert prepared is False
+
+
+async def test_prepare_proactive_delivery_rechecks_ui_engagement_before_claim(
+    monkeypatch,
+):
+    mgr = _make_mgr()
+    mgr.is_goodbye_silent = MagicMock(return_value=False)
+    mgr.is_active = False
+    mgr.websocket = object()
+    mgr.last_user_activity_time = 10.0
+    mgr.last_user_engagement_time = None
+    monkeypatch.setattr(proactive_core.time, "time", lambda: 100.0)
+
+    async def start_session_after_engagement(*_args, **_kwargs):
+        mgr.session = SimpleNamespace(_conversation_history=[])
+        mgr.last_user_engagement_time = 95.0
+
+    mgr.start_session = AsyncMock(side_effect=start_session_after_engagement)
+
+    prepared = await LLMSessionManager.prepare_proactive_delivery(
+        mgr,
+        min_idle_secs=10.0,
+    )
+
+    assert prepared is False
+    assert mgr.current_speech_id is None
 
 
 # ─────────────────────────────────────────────────────────────────────────────

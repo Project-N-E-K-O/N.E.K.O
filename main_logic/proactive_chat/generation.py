@@ -556,6 +556,7 @@ async def _run_phase2_generation(
     )
 
     make_llm = partial(_make_proactive_llm, model_config)
+    silence_since_before_generation = _proactive_silence_since(mgr)
     generated = await _generate_phase2_stream(
         mgr=mgr,
         proactive_sid=proactive_sid,
@@ -574,6 +575,30 @@ async def _run_phase2_generation(
     )
     if generated.result is not None:
         return Phase2GuardedOutput(result=generated.result)
+
+    silence_since_after_generation = _proactive_silence_since(mgr)
+    if (
+        silence_since_after_generation is not None
+        and (
+            silence_since_before_generation is None
+            or silence_since_after_generation > silence_since_before_generation
+        )
+    ):
+        active_logger.info(
+            "[%s] proactive Phase 2 abandoned after user interaction "
+            "during generation",
+            lanlan_name,
+        )
+        if not mgr.state.is_proactive_preempted(proactive_sid):
+            await mgr.handle_new_message()
+        return Phase2GuardedOutput(
+            result=ProactiveChatResult(
+                body=_proactive_pass_body(
+                    PROACTIVE_REASON_DELIVERY_PREEMPTED,
+                    message="用户已在主动搭话生成期间恢复互动",
+                )
+            )
+        )
 
     return await _guard_phase2_output(
         mgr=mgr,

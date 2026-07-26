@@ -193,6 +193,18 @@ class ProactiveMixin:
 
     async def prepare_proactive_delivery(self, min_idle_secs: float = 10.0) -> bool:
         """Pre-checks before Phase 2 streaming + speech_id generation. Returns True if it's OK to proceed."""
+        def _user_active_recently() -> bool:
+            now = time.time()
+            activity_times = (
+                self.last_user_activity_time,
+                self.last_user_engagement_time,
+            )
+            return any(
+                timestamp is not None
+                and now - float(timestamp) < min_idle_secs
+                for timestamp in activity_times
+            )
+
         if self.is_goodbye_silent():
             logger.info("[%s] prepare_proactive_delivery: goodbye silent", self.lanlan_name)
             return False
@@ -204,10 +216,9 @@ class ProactiveMixin:
         if self.state.is_proactive_preempted():
             logger.info("[%s] prepare_proactive_delivery: preempted before claim", self.lanlan_name)
             return False
-        if self.last_user_activity_time is not None:
-            if time.time() - self.last_user_activity_time < min_idle_secs:
-                logger.info("[%s] prepare_proactive_delivery: user active recently", self.lanlan_name)
-                return False
+        if _user_active_recently():
+            logger.info("[%s] prepare_proactive_delivery: user active recently", self.lanlan_name)
+            return False
         if self.is_active and isinstance(self.session, OmniRealtimeClient):
             logger.info("[%s] prepare_proactive_delivery: voice session active", self.lanlan_name)
             return False
@@ -237,6 +248,14 @@ class ProactiveMixin:
             # flag 先于 sid mutation 翻起；此处若已被抢占则不写 current_speech_id。
             if self.state.is_proactive_preempted():
                 logger.info("[%s] prepare_proactive_delivery: preempted in claim lock", self.lanlan_name)
+                return False
+            # UI-only engagement does not rotate the proactive SID, so repeat
+            # the shared idle check after session startup and lock waiting.
+            if _user_active_recently():
+                logger.info(
+                    "[%s] prepare_proactive_delivery: user active before claim",
+                    self.lanlan_name,
+                )
                 return False
             self.current_speech_id = str(uuid4())
             self._tts_done_queued_for_turn = False
