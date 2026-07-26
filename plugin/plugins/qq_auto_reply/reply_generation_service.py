@@ -287,7 +287,9 @@ class QQReplyGenerationService:
             # fallback 成功也要跑 scoped 记忆钩子：成员发言入 bucket、
             # 被展示的 scoped 条目计 mention——主会话空回复不代表这轮
             # 没发生。会话可能已被超时丢弃（user_data 不在了则跳过）。
-            if context.is_group:
+            if context.is_group and not context.ephemeral_session:
+                # ephemeral 键含 time_ns，重新生成必 miss；且 ephemeral 会话
+                # persist=False、finally 即丢弃，记忆钩子本就无意义。
                 session_key = self.plugin.session_runtime_service.build_generation_session_key(context)
                 user_data = self.plugin._user_sessions.get(session_key)
                 if user_data is not None:
