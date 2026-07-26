@@ -1720,10 +1720,15 @@ class LifecycleMixin:
         never mirror into ``pending_extra_replies`` (PR #2469), so a pure
         voice session has no user-turn drain to carry them. Their delivery
         point is HERE: the next NATURALLY-occurring hot swap hands them to
-        the new session as background context via a DEDICATED
-        ``prime_context(skipped=True)`` call — physically separate from the
-        (possibly ``skipped=False``) announce prime, so read content can
-        never become part of the user turn that triggers a spoken response.
+        the new session as background context. Non-Gemini providers get a
+        DEDICATED ``prime_context(skipped=True)`` call (instructions channel,
+        no turn) AFTER the announce prime — physically separate, so read
+        content can never become part of the user turn that triggers a
+        spoken response. Gemini has no instructions channel and a global,
+        response-unscoped skip guard, so one swap may carry at most ONE
+        prime turn: on a no-extras swap the passive block merges into the
+        single ``skipped=True`` prime; a swap that also announces extras
+        skips the ride-along and leaves passive queued for the next swap.
 
         Deliberate trade-off (owner decision): an ACTIVE voice session gets
         no mid-session context push for passive cues — they wait for the
@@ -1909,6 +1914,7 @@ class LifecycleMixin:
             _removed_passive_cbs: list = []
             _passive_sel: list = []
             _passive_swap_text = ""
+            _extras_for_budget: list = []
             next_session_context_messages = getattr(self, "next_session_context_messages", []) or []
             incremental_next_session_context = next_session_context_messages[
                 self.initial_next_session_context_snapshot_len:
@@ -1953,17 +1959,16 @@ class LifecycleMixin:
                     lanlan_name=self.lanlan_name,
                     master_name=self.master_name,
                 )
-                # Passive（read）回调搭车：只在这里做选取（预算吃 extras 选剩
-                # 的份额）。注入不混进本分支 skipped=False 的播报 prime——那会
-                # 让 read 内容成为主动发言那一轮 user turn 的一部分、被当场说
-                # 出来（Codex review P2）。统一走 if/else 之后的独立
-                # skipped=True 注入。
-                if isinstance(self.pending_session, OmniRealtimeClient):
-                    _passive_sel, _passive_swap_text = (
-                        self._select_passive_callbacks_for_swap_prime(
-                            extras_selected=_selected,
-                        )
-                    )
+                # Passive（read）回调搭车：本分支只记预算参照（extras 先占
+                # 份额），选取推迟到主 prime 之后的统一注入点——收窄"同 key
+                # 更新 cue 在主 prime await 期间入队"的陈旧窗口（Codex P2）。
+                # 注入绝不混进本分支 skipped=False 的播报 prime，read 内容
+                # 不能成为触发主动发言那一轮 user turn 的一部分。Gemini 在
+                # 有 extras 的 swap 上不搭车（统一注入点会跳过）：全局
+                # _skip_until_next_response 标志不分响应，第二个 turn 会
+                # 丢播报、放出 read 响应（Codex P1），留队等下一次无 extras
+                # 的 swap。
+                _extras_for_budget = _selected
                 try:
                     await self.pending_session.prime_context(final_prime_text, skipped=False)
                 except (web_exceptions.ConnectionClosed, AttributeError) as e:
@@ -1986,12 +1991,19 @@ class LifecycleMixin:
                 _lang = normalize_language_code(self.user_language, format='short')
                 final_prime_text += _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
                 # Passive（read）回调搭车：本分支没有 proactive extras，
-                # passive 吃满整个预算。注入同样走 if/else 之后的统一
-                # skipped=True 通道。
-                if isinstance(self.pending_session, OmniRealtimeClient):
+                # passive 吃满整个预算。非 Gemini 走 if/else 之后的统一
+                # skipped=True 注入；Gemini 特例在这里合并进本分支唯一的
+                # skipped=True prime——Gemini 没有 instructions 通道，任何
+                # prime 都是一个 turn，同一次 swap 发两个 turn 会被全局
+                # skip 标志错序丢弃（Codex P1），所以必须单 turn：响应被
+                # skip-guard 丢弃、内容留在上下文，read 语义不变。
+                if (isinstance(self.pending_session, OmniRealtimeClient)
+                        and getattr(self.pending_session, "_is_gemini", False)):
                     _passive_sel, _passive_swap_text = (
                         self._select_passive_callbacks_for_swap_prime()
                     )
+                    if _passive_swap_text:
+                        final_prime_text += "\n" + _passive_swap_text
                 try:
                     await self.pending_session.prime_context(final_prime_text, skipped=True)
                 except (web_exceptions.ConnectionClosed, AttributeError) as e:
@@ -2001,23 +2013,38 @@ class LifecycleMixin:
                     await self._reset_preparation_state(clear_main_cache=True)
                     self.is_hot_swap_imminent = False
                     return
-
-            # Passive（read）搭车条目的统一注入点：独立的 skipped=True 调用
-            # ——非 Qwen/Gemini 走 session instructions，Qwen 同路，Gemini 走
-            # skip-guard 丢弃响应——与上面可能 skipped=False 的播报 prime 物理
-            # 隔离，read 内容永远不会成为触发主动发言那一轮的 user turn 的一
-            # 部分。失败是 best-effort：不中止 swap（主 prime 已成功，中止丢
-            # 更多）；_prime_selected_passive_cbs 不赋值 → promote 不出队，
-            # 条目留在队列等下一次热切换；pending session 若真死了，promote
-            # 后的 ws 校验会兜住。
-            if _passive_swap_text:
-                try:
-                    await self.pending_session.prime_context(_passive_swap_text, skipped=True)
+                # Gemini 合并搭车成功：prime 已带上 passive 块，此刻记账，
+                # 统一注入点会因 _is_gemini 跳过，不会双投。
+                if _passive_swap_text:
                     _prime_selected_passive_cbs = _passive_sel
-                except (web_exceptions.ConnectionClosed, AttributeError) as e:
-                    logger.warning(
-                        f"Final Swap Sequence: passive ride-along prime failed (kept queued): {e}"
+
+            # Passive（read）搭车条目的统一注入点（非 Gemini；Gemini 已在
+            # 无 extras 分支合并单 turn，有 extras 的 Gemini swap 不搭车）。
+            # 选取放在主 prime await 之后：同 key 更新 cue 在主 prime 期间
+            # 入队会 retract 掉队列里的旧条目，此刻再选就不会把已过期的
+            # 快照注进新会话（Codex P2）；剩余窗口只有本次注入自身的
+            # await，与 extras 的 accepted residual window 对齐。skipped=True
+            # 在非 Gemini 上走 session instructions（Qwen 同路），不产生
+            # turn，与播报 prime 物理隔离。失败 best-effort 兜住全部
+            # Exception（provider RuntimeError/超时不该中止已成功的主
+            # prime，Codex P2）：_prime_selected_passive_cbs 不赋值 →
+            # promote 不出队，条目留队等下一次热切换；pending session 若
+            # 真死了，promote 后的 ws 校验会兜住。
+            if (isinstance(self.pending_session, OmniRealtimeClient)
+                    and not getattr(self.pending_session, "_is_gemini", False)):
+                _passive_sel, _passive_swap_text = (
+                    self._select_passive_callbacks_for_swap_prime(
+                        extras_selected=_extras_for_budget,
                     )
+                )
+                if _passive_swap_text:
+                    try:
+                        await self.pending_session.prime_context(_passive_swap_text, skipped=True)
+                        _prime_selected_passive_cbs = _passive_sel
+                    except Exception as e:
+                        logger.warning(
+                            f"Final Swap Sequence: passive ride-along prime failed (kept queued): {e}"
+                        )
 
             print(final_prime_text) #只在控制台显示，不输出到日志文件
 
