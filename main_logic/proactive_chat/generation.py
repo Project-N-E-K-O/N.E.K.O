@@ -1332,7 +1332,26 @@ async def _guard_phase2_output(
                 )
             )
 
-        if exempt_text_dedup or anti_repeat_corpus is None:
+        regen_dedup_tag = (
+            "CHAT"
+            if regen_source_tag == "MEME" and selected_meme_link is None
+            else regen_source_tag
+        )
+        regen_material_key = _proactive_material_key(
+            regen_dedup_tag,
+            selected_music_link,
+            meme_content,
+        )
+        regen_exempt_text_dedup = (
+            regen_dedup_tag in ANTI_REPEAT_EXEMPT_SOURCE_TAGS
+            and not _is_recent_proactive_material(
+                lanlan_name,
+                regen_dedup_tag,
+                regen_material_key,
+            )
+        )
+
+        if regen_exempt_text_dedup or anti_repeat_corpus is None:
             regen_total = 0.0
         else:
             try:
@@ -1360,13 +1379,13 @@ async def _guard_phase2_output(
                 )
             )
         regen_unanswered_repeat_signal = None
-        if not exempt_text_dedup and anti_repeat_corpus is not None:
+        if not regen_exempt_text_dedup and anti_repeat_corpus is not None:
             try:
                 regen_unanswered_repeat_signal = (
                     anti_repeat_corpus.score_unanswered_proactive_draft(
                         lanlan_name,
                         cleaned,
-                        silence_since=silence_since,
+                        silence_since=_proactive_silence_since(mgr),
                     )
                 )
             except Exception as exc:  # pragma: no cover - defensive
@@ -1402,9 +1421,11 @@ async def _guard_phase2_output(
                     )
                 )
             )
-        regen_duplicate, regen_similarity = (
-            _is_similar_to_recent_proactive_chat(lanlan_name, cleaned)
-        )
+        regen_duplicate, regen_similarity = False, 0.0
+        if not regen_exempt_text_dedup:
+            regen_duplicate, regen_similarity = (
+                _is_similar_to_recent_proactive_chat(lanlan_name, cleaned)
+            )
         if regen_duplicate:
             active_logger.info(
                 "[%s] proactive BM25 regen still literal-dup "

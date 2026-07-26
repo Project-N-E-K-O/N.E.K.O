@@ -25,8 +25,9 @@ class _NeverPreemptedState:
 
 
 class _FakeRegenLlm:
-    def __init__(self, content: str):
+    def __init__(self, content: str, on_invoke=None):
         self.content = content
+        self.on_invoke = on_invoke
 
     async def __aenter__(self):
         return self
@@ -35,6 +36,8 @@ class _FakeRegenLlm:
         return None
 
     async def ainvoke(self, _messages):
+        if self.on_invoke is not None:
+            self.on_invoke()
         return SimpleNamespace(content=self.content)
 
 
@@ -212,6 +215,158 @@ async def test_unanswered_score_failure_keeps_bm25_guard_active(monkeypatch):
     mgr.handle_new_message.assert_not_awaited()
     assert output.result is None
     assert output.response_text == "这是改写后的全新主动话题。"
+
+
+@pytest.mark.asyncio
+async def test_regenerated_fresh_music_recomputes_text_exemption(monkeypatch):
+    """A rewrite that selects fresh material skips every textual recheck."""
+    corpus = MagicMock()
+    corpus.score_unanswered_proactive_draft.return_value = (
+        anti_repeat_module.UnansweredProactiveRepeatSignal(
+            triggered=True,
+            match_count=2,
+            considered_count=8,
+            best_similarity=0.8,
+            repeated_terms=("旧话题",),
+        )
+    )
+    corpus.score_draft.return_value = (0.0, {})
+    monkeypatch.setattr(
+        anti_repeat_module,
+        "get_anti_repeat_corpus",
+        lambda: corpus,
+    )
+    literal_guard = MagicMock(return_value=(False, 0.0))
+    monkeypatch.setattr(
+        "main_logic.proactive_chat.generation._is_similar_to_recent_proactive_chat",
+        literal_guard,
+    )
+
+    mgr = SimpleNamespace(
+        state=_NeverPreemptedState(),
+        last_user_message_time=None,
+        last_user_engagement_time=None,
+        proactive_engagement_observation_started_at=100.0,
+        handle_new_message=AsyncMock(),
+    )
+
+    async def make_llm(**_kwargs):
+        return _FakeRegenLlm("[MUSIC] 这首新歌很适合现在听。")
+
+    output = await _guard_phase2_output(
+        mgr=mgr,
+        proactive_sid="sid",
+        lanlan_name="regen-fresh-music-exemption-test",
+        response_text="先聊一个会触发长窗口改写的旧话题。",
+        full_text="先聊一个会触发长窗口改写的旧话题。",
+        source_tag="CHAT",
+        active_channels=["music", "vision"],
+        selected_music_link={"title": "Fresh Regen Song", "artist": "Neko"},
+        selected_meme_link=None,
+        music_content=None,
+        meme_content=None,
+        is_playing_music=False,
+        music_cooldown=False,
+        expects_source_tag=True,
+        make_llm=make_llm,
+        messages=[
+            SystemMessage(content="system"),
+            HumanMessage(content="begin"),
+        ],
+        human_text="begin",
+        screenshot_b64=None,
+        phase2_use_vision=False,
+        phase2_disable_thinking=True,
+        proactive_lang="zh",
+        master_name="博士",
+    )
+
+    corpus.score_unanswered_proactive_draft.assert_called_once()
+    corpus.score_draft.assert_called_once()
+    literal_guard.assert_called_once()
+    mgr.handle_new_message.assert_not_awaited()
+    assert output.result is None
+    assert output.source_tag == "MUSIC"
+    assert output.is_music_used is True
+
+
+@pytest.mark.asyncio
+async def test_regenerated_score_refreshes_silence_cutoff(monkeypatch):
+    """Engagement during the rewrite invalidates the old unanswered window."""
+    initial_signal = anti_repeat_module.UnansweredProactiveRepeatSignal(
+        triggered=True,
+        match_count=2,
+        considered_count=8,
+        best_similarity=0.8,
+        repeated_terms=("旧话题",),
+    )
+    regenerated_signal = anti_repeat_module.UnansweredProactiveRepeatSignal(
+        triggered=False,
+        match_count=0,
+        considered_count=0,
+        best_similarity=0.0,
+    )
+    corpus = MagicMock()
+    corpus.score_unanswered_proactive_draft.side_effect = [
+        initial_signal,
+        regenerated_signal,
+    ]
+    corpus.score_draft.return_value = (0.0, {})
+    monkeypatch.setattr(
+        anti_repeat_module,
+        "get_anti_repeat_corpus",
+        lambda: corpus,
+    )
+
+    mgr = SimpleNamespace(
+        state=_NeverPreemptedState(),
+        last_user_message_time=None,
+        last_user_engagement_time=None,
+        proactive_engagement_observation_started_at=100.0,
+        handle_new_message=AsyncMock(),
+    )
+
+    async def make_llm(**_kwargs):
+        return _FakeRegenLlm(
+            "这是改写后的全新主动话题。",
+            on_invoke=lambda: setattr(mgr, "last_user_engagement_time", 250.0),
+        )
+
+    output = await _guard_phase2_output(
+        mgr=mgr,
+        proactive_sid="sid",
+        lanlan_name="regen-silence-refresh-test",
+        response_text="这是用户一直没有回应的旧主动话题。",
+        full_text="这是用户一直没有回应的旧主动话题。",
+        source_tag="CHAT",
+        active_channels=[],
+        selected_music_link=None,
+        selected_meme_link=None,
+        music_content=None,
+        meme_content=None,
+        is_playing_music=False,
+        music_cooldown=False,
+        expects_source_tag=False,
+        make_llm=make_llm,
+        messages=[
+            SystemMessage(content="system"),
+            HumanMessage(content="begin"),
+        ],
+        human_text="begin",
+        screenshot_b64=None,
+        phase2_use_vision=False,
+        phase2_disable_thinking=True,
+        proactive_lang="zh",
+        master_name="博士",
+    )
+
+    silence_cutoffs = [
+        call.kwargs["silence_since"]
+        for call in corpus.score_unanswered_proactive_draft.call_args_list
+    ]
+    assert silence_cutoffs == [100.0, 250.0]
+    mgr.handle_new_message.assert_not_awaited()
+    assert output.result is None
 
 
 @pytest.mark.asyncio
