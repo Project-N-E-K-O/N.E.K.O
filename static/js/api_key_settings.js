@@ -1471,6 +1471,31 @@ function updateTtsProviderFieldVisibility(provider) {
     if (standardFields) standardFields.style.display = isGsv ? 'none' : '';
     if (gsvFields) gsvFields.style.display = isGsv ? 'block' : 'none';
     if (isGsv) updateGptSovitsTutorialLink();
+    updateTtsProtocolHint(provider);
+}
+
+function updateTtsProtocolHint(provider) {
+    const hint = document.getElementById('tts-protocol-hint');
+    if (!hint) return;
+    const keyByProvider = {
+        custom: 'api.ttsProtocolHintOpenAI',
+        vllm_omni: 'api.ttsProtocolHintVllmOmni',
+    };
+    const fallbackByProvider = {
+        custom: 'OpenAI-compatible: HTTP(S) POST /v1/audio/speech，完整文本请求、流式音频响应。',
+        vllm_omni: 'vLLM-Omni: WS(S) /v1/audio/speech/stream，文本与音频双向流式传输。',
+    };
+    const key = keyByProvider[provider];
+    if (!key) {
+        hint.style.display = 'none';
+        hint.removeAttribute('data-i18n');
+        hint.textContent = '';
+        return;
+    }
+    hint.setAttribute('data-i18n', key);
+    const translated = window.t ? window.t(key) : '';
+    hint.textContent = translated && translated !== key ? translated : fallbackByProvider[provider];
+    hint.style.display = 'block';
 }
 
 /**
@@ -1489,6 +1514,9 @@ function updateGptSovitsTutorialLink() {
 
 // 语言切换时同步更新教程文档链接（中文↔其它语言走不同文档）
 window.addEventListener('localechange', updateGptSovitsTutorialLink);
+window.addEventListener('localechange', () => {
+    updateTtsProtocolHint(document.getElementById('ttsModelProvider')?.value || '');
+});
 
 /**
  * 在 key 输入框旁添加"前往管理簿"快捷按钮（如果还没有）
@@ -3707,7 +3735,13 @@ const ConnectivityManager = {
             } else if (provider === 'custom') {
                 // 自定义：直接从输入框读取，不设 providerKey（走自定义模式）
                 result.key = keyInput ? getRealKey(keyInput) : '';
-                result.providerType = (mt === 'omni') ? 'websocket' : 'openai_compatible';
+                result.providerType = (mt === 'omni')
+                    ? 'websocket'
+                    : (mt === 'tts' ? 'tts' : 'openai_compatible');
+                if (mt === 'tts') {
+                    result.subType = 'openai_tts';
+                    result.voiceId = document.getElementById('ttsVoiceId')?.value?.trim() || '';
+                }
                 result.model = getResolvedCustomModelId(mt, provider);
             } else if (mt === 'tts' && getTtsProviderMeta(provider) && getTtsProviderMeta(provider).editable_endpoint) {
                 // 端点可编辑的 TTS provider（如 vLLM-Omni）：走 Mode 2（custom 路径），

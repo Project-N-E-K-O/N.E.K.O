@@ -1279,6 +1279,49 @@ def test_explicit_mimo_tts_provider_is_saved_for_runtime_routing(mock_page: Page
 
 
 @pytest.mark.frontend
+def test_custom_tts_uses_openai_speech_probe_and_protocol_hint(mock_page: Page, running_server: str):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#ttsModelProvider option[value='custom']", state="attached", timeout=10000)
+
+    result = mock_page.evaluate("""
+        () => {
+            const provider = document.getElementById('ttsModelProvider');
+            provider.value = 'custom';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            document.getElementById('ttsModelUrl').value = 'https://speech.example.com/v1';
+            document.getElementById('ttsModelId').value = 'vendor-tts';
+            setMaskedInput(document.getElementById('ttsModelApiKey'), 'sk-speech');
+            document.getElementById('ttsVoiceId').value = 'vendor-voice';
+            const resolved = ConnectivityManager.resolveEffectiveKey({
+                type: 'custom',
+                modelType: 'tts'
+            });
+            const hint = document.getElementById('tts-protocol-hint');
+            return {
+                resolved,
+                customOptionCount: provider.querySelectorAll("option[value='custom']").length,
+                hintVisible: hint.style.display !== 'none',
+                hintKey: hint.getAttribute('data-i18n'),
+                hintText: hint.textContent,
+            };
+        }
+    """)
+
+    assert result["customOptionCount"] == 1
+    assert result["resolved"]["url"] == "https://speech.example.com/v1"
+    assert result["resolved"]["key"] == "sk-speech"
+    assert result["resolved"]["model"] == "vendor-tts"
+    assert result["resolved"]["voiceId"] == "vendor-voice"
+    assert result["resolved"]["providerType"] == "tts"
+    assert result["resolved"]["subType"] == "openai_tts"
+    assert result["hintVisible"] is True
+    assert result["hintKey"] == "api.ttsProtocolHintOpenAI"
+    assert "/v1/audio/speech" in result["hintText"]
+
+
+@pytest.mark.frontend
 def test_doubao_tts_is_keybook_only_and_hidden_from_tts_config(mock_page: Page, running_server: str):
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
     mock_page.goto(f"{running_server}/api_key")

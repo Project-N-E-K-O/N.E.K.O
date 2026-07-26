@@ -14,49 +14,109 @@
 
 """OpenAI TTS worker."""
 
+from functools import partial
+
+import httpx
 import numpy as np
 
-from .._infra import TTS_SHUTDOWN_SENTINEL, _resample_audio, _run_sentence_tts_worker
+from .._infra import _resample_audio, _run_sentence_tts_worker
 from .._telemetry import _record_tts_telemetry
+from utils.config_manager import _as_bool
 from utils.logger_config import get_module_logger
+from utils.openai_tts import (
+    OPENAI_TTS_DEFAULT_BASE_URL,
+    OPENAI_TTS_DEFAULT_MODEL,
+    OPENAI_TTS_DEFAULT_VOICE,
+    build_openai_tts_payload,
+    openai_tts_headers,
+    openai_tts_speech_url,
+)
 
 logger = get_module_logger(__name__, "Main")
 
-def openai_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
-    """OpenAI TTS worker — per-sentence synthesis, streaming audio reception."""
-    try:
-        from openai import AsyncOpenAI
-    except ImportError:
-        logger.error("❌ 无法导入 openai 库，OpenAI TTS 不可用")
-        response_queue.put(("__ready__", False))
-        while True:
-            try:
-                sid, _ = request_queue.get()
-                if sid == TTS_SHUTDOWN_SENTINEL:
-                    break
-            except Exception:
-                break
-        return
 
-    if not voice_id:
-        voice_id = "marin"
+def openai_tts_worker(
+    request_queue,
+    response_queue,
+    audio_api_key,
+    voice_id,
+    *,
+    base_url=OPENAI_TTS_DEFAULT_BASE_URL,
+    model=OPENAI_TTS_DEFAULT_MODEL,
+    voice=OPENAI_TTS_DEFAULT_VOICE,
+):
+    """OpenAI-compatible TTS: sentence input with a streamed PCM response."""
+
+    effective_model = str(model or "").strip() or OPENAI_TTS_DEFAULT_MODEL
+    effective_voice = str(voice_id or "").strip() or str(voice or "").strip()
 
     async def setup(response_queue):
-        client = AsyncOpenAI(api_key=audio_api_key)
+        # Validate the URL inside setup so the shared worker skeleton reports
+        # configuration failures through its normal __ready__ channel.
+        endpoint = openai_tts_speech_url(base_url)
+        client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=90.0))
 
         async def synthesize(text: str, speech_id: str) -> None:
-            async with client.audio.speech.with_streaming_response.create(
-                model="gpt-4o-mini-tts",
-                voice=voice_id,
-                input=text,
-                response_format="pcm",
+            payload = build_openai_tts_payload(text, effective_model, effective_voice)
+            async with client.stream(
+                "POST",
+                endpoint,
+                headers=openai_tts_headers(audio_api_key),
+                json=payload,
             ) as response:
-                _record_tts_telemetry("gpt-4o-mini-tts", len(text))
-                async for chunk in response.iter_bytes(chunk_size=4096):
+                response.raise_for_status()
+                _record_tts_telemetry(effective_model, len(text))
+                pending = b""
+                async for chunk in response.aiter_bytes(chunk_size=4096):
                     if chunk:
-                        audio_array = np.frombuffer(chunk, dtype=np.int16)
+                        pcm = pending + chunk
+                        even_length = len(pcm) - (len(pcm) % 2)
+                        pending = pcm[even_length:]
+                        if not even_length:
+                            continue
+                        audio_array = np.frombuffer(pcm[:even_length], dtype="<i2")
                         response_queue.put(_resample_audio(audio_array, 24000, 48000))
 
-        return synthesize, None
+        return synthesize, client.aclose
 
     _run_sentence_tts_worker(request_queue, response_queue, setup, label="OpenAI TTS")
+
+
+def _custom_openai_tts_is_selected(ctx) -> bool:
+    """Whether the user selected the custom OpenAI-compatible TTS endpoint."""
+
+    if not _as_bool(ctx.core_config.get("ENABLE_CUSTOM_API"), False):
+        return False
+    try:
+        raw = ctx.cm.load_json_config("core_config.json", {}) or {}
+    except Exception:
+        raw = {}
+    if str(raw.get("ttsModelProvider") or "").strip() != "custom":
+        return False
+
+    configured_voice = str(raw.get("ttsVoiceId") or "").strip()
+    # A saved clone/design voice owns its provider route. The custom endpoint is
+    # the configured fallback, not a blanket override of existing voice vendors.
+    if ctx.voice_id and ctx.has_custom_voice and ctx.voice_meta:
+        return False
+    if ctx.voice_id and configured_voice and str(ctx.voice_id).strip() != configured_voice:
+        return False
+    return bool(
+        str(raw.get("ttsModelUrl") or "").strip()
+        and str(raw.get("ttsModelId") or "").strip()
+        and configured_voice
+    )
+
+
+def _custom_openai_tts_resolve(ctx):
+    try:
+        raw = ctx.cm.load_json_config("core_config.json", {}) or {}
+    except Exception:
+        raw = {}
+    worker = partial(
+        openai_tts_worker,
+        base_url=str(raw.get("ttsModelUrl") or "").strip(),
+        model=str(raw.get("ttsModelId") or "").strip(),
+        voice=str(raw.get("ttsVoiceId") or "").strip(),
+    )
+    return worker, str(raw.get("ttsModelApiKey") or "").strip(), "custom"

@@ -76,7 +76,11 @@ from .workers.cosyvoice import (
 )
 from .workers.cogtts import cogtts_tts_worker
 from .workers.gemini import gemini_tts_worker
-from .workers.openai import openai_tts_worker
+from .workers.openai import (
+    openai_tts_worker,
+    _custom_openai_tts_is_selected,
+    _custom_openai_tts_resolve,
+)
 from .workers.vllm_omni import (
     vllm_omni_tts_worker,
     VLLM_OMNI_DEFAULT_BASE_URL,
@@ -173,6 +177,7 @@ __all__ = [
     "_vllm_omni_clone_is_selected", "_vllm_omni_clone_resolve",
     "_vllm_omni_normalize_ws_endpoint",
     "_gptsovits_is_selected", "_gptsovits_resolve",
+    "_custom_openai_tts_is_selected", "_custom_openai_tts_resolve",
     "_minimax_clone_is_selected", "_minimax_clone_resolve",
     "_elevenlabs_clone_is_selected", "_elevenlabs_clone_resolve",
     "_cosyvoice_clone_is_selected", "_cosyvoice_clone_resolve",
@@ -437,6 +442,23 @@ _tts_providers.register(_tts_providers.TTSProvider(
     probe_kind='ws_handshake',
     probe_sub_type='vllm_omni_tts',
     probe_ws_path='/audio/speech/stream',
+    configured_preset_voice=True,
+))
+
+_tts_providers.register(_tts_providers.TTSProvider(
+    key='custom',
+    kind='hosted',
+    priority=25,
+    capabilities=frozenset({'preset'}),
+    is_selected=_custom_openai_tts_is_selected,
+    resolve=_custom_openai_tts_resolve,
+    editable_endpoint=True,
+    probe_kind='http_tts',
+    probe_sub_type='openai_tts',
+    configured_preset_voice=True,
+    # The generic "custom" option is already inserted into every model dropdown.
+    # Keep this registry entry available as metadata without adding a duplicate.
+    tts_config_visible=False,
 ))
 
 # 克隆音色 provider（hosted SaaS，按 voice_meta.provider 选中）。priority 30/40/50

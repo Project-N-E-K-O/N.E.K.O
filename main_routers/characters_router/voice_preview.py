@@ -379,7 +379,7 @@ async def get_voices():
         core_config or {}, _config_manager
     )
     selected_preset_catalog = (
-        tts_provider_registry.preset_catalog_for_ui(winning_provider_key)
+        tts_provider_registry.preset_catalog_for_ui(winning_provider_key, core_config)
         if winning_provider_key else None
     )
     active_native_provider = (

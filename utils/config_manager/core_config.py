@@ -1214,7 +1214,7 @@ class CoreConfigMixin:
         config['ELEVENLABS_API_KEY'] = core_cfg.get('assistApiKeyElevenlabs', '')
         config['TTS_PROVIDER'] = core_cfg.get('ttsProvider', '')
 
-        # 将 vLLM-Omni TTS 的前端原始字段放进 core_config snapshot，供
+        # 将协议专用 TTS provider 的前端原始字段放进 core_config snapshot，供
         # core.py 判断是否启用外部 TTS，并生成与实际 worker 参数一致的复用 key。
         # 凭证字段 ttsModelApiKey 不放入 snapshot；它仍由 tts_client.py 从持久化
         # 配置读取，避免扩大通用配置快照中的敏感字段范围。

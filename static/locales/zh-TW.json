@@ -1188,6 +1188,8 @@
         "omniModelApiKeyPlaceholder": "可選，本地服務商可留空",
         "ttsModelApiKeyPlaceholder": "可選，本地服務商可留空",
         "ttsVoiceId": "Voice ID",
+        "ttsProtocolHintOpenAI": "OpenAI 相容：HTTP(S) POST /v1/audio/speech，完整文字請求、串流音訊回應。",
+        "ttsProtocolHintVllmOmni": "vLLM-Omni：WS(S) /v1/audio/speech/stream，文字與音訊雙向串流傳輸。",
         "ttsVoiceIdHint": "（可選，角色未設置時的回退音色）",
         "ttsVoiceIdPlaceholder": "如：中文女、alloy",
         "agentModelUrlPlaceholder": "留空則跟隨輔助 API 視覺模型 URL",
@@ -1233,12 +1235,6 @@
             "localModeOnly": "• Realtime API 僅用於 Local 模式（本地語音對話）",
             "wsProtocol": "• URL 必須使用 WebSocket 協議（以 ws:// 或 wss:// 開頭）",
             "autoSwitchLocal": "• 配置後，核心 API 類型將自動切換為 \"local\""
-        },
-        "ttsWarning": {
-            "title": "重要提示：",
-            "duplexStreaming": "• TTS API 必須支持雙工流式（全雙工實時語音閤成）",
-            "wsProtocol": "• URL 必須使用 WebSocket 協議（以 ws:// 或 wss:// 開頭）",
-            "cosyVoiceOnly": "• 目前僅支持阿里雲 CosyVoice 兼容的協議格式"
         },
         "gptsovitsConfig": "GPT-SoVITS 配置",
         "gptsovitsDescription": "GPT-SoVITS 說明：",

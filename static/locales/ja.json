@@ -1188,6 +1188,8 @@
         "omniModelApiKeyPlaceholder": "任意、ローカルプロバイダーは空欄可",
         "ttsModelApiKeyPlaceholder": "任意、ローカルプロバイダーは空欄可",
         "ttsVoiceId": "ボイスID",
+        "ttsProtocolHintOpenAI": "OpenAI互換：HTTP(S) POST /v1/audio/speech。テキストを一括送信し、音声レスポンスをストリーミングします。",
+        "ttsProtocolHintVllmOmni": "vLLM-Omni：WS(S) /v1/audio/speech/stream。テキストと音声を双方向ストリーミングします。",
         "ttsVoiceIdHint": "（任意、キャラクター音声がない場合のフォールバック）",
         "ttsVoiceIdPlaceholder": "例: 日本語（女性）, alloy",
         "agentModelUrlPlaceholder": "空欄のままにすると、アシストAPIビジョンモデルのURLを継承します",
@@ -1233,12 +1235,6 @@
             "localModeOnly": "• Realtime APIはLocalモード（ローカル音声会話）専用です",
             "wsProtocol": "• URLはWebSocketプロトコル（ws:// または wss://）である必要があります",
             "autoSwitchLocal": "• 設定後、Core APIタイプは自動的に「local」になります"
-        },
-        "ttsWarning": {
-            "title": "重要:",
-            "duplexStreaming": "• TTS APIは全二重ストリーミング（リアルタイム音声合成）対応必須です",
-            "wsProtocol": "• URLはWebSocketプロトコル（ws:// または wss://）である必要があります",
-            "cosyVoiceOnly": "• 現在はAlibaba Cloud CosyVoice互換プロトコルのみサポートしています"
         },
         "gptsovitsConfig": "GPT-SoVITS 設定",
         "gptsovitsDescription": "GPT-SoVITS 説明：",

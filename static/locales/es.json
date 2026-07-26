@@ -1188,6 +1188,8 @@
         "omniModelApiKeyPlaceholder": "Opcional, puede estar vacío para proveedores locales.",
         "ttsModelApiKeyPlaceholder": "Opcional, puede estar vacío para proveedores locales.",
         "ttsVoiceId": "Identificación de voz",
+        "ttsProtocolHintOpenAI": "Compatible con OpenAI: HTTP(S) POST /v1/audio/speech con texto completo y respuesta de audio en streaming.",
+        "ttsProtocolHintVllmOmni": "vLLM-Omni: WS(S) /v1/audio/speech/stream con transmisión bidireccional de texto y audio.",
         "ttsVoiceIdHint": "(Opcional, voz alternativa cuando el personaje no tiene ninguna)",
         "ttsVoiceIdPlaceholder": "por ejemplo, mujer china, aleación",
         "agentModelUrlPlaceholder": "Déjelo en blanco para seguir la URL del modelo de visión de Assist API",
@@ -1233,12 +1235,6 @@
             "localModeOnly": "• La API en tiempo real es solo para el modo local (conversación de voz local)",
             "wsProtocol": "• La URL debe utilizar el protocolo WebSocket (comenzando con ws:// o wss://)",
             "autoSwitchLocal": "• Después de la configuración, el tipo de API principal cambiará automáticamente a \"local\""
-        },
-        "ttsWarning": {
-            "title": "Aviso importante:",
-            "duplexStreaming": "• La API TTS debe admitir transmisión dúplex (síntesis de voz en tiempo real dúplex completo)",
-            "wsProtocol": "• La URL debe utilizar el protocolo WebSocket (comenzando con ws:// o wss://)",
-            "cosyVoiceOnly": "• Actualmente solo admite el formato de protocolo compatible con Alibaba Cloud CosyVoice"
         },
         "gptsovitsConfig": "Configuración GPT-SoVITS",
         "gptsovitsDescription": "Nota GPT-SoVITS:",

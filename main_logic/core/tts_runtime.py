@@ -284,6 +284,16 @@ class TtsRuntimeMixin:
             str(core_config.get('ttsModelProvider') or '').strip() == 'vllm_omni'
         )
 
+    @staticmethod
+    def _is_custom_openai_tts_enabled(core_config: dict) -> bool:
+        return _as_bool(core_config.get('ENABLE_CUSTOM_API'), False) and (
+            str(core_config.get('ttsModelProvider') or '').strip() == 'custom'
+        ) and bool(
+            str(core_config.get('ttsModelUrl') or '').strip()
+            and str(core_config.get('ttsModelId') or '').strip()
+            and str(core_config.get('ttsVoiceId') or '').strip()
+        )
+
     @classmethod
     def _resolve_vllm_omni_runtime_config(cls, core_config: dict) -> tuple[str, str, str]:
         if not cls._is_vllm_omni_tts_enabled(core_config):
@@ -322,6 +332,10 @@ class TtsRuntimeMixin:
                 tts_config.get('base_url', ''),
                 tts_config.get('model', ''),
                 self._resolve_vllm_omni_runtime_config(core_config),
+                (
+                    str(core_config.get('ttsModelProvider') or '').strip(),
+                    str(core_config.get('ttsVoiceId') or '').strip(),
+                ),
                 api_key,
             )
         except Exception:
@@ -640,6 +654,9 @@ class TtsRuntimeMixin:
             return False
         if self._is_vllm_omni_tts_enabled(core_config_snapshot):
             logger.info(f"{log_prefix}🔊 语音模式：检测到 vLLM-Omni TTS provider，将使用外部 TTS")
+            return True
+        if self._is_custom_openai_tts_enabled(core_config_snapshot):
+            logger.info(f"{log_prefix}🔊 语音模式：检测到 OpenAI-compatible TTS provider，将使用外部 TTS")
             return True
         base_url = realtime_config.get('base_url', '')
         _, uses_provider_native_voice = resolve_native_voice_for_routing(

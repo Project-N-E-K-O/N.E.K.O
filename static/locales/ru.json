@@ -1188,6 +1188,8 @@
         "omniModelApiKeyPlaceholder": "Необязательно, можно оставить пустым для локальных провайдеров",
         "ttsModelApiKeyPlaceholder": "Необязательно, можно оставить пустым для локальных провайдеров",
         "ttsVoiceId": "Voice ID",
+        "ttsProtocolHintOpenAI": "OpenAI-совместимый API: HTTP(S) POST /v1/audio/speech с полной текстовой фразой и потоковым аудиоответом.",
+        "ttsProtocolHintVllmOmni": "vLLM-Omni: WS(S) /v1/audio/speech/stream с двунаправленной потоковой передачей текста и аудио.",
         "ttsVoiceIdHint": "(Необязательно, запасной голос)",
         "ttsVoiceIdPlaceholder": "например, Chinese Female, alloy",
         "agentModelUrlPlaceholder": "Оставьте пустым для URL модели вспомогательного API",
@@ -1233,12 +1235,6 @@
             "localModeOnly": "• Realtime API только для локального режима",
             "wsProtocol": "• URL должен использовать ws:// или wss://",
             "autoSwitchLocal": "• Тип основного API переключится на \"local\""
-        },
-        "ttsWarning": {
-            "title": "Важное уведомление:",
-            "duplexStreaming": "• TTS API должен поддерживать дуплексную потоковую передачу",
-            "wsProtocol": "• URL должен использовать ws:// или wss://",
-            "cosyVoiceOnly": "• Поддерживается только протокол Alibaba Cloud CosyVoice"
         },
         "gptsovitsConfig": "Конфигурация GPT-SoVITS",
         "gptsovitsDescription": "Примечание GPT-SoVITS:",

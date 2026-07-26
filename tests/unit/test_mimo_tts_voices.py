@@ -143,14 +143,23 @@ def test_mimo_catalog_hidden_when_gptsovits_custom_tts_wins():
 
 
 @pytest.mark.unit
-def test_no_catalog_winner_suppresses_native_voices():
-    # vLLM-Omni（无静态目录）赢得 dispatch：selected_provider_key 返回 vllm_omni、
-    # 目录为 None → /voices 的三路分支既不出目录、也不回退 core-native。
+def test_vllm_winner_exposes_its_configured_fallback_voice():
+    # vLLM-Omni 没有服务端音色枚举接口；registry 将设置页的 ttsVoiceId
+    # （缺省为 default）作为当前模型的一条预制音色，同时抑制 core-native。
     core_config = {"CORE_API_TYPE": "gemini", "ENABLE_CUSTOM_API": True}
     cm = _CM(core_config, raw_core_config={"ttsModelProvider": "vllm_omni"})
     key = tts_provider_registry.selected_provider_key(core_config, cm)
     assert key == "vllm_omni"
-    assert tts_provider_registry.preset_catalog_for_ui(key) is None
+    assert tts_provider_registry.preset_catalog_for_ui(key, core_config) == {
+        "default": {
+            "prefix": "default",
+            "provider": "vllm_omni",
+            "provider_label": "vllm_omni",
+            "gender": "",
+            "display_name": "default",
+            "builtin": True,
+        }
+    }
 
 
 @pytest.mark.unit
