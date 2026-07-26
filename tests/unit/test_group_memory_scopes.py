@@ -2688,6 +2688,34 @@ async def test_correction_domains_and_apply_respect_custom_scope(tmp_path):
     ]
     assert new_ids and all(new_ids)
 
+    # Same text corrected under scope B must yield a *different* hash
+    # segment: the id salt is subject.key|scope, so identical text across
+    # scopes cannot collide. Compare the hash suffix, not the whole id —
+    # the second-resolution timestamp segment could differ on its own.
+    items_b = [
+        {
+            "old_text": "旧观点", "new_text": "A 的新观点",
+            "entity": section_key, "created_at": "2026-07-26T12:00:02",
+            **subject_b.as_entry_fields(),
+        },
+    ]
+    resolved = await pm._apply_correction_results(
+        name, items_b, {0}, [{"index": 0, "action": "keep_new"}],
+    )
+    assert resolved == 1
+    persona = await pm.aensure_persona(name)
+    facts = persona[section_key]["facts"]
+    ids_by_scope = {
+        f.get("scope"): f["id"]
+        for f in facts
+        if isinstance(f, dict) and f.get("text") == "A 的新观点"
+    }
+    assert set(ids_by_scope) == {"tenant-a", "tenant-b"}
+    assert all(ids_by_scope.values())
+    hash_a = ids_by_scope["tenant-a"].rsplit("_", 1)[-1]
+    hash_b = ids_by_scope["tenant-b"].rsplit("_", 1)[-1]
+    assert hash_a != hash_b
+
 
 @pytest.mark.asyncio
 async def test_member_toggle_off_settles_buckets_before_clearing():
