@@ -30,7 +30,7 @@ from main_logic.omni_offline_client import OmniOfflineClient, _is_safety_violati
 from main_logic.proactive_delivery import DELIVERY_RETRACTED_KEY
 from utils.gptsovits_config import is_gsv_disabled_voice_id
 from config.prompts.prompts_sys import _loc, CONTEXT_SUMMARY_READY
-from utils.config_manager import _as_bool
+from utils.config_manager import _as_bool, ensure_default_yui_voice_for_free_api
 from utils.language_utils import normalize_language_code, get_global_language_full
 from queue import Empty
 from uuid import uuid4
@@ -925,6 +925,11 @@ class LifecycleMixin:
         # 立即通知前端系统正在准备（静默期开始）
         await self.send_session_preparing(input_mode)
 
+        # 会话的线路在下面这几行定死、整场不再复议，所以先给仍在飞的区域探测一个
+        # 收尾窗口（启动预热的 join 可能在 DNS 解析上过期）。已落定时立即返回，
+        # 正常路径零开销；等待也是 offload 的，不占事件循环。
+        await self._config_manager.aensure_region_resolved()
+
         # 重新读取配置以支持热重载
         # core_api_type 从 realtime 配置获取，支持自定义 realtime API 时自动设为 'local'
         # 合并两次同步 IO：core_config.json 只 read 一次，realtime 解析复用同一份快照
@@ -943,6 +948,17 @@ class LifecycleMixin:
             self._enqueue_voice_migration_notice(legacy_names)
         except Exception as e:
             logger.warning(f"⚠️ start_session 清理无效 voice_id 失败，继续启动会话: {e}")
+
+        # 默认 YUI 卡的免费音色绑定在区域未落定时会主动推迟（绑错了纠正不回来），
+        # 而它原本只有两个调用点——保存核心配置与 clear_voice_ids。用户在设置里切到
+        # 免费 API 时，保存路径紧接着就调它，此时探测刚起、必然还是未落定，于是推迟；
+        # 之后再没有任何路径调它，"等下一轮"永远等不到。这里就是那一轮：紧跟上面的
+        # aensure_region_resolved，区域已尽力落定；每场会话都跑一次，幂等（只在默认
+        # YUI 卡且 voice_id 为空时写入）；放在下面读 voice_id 之前，绑上本场即生效。
+        try:
+            await ensure_default_yui_voice_for_free_api(self._config_manager, core_config_snapshot)
+        except Exception as e:
+            logger.warning(f"⚠️ start_session 绑定默认 YUI 音色失败，继续启动会话: {e}")
 
         # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
         _, _, _, self.lanlan_basic_config, _, _, _, _, _ = await self._config_manager.aget_character_data()
@@ -1219,12 +1235,36 @@ class LifecycleMixin:
         # held at connect time. ``set_tools`` keeps it live for
         # later mutations.
         _initial_tool_defs = self.tool_registry.all()
+
+        # 下面两个分支都会在此刻重读配置并把 base_url 冻进 client（text 分支的
+        # OmniOfflineClient / realtime 分支的连接配置）。prepare_runtime 虽已落定
+        # 过一次，但上面 await 记忆拉取可达数秒——若那次落定是 Steam 兜底或超时
+        # fail-open，权威 IP 结论可能恰在这几秒内落地，这里再给一个收尾窗口，
+        # 让冻结用的快照与最终结论一致。已落定时零开销。
+        await self._config_manager.aensure_region_resolved()
+
         if input_mode == 'text':
             # 不复用 prepare_runtime 的快照：上面 await 过 /new_dialog 的记忆拉取
             # （可达数秒），期间用户可能刚在 /core_api 存了新凭证。构造 client 前重新
             # 读一份**新鲜快照**，conversation 与 vision 都从它解析——两次独立的读会
             # 让保存恰好落在中间时拿到撕裂的一对（旧 conversation + 新 vision）。
             _fresh_core_config = await self._config_manager.aget_core_config()
+            # 区域可能恰在记忆拉取那几秒里翻转（prepare 的落定是 Steam 兜底/超时、
+            # 权威 IP 结论随后到达）：此时 prepare 阶段解析的 voice_id 属于旧区域
+            # 目录，而本快照的线路是新区域。realtime 侧有按快照的配对闸门兜底
+            # （错配不下发、落服务端默认）；text 的 TTS 直接拿 self.voice_id 合成，
+            # 由 _drop_free_voice_on_route_flip 施加同一条 fail-safe（清空免费音色
+            # 落服务端默认，本场生效、下场按新区域正常解析）。
+            if (str(core_config_snapshot.get('CORE_URL') or '')
+                    != str(_fresh_core_config.get('CORE_URL') or '')):
+                logger.warning(
+                    "[GeoIP] 区域结论在会话准备与连接创建之间发生变化"
+                    "（%s → %s），本场音色可能落到服务端默认",
+                    core_config_snapshot.get('CORE_URL'), _fresh_core_config.get('CORE_URL'),
+                )
+                self._drop_free_voice_on_route_flip(
+                    core_config_snapshot.get('CORE_URL'), _fresh_core_config.get('CORE_URL'),
+                )
             conversation_config = await self._config_manager.aget_model_api_config(
                 'conversation', core_config=_fresh_core_config
             )
@@ -1274,7 +1314,16 @@ class LifecycleMixin:
             new_session.on_thinking_active = self._make_thinking_active_callback(new_session)
         else:
             # 同上：await 记忆拉取之后必须重读，不复用 prepare_runtime 的快照
+            _prev_realtime_base = str(realtime_config.get('base_url') or '')
             realtime_config = await self._config_manager.aget_model_api_config('realtime')
+            # 区域翻转诊断，与 text 分支对偶；realtime 的音色下发按本快照的
+            # base_url 走配对闸门，错配不下发、落服务端默认（fail-safe）。
+            if _prev_realtime_base != str(realtime_config.get('base_url') or ''):
+                logger.warning(
+                    "[GeoIP] 区域结论在会话准备与连接创建之间发生变化"
+                    "（%s → %s），本场音色可能落到服务端默认",
+                    _prev_realtime_base, realtime_config.get('base_url'),
+                )
             nr_enabled = (await _core_facade.aload_global_conversation_settings()).get('noiseReductionEnabled', True)
             new_session = OmniRealtimeClient(
                 base_url=realtime_config.get('base_url', ''),
@@ -1427,6 +1476,10 @@ class LifecycleMixin:
 
         # 2. Create PENDING session components (as before, store in self.pending_connector, self.pending_session)
         try:
+            # 与 _start_session_prepare_runtime 对偶：热切换准备出来的会话同样会把
+            # 线路定死一整场，所以这里也要给仍在飞的区域探测一个收尾窗口。
+            await self._config_manager.aensure_region_resolved()
+
             # 重新读取配置以支持热重载
             # core_api_type 从 realtime 配置获取，支持自定义 realtime API 时自动设为 'local'
             # 合并两次同步 IO：core_config.json 只 read 一次，realtime 解析复用同一份快照
@@ -1445,6 +1498,13 @@ class LifecycleMixin:
                 self._enqueue_voice_migration_notice(legacy_names)
             except Exception as e:
                 logger.warning(f"⚠️ 热切换准备: 清理无效 voice_id 失败，继续准备会话: {e}")
+
+            # 与 _start_session_prepare_runtime 对偶：补上被区域未落定推迟的默认 YUI
+            # 音色绑定（那次推迟没有其它路径会回来补）。
+            try:
+                await ensure_default_yui_voice_for_free_api(self._config_manager, core_config_snapshot)
+            except Exception as e:
+                logger.warning(f"⚠️ 热切换准备: 绑定默认 YUI 音色失败，继续准备会话: {e}")
 
             # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
             _, _, _, self.lanlan_basic_config, _, _, _, _, _ = await self._config_manager.aget_character_data()
@@ -1490,6 +1550,20 @@ class LifecycleMixin:
                 # 与主会话构造点对偶：顶部快照与此处之间隔着角色数据读取等 await，
                 # 故重新读一份新鲜快照，并让 conversation / vision 共用它，避免撕裂
                 _fresh_core_config = await self._config_manager.aget_core_config()
+                # 与主会话构造点对偶：区域可能恰在上面的 cleanup / 角色读取等
+                # await 期间翻转（顶部落定是 Steam 兜底时不落 _region_cache），
+                # self.voice_id 解析自旧区域目录——同一条 fail-safe：清空免费
+                # 音色落服务端默认，promotion 后的 TTS 不拿旧区域 ID 去新端点。
+                if (str(core_config_snapshot.get('CORE_URL') or '')
+                        != str(_fresh_core_config.get('CORE_URL') or '')):
+                    logger.warning(
+                        "[GeoIP] 热切换准备: 区域结论在准备与连接创建之间发生变化"
+                        "（%s → %s），本场音色可能落到服务端默认",
+                        core_config_snapshot.get('CORE_URL'), _fresh_core_config.get('CORE_URL'),
+                    )
+                    self._drop_free_voice_on_route_flip(
+                        core_config_snapshot.get('CORE_URL'), _fresh_core_config.get('CORE_URL'),
+                    )
                 conversation_config = await self._config_manager.aget_model_api_config(
                     'conversation', core_config=_fresh_core_config
                 )
