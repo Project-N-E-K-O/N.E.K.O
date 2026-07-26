@@ -175,13 +175,31 @@ class CorrectionsMixin:
                 MEMORY_LIVENESS_MAX_ATTEMPTS,
                 PERSONA_CORRECTION_BATCH_LIMIT,
             )
+            from memory.scopes import SCOPED_PERSONA_PREFIX
+
+            # 单批只装同一个隔离域：legacy 私聊全体算一个域（与升级前
+            # 行为逐字节一致），每个 @subject/ scoped section 各算一个域。
+            # 不分域的话，不同群/私聊的记忆文本会拼进同一个 correction
+            # prompt 里互相可见，且 keep/merge 的不可逆决策会被相邻域的
+            # 上下文影响（merge 重写文本甚至可能串词）。非本域条目留在
+            # 队列里，下一轮 resolve 触发时按 FIFO 头部轮到的域继续消化。
             pairs = []
+            batch_domain = None
             for i, item in enumerate(corrections):
                 if safe_int_field(item, 'resolve_attempts') >= MEMORY_LIVENESS_MAX_ATTEMPTS:
                     continue
                 old_text = item.get('old_text', '')
                 new_text = item.get('new_text', '')
                 if old_text and new_text:
+                    entity = str(item.get('entity') or '')
+                    domain = (
+                        entity if entity.startswith(SCOPED_PERSONA_PREFIX)
+                        else '__legacy__'
+                    )
+                    if batch_domain is None:
+                        batch_domain = domain
+                    elif domain != batch_domain:
+                        continue
                     pairs.append((i, item))
                 if len(pairs) >= PERSONA_CORRECTION_BATCH_LIMIT:
                     break

@@ -45,7 +45,16 @@ class QQPromptBuilder:
 
     def should_use_memory_context(self, *, is_group: bool, permission_level: str, requested: Optional[bool]) -> bool:
         if requested is None:
-            return (not is_group and permission_level == "admin")
+            if is_group:
+                # 群路径的 None 默认跟配置走：normal 群路径由 dispatcher 显式
+                # 传值，但回溯审核（_reply_to_ignored_message）、rapid-fire
+                # flush 等旁路构造请求时不带该字段。None→False 会让这些回复
+                # 既不召回 scoped 记忆也不落成员轮，还会把共享群会话的
+                # memory_enabled 翻回 False、阻断 idle flush 结算。让 None
+                # 恒等于"配置的群记忆策略"，任何旁路自动对齐，不再逐点补。
+                settings = getattr(self.plugin, "_qq_settings", {}) or {}
+                return bool(settings.get("group_memory_enabled", False))
+            return permission_level == "admin"
         return bool(requested)
 
     def should_persist_memory(self, *, should_use_memory_context: bool, requested: Optional[bool]) -> bool:

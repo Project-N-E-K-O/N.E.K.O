@@ -617,6 +617,7 @@ async def test_qq_group_session_writes_only_scoped_history():
         "Neko",
         [{"role": "user", "content": [{"type": "text", "text": "我最喜欢三文鱼"}]}],
         subject=QQMemoryBridge.group_participant_subject("7788", "2046"),
+        speaker_label="2046",
         timeout=30.0,
     )
     assert bridge.post_scoped_memory_history.await_count == 2
@@ -689,6 +690,7 @@ async def test_qq_member_flush_continues_and_retries_only_failed_buckets():
         "Neko",
         failed_member_messages,
         subject=QQMemoryBridge.group_participant_subject("7788", "2046"),
+        speaker_label="2046",
         timeout=30.0,
     )
     assert member_buckets == {}
@@ -710,11 +712,20 @@ def test_qq_group_member_turns_are_opt_in_and_actor_attributed():
     )
     service.record_group_member_turn(
         user_data,
-        SimpleNamespace(is_group=True, sender_id="4096", message="我周五有空"),
+        SimpleNamespace(
+            is_group=True, sender_id="4096", message="我周五有空",
+            user_nickname="Bob",
+        ),
     )
 
     assert list(user_data["group_member_memory_messages"]) == ["2046", "4096"]
     assert user_data["group_member_memory_messages"]["2046"][0]["content"][0]["text"] == "我喜欢三文鱼"
+    # Speaker labels recorded for extraction attribution: nickname when
+    # known, bare sender id otherwise.
+    assert user_data["group_member_memory_labels"] == {
+        "2046": "2046",
+        "4096": "Bob(4096)",
+    }
 
 
 @pytest.mark.asyncio
@@ -1294,3 +1305,245 @@ async def test_fts_dedup_window_not_crowded_by_scoped_rows():
         "Neko", [_fact("主人周五晚八点要开黑")], semantic_dedup=True,
     )
     assert duplicate == []
+
+
+@pytest.mark.asyncio
+async def test_fts_dedup_escalates_past_crowded_first_window():
+    """Subject fan-out can fill the entire first FTS window (10 rows) with
+    cross-subject hits; the dedup must escalate the window once so a legacy
+    near-duplicate ranked 11th is still examined and caught."""
+    index = _FakeTimeIndexed()
+    harness = _PersistHarness(index)
+    group = MemorySubject.group_chat("qq", "100")
+
+    for offset in range(10):
+        await harness._apersist_new_facts(
+            "Neko", [_fact(f"群里聊周五开黑 {offset}")],
+            subject=group, semantic_dedup=False,
+        )
+    legacy_first = await harness._apersist_new_facts(
+        "Neko", [_fact("主人周五晚上八点想开黑")], semantic_dedup=False,
+    )
+    scoped_ids = [fact["id"] for fact in harness._mem[:10]]
+    index.hits = [(fid, -10.0) for fid in scoped_ids] + [
+        (legacy_first[0]["id"], -10.0),
+    ]
+
+    duplicate = await harness._apersist_new_facts(
+        "Neko", [_fact("主人周五晚八点要开黑")], semantic_dedup=True,
+    )
+    assert duplicate == []
+
+
+@pytest.mark.asyncio
+async def test_scoped_history_route_fails_closed_on_extraction_failure():
+    """A swallowed extraction failure lets the plugin advance its digest
+    cursor and drop member buckets over a batch that was never extracted;
+    the route must surface it as an HTTP error, while a genuine empty
+    extraction stays a 200 no-facts success that may checkpoint."""
+    import json as _json
+
+    from fastapi import HTTPException
+
+    from app.memory_server import routes as memory_routes
+    from app.memory_server.routes import ScopedHistoryRequest
+    from memory.facts import FactExtractionFailed
+
+    history = _json.dumps([
+        {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+    ])
+    subject = {"subject_kind": "group_chat", "subject_id": "qq:100"}
+
+    failing_store = MagicMock()
+    failing_store.extract_facts = AsyncMock(
+        side_effect=FactExtractionFailed("retries exhausted"),
+    )
+    with patch.object(memory_routes.runtime, "fact_store", failing_store):
+        with pytest.raises(HTTPException) as excinfo:
+            await memory_routes.process_scoped_history(
+                "Neko",
+                ScopedHistoryRequest(input_history=history, subject=subject),
+            )
+        assert excinfo.value.status_code == 502
+
+    empty_store = MagicMock()
+    empty_store.extract_facts = AsyncMock(return_value=[])
+    with patch.object(memory_routes.runtime, "fact_store", empty_store):
+        result = await memory_routes.process_scoped_history(
+            "Neko",
+            ScopedHistoryRequest(input_history=history, subject=subject),
+        )
+    assert result["status"] == "processed"
+    assert result["created"] == 0
+    assert empty_store.extract_facts.await_args.kwargs["fail_closed"] is True
+
+
+@pytest.mark.asyncio
+async def test_scoped_history_route_passes_speaker_label():
+    """Member batches carry the speaker identity through to extraction; an
+    oversized label is rejected instead of silently truncated."""
+    import json as _json
+
+    from fastapi import HTTPException
+
+    from app.memory_server import routes as memory_routes
+    from app.memory_server.routes import ScopedHistoryRequest
+
+    history = _json.dumps([
+        {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+    ])
+    subject = {
+        "subject_kind": "group_participant", "subject_id": "qq:100:12345",
+    }
+
+    store = MagicMock()
+    store.extract_facts = AsyncMock(return_value=[])
+    with patch.object(memory_routes.runtime, "fact_store", store):
+        await memory_routes.process_scoped_history(
+            "Neko",
+            ScopedHistoryRequest(
+                input_history=history, subject=subject,
+                speaker_label="  Alice(12345)  ",
+            ),
+        )
+    assert store.extract_facts.await_args.kwargs["speaker_label"] == "Alice(12345)"
+
+    with patch.object(memory_routes.runtime, "fact_store", store):
+        with pytest.raises(HTTPException) as excinfo:
+            await memory_routes.process_scoped_history(
+                "Neko",
+                ScopedHistoryRequest(
+                    input_history=history, subject=subject,
+                    speaker_label="x" * 65,
+                ),
+            )
+        assert excinfo.value.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_extraction_prompt_uses_speaker_label(tmp_path):
+    """With speaker_label the extraction prompt frames the human speaker as
+    that member instead of the configured private-chat master, so member
+    statements cannot be extracted as facts about the master."""
+    from types import SimpleNamespace
+
+    mock_cm = _build_scope_mock_cm(str(tmp_path))
+    fs = FactStore()
+    fs._config_manager = mock_cm
+
+    captured = {}
+
+    async def _capture(prompt, lanlan_name, **kwargs):
+        captured["prompt"] = prompt
+        return []
+
+    fs._allm_call_with_retries = _capture
+    msg = SimpleNamespace(type="human", content="我对花生过敏")
+
+    with patch("memory.facts.get_global_language", return_value="zh"):
+        await fs._allm_extract_facts("Neko", [msg])
+        assert "主人 | 我对花生过敏" in captured["prompt"]
+
+        await fs._allm_extract_facts(
+            "Neko", [msg], speaker_label="Alice(12345)",
+        )
+    assert "Alice(12345) | 我对花生过敏" in captured["prompt"]
+    assert "主人 | 我对花生过敏" not in captured["prompt"]
+    assert "{MASTER_NAME}" not in captured["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_extract_facts_fail_closed_raises_on_terminal_failure(tmp_path):
+    """fail_closed callers (the scoped-history route) need failure and
+    genuine-empty to be distinguishable; the default swallow stays for
+    legacy best-effort callers whose history is durably stored."""
+    from types import SimpleNamespace
+
+    from memory.facts import FactExtractionFailed
+
+    mock_cm = _build_scope_mock_cm(str(tmp_path))
+    fs = FactStore()
+    fs._config_manager = mock_cm
+    msg = SimpleNamespace(type="human", content="hi")
+
+    async def _terminal_failure(prompt, lanlan_name, **kwargs):
+        return None
+
+    fs._allm_call_with_retries = _terminal_failure
+    with patch("memory.facts.get_global_language", return_value="zh"):
+        with pytest.raises(FactExtractionFailed):
+            await fs.extract_facts([msg], "Neko", fail_closed=True)
+        assert await fs.extract_facts([msg], "Neko") == []
+
+        async def _malformed(prompt, lanlan_name, **kwargs):
+            return {"facts": []}
+
+        fs._allm_call_with_retries = _malformed
+        with pytest.raises(FactExtractionFailed):
+            await fs.extract_facts([msg], "Neko", fail_closed=True)
+
+
+@pytest.mark.asyncio
+async def test_correction_batches_partition_by_isolation_domain(tmp_path):
+    """One resolve batch must not mix isolation domains: scoped sections and
+    the legacy persona would otherwise co-appear in a single correction
+    prompt, letting cross-domain text bias irreversible keep/merge decisions
+    (and a blended merge rewrite could leak wording across domains)."""
+    import json as _json
+
+    from memory.persona import PersonaManager
+
+    pm = PersonaManager()
+    pm._config_manager = _build_scope_mock_cm(str(tmp_path))
+    name = "neko_corr_partition"
+    corr_path = tmp_path / f"{name}_corrections.json"
+    items = [
+        {
+            "old_text": "legacy old", "new_text": "legacy new",
+            "entity": "master", "created_at": "2026-07-26T10:00:00",
+        },
+        {
+            "old_text": "group A old", "new_text": "group A new",
+            "entity": "@subject/group_chat:qq:100",
+            "created_at": "2026-07-26T10:00:01",
+        },
+        {
+            "old_text": "group B old", "new_text": "group B new",
+            "entity": "@subject/group_chat:qq:200",
+            "created_at": "2026-07-26T10:00:02",
+        },
+    ]
+    corr_path.write_text(
+        _json.dumps(items, ensure_ascii=False), encoding="utf-8",
+    )
+
+    captured = {}
+
+    class _FakeLLM:
+        async def ainvoke(self, prompt):
+            captured["prompt"] = prompt
+            resp = MagicMock()
+            # Valid-but-empty decision list: nothing is consumed, the queue
+            # survives, and the test only pins WHICH pairs entered the prompt.
+            resp.content = "[]"
+            return resp
+
+        async def aclose(self):
+            return None
+
+    async def _fake_create(*args, **kwargs):
+        return _FakeLLM()
+
+    with patch.object(pm, "_corrections_path", return_value=str(corr_path)), \
+         patch("utils.llm_client.create_chat_llm_async", _fake_create):
+        resolved = await pm.resolve_corrections(name)
+
+    assert resolved == 0
+    prompt = captured["prompt"]
+    assert "legacy old" in prompt
+    assert "group A old" not in prompt
+    assert "group B old" not in prompt
+    remaining = _json.loads(corr_path.read_text(encoding="utf-8"))
+    assert {item["entity"] for item in remaining} == {
+        "master", "@subject/group_chat:qq:100", "@subject/group_chat:qq:200",
+    }

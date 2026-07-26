@@ -138,15 +138,22 @@ class QQMemoryBridge:
         messages: list[dict[str, Any]],
         *,
         subject: dict[str, str],
+        speaker_label: str | None = None,
         timeout: float = 30.0,
     ) -> dict[str, Any]:
+        # speaker_label 只在单发言人批次（成员 bucket）传：提取 prompt 用它
+        # 替代私聊主人名渲染 user 轮，避免成员发言被抽成"关于主人"的事实。
+        # 群 digest 不传——内容里每条消息已带发言人头。
+        payload: dict[str, Any] = {
+            "input_history": json.dumps(messages, ensure_ascii=False),
+            "subject": subject,
+        }
+        if speaker_label:
+            payload["speaker_label"] = speaker_label
         async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
             response = await client.post(
                 f"{self._base_url()}/internal/memory/{her_name}/scoped_history",
-                json={
-                    "input_history": json.dumps(messages, ensure_ascii=False),
-                    "subject": subject,
-                },
+                json=payload,
             )
             response.raise_for_status()
             return response.json()

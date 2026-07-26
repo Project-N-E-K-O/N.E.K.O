@@ -490,6 +490,7 @@ class FactStore:
     async def _allm_extract_facts(
         self, lanlan_name: str, messages: list,
         *, treat_malformed_as_failure: bool = False,
+        speaker_label: str | None = None,
     ) -> list[dict] | None:
         """Stage-1: pure extraction. Prompt carries no existing observations
         to avoid self-cycling (the LLM quoting an existing reflection back as a
@@ -502,9 +503,18 @@ class FactStore:
         ``True`` so a malformed result becomes a failed day (retryable) rather
         than being checkpointed in the sidecar as a fact-less day — a sidecar
         checkpoint would skip the LLM on every later import and silently lose
-        that day's facts (Codex P2)."""
+        that day's facts (Codex P2).
+
+        ``speaker_label``: render 'user' turns and the {MASTER_NAME}
+        placeholder as this label instead of the configured master name. The
+        legacy prompt assumes the human speaker IS the master — true for
+        private admin chats, wrong for group-member batches, whose speaker
+        would otherwise have their statements extracted as facts about the
+        master (Codex P2)."""
         _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
         name_mapping['ai'] = lanlan_name
+        if speaker_label:
+            name_mapping['human'] = speaker_label
         conversation_text = self._format_conversation(messages, name_mapping)
 
         prompt = get_fact_extraction_prompt(get_global_language()) \
@@ -716,34 +726,48 @@ class FactStore:
                 # duplicates nor consume the 3-candidate budget (a busy
                 # group would otherwise crowd legacy candidates out of a
                 # top-3 fetch and let legacy near-duplicates slip through).
-                similar = await self._time_indexed.asearch_facts(
-                    lanlan_name, text, 10,
-                )
+                # 扇出场景（同一事件按 subject 存 N 份、BM25 并列）可能把
+                # 首窗 10 条全部占满——此时本 subject 的候选在 rank 11 之后，
+                # 一次性扩窗到 200 重扫；仍不足就放行（>200 条命中意味着
+                # 文本本身是退化的口水句，去重已无意义）。
                 is_dup = False
-                same_subject_seen = 0
-                for fid, score in similar:
-                    hit = facts_by_id.get(fid)
-                    if not entry_matches_subject(hit or {}, memory_subject):
-                        continue
-                    same_subject_seen += 1
-                    if same_subject_seen > 3:
-                        break
-                    if score >= -5:
-                        continue
-                    if daily_event_date:
-                        # daily 候选：命中的既存 fact 若也是 daily 且日期不同 →
-                        # 跨日期重复事件，不算语义重复（同日期近似命中仍挡住，
-                        # 兜 LLM 重抽输出不稳定的重试幂等）。
-                        hit_meta = (hit or {}).get('external_import')
-                        hit_date = (
-                            str(hit_meta.get('event_date'))
-                            if isinstance(hit_meta, dict) and hit_meta.get('event_date')
-                            else None
-                        )
-                        if hit_date and hit_date != daily_event_date:
+                raw_limit = 10
+                while True:
+                    similar = await self._time_indexed.asearch_facts(
+                        lanlan_name, text, raw_limit,
+                    )
+                    same_subject_seen = 0
+                    for fid, score in similar:
+                        hit = facts_by_id.get(fid)
+                        if not entry_matches_subject(hit or {}, memory_subject):
                             continue
-                    is_dup = True
-                    break
+                        same_subject_seen += 1
+                        if same_subject_seen > 3:
+                            break
+                        if score >= -5:
+                            continue
+                        if daily_event_date:
+                            # daily 候选：命中的既存 fact 若也是 daily 且日期不同 →
+                            # 跨日期重复事件，不算语义重复（同日期近似命中仍挡住，
+                            # 兜 LLM 重抽输出不稳定的重试幂等）。
+                            hit_meta = (hit or {}).get('external_import')
+                            hit_date = (
+                                str(hit_meta.get('event_date'))
+                                if isinstance(hit_meta, dict) and hit_meta.get('event_date')
+                                else None
+                            )
+                            if hit_date and hit_date != daily_event_date:
+                                continue
+                        is_dup = True
+                        break
+                    if (
+                        is_dup
+                        or same_subject_seen >= 3
+                        or len(similar) < raw_limit
+                        or raw_limit >= 200
+                    ):
+                        break
+                    raw_limit = 200
                 if is_dup:
                     continue
 
@@ -1326,6 +1350,8 @@ class FactStore:
         lanlan_name: str,
         *,
         subject: MemorySubject | dict | None = None,
+        fail_closed: bool = False,
+        speaker_label: str | None = None,
     ) -> list[dict]:
         """Stage-1-only backward-compat entry.
 
@@ -1336,10 +1362,29 @@ class FactStore:
         runs Stage-1+Stage-2 together.
 
         Unlike the Stage-1+2 entry, a Stage-1 terminal failure is swallowed
-        here (returns []): the legacy per-turn call site treats extraction as
-        best-effort — the next turn / the background loop will retry.
+        here by default (returns []): the legacy per-turn call site treats
+        extraction as best-effort — the next turn / the background loop will
+        retry over durably stored history.
+
+        ``fail_closed=True`` raises :class:`FactExtractionFailed` on terminal
+        failure (retries exhausted or malformed payload) instead. The scoped
+        history route needs the distinction: its callers checkpoint volatile
+        caller-owned buffers on success, so a swallowed failure would
+        permanently drop the batch (Codex P1). A genuine empty extraction
+        still returns [].
+
+        ``speaker_label`` is forwarded to the extraction prompt — see
+        :meth:`_allm_extract_facts`.
         """
-        extracted = await self._allm_extract_facts(lanlan_name, messages)
+        extracted = await self._allm_extract_facts(
+            lanlan_name, messages,
+            treat_malformed_as_failure=fail_closed,
+            speaker_label=speaker_label,
+        )
+        if extracted is None and fail_closed:
+            raise FactExtractionFailed(
+                f"Stage-1 LLM call failed for {lanlan_name!r} (fail_closed caller)"
+            )
         if not extracted:
             return []
         return await self._apersist_new_facts(

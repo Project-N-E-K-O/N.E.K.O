@@ -723,6 +723,12 @@ class ScopedFactsWriteRequest(BaseModel):
 class ScopedHistoryRequest(BaseModel):
     input_history: str
     subject: MemorySubjectRequest
+    # Optional speaker identity for single-speaker batches (group-member
+    # buckets). The extraction prompt otherwise renders every 'user' turn as
+    # the configured private-chat master and extracts facts about the master,
+    # misattributing member statements. Group digests omit it — their turns
+    # already carry per-message speaker headers in the content.
+    speaker_label: str | None = None
 
 
 class ScopedContextRequest(BaseModel):
@@ -812,12 +818,32 @@ async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             status_code=422,
             detail="input_history must contain 1..200 messages",
         )
+    speaker_label = (req.speaker_label or "").strip() or None
+    if speaker_label and len(speaker_label) > 64:
+        raise HTTPException(
+            status_code=422,
+            detail="speaker_label must contain at most 64 characters",
+        )
     subject = req.subject.to_domain()
-    created = await runtime.fact_store.extract_facts(
-        input_history,
-        lanlan_name,
-        subject=subject,
-    )
+    from memory.facts import FactExtractionFailed
+
+    # fail_closed：调用方（QQ 插件 finalize/focus-shift）在成功响应后会推进
+    # 游标、丢弃 member bucket——这些历史只存在于调用方内存里，没有像 legacy
+    # /process 那样先落 time_indexed.db。抽取失败必须以 HTTP 错误暴露出去
+    # 让调用方保留缓冲下轮重试；真·空抽取仍然 200 正常 checkpoint。
+    try:
+        created = await runtime.fact_store.extract_facts(
+            input_history,
+            lanlan_name,
+            subject=subject,
+            fail_closed=True,
+            speaker_label=speaker_label,
+        )
+    except FactExtractionFailed as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="scoped fact extraction failed; retry later",
+        ) from exc
     return {
         "status": "processed",
         "subject": subject.as_entry_fields(),

@@ -101,6 +101,18 @@ class QQSessionMemoryService:
         buckets = user_data.setdefault("group_member_memory_messages", {})
         if sender_id not in buckets and len(buckets) >= self.GROUP_MEMBER_MAX_PARTICIPANTS:
             return
+        # 记录发言人展示名（备注名 > 群昵称 > 纯 QQ 号），finalize 时作为
+        # speaker_label 传给提取端点——不带则提取 prompt 会把成员发言当私聊
+        # 主人的发言抽取。label 是原始用户数据（昵称/号码），无 i18n 词。
+        permission_mgr = getattr(self.plugin, "permission_mgr", None)
+        custom_nickname = (
+            permission_mgr.get_nickname(sender_id) if permission_mgr else None
+        )
+        nickname = str(
+            custom_nickname or getattr(context, "user_nickname", "") or ""
+        ).strip()
+        labels = user_data.setdefault("group_member_memory_labels", {})
+        labels[sender_id] = f"{nickname}({sender_id})" if nickname else sender_id
         messages = buckets.setdefault(sender_id, [])
         messages.append({
             "role": "user",
@@ -179,6 +191,7 @@ class QQSessionMemoryService:
                     user_data.get("group_member_memory_messages") or {}
                     if member_memory_enabled else {}
                 )
+                member_labels = user_data.get("group_member_memory_labels") or {}
                 failed_member_ids: list[str] = []
                 for sender_id, member_messages in list(member_buckets.items()):
                     if not group_id or not sender_id or not member_messages:
@@ -189,6 +202,9 @@ class QQSessionMemoryService:
                             member_messages,
                             subject=self.plugin.memory_bridge.group_participant_subject(
                                 group_id, sender_id,
+                            ),
+                            speaker_label=(
+                                str(member_labels.get(sender_id) or sender_id)[:64]
                             ),
                             timeout=30.0,
                         )
