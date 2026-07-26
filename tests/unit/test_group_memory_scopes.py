@@ -2639,6 +2639,60 @@ async def test_prompt_change_discard_actually_runs():
     assert discard.await_count == 2
 
 
+@pytest.mark.asyncio
+async def test_finalize_honors_opt_out_cutoff():
+    """Turns appended after the OFF policy write (race window while other
+    groups settle) must never be extracted: finalize settles only up to the
+    cutoff stamped synchronously at the policy change."""
+    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    history = [SimpleNamespace(type="human", content=f"msg {i}") for i in range(6)]
+    session = SimpleNamespace(_conversation_history=history, close=AsyncMock())
+    bridge = MagicMock()
+    bridge.group_subject.side_effect = QQMemoryBridge.group_subject
+    bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
+    user_data = {
+        "memory_enabled": True, "is_group": True, "group_id": "7788",
+        "her_name": "Neko", "session": session, "group_opt_out_cutoff": 3,
+    }
+    plugin = SimpleNamespace(
+        _user_sessions={"group:7788": user_data},
+        _qq_settings={},
+        memory_bridge=bridge,
+        logger=MagicMock(),
+    )
+    service = QQSessionMemoryService(plugin)
+
+    completed = await service.finalize_user_memory_session(
+        "group:7788", reason="group_memory_disabled",
+    )
+    assert completed is True
+    sent = [
+        m["content"][0]["text"]
+        for call in bridge.post_scoped_memory_history.await_args_list
+        for m in call.args[1]
+    ]
+    assert sent == ["msg 0", "msg 1", "msg 2"]
+
+
+def test_scoped_entry_ids_unique_per_domain():
+    """Identical text promoted into two custom scopes of one shared section
+    within the same second must not collide on entry ID — ID-addressed
+    archive/delete would otherwise hit both scopes."""
+    harness = _PersonaHarness()
+    subject_a = MemorySubject.create("group_chat", "qq:1", scope="t-a")
+    subject_b = MemorySubject.create("group_chat", "qq:1", scope="t-b")
+    harness.add_fact("Neko", "同一段文本", subject=subject_a)
+    harness.add_fact("Neko", "同一段文本", subject=subject_b)
+    section = harness.persona[subject_a.persona_section_key]
+    ids = [f["id"] for f in section["facts"]]
+    assert len(ids) == 2
+    assert len(set(ids)) == 2
+
+
 def test_persona_view_authorizes_scoped_entries_per_entry():
     """persona_section_key omits the scope, so two subjects with the same
     kind/id but different custom scopes share one section whose metadata is

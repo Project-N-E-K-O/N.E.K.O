@@ -172,10 +172,16 @@ class FactsMixin:
         self, text: str, source: str, source_id: str | None, *, subject=None,
     ) -> dict:
         entry = self._normalize_entry(text)
+        # scoped 条目 ID 掺隔离域：同 section 双 scope 同秒同文本会撞 ID，
+        # ID 寻址的归档/删除会跨域误伤（Codex P2）。
+        domain_salt = (
+            f"{subject.key}|{subject.scope}|" if subject is not None else ""
+        )
         if source == 'reflection' and source_id:
             entry['id'] = f"prom_{source_id}"
         else:
-            entry['id'] = f"manual_{datetime.now().strftime('%Y%m%d%H%M%S')}_{hashlib.sha256(text.encode()).hexdigest()[:8]}"
+            digest = hashlib.sha256((domain_salt + text).encode()).hexdigest()[:8]
+            entry['id'] = f"manual_{datetime.now().strftime('%Y%m%d%H%M%S')}_{digest}"
         entry['source'] = source
         entry['source_id'] = source_id
         if subject is not None:

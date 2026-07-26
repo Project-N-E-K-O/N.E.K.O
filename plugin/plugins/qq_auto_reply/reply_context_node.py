@@ -82,6 +82,12 @@ class QQReplyContextNode:
         force_reply: bool = False,
         source_kind: str = "",
     ) -> QQReplyContext:
+        # 合成轮（rapid-fire/proactive/buffer 合并）复用首个 pending sender，
+        # 但缓冲内容可能混有其他成员的发言——记忆读路径只授权群 subject，
+        # 不得注入"名义 sender"的成员记忆（写侧已同样过滤）。
+        memory_sender_id = (
+            "" if source_kind in ("proactive_speech", "rapid_fire_flush", "buffer_delayed") else sender_id
+        )
         traces: list[QQPipelineStageTrace] = []
         config_manager = get_config_manager()
         master_name, her_name, _, catgirl_data, _, lanlan_prompt_map, _, _, _ = config_manager.get_character_data()
@@ -181,6 +187,7 @@ class QQReplyContextNode:
             character_card_fields=character_card_fields,
             permission_level=permission_level,
             sender_id=sender_id,
+            memory_sender_id=memory_sender_id,
             user_title=user_title,
             is_group=is_group,
             group_id=group_id,
@@ -203,7 +210,7 @@ class QQReplyContextNode:
             attachments=attachments,
             is_group=is_group,
             group_id=group_id,
-            sender_id=sender_id,
+            sender_id=memory_sender_id,
         )
         recalled_memory_used = bool(recalled_memory_text)
         traces.append(

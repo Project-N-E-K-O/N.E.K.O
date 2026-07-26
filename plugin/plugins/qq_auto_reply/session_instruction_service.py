@@ -221,6 +221,7 @@ class QQSessionInstructionService:
         permission_level: str,
         sender_id: str,
         user_title: str,
+        memory_sender_id: str | None = None,
         is_group: bool = False,
         group_id: Optional[str] = None,
         use_memory_context: Optional[bool] = None,
@@ -313,7 +314,7 @@ class QQSessionInstructionService:
             context_ready_template=context_ready_template,
             is_group=is_group,
             group_id=group_id,
-            sender_id=sender_id,
+            sender_id=(memory_sender_id if memory_sender_id is not None else sender_id),
         )
         if core_memory_text:
             sections.append(core_memory_text)

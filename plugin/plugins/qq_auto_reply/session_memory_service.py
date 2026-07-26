@@ -278,6 +278,11 @@ class QQSessionMemoryService:
         try:
             conversation_history = getattr(session, "_conversation_history", []) or []
             if user_data.get("is_group"):
+                cutoff = user_data.pop("group_opt_out_cutoff", None)
+                if cutoff is not None:
+                    # opt-out 截止点：只结算策略翻 OFF 时刻之前的历史，
+                    # 竞态窗口内追加的轮次绝不入库。
+                    conversation_history = conversation_history[:max(0, int(cutoff))]
                 group_id = str(user_data.get("group_id") or "").strip()
                 last_group_digest_index = max(
                     0, int(user_data.get("last_group_digest_index", 0)),
