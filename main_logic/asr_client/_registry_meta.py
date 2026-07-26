@@ -62,6 +62,7 @@ class AsrProviderMeta:
     max_segment_ms: int | None = None
     warm_transport_ms: int = 25_000
     replay_policy: AsrReplayPolicy = "preconnect_only"
+    provider_final_timeout_ms: int = 10_000
     connect_max_attempts: int = 1
     connect_retry_base_seconds: float = 0.25
     connect_retry_cap_seconds: float = 1.0
@@ -81,6 +82,8 @@ class AsrProviderMeta:
             raise ValueError("max_segment_ms must be positive")
         if self.warm_transport_ms < 0:
             raise ValueError("warm_transport_ms must not be negative")
+        if self.provider_final_timeout_ms <= 0:
+            raise ValueError("provider_final_timeout_ms must be positive")
         if self.connect_max_attempts <= 0:
             raise ValueError("connect_max_attempts must be positive")
         if self.connect_retry_base_seconds <= 0:
@@ -194,6 +197,10 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         max_segment_ms=27_000,
         warm_transport_ms=0,
         replay_policy="none",
+        # The final HTTP request starts at the logical commit (turn seal), so
+        # the provider-final watchdog must outlast the worker's 35 s request
+        # timeout; otherwise ordinary slow responses fail deterministically.
+        provider_final_timeout_ms=40_000,
     ),
     "gemini": AsrProviderMeta(
         provider_key="gemini",
@@ -206,6 +213,8 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         max_segment_ms=27_000,
         warm_transport_ms=0,
         replay_policy="none",
+        # Same contract as glm: cover the worker's 35 s request timeout.
+        provider_final_timeout_ms=40_000,
     ),
     "soniox": AsrProviderMeta(
         provider_key="soniox",

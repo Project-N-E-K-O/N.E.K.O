@@ -1280,6 +1280,38 @@ async def test_provider_final_watchdog_blocks_only_independent_asr() -> None:
     assert runtime._omni_mic_audio_bytes == 0
 
 
+async def test_provider_final_watchdog_honors_per_provider_policy_timeout() -> None:
+    runtime = _Runtime()
+    asr = type("Asr", (), {"is_ready": True, "close": AsyncMock()})()
+    runtime._asr_session = asr
+    runtime._asr_provider = "glm"
+    runtime._asr_route_mode = "independent"
+    # Segmented providers resolve a longer final timeout than the streaming
+    # default; scale both down so the watchdog must track the policy value.
+    policy = replace(
+        resolve_provider_policy("glm", "manual"),
+        provider_final_timeout_ms=80,
+    )
+    assert resolve_provider_policy("glm", "manual").provider_final_timeout_ms == 40_000
+    runtime._asr_lifecycle = VoiceInputLifecycleController(
+        provider_policy=policy,
+        shadow_mode=False,
+    )
+    runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    runtime._asr_detector = _ReadyDetector()
+
+    await _start_and_seal_turn(runtime, "glm")
+    await asyncio.sleep(0.03)
+
+    # A watchdog stuck on the shared default (10 ms in the scaled test above)
+    # would have fired by now; the per-provider override keeps it armed.
+    assert runtime._asr_route_mode == "independent"
+
+    await asyncio.sleep(0.09)
+
+    assert runtime._asr_route_mode == "blocked"
+
+
 async def test_optimization_disabled_continuously_uploads_with_smart_turn() -> None:
     runtime = _Runtime()
     runtime._voice_input_resource_optimization_enabled = False

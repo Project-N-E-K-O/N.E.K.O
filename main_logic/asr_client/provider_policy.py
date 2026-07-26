@@ -89,6 +89,7 @@ def resolve_provider_policy(
         warm_transport_ms=meta.warm_transport_ms if transport == "streaming" else 0,
         replay_policy=meta.replay_policy,
         availability=meta.availability,
+        provider_final_timeout_ms=meta.provider_final_timeout_ms,
         connect_max_attempts=meta.connect_max_attempts,
         connect_retry_base_seconds=meta.connect_retry_base_seconds,
         connect_retry_cap_seconds=meta.connect_retry_cap_seconds,

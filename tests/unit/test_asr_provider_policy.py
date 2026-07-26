@@ -44,6 +44,25 @@ def test_segmented_provider_always_requires_smart_turn(provider_key: str) -> Non
     assert policy.warm_transport_ms == 0
 
 
+@pytest.mark.parametrize("provider_key", ["glm", "gemini"])
+def test_segmented_final_timeout_covers_worker_request_timeout(
+    provider_key: str,
+) -> None:
+    # The segmented workers allow 35 s per HTTP request and the final request
+    # starts at the turn seal, so the provider-final watchdog must be armed
+    # with a longer timeout than the shared streaming default.
+    policy = resolve_provider_policy(provider_key, "manual")
+
+    assert policy.provider_final_timeout_ms == 40_000
+
+
+@pytest.mark.parametrize("provider_key", ["qwen", "soniox"])
+def test_streaming_final_timeout_keeps_shared_default(provider_key: str) -> None:
+    policy = resolve_provider_policy(provider_key, "manual")
+
+    assert policy.provider_final_timeout_ms == 10_000
+
+
 def test_openai_provider_endpoint_does_not_require_smart_turn() -> None:
     policy = resolve_provider_policy("openai", "provider")
 
