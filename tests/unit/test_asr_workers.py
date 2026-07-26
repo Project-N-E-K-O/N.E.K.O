@@ -1066,6 +1066,60 @@ async def test_openai_transcription_resampling_and_out_of_order_finals(
     )
 
 
+async def test_openai_partial_transcripts_accumulate_deltas(monkeypatch) -> None:
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        assert isinstance(payload, str)
+        message = json.loads(payload)
+        if message["type"] == "session.update":
+            await ws.server_send(
+                {
+                    "type": "session.updated",
+                    "session": message["session"],
+                }
+            )
+
+    websocket = _FakeWebSocket(on_send=on_send)
+    monkeypatch.setattr(openai.websockets, "connect", _FakeConnector(websocket))
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        openai.openai_asr_worker(
+            requests,
+            responses,
+            "openai-key",
+            AsrSessionConfig(endpointing_mode="provider"),
+        )
+    )
+    await _next_event(responses, "ready")
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_started", "item_id": "openai-partial"}
+    )
+    await _next_event(responses, "utterance_started")
+    for delta in ("hello ", "world"):
+        await websocket.server_send(
+            {
+                "type": "conversation.item.input_audio_transcription.delta",
+                "item_id": "openai-partial",
+                "delta": delta,
+            }
+        )
+
+    first = await _next_event(responses, "partial")
+    second = await _next_event(responses, "partial")
+    assert first.text == "hello "
+    assert second.text == "hello world"
+
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "openai-partial",
+            "transcript": "hello world",
+        }
+    )
+    assert (await _next_event(responses, "final")).text == "hello world"
+    await _stop_worker(task, requests, responses, utterance_id=2)
+
+
 async def test_openai_transcription_failure_terminates_item_and_worker(
     monkeypatch,
 ) -> None:

@@ -921,6 +921,7 @@ class AsrRuntimeMixin:
         session_ref = self.session
         audio_epoch = audio_stream_epoch
         pipeline_ref = self._voice_input_audio_pipeline
+        voice_owner = self._voice_lease_owner
         processing_reserved = False
         try:
             if not isinstance(data, list):
@@ -962,7 +963,7 @@ class AsrRuntimeMixin:
             if (
                 not self.is_active
                 or self._audio_stream_epoch != audio_epoch
-                or self._voice_lease_owner != "core"
+                or self._voice_lease_owner != voice_owner
                 or not self._voice_input_accepts_pcm()
             ):
                 return
@@ -1128,8 +1129,7 @@ class AsrRuntimeMixin:
             and self._asr_route_mode == "independent"
             and (route_operation_generation == self._asr_route_operation_generation)
             and (voice_transition_generation == self._voice_input_transition_generation)
-            and owner == "core"
-            and self._voice_lease_owner == "core"
+            and owner == self._voice_lease_owner
             and self._voice_input_accepts_pcm()
             and self._independent_asr_provider == provider
         )

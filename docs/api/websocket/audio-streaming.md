@@ -1,15 +1,18 @@
 # Audio Streaming
 
-Audio is asymmetric on the application WebSocket: microphone input is JSON sample arrays, while server speech output is a JSON header followed by binary audio.
+Audio uses binary frames in both directions for the bundled client. Client JSON
+sample arrays remain available as a compatibility format, while server speech
+output is a JSON header followed by binary audio.
 
 ## Wire formats
 
 | Direction | Transport | Current first-party format |
 |---|---|---|
-| Client → server | JSON text frame | `stream_data.data` is an array of signed PCM16 sample integers. Mono, little-endian when packed by Python. |
+| Client → server | Binary frame (preferred) | 8-byte `NEKO`/sample-rate header followed by mono signed little-endian PCM16. |
+| Client → server | JSON text frame (compatibility) | `stream_data.data` is an array of signed PCM16 sample integers. |
 | Server → client | JSON header + binary frame | Normally mono signed PCM16 at 48,000 Hz. The bundled player can also identify Ogg Opus binary chunks for compatibility. |
 
-The application route does **not** accept base64 microphone audio and does not call `receive_bytes()` for client input.
+The application route does **not** accept base64 microphone audio.
 
 ## Synchronize the microphone lease
 
@@ -71,7 +74,21 @@ checks.
 
 ## Microphone input
 
-The bundled AudioWorklet converts Float32 capture into signed PCM16, resamples desktop capture to 48 kHz and mobile capture to 16 kHz, then sends about 10 ms per JSON frame:
+The bundled AudioWorklet converts Float32 capture into signed PCM16, resamples
+desktop capture to 48 kHz and mobile capture to 16 kHz, then sends about 10 ms
+per binary frame. The frame layout is:
+
+| Offset | Size | Encoding |
+|---|---:|---|
+| 0 | 4 bytes | ASCII magic `NEKO` (`4e 45 4b 4f`) |
+| 4 | 4 bytes | Unsigned sample rate in little-endian order; `16000` or `48000` |
+| 8 | remaining bytes | Mono signed PCM16 samples in little-endian order |
+
+The PCM payload must be non-empty, have an even byte length, and represent at
+most one second of audio at the declared rate. No JSON `action` accompanies
+this frame; the server decodes it as `stream_data` with `input_type: "audio"`.
+
+For compatibility, clients may instead send a JSON text frame:
 
 ```json
 {
@@ -81,7 +98,9 @@ The bundled AudioWorklet converts Float32 capture into signed PCM16, resamples d
 }
 ```
 
-The backend packs the integer list with little-endian 16-bit `struct.pack`. Values outside the signed 16-bit range or non-integers can fail packing and the chunk is discarded.
+The backend packs the compatibility integer list with little-endian 16-bit
+`struct.pack`. Values outside the signed 16-bit range or non-integers can fail
+packing and the chunk is discarded.
 
 Do not infer arbitrary sample-rate support from the array length. The implemented first-party paths are:
 
@@ -92,7 +111,9 @@ The exact provider transport may then resample those bytes again to the selected
 
 ### Ordering and backpressure
 
-`audio`, `avatar_drop_image`, and `user_image` stream messages are awaited in the router to preserve order. Other media can be scheduled asynchronously. The JSON representation is intentionally simple for the browser/Electron bridge but is bandwidth-heavy; this is a local UI protocol, not an efficient WAN audio transport.
+`audio`, `avatar_drop_image`, and `user_image` stream messages are awaited in
+the router to preserve order. Other media can be scheduled asynchronously. The
+JSON audio representation is retained for compatibility but is bandwidth-heavy.
 
 When a game route is active, audio also feeds its realtime STT path.
 

@@ -70,7 +70,19 @@ Image (`screen`, `camera`, `avatar_drop_image`, or `user_image`):
 }
 ```
 
-Audio uses a JSON array of signed 16-bit PCM sample values, **not base64** and not a client binary frame:
+The bundled client sends microphone audio as a binary frame:
+
+```text
+bytes 0..3   ASCII "NEKO"
+bytes 4..7   uint32 little-endian sample rate (16000 or 48000)
+bytes 8..N   mono signed PCM16, little-endian
+```
+
+The PCM payload must be non-empty, even-sized, and no longer than one second.
+The server treats this frame as `stream_data` with `input_type: "audio"`.
+
+For compatibility, clients may send a JSON array of signed 16-bit PCM sample
+values instead. Audio is **not base64**:
 
 ```json
 {

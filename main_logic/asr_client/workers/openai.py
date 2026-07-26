@@ -105,6 +105,7 @@ async def openai_asr_worker(
     websocket = None
 
     item_keys: dict[str, _UtteranceKey] = {}
+    partial_transcripts: dict[str, str] = {}
     current_buffer_epoch = 0
     next_utterance_id = 1
     resampler = soxr.ResampleStream(
@@ -155,19 +156,21 @@ async def openai_asr_worker(
         if not isinstance(item_id, str) or not item_id:
             return
         event_type = event.get("type")
-        key = (
-            item_keys.pop(item_id, None)
-            if event_type
-            == "conversation.item.input_audio_transcription.completed"
-            else item_keys.get(item_id)
+        completed = (
+            event_type == "conversation.item.input_audio_transcription.completed"
         )
+        key = item_keys.pop(item_id, None) if completed else item_keys.get(item_id)
+        if completed:
+            partial_transcripts.pop(item_id, None)
         if key is None:
             # Unknown IDs belong to a cleared route epoch or a duplicate final.
             return
         generation, buffer_epoch, utterance_id = key
         if event_type == "conversation.item.input_audio_transcription.delta":
-            text = event.get("delta", "")
-            if isinstance(text, str):
+            delta = event.get("delta", "")
+            if isinstance(delta, str) and delta:
+                text = partial_transcripts.get(item_id, "") + delta
+                partial_transcripts[item_id] = text
                 await response_queue.put(
                     _AsrWorkerEvent(
                         kind="partial",
@@ -316,6 +319,7 @@ async def openai_asr_worker(
                         )
                         return
                     item_key = item_keys.pop(item_id, None)
+                    partial_transcripts.pop(item_id, None)
                     if item_key is None:
                         # A cleared epoch may still deliver a late failure.
                         continue
@@ -395,6 +399,7 @@ async def openai_asr_worker(
 
                 if request.kind == "clear":
                     item_keys.clear()
+                    partial_transcripts.clear()
                     clear_acknowledged.clear()
                     clear_applied.clear()
                     await websocket.send(
@@ -419,6 +424,7 @@ async def openai_asr_worker(
                     current_buffer_epoch = request.buffer_epoch
                     next_utterance_id = request.utterance_id or next_utterance_id
                     item_keys.clear()
+                    partial_transcripts.clear()
                     resampler.clear()
                     resampler = soxr.ResampleStream(
                         16_000,

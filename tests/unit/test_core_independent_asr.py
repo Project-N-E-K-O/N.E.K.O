@@ -710,6 +710,93 @@ async def test_bound_game_consumer_reuses_smart_turn_asr_without_core() -> None:
     assert runtime.unbind_voice_input_consumer(binding) is True
 
 
+async def test_bound_game_consumer_accepts_real_pcm_through_pipeline() -> None:
+    runtime = _Runtime()
+    runtime.is_active = True
+    runtime.is_hot_swap_imminent = False
+    runtime.bind_voice_input_consumer("game", AsyncMock())
+    assert (
+        await runtime._handle_voice_input_control(
+            "lease_sync",
+            1,
+            owner="game",
+            hard_muted=False,
+            focus_suppressed=False,
+        )
+        is True
+    )
+    runtime._set_microphone_route("independent")
+    runtime._independent_asr_provider = "qwen"
+    route_audio = AsyncMock(return_value=True)
+    runtime._route_microphone_audio = route_audio
+    processed = ProcessedVoiceFrame(
+        pcm16=b"\x01\x00" * 160,
+        sample_rate_hz=16_000,
+        speech_probability=0.8,
+        rnnoise_available=True,
+    )
+    runtime._voice_input_audio_pipeline.process = AsyncMock(return_value=processed)
+    token = runtime._capture_ingress_token()
+
+    await runtime._process_microphone_stream_data(
+        {
+            "input_type": "audio",
+            "sample_rate_hz": 16_000,
+            "data": [1] * 160,
+        },
+        ingress_token=token,
+    )
+
+    runtime._voice_input_audio_pipeline.process.assert_awaited_once()
+    route_audio.assert_awaited_once_with(
+        processed.pcm16,
+        sample_rate_hz=processed.sample_rate_hz,
+        speech_probability=processed.speech_probability,
+        rnnoise_available=processed.rnnoise_available,
+        ingress_token=token,
+    )
+
+
+async def test_bound_game_consumer_submit_preserves_owner_identity() -> None:
+    runtime = _Runtime()
+    runtime.bind_voice_input_consumer("game", AsyncMock())
+    assert (
+        await runtime._handle_voice_input_control(
+            "lease_sync",
+            1,
+            owner="game",
+            hard_muted=False,
+            focus_suppressed=False,
+        )
+        is True
+    )
+    runtime._set_microphone_route("independent")
+    runtime._independent_asr_provider = "qwen"
+    runtime._asr_runtime.submit = AsyncMock(
+        return_value=AsrSubmitResult(AsrSubmitStatus.ACCEPTED)
+    )
+    token = runtime._capture_ingress_token()
+    processed = ProcessedVoiceFrame(
+        pcm16=b"\x01\x00" * 160,
+        sample_rate_hz=16_000,
+        speech_probability=0.8,
+        rnnoise_available=True,
+    )
+
+    await runtime._route_microphone_audio(
+        processed.pcm16,
+        sample_rate_hz=processed.sample_rate_hz,
+        speech_probability=processed.speech_probability,
+        rnnoise_available=processed.rnnoise_available,
+        ingress_token=token,
+    )
+
+    runtime._asr_runtime.submit.assert_awaited_once_with(
+        processed,
+        ingress_token=token,
+    )
+
+
 async def test_game_consumer_failure_never_falls_back_to_core() -> None:
     runtime = _Runtime()
     on_final = AsyncMock(side_effect=RuntimeError("consumer failed"))

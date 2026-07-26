@@ -19,10 +19,13 @@ Only the newest connection UUID for a character is authoritative in the router. 
 
 ## Frame model
 
-- Client commands are UTF-8 JSON text frames with top-level `action`.
+- Client commands are normally UTF-8 JSON text frames with top-level `action`.
+- Client microphone audio may use the preferred binary frame: ASCII `NEKO`,
+  then a little-endian uint32 sample rate (`16000` or `48000`), then mono
+  little-endian signed PCM16. JSON `stream_data.data` arrays remain supported
+  for compatibility.
 - Server events are normally UTF-8 JSON text frames with top-level `type`.
 - TTS audio is the exception: an `audio_chunk` JSON header is followed by one binary frame.
-- The server currently expects `receive_text()` from clients. Do not send client binary audio frames.
 - Any client JSON object may include `language`; the router updates the character's current UI language before dispatching its `action`.
 
 Malformed JSON is a connection-level error: the handler sends a best-effort `SERVER_ERROR` status, exits its receive loop, and cleans up the current session.
