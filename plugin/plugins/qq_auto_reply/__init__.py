@@ -372,6 +372,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             # asyncio.wait 不取消未完成任务——超时放行但不杀结算。
             done_tasks, _pending = await asyncio.wait(sync_tasks, timeout=1.0)
             for finished in done_tasks:
+                if finished.cancelled():
+                    self._emit_log("WARNING", "记忆同步任务被外部取消")
+                    continue
                 exc = finished.exception()
                 if exc is not None:
                     self._emit_log("ERROR", f"记忆同步任务异常结束: {exc}")

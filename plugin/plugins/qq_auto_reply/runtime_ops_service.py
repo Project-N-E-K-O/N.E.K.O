@@ -99,6 +99,10 @@ class QQRuntimeOpsService:
             _done, stragglers = await asyncio.wait(pending_tasks, timeout=1.0)
             for finished in _done:
                 # 消费异常：不取出的话失败静默（仅事件循环析构时告警）。
+                # 已取消的任务 exception() 会抛 CancelledError——先跳过。
+                if finished.cancelled():
+                    self.plugin.logger.warning("记忆同步任务被外部取消")
+                    continue
                 exc = finished.exception()
                 if exc is not None:
                     self.plugin.logger.error(f"记忆同步任务异常结束: {exc}")
