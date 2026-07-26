@@ -171,6 +171,22 @@ def test_route_flip_leaves_custom_voice_alone(old_url, new_url):
 
 
 @pytest.mark.unit
+def test_route_flip_keeps_a_cloned_voice_shadowing_a_native_name():
+    """A cloned voice named like a Gemini native must survive the flip.
+
+    The registry resolves storage hits as custom first (native=False), so the
+    fail-safe must honor the ``voice_id_exists_in_any_storage`` callback — an
+    implementation ignoring it would judge ``Puck`` by catalog name alone and
+    clear the user's cloned asset. ``my-cloned-voice`` alone cannot catch that:
+    it is outside the catalog either way.
+    """
+    mgr = _flip_mgr('Puck', False, exists_in_storage=True)
+    assert LLMSessionManager._drop_free_voice_on_route_flip(
+        mgr, OVERSEAS_URL, MAINLAND_URL) is False
+    assert mgr.voice_id == 'Puck'
+
+
+@pytest.mark.unit
 def test_no_flip_keeps_the_free_voice():
     """Same route on both snapshots: the resolved voice stays."""
     mgr = _flip_mgr('yui', False)
