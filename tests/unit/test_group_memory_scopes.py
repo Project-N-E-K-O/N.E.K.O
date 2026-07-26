@@ -1839,8 +1839,16 @@ async def test_group_memory_toggle_syncs_existing_sessions():
     assert user_data["last_group_digest_index"] == 1
     # Corrupt negative boundary clamps to 0, never a negative cursor.
     user_data["pending_enable_rebase"] = -5
+    user_data.pop("nonconsent_history_end", None)
     await service.invalidate_group_sessions(enabled=True)
     assert user_data["last_group_digest_index"] == 0
+
+    # A non-consented turn still in flight at the enable stamp finishes
+    # AFTER the boundary: its recorded end wins (privacy over完整性).
+    user_data["pending_enable_rebase"] = 1
+    user_data["nonconsent_history_end"] = 3
+    await service.invalidate_group_sessions(enabled=True)
+    assert user_data["last_group_digest_index"] == 3
 
     # Unmarked session (created AFTER the transition): untouched in both
     # directions — no bogus rebase, no bogus settle.
@@ -2689,6 +2697,29 @@ async def test_member_toggle_off_settles_buckets_before_clearing():
     bridge.post_scoped_memory_history = AsyncMock(side_effect=RuntimeError("down"))
     await service.settle_member_buckets_on_disable()
     assert "group_member_memory_messages" not in user_data
+
+    # A concurrent finalizer that wins the lock before the settle task must
+    # still flush marked buckets even though the global flag is already off.
+    session2 = SimpleNamespace(
+        _conversation_history=[], close=AsyncMock(),
+    )
+    marked = {
+        "is_group": True, "group_id": "7788", "her_name": "Neko",
+        "memory_enabled": True, "session": session2,
+        "pending_member_settle": True,
+        "group_member_memory_messages": {
+            "2046": [{"role": "user", "content": [{"type": "text", "text": "C"}]}],
+        },
+        "group_member_memory_labels": {"2046": "2046"},
+    }
+    plugin._user_sessions["group:7788"] = marked
+    bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
+    completed = await service.finalize_user_memory_session(
+        "group:7788", reason="idle_timeout",
+    )
+    assert completed is True
+    kwargs = bridge.post_scoped_memory_history.await_args.kwargs
+    assert kwargs["speaker_label"] == "2046"
 
 
 def test_static_layer_falls_back_when_required_placeholders_missing():

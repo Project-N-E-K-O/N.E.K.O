@@ -227,6 +227,14 @@ class QQReplyGenerationService:
             self.plugin.logger.info(f"[临时发送] 已使用记忆上下文但跳过记忆同步 (会话: {session_key})")
             return
         if context.is_group:
+            # 记下"未授权轮"结束时的历史长度：memory OFF 期间开始、跨过
+            # OFF→ON 切换才结束的轮次，其行会落在 enable 时间戳之后——
+            # rebase 用 max(边界, 此值) 才能把它们精确排除（fail-closed）。
+            session = user_data.get("session")
+            if session is not None:
+                user_data["nonconsent_history_end"] = len(
+                    getattr(session, "_conversation_history", []) or []
+                )
             self.plugin.logger.info(f"[群聊] 跳过记忆同步 (群: {context.group_id}, 用户: {context.sender_id})")
             return
         self.plugin.logger.info(f"[非管理员] 跳过记忆同步 (用户: {context.sender_id}, 权限: {context.permission_level})")

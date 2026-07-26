@@ -202,6 +202,12 @@ class QQSettingsService:
             self.plugin._qq_settings.get("group_member_memory_enabled", False)
         )
         member_turning_off = member_memory_before and not member_memory_after
+        if member_turning_off:
+            # 同步打标：并发的 idle/discard finalizer 在后台结算任务拿到
+            # 锁之前跑到时，凭标记照常冲 bucket（finalize 侧配合读取）。
+            for ud in list(getattr(self.plugin, "_user_sessions", {}).values()):
+                if ud.get("is_group") and ud.get("group_member_memory_messages"):
+                    ud["pending_member_settle"] = True
         if group_memory_before != group_memory_after:
             # 同步（无 await）给"转变时刻已存在"的群会话打标：后台任务只
             # 处理带标会话——转变之后新建的会话天然无标、不被误结算/误

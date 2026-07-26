@@ -261,6 +261,7 @@ class QQSessionMemoryService:
                         )
                 current.pop("group_member_memory_messages", None)
                 current.pop("group_member_memory_labels", None)
+                current.pop("pending_member_settle", None)
 
             await self.plugin._run_with_session_lock(session_key, _settle_one)
 
@@ -339,7 +340,10 @@ class QQSessionMemoryService:
                     (getattr(self.plugin, "_qq_settings", {}) or {}).get(
                         "group_member_memory_enabled", False,
                     )
-                )
+                ) or bool(user_data.get("pending_member_settle"))
+                # pending_member_settle：member 开关同步关掉后、后台结算
+                # 任务跑到之前，并发的 idle/discard finalizer 也必须冲掉
+                # opt-in 期间收集的 bucket，不得因全局 flag 已 False 丢弃。
                 failed_member_ids: list[str] = []
                 if member_memory_enabled and group_id:
                     failed_member_ids = await self._flush_member_buckets(
@@ -408,8 +412,15 @@ class QQSessionMemoryService:
                     # 轮次全部保留；boundary=True 兼容旧标记取当前长度。
                     if boundary is True:
                         boundary = len(history)
+                    # 与"未授权轮结束位置"取 max：enable 时间戳打下时可能
+                    # 有一轮 persist=False 的生成还在途，其行落在时间戳之
+                    # 后——隐私优先于完整性，宁可多跳过也不入库。
+                    boundary = max(
+                        int(boundary),
+                        int(current.get("nonconsent_history_end", 0) or 0),
+                    )
                     current["last_group_digest_index"] = min(
-                        max(0, int(boundary)), len(history),
+                        max(0, boundary), len(history),
                     )
                     current["memory_enabled"] = True
                     return
