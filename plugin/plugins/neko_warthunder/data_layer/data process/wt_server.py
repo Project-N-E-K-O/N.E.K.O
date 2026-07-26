@@ -208,6 +208,9 @@ class TelemetryService:
         # 初值 True：覆盖“工具启动时已在对局中”的冷启动场景。
         self._hud_drain_pending = True
         self._chat_drain_pending = True
+        # 首次 HUD 排空失败时保存进局前游标；重试从该边界读取失败窗口内的本局事件，
+        # 而不是再次从 0 排空并永久丢失击杀/阵亡。
+        self._hud_recovery_cursor: dict[str, int] | None = None
         self._probe_failure_since: float | None = None
         # 进入战局的时间戳（用于开局告警抑制窗口）；离开战局清空。
         self._battle_entry_ts: float | None = None
@@ -353,6 +356,7 @@ class TelemetryService:
                 # 游标清零和排空由 events 线程独占执行，避免旧请求晚返回覆盖新局游标。
                 self._hud_drain_pending = True
                 self._chat_drain_pending = True
+                self._hud_recovery_cursor = None
                 self._battle_entry_ts = now
                 self._life_entry_ts = now
                 self._battle_id = uuid.uuid4().hex
@@ -437,6 +441,7 @@ class TelemetryService:
             self._name_req = _UNSET
             drain_hud = self._hud_drain_pending
             drain_chat = self._chat_drain_pending
+            hud_recovery_cursor = self._hud_recovery_cursor
             self._hud_drain_pending = False
             self._chat_drain_pending = False
         if req is not _UNSET:
@@ -445,14 +450,19 @@ class TelemetryService:
         # 避免任一接口短暂失败导致另一接口反复清零、吞掉本局新事件。
         poll_hud = True
         poll_chat = True
+        recovered_hud = []
         if drain_hud or drain_chat:
             cursors_before = self.client.incremental_cursor_state()
             hud_ok, dropped_hud = True, 0
             chat_ok, dropped_chat = True, 0
             if drain_hud:
-                self.client.reset_hud_cursors()
-                hud_ok, old_hud = self.client.get_hud_with_status()
-                dropped_hud = len(old_hud)
+                if hud_recovery_cursor is None:
+                    self.client.reset_hud_cursors()
+                hud_ok, drained_hud = self.client.get_hud_with_status()
+                if hud_recovery_cursor is None:
+                    dropped_hud = len(drained_hud)
+                else:
+                    recovered_hud = drained_hud
             if drain_chat:
                 self.client.reset_chat_cursor()
                 chat_ok, old_chat = self.client.get_chat_with_status()
@@ -463,6 +473,14 @@ class TelemetryService:
                 if drain_hud and not hud_ok:
                     self._hud_drain_pending = True
                     poll_hud = False
+                    if hud_recovery_cursor is None:
+                        self.client.restore_hud_cursors(cursors_before)
+                        self._hud_recovery_cursor = {
+                            "last_evt": cursors_before.get("last_evt", 0),
+                            "last_dmg": cursors_before.get("last_dmg", 0),
+                        }
+                elif drain_hud:
+                    self._hud_recovery_cursor = None
                 if drain_chat and not chat_ok:
                     self._chat_drain_pending = True
                     poll_chat = False
@@ -476,6 +494,7 @@ class TelemetryService:
                 "dropped": dropped_hud,
                 "dropped_hud": dropped_hud,
                 "dropped_chat": dropped_chat,
+                "recovered_hud": len(recovered_hud),
                 "hud_ok": hud_ok,
                 "chat_ok": chat_ok,
                 "cursors_before": cursors_before,
@@ -488,6 +507,8 @@ class TelemetryService:
         cursors_before = self.client.incremental_cursor_state()
         hud_ok, hud = self.client.get_hud_with_status() if poll_hud else (False, [])
         chat_ok, chat = self.client.get_chat_with_status() if poll_chat else (False, [])
+        if recovered_hud:
+            hud = [*recovered_hud, *hud]
         terminal_status = str(status or "").strip().lower() in _TERMINAL_MISSION_STATUSES
         with self._lock:
             if generation != self._battle_generation:
@@ -646,6 +667,7 @@ class TelemetryService:
         self._map_info = MapInfo(valid=False)
         self._mission_status = None
         self._mission_objectives = None
+        self._hud_recovery_cursor = None
         self._hud_events.clear()
         self._chat.clear()
         self._processed = None

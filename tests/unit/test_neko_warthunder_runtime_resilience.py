@@ -44,6 +44,7 @@ from wt_server import TelemetryService  # noqa: E402
 import wt_capture  # noqa: E402
 from wt_telemetry import (  # noqa: E402
     ConnectionState,
+    HudMessage,
     Indicators,
     MapObject,
     MapInfo,
@@ -158,23 +159,41 @@ def test_failed_chat_drain_does_not_block_hud_incremental_polling() -> None:
     assert client.chat_calls == 2
 
 
-def test_terminal_mission_waits_for_successful_hud_catchup() -> None:
+def test_terminal_mission_recovers_events_after_failed_initial_hud_drain() -> None:
     class DrainClient:
         def __init__(self) -> None:
             self.hud_calls = 0
+            self.last_evt = 40
+            self.last_dmg = 20
 
         def incremental_cursor_state(self):
-            return {}
+            return {
+                "last_evt": self.last_evt,
+                "last_dmg": self.last_dmg,
+                "last_chat": 0,
+            }
 
         def reset_hud_cursors(self):
-            return None
+            self.last_evt = 0
+            self.last_dmg = 0
+
+        def restore_hud_cursors(self, state):
+            self.last_evt = state["last_evt"]
+            self.last_dmg = state["last_dmg"]
 
         def reset_chat_cursor(self):
             return None
 
         def get_hud_with_status(self):
             self.hud_calls += 1
-            return self.hud_calls != 1, []
+            if self.hud_calls == 1:
+                assert (self.last_evt, self.last_dmg) == (0, 0)
+                return False, []
+            if self.hud_calls == 2:
+                assert (self.last_evt, self.last_dmg) == (40, 20)
+                self.last_evt = 41
+                return True, [HudMessage(id=41, kind="event")]
+            return True, []
 
         def get_chat_with_status(self):
             return True, []
@@ -183,33 +202,38 @@ def test_terminal_mission_waits_for_successful_hud_catchup() -> None:
             return "success", {"completed": True}
 
     class SummaryTracker:
-        def reset(self):
-            return None
+        def __init__(self):
+            self.kills = 0
 
-        def feed(self, _hud):
-            return None
+        def reset(self):
+            self.kills = 0
+
+        def feed(self, hud):
+            self.kills += len(hud)
 
         def get_summary(self):
-            return {"player_name": "pilot", "my": {"kills": 3, "deaths": 1}}
+            return {"player_name": "pilot", "my": {"kills": self.kills, "deaths": 0}}
 
     client = DrainClient()
     service = TelemetryService(client)
     service.tracker = SummaryTracker()
     service._mission_status = "running"
     service._mission_objectives = {"completed": False}
-    service._combat = {"player_name": "pilot", "my": {"kills": 1, "deaths": 1}}
+    service._combat = {"player_name": "pilot", "my": {"kills": 0, "deaths": 0}}
 
     service._poll_events(service._battle_generation)
     assert service._hud_drain_pending is True
+    assert service._hud_recovery_cursor == {"last_evt": 40, "last_dmg": 20}
     assert service._mission_status == "running"
     assert service._mission_objectives == {"completed": False}
-    assert service._combat["my"] == {"kills": 1, "deaths": 1}
+    assert service._combat["my"] == {"kills": 0, "deaths": 0}
 
     service._poll_events(service._battle_generation)
     assert service._hud_drain_pending is False
+    assert service._hud_recovery_cursor is None
     assert service._mission_status == "success"
     assert service._mission_objectives == {"completed": True}
-    assert service._combat["my"] == {"kills": 3, "deaths": 1}
+    assert service._combat["my"] == {"kills": 1, "deaths": 0}
 
 
 def test_user_context_refresh_cannot_move_chat_activity_backwards() -> None:

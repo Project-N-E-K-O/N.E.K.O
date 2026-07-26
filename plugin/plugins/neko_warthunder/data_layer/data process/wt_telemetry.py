@@ -826,6 +826,11 @@ class WarThunderClient:
         self._last_evt = 0
         self._last_dmg = 0
 
+    def restore_hud_cursors(self, state: dict[str, int]) -> None:
+        """恢复 HUD 游标，供首次排空失败后从原边界继续增量读取。"""
+        self._last_evt = max(0, _safe_int(state.get("last_evt")))
+        self._last_dmg = max(0, _safe_int(state.get("last_dmg")))
+
     def reset_chat_cursor(self) -> None:
         """重置聊天游标。"""
         self._last_chat = 0
