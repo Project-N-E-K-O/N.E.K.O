@@ -650,17 +650,23 @@ async def test_mini_game_button_response_records_user_engagement(monkeypatch):
         "choice": "later",
         "session_id": "invite-session",
     }
+    clock = {"now": 123.0}
+
+    async def _read_after_clock_advance(_request):
+        clock["now"] = 173.0
+        return request_data
+
     monkeypatch.setattr(
         router_module,
         "_read_json_object",
-        AsyncMock(return_value=request_data),
+        _read_after_clock_advance,
     )
     monkeypatch.setattr(
         router_module,
         "_validate_local_mutation_request",
         lambda *_args, **_kwargs: None,
     )
-    monkeypatch.setattr(router_module.time, "time", lambda: 123.0)
+    monkeypatch.setattr(router_module.time, "time", lambda: clock["now"])
     config_manager = SimpleNamespace(
         aget_character_data=AsyncMock(
             return_value=(None, "fallback", None, None, None, None, None, None, None)

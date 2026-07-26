@@ -719,6 +719,47 @@ async def test_one_shot_user_image_records_engagement(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("input_type", ["avatar_drop_image", "user_image"])
+async def test_cached_user_image_preserves_server_ingress_time(
+    monkeypatch,
+    input_type,
+):
+    """Session-start caching must preserve a user image's server arrival time."""
+    mgr = _make_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session.stream_image = AsyncMock()
+    mgr.is_active = True
+    mgr.session_ready = False
+    mgr._starting_session_count = 1
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = []
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    clock = {"now": FIXED_TS}
+    monkeypatch.setattr(core_module.time, "time", lambda: clock["now"])
+    monkeypatch.setattr(
+        core_module,
+        "process_screen_data",
+        AsyncMock(return_value="img-b64"),
+    )
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr,
+        {"input_type": input_type, "data": "raw-image"},
+    )
+
+    assert mgr.pending_input_data[0]["_user_input_ingress_time"] == FIXED_TS
+    clock["now"] = FIXED_TS + 50.0
+    mgr._starting_session_count = 0
+    mgr.session_ready = True
+    await core_module.LLMSessionManager._flush_pending_input_data(mgr)
+
+    mgr.session.stream_image.assert_awaited_once_with("img-b64")
+    assert mgr.last_user_engagement_time == FIXED_TS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_text_mode_avatar_drop_image_is_metadata_only_in_analyzer_queue(monkeypatch):
     """Avatar Drop images must not put full base64 payloads into the sync queue."""
     mgr = _make_manager()

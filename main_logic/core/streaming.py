@@ -204,7 +204,10 @@ class StreamingMixin:
         input_type = message.get("input_type")
         if self._should_drop_live_vision_stream(input_type):
             return
-        if input_type in _TEXT_SESSION_INPUT_TYPES:
+        if (
+            input_type in _TEXT_SESSION_INPUT_TYPES
+            or input_type in {"avatar_drop_image", "user_image"}
+        ):
             # Preserve when the user action reached the server. Session startup,
             # mode rebuilds, and pending-input flushes may delay actual handling.
             # Copy so callers cannot observe this internal transport metadata.

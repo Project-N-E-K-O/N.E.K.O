@@ -59,13 +59,13 @@ install_mini_game_invite_hooks()
 @router.post('/mini_game/invite/respond')
 async def mini_game_invite_respond(request: Request):
     """Apply a frontend mini-game invite choice."""
+    request_arrival_time = time.time()
     payload = await _read_json_object(request)
     validation_error = _validate_local_mutation_request(request, payload=payload)
     if validation_error is not None:
         _set_no_store_headers(validation_error)
         return validation_error
     data = payload if isinstance(payload, dict) else {}
-    request_arrival_time = time.time()
     try:
         config_manager = get_config_manager()
         _, her_name_default, _, _, _, _, _, _, _ = (
