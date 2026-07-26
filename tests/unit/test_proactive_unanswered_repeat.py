@@ -149,6 +149,72 @@ async def test_guard_regenerates_then_drops_still_unanswered_repeat(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_unanswered_score_failure_keeps_bm25_guard_active(monkeypatch):
+    """A new-signal failure must not disable the established BM25 fallback."""
+    corpus = MagicMock()
+    corpus.score_unanswered_proactive_draft.side_effect = RuntimeError(
+        "synthetic unanswered scorer failure"
+    )
+    corpus.score_draft.side_effect = [
+        (100.0, {"legacy-bm25-topic": 100.0}),
+        (0.0, {}),
+    ]
+    monkeypatch.setattr(
+        anti_repeat_module,
+        "get_anti_repeat_corpus",
+        lambda: corpus,
+    )
+
+    mgr = SimpleNamespace(
+        state=_NeverPreemptedState(),
+        last_user_message_time=None,
+        proactive_engagement_observation_started_at=100.0,
+        handle_new_message=AsyncMock(),
+    )
+    make_llm_calls = 0
+
+    async def make_llm(**_kwargs):
+        nonlocal make_llm_calls
+        make_llm_calls += 1
+        return _FakeRegenLlm("这是改写后的全新主动话题。")
+
+    output = await _guard_phase2_output(
+        mgr=mgr,
+        proactive_sid="sid",
+        lanlan_name="unanswered-failure-bm25-test",
+        response_text="这是触发既有 BM25 防线的主动话题。",
+        full_text="这是触发既有 BM25 防线的主动话题。",
+        source_tag="CHAT",
+        active_channels=[],
+        selected_music_link=None,
+        selected_meme_link=None,
+        music_content=None,
+        meme_content=None,
+        is_playing_music=False,
+        music_cooldown=False,
+        expects_source_tag=False,
+        make_llm=make_llm,
+        messages=[
+            SystemMessage(content="system"),
+            HumanMessage(content="begin"),
+        ],
+        human_text="begin",
+        screenshot_b64=None,
+        phase2_use_vision=False,
+        phase2_disable_thinking=True,
+        proactive_lang="zh",
+        master_name="博士",
+    )
+
+    assert make_llm_calls == 1
+    assert corpus.score_unanswered_proactive_draft.call_count == 2
+    assert corpus.score_draft.call_count == 2
+    mgr.handle_new_message.assert_not_awaited()
+    assert output.result is None
+    assert output.response_text == "这是改写后的全新主动话题。"
+
+
+@pytest.mark.asyncio
 async def test_fresh_music_material_skips_unanswered_text_scoring(monkeypatch):
     """Fresh material keeps its established exemption from every text repeat guard."""
     corpus = MagicMock()

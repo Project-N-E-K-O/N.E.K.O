@@ -1151,7 +1151,12 @@ async def _guard_phase2_output(
         from memory.anti_repeat import get_anti_repeat_corpus
 
         anti_repeat_corpus = get_anti_repeat_corpus()
-        if not exempt_text_dedup:
+    except Exception as exc:  # pragma: no cover - defensive
+        active_logger.debug("[AntiRepeat] corpus unavailable: %s", exc)
+        anti_repeat_corpus = None
+
+    if anti_repeat_corpus is not None and not exempt_text_dedup:
+        try:
             unanswered_repeat_signal = (
                 anti_repeat_corpus.score_unanswered_proactive_draft(
                     lanlan_name,
@@ -1159,12 +1164,11 @@ async def _guard_phase2_output(
                     silence_since=silence_since,
                 )
             )
-    except Exception as exc:  # pragma: no cover - defensive
-        active_logger.debug(
-            "[AntiRepeat] unanswered proactive score skipped: %s",
-            exc,
-        )
-        anti_repeat_corpus = None
+        except Exception as exc:  # pragma: no cover - defensive
+            active_logger.debug(
+                "[AntiRepeat] unanswered proactive score skipped: %s",
+                exc,
+            )
 
     unanswered_repeat_triggered = bool(
         unanswered_repeat_signal is not None
