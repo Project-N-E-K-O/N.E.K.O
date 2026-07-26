@@ -2166,6 +2166,100 @@ async def test_proactive_prompt_row_excluded_from_digest():
 
 
 @pytest.mark.asyncio
+async def test_retro_replay_honors_receipt_time_policy():
+    """Retroactive review replays a backlog message through the shared
+    session: consent belongs to when it was SAID. A message received while
+    group memory was OFF (or a legacy row without the field) must have its
+    replayed human row excluded from scoped history; a message received
+    under ON replays normally."""
+    from plugin.plugins.qq_auto_reply.attention_gate_service import (
+        QQAttentionGateService,
+    )
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    def _msg(msg_type, text):
+        return SimpleNamespace(type=msg_type, content=text)
+
+    history = []
+    user_data = {"session": SimpleNamespace(_conversation_history=history)}
+
+    async def _run(request):
+        history.append(_msg("human", request.message_text))
+        history.append(_msg("ai", "补回的回复"))
+        return SimpleNamespace(action="reply", reply_text="补回的回复")
+
+    async def _lock(session_key, fn):
+        return await fn()
+
+    plugin = SimpleNamespace(
+        _user_sessions={"group:g7": user_data},
+        reply_pipeline=SimpleNamespace(run=AsyncMock(side_effect=_run)),
+        _run_with_session_lock=_lock,
+        runtime_service=SimpleNamespace(record_pipeline_outcome=lambda **k: None),
+    )
+    memory_service = QQSessionMemoryService.__new__(QQSessionMemoryService)
+    memory_service.plugin = plugin
+    plugin.session_memory_service = memory_service
+    gate = QQAttentionGateService.__new__(QQAttentionGateService)
+    gate.plugin = plugin
+    gate._logger = MagicMock()
+
+    # Legacy row without the field: fails closed, row excluded.
+    assert await gate._reply_to_ignored_message(
+        "g7", {"message_text": "OFF 时代的话", "sender_id": "1",
+               "sender_nickname": "Bob"},
+    ) is True
+    rows = user_data["undelivered_draft_rows"]
+    assert any(getattr(r, "type", "") == "human" for r in rows)
+    excluded_before = len(rows)
+
+    # Received under ON: replays normally, nothing new excluded.
+    assert await gate._reply_to_ignored_message(
+        "g7", {"message_text": "ON 时代的话", "sender_id": "1",
+               "sender_nickname": "Bob",
+               "group_memory_enabled_at_receipt": True},
+    ) is True
+    assert len(user_data["undelivered_draft_rows"]) == excluded_before
+
+
+def test_member_consent_snapshot_taken_before_first_await():
+    """The consent snapshot must be assigned before build()'s first await:
+    the login/bootstrap/recall calls can suspend for seconds, and an
+    OFF->ON flip during them must not retroactively authorize collection
+    for a turn whose utterance happened under OFF."""
+    import ast
+    import inspect
+
+    from plugin.plugins.qq_auto_reply import reply_context_node
+
+    source = inspect.getsource(reply_context_node.QQReplyContextNode.build)
+    tree = ast.parse("class _W:\n" + "\n".join(
+        "    " + line for line in source.splitlines()
+    ))
+    func = tree.body[0].body[0]
+    snapshot_line = None
+    first_await_line = None
+    for node in ast.walk(func):
+        if (
+            snapshot_line is None
+            and isinstance(node, ast.Assign)
+            and any(
+                isinstance(t, ast.Name) and t.id == "member_memory_snapshot"
+                for t in node.targets
+            )
+        ):
+            snapshot_line = node.lineno
+        if isinstance(node, ast.Await):
+            if first_await_line is None or node.lineno < first_await_line:
+                first_await_line = node.lineno
+    assert snapshot_line is not None
+    assert first_await_line is not None
+    assert snapshot_line < first_await_line
+
+
+@pytest.mark.asyncio
 async def test_correction_dead_letter_redacts_scoped_text(tmp_path):
     """Dead-lettered corrections carrying subject fields hold participant-
     derived persona content: the WARN must log only domain identifiers and

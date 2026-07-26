@@ -492,10 +492,24 @@ class QQAttentionGateService:
             group_scene_mode="shared_context",
             fallback_to_text_on_voice_failure=True,
         )
+        # 发言时刻的群记忆政策随 backlog 行保存：OFF 时代被忽略的消息在
+        # ON 之后回放，其"[回溯补回]…"行不得以当前政策入 digest。存量行
+        # 缺字段按 False 处理（fail-closed）。ON 时代的消息回放照常入库。
+        consented_at_receipt = bool(msg.get("group_memory_enabled_at_receipt"))
         try:
+            async def _run_retro():
+                svc = self.plugin.session_memory_service
+                before = svc.session_history_len(f"group:{group_id}")
+                try:
+                    return await self.plugin.reply_pipeline.run(request)
+                finally:
+                    if not consented_at_receipt:
+                        svc.record_synthetic_prompt_rows(
+                            f"group:{group_id}", before,
+                        )
+
             outcome = await self.plugin._run_with_session_lock(
-                f"group:{group_id}",
-                lambda: self.plugin.reply_pipeline.run(request),
+                f"group:{group_id}", _run_retro,
             )
             self.plugin.runtime_service.record_pipeline_outcome(
                 source=request.source_kind, request=request, outcome=outcome,

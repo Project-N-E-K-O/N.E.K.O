@@ -105,6 +105,11 @@ class QQBacklogService:
             group_level=group_level,
             is_at_bot=bool(message.get("is_at_bot")),
             category=category,
+            group_memory_enabled_at_receipt=bool(
+                (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                    "group_memory_enabled", False,
+                )
+            ),
             raw=dict(message.get("raw") or {}),
         )
         display_name = self.plugin.permission_mgr.get_nickname(sender_id) if self.plugin.permission_mgr else None
