@@ -6,7 +6,10 @@ from unittest.mock import AsyncMock
 import pytest
 
 from main_logic.omni_realtime_client import OmniRealtimeClient
-from main_logic.omni_realtime_client._response_arbiter import RealtimeResponseArbiter
+from main_logic.omni_realtime_client._response_arbiter import (
+    _SERVER_RESPONSE_ID_LIMIT,
+    RealtimeResponseArbiter,
+)
 
 
 async def _wait_for_arbiter_source(
@@ -214,6 +217,71 @@ async def test_server_response_terminal_does_not_release_id_matched_owner():
     )
     await asyncio.wait_for(follow_up.done, 0.2)
     await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_server_response_terminal_does_not_release_idless_owner():
+    sent = []
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "response.create":
+            arbiter.notify_response_created({"type": "response.created"})
+
+    arbiter = RealtimeResponseArbiter(send)
+    ticket = await arbiter.enqueue(source="owner")
+    await asyncio.wait_for(ticket.started, 0.2)
+
+    # The owner's response.created carried no id. A server-initiated response
+    # (whose created event does carry an id) starts and finishes while the
+    # owner's response is still running; its terminal event must not release
+    # the lane or complete the owner.
+    arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-server"}}
+    )
+    follow_up = await arbiter.enqueue(source="follow-up")
+    arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-server"}}
+    )
+    await asyncio.sleep(0.01)
+    assert ticket.done.done() is False
+    assert follow_up.sent.done() is False
+    assert [event["type"] for event in sent] == ["response.create"]
+
+    # The owner's own id-less terminal still releases the lane normally.
+    arbiter.notify_response_terminal({"type": "response.done"})
+    await asyncio.wait_for(ticket.done, 0.2)
+    await asyncio.wait_for(follow_up.sent, 0.2)
+    assert [event["type"] for event in sent] == [
+        "response.create",
+        "response.create",
+    ]
+    arbiter.notify_response_terminal({"type": "response.done"})
+    await asyncio.wait_for(follow_up.done, 0.2)
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_server_response_id_memory_is_bounded_and_pruned():
+    async def send(_event):
+        return None
+
+    arbiter = RealtimeResponseArbiter(send)
+    for index in range(3 * _SERVER_RESPONSE_ID_LIMIT):
+        arbiter.notify_response_created(
+            {"type": "response.created", "response": {"id": f"resp-{index}"}}
+        )
+    assert len(arbiter._server_response_ids) == _SERVER_RESPONSE_ID_LIMIT
+    assert "resp-0" not in arbiter._server_response_ids
+    newest = f"resp-{3 * _SERVER_RESPONSE_ID_LIMIT - 1}"
+    assert newest in arbiter._server_response_ids
+
+    # A terminal event prunes its own id from the bookkeeping.
+    arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": newest}}
+    )
+    assert newest not in arbiter._server_response_ids
 
 
 @pytest.mark.asyncio

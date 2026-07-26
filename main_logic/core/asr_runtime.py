@@ -1217,12 +1217,13 @@ class AsrRuntimeMixin:
             # per-frame submits so detector metadata stays frame-accurate.
             native_batch_frames = 5
             send_interval_s = 0.025
-            iteration = 0
-            while iteration < 20:
-                async with self.hot_swap_cache_lock:
-                    audio_frames = self.hot_swap_audio_cache.drain()
-                if not audio_frames:
-                    break
+
+            async def replay_frames(
+                audio_frames: tuple[_HotSwapAudioFrame, ...],
+                *,
+                paced: bool,
+            ) -> bool:
+                """Replay drained frames; ``False`` means a send failed."""
                 index = 0
                 while index < len(audio_frames):
                     frame = audio_frames[index]
@@ -1275,23 +1276,53 @@ class AsrRuntimeMixin:
                         raise
                     except Exception:
                         damaged_frames.extend(audio_frames[index:])
-                        return
+                        return False
                     index = batch_end
-                    if self._asr_route_mode == "native":
+                    if paced and self._asr_route_mode == "native":
                         try:
                             await asyncio.sleep(send_interval_s)
                         except asyncio.CancelledError:
                             damaged_frames.extend(audio_frames[index:])
                             raise
-                iteration += 1
-            async with self.hot_swap_cache_lock:
-                remaining = self.hot_swap_audio_cache.drain()
-                if remaining:
-                    damaged_frames.extend(remaining)
-                else:
-                    self.is_flushing_hot_swap_cache = False
-                    self.is_hot_swap_imminent = False
-                    flush_complete = True
+                return True
+
+            # Termination contract: live frames keep landing in the cache
+            # while the flush runs, so a paced native pass can never drain
+            # to empty on its own -- at ~2x real time each pass roughly
+            # halves the backlog until per-batch pacing overhead dominates
+            # (one <=5-frame batch costs 25 ms while ~2.5 frames arrive)
+            # and the drain settles at a few-frame steady state. That
+            # healthy tail is replayed unpaced while holding the cache
+            # lock, so the flush barrier drops atomically and the next
+            # live frame routes directly instead of being damaged. The
+            # wall-clock deadline (2x the initial-backlog replay estimate
+            # plus fixed slack) therefore only trips when replay cannot
+            # outpace ingress -- genuine backpressure -- and the residue
+            # then invalidates the candidate turn below.
+            tail_handoff_frames = 25  # <=250 ms residue: burst and hand off
+            flush_deadline = (
+                time.monotonic()
+                + 2.0 * self.hot_swap_audio_cache.duration_ms / 1_000.0
+                + 3.0
+            )
+            while True:
+                async with self.hot_swap_cache_lock:
+                    audio_frames = self.hot_swap_audio_cache.drain()
+                    if len(audio_frames) <= tail_handoff_frames:
+                        if audio_frames and not await replay_frames(
+                            audio_frames,
+                            paced=False,
+                        ):
+                            return
+                        self.is_flushing_hot_swap_cache = False
+                        self.is_hot_swap_imminent = False
+                        flush_complete = True
+                        return
+                if time.monotonic() >= flush_deadline:
+                    damaged_frames.extend(audio_frames)
+                    return
+                if not await replay_frames(audio_frames, paced=True):
+                    return
         finally:
             async with self.hot_swap_cache_lock:
                 if not flush_complete:

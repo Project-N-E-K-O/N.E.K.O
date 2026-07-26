@@ -179,6 +179,9 @@ async def test_glm_commit_posts_pcm16_wav_and_emits_exactly_one_final() -> None:
     # provider call or a duplicate final.
     await requests.put(_AsrWorkerRequest(kind="commit", **key))
     await asyncio.wait_for(requests.join(), 1)
+    # Yield once so an accidentally spawned HTTP task would run and be caught
+    # here instead of being cancelled unseen at shutdown.
+    await asyncio.sleep(0)
     assert len(client.calls) == 1
     await _stop_worker(task, requests, responses)
 
@@ -208,6 +211,9 @@ async def test_glm_duplicate_commit_after_late_audio_posts_no_second_request() -
     await requests.put(_AsrWorkerRequest(kind="audio", audio=b"\x03\x04", **key))
     await requests.put(_AsrWorkerRequest(kind="commit", **key))
     await asyncio.wait_for(requests.join(), 1)
+    # Yield once so an accidentally spawned HTTP task would run and be caught
+    # here instead of being cancelled unseen at shutdown.
+    await asyncio.sleep(0)
     assert len(client.calls) == 1
     assert responses.empty()
     await _stop_worker(task, requests, responses)
@@ -439,6 +445,9 @@ async def test_glm_clear_wins_same_batch_old_timeout_and_queue_joins() -> None:
     )
     client.release.set()
     await asyncio.wait_for(requests.join(), 1)
+    # Yield once so an accidentally spawned HTTP task would run and be caught
+    # here instead of being cancelled unseen at shutdown.
+    await asyncio.sleep(0)
     assert responses.empty()
 
     new_key = {"generation": 3, "buffer_epoch": 5, "utterance_id": 6}
@@ -494,6 +503,9 @@ async def test_glm_current_timeout_emits_one_fully_keyed_fatal_error() -> None:
     assert (await _next_event(responses, "closed")).kind == "closed"
     await asyncio.wait_for(task, 1)
     await asyncio.wait_for(requests.join(), 1)
+    # Yield once so an accidentally spawned HTTP task would run and be caught
+    # here instead of being cancelled unseen at shutdown.
+    await asyncio.sleep(0)
     assert responses.empty()
     assert requests._unfinished_tasks == 0
 

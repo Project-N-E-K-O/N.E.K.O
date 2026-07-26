@@ -1033,30 +1033,95 @@ async def test_hot_swap_mid_batch_failure_invalidates_candidate():
     assert mgr.is_flushing_hot_swap_cache is False
 
 
-async def test_hot_swap_iteration_exhaustion_invalidates_residual_audio():
+class _FakeClock:
+    """Module-local stand-in for ``time`` inside ``core_asr_runtime_module``."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def time(self) -> float:
+        return self.now
+
+
+async def test_hot_swap_flush_hands_off_sustained_arrival_without_abort(
+    monkeypatch,
+):
+    mgr = _make_routable_audio_manager(True)
+    del mgr._route_microphone_audio
+    token = mgr._capture_ingress_token()
+    mgr._asr_runtime.abort = AsyncMock()
+    mgr.hot_swap_audio_cache = HotSwapAudioBuffer(capacity_ms=8_000)
+    for _ in range(40):
+        assert mgr.hot_swap_audio_cache.append(
+            HotSwapAudioFrame(pcm16=b"\x01\x00" * 160, token=token)
+        )
+    sleeps: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def paced_arrival_sleep(delay: float) -> None:
+        # Sustained live ingress: ~2 frames arrive during each 25 ms pacing
+        # gap, so a paced drain settles at a small steady state instead of
+        # converging to empty on its own.
+        sleeps.append(delay)
+        for _ in range(2):
+            assert mgr.hot_swap_audio_cache.append(
+                HotSwapAudioFrame(pcm16=b"\x01\x00" * 160, token=token)
+            )
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", paced_arrival_sleep)
+
+    await LLMSessionManager._flush_hot_swap_audio_cache(mgr)
+
+    # One paced pass (40 frames, 8 batches) plus the unpaced tail handoff
+    # (16 frames that arrived during pacing); nothing is damaged.
+    assert sleeps == [0.025] * 8
+    sent = b"".join(
+        call.args[0] for call in mgr.session.stream_audio.await_args_list
+    )
+    assert sent == b"\x01\x00" * 160 * 56
+    mgr._asr_runtime.abort.assert_not_awaited()
+    assert not mgr.hot_swap_audio_cache
+    assert mgr.is_flushing_hot_swap_cache is False
+    assert mgr.is_hot_swap_imminent is False
+
+
+async def test_hot_swap_flush_deadline_invalidates_non_converging_replay(
+    monkeypatch,
+):
     mgr = _make_routable_audio_manager(True)
     token = _queue_token()
     mgr._ingress_token_matches = MagicMock(return_value=True)
     mgr._asr_runtime.abort = AsyncMock()
     mgr.hot_swap_audio_cache = HotSwapAudioBuffer(capacity_ms=8_000)
-    assert mgr.hot_swap_audio_cache.append(_hot_swap_frame(token))
-    calls = 0
-
-    async def route(_pcm16: bytes, **_kwargs) -> bool:
-        nonlocal calls
-        calls += 1
+    for _ in range(40):
         assert mgr.hot_swap_audio_cache.append(_hot_swap_frame(token))
-        return True
+    clock = _FakeClock()
+    monkeypatch.setattr(core_asr_runtime_module, "time", clock)
+    real_sleep = asyncio.sleep
 
-    mgr._route_microphone_audio = AsyncMock(side_effect=route)
+    async def degraded_sleep(delay: float) -> None:
+        # Ingress matches the replay rate exactly (5 frames per 25 ms
+        # pacing gap), so the backlog never shrinks below the handoff
+        # threshold: genuine backpressure, not a healthy steady state.
+        clock.now += delay
+        for _ in range(5):
+            assert mgr.hot_swap_audio_cache.append(_hot_swap_frame(token))
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", degraded_sleep)
 
     await LLMSessionManager._flush_hot_swap_audio_cache(mgr)
 
-    assert calls == 20
     mgr._asr_runtime.abort.assert_awaited_once_with("ingress_backpressure")
     mgr.session.stream_audio.assert_not_awaited()
     mgr._record_omni_microphone_audio.assert_not_called()
     assert not mgr.hot_swap_audio_cache
+    assert mgr.is_flushing_hot_swap_cache is False
+    assert mgr.is_hot_swap_imminent is False
 
 
 async def test_native_route_skips_send_after_fatal_error_with_rate_limited_log(
@@ -1091,6 +1156,34 @@ async def test_hot_swap_flush_batches_and_paces_native_replay(monkeypatch):
     del mgr._route_microphone_audio
     token = mgr._capture_ingress_token()
     mgr.hot_swap_audio_cache = HotSwapAudioBuffer(capacity_ms=8_000)
+    # 27 frames (270 ms) exceeds the 250 ms tail-handoff threshold, so the
+    # first pass replays with batching and pacing.
+    for _ in range(27):
+        assert mgr.hot_swap_audio_cache.append(
+            HotSwapAudioFrame(pcm16=b"\x01\x00" * 160, token=token)
+        )
+    sleeps: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def record_sleep(delay: float) -> None:
+        sleeps.append(delay)
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", record_sleep)
+
+    await LLMSessionManager._flush_hot_swap_audio_cache(mgr)
+
+    sent = [call.args[0] for call in mgr.session.stream_audio.await_args_list]
+    assert sent == [b"\x01\x00" * 160 * 5] * 5 + [b"\x01\x00" * 160 * 2]
+    assert sleeps == [0.025] * 6
+    assert not mgr.hot_swap_audio_cache
+
+
+async def test_hot_swap_flush_bursts_small_tail_without_pacing(monkeypatch):
+    mgr = _make_routable_audio_manager(True)
+    del mgr._route_microphone_audio
+    token = mgr._capture_ingress_token()
+    mgr.hot_swap_audio_cache = HotSwapAudioBuffer(capacity_ms=8_000)
     for _ in range(7):
         assert mgr.hot_swap_audio_cache.append(
             HotSwapAudioFrame(pcm16=b"\x01\x00" * 160, token=token)
@@ -1108,7 +1201,7 @@ async def test_hot_swap_flush_batches_and_paces_native_replay(monkeypatch):
 
     sent = [call.args[0] for call in mgr.session.stream_audio.await_args_list]
     assert sent == [b"\x01\x00" * 160 * 5, b"\x01\x00" * 160 * 2]
-    assert sleeps == [0.025, 0.025]
+    assert sleeps == []
     assert not mgr.hot_swap_audio_cache
 
 

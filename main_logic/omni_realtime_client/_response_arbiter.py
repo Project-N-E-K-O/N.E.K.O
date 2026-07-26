@@ -13,6 +13,12 @@ SendEvent = Callable[[dict[str, Any]], Awaitable[None]]
 AbortTransport = Callable[[str], Awaitable[None]]
 logger = logging.getLogger(__name__)
 
+# Server-initiated response ids are remembered so their terminal events are
+# never credited to an owner whose own ``response.created`` carried no id.
+# Only the most recent ids are kept: an id matters solely while its response
+# is still live, so a small bound prevents unbounded growth on long sessions.
+_SERVER_RESPONSE_ID_LIMIT = 32
+
 
 @dataclass(frozen=True, slots=True)
 class ResponseDispatchResult:
@@ -90,6 +96,9 @@ class RealtimeResponseArbiter:
         self._current: _QueuedResponse | None = None
         self._response_owner: _QueuedResponse | None = None
         self._server_response_active = False
+        # Bounded insertion-ordered set (dict keys) of known server-initiated
+        # response ids; see _SERVER_RESPONSE_ID_LIMIT.
+        self._server_response_ids: dict[str, None] = {}
         self._connection_available = True
         self._dispatch_allowed = asyncio.Event()
         self._dispatch_allowed.set()
@@ -245,6 +254,12 @@ class RealtimeResponseArbiter:
         response_id = response.get("id") if isinstance(response, dict) else None
         return str(response_id) if response_id else None
 
+    def _remember_server_response_id(self, response_id: str) -> None:
+        self._server_response_ids.pop(response_id, None)
+        self._server_response_ids[response_id] = None
+        while len(self._server_response_ids) > _SERVER_RESPONSE_ID_LIMIT:
+            del self._server_response_ids[next(iter(self._server_response_ids))]
+
     def notify_response_created(self, event: dict[str, Any]) -> None:
         self._server_response_active = True
         self._idle.clear()
@@ -256,25 +271,46 @@ class RealtimeResponseArbiter:
             # can release the lane.
             owner.response_id = self._event_response_id(event)
             owner.ticket.started.set_result(None)
+            return
+        # This created event cannot be credited to a waiting owner (the owner
+        # already started, or no owner is pending), so it announces a
+        # server-initiated response. Remember its id so its terminal event is
+        # recognized as an orphan even when the owner's own response.created
+        # carried no id.
+        response_id = self._event_response_id(event)
+        if response_id is not None:
+            self._remember_server_response_id(response_id)
 
     def notify_response_terminal(self, event: dict[str, Any] | None = None) -> None:
         owner = self._response_owner
-        if owner is not None:
-            response_id = self._event_response_id(event)
-            if response_id is not None and owner.ticket.started.done():
-                if owner.response_id is not None and response_id != owner.response_id:
-                    # A server-initiated response finished while the owner's
-                    # own response is still running. Releasing the lane here
-                    # would let a queued response.create collide with it, so
-                    # treat the mismatched terminal as an orphan.
-                    return
-            elif response_id is not None:
+        response_id = self._event_response_id(event)
+        if owner is not None and response_id is not None:
+            if not owner.ticket.started.done():
                 # The owner has not seen its response.created yet, and a
                 # response's terminal event never precedes its created event,
                 # so an id-bearing terminal here belongs to another
                 # (server-initiated) response. Keep waiting for the owner's
                 # own lifecycle instead of failing it.
+                self._server_response_ids.pop(response_id, None)
                 return
+            if owner.response_id is not None:
+                if response_id != owner.response_id:
+                    # A server-initiated response finished while the owner's
+                    # own response is still running. Releasing the lane here
+                    # would let a queued response.create collide with it, so
+                    # treat the mismatched terminal as an orphan.
+                    self._server_response_ids.pop(response_id, None)
+                    return
+            elif response_id in self._server_response_ids:
+                # The owner's response.created carried no id, but this
+                # terminal matches a known server-initiated response, so it
+                # cannot be the owner's own terminal.
+                del self._server_response_ids[response_id]
+                return
+        elif response_id is not None:
+            # No owner: a server-initiated response reached its terminal
+            # state, so its id no longer needs to be remembered.
+            self._server_response_ids.pop(response_id, None)
         self._server_response_active = False
         if owner is not None:
             if not owner.ticket.started.done():
@@ -326,6 +362,7 @@ class RealtimeResponseArbiter:
         # the failed connection and complete its selected ticket.
         self._dispatch_allowed.set()
         self._server_response_active = False
+        self._server_response_ids.clear()
         exc = ConnectionError(reason)
         owner = self._response_owner
         current = self._current
@@ -346,6 +383,7 @@ class RealtimeResponseArbiter:
     def reset_connection_state(self) -> None:
         self._connection_available = True
         self._dispatch_allowed.set()
+        self._server_response_ids.clear()
         if self._current is None and self._response_owner is None:
             self._server_response_active = False
             self._idle.set()
