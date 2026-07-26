@@ -85,6 +85,23 @@ class QQRuntimeOpsService:
             await self.plugin.qq_client.disconnect()
         if stop_napcat:
             await self.plugin.napcat_service.stop_managed_napcat()
+        # 清锁表前 join 隐私关键的后台任务（开关转变结算 + prompt 变更
+        # discard，限 1s）：否则 stop→立刻 start 会给同一会话建新锁，旧
+        # 任务与新 handler 并发改写、甚至中途弹掉活跃会话。
+        pending_tasks = (
+            list(getattr(self.plugin, "_group_memory_sync_tasks", ()) or ())
+            + list(getattr(self.plugin, "_prompt_change_discard_tasks", ()) or ())
+        )
+        if pending_tasks:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*pending_tasks, return_exceptions=True),
+                    timeout=1.0,
+                )
+            except asyncio.TimeoutError:
+                self.plugin.logger.warning(
+                    "停止时仍有记忆同步任务未完成，已超时放行"
+                )
         self.plugin._session_locks.clear()
 
 
