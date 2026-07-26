@@ -644,6 +644,88 @@ def test_init_repo_uses_market_repository_name_and_keeps_plugin_id(
     assert "[OK] market_demo: check found" in captured.out
 
 
+def test_init_repo_generates_online_vendor_build_workflow(tmp_path: Path) -> None:
+    exit_code = neko_plugin_cli.main(
+        [
+            "init-repo",
+            "dependency_demo",
+            "--plugins-root",
+            str(tmp_path),
+            "--no-git",
+            "--neko-repo",
+            "Project-N-E-K-O/N.E.K.O",
+        ]
+    )
+
+    assert exit_code == 0
+    repo_dir = tmp_path / "n.e.k.o_plugin_dependency_demo"
+    gitignore = (repo_dir / ".gitignore").read_text(encoding="utf-8")
+    verify_workflow = (
+        repo_dir / ".github" / "workflows" / "verify.yml"
+    ).read_text(encoding="utf-8")
+    release_workflow = (
+        repo_dir / ".github" / "workflows" / "release.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "vendor/" in gitignore.splitlines()
+    sync_command = (
+        'uv run --with pip python -m plugin.neko_plugin_cli.cli sync '
+        '"${PLUGIN_ID}" --clean'
+    )
+    assert sync_command in verify_workflow
+    assert sync_command in release_workflow
+    assert verify_workflow.index(sync_command) < verify_workflow.index(
+        "check -r"
+    )
+    assert release_workflow.index(sync_command) < release_workflow.index(
+        "check -r --market-release"
+    )
+
+
+def test_init_repo_documents_and_exposes_dependency_sync(tmp_path: Path) -> None:
+    exit_code = neko_plugin_cli.main(
+        [
+            "init-repo",
+            "dependency_demo",
+            "--plugins-root",
+            str(tmp_path),
+            "--no-git",
+        ]
+    )
+
+    assert exit_code == 0
+    repo_dir = tmp_path / "n.e.k.o_plugin_dependency_demo"
+    readme = (repo_dir / "README.md").read_text(encoding="utf-8")
+    tasks = (repo_dir / ".vscode" / "tasks.json").read_text(encoding="utf-8")
+
+    sync_command = (
+        "uv run --with pip python -m plugin.neko_plugin_cli.cli "
+        "sync dependency_demo --clean"
+    )
+    assert sync_command in readme
+    assert "`vendor/`" in readme
+    assert "not committed" in readme
+    assert "N.E.K.O: sync dependency_demo" in tasks
+    assert sync_command in tasks
+
+
+def test_sync_without_pyproject_is_successful_noop(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path, "no_pyproject")
+    vendor_file = plugin_dir / "vendor" / "legacy_dependency.py"
+    vendor_file.parent.mkdir()
+    vendor_file.write_text("value = 1\n", encoding="utf-8")
+
+    exit_code = neko_plugin_cli.main(["sync", str(plugin_dir), "--clean"])
+
+    assert exit_code == 0
+    assert vendor_file.is_file()
+    captured = capsys.readouterr()
+    assert "[OK] no_pyproject: no external dependencies to sync" in captured.out
+
+
 def test_market_release_check_enforces_repo_and_tag_conventions(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
