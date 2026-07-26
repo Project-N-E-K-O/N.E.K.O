@@ -78,66 +78,6 @@
         startupDefaultCatTimerId: 0,
     };
 
-    // TEMPORARY desktop-window sensing visual acceptance: BEGIN.
-    // Real page lifecycle caller for user acceptance. Remove this block and the
-    // two marked call sites after the visual acceptance is complete.
-    let desktopWindowSensingAcceptanceGeneration = 0;
-    let desktopWindowSensingAcceptanceSessionId = null;
-    let desktopWindowSensingAcceptanceStartedForCatForm = false;
-
-    function getDesktopWindowSensingAcceptanceBridge() {
-        const sensing = window.nekoDesktopWindowSensing;
-        if (!sensing
-            || typeof sensing.start !== 'function'
-            || typeof sensing.stop !== 'function') {
-            return null;
-        }
-        return sensing;
-    }
-
-    function stopDesktopWindowSensingAcceptanceResult(sensing, sessionId) {
-        if (!sensing || !sessionId) return;
-        try {
-            Promise.resolve(sensing.stop(sessionId)).catch(() => {});
-        } catch (_) {}
-    }
-
-    function startDesktopWindowSensingAcceptance(catScreenRect) {
-        if (desktopWindowSensingAcceptanceStartedForCatForm) return;
-        desktopWindowSensingAcceptanceStartedForCatForm = true;
-        const sensing = getDesktopWindowSensingAcceptanceBridge();
-        if (!sensing) return;
-
-        const generation = ++desktopWindowSensingAcceptanceGeneration;
-        let operation;
-        try {
-            operation = sensing.start(catScreenRect);
-        } catch (_) {
-            return;
-        }
-
-        Promise.resolve(operation).then((result) => {
-            if (!result || result.status !== 'ready' || !result.sessionId) return;
-            if (generation !== desktopWindowSensingAcceptanceGeneration) {
-                stopDesktopWindowSensingAcceptanceResult(sensing, result.sessionId);
-                return;
-            }
-            desktopWindowSensingAcceptanceSessionId = result.sessionId;
-        }).catch(() => {});
-    }
-
-    function stopDesktopWindowSensingAcceptance() {
-        desktopWindowSensingAcceptanceGeneration += 1;
-        desktopWindowSensingAcceptanceStartedForCatForm = false;
-        const sessionId = desktopWindowSensingAcceptanceSessionId;
-        desktopWindowSensingAcceptanceSessionId = null;
-        stopDesktopWindowSensingAcceptanceResult(
-            getDesktopWindowSensingAcceptanceBridge(),
-            sessionId
-        );
-    }
-    // TEMPORARY desktop-window sensing visual acceptance: END.
-
     function nowMs() {
         return Date.now();
     }
@@ -937,13 +877,6 @@
             if (detail.form === 'cat') requestStartupDefaultCat();
         });
 
-        // TEMPORARY desktop-window sensing visual acceptance: remove after acceptance.
-        window.addEventListener('neko:idle-return-ball-state', (event) => {
-            const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
-            if (detail.visible !== true || !detail.screenRect) return;
-            startDesktopWindowSensingAcceptance(detail.screenRect);
-        });
-
         window.addEventListener('live2d-goodbye-click', (event) => {
             const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
             if (detail.startupDefaultForm !== 'cat' && state.startupDefaultCatRequested) {
@@ -980,8 +913,6 @@
             const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
             if (!isGreetingReturnSource(detail.source)) return;
             // Returning is an explicit user override of any startup request still waiting for avatar readiness.
-            // TEMPORARY desktop-window sensing visual acceptance: remove after acceptance.
-            stopDesktopWindowSensingAcceptance();
             cancelStartupDefaultCatRequest(true);
             syncGoodbyeSilentState(false, 'return-click');
             if (!state.pendingReturnSnapshot) {
