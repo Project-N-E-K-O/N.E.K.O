@@ -5,8 +5,10 @@ from pathlib import Path
 
 APP_WEBSOCKET_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-websocket.js"
 APP_STATE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-state.js"
+APP_AUDIO_CAPTURE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-audio-capture.js"
 LOCALES_PATH = Path(__file__).resolve().parents[2] / "static" / "locales"
 WEBSOCKET_ROUTER_PATH = Path(__file__).resolve().parents[2] / "main_routers" / "websocket_router.py"
+ASR_REGISTRY_META_PATH = Path(__file__).resolve().parents[2] / "main_logic" / "asr_client" / "_registry_meta.py"
 
 
 def test_independent_asr_injection_failure_does_not_show_fallback_toast():
@@ -71,7 +73,7 @@ def test_provider_unavailable_status_names_provider_and_denies_silent_switch():
 
     assert "ASR_INDEPENDENT_PROVIDER_UNAVAILABLE" in source
     assert "microphone.independentAsrProviderUnavailable" in source
-    assert "{ provider: asrProvider }" in source
+    assert "{ providerKey: asrProvider || 'unknown' }" in source
     assert "It did not switch to another speech recognition service" in source
 
 
@@ -82,6 +84,77 @@ def test_voice_lifecycle_status_is_validated_and_exposed_to_ui():
     assert "voiceInputLifecycleState" in source
     assert "voice-input-lifecycle-changed" in source
     assert "data-voice-input-state" in source
+
+
+def test_lease_resync_status_resends_snapshot_only_from_capturing_window():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    capture_source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
+
+    resync_branch = source.split(
+        "if (statusCode === 'VOICE_INPUT_LEASE_RESYNC_REQUIRED')",
+        1,
+    )[1].split("if (statusCode && statusCode.indexOf('ASR_INDEPENDENT_') === 0)", 1)[0]
+
+    assert "S.isRecording === true" in resync_branch
+    assert "window.appAudioCapture.sendVoiceInputControlState(true);" in resync_branch
+    assert resync_branch.index("S.isRecording === true") < resync_branch.index(
+        "window.appAudioCapture.sendVoiceInputControlState(true);"
+    )
+    assert "return;" in resync_branch
+    assert "setInterval" not in resync_branch
+    assert "setTimeout" not in resync_branch
+    assert "mod.sendVoiceInputControlState = sendVoiceInputControlState;" in capture_source
+
+
+def test_independent_asr_provider_copy_resolves_via_provider_names():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    capture_source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
+
+    assert "{ provider: asrProvider }" not in source
+    ready_branch = source.split("if (statusCode === 'ASR_INDEPENDENT_READY')", 1)[1].split(
+        "if (statusCode === 'ASR_INDEPENDENT_DISABLED')",
+        1,
+    )[0]
+    assert "window.t('microphone.independentAsrActive', { providerKey: asrProvider || 'unknown' })" in ready_branch
+    assert "window.t('microphone.independentAsrProviderUnavailable', { providerKey: asrProvider || 'unknown' })" in source
+
+    hint_block = capture_source.split("var asrHintKey = ", 1)[1].split(
+        "leftColumn.appendChild(asrContainer);",
+        1,
+    )[0]
+    assert "{ providerKey: S.independentAsrProvider || 'unknown' }" in hint_block
+    assert "asrHint.setAttribute('data-i18n-params', JSON.stringify(asrHintParams));" in hint_block
+    assert hint_block.index("asrHint.setAttribute('data-i18n-params', JSON.stringify(asrHintParams));") < hint_block.index(
+        "window.t(asrHintKey, asrHintParams)"
+    )
+    assert "provider: S.independentAsrProvider" not in hint_block
+
+
+def test_provider_names_cover_asr_registry_keys_in_all_locales():
+    registry_source = ASR_REGISTRY_META_PATH.read_text(encoding="utf-8")
+    registry_keys = set(re.findall(r'provider_key="([a-z0-9_]+)"', registry_source))
+    assert registry_keys, "provider_key extraction regex no longer matches _registry_meta.py"
+    required_keys = registry_keys | {"unknown"}
+
+    locale_names = sorted(path.name for path in LOCALES_PATH.glob("*.json"))
+    assert len(locale_names) == 8
+
+    key_sets = {}
+    for locale_name in locale_names:
+        locale = json.loads((LOCALES_PATH / locale_name).read_text(encoding="utf-8"))
+        provider_names = locale["api"]["providerNames"]
+        key_sets[locale_name] = set(provider_names)
+        missing = required_keys - set(provider_names)
+        assert not missing, f"{locale_name} providerNames missing: {sorted(missing)}"
+        for key in required_keys:
+            value = provider_names[key]
+            assert isinstance(value, str) and value.strip(), f"{locale_name} providerNames[{key}] is empty"
+
+    reference_locale = locale_names[0]
+    for locale_name in locale_names[1:]:
+        assert key_sets[locale_name] == key_sets[reference_locale], (
+            f"providerNames key set of {locale_name} diverges from {reference_locale}"
+        )
 
 
 def test_independent_asr_failure_copy_matches_hard_route_in_all_locales():

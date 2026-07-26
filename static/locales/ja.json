@@ -1033,7 +1033,13 @@
             "silicon": "SiliconFlow",
             "gemini": "Gemini",
             "kimi_code": "Moonshot Kimi Code",
-            "vllm_omni": "vLLM-Omni（TTS）"
+            "vllm_omni": "vLLM-Omni（TTS）",
+            "qwen": "Qwen",
+            "grok": "Grok",
+            "soniox": "Soniox",
+            "free": "無料版",
+            "dummy": "テスト用プロバイダー",
+            "unknown": "不明なプロバイダー"
         },
         "coreProviderNames": {
             "free": "無料版（猫娘特典、Web検索対応）",

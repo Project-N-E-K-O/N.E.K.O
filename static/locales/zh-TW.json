@@ -1033,7 +1033,13 @@
             "silicon": "矽基流動",
             "gemini": "Gemini",
             "kimi_code": "Kimi Code（月之暗面）",
-            "vllm_omni": "vLLM-Omni（TTS）"
+            "vllm_omni": "vLLM-Omni（TTS）",
+            "qwen": "通義千問",
+            "grok": "Grok",
+            "soniox": "Soniox",
+            "free": "免費版",
+            "dummy": "測試服務",
+            "unknown": "未知服務"
         },
         "coreProviderNames": {
             "free": "免費版（貓娘專屬福利，支持聯網搜索）",

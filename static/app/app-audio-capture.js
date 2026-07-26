@@ -1575,6 +1575,7 @@
     mod.startGameVoiceSttGate = startGameVoiceSttGate;
     mod.stopGameVoiceSttGate = stopGameVoiceSttGate;
     mod.refreshMicLease = refreshMicLease;
+    mod.sendVoiceInputControlState = sendVoiceInputControlState;
     mod.canUploadOrdinaryMicFrame = canUploadOrdinaryMicFrame;
     mod.setVoiceInputLifecycleState = setVoiceInputLifecycleState;
 
@@ -1933,10 +1934,12 @@
             var asrHintKey = S.independentAsrActive
                 ? 'microphone.independentAsrActive'
                 : (S.independentAsrEnabled ? 'microphone.independentAsrNextSession' : 'microphone.independentAsrNative');
-            asrHint.textContent = window.t
-                ? window.t(asrHintKey, { provider: S.independentAsrProvider || '' })
-                : (S.independentAsrActive ? 'Independent ASR active' : (S.independentAsrEnabled ? 'Takes effect next voice session' : 'Using Omni native recognition'));
+            var asrHintParams = { providerKey: S.independentAsrProvider || 'unknown' };
             asrHint.setAttribute('data-i18n', asrHintKey);
+            asrHint.setAttribute('data-i18n-params', JSON.stringify(asrHintParams));
+            asrHint.textContent = window.t
+                ? window.t(asrHintKey, asrHintParams)
+                : (S.independentAsrActive ? 'Independent ASR active' : (S.independentAsrEnabled ? 'Takes effect next voice session' : 'Using Omni native recognition'));
             Object.assign(asrHint.style, { fontSize: '11px', color: 'var(--neko-popup-text-sub)', marginTop: '6px' });
             asrContainer.appendChild(asrHint);
             leftColumn.appendChild(asrContainer);

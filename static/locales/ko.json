@@ -1033,7 +1033,13 @@
             "silicon": "실리콘플로우",
             "gemini": "쌍둥이자리",
             "kimi_code": "Moonshot Kimi Code",
-            "vllm_omni": "vLLM-Omni (TTS)"
+            "vllm_omni": "vLLM-Omni (TTS)",
+            "qwen": "Qwen",
+            "grok": "Grok",
+            "soniox": "Soniox",
+            "free": "무료 버전",
+            "dummy": "테스트 서비스",
+            "unknown": "알 수 없는 서비스"
         },
         "coreProviderNames": {
             "free": "무료 버전(N.E.K.O. 독점 혜택, 웹 검색 지원)",

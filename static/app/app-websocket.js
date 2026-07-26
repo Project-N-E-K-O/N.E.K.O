@@ -2175,6 +2175,16 @@
                         return;
                     }
 
+                    if (statusCode === 'VOICE_INPUT_LEASE_RESYNC_REQUIRED') {
+                        // 仅采集中的窗口重发 lease 快照；非采集窗口忽略，避免多窗口互相覆盖
+                        if (S.isRecording === true
+                            && window.appAudioCapture
+                            && typeof window.appAudioCapture.sendVoiceInputControlState === 'function') {
+                            window.appAudioCapture.sendVoiceInputControlState(true);
+                        }
+                        return;
+                    }
+
                     if (statusCode && statusCode.indexOf('ASR_INDEPENDENT_') === 0) {
                         var asrProvider = (statusDetails && statusDetails.provider) || '';
                         S.independentAsrProvider = asrProvider;
@@ -2182,7 +2192,7 @@
                             S.independentAsrActive = true;
                             if (typeof window.showStatusToast === 'function') {
                                 window.showStatusToast(
-                                    window.t ? window.t('microphone.independentAsrActive', { provider: asrProvider }) : ('Independent ASR active: ' + asrProvider),
+                                    window.t ? window.t('microphone.independentAsrActive', { providerKey: asrProvider || 'unknown' }) : ('Independent ASR active: ' + asrProvider),
                                     3000
                                 );
                             }
@@ -2202,7 +2212,7 @@
                             if (statusCode === 'ASR_INDEPENDENT_PROVIDER_UNAVAILABLE') {
                                 window.showStatusToast(
                                     window.t
-                                        ? window.t('microphone.independentAsrProviderUnavailable', { provider: asrProvider })
+                                        ? window.t('microphone.independentAsrProviderUnavailable', { providerKey: asrProvider || 'unknown' })
                                         : ((asrProvider || 'ASR') + ' is temporarily unavailable. Voice input has stopped for this session. It did not switch to another speech recognition service. Please start a new voice session later.'),
                                     5000
                                 );

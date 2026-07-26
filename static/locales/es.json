@@ -1033,7 +1033,13 @@
             "silicon": "flujo de silicio",
             "gemini": "Géminis",
             "kimi_code": "Moonshot Kimi Code",
-            "vllm_omni": "vLLM-Omni (TTS)"
+            "vllm_omni": "vLLM-Omni (TTS)",
+            "qwen": "Qwen",
+            "grok": "Grok",
+            "soniox": "Soniox",
+            "free": "Versión gratuita",
+            "dummy": "Proveedor de prueba",
+            "unknown": "Proveedor desconocido"
         },
         "coreProviderNames": {
             "free": "Versión gratuita (beneficio exclusivo de N.E.K.O., admite búsqueda web)",
