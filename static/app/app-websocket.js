@@ -2172,6 +2172,31 @@
                                 'voice-input-lifecycle-changed',
                                 { detail: statusDetails }
                             ));
+                            // Hard-failure cleanup. The runtime's
+                            // _handle_independent_asr_error (main_logic/asr_client/
+                            // runtime.py) is the only BLOCKED emitter, and it always
+                            // broadcasts lifecycle BLOCKED before the fatal status
+                            // code. That code set is open-ended and mostly NOT
+                            // ASR_INDEPENDENT_-prefixed (ASR_ENDPOINTING_FAILED,
+                            // ASR_BLOCKED_ENDPOINTING, ASR_AUDIO_ORDERING_FAILED,
+                            // ASR_PROVIDER_FINAL_TIMEOUT, provider-specific codes...),
+                            // so derive the independent-ASR failure teardown from
+                            // BLOCKED instead of enumerating fatal codes. Start-path
+                            // failures (ASR_INDEPENDENT_PROVIDER_UNAVAILABLE /
+                            // ASR_INDEPENDENT_FAILED before READY) never emit
+                            // BLOCKED and keep their per-code toasts below; a
+                            // prefixed fatal code after BLOCKED re-shows the same
+                            // fallback text, which the toast renders as one message.
+                            if (lifecycleState === 'blocked') {
+                                removeExternalAsrPreview();
+                                S.independentAsrActive = false;
+                                if (typeof window.showStatusToast === 'function') {
+                                    window.showStatusToast(
+                                        window.t ? window.t('microphone.independentAsrFallback') : 'Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.',
+                                        5000
+                                    );
+                                }
+                            }
                         }
                         return;
                     }

@@ -86,6 +86,49 @@ def test_voice_lifecycle_status_is_validated_and_exposed_to_ui():
     assert "data-voice-input-state" in source
 
 
+def test_lifecycle_blocked_clears_independent_asr_and_shows_failure_toast():
+    # runtime.py _handle_independent_asr_error always broadcasts lifecycle
+    # BLOCKED before the fatal status code, and most fatal codes
+    # (ASR_ENDPOINTING_FAILED, ASR_BLOCKED_ENDPOINTING,
+    # ASR_AUDIO_ORDERING_FAILED, ASR_PROVIDER_FINAL_TIMEOUT, provider codes)
+    # do NOT carry the ASR_INDEPENDENT_ prefix. The failure teardown must
+    # therefore hang off the BLOCKED lifecycle notification, not off a
+    # fatal-code enumeration.
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    lifecycle_block = source.split("if (statusCode === 'ASR_LIFECYCLE_STATE')", 1)[1].split(
+        "if (statusCode === 'VOICE_INPUT_LEASE_RESYNC_REQUIRED')",
+        1,
+    )[0]
+
+    # BLOCKED teardown lives inside the validated-state branch.
+    assert "if (lifecycleState === 'blocked')" in lifecycle_block
+    assert lifecycle_block.index("allowedLifecycleStates.indexOf(lifecycleState)") < lifecycle_block.index(
+        "if (lifecycleState === 'blocked')"
+    )
+
+    blocked_branch = lifecycle_block.split("if (lifecycleState === 'blocked')", 1)[1]
+    assert "removeExternalAsrPreview();" in blocked_branch
+    assert "S.independentAsrActive = false;" in blocked_branch
+    assert blocked_branch.index("removeExternalAsrPreview();") < blocked_branch.index(
+        "S.independentAsrActive = false;"
+    )
+    assert "microphone.independentAsrFallback" in blocked_branch
+
+    # Cross-reference comment so backend changes to the failure path get
+    # traced back here.
+    assert "_handle_independent_asr_error" in lifecycle_block
+
+    # Start-path failures never emit BLOCKED; the per-code toasts in the
+    # ASR_INDEPENDENT_ prefix branch must survive.
+    prefix_block = source.split(
+        "if (statusCode && statusCode.indexOf('ASR_INDEPENDENT_') === 0)",
+        1,
+    )[1].split("if (statusCode === 'TTS_CONNECTION_FAILED')", 1)[0]
+    assert "microphone.independentAsrProviderUnavailable" in prefix_block
+    assert "microphone.independentAsrFallback" in prefix_block
+
+
 def test_lease_resync_status_resends_snapshot_only_from_capturing_window():
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
     capture_source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
