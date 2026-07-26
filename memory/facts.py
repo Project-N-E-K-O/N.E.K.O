@@ -732,6 +732,33 @@ class FactStore:
                 # 文本本身是退化的口水句，去重已无意义）。
                 is_dup = False
                 raw_limit = 10
+                archived_by_id: dict | None = None
+
+                async def _aarchived_by_id() -> dict:
+                    # 惰性读 facts_archive.json（仅当 FTS 命中不在活跃集时）：
+                    # 归档行仍在 FTS 索引里，但 facts_by_id 只含活跃行——
+                    # 不解析归档元数据的话，归档后的同文本会绕过去重
+                    # （legacy 在 main 上本来是挡得住的，属回归；scoped
+                    # 需要 subject 戳判界）。
+                    nonlocal archived_by_id
+                    if archived_by_id is None:
+                        def _read() -> dict:
+                            path = self._facts_archive_path(lanlan_name)
+                            if os.path.exists(path):
+                                try:
+                                    with open(path, encoding='utf-8') as fh:
+                                        data = json.load(fh)
+                                    if isinstance(data, list):
+                                        return {
+                                            r.get('id'): r for r in data
+                                            if isinstance(r, dict)
+                                        }
+                                except (json.JSONDecodeError, OSError):
+                                    pass
+                            return {}
+                        archived_by_id = await asyncio.to_thread(_read)
+                    return archived_by_id
+
                 while True:
                     similar = await self._time_indexed.asearch_facts(
                         lanlan_name, text, raw_limit,
@@ -739,7 +766,9 @@ class FactStore:
                     same_subject_seen = 0
                     for fid, score in similar:
                         hit = facts_by_id.get(fid)
-                        if not entry_matches_subject(hit or {}, memory_subject):
+                        if hit is None:
+                            hit = (await _aarchived_by_id()).get(fid)
+                        if hit is None or not entry_matches_subject(hit, memory_subject):
                             continue
                         same_subject_seen += 1
                         if same_subject_seen > 3:
@@ -1385,6 +1414,18 @@ class FactStore:
             raise FactExtractionFailed(
                 f"Stage-1 LLM call failed for {lanlan_name!r} (fail_closed caller)"
             )
+        if fail_closed and isinstance(extracted, list) and extracted:
+            # 非空但全是畸形元素（如字符串数组）：persist 会逐条跳过、返回
+            # []，调用方误当"确认为空"推进游标——按可重试失败处理（对齐
+            # daily import 的 malformed 语义）。
+            if not any(
+                isinstance(f, dict) and str(f.get('text') or '').strip()
+                for f in extracted
+            ):
+                raise FactExtractionFailed(
+                    f"Stage-1 returned {len(extracted)} malformed fact "
+                    f"entries for {lanlan_name!r} (fail_closed caller)"
+                )
         if not extracted:
             return []
         return await self._apersist_new_facts(

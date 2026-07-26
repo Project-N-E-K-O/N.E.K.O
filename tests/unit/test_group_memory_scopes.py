@@ -1359,6 +1359,37 @@ async def test_fts_dedup_window_not_crowded_by_scoped_rows():
 
 
 @pytest.mark.asyncio
+async def test_fts_dedup_sees_archived_rows(tmp_path):
+    """Archived facts stay in the FTS index but leave the active map: the
+    subject check must resolve them from the archive, or an identical scoped
+    fact repeated after archival re-enters the store (and legacy dedup
+    regresses vs main, which never needed the lookup)."""
+    import json as _json
+
+    index = _FakeTimeIndexed()
+    harness = _PersistHarness(index)
+    group = MemorySubject.group_chat("qq", "100")
+    archived = [{
+        "id": "arch1", "text": "群规是不剧透", **group.as_entry_fields(),
+    }]
+    arch_path = tmp_path / "facts_archive.json"
+    arch_path.write_text(
+        _json.dumps(archived, ensure_ascii=False), encoding="utf-8",
+    )
+    index.hits = [("arch1", -10.0)]
+
+    with patch.object(
+        harness, "_facts_archive_path", return_value=str(arch_path),
+    ):
+        duplicate = await harness._apersist_new_facts(
+            "Neko",
+            [{"text": "群规是不能剧透", "importance": 7, "entity": "group_chat"}],
+            subject=group, semantic_dedup=True,
+        )
+    assert duplicate == []
+
+
+@pytest.mark.asyncio
 async def test_fts_dedup_escalates_past_crowded_first_window():
     """Subject fan-out can fill the entire first FTS window (10 rows) with
     cross-subject hits; the dedup must escalate the window once so a legacy
@@ -1532,6 +1563,17 @@ async def test_extract_facts_fail_closed_raises_on_terminal_failure(tmp_path):
         fs._allm_call_with_retries = _malformed
         with pytest.raises(FactExtractionFailed):
             await fs.extract_facts([msg], "Neko", fail_closed=True)
+
+        # A NON-EMPTY array of malformed elements (e.g. bare strings) would
+        # be silently skipped by persist and read as a genuine empty
+        # extraction — fail_closed must reject it as retryable too.
+        async def _malformed_items(prompt, lanlan_name, **kwargs):
+            return ["Alice likes tea"]
+
+        fs._allm_call_with_retries = _malformed_items
+        with pytest.raises(FactExtractionFailed):
+            await fs.extract_facts([msg], "Neko", fail_closed=True)
+        assert await fs.extract_facts([msg], "Neko") == []
 
 
 @pytest.mark.asyncio

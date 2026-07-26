@@ -2912,6 +2912,21 @@ def get_scoped_persona_section_header(
         return subject_id
     return _loc(table, lang).format(subject_id=subject_id)
 
+GROUP_DIGEST_SPEAKER_LABEL = {
+    "zh": "群聊成员们（每条消息开头标注了实际发言人）",
+    "en": "the group members (the actual speaker is named at the start of each message)",
+    "ja": "グループのメンバーたち（各メッセージの冒頭に実際の発言者が記載）",
+    "ko": "그룹 멤버들 (각 메시지 시작 부분에 실제 발언자가 표기됨)",
+    "ru": "участники группы (в начале каждого сообщения указан реальный автор)",
+    "es": "los miembros del grupo (el hablante real se indica al inicio de cada mensaje)",
+    "pt": "os membros do grupo (o falante real é indicado no início de cada mensagem)",
+}
+
+
+def get_group_digest_speaker_label(lang: str = "zh") -> str:
+    return _loc(GROUP_DIGEST_SPEAKER_LABEL, lang)
+
+
 # ---------- persona_correction_prompt → i18n dict ----------
 
 PERSONA_CORRECTION_PROMPT = {

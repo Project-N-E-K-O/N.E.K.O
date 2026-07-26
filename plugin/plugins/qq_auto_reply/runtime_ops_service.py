@@ -62,6 +62,18 @@ class QQRuntimeOpsService:
             await self.plugin.attention_service.stop_decay_loop()
         if self.plugin.attention_gate_service:
             await self.plugin.attention_gate_service.stop_proactive_loop()
+        housekeeping = getattr(self.plugin, "_session_housekeeping_task", None)
+        if housekeeping:
+            # housekeeping 循环可能正处在 idle finalize 内：先取消并等它
+            # 退出，否则下面判定无 straggler、清锁表后，旧 finalizer 会与
+            # 重启后的新 handler 各持一把锁并发改写同一会话。被打断的
+            # settle 走 fail-closed（缓冲保留、下次重试）。
+            housekeeping.cancel()
+            try:
+                await housekeeping
+            except asyncio.CancelledError:
+                pass
+            self.plugin._session_housekeeping_task = None
         if self.plugin._message_task:
             self.plugin._message_task.cancel()
             try:

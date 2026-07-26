@@ -830,6 +830,14 @@ async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             detail="speaker_label must contain at most 64 characters",
         )
     subject = req.subject.to_domain()
+    if speaker_label is None and subject.kind == "group_chat":
+        # 群 digest 无单一发言人：不给 label 时 legacy prompt 会把提取
+        # 框定为"只找关于私聊主人的事实"，成员自述被当空提取 checkpoint
+        # 掉。用集体描述符重定 {MASTER_NAME} 槽位，配合内容里每条消息的
+        # 发言人头。
+        from config.prompts.prompts_memory import get_group_digest_speaker_label
+        from utils.language_utils import get_global_language
+        speaker_label = get_group_digest_speaker_label(get_global_language())
     from memory.facts import FactExtractionFailed
 
     # fail_closed：调用方（QQ 插件 finalize/focus-shift）在成功响应后会推进
