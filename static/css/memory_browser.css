@@ -1764,23 +1764,12 @@ html.neko-window-maximized .chat-item + .chat-item::before {
     flex-shrink: 0;
     display: flex;
     align-items: center;
-}
-
-/* 备忘录（system）那一条是整行铺满的编辑区，删除按钮仍旧顶到行尾；
- * 对话轮次则跟着气泡走——否则短消息的删除按钮会被甩到一屏之外，
- * 既难对应也容易点错行。 */
-.chat-item[data-role="system"] .delete-btn-wrapper {
     margin-left: auto;
 }
 
-/* 对齐到气泡而不是「说话人 + 气泡 + 时间」整块的中线——否则按钮会浮在说话人
- * 标签那一行的右边，看起来像属于名字而不是属于消息。
- * 偏移 = 说话人行高 18px + 其下间距 4px + (气泡单行高 38px - 按钮高 28px) / 2。
- * 多行气泡时按钮停在气泡顶部，与常见的行内操作位置一致。 */
 .chat-item[data-role="ai"] .delete-btn-wrapper,
 .chat-item[data-role="human"] .delete-btn-wrapper {
-    align-self: flex-start;
-    margin-top: 27px;
+    align-self: center;
 }
 
 .delete-btn {
