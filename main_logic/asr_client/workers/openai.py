@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -37,6 +38,12 @@ _OPENAI_PREFIX_PADDING_MS = 300
 _OPENAI_SILENCE_DURATION_MS = 1_000
 _CLOSE_TIMEOUT_SECONDS = 0.5
 _CLEAR_TIMEOUT_SECONDS = 3.0
+# Server VAD publishes speech_stopped/committed as the logical endpoint of a
+# turn, but the transcription completed event may be delayed or never arrive.
+# An item that outlives this deadline after its endpoint is completed with an
+# empty final so the upstream utterance lifecycle converges instead of waiting
+# unboundedly. Mirrors the Step worker's stalled pending-turn deadline.
+_OPENAI_STALLED_ITEM_TIMEOUT_SECONDS = 30.0
 
 _UtteranceKey = tuple[int, int, int]
 
@@ -102,10 +109,13 @@ async def openai_asr_worker(
     clear_applied.set()
     receiver_task: asyncio.Task[None] | None = None
     sender_task: asyncio.Task[None] | None = None
+    stalled_watch_task: asyncio.Task[None] | None = None
     websocket = None
 
     item_keys: dict[str, _UtteranceKey] = {}
     partial_transcripts: dict[str, str] = {}
+    item_deadlines: dict[str, float] = {}
+    stalled_deadline_armed = asyncio.Event()
     current_buffer_epoch = 0
     next_utterance_id = 1
     resampler = soxr.ResampleStream(
@@ -162,11 +172,17 @@ async def openai_asr_worker(
         key = item_keys.pop(item_id, None) if completed else item_keys.get(item_id)
         if completed:
             partial_transcripts.pop(item_id, None)
+            item_deadlines.pop(item_id, None)
         if key is None:
-            # Unknown IDs belong to a cleared route epoch or a duplicate final.
+            # Unknown IDs belong to a cleared route epoch, a duplicate final,
+            # or an item already expired by the stalled-item deadline.
             return
         generation, buffer_epoch, utterance_id = key
         if event_type == "conversation.item.input_audio_transcription.delta":
+            if item_id in item_deadlines:
+                # Streaming deltas prove the transcription is alive; push the
+                # stalled-item deadline forward instead of expiring mid-stream.
+                item_deadlines[item_id] = time.monotonic()
             delta = event.get("delta", "")
             if isinstance(delta, str) and delta:
                 text = partial_transcripts.get(item_id, "") + delta
@@ -217,6 +233,55 @@ async def openai_asr_worker(
             )
         )
         return key
+
+    def _arm_stalled_item_deadline(item_id: object) -> None:
+        if not isinstance(item_id, str) or not item_id:
+            return
+        if item_id in item_keys and item_id not in item_deadlines:
+            item_deadlines[item_id] = time.monotonic()
+            stalled_deadline_armed.set()
+
+    async def _expire_stalled_items() -> None:
+        now = time.monotonic()
+        expired_ids = [
+            item_id
+            for item_id, armed_at in item_deadlines.items()
+            if now - armed_at >= _OPENAI_STALLED_ITEM_TIMEOUT_SECONDS
+        ]
+        for item_id in expired_ids:
+            del item_deadlines[item_id]
+            partial_transcripts.pop(item_id, None)
+            key = item_keys.pop(item_id, None)
+            if key is None:
+                continue
+            await response_queue.put(
+                _AsrWorkerEvent(
+                    kind="final",
+                    generation=key[0],
+                    buffer_epoch=key[1],
+                    utterance_id=key[2],
+                    text="",
+                )
+            )
+
+    async def _watch_stalled_items() -> None:
+        # Runs beside the receiver because the receiver blocks on provider
+        # frames; a provider that goes silent after server VAD reported the
+        # end of speech would otherwise never trigger the sweep, leaving the
+        # upstream turn open unboundedly.
+        while True:
+            if not item_deadlines:
+                await stalled_deadline_armed.wait()
+                stalled_deadline_armed.clear()
+                continue
+            earliest = min(item_deadlines.values())
+            remaining = (
+                earliest + _OPENAI_STALLED_ITEM_TIMEOUT_SECONDS - time.monotonic()
+            )
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+                continue
+            await _expire_stalled_items()
 
     def _accepted_session_capabilities(event: dict[str, Any]) -> tuple[object, object]:
         session = event.get("session")
@@ -296,10 +361,15 @@ async def openai_asr_worker(
                     await _ensure_item_key(event.get("item_id"))
                     continue
                 if event_type == "input_audio_buffer.speech_stopped":
-                    # Session publishes the logical endpoint immediately before final.
+                    # Server VAD sealed the turn; the transcription final is
+                    # still outstanding. Arm the stalled-item deadline so a
+                    # delayed or missing completed event cannot leave the
+                    # upstream turn open unboundedly.
+                    _arm_stalled_item_deadline(event.get("item_id"))
                     continue
                 if event_type == "input_audio_buffer.committed":
                     await _ensure_item_key(event.get("item_id"))
+                    _arm_stalled_item_deadline(event.get("item_id"))
                     continue
                 if event_type == "input_audio_buffer.cleared":
                     clear_acknowledged.set()
@@ -324,6 +394,7 @@ async def openai_asr_worker(
                         return
                     item_key = item_keys.pop(item_id, None)
                     partial_transcripts.pop(item_id, None)
+                    item_deadlines.pop(item_id, None)
                     if item_key is None:
                         # A cleared epoch may still deliver a late failure.
                         continue
@@ -404,6 +475,7 @@ async def openai_asr_worker(
                 if request.kind == "clear":
                     item_keys.clear()
                     partial_transcripts.clear()
+                    item_deadlines.clear()
                     clear_acknowledged.clear()
                     clear_applied.clear()
                     await websocket.send(
@@ -429,6 +501,7 @@ async def openai_asr_worker(
                     next_utterance_id = request.utterance_id or next_utterance_id
                     item_keys.clear()
                     partial_transcripts.clear()
+                    item_deadlines.clear()
                     resampler.clear()
                     resampler = soxr.ResampleStream(
                         16_000,
@@ -522,14 +595,20 @@ async def openai_asr_worker(
 
         await ready_wait_task
         sender_task = asyncio.create_task(_send_requests(), name="openai-asr-sender")
+        stalled_watch_task = asyncio.create_task(
+            _watch_stalled_items(), name="openai-asr-stalled-watch"
+        )
         done, pending = await asyncio.wait(
-            {sender_task, receiver_task},
+            {sender_task, receiver_task, stalled_watch_task},
             return_when=asyncio.FIRST_COMPLETED,
         )
         for task in done:
             await task
         if pending:
             if shutdown_requested.is_set():
+                # The stalled-item watchdog never finishes on its own; a
+                # graceful shutdown must cancel it while the receiver drains.
+                stalled_watch_task.cancel()
                 await asyncio.gather(*pending, return_exceptions=True)
             else:
                 for task in pending:
@@ -557,10 +636,14 @@ async def openai_asr_worker(
         )
     finally:
         shutdown_requested.set()
-        for task in (sender_task, receiver_task):
+        for task in (sender_task, receiver_task, stalled_watch_task):
             if task is not None and not task.done():
                 task.cancel()
-        tasks = [task for task in (sender_task, receiver_task) if task is not None]
+        tasks = [
+            task
+            for task in (sender_task, receiver_task, stalled_watch_task)
+            if task is not None
+        ]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         if websocket is not None:

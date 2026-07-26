@@ -1397,6 +1397,85 @@ async def test_openai_completed_without_transcript_emits_empty_final(
     await _stop_worker(task, requests, responses, utterance_id=2)
 
 
+async def test_openai_speech_stopped_without_completed_expires_empty_final(
+    monkeypatch,
+) -> None:
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        assert isinstance(payload, str)
+        message = json.loads(payload)
+        if message["type"] == "session.update":
+            await ws.server_send(
+                {"type": "session.updated", "session": message["session"]}
+            )
+
+    websocket = _FakeWebSocket(on_send=on_send)
+    monkeypatch.setattr(openai.websockets, "connect", _FakeConnector(websocket))
+    monkeypatch.setattr(openai, "_OPENAI_STALLED_ITEM_TIMEOUT_SECONDS", 0.2)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        openai.openai_asr_worker(
+            requests,
+            responses,
+            "openai-key",
+            AsrSessionConfig(endpointing_mode="provider"),
+        )
+    )
+    await _next_event(responses, "ready")
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_started", "item_id": "openai-stalled"}
+    )
+    started = await _next_event(responses, "utterance_started")
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_stopped", "item_id": "openai-stalled"}
+    )
+    await websocket.server_send(
+        {"type": "input_audio_buffer.committed", "item_id": "openai-stalled"}
+    )
+
+    # Server VAD sealed the turn but the transcription completed event never
+    # arrives: the stalled-item deadline must close the turn with an empty
+    # final instead of leaving the upstream session waiting unboundedly.
+    expired = await _next_event(responses, "final")
+    assert expired.text == ""
+    assert expired.utterance_id == started.utterance_id
+
+    # A late completed event for the expired item must not resurrect it.
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "openai-stalled",
+            "transcript": "late text",
+        }
+    )
+
+    # The session keeps transcribing: a following turn whose completed event
+    # arrives before the deadline is delivered unchanged.
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_started", "item_id": "openai-next"}
+    )
+    next_started = await _next_event(responses, "utterance_started")
+    assert next_started.utterance_id != started.utterance_id
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_stopped", "item_id": "openai-next"}
+    )
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "openai-next",
+            "transcript": "next turn",
+        }
+    )
+    final = await _next_event(responses, "final")
+    assert final.text == "next turn"
+    assert final.utterance_id == next_started.utterance_id
+
+    # A disarmed deadline must not fire a duplicate empty final later.
+    await asyncio.sleep(0.5)
+    assert responses.empty()
+    await _stop_worker(task, requests, responses)
+
+
 async def test_openai_transcription_failure_terminates_item_and_worker(
     monkeypatch,
 ) -> None:
@@ -3113,6 +3192,59 @@ async def test_soniox_reconnects_once_and_replays_current_audio(monkeypatch) -> 
     )
     assert (await _next_event(responses, "utterance_started")).generation == 4
     assert (await _next_event(responses, "final")).text == "replayed"
+    await _stop_worker(task, requests, responses, generation=4, buffer_epoch=5)
+
+
+async def test_soniox_reconnect_replays_frame_cancelled_mid_send(monkeypatch) -> None:
+    send_suspended = asyncio.Event()
+
+    class BlockingAudioWebSocket(_FakeWebSocket):
+        async def send(self, payload: str | bytes) -> None:
+            if isinstance(payload, bytes) and payload:
+                # Suspend the sender inside connection.send() forever so the
+                # receiver-detected disconnect cancels it mid-flight.
+                send_suspended.set()
+                await asyncio.Event().wait()
+            await super().send(payload)
+
+    first = BlockingAudioWebSocket()
+    second = _FakeWebSocket()
+    connector = _FakeConnector(first, second)
+    monkeypatch.setattr(soniox.websockets, "connect", connector)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        soniox.soniox_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+        )
+    )
+    await _next_event(responses, "ready")
+    pcm = b"\x20\x10" * 320
+    await requests.put(
+        _AsrWorkerRequest(
+            kind="audio", generation=4, buffer_epoch=5, utterance_id=1, audio=pcm
+        )
+    )
+    await asyncio.wait_for(send_suspended.wait(), 1)
+    await first.server_end()
+
+    # The dequeued frame whose send() was cancelled mid-flight must survive
+    # into the reconnect replay buffer instead of being silently dropped.
+    await _wait_until(lambda: len(connector.calls) == 2)
+    await _wait_until(lambda: pcm in second.sent)
+    assert second.sent[1] == pcm
+    await second.server_send(
+        {
+            "tokens": [
+                {"text": "recovered", "is_final": True},
+                {"text": "<end>", "is_final": True},
+            ]
+        }
+    )
+    assert (await _next_event(responses, "final")).text == "recovered"
     await _stop_worker(task, requests, responses, generation=4, buffer_epoch=5)
 
 

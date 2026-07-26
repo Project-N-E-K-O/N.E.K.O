@@ -553,10 +553,12 @@ async def soniox_asr_worker(
                     if request.audio:
                         if state.first_audio_at is None:
                             state.first_audio_at = time.monotonic()
-                        await connection.send(request.audio)
-                        audio_frame_count += 1
-                        audio_bytes_sent += len(request.audio)
-                        provider_wire_audio_bytes += len(request.audio)
+                        # Record replay and wire bookkeeping before send() can
+                        # suspend: a receiver-driven cancellation mid-send must
+                        # keep the in-flight frame in the reconnect replay
+                        # buffer, and a cancelled first frame may have reached
+                        # the wire, so it must not classify as pre-audio under
+                        # the preconnect_only replay policy.
                         if replay_complete:
                             if (
                                 len(replay_audio) + len(request.audio)
@@ -566,6 +568,10 @@ async def soniox_asr_worker(
                             else:
                                 replay_complete = False
                                 replay_audio.clear()
+                        provider_wire_audio_bytes += len(request.audio)
+                        await connection.send(request.audio)
+                        audio_frame_count += 1
+                        audio_bytes_sent += len(request.audio)
                     continue
                 if request.kind == "commit":
                     if config.endpointing_mode != "manual":
