@@ -106,9 +106,15 @@ class QQSessionRuntimeService:
         # 销毁唯一副本。集中在这里做，prompt 变更/登录身份变化/超时等所有
         # discard 入口统一受益；ephemeral（memory_enabled falsy）自然跳过；
         # finalize 成功会自己弹出会话，下面的 pop 变成无害 no-op。
+        # pending_disable_settle 也算：OFF 盖章后新轮 prime 会按实时配置把
+        # flag 打成 False，但 cutoff 前的已授权缓冲还在等排队的 OFF 结算——
+        # 此刻 pop+close 会销毁唯一副本。放行后 finalize 因 flag False 返回
+        # False，走下面的保留分支，会话留给转变任务按 cutoff 结算。
         peek = self.plugin._user_sessions.get(session_key)
         finalized = False
-        if peek and peek.get("memory_enabled"):
+        if peek and (
+            peek.get("memory_enabled") or peek.get("pending_disable_settle")
+        ):
             try:
                 finalized = await self.plugin.session_memory_service.finalize_user_memory_session(
                     session_key, reason=f"discard:{reason}",

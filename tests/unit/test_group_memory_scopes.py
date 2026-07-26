@@ -769,6 +769,19 @@ def test_qq_group_member_turns_are_opt_in_and_actor_attributed():
         ),
     )
     assert "8888" not in user_data["group_member_memory_messages"]
+    # Retroactive review turns are built at review time: the consent
+    # snapshot cannot see the utterance-time policy (the original message
+    # may date from an opted-out era) and the text is synthetic framing.
+    service.record_group_member_turn(
+        user_data,
+        SimpleNamespace(
+            is_group=True, sender_id="7777",
+            message="[回溯补回] Bob 之前说：旧消息",
+            group_scene_mode="shared_context", group_facing=False,
+            source_kind="retroactive_review", member_memory_enabled=True,
+        ),
+    )
+    assert "7777" not in user_data["group_member_memory_messages"]
 
 
 def test_entry_missing_scope_fails_closed():
@@ -1777,6 +1790,122 @@ async def test_group_turns_always_refresh_session_prompt():
 
 
 @pytest.mark.asyncio
+async def test_enable_rebase_consumes_dead_cutoff_and_keeps_cursor_monotonic():
+    """The ON rebase must (a) pop a cutoff left behind by a failed OFF
+    settle — otherwise every later finalize truncates history at the dead
+    boundary, the overflow clamp regresses the cursor to it, and the empty
+    slice 'succeeds' into pop+close, destroying unsettled new-era rows —
+    and (b) never move the digest cursor backwards: a focus-shift digest
+    may already have pushed post-reenable rows and advanced past the
+    boundary; overwriting would settle those rows twice."""
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    history = [SimpleNamespace(type="human", content=f"m{i}") for i in range(8)]
+    user_data = {
+        "memory_enabled": False,
+        "is_group": True,
+        "group_id": "7788",
+        "her_name": "Neko",
+        "session": SimpleNamespace(_conversation_history=history, close=AsyncMock()),
+        "pending_enable_rebase": 4,
+        "group_opt_out_cutoff": 2,
+        "last_group_digest_index": 6,
+    }
+
+    async def _run_with_session_lock(session_key, fn):
+        return await fn()
+
+    bridge = MagicMock()
+    bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
+    plugin = SimpleNamespace(
+        _user_sessions={"group:7788": user_data},
+        _qq_settings={},
+        _run_with_session_lock=_run_with_session_lock,
+        memory_bridge=bridge,
+        logger=MagicMock(),
+    )
+    service = QQSessionMemoryService(plugin)
+
+    await service.invalidate_group_sessions(enabled=True)
+    assert "group_opt_out_cutoff" not in user_data
+    assert user_data["last_group_digest_index"] == 6
+    assert user_data["memory_enabled"] is True
+    bridge.post_scoped_memory_history.assert_not_awaited()
+
+    # Normal direction still rebases forward past the opt-out era.
+    user_data["pending_enable_rebase"] = 4
+    user_data["last_group_digest_index"] = 1
+    user_data["memory_enabled"] = False
+    await service.invalidate_group_sessions(enabled=True)
+    assert user_data["last_group_digest_index"] == 4
+
+
+@pytest.mark.asyncio
+async def test_retain_settle_pops_only_the_cutoff_it_consumed():
+    """The batched retain-settle can run for minutes; a second OFF stamp
+    landing mid-flight overwrites the cutoff. The retain block must not
+    delete that newer, unconsumed cutoff — the queued second OFF settlement
+    still needs it as its opt-out fence."""
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    def _mk(plugin_holder, key):
+        history = [
+            SimpleNamespace(type="human", content=f"m{i}") for i in range(4)
+        ]
+        return {
+            "memory_enabled": True,
+            "is_group": True,
+            "group_id": key,
+            "her_name": "Neko",
+            "session": SimpleNamespace(
+                _conversation_history=history, close=AsyncMock(),
+            ),
+            "last_group_digest_index": 0,
+            "group_opt_out_cutoff": 2,
+        }
+
+    bridge = MagicMock()
+    bridge.group_subject.side_effect = (
+        lambda gid: {"subject_kind": "group_chat", "subject_id": f"qq:{gid}"}
+    )
+    plugin = SimpleNamespace(
+        _user_sessions={},
+        _qq_settings={},
+        memory_bridge=bridge,
+        logger=MagicMock(),
+    )
+    service = QQSessionMemoryService(plugin)
+    ud_raced = _mk(plugin, "g1")
+    ud_clean = _mk(plugin, "g2")
+    plugin._user_sessions["group:g1"] = ud_raced
+    plugin._user_sessions["group:g2"] = ud_clean
+
+    async def _post_and_restamp(*args, **kwargs):
+        # Simulate OFF#2 stamping a fresh cutoff while the settle is on the
+        # wire.
+        ud_raced["group_opt_out_cutoff"] = 3
+        return {"status": "ok"}
+
+    bridge.post_scoped_memory_history = AsyncMock(side_effect=_post_and_restamp)
+    assert await service.finalize_user_memory_session(
+        "group:g1", reason="test", retain_session=True,
+    ) is True
+    assert plugin._user_sessions.get("group:g1") is ud_raced
+    assert ud_raced["group_opt_out_cutoff"] == 3
+
+    bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
+    assert await service.finalize_user_memory_session(
+        "group:g2", reason="test", retain_session=True,
+    ) is True
+    assert plugin._user_sessions.get("group:g2") is ud_clean
+    assert "group_opt_out_cutoff" not in ud_clean
+
+
+@pytest.mark.asyncio
 async def test_group_memory_toggle_syncs_existing_sessions():
     """Flipping group_memory_enabled must reach already-open group sessions:
     ON->OFF fail-closes a session whose settle fails (no later flush can
@@ -1853,11 +1982,12 @@ async def test_group_memory_toggle_syncs_existing_sessions():
     user_data["pending_enable_rebase"] = 1
     await service.invalidate_group_sessions(enabled=True)
     assert user_data["last_group_digest_index"] == 1
-    # Corrupt negative boundary clamps to 0, never a negative cursor.
+    # Corrupt negative boundary clamps to 0 and the cursor stays monotonic:
+    # never negative, never regressed below its current position.
     user_data["pending_enable_rebase"] = -5
     user_data.pop("nonconsent_history_end", None)
     await service.invalidate_group_sessions(enabled=True)
-    assert user_data["last_group_digest_index"] == 0
+    assert user_data["last_group_digest_index"] == 1
 
     # A non-consented turn still in flight at the enable stamp finishes
     # AFTER the boundary: its recorded end wins (privacy over完整性).
@@ -2397,6 +2527,24 @@ async def test_discard_session_salvages_group_buffers_first():
     ) is True
     leak_session.close.assert_awaited_once()
 
+    # A queued OFF settlement (pending_disable_settle) protects the buffers
+    # even when a later turn primed memory_enabled=False from the live
+    # setting: the salvage path must run, and — finalize declining on the
+    # False flag — keep the session for the transition task to settle.
+    plugin.session_memory_service = SimpleNamespace(
+        finalize_user_memory_session=_finalize_fail,
+    )
+    stamped = {
+        "is_group": True, "memory_enabled": False,
+        "pending_disable_settle": True,
+        "session": SimpleNamespace(close=AsyncMock()),
+    }
+    plugin._user_sessions["group:11"] = stamped
+    assert await runtime.discard_session(
+        "group:11", reason="prompt_override_changed",
+    ) is False
+    assert plugin._user_sessions.get("group:11") is stamped
+
     # Kept sessions report False so callers (login-change bootstrap) must
     # not overwrite the key and destroy the preserved buffers.
     plugin.session_memory_service = SimpleNamespace(
@@ -2555,6 +2703,17 @@ async def test_focus_shift_digest_batches_never_skip_backlog():
     await gate._push_group_digest("7788")
     assert bridge.post_scoped_memory_history.await_count == 3
     assert user_data["last_group_digest_index"] == 9
+
+    # Enable-rebase limbo: after a retained OFF settle the cursor still sits
+    # before the opt-out gap until the queued ON task rebases it — pushing
+    # here would lean on the nonconsent floor alone. Nothing is sent.
+    user_data["last_group_digest_index"] = 0
+    user_data["pending_enable_rebase"] = 5
+    bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
+    await gate._push_group_digest("7788")
+    bridge.post_scoped_memory_history.assert_not_awaited()
+    assert user_data["last_group_digest_index"] == 0
+    user_data.pop("pending_enable_rebase", None)
 
 
 @pytest.mark.asyncio

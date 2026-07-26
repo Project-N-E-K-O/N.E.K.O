@@ -521,6 +521,11 @@ class QQAttentionGateService:
                     # opt-out 结算未完成（快速 re-enable 会让上面的 setting
                     # 检查重新通过）：digest 不碰，交转变任务按 cutoff 结算。
                     return 0
+                if s.get("pending_enable_rebase") is not None:
+                    # retain 结算后、ON rebase 前的 limbo：游标还停在
+                    # opt-out 区间之前，此处推送只剩 nonconsent floor 一道
+                    # 防线兜着未授权行。交 rebase 任务先把游标规整过界。
+                    return 0
                 session = s.get("session")
                 if not session or not hasattr(session, "_conversation_history"):
                     return 0

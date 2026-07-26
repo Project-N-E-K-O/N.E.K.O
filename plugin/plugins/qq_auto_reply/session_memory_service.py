@@ -146,10 +146,14 @@ class QQSessionMemoryService:
             or getattr(context, "group_scene_mode", "") == "group_collective"
             or getattr(context, "source_kind", "") in (
                 "proactive_speech", "rapid_fire_flush", "buffer_delayed",
+                "retroactive_review",
             )
         ):
             # 群体面向/合成轮（proactive 的"[系统]…"控制指令等）不是成员
             # 发言——按 sender 入 bucket 会把捏造的偏好挂到该成员 scope。
+            # retroactive_review 的 context 在回看时刻构建，快照看不到
+            # 发言时刻的 member 政策（原话可能出自 OFF 时代），且其文本
+            # 是"[回溯补回]…"合成包装——同样不入 bucket。
             return
         sender_id = str(getattr(context, "sender_id", "") or "").strip()
         text = str(getattr(context, "message", "") or "").strip()
@@ -313,12 +317,14 @@ class QQSessionMemoryService:
             self.plugin._user_sessions.pop(session_key, None)
             return False
 
+        consumed_cutoff = None
         try:
             conversation_history = getattr(session, "_conversation_history", []) or []
             if user_data.get("is_group"):
                 # get 而非 pop：finalize 失败时 cutoff 必须留存，重试仍
                 # 以 opt-out 时刻为界；成功路径整个 user_data 被弹出作废。
                 cutoff = user_data.get("group_opt_out_cutoff", None)
+                consumed_cutoff = cutoff
                 if cutoff is not None:
                     # opt-out 截止点：只结算策略翻 OFF 时刻之前的历史，
                     # 竞态窗口内追加的轮次绝不入库。
@@ -442,7 +448,11 @@ class QQSessionMemoryService:
             # 完毕后保留会话，pop+close 会把 ON 之后追加的已授权轮次连带
             # 销毁（共享上下文与群记忆双双丢失）。cutoff 已随本次结算消费
             # 完毕，留着会让后续 finalize 永远截断在旧时代边界。
-            user_data.pop("group_opt_out_cutoff", None)
+            # compare-and-pop：分批结算窗口长达数分钟，期间第二次 OFF 盖章
+            # 会覆写 cutoff——那个更新的 cutoff 本次并未消费，删掉它会让
+            # 排队中的第二个 OFF 结算失去 opt-out 围栏。
+            if user_data.get("group_opt_out_cutoff") == consumed_cutoff:
+                user_data.pop("group_opt_out_cutoff", None)
             return True
         self.plugin._user_sessions.pop(session_key, None)
         try:
@@ -488,8 +498,21 @@ class QQSessionMemoryService:
                         int(boundary),
                         int(current.get("nonconsent_history_end", 0) or 0),
                     )
+                    # 死 cutoff 不得跨时代存活：OFF 结算失败（fail-closed）
+                    # 会留下 cutoff。rebase 之后它会让后续 finalize 把历史
+                    # 截断在旧时代边界、越界钳制再把游标回退到 cutoff——
+                    # 空片"成功"后 pop+close，新时代行未结算即被销毁。旧
+                    # 时代已按 fail-closed 处理完毕，这里消费掉。
+                    current.pop("group_opt_out_cutoff", None)
+                    # 游标只前进不覆写回退：retain 结算到 rebase 之间的
+                    # 窗口里，焦点 digest 可能已把新时代行推送入库并推进
+                    # 游标——回退会让那些行被下一次 finalize 重复结算。
                     current["last_group_digest_index"] = min(
-                        max(0, boundary), len(history),
+                        max(
+                            int(current.get("last_group_digest_index", 0) or 0),
+                            boundary,
+                        ),
+                        len(history),
                     )
                     current["memory_enabled"] = True
                     return
