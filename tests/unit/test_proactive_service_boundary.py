@@ -27,6 +27,7 @@ from main_logic.proactive_chat import (
     state,
 )
 from main_routers import system_router as system_router_facade
+from main_routers.system_router import break_reminders as break_reminder_adapter
 from main_routers.system_router import proactive_chat_flow
 
 _CHARACTER_DATA = (
@@ -104,6 +105,42 @@ def test_all_break_reminder_branches_consume_repeat_suppression() -> None:
     source = inspect.getsource(service.handle_proactive_chat)
     assert source.count("if reminder_delivery.repeat_suppressed:") == 3
     assert source.count("_consume_repeat_suppressed_break_reminder(") == 3
+
+
+@pytest.mark.asyncio
+async def test_break_reminder_router_adapter_preserves_tuple_contract(
+    monkeypatch,
+) -> None:
+    domain_delivery = AsyncMock(
+        return_value=break_reminders.BreakReminderDeliveryResult(
+            delivered_text="起来活动一下吧。",
+            proactive_sid="break-sid",
+            repeat_suppressed=True,
+        )
+    )
+    config_manager = object()
+    monkeypatch.setattr(
+        break_reminder_adapter,
+        "_deliver_break_reminder_via_llm_domain",
+        domain_delivery,
+    )
+    monkeypatch.setattr(
+        break_reminder_adapter,
+        "get_config_manager",
+        lambda: config_manager,
+    )
+
+    result = await break_reminder_adapter._deliver_break_reminder_via_llm(
+        lanlan_name="Neko",
+        mgr=object(),
+        system_prompt="prompt",
+        channel="work_break",
+        lang="zh",
+    )
+
+    assert result == ("起来活动一下吧。", "break-sid")
+    assert isinstance(result, tuple)
+    assert domain_delivery.await_args.kwargs["config_manager"] is config_manager
 
 
 @pytest.mark.parametrize(

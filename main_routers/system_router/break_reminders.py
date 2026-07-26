@@ -38,7 +38,7 @@ async def _deliver_break_reminder_via_llm(
     timeout_seconds: float = 25.0,
 ) -> tuple[str | None, str | None]:
     """Preserve the former Router helper signature for external callers."""
-    return await _deliver_break_reminder_via_llm_domain(
+    result = await _deliver_break_reminder_via_llm_domain(
         lanlan_name=lanlan_name,
         mgr=mgr,
         config_manager=get_config_manager(),
@@ -47,6 +47,7 @@ async def _deliver_break_reminder_via_llm(
         lang=lang,
         timeout_seconds=timeout_seconds,
     )
+    return result.delivered_text, result.proactive_sid
 
 
 __all__ = (
