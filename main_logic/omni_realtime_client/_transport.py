@@ -39,6 +39,9 @@ from ._shared import (
 )
 
 
+_ATTACHED_TRANSPORT = object()
+
+
 
 class _TransportMixin:
     _WS_FRAME_LIMIT = OMNI_WS_FRAME_LIMIT_BYTES  # safe threshold below 256KB server cap
@@ -49,7 +52,6 @@ class _TransportMixin:
         # silence-check task, or Gemini SDK init). Applies uniformly to all providers.
         if self.turn_detection_mode not in (TurnDetectionMode.MANUAL, TurnDetectionMode.SERVER_VAD):
             raise ValueError(f"Invalid turn detection mode: {self.turn_detection_mode}")
-        self._response_arbiter.reset_connection_state()
 
         # [ISSUE4c] Reset the tool-call flood window on every (re)connect. The
         # same OmniRealtimeClient instance is reused across sessions, so stale
@@ -66,6 +68,7 @@ class _TransportMixin:
         # Gemini uses google-genai SDK, not raw WebSocket
         if self._is_gemini:
             await self._connect_gemini(instructions, native_audio)
+            self._response_arbiter.reset_connection_state()
             return
 
         # 确保开始新连接时状态完全重置
@@ -93,6 +96,9 @@ class _TransportMixin:
         # end_session 协程挂住数百毫秒~数秒（Qwen 回 CLOSE 帧偶尔很慢），
         # 超时后 websockets 内部会 transport.abort() 强制关闭。
         self.ws = await websockets.connect(url, additional_headers=headers, close_timeout=0.5)
+        # Do not reopen the arbiter until the replacement transport exists.
+        # A failed reconnect must leave the prior shutdown state intact.
+        self._response_arbiter.reset_connection_state()
         # Clear fatal flag so send_event/update_session work on this new
         # connection (flag may be leftover from a previous failed session
         # when the same OmniRealtimeClient instance is reused).
@@ -888,7 +894,6 @@ class _TransportMixin:
                             event_response_id = response.get("id")
                     if (
                         event_response_id
-                        and self._current_response_id
                         and event_response_id != self._current_response_id
                     ):
                         logger.info(
@@ -1221,16 +1226,23 @@ class _TransportMixin:
     async def _close_failed_transport(self, reason: str) -> None:
         """Fail response tickets and atomically detach the failed socket."""
 
+        self._fatal_error_occurred = True
+        ws, self.ws = self.ws, None
         response_arbiter = getattr(self, "_response_arbiter", None)
         if response_arbiter is not None:
             await response_arbiter.shutdown(reason)
-        await self._abort_failed_transport(reason)
+        await self._abort_failed_transport(reason, ws)
 
-    async def _abort_failed_transport(self, reason: str) -> None:
-        """Atomically detach and physically close a failed raw WebSocket."""
+    async def _abort_failed_transport(
+        self,
+        reason: str,
+        ws=_ATTACHED_TRANSPORT,
+    ) -> None:
+        """Detach, when needed, and physically close a failed raw WebSocket."""
 
         self._fatal_error_occurred = True
-        ws, self.ws = self.ws, None
+        if ws is _ATTACHED_TRANSPORT:
+            ws, self.ws = self.ws, None
         if ws is not None:
             try:
                 await ws.close()
@@ -1243,6 +1255,7 @@ class _TransportMixin:
 
     async def close(self) -> None:
         """Close the WebSocket connection."""
+        ws, self.ws = self.ws, None
         response_arbiter = getattr(self, "_response_arbiter", None)
         if response_arbiter is not None:
             await response_arbiter.shutdown("realtime client closed")
@@ -1281,16 +1294,15 @@ class _TransportMixin:
             await self._close_gemini()
             return
 
-        if self.ws:
+        if ws:
             try:
                 # 连接时已设 close_timeout=0.5s：远端超时未回 CLOSE 帧时，
                 # websockets 内部会自行 abort transport 强制关闭，
                 # 保证 end_session 快速返回、主事件循环心跳不受影响。
-                await self.ws.close()
+                await ws.close()
             except Exception as e:
                 logger.error(f"Error closing websocket: {e}")
             finally:
-                self.ws = None  # 清空引用，防止后续误用
                 logger.info("WebSocket connection closed")
         else:
             logger.warning("WebSocket connection is already closed or None")

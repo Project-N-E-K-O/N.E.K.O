@@ -1911,7 +1911,9 @@ class IndependentAsrRuntime:
                 SpeechActivityEvent.SPEECH_RESUMED,
             }
         ):
-            lifecycle.mark_pending_turn_speech()
+            # The DRAINING path already confirmed this pending turn. Re-marking
+            # it after PROVIDER_FINAL reaches WARM_IDLE violates the lifecycle
+            # guard and can fail the replacement turn during activation.
             return
         if lifecycle is not None and event in {
             SpeechActivityEvent.SPEECH_STARTED,
@@ -2082,7 +2084,7 @@ class IndependentAsrRuntime:
                 lifecycle.discard_unconfirmed_pending_audio()
             return
         if lifecycle.snapshot.state is not VoiceLifecycleState.WARM_IDLE:
-            lifecycle.discard_unconfirmed_pending_audio()
+            lifecycle.discard_pending_turn()
             self._asr_pending_detector_candidate = None
             return
         payload = lifecycle.begin_pending_turn()

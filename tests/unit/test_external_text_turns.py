@@ -769,7 +769,7 @@ async def test_external_text_turn_response_create_has_no_per_response_instructio
 
 
 @pytest.mark.asyncio
-async def test_idless_response_created_accepts_id_bearing_done_event():
+async def test_idless_response_created_drops_id_bearing_done_event():
     response_done = AsyncMock()
     client = OmniRealtimeClient(
         "wss://example.invalid/realtime",
@@ -786,7 +786,7 @@ async def test_idless_response_created_accepts_id_bearing_done_event():
 
     await client.handle_messages()
 
-    response_done.assert_awaited_once()
+    response_done.assert_not_awaited()
     await client._response_arbiter.wait_until_idle(timeout=0.2)
 
 

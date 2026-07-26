@@ -327,11 +327,23 @@ def _resolve_relative(pkg: str, level: int, module) -> str | None:
     return ".".join(anchor)
 
 
-def _imported_paths(node: ast.AST, pkg: str) -> tuple[str, ...]:
-    """Return absolute module paths represented by one import statement."""
+def _imported_paths(
+    node: ast.AST,
+    pkg: str,
+    alias_paths: dict[str, str] | None = None,
+) -> tuple[str, ...]:
+    """Return absolute module paths imported or referenced by one AST node."""
 
     if isinstance(node, ast.Import):
         return tuple(alias.name for alias in node.names)
+    if isinstance(node, ast.Attribute) and alias_paths is not None:
+        # The innermost attribute is sufficient to expose a package alias:
+        # ``ml.core.runtime`` visits ``ml.core`` and resolves it to
+        # ``main_logic.core`` without reporting the same expression twice.
+        if isinstance(node.value, ast.Attribute):
+            return ()
+        resolved = resolve_chain(dotted_node_path(node) or "", alias_paths)
+        return (resolved,) if resolved else ()
     if not isinstance(node, ast.ImportFrom):
         return ()
     base = (
@@ -701,6 +713,7 @@ def run(root: Path) -> list[Violation]:
     if tts_path.exists():
         tts_tree = parse(tts_path)
         tts_pkg = ".".join(tts_path.relative_to(root).parts[:-1])
+        tts_alias_paths = module_alias_paths(tts_tree, tts_pkg)
         forbidden_ingress_methods = {
             "_ensure_audio_stream_worker",
             "_clear_audio_stream_queue",
@@ -712,7 +725,7 @@ def run(root: Path) -> list[Violation]:
             if any(
                 imported == "main_logic.asr_client"
                 or imported.startswith("main_logic.asr_client.")
-                for imported in _imported_paths(node, tts_pkg)
+                for imported in _imported_paths(node, tts_pkg, tts_alias_paths)
             ):
                 violations.append(Violation(
                     tts_path,
@@ -736,11 +749,12 @@ def run(root: Path) -> list[Violation]:
         for path in sorted(asr_client_dir.rglob("*.py")):
             tree = parse(path)
             pkg = ".".join(path.relative_to(root).parts[:-1])
+            alias_paths = module_alias_paths(tree, pkg)
             for node in ast.walk(tree):
                 if any(
                     module == "main_logic.core"
                     or module.startswith("main_logic.core.")
-                    for module in _imported_paths(node, pkg)
+                    for module in _imported_paths(node, pkg, alias_paths)
                 ):
                     violations.append(Violation(
                         path,
@@ -1287,7 +1301,7 @@ def run(root: Path) -> list[Violation]:
     # registered ASR mixin must read its real owner modules and must not depend
     # on the core facade.
     routing_files = sorted(
-        {path for path in mixin_files if path.parent == core_dir} | {manager_path}
+        set(mixin_files) | {manager_path}
     )
     module_info = {}
     for path in routing_files:

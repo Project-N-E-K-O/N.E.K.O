@@ -615,7 +615,66 @@ async def test_step_server_vad_correlates_distinct_item_ids_and_tombstones(
     await _stop_worker(task, requests, responses)
 
 
-async def test_step_server_vad_fails_closed_on_ambiguous_unbound_turns(
+async def test_step_server_vad_keeps_tombstones_for_connection_lifetime(
+    monkeypatch,
+) -> None:
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        if isinstance(payload, str) and json.loads(payload)["type"] == "session.update":
+            await ws.server_send({"type": "session.updated"})
+
+    websocket = _FakeWebSocket(on_send=on_send)
+    monkeypatch.setattr(step.websockets, "connect", _FakeConnector(websocket))
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        step.step_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+        )
+    )
+    await _next_event(responses, "ready")
+
+    for index in range(1_025):
+        await websocket.server_send(
+            {
+                "type": "conversation.item.input_audio_transcription.completed",
+                "item_id": f"unknown-{index}",
+                "transcript": "",
+            }
+        )
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_started", "item_id": "current-audio"}
+    )
+    assert (await _next_event(responses, "utterance_started")).utterance_id == 1
+
+    # A very late duplicate must not consume the current FIFO fallback turn,
+    # even after more than the former bounded tombstone limit.
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "unknown-0",
+            "transcript": "stale",
+        }
+    )
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert responses.empty()
+
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "current-audio",
+            "transcript": "current",
+        }
+    )
+    final = await _next_event(responses, "final")
+    assert (final.utterance_id, final.text) == (1, "current")
+    await _stop_worker(task, requests, responses, utterance_id=2)
+
+
+async def test_step_server_vad_preserves_overlapping_provider_turns(
     monkeypatch,
 ) -> None:
     async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
@@ -651,11 +710,27 @@ async def test_step_server_vad_fails_closed_on_ambiguous_unbound_turns(
                 "item_id": audio_item_id,
             }
         )
-    started = await _next_event(responses, "utterance_started")
-    error = await _next_event(responses, "error")
-    assert started.utterance_id == 1
-    assert error.error_code == "ASR_STEP_PROTOCOL_ERROR"
-    await asyncio.wait_for(task, 1)
+    first_started = await _next_event(responses, "utterance_started")
+    second_started = await _next_event(responses, "utterance_started")
+    assert (first_started.utterance_id, second_started.utterance_id) == (1, 2)
+
+    for item_id, text in (
+        ("step-audio-2", "second"),
+        ("step-audio-1", "first"),
+    ):
+        await websocket.server_send(
+            {
+                "type": "conversation.item.input_audio_transcription.completed",
+                "item_id": item_id,
+                "transcript": text,
+            }
+        )
+    second_final = await _next_event(responses, "final")
+    first_final = await _next_event(responses, "final")
+    assert (second_final.utterance_id, second_final.text) == (2, "second")
+    assert (first_final.utterance_id, first_final.text) == (1, "first")
+    assert task.done() is False
+    await _stop_worker(task, requests, responses, utterance_id=3)
 
 
 async def test_step_manual_fails_closed_on_ambiguous_second_commit(

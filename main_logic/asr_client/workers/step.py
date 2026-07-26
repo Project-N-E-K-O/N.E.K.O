@@ -35,7 +35,6 @@ from ._shared import is_auth_rejection
 _STEP_URL = "wss://api.stepfun.com/v1/realtime/asr/stream"
 _STEP_MODEL = "stepaudio-2.5-asr-stream"
 _STEP_SUPPORTED_LANGUAGES = frozenset({"en", "zh"})
-_STEP_FINALIZED_ITEM_LIMIT = 1024
 _STEP_PENDING_TURN_TIMEOUT_SECONDS = 30.0
 
 _ItemKey: TypeAlias = tuple[int, int, int]
@@ -57,7 +56,6 @@ class _StepConnectionState:
     unbound_manual_item_ids: deque[str] = field(default_factory=deque)
     unbound_manual_item_id_set: set[str] = field(default_factory=set)
     finalized_item_ids: set[str] = field(default_factory=set)
-    finalized_item_order: deque[str] = field(default_factory=deque)
     configured: asyncio.Event = field(default_factory=asyncio.Event)
     intentional_close: asyncio.Event = field(default_factory=asyncio.Event)
     error_sent: asyncio.Event = field(default_factory=asyncio.Event)
@@ -105,8 +103,17 @@ def _step_provider_item_key(
     key = state.transcription_item_keys.get(item_id)
     if key is not None:
         return key
+    audio_key = state.provider_audio_item_keys.get(item_id)
+    if audio_key is not None:
+        for index, (pending_key, _) in enumerate(state.pending_provider_turns):
+            if pending_key == audio_key:
+                del state.pending_provider_turns[index]
+                state.transcription_item_keys[item_id] = audio_key
+                return audio_key
     if not state.pending_provider_turns:
         return None
+    # Some Step deployments use a distinct transcription item ID. Preserve
+    # FIFO fallback for those events after preferring an exact audio item ID.
     key, _ = state.pending_provider_turns.popleft()
     state.transcription_item_keys[item_id] = key
     return key
@@ -149,11 +156,10 @@ def _step_remember_finalized_item(
 ) -> None:
     if not item_id or item_id in state.finalized_item_ids:
         return
+    # Item IDs are scoped to this WebSocket connection. Keep every terminal
+    # ID until reconnect so an arbitrarily late duplicate can never consume a
+    # future FIFO fallback turn after falling out of a bounded tombstone cache.
     state.finalized_item_ids.add(item_id)
-    state.finalized_item_order.append(item_id)
-    while len(state.finalized_item_order) > _STEP_FINALIZED_ITEM_LIMIT:
-        expired_item_id = state.finalized_item_order.popleft()
-        state.finalized_item_ids.discard(expired_item_id)
 
 
 def _step_complete_item(
@@ -431,14 +437,6 @@ async def _step_receiver(
                 item_id = str(event.get("item_id") or "")
                 if not item_id or item_id in state.provider_audio_item_keys:
                     continue
-                if state.pending_provider_turns:
-                    await _emit_step_error_once(
-                        response_queue,
-                        state,
-                        "ASR_STEP_PROTOCOL_ERROR",
-                        "Step ASR cannot safely bind overlapping provider turns",
-                    )
-                    return "error"
                 key = (
                     state.generation,
                     state.buffer_epoch,

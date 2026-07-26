@@ -990,6 +990,97 @@ async def test_connect_websocket_invalid_turn_detection_mode_raises_before_webso
         mock_ws_connect.assert_not_called()
 
 
+@pytest.mark.unit
+async def test_failed_websocket_connect_does_not_reset_response_arbiter():
+    client = _make_manual_client(
+        model="qwen-omni-turbo-realtime",
+        api_type="qwen",
+    )
+    client._response_arbiter.reset_connection_state = MagicMock()
+
+    with patch(
+        "websockets.connect",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("connect failed"),
+    ):
+        with pytest.raises(RuntimeError, match="connect failed"):
+            await client.connect(instructions="hi", native_audio=True)
+
+    client._response_arbiter.reset_connection_state.assert_not_called()
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_successful_websocket_connect_resets_arbiter_after_socket_is_ready():
+    client = _make_manual_client(
+        model="qwen-omni-turbo-realtime",
+        api_type="qwen",
+    )
+    ws = AsyncMock()
+
+    def assert_socket_ready() -> None:
+        assert client.ws is ws
+
+    client._response_arbiter.reset_connection_state = MagicMock(
+        side_effect=assert_socket_ready
+    )
+    with patch("websockets.connect", new_callable=AsyncMock, return_value=ws):
+        await client.connect(instructions="hi", native_audio=True)
+
+    client._response_arbiter.reset_connection_state.assert_called_once_with()
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_close_detaches_socket_before_awaiting_arbiter_shutdown():
+    client = _make_manual_client(
+        model="qwen-omni-turbo-realtime",
+        api_type="qwen",
+    )
+    ws = AsyncMock()
+    client.ws = ws
+    client._close_audio_processor = AsyncMock()
+
+    async def assert_socket_detached(_reason: str) -> None:
+        assert client.ws is None
+
+    client._response_arbiter.shutdown = AsyncMock(
+        side_effect=assert_socket_detached
+    )
+
+    await client.close()
+
+    client._response_arbiter.shutdown.assert_awaited_once_with(
+        "realtime client closed"
+    )
+    ws.close.assert_awaited_once_with()
+
+
+@pytest.mark.unit
+async def test_failed_transport_detaches_socket_before_arbiter_shutdown():
+    client = _make_manual_client(
+        model="qwen-omni-turbo-realtime",
+        api_type="qwen",
+    )
+    ws = AsyncMock()
+    client.ws = ws
+
+    async def assert_socket_detached(_reason: str) -> None:
+        assert client.ws is None
+
+    client._response_arbiter.shutdown = AsyncMock(
+        side_effect=assert_socket_detached
+    )
+
+    await client._close_failed_transport("transport failed")
+
+    assert client._fatal_error_occurred is True
+    client._response_arbiter.shutdown.assert_awaited_once_with(
+        "transport failed"
+    )
+    ws.close.assert_awaited_once_with()
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Uplink sample rate — OpenAI Realtime PCM input only accepts 24kHz, every
 # other provider takes the internal 16kHz unchanged. The client keeps the

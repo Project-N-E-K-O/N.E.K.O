@@ -1229,6 +1229,81 @@ async def test_draining_next_speech_waits_for_old_final_then_starts_new_turn() -
     runtime.handle_input_transcript.assert_not_awaited()
 
 
+async def test_warm_idle_pending_speech_does_not_reenter_draining_guard() -> None:
+    runtime = _Runtime()
+    asr = type("Asr", (), {})()
+    asr.is_ready = True
+    asr.stream_audio = AsyncMock()
+    runtime._asr_session = asr
+    runtime._asr_provider = "qwen"
+    runtime._asr_route_mode = "independent"
+    _install_ready_lifecycle(runtime, "qwen")
+    epoch = runtime._asr_session_epoch
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+    await runtime._route_microphone_audio(
+        b"\x02\x00" * 160,
+        sample_rate_hz=16_000,
+    )
+    lifecycle = runtime._asr_lifecycle
+    assert lifecycle is not None
+    lifecycle.transition(VoiceLifecycleEvent.PROVIDER_FINAL)
+    assert lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+    assert lifecycle.has_pending_turn is True
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+
+    assert lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+    assert lifecycle.has_pending_turn is True
+
+
+async def test_stale_pending_activation_discards_confirmed_candidate() -> None:
+    runtime = _Runtime()
+    asr = type("Asr", (), {})()
+    asr.is_ready = True
+    asr.stream_audio = AsyncMock()
+    runtime._asr_session = asr
+    runtime._asr_provider = "qwen"
+    runtime._asr_route_mode = "independent"
+    _install_ready_lifecycle(runtime, "qwen")
+    epoch = runtime._asr_session_epoch
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+    await runtime._route_microphone_audio(
+        b"\x02\x00" * 160,
+        sample_rate_hz=16_000,
+    )
+    lifecycle = runtime._asr_lifecycle
+    assert lifecycle is not None
+    assert lifecycle.snapshot.state is VoiceLifecycleState.DRAINING
+    assert lifecycle.has_pending_turn is True
+
+    await runtime._activate_pending_independent_turn(epoch)
+
+    assert lifecycle.pending_turn_bytes == 0
+    assert lifecycle.has_pending_turn is False
+    assert runtime._asr_pending_detector_candidate is None
+
+
 async def test_final_without_observed_pending_preserves_racing_next_onset() -> None:
     runtime = _Runtime()
     await _start_and_seal_turn(runtime, "gemini")
