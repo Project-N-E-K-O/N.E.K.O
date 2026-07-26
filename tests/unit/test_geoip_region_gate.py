@@ -1527,7 +1527,8 @@ def _yui_binding_manager(authoritative_cfg, saved, probe_calls=None, non_mainlan
 
     class _CM:
         def __init__(self):
-            self._region_verdict_is_provisional = lambda: False
+            # 生产签名带可选 cfg 快照参数，替身要兼容两种调用形态
+            self._region_verdict_is_provisional = lambda *_a: False
 
         async def aget_core_config(self):
             return dict(authoritative_cfg)
@@ -2189,3 +2190,122 @@ def test_forced_override_counts_as_settled(monkeypatch, forced):
     cm._config_needs_region = ConfigManager._config_needs_region
     assert cm._region_verdict_is_provisional() is False, \
         'override 是确定结论，不该判成 provisional（会永久禁用清理与默认音色绑定）'
+
+
+@pytest.mark.unit
+def test_yui_binding_rechecks_provider_on_the_assembled_snapshot():
+    """A free→paid switch racing the binding must not persist a free-only voice.
+
+    The caller's snapshot passed the free-only gate, but the awaited assembled
+    read can come back with the new paid provider. Without a recheck the code
+    falls through with overseas=False and writes ``yui_cn`` into a paid
+    configuration — and the helper never overwrites a nonempty voice, so no
+    later run corrects it.
+    """
+    saved = {}
+    caller_raw = {'coreApi': 'free'}
+    assembled_paid = {'coreApi': 'qwen', 'CORE_URL': 'https://api.qwen.example/v1'}
+    cm = _yui_binding_manager(assembled_paid, saved)
+
+    ok = asyncio.run(config_manager_pkg.ensure_default_yui_voice_for_free_api(cm, caller_raw))
+    assert ok is False
+    assert saved == {}, f'free→paid 切换竞态下不该写入任何音色: {saved}'
+
+
+@pytest.mark.unit
+def test_provisional_predicate_with_snapshot_does_not_reread_config(monkeypatch):
+    """Passing an assembled snapshot must keep the predicate pure in-memory.
+
+    Its production callers sit on the shared event loop; the self-read branch
+    is a sync open()+json.load() that belongs on worker threads only.
+    """
+    reads = {'n': 0}
+
+    class _CM(config_manager_pkg.voice_storage.VoiceStorageMixin):
+        def get_core_config(self):
+            # 计数而不是抛：谓词整体包在 try/except 里，抛异常会被吞成
+            # 「保守 True」，与正确行为在断言上无差别（变异实测漏过）。
+            reads['n'] += 1
+            return {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.tech/core'}
+
+    cm = _CM()
+    cm._config_needs_region = ConfigManager._config_needs_region
+    monkeypatch.setattr(ConfigManager, '_region_cache', None)
+
+    cfg = {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.tech/core'}
+    assert cm._region_verdict_is_provisional(cfg) is True
+    assert reads['n'] == 0, '传入快照时不应再自读配置（同步读会跑在事件循环上）'
+    # 不传快照的自读分支仍然可用
+    assert cm._region_verdict_is_provisional() is True
+    assert reads['n'] == 1
+
+
+@pytest.mark.unit
+def test_deprecated_voice_migration_respects_the_privacy_gate(monkeypatch):
+    """The remap path must not start a probe for a route that needs no verdict.
+
+    A fully livestream-derived free route is deterministic, yet
+    ``remap_deprecated_free_yui_voice_id`` used to fall through to
+    ``_check_non_mainland()`` unconditionally — starting the indefinitely
+    retrying ip-api.com loop just to migrate a voice id (invariant #2).
+    """
+    deprecated = sorted(config_manager_pkg.voice_storage._DEPRECATED_FREE_YUI_VOICE_IDS)[0]
+    monkeypatch.setattr(
+        'utils.api_config_loader.get_free_voices', lambda: {'yui_cn': 'voice-tone-current'})
+
+    geo_calls = {'n': 0}
+
+    class _CM(config_manager_pkg.voice_storage.VoiceStorageMixin):
+        def get_core_config(self):
+            # livestream 全派生形态：free 路由但没有任何 lanlan 官方 host
+            return {'coreApi': 'free', 'CORE_API_TYPE': 'free',
+                    'CORE_URL': 'ws://192.168.1.9:8000/tok/core'}
+
+        def _check_non_mainland(self):
+            # 计数而不是抛：remap 的兜底把异常吞成 overseas=False，抛异常的
+            # 断言与「压根没调用」结果相同，测不出差别（变异实测漏过）。
+            geo_calls['n'] += 1
+            return False
+
+    cm = _CM()
+    assert cm.remap_deprecated_free_yui_voice_id(deprecated) == 'voice-tone-current', \
+        '国内派生路由的废弃音色仍应迁移到现役 yui_cn'
+    assert geo_calls['n'] == 0, \
+        '无区域敏感 URL 的迁移不该问地理判定（_check_non_mainland 内部会起探测）'
+    assert ConfigManager._ip_probe_thread is None, '迁移路径不该起 GeoIP 探测'
+
+
+@pytest.mark.unit
+def test_memory_server_warms_the_region_before_outbox_replay():
+    """memory_server runs standalone — the main process's warmup does not reach it.
+
+    Its first free-route LLM work (pending-outbox replay, first memory update)
+    would otherwise read the transient mainland snapshot while this process's
+    own probe was only just starting. Structural and line-ordered, matching the
+    main-server warmup guard.
+    """
+    import ast
+    import pathlib
+
+    source = (pathlib.Path(__file__).resolve().parents[2]
+              / 'app' / 'memory_server' / 'runtime.py')
+    tree = ast.parse(source.read_text(encoding='utf-8'))
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.AsyncFunctionDef):
+            continue
+        calls = {}
+        for c in ast.walk(node):
+            if isinstance(c, ast.Call):
+                name = getattr(c.func, 'attr', None)
+                if name:
+                    calls.setdefault(name, []).append(c.lineno)
+        if '_replay_pending_outbox' not in calls:
+            continue
+        assert 'awarmup_region_check' in calls, \
+            'memory_server 启动未做区域预热（独立进程不经过 main_server 的预热）'
+        assert min(calls['awarmup_region_check']) < min(calls['_replay_pending_outbox']), \
+            '预热必须早于 outbox 补跑，否则补跑的 LLM 调用会读到临时大陆快照'
+        break
+    else:
+        pytest.fail('未找到 outbox 补跑调用，断言失效')

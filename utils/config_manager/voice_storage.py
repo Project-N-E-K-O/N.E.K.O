@@ -102,10 +102,16 @@ class VoiceStorageMixin:
         core_url = str(core_cfg.get("CORE_URL") or "")
         overseas = is_free_lanlan_app_route("free", core_url)
         if not overseas:
-            try:
-                overseas = bool(self._check_non_mainland())
-            except Exception:
-                overseas = False
+            # 兜底问地理前先过 needs_region 门：livestream 已把全部免费端点派生掉
+            # 时线路是确定的，而 _check_non_mainland 内部会起探测——不该为迁移一个
+            # 音色把这类用户的 IP 发给 ip-api.com（不变量 #2）。与 ensure_default
+            # 的门同源；ADJUSTED 因为这里读的是组装后快照。
+            from utils.config_manager import ConfigManager
+            if ConfigManager._config_needs_region(core_cfg, ConfigManager._REGION_HOSTS_ADJUSTED):
+                try:
+                    overseas = bool(self._check_non_mainland())
+                except Exception:
+                    overseas = False
         if overseas:
             return voice_id
 
@@ -914,13 +920,18 @@ class VoiceStorageMixin:
             return s
         return vc.to_dict()
 
-    def _region_verdict_is_provisional(self) -> bool:
+    def _region_verdict_is_provisional(self, cfg=None) -> bool:
         """Whether voice validity would currently be judged on a guessed region.
 
         Only free routes are region-dependent, so a custom/paid config is never
         provisional here. On a free route it is provisional until the IP probe has
         landed: ``_check_non_mainland`` falls back to Steam (deliberately uncached)
         or to the mainland default, and neither is a verdict to delete data on.
+
+        ``cfg`` lets an async caller pass an already assembled snapshot so the
+        predicate stays pure in-memory; without it the config is read here —
+        a sync open()+json.load(), fine on worker threads but not on the shared
+        event loop.
         """
         from utils.config_manager import ConfigManager, core_config as _core_config_mod
 
@@ -933,7 +944,8 @@ class VoiceStorageMixin:
                 return False
             if ConfigManager._region_cache is not None:
                 return False
-            cfg = self.get_core_config() or {}
+            if cfg is None:
+                cfg = self.get_core_config() or {}
             # 判「是不是免费路由」必须用**不受区域改写影响**的路由选择字段：
             # get_core_config() 返回的是已改写快照，Steam 临时判海外时 URL 已经变成
             # lanlan.app，按 URL host 判会得出「这是自配线路」而放行清理——恰好在这个

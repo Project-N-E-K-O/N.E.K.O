@@ -113,15 +113,30 @@ async def ensure_default_yui_voice_for_free_api(config_manager, core_cfg: dict |
     if (core_cfg.get("coreApi") or core_cfg.get("CORE_API_TYPE")) != "free":
         return False
 
+    # 组装快照只读一次（offload 过的 aget），后面的 provisional 守卫、免费路由复查、
+    # overseas 判定全用这一份——既保证一份快照一判定，也让 provisional 谓词走纯内存
+    # 分支（它自读配置是同步 open()+json.load()，本函数的调用方全在事件循环上）。
+    try:
+        assembled_cfg = await config_manager.aget_core_config() or {}
+    except Exception:
+        logger.debug("[GeoIP] 读取组装后的核心配置失败，跳过本轮默认音色绑定", exc_info=True)
+        return False
+
     # 区域判定还没落定时不要绑：国内绑 yui_cn、海外绑字面量 "yui"，两者不通用，而
     # 本函数一旦写入非空 voice_id 就不会再覆盖——猜错了，稍后拿到的权威结论也纠正
     # 不回来。等下一次（判定落定后）再绑，代价只是晚一轮。
     try:
-        if config_manager._region_verdict_is_provisional():
+        if config_manager._region_verdict_is_provisional(assembled_cfg):
             logger.info("[GeoIP] 区域判定尚未落定，暂不绑定默认 YUI 音色，等落定后再绑")
             return False
     except Exception:
         logger.debug("[GeoIP] 区域落定状态判断失败，跳过本轮默认音色绑定", exc_info=True)
+        return False
+
+    # 组装快照才是权威：调用方快照过了上面的免费门后，用户可能恰在这个 await 期间
+    # 把 coreApi 从 free 切到付费——不复查就会拿 overseas=False 给付费配置绑上
+    # free 专属的 yui_cn（写入非空后本函数不再纠正）。
+    if (assembled_cfg.get("coreApi") or assembled_cfg.get("CORE_API_TYPE")) != "free":
         return False
 
     # 海外免费（free + *.lanlan.app）：默认音色是品牌 yui（free_intl 的 default_voice），
@@ -147,17 +162,12 @@ async def ensure_default_yui_voice_for_free_api(config_manager, core_cfg: dict |
     # 要求每个调用方（含测试替身）都实现它。
     from utils.config_manager import ConfigManager
 
-    # needs_region 这道门必须拿**组装后**的配置判，不能拿调用方传进来的那份：保存
-    # 路径传的是持久化的 raw 配置，里面只有 coreApi / assistApi 这类选择字段，压根
-    # 没有 *_URL（URL 是 get_core_config 按 profile 组装时才填的）。拿 raw 判会恒为
-    # False，于是跳过区域判定、把**所有**海外免费用户永久绑成大陆 yui_cn——正好是
-    # 这个函数最不能出错的地方。provisional 守卫用的也是组装配置，两边就此一致。
-    try:
-        assembled_cfg = await config_manager.aget_core_config() or {}
-    except Exception:
-        logger.debug("[GeoIP] 读取组装后的核心配置失败，跳过本轮默认音色绑定", exc_info=True)
-        return False
-
+    # needs_region 这道门必须拿**组装后**的配置判（函数开头读的那份 assembled_cfg），
+    # 不能拿调用方传进来的那份：保存路径传的是持久化的 raw 配置，里面只有
+    # coreApi / assistApi 这类选择字段，压根没有 *_URL（URL 是 get_core_config 按
+    # profile 组装时才填的）。拿 raw 判会恒为 False，于是跳过区域判定、把**所有**
+    # 海外免费用户永久绑成大陆 yui_cn——正好是这个函数最不能出错的地方。
+    # provisional 守卫用的也是同一份组装配置，两边就此一致。
     overseas = False
     if ConfigManager._config_needs_region(assembled_cfg, ConfigManager._REGION_HOSTS_ADJUSTED):
         try:
