@@ -9,6 +9,7 @@ import pytest
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 from main_logic.core import LLMSessionManager
+from main_logic.core import asr_runtime as core_asr_runtime_module
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.voice_turn.audio_input import ProcessedVoiceFrame
 from main_logic.core.asr_runtime import (
@@ -188,6 +189,7 @@ async def test_audio_stream_queue_clears_whole_candidate_when_full():
     mgr._audio_stream_dropped_total = 0
     mgr._last_audio_stream_backlog_log_time = 0.0
     mgr._ensure_audio_stream_worker = lambda: None
+    mgr._bg_tasks = set()
     mgr._asr_runtime.abort = AsyncMock()
 
     def message(seq: int) -> dict:
@@ -201,6 +203,7 @@ async def test_audio_stream_queue_clears_whole_candidate_when_full():
     await LLMSessionManager._enqueue_audio_stream_data(mgr, message(1))
     await LLMSessionManager._enqueue_audio_stream_data(mgr, message(2))
     await LLMSessionManager._enqueue_audio_stream_data(mgr, message(3))
+    await asyncio.gather(*list(mgr._bg_tasks))
 
     assert mgr._audio_stream_dropped_total == 3
     assert mgr._audio_stream_queue.empty()
@@ -229,6 +232,7 @@ async def test_active_audio_queue_overflow_aborts_turn_then_resumes_local_listen
     mgr._audio_stream_dropped_total = 0
     mgr._last_audio_stream_backlog_log_time = 0.0
     mgr._ensure_audio_stream_worker = lambda: None
+    mgr._bg_tasks = set()
     message = {
         "input_type": "audio",
         "sample_rate_hz": 16_000,
@@ -237,6 +241,7 @@ async def test_active_audio_queue_overflow_aborts_turn_then_resumes_local_listen
 
     await LLMSessionManager._enqueue_audio_stream_data(mgr, message)
     await LLMSessionManager._enqueue_audio_stream_data(mgr, message)
+    await asyncio.gather(*list(mgr._bg_tasks))
 
     assert mgr._asr_runtime._asr_lifecycle is not None
     assert (
@@ -916,7 +921,9 @@ async def test_hot_swap_flush_rechecks_cutoff_after_event_edge():
 
     release[2].set()
     await asyncio.wait_for(third, 1)
-    assert mgr._route_microphone_audio.await_count == 3
+    # The native replay coalesces the two cached frames into one send; the
+    # third frame is routed live after the flush completes.
+    assert mgr._route_microphone_audio.await_count == 2
     mgr._asr_runtime.abort.assert_not_awaited()
 
 
@@ -990,7 +997,12 @@ async def test_hot_swap_flush_orders_inflight_live_then_cached_audio():
     release_first.set()
     await asyncio.wait_for(asyncio.gather(first, second, flush), 1)
 
-    assert [pcm[:2] for pcm in routed] == [b"\x20\x00", b"\x10\x00", b"\x30\x00"]
+    # The inflight live frame is routed first; the cached frames follow in
+    # order (the native replay may coalesce them into a single send).
+    assert routed[0][:2] == b"\x20\x00"
+    assert b"".join(routed) == (
+        b"\x20\x00" * 160 + b"\x10\x00" * 160 + b"\x30\x00" * 160
+    )
     mgr._asr_runtime.abort.assert_not_awaited()
     mgr.session.stream_audio.assert_not_awaited()
     mgr._record_omni_microphone_audio.assert_not_called()
@@ -1045,3 +1057,136 @@ async def test_hot_swap_iteration_exhaustion_invalidates_residual_audio():
     mgr.session.stream_audio.assert_not_awaited()
     mgr._record_omni_microphone_audio.assert_not_called()
     assert not mgr.hot_swap_audio_cache
+
+
+async def test_native_route_skips_send_after_fatal_error_with_rate_limited_log(
+    monkeypatch,
+):
+    mgr = _make_routable_audio_manager(True)
+    mgr.session._fatal_error_occurred = True
+    token = mgr._capture_ingress_token()
+    log_warning = MagicMock()
+    monkeypatch.setattr(core_asr_runtime_module.logger, "warning", log_warning)
+
+    await LLMSessionManager._route_microphone_audio(
+        mgr,
+        b"\x01\x00" * 160,
+        sample_rate_hz=16_000,
+        ingress_token=token,
+    )
+    await LLMSessionManager._route_microphone_audio(
+        mgr,
+        b"\x01\x00" * 160,
+        sample_rate_hz=16_000,
+        ingress_token=token,
+    )
+
+    mgr.session.stream_audio.assert_not_awaited()
+    mgr._record_omni_microphone_audio.assert_not_called()
+    log_warning.assert_called_once()
+
+
+async def test_hot_swap_flush_batches_and_paces_native_replay(monkeypatch):
+    mgr = _make_routable_audio_manager(True)
+    del mgr._route_microphone_audio
+    token = mgr._capture_ingress_token()
+    mgr.hot_swap_audio_cache = HotSwapAudioBuffer(capacity_ms=8_000)
+    for _ in range(7):
+        assert mgr.hot_swap_audio_cache.append(
+            HotSwapAudioFrame(pcm16=b"\x01\x00" * 160, token=token)
+        )
+    sleeps: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def record_sleep(delay: float) -> None:
+        sleeps.append(delay)
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", record_sleep)
+
+    await LLMSessionManager._flush_hot_swap_audio_cache(mgr)
+
+    sent = [call.args[0] for call in mgr.session.stream_audio.await_args_list]
+    assert sent == [b"\x01\x00" * 160 * 5, b"\x01\x00" * 160 * 2]
+    assert sleeps == [0.025, 0.025]
+    assert not mgr.hot_swap_audio_cache
+
+
+async def test_hot_swap_flush_counts_and_logs_unrebindable_frames(monkeypatch):
+    mgr = _make_routable_audio_manager(True)
+    mgr._asr_runtime.abort = AsyncMock()
+    mgr.hot_swap_audio_cache = HotSwapAudioBuffer(capacity_ms=8_000)
+    assert mgr.hot_swap_audio_cache.append(_hot_swap_frame(_queue_token()))
+    assert mgr.hot_swap_audio_cache.append(_hot_swap_frame(_queue_token()))
+    log_warning = MagicMock()
+    monkeypatch.setattr(core_asr_runtime_module.logger, "warning", log_warning)
+
+    await LLMSessionManager._flush_hot_swap_audio_cache(mgr)
+
+    assert mgr._audio_stream_dropped_total == 2
+    log_warning.assert_called_once()
+    mgr._route_microphone_audio.assert_not_awaited()
+    mgr._asr_runtime.abort.assert_not_awaited()
+    assert not mgr.hot_swap_audio_cache
+
+
+async def test_hot_swap_flush_aborts_once_for_multiple_damaged_tokens():
+    mgr = _make_routable_audio_manager(True)
+    mgr._ingress_token_matches = MagicMock(return_value=True)
+    mgr._asr_runtime.abort = AsyncMock()
+    mgr.hot_swap_audio_cache = HotSwapAudioBuffer(capacity_ms=8_000)
+    token_a = VoiceIngressToken(1, "socket", 1, 1, 1)
+    token_b = VoiceIngressToken(1, "socket", 1, 2, 1)
+    assert mgr.hot_swap_audio_cache.append(_hot_swap_frame(token_a))
+    assert mgr.hot_swap_audio_cache.append(_hot_swap_frame(token_b))
+    mgr._route_microphone_audio = AsyncMock(side_effect=RuntimeError("route failed"))
+
+    await LLMSessionManager._flush_hot_swap_audio_cache(mgr)
+
+    mgr._route_microphone_audio.assert_awaited_once()
+    mgr._asr_runtime.abort.assert_awaited_once_with("ingress_backpressure")
+    assert not mgr.hot_swap_audio_cache
+
+
+async def test_slow_runtime_abort_does_not_block_enqueue_processing():
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.lanlan_name = "Test"
+    mgr._init_asr_runtime_state()
+    _authorize_core_lease(mgr)
+    mgr._audio_stream_queue = AudioDurationQueue(
+        capacity_us=1_000_000,
+        max_frames=1,
+    )
+    mgr._audio_stream_dropped_total = 0
+    mgr._last_audio_stream_backlog_log_time = 0.0
+    mgr._ensure_audio_stream_worker = lambda: None
+    mgr._bg_tasks = set()
+    abort_started = asyncio.Event()
+    release_abort = asyncio.Event()
+
+    async def slow_abort(_reason: str) -> None:
+        abort_started.set()
+        await release_abort.wait()
+
+    mgr._asr_runtime.abort = AsyncMock(side_effect=slow_abort)
+    message = {
+        "input_type": "audio",
+        "sample_rate_hz": 16_000,
+        "data": [1] * 160,
+    }
+
+    await LLMSessionManager._enqueue_audio_stream_data(mgr, message)
+    # Overflow: the teardown is scheduled off the receive path, so this call
+    # returns without waiting for the slow provider close.
+    await LLMSessionManager._enqueue_audio_stream_data(mgr, message)
+    assert mgr._audio_stream_queue.empty()
+    await asyncio.wait_for(abort_started.wait(), 1)
+    assert not release_abort.is_set()
+
+    # A later frame is accepted while the abort is still pending.
+    await LLMSessionManager._enqueue_audio_stream_data(mgr, message)
+    assert mgr._audio_stream_queue.qsize() == 1
+
+    release_abort.set()
+    await asyncio.gather(*list(mgr._bg_tasks))
+    mgr._asr_runtime.abort.assert_awaited_once_with("ingress_backpressure")
