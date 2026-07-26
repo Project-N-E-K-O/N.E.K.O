@@ -92,17 +92,20 @@ class QQRuntimeOpsService:
             list(getattr(self.plugin, "_group_memory_sync_tasks", ()) or ())
             + list(getattr(self.plugin, "_prompt_change_discard_tasks", ()) or ())
         )
+        stragglers: set = set()
         if pending_tasks:
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*pending_tasks, return_exceptions=True),
-                    timeout=1.0,
-                )
-            except asyncio.TimeoutError:
-                self.plugin.logger.warning(
-                    "停止时仍有记忆同步任务未完成，已超时放行"
-                )
-        self.plugin._session_locks.clear()
+            # asyncio.wait 不取消未完成任务（wait_for(gather) 超时会取消，
+            # 等于把结算杀在半路）；straggler 继续跑完自己的锁临界区。
+            _done, stragglers = await asyncio.wait(pending_tasks, timeout=1.0)
+        if stragglers:
+            # 有任务仍在锁内：不清锁表——清了之后新 handler 会为同一
+            # 会话铸新锁与旧任务并发。留旧表让新旧共用同一把锁。
+            self.plugin.logger.warning(
+                f"停止时仍有 {len(stragglers)} 个记忆同步任务未完成，"
+                f"保留会话锁表以维持隔离"
+            )
+        else:
+            self.plugin._session_locks.clear()
 
 
 class QQProactiveMessageService:
