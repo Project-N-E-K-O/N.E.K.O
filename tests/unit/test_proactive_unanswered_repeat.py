@@ -790,6 +790,74 @@ async def test_regenerated_music_without_material_keeps_text_rechecks(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_initial_music_without_material_keeps_text_rechecks(monkeypatch):
+    """A bare initial MUSIC tag cannot exempt ordinary chat text."""
+    corpus = MagicMock()
+    corpus.score_unanswered_proactive_draft.return_value = (
+        anti_repeat_module.UnansweredProactiveRepeatSignal(
+            triggered=False,
+            match_count=0,
+            considered_count=2,
+            best_similarity=0.1,
+        )
+    )
+    corpus.score_draft.return_value = (0.0, {})
+    monkeypatch.setattr(
+        anti_repeat_module,
+        "get_anti_repeat_corpus",
+        lambda: corpus,
+    )
+    literal_guard = MagicMock(return_value=(False, 0.0))
+    monkeypatch.setattr(
+        "main_logic.proactive_chat.generation._is_similar_to_recent_proactive_chat",
+        literal_guard,
+    )
+    mgr = SimpleNamespace(
+        state=_NeverPreemptedState(),
+        last_user_message_time=None,
+        last_user_engagement_time=None,
+        proactive_engagement_observation_started_at=100.0,
+        handle_new_message=AsyncMock(),
+    )
+    make_llm = AsyncMock()
+
+    output = await _guard_phase2_output(
+        mgr=mgr,
+        proactive_sid="sid",
+        lanlan_name="initial-materialless-music-test",
+        response_text="还是来聊聊这个一直重复的旧话题吧。",
+        full_text="还是来聊聊这个一直重复的旧话题吧。",
+        source_tag="MUSIC",
+        active_channels=["music"],
+        selected_music_link=None,
+        selected_meme_link=None,
+        music_content=None,
+        meme_content=None,
+        is_playing_music=False,
+        music_cooldown=False,
+        expects_source_tag=True,
+        make_llm=make_llm,
+        messages=[
+            SystemMessage(content="system"),
+            HumanMessage(content="begin"),
+        ],
+        human_text="begin",
+        screenshot_b64=None,
+        phase2_use_vision=False,
+        phase2_disable_thinking=True,
+        proactive_lang="zh",
+        master_name="博士",
+    )
+
+    literal_guard.assert_called_once()
+    corpus.score_unanswered_proactive_draft.assert_called_once()
+    corpus.score_draft.assert_called_once()
+    make_llm.assert_not_awaited()
+    mgr.handle_new_message.assert_not_awaited()
+    assert output.result is None
+
+
+@pytest.mark.asyncio
 async def test_regenerated_delivery_aborts_when_engagement_cutoff_advances(
     monkeypatch,
 ):

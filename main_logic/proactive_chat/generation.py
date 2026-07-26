@@ -1104,7 +1104,10 @@ async def _guard_phase2_output(
     )
     if music_only_pending and source_tag != "MUSIC":
         dedup_tag = "MUSIC"
-    elif source_tag == "MEME" and selected_meme_link is None:
+    elif (
+        (source_tag == "MEME" and selected_meme_link is None)
+        or (source_tag == "MUSIC" and selected_music_link is None)
+    ):
         dedup_tag = "CHAT"
     else:
         dedup_tag = source_tag
