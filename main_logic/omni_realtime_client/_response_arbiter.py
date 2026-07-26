@@ -14,10 +14,20 @@ AbortTransport = Callable[[str], Awaitable[None]]
 logger = logging.getLogger(__name__)
 
 # Server-initiated response ids are remembered so their terminal events are
-# never credited to an owner whose own ``response.created`` carried no id.
-# Only the most recent ids are kept: an id matters solely while its response
-# is still live, so a small bound prevents unbounded growth on long sessions.
+# never credited to an owner whose own ``response.created`` carried no id,
+# and so the lane stays closed while such a response is still live even after
+# the owner's own terminal has arrived. Only the most recent ids are kept: an
+# id matters solely while its response is still live, so a small bound
+# prevents unbounded growth on long sessions.
 _SERVER_RESPONSE_ID_LIMIT = 32
+
+# A tracked server response whose terminal event never arrives must not hold
+# the lane forever on an otherwise healthy connection: past this age its id
+# stops holding the lane and a timer re-runs the release check, so recovery
+# does not depend on another event arriving. Kept below the worker's default
+# 60 s ``response_done_timeout`` so a stale id opens the lane before the
+# idle-wait backstop fail-closes the whole connection.
+_SERVER_RESPONSE_MAX_AGE = 30.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,9 +106,11 @@ class RealtimeResponseArbiter:
         self._current: _QueuedResponse | None = None
         self._response_owner: _QueuedResponse | None = None
         self._server_response_active = False
-        # Bounded insertion-ordered set (dict keys) of known server-initiated
-        # response ids; see _SERVER_RESPONSE_ID_LIMIT.
-        self._server_response_ids: dict[str, None] = {}
+        # Bounded insertion-ordered map of live server-initiated response ids
+        # to their creation loop time; see _SERVER_RESPONSE_ID_LIMIT and
+        # _SERVER_RESPONSE_MAX_AGE. Created adds, terminal removes.
+        self._server_response_ids: dict[str, float] = {}
+        self._stale_release_handle: asyncio.TimerHandle | None = None
         self._connection_available = True
         self._dispatch_allowed = asyncio.Event()
         self._dispatch_allowed.set()
@@ -256,9 +268,60 @@ class RealtimeResponseArbiter:
 
     def _remember_server_response_id(self, response_id: str) -> None:
         self._server_response_ids.pop(response_id, None)
-        self._server_response_ids[response_id] = None
+        self._server_response_ids[response_id] = asyncio.get_running_loop().time()
         while len(self._server_response_ids) > _SERVER_RESPONSE_ID_LIMIT:
             del self._server_response_ids[next(iter(self._server_response_ids))]
+        self._arm_stale_release_timer()
+
+    def _cancel_stale_release_timer(self) -> None:
+        handle, self._stale_release_handle = self._stale_release_handle, None
+        if handle is not None:
+            handle.cancel()
+
+    def _arm_stale_release_timer(self) -> None:
+        """(Re)start the timer that re-checks the lane at the next staleness deadline."""
+
+        loop = asyncio.get_running_loop()
+        deadline = min(self._server_response_ids.values()) + _SERVER_RESPONSE_MAX_AGE
+        self._cancel_stale_release_timer()
+        self._stale_release_handle = loop.call_later(
+            max(deadline - loop.time(), 0.0), self._stale_release_expired
+        )
+
+    def _stale_release_expired(self) -> None:
+        self._stale_release_handle = None
+        if self._response_owner is not None:
+            # The lane is held by an owner anyway; its own terminal path
+            # re-runs the release check (and re-arms the timer if needed).
+            return
+        self._release_lane_if_clear()
+
+    def _release_lane_if_clear(self) -> None:
+        """Open the lane unless a live server-initiated response still holds it.
+
+        Ids older than ``_SERVER_RESPONSE_MAX_AGE`` are dropped first: a server
+        response whose terminal event was lost must not wedge the lane on a
+        healthy connection, so past that bound its id stops holding the lane.
+        """
+
+        now = asyncio.get_running_loop().time()
+        stale = [
+            response_id
+            for response_id, created_at in self._server_response_ids.items()
+            if now - created_at >= _SERVER_RESPONSE_MAX_AGE
+        ]
+        for response_id in stale:
+            del self._server_response_ids[response_id]
+        if self._server_response_ids:
+            # A known server-initiated response is still live. Opening the
+            # lane now would let the next queued response.create collide with
+            # it, so keep the lane closed until its terminal arrives (or its
+            # id goes stale).
+            self._arm_stale_release_timer()
+            return
+        self._cancel_stale_release_timer()
+        self._server_response_active = False
+        self._idle.set()
 
     def notify_response_created(self, event: dict[str, Any]) -> None:
         self._server_response_active = True
@@ -309,9 +372,8 @@ class RealtimeResponseArbiter:
                 return
         elif response_id is not None:
             # No owner: a server-initiated response reached its terminal
-            # state, so its id no longer needs to be remembered.
+            # state, so its id no longer holds the lane.
             self._server_response_ids.pop(response_id, None)
-        self._server_response_active = False
         if owner is not None:
             if not owner.ticket.started.done():
                 owner.ticket.started.set_exception(
@@ -320,7 +382,10 @@ class RealtimeResponseArbiter:
             if owner.terminal is not None and not owner.terminal.done():
                 owner.terminal.set_result(None)
             self._response_owner = None
-        self._idle.set()
+        # The owner (if any) has terminated; the lane opens only once no
+        # server-initiated response is still live, so a queued
+        # response.create cannot overlap with one whose terminal is pending.
+        self._release_lane_if_clear()
 
     def notify_error(self, event_id: str | None, message: str) -> None:
         current = self._current
@@ -363,6 +428,7 @@ class RealtimeResponseArbiter:
         self._dispatch_allowed.set()
         self._server_response_active = False
         self._server_response_ids.clear()
+        self._cancel_stale_release_timer()
         exc = ConnectionError(reason)
         owner = self._response_owner
         current = self._current
@@ -384,6 +450,7 @@ class RealtimeResponseArbiter:
         self._connection_available = True
         self._dispatch_allowed.set()
         self._server_response_ids.clear()
+        self._cancel_stale_release_timer()
         if self._current is None and self._response_owner is None:
             self._server_response_active = False
             self._idle.set()

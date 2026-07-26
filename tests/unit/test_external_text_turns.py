@@ -285,6 +285,100 @@ async def test_server_response_id_memory_is_bounded_and_pruned():
 
 
 @pytest.mark.asyncio
+async def test_owner_terminal_before_live_server_response_holds_lane():
+    sent = []
+    arbiter = None
+    created_ids = iter(["resp-owner", "resp-follow-up"])
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "response.create":
+            arbiter.notify_response_created(
+                {"type": "response.created", "response": {"id": next(created_ids)}}
+            )
+
+    arbiter = RealtimeResponseArbiter(send)
+    ticket = await arbiter.enqueue(source="owner")
+    await asyncio.wait_for(ticket.started, 0.2)
+
+    # A server-initiated response starts while the owner's response is still
+    # running, and the owner's own terminal arrives FIRST. The live server
+    # response must keep the lane closed, or the queued follow-up would
+    # collide with it (response_already_active).
+    arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-server"}}
+    )
+    follow_up = await arbiter.enqueue(source="follow-up")
+    arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-owner"}}
+    )
+    await asyncio.wait_for(ticket.done, 0.2)
+    await asyncio.sleep(0.01)
+    assert follow_up.sent.done() is False
+    assert arbiter.is_busy
+    assert [event["type"] for event in sent] == ["response.create"]
+
+    # The server response's terminal releases the lane and the follow-up
+    # dispatches normally.
+    arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-server"}}
+    )
+    await asyncio.wait_for(follow_up.sent, 0.2)
+    assert [event["type"] for event in sent] == [
+        "response.create",
+        "response.create",
+    ]
+    arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-follow-up"}}
+    )
+    await asyncio.wait_for(follow_up.done, 0.2)
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_stale_server_response_id_releases_lane_without_terminal(monkeypatch):
+    monkeypatch.setattr(
+        "main_logic.omni_realtime_client._response_arbiter._SERVER_RESPONSE_MAX_AGE",
+        0.2,
+    )
+    sent = []
+    arbiter = None
+    created_ids = iter(["resp-owner", "resp-follow-up"])
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "response.create":
+            arbiter.notify_response_created(
+                {"type": "response.created", "response": {"id": next(created_ids)}}
+            )
+
+    arbiter = RealtimeResponseArbiter(send)
+    ticket = await arbiter.enqueue(source="owner")
+    await asyncio.wait_for(ticket.started, 0.2)
+
+    arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-server"}}
+    )
+    follow_up = await arbiter.enqueue(source="follow-up")
+    arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-owner"}}
+    )
+    await asyncio.wait_for(ticket.done, 0.2)
+    await asyncio.sleep(0.01)
+    assert follow_up.sent.done() is False
+
+    # The server response's terminal never arrives. Past the staleness bound
+    # its id stops holding the lane, so a healthy connection is not wedged.
+    await asyncio.wait_for(follow_up.sent, 2.0)
+    assert "resp-server" not in arbiter._server_response_ids
+    arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-follow-up"}}
+    )
+    await asyncio.wait_for(follow_up.done, 0.2)
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_id_bearing_terminal_before_owner_created_is_treated_as_orphan():
     sent = []
 
