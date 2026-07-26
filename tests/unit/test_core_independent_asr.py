@@ -45,6 +45,7 @@ from main_logic.asr_client.detector import (
 )
 import main_logic.core.asr_runtime as core_asr_runtime_module
 import main_logic.core as core_module
+import main_logic.voice_turn.audio_input as audio_input_module
 from utils import preferences
 
 
@@ -75,6 +76,10 @@ class _Runtime(AsrRuntimeMixin):
         component = self.__dict__.get("_asr_runtime")
         if name in {
             "_asr_route_mode",
+            # Keep the operation generation on the instance so reads observe
+            # bumps, matching production (writes routed to the component
+            # would freeze it at its initial value for every read).
+            "_asr_route_operation_generation",
             "_microphone_route_generation",
             "_independent_asr_provider",
             "_independent_asr_route_key",
@@ -4248,6 +4253,170 @@ async def test_settings_result_is_stale_after_connection_replacement(
     assert runtime._independent_asr_provider is None
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_cold_start_with_unclaimed_lease_still_routes(
+    monkeypatch, enabled: bool
+) -> None:
+    """The bundled frontend flips the lease owner to "core" only after
+    session_started, so route setup must not require owner=="core": gating
+    the start on lease state would leave every cold start blocked."""
+
+    runtime = _Runtime()
+    runtime._voice_lease_owner = "none"
+    runtime._voice_lease_synchronized = True
+    runtime.core_api_type = "qwen"
+
+    async def ready_start(**_kwargs) -> AsrStartResult:
+        return AsrStartResult(
+            AsrStartStatus.READY,
+            provider="qwen",
+            session_epoch=runtime._asr_session_epoch,
+        )
+
+    runtime._asr_runtime.start = AsyncMock(side_effect=ready_start)
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": enabled}),
+    )
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    if enabled:
+        assert runtime._asr_route_mode == "independent"
+        assert runtime._independent_asr_provider == "qwen"
+    else:
+        assert runtime._asr_route_mode == "native"
+
+
+async def test_stale_start_abort_does_not_clobber_newer_start_placeholder(
+    monkeypatch,
+) -> None:
+    """A stale start parked in its abort must not clear the blocked
+    placeholder a newer start installed meanwhile: clearing it would make
+    the newer start's fence fail before it even reaches the native
+    fallback, leaving the route blocked with no failure status."""
+
+    runtime = _Runtime()
+    runtime.core_api_type = "qwen"
+    runtime._voice_lease_connection_id = "conn-A"
+    runtime._voice_lease_generation = 0
+
+    a_start_parked = asyncio.Event()
+    release_a_start = asyncio.Event()
+    a_abort_parked = asyncio.Event()
+    release_a_abort = asyncio.Event()
+    b_settings_parked = asyncio.Event()
+    release_b_settings = asyncio.Event()
+    start_calls: list[dict] = []
+
+    async def fake_runtime_start(**kwargs):
+        start_calls.append(kwargs)
+        if len(start_calls) == 1:
+            a_start_parked.set()
+            await release_a_start.wait()
+            return AsrStartResult(
+                AsrStartStatus.FAILED,
+                failure_code="ASR_START_STALE",
+                session_epoch=runtime._asr_session_epoch,
+            )
+        return AsrStartResult(
+            AsrStartStatus.READY,
+            provider="qwen",
+            session_epoch=runtime._asr_session_epoch,
+        )
+
+    async def fake_abort(reason):
+        a_abort_parked.set()
+        await release_a_abort.wait()
+
+    runtime._asr_runtime.start = fake_runtime_start
+    runtime._asr_runtime.abort = fake_abort
+    runtime._asr_runtime.close = AsyncMock()
+
+    settings_calls = 0
+
+    async def load_settings():
+        nonlocal settings_calls
+        settings_calls += 1
+        if settings_calls == 2:
+            b_settings_parked.set()
+            await release_b_settings.wait()
+        return {"independentAsrEnabled": True}
+
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        load_settings,
+    )
+
+    task_a = asyncio.create_task(runtime._start_independent_asr_if_enabled("audio"))
+    await asyncio.wait_for(a_start_parked.wait(), 1)
+    runtime._begin_voice_input_connection("conn-B")
+    release_a_start.set()
+    await asyncio.wait_for(a_abort_parked.wait(), 1)
+
+    task_b = asyncio.create_task(runtime._start_independent_asr_if_enabled("audio"))
+    await asyncio.wait_for(b_settings_parked.wait(), 1)
+    assert runtime._independent_asr_route_key == "qwen"
+
+    release_a_abort.set()
+    await asyncio.wait_for(task_a, 1)
+    assert runtime._independent_asr_route_key == "qwen"
+
+    release_b_settings.set()
+    await asyncio.wait_for(task_b, 1)
+
+    assert len(start_calls) == 2
+    assert runtime._asr_route_mode == "independent"
+    assert runtime._independent_asr_provider == "qwen"
+
+
+async def test_core_start_survives_benign_lease_transition(monkeypatch) -> None:
+    """Owner flip / mute toggle / lease bump during the settings await are
+    PCM-gating changes, not route operations; they must not abort the start
+    (there is no retry or failure status on that path)."""
+
+    settings_started = asyncio.Event()
+    release_settings = asyncio.Event()
+
+    async def load_settings():
+        settings_started.set()
+        await release_settings.wait()
+        return {"independentAsrEnabled": True}
+
+    runtime = _Runtime()
+    runtime._voice_lease_owner = "none"
+    runtime._voice_lease_synchronized = True
+    runtime.core_api_type = "qwen"
+
+    async def ready_start(**_kwargs) -> AsrStartResult:
+        return AsrStartResult(
+            AsrStartStatus.READY,
+            provider="qwen",
+            session_epoch=runtime._asr_session_epoch,
+        )
+
+    runtime._asr_runtime.start = AsyncMock(side_effect=ready_start)
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        load_settings,
+    )
+
+    starting = asyncio.create_task(runtime._start_independent_asr_if_enabled("audio"))
+    await asyncio.wait_for(settings_started.wait(), 1)
+    runtime._voice_lease_owner = "core"
+    runtime._voice_lease_hard_muted = True
+    runtime._voice_lease_generation += 1
+    release_settings.set()
+    await asyncio.wait_for(starting, 1)
+
+    runtime._asr_runtime.start.assert_awaited_once()
+    assert runtime._asr_route_mode == "independent"
+    assert runtime._independent_asr_provider == "qwen"
+
+
 @pytest.mark.parametrize(
     "newer_transition",
     [
@@ -4258,9 +4427,12 @@ async def test_settings_result_is_stale_after_connection_replacement(
         "connection_replacement",
     ],
 )
-async def test_old_game_release_cannot_resume_after_newer_transition(
+async def test_game_release_resume_only_survives_pcm_gating_transitions(
     newer_transition: str,
 ) -> None:
+    """Ownership loss during the release abort must skip resume; PCM-gating
+    transitions (mute/focus/lease bump) must not, because resume has no other
+    call site and skipping it leaves the runtime SUSPENDED for the session."""
     runtime = _Runtime()
     runtime._voice_lease_connection_id = "connection"
     runtime._voice_lease_generation = 1
@@ -4318,7 +4490,10 @@ async def test_old_game_release_cannot_resume_after_newer_transition(
     release_abort.set()
     await asyncio.wait_for(releasing, 1)
 
-    runtime._asr_runtime.resume.assert_not_awaited()
+    if newer_transition in {"game_takeover", "connection_replacement"}:
+        runtime._asr_runtime.resume.assert_not_awaited()
+    else:
+        runtime._asr_runtime.resume.assert_awaited_once_with("game_release")
 
 
 async def test_current_game_release_still_aborts_and_resumes_once() -> None:
@@ -4378,3 +4553,175 @@ async def test_notification_waiting_on_lock_drops_same_epoch_stale_identity(
 
     runtime.send_status.assert_not_awaited()
     assert runtime._asr_route_mode == "independent"
+
+
+def _lease_resync_statuses(runtime: _Runtime) -> list[dict]:
+    statuses = [
+        json.loads(call.args[0]) for call in runtime.send_status.await_args_list
+    ]
+    return [
+        status
+        for status in statuses
+        if status["code"] == "VOICE_INPUT_LEASE_RESYNC_REQUIRED"
+    ]
+
+
+def _mic_frame() -> dict:
+    return {"input_type": "audio", "sample_rate_hz": 16_000, "data": [1] * 160}
+
+
+async def test_unsynchronized_pcm_signals_lease_resync_once_per_state() -> None:
+    runtime = _Runtime()
+    assert runtime._begin_voice_input_connection("chat-window") is True
+
+    for _ in range(3):
+        await runtime._enqueue_audio_stream_data(_mic_frame())
+
+    resync = _lease_resync_statuses(runtime)
+    assert len(resync) == 1
+    assert resync[0]["details"]["reason"] == "lease_unsynchronized"
+    assert runtime._audio_stream_queue.empty()
+    assert runtime._audio_stream_worker_task is None
+
+    assert runtime._begin_voice_input_connection("pet-window") is True
+    for _ in range(2):
+        await runtime._enqueue_audio_stream_data(_mic_frame())
+
+    assert len(_lease_resync_statuses(runtime)) == 2
+    assert runtime._audio_stream_queue.empty()
+
+
+async def test_synchronized_none_owner_pcm_signals_lease_resync() -> None:
+    runtime = _Runtime()
+    assert runtime._begin_voice_input_connection("chat-window") is True
+    assert (
+        await runtime._handle_voice_input_control(
+            "lease_sync",
+            1,
+            owner="none",
+            hard_muted=False,
+            focus_suppressed=False,
+        )
+        is True
+    )
+
+    for _ in range(2):
+        await runtime._enqueue_audio_stream_data(_mic_frame())
+
+    resync = _lease_resync_statuses(runtime)
+    assert len(resync) == 1
+    assert resync[0]["details"]["reason"] == "owner_none"
+    assert runtime._audio_stream_queue.empty()
+
+
+async def test_hard_muted_pcm_never_signals_lease_resync() -> None:
+    runtime = _Runtime()
+    assert runtime._begin_voice_input_connection("chat-window") is True
+    assert (
+        await runtime._handle_voice_input_control(
+            "lease_sync",
+            1,
+            owner="core",
+            hard_muted=True,
+            focus_suppressed=False,
+        )
+        is True
+    )
+
+    for _ in range(2):
+        await runtime._enqueue_audio_stream_data(_mic_frame())
+
+    assert _lease_resync_statuses(runtime) == []
+    assert runtime._audio_stream_queue.empty()
+
+
+async def test_game_owner_pcm_never_signals_lease_resync() -> None:
+    runtime = _Runtime()
+    assert runtime._begin_voice_input_connection("chat-window") is True
+    assert (
+        await runtime._handle_voice_input_control(
+            "lease_sync",
+            1,
+            owner="game",
+            hard_muted=False,
+            focus_suppressed=False,
+        )
+        is True
+    )
+
+    for _ in range(2):
+        await runtime._enqueue_audio_stream_data(_mic_frame())
+
+    assert _lease_resync_statuses(runtime) == []
+    assert runtime._audio_stream_queue.empty()
+
+
+async def test_noise_reduction_disabled_reaches_pipeline_audio_processor(
+    monkeypatch,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    created: list[dict] = []
+
+    class _RecordingProcessor:
+        def __init__(self, **kwargs) -> None:
+            created.append(kwargs)
+            self.speech_probability = 0.0
+            self.rnnoise_available = False
+
+        def process_chunk(self, _audio_bytes: bytes) -> bytes:
+            return b""
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(audio_input_module, "AudioProcessor", _RecordingProcessor)
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(
+            return_value={
+                "independentAsrEnabled": False,
+                "noiseReductionEnabled": False,
+            }
+        ),
+    )
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    assert runtime._voice_input_noise_reduction_enabled is False
+    assert runtime._voice_input_audio_pipeline.nr_enabled is False
+    await runtime._voice_input_audio_pipeline.process(
+        b"\x01\x00" * 480,
+        sample_rate_hz=48_000,
+    )
+    assert created[-1]["noise_reduce_enabled"] is False
+
+    started_pipeline = runtime._voice_input_audio_pipeline
+    await runtime._close_independent_asr(next_route_mode="blocked")
+
+    assert runtime._voice_input_audio_pipeline is not started_pipeline
+    assert runtime._voice_input_audio_pipeline.nr_enabled is False
+    await runtime._voice_input_audio_pipeline.process(
+        b"\x01\x00" * 480,
+        sample_rate_hz=48_000,
+    )
+    assert len(created) == 2
+    assert created[-1]["noise_reduce_enabled"] is False
+
+
+async def test_settings_read_failure_keeps_noise_reduction_enabled(
+    monkeypatch,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(side_effect=RuntimeError("settings unavailable")),
+    )
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    assert runtime._voice_input_noise_reduction_enabled is True
+    assert runtime._voice_input_audio_pipeline.nr_enabled is True

@@ -34,12 +34,23 @@ class VoiceInputAudioPipeline:
     def __init__(
         self,
         *,
+        nr_enabled: bool = True,
         processor_factory: Callable[[], _AudioProcessorProtocol] | None = None,
     ) -> None:
-        self._processor_factory = processor_factory or AudioProcessor
+        self._nr_enabled = bool(nr_enabled)
+        self._processor_factory = (
+            processor_factory or self._default_processor_factory
+        )
         self._processor: _AudioProcessorProtocol | None = None
         self._lock = asyncio.Lock()
         self._closed = False
+
+    @property
+    def nr_enabled(self) -> bool:
+        return self._nr_enabled
+
+    def _default_processor_factory(self) -> _AudioProcessorProtocol:
+        return AudioProcessor(noise_reduce_enabled=self._nr_enabled)
 
     async def _process_chunk_cancellation_safe(
         self,

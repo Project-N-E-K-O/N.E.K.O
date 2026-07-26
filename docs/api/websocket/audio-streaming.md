@@ -40,6 +40,17 @@ has sent any explicit control message—even an invalid one—the fallback is
 permanently disabled for that connection. A start that remains unauthorized
 returns `VOICE_INPUT_LEASE_REQUIRED`.
 
+The manager keeps one lease across all connections, and every new WebSocket
+resets it. If microphone samples then arrive while the lease is unusable
+because it was never synchronized or its installed owner is `none`—for
+example after another window opened a connection and reset the manager
+lease—the server drops that audio and emits status code
+`VOICE_INPUT_LEASE_RESYNC_REQUIRED`. The signal is sent at most once per
+connection and lease state; on receiving it, resend a full `lease_sync`
+snapshot even if the client-side snapshot fingerprint is unchanged.
+Deliberate suppression never triggers this signal: hard mute, focus
+suppression, and a game owner keep dropping audio silently.
+
 ## Start the voice session first
 
 ```json

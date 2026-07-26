@@ -197,6 +197,9 @@ class AsrRuntimeMixin:
         self._voice_lease_requires_abort = False
         self._voice_input_suppressed = True
         self._voice_input_suppression_reasons: set[str] = {"owner_none"}
+        self._voice_lease_resync_signal_state: tuple[str, int, bool, str] | None = (
+            None
+        )
         self._voice_input_consumer_bindings: dict[
             str,
             VoiceInputConsumerBinding,
@@ -226,7 +229,10 @@ class AsrRuntimeMixin:
         self._asr_notification_lock = asyncio.Lock()
         self._independent_asr_provider: str | None = None
         self._independent_asr_route_key: str | None = None
-        self._voice_input_audio_pipeline = VoiceInputAudioPipeline()
+        self._voice_input_noise_reduction_enabled = True
+        self._voice_input_audio_pipeline = VoiceInputAudioPipeline(
+            nr_enabled=self._voice_input_noise_reduction_enabled,
+        )
         self._voice_input_pipeline_failed = False
         callbacks = AsrRuntimeCallbacks(
             display_name=lambda: str(getattr(self, "lanlan_name", "core")),
@@ -248,6 +254,10 @@ class AsrRuntimeMixin:
             self._asr_notification_lock = asyncio.Lock()
         if not hasattr(self, "_voice_input_transition_generation"):
             self._voice_input_transition_generation = 0
+        if not hasattr(self, "_voice_lease_resync_signal_state"):
+            self._voice_lease_resync_signal_state = None
+        if not hasattr(self, "_voice_input_noise_reduction_enabled"):
+            self._voice_input_noise_reduction_enabled = True
 
     def _begin_asr_route_operation(self) -> int:
         self._asr_route_operation_generation += 1
@@ -419,19 +429,32 @@ class AsrRuntimeMixin:
         self._omni_mic_audio_bytes = 0
         core_type = str(getattr(self, "core_api_type", "") or "").strip().lower()
         self._independent_asr_route_key = core_type
-        start_identity = self._capture_core_asr_operation_identity()
-        session_epoch = self._core_asr_identity_ingress_token(
-            start_identity
-        ).session_epoch
+        session_epoch = self._capture_ingress_token().session_epoch
+        start_connection_id = self._voice_lease_connection_id
+        start_session_ref = getattr(self, "session", None)
 
-        def core_start_is_current(*, include_runtime_identity: bool = True) -> bool:
+        def route_operation_unclaimed() -> bool:
+            # No competing route operation has run or completed: the route is
+            # still the blocked placeholder this start installed.
             return bool(
-                self._core_asr_operation_identity_matches(
-                    start_identity,
-                    include_runtime_identity=include_runtime_identity,
-                )
-                and self._voice_lease_owner == "core"
-                and self._voice_input_accepts_pcm()
+                self._asr_route_operation_matches(operation_generation)
+                and self._asr_route_mode == "blocked"
+                and self._independent_asr_route_key == core_type
+                and self._independent_asr_provider is None
+                and str(getattr(self, "core_api_type", "") or "").strip().lower()
+                == core_type
+                and getattr(self, "session", None) is start_session_ref
+            )
+
+        def core_start_is_current() -> bool:
+            # Route setup is fenced on competing route operations and on
+            # websocket replacement. Lease state (owner/mute/focus) gates PCM
+            # at ingress, not routing: the frontend flips owner to "core"
+            # only after session_started, so a lease-state gate here would
+            # permanently block every cold start.
+            return bool(
+                route_operation_unclaimed()
+                and self._voice_lease_connection_id == start_connection_id
             )
 
         if input_mode != "audio":
@@ -452,6 +475,23 @@ class AsrRuntimeMixin:
             return
         if not core_start_is_current():
             return
+        nr_enabled = settings.get("noiseReductionEnabled", True) is not False
+        self._voice_input_noise_reduction_enabled = nr_enabled
+        if self._voice_input_audio_pipeline.nr_enabled != nr_enabled:
+            stale_pipeline = self._voice_input_audio_pipeline
+            self._voice_input_audio_pipeline = VoiceInputAudioPipeline(
+                nr_enabled=nr_enabled,
+            )
+            self._voice_input_pipeline_failed = False
+            try:
+                await stale_pipeline.close()
+            except Exception:
+                logger.warning(
+                    "[%s] voice input audio pipeline close failed",
+                    self.lanlan_name,
+                )
+            if not core_start_is_current():
+                return
         enabled = bool(settings.get("independentAsrEnabled", False))
         optimization_value = settings.get(
             "voice_input_resource_optimization_enabled",
@@ -472,15 +512,39 @@ class AsrRuntimeMixin:
             resource_optimization_enabled=optimization_value is not False,
         )
         current_epoch = self._capture_ingress_token().session_epoch
-        if not core_start_is_current(include_runtime_identity=False):
-            if self._asr_route_operation_matches(operation_generation):
+        if not core_start_is_current():
+            route_fields_still_ours = bool(
+                self._asr_route_operation_matches(operation_generation)
+                and self._asr_route_mode == "blocked"
+                and self._independent_asr_route_key == core_type
+                and self._independent_asr_provider is None
+            )
+            if route_fields_still_ours:
+                # Websocket replacement or session swap without a competing
+                # route operation: nobody else owns the runtime, so close the
+                # candidate and clear the route key so a later reconcile
+                # retries.
                 abort = getattr(self._asr_runtime, "abort", None)
                 if callable(abort):
                     await abort("stale_core_start")
+                # Re-check after the abort await: a competing start may have
+                # installed its own blocked placeholder meanwhile, and
+                # clearing that key would silently kill it before it even
+                # reaches the native fallback.
+                if (
+                    self._asr_route_operation_matches(operation_generation)
+                    and self._independent_asr_route_key == core_type
+                ):
+                    self._independent_asr_route_key = None
             return
         if result.failure_code == "ASR_START_STALE":
+            # Runtime-level invalidation (e.g. a new websocket connection)
+            # without a competing route operation: clear the route key so a
+            # later reconcile retries instead of treating the route as done.
+            self._independent_asr_route_key = None
             return
         if result.session_epoch != current_epoch:
+            self._independent_asr_route_key = None
             return
         self._independent_asr_provider = result.provider
         if result.status is AsrStartStatus.READY:
@@ -507,7 +571,9 @@ class AsrRuntimeMixin:
         self._set_microphone_route("blocked")
         if not preserve_hot_swap_audio:
             self._invalidate_voice_pcm_sync("independent_asr_close")
-        self._voice_input_audio_pipeline = VoiceInputAudioPipeline()
+        self._voice_input_audio_pipeline = VoiceInputAudioPipeline(
+            nr_enabled=self._voice_input_noise_reduction_enabled,
+        )
         self._voice_input_pipeline_failed = False
         self._independent_asr_provider = None
         self._independent_asr_route_key = None
@@ -582,9 +648,52 @@ class AsrRuntimeMixin:
             reason,
         )
 
+    async def _maybe_signal_voice_lease_resync(self) -> None:
+        """Nudge a client whose PCM is dropped only because no lease is set.
+
+        Deliberate suppression (hard mute, focus suppression, game owner)
+        must stay silent; only an unsynchronized lease or an installed
+        ``none`` owner means the sender lost a lease it still believes it
+        holds. One signal per connection and lease state keeps the channel
+        quiet while every later lease change re-arms it.
+        """
+
+        if (
+            self._voice_lease_hard_muted
+            or self._voice_lease_focus_suppressed
+            or self._voice_lease_owner == "game"
+        ):
+            return
+        if self._voice_lease_synchronized and self._voice_lease_owner != "none":
+            return
+        signal_state = (
+            self._voice_lease_connection_id,
+            self._voice_lease_generation,
+            self._voice_lease_synchronized,
+            self._voice_lease_owner,
+        )
+        if signal_state == self._voice_lease_resync_signal_state:
+            return
+        self._voice_lease_resync_signal_state = signal_state
+        await self.send_status(
+            json.dumps(
+                {
+                    "code": "VOICE_INPUT_LEASE_RESYNC_REQUIRED",
+                    "details": {
+                        "reason": (
+                            "lease_unsynchronized"
+                            if not self._voice_lease_synchronized
+                            else "owner_none"
+                        ),
+                    },
+                }
+            )
+        )
+
     async def _enqueue_audio_stream_data(self, message: dict) -> None:
         self._ensure_asr_runtime_state()
         if not self._voice_input_accepts_pcm():
+            await self._maybe_signal_voice_lease_resync()
             return
         token = self._capture_ingress_token()
         ingress_sequence = self._reserve_hot_swap_ingress_sequence()
@@ -1149,7 +1258,6 @@ class AsrRuntimeMixin:
         self._voice_input_suppressed = bool(reasons)
         self._invalidate_voice_pcm_sync(reason)
         current = (owner, hard_muted, focus_suppressed)
-        transition_identity = self._capture_core_asr_operation_identity()
         should_abort = (
             force_abort or self._voice_lease_requires_abort or previous != current
         )
@@ -1160,14 +1268,19 @@ class AsrRuntimeMixin:
             await self._asr_runtime.suspend(reason)
         elif reason == "game_release":
             if should_abort:
+                route_operation_snapshot = self._asr_route_operation_generation
                 await self._asr_runtime.abort(reason)
-                if not self._core_asr_operation_identity_matches(
-                    transition_identity,
-                    include_runtime_identity=False,
+                if (
+                    self._asr_route_operation_generation != route_operation_snapshot
+                    or self._voice_lease_owner != "core"
                 ):
                     return
-            if self._voice_lease_owner != "core" or not self._voice_input_accepts_pcm():
+            if self._voice_lease_owner != "core":
                 return
+            # Resume the lifecycle even while hard-muted or focus-suppressed:
+            # those states gate PCM at ingress, and no later unmute path calls
+            # resume, so skipping here would leave the runtime SUSPENDED for
+            # the rest of the session.
             await self._asr_runtime.resume(reason)
         elif should_abort:
             await self._asr_runtime.abort(reason)
