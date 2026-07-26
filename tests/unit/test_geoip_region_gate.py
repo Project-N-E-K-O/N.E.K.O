@@ -386,7 +386,10 @@ def test_startup_warmup_waits_for_the_verdict(monkeypatch):
     monkeypatch.setattr(urllib.request, 'build_opener', lambda *a, **kw: _Slow())
 
     probe = _Probe()
-    probe.aget_core_config = _async_return(None)
+    probe.aget_core_config = _async_return(
+        # 真实的免费路由形态：空真判定按「free provider + 区域敏感 URL」合取，
+        # None/空配置会被判成无需区域而跳过等待，测不到等待路径
+        {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.tech/core'})
 
     ConfigManager._ensure_ip_probe_started()
     assert ConfigManager._ip_check_cache is None, '前置条件：预热开始时结论尚未落地'
@@ -409,7 +412,10 @@ def test_startup_warmup_does_not_block_the_event_loop(monkeypatch):
     monkeypatch.setattr(urllib.request, 'build_opener', lambda *a, **kw: _Hanging())
 
     probe = _Probe()
-    probe.aget_core_config = _async_return(None)
+    probe.aget_core_config = _async_return(
+        # 真实的免费路由形态：空真判定按「free provider + 区域敏感 URL」合取，
+        # None/空配置会被判成无需区域而跳过等待，测不到等待路径
+        {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.tech/core'})
     ConfigManager._ensure_ip_probe_started()
 
     async def _run():
@@ -451,7 +457,10 @@ def test_session_start_waits_out_a_probe_still_in_flight(monkeypatch):
     monkeypatch.setattr(urllib.request, 'build_opener', lambda *a, **kw: _Slow())
 
     probe = _Probe()
-    probe.aget_core_config = _async_return(None)
+    probe.aget_core_config = _async_return(
+        # 真实的免费路由形态：空真判定按「free provider + 区域敏感 URL」合取，
+        # None/空配置会被判成无需区域而跳过等待，测不到等待路径
+        {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.tech/core'})
     ConfigManager._ensure_ip_probe_started()
     assert ConfigManager._ip_check_cache is None
 
@@ -501,7 +510,10 @@ def test_session_start_logs_when_the_wait_expires(monkeypatch):
     )
 
     probe = _Probe()
-    probe.aget_core_config = _async_return(None)
+    probe.aget_core_config = _async_return(
+        # 真实的免费路由形态：空真判定按「free provider + 区域敏感 URL」合取，
+        # None/空配置会被判成无需区域而跳过等待，测不到等待路径
+        {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.tech/core'})
     ConfigManager._ensure_ip_probe_started()
     try:
         assert asyncio.run(probe.aensure_region_resolved(timeout=0.1)) is False
@@ -546,7 +558,10 @@ def test_skipping_the_wait_does_not_promote_steam():
     """Not waiting is a latency call, not a correctness one — Steam must not latch."""
     probe = _Probe()
     probe._check_steam_non_mainland = lambda: True
-    probe.aget_core_config = _async_return(None)
+    probe.aget_core_config = _async_return(
+        # 真实的免费路由形态：空真判定按「free provider + 区域敏感 URL」合取，
+        # None/空配置会被判成无需区域而跳过等待，测不到等待路径
+        {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.tech/core'})
 
     assert asyncio.run(probe.aensure_region_resolved(timeout=5)) is True
     assert ConfigManager._region_cache is None, 'Steam 票不得因跳过等待而落定'
@@ -1350,7 +1365,10 @@ def test_startup_warmup_retries_a_backed_off_probe(monkeypatch):
     calls = _patch_probe_once(monkeypatch, [OSError('network not up'), 'US'])
 
     probe = _Probe()
-    probe.aget_core_config = _async_return(None)
+    probe.aget_core_config = _async_return(
+        # 真实的免费路由形态：空真判定按「free provider + 区域敏感 URL」合取，
+        # None/空配置会被判成无需区域而跳过等待，测不到等待路径
+        {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.tech/core'})
 
     # 首探失败并进入 30 秒退避（远长于预热愿意等的时间）
     ConfigManager._ensure_ip_probe_started()
@@ -2453,3 +2471,48 @@ def test_custom_url_with_brand_substring_survives_the_rewrite(config_manager):
     kept = config_manager._adjust_free_api_url(
         'wss://www.lanlan.tech/core', True, non_mainland=False)
     assert kept == 'wss://www.lanlan.tech/core'
+
+
+@pytest.mark.unit
+def test_leaving_the_free_route_bypasses_a_wedged_probe(monkeypatch):
+    """A config that needs no verdict settles vacuously even with a live stale probe.
+
+    Switching from free to a paid/custom provider does not kill an HTTP lookup
+    already wedged in DNS — the old thread stays alive with the in-flight
+    marker set for as long as ``getaddrinfo`` blocks. Evaluating the vacuous
+    truth only when the thread was dead made every later session and guarded
+    plugin request pay the full join timeout for a route no verdict will ever
+    touch.
+    """
+    wedged = threading.Event()
+    release = threading.Event()
+
+    def _once():
+        wedged.set()
+        release.wait(10)          # 模拟卡在 getaddrinfo
+        raise OSError('resolver timed out')
+
+    monkeypatch.setattr(ConfigManager, '_ip_probe_once', staticmethod(_once))
+    try:
+        ConfigManager._ensure_ip_probe_started()
+        assert wedged.wait(5), '前置条件：探测已卡在请求中'
+        assert ConfigManager._ip_probe_in_flight.is_set()
+
+        probe = _Probe()
+        probe._check_steam_non_mainland = lambda: None
+        probe.aget_core_config = _async_return(
+            {'coreApi': 'openai', 'CORE_URL': 'https://api.openai.com/v1'})
+
+        started = real_time.monotonic()
+        assert asyncio.run(probe.aensure_region_resolved(timeout=5)) is True, \
+            '切走免费路由后不该再为残留的卡死探测等待'
+        assert real_time.monotonic() - started < 0.5, '空真判定不该看探测死活'
+
+        warm = _Probe()
+        warm.aget_core_config = _async_return(
+            {'coreApi': 'openai', 'CORE_URL': 'https://api.openai.com/v1'})
+        started = real_time.monotonic()
+        assert asyncio.run(warm.awarmup_region_check(timeout=5)) is True
+        assert real_time.monotonic() - started < 0.5
+    finally:
+        release.set()

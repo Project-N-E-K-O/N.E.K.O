@@ -1249,6 +1249,19 @@ class LifecycleMixin:
             # 读一份**新鲜快照**，conversation 与 vision 都从它解析——两次独立的读会
             # 让保存恰好落在中间时拿到撕裂的一对（旧 conversation + 新 vision）。
             _fresh_core_config = await self._config_manager.aget_core_config()
+            # 区域可能恰在记忆拉取那几秒里翻转（prepare 的落定是 Steam 兜底/超时、
+            # 权威 IP 结论随后到达）：此时 prepare 阶段解析的 voice_id 属于旧区域
+            # 目录，而本快照的线路是新区域——realtime 侧有按快照的配对闸门兜底
+            # （错配不下发、落服务端默认），text 的 TTS 合成则可能失败一场后自愈。
+            # 完整修复需把 prepare 的音色链在此有条件重演，回归风险大于收益，先
+            # 记日志让现场可诊断（与热切换 TTS worker 不重建同类，见 PR 说明）。
+            if (str(core_config_snapshot.get('CORE_URL') or '')
+                    != str(_fresh_core_config.get('CORE_URL') or '')):
+                logger.warning(
+                    "[GeoIP] 区域结论在会话准备与连接创建之间发生变化"
+                    "（%s → %s），本场音色可能落到服务端默认",
+                    core_config_snapshot.get('CORE_URL'), _fresh_core_config.get('CORE_URL'),
+                )
             conversation_config = await self._config_manager.aget_model_api_config(
                 'conversation', core_config=_fresh_core_config
             )
@@ -1298,7 +1311,16 @@ class LifecycleMixin:
             new_session.on_thinking_active = self._make_thinking_active_callback(new_session)
         else:
             # 同上：await 记忆拉取之后必须重读，不复用 prepare_runtime 的快照
+            _prev_realtime_base = str(realtime_config.get('base_url') or '')
             realtime_config = await self._config_manager.aget_model_api_config('realtime')
+            # 区域翻转诊断，与 text 分支对偶；realtime 的音色下发按本快照的
+            # base_url 走配对闸门，错配不下发、落服务端默认（fail-safe）。
+            if _prev_realtime_base != str(realtime_config.get('base_url') or ''):
+                logger.warning(
+                    "[GeoIP] 区域结论在会话准备与连接创建之间发生变化"
+                    "（%s → %s），本场音色可能落到服务端默认",
+                    _prev_realtime_base, realtime_config.get('base_url'),
+                )
             nr_enabled = (await _core_facade.aload_global_conversation_settings()).get('noiseReductionEnabled', True)
             new_session = OmniRealtimeClient(
                 base_url=realtime_config.get('base_url', ''),

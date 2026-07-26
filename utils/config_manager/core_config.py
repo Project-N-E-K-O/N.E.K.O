@@ -556,32 +556,27 @@ class CoreConfigMixin:
         cfg = await self.aget_core_config()
         if ConfigManager._ip_check_cache is not None:
             return True
+        # 空真判定提前到「不看探测死活」：配置里没有区域敏感 URL（自配 API /
+        # livestream 全派生）就是已落定，与旧探测是否还卡在 DNS 无关——用户从
+        # 免费路由切走后，残留探测可以 alive+in_flight 很久（getaddrinfo 不受
+        # socket timeout 约束），只在线程死后才认空真会让之后每个会话/插件请求
+        # 都为一条区域无关的线路白等满 timeout。
+        if not (
+            ConfigManager._any_free_provider(cfg)
+            and ConfigManager._config_needs_region(
+                cfg, ConfigManager._REGION_HOSTS_ADJUSTED,
+            )
+        ):
+            return True
         thread = ConfigManager._ip_probe_thread
         if ((thread is None or not thread.is_alive())
                 and not ConfigManager._ip_probe_in_flight.is_set()):
-            # 没有探测在跑。in_flight 同查：_ensure_ip_probe_started 先预置
-            # in-flight 再 start()，「已赋值未启动」的线程不该被误判成不存在——
-            # 与 join_ip_probe 里的护栏同一习语，那种窗口该落到下面的 join 去等。
-            # 先复查一次结论：循环可能恰在上面读配置之后落地退出（写完 cache
-            # 线程即结束），这窗口里 thread 已死但结论其实已有。
-            if ConfigManager._ip_check_cache is not None:
-                return True
-            # 配置里压根没有区域敏感 URL（自配 API / livestream 全派生）时，
-            # 「已落定」是空真——没有什么可落定的，返回 True。返回 False 会让
-            # 检查返回值的调用方（音色目录、语音合成）对着一个不存在的风险每次
-            # 请求都告警，把这些 warning 本来要抓的真信号（免费路由用户探测未
-            # 落地）淹掉。
-            # 判据与 _free_route_still_needs_region / _region_verdict_is_provisional
-            # 对偶：_any_free_provider 合取 + ADJUSTED 集合，不另立一套（不变量 #2）。
-            # 只看 host 会把「显式把自配端点配在 lanlan.app」的用户误判成未落定
-            # ——他们的 provider 字段不是 free、URL 不参与区域改写，区域对其无
-            # 意义，永远不会有探测来终止那个假警告。
-            return not (
-                ConfigManager._any_free_provider(cfg)
-                and ConfigManager._config_needs_region(
-                    cfg, ConfigManager._REGION_HOSTS_ADJUSTED,
-                )
-            )
+            # 免费路由却没有探测在跑（循环恰在上面读配置后落地退出，或已收工）。
+            # in_flight 同查：_ensure_ip_probe_started 先预置 in-flight 再 start()，
+            # 「已赋值未启动」的线程不该被误判成不存在——与 join_ip_probe 里的
+            # 护栏同一习语，那种窗口该落到下面的 join 去等。
+            # 复查一次结论：写完 cache 线程即结束的窗口里 thread 已死但结论已有。
+            return ConfigManager._ip_check_cache is not None
         resolved = await asyncio.to_thread(self.join_ip_probe, timeout)
         if not resolved:
             # 等满仍无结论：这一场会话会用大陆兜底线路，且中途不会改。无限等不是
@@ -607,19 +602,21 @@ class CoreConfigMixin:
         from utils.config_manager import ConfigManager
 
         cfg = await self.aget_core_config()
-        self._kick_ip_probe()
-        if await asyncio.to_thread(self.join_ip_probe, timeout, True):
-            return True
-        # join 拿不到结论时区分「等不到」和「无需等」：自配 API / livestream 全派生
-        # 的配置根本不起探测（隐私门），对它们返回 False 只会让启动日志报一条不存
-        # 在的「后续按退避重试」。语义与 aensure_region_resolved 对偶，判据同样取
-        # _any_free_provider 合取（显式自配在 lanlan.app 的端点不是免费路由）。
-        return not (
+        # 空真提前且不看探测死活：自配 API / livestream 全派生的配置根本不需要
+        # 区域结论（隐私门），对它们返回 False 只会让启动日志报一条不存在的
+        # 「后续按退避重试」；而残留的旧探测（用户刚从免费路由切走）可以卡在
+        # DNS 里 alive 很久，等它纯属白付启动时长。语义与 aensure_region_resolved
+        # 对偶，判据同样取 _any_free_provider 合取（显式自配在 lanlan.app 的端点
+        # 不是免费路由）。
+        if not (
             ConfigManager._any_free_provider(cfg)
             and ConfigManager._config_needs_region(
                 cfg, ConfigManager._REGION_HOSTS_ADJUSTED,
             )
-        )
+        ):
+            return True
+        self._kick_ip_probe()
+        return await asyncio.to_thread(self.join_ip_probe, timeout, True)
 
     @staticmethod
     def _check_ip_non_mainland_http():
