@@ -1406,7 +1406,14 @@ class CoreConfigMixin:
         for key, value in config.items():
             if key.endswith('_URL') and isinstance(value, str):
                 config[key] = self._adjust_free_api_url(
-                    value, True, non_mainland=snapshot_non_mainland,
+                    value, True,
+                    # AGENT_MODEL_URL 豁免区域改写：free-agent-model 有意固定 CN 的
+                    # lanlan.tech text 入口（见 _normalize_agent_url——它是恒等函数，
+                    # **撤销不了**本循环已做的改写，豁免必须发生在这里）。传
+                    # non_mainland=False 而不是跳过整个调用：livestream 前缀派生在
+                    # _adjust_free_api_url 里优先于区域改写，豁免的是「区域」，
+                    # 不是「本地转发」。
+                    non_mainland=False if key == 'AGENT_MODEL_URL' else snapshot_non_mainland,
                 )
 
         # Agent model always uses international API regardless of region

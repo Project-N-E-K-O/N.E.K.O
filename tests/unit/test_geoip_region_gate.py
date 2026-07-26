@@ -2067,3 +2067,34 @@ def test_deduper_cache_is_published_atomically():
             '二元组」或 None 初始化——任何引用旧缓存分量的表达式都会重新引入'
             '交错错配'
         )
+
+
+@pytest.mark.unit
+def test_agent_url_survives_the_overseas_rewrite_end_to_end(config_manager, monkeypatch):
+    """The Agent exemption must hold on the assembled snapshot, not just the predicate.
+
+    ``_normalize_agent_url`` is an identity function — it cannot undo a rewrite
+    the generic ``*_URL`` loop already applied, so the exemption has to happen
+    inside that loop. The predicate-only test above kept passing while the
+    assembled config shipped a ``lanlan.app`` Agent URL; this pins the actual
+    ``get_core_config`` output: overseas verdict, free route — every other free
+    URL flips to ``.app``, the Agent URL stays on the CN ``lanlan.tech`` entry.
+    """
+    import json as _json
+
+    path = config_manager.get_config_path('core_config.json')
+    with open(str(path), 'w', encoding='utf-8') as fh:
+        _json.dump({'coreApi': 'free'}, fh)
+
+    monkeypatch.setattr(ConfigManager, '_region_cache', True)
+    monkeypatch.setattr(ConfigManager, '_ip_check_cache', True)
+
+    cfg = config_manager.get_core_config()
+
+    agent_url = cfg.get('AGENT_MODEL_URL') or ''
+    assert 'lanlan.tech' in agent_url, \
+        f'AGENT_MODEL_URL 被区域改写卷走了（free-agent-model 固定 CN 入口）: {agent_url}'
+    rewritten = [v for k, v in cfg.items()
+                 if k.endswith('_URL') and k != 'AGENT_MODEL_URL'
+                 and isinstance(v, str) and 'lanlan.app' in v]
+    assert rewritten, '前置条件：海外判定下其它免费 URL 应已改写为 lanlan.app'
