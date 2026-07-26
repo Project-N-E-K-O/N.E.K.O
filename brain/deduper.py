@@ -105,15 +105,22 @@ class TaskDeduper:
             return {"duplicate": False, "matched_id": None}
 
         prompt = self._build_prompt(new_task, candidates)
-        
+
+        # 路由复查 offload 出事件循环：_get_llm 内部走 get_model_api_config →
+        # get_core_config，是同步的 open()+json.load() 磁盘读——agent_server 的
+        # 事件循环被三个子系统共享，慢盘/杀软下同步读会卡住所有并发请求（与
+        # aget_core_config 必须 offload 同一条理由）。每次 judge 复查一次就够：
+        # 单次 judge 内部的重试没必要各自重读路由。
+        llm = await asyncio.to_thread(self._get_llm)
+
         # Retry策略：重试2次，间隔1秒、2秒
         max_retries = 3
         retry_delays = [1, 2]
-        
+
         for attempt in range(max_retries):
             try:
                 set_call_type("dedup")
-                resp = await self._get_llm().ainvoke([  # noqa: LLM_INPUT_BUDGET  # each prompt component truncated to TASK_SUMMARY/DETAIL_MAX_TOKENS in _build_prompt (truncation lives in the builder, not here).
+                resp = await llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # each prompt component truncated to TASK_SUMMARY/DETAIL_MAX_TOKENS in _build_prompt (truncation lives in the builder, not here).
                     {"role": "system", "content": "You are a careful deduplication judge."},
                     {"role": "user", "content": prompt},
                 ])
