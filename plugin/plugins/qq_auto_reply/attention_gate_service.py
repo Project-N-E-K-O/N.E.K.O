@@ -515,6 +515,11 @@ class QQAttentionGateService:
                 # 批，剩余留给下一次 digest/finalize。
                 svc = self.plugin.session_memory_service
                 start_index = max(0, int(s.get("last_group_digest_index", 0)))
+                if start_index > len(history):
+                    # 历史被重复守卫重置/收缩：钳游标，防新增轮次被
+                    # 永久跳过（对偶 finalize 的同名钳制）。
+                    start_index = len(history)
+                    s["last_group_digest_index"] = start_index
                 total_sent = 0
                 while True:
                     messages, next_index = svc._slice_group_history_batch(

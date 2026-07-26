@@ -224,7 +224,13 @@ class FactsMixin:
                 memory_subject.persona_section_key
                 if memory_subject is not None else entity
             )
-            self._queue_correction(name, old_text, text, correction_entity)
+            self._queue_correction(
+                name, old_text, text, correction_entity,
+                subject_fields=(
+                    memory_subject.as_entry_fields()
+                    if memory_subject is not None else None
+                ),
+            )
             return self.FACT_QUEUED_CORRECTION
 
         section_facts.append(self._build_fact_entry(
@@ -272,6 +278,10 @@ class FactsMixin:
                 )
                 await self._aqueue_correction_locked(
                     name, old_text, text, correction_entity,
+                    subject_fields=(
+                        memory_subject.as_entry_fields()
+                        if memory_subject is not None else None
+                    ),
                 )
                 return self.FACT_QUEUED_CORRECTION
 

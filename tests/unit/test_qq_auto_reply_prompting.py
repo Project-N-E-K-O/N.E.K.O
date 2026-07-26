@@ -77,3 +77,30 @@ def test_group_memory_default_follows_configured_policy():
     assert _prompt_builder(None).should_use_memory_context(
         is_group=True, permission_level="user", requested=None,
     ) is False
+
+
+def test_group_persist_policy_decoupled_from_turn_recall():
+    """Group persistence follows the configured policy when unspecified,
+    independent of per-turn recall: a proactive turn that explicitly
+    disables recall (use=False) must not flip the shared session's
+    memory_enabled off and strand buffered opt-in history."""
+    on = _prompt_builder({"group_memory_enabled": True})
+    off = _prompt_builder({"group_memory_enabled": False})
+
+    assert on.should_persist_memory(
+        should_use_memory_context=False, requested=None, is_group=True,
+    ) is True
+    assert off.should_persist_memory(
+        should_use_memory_context=True, requested=None, is_group=True,
+    ) is False
+    # Explicit values still win.
+    assert on.should_persist_memory(
+        should_use_memory_context=False, requested=False, is_group=True,
+    ) is False
+    # Private default unchanged: follows the turn's recall decision.
+    assert on.should_persist_memory(
+        should_use_memory_context=True, requested=None,
+    ) is True
+    assert on.should_persist_memory(
+        should_use_memory_context=False, requested=None,
+    ) is False

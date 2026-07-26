@@ -57,8 +57,15 @@ class QQPromptBuilder:
             return permission_level == "admin"
         return bool(requested)
 
-    def should_persist_memory(self, *, should_use_memory_context: bool, requested: Optional[bool]) -> bool:
+    def should_persist_memory(self, *, should_use_memory_context: bool, requested: Optional[bool], is_group: bool = False) -> bool:
         if requested is None:
+            if is_group:
+                # 群会话的持久化跟配置策略走、与"本轮是否召回"解耦：
+                # proactive 等路径显式关本轮召回（use=False）不代表要把
+                # 共享会话的 memory_enabled 翻回 False——那会搁浅已缓冲
+                # 的 opt-in 历史直到下一条普通消息。
+                settings = getattr(self.plugin, "_qq_settings", {}) or {}
+                return bool(settings.get("group_memory_enabled", False))
             return should_use_memory_context
         return bool(requested)
 

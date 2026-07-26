@@ -53,24 +53,36 @@ class CorrectionsMixin:
     @staticmethod
     def _build_correction_list(
         corrections: list[dict], old_text: str, new_text: str, entity: str,
+        subject_fields: dict | None = None,
     ) -> list[dict] | None:
         """Returns the modified list or None if duplicate (no change needed)."""
         for existing in corrections:
             if (existing.get('old_text') == old_text
                     and existing.get('new_text') == new_text
-                    and existing.get('entity') == entity):
+                    and existing.get('entity') == entity
+                    and existing.get('scope') == (subject_fields or {}).get('scope')):
                 return None
-        corrections.append({
+        item = {
             'old_text': old_text,
             'new_text': new_text,
             'entity': entity,
             'created_at': datetime.now().isoformat(),
-        })
+        }
+        if subject_fields:
+            # scoped correction 携带完整 subject 戳：section key 不含 scope，
+            # resolve 分域与 apply 界定都需要它。
+            item.update(subject_fields)
+        corrections.append(item)
         return corrections
 
-    def _queue_correction(self, name: str, old_text: str, new_text: str, entity: str) -> None:
+    def _queue_correction(
+        self, name: str, old_text: str, new_text: str, entity: str,
+        subject_fields: dict | None = None,
+    ) -> None:
         corrections = self.load_pending_corrections(name)
-        updated = self._build_correction_list(corrections, old_text, new_text, entity)
+        updated = self._build_correction_list(
+            corrections, old_text, new_text, entity, subject_fields,
+        )
         if updated is None:
             return
         assert_cloudsave_writable(
@@ -81,17 +93,27 @@ class CorrectionsMixin:
         atomic_write_json(self._corrections_path(name), updated, indent=2, ensure_ascii=False)
         logger.info(f"[Persona] {name}: 发现潜在矛盾，加入审视队列")
 
-    async def _aqueue_correction(self, name: str, old_text: str, new_text: str, entity: str) -> None:
+    async def _aqueue_correction(
+        self, name: str, old_text: str, new_text: str, entity: str,
+        subject_fields: dict | None = None,
+    ) -> None:
         """Public async entry — acquires the per-character lock.
         Callers already holding the lock must use _aqueue_correction_locked."""
         async with self._get_alock(name):
-            await self._aqueue_correction_locked(name, old_text, new_text, entity)
+            await self._aqueue_correction_locked(
+                name, old_text, new_text, entity, subject_fields,
+            )
 
-    async def _aqueue_correction_locked(self, name: str, old_text: str, new_text: str, entity: str) -> None:
+    async def _aqueue_correction_locked(
+        self, name: str, old_text: str, new_text: str, entity: str,
+        subject_fields: dict | None = None,
+    ) -> None:
         """Inner body. Caller must hold self._get_alock(name).
         Used by aadd_fact which already has the lock."""
         corrections = await self.aload_pending_corrections(name)
-        updated = self._build_correction_list(corrections, old_text, new_text, entity)
+        updated = self._build_correction_list(
+            corrections, old_text, new_text, entity, subject_fields,
+        )
         if updated is None:
             return
         assert_cloudsave_writable(
@@ -201,10 +223,17 @@ class CorrectionsMixin:
                         # 也不算 scoped：跳过本批、留在队列（fail-closed，
                         # 与 scopes.py 读路径对损坏描述符的处理一致）。
                         continue
-                    domain = (
-                        entity if entity.startswith(SCOPED_PERSONA_PREFIX)
-                        else '__legacy__'
-                    )
+                    if entity.startswith(SCOPED_PERSONA_PREFIX):
+                        # 域 = (section key, scope)：同 kind/id 的自定义
+                        # scope 互为独立隔离域，不得同批。旧队列条目无
+                        # scope 字段时按默认 scope（=key）归域。
+                        domain = (
+                            entity,
+                            item.get('scope')
+                            or entity[len(SCOPED_PERSONA_PREFIX):],
+                        )
+                    else:
+                        domain = '__legacy__'
                     if batch_domain is None:
                         batch_domain = domain
                     elif domain != batch_domain:
@@ -339,6 +368,45 @@ class CorrectionsMixin:
             new_text = item.get('new_text', '')
             section_facts = self._get_section_facts(persona, entity)
 
+            # scoped correction 的一切匹配/删除/新建都限定在 item 自己的
+            # subject 域内：section key 不含 scope，同 kind/id 异 scope 的
+            # 条目共存于同一 section，按裸文本跨域改写即泄漏。item 无戳
+            # （升级前入队）按默认 scope（=key）重建；重建失败 fail-closed。
+            from memory.scopes import (
+                SCOPED_PERSONA_PREFIX,
+                MemoryScopeError,
+                MemorySubject,
+                entry_matches_subject,
+                subject_from_entry,
+            )
+
+            item_subject = None
+            if entity.startswith(SCOPED_PERSONA_PREFIX):
+                item_subject = subject_from_entry(item)
+                if item_subject is None:
+                    section_key_body = entity[len(SCOPED_PERSONA_PREFIX):]
+                    kind, _, subject_id = section_key_body.partition(':')
+                    try:
+                        item_subject = MemorySubject.create(
+                            kind, subject_id,
+                            scope=item.get('scope') or section_key_body,
+                        )
+                    except MemoryScopeError:
+                        continue
+
+            def _entry_in_scope(entry, _subj=item_subject) -> bool:
+                if _subj is None:
+                    return True
+                return isinstance(entry, dict) and entry_matches_subject(entry, _subj)
+
+            def _stamped_new_entry(text_value, _subj=item_subject) -> dict:
+                new_entry = self._normalize_entry_for_section(
+                    persona, entity, text_value,
+                )
+                if _subj is not None:
+                    new_entry.update(_subj.as_entry_fields())
+                return new_entry
+
             if action == 'merge':
                 # `replace` means "new observation is an update/correction to
                 # the old memory" — semantically an in-place edit, not a
@@ -361,7 +429,7 @@ class CorrectionsMixin:
                 }
                 for j, existing in enumerate(section_facts):
                     et = existing.get('text', '') if isinstance(existing, dict) else str(existing)
-                    if et == old_text:
+                    if et == old_text and _entry_in_scope(existing):
                         if isinstance(existing, dict):
                             from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
                             prior_history = existing.get('version_history', []) or []
@@ -379,9 +447,7 @@ class CorrectionsMixin:
                         else:
                             # Legacy str entry — no metadata to preserve;
                             # migrate to dict form and seed the chain.
-                            new_entry = self._normalize_entry_for_section(
-                                persona, entity, merged_text,
-                            )
+                            new_entry = _stamped_new_entry(merged_text)
                             new_entry['version_history'] = [history_entry]
                             section_facts[j] = new_entry
                         break
@@ -389,21 +455,19 @@ class CorrectionsMixin:
                 section_facts[:] = [
                     e for e in section_facts
                     if (e.get('text', '') if isinstance(e, dict) else str(e)) != old_text
+                    or not _entry_in_scope(e)
                 ]
-                section_facts.append(self._normalize_entry_for_section(
-                    persona, entity, new_text,
-                ))
+                section_facts.append(_stamped_new_entry(new_text))
             elif action == 'keep_old':
                 pass
             else:  # keep_both
                 existing_texts = {
                     (e.get('text', '') if isinstance(e, dict) else str(e))
                     for e in section_facts
+                    if _entry_in_scope(e)
                 }
                 if new_text not in existing_texts:
-                    section_facts.append(self._normalize_entry_for_section(
-                        persona, entity, new_text,
-                    ))
+                    section_facts.append(_stamped_new_entry(new_text))
 
             resolved += 1
 

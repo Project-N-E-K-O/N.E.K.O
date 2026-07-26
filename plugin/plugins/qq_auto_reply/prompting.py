@@ -58,10 +58,11 @@ class QQAutoReplyPromptingMixin:
             requested=requested,
         )
 
-    def _should_persist_memory(self, *, should_use_memory_context: bool, requested: Optional[bool]) -> bool:
+    def _should_persist_memory(self, *, should_use_memory_context: bool, requested: Optional[bool], is_group: bool = False) -> bool:
         return self.prompt_builder.should_persist_memory(
             should_use_memory_context=should_use_memory_context,
             requested=requested,
+            is_group=is_group,
         )
 
     def _build_prompt_message(

@@ -183,6 +183,12 @@ class QQSessionMemoryService:
                 last_group_digest_index = max(
                     0, int(user_data.get("last_group_digest_index", 0)),
                 )
+                if last_group_digest_index > len(conversation_history):
+                    # 会话历史被重复守卫重置/收缩后旧游标越界：钳到当前
+                    # 长度并回写，否则此后追加的轮次会被当成"已结算"
+                    # 永久跳过。绝不回退（避免重放）。
+                    last_group_digest_index = len(conversation_history)
+                    user_data["last_group_digest_index"] = last_group_digest_index
                 # 先旧后新分批结算，游标只推进到本批实际覆盖的原始下标。
                 # 旧写法单发 `[-200:]` 会把超过窗口的中段永久跳过（游标却
                 # 直接跳到 len(history)）——活跃群完全可复现的数据丢失。

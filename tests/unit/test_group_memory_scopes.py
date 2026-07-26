@@ -2173,6 +2173,160 @@ async def test_focus_shift_digest_batches_never_skip_backlog():
     assert user_data["last_group_digest_index"] == 3
 
 
+@pytest.mark.asyncio
+async def test_digest_cursor_rebases_after_history_reset():
+    """The repetition guard can replace _conversation_history with just the
+    system message; a stale cursor beyond the new length must be clamped so
+    turns appended after the reset are still digested instead of being
+    treated as already settled forever."""
+    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    # Post-reset history: system message + two fresh human turns.
+    history = [
+        SimpleNamespace(type="system", content="sys"),
+        SimpleNamespace(type="human", content="fresh 0"),
+        SimpleNamespace(type="human", content="fresh 1"),
+    ]
+    session = SimpleNamespace(_conversation_history=history, close=AsyncMock())
+    bridge = MagicMock()
+    bridge.group_subject.side_effect = QQMemoryBridge.group_subject
+    bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
+    user_data = {
+        "memory_enabled": True, "is_group": True, "group_id": "7788",
+        "her_name": "Neko", "session": session,
+        "last_group_digest_index": 250,
+    }
+    plugin = SimpleNamespace(
+        _user_sessions={"group:7788": user_data},
+        _qq_settings={},
+        memory_bridge=bridge,
+        logger=MagicMock(),
+    )
+    service = QQSessionMemoryService(plugin)
+
+    # Pre-fix, cursor 250 > len(3) made the slice empty and finalize
+    # "completed" while silently skipping the fresh turns.
+    # Wait: the finalize-time clamp snaps to len(history), so the fresh
+    # turns present at clamp time would still be skipped — the per-turn
+    # prime clamp is what rebases early. Simulate it first.
+    from plugin.plugins.qq_auto_reply.session_runtime_service import (
+        QQSessionRuntimeService,
+    )
+    runtime_plugin = SimpleNamespace()
+    runtime = QQSessionRuntimeService.__new__(QQSessionRuntimeService)
+    runtime.plugin = runtime_plugin
+    stale = {
+        "session": session, "reply_chunks": [],
+        "last_group_digest_index": 250,
+    }
+    context = SimpleNamespace(
+        sender_id="1", permission_level="user", is_group=True,
+        group_id="7788", user_title="u", user_nickname="",
+        persist_memory=True, memory_context_used=False,
+        ephemeral_session=False, login_status="", login_self_id="",
+        login_nickname="",
+    )
+    runtime.prime_generation_session_state(
+        stale, session_key="group:7788", context=context,
+    )
+    assert stale["last_group_digest_index"] == len(history)
+
+    # Finalize-time clamp (defensive): oversized cursor never blocks the
+    # rest of finalization and is persisted back at len(history).
+    completed = await service.finalize_user_memory_session(
+        "group:7788", reason="test",
+    )
+    assert completed is True
+    assert bridge.post_scoped_memory_history.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_correction_domains_and_apply_respect_custom_scope(tmp_path):
+    """Same kind/id under two custom scopes shares one persona_section_key:
+    the resolve batch must treat each (key, scope) as its own domain, and
+    the apply phase must only match/remove/stamp entries belonging to the
+    correction item's own subject."""
+    import json as _json
+
+    from memory.persona import PersonaManager
+
+    subject_a = MemorySubject.create("group_chat", "qq:123", scope="tenant-a")
+    subject_b = MemorySubject.create("group_chat", "qq:123", scope="tenant-b")
+    section_key = subject_a.persona_section_key
+
+    pm = PersonaManager()
+    pm._config_manager = _build_scope_mock_cm(str(tmp_path))
+    name = "neko_corr_scope"
+    corr_path = tmp_path / f"{name}_corrections.json"
+    items = [
+        {
+            "old_text": "旧观点", "new_text": "A 的新观点",
+            "entity": section_key, "created_at": "2026-07-26T12:00:00",
+            **subject_a.as_entry_fields(),
+        },
+        {
+            "old_text": "旧观点", "new_text": "B 的新观点",
+            "entity": section_key, "created_at": "2026-07-26T12:00:01",
+            **subject_b.as_entry_fields(),
+        },
+    ]
+    corr_path.write_text(
+        _json.dumps(items, ensure_ascii=False), encoding="utf-8",
+    )
+
+    captured = {}
+
+    class _FakeLLM:
+        async def ainvoke(self, prompt):
+            captured["prompt"] = prompt
+            resp = MagicMock()
+            resp.content = "[]"
+            return resp
+
+        async def aclose(self):
+            return None
+
+    async def _fake_create(*args, **kwargs):
+        return _FakeLLM()
+
+    with patch.object(pm, "_corrections_path", return_value=str(corr_path)), \
+         patch("utils.llm_client.create_chat_llm_async", _fake_create):
+        await pm.resolve_corrections(name)
+
+    # Same entity, different scopes: one batch may only contain scope A.
+    assert captured["prompt"].count("旧观点") == 1
+    assert "A 的新观点" in captured["prompt"]
+    assert "B 的新观点" not in captured["prompt"]
+
+    # Apply phase: keep_new for scope A removes only A's entry with that
+    # text; B's identical-text entry survives, and the new entry carries
+    # A's subject stamp (not the section's last-writer metadata).
+    persona = await pm.aensure_persona(name)
+    persona[section_key] = {
+        **subject_b.as_entry_fields(),
+        "facts": [
+            {"text": "旧观点", **subject_a.as_entry_fields()},
+            {"text": "旧观点", **subject_b.as_entry_fields()},
+        ],
+    }
+    await pm.asave_persona(name, persona)
+    resolved = await pm._apply_correction_results(
+        name, items, {0}, [{"index": 0, "action": "keep_new"}],
+    )
+    assert resolved == 1
+    persona = await pm.aensure_persona(name)
+    facts = persona[section_key]["facts"]
+    survivors = [
+        (f["text"], f.get("scope")) for f in facts if isinstance(f, dict)
+    ]
+    assert ("旧观点", "tenant-b") in survivors
+    assert ("旧观点", "tenant-a") not in survivors
+    assert ("A 的新观点", "tenant-a") in survivors
+
+
 def test_persona_view_authorizes_scoped_entries_per_entry():
     """persona_section_key omits the scope, so two subjects with the same
     kind/id but different custom scopes share one section whose metadata is

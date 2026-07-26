@@ -144,6 +144,7 @@ class QQReplyContextNode:
         should_persist_memory = self.plugin._should_persist_memory(
             should_use_memory_context=should_use_memory_context,
             requested=persist_memory,
+            is_group=is_group,
         )
         traces.append(
             QQPipelineStageTrace(

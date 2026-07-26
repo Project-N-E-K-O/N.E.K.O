@@ -59,6 +59,15 @@ class QQSessionRuntimeService:
         user_data["login_status"] = context.login_status
         user_data["login_self_id"] = context.login_self_id
         user_data["login_nickname"] = context.login_nickname
+        # 每轮巡检 digest 游标：OmniOfflineClient 的重复守卫会把
+        # _conversation_history 重置成只剩 system message，旧游标若大于
+        # 当前长度，之后追加的轮次都会被 digest/finalize 当成"已结算"
+        # 永久跳过。此处钳制最及时（每个生成轮都会经过）。
+        history_len = len(
+            getattr(user_session, "_conversation_history", []) or []
+        )
+        if int(user_data.get("last_group_digest_index", 0) or 0) > history_len:
+            user_data["last_group_digest_index"] = history_len
         return user_session, reply_chunks
 
     async def get_session_lock(self, session_key: str) -> asyncio.Lock:
