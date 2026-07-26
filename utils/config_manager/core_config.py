@@ -269,6 +269,12 @@ class CoreConfigMixin:
         for key, value in (config or {}).items():
             if not (key.endswith('_URL') and isinstance(value, str)):
                 continue
+            # AGENT_MODEL_URL 永不参与区域改写（free-agent-model 固定 CN 入口，
+            # 见 _normalize_agent_url 与改写循环里的豁免），区域判定对它零作用
+            # ——把它算进「需要区域」会在 core/assist 皆非免费时为一个不会被改
+            # 写的 URL 启动探测，纯暴露 IP（不变量 #2）。
+            if key == 'AGENT_MODEL_URL':
+                continue
             try:
                 parsed = urlparse(value)
                 host = (parsed.hostname or '').lower()
@@ -764,12 +770,22 @@ class CoreConfigMixin:
         # keep intercepting these call sites.
         from utils.config_manager import get_livestream_config, is_livestream_active
 
-        if not url or 'lanlan.tech' not in url:
+        if not url:
+            return url
+        # 按 hostname 判而不是子串包含，与 _config_needs_region 同一判据：自配
+        # URL 的路径里恰含 "lanlan.tech" 子串（如 https://custom.example/v1/lanlan.tech）
+        # 时，子串门会放行、下面的替换会把路径一并改写——自定义端点被污染。
+        try:
+            parsed = urlparse(url)
+            host = (parsed.hostname or '').lower()
+        except Exception:
+            return url
+        if not (host == 'lanlan.tech' or host.endswith('.lanlan.tech')):
             return url
 
         try:
             if is_livestream_active():
-                orig_path = urlparse(url).path or ''
+                orig_path = parsed.path or ''
                 if orig_path in self._LIVESTREAM_DERIVE_PATHS:
                     derived = self._derive_livestream_url(
                         url, get_livestream_config()['server_prefix']
@@ -785,7 +801,9 @@ class CoreConfigMixin:
                 # 海外免费统一走 www.lanlan.app（含 /tts）：该节点透传客户端
                 # voice 字段到 Gemini，支持 Gemini 全量 + yui。早期把 /tts 降级到
                 # 裸 lanlan.app（硬覆盖 Leda 的旧端点）的 .replace 已移除。
-                return url.replace('lanlan.tech', 'lanlan.app')
+                # 只换 netloc（host 已确认命中官方域），path/query 原样保留。
+                return urlunparse(parsed._replace(
+                    netloc=parsed.netloc.replace('lanlan.tech', 'lanlan.app')))
         except Exception:
             pass
 

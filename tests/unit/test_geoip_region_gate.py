@@ -2415,3 +2415,41 @@ def test_kick_racing_the_attempt_finally_keeps_the_marker(monkeypatch):
         'kick 与失败 finally 交错后，被唤醒的重试仍应被等到（预置标记不该被误清）'
     assert ConfigManager._ip_check_cache is True
     assert calls['n'] == 2
+
+
+@pytest.mark.unit
+def test_agent_url_alone_never_triggers_the_probe():
+    """``AGENT_MODEL_URL`` is exempt from the rewrite — probing for it buys nothing.
+
+    With core/assist on custom providers, a lanlan-hosted Agent URL was the
+    only match in the ``*_URL`` scan, so the eligibility gate started the
+    ip-api.com probe for a URL no region verdict will ever touch — pure IP
+    disclosure (invariant #2).
+    """
+    assert ConfigManager._config_needs_region(
+        {'AGENT_MODEL_URL': 'https://www.lanlan.tech/text/v1',
+         'CORE_URL': 'https://api.openai.com/v1'}) is False
+    # 其它免费 URL 照常触发——排除只针对 Agent 槽
+    assert ConfigManager._config_needs_region(
+        {'AGENT_MODEL_URL': 'https://www.lanlan.tech/text/v1',
+         'CORE_URL': 'wss://www.lanlan.tech/core'}) is True
+
+
+@pytest.mark.unit
+def test_custom_url_with_brand_substring_survives_the_rewrite(config_manager):
+    """The rewrite keys on hostname, mirroring ``_config_needs_region``.
+
+    A substring gate plus ``str.replace`` would mangle a custom endpoint whose
+    *path* happens to contain the brand string whenever the snapshot resolves
+    overseas (e.g. core=free): ``/v1/lanlan.tech`` → ``/v1/lanlan.app``.
+    """
+    custom = 'https://custom.example/v1/lanlan.tech'
+    assert config_manager._adjust_free_api_url(custom, True, non_mainland=True) == custom
+
+    official = config_manager._adjust_free_api_url(
+        'wss://www.lanlan.tech/core', True, non_mainland=True)
+    assert official == 'wss://www.lanlan.app/core', \
+        f'官方免费 URL 的海外改写不受影响: {official}'
+    kept = config_manager._adjust_free_api_url(
+        'wss://www.lanlan.tech/core', True, non_mainland=False)
+    assert kept == 'wss://www.lanlan.tech/core'
