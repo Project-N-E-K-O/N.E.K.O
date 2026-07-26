@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import sys
 import threading
 from pathlib import Path
@@ -39,6 +41,7 @@ _DATA_PROCESS = (
 sys.path.insert(0, str(_DATA_PROCESS))
 
 from wt_server import TelemetryService  # noqa: E402
+import wt_capture  # noqa: E402
 from wt_telemetry import (  # noqa: E402
     ConnectionState,
     Indicators,
@@ -49,6 +52,110 @@ from wt_telemetry import (  # noqa: E402
 )
 from wt_geo import analyze_situation  # noqa: E402
 from wt_proximity import ProximityTracker  # noqa: E402
+
+
+def test_urgent_output_migration_marker_write_failure_does_not_abort_startup() -> None:
+    warnings: list[str] = []
+    plugin = object.__new__(NekoWarthunderPlugin)
+    plugin.logger = SimpleNamespace(warning=warnings.append)
+    plugin._save_runtime_state = lambda _patch: (_ for _ in ()).throw(OSError("read only"))
+
+    asyncio.run(
+        plugin._migrate_urgent_output_tts_default(
+            {},
+            {},
+            config_loaded=True,
+        )
+    )
+
+    assert warnings == ["urgent output TTS migration flag persist failed: OSError"]
+
+
+def test_exited_managed_process_preserves_failure_when_auto_start_is_disabled(tmp_path) -> None:
+    process = SimpleNamespace(poll=lambda: 7, pid=4321)
+    manager = DataLayerProcessManager(
+        WtConfig(data_layer_auto_start=False),
+        plugin_root=tmp_path,
+        health_check=lambda _url, _timeout: False,
+    )
+    manager._process = process
+    manager._started_by_plugin = True
+
+    status = manager.start_if_needed()
+
+    assert status["mode"] == "failed"
+    assert status["last_error"] == "process_exited_before_healthy(exit=7)"
+
+
+def test_processed_snapshot_capture_redacts_chat_and_invalid_raw_body(tmp_path, monkeypatch) -> None:
+    capturer = wt_capture.Capturer(
+        "http://127.0.0.1:8111",
+        "http://127.0.0.1:8112",
+        str(tmp_path),
+    )
+    responses = iter(
+        [
+            (
+                True,
+                200,
+                json.dumps({"state": "in_battle", "chat": [{"msg": "private"}]}).encode(),
+            ),
+            (True, 200, b'{"chat":[{"msg":"private"}]'),
+        ]
+    )
+    monkeypatch.setattr(wt_capture, "_fetch_text", lambda *_args, **_kwargs: next(responses))
+
+    capturer._snap_server()
+    capturer._snap_server()
+    capturer.finalize()
+
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "processed_8112.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert rows[0]["data"] == {"state": "in_battle"}
+    assert rows[1]["parse_error"] is True
+    assert "private" not in json.dumps(rows, ensure_ascii=False)
+
+
+def test_failed_chat_drain_does_not_block_hud_incremental_polling() -> None:
+    class DrainClient:
+        def __init__(self) -> None:
+            self.hud_calls = 0
+            self.chat_calls = 0
+
+        def incremental_cursor_state(self):
+            return {}
+
+        def reset_hud_cursors(self):
+            return None
+
+        def reset_chat_cursor(self):
+            return None
+
+        def get_hud_with_status(self):
+            self.hud_calls += 1
+            return True, []
+
+        def get_chat_with_status(self):
+            self.chat_calls += 1
+            return False, []
+
+        def get_mission(self):
+            return "running", None
+
+    client = DrainClient()
+    service = TelemetryService(client)
+
+    service._poll_events(service._battle_generation)
+    assert client.hud_calls == 2
+    assert client.chat_calls == 1
+    assert service._hud_drain_pending is False
+    assert service._chat_drain_pending is True
+
+    service._poll_events(service._battle_generation)
+    assert client.hud_calls == 3
+    assert client.chat_calls == 2
 
 
 def _running_ground_state(timestamp: float = 1.0) -> BattleState:
@@ -341,7 +448,8 @@ def test_new_generation_drain_overwrites_late_old_cursor_side_effect() -> None:
     assert client._last_evt == 1000
 
     service._poll_events(2)
-    assert client.hud_paths[-1] == "/hudmsg?lastEvt=0&lastDmg=0"
+    assert client.hud_paths[-2] == "/hudmsg?lastEvt=0&lastDmg=0"
+    assert client.hud_paths[-1] == "/hudmsg?lastEvt=20&lastDmg=0"
     assert client._last_evt == 20
 
 
@@ -509,3 +617,5 @@ def test_tailing_confirmation_requires_persistent_same_contact() -> None:
     assert switched.detect(one, two) is None
     three = state(3.0, 8)
     assert switched.detect(two, three).event_id == "tailing_risk"
+from plugin.plugins.neko_warthunder import NekoWarthunderPlugin
+from plugin.plugins.neko_warthunder.adapters.data_layer_process import DataLayerProcessManager

@@ -167,7 +167,12 @@ class NekoWarthunderPlugin(NekoPluginBase):
                 self.logger.warning(f"urgent output TTS default migration failed: {type(exc).__name__}")
                 return
 
-        self._save_runtime_state({_URGENT_OUTPUT_TTS_MIGRATION_KEY: True})
+        try:
+            self._save_runtime_state({_URGENT_OUTPUT_TTS_MIGRATION_KEY: True})
+        except OSError as exc:
+            self.logger.warning(
+                f"urgent output TTS migration flag persist failed: {type(exc).__name__}"
+            )
 
     def _apply_config(self, cfg: WtConfig) -> None:
         prev_player = self.cfg.player_name

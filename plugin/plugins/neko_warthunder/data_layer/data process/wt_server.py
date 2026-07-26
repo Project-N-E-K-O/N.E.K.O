@@ -438,6 +438,8 @@ class TelemetryService:
             self.tracker.set_player_name(req)
         # 进入对局首次轮询：游标仅由 events 线程清零并排空旧缓冲。HUD 与聊天分别重试，
         # 避免任一接口短暂失败导致另一接口反复清零、吞掉本局新事件。
+        poll_hud = True
+        poll_chat = True
         if drain_hud or drain_chat:
             cursors_before = self.client.incremental_cursor_state()
             hud_ok, dropped_hud = True, 0
@@ -455,8 +457,10 @@ class TelemetryService:
                     return
                 if drain_hud and not hud_ok:
                     self._hud_drain_pending = True
+                    poll_hud = False
                 if drain_chat and not chat_ok:
                     self._chat_drain_pending = True
+                    poll_chat = False
             if drain_hud and hud_ok:
                 self.tracker.reset()
                 self.notices.reset()
@@ -472,26 +476,28 @@ class TelemetryService:
                 "cursors_before": cursors_before,
                 "cursors_after": self.client.incremental_cursor_state(),
             })
-            return
+            if not poll_hud and not poll_chat:
+                return
 
         status, objectives = self.client.get_mission()
         cursors_before = self.client.incremental_cursor_state()
-        hud_ok, hud = self.client.get_hud_with_status()
-        chat_ok, chat = self.client.get_chat_with_status()
+        hud_ok, hud = self.client.get_hud_with_status() if poll_hud else (False, [])
+        chat_ok, chat = self.client.get_chat_with_status() if poll_chat else (False, [])
         with self._lock:
             if generation != self._battle_generation:
                 return
-            self.tracker.feed(hud)  # 解析击杀事件并累积战绩
-            combat = self.tracker.get_summary()
-            self.notices.feed(hud)  # 解析自机技术通知(油温过高/襟翼非对称/发动机过热)
-            notices = self.notices.get_summary()
-            self.awards.feed(hud)   # 解析战斗嘉奖(一血/双杀/三杀/连续无伤歼敌等)
-            awards = self.awards.get_summary(combat.get("player_name"))
+            if poll_hud:
+                self.tracker.feed(hud)  # 解析击杀事件并累积战绩
+                combat = self.tracker.get_summary()
+                self.notices.feed(hud)  # 解析自机技术通知(油温过高/襟翼非对称/发动机过热)
+                notices = self.notices.get_summary()
+                self.awards.feed(hud)   # 解析战斗嘉奖(一血/双杀/三杀/连续无伤歼敌等)
+                awards = self.awards.get_summary(combat.get("player_name"))
+                self._combat = combat
+                self._notices = notices
+                self._awards = awards
             self._mission_status = status
             self._mission_objectives = objectives
-            self._combat = combat
-            self._notices = notices
-            self._awards = awards
             for ev in hud:
                 self._hud_events.append(ev)
             for msg in chat:

@@ -223,6 +223,7 @@ class DataLayerProcessManager:
         self.config = config
 
     def start_if_needed(self) -> dict[str, Any]:
+        managed_process_exited = False
         if self._started_by_plugin and self._process is not None:
             returncode = self._process.poll()
             if returncode is None:
@@ -236,6 +237,7 @@ class DataLayerProcessManager:
                     self._last_error = None
                 return self.snapshot()
             self._last_error = self._format_exit_error(returncode)
+            managed_process_exited = True
             self._process = None
             self._started_by_plugin = False
             self._last_health = False
@@ -250,9 +252,10 @@ class DataLayerProcessManager:
 
         self._last_health = False
         if not self.config.data_layer_auto_start:
-            self._mode = "missing"
+            self._mode = "failed" if managed_process_exited else "missing"
             self._started_by_plugin = False
-            self._last_error = None
+            if not managed_process_exited:
+                self._last_error = None
             return self.snapshot()
 
         try:

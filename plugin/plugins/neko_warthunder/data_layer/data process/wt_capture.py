@@ -232,9 +232,13 @@ class Capturer:
         data, raw_text = _parse_json(body)
         rec: dict[str, Any] = {"ts": round(time.time(), 3), "status": status}
         if raw_text is not None:
-            rec["raw_text"] = raw_text
+            # 加工层快照可能包含原始聊天；解析失败时也不能把整段响应落盘。
+            rec["parse_error"] = True
         else:
-            rec["data"] = data
+            sanitized = dict(data) if isinstance(data, dict) else data
+            if isinstance(sanitized, dict):
+                sanitized.pop("chat", None)
+            rec["data"] = sanitized
         self._w["processed_8112"].write(rec)
 
     # -- 主循环 ------------------------------------------------------------
