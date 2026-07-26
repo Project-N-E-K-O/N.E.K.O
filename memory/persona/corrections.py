@@ -191,7 +191,16 @@ class CorrectionsMixin:
                 old_text = item.get('old_text', '')
                 new_text = item.get('new_text', '')
                 if old_text and new_text:
-                    entity = str(item.get('entity') or '')
+                    entity_raw = item.get('entity')
+                    entity = (
+                        entity_raw.strip()
+                        if isinstance(entity_raw, str) else ''
+                    )
+                    if not entity:
+                        # 实体缺失/空/非字符串的畸形 correction 既不算 legacy
+                        # 也不算 scoped：跳过本批、留在队列（fail-closed，
+                        # 与 scopes.py 读路径对损坏描述符的处理一致）。
+                        continue
                     domain = (
                         entity if entity.startswith(SCOPED_PERSONA_PREFIX)
                         else '__legacy__'
@@ -319,7 +328,13 @@ class CorrectionsMixin:
 
             action = result.get('action', 'keep_both')
             merged_text = result.get('text', item.get('new_text', ''))
-            entity = item.get('entity', 'master')
+            entity_raw = item.get('entity')
+            entity = entity_raw.strip() if isinstance(entity_raw, str) else ''
+            if not entity:
+                # 对偶批次构建的畸形实体守卫：绝不能默认写进 master 段——
+                # 一条丢了 entity 的 scoped correction 会因此跨进 legacy
+                # 私聊 persona。跳过即留队，不计 resolved。
+                continue
             old_text = item.get('old_text', '')
             new_text = item.get('new_text', '')
             section_facts = self._get_section_facts(persona, entity)

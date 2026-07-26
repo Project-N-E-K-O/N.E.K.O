@@ -1547,3 +1547,78 @@ async def test_correction_batches_partition_by_isolation_domain(tmp_path):
     assert {item["entity"] for item in remaining} == {
         "master", "@subject/group_chat:qq:100", "@subject/group_chat:qq:200",
     }
+
+
+@pytest.mark.asyncio
+async def test_malformed_correction_entities_never_reach_prompt_or_master(tmp_path):
+    """A correction whose entity is missing, empty, or not a string belongs
+    to no isolation domain: it must not enter a resolve batch, and the apply
+    phase must not default it into the master section (a scoped correction
+    that lost its entity would otherwise cross into the legacy persona)."""
+    import json as _json
+
+    from memory.persona import PersonaManager
+
+    pm = PersonaManager()
+    pm._config_manager = _build_scope_mock_cm(str(tmp_path))
+    name = "neko_corr_malformed"
+    corr_path = tmp_path / f"{name}_corrections.json"
+    items = [
+        {
+            "old_text": "legit old", "new_text": "legit new",
+            "entity": "master", "created_at": "2026-07-26T11:00:00",
+        },
+        {
+            "old_text": "no entity old", "new_text": "no entity new",
+            "created_at": "2026-07-26T11:00:01",
+        },
+        {
+            "old_text": "empty old", "new_text": "empty new",
+            "entity": "  ", "created_at": "2026-07-26T11:00:02",
+        },
+        {
+            "old_text": "weird old", "new_text": "weird new",
+            "entity": 123, "created_at": "2026-07-26T11:00:03",
+        },
+    ]
+    corr_path.write_text(
+        _json.dumps(items, ensure_ascii=False), encoding="utf-8",
+    )
+
+    captured = {}
+
+    class _FakeLLM:
+        async def ainvoke(self, prompt):
+            captured["prompt"] = prompt
+            resp = MagicMock()
+            resp.content = "[]"
+            return resp
+
+        async def aclose(self):
+            return None
+
+    async def _fake_create(*args, **kwargs):
+        return _FakeLLM()
+
+    with patch.object(pm, "_corrections_path", return_value=str(corr_path)), \
+         patch("utils.llm_client.create_chat_llm_async", _fake_create):
+        await pm.resolve_corrections(name)
+
+    prompt = captured["prompt"]
+    assert "legit old" in prompt
+    assert "no entity old" not in prompt
+    assert "empty old" not in prompt
+    assert "weird old" not in prompt
+    assert len(_json.loads(corr_path.read_text(encoding="utf-8"))) == 4
+
+    # Apply-phase guard (defense in depth): even when a malformed item is
+    # referenced by a valid LLM decision — e.g. replaying a stale batch —
+    # it is skipped instead of being written into the master section.
+    resolved = await pm._apply_correction_results(
+        name, items, {1}, [{"index": 1, "action": "keep_both"}],
+    )
+    assert resolved == 0
+    persona_text = _json.dumps(
+        await pm.aensure_persona(name), ensure_ascii=False,
+    )
+    assert "no entity new" not in persona_text
