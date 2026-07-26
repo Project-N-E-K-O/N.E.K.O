@@ -741,6 +741,18 @@ def test_qq_group_member_turns_are_opt_in_and_actor_attributed():
         ),
     )
     assert "9999" not in user_data["group_member_memory_messages"]
+    # Rapid-fire control prompts resolve to shared_context but carry a
+    # synthetic source_kind — also excluded.
+    service.record_group_member_turn(
+        user_data,
+        SimpleNamespace(
+            is_group=True, sender_id="8888",
+            message="[系统] 合并的缓冲消息",
+            group_scene_mode="shared_context", group_facing=False,
+            source_kind="rapid_fire_flush",
+        ),
+    )
+    assert "8888" not in user_data["group_member_memory_messages"]
 
 
 def test_entry_missing_scope_fails_closed():
@@ -2203,8 +2215,46 @@ async def test_discard_session_salvages_group_buffers_first():
     plugin._user_sessions["group:10"] = {
         "is_group": True, "memory_enabled": True, "session": leak_session,
     }
-    await runtime.discard_session("group:10", reason="generation_timeout")
+    assert await runtime.discard_session(
+        "group:10", reason="generation_timeout",
+    ) is True
     leak_session.close.assert_awaited_once()
+
+    # Kept sessions report False so callers (login-change bootstrap) must
+    # not overwrite the key and destroy the preserved buffers.
+    plugin.session_memory_service = SimpleNamespace(
+        finalize_user_memory_session=_finalize_fail,
+    )
+    plugin._user_sessions["group:11"] = {
+        "is_group": True, "memory_enabled": True, "session": session,
+    }
+    assert await runtime.discard_session("group:11", reason="登录身份变化") is False
+    assert "group:11" in plugin._user_sessions
+
+
+@pytest.mark.asyncio
+async def test_login_change_bootstrap_keeps_session_when_discard_fails():
+    """When the identity-change discard intentionally kept the session (settle
+    failed), bootstrap must reuse it instead of overwriting the key — the
+    overwrite would destroy the sole buffer copy and leak the old client."""
+    from plugin.plugins.qq_auto_reply.session_bootstrap_service import (
+        QQSessionBootstrapService,
+    )
+
+    existing = {"login_self_id": "old", "is_group": True, "memory_enabled": True}
+    plugin = SimpleNamespace(
+        _user_sessions={"group:7788": existing},
+        session_runtime_service=SimpleNamespace(
+            discard_session=AsyncMock(return_value=False),
+        ),
+    )
+    service = QQSessionBootstrapService.__new__(QQSessionBootstrapService)
+    service.plugin = plugin
+    context = SimpleNamespace(ephemeral_session=False, login_self_id="new")
+
+    result = await service.ensure_generation_session(context, "group:7788")
+    assert result is existing
+    assert plugin._user_sessions["group:7788"] is existing
 
 
 @pytest.mark.asyncio

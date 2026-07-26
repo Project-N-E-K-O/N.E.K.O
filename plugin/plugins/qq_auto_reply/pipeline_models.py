@@ -93,6 +93,7 @@ class QQReplyContext:
     login_nickname: str | None
     current_message_id: str = ""
     force_reply: bool = False
+    source_kind: str = ""
     traces: list[QQPipelineStageTrace] = field(default_factory=list)
 
 

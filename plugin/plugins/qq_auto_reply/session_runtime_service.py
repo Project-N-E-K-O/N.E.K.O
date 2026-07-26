@@ -83,7 +83,9 @@ class QQSessionRuntimeService:
         async with session_lock:
             return await coro_factory()
 
-    async def discard_session(self, session_key: str, *, reason: str) -> None:
+    async def discard_session(self, session_key: str, *, reason: str) -> bool:
+        """Returns True when the session is gone; False when a failed settle
+        intentionally kept it (callers must NOT overwrite the key)."""
         # 群会话的 scoped 缓冲只存在于 user_data（无 per-turn /cache）：
         # 任何 discard 前先 best-effort 结算，否则唯一副本随 pop 消失。
         # 集中在这里做，prompt 变更/登录身份变化/超时等所有 discard 入口
@@ -107,7 +109,7 @@ class QQSessionRuntimeService:
                 self.plugin.logger.warning(
                     f"[{reason}] 群记忆结算未完成，保留会话与缓冲待重试 ({session_key})"
                 )
-                return
+                return False
         user_data = self.plugin._user_sessions.pop(session_key, None)
         session = user_data.get("session") if user_data else None
         if session is None and not finalized and peek:
@@ -120,6 +122,7 @@ class QQSessionRuntimeService:
                 await session.close()
             except Exception as close_error:
                 self.plugin.logger.warning(f"[{reason}] 关闭会话失败: {close_error}")
+        return True
 
     async def session_housekeeping_loop(self) -> None:
         try:

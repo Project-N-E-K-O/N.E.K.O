@@ -119,6 +119,9 @@ class QQSessionMemoryService:
         if (
             getattr(context, "group_facing", False)
             or getattr(context, "group_scene_mode", "") == "group_collective"
+            or getattr(context, "source_kind", "") in (
+                "proactive_speech", "rapid_fire_flush", "buffer_delayed",
+            )
         ):
             # 群体面向/合成轮（proactive 的"[系统]…"控制指令等）不是成员
             # 发言——按 sender 入 bucket 会把捏造的偏好挂到该成员 scope。

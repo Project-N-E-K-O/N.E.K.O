@@ -80,6 +80,7 @@ class QQReplyContextNode:
         group_scene_mode: str = "",
         current_message_id: str = "",
         force_reply: bool = False,
+        source_kind: str = "",
     ) -> QQReplyContext:
         traces: list[QQPipelineStageTrace] = []
         config_manager = get_config_manager()
@@ -283,5 +284,6 @@ class QQReplyContextNode:
             login_nickname=login_nickname,
             current_message_id=current_message_id,
             force_reply=force_reply,
+            source_kind=source_kind,
             traces=traces,
         )

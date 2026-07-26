@@ -154,6 +154,7 @@ class QQReplyPipelineRunner:
             group_scene_mode=request.group_scene_mode,
             current_message_id=request.current_message_id,
             force_reply=request.force_reply,
+            source_kind=getattr(request, "source_kind", ""),
         )
 
     async def _run_model(self, context: QQReplyContext) -> QQModelResult:
