@@ -3468,8 +3468,8 @@
                 "desc": "Browse and review recent memories and summaries here to help reduce repetition and cognitive errors."
             },
             "step3": {
-        "title": "🧰 Actions",
-        "desc": "Use this area to reopen the tutorial, export diagnostic logs, and adjust memory settings."
+                "title": "🧰 Actions",
+                "desc": "Use this area to reopen the tutorial, export diagnostic logs, and adjust memory settings."
             }
         },
         "buttons": {

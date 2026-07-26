@@ -3468,8 +3468,8 @@
                 "desc": "Explore e revise memórias e resumos recentes para ajudar a reduzir repetições e erros cognitivos."
             },
             "step3": {
-        "title": "🧰 Ações",
-        "desc": "Nesta área, você pode reabrir o tutorial, exportar logs de diagnóstico e ajustar as configurações de memória."
+                "title": "🧰 Ações",
+                "desc": "Nesta área, você pode reabrir o tutorial, exportar logs de diagnóstico e ajustar as configurações de memória."
             }
         },
         "buttons": {
