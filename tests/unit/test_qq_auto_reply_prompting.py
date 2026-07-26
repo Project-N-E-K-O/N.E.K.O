@@ -69,3 +69,11 @@ def test_group_memory_default_follows_configured_policy():
     assert on.should_use_memory_context(
         is_group=False, permission_level="user", requested=None,
     ) is False
+    # Upgraded configs may lack the key entirely, and _qq_settings itself
+    # may be None: both must default safely to off.
+    assert _prompt_builder({}).should_use_memory_context(
+        is_group=True, permission_level="user", requested=None,
+    ) is False
+    assert _prompt_builder(None).should_use_memory_context(
+        is_group=True, permission_level="user", requested=None,
+    ) is False

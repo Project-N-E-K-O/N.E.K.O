@@ -237,6 +237,8 @@ class FactDedupResolver:
                     'candidate_text': p.get('candidate_text', ''),
                     'existing_text': p.get('existing_text', ''),
                     'entity': p.get('entity'),
+                    'subject_key': p.get('subject_key'),
+                    'scope': p.get('scope'),
                     'cosine': float(p.get('cosine', 0.0)),
                     'queued_at': now_iso,
                 })
@@ -401,6 +403,10 @@ class FactDedupResolver:
                     'candidate_text': ctext,
                     'existing_text': sib.get('text', ''),
                     'entity': entity,
+                    # 隔离域随 pair 入队（legacy 为 None/None）：resolve 侧
+                    # 按域锁批，跨隔离域的 fact 文本不得共现在同一个 prompt。
+                    'subject_key': bucket[1],
+                    'scope': bucket[2],
                     'cosine': cos,
                 })
                 collected += 1
@@ -441,13 +447,64 @@ class FactDedupResolver:
         # Liveness：过滤已达 MEMORY_LIVENESS_MAX_ATTEMPTS 的 dead-letter pair
         # （防御性——_abump_dedup_attempts_and_dead_letter_locked 命中阈值时直接
         # 从 queue 删除，正常路径不会让 attempts ≥ MAX 的 entry 还留着）。
+        #
+        # 单批锁定单一隔离域（对偶 corrections 的 batch_domain 锁）：legacy
+        # 私聊为一域、每个 subject (key, scope) 各一域；跨域 pair 留队等
+        # 下一轮 FIFO 轮到。新条目带 subject_key/scope 直接分类；升级前的
+        # 老队列条目查活体 fact 行兜底分类；两行都消失/损坏的条目按既有
+        # disappeared-row 语义直接出队，不进任何 prompt（fail-closed）。
+        from memory.scopes import is_legacy_private_entry, subject_from_entry
+
+        facts_by_id: dict | None = None
+
+        async def _classify_domain(it: dict) -> tuple | None:
+            nonlocal facts_by_id
+            if 'subject_key' in it:
+                return (it.get('subject_key'), it.get('scope'))
+            if facts_by_id is None:
+                rows = await self._fact_store.aload_facts(name)
+                facts_by_id = {
+                    r.get('id'): r for r in rows if isinstance(r, dict)
+                }
+            for fid in (it.get('candidate_id'), it.get('existing_id')):
+                row = facts_by_id.get(fid)
+                if row is None:
+                    continue
+                subject = subject_from_entry(row)
+                if subject is not None:
+                    return (subject.key, subject.scope)
+                if is_legacy_private_entry(row):
+                    return (None, None)
+            return None
+
         batch: list[dict] = []
+        stale_keys: set[tuple] = set()
+        batch_domain: tuple | None = None
         for it in pending:
             if safe_int_field(it, 'resolve_attempts') >= MEMORY_LIVENESS_MAX_ATTEMPTS:
+                continue
+            domain = await _classify_domain(it)
+            if domain is None:
+                stale_keys.add((it.get('candidate_id'), it.get('existing_id')))
+                continue
+            if batch_domain is None:
+                batch_domain = domain
+            elif domain != batch_domain:
                 continue
             batch.append(it)
             if len(batch) >= FACT_DEDUP_BATCH_LIMIT:
                 break
+        if stale_keys:
+            kept = [
+                it for it in pending
+                if (it.get('candidate_id'), it.get('existing_id')) not in stale_keys
+            ]
+            # 落盘失败（维护态）无妨：下一轮重新识别重新丢。
+            await self._asave_pending(name, kept)
+            logger.info(
+                "[FactDedup] %s: 出队 %d 对无法归域的陈旧候选",
+                name, len(stale_keys),
+            )
         if not batch:
             return 0
         pairs_text = "\n".join(

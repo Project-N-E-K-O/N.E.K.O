@@ -230,7 +230,15 @@ class SynthesisMixin:
             return []
 
         _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
-        master_name = name_mapping.get('human', '主人')
+        if memory_subject is not None:
+            # scoped 合成绝不能把私聊主人名注入 prompt：legacy 反思模板的
+            # {MASTER_NAME} 框架会指示模型"产出关于主人的洞察"，把已正确
+            # 归属的成员事实改写成关于私聊主人的反思（对偶提取侧的
+            # speaker_label 修复）。用 subject.key 作机械描述符——fact 文本
+            # 本身已带成员可读标签，模型锚定不受影响。
+            master_name = memory_subject.key
+        else:
+            master_name = name_mapping.get('human', '主人')
 
         facts_text = "\n".join(f"- {f['text']} (importance: {f.get('importance', 5)})" for f in unabsorbed)
         related_block = await self._build_related_context_block(

@@ -1622,3 +1622,345 @@ async def test_malformed_correction_entities_never_reach_prompt_or_master(tmp_pa
         await pm.aensure_persona(name), ensure_ascii=False,
     )
     assert "no entity new" not in persona_text
+
+
+@pytest.mark.asyncio
+async def test_group_turns_always_refresh_session_prompt():
+    """Group sessions are shared: the creation-time system prompt carries the
+    first speaker's member persona. Group turns must swap in the current
+    turn's freshly built prompt even when semantic recall is empty, and
+    restore the original afterwards; private turns keep the old no-op."""
+    from utils.llm_client import SystemMessage
+
+    from plugin.plugins.qq_auto_reply.reply_generation_service import (
+        QQReplyGenerationService,
+    )
+
+    service = QQReplyGenerationService(SimpleNamespace(logger=MagicMock()))
+    original = SystemMessage(content="creator prompt with member A persona")
+    session = SimpleNamespace(
+        _conversation_history=[original],
+        _instructions=original.content,
+    )
+
+    restore = service._apply_turn_memory_context(
+        session, "current speaker prompt", "", always_refresh=True,
+    )
+    assert session._conversation_history[0].content == "current speaker prompt"
+    restore()
+    assert session._conversation_history[0] is original
+    assert session._instructions == original.content
+
+    # Private path unchanged: empty recall without the flag is a no-op.
+    service._apply_turn_memory_context(session, "whatever", "")
+    assert session._conversation_history[0] is original
+
+
+@pytest.mark.asyncio
+async def test_group_memory_toggle_syncs_existing_sessions():
+    """Flipping group_memory_enabled must reach already-open group sessions:
+    ON->OFF fail-closes a session whose settle fails (no later flush can
+    persist opted-out data), and OFF->ON advances the digest cursor so turns
+    from the opted-out period are never retroactively extracted."""
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    history = [SimpleNamespace(type="human", content=f"msg {i}") for i in range(6)]
+    session = SimpleNamespace(_conversation_history=history, close=AsyncMock())
+    bridge = MagicMock()
+    bridge.group_subject.side_effect = (
+        lambda gid: {"subject_kind": "group_chat", "subject_id": f"qq:{gid}"}
+    )
+    bridge.post_scoped_memory_history = AsyncMock(
+        side_effect=RuntimeError("server down"),
+    )
+    user_data = {
+        "memory_enabled": True,
+        "is_group": True,
+        "group_id": "7788",
+        "her_name": "Neko",
+        "session": session,
+        "last_group_digest_index": 0,
+        "group_member_memory_messages": {"2046": [{"role": "user", "content": []}]},
+        "group_member_memory_labels": {"2046": "2046"},
+    }
+
+    async def _run_with_session_lock(session_key, fn):
+        return await fn()
+
+    plugin = SimpleNamespace(
+        _user_sessions={"group:7788": user_data},
+        _qq_settings={"group_member_memory_enabled": True},
+        _run_with_session_lock=_run_with_session_lock,
+        memory_bridge=bridge,
+        logger=MagicMock(),
+    )
+    service = QQSessionMemoryService(plugin)
+
+    # ON->OFF with a failing settle: fail closed.
+    await service.invalidate_group_sessions(enabled=False)
+    assert user_data["memory_enabled"] is False
+    assert user_data["last_group_digest_index"] == len(history)
+    assert "group_member_memory_messages" not in user_data
+    # A later idle/shutdown sweep must now skip this session entirely.
+    await service.flush_all_memory_sessions("shutdown")
+    bridge.post_scoped_memory_history.assert_awaited_once()  # only the settle try
+
+    # OFF->ON on a session that accumulated turns while opted out.
+    history.append(SimpleNamespace(type="human", content="opted-out turn"))
+    user_data["last_group_digest_index"] = 0
+    await service.invalidate_group_sessions(enabled=True)
+    assert user_data["memory_enabled"] is True
+    assert user_data["last_group_digest_index"] == len(history)
+
+
+@pytest.mark.asyncio
+async def test_fact_dedup_resolve_locks_batch_to_one_domain(tmp_path):
+    """The dedup queue mixes isolation domains; one resolve batch must not:
+    the prompt may only contain pairs from the FIFO head's domain. Legacy
+    queue items without stored domain fields are classified via their live
+    fact rows, and pairs whose rows are gone are dequeued without ever
+    reaching a prompt."""
+    import json as _json
+
+    from memory.fact_dedup import FactDedupResolver
+
+    group = MemorySubject.group_chat("qq", "100")
+    fact_store = MagicMock()
+    fact_store._config_manager = MagicMock()
+    fact_store._config_manager.get_model_api_config = MagicMock(return_value={
+        "model": "fake", "base_url": "http://fake", "api_key": "sk",
+    })
+    # Live rows used to classify OLD queue items lacking domain fields.
+    fact_store.aload_facts = AsyncMock(return_value=[
+        {"id": "old_cand", "text": "legacy old cand"},
+        {"id": "old_exist", "text": "legacy old exist"},
+    ])
+    resolver = FactDedupResolver(fact_store=fact_store)
+    name = "neko_dedup_domain"
+    pending_path = tmp_path / "pending.json"
+    seed = [
+        {
+            # New-schema legacy pair (head -> locks the batch to legacy).
+            "candidate_id": "c1", "existing_id": "e1",
+            "candidate_text": "legacy pair text", "existing_text": "legacy sib",
+            "entity": "master", "subject_key": None, "scope": None,
+            "cosine": 0.9, "queued_at": "2026-07-26T10:00:00",
+        },
+        {
+            # New-schema scoped pair: different domain, must stay queued.
+            "candidate_id": "c2", "existing_id": "e2",
+            "candidate_text": "group pair text", "existing_text": "group sib",
+            "entity": "group_chat",
+            "subject_key": group.key, "scope": group.scope,
+            "cosine": 0.9, "queued_at": "2026-07-26T10:00:01",
+        },
+        {
+            # Old-schema pair (no domain fields): classified legacy via rows.
+            "candidate_id": "old_cand", "existing_id": "old_exist",
+            "candidate_text": "old schema text", "existing_text": "old sib",
+            "entity": "master",
+            "cosine": 0.9, "queued_at": "2026-07-26T10:00:02",
+        },
+        {
+            # Old-schema pair whose rows are gone: dequeued, never prompted.
+            "candidate_id": "ghost_c", "existing_id": "ghost_e",
+            "candidate_text": "ghost text", "existing_text": "ghost sib",
+            "entity": "master",
+            "cosine": 0.9, "queued_at": "2026-07-26T10:00:03",
+        },
+    ]
+    pending_path.write_text(
+        _json.dumps(seed, ensure_ascii=False), encoding="utf-8",
+    )
+
+    captured = {}
+
+    class _FakeLLM:
+        async def ainvoke(self, prompt):
+            captured["prompt"] = prompt
+            resp = MagicMock()
+            resp.content = "[]"
+            return resp
+
+        async def aclose(self):
+            return None
+
+    async def _fake_create(*args, **kwargs):
+        return _FakeLLM()
+
+    def _noop_assert(*args, **kw):
+        return None
+
+    with patch.object(resolver, "_pending_path", return_value=str(pending_path)), \
+         patch("memory.fact_dedup.assert_cloudsave_writable", _noop_assert), \
+         patch("utils.llm_client.create_chat_llm_async", _fake_create):
+        await resolver._aresolve_locked(name)
+
+    prompt = captured["prompt"]
+    assert "legacy pair text" in prompt
+    assert "old schema text" in prompt
+    assert "group pair text" not in prompt
+    assert "ghost text" not in prompt
+    remaining = _json.loads(pending_path.read_text(encoding="utf-8"))
+    remaining_ids = {item["candidate_id"] for item in remaining}
+    assert "c2" in remaining_ids
+    assert "ghost_c" not in remaining_ids
+
+
+@pytest.mark.asyncio
+async def test_scoped_synthesis_prompt_never_names_private_master(tmp_path):
+    """The reflection template frames its facts as being about {MASTER_NAME}.
+    Scoped synthesis must substitute the subject descriptor: injecting the
+    private master's name would both leak it into a scoped prompt and steer
+    the model into rewriting member facts as insights about the master."""
+    import json
+    import os
+
+    mock_cm = _build_scope_mock_cm(str(tmp_path))
+    group = MemorySubject.group_chat("qq", "100")
+    char_dir = os.path.join(str(tmp_path), "Neko")
+    os.makedirs(char_dir, exist_ok=True)
+    facts = [
+        {
+            "id": f"g{index}", "text": f"群事实 {index}",
+            "entity": "group_chat", "importance": 5, "absorbed": False,
+            **group.as_entry_fields(),
+        }
+        for index in range(6)
+    ]
+    with open(os.path.join(char_dir, "facts.json"), "w", encoding="utf-8") as f:
+        json.dump(facts, f, ensure_ascii=False)
+
+    with patch("memory.reflection.manager.get_config_manager", return_value=mock_cm), \
+         patch("memory.facts.get_config_manager", return_value=mock_cm):
+        from memory.persona import PersonaManager
+        from memory.reflection import ReflectionEngine
+
+        fs = FactStore()
+        fs._config_manager = mock_cm
+        pm = PersonaManager()
+        pm._config_manager = mock_cm
+        engine = ReflectionEngine(fs, pm)
+        engine._config_manager = mock_cm
+
+        captured = {}
+
+        async def _fake_ainvoke(self, prompt):
+            captured["prompt"] = prompt
+            resp = MagicMock()
+            resp.content = (
+                '{"reflection": "这个群固定周五晚上开黑", "entity": "group_chat"}'
+            )
+            return resp
+
+        async def _fake_aclose(self):
+            return None
+
+        class _FakeLLM:
+            def __init__(self, *a, **kw):
+                pass
+            ainvoke = _fake_ainvoke
+            aclose = _fake_aclose
+
+        with patch("utils.llm_client.create_chat_llm", _FakeLLM), \
+             patch(
+                 "config.prompts.prompts_memory.get_reflection_prompt",
+                 lambda lang: "{FACTS}|{LANLAN_NAME}|{MASTER_NAME}",
+             ), \
+             patch("utils.language_utils.get_global_language", return_value="zh"):
+            created = await engine.synthesize_reflections("Neko", subject=group)
+
+    assert len(created) == 1
+    assert "主人" not in captured["prompt"]
+    assert group.key in captured["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_scoped_mentions_route_records_with_subject_boundary():
+    """The scoped mention endpoint bumps both recorders with the caller's
+    subjects and never touches legacy-private entries; an empty subject list
+    fails closed."""
+    from fastapi import HTTPException
+
+    from app.memory_server import routes as memory_routes
+    from app.memory_server.routes import ScopedMentionsRequest
+
+    subject = {"subject_kind": "group_chat", "subject_id": "qq:100"}
+    pm = MagicMock()
+    pm.arecord_mentions = AsyncMock()
+    engine = MagicMock()
+    engine.arecord_mentions = AsyncMock()
+    with patch.object(memory_routes.runtime, "persona_manager", pm), \
+         patch.object(memory_routes.runtime, "reflection_engine", engine):
+        result = await memory_routes.record_scoped_mentions(
+            "Neko",
+            ScopedMentionsRequest(response_text="回复文本", subjects=[subject]),
+        )
+        assert result["status"] == "recorded"
+        for recorder in (pm.arecord_mentions, engine.arecord_mentions):
+            kwargs = recorder.await_args.kwargs
+            assert kwargs["include_legacy_private"] is False
+            assert len(kwargs["subjects"]) == 1
+
+        with pytest.raises(HTTPException) as excinfo:
+            await memory_routes.record_scoped_mentions(
+                "Neko",
+                ScopedMentionsRequest(response_text="回复文本", subjects=[]),
+            )
+        assert excinfo.value.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_group_reply_success_records_scoped_mentions_best_effort():
+    """After a successful group reply the plugin bumps scoped mention
+    counters with the same subjects the reply was authorized to see; a
+    recording failure never breaks the reply path."""
+    from plugin.plugins.qq_auto_reply.reply_generation_service import (
+        QQReplyGenerationService,
+    )
+
+    bridge = MagicMock()
+    bridge.group_subject.side_effect = (
+        lambda gid: {"subject_kind": "group_chat", "subject_id": f"qq:{gid}"}
+    )
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {
+            "subject_kind": "group_participant", "subject_id": f"qq:{gid}:{uid}",
+        }
+    )
+    bridge.post_scoped_mentions = AsyncMock()
+    plugin = SimpleNamespace(
+        memory_bridge=bridge,
+        logger=MagicMock(),
+        session_memory_service=SimpleNamespace(
+            record_group_member_turn=MagicMock(),
+        ),
+        _cache_session_delta=AsyncMock(return_value=0),
+    )
+    service = QQReplyGenerationService(plugin)
+    context = SimpleNamespace(
+        is_group=True, group_id="7788", sender_id="2046", her_name="Neko",
+        permission_level="user",
+    )
+
+    await service._sync_memory_after_success(
+        session_key="group:7788",
+        user_data={"memory_enabled": True},
+        context=context,
+        reply_text="她记得群规是不剧透",
+    )
+    kwargs = bridge.post_scoped_mentions.await_args.kwargs
+    assert [s["subject_id"] for s in kwargs["subjects"]] == [
+        "qq:7788", "qq:7788:2046",
+    ]
+
+    # Failure is swallowed (reply already delivered).
+    bridge.post_scoped_mentions = AsyncMock(side_effect=RuntimeError("down"))
+    await service._sync_memory_after_success(
+        session_key="group:7788",
+        user_data={"memory_enabled": True},
+        context=context,
+        reply_text="再次回复",
+    )

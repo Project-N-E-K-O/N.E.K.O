@@ -105,7 +105,10 @@ class QQReplyGenerationService:
                 stage_trace.metadata["reply_length"] = 0
                 return QQModelResult(reply_text=None, source="session", allow_fallback=True, traces=[stage_trace])
 
-            await self._sync_memory_after_success(session_key=session_key, user_data=user_data, context=context)
+            await self._sync_memory_after_success(
+                session_key=session_key, user_data=user_data, context=context,
+                reply_text=ai_reply,
+            )
             self.plugin.logger.info(f"AI 生成回复完成 (会话: {session_key}, length: {len(ai_reply)})")
             stage_trace.status = "success"
             stage_trace.metadata["reply_length"] = len(ai_reply)
@@ -142,7 +145,14 @@ class QQReplyGenerationService:
 
             queued_images = await self.plugin._queue_attachment_images(user_session, context.attachments)
             self.plugin.logger.info(f"发送消息到 AI (会话: {session_key}, length: {len(context.prompt_message)}, images: {queued_images})")
-            restore_session_prompt = self._apply_turn_memory_context(user_session, context.system_prompt, context.recalled_memory_text)
+            # 群会话是全群共享的：创建时烙进 system prompt 的是首个发言者的
+            # member persona / 身份行。群轮必须无条件换上本轮刚构建好的
+            # prompt（含当前发言人的 scoped persona），否则召回为空的轮次
+            # （早期常态）会一直用创建者快照回答所有人。
+            restore_session_prompt = self._apply_turn_memory_context(
+                user_session, context.system_prompt, context.recalled_memory_text,
+                always_refresh=context.is_group,
+            )
             try:
                 await asyncio.wait_for(
                     user_session.stream_text(context.prompt_message),
@@ -159,8 +169,14 @@ class QQReplyGenerationService:
 
             return "".join(reply_chunks)
 
-    def _apply_turn_memory_context(self, user_session: Any, system_prompt: str, recalled_memory_text: str):
-        if not recalled_memory_text:
+    def _apply_turn_memory_context(
+        self, user_session: Any, system_prompt: str, recalled_memory_text: str,
+        *, always_refresh: bool = False,
+    ):
+        # always_refresh：群轮即使无召回也要换 prompt——
+        # _compose_turn_instructions 会自动省略空的召回段，swap 退化为
+        # 纯 system_prompt 替换；restore 保证会话落盘的仍是创建时原文。
+        if not recalled_memory_text and not always_refresh:
             return lambda: None
         conversation_history = getattr(user_session, "_conversation_history", None)
         if not conversation_history or not isinstance(conversation_history[0], SystemMessage):
@@ -185,6 +201,7 @@ class QQReplyGenerationService:
         session_key: str,
         user_data: dict[str, Any],
         context: QQReplyContext,
+        reply_text: str = "",
     ) -> None:
         if user_data.get("memory_enabled"):
             try:
@@ -196,6 +213,11 @@ class QQReplyGenerationService:
                     self.plugin.logger.info(f"[管理员] 成功同步 {count} 条消息到 Memory Server (会话: {session_key})")
             except Exception as e:
                 self.plugin.logger.error(f"记忆同步失败: {e}")
+            if context.is_group and reply_text:
+                # 群路径绕开 legacy post_turn，scoped 条目的 mention 计数
+                # （防重复注入的 suppression 输入）只能在这里补记。best-effort：
+                # 失败只影响该条目晚几轮进入"暂不主动提及"，回复已送达。
+                await self._record_scoped_mentions_best_effort(context, reply_text)
             return
 
         if user_data.get("memory_context_used"):
@@ -205,6 +227,27 @@ class QQReplyGenerationService:
             self.plugin.logger.info(f"[群聊] 跳过记忆同步 (群: {context.group_id}, 用户: {context.sender_id})")
             return
         self.plugin.logger.info(f"[非管理员] 跳过记忆同步 (用户: {context.sender_id}, 权限: {context.permission_level})")
+
+    async def _record_scoped_mentions_best_effort(
+        self, context: QQReplyContext, reply_text: str,
+    ) -> None:
+        """Bump scoped mention counters with the subjects this reply was
+        authorized to see, so repeatedly-volunteered scoped entries reach the
+        suppression threshold like legacy entries do."""
+        group_id = str(context.group_id or "").strip()
+        if not group_id:
+            return
+        bridge = self.plugin.memory_bridge
+        subjects = [bridge.group_subject(group_id)]
+        sender_id = str(context.sender_id or "").strip()
+        if sender_id:
+            subjects.append(bridge.group_participant_subject(group_id, sender_id))
+        try:
+            await bridge.post_scoped_mentions(
+                context.her_name, reply_text, subjects=subjects,
+            )
+        except Exception as e:
+            self.plugin.logger.warning(f"scoped mention 记录失败（忽略）: {e}")
 
     async def generate_from_context(self, context: QQReplyContext) -> QQModelResult:
         if not context.is_group and context.permission_level not in ["admin", "trusted"]:

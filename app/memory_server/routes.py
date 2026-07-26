@@ -735,6 +735,11 @@ class ScopedContextRequest(BaseModel):
     subjects: list[MemorySubjectRequest]
 
 
+class ScopedMentionsRequest(BaseModel):
+    response_text: str
+    subjects: list[MemorySubjectRequest]
+
+
 class QueryMemoryRequest(BaseModel):
     # query / time 都可选，至少给一个有效值即可（time-only 是新支持的用法）。
     # 两者都空时不报错，hybrid_recall 对空 query 短路返回空 results，调用方
@@ -882,6 +887,38 @@ async def get_scoped_context(lanlan_name: str, req: ScopedContextRequest):
         include_legacy_private=False,
     )
     return PlainTextResponse(rendered)
+
+
+@app.post("/internal/memory/{lanlan_name}/scoped_mentions")
+async def record_scoped_mentions(lanlan_name: str, req: ScopedMentionsRequest):
+    """Bump mention counters for scoped persona/reflection entries.
+
+    Group replies bypass the legacy post-turn flow, so without this the
+    anti-repeat suppression never engages for scoped entries and the model
+    keeps volunteering the same scoped fact on every group reply. Zero LLM
+    cost: mention scanning is a local token-overlap pass. Legacy-private
+    entries are explicitly excluded (fail-closed)."""
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    if runtime.persona_manager is None or runtime.reflection_engine is None:
+        raise HTTPException(
+            status_code=503,
+            detail="memory_server not fully initialized (limited mode or startup incomplete)",
+        )
+    if not req.subjects or len(req.subjects) > 8:
+        raise HTTPException(status_code=422, detail="subjects must contain 1..8 items")
+    response_text = (req.response_text or "").strip()
+    if not response_text:
+        return {"status": "skipped"}
+    subjects = [subject.to_domain() for subject in req.subjects]
+    await runtime.persona_manager.arecord_mentions(
+        lanlan_name, response_text,
+        subjects=subjects, include_legacy_private=False,
+    )
+    await runtime.reflection_engine.arecord_mentions(
+        lanlan_name, response_text,
+        subjects=subjects, include_legacy_private=False,
+    )
+    return {"status": "recorded"}
 
 
 @app.post("/query_memory/{lanlan_name}")

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from typing import Any
 
 from .permission import PermissionManager
@@ -144,6 +146,9 @@ class QQSettingsService:
         retroactive_review_max_reply = kwargs.get("retroactive_review_max_reply")
         if retroactive_review_max_reply is not None:
             self.plugin._qq_settings["retroactive_review_max_reply"] = max(1, int(retroactive_review_max_reply))
+        group_memory_before = bool(
+            self.plugin._qq_settings.get("group_memory_enabled", False)
+        )
         for key in (
             "group_memory_enabled",
             "group_member_memory_enabled",
@@ -152,6 +157,20 @@ class QQSettingsService:
             value = kwargs.get(key)
             if value is not None:
                 self.plugin._qq_settings[key] = bool(value)
+        group_memory_after = bool(
+            self.plugin._qq_settings.get("group_memory_enabled", False)
+        )
+        if group_memory_after != group_memory_before:
+            # 群记忆开关转变必须同步既有群会话（对偶私聊权限切换的
+            # _invalidate_private_session）：ON→OFF 结清 opt-in 期间的缓冲、
+            # 失败则 fail-closed 清空；OFF→ON 推进 digest 游标，opt-out
+            # 期间的对话绝不追溯入库。放后台跑，settings 保存不被
+            # per-group 结算（每群最多 30s）拖住。
+            asyncio.create_task(
+                self.plugin.session_memory_service.invalidate_group_sessions(
+                    enabled=group_memory_after,
+                )
+            )
         # 猫娘动态策略配置
         strategy_mode = kwargs.get("strategy_mode")
         if strategy_mode is not None:

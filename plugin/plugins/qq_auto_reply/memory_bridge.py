@@ -63,6 +63,23 @@ class QQMemoryBridge:
             response.raise_for_status()
             return response.text.strip()
 
+    async def post_scoped_mentions(
+        self,
+        her_name: str,
+        response_text: str,
+        *,
+        subjects: list[dict[str, str]],
+        timeout: float = 5.0,
+    ) -> None:
+        if not subjects or not response_text:
+            return
+        async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
+            response = await client.post(
+                f"{self._base_url()}/internal/memory/{her_name}/scoped_mentions",
+                json={"response_text": response_text, "subjects": subjects},
+            )
+            response.raise_for_status()
+
     async def query_relevant_memory(
         self,
         her_name: str,

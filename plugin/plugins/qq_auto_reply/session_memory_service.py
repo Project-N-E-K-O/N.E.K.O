@@ -254,6 +254,50 @@ class QQSessionMemoryService:
             self.plugin.logger.warning(f"[{reason}] 用户 {session_key} 的本地会话关闭失败: {e}")
         return True
 
+    async def invalidate_group_sessions(self, *, enabled: bool) -> None:
+        """Sync existing group sessions with a group_memory_enabled flip.
+
+        ON to OFF: settle buffers recorded under consent now (same one scoped
+        extraction the idle flush would have run, just earlier); on failure
+        fail closed — mark the session memory-disabled, advance the digest
+        cursor, and drop member buckets so nothing persists after opt-out.
+        OFF to ON: advance the digest cursor past history accumulated while
+        opted out, so those turns are never retroactively extracted.
+        """
+        for session_key, user_data in list(self.plugin._user_sessions.items()):
+            if not user_data.get("is_group"):
+                continue
+
+            async def _sync_one() -> None:
+                current = self.plugin._user_sessions.get(session_key)
+                if not current:
+                    return
+                session = current.get("session")
+                history = getattr(session, "_conversation_history", []) or []
+                if enabled:
+                    if not current.get("memory_enabled"):
+                        current["last_group_digest_index"] = len(history)
+                        current["memory_enabled"] = True
+                    return
+                if not current.get("memory_enabled"):
+                    return
+                finalized = False
+                try:
+                    finalized = await self.finalize_user_memory_session(
+                        session_key, reason="group_memory_disabled",
+                    )
+                except Exception as exc:
+                    self.plugin.logger.error(
+                        f"群记忆关闭时结算失败 ({session_key}): {exc}"
+                    )
+                if not finalized:
+                    current["memory_enabled"] = False
+                    current["last_group_digest_index"] = len(history)
+                    current.pop("group_member_memory_messages", None)
+                    current.pop("group_member_memory_labels", None)
+
+            await self.plugin._run_with_session_lock(session_key, _sync_one)
+
     async def invalidate_private_session(self, qq_number: str) -> None:
         session_key = self.plugin._build_session_key(sender_id=qq_number, is_group=False)
 
