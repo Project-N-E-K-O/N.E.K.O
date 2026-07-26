@@ -2573,13 +2573,18 @@
             );
         } finally {
             if (etaTimer) { window.clearInterval(etaTimer); etaTimer = null; }
-            if (persistedCharacterName) {
-                await refreshImportedMemoryView(persistedCharacterName);
+            try {
+                if (persistedCharacterName) {
+                    await refreshImportedMemoryView(persistedCharacterName);
+                }
+            } catch (refreshError) {
+                console.error('Failed to refresh imported memory view:', refreshError);
+            } finally {
+                window._memoryImportInProgress = false;
+                if (fileInput) fileInput.disabled = false;
+                if (formatSelect) formatSelect.disabled = false;
+                updateExternalImportButton();
             }
-            window._memoryImportInProgress = false;
-            if (fileInput) fileInput.disabled = false;
-            if (formatSelect) formatSelect.disabled = false;
-            updateExternalImportButton();
         }
     }
 

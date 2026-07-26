@@ -875,7 +875,7 @@ def test_memory_browser_header_actions_fit_all_localized_labels_without_clipping
             "noActionOverflow": True,
             "noPageOverflow": True,
         }
-        for locale in geometry_by_locale
+        for locale in expected_labels
     }
 
 
@@ -2251,8 +2251,13 @@ def test_memory_browser_beforeunload_blocks_unsaved_memory_changes(
 
 @pytest.mark.frontend
 @pytest.mark.parametrize(
-    ("partial_import", "edit_during_import"),
-    [(False, False), (True, False), (False, True)],
+    ("partial_import", "edit_during_import", "refresh_failure"),
+    [
+        (False, False, False),
+        (True, False, False),
+        (False, True, False),
+        (False, False, True),
+    ],
 )
 def test_external_import_refreshes_open_memory_after_persisting(
     mock_page: Page,
@@ -2260,6 +2265,7 @@ def test_external_import_refreshes_open_memory_after_persisting(
     seed_memory_file,
     partial_import: bool,
     edit_during_import: bool,
+    refresh_failure: bool,
 ):
     _install_ready_memory_browser_routes(mock_page, seed_memory_file)
     memory_content = {"value": seed_memory_file.read_text(encoding="utf-8")}
@@ -2346,18 +2352,25 @@ def test_external_import_refreshes_open_memory_after_persisting(
     mock_page.goto(f"{running_server}/memory_browser")
     memo = mock_page.locator("#memory-chat-edit .memo-textarea").first
     expect(memo).to_have_value("这是测试备忘录内容。", timeout=10000)
-    if edit_during_import:
+    if edit_during_import or refresh_failure:
         mock_page.evaluate(
-            """
-            () => {
+            """({ editDuringImport, refreshFailure }) => {
                 window.confirm = () => {
-                    const memo = document.querySelector('#memory-chat-edit .memo-textarea');
-                    memo.value = '导入期间的未保存编辑。';
-                    memo.dispatchEvent(new Event('input', { bubbles: true }));
+                    if (editDuringImport) {
+                        const memo = document.querySelector('#memory-chat-edit .memo-textarea');
+                        memo.value = '导入期间的未保存编辑。';
+                        memo.dispatchEvent(new Event('input', { bubbles: true }));
+                    }
+                    if (refreshFailure) {
+                        document.getElementById('memory-file-list').remove();
+                    }
                     return true;
                 };
-            }
-            """
+            }""",
+            {
+                "editDuringImport": edit_during_import,
+                "refreshFailure": refresh_failure,
+            },
         )
     else:
         mock_page.on("dialog", lambda dialog: dialog.accept())
@@ -2378,13 +2391,22 @@ def test_external_import_refreshes_open_memory_after_persisting(
         re.compile(rf"\b{expected_status}\b"),
         timeout=10000,
     )
-    expected_memo = (
-        "导入期间的未保存编辑。" if edit_during_import else "导入后立即可见。"
-    )
+    expected_memo = "导入后立即可见。"
+    if edit_during_import:
+        expected_memo = "导入期间的未保存编辑。"
+    elif refresh_failure:
+        expected_memo = "这是测试备忘录内容。"
     expect(memo).to_have_value(expected_memo, timeout=10000)
-    assert request_counts["recent_files"] >= 2
+    expect(mock_page.locator("#external-memory-files")).to_be_enabled()
+    expect(mock_page.locator("#external-memory-format")).to_be_enabled()
+    assert mock_page.evaluate("window._memoryImportInProgress") is False
+    if refresh_failure:
+        assert request_counts["recent_files"] == 1
+    else:
+        assert request_counts["recent_files"] >= 2
     if edit_during_import:
         expect(mock_page.locator("#memory-unsaved-status")).to_be_visible()
+    if edit_during_import or refresh_failure:
         assert request_counts["recent_file"] == 1
     else:
         assert request_counts["recent_file"] >= 2
