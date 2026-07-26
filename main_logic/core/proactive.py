@@ -328,6 +328,7 @@ class ProactiveMixin:
         action_note: str | None = None,
         source_tag: str | None = None,
         vision_screenshot_b64: str | None = None,
+        expected_user_engagement_time: Any = Ellipsis,
     ) -> bool:
         """Wrap-up after streaming completes: deliver the full text in one shot + record history + TTS/turn end signals.
 
@@ -339,6 +340,11 @@ class ProactiveMixin:
         text bubble would appear after the user's reply, history would be
         polluted, and TTS done would wrongly terminate the user's in-progress
         reply.
+
+        expected_user_engagement_time: when supplied (including an expected
+        ``None``), skip the commit if genuine UI engagement advanced before the
+        final commit boundary. The caller must clear any TTS chunk already queued
+        before this check.
 
         action_note: optional; when non-empty it is appended to the tail of that
         AIMessage's content in _conversation_history (history-only — never enters
@@ -373,6 +379,20 @@ class ProactiveMixin:
                 logger.info(
                     "[%s] finish_proactive_delivery skip: sid changed (expected=%s current=%s)，用户已接管本轮",
                     self.lanlan_name, expected_speech_id, self.current_speech_id,
+                )
+                return False
+            if (
+                expected_user_engagement_time
+                is not Ellipsis
+                and self.last_user_engagement_time
+                != expected_user_engagement_time
+            ):
+                logger.info(
+                    "[%s] finish_proactive_delivery skip: user engagement advanced "
+                    "(expected=%s current=%s)",
+                    self.lanlan_name,
+                    expected_user_engagement_time,
+                    self.last_user_engagement_time,
                 )
                 return False
             # 冻结 commit 用的 turn_id：current_speech_id 由 self.lock 保护，不在

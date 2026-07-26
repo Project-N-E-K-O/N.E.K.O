@@ -882,6 +882,29 @@ async def test_cached_text_preserves_server_ingress_time(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_cached_text_dropped_for_voice_still_records_engagement():
+    """A typed response remains engagement even when voice startup discards it."""
+    mgr = _make_transcript_manager()
+    mgr.session = object.__new__(core_module.OmniRealtimeClient)
+    mgr.is_active = True
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = [
+        {
+            "input_type": "text",
+            "data": "我在这里",
+            "_user_input_ingress_time": FIXED_TS,
+        }
+    ]
+    mgr.last_user_engagement_time = None
+
+    await core_module.LLMSessionManager._flush_pending_input_data(mgr)
+
+    assert mgr.pending_input_data == []
+    assert mgr.last_user_engagement_time == FIXED_TS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_explicit_openclaw_magic_command_skips_local_text_stream(monkeypatch):
     """Namespaced OpenClaw slash commands use the manual-control fast path only."""
     mgr = _make_transcript_manager()

@@ -543,8 +543,13 @@ async def _deliver_break_reminder_via_llm(
     committed = await mgr.finish_proactive_delivery(
         text,
         expected_speech_id=proactive_sid,
+        expected_user_engagement_time=expected_user_engagement_time,
     )
     if not committed:
+        if not mgr.state.is_proactive_preempted(proactive_sid):
+            # The guarded feed already queued this reminder. A UI interaction
+            # before commit must retract that stale TTS as well as skip display.
+            await mgr.handle_new_message()
         return BreakReminderDeliveryResult()
 
     _record_proactive_chat(lanlan_name, text, channel=channel)

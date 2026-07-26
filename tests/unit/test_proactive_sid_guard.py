@@ -44,6 +44,7 @@ def _make_mgr() -> LLMSessionManager:
     mgr._is_free_preset_voice = False
     mgr._tts_runtime_key = LLMSessionManager._build_tts_runtime_key(mgr)
     mgr.current_speech_id = None
+    mgr.last_user_engagement_time = None
     mgr._tts_done_queued_for_turn = False
     mgr.lanlan_name = "Test"
     mgr.session = None
@@ -346,6 +347,28 @@ async def test_finish_proactive_delivery_sid_mismatch_skips_all_writes():
     result = await LLMSessionManager.finish_proactive_delivery(
         mgr, "orphan proactive", expected_speech_id="s_proactive",
     )
+    assert result is False
+    mgr.send_lanlan_response.assert_not_called()
+    assert mgr.session._conversation_history == []
+    assert mgr._tts_done_queued_for_turn is False
+    assert mgr.sync_message_queue.empty()
+
+
+async def test_finish_proactive_delivery_engagement_mismatch_skips_all_writes():
+    """UI-only engagement after TTS feed must block the final visible commit."""
+    mgr = _make_mgr()
+    mgr.current_speech_id = "s_proactive"
+    mgr.last_user_engagement_time = 200.0
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = []
+
+    result = await LLMSessionManager.finish_proactive_delivery(
+        mgr,
+        "stale proactive",
+        expected_speech_id="s_proactive",
+        expected_user_engagement_time=100.0,
+    )
+
     assert result is False
     mgr.send_lanlan_response.assert_not_called()
     assert mgr.session._conversation_history == []

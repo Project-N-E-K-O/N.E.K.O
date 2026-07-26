@@ -266,14 +266,39 @@ async def _commit_proactive_delivery(
         master_name=master_name,
     )
     staged_screenshot = screenshot_b64 if phase2_use_vision else None
+    expected_user_engagement_time = getattr(
+        mgr,
+        "last_user_engagement_time",
+        None,
+    )
     try:
-        await mgr.feed_tts_chunk(
+        tts_accepted = await mgr.feed_tts_chunk(
             response_text,
             expected_speech_id=proactive_sid,
+            expected_user_engagement_time=expected_user_engagement_time,
         )
+        if tts_accepted is False:
+            active_logger.info(
+                "[%s] buffered proactive TTS dropped after user interaction or takeover",
+                lanlan_name,
+            )
+            if not mgr.state.is_proactive_preempted(proactive_sid):
+                await mgr.handle_new_message()
+            return DeliveryCommit(
+                result=ProactiveChatResult(
+                    body=_proactive_pass_body(
+                        PROACTIVE_REASON_DELIVERY_PREEMPTED,
+                        message="proactive TTS skipped: user became active",
+                        lanlan_name=lanlan_name,
+                        turn_id=mgr.current_speech_id,
+                    )
+                ),
+                delivery=None,
+            )
         committed = await mgr.finish_proactive_delivery(
             response_text,
             expected_speech_id=proactive_sid,
+            expected_user_engagement_time=expected_user_engagement_time,
             action_note=action_note,
             source_tag=delivered_tag,
             vision_screenshot_b64=staged_screenshot,
@@ -306,6 +331,10 @@ async def _commit_proactive_delivery(
             "[%s] 主动搭话被用户接管，短路下游写入（topic/memory/response）",
             lanlan_name,
         )
+        if not mgr.state.is_proactive_preempted(proactive_sid):
+            # The TTS chunk was accepted before the final engagement check.
+            # Retract it when UI-only engagement invalidates the commit.
+            await mgr.handle_new_message()
         return DeliveryCommit(
             result=ProactiveChatResult(
                 body=_proactive_pass_body(

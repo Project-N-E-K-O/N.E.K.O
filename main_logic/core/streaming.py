@@ -101,6 +101,18 @@ class StreamingMixin:
                             await self._enqueue_audio_stream_data(message)
                         else:
                             if is_voice_session and msg_input_type in _TEXT_SESSION_INPUT_TYPES:
+                                if msg_input_type == "text":
+                                    memory_text = self._clean_frontend_memory_text(
+                                        message.get("memory_text")
+                                    )
+                                    record_data = memory_text or message.get("data")
+                                    if (
+                                        isinstance(record_data, str)
+                                        and record_data.strip()
+                                    ):
+                                        self.note_user_engagement(
+                                            at=self._user_input_ingress_time(message)
+                                        )
                                 dropped_text_for_voice += 1
                                 continue
                             await self._process_stream_data_internal(message)

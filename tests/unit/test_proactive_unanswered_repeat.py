@@ -14,6 +14,7 @@ from main_logic.proactive_chat.contracts import (
     PROACTIVE_REASON_DELIVERY_PREEMPTED,
     PROACTIVE_REASON_PASS_DUPLICATE,
 )
+from main_logic.proactive_chat.delivery import _commit_proactive_delivery
 from main_logic.proactive_chat.generation import (
     _guard_phase2_output,
     _merge_regen_avoid_terms,
@@ -43,6 +44,69 @@ class _FakeRegenLlm:
         if self.on_invoke is not None:
             self.on_invoke()
         return SimpleNamespace(content=self.content)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tts_accepted", "committed"),
+    ((False, True), (True, False)),
+)
+async def test_normal_delivery_guards_tts_and_commit_with_engagement_snapshot(
+    tts_accepted,
+    committed,
+):
+    """Normal proactive chat retracts stale TTS at either guarded boundary."""
+    mgr = SimpleNamespace(
+        current_speech_id="proactive-sid",
+        last_user_engagement_time=100.0,
+        state=_NeverPreemptedState(),
+        feed_tts_chunk=AsyncMock(return_value=tts_accepted),
+        finish_proactive_delivery=AsyncMock(return_value=committed),
+        handle_new_message=AsyncMock(),
+    )
+
+    result = await _commit_proactive_delivery(
+        mgr=mgr,
+        proactive_sid="proactive-sid",
+        lanlan_name="Neko",
+        response_text="这句不应在用户互动后送达。",
+        source_tag="CHAT",
+        active_channels=[],
+        selected_web_link=None,
+        selected_music_link=None,
+        selected_meme_link=None,
+        music_content=None,
+        is_music_used=False,
+        is_playing_music=False,
+        music_cooldown=False,
+        vision_content=None,
+        phase2_use_vision=False,
+        screenshot_b64=None,
+        proactive_lang="zh",
+        master_name="博士",
+    )
+
+    mgr.feed_tts_chunk.assert_awaited_once_with(
+        "这句不应在用户互动后送达。",
+        expected_speech_id="proactive-sid",
+        expected_user_engagement_time=100.0,
+    )
+    if tts_accepted is False:
+        mgr.finish_proactive_delivery.assert_not_awaited()
+    else:
+        mgr.finish_proactive_delivery.assert_awaited_once()
+        assert (
+            mgr.finish_proactive_delivery.await_args.kwargs[
+                "expected_user_engagement_time"
+            ]
+            == 100.0
+        )
+    mgr.handle_new_message.assert_awaited_once_with()
+    assert result.delivery is None
+    assert (
+        result.result.body["reason_code"]
+        == PROACTIVE_REASON_DELIVERY_PREEMPTED
+    )
 
 
 class _FakeStreamingLlm:
@@ -107,15 +171,17 @@ def test_merge_regen_avoid_terms_preserves_both_repeat_signals():
         "regen_returns_pass",
         "preempted_after_initial",
         "tts_feed_rejected",
+        "finish_rejected",
     ),
     (
-        (False, False, False, False, False, False),
-        (True, False, False, False, False, False),
-        (False, True, False, False, False, False),
-        (False, False, True, False, False, False),
-        (False, False, False, True, False, False),
-        (False, False, True, False, True, False),
-        (False, False, False, False, False, True),
+        (False, False, False, False, False, False, False),
+        (True, False, False, False, False, False, False),
+        (False, True, False, False, False, False, False),
+        (False, False, True, False, False, False, False),
+        (False, False, False, True, False, False, False),
+        (False, False, True, False, True, False, False),
+        (False, False, False, False, False, True, False),
+        (False, False, False, False, False, False, True),
     ),
 )
 async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
@@ -126,6 +192,7 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
     regen_returns_pass,
     preempted_after_initial,
     tts_feed_rejected,
+    finish_rejected,
 ):
     from main_logic.proactive_chat import break_reminders
 
@@ -193,7 +260,7 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
         current_speech_id="break-sid",
         state=state,
         feed_tts_chunk=AsyncMock(return_value=not tts_feed_rejected),
-        finish_proactive_delivery=AsyncMock(return_value=True),
+        finish_proactive_delivery=AsyncMock(return_value=not finish_rejected),
         handle_new_message=AsyncMock(),
         proactive_engagement_observation_started_at=100.0,
         last_user_message_time=None,
@@ -260,6 +327,19 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
         )
         mgr.finish_proactive_delivery.assert_not_awaited()
         mgr.handle_new_message.assert_awaited_once_with()
+    elif finish_rejected:
+        assert result == break_reminders.BreakReminderDeliveryResult()
+        mgr.feed_tts_chunk.assert_awaited_once_with(
+            regenerated_text,
+            expected_speech_id="break-sid",
+            expected_user_engagement_time=None,
+        )
+        mgr.finish_proactive_delivery.assert_awaited_once_with(
+            regenerated_text,
+            expected_speech_id="break-sid",
+            expected_user_engagement_time=None,
+        )
+        mgr.handle_new_message.assert_awaited_once_with()
     else:
         assert corpus.score_unanswered_proactive_draft.call_count == 2
         assert result.delivered_text == regenerated_text
@@ -273,6 +353,7 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
         mgr.finish_proactive_delivery.assert_awaited_once_with(
             regenerated_text,
             expected_speech_id="break-sid",
+            expected_user_engagement_time=None,
         )
 
 
@@ -552,6 +633,80 @@ async def test_regenerated_fresh_music_recomputes_text_exemption(monkeypatch):
     assert output.result is None
     assert output.source_tag == "MUSIC"
     assert output.is_music_used is True
+
+
+@pytest.mark.asyncio
+async def test_regenerated_music_without_material_keeps_text_rechecks(monkeypatch):
+    """A bare MUSIC tag cannot exempt a rewrite that has no selected track."""
+    initial_signal = anti_repeat_module.UnansweredProactiveRepeatSignal(
+        triggered=True,
+        match_count=2,
+        considered_count=8,
+        best_similarity=0.8,
+        repeated_terms=("旧话题",),
+    )
+    regenerated_signal = anti_repeat_module.UnansweredProactiveRepeatSignal(
+        triggered=True,
+        match_count=2,
+        considered_count=8,
+        best_similarity=0.75,
+        repeated_terms=("旧话题",),
+    )
+    corpus = MagicMock()
+    corpus.score_unanswered_proactive_draft.side_effect = [
+        initial_signal,
+        regenerated_signal,
+    ]
+    corpus.score_draft.return_value = (0.0, {})
+    monkeypatch.setattr(
+        anti_repeat_module,
+        "get_anti_repeat_corpus",
+        lambda: corpus,
+    )
+
+    mgr = SimpleNamespace(
+        state=_NeverPreemptedState(),
+        last_user_message_time=None,
+        last_user_engagement_time=None,
+        proactive_engagement_observation_started_at=100.0,
+        handle_new_message=AsyncMock(),
+    )
+
+    async def make_llm(**_kwargs):
+        return _FakeRegenLlm("[MUSIC] 还是说说这个一直重复的旧话题。")
+
+    output = await _guard_phase2_output(
+        mgr=mgr,
+        proactive_sid="sid",
+        lanlan_name="regen-materialless-music-test",
+        response_text="先聊一个会触发长窗口改写的旧话题。",
+        full_text="先聊一个会触发长窗口改写的旧话题。",
+        source_tag="CHAT",
+        active_channels=["music"],
+        selected_music_link=None,
+        selected_meme_link=None,
+        music_content=None,
+        meme_content=None,
+        is_playing_music=False,
+        music_cooldown=False,
+        expects_source_tag=True,
+        make_llm=make_llm,
+        messages=[
+            SystemMessage(content="system"),
+            HumanMessage(content="begin"),
+        ],
+        human_text="begin",
+        screenshot_b64=None,
+        phase2_use_vision=False,
+        phase2_disable_thinking=True,
+        proactive_lang="zh",
+        master_name="博士",
+    )
+
+    assert corpus.score_unanswered_proactive_draft.call_count == 2
+    mgr.handle_new_message.assert_awaited_once_with()
+    assert output.result is not None
+    assert output.result.body["reason_code"] == PROACTIVE_REASON_PASS_DUPLICATE
 
 
 @pytest.mark.asyncio

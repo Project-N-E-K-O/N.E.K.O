@@ -1383,7 +1383,13 @@ async def _guard_phase2_output(
 
         regen_dedup_tag = (
             "CHAT"
-            if regen_source_tag == "MEME" and selected_meme_link is None
+            if (
+                (regen_source_tag == "MEME" and selected_meme_link is None)
+                or (
+                    regen_source_tag == "MUSIC"
+                    and selected_music_link is None
+                )
+            )
             else regen_source_tag
         )
         regen_material_key = _proactive_material_key(
