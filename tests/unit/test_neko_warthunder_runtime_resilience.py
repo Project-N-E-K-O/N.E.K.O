@@ -165,6 +165,25 @@ def test_terminal_mission_recovers_events_after_failed_initial_hud_drain() -> No
             self.hud_calls = 0
             self.last_evt = 40
             self.last_dmg = 20
+            self.in_battle = True
+
+        def get_indicators_with_status(self):
+            if self.in_battle:
+                return (
+                    True,
+                    ConnectionState.IN_BATTLE,
+                    Indicators(valid=True, army="tank"),
+                    MapInfo(valid=True),
+                )
+            return (
+                True,
+                ConnectionState.NOT_IN_BATTLE,
+                Indicators(valid=False),
+                MapInfo(valid=False),
+            )
+
+        def get_state_with_status(self):
+            return True, VehicleState(valid=True)
 
         def incremental_cursor_state(self):
             return {
@@ -224,6 +243,7 @@ def test_terminal_mission_recovers_events_after_failed_initial_hud_drain() -> No
     service._poll_events(service._battle_generation)
     assert service._hud_drain_pending is True
     assert service._hud_recovery_cursor == {"last_evt": 40, "last_dmg": 20}
+    assert service._pending_terminal_status == "success"
     assert service._mission_status == "running"
     assert service._mission_objectives == {"completed": False}
     assert service._combat["my"] == {"kills": 0, "deaths": 0}
@@ -234,6 +254,33 @@ def test_terminal_mission_recovers_events_after_failed_initial_hud_drain() -> No
     assert service._mission_status == "success"
     assert service._mission_objectives == {"completed": True}
     assert service._combat["my"] == {"kills": 1, "deaths": 0}
+
+    # If the fast group confirms exit before the HUD retry, preserve the real
+    # terminal result with the latest committed K/D until the next battle starts.
+    exit_client = DrainClient()
+    exit_service = TelemetryService(exit_client)
+    exit_service.tracker = SummaryTracker()
+    exit_service._state = ConnectionState.IN_BATTLE
+    exit_service._battle_id = "ending-battle"
+    exit_service._mission_status = "running"
+    exit_service._mission_objectives = {"completed": False}
+    exit_service._combat = {"player_name": "pilot", "my": {"kills": 0, "deaths": 0}}
+
+    exit_service._poll_events(exit_service._battle_generation)
+    exit_client.in_battle = False
+    exit_service._poll_fast()
+    ended = exit_service.get_snapshot()
+    assert ended["state"] == "not_in_battle"
+    assert ended["mission_status"] == "success"
+    assert ended["mission_objectives"] == {"completed": True}
+    assert ended["combat"]["my"] == {"kills": 0, "deaths": 0}
+
+    exit_client.in_battle = True
+    exit_service._poll_fast()
+    next_battle = exit_service.get_snapshot()
+    assert next_battle["mission_status"] is None
+    assert next_battle["mission_objectives"] is None
+    assert next_battle["combat"] is None
 
 
 def test_user_context_refresh_cannot_move_chat_activity_backwards() -> None:

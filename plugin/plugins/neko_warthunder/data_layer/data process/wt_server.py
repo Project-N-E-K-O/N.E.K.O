@@ -179,6 +179,11 @@ class TelemetryService:
         self._map_info = MapInfo(valid=False)
         self._mission_status: str | None = None
         self._mission_objectives: Any = None
+        # 终局 mission 先于最终 HUD 到达时，先私下暂存；若 HUD 随后恢复则与最终 K/D
+        # 原子发布，若快速探针先确认离局则作为终局交接保留到下一局开始，避免胜负边沿丢失。
+        self._pending_terminal_status: str | None = None
+        self._pending_terminal_objectives: Any = None
+        self._terminal_handoff_active = False
         self._hud_events: deque = deque(maxlen=_HUD_BUFFER)
         self._chat: deque = deque(maxlen=_CHAT_BUFFER)
         self._processed: dict[str, Any] | None = None  # 加工后的关键信息/告警
@@ -348,11 +353,17 @@ class TelemetryService:
             self._fast_ts = now
             # 离开战局 -> 清空本局缓存
             if state is not ConnectionState.IN_BATTLE and prev is ConnectionState.IN_BATTLE:
-                self._reset_battle_cache_locked()
+                self._reset_battle_cache_locked(preserve_terminal_handoff=True)
                 self._battle_entry_ts = None
                 self._life_entry_ts = None
             # 进入战局 -> 标记需排空 hud 积压（丢弃上一局/连接前的残留事件）+ 记录进局时刻
             if state is ConnectionState.IN_BATTLE and prev is not ConnectionState.IN_BATTLE:
+                # 终局交接只服务上一局离局后的检测窗口；新局状态必须从空基线开始。
+                if self._terminal_handoff_active:
+                    self._mission_status = None
+                    self._mission_objectives = None
+                    self._combat = None
+                    self._terminal_handoff_active = False
                 # 游标清零和排空由 events 线程独占执行，避免旧请求晚返回覆盖新局游标。
                 self._hud_drain_pending = True
                 self._chat_drain_pending = True
@@ -525,10 +536,17 @@ class TelemetryService:
                 self._awards = awards
             # battle_end is edge-triggered and consumes the current K/D once. Keep a
             # terminal mission result private until the matching HUD channel succeeds,
-            # so the result and final combat summary become visible atomically.
-            if hud_ok or not terminal_status:
+            # so the result and final combat summary become visible atomically. If the
+            # player leaves before HUD recovers, _reset_battle_cache_locked publishes
+            # the pending result with the latest committed combat summary as a fallback.
+            if terminal_status and not hud_ok:
+                self._pending_terminal_status = status
+                self._pending_terminal_objectives = objectives
+            else:
                 self._mission_status = status
                 self._mission_objectives = objectives
+                self._pending_terminal_status = None
+                self._pending_terminal_objectives = None
             for ev in hud:
                 self._hud_events.append(ev)
             for msg in chat:
@@ -659,14 +677,37 @@ class TelemetryService:
             return True
         return False
 
-    def _reset_battle_cache_locked(self) -> None:
+    def _reset_battle_cache_locked(self, *, preserve_terminal_handoff: bool = False) -> None:
         """离开战局时清空本局相关缓存（调用方需已持锁）。"""
+        terminal_status: str | None = None
+        terminal_objectives: Any = None
+        terminal_combat: dict[str, Any] | None = None
+        if preserve_terminal_handoff:
+            pending_is_terminal = (
+                str(self._pending_terminal_status or "").strip().lower()
+                in _TERMINAL_MISSION_STATUSES
+            )
+            visible_is_terminal = (
+                str(self._mission_status or "").strip().lower()
+                in _TERMINAL_MISSION_STATUSES
+            )
+            if pending_is_terminal:
+                terminal_status = self._pending_terminal_status
+                terminal_objectives = self._pending_terminal_objectives
+            elif visible_is_terminal:
+                terminal_status = self._mission_status
+                terminal_objectives = self._mission_objectives
+            if terminal_status is not None and isinstance(self._combat, dict):
+                terminal_combat = self._combat
         # 录制标记：一次会话可跨多局，靠此标记供离线工具按局切分
         self.recorder.mark({"_event": "battle_reset"})
         self._map_objects = []
         self._map_info = MapInfo(valid=False)
         self._mission_status = None
         self._mission_objectives = None
+        self._pending_terminal_status = None
+        self._pending_terminal_objectives = None
+        self._terminal_handoff_active = False
         self._hud_recovery_cursor = None
         self._hud_events.clear()
         self._chat.clear()
@@ -696,6 +737,11 @@ class TelemetryService:
         self._last_deaths = 0
         self._battle_id = None
         self._life_index = None
+        if terminal_status is not None:
+            self._mission_status = terminal_status
+            self._mission_objectives = terminal_objectives
+            self._combat = terminal_combat
+            self._terminal_handoff_active = True
 
     def _write_map(self, data: bytes, ext: str, gen: int | None) -> None:
         try:
