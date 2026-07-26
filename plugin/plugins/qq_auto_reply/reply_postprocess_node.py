@@ -229,6 +229,7 @@ class QQReplyPostprocessNode:
                 reply_text=None,
                 raw_reply_text=raw_reply_text,
                 postprocess_reason="empty",
+                used_fallback=bool(getattr(model_result, "used_fallback", False)),
             )
         strategy_mode = getattr(self.plugin, "_strategy_mode", "neko_dynamic")
         is_forced = getattr(context, "force_reply", False) or context.permission_level == "admin"
@@ -238,13 +239,17 @@ class QQReplyPostprocessNode:
                 reply_text=None,
                 raw_reply_text=raw_reply_text,
                 postprocess_reason="llm_skip",
+                used_fallback=bool(getattr(model_result, "used_fallback", False)),
             )
+        # default/forced 回复同样没有本轮历史 ai 行：标记必须保留，
+        # 否则 buffer 会把上一条已投递回复误记成未投递草稿。
         return QQReplyOutcome(
             action="reply",
             reply_text=self.plugin.i18n.t("messages.default_no_reply", default="嗯嗯~"),
             used_default_message=True,
             raw_reply_text=raw_reply_text,
             postprocess_reason="default",
+            used_fallback=bool(getattr(model_result, "used_fallback", False)),
         )
 
     def build_delivery_plan(self, request: Any, outcome: QQReplyOutcome) -> QQDeliveryPlan | None:

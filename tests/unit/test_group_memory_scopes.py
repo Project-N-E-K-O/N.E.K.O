@@ -2070,6 +2070,53 @@ async def test_fallback_buffered_reply_does_not_mark_previous_row():
 
 
 @pytest.mark.asyncio
+async def test_used_fallback_survives_every_postprocess_path():
+    """used_fallback must reach the outcome on EVERY finalize branch — the
+    default/forced reply after an empty fallback also has no ai row for
+    this turn in the shared history; losing the flag would let the buffer
+    mark the previous delivered reply as an undelivered draft."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import QQModelResult
+    from plugin.plugins.qq_auto_reply.reply_postprocess_node import (
+        QQReplyPostprocessNode,
+    )
+
+    plugin = SimpleNamespace(
+        _sanitize_generated_reply=lambda t: t,
+        _strategy_mode="neko_dynamic",
+        _emit_log=lambda *a, **k: None,
+        i18n=SimpleNamespace(t=lambda *a, **k: "嗯嗯~"),
+    )
+    node = QQReplyPostprocessNode.__new__(QQReplyPostprocessNode)
+    node.plugin = plugin
+    empty_fallback = QQModelResult(
+        reply_text=None, source="none", used_fallback=True,
+    )
+
+    # default/forced branch
+    forced = SimpleNamespace(
+        ephemeral_session=False, force_reply=True, permission_level="normal",
+    )
+    outcome = await node.finalize(forced, empty_fallback)
+    assert outcome.used_default_message is True
+    assert outcome.used_fallback is True
+
+    # llm_skip branch
+    skip = SimpleNamespace(
+        ephemeral_session=False, force_reply=False, permission_level="normal",
+    )
+    outcome = await node.finalize(skip, empty_fallback)
+    assert outcome.reply_text is None
+    assert outcome.used_fallback is True
+
+    # ephemeral-empty branch
+    eph = SimpleNamespace(
+        ephemeral_session=True, force_reply=False, permission_level="normal",
+    )
+    outcome = await node.finalize(eph, empty_fallback)
+    assert outcome.used_fallback is True
+
+
+@pytest.mark.asyncio
 async def test_proactive_prompt_row_excluded_from_digest():
     """The silence-timer proactive turn appends a synthetic system-
     instruction human row to the shared history; like rapid-fire control
