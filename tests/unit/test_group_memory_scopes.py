@@ -2255,6 +2255,12 @@ async def test_login_change_bootstrap_keeps_session_when_discard_fails():
     result = await service.ensure_generation_session(context, "group:7788")
     assert result is existing
     assert plugin._user_sessions["group:7788"] is existing
+    # Sticky retry: prime overwrites login_self_id with the new value, so
+    # the retry must key on the pending flag, not the id mismatch.
+    assert existing["pending_identity_discard"] is True
+    existing["login_self_id"] = "new"
+    await service.ensure_generation_session(context, "group:7788")
+    assert plugin.session_runtime_service.discard_session.await_count == 2
 
 
 @pytest.mark.asyncio

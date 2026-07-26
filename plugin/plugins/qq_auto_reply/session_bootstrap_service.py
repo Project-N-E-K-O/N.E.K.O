@@ -19,9 +19,15 @@ class QQSessionBootstrapService:
             self.plugin._user_sessions = {}
 
         existing_session = None if context.ephemeral_session else self.plugin._user_sessions.get(session_key)
-        if existing_session and existing_session.get("login_self_id") != context.login_self_id:
+        if existing_session and (
+            existing_session.get("login_self_id") != context.login_self_id
+            or existing_session.get("pending_identity_discard")
+        ):
             discarded = await self.plugin.session_runtime_service.discard_session(session_key, reason="登录身份变化")
             if discarded is False:
+                # 粘性标记：prime 会把 login_self_id 刷成新值，若只靠 id
+                # 不匹配做重试条件，下一轮就再也进不来这里了。
+                existing_session["pending_identity_discard"] = True
                 # 结算失败被有意保留：覆盖 key 会销毁缓冲唯一副本并泄漏
                 # 旧 client。本轮沿用旧会话，身份行至多滞后一轮，下次重试。
                 return existing_session
