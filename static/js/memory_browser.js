@@ -2588,6 +2588,60 @@
         }
     }
 
+    // 让备忘录 textarea 随内容撑高，把滚动权交还给外层列表。CSS 侧用 max-height
+    // 封顶，超过封顶才由 textarea 自己滚——常规长度不会再出现两条并排的滚动条。
+    function autoGrowMemoTextarea(textarea) {
+        if (!textarea) return;
+        // 必须先归零：否则内容变短时 scrollHeight 仍是旧高度，高度只涨不落。
+        textarea.style.height = 'auto';
+        const contentHeight = textarea.scrollHeight;
+        if (contentHeight > 0) {
+            textarea.style.height = contentHeight + 'px';
+        }
+    }
+
+    // 空态复用已有的 i18n key（noChatContent + tip1），不新增 8 份语言包条目。
+    function renderMemoryEmptyState(container) {
+        if (!container) return;
+        while (container.firstChild) container.removeChild(container.firstChild);
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'memory-empty-state';
+
+        const icon = document.createElement('img');
+        icon.className = 'memory-empty-state-icon';
+        icon.src = '/static/icons/exclamation.png';
+        icon.alt = '';
+        icon.draggable = false;
+        icon.setAttribute('aria-hidden', 'true');
+        wrapper.appendChild(icon);
+
+        const title = document.createElement('div');
+        title.className = 'memory-empty-state-title';
+        title.textContent = translate('memory.noChatContent', '无聊天内容');
+        wrapper.appendChild(title);
+
+        const hint = document.createElement('div');
+        hint.className = 'memory-empty-state-hint';
+        hint.textContent = translate(
+            'memory.tip1',
+            '刚刚结束的对话内容要稍等片刻才会载入，可以重新点击猫娘名称刷新。'
+        );
+        wrapper.appendChild(hint);
+
+        container.appendChild(wrapper);
+    }
+
+    // 滚到底时撤掉底部渐隐，否则最后一条气泡会一直半透明，看起来像没渲染完。
+    function syncMemoryChatScrollMask() {
+        const editor = document.getElementById('memory-chat-edit');
+        if (!editor) return;
+        const scrollable = editor.scrollHeight - editor.clientHeight > 1;
+        const atEnd = editor.scrollTop + editor.clientHeight >= editor.scrollHeight - 1;
+        editor.classList.toggle('is-not-scrollable', !scrollable);
+        editor.classList.toggle('is-scrolled-to-end', scrollable && atEnd);
+    }
+
     function createDeleteButton(index, speaker, position) {
         const speakerLabel = String(speaker || 'AI').trim().replace(/[：:]\s*$/, '');
         const label = translate(
@@ -2613,6 +2667,11 @@
         const div = document.getElementById('memory-chat-edit');
         // 清空并使用 DOM API 渲染每一条消息，避免将未转义的用户数据插入到 HTML 中
         while (div.firstChild) div.removeChild(div.firstChild);
+        if (!chatData.length) {
+            renderMemoryEmptyState(div);
+            syncMemoryChatScrollMask();
+            return;
+        }
         let conversationPosition = 0;
         chatData.forEach((msg, i) => {
             const container = document.createElement('div');
@@ -2672,8 +2731,10 @@
                     bodyValue = this.value;
                     commitMemo();
                     setMemoryDirty(true);
+                    autoGrowMemoTextarea(this);
                 });
                 contentWrapper.appendChild(ta);
+                autoGrowMemoTextarea(ta);
 
                 if (olderValue) {
                     const olderLabel = document.createElement('span');
@@ -2690,8 +2751,10 @@
                         olderValue = this.value;
                         commitMemo();
                         setMemoryDirty(true);
+                        autoGrowMemoTextarea(this);
                     });
                     contentWrapper.appendChild(olderTa);
+                    autoGrowMemoTextarea(olderTa);
                 }
             } else if (msg.role === 'ai') {
                 conversationPosition += 1;
@@ -2751,6 +2814,7 @@
 
             div.appendChild(container);
         });
+        syncMemoryChatScrollMask();
     }
 
     function deleteChat(idx) {
@@ -3154,7 +3218,7 @@
                     return;
                 }
                 chatData = [];
-                editDiv.innerHTML = '<div style="color:#888; padding: 20px; text-align: center;">' + (window.t ? window.t('memory.noChatContent') : '无聊天内容') + '</div>';
+                renderMemoryEmptyState(editDiv);
             }
         } catch (e) {
             if (requestId !== memoryFileRequestId) {
@@ -3426,6 +3490,11 @@
         initMemoryRolePanel();
         initMemoryUnsavedSwitchDialog();
         initMemoryAuxiliaryPanels();
+        const chatEditor = document.getElementById('memory-chat-edit');
+        if (chatEditor) {
+            chatEditor.addEventListener('scroll', syncMemoryChatScrollMask, { passive: true });
+            window.addEventListener('resize', syncMemoryChatScrollMask);
+        }
         const storagePanelState = await initStorageLocationPanel();
         if (storagePanelState && storagePanelState.limited) {
             renderMemoryBrowserLimitedState(storagePanelState);

@@ -68,6 +68,23 @@
     --memory-motion-panel: 220ms;
     --memory-ease-out: cubic-bezier(0.2, 0, 0, 1);
     --memory-ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+    /* 字号阶梯。这份样式表历史上散着 17 个不同字号（px 与 rem 混用，0.82/0.85/
+     * 0.9/0.92/0.95/0.98/1.18rem 这类相邻半档尤其多，肉眼分不出来但会让整页
+     * 读起来「不齐」）。新代码一律走这五级，旧值随手改到时再往这里靠。
+     *   caption 12 — 时间戳、状态、辅助说明
+     *   control 13 — 按钮、列表项等密集控件
+     *   body    14 — 正文、气泡
+     *   title   16 — 区块标题、侧栏面板标题
+     *   dialog  18 — 模态对话框标题（比 title 高一档以示强调，非漂移）
+     */
+    --memory-font-caption: 12px;
+    --memory-font-control: 13px;
+    --memory-font-body: 14px;
+    --memory-font-title: 16px;
+    --memory-font-dialog: 18px;
+    /* 字重只保留两级：常规与强调。历史上 bold(700) 与 650 混用。 */
+    --memory-font-weight-regular: 400;
+    --memory-font-weight-strong: 650;
 }
 
 [data-theme="dark"] {
@@ -433,19 +450,21 @@ body .container-header {
     overflow-wrap: anywhere;
 }
 
+/* 立绘只做右缘的氛围，不参与信息传达：拉宽 + 降透明度 + 让渐变更早开始淡出，
+ * 文字侧才能完全干净。宽度加大反而更轻——同样的淡出距离铺得更开。 */
 .memory-role-card-face {
     position: absolute;
     z-index: 0;
     inset-block: 0;
     inset-inline-end: 0;
-    width: 64px;
+    width: 88px;
     height: 100%;
     object-fit: cover;
     object-position: 50% 8%;
-    opacity: 0.32;
+    opacity: 0.26;
     pointer-events: none;
-    -webkit-mask-image: linear-gradient(to left, #000 44%, transparent 100%);
-    mask-image: linear-gradient(to left, #000 44%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to left, #000 30%, transparent 100%);
+    mask-image: linear-gradient(to left, #000 30%, transparent 100%);
 }
 
 .memory-role-card-face[hidden] {
@@ -1564,10 +1583,12 @@ body.storage-location-memory-modal-open {
 
 .chat-item {
     max-height: none;
-    margin-bottom: 10px;
+    /* 组间距 16px 对组内 4px（说话人 / 气泡 / 时间），4:1 的对比让眼睛自动把
+     * 一条消息的三个部件归为一组，而不是把时间戳读成下一条的开头。 */
+    margin-bottom: var(--memory-space-4);
     display: flex;
     align-items: flex-start;
-    gap: var(--memory-space-3);
+    gap: var(--memory-space-2);
     position: relative;
     opacity: 1;
 }
@@ -1602,17 +1623,23 @@ html.neko-window-maximized .chat-item + .chat-item::before {
 }
 
 .memo-label {
-    font-weight: bold;
+    font-weight: 650;
     color: var(--memory-text);
-    margin-bottom: 10px;
+    margin-bottom: var(--memory-space-2);
     display: block;
-    font-size: 1.1rem;
+    font-size: 16px;
+    line-height: 24px;
 }
 
+/* 备忘录是页面里唯一可编辑的区域，却嵌在滚动列表内部——再给它自己一条滚动条
+ * 就会出现两条并排的滚动条，滚轮停在 textarea 上时会被吃掉。改成随内容撑高，
+ * 40vh 封顶后才允许内部滚动，常规长度的备忘录不会再出现第二条滚动条。 */
 .memo-textarea {
     width: 100%;
     max-width: 100%;
     min-height: 120px;
+    max-height: 40vh;
+    overflow-y: auto;
     padding: 12px;
     border-radius: var(--memory-radius-control);
     border: 1px solid var(--memory-border);
@@ -1638,16 +1665,17 @@ html.neko-window-maximized .chat-item + .chat-item::before {
  * 事件。前置 label + 缩小字号 + 轻量背景；编辑功能保持完整。 */
 .memo-older-label {
     display: block;
-    margin-top: 14px;
-    margin-bottom: 6px;
-    font-size: 0.85rem;
+    margin-top: var(--memory-space-4);
+    margin-bottom: var(--memory-space-1);
+    font-size: var(--memory-font-caption);
+    line-height: 18px;
     color: var(--memory-text-tertiary);
     letter-spacing: 0.02em;
 }
 
 .memo-textarea--older {
     min-height: 80px;
-    font-size: 0.92rem;
+    font-size: var(--memory-font-body);
     color: var(--memory-text-secondary);
     background: var(--memory-surface-subtle);
     border-color: var(--memory-divider);
@@ -1659,13 +1687,20 @@ html.neko-window-maximized .chat-item + .chat-item::before {
     padding: 8px 11px;
     border-radius: var(--memory-radius-control);
     border: 1px solid var(--memory-divider);
-    margin: 2px 0;
+    margin: 0;
     display: inline-block;
     max-width: 100%;
     box-sizing: border-box;
     overflow-wrap: break-word;
     line-height: 22px;
     font-size: 14px;
+}
+
+/* 「根部」收一个小圆角，让气泡朝说话人一侧有归属感——比做左右分栏成本低，
+ * 又不改变现有的全左对齐布局。 */
+.chat-item[data-role="ai"] .chat-bubble,
+.chat-item[data-role="human"] .chat-bubble {
+    border-top-left-radius: var(--memory-space-1);
 }
 
 .chat-item[data-role="ai"] .chat-bubble {
@@ -1700,9 +1735,10 @@ html.neko-window-maximized .chat-item + .chat-item::before {
 
 .chat-speaker {
     color: var(--memory-accent-foreground);
-    font-weight: bold;
-    margin-bottom: 2px;
-    font-size: 14px;
+    font-weight: 650;
+    margin-bottom: var(--memory-space-1);
+    font-size: 13px;
+    line-height: 18px;
 }
 
 .chat-item[data-role="human"] .chat-speaker {
@@ -1712,7 +1748,9 @@ html.neko-window-maximized .chat-item + .chat-item::before {
 .chat-time {
     color: var(--memory-text-tertiary);
     font-size: 12px;
-    margin-top: 2px;
+    line-height: 16px;
+    margin-top: var(--memory-space-1);
+    font-variant-numeric: tabular-nums;
 }
 
 .chat-actions {
@@ -1726,12 +1764,23 @@ html.neko-window-maximized .chat-item + .chat-item::before {
     flex-shrink: 0;
     display: flex;
     align-items: center;
+}
+
+/* 备忘录（system）那一条是整行铺满的编辑区，删除按钮仍旧顶到行尾；
+ * 对话轮次则跟着气泡走——否则短消息的删除按钮会被甩到一屏之外，
+ * 既难对应也容易点错行。 */
+.chat-item[data-role="system"] .delete-btn-wrapper {
     margin-left: auto;
 }
 
+/* 对齐到气泡而不是「说话人 + 气泡 + 时间」整块的中线——否则按钮会浮在说话人
+ * 标签那一行的右边，看起来像属于名字而不是属于消息。
+ * 偏移 = 说话人行高 18px + 其下间距 4px + (气泡单行高 38px - 按钮高 28px) / 2。
+ * 多行气泡时按钮停在气泡顶部，与常见的行内操作位置一致。 */
 .chat-item[data-role="ai"] .delete-btn-wrapper,
 .chat-item[data-role="human"] .delete-btn-wrapper {
-    align-self: center;
+    align-self: flex-start;
+    margin-top: 27px;
 }
 
 .delete-btn {
@@ -3239,6 +3288,49 @@ body.is-memory-switch-confirming .editor::after {
     padding-right: 8px;
     overflow-y: auto;
     scrollbar-gutter: stable;
+    /* 底部 16px 渐隐，告诉用户「下面还有」，而不是让最后一条气泡看起来被切断。
+     * 用 mask 而不是伪元素遮罩，滚动条不会被盖住。 */
+    -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent 100%);
+    mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent 100%);
+}
+
+/* 滚到底之后没有更多内容，渐隐就该撤掉——否则最后一条会一直半透明。 */
+#memory-chat-edit.is-scrolled-to-end,
+#memory-chat-edit.is-not-scrollable {
+    -webkit-mask-image: none;
+    mask-image: none;
+}
+
+/* 空态：没有对话记录时给一个居中的说明，而不是一行贴在左上角的灰字。 */
+.memory-empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--memory-space-2);
+    min-height: 220px;
+    padding: var(--memory-space-6);
+    text-align: center;
+}
+
+.memory-empty-state-icon {
+    width: 44px;
+    height: 44px;
+    opacity: 0.5;
+}
+
+.memory-empty-state-title {
+    color: var(--memory-text-secondary);
+    font-size: 14px;
+    font-weight: 650;
+    line-height: 20px;
+}
+
+.memory-empty-state-hint {
+    max-width: 30ch;
+    color: var(--memory-text-tertiary);
+    font-size: 12px;
+    line-height: 18px;
 }
 
 .editor-actions {

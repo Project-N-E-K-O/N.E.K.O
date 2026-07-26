@@ -3070,9 +3070,13 @@ def test_memory_browser_select_file(mock_page: Page, running_server: str, seed_m
                 humanBubbleBorder: humanBubbleStyle.borderTopColor,
                 humanBubblePaddingTop: parseFloat(humanBubbleStyle.paddingTop),
                 aiBubblePaddingTop: parseFloat(aiBubbleStyle.paddingTop),
-                deleteRightInset: Math.round((humanRect.right - deleteRect.right) * 10) / 10,
-                deleteEdgesAligned: Math.abs(deleteRect.right - aiDeleteRect.right) <= 1,
+                deleteGapFromContent: Math.round((deleteRect.left - contentRect.right) * 10) / 10,
+                deleteTrailsOwnBubble: Math.round((deleteRect.left - humanBubble.getBoundingClientRect().right) * 10) / 10,
+                deleteStaysInsideRow: deleteRect.right <= humanRect.right + 1,
                 deleteClearsContent: deleteRect.left >= contentRect.right,
+                aiDeleteTrailsOwnBubble: Math.round(
+                    (aiDeleteRect.left - aiBubble.getBoundingClientRect().right) * 10
+                ) / 10,
                 rowGap: Math.round((aiRect.top - humanRect.bottom) * 10) / 10,
             };
         }
@@ -3086,10 +3090,15 @@ def test_memory_browser_select_file(mock_page: Page, running_server: str, seed_m
     assert message_surfaces["humanBubbleBorder"] != "rgba(0, 0, 0, 0)"
     assert message_surfaces["humanBubblePaddingTop"] == 8
     assert message_surfaces["aiBubblePaddingTop"] == 8
-    assert message_surfaces["deleteRightInset"] == 0
-    assert message_surfaces["deleteEdgesAligned"] is True
+    # 删除按钮跟着自己的气泡走，而不是排成一列贴在行尾。短消息的删除按钮曾被甩到
+    # 一屏之外（气泡 ~80px、按钮在 1400px 开外），既难对应也容易点错行。
+    # 这里把「紧邻」钉死：按钮左缘距离它那条气泡的右缘不超过一个 flex gap。
     assert message_surfaces["deleteClearsContent"] is True
-    assert 8 <= message_surfaces["rowGap"] <= 12
+    assert message_surfaces["deleteStaysInsideRow"] is True
+    assert message_surfaces["deleteGapFromContent"] == 8
+    assert 0 <= message_surfaces["deleteTrailsOwnBubble"] <= 12
+    assert 0 <= message_surfaces["aiDeleteTrailsOwnBubble"] <= 12
+    assert 14 <= message_surfaces["rowGap"] <= 18
     
     # Verify the save row is now visible
     expect(mock_page.locator("#save-row")).to_be_visible()
