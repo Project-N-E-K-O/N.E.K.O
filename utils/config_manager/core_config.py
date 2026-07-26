@@ -106,12 +106,29 @@ class CoreConfigMixin:
         This used to live inside get_core_config, which made that method a
         read-modify-write. Every async caller now reaches it through asyncio.to_thread,
         so the write could interleave with a /core_api save on the loop and replace the
-        user's just-saved keys with the worker's older snapshot. Startup runs before the
-        server accepts requests, so there is no writer to race here.
+        user's just-saved keys with the worker's older snapshot.
+
+        Scope of the guarantee, stated honestly:
+        - In-process it is serialized by _openclaw_migration_lock, and the servers
+          create the manager at module import, before uvicorn accepts connections.
+        - Cross-process it is NOT airtight: a second entry point (app/monitor.py has its
+          own __main__) can import while another process already serves /core_api, so a
+          save can still land between the load and the save below. The window is that
+          gap only, and only for a config still carrying the legacy 8089.
+        - No config write in this codebase takes a file lock -- /core_api itself is an
+          unlocked load-modify-save, so two concurrent saves already lose updates. Making
+          this airtight means introducing config-wide write locking, which belongs to
+          that shared write path, not to this one-shot migration.
 
         get_core_config still normalizes in memory (see _migrated_openclaw_url) so a
         config that somehow arrives with 8089 later is routed correctly regardless.
         """
+        from utils.config_manager import ConfigManager
+        with ConfigManager._openclaw_migration_lock:
+            return self._migrate_openclaw_url_port_locked()
+
+    def _migrate_openclaw_url_port_locked(self) -> bool:
+        """Body of migrate_openclaw_url_port; the caller holds the migration lock."""
         for attempt in range(_OPENCLAW_MIGRATION_ATTEMPTS):
             try:
                 core_cfg = self.load_json_config('core_config.json', {})

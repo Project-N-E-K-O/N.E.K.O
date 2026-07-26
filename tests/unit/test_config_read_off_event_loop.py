@@ -593,3 +593,50 @@ def test_save_choke_point_normalizes_a_resubmitted_legacy_port():
         assert "_migrated_openclaw_url" in called, (
             "保存路径直接落了用户提交的 openclawUrl，旧的 8089 会被重新固化"
         )
+
+
+@pytest.mark.unit
+def test_startup_migration_is_serialized_in_process():
+    """Two threads racing the migration must not both perform the read-modify-write.
+
+    ``_config_manager_migrated`` is a plain bool with no memory barrier, so two threads
+    can both observe False and both enter. Without the lock they interleave load/save
+    and the loser writes a snapshot that predates the winner.
+    """
+    import threading
+
+    barrier = threading.Barrier(2)
+    inside: list[int] = []
+    overlap = []
+
+    class _RacingManager(CoreConfigMixin):
+        def __init__(self):
+            self.stored = {"openclawUrl": "http://127.0.0.1:8089"}
+
+        def load_json_config(self, filename, default_value=None):
+            inside.append(1)
+            if len(inside) > 1:
+                overlap.append(True)
+            # 让两个线程有充分机会重叠：先都到齐，再各自往下走
+            real_time.sleep(0.02)
+            return dict(self.stored)
+
+        def save_json_config(self, filename, data):
+            self.stored = dict(data)
+            inside.pop()
+
+    manager = _RacingManager()
+
+    def run():
+        barrier.wait(5)
+        manager.migrate_openclaw_url_port()
+
+    threads = [threading.Thread(target=run) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert not any(t.is_alive() for t in threads), "迁移线程未退出"
+
+    assert not overlap, "两个线程的 load/save 发生了重叠，进程内串行化失效"
+    assert manager.stored["openclawUrl"] == "http://127.0.0.1:8088"

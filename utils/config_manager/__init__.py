@@ -157,6 +157,9 @@ class ConfigManager(
     # 配额耗尽时给前端弹提示的节流：与 _agent_quota_lock 不同的锁，避免在持有配额锁时重入。
     # notifier 由 agent_server 在启动时注册（进程级），收到耗尽信号最多每 _quota_notify_interval_s 秒触发一次。
     _quota_notify_lock = threading.Lock()
+    # openclawUrl 8089→8088 落盘迁移的进程内串行化。_config_manager_migrated 那个标志
+    # 本身不是线程安全的，两个线程可能同时看到 False 各跑一遍迁移。
+    _openclaw_migration_lock = threading.Lock()
     _quota_notify_interval_s = 10.0
     _quota_notify_last_monotonic = 0.0
     _quota_exceeded_notifier = None
