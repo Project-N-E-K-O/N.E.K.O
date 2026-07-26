@@ -151,6 +151,25 @@ async def stop_live_listener(runtime: Any, *, mark_disabled: bool = True) -> Non
             runtime.safety_guard.set_connected(False)
 
 
+async def handle_unexpected_live_listener_stop(
+    runtime: Any,
+    *,
+    connection_state: str = "disconnected",
+) -> None:
+    """Converge runtime state after a provider stops without an explicit user action."""
+    runtime._accepting_live_events = False
+    invalidate_live_session(runtime)
+    runtime.config.live_enabled = False
+    _clear_connected_room_status(runtime)
+    runtime.live_connection_state = (
+        connection_state if connection_state == "auth_required" else "disconnected"
+    )
+    runtime.live_connection_auth_mode = "unknown"
+    runtime._live_listener_started_at = 0.0
+    runtime.safety_guard.set_connected(False)
+    await runtime.restore_instructions(force=True)
+
+
 async def _stop_captured_provider(provider: Any) -> None:
     stopper = getattr(provider, "stop_listening", None)
     if callable(stopper):
