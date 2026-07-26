@@ -44,19 +44,16 @@ from ._shared import (
 from main_logic import core as _core_facade
 
 
-_USER_INPUT_INGRESS_TIME_KEY = "_user_input_ingress_time"
-
-
-def _user_input_ingress_time(message: dict) -> float:
-    """Return the server-captured ingress time, or sample a safe fallback."""
-    captured_at = message.get(_USER_INPUT_INGRESS_TIME_KEY)
-    if isinstance(captured_at, (int, float)):
-        return float(captured_at)
-    return time.time()
-
-
 class StreamingMixin:
     """Live input streaming methods (see module docstring)."""
+
+    @staticmethod
+    def _user_input_ingress_time(message: dict) -> float:
+        """Return the server-captured ingress time, or sample a safe fallback."""
+        captured_at = message.get("_user_input_ingress_time")
+        if isinstance(captured_at, (int, float)):
+            return float(captured_at)
+        return time.time()
 
     def _emit_cooldown_turn_end_if_needed(self):
         """Deduplicated turn_end emission during cooldown, at most once per second. Returns True when currently cooling down."""
@@ -213,7 +210,7 @@ class StreamingMixin:
             # Copy so callers cannot observe this internal transport metadata.
             message = {
                 **message,
-                _USER_INPUT_INGRESS_TIME_KEY: time.time(),
+                "_user_input_ingress_time": time.time(),
             }
         # 检查session是否就绪
         async with self.input_cache_lock:
@@ -368,7 +365,7 @@ class StreamingMixin:
                     # 更新用户活动时间戳（与 handle_input_transcript / _record_external_user_input
                     # 对偶）。idle reset loop 依赖该字段判断静默时长，文本路径不补的话
                     # 纯文本会话永远满足"静默 ≥ 30 min"被误重置。
-                    _user_input_time = _user_input_ingress_time(message)
+                    _user_input_time = self._user_input_ingress_time(message)
                     self.last_user_activity_time = _user_input_time
                     # 「真消息」时间戳：strip 后非空才刷，与语音路径
                     # `if transcript_text:` 对偶——空白输入不算真实回应，否则会误
@@ -688,7 +685,7 @@ class StreamingMixin:
                     if self._should_drop_magic_command_image(message.get("request_id")):
                         return
                     image_arrival_time = (
-                        _user_input_ingress_time(message)
+                        self._user_input_ingress_time(message)
                         if input_type in {"avatar_drop_image", "user_image"}
                         else None
                     )
