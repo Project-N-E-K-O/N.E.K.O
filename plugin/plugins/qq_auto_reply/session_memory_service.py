@@ -75,17 +75,24 @@ class QQSessionMemoryService:
 
             await self.plugin._run_with_session_lock(session_key, _finalize_existing)
 
-    def conversation_slice_to_memory_messages(self, conversation_history: list, start_index: int = 0) -> list[dict[str, Any]]:
+    def conversation_slice_to_memory_messages(
+        self, conversation_history: list, start_index: int = 0,
+        *, user_data: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         memory_messages = []
+        # 被 rapid-fire 合并取代的未投递草稿：没人见过的话不得被提取成
+        # 持久记忆（群 digest 与私聊 /cache 同源过滤）。名单在 user_data
+        # 上（buffer 记入，插件自有 dict 无"打标失败"模式），按对象身份
+        # 比对——名单持强引用保活，id 稳定。
+        undelivered_ids = {
+            id(row)
+            for row in ((user_data or {}).get("undelivered_draft_rows") or [])
+        }
         for msg in conversation_history[start_index:]:
             msg_type = getattr(msg, "type", "")
             if msg_type not in ("human", "ai"):
                 continue
-            if msg_type == "ai" and (
-                getattr(msg, "additional_kwargs", None) or {}
-            ).get("neko_undelivered"):
-                # 被 rapid-fire 合并取代的未投递草稿：没人见过的话不得
-                # 被提取成持久记忆（群 digest 与私聊 /cache 同源过滤）。
+            if msg_type == "ai" and id(msg) in undelivered_ids:
                 continue
             role = "user" if msg_type == "human" else "assistant"
             content = getattr(msg, "content", "")
@@ -114,6 +121,7 @@ class QQSessionMemoryService:
 
     def _slice_group_history_batch(
         self, conversation_history: list, start_index: int, max_messages: int,
+        *, user_data: dict[str, Any] | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
         """Oldest-first digest batch with an exact cursor.
 
@@ -127,6 +135,7 @@ class QQSessionMemoryService:
         for raw_index in range(next_index, len(conversation_history)):
             converted = self.conversation_slice_to_memory_messages(
                 conversation_history[raw_index:raw_index + 1],
+                user_data=user_data,
             )
             if converted and len(messages) + len(converted) > max_messages:
                 break
@@ -200,7 +209,9 @@ class QQSessionMemoryService:
             return 0
         conversation_history = getattr(session, "_conversation_history", []) or []
         start_index = int(user_data.get("last_synced_index", 0))
-        delta_messages = self.conversation_slice_to_memory_messages(conversation_history, start_index)
+        delta_messages = self.conversation_slice_to_memory_messages(
+            conversation_history, start_index, user_data=user_data,
+        )
         if not delta_messages:
             return 0
         result = await self.post_memory_history("cache", her_name, delta_messages, timeout=5.0)
@@ -378,6 +389,7 @@ class QQSessionMemoryService:
                     scoped_messages, next_index = self._slice_group_history_batch(
                         conversation_history, last_group_digest_index,
                         self.GROUP_HISTORY_MAX_MESSAGES,
+                        user_data=user_data,
                     )
                     if not scoped_messages:
                         if next_index > last_group_digest_index:
@@ -432,7 +444,9 @@ class QQSessionMemoryService:
                     return False
             else:
                 last_synced_index = int(user_data.get("last_synced_index", 0))
-                remaining_messages = self.conversation_slice_to_memory_messages(conversation_history, last_synced_index)
+                remaining_messages = self.conversation_slice_to_memory_messages(
+                    conversation_history, last_synced_index, user_data=user_data,
+                )
 
                 if remaining_messages:
                     result = await self.post_memory_history("process", her_name, remaining_messages, timeout=30.0)
@@ -440,7 +454,9 @@ class QQSessionMemoryService:
                         raise RuntimeError(result.get("message", "process failed"))
                     self.plugin.logger.info(f"[{reason}] 已为用户 {session_key} 完成正式记忆结算，消息数: {len(remaining_messages)}")
                 elif user_data.get("has_cached_memory"):
-                    settled_messages = self.conversation_slice_to_memory_messages(conversation_history, 0)
+                    settled_messages = self.conversation_slice_to_memory_messages(
+                        conversation_history, 0, user_data=user_data,
+                    )
                     result = await self.post_memory_history("settle", her_name, settled_messages, timeout=30.0)
                     if result.get("status") == "error":
                         raise RuntimeError(result.get("message", "settle failed"))

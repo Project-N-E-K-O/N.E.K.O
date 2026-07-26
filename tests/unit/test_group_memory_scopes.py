@@ -1818,9 +1818,10 @@ async def test_group_turns_always_refresh_session_prompt():
 async def test_undelivered_buffer_drafts_stay_out_of_memory():
     """Rapid-fire merging delivers only the generated summary: the buffered
     draft replies already sit in the shared history but no participant ever
-    saw them. They are marked at interception, unmarked only when the
-    single-draft path actually delivers, and the memory serializer skips
-    marked rows — undelivered text must never become a durable group fact."""
+    saw them. Drafts are recorded on user_data at interception (a plugin-
+    owned dict — no unwritable-message failure mode), the serializer skips
+    recorded rows by identity, and the single-draft path unrecords ONLY its
+    own delivered row: older merged-away drafts stay excluded forever."""
     from plugin.plugins.qq_auto_reply.pipeline_models import QQMessageBlock
     from plugin.plugins.qq_auto_reply.reply_buffer_service import (
         PendingReply,
@@ -1831,17 +1832,12 @@ async def test_undelivered_buffer_drafts_stay_out_of_memory():
     )
 
     def _msg(msg_type, text):
-        return SimpleNamespace(
-            type=msg_type, content=text, additional_kwargs={},
-        )
+        return SimpleNamespace(type=msg_type, content=text)
 
     history = [_msg("human", "问题一"), _msg("ai", "草稿一")]
+    user_data = {"session": SimpleNamespace(_conversation_history=history)}
     plugin = SimpleNamespace(
-        _user_sessions={
-            "group:7788": {
-                "session": SimpleNamespace(_conversation_history=history),
-            },
-        },
+        _user_sessions={"group:7788": user_data},
         _emit_log=lambda *a, **k: None,
         reply_delivery_node=SimpleNamespace(deliver=AsyncMock()),
     )
@@ -1854,9 +1850,9 @@ async def test_undelivered_buffer_drafts_stay_out_of_memory():
         blocks=[QQMessageBlock(text="草稿一")], wait_seconds=999,
         sender_id="1", is_group=True, group_id="7788",
     )
-    assert history[1].additional_kwargs.get("neko_undelivered") is True
+    assert user_data["undelivered_draft_rows"] == [history[1]]
 
-    # Second draft buffered before the wait expires: marked as well.
+    # Second draft buffered before the wait expires: recorded as well.
     history.append(_msg("human", "问题二"))
     history.append(_msg("ai", "草稿二"))
     await service.schedule_reply(
@@ -1864,34 +1860,41 @@ async def test_undelivered_buffer_drafts_stay_out_of_memory():
         blocks=[QQMessageBlock(text="草稿二")], wait_seconds=999,
         sender_id="1", is_group=True, group_id="7788",
     )
-    assert history[3].additional_kwargs.get("neko_undelivered") is True
-    pending = service._pending.pop("group:7788")
-    if pending.task:
-        pending.task.cancel()
+    assert user_data["undelivered_draft_rows"] == [history[1], history[3]]
+    merged_away = service._pending.pop("group:7788")
+    if merged_away.task:
+        merged_away.task.cancel()
 
-    # The memory serializer skips marked ai rows for digest and /cache alike.
+    # The memory serializer skips recorded ai rows for digest and /cache
+    # alike — by identity, so an identical-text delivered row still passes.
     history.append(_msg("ai", "已投递的总结"))
     memory_service = QQSessionMemoryService.__new__(QQSessionMemoryService)
     memory_service.plugin = plugin
     texts = [
         m["content"][0]["text"]
-        for m in memory_service.conversation_slice_to_memory_messages(history, 0)
+        for m in memory_service.conversation_slice_to_memory_messages(
+            history, 0, user_data=user_data,
+        )
     ]
     assert texts == ["问题一", "问题二", "已投递的总结"]
 
-    # Single-draft path: the original draft IS delivered — unmark it.
+    # Single-draft path: the new draft IS delivered — unrecord it, and ONLY
+    # it. The two merged-away drafts from the earlier burst must stay
+    # excluded, or "replies that never happened" re-enter digest/cache.
+    history.append(_msg("human", "问题三"))
+    history.append(_msg("ai", "草稿三"))
     single = PendingReply(
-        first_text="草稿一", wait_seconds=0, sender_id="1",
+        first_text="草稿三", wait_seconds=0, sender_id="1",
         is_group=True, group_id="7788",
     )
-    single.first_blocks = [QQMessageBlock(text="草稿一")]
+    single.first_blocks = [QQMessageBlock(text="草稿三")]
     single.wait_until = 0.0
     service._pending["group:7788"] = single
+    service._mark_latest_draft_undelivered("group:7788", single)
+    assert history[6] in user_data["undelivered_draft_rows"]
     await service._deliver_after_wait("group:7788", single)
     plugin.reply_delivery_node.deliver.assert_awaited_once()
-    assert not any(
-        m.additional_kwargs.get("neko_undelivered") for m in history
-    )
+    assert user_data["undelivered_draft_rows"] == [history[1], history[3]]
 
 
 @pytest.mark.asyncio

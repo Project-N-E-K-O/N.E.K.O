@@ -18,7 +18,8 @@ from typing import Any, Optional
 class PendingReply:
     """待发送的回复（缓冲模式：收消息时不合成，等暂停后统一生成回复）"""
     __slots__ = ("buffered_texts", "wait_until", "task", "topic_hint", "message_count",
-                 "sender_id", "is_group", "group_id", "_acked", "first_blocks")
+                 "sender_id", "is_group", "group_id", "_acked", "first_blocks",
+                 "draft_rows")
 
     def __init__(self, first_text: str, wait_seconds: float, sender_id: str, is_group: bool, group_id: str):
         self.buffered_texts: list[str] = [first_text]  # 缓冲的消息文本
@@ -31,6 +32,9 @@ class PendingReply:
         self.group_id = group_id
         self._acked = False
         self.first_blocks: list = []
+        # 本缓冲期截停的草稿历史行（消息对象引用）：单条路径投递后只撤
+        # 这些行的未投递记录，绝不动此前合并场景留下的旧标。
+        self.draft_rows: list = []
 
 
 class QQReplyBufferService:
@@ -39,41 +43,54 @@ class QQReplyBufferService:
     DEFAULT_WAIT_SECONDS = 3.0      # 群聊默认等待 3 秒
     DEFAULT_WAIT_PRIVATE = 6.0      # 私聊默认等待 6 秒（对方往往在连续输出）
 
-    def _mark_latest_draft_undelivered(self, session_key: str) -> None:
-        """截停时给共享历史尾部的草稿 ai 行打未投递标。
+    def _mark_latest_draft_undelivered(
+        self, session_key: str, pending: "PendingReply | None" = None,
+    ) -> None:
+        """截停时把共享历史尾部的草稿 ai 行记入 user_data 的未投递名单。
 
         多条合并场景只投递新生成的 summary，被取代的草稿从未离开进程，
         却已经躺在会话历史里——digest/cache 若无差别序列化，会把没人见过
-        的话提取成持久记忆，之后的回复能"回忆"从未发生的披露。单条路径
-        真正投递后由 _clear_undelivered_marks 撤标。"""
+        的话提取成持久记忆，之后的回复能"回忆"从未发生的披露。
+
+        名单放 user_data（插件自有 dict，永远可写）而非消息对象属性：
+        对不可写/陌生消息类型不存在"打标失败被吞、草稿静默放行"的模式。
+        名单持对象强引用，序列化侧按身份（id）比对——引用保活使 id 稳定，
+        名单随会话 pop 一并销毁。单条路径真正投递后由
+        _clear_undelivered_marks 只撤本次 pending 的行。"""
         user_data = (getattr(self.plugin, "_user_sessions", {}) or {}).get(
             session_key
         )
-        session = (user_data or {}).get("session")
+        if not isinstance(user_data, dict):
+            return
+        session = user_data.get("session")
         history = getattr(session, "_conversation_history", None) or []
         for msg in reversed(history):
             if getattr(msg, "type", "") != "ai":
                 continue
-            kwargs = getattr(msg, "additional_kwargs", None)
-            if kwargs is None:
-                try:
-                    msg.additional_kwargs = {"neko_undelivered": True}
-                except Exception:
-                    pass
-            else:
-                kwargs["neko_undelivered"] = True
+            rows = user_data.setdefault("undelivered_draft_rows", [])
+            if not any(existing is msg for existing in rows):
+                rows.append(msg)
+            if pending is not None and not any(
+                existing is msg for existing in pending.draft_rows
+            ):
+                pending.draft_rows.append(msg)
             return
 
-    def _clear_undelivered_marks(self, session_key: str) -> None:
+    def _clear_undelivered_marks(
+        self, session_key: str, pending: "PendingReply",
+    ) -> None:
+        """只撤销本次 pending 实际投递的草稿行——此前合并场景留下的旧
+        未投递记录必须保留，否则"从未发生的回复"会重新进入 digest/cache。"""
         user_data = (getattr(self.plugin, "_user_sessions", {}) or {}).get(
             session_key
         )
-        session = (user_data or {}).get("session")
-        history = getattr(session, "_conversation_history", None) or []
-        for msg in history:
-            kwargs = getattr(msg, "additional_kwargs", None)
-            if kwargs and kwargs.get("neko_undelivered"):
-                kwargs.pop("neko_undelivered", None)
+        if not isinstance(user_data, dict):
+            return
+        rows = user_data.get("undelivered_draft_rows")
+        if not rows:
+            return
+        for delivered in pending.draft_rows:
+            rows[:] = [row for row in rows if row is not delivered]
     MAX_WAIT_SECONDS = 10.0         # 最多等 10 秒
 
     def __init__(self, plugin: Any):
@@ -178,8 +195,9 @@ class QQReplyBufferService:
         clean_text = re.sub(r"<[^>]+>", "", str(reply_text or raw_text or "")).strip()
         if not clean_text:
             clean_text = str(reply_text or raw_text or "").strip()
-        # 这条回复被截停进缓冲、尚未投递——历史尾部的 ai 行先按未投递草稿
-        # 打标；单条路径真正送出后撤标，多条合并路径草稿永不投递、标留存。
+        # 这条回复被截停进缓冲、尚未投递——历史尾部的 ai 行先记入未投递
+        # 名单；单条路径真正送出后只撤本次 pending 的行，多条合并路径草稿
+        # 永不投递、记录留存。pending 解析后再补一次关联（幂等）。
         self._mark_latest_draft_undelivered(session_key)
         existing = self._pending.get(session_key)
 
@@ -273,6 +291,8 @@ class QQReplyBufferService:
         existing.sender_id = sender_id  # 更新（可能变化）
         existing.is_group = is_group
         existing.group_id = group_id
+        # 幂等补关联：把刚记入名单的草稿行绑到本 pending，单条投递后可精确撤销。
+        self._mark_latest_draft_undelivered(session_key, existing)
         existing.task = asyncio.create_task(self._deliver_after_wait(session_key, existing))
 
     async def _deliver_after_wait(self, session_key: str, pending: PendingReply) -> None:
@@ -305,8 +325,9 @@ class QQReplyBufferService:
                 fallback_to_text_on_voice_failure=True,
             )
             await self.plugin.reply_delivery_node.deliver(plan)
-            # 单条草稿真的送出去了：撤未投递标，digest/cache 照常序列化。
-            self._clear_undelivered_marks(session_key)
+            # 单条草稿真的送出去了：只撤本次 pending 的未投递记录——此前
+            # 合并场景留下的旧记录必须留存。
+            self._clear_undelivered_marks(session_key, pending)
             self._pending.pop(session_key, None)
             return
 
