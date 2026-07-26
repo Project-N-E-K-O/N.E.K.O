@@ -20,6 +20,7 @@ import logging
 import re
 from dataclasses import dataclass
 from functools import partial
+from itertools import zip_longest
 from typing import Any
 
 from config import (
@@ -90,6 +91,17 @@ def _proactive_silence_since(mgr: Any) -> float | None:
     )
     valid = [float(value) for value in timestamps if value is not None]
     return max(valid) if valid else None
+
+
+def _merge_regen_avoid_terms(*term_groups: Any) -> list[str]:
+    """Interleave repeat signals while keeping the prompt injection bounded."""
+    interleaved = (
+        term
+        for row in zip_longest(*term_groups)
+        for term in row
+        if term is not None
+    )
+    return list(dict.fromkeys(interleaved))[:ANTI_REPEAT_INJECT_TOP_K]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1193,9 +1205,14 @@ async def _guard_phase2_output(
     ):
         initial_source_tag = source_tag
         if unanswered_repeat_triggered:
-            avoid_terms = list(
-                unanswered_repeat_signal.repeated_terms
-            )[:ANTI_REPEAT_INJECT_TOP_K]
+            avoid_terms = _merge_regen_avoid_terms(
+                (
+                    bm25_terms.keys()
+                    if bm25_total >= ANTI_REPEAT_REGEN_THRESHOLD
+                    else ()
+                ),
+                unanswered_repeat_signal.repeated_terms,
+            )
         else:
             avoid_terms = list(bm25_terms.keys())[:ANTI_REPEAT_INJECT_TOP_K]
         active_logger.info(

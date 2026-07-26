@@ -183,6 +183,7 @@ class GreetingMixin:
             if interrupted:
                 self._pending_turn_meta = None
             if accepted:
+                self.note_user_engagement(at=now_ms / 1000)
                 self._last_avatar_interaction_speak_at = int(time.time() * 1000)
             ack_reason = "delivered" if accepted else ("interrupted" if interrupted else "empty_response")
             await self.send_avatar_interaction_ack(

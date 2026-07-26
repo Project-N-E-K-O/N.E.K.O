@@ -180,7 +180,10 @@ async def test_rps_payload_reaches_the_runtime_delivered_result_without_action_f
             self.acks.append((interaction_id, accepted, reason, kwargs))
 
     monkeypatch.setattr(greeting, "OmniOfflineClient", FakeOfflineClient)
+    monkeypatch.setattr(greeting.time, "time", lambda: 123.456)
     runtime = RuntimeHarness()
+    runtime.engagement_times = []
+    runtime.note_user_engagement = lambda *, at=None: runtime.engagement_times.append(at)
 
     result = await runtime.handle_avatar_interaction({
         "interactionId": "rps-runtime-delivery",
@@ -202,6 +205,7 @@ async def test_rps_payload_reaches_the_runtime_delivered_result_without_action_f
         "delivered",
         {"turn_id": runtime.current_speech_id},
     )]
+    assert runtime.engagement_times == [123.456]
 
 
 @pytest.mark.unit

@@ -12,6 +12,7 @@ import memory.anti_repeat as anti_repeat_module
 from main_logic.proactive_chat.contracts import PROACTIVE_REASON_PASS_DUPLICATE
 from main_logic.proactive_chat.generation import (
     _guard_phase2_output,
+    _merge_regen_avoid_terms,
     _proactive_silence_since,
 )
 from utils.llm_client import HumanMessage, SystemMessage
@@ -50,6 +51,21 @@ def test_proactive_silence_since_prefers_last_real_user_message():
 
     mgr.last_user_engagement_time = None
     assert _proactive_silence_since(mgr) == 100.0
+
+
+def test_merge_regen_avoid_terms_preserves_both_repeat_signals():
+    """BM25 and long-window shape terms share the bounded rewrite instruction."""
+    assert _merge_regen_avoid_terms(
+        ("rare-topic-a", "rare-topic-b", "rare-topic-c", "rare-topic-d"),
+        ("screen-shape", "button-shape", "click-shape", "prompt-shape"),
+    ) == [
+        "rare-topic-a",
+        "screen-shape",
+        "rare-topic-b",
+        "button-shape",
+        "rare-topic-c",
+        "click-shape",
+    ]
 
 
 @pytest.mark.asyncio
