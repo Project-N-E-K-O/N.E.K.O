@@ -43,6 +43,7 @@ from .state import (
     _record_proactive_material,
     _record_reminiscence_usage,
     _record_source_used,
+    _proactive_turn_still_owned,
 )
 
 logger = get_module_logger(__name__, "Main")
@@ -282,7 +283,7 @@ async def _commit_proactive_delivery(
                 "[%s] buffered proactive TTS dropped after user interaction or takeover",
                 lanlan_name,
             )
-            if not mgr.state.is_proactive_preempted(proactive_sid):
+            if _proactive_turn_still_owned(mgr, proactive_sid):
                 await mgr.handle_new_message()
             return DeliveryCommit(
                 result=ProactiveChatResult(
@@ -309,7 +310,7 @@ async def _commit_proactive_delivery(
             lanlan_name,
             exc,
         )
-        if not mgr.state.is_proactive_preempted(proactive_sid):
+        if _proactive_turn_still_owned(mgr, proactive_sid):
             await mgr.handle_new_message()
         else:
             active_logger.info(
@@ -331,7 +332,7 @@ async def _commit_proactive_delivery(
             "[%s] 主动搭话被用户接管，短路下游写入（topic/memory/response）",
             lanlan_name,
         )
-        if not mgr.state.is_proactive_preempted(proactive_sid):
+        if _proactive_turn_still_owned(mgr, proactive_sid):
             # The TTS chunk was accepted before the final engagement check.
             # Retract it when UI-only engagement invalidates the commit.
             await mgr.handle_new_message()

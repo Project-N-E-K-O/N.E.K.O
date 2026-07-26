@@ -430,6 +430,14 @@ def _record_proactive_material(lanlan_name: str, source_tag: str, key: str) -> N
     per_tag[source_tag].append((time.time(), key))
 
 
+def _proactive_turn_still_owned(mgr: Any, proactive_sid: Any) -> bool:
+    """Whether cleanup may still target the rejected proactive turn safely."""
+    return (
+        mgr.current_speech_id == proactive_sid
+        and not mgr.state.is_proactive_preempted(proactive_sid)
+    )
+
+
 def _proactive_chat_totals_path(
     *, memory_dir: str | Path | None = None
 ) -> Path:

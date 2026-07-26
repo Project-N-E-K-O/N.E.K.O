@@ -48,12 +48,18 @@ class _FakeRegenLlm:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("tts_accepted", "committed"),
-    ((False, True), (True, False)),
+    ("tts_accepted", "committed", "replacement_sid", "expects_cleanup"),
+    (
+        (False, True, None, True),
+        (True, False, None, True),
+        (True, False, "avatar-sid", False),
+    ),
 )
 async def test_normal_delivery_guards_tts_and_commit_with_engagement_snapshot(
     tts_accepted,
     committed,
+    replacement_sid,
+    expects_cleanup,
 ):
     """Normal proactive chat retracts stale TTS at either guarded boundary."""
     mgr = SimpleNamespace(
@@ -64,6 +70,12 @@ async def test_normal_delivery_guards_tts_and_commit_with_engagement_snapshot(
         finish_proactive_delivery=AsyncMock(return_value=committed),
         handle_new_message=AsyncMock(),
     )
+    if replacement_sid is not None:
+        async def finish_after_avatar_response(*_args, **_kwargs):
+            mgr.current_speech_id = replacement_sid
+            return committed
+
+        mgr.finish_proactive_delivery.side_effect = finish_after_avatar_response
 
     result = await _commit_proactive_delivery(
         mgr=mgr,
@@ -101,7 +113,10 @@ async def test_normal_delivery_guards_tts_and_commit_with_engagement_snapshot(
             ]
             == 100.0
         )
-    mgr.handle_new_message.assert_awaited_once_with()
+    if expects_cleanup:
+        mgr.handle_new_message.assert_awaited_once_with()
+    else:
+        mgr.handle_new_message.assert_not_awaited()
     assert result.delivery is None
     assert (
         result.result.body["reason_code"]
