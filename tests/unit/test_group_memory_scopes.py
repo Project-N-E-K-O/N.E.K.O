@@ -1126,6 +1126,84 @@ async def test_scoped_reflections_use_time_driven_lifecycle(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_corrupt_descriptor_never_promotes_in_either_mode(tmp_path):
+    """A partially written subject descriptor is neither legacy nor scoped.
+    Every promotion lifecycle pass must fail closed on such rows: no
+    score-driven confirm/promote, no age-driven confirm/promote, and no
+    persona write in either strong or weak memory mode."""
+    import json
+    import os
+    from datetime import datetime, timedelta
+
+    mock_cm = _build_scope_mock_cm(str(tmp_path))
+    now = datetime.now()
+    char_dir = os.path.join(str(tmp_path), "Neko")
+    os.makedirs(char_dir, exist_ok=True)
+    # subject_kind set but subject_id/scope missing: subject_from_entry()
+    # returns None and is_legacy_private_entry() is False.
+    corrupt_fields = {
+        "subject_kind": "group_chat", "subject_id": None, "scope": None,
+    }
+    reflections = [
+        {
+            # High evidence AND old enough: would pass the score-driven
+            # confirm gate and the time-driven age gate if treated as legacy.
+            "id": "ref_corrupt_pending", "text": "damaged pending row",
+            "entity": "group_chat", "status": "pending",
+            "created_at": (now - timedelta(days=8)).isoformat(),
+            "reinforcement": 5.0, "rein_last_signal_at": now.isoformat(),
+            "source_fact_ids": ["g1"], **corrupt_fields,
+        },
+        {
+            # Same for confirmed → promoted: high score + 8-day-old
+            # confirmed_at would hit both promote paths if treated as legacy.
+            "id": "ref_corrupt_confirmed", "text": "damaged confirmed row",
+            "entity": "group_chat", "status": "confirmed",
+            "created_at": (now - timedelta(days=20)).isoformat(),
+            "confirmed_at": (now - timedelta(days=8)).isoformat(),
+            "reinforcement": 5.0, "rein_last_signal_at": now.isoformat(),
+            "source_fact_ids": ["g2"], **corrupt_fields,
+        },
+    ]
+    with open(
+        os.path.join(char_dir, "reflections.json"), "w", encoding="utf-8",
+    ) as f:
+        json.dump(reflections, f, ensure_ascii=False)
+
+    with patch("memory.reflection.manager.get_config_manager", return_value=mock_cm), \
+         patch("memory.facts.get_config_manager", return_value=mock_cm):
+        from memory.persona import PersonaManager
+        from memory.reflection import ReflectionEngine
+
+        fs = FactStore()
+        fs._config_manager = mock_cm
+        pm = PersonaManager()
+        pm._config_manager = mock_cm
+        engine = ReflectionEngine(fs, pm)
+        engine._config_manager = mock_cm
+        engine._apromote_with_merge = AsyncMock(
+            side_effect=AssertionError("corrupt row must not reach the merge LLM"),
+        )
+        engine._persona_manager.aadd_fact = AsyncMock(
+            side_effect=AssertionError("corrupt row must not reach persona writes"),
+        )
+
+        # Strong mode: score-driven passes + scoped_only time-driven tail.
+        await engine.aauto_promote_stale("Neko")
+        # Weak mode: age-driven passes over every row.
+        await engine.aauto_promote_time_driven("Neko")
+
+        engine._apromote_with_merge.assert_not_awaited()
+        engine._persona_manager.aadd_fact.assert_not_awaited()
+        by_id = {
+            r.get("id"): r for r in await engine._aload_reflections_full("Neko")
+        }
+
+    assert by_id["ref_corrupt_pending"]["status"] == "pending"
+    assert by_id["ref_corrupt_confirmed"]["status"] == "confirmed"
+
+
+@pytest.mark.asyncio
 async def test_mode_switch_reset_skips_scoped_confirmed(tmp_path):
     """The strong→weak migration resets legacy confirmed_at so old entries
     don't bulk-promote, but scoped reflections run the time-driven clock in
@@ -1153,6 +1231,14 @@ async def test_mode_switch_reset_skips_scoped_confirmed(tmp_path):
             "confirmed_at": old_confirmed_at, "source_fact_ids": ["g1"],
             **group.as_entry_fields(),
         },
+        {
+            # Corrupt partial descriptor: quarantined from every lifecycle
+            # pass, so the migration must not touch its clock either.
+            "id": "ref_corrupt", "text": "corrupt", "entity": "group_chat",
+            "status": "confirmed", "created_at": old_confirmed_at,
+            "confirmed_at": old_confirmed_at, "source_fact_ids": ["g2"],
+            "subject_kind": "group_chat", "subject_id": None, "scope": None,
+        },
     ]
     with open(
         os.path.join(char_dir, "reflections.json"), "w", encoding="utf-8",
@@ -1179,6 +1265,7 @@ async def test_mode_switch_reset_skips_scoped_confirmed(tmp_path):
     assert count == 1
     assert by_id["ref_legacy"]["confirmed_at"] != old_confirmed_at
     assert by_id["ref_scoped"]["confirmed_at"] == old_confirmed_at
+    assert by_id["ref_corrupt"]["confirmed_at"] == old_confirmed_at
 
 
 @pytest.mark.asyncio

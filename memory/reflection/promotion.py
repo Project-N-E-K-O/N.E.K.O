@@ -137,7 +137,7 @@ class PromotionMixin:
         # slightly stale view (any concurrent state change will just mean
         # we attempt promote on a no-longer-confirmed reflection, which
         # the inner lock + status recheck will catch).
-        from memory.scopes import subject_from_entry
+        from memory.scopes import is_legacy_private_entry
 
         reflections = await self._aload_reflections_full(lanlan_name)
         now = datetime.now()
@@ -145,9 +145,10 @@ class PromotionMixin:
         for r in reflections:
             if r.get('status') != 'confirmed':
                 continue
-            if subject_from_entry(r) is not None:
+            if not is_legacy_private_entry(r):
                 # scoped reflection 走 time-driven 简化生命周期，不参与
-                # score-driven 晋升（它们没有 evidence 信号来源）。
+                # score-driven 晋升（它们没有 evidence 信号来源）；损坏的
+                # 部分 subject 描述符 fail-closed，绝不许合入 legacy persona。
                 continue
             if evidence_score(r, now) < EVIDENCE_PROMOTED_THRESHOLD:
                 continue
@@ -175,7 +176,7 @@ class PromotionMixin:
         this loop reads the updated view to decide promotions). The caller
         is responsible for that ordering — see memory_server background loops.
         """
-        from memory.scopes import subject_from_entry
+        from memory.scopes import is_legacy_private_entry
 
         reflections = await self._aload_reflections_full(lanlan_name)
         now = datetime.now()
@@ -185,9 +186,10 @@ class PromotionMixin:
         for r in reflections:
             if r.get('status') != 'pending':
                 continue
-            if subject_from_entry(r) is not None:
+            if not is_legacy_private_entry(r):
                 # scoped pending（正常不该存在——scoped 合成直出 confirmed；
-                # 兜历史遗留）由 time-driven scoped pass 按年龄确认。
+                # 兜历史遗留）由 time-driven scoped pass 按年龄确认；损坏
+                # 描述符 fail-closed，不推进。
                 continue
             if evidence_score(r, now) < EVIDENCE_CONFIRMED_THRESHOLD:
                 continue
@@ -235,16 +237,18 @@ class PromotionMixin:
         ``scoped_only=True`` restricts both passes to scoped reflections —
         used by ``aauto_promote_stale`` (strong-memory mode) so scoped entries
         advance by age while legacy entries stay score-driven. With
-        ``scoped_only=False`` (weak-memory caller) every reflection advances
-        by age, which already covers scoped entries. This method never reads
-        evidence_score; missing/zero evidence fields have no effect.
+        ``scoped_only=False`` (weak-memory caller) every legacy and scoped
+        reflection advances by age. Corrupt partial subject descriptors are
+        excluded in both modes (fail-closed, never written to any persona).
+        This method never reads evidence_score; missing/zero evidence fields
+        have no effect.
         """
         from config import (
             WEAK_MEMORY_AUTO_CONFIRM_DAYS,
             WEAK_MEMORY_AUTO_PROMOTE_DAYS,
         )
 
-        from memory.scopes import subject_from_entry
+        from memory.scopes import is_legacy_private_entry, subject_from_entry
 
         from memory.persona import PersonaManager
         async with self._get_alock(lanlan_name):
@@ -259,7 +263,12 @@ class PromotionMixin:
             for r in reflections:
                 if r.get('status') != 'pending':
                     continue
-                if scoped_only and subject_from_entry(r) is None:
+                subj = subject_from_entry(r)
+                if scoped_only and subj is None:
+                    continue
+                if subj is None and not is_legacy_private_entry(r):
+                    # 损坏的部分 subject 描述符：两种模式都 fail-closed，
+                    # 不按年龄推进（对齐 scopes.py 的读路径排除语义）。
                     continue
                 created_iso = r.get('created_at')
                 if not created_iso:
@@ -289,7 +298,11 @@ class PromotionMixin:
             for r in reflections:
                 if r.get('status') != 'confirmed':
                     continue
-                if scoped_only and subject_from_entry(r) is None:
+                promote_subject = subject_from_entry(r)
+                if scoped_only and promote_subject is None:
+                    continue
+                if promote_subject is None and not is_legacy_private_entry(r):
+                    # 同 Pass 1：损坏描述符绝不许零成本合入任何 persona。
                     continue
                 confirmed_iso = r.get('confirmed_at')
                 if not confirmed_iso:
@@ -311,7 +324,6 @@ class PromotionMixin:
                 #     "记忆失活" case；rare（启发式 ratio ≥0.4 才命中）。
                 rid = r.get('id')
                 try:
-                    promote_subject = subject_from_entry(r)
                     promote_kwargs = (
                         {'subject': promote_subject}
                         if promote_subject is not None else {}
@@ -617,9 +629,11 @@ class PromotionMixin:
 
         Scoped reflections are exempt: their time-driven clock runs in both
         modes (see ``aauto_promote_time_driven``), so the on→off rationale
-        does not apply to them.
+        does not apply to them. Corrupt partial descriptors are exempt too —
+        they are excluded from every lifecycle pass, so mutating them here
+        would be a pointless write to otherwise-quarantined rows.
         """
-        from memory.scopes import subject_from_entry
+        from memory.scopes import is_legacy_private_entry
 
         async with self._get_alock(lanlan_name):
             reflections = await self._aload_reflections_full(lanlan_name)
@@ -628,10 +642,11 @@ class PromotionMixin:
             for r in reflections:
                 if r.get('status') != 'confirmed':
                     continue
-                if subject_from_entry(r) is not None:
+                if not is_legacy_private_entry(r):
                     # scoped reflection 与强弱模式无关、恒走 time-driven：
                     # 切换开关前它的晋升时钟本来就在跑，重置属于误伤
-                    # （反复切换可无限推迟 scoped 晋升）。
+                    # （反复切换可无限推迟 scoped 晋升）。损坏描述符同样
+                    # 不碰——它已被所有生命周期 pass 隔离。
                     continue
                 r['confirmed_at'] = now_iso
                 count += 1
