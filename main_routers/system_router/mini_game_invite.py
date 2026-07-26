@@ -15,6 +15,8 @@
 
 """HTTP adapter and compatibility facade for mini-game invites."""
 
+import time
+
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
@@ -63,6 +65,7 @@ async def mini_game_invite_respond(request: Request):
         _set_no_store_headers(validation_error)
         return validation_error
     data = payload if isinstance(payload, dict) else {}
+    request_arrival_time = time.time()
     try:
         config_manager = get_config_manager()
         _, her_name_default, _, _, _, _, _, _, _ = (
@@ -94,7 +97,7 @@ async def mini_game_invite_respond(request: Request):
         if mgr is not None:
             # A valid local button click is genuine engagement even when its
             # invite has just expired or been superseded.
-            mgr.note_user_engagement()
+            mgr.note_user_engagement(at=request_arrival_time)
     except Exception as exc:
         logger.warning(
             "[%s] mini-game button engagement record failed: %s",

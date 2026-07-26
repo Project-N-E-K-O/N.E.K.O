@@ -46,6 +46,7 @@ class _FakeAppendContextManager:
         self.calls = []
         self.spoken = []
         self.engagement_calls = 0
+        self.engagement_times = []
         self.language_updates = []
         self.user_language = "zh-CN"
         self.result = result or SimpleNamespace(appended=True, deduped=False, reason=None)
@@ -56,8 +57,9 @@ class _FakeAppendContextManager:
         self.language_updates.append(language)
         self.user_language = language
 
-    def note_user_engagement(self):
+    def note_user_engagement(self, *, at=None):
         self.engagement_calls += 1
+        self.engagement_times.append(at)
 
     async def append_context(self, **kwargs):
         self.calls.append(kwargs)
@@ -247,17 +249,28 @@ async def test_icebreaker_context_caches_user_choice_to_recent_memory(monkeypatc
 @pytest.mark.asyncio
 async def test_icebreaker_choice_records_user_engagement(monkeypatch):
     mgr = _FakeAppendContextManager()
+    clock = {"now": 100.0}
 
     monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
     monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
     monkeypatch.setattr(
-        icebreaker_router,
-        "record_tutorial_choice",
-        lambda payload: {
+        icebreaker_router.time,
+        "time",
+        lambda: clock["now"],
+    )
+
+    def record_choice(payload):
+        clock["now"] = 200.0
+        return {
             "ok": True,
             "lanlan_name": payload["lanlan_name"],
             "day": payload["day"],
-        },
+        }
+
+    monkeypatch.setattr(
+        icebreaker_router,
+        "record_tutorial_choice",
+        record_choice,
     )
     icebreaker_route_state.activate_icebreaker_route("Lan", "icebreaker-day1-test")
 
@@ -276,6 +289,7 @@ async def test_icebreaker_choice_records_user_engagement(monkeypatch):
 
     assert result["ok"] is True
     assert mgr.engagement_calls == 1
+    assert mgr.engagement_times == [100.0]
 
 
 @pytest.mark.asyncio

@@ -193,6 +193,65 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
 
 
 @pytest.mark.asyncio
+async def test_break_reminder_tts_failure_restores_message_handling(monkeypatch):
+    """A buffered TTS failure follows the existing graceful-abort path."""
+    from main_logic.proactive_chat import break_reminders
+
+    monkeypatch.setattr(
+        break_reminders,
+        "create_chat_llm_async",
+        AsyncMock(return_value=_FakeStreamingLlm("记得起来活动一下。")),
+    )
+    monkeypatch.setattr(
+        break_reminders,
+        "get_anti_repeat_corpus",
+        lambda: None,
+    )
+    record_proactive = MagicMock()
+    monkeypatch.setattr(
+        break_reminders,
+        "_record_proactive_chat",
+        record_proactive,
+    )
+    state = SimpleNamespace(
+        fire=AsyncMock(),
+        is_proactive_preempted=MagicMock(return_value=False),
+    )
+    mgr = SimpleNamespace(
+        prepare_proactive_delivery=AsyncMock(return_value=True),
+        current_speech_id="break-sid",
+        state=state,
+        feed_tts_chunk=AsyncMock(side_effect=RuntimeError("tts unavailable")),
+        finish_proactive_delivery=AsyncMock(return_value=True),
+        handle_new_message=AsyncMock(),
+    )
+    config_manager = SimpleNamespace(
+        aget_model_api_config=AsyncMock(
+            return_value={
+                "model": "fake-model",
+                "base_url": "http://127.0.0.1:9/v1",
+                "api_key": "fake-key",
+                "provider_type": "openai_compatible",
+            }
+        )
+    )
+
+    result = await break_reminders._deliver_break_reminder_via_llm(
+        lanlan_name="Neko",
+        mgr=mgr,
+        config_manager=config_manager,
+        system_prompt="Generate one concise movement reminder.",
+        channel="work_break",
+        lang="en",
+    )
+
+    assert result == (None, None)
+    mgr.handle_new_message.assert_awaited_once_with()
+    mgr.finish_proactive_delivery.assert_not_awaited()
+    record_proactive.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_guard_regenerates_then_drops_still_unanswered_repeat(monkeypatch):
     """The third ignored repeat gets one rewrite before a still-repetitive drop."""
     initial_signal = anti_repeat_module.UnansweredProactiveRepeatSignal(
@@ -575,6 +634,7 @@ async def test_mini_game_button_response_records_user_engagement(monkeypatch):
         "_validate_local_mutation_request",
         lambda *_args, **_kwargs: None,
     )
+    monkeypatch.setattr(router_module.time, "time", lambda: 123.0)
     config_manager = SimpleNamespace(
         aget_character_data=AsyncMock(
             return_value=(None, "fallback", None, None, None, None, None, None, None)
@@ -616,7 +676,7 @@ async def test_mini_game_button_response_records_user_engagement(monkeypatch):
     response = await router_module.mini_game_invite_respond(object())
 
     assert response.status_code == 200
-    mgr.note_user_engagement.assert_called_once_with()
+    mgr.note_user_engagement.assert_called_once_with(at=123.0)
     push_resolved.assert_awaited_once()
 
 
@@ -655,6 +715,7 @@ async def test_rejected_mini_game_button_response_records_user_engagement(
         "_validate_local_mutation_request",
         lambda *_args, **_kwargs: None,
     )
+    monkeypatch.setattr(router_module.time, "time", lambda: 456.0)
     monkeypatch.setattr(
         router_module,
         "get_config_manager",
@@ -695,7 +756,7 @@ async def test_rejected_mini_game_button_response_records_user_engagement(
     response = await router_module.mini_game_invite_respond(object())
 
     assert response.status_code == 200
-    mgr.note_user_engagement.assert_called_once_with()
+    mgr.note_user_engagement.assert_called_once_with(at=456.0)
     if pending_session_id == "invite-session":
         apply_choice.assert_called_once()
     else:

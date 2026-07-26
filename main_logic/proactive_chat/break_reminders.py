@@ -458,10 +458,22 @@ async def _deliver_break_reminder_via_llm(
 
     # Withhold TTS until all repeat checks finish; otherwise a rejected initial
     # draft can already be audible while the long-window guard is still running.
-    await mgr.feed_tts_chunk(
-        text,
-        expected_speech_id=proactive_sid,
-    )
+    try:
+        await mgr.feed_tts_chunk(
+            text,
+            expected_speech_id=proactive_sid,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[%s] break reminder TTS feed failed (channel=%s): %s: %s",
+            lanlan_name,
+            channel,
+            type(exc).__name__,
+            exc,
+        )
+        if not mgr.state.is_proactive_preempted(proactive_sid):
+            await mgr.handle_new_message()
+        return None, None
     committed = await mgr.finish_proactive_delivery(
         text,
         expected_speech_id=proactive_sid,

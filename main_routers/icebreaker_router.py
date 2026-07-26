@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from typing import Any, Dict
 
 from fastapi import APIRouter, Request
@@ -186,12 +187,20 @@ def _validate_icebreaker_local_mutation(request: Request, data: dict) -> Any:
     )
 
 
-def _note_icebreaker_user_engagement(mgr: Any, lanlan_name: str) -> None:
+def _note_icebreaker_user_engagement(
+    mgr: Any,
+    lanlan_name: str,
+    *,
+    at: float | None = None,
+) -> None:
     note_engagement = getattr(mgr, "note_user_engagement", None)
     if not callable(note_engagement):
         return
     try:
-        note_engagement()
+        if at is None:
+            note_engagement()
+        else:
+            note_engagement(at=at)
     except Exception:
         logger.debug(
             "icebreaker engagement record failed lanlan=%s",
@@ -577,6 +586,7 @@ async def icebreaker_choice(request: Request):
     if stale_response:
         return stale_response
 
+    choice_arrival_time = time.time()
     payload = {
         "lanlan_name": lanlan_name,
         "session_id": data.get("session_id"),
@@ -612,7 +622,11 @@ async def icebreaker_choice(request: Request):
             )
         else:
             if mgr is not None:
-                _note_icebreaker_user_engagement(mgr, lanlan_name)
+                _note_icebreaker_user_engagement(
+                    mgr,
+                    lanlan_name,
+                    at=choice_arrival_time,
+                )
     return result
 
 
