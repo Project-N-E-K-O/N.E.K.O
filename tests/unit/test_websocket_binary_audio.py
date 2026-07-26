@@ -155,6 +155,13 @@ def test_binary_audio_frame_decodes_pcm_and_sample_rate() -> None:
     }
 
 
+def test_binary_audio_frame_decodes_extreme_sample_values() -> None:
+    samples = [-32_768, 32_767, 0, -1, 1]
+    payload = struct.pack("<4sI5h", b"NEKO", 16_000, *samples)
+
+    assert _decode_binary_audio_frame(payload)["data"] == samples
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -304,6 +311,52 @@ async def test_explicit_voice_control_stays_on_authoritative_path(
     assert [name for name, _payload in manager.calls].count("authorize") == 1
     assert [name for name, _payload in manager.calls].count("start_session") == 1
     assert manager.statuses == []
+
+
+@pytest.mark.asyncio
+async def test_voice_input_control_noops_for_manager_without_mixin_hook(
+    monkeypatch,
+) -> None:
+    class _MixinlessManager:
+        def __init__(self) -> None:
+            self.pending_agent_callbacks = []
+            self.websocket = None
+            self.statuses: list[dict] = []
+            self.cleanup_calls = 0
+
+        async def send_status(self, payload: str) -> None:
+            self.statuses.append(json.loads(payload))
+
+        async def cleanup(self, *, expected_websocket) -> None:
+            assert expected_websocket is websocket
+            self.cleanup_calls += 1
+
+    manager = _MixinlessManager()
+    websocket = _EventWebSocket(
+        [
+            {
+                "action": "voice_input_control",
+                "event": "lease_sync",
+                "lease_generation": 1,
+            },
+            {"action": "ping"},
+        ]
+    )
+    _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=websocket,
+    )
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+
+    # Without the getattr guard the missing hook raises AttributeError, the
+    # loop dies with SERVER_ERROR and the trailing ping never gets its pong.
+    assert [json.loads(payload) for payload in websocket.sent_text] == [
+        {"type": "pong"}
+    ]
+    assert manager.statuses == []
+    assert manager.cleanup_calls == 1
 
 
 @pytest.mark.asyncio

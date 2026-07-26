@@ -244,6 +244,12 @@ def test_websocket_has_no_widget_mode_capability_or_lifecycle_protocol():
     assert "neko:widget-mode-message" not in frontend_source
 
 
+def test_external_asr_preview_message_is_declared_app_state_field():
+    app_state = APP_STATE_PATH.read_text(encoding="utf-8")
+
+    assert "externalAsrPreviewMessage: null," in app_state
+
+
 def test_external_asr_preview_uses_owned_react_message_id():
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
 

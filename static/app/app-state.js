@@ -86,6 +86,7 @@
         independentAsrEnabled: false,
         independentAsrActive: false,
         independentAsrProvider: '',
+        externalAsrPreviewMessage: null, // 独立 ASR 实时转写预览的消息句柄（app-websocket.js 维护）
         micVolumeAnimationId: null,
         silenceDetectionTimer: null,
         hasSoundDetected: false,

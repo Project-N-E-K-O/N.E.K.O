@@ -106,9 +106,9 @@
     }
 
     function refreshMicLease() {
-        const owner = setMicLeaseOwner(resolveMicLeaseOwner());
-        sendVoiceInputControlState(false);
-        return owner;
+        // setMicLeaseOwner() already sends the (fingerprint-deduped) control
+        // snapshot — no extra send here.
+        return setMicLeaseOwner(resolveMicLeaseOwner());
     }
 
     function canUploadOrdinaryMicFrame() {
@@ -959,6 +959,10 @@
                     header.setUint8(2, 0x4B);
                     header.setUint8(3, 0x4F);
                     header.setUint32(4, targetSampleRate, true);
+                    // 字节级拷贝按平台字节序输出 PCM，而 wire 格式要求
+                    // little-endian。所有主流浏览器 / JS 引擎都是 LE，这里
+                    // 显式依赖该假设以保持每帧热路径零逐样本开销；若未来
+                    // 出现 BE 平台，需改为 DataView 逐样本 setInt16(LE)。
                     new Uint8Array(frame, 8).set(new Uint8Array(
                         pcm16.buffer,
                         pcm16.byteOffset,

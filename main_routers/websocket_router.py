@@ -28,9 +28,11 @@ same no-trailing-slash rule as HTTP routes. See
 enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
+import array
 import json
 import math
 import struct
+import sys
 import uuid
 import asyncio
 import time
@@ -72,8 +74,17 @@ def _decode_binary_audio_frame(payload: bytes) -> dict[str, object]:
     max_pcm_bytes = sample_rate_hz * 2 * _VOICE_BINARY_MAX_DURATION_MS // 1_000
     if len(pcm) > max_pcm_bytes:
         raise ValueError("VOICE_BINARY_FRAME_INVALID: frame is too large")
-    sample_count = len(pcm) // 2
-    samples = list(struct.unpack(f"<{sample_count}h", pcm))
+    # The int-list materialization cannot be deferred past this point: the
+    # Core ASR bridge's lease check runs downstream of stream_data and its
+    # consumers require ``data`` to be a real ``list`` of PCM16 ints (see
+    # main_logic/core/asr_runtime.py _QueuedMicFrame.from_message and the
+    # hot-swap repack). array('h').tolist() builds the identical list ~20%
+    # cheaper than list(struct.unpack(...)) for the worst-case 48k-sample
+    # frame; the wire format is little-endian, so byteswap on big-endian.
+    samples_array = array.array("h", pcm)
+    if sys.byteorder == "big":
+        samples_array.byteswap()
+    samples = samples_array.tolist()
     return {
         "action": "stream_data",
         "input_type": "audio",
@@ -518,9 +529,17 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             elif action == "voice_input_control":
                 # MicLease 是音频路由的后端权威控制面；按 websocket 消息顺序
                 # 同步处理，避免控制事件之后的 PCM 抢先进入旧 turn。
-                control_applied = await session_manager[
-                    lanlan_name
-                ]._handle_voice_input_control(
+                # getattr 守卫与 _begin_voice_input_connection /
+                # _ensure_voice_input_session_authorized 对齐：没有 mixin 的
+                # manager double 应 no-op 而不是抛出 SERVER_ERROR。
+                handle_voice_input_control = getattr(
+                    session_manager[lanlan_name],
+                    "_handle_voice_input_control",
+                    None,
+                )
+                if not callable(handle_voice_input_control):
+                    continue
+                control_applied = await handle_voice_input_control(
                     message.get("event", ""),
                     message.get("lease_generation", -1),
                     owner=message.get("owner"),

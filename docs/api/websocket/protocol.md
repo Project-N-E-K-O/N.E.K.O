@@ -28,7 +28,7 @@ Only the newest connection UUID for a character is authoritative in the router. 
 - TTS audio is the exception: an `audio_chunk` JSON header is followed by one binary frame.
 - Any client JSON object may include `language`; the router updates the character's current UI language before dispatching its `action`.
 
-Malformed JSON is a connection-level error: the handler sends a best-effort `SERVER_ERROR` status, exits its receive loop, and cleans up the current session.
+Malformed JSON is a connection-level error: the handler sends a best-effort `SERVER_ERROR` status, exits its receive loop, and cleans up the current session. Binary frames behave asymmetrically: a malformed `NEKO` binary frame is logged and dropped, and the connection stays open for the next frame.
 
 ## Session lifecycle
 

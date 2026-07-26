@@ -75,8 +75,9 @@ checks.
 ## Microphone input
 
 The bundled AudioWorklet converts Float32 capture into signed PCM16, resamples
-desktop capture to 48 kHz and mobile capture to 16 kHz, then sends about 10 ms
-per binary frame. The frame layout is:
+desktop capture to 48 kHz and mobile capture to 16 kHz, then sends one buffered
+chunk per binary frame: 480 samples (10 ms) at 48 kHz on desktop, 512 samples
+(about 32 ms) at 16 kHz on mobile. The frame layout is:
 
 | Offset | Size | Encoding |
 |---|---:|---|
@@ -105,7 +106,7 @@ packing and the chunk is discarded.
 Do not infer arbitrary sample-rate support from the array length. The implemented first-party paths are:
 
 - 480 samples per 10 ms at 48 kHz on desktop;
-- 160 samples per 10 ms at 16 kHz on mobile.
+- 512 samples per roughly 32 ms at 16 kHz on mobile.
 
 The exact provider transport may then resample those bytes again to the selected realtime API's native rate.
 

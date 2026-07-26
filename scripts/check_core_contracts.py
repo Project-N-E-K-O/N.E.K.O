@@ -362,7 +362,13 @@ def _imported_paths(
 
 
 def _registry_provider_keys(path: Path) -> frozenset[str]:
-    """Extract ASR provider keys from the registry without importing runtime code."""
+    """Extract ASR provider keys from the registry without importing runtime code.
+
+    Hard-fails (exit 2) when the registry shape is unrecognized: silently
+    returning an empty set would disable the provider-literal rule while the
+    gate keeps reporting green — the exact go-dark failure mode this gate
+    exists to prevent (see module docstring).
+    """
 
     for node in parse(path).body:
         if not isinstance(node, (ast.Assign, ast.AnnAssign)):
@@ -376,13 +382,110 @@ def _registry_provider_keys(path: Path) -> frozenset[str]:
             continue
         value = node.value
         if not isinstance(value, ast.Dict):
-            return frozenset()
+            print(f"error: ASR_PROVIDER_REGISTRY in {path} is not a top-level dict literal — "
+                  f"the provider-literal rule cannot harvest its keys; keep the registry a "
+                  f"literal dict or update _registry_provider_keys in "
+                  f"scripts/check_core_contracts.py instead of letting the rule go dark.",
+                  file=sys.stderr)
+            sys.exit(2)
         return frozenset(
             key.value
             for key in value.keys
             if isinstance(key, ast.Constant) and isinstance(key.value, str)
         )
-    return frozenset()
+    print(f"error: no top-level ASR_PROVIDER_REGISTRY assignment found in {path} — "
+          f"the provider-literal rule cannot harvest its keys; restore the assignment or "
+          f"update _registry_provider_keys in scripts/check_core_contracts.py instead of "
+          f"letting the rule go dark.",
+          file=sys.stderr)
+    sys.exit(2)
+
+
+def _dynamic_import_target(node: ast.AST, alias_paths: dict[str, str]) -> tuple[str | None, bool]:
+    """(module, is_dynamic) for ``importlib.import_module``/``__import__`` calls.
+
+    The static layering scans see only ``import``/``from`` forms, so
+    ``importlib.import_module("main_logic.core")`` would sail through the gate.
+    ``module`` is the string-literal module argument when statically known and
+    None otherwise; ``is_dynamic`` is True whenever the call is one of the two
+    dynamic-import entry points, so guarded packages can also reject
+    non-literal targets the AST cannot verify. Recognizes ``importlib`` under
+    a top-level alias and ``from importlib import import_module [as x]`` via
+    ``alias_paths``.
+    """
+    if not isinstance(node, ast.Call):
+        return None, False
+    chain = dotted_node_path(node.func)
+    if chain is None:
+        return None, False
+    resolved = resolve_chain(chain, alias_paths) or chain
+    if resolved not in {"__import__", "importlib.import_module"}:
+        return None, False
+    arg = node.args[0] if node.args else next(
+        (kw.value for kw in node.keywords if kw.arg == "name"), None)
+    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+        return arg.value, True
+    return None, True
+
+
+def _dynamic_import_violations(path: Path, tree: ast.Module, alias_paths: dict[str, str],
+                               forbidden_prefix: str, where: str) -> list["Violation"]:
+    """ASR_LAYERING violations for dynamic imports in a guarded module.
+
+    Flags a literal target inside ``forbidden_prefix`` the same way the static
+    import ban does, and any non-literal target outright — the gate cannot
+    prove a computed module name stays on the right side of the boundary.
+    """
+    out: list[Violation] = []
+    for node in ast.walk(tree):
+        target, dynamic = _dynamic_import_target(node, alias_paths)
+        if not dynamic:
+            continue
+        if target is None:
+            out.append(Violation(
+                path, node.lineno, node.col_offset, "ASR_LAYERING",
+                f"dynamic import with a non-literal module name is not allowed in "
+                f"{where} — the layering gate cannot verify its target; use a "
+                f"static import or a string literal",
+            ))
+        elif target == forbidden_prefix or target.startswith(f"{forbidden_prefix}."):
+            out.append(Violation(
+                path, node.lineno, node.col_offset, "ASR_LAYERING",
+                f"{where} must not import {forbidden_prefix} (dynamic import)",
+            ))
+    return out
+
+
+def _asr_runtime_alias_reads(fn: ast.AST, forbidden: set[str]) -> list[tuple[int, int, str]]:
+    """(line, col, attr) reads of forbidden runtime fields through a local alias.
+
+    ``rt = self._asr_runtime; rt.lifecycle`` dodges the exact three-node
+    ``self._asr_runtime.<attr>`` pattern the bridge scan matches. Track simple
+    single-target Name assignments from ``self._asr_runtime`` within one
+    function scope (order-insensitive and without reassignment tracking — a
+    deliberately conservative over-approximation for a gate).
+    """
+    aliases = {
+        child.targets[0].id
+        for child in ast.walk(fn)
+        if isinstance(child, ast.Assign)
+        and len(child.targets) == 1
+        and isinstance(child.targets[0], ast.Name)
+        and isinstance(child.value, ast.Attribute)
+        and isinstance(child.value.value, ast.Name)
+        and child.value.value.id == "self"
+        and child.value.attr == "_asr_runtime"
+    }
+    if not aliases:
+        return []
+    return [
+        (child.lineno, child.col_offset, child.attr)
+        for child in ast.walk(fn)
+        if isinstance(child, ast.Attribute)
+        and child.attr in forbidden
+        and isinstance(child.value, ast.Name)
+        and child.value.id in aliases
+    ]
 
 
 def module_alias_paths(tree: ast.Module, pkg: str) -> dict[str, str]:
@@ -744,6 +847,10 @@ def run(root: Path) -> list[Violation]:
                     "ASR_LAYERING",
                     f"microphone ingress method '{node.name}' belongs in core/asr_runtime.py",
                 ))
+        violations.extend(_dynamic_import_violations(
+            tts_path, tts_tree, tts_alias_paths,
+            "main_logic.asr_client", "tts_runtime.py",
+        ))
 
     if asr_client_dir.exists():
         for path in sorted(asr_client_dir.rglob("*.py")):
@@ -763,6 +870,10 @@ def run(root: Path) -> list[Violation]:
                         "ASR_LAYERING",
                         "asr_client must not import main_logic.core",
                     ))
+            violations.extend(_dynamic_import_violations(
+                path, tree, alias_paths,
+                "main_logic.core", "asr_client",
+            ))
 
     if asr_bridge_path.exists():
         bridge_tree = parse(asr_bridge_path)
@@ -801,6 +912,21 @@ def run(root: Path) -> list[Violation]:
                     "ASR_LAYERING",
                     f"Core must not read IndependentAsrRuntime.{node.attr}",
                 ))
+        alias_read_sites: set[tuple[int, int, str]] = set()
+        for node in ast.walk(bridge_tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                alias_read_sites.update(
+                    _asr_runtime_alias_reads(node, forbidden_runtime_reads)
+                )
+        for line, col, attr in sorted(alias_read_sites):
+            violations.append(Violation(
+                asr_bridge_path,
+                line,
+                col,
+                "ASR_LAYERING",
+                f"Core must not read IndependentAsrRuntime.{attr} "
+                f"(via a local alias of self._asr_runtime)",
+            ))
         for node in ast.walk(bridge_tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue

@@ -21,6 +21,20 @@ def test_mic_lease_state_and_priority_are_explicit() -> None:
     assert "HARD_MUTED" not in source.split("let voiceLeaseGeneration", 1)[0]
 
 
+def test_refresh_mic_lease_delegates_snapshot_send_to_owner_setter() -> None:
+    source = CAPTURE.read_text(encoding="utf-8")
+    setter = source.split("function setMicLeaseOwner(owner)", 1)[1].split(
+        "function resolveMicLeaseOwner()", 1
+    )[0]
+    refresh = source.split("function refreshMicLease()", 1)[1].split(
+        "function canUploadOrdinaryMicFrame()", 1
+    )[0]
+
+    assert "sendVoiceInputControlState(false);" in setter
+    assert "sendVoiceInputControlState" not in refresh
+    assert "setMicLeaseOwner(resolveMicLeaseOwner())" in refresh
+
+
 def test_worklet_upload_is_governed_by_one_mic_lease_gate() -> None:
     source = CAPTURE.read_text(encoding="utf-8")
     handler = source.split("S.workletNode.port.onmessage = (event) => {", 1)[1].split(
