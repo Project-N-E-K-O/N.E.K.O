@@ -948,6 +948,22 @@ async def test_scoped_synthesis_skips_malformed_rows():
 
 
 @pytest.mark.asyncio
+async def test_unabsorbed_getter_skips_malformed_rows():
+    """Scoped synthesis re-enters FactStore.aget_unabsorbed_facts after its
+    own grouping guard: the getter itself must skip non-dict rows or one
+    corrupted row still raises through every caller."""
+    group_a = MemorySubject.group_chat("qq", "100")
+    good = {
+        "id": "a0", "text": "a", "importance": 7,
+        **group_a.as_entry_fields(),
+    }
+    fs = FactStore.__new__(FactStore)
+    fs.aload_facts = AsyncMock(return_value=["corrupted-row", good])
+    result = await fs.aget_unabsorbed_facts("Neko", subject=group_a)
+    assert result == [good]
+
+
+@pytest.mark.asyncio
 async def test_stage2_observation_pool_respects_subject_boundary():
     """Real _aload_signal_targets (no mock): a scoped trigger batch may only
     see same-subject observation targets and a legacy batch only legacy
@@ -1936,6 +1952,9 @@ async def test_flush_prompt_excluded_but_delivered_ack_kept():
         reply_pipeline=SimpleNamespace(run=AsyncMock(side_effect=_run_ack)),
         reply_delivery_node=SimpleNamespace(deliver=AsyncMock()),
     )
+    memory_service = QQSessionMemoryService.__new__(QQSessionMemoryService)
+    memory_service.plugin = plugin
+    plugin.session_memory_service = memory_service
     service = QQReplyBufferService.__new__(QQReplyBufferService)
     service.plugin = plugin
     service._pending = {}
@@ -1967,8 +1986,6 @@ async def test_flush_prompt_excluded_but_delivered_ack_kept():
 
     # Serializer: the synthetic prompt (human) and the draft (ai) are both
     # excluded; the delivered ack row survives.
-    memory_service = QQSessionMemoryService.__new__(QQSessionMemoryService)
-    memory_service.plugin = plugin
     texts = [
         m["content"][0]["text"]
         for m in memory_service.conversation_slice_to_memory_messages(
@@ -1976,6 +1993,129 @@ async def test_flush_prompt_excluded_but_delivered_ack_kept():
         )
     ]
     assert texts == ["u1", "嗯嗯，听着呢"]
+
+
+@pytest.mark.asyncio
+async def test_production_model_node_runs_fallback_memory_hooks():
+    """The production pipeline goes through QQReplyModelNode.generate(),
+    not the legacy generate_from_context(): its successful-fallback path
+    must run the same scoped memory hooks (member bucket / mention
+    counters) or fallback turns silently skip memory."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import QQModelResult
+    from plugin.plugins.qq_auto_reply.reply_model_node import QQReplyModelNode
+
+    hooks = AsyncMock()
+    generation = SimpleNamespace(
+        run_primary_session_call=AsyncMock(
+            return_value=QQModelResult(
+                reply_text=None, source="none", allow_fallback=True,
+            ),
+        ),
+        generate_fallback_from_context=AsyncMock(return_value="备用回复"),
+        run_fallback_memory_hooks=hooks,
+    )
+    plugin = SimpleNamespace(
+        reply_generation_service=generation,
+        qq_client=SimpleNamespace(needs_attention=False),
+    )
+    node = QQReplyModelNode(plugin)
+    context = SimpleNamespace(
+        is_group=True, permission_level="normal", ephemeral_session=False,
+    )
+    result = await node.generate(context)
+    assert result.reply_text == "备用回复"
+    assert result.used_fallback is True
+    hooks.assert_awaited_once_with(context, "备用回复")
+
+
+@pytest.mark.asyncio
+async def test_fallback_buffered_reply_does_not_mark_previous_row():
+    """A direct-LLM fallback reply appends NO ai row to the shared history:
+    scheduling it with history_backed=False must not record the most recent
+    (already delivered) ai reply as an undelivered draft."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import QQMessageBlock
+    from plugin.plugins.qq_auto_reply.reply_buffer_service import (
+        QQReplyBufferService,
+    )
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    delivered_old = SimpleNamespace(type="ai", content="上一条已投递回复")
+    history = [SimpleNamespace(type="human", content="u1"), delivered_old]
+    user_data = {"session": SimpleNamespace(_conversation_history=history)}
+    plugin = SimpleNamespace(
+        _user_sessions={"group:7788": user_data},
+        _emit_log=lambda *a, **k: None,
+        reply_delivery_node=SimpleNamespace(deliver=AsyncMock()),
+    )
+    memory_service = QQSessionMemoryService.__new__(QQSessionMemoryService)
+    memory_service.plugin = plugin
+    plugin.session_memory_service = memory_service
+    service = QQReplyBufferService.__new__(QQReplyBufferService)
+    service.plugin = plugin
+    service._pending = {}
+
+    await service.schedule_reply(
+        session_key="group:7788", reply_text="fallback 回复",
+        raw_text="fallback 回复", blocks=[QQMessageBlock(text="x")],
+        wait_seconds=999, sender_id="1", is_group=True, group_id="7788",
+        history_backed=False,
+    )
+    pending = service._pending.pop("group:7788")
+    if pending.task:
+        pending.task.cancel()
+    assert not user_data.get("undelivered_draft_rows")
+    assert pending.draft_rows == []
+
+
+@pytest.mark.asyncio
+async def test_proactive_prompt_row_excluded_from_digest():
+    """The silence-timer proactive turn appends a synthetic system-
+    instruction human row to the shared history; like rapid-fire control
+    prompts it must be recorded for exclusion so digests never persist it
+    as a participant utterance. The delivered proactive reply row stays."""
+    from plugin.plugins.qq_auto_reply.attention_gate_service import (
+        QQAttentionGateService,
+    )
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    def _msg(msg_type, text):
+        return SimpleNamespace(type=msg_type, content=text)
+
+    history = [_msg("human", "真实发言")]
+    user_data = {"session": SimpleNamespace(_conversation_history=history)}
+    prompt_row = _msg("human", "[synthetic proactive instruction]")
+    reply_row = _msg("ai", "主动说的话")
+
+    async def _run(request):
+        history.append(prompt_row)
+        history.append(reply_row)
+        return SimpleNamespace(action="reply", reply_text="主动说的话")
+
+    async def _lock(session_key, fn):
+        return await fn()
+
+    plugin = SimpleNamespace(
+        _user_sessions={"group:g9": user_data},
+        _admin_qq="1",
+        reply_pipeline=SimpleNamespace(run=AsyncMock(side_effect=_run)),
+        _run_with_session_lock=_lock,
+        runtime_service=SimpleNamespace(record_pipeline_outcome=lambda **k: None),
+    )
+    memory_service = QQSessionMemoryService.__new__(QQSessionMemoryService)
+    memory_service.plugin = plugin
+    plugin.session_memory_service = memory_service
+    gate = QQAttentionGateService.__new__(QQAttentionGateService)
+    gate.plugin = plugin
+    gate._logger = MagicMock()
+
+    await gate._trigger_proactive_speech("g9")
+    rows = user_data["undelivered_draft_rows"]
+    assert any(r is prompt_row for r in rows)
+    assert not any(r is reply_row for r in rows)
 
 
 @pytest.mark.asyncio

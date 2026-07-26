@@ -221,6 +221,7 @@ class QQReplyPostprocessNode:
                 raw_reply_text=raw_reply_text,
                 postprocess_reason="reply_xml" if strategy_mode == "neko_dynamic" else "reply",
                 blocks=blocks,
+                used_fallback=bool(getattr(model_result, "used_fallback", False)),
             )
         if context.ephemeral_session:
             return QQReplyOutcome(

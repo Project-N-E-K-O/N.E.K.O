@@ -166,6 +166,10 @@ class QQReplyOutcome:
     action: str
     reply_text: str | None = None
     used_default_message: bool = False
+    # True when the reply came from the direct-LLM fallback: the shared
+    # session history has NO ai row for this turn, so the buffer must not
+    # mark the previous (delivered) reply as an undelivered draft.
+    used_fallback: bool = False
     raw_reply_text: str | None = None
     postprocess_reason: str = ""
     blocks: list[QQMessageBlock] = field(default_factory=list)

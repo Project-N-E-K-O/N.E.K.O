@@ -144,6 +144,38 @@ class QQSessionMemoryService:
             next_index = raw_index + 1
         return messages, next_index
 
+    def session_history_len(self, session_key: str) -> int:
+        user_data = (getattr(self.plugin, "_user_sessions", {}) or {}).get(
+            session_key
+        )
+        if not isinstance(user_data, dict):
+            return 0
+        session = user_data.get("session")
+        return len(getattr(session, "_conversation_history", None) or [])
+
+    def record_synthetic_prompt_rows(
+        self, session_key: str, history_len_before: int,
+    ) -> None:
+        """Synthetic control turns (rapid-fire flush / proactive speech) run
+        the full pipeline, appending a fabricated human instruction row to
+        the shared history. Record those rows into the exclusion list so
+        digest/cache never extracts them as participant utterances; the
+        delivered ai reply rows stay. Callers must take history_len_before
+        INSIDE the session lock or a racing real user row gets mis-captured."""
+        user_data = (getattr(self.plugin, "_user_sessions", {}) or {}).get(
+            session_key
+        )
+        if not isinstance(user_data, dict):
+            return
+        session = user_data.get("session")
+        history = getattr(session, "_conversation_history", None) or []
+        rows = user_data.setdefault("undelivered_draft_rows", [])
+        for msg in history[max(0, history_len_before):]:
+            if getattr(msg, "type", "") != "human":
+                continue
+            if not any(existing is msg for existing in rows):
+                rows.append(msg)
+
     def record_group_member_turn(self, user_data: dict[str, Any], context: Any) -> None:
         """Keep bounded, actor-attributed user turns for optional member memory."""
         settings = getattr(self.plugin, "_qq_settings", {}) or {}

@@ -265,6 +265,26 @@ class QQReplyGenerationService:
         except Exception as e:
             self.plugin.logger.warning(f"scoped mention 记录失败（忽略）: {e}")
 
+    async def run_fallback_memory_hooks(
+        self, context: QQReplyContext, fallback_reply: str,
+    ) -> None:
+        """fallback 成功也要跑 scoped 记忆钩子：成员发言入 bucket、被展示
+        的 scoped 条目计 mention——主会话空回复不代表这轮没发生。生产
+        pipeline 走 QQReplyModelNode.generate()，legacy 入口走
+        generate_from_context()——两条 fallback 成功路径都必须调这里。
+        会话可能已被超时丢弃（user_data 不在了则跳过）。"""
+        if not context.is_group or context.ephemeral_session:
+            # ephemeral 键含 time_ns，重新生成必 miss；且 ephemeral 会话
+            # persist=False、finally 即丢弃，记忆钩子本就无意义。
+            return
+        session_key = self.plugin.session_runtime_service.build_generation_session_key(context)
+        user_data = self.plugin._user_sessions.get(session_key)
+        if user_data is not None:
+            await self._sync_memory_after_success(
+                session_key=session_key, user_data=user_data,
+                context=context, reply_text=fallback_reply,
+            )
+
     async def generate_from_context(self, context: QQReplyContext) -> QQModelResult:
         if not context.is_group and context.permission_level not in ["admin", "trusted"]:
             return QQModelResult(reply_text=None, source="none")
@@ -282,19 +302,7 @@ class QQReplyGenerationService:
                     metadata={"reply_length": len(fallback_reply), "group_scene_mode": context.group_scene_mode},
                 )
             )
-            # fallback 成功也要跑 scoped 记忆钩子：成员发言入 bucket、
-            # 被展示的 scoped 条目计 mention——主会话空回复不代表这轮
-            # 没发生。会话可能已被超时丢弃（user_data 不在了则跳过）。
-            if context.is_group and not context.ephemeral_session:
-                # ephemeral 键含 time_ns，重新生成必 miss；且 ephemeral 会话
-                # persist=False、finally 即丢弃，记忆钩子本就无意义。
-                session_key = self.plugin.session_runtime_service.build_generation_session_key(context)
-                user_data = self.plugin._user_sessions.get(session_key)
-                if user_data is not None:
-                    await self._sync_memory_after_success(
-                        session_key=session_key, user_data=user_data,
-                        context=context, reply_text=fallback_reply,
-                    )
+            await self.run_fallback_memory_hooks(context, fallback_reply)
             return QQModelResult(reply_text=fallback_reply, source="direct_llm_fallback", used_fallback=True, traces=primary_result.traces)
         primary_result.traces.append(
             QQPipelineStageTrace(

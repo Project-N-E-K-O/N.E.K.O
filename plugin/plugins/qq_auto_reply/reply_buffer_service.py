@@ -88,35 +88,16 @@ class QQReplyBufferService:
             pending.draft_rows.append(draft_row)
 
     def _session_history_len(self, session_key: str) -> int:
-        user_data = (getattr(self.plugin, "_user_sessions", {}) or {}).get(
-            session_key
-        )
-        if not isinstance(user_data, dict):
-            return 0
-        session = user_data.get("session")
-        return len(getattr(session, "_conversation_history", None) or [])
+        return self.plugin.session_memory_service.session_history_len(session_key)
 
     def _record_synthetic_prompt_rows(
         self, session_key: str, history_len_before: int,
     ) -> None:
-        """合成控制轮（rapid_fire_flush 的"[系统]…"指令）跑完 pipeline 后，
-        把新追加的 human 行记入排除名单：这些文本带着未投递草稿的副本，
-        不是任何参与者说过的话，不得进 digest/cache 提取。真投递的 ai
-        回复行（ack/总结）不记、照常入库。调用方必须在会话锁内取
-        history_len_before，否则窗口里插入的真实用户行会被误记。"""
-        user_data = (getattr(self.plugin, "_user_sessions", {}) or {}).get(
-            session_key
+        # 实现挪到 session_memory_service（proactive 合成轮同用）；语义见
+        # record_synthetic_prompt_rows docstring。
+        self.plugin.session_memory_service.record_synthetic_prompt_rows(
+            session_key, history_len_before,
         )
-        if not isinstance(user_data, dict):
-            return
-        session = user_data.get("session")
-        history = getattr(session, "_conversation_history", None) or []
-        rows = user_data.setdefault("undelivered_draft_rows", [])
-        for msg in history[max(0, history_len_before):]:
-            if getattr(msg, "type", "") != "human":
-                continue
-            if not any(existing is msg for existing in rows):
-                rows.append(msg)
 
     def _clear_undelivered_marks(
         self, session_key: str, pending: "PendingReply",
@@ -230,8 +211,12 @@ class QQReplyBufferService:
         is_group: bool,
         group_id: str = "",
         extra_count: int = 0,
+        history_backed: bool = True,
     ) -> None:
-        """缓冲一条消息。如果已有等待中的缓冲，追加消息并重置等待计时。"""
+        """缓冲一条消息。如果已有等待中的缓冲，追加消息并重置等待计时。
+
+        history_backed=False：本轮回复来自直连 LLM fallback，共享会话历史
+        没有本轮的 ai 行——反扫会误把上一条已投递回复记成未投递草稿。"""
         # 存入缓冲前去除 XML 标签（raw_text 可能含 <msg><text> 等）
         import re
         clean_text = re.sub(r"<[^>]+>", "", str(reply_text or raw_text or "")).strip()
@@ -240,7 +225,11 @@ class QQReplyBufferService:
         # 这条回复被截停进缓冲、尚未投递——历史尾部的 ai 行先记入未投递
         # 名单；单条路径真正送出后只撤本次 pending 的行，多条合并路径草稿
         # 永不投递、记录留存。pending 解析后用同一引用补关联，不重扫。
-        draft_row = self._mark_latest_draft_undelivered(session_key)
+        # fallback 轮（history_backed=False）历史里没有本轮行，不标。
+        draft_row = (
+            self._mark_latest_draft_undelivered(session_key)
+            if history_backed else None
+        )
         existing = self._pending.get(session_key)
 
         if existing and existing.task and not existing.task.done():

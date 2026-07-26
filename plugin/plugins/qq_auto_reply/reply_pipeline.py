@@ -274,6 +274,9 @@ class QQReplyPipelineRunner:
                 is_group=request.is_group,
                 group_id=request.group_id or "",
                 extra_count=fwd_count,
+                history_backed=not bool(
+                    getattr(outcome, "used_fallback", False) if outcome else False
+                ),
             )
             from .pipeline_models import QQDeliveryResult
             return QQDeliveryResult(delivered=True, target_type=delivery_plan.target_type, target_id=delivery_plan.target_id, reply_text=first_text)

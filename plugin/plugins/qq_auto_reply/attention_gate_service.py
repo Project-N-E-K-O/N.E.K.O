@@ -146,9 +146,19 @@ class QQAttentionGateService:
         try:
             # 经 per-session 锁：teardown（prompt 变更/开关转变）不得在
             # 本合成轮 stream 中途弹出共享会话。
+            async def _run_proactive():
+                svc = self.plugin.session_memory_service
+                # 合成 "[系统]…" 指令行不是参与者发言：pipeline 跑完后记入
+                # 排除名单（对偶 rapid-fire flush），digest 不提取它。
+                # before 在锁内取，防竞态窗口误记真实用户行。
+                before = svc.session_history_len(f"group:{group_id}")
+                try:
+                    return await self.plugin.reply_pipeline.run(request)
+                finally:
+                    svc.record_synthetic_prompt_rows(f"group:{group_id}", before)
+
             outcome = await self.plugin._run_with_session_lock(
-                f"group:{group_id}",
-                lambda: self.plugin.reply_pipeline.run(request),
+                f"group:{group_id}", _run_proactive,
             )
             if outcome.action == "reply" and outcome.reply_text:
                 self._logger.info(f"[Proactive] 主动发言成功: {outcome.reply_text[:50]}...")

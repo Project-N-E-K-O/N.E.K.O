@@ -2044,9 +2044,13 @@ class FactStore:
         subject: MemorySubject | dict | None = None,
     ) -> list[dict]:
         facts = await self.aload_facts(name)
+        # load_facts preserves legacy/hand-edited non-dict rows; filter them
+        # here too or one corrupted row keeps raising through every caller
+        # (scoped synthesis re-enters this getter after its own guard).
         return [
             f for f in facts
-            if not f.get('absorbed')
+            if isinstance(f, dict)
+            and not f.get('absorbed')
             and f.get('importance', 0) >= min_importance
             and entry_matches_subject(f, subject)
         ]
