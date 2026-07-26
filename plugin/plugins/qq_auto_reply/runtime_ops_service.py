@@ -97,6 +97,11 @@ class QQRuntimeOpsService:
             # asyncio.wait 不取消未完成任务（wait_for(gather) 超时会取消，
             # 等于把结算杀在半路）；straggler 继续跑完自己的锁临界区。
             _done, stragglers = await asyncio.wait(pending_tasks, timeout=1.0)
+            for finished in _done:
+                # 消费异常：不取出的话失败静默（仅事件循环析构时告警）。
+                exc = finished.exception()
+                if exc is not None:
+                    self.plugin.logger.error(f"记忆同步任务异常结束: {exc}")
         if stragglers:
             # 有任务仍在锁内：不清锁表——清了之后新 handler 会为同一
             # 会话铸新锁与旧任务并发。留旧表让新旧共用同一把锁。

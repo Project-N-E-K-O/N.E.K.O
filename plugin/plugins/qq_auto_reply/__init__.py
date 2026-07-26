@@ -370,7 +370,11 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             # 隐私关键的开关转变任务在关机 flush 前 join（限 1s），避免
             # 结算做到一半被进程退出截断。
             # asyncio.wait 不取消未完成任务——超时放行但不杀结算。
-            await asyncio.wait(sync_tasks, timeout=1.0)
+            done_tasks, _pending = await asyncio.wait(sync_tasks, timeout=1.0)
+            for finished in done_tasks:
+                exc = finished.exception()
+                if exc is not None:
+                    self._emit_log("ERROR", f"记忆同步任务异常结束: {exc}")
         await self._flush_all_memory_sessions(reason="shutdown")
         if self.attention_gate_service:
             await self.attention_gate_service.shutdown()
