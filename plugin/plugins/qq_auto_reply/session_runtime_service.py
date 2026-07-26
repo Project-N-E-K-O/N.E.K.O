@@ -90,8 +90,8 @@ class QQSessionRuntimeService:
         # 统一受益；ephemeral 与私聊（memory_enabled falsy）自然跳过；
         # finalize 成功会自己弹出会话，下面的 pop 变成无害 no-op。
         peek = self.plugin._user_sessions.get(session_key)
+        finalized = False
         if peek and peek.get("is_group") and peek.get("memory_enabled"):
-            finalized = False
             try:
                 finalized = await self.plugin.session_memory_service.finalize_user_memory_session(
                     session_key, reason=f"discard:{reason}",
@@ -110,6 +110,11 @@ class QQSessionRuntimeService:
                 return
         user_data = self.plugin._user_sessions.pop(session_key, None)
         session = user_data.get("session") if user_data else None
+        if session is None and not finalized and peek:
+            # finalize 的 early-exit（缺 her_name/session 元数据）会弹出
+            # user_data 但不关闭 session——用进入时的引用兜底关闭，防泄漏。
+            # finalize 成功时它自己已关闭，不能重复关。
+            session = peek.get("session")
         if session:
             try:
                 await session.close()

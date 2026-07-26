@@ -2189,6 +2189,23 @@ async def test_discard_session_salvages_group_buffers_first():
     await runtime.discard_session("group:9", reason="generation_timeout")
     assert plugin._user_sessions.get("group:9") is kept
 
+    # finalize's early-exit (missing metadata) pops WITHOUT closing: the
+    # discard must still close the session captured on entry — no leak.
+    leak_session = SimpleNamespace(close=AsyncMock())
+
+    async def _finalize_pop_no_close(session_key, reason):
+        plugin._user_sessions.pop(session_key, None)
+        return False
+
+    plugin.session_memory_service = SimpleNamespace(
+        finalize_user_memory_session=_finalize_pop_no_close,
+    )
+    plugin._user_sessions["group:10"] = {
+        "is_group": True, "memory_enabled": True, "session": leak_session,
+    }
+    await runtime.discard_session("group:10", reason="generation_timeout")
+    leak_session.close.assert_awaited_once()
+
 
 @pytest.mark.asyncio
 async def test_memory_transitions_settle_members_before_group_invalidate():
