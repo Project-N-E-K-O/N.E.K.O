@@ -349,7 +349,13 @@ class CoreConfigMixin:
                 finally:
                     # 退避期间不算「在飞」：此时不可能有结论到达，等待方据此直接跳过
                     # join，免得每个会话白付一次 join 超时（见 join_ip_probe）。
-                    ConfigManager._ip_probe_in_flight.clear()
+                    # 例外：wake 已 set（kick 恰落在本次尝试期间）时保留标记——循环
+                    # 马上会消费这次唤醒立即重试，但要先做一轮资格复查（读盘）才会
+                    # 再次置位；在这个滚动窗口里清掉标记，会话 join 会把被刻意唤醒
+                    # 的重试误判成普通退避而放弃。若资格复查判收工或 stopping 退出，
+                    # outer finally 兜底清位，不会悬挂。
+                    if not ConfigManager._ip_probe_wake.is_set():
+                        ConfigManager._ip_probe_in_flight.clear()
 
                 failures += 1
                 wait = ConfigManager._ip_check_backoff_s(failures)

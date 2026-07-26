@@ -2309,3 +2309,51 @@ def test_memory_server_warms_the_region_before_outbox_replay():
         break
     else:
         pytest.fail('未找到 outbox 补跑调用，断言失效')
+
+
+@pytest.mark.unit
+def test_awakened_retry_stays_in_flight_across_rollover(monkeypatch):
+    """A kick landing mid-attempt keeps the marker set through the rollover.
+
+    Sequence: the kick arrives while an HTTP attempt is running; that attempt
+    fails, and its ``finally`` used to clear the pre-set marker; the loop then
+    consumes the wake and spends the eligibility re-read (a disk read) before
+    setting the event again. A session join sampling that gap treated the
+    deliberately awakened retry as ordinary backoff, returned False, and froze
+    the mainland fallback moments before the retry ran.
+    """
+    monkeypatch.setattr(ConfigManager, '_IP_CHECK_RETRY_BASE_S', 30.0)
+    monkeypatch.setattr(ConfigManager, '_IP_CHECK_RETRY_MAX_S', 30.0)
+
+    entered = threading.Event()
+    fail_gate = threading.Event()
+    calls = {'n': 0}
+
+    def _once():
+        calls['n'] += 1
+        if calls['n'] == 1:
+            entered.set()
+            fail_gate.wait(10)
+            raise OSError('down')
+        return True
+
+    monkeypatch.setattr(ConfigManager, '_ip_probe_once', staticmethod(_once))
+
+    # 拉宽滚动窗口：下一轮尝试置位前的资格复查改成慢读，确定性地暴露
+    # 「失败 finally 清位 → 复查 → 再置位」之间的间隙
+    def _slow_eligibility():
+        real_time.sleep(0.2)
+        return True
+
+    monkeypatch.setattr(ConfigManager, '_free_route_still_needs_region',
+                        staticmethod(_slow_eligibility))
+
+    _Probe()._ensure_ip_probe_started()
+    assert entered.wait(5), '首次尝试未开始'
+
+    ConfigManager._kick_ip_probe()      # kick 恰落在在飞尝试期间
+    fail_gate.set()                     # 让该尝试立刻失败，进入滚动
+    assert ConfigManager.join_ip_probe(timeout=5) is True, \
+        '滚动窗口（失败 finally → 资格复查 → 下一轮置位）里 join 不该把被唤醒的重试当成退避放弃'
+    assert ConfigManager._ip_check_cache is True
+    assert calls['n'] == 2
