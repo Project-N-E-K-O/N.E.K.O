@@ -438,6 +438,19 @@ def _proactive_turn_still_owned(mgr: Any, proactive_sid: Any) -> bool:
     )
 
 
+def _proactive_feed_rejected_for_takeover(
+    mgr: Any,
+    proactive_sid: Any,
+    expected_user_engagement_time: Any,
+) -> bool:
+    """Distinguish a guarded-feed rejection from a local TTS enqueue failure."""
+    return (
+        not _proactive_turn_still_owned(mgr, proactive_sid)
+        or getattr(mgr, "last_user_engagement_time", None)
+        != expected_user_engagement_time
+    )
+
+
 def _proactive_chat_totals_path(
     *, memory_dir: str | Path | None = None
 ) -> Path:

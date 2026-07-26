@@ -29,6 +29,7 @@ from config.prompts.prompts_activity import BREAK_REMINDER_REGEN_INSTRUCTION
 from config.prompts.prompts_proactive import BEGIN_GENERATE
 from config.prompts.prompts_sys import _loc
 from main_logic.proactive_chat.state import (
+    _proactive_feed_rejected_for_takeover,
     _proactive_turn_still_owned,
     _record_proactive_chat,
 )
@@ -535,7 +536,11 @@ async def _deliver_break_reminder_via_llm(
         if _proactive_turn_still_owned(mgr, proactive_sid):
             await mgr.handle_new_message()
         return BreakReminderDeliveryResult()
-    if tts_accepted is False:
+    if tts_accepted is False and _proactive_feed_rejected_for_takeover(
+        mgr,
+        proactive_sid,
+        expected_user_engagement_time,
+    ):
         logger.info(
             "[%s] break reminder TTS dropped after user interaction or takeover",
             lanlan_name,
@@ -543,6 +548,11 @@ async def _deliver_break_reminder_via_llm(
         if _proactive_turn_still_owned(mgr, proactive_sid):
             await mgr.handle_new_message()
         return BreakReminderDeliveryResult()
+    if tts_accepted is False:
+        logger.warning(
+            "[%s] break reminder TTS enqueue failed; committing text without audio",
+            lanlan_name,
+        )
     committed = await mgr.finish_proactive_delivery(
         text,
         expected_speech_id=proactive_sid,

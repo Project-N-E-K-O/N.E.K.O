@@ -70,6 +70,12 @@ async def test_normal_delivery_guards_tts_and_commit_with_engagement_snapshot(
         finish_proactive_delivery=AsyncMock(return_value=committed),
         handle_new_message=AsyncMock(),
     )
+    if tts_accepted is False:
+        async def reject_after_user_engagement(*_args, **_kwargs):
+            mgr.last_user_engagement_time = 101.0
+            return False
+
+        mgr.feed_tts_chunk.side_effect = reject_after_user_engagement
     if replacement_sid is not None:
         async def finish_after_avatar_response(*_args, **_kwargs):
             mgr.current_speech_id = replacement_sid
@@ -122,6 +128,45 @@ async def test_normal_delivery_guards_tts_and_commit_with_engagement_snapshot(
         result.result.body["reason_code"]
         == PROACTIVE_REASON_DELIVERY_PREEMPTED
     )
+
+
+@pytest.mark.asyncio
+async def test_normal_delivery_commits_text_when_local_tts_enqueue_fails():
+    """An unchanged guard means False came from TTS, not user takeover."""
+    mgr = SimpleNamespace(
+        current_speech_id="proactive-sid",
+        last_user_engagement_time=100.0,
+        state=_NeverPreemptedState(),
+        feed_tts_chunk=AsyncMock(return_value=False),
+        finish_proactive_delivery=AsyncMock(return_value=True),
+        handle_new_message=AsyncMock(),
+    )
+
+    result = await _commit_proactive_delivery(
+        mgr=mgr,
+        proactive_sid="proactive-sid",
+        lanlan_name="Neko",
+        response_text="文字仍应送达。",
+        source_tag="CHAT",
+        active_channels=[],
+        selected_web_link=None,
+        selected_music_link=None,
+        selected_meme_link=None,
+        music_content=None,
+        is_music_used=False,
+        is_playing_music=False,
+        music_cooldown=False,
+        vision_content=None,
+        phase2_use_vision=False,
+        screenshot_b64=None,
+        proactive_lang="zh",
+        master_name="博士",
+    )
+
+    mgr.finish_proactive_delivery.assert_awaited_once()
+    mgr.handle_new_message.assert_not_awaited()
+    assert result.result is None
+    assert result.delivery is not None
 
 
 class _FakeStreamingLlm:
@@ -186,17 +231,19 @@ def test_merge_regen_avoid_terms_preserves_both_repeat_signals():
         "regen_returns_pass",
         "preempted_after_initial",
         "tts_feed_rejected",
+        "tts_feed_failed_locally",
         "finish_rejected",
     ),
     (
-        (False, False, False, False, False, False, False),
-        (True, False, False, False, False, False, False),
-        (False, True, False, False, False, False, False),
-        (False, False, True, False, False, False, False),
-        (False, False, False, True, False, False, False),
-        (False, False, True, False, True, False, False),
-        (False, False, False, False, False, True, False),
-        (False, False, False, False, False, False, True),
+        (False, False, False, False, False, False, False, False),
+        (True, False, False, False, False, False, False, False),
+        (False, True, False, False, False, False, False, False),
+        (False, False, True, False, False, False, False, False),
+        (False, False, False, True, False, False, False, False),
+        (False, False, True, False, True, False, False, False),
+        (False, False, False, False, False, True, False, False),
+        (False, False, False, False, False, False, True, False),
+        (False, False, False, False, False, False, False, True),
     ),
 )
 async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
@@ -207,6 +254,7 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
     regen_returns_pass,
     preempted_after_initial,
     tts_feed_rejected,
+    tts_feed_failed_locally,
     finish_rejected,
 ):
     from main_logic.proactive_chat import break_reminders
@@ -274,13 +322,21 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
         prepare_proactive_delivery=AsyncMock(return_value=True),
         current_speech_id="break-sid",
         state=state,
-        feed_tts_chunk=AsyncMock(return_value=not tts_feed_rejected),
+        feed_tts_chunk=AsyncMock(
+            return_value=not (tts_feed_rejected or tts_feed_failed_locally)
+        ),
         finish_proactive_delivery=AsyncMock(return_value=not finish_rejected),
         handle_new_message=AsyncMock(),
         proactive_engagement_observation_started_at=100.0,
         last_user_message_time=None,
         last_user_engagement_time=None,
     )
+    if tts_feed_rejected:
+        async def reject_after_user_engagement(*_args, **_kwargs):
+            mgr.last_user_engagement_time = 101.0
+            return False
+
+        mgr.feed_tts_chunk.side_effect = reject_after_user_engagement
     manager_holder["mgr"] = mgr
     config_manager = SimpleNamespace(
         aget_model_api_config=AsyncMock(
@@ -342,6 +398,15 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
         )
         mgr.finish_proactive_delivery.assert_not_awaited()
         mgr.handle_new_message.assert_awaited_once_with()
+    elif tts_feed_failed_locally:
+        assert result.delivered_text == regenerated_text
+        assert result.proactive_sid == "break-sid"
+        mgr.finish_proactive_delivery.assert_awaited_once_with(
+            regenerated_text,
+            expected_speech_id="break-sid",
+            expected_user_engagement_time=None,
+        )
+        mgr.handle_new_message.assert_not_awaited()
     elif finish_rejected:
         assert result == break_reminders.BreakReminderDeliveryResult()
         mgr.feed_tts_chunk.assert_awaited_once_with(

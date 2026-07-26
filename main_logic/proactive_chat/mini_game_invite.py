@@ -53,9 +53,10 @@ from .contracts import (
 from .state import (
     _ensure_proactive_chat_totals_loaded,
     _get_proactive_chat_total,
+    _proactive_feed_rejected_for_takeover,
+    _proactive_turn_still_owned,
     _record_invite_delivery_persistent,
     _record_proactive_chat,
-    _proactive_turn_still_owned,
     _was_invite_ever_delivered,
 )
 
@@ -532,12 +533,21 @@ async def _attempt_mini_game_invite_delivery(
         logger.warning(
             "[%s] mini-game invite feed_tts_chunk failed: %s", lanlan_name, exc,
         )
-    if tts_accepted is False:
+    if tts_accepted is False and _proactive_feed_rejected_for_takeover(
+        mgr,
+        proactive_sid,
+        expected_user_engagement_time,
+    ):
         if _proactive_turn_still_owned(mgr, proactive_sid):
             await mgr.handle_new_message()
         return _proactive_pass_body(
             PROACTIVE_REASON_DELIVERY_PREEMPTED,
             message="mini-game invite skipped: user became active before TTS",
+        )
+    if tts_accepted is False:
+        logger.warning(
+            "[%s] mini-game invite TTS enqueue failed; committing text without audio",
+            lanlan_name,
         )
     committed = await mgr.finish_proactive_delivery(
         invite_text,

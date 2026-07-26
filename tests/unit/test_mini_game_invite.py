@@ -685,6 +685,11 @@ async def test_maybe_deliver_pass_when_engagement_rejects_tts(monkeypatch):
     monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
     mgr = _make_mgr(feed_ok=False, sid='sid-engagement')
 
+    async def reject_after_user_engagement(*_args, **_kwargs):
+        mgr.last_user_engagement_time = 101.0
+        return False
+
+    mgr.feed_tts_chunk.side_effect = reject_after_user_engagement
     out = await sr._maybe_deliver_mini_game_invite(
         lanlan_name=LANLAN,
         mgr=mgr,
@@ -698,6 +703,27 @@ async def test_maybe_deliver_pass_when_engagement_rejects_tts(monkeypatch):
     mgr.finish_proactive_delivery.assert_not_awaited()
     mgr.handle_new_message.assert_awaited_once_with()
     assert LANLAN not in sr._mini_game_invite_state
+
+
+@pytest.mark.asyncio
+async def test_maybe_deliver_commits_text_when_local_tts_enqueue_fails(monkeypatch):
+    """A local TTS failure must not discard a direct invite's UI delivery."""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+    mgr = _make_mgr(feed_ok=False, sid='sid-tts-failure')
+
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN,
+        mgr=mgr,
+        activity_snapshot=_make_snapshot(),
+        invite_lang='zh',
+        master_name=MASTER,
+    )
+
+    assert out is not None
+    assert out["reason_code"] == sr.PROACTIVE_REASON_CHAT_DELIVERED
+    mgr.finish_proactive_delivery.assert_awaited_once()
+    mgr.handle_new_message.assert_not_awaited()
+    assert LANLAN in sr._mini_game_invite_state
 
 
 @pytest.mark.asyncio

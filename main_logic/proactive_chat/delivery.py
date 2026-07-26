@@ -38,12 +38,13 @@ from .mini_game_invite import _mini_game_invite_count_post_response_chat
 from .music_recommendation import _append_music_recommendations
 from .state import (
     _increment_proactive_chat_total,
+    _proactive_feed_rejected_for_takeover,
     _proactive_material_key,
+    _proactive_turn_still_owned,
     _record_proactive_chat,
     _record_proactive_material,
     _record_reminiscence_usage,
     _record_source_used,
-    _proactive_turn_still_owned,
 )
 
 logger = get_module_logger(__name__, "Main")
@@ -278,7 +279,11 @@ async def _commit_proactive_delivery(
             expected_speech_id=proactive_sid,
             expected_user_engagement_time=expected_user_engagement_time,
         )
-        if tts_accepted is False:
+        if tts_accepted is False and _proactive_feed_rejected_for_takeover(
+            mgr,
+            proactive_sid,
+            expected_user_engagement_time,
+        ):
             active_logger.info(
                 "[%s] buffered proactive TTS dropped after user interaction or takeover",
                 lanlan_name,
@@ -295,6 +300,11 @@ async def _commit_proactive_delivery(
                     )
                 ),
                 delivery=None,
+            )
+        if tts_accepted is False:
+            active_logger.warning(
+                "[%s] proactive TTS enqueue failed; committing text without audio",
+                lanlan_name,
             )
         committed = await mgr.finish_proactive_delivery(
             response_text,
