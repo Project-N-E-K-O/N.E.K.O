@@ -509,20 +509,31 @@ class QQAttentionGateService:
                 history = getattr(session, "_conversation_history", []) or []
                 if len(history) < 4:
                     return 0
+                # 先旧后新分批 + 精确游标（对偶 finalize 的同名修复）：旧写法
+                # `[-200:]` 会把超窗中段永久跳过、游标却跳到 len(history)，
+                # 之后 finalize 也无从补救。失败即停，游标停在最后一个成功
+                # 批，剩余留给下一次 digest/finalize。
+                svc = self.plugin.session_memory_service
                 start_index = max(0, int(s.get("last_group_digest_index", 0)))
-                messages = self.plugin.session_memory_service.conversation_slice_to_memory_messages(
-                    history, start_index,
-                )[-self.plugin.session_memory_service.GROUP_HISTORY_MAX_MESSAGES:]
-                if not messages:
-                    return 0
-                await self.plugin.memory_bridge.post_scoped_memory_history(
-                    str(s.get("her_name") or "neko"),
-                    messages,
-                    subject=self.plugin.memory_bridge.group_subject(group_id),
-                    timeout=30.0,
-                )
-                s["last_group_digest_index"] = len(history)
-                return len(messages)
+                total_sent = 0
+                while True:
+                    messages, next_index = svc._slice_group_history_batch(
+                        history, start_index, svc.GROUP_HISTORY_MAX_MESSAGES,
+                    )
+                    if not messages:
+                        if next_index > start_index:
+                            s["last_group_digest_index"] = next_index
+                        break
+                    await self.plugin.memory_bridge.post_scoped_memory_history(
+                        str(s.get("her_name") or "neko"),
+                        messages,
+                        subject=self.plugin.memory_bridge.group_subject(group_id),
+                        timeout=30.0,
+                    )
+                    s["last_group_digest_index"] = next_index
+                    start_index = next_index
+                    total_sent += len(messages)
+                return total_sent
 
             sent_messages = await self.plugin._run_with_session_lock(session_key, _push_delta)
             if sent_messages:

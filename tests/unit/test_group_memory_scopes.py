@@ -2115,6 +2115,64 @@ async def test_generation_timeout_salvages_group_buffers_before_discard():
     assert calls == []
 
 
+@pytest.mark.asyncio
+async def test_focus_shift_digest_batches_never_skip_backlog():
+    """The focus-shift digest shares finalize's batching fix: a backlog
+    beyond the window drains oldest-first with an exact cursor instead of
+    pushing the newest slice and jumping the cursor past skipped messages
+    (which finalize could then never recover)."""
+    from plugin.plugins.qq_auto_reply.attention_gate_service import (
+        QQAttentionGateService,
+    )
+    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    history = [SimpleNamespace(type="human", content=f"msg {i}") for i in range(8)]
+    session = SimpleNamespace(_conversation_history=history)
+    bridge = MagicMock()
+    bridge.group_subject.side_effect = QQMemoryBridge.group_subject
+    bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
+    user_data = {"session": session, "her_name": "Neko"}
+
+    async def _run_with_session_lock(session_key, fn):
+        return await fn()
+
+    plugin = SimpleNamespace(
+        _qq_settings={"group_memory_enabled": True},
+        _user_sessions={"group:7788": user_data},
+        _run_with_session_lock=_run_with_session_lock,
+        memory_bridge=bridge,
+        logger=MagicMock(),
+    )
+    plugin.session_memory_service = QQSessionMemoryService(plugin)
+    plugin.session_memory_service.GROUP_HISTORY_MAX_MESSAGES = 3
+    gate = QQAttentionGateService(plugin)
+
+    await gate._push_group_digest("7788")
+
+    sent = [
+        [m["content"][0]["text"] for m in call.args[1]]
+        for call in bridge.post_scoped_memory_history.await_args_list
+    ]
+    assert sent == [
+        ["msg 0", "msg 1", "msg 2"],
+        ["msg 3", "msg 4", "msg 5"],
+        ["msg 6", "msg 7"],
+    ]
+    assert user_data["last_group_digest_index"] == len(history)
+
+    # Mid-drain failure: cursor stays at the last successful batch so
+    # finalize (or the next digest) picks up the remainder.
+    user_data["last_group_digest_index"] = 0
+    bridge.post_scoped_memory_history = AsyncMock(side_effect=[
+        {"status": "ok"}, RuntimeError("down"),
+    ])
+    await gate._push_group_digest("7788")
+    assert user_data["last_group_digest_index"] == 3
+
+
 def test_persona_view_authorizes_scoped_entries_per_entry():
     """persona_section_key omits the scope, so two subjects with the same
     kind/id but different custom scopes share one section whose metadata is
