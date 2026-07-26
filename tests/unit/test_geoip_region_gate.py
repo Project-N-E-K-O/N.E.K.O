@@ -2357,3 +2357,61 @@ def test_awakened_retry_stays_in_flight_across_rollover(monkeypatch):
         '滚动窗口（失败 finally → 资格复查 → 下一轮置位）里 join 不该把被唤醒的重试当成退避放弃'
     assert ConfigManager._ip_check_cache is True
     assert calls['n'] == 2
+
+
+@pytest.mark.unit
+def test_kick_racing_the_attempt_finally_keeps_the_marker(monkeypatch):
+    """A kick interleaving with the failing attempt's finally must not lose the marker.
+
+    ``_kick_ip_probe`` writes (in_flight, wake) in two steps and the loop's
+    finally decides "clear or keep" by reading wake. Unserialized, the finally
+    can read wake before the kick sets it and then clear the marker the kick
+    just preset — the pre-set is voided, and a session join sampling the
+    rollover gap gives the awakened retry up as ordinary backoff. Both critical
+    sections share ``_geo_probe_lock``, so either runs whole: kick first →
+    finally sees wake and keeps; finally first → the kick re-sets afterwards.
+    The hooked event blocks inside the finally's clear to force the bad window.
+    """
+    monkeypatch.setattr(ConfigManager, '_IP_CHECK_RETRY_BASE_S', 30.0)
+    monkeypatch.setattr(ConfigManager, '_IP_CHECK_RETRY_MAX_S', 30.0)
+
+    entered_clear = threading.Event()
+    allow_clear = threading.Event()
+
+    class _GatedClearEvent(threading.Event):
+        def __init__(self):
+            super().__init__()
+            self._gated_once = False
+
+        def clear(self):
+            if not self._gated_once:
+                self._gated_once = True
+                entered_clear.set()
+                allow_clear.wait(10)
+            super().clear()
+
+    monkeypatch.setattr(ConfigManager, '_ip_probe_in_flight', _GatedClearEvent())
+    calls = _patch_probe_once(monkeypatch, [OSError('down'), 'US'])
+
+    def _slow_eligibility():
+        real_time.sleep(0.2)        # 拉宽滚动窗口，让误清必然被 join 采样到
+        return True
+
+    monkeypatch.setattr(ConfigManager, '_free_route_still_needs_region',
+                        staticmethod(_slow_eligibility))
+
+    _Probe()._ensure_ip_probe_started()
+    assert entered_clear.wait(5), '首次失败未进入 finally 清位'
+
+    # kick 在「finally 已判定要清、尚未清完」的窗口里到达——锁实现把它挡在临界区
+    # 外直到清位完成，随后整体置位；无锁实现的两步会被这次 clear 抹掉
+    kicker = threading.Thread(target=ConfigManager._kick_ip_probe, daemon=True)
+    kicker.start()
+    real_time.sleep(0.1)
+    allow_clear.set()
+    kicker.join(5)
+
+    assert ConfigManager.join_ip_probe(timeout=5) is True, \
+        'kick 与失败 finally 交错后，被唤醒的重试仍应被等到（预置标记不该被误清）'
+    assert ConfigManager._ip_check_cache is True
+    assert calls['n'] == 2

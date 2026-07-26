@@ -354,8 +354,12 @@ class CoreConfigMixin:
                     # 再次置位；在这个滚动窗口里清掉标记，会话 join 会把被刻意唤醒
                     # 的重试误判成普通退避而放弃。若资格复查判收工或 stopping 退出，
                     # outer finally 兜底清位，不会悬挂。
-                    if not ConfigManager._ip_probe_wake.is_set():
-                        ConfigManager._ip_probe_in_flight.clear()
+                    # 「检查 wake + 清位」在 _geo_probe_lock 内，与 _kick_ip_probe
+                    # 的两步写互斥——无锁时 kick 的 in_flight 预置与 wake 置位之间
+                    # 若恰被本 finally 插进来，会读到 wake 未置而误清刚预置的标记。
+                    with ConfigManager._geo_probe_lock:
+                        if not ConfigManager._ip_probe_wake.is_set():
+                            ConfigManager._ip_probe_in_flight.clear()
 
                 failures += 1
                 wait = ConfigManager._ip_check_backoff_s(failures)
@@ -442,15 +446,22 @@ class CoreConfigMixin:
         """
         from utils.config_manager import ConfigManager
 
-        thread = ConfigManager._ip_probe_thread
-        if thread is not None and thread.is_alive() and not ConfigManager._ip_probe_stopping:
-            # 先预置 in-flight 再唤醒，与 _ensure_ip_probe_started 同一习语：被唤醒
-            # 的循环要等 OS 调度后才自己 set in_flight，若调用方（典型序列：切回
-            # 免费路由后立刻开会话）在那之前到达 join，会把这次**刻意唤醒**的尝试
-            # 误判成普通退避而直接放弃等待，整场冻结在大陆兜底。循环若醒来后因
-            # 资格复查收工，outer finally 会清掉这个预置位，不会悬挂。
-            ConfigManager._ip_probe_in_flight.set()
-            ConfigManager._ip_probe_wake.set()
+        # 两步写（预置 in-flight + set wake）与探测循环 finally 的「看 wake 决定
+        # 清位」必须互斥（共用 _geo_probe_lock）：无锁时可交错成 finally 读到
+        # wake 未置、把这里刚预置的标记清掉——预置形同虚设，join 在滚动窗口里
+        # 照样把被唤醒的重试当退避放弃。锁下两个临界区谁先行都成立：kick 先行
+        # 则 finally 看到 wake 已置而保留标记；finally 先行则 kick 随后整体
+        # 置位、标记依然存续到下一轮接手。
+        with ConfigManager._geo_probe_lock:
+            thread = ConfigManager._ip_probe_thread
+            if thread is not None and thread.is_alive() and not ConfigManager._ip_probe_stopping:
+                # 先预置 in-flight 再唤醒，与 _ensure_ip_probe_started 同一习语：
+                # 被唤醒的循环要等 OS 调度后才自己 set in_flight，若调用方（典型
+                # 序列：切回免费路由后立刻开会话）在那之前到达 join，会把这次
+                # **刻意唤醒**的尝试误判成普通退避而直接放弃等待。循环若醒来后
+                # 因资格复查收工，outer finally 会清掉这个预置位，不会悬挂。
+                ConfigManager._ip_probe_in_flight.set()
+                ConfigManager._ip_probe_wake.set()
 
     @staticmethod
     def join_ip_probe(timeout: float = 5.0, through_backoff: bool = False) -> bool:
