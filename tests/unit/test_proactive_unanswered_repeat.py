@@ -43,8 +43,9 @@ class _FakeRegenLlm:
 
 
 class _FakeStreamingLlm:
-    def __init__(self, *chunks: str):
+    def __init__(self, *chunks: str, on_stream=None):
         self.chunks = chunks
+        self.on_stream = on_stream
 
     async def __aenter__(self):
         return self
@@ -53,6 +54,8 @@ class _FakeStreamingLlm:
         return None
 
     async def astream(self, _messages):
+        if self.on_stream is not None:
+            self.on_stream()
         for chunk in self.chunks:
             yield SimpleNamespace(content=chunk)
 
@@ -94,17 +97,26 @@ def test_merge_regen_avoid_terms_preserves_both_repeat_signals():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("regen_still_repeats", "interaction_during_regen"),
     (
-        (False, False),
-        (True, False),
-        (False, True),
+        "regen_still_repeats",
+        "interaction_during_regen",
+        "interaction_during_initial",
+        "regen_returns_pass",
+    ),
+    (
+        (False, False, False, False),
+        (True, False, False, False),
+        (False, True, False, False),
+        (False, False, True, False),
+        (False, False, False, True),
     ),
 )
 async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
     monkeypatch,
     regen_still_repeats,
     interaction_during_regen,
+    interaction_during_initial,
+    regen_returns_pass,
 ):
     from main_logic.proactive_chat import break_reminders
 
@@ -112,14 +124,21 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
     regenerated_text = "先望望远处，让眼睛放松一会儿吧。"
     manager_holder = {}
 
+    def on_initial_stream():
+        if interaction_during_initial:
+            manager_holder["mgr"].last_user_engagement_time = 225.0
+
     def on_regen():
         if interaction_during_regen:
             manager_holder["mgr"].last_user_engagement_time = 250.0
 
     make_llm = AsyncMock(
         side_effect=[
-            _FakeStreamingLlm(initial_text),
-            _FakeRegenLlm(regenerated_text, on_invoke=on_regen),
+            _FakeStreamingLlm(initial_text, on_stream=on_initial_stream),
+            _FakeRegenLlm(
+                "[PASS]" if regen_returns_pass else regenerated_text,
+                on_invoke=on_regen,
+            ),
         ]
     )
     monkeypatch.setattr(break_reminders, "create_chat_llm_async", make_llm)
@@ -189,9 +208,23 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
         lang="en",
     )
 
-    if interaction_during_regen:
+    if interaction_during_initial:
+        assert corpus.score_unanswered_proactive_draft.call_count == 0
+        assert result == break_reminders.BreakReminderDeliveryResult()
+        mgr.feed_tts_chunk.assert_not_awaited()
+        mgr.finish_proactive_delivery.assert_not_awaited()
+        mgr.handle_new_message.assert_awaited_once_with()
+    elif interaction_during_regen:
         assert corpus.score_unanswered_proactive_draft.call_count == 1
         assert result == break_reminders.BreakReminderDeliveryResult()
+        mgr.feed_tts_chunk.assert_not_awaited()
+        mgr.finish_proactive_delivery.assert_not_awaited()
+        mgr.handle_new_message.assert_awaited_once_with()
+    elif regen_returns_pass:
+        assert corpus.score_unanswered_proactive_draft.call_count == 1
+        assert result.delivered_text is None
+        assert result.proactive_sid is None
+        assert result.repeat_suppressed is True
         mgr.feed_tts_chunk.assert_not_awaited()
         mgr.finish_proactive_delivery.assert_not_awaited()
         mgr.handle_new_message.assert_awaited_once_with()

@@ -263,8 +263,9 @@ async def _deliver_break_reminder_via_llm(
     the env-notice block, so the model puts all attention on the single nudge.
 
     Returns a result with text/SID on success. ``repeat_suppressed`` is true
-    only when the long-window guard deliberately consumes a still-repetitive
-    rewrite; callers must consume that reminder source instead of retrying it.
+    when the long-window guard deliberately consumes a rejected rewrite
+    (explicit ``[PASS]`` or still-repetitive content); callers must consume
+    that reminder source instead of retrying it.
     An empty default result means:
       * ``prepare_proactive_delivery`` rejection (user just spoke / WS offline /
         etc — leave the source pending alone, next round can retry)
@@ -304,6 +305,7 @@ async def _deliver_break_reminder_via_llm(
     if not await mgr.prepare_proactive_delivery(min_idle_secs=10.0):
         return BreakReminderDeliveryResult()
 
+    silence_since_before_generation = _break_reminder_silence_since(mgr)
     proactive_sid = mgr.current_speech_id
     from main_logic.session_state import SessionEvent as _SE
 
@@ -392,6 +394,21 @@ async def _deliver_break_reminder_via_llm(
         return BreakReminderDeliveryResult()
 
     text = full_text.strip()
+    silence_since_after_generation = _break_reminder_silence_since(mgr)
+    if (
+        silence_since_after_generation is not None
+        and (
+            silence_since_before_generation is None
+            or silence_since_after_generation > silence_since_before_generation
+        )
+    ):
+        logger.info(
+            "[%s] break reminder abandoned after user interaction during generation",
+            lanlan_name,
+        )
+        await mgr.handle_new_message()
+        return BreakReminderDeliveryResult()
+
     anti_repeat_corpus = None
     unanswered_repeat_signal = None
     try:
@@ -465,11 +482,11 @@ async def _deliver_break_reminder_via_llm(
             await mgr.handle_new_message()
             return BreakReminderDeliveryResult()
         cleaned = regen_text.strip()
-        if (
-            not cleaned
-            or "[PASS]" in cleaned.upper()
-            or count_tokens(cleaned) > PHASE2_OUTPUT_MAX_TOKENS
-        ):
+        if "[PASS]" in cleaned.upper():
+            if not mgr.state.is_proactive_preempted(proactive_sid):
+                await mgr.handle_new_message()
+            return BreakReminderDeliveryResult(repeat_suppressed=True)
+        if not cleaned or count_tokens(cleaned) > PHASE2_OUTPUT_MAX_TOKENS:
             if not mgr.state.is_proactive_preempted(proactive_sid):
                 await mgr.handle_new_message()
             return BreakReminderDeliveryResult()
