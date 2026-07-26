@@ -743,12 +743,6 @@ Live2DManager.prototype._tryApplyLive2DPeek = async function (model) {
     if (isLive2DPeekDesktopRuntime()) {
         await refreshLive2DPeekDisplayContext();
     }
-    try {
-        const stage = this.pixi_app && this.pixi_app.stage;
-        if (stage && typeof stage.updateTransform === 'function') {
-            stage.updateTransform();
-        }
-    } catch (_) {}
     const bounds = getLive2DPeekBounds(model);
     const target = getLive2DPeekPlacement(model, bounds, this);
     if (!bounds || !target) {
