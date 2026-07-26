@@ -11,18 +11,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from ...core.contracts import BattleEvent, BattleState
+from ...core.contracts import (
+    BATTLE_END_MISSION_STATUSES,
+    BattleEvent,
+    BattleState,
+    classify_battle_result,
+)
 from .._base import DiscreteDetector
 from .free_text import FreeTextActivityDetector
 from .notices import HudNoticeDetector
 from .proximity import ProximityDetector
 from .radio import RadioCommandDetector
 from .situation import AirSituationDetector, GroundTargetDetector
-
-_END_STATUSES = frozenset(
-    {"win", "won", "victory", "success", "fail", "failed", "lost", "defeat", "left", "ended", "finished"}
-)
-
 
 def _alive(s: BattleState) -> bool:
     return s.is_alive()
@@ -148,11 +148,15 @@ class BattleEndDetector(DiscreteDetector):
     id = "battle_end"
 
     def _ended(self, s: BattleState) -> bool:
-        return (s.mission_status or "").lower() in _END_STATUSES
+        return (s.mission_status or "").lower() in BATTLE_END_MISSION_STATUSES
 
     def detect(self, prev: BattleState, cur: BattleState) -> BattleEvent | None:
         if self._ended(cur) and not self._ended(prev):
-            payload: dict[str, Any] = {"result": cur.mission_status, "domain": cur.domain}
+            payload: dict[str, Any] = {
+                "result": cur.mission_status,
+                "result_kind": classify_battle_result(cur.mission_status),
+                "domain": cur.domain,
+            }
             my = cur.combat.get("my") if isinstance(cur.combat, dict) else None
             if isinstance(my, dict):
                 payload["result"] = f"{cur.mission_status}, K{my.get('kills', 0)}/D{my.get('deaths', 0)}"

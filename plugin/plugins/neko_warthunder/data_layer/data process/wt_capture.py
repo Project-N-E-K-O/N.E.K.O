@@ -1,13 +1,14 @@
 """战雷全量数据抓包采集器。
 
-直接拉取游戏 8111 的**所有**原始接口（不止 HUD），按时间戳落盘到专门文件夹，
+直接拉取游戏 8111 的允许持久化接口（不止 HUD），按时间戳落盘到专门文件夹，
 供后续离线分析与关键词校准（如 HUD 自机通知 _SELF_NOTICES 的措辞核对）。
+`/gamechat` 仅推进增量游标并记录汇总计数，原始聊天正文和发送者不会落盘。
 
 采集内容（单线程定时轮询，各接口按自己的间隔）：
     /state             载具仪表          0.5s   -> state.jsonl
     /indicators        座舱原始数据      0.5s   -> indicators.jsonl
     /hudmsg            击杀/事件(增量)   1.0s   -> hudmsg.jsonl（逐条，无损）
-    /gamechat          聊天(增量)        1.0s   -> gamechat.jsonl（逐条，无损）
+    /gamechat          聊天(增量)        1.0s   -> 仅汇总计数，不写原始聊天
     /map_obj.json      地图单位          1.0s   -> map_obj.jsonl
     /map_info.json     坐标换算参数      2.0s   -> map_info.jsonl
     /mission.json      任务状态          2.0s   -> mission.jsonl
@@ -124,7 +125,7 @@ class Capturer:
         self._w: dict[str, JsonlWriter] = {
             name: JsonlWriter(os.path.join(out_dir, f"{name}.jsonl"))
             for name in (
-                "state", "indicators", "hudmsg", "gamechat",
+                "state", "indicators", "hudmsg",
                 "map_obj", "map_info", "mission", "processed_8112",
             )
         }
@@ -133,6 +134,7 @@ class Capturer:
         self._last_evt = 0
         self._last_dmg = 0
         self._last_chat = 0
+        self._chat_seen_count = 0
         self._last_map_gen: int | None = None
         self._map_saved = 0
 
@@ -183,19 +185,16 @@ class Capturer:
 
     def _snap_gamechat(self) -> None:
         url = f"{self.wt_base}/gamechat?lastId={self._last_chat}"
-        connected, status, body = _fetch_text(url)
+        connected, _, body = _fetch_text(url)
         if not connected:
             return
-        data, raw_text = _parse_json(body)
-        ts = round(time.time(), 3)
+        data, _ = _parse_json(body)
         if not isinstance(data, list):
-            if raw_text:
-                self._w["gamechat"].write({"ts": ts, "raw_text": raw_text})
             return
         for msg in data:
             if isinstance(msg, dict):
                 self._last_chat = max(self._last_chat, int(msg.get("id", 0) or 0))
-                self._w["gamechat"].write({"ts": ts, **msg})
+                self._chat_seen_count += 1
 
     def _snap_mapimg(self) -> None:
         # 先看 map_info 的 generation，变化才存（避免重复写同一张）
@@ -302,7 +301,7 @@ class Capturer:
         online = "在线" if self._connected_ticks > 0 else "离线(等待游戏)"
         print(
             f"  [{time.strftime('%H:%M:%S')}] 剩余 {remaining:5.0f}s | {online} | "
-            f"hud={self._w['hudmsg'].count} chat={self._w['gamechat'].count} "
+            f"hud={self._w['hudmsg'].count} chat_seen={self._chat_seen_count} "
             f"state={self._w['state'].count} ind={self._w['indicators'].count} "
             f"mapobj={self._w['map_obj'].count} proc={self._w['processed_8112'].count} "
             f"maps={self._map_saved}"
@@ -320,7 +319,10 @@ class Capturer:
             "total_ticks": self._total_ticks,
             "connected_ticks": self._connected_ticks,
             "maps_saved": self._map_saved,
-            "counts": {k: w.count for k, w in self._w.items()},
+            "counts": {
+                **{k: w.count for k, w in self._w.items()},
+                "gamechat_seen": self._chat_seen_count,
+            },
         }
         with open(os.path.join(self.session_dir, "meta.json"), "w", encoding="utf-8") as fh:
             json.dump(summary, fh, ensure_ascii=False, indent=2)

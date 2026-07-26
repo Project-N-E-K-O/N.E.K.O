@@ -33,6 +33,26 @@ ALL_SCENARIOS = (
     BATTLE_ENDED,
 )
 
+VICTORY_MISSION_STATUSES = frozenset({"win", "won", "victory", "success"})
+DEFEAT_MISSION_STATUSES = frozenset({"fail", "failed", "lost", "defeat"})
+NEUTRAL_END_MISSION_STATUSES = frozenset({"left", "ended", "finished"})
+BATTLE_END_MISSION_STATUSES = (
+    VICTORY_MISSION_STATUSES | DEFEAT_MISSION_STATUSES | NEUTRAL_END_MISSION_STATUSES
+)
+
+
+def classify_battle_result(status: object) -> str:
+    """Normalize a mission status or rendered result into an outcome kind."""
+    normalized = str(status or "").strip().lower().split(",", 1)[0].strip()
+    if normalized in VICTORY_MISSION_STATUSES:
+        return "victory"
+    if normalized in DEFEAT_MISSION_STATUSES:
+        return "defeat"
+    if normalized in NEUTRAL_END_MISSION_STATUSES:
+        return "neutral"
+    return "unknown"
+
+
 # ---------------------------------------------------------------------------
 # 事件类别（D-B1 第 4 节门控矩阵的列）
 # ---------------------------------------------------------------------------

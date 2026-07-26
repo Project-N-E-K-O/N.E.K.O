@@ -14,7 +14,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from ..core.contracts import BattleEvent, broadcast_frequency_multiplier
+from ..core.contracts import BattleEvent, broadcast_frequency_multiplier, classify_battle_result
 from .dispatch_observer import DispatchObserver
 from .event_delivery import EventDelivery
 from .runtime_timeline import RuntimeTimeline
@@ -360,6 +360,17 @@ def _event_freshness_metadata(event: BattleEvent, now: float, plugin: Any) -> di
 
 
 def _reply_style_contract(event: BattleEvent) -> str:
+    result_kind = _battle_result_kind(event)
+    if event.event_id == "battle_end" and result_kind == "victory":
+        return (
+            "Boundary: exactly one Chinese line celebrating the verified victory; the character owns the emotion and "
+            "wording; no invented battle details, analysis, or follow-up."
+        )
+    if event.event_id == "battle_end" and result_kind == "defeat":
+        return (
+            "Boundary: exactly one Chinese line comforting the player after the verified defeat; the character owns "
+            "the emotion and wording; no blame, invented battle details, analysis, or follow-up."
+        )
     if event.event_id == "you_killed":
         if event.payload.get("trade_death"):
             return (
@@ -530,6 +541,20 @@ def _copilot_role_boundary(event: BattleEvent) -> str:
     return COPILOT_ROLE_BOUNDARY
 
 
+def _battle_result_kind(event: BattleEvent) -> str:
+    if event.event_id != "battle_end":
+        return "unknown"
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    explicit = str(payload.get("result_kind") or "").strip().lower()
+    if explicit in {"victory", "defeat", "neutral"}:
+        return explicit
+    return classify_battle_result(payload.get("result"))
+
+
+def _is_confirmed_battle_outcome(event: BattleEvent) -> bool:
+    return _battle_result_kind(event) in {"victory", "defeat"}
+
+
 def _event_intent(event: BattleEvent) -> str:
     if event.edge == "recovery":
         return _RECOVERY_INTENT
@@ -556,6 +581,19 @@ def _event_intent(event: BattleEvent) -> str:
                 "不补充未提供的战术细节"
             )
         return "{MASTER_NAME} 刚取得可信战果；回应一次；不复盘或补充未提供的战术细节"
+    if event.event_id == "battle_end":
+        result_kind = _battle_result_kind(event)
+        if result_kind == "victory":
+            return (
+                "确认这局获胜；把胜利和已提供战绩作为事实；"
+                "对 {MASTER_NAME} 由当前人设自然庆祝或夸奖一次；不编造战报或套固定台词"
+            )
+        if result_kind == "defeat":
+            return (
+                "确认这局失利；把失败和已提供战绩作为事实；"
+                "对 {MASTER_NAME} 由当前人设自然安慰或鼓励一次；不责怪、不编造战报或套固定台词"
+            )
+        return "确认这局结束或离开；对 {MASTER_NAME} 中性回应一次；不误判胜负，不展开战报"
     return _INTENT.get(event.event_id, "")
 
 
@@ -568,6 +606,10 @@ def _output_shape_contract(event: BattleEvent) -> str:
         content = "必须清楚传达已确认的危险或动作"
     elif event.event_id == "you_killed":
         content = "只围绕已确认战果"
+    elif event.event_id == "battle_end" and _battle_result_kind(event) == "victory":
+        content = "只围绕已确认的胜利和战绩，自然庆祝或夸奖"
+    elif event.event_id == "battle_end" and _battle_result_kind(event) == "defeat":
+        content = "只围绕已确认的失利和战绩，自然安慰或鼓励"
     elif event.event_id in {"spawn", "battle_end"}:
         content = "只围绕已确认的开场或终局状态"
     elif event.event_id == "player_radio_command":
@@ -1097,7 +1139,11 @@ class NekoDispatcher:
         return f"pushed(event={event.event_id}/{event.edge})"
 
     def _is_backpressured(self, event: BattleEvent, now: float) -> bool:
-        if event.event_id in BACKPRESSURE_BYPASS_EVENTS or event.level == "critical":
+        if (
+            event.event_id in BACKPRESSURE_BYPASS_EVENTS
+            or event.level == "critical"
+            or _is_confirmed_battle_outcome(event)
+        ):
             return False
         if event.event_id == "spawn" and event.payload.get("respawn") is True:
             return False

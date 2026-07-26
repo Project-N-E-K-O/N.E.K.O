@@ -505,11 +505,10 @@ class TelemetryService:
             "cursors_before": cursors_before,
             "cursors_after": self.client.incremental_cursor_state(),
         })
-        # 录制：HUD/聊天增量落盘（击杀/通知可离线从 hudmsg 再解析）
+        # 录制：仅 HUD 增量落盘（击杀/通知可离线从 hudmsg 再解析）。
+        # 原始聊天只保留在受限内存缓冲中，严禁写入持久化录制。
         if hud:
             self.recorder.write_events("hudmsg", [asdict(ev) for ev in hud])
-        if chat:
-            self.recorder.write_events("chat", list(chat))
 
     def _poll_mapimg(self, generation: int) -> None:
         # map_info 已由 fast 组实时缓存，这里只负责按 generation 拉取底图

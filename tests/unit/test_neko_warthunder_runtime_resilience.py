@@ -72,7 +72,11 @@ def test_terminal_mission_status_emits_once_and_plain_exit_does_not_invent_resul
     success.mission_status = "success"
     event = detector.detect(running, success)
     assert event is not None
-    assert event.payload == {"result": "success, K2/D1", "domain": "ground"}
+    assert event.payload == {
+        "result": "success, K2/D1",
+        "result_kind": "victory",
+        "domain": "ground",
+    }
     assert detector.detect(success, success) is None
     menu_after_success = BattleState(connected=True, conn_state="not_in_battle", timestamp=3.0)
     assert detector.detect(success, menu_after_success) is None

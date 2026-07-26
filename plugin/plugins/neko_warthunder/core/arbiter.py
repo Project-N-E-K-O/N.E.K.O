@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from .contracts import (
@@ -18,6 +19,14 @@ from .contracts import (
     category_allowed,
 )
 from .safety_guard import SafetyGuard
+
+
+@dataclass(frozen=True)
+class ArbiterCheckpoint:
+    """Snapshot delivery accounting before a host delivery attempt."""
+
+    last_fired: dict[str, tuple[float, str]]
+
 
 class Arbiter:
     def __init__(self, safety: SafetyGuard) -> None:
@@ -34,6 +43,14 @@ class Arbiter:
         self._last_fired.clear()
         self._window_best = None
         self._clear_kill_window()
+
+    def checkpoint(self) -> ArbiterCheckpoint:
+        """Capture cooldown bookkeeping that commits only after delivery."""
+        return ArbiterCheckpoint(last_fired=dict(self._last_fired))
+
+    def restore(self, checkpoint: ArbiterCheckpoint) -> None:
+        """Roll back cooldown bookkeeping without resurrecting consumed buffers."""
+        self._last_fired = dict(checkpoint.last_fired)
 
     def decide(self, candidates: list[BattleEvent], scenario: str, now: float) -> tuple[BattleEvent | None, list[dict[str, Any]]]:
         chain: list[dict[str, Any]] = []

@@ -113,6 +113,7 @@ class NekoWarthunderPlugin(NekoPluginBase):
         self._last_user_chat_mode = "unknown"
         self._last_user_context_seen_at = 0.0
         self._last_battle_respond_at = 0.0
+        self._pending_dispatch_event: BattleEvent | None = None
         self._startup_completed = False
 
     # ------------------------------------------------------------------ 配置
@@ -454,6 +455,7 @@ class NekoWarthunderPlugin(NekoPluginBase):
             self.engine.reset()
             self.resolver.reset()
             self.arbiter.reset()
+            self._pending_dispatch_event = None
             self.timeline.record_stage(
                 stage="battle_boundary",
                 outcome="reset",
@@ -465,6 +467,7 @@ class NekoWarthunderPlugin(NekoPluginBase):
         cur.scenario = self.resolver.resolve(cur, now, self.cfg.spawn_grace_seconds)
         candidates = self.engine.feed(prev, cur)
         if cur.replay:
+            self._pending_dispatch_event = None
             self.timeline.record_stage(
                 stage="detector_suppressed",
                 outcome="suppressed",
@@ -485,6 +488,15 @@ class NekoWarthunderPlugin(NekoPluginBase):
                 dry_run=self.cfg.dry_run,
             )
             return
+        pending_dispatch = getattr(self, "_pending_dispatch_event", None)
+        self._pending_dispatch_event = None
+        if pending_dispatch is not None and not any(
+            candidate.event_id == pending_dispatch.event_id
+            and candidate.edge == pending_dispatch.edge
+            and candidate.ts == pending_dispatch.ts
+            for candidate in candidates
+        ):
+            candidates.insert(0, pending_dispatch)
         self._record_blocked_free_text_sources(cur)
         self._record_deferred_hud_notices(cur)
         candidates = self._suppress_takeoff_grace(candidates, cur, now)
@@ -504,6 +516,7 @@ class NekoWarthunderPlugin(NekoPluginBase):
                 safe_summary=f"{candidate.event_id}/{candidate.edge}/{candidate.level}",
             )
         output_clock_checkpoint = self.safety.output_clock_checkpoint()
+        arbiter_checkpoint = self.arbiter.checkpoint()
         chosen, chain = self.arbiter.decide(candidates, cur.scenario, now)
         for record in arbiter_chain_to_observe_records(chain, scenario=cur.scenario):
             self.timeline.record_stage(**record)
@@ -522,10 +535,13 @@ class NekoWarthunderPlugin(NekoPluginBase):
             try:
                 result = self.dispatcher.push_event(chosen, dry_run=self.cfg.dry_run)
                 if not result.startswith(("pushed(", "dry_run(")):
+                    self.arbiter.restore(arbiter_checkpoint)
                     self.safety.restore_output_clock(output_clock_checkpoint)
                 self.logger.info(f"[output] {result}")
             except Exception as exc:  # noqa: BLE001 — 投递失败计入安全门，不杀循环
+                self.arbiter.restore(arbiter_checkpoint)
                 self.safety.restore_output_clock(output_clock_checkpoint)
+                self._pending_dispatch_event = chosen
                 self.logger.warning(f"dispatch failed: {type(exc).__name__}: {exc}")
                 self.safety.record_failure(now)
 
