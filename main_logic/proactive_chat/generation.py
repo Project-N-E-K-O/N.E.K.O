@@ -81,6 +81,19 @@ logger = get_module_logger(__name__, "Main")
 _PROACTIVE_LLM_RETRY_ERROR_TYPES: tuple[type[BaseException], ...] | None = None
 
 
+def _proactive_silence_since(mgr: Any) -> float | None:
+    """Return the trustworthy start of the current no-response streak."""
+    last_user_message = getattr(mgr, "last_user_message_time", None)
+    if last_user_message is not None:
+        return float(last_user_message)
+    observation_started = getattr(
+        mgr,
+        "proactive_engagement_observation_started_at",
+        None,
+    )
+    return float(observation_started) if observation_started is not None else None
+
+
 @dataclass(frozen=True, slots=True)
 class ProactiveModelConfig:
     """Resolved conversation and optional vision model settings for one turn."""
@@ -1121,14 +1134,50 @@ async def _guard_phase2_output(
             )
         )
 
+    anti_repeat_corpus = None
+    unanswered_repeat_signal = None
+    silence_since = _proactive_silence_since(mgr)
+    try:
+        from memory.anti_repeat import get_anti_repeat_corpus
+
+        anti_repeat_corpus = get_anti_repeat_corpus()
+        unanswered_repeat_signal = (
+            anti_repeat_corpus.score_unanswered_proactive_draft(
+                lanlan_name,
+                response_text,
+                silence_since=silence_since,
+            )
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        active_logger.debug(
+            "[AntiRepeat] unanswered proactive score skipped: %s",
+            exc,
+        )
+        anti_repeat_corpus = None
+
+    unanswered_repeat_triggered = bool(
+        unanswered_repeat_signal is not None
+        and unanswered_repeat_signal.triggered
+    )
+    if unanswered_repeat_triggered:
+        active_logger.info(
+            "[%s] proactive unanswered-repeat regen "
+            "(matches=%d considered=%d best_similarity=%.3f)",
+            lanlan_name,
+            unanswered_repeat_signal.match_count,
+            unanswered_repeat_signal.considered_count,
+            unanswered_repeat_signal.best_similarity,
+        )
+        print(
+            f"[{lanlan_name}] 用户持续未互动且主动搭话内容反复，触发改写 "
+            f"(matches={unanswered_repeat_signal.match_count}, "
+            f"similarity={unanswered_repeat_signal.best_similarity:.3f})"
+        )
+
     if exempt_text_dedup:
         bm25_total, bm25_terms = 0.0, {}
-        anti_repeat_corpus = None
-    else:
+    elif anti_repeat_corpus is not None:
         try:
-            from memory.anti_repeat import get_anti_repeat_corpus
-
-            anti_repeat_corpus = get_anti_repeat_corpus()
             bm25_total, bm25_terms = anti_repeat_corpus.score_draft(
                 lanlan_name,
                 response_text,
@@ -1136,21 +1185,32 @@ async def _guard_phase2_output(
         except Exception as exc:  # pragma: no cover - defensive
             active_logger.debug("[AntiRepeat] BM25 score skipped: %s", exc)
             bm25_total, bm25_terms = 0.0, {}
-            anti_repeat_corpus = None
+    else:
+        bm25_total, bm25_terms = 0.0, {}
 
-    if bm25_total >= ANTI_REPEAT_REGEN_THRESHOLD:
+    if (
+        unanswered_repeat_triggered
+        or bm25_total >= ANTI_REPEAT_REGEN_THRESHOLD
+    ):
         initial_source_tag = source_tag
-        avoid_terms = list(bm25_terms.keys())[:ANTI_REPEAT_INJECT_TOP_K]
+        if unanswered_repeat_triggered:
+            avoid_terms = list(
+                unanswered_repeat_signal.repeated_terms
+            )[:ANTI_REPEAT_INJECT_TOP_K]
+        else:
+            avoid_terms = list(bm25_terms.keys())[:ANTI_REPEAT_INJECT_TOP_K]
         active_logger.info(
-            "[%s] proactive BM25 regen (score=%.2f threshold=%.2f avoid=%s)",
+            "[%s] proactive regen (bm25_score=%.2f threshold=%.2f "
+            "unanswered_repeat=%s)",
             lanlan_name,
             bm25_total,
             ANTI_REPEAT_REGEN_THRESHOLD,
-            avoid_terms,
+            unanswered_repeat_triggered,
         )
         print(
-            f"[{lanlan_name}] 主动搭话 BM25 触发 regen "
-            f"(score={bm25_total:.2f} >= {ANTI_REPEAT_REGEN_THRESHOLD}, "
+            f"[{lanlan_name}] 主动搭话触发 regen "
+            f"(bm25={bm25_total:.2f}, unanswered_repeat="
+            f"{unanswered_repeat_triggered}, "
             f"避开={avoid_terms})"
         )
         avoid_message = render_regen_avoid_instruction(
@@ -1252,13 +1312,16 @@ async def _guard_phase2_output(
                 )
             )
 
-        try:
-            regen_total, _ = anti_repeat_corpus.score_draft(
-                lanlan_name,
-                cleaned,
-            )
-        except Exception:
+        if exempt_text_dedup or anti_repeat_corpus is None:
             regen_total = 0.0
+        else:
+            try:
+                regen_total, _ = anti_repeat_corpus.score_draft(
+                    lanlan_name,
+                    cleaned,
+                )
+            except Exception:
+                regen_total = 0.0
         if regen_total >= ANTI_REPEAT_DROP_THRESHOLD:
             active_logger.info(
                 "[%s] proactive BM25 regen still over drop (score=%.2f)",
@@ -1273,6 +1336,49 @@ async def _guard_phase2_output(
                         PROACTIVE_REASON_PASS_DUPLICATE,
                         message="BM25 regen 后仍超阈值，已 drop",
                         bm25_score=regen_total,
+                    )
+                )
+            )
+        regen_unanswered_repeat_signal = None
+        if anti_repeat_corpus is not None:
+            try:
+                regen_unanswered_repeat_signal = (
+                    anti_repeat_corpus.score_unanswered_proactive_draft(
+                        lanlan_name,
+                        cleaned,
+                        silence_since=silence_since,
+                    )
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                active_logger.debug(
+                    "[AntiRepeat] unanswered proactive regen score skipped: %s",
+                    exc,
+                )
+        if (
+            regen_unanswered_repeat_signal is not None
+            and regen_unanswered_repeat_signal.triggered
+        ):
+            active_logger.info(
+                "[%s] proactive regen still repeats unanswered content "
+                "(matches=%d considered=%d best_similarity=%.3f), drop",
+                lanlan_name,
+                regen_unanswered_repeat_signal.match_count,
+                regen_unanswered_repeat_signal.considered_count,
+                regen_unanswered_repeat_signal.best_similarity,
+            )
+            if not mgr.state.is_proactive_preempted(proactive_sid):
+                await mgr.handle_new_message()
+            return _output(
+                result=ProactiveChatResult(
+                    body=_proactive_pass_body(
+                        PROACTIVE_REASON_PASS_DUPLICATE,
+                        message="改写后仍与用户持续未回应的主动搭话内容雷同，已 drop",
+                        unanswered_repeat_matches=(
+                            regen_unanswered_repeat_signal.match_count
+                        ),
+                        unanswered_repeat_similarity=(
+                            regen_unanswered_repeat_signal.best_similarity
+                        ),
                     )
                 )
             )

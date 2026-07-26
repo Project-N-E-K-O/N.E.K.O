@@ -72,6 +72,28 @@ ANTI_REPEAT_FG_TTL_SECONDS = 600.0
 - 取值：10 分钟。防复读本就只防「刚说过、又说一遍」的 back-to-back 复读；十分钟
   前说过的话题再提不算复读。BG（IDF 语境）不设 TTL，评分质量不受影响。"""
 
+ANTI_REPEAT_UNANSWERED_WINDOW = 64
+"""用户持续无互动时，长窗口复读信号最多检查的主动搭话条数。
+- 与 FG 的「最近 5 条 / 10 分钟」不同，这里要识别隔几轮才出现一次的雷同内容。
+- 64 条足以覆盖高频主动搭话的一整段使用时段，同时保持 O(N) 检查足够小。"""
+
+ANTI_REPEAT_UNANSWERED_MAX_AGE_SECONDS = 86400.0
+"""用户持续无互动时，长窗口复读信号回看的最长时间（24 小时）。
+- 只有用户最后一条真实消息（或本次进程开始观察）之后的主动搭话会参与；
+  用户一旦互动，旧的「未回应」证据立即失效。
+- 24 小时用于抓跨小时、非连续复读，不把更早的表达固化成长期禁题。"""
+
+ANTI_REPEAT_UNANSWERED_SIMILARITY_THRESHOLD = 0.55
+"""长窗口内两条主动搭话的 ngram Dice 相似度阈值。
+- 低于字面 SequenceMatcher 的 0.90 硬阈值，允许识别「换了屏幕对象名，
+  但仍反复说快点一下」这类模板化改写。
+- 必须再满足多次命中 + 用户持续无互动，不能单独作为拦截依据。"""
+
+ANTI_REPEAT_UNANSWERED_MIN_MATCHES = 2
+"""当前草稿至少命中多少条未获回应的相似主动搭话才触发干预。
+- 2 条历史命中意味着当前草稿是同类内容的第三次出现；
+  单次撞题只作为弱信号，不触发 regen / drop。"""
+
 ANTI_REPEAT_INJECT_TOP_K = 6
 """注入 system prompt 的 "最近高频 topic 词" 数量。
 - 用途：build_recent_topics_block 取 BM25 排名前 K 的 ngram。

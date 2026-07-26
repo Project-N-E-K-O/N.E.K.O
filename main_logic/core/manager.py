@@ -19,6 +19,7 @@ caches, queues, flags); the domain mixins contribute methods only.
 
 import asyncio
 import re
+import time
 from collections import OrderedDict, deque
 from typing import Any, Awaitable, Callable, Optional
 from utils.frontend_utils import TtsStreamNormalizer, TtsBracketStripper, TtsMarkdownStripper
@@ -311,6 +312,10 @@ class LLMSessionManager(
         # 隐式 dismiss 在用户还没点按钮前就把 pending 邀请清掉、按钮撤走，用户随后
         # 点「现在不想玩」落到 expired、真正的 decline 冷却起不来、邀请反复重来。
         self.last_user_message_time = None  # float timestamp or None
+        # 长窗口主动搭话反馈的本进程观察起点。anti-repeat corpus 会跨重启持久化，
+        # 但用户真实消息时间戳不会；用 manager 创建时刻兜底，避免重启后把上一次
+        # 运行里可能已经得到回应的旧搭话误算成「持续无互动」。
+        self.proactive_engagement_observation_started_at = time.time()
 
         # 用户静默 ≥ IDLE_SESSION_RESET_THRESHOLD_SECONDS 时主动断 session 的
         # 后台 loop。lazily 在首次 start_session 时启动，永久存活（per-manager

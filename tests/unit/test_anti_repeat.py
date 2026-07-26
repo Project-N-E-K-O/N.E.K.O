@@ -13,7 +13,7 @@ scorer + soft-hint prompt 注入。
 4. ``top_recent_topics`` 返回最近 5 条里 rank 最高的 K 个 ngram，提示模型
    "已经聊过这些"。
 5. 持久化 round-trip + ``clear``。
-"""
+"""  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
 import os
@@ -282,6 +282,118 @@ def test_score_draft_bg_idf_survives_after_fg_ttl(tmp_path):
     fg_only = [_ngrams(LONG_TIGER)]  # 若 BG 也被 TTL 裁，就只剩这一条新鲜文档
     total_if_bg_trimmed, _ = bm25_score(draft_ngrams, fg_only, fg_only)
     assert total > total_if_bg_trimmed
+
+
+# ── 3c. 用户无互动 + 长窗口重复内容 ─────────────────────────────
+
+
+def test_unanswered_proactive_repeat_detects_non_consecutive_pattern(tmp_path):
+    """A third similar draft triggers even when unrelated outputs separate it."""
+    s = _build_store(tmp_path)
+    name = "Neko"
+    base = 1_000_000.0
+    repeated_a = "屏幕上这个蓝色的小猫按钮好好看啊，快点点一下看看吧。"
+    repeated_b = "屏幕上这个绿色的小猫按钮好好看呀，快点点一下试试看吧。"
+    draft = "屏幕上这个新的小猫按钮好好看啊，快点点一下看看吧。"
+    fillers = [
+        "窗外好像开始下雨了，玻璃上的水珠慢慢连成了几条细线。",
+        "刚才那段音乐的节奏变轻了，像是从很远的地方飘过来。",
+        "桌面右边多了一个新文件，名字看起来像是今天刚保存的。",
+        "现在的光线有点暖，整个房间看起来比刚才安静了不少。",
+        "任务栏上的时间已经不早了，今天好像一下子就过去了。",
+        "这个页面的配色换成了深色，和前一个窗口的感觉完全不同。",
+    ]
+    timeline = [
+        repeated_a,
+        *fillers[:3],
+        repeated_b,
+        *fillers[3:],
+    ]
+    for index, text in enumerate(timeline):
+        s.record_output(
+            name,
+            text,
+            is_proactive=True,
+            now=base + index * 900.0,
+        )
+
+    now = base + len(timeline) * 900.0
+    signal = s.score_unanswered_proactive_draft(
+        name,
+        draft,
+        silence_since=base - 1.0,
+        now=now,
+    )
+
+    assert signal.triggered is True
+    assert signal.match_count == 2
+    assert signal.considered_count == len(timeline)
+    assert signal.best_similarity >= 0.55
+    assert signal.repeated_terms
+    # 最早两次模板内容已经远超短 BM25 的 10 分钟 TTL；本测试锁住的是长窗口。
+    bm25_total, _ = s.score_draft(name, draft, now=now)
+    assert bm25_total == 0.0
+
+
+def test_unanswered_proactive_repeat_needs_multiple_matches(tmp_path):
+    """One similar prior draft is weak evidence and must not trigger intervention."""
+    s = _build_store(tmp_path)
+    name = "Neko"
+    base = 2_000_000.0
+    text = "屏幕上这个新的小猫按钮好好看啊，快点点一下看看吧。"
+    s.record_output(name, text, is_proactive=True, now=base)
+
+    signal = s.score_unanswered_proactive_draft(
+        name,
+        text,
+        silence_since=base - 1.0,
+        now=base + 60.0,
+    )
+
+    assert signal.triggered is False
+    assert signal.match_count == 1
+    assert signal.considered_count == 1
+
+
+def test_unanswered_proactive_repeat_resets_after_real_user_message(tmp_path):
+    """A genuine user message invalidates older unanswered-repeat evidence."""
+    s = _build_store(tmp_path)
+    name = "Neko"
+    base = 3_000_000.0
+    text = "屏幕上这个新的小猫按钮好好看啊，快点点一下看看吧。"
+    s.record_output(name, text, is_proactive=True, now=base)
+    s.record_output(name, text + "真的很可爱。", is_proactive=True, now=base + 60.0)
+
+    signal = s.score_unanswered_proactive_draft(
+        name,
+        text,
+        silence_since=base + 120.0,
+        now=base + 180.0,
+    )
+
+    assert signal.triggered is False
+    assert signal.match_count == 0
+    assert signal.considered_count == 0
+
+
+def test_unanswered_proactive_repeat_ignores_regular_ai_outputs(tmp_path):
+    """Regular AI replies cannot fabricate an ignored-proactive signal."""
+    s = _build_store(tmp_path)
+    name = "Neko"
+    base = 4_000_000.0
+    text = "屏幕上这个新的小猫按钮好好看啊，快点点一下看看吧。"
+    s.record_output(name, text, is_proactive=False, now=base)
+    s.record_output(name, text, is_proactive=False, now=base + 60.0)
+
+    signal = s.score_unanswered_proactive_draft(
+        name,
+        text,
+        silence_since=base - 1.0,
+        now=base + 120.0,
+    )
+
+    assert signal.triggered is False
+    assert signal.considered_count == 0
 
 
 # ── 4. top_recent_topics ──────────────────────────────────────
