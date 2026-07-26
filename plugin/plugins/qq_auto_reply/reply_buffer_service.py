@@ -180,10 +180,7 @@ class QQReplyBufferService:
                         source_kind="rapid_fire_flush",
                         fallback_to_text_on_voice_failure=True,
                     )
-                    await self.plugin._run_with_session_lock(
-                        session_key,
-                        lambda: self.plugin.reply_pipeline.run(request),
-                    )
+                    await self.plugin.reply_pipeline.run(request)  # handler 已持本会话锁，重取会自锁死
                 except Exception as e:
                     self.plugin._emit_log("WARN", f"[Buffer] 简短确认失败: {e}")
 
@@ -203,10 +200,7 @@ class QQReplyBufferService:
                         source_kind="rapid_fire_flush",
                         fallback_to_text_on_voice_failure=True,
                     )
-                    await self.plugin._run_with_session_lock(
-                        session_key,
-                        lambda: self.plugin.reply_pipeline.run(request),
-                    )
+                    await self.plugin.reply_pipeline.run(request)  # handler 已持本会话锁，重取会自锁死
                 except Exception as e:
                     self.plugin._emit_log("WARN", f"[Buffer] 强制总结失败: {e}")
                 return

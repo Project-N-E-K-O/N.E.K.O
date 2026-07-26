@@ -207,6 +207,15 @@ class QQSettingsService:
             # 锁之前跑到时，凭标记照常冲 bucket（finalize 侧配合读取）。
             for ud in list(getattr(self.plugin, "_user_sessions", {}).values()):
                 if ud.get("is_group") and ud.get("group_member_memory_messages"):
+                    # 快照分离：OFF 时代的 bucket 挪进 pending 槽。快速
+                    # re-enable 后新授权轮写全新的活 bucket，迟到的结算
+                    # 任务只消费快照，绝不吞新轮。
+                    ud["pending_settle_buckets"] = ud.pop(
+                        "group_member_memory_messages",
+                    )
+                    ud["pending_settle_labels"] = ud.pop(
+                        "group_member_memory_labels", {},
+                    )
                     ud["pending_member_settle"] = True
         if group_memory_before != group_memory_after:
             # 同步（无 await）给"转变时刻已存在"的群会话打标：后台任务只

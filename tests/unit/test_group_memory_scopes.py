@@ -2665,10 +2665,19 @@ async def test_member_toggle_off_settles_buckets_before_clearing():
     user_data = {
         "is_group": True, "group_id": "7788", "her_name": "Neko",
         "memory_enabled": True,
-        "group_member_memory_messages": {
+        # Settings detaches OFF-era buckets into the pending snapshot
+        # synchronously; the settle task consumes only the snapshot.
+        "pending_settle_buckets": {
             "2046": [{"role": "user", "content": [{"type": "text", "text": "A"}]}],
         },
-        "group_member_memory_labels": {"2046": "Alice(2046)"},
+        "pending_settle_labels": {"2046": "Alice(2046)"},
+        "pending_member_settle": True,
+        # A freshly re-enabled turn writes into a NEW live bucket that the
+        # late settle must not touch.
+        "group_member_memory_messages": {
+            "9999": [{"role": "user", "content": [{"type": "text", "text": "新授权"}]}],
+        },
+        "group_member_memory_labels": {"9999": "9999"},
     }
 
     async def _run_with_session_lock(session_key, fn):
@@ -2687,16 +2696,19 @@ async def test_member_toggle_off_settles_buckets_before_clearing():
 
     kwargs = bridge.post_scoped_memory_history.await_args.kwargs
     assert kwargs["speaker_label"] == "Alice(2046)"
-    assert "group_member_memory_messages" not in user_data
-    assert "group_member_memory_labels" not in user_data
+    assert "pending_settle_buckets" not in user_data
+    # The re-enabled live bucket survives the late settle untouched.
+    assert "9999" in user_data["group_member_memory_messages"]
 
-    # Failure path: buckets are still cleared (fail-closed after opt-out).
-    user_data["group_member_memory_messages"] = {
+    # Failure path: the snapshot is still cleared (fail-closed after
+    # opt-out) while live buckets remain.
+    user_data["pending_settle_buckets"] = {
         "2046": [{"role": "user", "content": [{"type": "text", "text": "B"}]}],
     }
     bridge.post_scoped_memory_history = AsyncMock(side_effect=RuntimeError("down"))
     await service.settle_member_buckets_on_disable()
-    assert "group_member_memory_messages" not in user_data
+    assert "pending_settle_buckets" not in user_data
+    assert "9999" in user_data["group_member_memory_messages"]
 
     # A concurrent finalizer that wins the lock before the settle task must
     # still flush marked buckets even though the global flag is already off.
@@ -2707,10 +2719,10 @@ async def test_member_toggle_off_settles_buckets_before_clearing():
         "is_group": True, "group_id": "7788", "her_name": "Neko",
         "memory_enabled": True, "session": session2,
         "pending_member_settle": True,
-        "group_member_memory_messages": {
+        "pending_settle_buckets": {
             "2046": [{"role": "user", "content": [{"type": "text", "text": "C"}]}],
         },
-        "group_member_memory_labels": {"2046": "2046"},
+        "pending_settle_labels": {"2046": "2046"},
     }
     plugin._user_sessions["group:7788"] = marked
     bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})

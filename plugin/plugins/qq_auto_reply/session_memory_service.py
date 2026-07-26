@@ -177,7 +177,7 @@ class QQSessionMemoryService:
 
     async def _flush_member_buckets(
         self, user_data: dict[str, Any], *, group_id: str, her_name: str,
-        reason: str,
+        reason: str, buckets: dict | None = None, labels: dict | None = None,
     ) -> list[str]:
         """Concurrently flush member buckets (semaphore 4).
 
@@ -185,8 +185,14 @@ class QQSessionMemoryService:
         the next sweep. Serial 8x30s used to hold the session lock ~4 min,
         exhausting the global message semaphore and never fitting the host
         shutdown kill window."""
-        member_buckets = user_data.get("group_member_memory_messages") or {}
-        member_labels = user_data.get("group_member_memory_labels") or {}
+        member_buckets = (
+            buckets if buckets is not None
+            else user_data.get("group_member_memory_messages") or {}
+        )
+        member_labels = (
+            labels if labels is not None
+            else user_data.get("group_member_memory_labels") or {}
+        )
         member_flush_sem = asyncio.Semaphore(4)
 
         async def _flush_one_member(
@@ -247,11 +253,13 @@ class QQSessionMemoryService:
                     return
                 group_id = str(current.get("group_id") or "").strip()
                 her_name = current.get("her_name")
-                buckets = current.get("group_member_memory_messages") or {}
-                if group_id and her_name and buckets:
+                snapshot = current.get("pending_settle_buckets") or {}
+                if group_id and her_name and snapshot:
                     failed = await self._flush_member_buckets(
                         current, group_id=group_id, her_name=her_name,
                         reason="member_memory_disabled",
+                        buckets=snapshot,
+                        labels=current.get("pending_settle_labels") or {},
                     )
                     if failed:
                         self.plugin.logger.error(
@@ -259,8 +267,10 @@ class QQSessionMemoryService:
                             f"{len(failed)} 个成员 bucket 结算失败，按 opt-out "
                             f"丢弃"
                         )
-                current.pop("group_member_memory_messages", None)
-                current.pop("group_member_memory_labels", None)
+                # 只清快照与标记；re-enable 后新授权轮写入的活 bucket
+                # 不受迟到结算任务影响。
+                current.pop("pending_settle_buckets", None)
+                current.pop("pending_settle_labels", None)
                 current.pop("pending_member_settle", None)
 
             await self.plugin._run_with_session_lock(session_key, _settle_one)
@@ -289,6 +299,13 @@ class QQSessionMemoryService:
                 group_id = str(user_data.get("group_id") or "").strip()
                 last_group_digest_index = max(
                     0, int(user_data.get("last_group_digest_index", 0)),
+                )
+                # 未授权边界地板：session 可能由"OFF 期间已解析 persist=
+                # False 的请求"在转变盖章之后才创建（无 enable 标记），其
+                # 未授权轮位于游标 0 之后——digest 起点不得低于该边界。
+                last_group_digest_index = max(
+                    last_group_digest_index,
+                    int(user_data.get("nonconsent_history_end", 0) or 0),
                 )
                 if last_group_digest_index > len(conversation_history):
                     # 会话历史被重复守卫重置/收缩后旧游标越界：钳到当前
@@ -340,13 +357,24 @@ class QQSessionMemoryService:
                     (getattr(self.plugin, "_qq_settings", {}) or {}).get(
                         "group_member_memory_enabled", False,
                     )
-                ) or bool(user_data.get("pending_member_settle"))
-                # pending_member_settle：member 开关同步关掉后、后台结算
-                # 任务跑到之前，并发的 idle/discard finalizer 也必须冲掉
-                # opt-in 期间收集的 bucket，不得因全局 flag 已 False 丢弃。
+                )
                 failed_member_ids: list[str] = []
+                # OFF 时代快照优先冲掉：member 开关同步关掉后、后台结算
+                # 任务跑到之前，并发的 idle/discard finalizer 凭快照照常
+                # 结算，不因全局 flag 已 False 丢弃 opt-in 期间的收集。
+                snapshot = user_data.get("pending_settle_buckets")
+                if snapshot and group_id:
+                    failed_member_ids += await self._flush_member_buckets(
+                        user_data, group_id=group_id, her_name=her_name,
+                        reason=reason, buckets=snapshot,
+                        labels=user_data.get("pending_settle_labels") or {},
+                    )
+                    if not snapshot:
+                        user_data.pop("pending_settle_buckets", None)
+                        user_data.pop("pending_settle_labels", None)
+                        user_data.pop("pending_member_settle", None)
                 if member_memory_enabled and group_id:
-                    failed_member_ids = await self._flush_member_buckets(
+                    failed_member_ids += await self._flush_member_buckets(
                         user_data, group_id=group_id, her_name=her_name,
                         reason=reason,
                     )
