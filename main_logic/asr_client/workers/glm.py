@@ -23,23 +23,23 @@ the caller's responsibility.
 from __future__ import annotations
 
 import asyncio
-import io
-import wave
 from collections.abc import Mapping
 from typing import Any, Protocol
 
 import httpx
 
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
+from ._shared import (
+    MAX_SEGMENT_PCM_BYTES,
+    PCM16_SAMPLE_WIDTH_BYTES,
+    encode_pcm16_wav,
+    is_auth_rejection,
+)
 
 
 GLM_ASR_URL = "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions"
 GLM_ASR_MODEL = "glm-asr-2512"
 
-_SAMPLE_RATE_HZ = 16_000
-_SAMPLE_WIDTH_BYTES = 2
-_MAX_AUDIO_SECONDS = 28
-_MAX_PCM_BYTES = _SAMPLE_RATE_HZ * _SAMPLE_WIDTH_BYTES * _MAX_AUDIO_SECONDS
 _HTTP_TIMEOUT_SECONDS = 35.0
 
 _UtteranceKey = tuple[int, int, int]
@@ -64,22 +64,6 @@ class _GlmRequestFailure(Exception):
         self.message = message
 
 
-def _encode_pcm16_wav(pcm16: bytes) -> bytes:
-    output = io.BytesIO()
-    with wave.open(output, "wb") as wav_file:
-        wav_file.setnchannels(1)
-        wav_file.setsampwidth(_SAMPLE_WIDTH_BYTES)
-        wav_file.setframerate(_SAMPLE_RATE_HZ)
-        wav_file.writeframes(pcm16)
-    return output.getvalue()
-
-
-def _http_status(exc: BaseException) -> int | None:
-    response = getattr(exc, "response", None)
-    status_code = getattr(response, "status_code", None)
-    return status_code if isinstance(status_code, int) else None
-
-
 async def _transcribe(
     client: _HttpClient,
     api_key: str,
@@ -92,13 +76,13 @@ async def _transcribe(
             GLM_ASR_URL,
             headers={"Authorization": f"Bearer {api_key}"},
             data={"model": GLM_ASR_MODEL},
-            files={"file": ("audio.wav", _encode_pcm16_wav(pcm16), "audio/wav")},
+            files={"file": ("audio.wav", encode_pcm16_wav(pcm16), "audio/wav")},
         )
         response.raise_for_status()
     except asyncio.CancelledError:
         raise
     except httpx.HTTPStatusError as exc:
-        if _http_status(exc) in {401, 403}:
+        if is_auth_rejection(exc):
             raise _GlmRequestFailure(
                 "ASR_CREDENTIALS_REJECTED",
                 "GLM credentials were rejected",
@@ -156,6 +140,7 @@ async def glm_asr_worker(
     request_task: asyncio.Task[_AsrWorkerRequest] | None = None
     pending: dict[asyncio.Task[_AsrWorkerEvent], _UtteranceKey] = {}
     buffers: dict[_UtteranceKey, bytearray] = {}
+    committed: set[_UtteranceKey] = set()
     owned_client = http_client is None
     client: _HttpClient | None = http_client
     failure_sent = False
@@ -237,6 +222,7 @@ async def glm_asr_worker(
                         current_generation = request.generation
                         current_buffer_epoch = request.buffer_epoch
                         buffers.clear()
+                        committed.clear()
                         await cancel_pending()
                         should_stop = True
                     else:
@@ -256,12 +242,14 @@ async def glm_asr_worker(
 
                         if scope_advanced:
                             buffers.clear()
+                            committed.clear()
                             await cancel_pending(keep_current_scope=True)
 
                         if stale:
                             pass
                         elif request.kind == "clear":
                             buffers.clear()
+                            committed.clear()
                             await cancel_pending()
                         elif request.utterance_id is None:
                             await emit_error(
@@ -270,21 +258,25 @@ async def glm_asr_worker(
                             )
                             should_stop = True
                         elif request.kind == "audio":
-                            if len(request.audio) % _SAMPLE_WIDTH_BYTES:
+                            key = (
+                                request.generation,
+                                request.buffer_epoch,
+                                request.utterance_id,
+                            )
+                            if key in committed or key in pending.values():
+                                # Late audio for a committed utterance must not
+                                # re-accumulate a second buffer for its key.
+                                pass
+                            elif len(request.audio) % PCM16_SAMPLE_WIDTH_BYTES:
                                 await emit_error(
                                     "ASR_GLM_PROTOCOL_ERROR",
                                     "GLM worker received invalid PCM16 audio",
                                 )
                                 should_stop = True
                             else:
-                                key = (
-                                    request.generation,
-                                    request.buffer_epoch,
-                                    request.utterance_id,
-                                )
                                 buffer = buffers.setdefault(key, bytearray())
                                 buffer.extend(request.audio)
-                                if len(buffer) > _MAX_PCM_BYTES:
+                                if len(buffer) > MAX_SEGMENT_PCM_BYTES:
                                     buffers.pop(key, None)
                                     await emit_error(
                                         "ASR_GLM_AUDIO_TOO_LONG",
@@ -297,14 +289,23 @@ async def glm_asr_worker(
                                 request.buffer_epoch,
                                 request.utterance_id,
                             )
-                            pcm16 = buffers.pop(key, None)
-                            if pcm16:
-                                assert client is not None
-                                task = asyncio.create_task(
-                                    _transcribe(client, api_key, key, bytes(pcm16)),
-                                    name="glm-asr-transcribe",
-                                )
-                                pending[task] = key
+                            if key in committed or key in pending.values():
+                                # A duplicate commit for an utterance that is
+                                # already inflight or finished must not post a
+                                # second provider request or second final.
+                                pass
+                            else:
+                                pcm16 = buffers.pop(key, None)
+                                if pcm16:
+                                    committed.add(key)
+                                    assert client is not None
+                                    task = asyncio.create_task(
+                                        _transcribe(
+                                            client, api_key, key, bytes(pcm16)
+                                        ),
+                                        name="glm-asr-transcribe",
+                                    )
+                                    pending[task] = key
                         else:
                             await emit_error(
                                 "ASR_GLM_PROTOCOL_ERROR",

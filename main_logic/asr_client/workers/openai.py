@@ -183,16 +183,20 @@ async def openai_asr_worker(
             return
         if event_type == "conversation.item.input_audio_transcription.completed":
             text = event.get("transcript", "")
-            if isinstance(text, str):
-                await response_queue.put(
-                    _AsrWorkerEvent(
-                        kind="final",
-                        generation=generation,
-                        buffer_epoch=buffer_epoch,
-                        utterance_id=utterance_id,
-                        text=text,
-                    )
+            if not isinstance(text, str):
+                # A missing or malformed transcript still completes the
+                # provider utterance; an empty final keeps the upstream
+                # lifecycle converging instead of stalling until the watchdog.
+                text = ""
+            await response_queue.put(
+                _AsrWorkerEvent(
+                    kind="final",
+                    generation=generation,
+                    buffer_epoch=buffer_epoch,
+                    utterance_id=utterance_id,
+                    text=text,
                 )
+            )
 
     async def _ensure_item_key(item_id: object) -> _UtteranceKey | None:
         nonlocal next_utterance_id

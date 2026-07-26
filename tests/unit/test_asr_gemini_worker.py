@@ -339,6 +339,37 @@ async def test_empty_transcript_is_delivered_as_empty_final(response: Any) -> No
     await _shutdown(task, requests, responses)
 
 
+async def test_hung_request_times_out_with_scoped_error(monkeypatch) -> None:
+    started = asyncio.Event()
+
+    async def hung_response() -> Any:
+        started.set()
+        await asyncio.Future()
+
+    monkeypatch.setattr(gemini, "_REQUEST_TIMEOUT_SECONDS", 0.05)
+    client = _FakeClient(hung_response)
+    task, requests, responses = await _start_worker(client)
+    await _next_event(responses, "ready")
+    await requests.put(
+        _AsrWorkerRequest(
+            kind="audio",
+            generation=0,
+            buffer_epoch=0,
+            utterance_id=3,
+            audio=b"\x01\x00" * 160,
+        )
+    )
+    await requests.put(
+        _AsrWorkerRequest(kind="commit", generation=0, buffer_epoch=0, utterance_id=3)
+    )
+    await asyncio.wait_for(started.wait(), 1)
+
+    error = await _next_event(responses, "error")
+    assert error.error_code == "ASR_GEMINI_TIMEOUT"
+    assert (error.generation, error.buffer_epoch, error.utterance_id) == (0, 0, 3)
+    await _shutdown(task, requests, responses)
+
+
 class _ProviderFailure(RuntimeError):
     def __init__(self, status_code: int | None = None) -> None:
         super().__init__("provider failure with sensitive details")
@@ -541,7 +572,7 @@ async def test_rejects_missing_credentials_and_provider_endpointing() -> None:
         config=AsrSessionConfig(endpointing_mode="provider"),
     )
     invalid = await _next_event(provider_responses, "error")
-    assert invalid.error_code == "ASR_INVALID_CONFIG"
+    assert invalid.error_code == "ASR_ENDPOINTING_NOT_SUPPORTED"
     assert (await _next_event(provider_responses, "closed")).kind == "closed"
     await asyncio.wait_for(provider_task, 1)
 

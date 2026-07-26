@@ -27,6 +27,18 @@ class ResponseTicket:
     done: asyncio.Future[ResponseDispatchResult]
 
 
+def _retrieve_exception(future: asyncio.Future[Any]) -> None:
+    """Mark a failed future's exception as observed.
+
+    Callers commonly await only ``ticket.sent``; without this, a failed
+    ``started``/``done`` future would log "exception was never retrieved"
+    when garbage collected.
+    """
+
+    if not future.cancelled():
+        future.exception()
+
+
 @dataclass(order=True, slots=True)
 class _QueuedResponse:
     priority: int
@@ -44,6 +56,7 @@ class _QueuedResponse:
     ticket: ResponseTicket = field(compare=False)
     item_ack: asyncio.Future[None] | None = field(default=None, compare=False)
     terminal: asyncio.Future[None] | None = field(default=None, compare=False)
+    response_id: str | None = field(default=None, compare=False)
     event_ids: frozenset[str] = field(default_factory=frozenset, compare=False)
     completed: asyncio.Future[None] | None = field(default=None, compare=False)
     bypass_count: int = field(default=0, compare=False)
@@ -117,6 +130,8 @@ class RealtimeResponseArbiter:
             started=loop.create_future(),
             done=loop.create_future(),
         )
+        for future in (ticket.sent, ticket.started, ticket.done):
+            future.add_done_callback(_retrieve_exception)
         if not self._connection_available:
             self._fail_ticket(ticket, ConnectionError("realtime connection is unavailable"))
             return ticket
@@ -224,16 +239,43 @@ class RealtimeResponseArbiter:
             return
         current.item_ack.set_result(None)
 
-    def notify_response_created(self, _event: dict[str, Any]) -> None:
+    @staticmethod
+    def _event_response_id(event: dict[str, Any] | None) -> str | None:
+        response = (event or {}).get("response")
+        response_id = response.get("id") if isinstance(response, dict) else None
+        return str(response_id) if response_id else None
+
+    def notify_response_created(self, event: dict[str, Any]) -> None:
         self._server_response_active = True
         self._idle.clear()
         owner = self._response_owner
         if owner is not None and not owner.ticket.started.done():
+            # The first response.created after the owner's response.create is
+            # credited to the owner. Remember its response id (when the
+            # provider supplies one) so only that response's terminal event
+            # can release the lane.
+            owner.response_id = self._event_response_id(event)
             owner.ticket.started.set_result(None)
 
-    def notify_response_terminal(self, _event: dict[str, Any] | None = None) -> None:
-        self._server_response_active = False
+    def notify_response_terminal(self, event: dict[str, Any] | None = None) -> None:
         owner = self._response_owner
+        if owner is not None:
+            response_id = self._event_response_id(event)
+            if response_id is not None and owner.ticket.started.done():
+                if owner.response_id is not None and response_id != owner.response_id:
+                    # A server-initiated response finished while the owner's
+                    # own response is still running. Releasing the lane here
+                    # would let a queued response.create collide with it, so
+                    # treat the mismatched terminal as an orphan.
+                    return
+            elif response_id is not None:
+                # The owner has not seen its response.created yet, and a
+                # response's terminal event never precedes its created event,
+                # so an id-bearing terminal here belongs to another
+                # (server-initiated) response. Keep waiting for the owner's
+                # own lifecycle instead of failing it.
+                return
+        self._server_response_active = False
         if owner is not None:
             if not owner.ticket.started.done():
                 owner.ticket.started.set_exception(

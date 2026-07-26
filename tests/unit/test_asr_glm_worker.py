@@ -183,6 +183,36 @@ async def test_glm_commit_posts_pcm16_wav_and_emits_exactly_one_final() -> None:
     await _stop_worker(task, requests, responses)
 
 
+async def test_glm_duplicate_commit_after_late_audio_posts_no_second_request() -> None:
+    client = _FakeClient(_FakeResponse({"text": "first"}))
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        glm.glm_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(),
+            http_client=client,
+        )
+    )
+    await _next_event(responses, "ready")
+    key = {"generation": 0, "buffer_epoch": 0, "utterance_id": 1}
+    await requests.put(_AsrWorkerRequest(kind="audio", audio=b"\x01\x02", **key))
+    await requests.put(_AsrWorkerRequest(kind="commit", **key))
+    final = await _next_event(responses, "final")
+    assert (final.text, final.utterance_id) == ("first", 1)
+
+    # Late audio for the already-committed key must not re-accumulate, and a
+    # duplicate commit must not post a second HTTP request or second final.
+    await requests.put(_AsrWorkerRequest(kind="audio", audio=b"\x03\x04", **key))
+    await requests.put(_AsrWorkerRequest(kind="commit", **key))
+    await asyncio.wait_for(requests.join(), 1)
+    assert len(client.calls) == 1
+    assert responses.empty()
+    await _stop_worker(task, requests, responses)
+
+
 async def test_glm_clear_cancels_inflight_old_epoch_and_new_epoch_isolated() -> None:
     blocking = _BlockingClient()
     requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()

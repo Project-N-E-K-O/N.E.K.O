@@ -405,6 +405,10 @@ async def _step_receiver(
                     "Step ASR returned an invalid event",
                 )
                 return "error"
+            if not isinstance(event, dict):
+                # Valid JSON that is not an object (e.g. []) carries no event
+                # type; skip it instead of failing the session.
+                continue
 
             await _step_expire_stalled_pending_turns(response_queue, state)
             event_type = event.get("type")

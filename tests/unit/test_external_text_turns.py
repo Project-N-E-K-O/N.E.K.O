@@ -1,4 +1,5 @@
 import asyncio
+import gc
 import json
 from types import MethodType
 from unittest.mock import AsyncMock
@@ -165,6 +166,118 @@ async def test_waiting_ticket_holds_followup_until_its_own_response_done():
 
     arbiter.notify_response_terminal({"type": "response.done", "response": "C"})
     await asyncio.wait_for(ticket_c.done, 0.2)
+
+
+@pytest.mark.asyncio
+async def test_server_response_terminal_does_not_release_id_matched_owner():
+    sent = []
+    arbiter = None
+    created_ids = iter(["resp-owner", "resp-follow-up"])
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "response.create":
+            arbiter.notify_response_created(
+                {"type": "response.created", "response": {"id": next(created_ids)}}
+            )
+
+    arbiter = RealtimeResponseArbiter(send)
+    ticket = await arbiter.enqueue(source="owner")
+    await asyncio.wait_for(ticket.started, 0.2)
+
+    # A server-initiated response starts and finishes while the owner's own
+    # response is still running. Its terminal event must not release the
+    # lane, or the queued follow-up would collide with the owner's response.
+    arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-server"}}
+    )
+    follow_up = await arbiter.enqueue(source="follow-up")
+    arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-server"}}
+    )
+    await asyncio.sleep(0.01)
+    assert ticket.done.done() is False
+    assert follow_up.sent.done() is False
+    assert [event["type"] for event in sent] == ["response.create"]
+
+    arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-owner"}}
+    )
+    await asyncio.wait_for(ticket.done, 0.2)
+    await asyncio.wait_for(follow_up.sent, 0.2)
+    assert [event["type"] for event in sent] == [
+        "response.create",
+        "response.create",
+    ]
+    arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-follow-up"}}
+    )
+    await asyncio.wait_for(follow_up.done, 0.2)
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_id_bearing_terminal_before_owner_created_is_treated_as_orphan():
+    sent = []
+
+    async def send(event):
+        sent.append(dict(event))
+
+    arbiter = RealtimeResponseArbiter(send)
+    ticket = await arbiter.enqueue(source="owner")
+    await asyncio.wait_for(ticket.sent, 0.2)
+    assert ticket.started.done() is False
+
+    # A terminal event never precedes its own response.created, so an
+    # id-bearing terminal arriving before the owner's response.created must
+    # belong to another response and must not fail the owner's lifecycle.
+    arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-server"}}
+    )
+    await asyncio.sleep(0.01)
+    assert ticket.started.done() is False
+
+    arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-owner"}}
+    )
+    await asyncio.wait_for(ticket.started, 0.2)
+    arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-owner"}}
+    )
+    await asyncio.wait_for(ticket.done, 0.2)
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_failed_ticket_does_not_log_unretrieved_exceptions():
+    async def send(_event):
+        return None
+
+    arbiter = RealtimeResponseArbiter(send)
+    arbiter.notify_connection_lost("socket lost before enqueue")
+    ticket = await arbiter.enqueue(source="failed")
+    with pytest.raises(ConnectionError, match="unavailable"):
+        await ticket.sent
+
+    # Production callers await only ticket.sent. The failed started/done
+    # futures must not log "exception was never retrieved" once the ticket
+    # is garbage collected.
+    await asyncio.sleep(0)  # let the exception-retriever callbacks run
+    captured: list[dict] = []
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: captured.append(context))
+    try:
+        del ticket
+        gc.collect()
+    finally:
+        loop.set_exception_handler(previous_handler)
+    assert not [
+        context
+        for context in captured
+        if "never retrieved" in str(context.get("message", ""))
+    ]
+    await arbiter.shutdown()
 
 
 @pytest.mark.asyncio

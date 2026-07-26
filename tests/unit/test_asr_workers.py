@@ -1013,6 +1013,44 @@ async def test_step_manual_expires_stalled_commit_with_empty_final(
     await _stop_worker(task, requests, responses, utterance_id=3)
 
 
+async def test_step_receiver_skips_valid_non_dict_json_events(monkeypatch) -> None:
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        if isinstance(payload, str) and json.loads(payload)["type"] == "session.update":
+            await ws.server_send({"type": "session.updated"})
+
+    websocket = _FakeWebSocket(on_send=on_send)
+    monkeypatch.setattr(step.websockets, "connect", _FakeConnector(websocket))
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        step.step_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+        )
+    )
+    await _next_event(responses, "ready")
+
+    # Valid JSON that is not an object must be skipped, not kill the session.
+    await websocket.server_send([])
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_started", "item_id": "step-audio-1"}
+    )
+    assert (await _next_event(responses, "utterance_started")).utterance_id == 1
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "step-audio-1",
+            "transcript": "still alive",
+        }
+    )
+    final = await _next_event(responses, "final")
+    assert (final.utterance_id, final.text) == (1, "still alive")
+    assert responses.empty()
+    await _stop_worker(task, requests, responses, utterance_id=2)
+
+
 async def test_openai_transcription_resampling_and_out_of_order_finals(
     monkeypatch,
 ) -> None:
@@ -1202,6 +1240,53 @@ async def test_openai_partial_transcripts_accumulate_deltas(monkeypatch) -> None
         }
     )
     assert (await _next_event(responses, "final")).text == "hello world"
+    await _stop_worker(task, requests, responses, utterance_id=2)
+
+
+async def test_openai_completed_without_transcript_emits_empty_final(
+    monkeypatch,
+) -> None:
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        assert isinstance(payload, str)
+        message = json.loads(payload)
+        if message["type"] == "session.update":
+            await ws.server_send(
+                {
+                    "type": "session.updated",
+                    "session": message["session"],
+                }
+            )
+
+    websocket = _FakeWebSocket(on_send=on_send)
+    monkeypatch.setattr(openai.websockets, "connect", _FakeConnector(websocket))
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        openai.openai_asr_worker(
+            requests,
+            responses,
+            "openai-key",
+            AsrSessionConfig(endpointing_mode="provider"),
+        )
+    )
+    await _next_event(responses, "ready")
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_started", "item_id": "openai-no-text"}
+    )
+    await _next_event(responses, "utterance_started")
+
+    # A completed event without a usable transcript still terminates the
+    # provider utterance; the final must not be silently dropped.
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "openai-no-text",
+            "transcript": 123,
+        }
+    )
+    final = await _next_event(responses, "final")
+    assert (final.utterance_id, final.text) == (1, "")
+    assert responses.empty()
     await _stop_worker(task, requests, responses, utterance_id=2)
 
 

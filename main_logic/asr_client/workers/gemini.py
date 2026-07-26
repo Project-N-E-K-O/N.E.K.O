@@ -22,14 +22,12 @@ submits exactly one WAV request when the session commits that utterance.
 from __future__ import annotations
 
 import asyncio
-import io
 import json
-import wave
 from collections.abc import Mapping
 from typing import Any, TypeAlias
 
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
-from ._shared import is_auth_rejection
+from ._shared import MAX_SEGMENT_PCM_BYTES, encode_pcm16_wav, is_auth_rejection
 
 
 _GEMINI_MODEL = "gemini-3.1-flash-lite"
@@ -56,23 +54,9 @@ _GOOGLE_API_KEY_REJECTION_REASONS = frozenset(
         "API_KEY_IOS_APP_BLOCKED",
     }
 )
-_MAX_PCM_BYTES = 16_000 * 2 * 28
+_REQUEST_TIMEOUT_SECONDS = 35.0
 
 _UtteranceKey: TypeAlias = tuple[int, int, int]
-
-
-def _pcm16_to_wav(pcm16: bytes) -> bytes:
-    """Wrap mono 16 kHz PCM16LE in an in-memory WAV container."""
-
-    if len(pcm16) % 2:
-        raise ValueError("PCM16LE data has an odd byte length")
-    output = io.BytesIO()
-    with wave.open(output, "wb") as wav_file:
-        wav_file.setnchannels(1)
-        wav_file.setsampwidth(2)
-        wav_file.setframerate(16_000)
-        wav_file.writeframes(pcm16)
-    return output.getvalue()
 
 
 def _create_gemini_client(api_key: str) -> Any:
@@ -178,32 +162,48 @@ async def gemini_asr_worker(
 
     async def _transcribe(key: _UtteranceKey, pcm16: bytes) -> None:
         try:
-            wav_audio = _pcm16_to_wav(pcm16)
-            response = await client.aio.models.generate_content(
-                model=_GEMINI_MODEL,
-                contents=[
-                    {
-                        "role": "user",
-                        "parts": [
-                            {"text": _GEMINI_TRANSCRIPTION_PROMPT},
-                            {
-                                "inline_data": {
-                                    "mime_type": "audio/wav",
-                                    "data": wav_audio,
-                                }
-                            },
-                        ],
-                    }
-                ],
-                config={
-                    "temperature": 0,
-                    "response_mime_type": "application/json",
-                    "response_json_schema": _GEMINI_RESPONSE_SCHEMA,
-                },
+            wav_audio = encode_pcm16_wav(pcm16)
+            response = await asyncio.wait_for(
+                client.aio.models.generate_content(
+                    model=_GEMINI_MODEL,
+                    contents=[
+                        {
+                            "role": "user",
+                            "parts": [
+                                {"text": _GEMINI_TRANSCRIPTION_PROMPT},
+                                {
+                                    "inline_data": {
+                                        "mime_type": "audio/wav",
+                                        "data": wav_audio,
+                                    }
+                                },
+                            ],
+                        }
+                    ],
+                    config={
+                        "temperature": 0,
+                        "response_mime_type": "application/json",
+                        "response_json_schema": _GEMINI_RESPONSE_SCHEMA,
+                    },
+                ),
+                _REQUEST_TIMEOUT_SECONDS,
             )
             transcript = _response_transcript(response)
         except asyncio.CancelledError:
             raise
+        except asyncio.TimeoutError:
+            if _is_current(key) and inflight.get(key) is asyncio.current_task():
+                await response_queue.put(
+                    _AsrWorkerEvent(
+                        kind="error",
+                        generation=key[0],
+                        buffer_epoch=key[1],
+                        utterance_id=key[2],
+                        error_code="ASR_GEMINI_TIMEOUT",
+                        error_message="Gemini ASR request timed out",
+                    )
+                )
+            return
         except ValueError:
             if _is_current(key) and inflight.get(key) is asyncio.current_task():
                 await response_queue.put(
@@ -271,7 +271,7 @@ async def gemini_asr_worker(
                 _AsrWorkerEvent(
                     kind="error",
                     generation=active_generation,
-                    error_code="ASR_INVALID_CONFIG",
+                    error_code="ASR_ENDPOINTING_NOT_SUPPORTED",
                     error_message="Gemini segmented ASR requires manual endpointing",
                 )
             )
@@ -359,7 +359,7 @@ async def gemini_asr_worker(
                         continue
                     buffer = buffers.setdefault(key, bytearray())
                     buffer.extend(request.audio)
-                    if len(buffer) > _MAX_PCM_BYTES:
+                    if len(buffer) > MAX_SEGMENT_PCM_BYTES:
                         buffers.pop(key, None)
                         committed.add(key)
                         await response_queue.put(

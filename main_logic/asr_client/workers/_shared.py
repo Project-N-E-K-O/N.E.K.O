@@ -16,6 +16,29 @@
 
 from __future__ import annotations
 
+import io
+import wave
+
+# Segmented workers buffer one 16 kHz mono PCM16 utterance and cap it at 28
+# seconds before submitting a single WAV request.
+PCM16_SAMPLE_RATE_HZ = 16_000
+PCM16_SAMPLE_WIDTH_BYTES = 2
+MAX_SEGMENT_PCM_BYTES = PCM16_SAMPLE_RATE_HZ * PCM16_SAMPLE_WIDTH_BYTES * 28
+
+
+def encode_pcm16_wav(pcm16: bytes) -> bytes:
+    """Wrap mono 16 kHz PCM16LE in an in-memory WAV container."""
+
+    if len(pcm16) % PCM16_SAMPLE_WIDTH_BYTES:
+        raise ValueError("PCM16LE data has an odd byte length")
+    output = io.BytesIO()
+    with wave.open(output, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(PCM16_SAMPLE_WIDTH_BYTES)
+        wav_file.setframerate(PCM16_SAMPLE_RATE_HZ)
+        wav_file.writeframes(pcm16)
+    return output.getvalue()
+
 
 def normalize_zh_en_language(language: str, *, provider_name: str) -> str | None:
     """Normalize the shared auto/Chinese/English language contract."""
