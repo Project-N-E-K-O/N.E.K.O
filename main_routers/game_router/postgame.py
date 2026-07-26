@@ -935,26 +935,31 @@ def _build_postgame_context_snapshot(state: dict) -> dict:
 
 
 def _game_voice_lease_release_needed(mgr: Any) -> bool:
-    """判断游戏退出时是否需要调 ``_resume_independent_voice_input_after_game``。
+    """Decide whether game exit must call ``_resume_independent_voice_input_after_game``.
 
-    realtime-STT 游戏从不移动麦克风租约：前端保持普通麦克风上传
-    （app-websocket.js 的 ``stt_provider === 'realtime'`` 分支立即停掉 STT
-    gate），后端租约 owner 全程停留在 ``core``。此时再走 resume 会在
-    ``_apply_voice_lease_state`` 里做一次 core->core 的空转换——空转换仍会
-    bump ``_voice_input_transition_generation`` 并清空麦克风队列 / 热切换
-    缓存，把横跨游戏退出瞬间的在途语音 PCM 掐断（codex P2）。
+    Realtime-STT games never move the microphone lease: the frontend keeps
+    ordinary microphone upload active (the ``stt_provider === 'realtime'``
+    branch in app-websocket.js stops the STT gate immediately) and the
+    backend lease owner stays ``core`` throughout. Running resume anyway
+    performs a core->core no-op transition in ``_apply_voice_lease_state``
+    — which still bumps ``_voice_input_transition_generation`` and clears
+    the microphone queue / hot-swap cache, cutting off in-flight speech PCM
+    that spans the game-exit instant.
 
-    仅当租约确实离开过 Core 时才需要 game_release：
+    game_release is needed only when the lease actually left Core:
 
-    - owner == "game"：游戏仍握着租约（浏览器 STT gate 场景）；
-    - owner == "none"：接管后玩家中途关麦（lease_sync owner=none 只 abort、
-      不 resume），SUSPENDED 只能靠 game_release 退出；
-    - owner == "core" 但 lifecycle 仍是 SUSPENDED：浏览器 STT gate 中途失败
-      回退普通麦克风时 owner 先回 core（lease_sync 不触发 resume），此时同样
-      只能靠这里补一次 game_release，否则 runtime 卡死在 SUSPENDED。
+    - owner == "game": the game still holds the lease (browser STT gate);
+    - owner == "none": the player closed the mic mid-takeover (lease_sync
+      owner=none only aborts, never resumes), and SUSPENDED's sole exit is
+      game_release;
+    - owner == "core" while the lifecycle is still SUSPENDED: the browser
+      STT gate failed mid-game and fell back to the ordinary microphone, so
+      the owner returned to core without a resume — only this game_release
+      can unstick the runtime from SUSPENDED.
 
-    lifecycle 探测是只读的、全程 ``getattr`` 防御，避免 import asr_client
-    内部类型；缺失 MicLease 状态的旧式 / 降级 manager 维持历史行为照常 resume。
+    The lifecycle probe is read-only and fully ``getattr``-guarded to avoid
+    importing asr_client internals; legacy/degraded managers without
+    MicLease state keep the historical unconditional resume.
     """
     owner = getattr(mgr, "_voice_lease_owner", None)
     if owner is None:
