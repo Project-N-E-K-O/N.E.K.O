@@ -1100,6 +1100,68 @@ async def test_turn_endpoint_seals_immediately_before_provider_final() -> None:
     assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.DRAINING
 
 
+async def test_rejected_prepare_fails_closed_instead_of_sealing_turn() -> None:
+    runtime = _Runtime()
+    runtime._asr_session = type(
+        "Asr", (), {"is_ready": True, "close": AsyncMock()}
+    )()
+    _install_ready_lifecycle(runtime, "qwen")
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    runtime.handle_new_message.side_effect = RuntimeError("prepare rejected")
+    epoch = runtime._asr_session_epoch
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    assert runtime._asr_turn_prepared is False
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+
+    await runtime._handle_independent_asr_endpoint(epoch)
+
+    # A persistently rejected preparation must never seal the turn: sealing
+    # is the only gate through which a provider final reaches Core, and Core
+    # does not re-run the interruption/external-turn pause at dispatch time.
+    assert runtime._asr_route_mode == "blocked"
+    assert "ASR_CORE_TURN_REJECTED" in str(runtime.send_status.await_args_list)
+
+    await runtime._handle_independent_asr_final("hello", epoch, "qwen")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    runtime.handle_input_transcript.assert_not_awaited()
+    runtime.session.create_response.assert_not_awaited()
+
+
+async def test_endpoint_reprepares_turn_after_transient_prepare_rejection() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "qwen")
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    runtime.handle_new_message.side_effect = [RuntimeError("transient"), None]
+    epoch = runtime._asr_session_epoch
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    assert runtime._asr_turn_prepared is False
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+
+    await runtime._handle_independent_asr_endpoint(epoch)
+
+    # The retry-able recovery path: the endpoint re-runs preparation, so the
+    # interruption/external-turn pause is established before the seal and the
+    # provider final is injected normally.
+    assert runtime._asr_turn_prepared is True
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.DRAINING
+    assert runtime.handle_new_message.await_count == 2
+
+    await runtime._handle_independent_asr_final("hello", epoch, "qwen")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    runtime.handle_input_transcript.assert_awaited_once()
+    runtime.session.create_response.assert_awaited_once_with("hello")
+
+
 async def test_empty_final_completes_turn_without_core_injection() -> None:
     runtime = _Runtime()
     runtime.session.prepare_external_voice_turn = AsyncMock()

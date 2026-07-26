@@ -2102,6 +2102,27 @@ class IndependentAsrRuntime:
         if lifecycle is None:
             return
         if lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE:
+            if not self._asr_turn_prepared:
+                # A rejected preparation keeps the lifecycle ACTIVE so the
+                # utterance can retry (SPEECH_RESUMED re-prepares), but Core
+                # never ran the interruption/external-turn pause for this
+                # turn. Re-prepare before sealing; without a successful
+                # preparation the final must never reach Core, so fail
+                # closed instead of sealing an unprepared turn.
+                await self._prepare_independent_asr_turn(epoch)
+                if (
+                    epoch != self._asr_session_epoch
+                    or self._asr_lifecycle is not lifecycle
+                    or lifecycle.snapshot.state is not VoiceLifecycleState.ACTIVE
+                ):
+                    return
+                if not self._asr_turn_prepared:
+                    await self._handle_independent_asr_error(
+                        epoch,
+                        provider,
+                        status_code="ASR_CORE_TURN_REJECTED",
+                    )
+                    return
             turn_token = self._capture_turn_token(lifecycle)
             detector = self._asr_detector
             if not self._asr_endpointing_ready(lifecycle, detector, turn_token):
