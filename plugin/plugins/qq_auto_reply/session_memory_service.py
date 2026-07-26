@@ -289,8 +289,18 @@ class QQSessionMemoryService:
                 # 旧写法单发 `[-200:]` 会把超过窗口的中段永久跳过（游标却
                 # 直接跳到 len(history)）——活跃群完全可复现的数据丢失。
                 # 每批一次 scoped 提取，失败即停：已成功批次的游标推进
-                # 保留，剩余留给下一轮 flush 重试。
+                # 保留，剩余留给下一轮 flush 重试。限批（5）：无界排水会
+                # 持会话锁数分钟、拖垮全局 semaphore 与关机串行 sweep；
+                # 剩余批次返回 False 留给下一轮继续（游标精确不丢）。
+                digest_batches_left = 5
                 while group_id:
+                    if digest_batches_left <= 0:
+                        self.plugin.logger.info(
+                            f"[{reason}] 群 {group_id} 本轮结算达批次上限，"
+                            f"剩余待下一轮"
+                        )
+                        return False
+                    digest_batches_left -= 1
                     scoped_messages, next_index = self._slice_group_history_batch(
                         conversation_history, last_group_digest_index,
                         self.GROUP_HISTORY_MAX_MESSAGES,

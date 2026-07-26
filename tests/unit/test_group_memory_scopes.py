@@ -2109,6 +2109,24 @@ async def test_group_digest_batches_never_skip_backlog():
     assert retried == [["m3", "m4", "m5"]]
     assert "group:7788" not in plugin._user_sessions
 
+    # Batch cap: one finalize sweep sends at most 5 batches, keeps the
+    # session and an exact cursor, and the next sweep resumes the rest.
+    history3 = [SimpleNamespace(type="human", content=f"x{i}") for i in range(20)]
+    session3 = SimpleNamespace(_conversation_history=history3, close=AsyncMock())
+    user_data3 = {
+        "memory_enabled": True, "is_group": True, "group_id": "7788",
+        "her_name": "Neko", "session": session3,
+    }
+    plugin._user_sessions["group:7788"] = user_data3
+    bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
+    completed = await service.finalize_user_memory_session(
+        "group:7788", reason="cap",
+    )
+    assert completed is False
+    assert bridge.post_scoped_memory_history.await_count == 5
+    assert user_data3["last_group_digest_index"] == 15
+    assert "group:7788" in plugin._user_sessions
+
 
 @pytest.mark.asyncio
 async def test_discard_session_salvages_group_buffers_first():
@@ -2157,6 +2175,46 @@ async def test_discard_session_salvages_group_buffers_first():
         await runtime.discard_session("k", reason="prompt_override_changed")
         assert finalize_calls == ["discard:generation_timeout"]
         assert "k" not in plugin._user_sessions
+
+    # Failed settle: the session and its buffers are KEPT — popping would
+    # destroy the only copy; the next sweep/discard retries the settle.
+    async def _finalize_fail(session_key, reason):
+        return False
+
+    plugin.session_memory_service = SimpleNamespace(
+        finalize_user_memory_session=_finalize_fail,
+    )
+    kept = {"is_group": True, "memory_enabled": True, "session": session}
+    plugin._user_sessions["group:9"] = kept
+    await runtime.discard_session("group:9", reason="generation_timeout")
+    assert plugin._user_sessions.get("group:9") is kept
+
+
+@pytest.mark.asyncio
+async def test_memory_transitions_settle_members_before_group_invalidate():
+    """Disabling both toggles at once (the UI links them) must settle member
+    buckets BEFORE the group invalidation — finalize flushes buckets only
+    while the member option is on, so the reverse order drops them."""
+    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
+
+    order = []
+    plugin = SimpleNamespace(
+        session_memory_service=SimpleNamespace(
+            settle_member_buckets_on_disable=AsyncMock(
+                side_effect=lambda: order.append("members"),
+            ),
+            invalidate_group_sessions=AsyncMock(
+                side_effect=lambda **kw: order.append("group"),
+            ),
+        ),
+    )
+    service = QQSettingsService.__new__(QQSettingsService)
+    service.plugin = plugin
+
+    await service._sync_memory_transitions(
+        settle_members=True, group_transition=True, group_enabled_after=False,
+    )
+    assert order == ["members", "group"]
 
 
 @pytest.mark.asyncio
@@ -2488,6 +2546,10 @@ async def test_prompt_change_discard_actually_runs():
     )
 
     discard = AsyncMock()
+
+    async def _run_with_session_lock(session_key, fn):
+        return await fn()
+
     plugin = SimpleNamespace(
         _user_sessions={"group:1": {}, "private:2": {}},
         session_runtime_service=SimpleNamespace(discard_session=discard),
@@ -2495,6 +2557,7 @@ async def test_prompt_change_discard_actually_runs():
         _qq_settings={},
         logger=MagicMock(),
         _emit_log=MagicMock(),
+        _run_with_session_lock=_run_with_session_lock,
     )
     service = QQSessionInstructionService(plugin)
     service._discard_all_sessions_for_prompt_change()

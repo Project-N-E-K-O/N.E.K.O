@@ -150,10 +150,16 @@ class QQSessionInstructionService:
             tasks = set()
             self.plugin._prompt_change_discard_tasks = tasks
         for session_key in list(getattr(self.plugin, "_user_sessions", {}).keys()):
-            task = asyncio.create_task(
-                self.plugin.session_runtime_service.discard_session(
-                    session_key, reason="prompt_override_changed",
+            # 经 per-session 锁串行化：正在生成的群轮要么完整收尾（成员轮
+            # 落 bucket）要么一致地被排除，绝不在 stream_text 改写历史时
+            # 中途弹出会话。
+            async def _locked_discard(key: str = session_key) -> None:
+                await self.plugin.session_runtime_service.discard_session(
+                    key, reason="prompt_override_changed",
                 )
+
+            task = asyncio.create_task(
+                self.plugin._run_with_session_lock(session_key, _locked_discard)
             )
             tasks.add(task)
             task.add_done_callback(tasks.discard)

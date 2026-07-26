@@ -12,6 +12,21 @@ class QQSettingsService:
     def __init__(self, plugin: Any):
         self.plugin = plugin
 
+    async def _sync_memory_transitions(
+        self, *, settle_members: bool, group_transition: bool,
+        group_enabled_after: bool,
+    ) -> None:
+        """Ordered transition sync: member buckets settle BEFORE the group
+        invalidation, so disabling both toggles at once (the UI links them)
+        cannot drop buckets via a finalize that already sees the member
+        option off."""
+        if settle_members:
+            await self.plugin.session_memory_service.settle_member_buckets_on_disable()
+        if group_transition:
+            await self.plugin.session_memory_service.invalidate_group_sessions(
+                enabled=group_enabled_after,
+            )
+
     def _spawn_group_memory_sync_task(self, coro) -> None:
         """Run a privacy-critical session-sync coroutine in the background.
 
@@ -179,23 +194,19 @@ class QQSettingsService:
         member_memory_after = bool(
             self.plugin._qq_settings.get("group_member_memory_enabled", False)
         )
-        if member_memory_before and not member_memory_after and group_memory_after:
-            # 成员记忆单独关闭（群记忆仍开）：先结算已收集的 bucket 再清，
-            # 否则 finalize 在开关关着时替换成空映射、随会话拆除静默丢弃。
-            # 群记忆同时关闭时不用管——下面的 invalidate_group_sessions
-            # ON→OFF 会整体结算/清理。
-            self._spawn_group_memory_sync_task(
-                self.plugin.session_memory_service.settle_member_buckets_on_disable()
-            )
-        if group_memory_after != group_memory_before:
-            # 群记忆开关转变必须同步既有群会话（对偶私聊权限切换的
-            # _invalidate_private_session）：ON→OFF 结清 opt-in 期间的缓冲、
-            # 失败则 fail-closed 清空；OFF→ON 推进 digest 游标，opt-out
-            # 期间的对话绝不追溯入库。放后台跑，settings 保存不被
+        member_turning_off = member_memory_before and not member_memory_after
+        if member_turning_off or group_memory_after != group_memory_before:
+            # 记忆开关转变必须同步既有群会话（对偶私聊权限切换的
+            # _invalidate_private_session）。单协程顺序执行保证次序：
+            # member 结算必须先于群 invalidate——UI 关群记忆会联动取消
+            # member 勾选，若群 finalize 先跑，member 开关已 OFF 使 bucket
+            # 被替换成空映射随会话拆除丢弃。放后台跑，settings 保存不被
             # per-group 结算（digest 分批 + 成员并发，仍可达数十秒）拖住。
             self._spawn_group_memory_sync_task(
-                self.plugin.session_memory_service.invalidate_group_sessions(
-                    enabled=group_memory_after,
+                self._sync_memory_transitions(
+                    settle_members=member_turning_off,
+                    group_transition=group_memory_after != group_memory_before,
+                    group_enabled_after=group_memory_after,
                 )
             )
         # 猫娘动态策略配置

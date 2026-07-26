@@ -91,14 +91,23 @@ class QQSessionRuntimeService:
         # finalize 成功会自己弹出会话，下面的 pop 变成无害 no-op。
         peek = self.plugin._user_sessions.get(session_key)
         if peek and peek.get("is_group") and peek.get("memory_enabled"):
+            finalized = False
             try:
-                await self.plugin.session_memory_service.finalize_user_memory_session(
+                finalized = await self.plugin.session_memory_service.finalize_user_memory_session(
                     session_key, reason=f"discard:{reason}",
                 )
             except Exception as exc:
                 self.plugin.logger.error(
                     f"[{reason}] 丢弃前群记忆结算失败 ({session_key}): {exc}"
                 )
+            if not finalized and session_key in self.plugin._user_sessions:
+                # 结算失败（memory server 不可用等）：不弹出——弹出即销毁
+                # 缓冲唯一副本。保留会话让下一轮 sweep/discard 重试结算；
+                # 记忆完整性优先于"立刻换新会话"。
+                self.plugin.logger.warning(
+                    f"[{reason}] 群记忆结算未完成，保留会话与缓冲待重试 ({session_key})"
+                )
+                return
         user_data = self.plugin._user_sessions.pop(session_key, None)
         session = user_data.get("session") if user_data else None
         if session:
