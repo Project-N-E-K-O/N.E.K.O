@@ -2749,6 +2749,35 @@ async def test_finalize_honors_opt_out_cutoff():
     ]
     assert sent == ["msg 0", "msg 1", "msg 2"]
 
+    # A failed finalize must NOT consume the cutoff: the retry stays bounded
+    # by the consent-time history length.
+    history2 = [SimpleNamespace(type="human", content=f"n{i}") for i in range(4)]
+    session2 = SimpleNamespace(_conversation_history=history2, close=AsyncMock())
+    user_data2 = {
+        "memory_enabled": True, "is_group": True, "group_id": "7788",
+        "her_name": "Neko", "session": session2, "group_opt_out_cutoff": 2,
+    }
+    plugin._user_sessions["group:7788"] = user_data2
+    bridge.post_scoped_memory_history = AsyncMock(
+        side_effect=RuntimeError("down"),
+    )
+    completed = await service.finalize_user_memory_session(
+        "group:7788", reason="group_memory_disabled",
+    )
+    assert completed is False
+    assert user_data2["group_opt_out_cutoff"] == 2
+    bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
+    completed = await service.finalize_user_memory_session(
+        "group:7788", reason="retry",
+    )
+    assert completed is True
+    sent2 = [
+        m["content"][0]["text"]
+        for call in bridge.post_scoped_memory_history.await_args_list
+        for m in call.args[1]
+    ]
+    assert sent2 == ["n0", "n1"]
+
 
 def test_scoped_entry_ids_unique_per_domain():
     """Identical text promoted into two custom scopes of one shared section

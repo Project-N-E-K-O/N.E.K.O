@@ -278,7 +278,9 @@ class QQSessionMemoryService:
         try:
             conversation_history = getattr(session, "_conversation_history", []) or []
             if user_data.get("is_group"):
-                cutoff = user_data.pop("group_opt_out_cutoff", None)
+                # get 而非 pop：finalize 失败时 cutoff 必须留存，重试仍
+                # 以 opt-out 时刻为界；成功路径整个 user_data 被弹出作废。
+                cutoff = user_data.get("group_opt_out_cutoff", None)
                 if cutoff is not None:
                     # opt-out 截止点：只结算策略翻 OFF 时刻之前的历史，
                     # 竞态窗口内追加的轮次绝不入库。

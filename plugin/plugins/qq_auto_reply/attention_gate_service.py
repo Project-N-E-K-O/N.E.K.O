@@ -144,7 +144,12 @@ class QQAttentionGateService:
             ephemeral_session=False,
         )
         try:
-            outcome = await self.plugin.reply_pipeline.run(request)
+            # 经 per-session 锁：teardown（prompt 变更/开关转变）不得在
+            # 本合成轮 stream 中途弹出共享会话。
+            outcome = await self.plugin._run_with_session_lock(
+                f"group:{group_id}",
+                lambda: self.plugin.reply_pipeline.run(request),
+            )
             if outcome.action == "reply" and outcome.reply_text:
                 self._logger.info(f"[Proactive] 主动发言成功: {outcome.reply_text[:50]}...")
                 self.plugin.runtime_service.record_pipeline_outcome(
@@ -478,7 +483,10 @@ class QQAttentionGateService:
             fallback_to_text_on_voice_failure=True,
         )
         try:
-            outcome = await self.plugin.reply_pipeline.run(request)
+            outcome = await self.plugin._run_with_session_lock(
+                f"group:{group_id}",
+                lambda: self.plugin.reply_pipeline.run(request),
+            )
             self.plugin.runtime_service.record_pipeline_outcome(
                 source=request.source_kind, request=request, outcome=outcome,
             )

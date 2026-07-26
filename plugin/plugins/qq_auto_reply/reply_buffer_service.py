@@ -180,7 +180,10 @@ class QQReplyBufferService:
                         source_kind="rapid_fire_flush",
                         fallback_to_text_on_voice_failure=True,
                     )
-                    await self.plugin.reply_pipeline.run(request)
+                    await self.plugin._run_with_session_lock(
+                        session_key,
+                        lambda: self.plugin.reply_pipeline.run(request),
+                    )
                 except Exception as e:
                     self.plugin._emit_log("WARN", f"[Buffer] 简短确认失败: {e}")
 
@@ -200,7 +203,10 @@ class QQReplyBufferService:
                         source_kind="rapid_fire_flush",
                         fallback_to_text_on_voice_failure=True,
                     )
-                    await self.plugin.reply_pipeline.run(request)
+                    await self.plugin._run_with_session_lock(
+                        session_key,
+                        lambda: self.plugin.reply_pipeline.run(request),
+                    )
                 except Exception as e:
                     self.plugin._emit_log("WARN", f"[Buffer] 强制总结失败: {e}")
                 return
@@ -283,7 +289,10 @@ class QQReplyBufferService:
                 source_kind="rapid_fire_flush",
                 fallback_to_text_on_voice_failure=True,
             )
-            await self.plugin.reply_pipeline.run(request)
+            await self.plugin._run_with_session_lock(
+                        session_key,
+                        lambda: self.plugin.reply_pipeline.run(request),
+                    )
             self._pending.pop(session_key, None)
         except Exception as e:
             self.plugin._emit_log("WARN", f"[Buffer] 总结pipeline失败: {e}")
