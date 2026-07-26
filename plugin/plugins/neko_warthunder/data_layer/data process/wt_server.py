@@ -538,7 +538,7 @@ class TelemetryService:
             # terminal mission result private until the matching HUD channel succeeds,
             # so the result and final combat summary become visible atomically. If the
             # player leaves before HUD recovers, _reset_battle_cache_locked publishes
-            # the pending result with the latest committed combat summary as a fallback.
+            # the pending result without an unverifiable combat summary as a fallback.
             if terminal_status and not hud_ok:
                 self._pending_terminal_status = status
                 self._pending_terminal_objectives = objectives
@@ -697,8 +697,8 @@ class TelemetryService:
             elif visible_is_terminal:
                 terminal_status = self._mission_status
                 terminal_objectives = self._mission_objectives
-            if terminal_status is not None and isinstance(self._combat, dict):
-                terminal_combat = self._combat
+                if isinstance(self._combat, dict):
+                    terminal_combat = self._combat
         # 录制标记：一次会话可跨多局，靠此标记供离线工具按局切分
         self.recorder.mark({"_event": "battle_reset"})
         self._map_objects = []

@@ -256,7 +256,7 @@ def test_terminal_mission_recovers_events_after_failed_initial_hud_drain() -> No
     assert service._combat["my"] == {"kills": 1, "deaths": 0}
 
     # If the fast group confirms exit before the HUD retry, preserve the real
-    # terminal result with the latest committed K/D until the next battle starts.
+    # terminal result without claiming an unverifiable K/D until the next battle starts.
     exit_client = DrainClient()
     exit_service = TelemetryService(exit_client)
     exit_service.tracker = SummaryTracker()
@@ -273,7 +273,7 @@ def test_terminal_mission_recovers_events_after_failed_initial_hud_drain() -> No
     assert ended["state"] == "not_in_battle"
     assert ended["mission_status"] == "success"
     assert ended["mission_objectives"] == {"completed": True}
-    assert ended["combat"]["my"] == {"kills": 0, "deaths": 0}
+    assert ended["combat"] is None
 
     exit_client.in_battle = True
     exit_service._poll_fast()
