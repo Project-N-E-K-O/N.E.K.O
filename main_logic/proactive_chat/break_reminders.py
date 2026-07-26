@@ -99,6 +99,13 @@ def _render_break_reminder_regen_instruction(
     return template.format(terms=terms)
 
 
+def _break_reminder_silence_since(mgr) -> float | None:
+    """Read the latest genuine-interaction cutoff shared with proactive chat."""
+    from main_logic.proactive_chat.generation import _proactive_silence_since
+
+    return _proactive_silence_since(mgr)
+
+
 def _score_unanswered_break_reminder(
     *,
     corpus,
@@ -108,12 +115,10 @@ def _score_unanswered_break_reminder(
 ):
     """Best-effort long-window score for a direct break-reminder draft."""
     try:
-        from main_logic.proactive_chat.generation import _proactive_silence_since
-
         return corpus.score_unanswered_proactive_draft(
             lanlan_name,
             text,
-            silence_since=_proactive_silence_since(mgr),
+            silence_since=_break_reminder_silence_since(mgr),
         )
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug(
@@ -415,6 +420,7 @@ async def _deliver_break_reminder_via_llm(
         ]
         if mgr.state.is_proactive_preempted(proactive_sid):
             return BreakReminderDeliveryResult()
+        silence_since_before_regen = _break_reminder_silence_since(mgr)
         regen_text = ""
         regen_timeout = min(20.0, timeout_seconds)
         try:
@@ -443,6 +449,20 @@ async def _deliver_break_reminder_via_llm(
             )
 
         if mgr.state.is_proactive_preempted(proactive_sid):
+            return BreakReminderDeliveryResult()
+        silence_since_after_regen = _break_reminder_silence_since(mgr)
+        if (
+            silence_since_after_regen is not None
+            and (
+                silence_since_before_regen is None
+                or silence_since_after_regen > silence_since_before_regen
+            )
+        ):
+            logger.info(
+                "[%s] break reminder abandoned after user interaction during regen",
+                lanlan_name,
+            )
+            await mgr.handle_new_message()
             return BreakReminderDeliveryResult()
         cleaned = regen_text.strip()
         if (

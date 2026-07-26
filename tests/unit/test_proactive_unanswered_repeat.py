@@ -93,19 +93,33 @@ def test_merge_regen_avoid_terms_preserves_both_repeat_signals():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("regen_still_repeats", [False, True])
+@pytest.mark.parametrize(
+    ("regen_still_repeats", "interaction_during_regen"),
+    (
+        (False, False),
+        (True, False),
+        (False, True),
+    ),
+)
 async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
     monkeypatch,
     regen_still_repeats,
+    interaction_during_regen,
 ):
     from main_logic.proactive_chat import break_reminders
 
     initial_text = "记得起来喝水休息一下。"
     regenerated_text = "先望望远处，让眼睛放松一会儿吧。"
+    manager_holder = {}
+
+    def on_regen():
+        if interaction_during_regen:
+            manager_holder["mgr"].last_user_engagement_time = 250.0
+
     make_llm = AsyncMock(
         side_effect=[
             _FakeStreamingLlm(initial_text),
-            _FakeRegenLlm(regenerated_text),
+            _FakeRegenLlm(regenerated_text, on_invoke=on_regen),
         ]
     )
     monkeypatch.setattr(break_reminders, "create_chat_llm_async", make_llm)
@@ -154,6 +168,7 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
         last_user_message_time=None,
         last_user_engagement_time=None,
     )
+    manager_holder["mgr"] = mgr
     config_manager = SimpleNamespace(
         aget_model_api_config=AsyncMock(
             return_value={
@@ -174,8 +189,14 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
         lang="en",
     )
 
-    assert corpus.score_unanswered_proactive_draft.call_count == 2
-    if regen_still_repeats:
+    if interaction_during_regen:
+        assert corpus.score_unanswered_proactive_draft.call_count == 1
+        assert result == break_reminders.BreakReminderDeliveryResult()
+        mgr.feed_tts_chunk.assert_not_awaited()
+        mgr.finish_proactive_delivery.assert_not_awaited()
+        mgr.handle_new_message.assert_awaited_once_with()
+    elif regen_still_repeats:
+        assert corpus.score_unanswered_proactive_draft.call_count == 2
         assert result.delivered_text is None
         assert result.proactive_sid is None
         assert result.repeat_suppressed is True
@@ -183,6 +204,7 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
         mgr.finish_proactive_delivery.assert_not_awaited()
         mgr.handle_new_message.assert_awaited_once_with()
     else:
+        assert corpus.score_unanswered_proactive_draft.call_count == 2
         assert result.delivered_text == regenerated_text
         assert result.proactive_sid == "break-sid"
         assert result.repeat_suppressed is False
