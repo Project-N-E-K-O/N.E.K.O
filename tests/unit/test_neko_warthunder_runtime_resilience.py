@@ -158,6 +158,65 @@ def test_failed_chat_drain_does_not_block_hud_incremental_polling() -> None:
     assert client.chat_calls == 2
 
 
+def test_user_context_refresh_cannot_move_chat_activity_backwards() -> None:
+    plugin = object.__new__(NekoWarthunderPlugin)
+    record = SimpleNamespace(
+        timestamp=50.0,
+        raw={
+            "type": "user_message",
+            "lanlan": "target",
+            "is_voice": True,
+            "_ts": 50.0,
+        },
+    )
+    plugin.ctx = SimpleNamespace(
+        bus=SimpleNamespace(
+            memory=SimpleNamespace(get_sync=lambda *_args, **_kwargs: [record])
+        )
+    )
+    plugin.timeline = None
+    plugin._last_user_context_seen_at = 40.0
+    plugin._last_user_chat_at = 100.0
+    plugin._last_user_chat_mode = "text"
+
+    assert plugin._refresh_user_chat_activity(target_lanlan="target") == "text"
+    assert plugin._last_user_context_seen_at == 40.0
+    assert plugin._last_user_chat_at == 100.0
+    assert plugin._last_user_chat_mode == "text"
+
+
+def test_post_acceptance_observer_failure_does_not_retry_delivered_event() -> None:
+    pushed: list[dict] = []
+    warnings: list[str] = []
+    plugin = SimpleNamespace(
+        cfg=WtConfig(
+            dry_run=False,
+            global_rate_limit_seconds=0,
+            output_backpressure_seconds=0,
+            dialogue_intrusion_mode="allow_interrupt",
+            user_chat_quiet_window_seconds=0,
+            battle_output_quiet_window_seconds=0,
+        ),
+        logger=SimpleNamespace(warning=warnings.append),
+        push_message=lambda **kwargs: pushed.append(kwargs),
+        _last_user_chat_at=0.0,
+        _last_user_chat_mode="unknown",
+        _last_battle_respond_at=0.0,
+    )
+    dispatcher = NekoDispatcher(plugin, clock=lambda: 100.0)
+    dispatcher._observer = SimpleNamespace(
+        record_event=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("observer unavailable")
+        )
+    )
+
+    result = dispatcher.push_event(BattleEvent("spawn", ts=100.0), dry_run=False)
+
+    assert result.startswith("pushed(")
+    assert len(pushed) == 1
+    assert warnings == ["post-acceptance output bookkeeping failed: RuntimeError"]
+
+
 def _running_ground_state(timestamp: float = 1.0) -> BattleState:
     return BattleState(
         connected=True,

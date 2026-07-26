@@ -305,7 +305,10 @@ class NekoWarthunderPlugin(NekoPluginBase):
 
         voice_flag = raw.get("is_voice")
         mode = "voice" if voice_flag is True else "text" if voice_flag is False else "unknown"
-        previous_seen_at = float(getattr(self, "_last_user_context_seen_at", 0.0) or 0.0)
+        previous_seen_at = max(
+            float(getattr(self, "_last_user_context_seen_at", 0.0) or 0.0),
+            float(getattr(self, "_last_user_chat_at", 0.0) or 0.0),
+        )
         if observed_at > previous_seen_at:
             self._last_user_context_seen_at = observed_at
             self._last_user_chat_at = observed_at

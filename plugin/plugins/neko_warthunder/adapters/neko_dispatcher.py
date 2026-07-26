@@ -1091,51 +1091,53 @@ class NekoDispatcher:
                 pushed=False,
             )
             raise
-        self._last_push_at = now
-        self._last_push_priority = event.priority
-        self._last_event_push[event.event_id] = (
-            now,
-            event.level,
-            self._repeat_signature(event, recommended_reply),
-        )
-        if delivery.ai_behavior == "respond" and self.plugin is not None:
-            try:
+        try:
+            self._last_push_at = now
+            self._last_push_priority = event.priority
+            self._last_event_push[event.event_id] = (
+                now,
+                event.level,
+                self._repeat_signature(event, recommended_reply),
+            )
+            if delivery.ai_behavior == "respond" and self.plugin is not None:
                 setattr(self.plugin, "_last_battle_respond_at", now)
-            except Exception:
-                # Host objects may reject optional bookkeeping attributes.
-                pass
-        self._observer.record_event(
-            event,
-            stage="dispatcher_pushed",
-            outcome="pushed",
-            reason="push_message_accepted",
-            dry_run=False,
-            ai_behavior=delivery.ai_behavior,
-            pushed=True,
-            target_lanlan=target_lanlan,
-            visibility=list(delivery.visibility),
-            coalesce_key=BATTLE_EVENT_COALESCE_KEY,
-            battle_reply_contract=BATTLE_REPLY_CONTRACT,
-            live_reply_contract=BATTLE_REPLY_CONTRACT,
-            max_reply_chars=BATTLE_REPLY_MAX_CHARS,
-            response_module_hint=BATTLE_RESPONSE_MODULE_HINT,
-            plugin_recommended_reply=recommended_reply,
-            plugin_owned_output=plugin_owned_output,
-            replace_pending=True,
-            interrupt_battle_event=_host_interrupt_pending(event),
-            interrupt_pending=_host_interrupt_pending(event),
-            reply_style_contract=_reply_style_contract(event),
-            reply_contract=BATTLE_REPLY_CONTRACT,
-            reply_max_chars=BATTLE_REPLY_MAX_CHARS,
-            dialogue_policy_owner="plugin",
-            plugin_dialogue_policy=delivery.metadata["plugin_dialogue_policy"],
-            plugin_quiet_window_policy=HOST_QUIET_WINDOW_POLICY,
-            host_callback_contract_version=HOST_CALLBACK_CONTRACT_VERSION,
-            delivery_strategy=delivery.metadata.get("delivery_strategy", "immediate"),
-            deferred_from_user_chat_quiet_window=bool(next_text_turn),
-            quiet_window_remaining_seconds=quiet_window_remaining,
-            **freshness,
-        )
+            self._observer.record_event(
+                event,
+                stage="dispatcher_pushed",
+                outcome="pushed",
+                reason="push_message_accepted",
+                dry_run=False,
+                ai_behavior=delivery.ai_behavior,
+                pushed=True,
+                target_lanlan=target_lanlan,
+                visibility=list(delivery.visibility),
+                coalesce_key=BATTLE_EVENT_COALESCE_KEY,
+                battle_reply_contract=BATTLE_REPLY_CONTRACT,
+                live_reply_contract=BATTLE_REPLY_CONTRACT,
+                max_reply_chars=BATTLE_REPLY_MAX_CHARS,
+                response_module_hint=BATTLE_RESPONSE_MODULE_HINT,
+                plugin_recommended_reply=recommended_reply,
+                plugin_owned_output=plugin_owned_output,
+                replace_pending=True,
+                interrupt_battle_event=_host_interrupt_pending(event),
+                interrupt_pending=_host_interrupt_pending(event),
+                reply_style_contract=_reply_style_contract(event),
+                reply_contract=BATTLE_REPLY_CONTRACT,
+                reply_max_chars=BATTLE_REPLY_MAX_CHARS,
+                dialogue_policy_owner="plugin",
+                plugin_dialogue_policy=delivery.metadata["plugin_dialogue_policy"],
+                plugin_quiet_window_policy=HOST_QUIET_WINDOW_POLICY,
+                host_callback_contract_version=HOST_CALLBACK_CONTRACT_VERSION,
+                delivery_strategy=delivery.metadata.get("delivery_strategy", "immediate"),
+                deferred_from_user_chat_quiet_window=bool(next_text_turn),
+                quiet_window_remaining_seconds=quiet_window_remaining,
+                **freshness,
+            )
+        except Exception as exc:  # noqa: BLE001 - accepted output must never be retried
+            logger = getattr(self.plugin, "logger", None)
+            warning = getattr(logger, "warning", None)
+            if callable(warning):
+                warning(f"post-acceptance output bookkeeping failed: {type(exc).__name__}")
         return f"pushed(event={event.event_id}/{event.edge})"
 
     def _is_backpressured(self, event: BattleEvent, now: float) -> bool:
