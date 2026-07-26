@@ -21,13 +21,25 @@ logger = logging.getLogger(__name__)
 # prevents unbounded growth on long sessions.
 _SERVER_RESPONSE_ID_LIMIT = 32
 
-# A tracked server response whose terminal event never arrives must not hold
-# the lane forever on an otherwise healthy connection: past this age its id
-# stops holding the lane and a timer re-runs the release check, so recovery
-# does not depend on another event arriving. Kept below the worker's default
-# 60 s ``response_done_timeout`` so a stale id opens the lane before the
-# idle-wait backstop fail-closes the whole connection.
-_SERVER_RESPONSE_MAX_AGE = 30.0
+# Default running-time allowance for a single response, shared by owned
+# responses (the ``enqueue`` ``response_done_timeout`` default) and
+# server-initiated ones (the staleness bound below). A tracked server response
+# whose terminal event never arrives must not hold the lane forever on an
+# otherwise healthy connection, so past its allowance its id stops holding the
+# lane and a timer re-runs the release check — but the transport forwards no
+# per-response activity signal that could distinguish a lost terminal from a
+# slow live response, so the bound must grant a server response at least the
+# same allowance an owned response gets (it ratchets up to the largest
+# per-ticket ``response_done_timeout`` this arbiter has been asked to honor).
+# Evicting sooner would reopen the lane under a still-running response and the
+# next queued response.create would collide with it (response_already_active).
+# The residual trade-off is deliberate: a live server response outliving the
+# allowance can still be presumed dead, but the alternative — holding the lane
+# until a terminal that may never come — reintroduces the permanent wedge this
+# bound exists to prevent, and a waiter behind a genuinely long lane hits the
+# idle-wait fail-close, which tears the connection down cleanly instead of
+# racing a known-live response.
+_DEFAULT_RESPONSE_DONE_TIMEOUT = 60.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,8 +120,13 @@ class RealtimeResponseArbiter:
         self._server_response_active = False
         # Bounded insertion-ordered map of live server-initiated response ids
         # to their creation loop time; see _SERVER_RESPONSE_ID_LIMIT and
-        # _SERVER_RESPONSE_MAX_AGE. Created adds, terminal removes.
+        # _server_response_max_age. Created adds, terminal removes.
         self._server_response_ids: dict[str, float] = {}
+        # Staleness bound for the map above. Mirrors the response_done_timeout
+        # semantics applied to owned responses: starts at the enqueue default
+        # and only ever ratchets up, so a server response is never presumed
+        # dead on a shorter clock than any owned response is allowed to run.
+        self._server_response_max_age = _DEFAULT_RESPONSE_DONE_TIMEOUT
         self._stale_release_handle: asyncio.TimerHandle | None = None
         self._connection_available = True
         self._dispatch_allowed = asyncio.Event()
@@ -142,7 +159,7 @@ class RealtimeResponseArbiter:
         priority: int = 10,
         item_ack_timeout: float = 1.5,
         response_started_timeout: float = 5.0,
-        response_done_timeout: float = 60.0,
+        response_done_timeout: float = _DEFAULT_RESPONSE_DONE_TIMEOUT,
         cancel_timeout: float = 3.0,
     ) -> ResponseTicket:
         loop = asyncio.get_running_loop()
@@ -158,6 +175,10 @@ class RealtimeResponseArbiter:
             return ticket
         create_event = dict(response_event or {"type": "response.create"})
         create_event.setdefault("type", "response.create")
+        # A server response must never be presumed dead sooner than the
+        # longest-running owned response is allowed to live.
+        if response_done_timeout > self._server_response_max_age:
+            self._server_response_max_age = response_done_timeout
         ids = {
             str(event.get("event_id"))
             for event in (*events_before_response, create_event)
@@ -282,7 +303,9 @@ class RealtimeResponseArbiter:
         """(Re)start the timer that re-checks the lane at the next staleness deadline."""
 
         loop = asyncio.get_running_loop()
-        deadline = min(self._server_response_ids.values()) + _SERVER_RESPONSE_MAX_AGE
+        deadline = (
+            min(self._server_response_ids.values()) + self._server_response_max_age
+        )
         self._cancel_stale_release_timer()
         self._stale_release_handle = loop.call_later(
             max(deadline - loop.time(), 0.0), self._stale_release_expired
@@ -299,7 +322,7 @@ class RealtimeResponseArbiter:
     def _release_lane_if_clear(self) -> None:
         """Open the lane unless a live server-initiated response still holds it.
 
-        Ids older than ``_SERVER_RESPONSE_MAX_AGE`` are dropped first: a server
+        Ids older than ``_server_response_max_age`` are dropped first: a server
         response whose terminal event was lost must not wedge the lane on a
         healthy connection, so past that bound its id stops holding the lane.
         """
@@ -308,10 +331,22 @@ class RealtimeResponseArbiter:
         stale = [
             response_id
             for response_id, created_at in self._server_response_ids.items()
-            if now - created_at >= _SERVER_RESPONSE_MAX_AGE
+            if now - created_at >= self._server_response_max_age
         ]
         for response_id in stale:
             del self._server_response_ids[response_id]
+        if stale:
+            # A response outliving the owned-response allowance without a
+            # terminal event is a protocol anomaly: either its terminal was
+            # lost, or a live response ran far longer than anything this
+            # arbiter is configured to wait for.
+            logger.warning(
+                "released %d server response id(s) with no terminal event "
+                "after %.0fs: %s",
+                len(stale),
+                self._server_response_max_age,
+                ", ".join(stale),
+            )
         if self._server_response_ids:
             # A known server-initiated response is still live. Opening the
             # lane now would let the next queued response.create collide with

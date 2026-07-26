@@ -7,6 +7,7 @@ import pytest
 
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_realtime_client._response_arbiter import (
+    _DEFAULT_RESPONSE_DONE_TIMEOUT,
     _SERVER_RESPONSE_ID_LIMIT,
     RealtimeResponseArbiter,
 )
@@ -336,11 +337,7 @@ async def test_owner_terminal_before_live_server_response_holds_lane():
 
 
 @pytest.mark.asyncio
-async def test_stale_server_response_id_releases_lane_without_terminal(monkeypatch):
-    monkeypatch.setattr(
-        "main_logic.omni_realtime_client._response_arbiter._SERVER_RESPONSE_MAX_AGE",
-        0.2,
-    )
+async def test_stale_server_response_id_releases_lane_without_terminal():
     sent = []
     arbiter = None
     created_ids = iter(["resp-owner", "resp-follow-up"])
@@ -367,14 +364,86 @@ async def test_stale_server_response_id_releases_lane_without_terminal(monkeypat
     await asyncio.sleep(0.01)
     assert follow_up.sent.done() is False
 
-    # The server response's terminal never arrives. Past the staleness bound
-    # its id stops holding the lane, so a healthy connection is not wedged.
+    # The server response's terminal never arrives. Shrink the allowance and
+    # re-arm so the timer path runs within the test: past the staleness bound
+    # its id stops holding the lane WITHOUT another event arriving, so a
+    # healthy connection is not wedged.
+    arbiter._server_response_max_age = 0.2
+    arbiter._arm_stale_release_timer()
     await asyncio.wait_for(follow_up.sent, 2.0)
     assert "resp-server" not in arbiter._server_response_ids
     arbiter.notify_response_terminal(
         {"type": "response.done", "response": {"id": "resp-follow-up"}}
     )
     await asyncio.wait_for(follow_up.done, 0.2)
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_server_response_older_than_30s_within_allowance_holds_lane():
+    """A live server response older than the removed 30 s constant keeps the
+    lane closed for the full owned-response ``response_done_timeout``."""
+
+    sent = []
+    arbiter = None
+    created_ids = iter(["resp-owner", "resp-follow-up"])
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "response.create":
+            arbiter.notify_response_created(
+                {"type": "response.created", "response": {"id": next(created_ids)}}
+            )
+
+    arbiter = RealtimeResponseArbiter(send)
+    ticket = await arbiter.enqueue(source="owner")
+    await asyncio.wait_for(ticket.started, 0.2)
+
+    arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-server"}}
+    )
+    follow_up = await arbiter.enqueue(source="follow-up")
+    # Backdate the server response to 31 s old: past the 30 s bound this
+    # arbiter used to enforce, but within the 60 s allowance owned responses
+    # get. The owner's terminal below re-runs the release check; the still
+    # live server response must keep the lane closed instead of being
+    # presumed dead (which let the follow-up collide with it).
+    loop = asyncio.get_running_loop()
+    arbiter._server_response_ids["resp-server"] = loop.time() - 31.0
+    arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-owner"}}
+    )
+    await asyncio.wait_for(ticket.done, 0.2)
+    await asyncio.sleep(0.05)
+    assert follow_up.sent.done() is False
+    assert "resp-server" in arbiter._server_response_ids
+    assert arbiter.is_busy
+
+    # Its real terminal still releases the lane normally.
+    arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-server"}}
+    )
+    await asyncio.wait_for(follow_up.sent, 0.2)
+    arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-follow-up"}}
+    )
+    await asyncio.wait_for(follow_up.done, 0.2)
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_server_response_allowance_ratchets_to_largest_owned_timeout():
+    async def send(_event):
+        return None
+
+    arbiter = RealtimeResponseArbiter(send)
+    assert arbiter._server_response_max_age == _DEFAULT_RESPONSE_DONE_TIMEOUT
+    await arbiter.enqueue(source="long", response_done_timeout=120.0)
+    assert arbiter._server_response_max_age == 120.0
+    # A later shorter ticket never lowers the allowance already promised to
+    # any server response remembered while the longer ticket was in flight.
+    await arbiter.enqueue(source="short", response_done_timeout=5.0)
+    assert arbiter._server_response_max_age == 120.0
     await arbiter.shutdown()
 
 
