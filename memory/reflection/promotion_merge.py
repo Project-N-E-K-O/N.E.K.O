@@ -517,7 +517,15 @@ class PromotionMergeMixin:
             section = persona_view.get(target_section)
             if isinstance(section, dict):
                 for e in section.get('facts', []):
-                    if isinstance(e, dict) and not e.get('protected'):
+                    if (
+                        isinstance(e, dict)
+                        and not e.get('protected')
+                        and entry_matches_subject(e, memory_subject)
+                    ):
+                        # 同 section 可能混不同 scope 的条目（section key 不含
+                        # scope）：候选只取本 subject 域，跨域条目不得进
+                        # merge prompt。legacy（memory_subject=None）只匹配
+                        # 无戳的 legacy 条目，双向 fail-closed。
                         same_entity_persona.append((target_section, e))
         all_reflections = await self._aload_reflections_full(lanlan_name)
         same_entity_reflections = [
@@ -672,6 +680,15 @@ class PromotionMergeMixin:
                 logger.warning(
                     f"[Promote] {lanlan_name}/{R['id']}: merge target "
                     f"{target_entry_id} not found in persona; skip"
+                )
+                return 'invalid_target'
+            if not entry_matches_subject(target_entry, memory_subject):
+                # LLM 可能幻觉出他域 entry id（全局 id 查找不设界）：合并
+                # 会用本域文本覆写他域条目，跨隔离边界——复验后拒绝。
+                logger.warning(
+                    f"[Promote] {lanlan_name}/{R['id']}: merge target "
+                    f"{target_entry_id} belongs to a different isolation "
+                    f"domain; refuse"
                 )
                 return 'invalid_target'
 
