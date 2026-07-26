@@ -428,6 +428,35 @@ def _dynamic_import_target(node: ast.AST, alias_paths: dict[str, str]) -> tuple[
     return None, True
 
 
+def _importlib_alias_paths(tree: ast.Module) -> dict[str, str]:
+    """importlib-related bindings from ANY scope → absolute dotted path.
+
+    ``module_alias_paths`` only reads ``tree.body``, so a function-local
+    ``import importlib as il`` or ``from importlib import import_module as im``
+    would evade the dynamic-import gate. This walks the whole tree and is
+    deliberately scope-insensitive: a binding collected here applies to the
+    entire module even where Python scoping would shadow it. For a gate that
+    over-approximation is the right trade — flagging a shadowed name is better
+    than a blind spot. Only importlib bindings are collected, so unrelated
+    local names never resolve to a dynamic-import entry point.
+    """
+    out: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == "importlib" or a.name.startswith("importlib."):
+                    out[a.asname or a.name.split(".")[0]] = (
+                        a.name if a.asname else "importlib")
+        elif (isinstance(node, ast.ImportFrom) and node.level == 0
+              and node.module
+              and (node.module == "importlib"
+                   or node.module.startswith("importlib."))):
+            for a in node.names:
+                if a.name != "*":
+                    out[a.asname or a.name] = f"{node.module}.{a.name}"
+    return out
+
+
 def _dynamic_import_violations(path: Path, tree: ast.Module, alias_paths: dict[str, str],
                                forbidden_prefix: str, where: str) -> list["Violation"]:
     """ASR_LAYERING violations for dynamic imports in a guarded module.
@@ -436,6 +465,10 @@ def _dynamic_import_violations(path: Path, tree: ast.Module, alias_paths: dict[s
     import ban does, and any non-literal target outright — the gate cannot
     prove a computed module name stays on the right side of the boundary.
     """
+    # Function-local importlib aliases win over same-named module-level
+    # bindings so nested ``import importlib as il`` cannot dodge the gate;
+    # module-level importlib aliases resolve identically through either dict.
+    alias_paths = {**alias_paths, **_importlib_alias_paths(tree)}
     out: list[Violation] = []
     for node in ast.walk(tree):
         target, dynamic = _dynamic_import_target(node, alias_paths)

@@ -98,6 +98,51 @@ def test_dynamic_import_target_ignores_unrelated_calls(contract_checker) -> None
     assert _dynamic_import_results(contract_checker, source) == []
 
 
+def _dynamic_import_violation_messages(contract_checker, source: str) -> list[str]:
+    tree = ast.parse(source)
+    aliases = contract_checker.module_alias_paths(tree, "main_logic.asr_client")
+    return [
+        violation.message
+        for violation in contract_checker._dynamic_import_violations(
+            Path("loader.py"), tree, aliases, "main_logic.core", "asr_client"
+        )
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def load():\n"
+        "    import importlib as il\n"
+        "    return il.import_module('main_logic.core')",
+        "def load():\n"
+        "    from importlib import import_module as im\n"
+        "    return im('main_logic.core')",
+    ],
+)
+def test_dynamic_import_violations_sees_function_local_importlib_aliases(
+    contract_checker,
+    source: str,
+) -> None:
+    assert _dynamic_import_violation_messages(contract_checker, source) == [
+        "asr_client must not import main_logic.core (dynamic import)"
+    ]
+
+
+@pytest.mark.unit
+def test_dynamic_import_violations_ignores_non_importlib_local_alias(
+    contract_checker,
+) -> None:
+    source = (
+        "def load(factory):\n"
+        "    il = factory()\n"
+        "    return il.import_module('main_logic.core')"
+    )
+
+    assert _dynamic_import_violation_messages(contract_checker, source) == []
+
+
 @pytest.mark.unit
 def test_asr_runtime_alias_reads_flags_single_assignment_alias(contract_checker) -> None:
     source = (
