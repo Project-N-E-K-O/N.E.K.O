@@ -165,6 +165,95 @@ class QQSessionMemoryService:
         user_data["has_cached_memory"] = True
         return len(delta_messages)
 
+    async def _flush_member_buckets(
+        self, user_data: dict[str, Any], *, group_id: str, her_name: str,
+        reason: str,
+    ) -> list[str]:
+        """Concurrently flush member buckets (semaphore 4).
+
+        Success pops the bucket; failures are collected and stay queued for
+        the next sweep. Serial 8x30s used to hold the session lock ~4 min,
+        exhausting the global message semaphore and never fitting the host
+        shutdown kill window."""
+        member_buckets = user_data.get("group_member_memory_messages") or {}
+        member_labels = user_data.get("group_member_memory_labels") or {}
+        member_flush_sem = asyncio.Semaphore(4)
+
+        async def _flush_one_member(
+            sender_id: str, member_messages: list,
+        ) -> str | None:
+            async with member_flush_sem:
+                try:
+                    result = await self.plugin.memory_bridge.post_scoped_memory_history(
+                        her_name,
+                        member_messages,
+                        subject=self.plugin.memory_bridge.group_participant_subject(
+                            group_id, sender_id,
+                        ),
+                        speaker_label=(
+                            str(member_labels.get(sender_id) or sender_id)[:64]
+                        ),
+                        timeout=30.0,
+                    )
+                    if result.get("status") == "error":
+                        raise RuntimeError(
+                            result.get(
+                                "message",
+                                "scoped participant history failed",
+                            )
+                        )
+                except Exception as exc:
+                    self.plugin.logger.error(
+                        f"[{reason}] 群 {group_id} 成员 {sender_id} "
+                        f"记忆结算失败: {exc}"
+                    )
+                    return sender_id
+                member_buckets.pop(sender_id, None)
+                return None
+
+        flush_jobs = [
+            _flush_one_member(sender_id, member_messages)
+            for sender_id, member_messages in list(member_buckets.items())
+            if sender_id and member_messages
+        ]
+        if not flush_jobs:
+            return []
+        return [sid for sid in await asyncio.gather(*flush_jobs) if sid]
+
+    async def settle_member_buckets_on_disable(self) -> None:
+        """group_member_memory_enabled ON->OFF transition: settle buckets
+        collected under consent now — finalize substitutes an empty mapping
+        while the option is off, so without this the collected participant
+        turns would be silently discarded at session teardown. Buckets that
+        fail to settle are dropped fail-closed (nothing may linger after
+        opt-out)."""
+        for session_key, user_data in list(self.plugin._user_sessions.items()):
+            if not user_data.get("is_group"):
+                continue
+
+            async def _settle_one() -> None:
+                current = self.plugin._user_sessions.get(session_key)
+                if not current:
+                    return
+                group_id = str(current.get("group_id") or "").strip()
+                her_name = current.get("her_name")
+                buckets = current.get("group_member_memory_messages") or {}
+                if group_id and her_name and buckets:
+                    failed = await self._flush_member_buckets(
+                        current, group_id=group_id, her_name=her_name,
+                        reason="member_memory_disabled",
+                    )
+                    if failed:
+                        self.plugin.logger.error(
+                            f"[member_memory_disabled] 群 {group_id} 有 "
+                            f"{len(failed)} 个成员 bucket 结算失败，按 opt-out "
+                            f"丢弃"
+                        )
+                current.pop("group_member_memory_messages", None)
+                current.pop("group_member_memory_labels", None)
+
+            await self.plugin._run_with_session_lock(session_key, _settle_one)
+
     async def finalize_user_memory_session(self, session_key: str, reason: str) -> bool:
         user_data = self.plugin._user_sessions.get(session_key)
         if not user_data or not user_data.get("memory_enabled"):
@@ -224,60 +313,12 @@ class QQSessionMemoryService:
                         "group_member_memory_enabled", False,
                     )
                 )
-                member_buckets = (
-                    user_data.get("group_member_memory_messages") or {}
-                    if member_memory_enabled else {}
-                )
-                member_labels = user_data.get("group_member_memory_labels") or {}
-                # 并发冲成员 bucket（限流 4）：串行 8×30s 最坏把本会话锁
-                # 持 4 分钟，期间该群 ≥3 条消息就会耗尽全局 Semaphore(3)、
-                # 冻结所有会话的消息处理；关机 flush 也挤不进宿主 1.5s 的
-                # kill 窗口。每任务自 catch：成功即弹出 bucket、失败留队
-                # 下轮重试，逐 bucket 语义与串行版一致。
-                member_flush_sem = asyncio.Semaphore(4)
-
-                async def _flush_one_member(
-                    sender_id: str, member_messages: list,
-                ) -> str | None:
-                    async with member_flush_sem:
-                        try:
-                            result = await self.plugin.memory_bridge.post_scoped_memory_history(
-                                her_name,
-                                member_messages,
-                                subject=self.plugin.memory_bridge.group_participant_subject(
-                                    group_id, sender_id,
-                                ),
-                                speaker_label=(
-                                    str(member_labels.get(sender_id) or sender_id)[:64]
-                                ),
-                                timeout=30.0,
-                            )
-                            if result.get("status") == "error":
-                                raise RuntimeError(
-                                    result.get(
-                                        "message",
-                                        "scoped participant history failed",
-                                    )
-                                )
-                        except Exception as exc:
-                            self.plugin.logger.error(
-                                f"[{reason}] 群 {group_id} 成员 {sender_id} "
-                                f"记忆结算失败: {exc}"
-                            )
-                            return sender_id
-                        member_buckets.pop(sender_id, None)
-                        return None
-
-                flush_jobs = [
-                    _flush_one_member(sender_id, member_messages)
-                    for sender_id, member_messages in list(member_buckets.items())
-                    if group_id and sender_id and member_messages
-                ]
-                failed_member_ids: list[str] = [
-                    sid for sid in (
-                        await asyncio.gather(*flush_jobs) if flush_jobs else []
-                    ) if sid
-                ]
+                failed_member_ids: list[str] = []
+                if member_memory_enabled and group_id:
+                    failed_member_ids = await self._flush_member_buckets(
+                        user_data, group_id=group_id, her_name=her_name,
+                        reason=reason,
+                    )
                 if failed_member_ids:
                     self.plugin.logger.error(
                         f"[{reason}] 群 {group_id} 仍有 "
@@ -331,9 +372,13 @@ class QQSessionMemoryService:
                 session = current.get("session")
                 history = getattr(session, "_conversation_history", []) or []
                 if enabled:
-                    if not current.get("memory_enabled"):
-                        current["last_group_digest_index"] = len(history)
-                        current["memory_enabled"] = True
+                    # 无条件重定位游标：settings 写入与本任务异步执行之间，
+                    # 抢先到达的群消息会把 memory_enabled 先置 True——按
+                    # flag 跳过会让 opt-out 期间积累的历史被下一次 flush
+                    # 追溯提取。以"策略转变"为准，不信 per-request 缓存；
+                    # 竞态窗口内的少量新轮次被一并跳过，属 fail-closed。
+                    current["last_group_digest_index"] = len(history)
+                    current["memory_enabled"] = True
                     return
                 if not current.get("memory_enabled"):
                     return
@@ -346,8 +391,10 @@ class QQSessionMemoryService:
                     self.plugin.logger.error(
                         f"群记忆关闭时结算失败 ({session_key}): {exc}"
                     )
+                # 成功路径 session 已被 finalize 弹出；仍把本地引用的 flag
+                # 置 False——任何持有旧引用的路径都不得再当它 opt-in。
+                current["memory_enabled"] = False
                 if not finalized:
-                    current["memory_enabled"] = False
                     current["last_group_digest_index"] = len(history)
                     current.pop("group_member_memory_messages", None)
                     current.pop("group_member_memory_labels", None)

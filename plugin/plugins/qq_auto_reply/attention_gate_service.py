@@ -521,7 +521,13 @@ class QQAttentionGateService:
                     start_index = len(history)
                     s["last_group_digest_index"] = start_index
                 total_sent = 0
-                while True:
+                # 限批：focus-shift 推送持有会话锁，慢 memory server 下
+                # 无界批次会让 3 个排水群占满全局 Semaphore(3) 冻结全部
+                # 消息处理。每次最多 3 批，游标精确，剩余留给下一次
+                # digest / finalize（结算 of record 在 finalize，不丢）。
+                remaining_batches = 3
+                while remaining_batches > 0:
+                    remaining_batches -= 1
                     messages, next_index = svc._slice_group_history_batch(
                         history, start_index, svc.GROUP_HISTORY_MAX_MESSAGES,
                     )

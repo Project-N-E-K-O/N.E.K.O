@@ -12,6 +12,19 @@ class QQSettingsService:
     def __init__(self, plugin: Any):
         self.plugin = plugin
 
+    def _spawn_group_memory_sync_task(self, coro) -> None:
+        """Run a privacy-critical session-sync coroutine in the background.
+
+        The event loop holds tasks weakly; without a strong reference the
+        settle/cleanup could be garbage-collected mid-flight."""
+        task = asyncio.create_task(coro)
+        sync_tasks = getattr(self.plugin, "_group_memory_sync_tasks", None)
+        if sync_tasks is None:
+            sync_tasks = set()
+            self.plugin._group_memory_sync_tasks = sync_tasks
+        sync_tasks.add(task)
+        task.add_done_callback(sync_tasks.discard)
+
     async def load_business_config(self) -> dict[str, Any]:
         self.plugin._qq_settings = await self.plugin.config_store.load()
         self.plugin.backlog_store = self.plugin._create_backlog_store_from_settings(self.plugin._qq_settings)
@@ -149,6 +162,9 @@ class QQSettingsService:
         group_memory_before = bool(
             self.plugin._qq_settings.get("group_memory_enabled", False)
         )
+        member_memory_before = bool(
+            self.plugin._qq_settings.get("group_member_memory_enabled", False)
+        )
         for key in (
             "group_memory_enabled",
             "group_member_memory_enabled",
@@ -160,25 +176,28 @@ class QQSettingsService:
         group_memory_after = bool(
             self.plugin._qq_settings.get("group_memory_enabled", False)
         )
+        member_memory_after = bool(
+            self.plugin._qq_settings.get("group_member_memory_enabled", False)
+        )
+        if member_memory_before and not member_memory_after and group_memory_after:
+            # 成员记忆单独关闭（群记忆仍开）：先结算已收集的 bucket 再清，
+            # 否则 finalize 在开关关着时替换成空映射、随会话拆除静默丢弃。
+            # 群记忆同时关闭时不用管——下面的 invalidate_group_sessions
+            # ON→OFF 会整体结算/清理。
+            self._spawn_group_memory_sync_task(
+                self.plugin.session_memory_service.settle_member_buckets_on_disable()
+            )
         if group_memory_after != group_memory_before:
             # 群记忆开关转变必须同步既有群会话（对偶私聊权限切换的
             # _invalidate_private_session）：ON→OFF 结清 opt-in 期间的缓冲、
             # 失败则 fail-closed 清空；OFF→ON 推进 digest 游标，opt-out
             # 期间的对话绝不追溯入库。放后台跑，settings 保存不被
             # per-group 结算（digest 分批 + 成员并发，仍可达数十秒）拖住。
-            task = asyncio.create_task(
+            self._spawn_group_memory_sync_task(
                 self.plugin.session_memory_service.invalidate_group_sessions(
                     enabled=group_memory_after,
                 )
             )
-            # event loop 对 task 只持弱引用——这是隐私关键操作，必须强引用
-            # 到跑完，否则可能在结算/清理中途被 GC 打断（CodeRabbit Major）。
-            sync_tasks = getattr(self.plugin, "_group_memory_sync_tasks", None)
-            if sync_tasks is None:
-                sync_tasks = set()
-                self.plugin._group_memory_sync_tasks = sync_tasks
-            sync_tasks.add(task)
-            task.add_done_callback(sync_tasks.discard)
         # 猫娘动态策略配置
         strategy_mode = kwargs.get("strategy_mode")
         if strategy_mode is not None:

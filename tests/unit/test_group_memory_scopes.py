@@ -1718,6 +1718,23 @@ async def test_group_memory_toggle_syncs_existing_sessions():
     assert user_data["memory_enabled"] is True
     assert user_data["last_group_digest_index"] == len(history)
 
+    # Enable race: a request that slipped in between the settings write and
+    # this task already primed memory_enabled=True — the cursor must still
+    # be rebased (the policy transition is authoritative, not the cached
+    # per-request flag).
+    user_data["last_group_digest_index"] = 0
+    user_data["memory_enabled"] = True
+    await service.invalidate_group_sessions(enabled=True)
+    assert user_data["last_group_digest_index"] == len(history)
+
+    # ON->OFF success path: settle succeeds, session pops, and the orphaned
+    # dict's flag is still cleared so stale references cannot re-flush it.
+    bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
+    user_data["last_group_digest_index"] = 0
+    await service.invalidate_group_sessions(enabled=False)
+    assert user_data["memory_enabled"] is False
+    assert "group:7788" not in plugin._user_sessions
+
 
 @pytest.mark.asyncio
 async def test_fact_dedup_resolve_locks_batch_to_one_domain(tmp_path):
@@ -2172,6 +2189,17 @@ async def test_focus_shift_digest_batches_never_skip_backlog():
     await gate._push_group_digest("7788")
     assert user_data["last_group_digest_index"] == 3
 
+    # Bounded drain: one push sends at most 3 batches while holding the
+    # session lock; the remainder stays for the next digest/finalize.
+    history.extend(
+        SimpleNamespace(type="human", content=f"msg {i}") for i in range(8, 10)
+    )
+    user_data["last_group_digest_index"] = 0
+    bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
+    await gate._push_group_digest("7788")
+    assert bridge.post_scoped_memory_history.await_count == 3
+    assert user_data["last_group_digest_index"] == 9
+
 
 @pytest.mark.asyncio
 async def test_digest_cursor_rebases_after_history_reset():
@@ -2325,6 +2353,127 @@ async def test_correction_domains_and_apply_respect_custom_scope(tmp_path):
     assert ("旧观点", "tenant-b") in survivors
     assert ("旧观点", "tenant-a") not in survivors
     assert ("A 的新观点", "tenant-a") in survivors
+
+
+@pytest.mark.asyncio
+async def test_member_toggle_off_settles_buckets_before_clearing():
+    """Turning group_member_memory_enabled off (group memory still on) must
+    settle already-collected member buckets before clearing them — finalize
+    substitutes an empty mapping while the option is off, so without the
+    transition hook the collected turns would be silently discarded."""
+    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    bridge = MagicMock()
+    bridge.group_participant_subject.side_effect = (
+        QQMemoryBridge.group_participant_subject
+    )
+    bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
+    user_data = {
+        "is_group": True, "group_id": "7788", "her_name": "Neko",
+        "memory_enabled": True,
+        "group_member_memory_messages": {
+            "2046": [{"role": "user", "content": [{"type": "text", "text": "A"}]}],
+        },
+        "group_member_memory_labels": {"2046": "Alice(2046)"},
+    }
+
+    async def _run_with_session_lock(session_key, fn):
+        return await fn()
+
+    plugin = SimpleNamespace(
+        _user_sessions={"group:7788": user_data},
+        _qq_settings={},
+        _run_with_session_lock=_run_with_session_lock,
+        memory_bridge=bridge,
+        logger=MagicMock(),
+    )
+    service = QQSessionMemoryService(plugin)
+
+    await service.settle_member_buckets_on_disable()
+
+    kwargs = bridge.post_scoped_memory_history.await_args.kwargs
+    assert kwargs["speaker_label"] == "Alice(2046)"
+    assert "group_member_memory_messages" not in user_data
+    assert "group_member_memory_labels" not in user_data
+
+    # Failure path: buckets are still cleared (fail-closed after opt-out).
+    user_data["group_member_memory_messages"] = {
+        "2046": [{"role": "user", "content": [{"type": "text", "text": "B"}]}],
+    }
+    bridge.post_scoped_memory_history = AsyncMock(side_effect=RuntimeError("down"))
+    await service.settle_member_buckets_on_disable()
+    assert "group_member_memory_messages" not in user_data
+
+
+def test_static_layer_falls_back_when_required_placeholders_missing():
+    """A bundled or user override that drops the required placeholders has
+    lost the template's identity-boundary constraints (e.g. the weak
+    shared_session override let group members be treated as the master):
+    resolution must fall back to the hardened default."""
+    from plugin.plugins.qq_auto_reply.scene_prompt_templates import (
+        SCENE_SHARED_GROUP,
+    )
+    from plugin.plugins.qq_auto_reply.session_instruction_service import (
+        QQSessionInstructionService,
+    )
+
+    weak = "## 场景：群聊共享上下文\n请自然地参考正在进行的讨论。"
+    i18n = SimpleNamespace(t=lambda key, default="": weak)
+    plugin = SimpleNamespace(i18n=i18n, _qq_settings={}, logger=MagicMock())
+    service = QQSessionInstructionService(plugin)
+
+    rendered = service._resolve_static_layer(
+        "prompts.group.shared_session", SCENE_SHARED_GROUP, "zh-CN",
+        her_name="Neko", master_name="老张", group_id="7788",
+    )
+    assert "身份边界" in rendered
+    assert "Neko" in rendered and "老张" in rendered and "7788" in rendered
+
+    # A user override that keeps the placeholders is honored.
+    plugin._qq_settings = {
+        "prompt_overrides": {
+            "zh-CN": {
+                "prompts.group.shared_session": (
+                    "自定义 {her_name}/{master_name}/{group_id} 模板"
+                ),
+            },
+        },
+    }
+    rendered = service._resolve_static_layer(
+        "prompts.group.shared_session", SCENE_SHARED_GROUP, "zh-CN",
+        her_name="Neko", master_name="老张", group_id="7788",
+    )
+    assert rendered == "自定义 Neko/老张/7788 模板"
+
+
+@pytest.mark.asyncio
+async def test_prompt_change_discard_actually_runs():
+    """_discard_all_sessions_for_prompt_change used to call the async
+    discard_session without awaiting it — the coroutine was dropped and no
+    session was ever discarded. It must now schedule real tasks."""
+    import asyncio as _asyncio
+
+    from plugin.plugins.qq_auto_reply.session_instruction_service import (
+        QQSessionInstructionService,
+    )
+
+    discard = AsyncMock()
+    plugin = SimpleNamespace(
+        _user_sessions={"group:1": {}, "private:2": {}},
+        session_runtime_service=SimpleNamespace(discard_session=discard),
+        i18n=SimpleNamespace(t=lambda key, default="": default),
+        _qq_settings={},
+        logger=MagicMock(),
+        _emit_log=MagicMock(),
+    )
+    service = QQSessionInstructionService(plugin)
+    service._discard_all_sessions_for_prompt_change()
+    await _asyncio.sleep(0)
+    await _asyncio.sleep(0)
+    assert discard.await_count == 2
 
 
 def test_persona_view_authorizes_scoped_entries_per_entry():

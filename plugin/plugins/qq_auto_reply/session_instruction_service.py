@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from datetime import datetime
 from typing import Any, Optional
 
@@ -94,9 +96,34 @@ class QQSessionInstructionService:
                     if isinstance(override_val, str) and override_val.strip():
                         base_text = override_val
                         break
+        # 必需占位符护栏：身份边界等安全层的 required_placeholders 在
+        # _PROMPT_LAYERS 里声明；覆盖文本（bundle 或用户）缺任一占位符
+        # 说明它丢掉了模板承载的身份/场景约束（例如 shared_session 的
+        # 弱两行覆盖会让群成员被当成主人）→ 回退到加固默认模板。
+        required = self._required_placeholders_by_key().get(i18n_key, ())
+        if required and base_text is not default_template:
+            missing = [p for p in required if p not in base_text]
+            if missing:
+                self.plugin.logger.warning(
+                    f"提示词层 {i18n_key} 的覆盖缺少必需占位符 {missing}，"
+                    f"回退默认模板"
+                )
+                base_text = default_template
         if format_kwargs:
             return base_text.format(**format_kwargs)
         return base_text
+
+    @classmethod
+    def _required_placeholders_by_key(cls) -> dict[str, tuple[str, ...]]:
+        cached = getattr(cls, "_required_by_key_cache", None)
+        if cached is None:
+            cached = {
+                layer["i18n_key"]: tuple(layer.get("required_placeholders") or ())
+                for layer in cls._PROMPT_LAYERS
+                if layer.get("i18n_key") and layer["i18n_key"] != "__runtime__"
+            }
+            cls._required_by_key_cache = cached
+        return cached
 
     def _resolve_init_template(self, locale: str) -> str:
         """初始化模板来自 SESSION_INIT_PROMPT 多语言 map，与普通 i18n 不同。"""
@@ -116,8 +143,20 @@ class QQSessionInstructionService:
 
     def _discard_all_sessions_for_prompt_change(self) -> None:
         """提示词覆盖变更后，清空所有现有 session，下次回复生效。"""
+        # discard_session 是协程——此前直接调用从未执行（协程被丢弃，
+        # session 根本没清）。改为 create_task 并持强引用防 GC。
+        tasks = getattr(self.plugin, "_prompt_change_discard_tasks", None)
+        if tasks is None:
+            tasks = set()
+            self.plugin._prompt_change_discard_tasks = tasks
         for session_key in list(getattr(self.plugin, "_user_sessions", {}).keys()):
-            self.plugin.session_runtime_service.discard_session(session_key, reason="prompt_override_changed")
+            task = asyncio.create_task(
+                self.plugin.session_runtime_service.discard_session(
+                    session_key, reason="prompt_override_changed",
+                )
+            )
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
         self.plugin._emit_log("INFO", "提示词覆盖已更新，所有现有会话已清除")
 
     # ==========================================
