@@ -813,6 +813,7 @@
         dispatchAssistantSpeechCancel('clear_audio_queue');
         clearAssistantTurnCompletion();
         clearPendingAudioMetaStallTimer();
+        clearScheduleAudioChunksTimer();
         S.scheduledSources.forEach(function (source) {
             try { source.stop(); } catch (_) { /* noop */ }
         });
@@ -844,6 +845,7 @@
         dispatchAssistantSpeechCancel('clear_audio_queue_without_decoder_reset');
         clearAssistantTurnCompletion();
         clearPendingAudioMetaStallTimer();
+        clearScheduleAudioChunksTimer();
         S.scheduledSources.forEach(function (source) {
             try { source.stop(); } catch (_) { /* noop */ }
         });
@@ -984,9 +986,20 @@
 
     // ======================== Audio chunk scheduling ========================
 
+    // 取消调度链待触发的下一拍（中断/清队列路径用，让停链意图显式化）
+    function clearScheduleAudioChunksTimer() {
+        if (S.scheduleAudioChunksTimer) {
+            clearTimeout(S.scheduleAudioChunksTimer);
+            S.scheduleAudioChunksTimer = null;
+        }
+    }
+
     function scheduleAudioChunks() {
         if (S.scheduleAudioChunksRunning) return;
         S.scheduleAudioChunksRunning = true;
+        // 单飞行：外部直接调用时吞掉已排队的下一拍，避免并存多条 25ms 自续链
+        // （旧实现的定时器 id 不保存、无条件自续，每次外部触发都会多叠一条永动链）。
+        clearScheduleAudioChunksTimer();
 
         try {
             var scheduleAheadTime = 5;
@@ -1127,8 +1140,13 @@
                 }
             }
 
-            // Continue the scheduling loop
-            setTimeout(scheduleAudioChunks, 25);
+            // 只在仍有工作时自续（复用 _hasPendingAudioWork：含 meta 队列、解码中的
+            // blob、decoder reset 等 in-flight 状态，避免解码窗口期误停链）；
+            // 完全空闲时停链，由 handleAudioBlob 在新音频到达时重新拉起。
+            // 旧实现无条件自续，首次播放后循环以 40Hz 永久空转（且可叠加多条链）。
+            if (_hasPendingAudioWork()) {
+                S.scheduleAudioChunksTimer = setTimeout(scheduleAudioChunks, 25);
+            }
 
         } finally {
             S.scheduleAudioChunksRunning = false;
@@ -1228,9 +1246,11 @@
             );
             S.isPlaying = true;
             scheduleAudioChunks();
+        } else if (!S.scheduleAudioChunksTimer && !S.scheduleAudioChunksRunning) {
+            // isPlaying=true 但调度链已因队列见底而停止（流式间隙）：
+            // 新 chunk 到达时必须重新拉起，否则后续音频永远不会被调度。
+            scheduleAudioChunks();
         }
-        // When isPlaying is already true the scheduler loop is already running via
-        // its own setTimeout; no need to spawn an extra call.
     }
 
     // ======================== Incoming audio blob queue ========================

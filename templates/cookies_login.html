@@ -7,10 +7,10 @@
     <title data-i18n="cookiesLogin.title">N.E.K.O 凭证控制中心</title>
     <link rel="icon" href="/static/icons/icon_systray.ico" type="image/x-icon">
     <script src="/static/libs/purify.js"></script>
-    <script src="/static/i18n-i18next.js"></script>
+    <script src="/static/i18n-i18next.js?v={{ static_asset_version | default('0') }}"></script>
     <script src="/static/theme-manager.js"></script>
-    <link rel="stylesheet" href="/static/css/window_controls.css">
-    <script src="/static/js/window_controls.js" defer></script>
+    <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version | default('0') }}">
+    <script src="/static/js/window_controls.js?v={{ static_asset_version | default('0') }}" defer></script>
     <style>
         :root {
             --primary: #40c5f1;
@@ -118,13 +118,16 @@
 
         .field-group { margin-bottom: 16px; display: flex; flex-direction: column; gap: 8px;}
         .field-group label { font-weight: 600; font-size: 14px; color: #334155; display: flex; justify-content: space-between; }
-        .field-group input { 
+        .field-group input,
+        .field-group textarea {
             width: 100%; padding: 12px 14px; 
             border: 2px solid #e2e8f0; border-radius: 10px; 
             font-family: monospace; font-size: 14px; 
             transition: all 0.2s; -webkit-appearance: none; appearance: none; /* 去除 iOS 默认圆角 */
         }
-        .field-group input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-shadow); }
+        .field-group textarea { resize: vertical; min-height: 130px; line-height: 1.5; }
+        .field-group input:focus,
+        .field-group textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-shadow); }
         
         .submit-btn { 
             width: 100%; padding: 14px; margin-top: 10px; 
@@ -194,7 +197,8 @@
             .tutorial-steps { grid-template-columns: 1fr; gap: 8px; }
 
             /* 5. 输入框体验优化 */
-            .field-group input { 
+            .field-group input,
+            .field-group textarea {
                 font-size: 16px; /* 关键：防止 iOS 缩放 */ 
                 padding: 14px; /* 更大的点击区域 */
             }
@@ -268,13 +272,15 @@
         box-shadow: inset 0 -3px 0 var(--primary);
     }
 
-    [data-theme="dark"] .field-group input {
+    [data-theme="dark"] .field-group input,
+    [data-theme="dark"] .field-group textarea {
         background: var(--input-bg);
         border-color: var(--input-border);
         color: var(--text);
     }
 
-    [data-theme="dark"] .field-group input:focus {
+    [data-theme="dark"] .field-group input:focus,
+    [data-theme="dark"] .field-group textarea:focus {
         border-color: var(--primary);
         box-shadow: 0 0 0 3px var(--primary-shadow);
     }
@@ -488,6 +494,9 @@
     <div class="container-header">
         <h2 data-i18n="cookiesLogin.header">凭证获取中心</h2>
         <div class="neko-window-controls">
+            <button type="button" class="neko-window-control-btn" data-neko-window-control="pin" hidden data-i18n-title="common.pinWindow" data-i18n-aria="common.pinWindow" title="置顶窗口" aria-label="置顶窗口" aria-pressed="false">
+                <span class="neko-window-pin-icon" aria-hidden="true"></span>
+            </button>
             <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
                 <span class="neko-window-minimize-icon"></span>
             </button>
@@ -504,6 +513,9 @@
         <div class="tabs">
             <button class="tab-btn active" onclick="switchTab('netease', this)" data-i18n="cookiesLogin.netease">网易云音乐</button>
             <button class="tab-btn" onclick="switchTab('bilibili', this)" data-i18n="cookiesLogin.bilibili">Bilibili</button>
+            <button class="tab-btn" onclick="switchTab('xhh', this)" data-i18n="cookiesLogin.xhh">小黑盒</button>
+            <button class="tab-btn" onclick="switchTab('youtube', this)" data-i18n="cookiesLogin.youtube">YouTube</button>
+            <button class="tab-btn" onclick="switchTab('twitch', this)" data-i18n="cookiesLogin.twitch">Twitch</button>
             <button class="tab-btn" onclick="switchTab('douyin', this)" data-i18n="cookiesLogin.douyin">抖音</button>
             <button class="tab-btn" onclick="switchTab('kuaishou', this)" data-i18n="cookiesLogin.kuaishou">快手</button>
             <button class="tab-btn" onclick="switchTab('weibo', this)" data-i18n="cookiesLogin.weibo">微博</button>
@@ -561,6 +573,6 @@
     </div>
 
     </div>
-    <script src="/static/js/cookies_login.js?v=2.2"></script>
+    <script src="/static/js/cookies_login.js?v={{ static_asset_version | default('0') }}"></script>
 </body>
 </html>

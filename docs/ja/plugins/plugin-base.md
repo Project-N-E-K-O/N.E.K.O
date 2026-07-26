@@ -249,14 +249,13 @@ recent_events = recent_events.filter(type="note_created").sort(
 # 最近のメッセージを読む
 recent_messages = await self.bus.messages.get(max_count=20)
 
-# bucket 内のメモリレコードを読む
+# メモリ上の bucket から最近のユーザー発話イベントを読む
 memory_records = await self.bus.memory.get(bucket_id="default", limit=20)
-
-# semantic lookup は別の context 操作
-matches = await self.ctx.query_memory("default", "ユーザーの好み")
 ```
 
 list surface は `filter` / `where`、`sort`、`limit`、`watch` です。callable の `filter(predicate)`、`where(predicate)`、`sort(key=...)` は local-only のため、watcher chain では structured `filter(field=value, ...)` と `sort(by=...)` を使います。`watch()` を使えるのは `messages`、`events`、`lifecycle` だけで、`conversations` と `memory` は read-only snapshot です。watcher は `add`、`del`、`change` のみ受け付けます。
+
+`memory` bucket は件数制限付きで、プロセス内に 1 時間保持されます。これは plugin context であり、キャラクターの永続的な facts、reflections、persona へのアクセスではありません。`ctx.query_memory(...)` は非推奨の placeholder endpoint に対する互換呼び出しとしてのみ残されており、semantic recall は行いません。
 
 ---
 

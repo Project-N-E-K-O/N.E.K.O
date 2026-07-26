@@ -15,7 +15,7 @@ const expectedPublicKeys = {
     reactChatWindowHost: [
         'appendMessage', 'clearChoicePromptBySource', 'clearGuideMessages',
         'clearIcebreakerChoicePrompt', 'clearMessages', 'clearPendingRollbackDraft',
-        'closeWindow', 'cycleChatSurfaceMode', 'deactivateToolCursor', 'ensureBundleLoaded',
+        'closeWindow', 'cycleChatSurfaceMode', 'deactivateAvatarTool', 'ensureBundleLoaded',
         'getChatSurfaceMode', 'getState', 'handleMiniGameInviteResolved',
         'isGalgameModeEnabled', 'isMounted', 'openWindow', 'prepareCompactHistoryDropSubmit',
         'refreshGalgameOptions', 'removeMessage', 'rollbackLastDraft', 'rotateCompactToolWheel',

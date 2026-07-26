@@ -1,76 +1,48 @@
 # Config Files
 
-Configuration files are stored under an `N.E.K.O/` subdirectory inside the platform's standard application-data directory: `%LOCALAPPDATA%\N.E.K.O\` on Windows, `~/Library/Application Support/N.E.K.O/` on macOS, and `$XDG_DATA_HOME/N.E.K.O/` on Linux (falling back to `~/.local/share/N.E.K.O/` when unset).
+N.E.K.O. separates **writable user data** from **bundled repository defaults**.
 
-## File locations
+## Writable data root
+
+The storage-location policy selects the application data root. Defaults are:
+
+- Windows: `%LOCALAPPDATA%\N.E.K.O`
+- macOS: `~/Library/Application Support/N.E.K.O`
+- Linux: `$XDG_DATA_HOME/N.E.K.O`, or `~/.local/share/N.E.K.O`
+
+A user-selected location can replace the default. Inspect the storage-location UI/API when diagnosing another machine.
+
+The selected root's `config/` directory can contain:
 
 | File | Purpose |
-|------|---------|
-| `core_config.json` | API keys, provider selection, custom endpoints |
-| `characters.json` | Character definitions and personality data |
-| `user_preferences.json` | UI preferences, model choices |
-| `voice_storage.json` | Custom voice configurations |
-| `workshop_config.json` | Steam Workshop settings |
-| `tutorial_prompt_config.json` | Tutorial/onboarding prompt thresholds and flow state |
+| --- | --- |
+| `core_config.json` | Provider selection, credentials, role overrides, feature settings |
+| `characters.json` | Character definitions and reserved avatar data |
+| `user_preferences.json` | User/UI preferences |
+| `voice_storage.json` | Saved voice metadata |
+| `workshop_config.json` | Workshop settings |
 
-## `core_config.json`
+Features may add more runtime files. Prefer the Web UI because it writes the current schema.
 
-The primary runtime configuration file.
+## Bundled configuration
 
-```json
-{
-  "coreApiKey": "",
-  "coreApi": "qwen",
-  "assistApi": "qwen",
-  "assistApiKeyQwen": "",
-  "assistApiKeyOpenai": "",
-  "assistApiKeyGlm": "",
-  "assistApiKeyStep": "",
-  "assistApiKeySilicon": "",
-  "assistApiKeyGemini": "",
-  "mcpToken": "",
-  "agentModelUrl": "",
-  "agentModelId": "",
-  "agentModelApiKey": ""
-}
-```
+The repository `config/` directory is application data, not the normal user-data location.
 
-## `characters.json`
+- `config/api_providers.json` defines provider profiles and related catalogs.
+- `config/characters/*.json` contains defaults for the eight supported locales.
+- Python modules under `config/` provide validated defaults and constants.
 
-Defines all characters and the master (owner) profile.
+On first use, `utils/config_manager/` migrates or copies supported defaults into the writable root. Subsequent writes go to the writable root.
 
-```json
-{
-  "主人": {
-    "档案名": "哥哥",
-    "性别": "男",
-    "昵称": "哥哥"
-  },
-  "猫娘": {
-    "小天": {
-      "性别": "女",
-      "年龄": 15,
-      "昵称": "T酱, 小T",
-      "live2d": "mao_pro",
-      "voice_id": "",
-      "system_prompt": "..."
-    }
-  },
-  "当前猫娘": "小天"
-}
-```
+## Character schema
 
-The top-level keys are Chinese and the code depends on them verbatim: `主人` (the owner profile), `猫娘` (a map of characters keyed by name), and `当前猫娘` (the name of the currently active character). English keys like `master`/`catgirl` are not recognized and will be ignored.
+Character identifiers and display names come from the active character data. Reserved multi-avatar settings live under `_reserved.avatar`; a legacy top-level `live2d` value may still appear for compatibility. The emergency code fallback and the locale JSON defaults are not identical, so never hardcode a translated character name as an identifier.
 
-Character fields are flexible — any key-value pair can be added and will be included in the character's context.
+## Safe manual editing
 
-## File discovery
+1. Stop the application.
+2. Back up the selected data root.
+3. Preserve JSON types and reserved fields.
+4. Restart and verify the owning UI.
 
-The `ConfigManager` class (`utils/config_manager.py`) handles file discovery:
-
-1. Prefer the platform's standard application-data directory (Windows `%LOCALAPPDATA%`, macOS `~/Library/Application Support`, Linux `$XDG_DATA_HOME` or `~/.local/share`), creating/reading `N.E.K.O/` underneath it.
-2. If the standard directory is unavailable, fall back to legacy locations (such as `~/Documents/N.E.K.O/`, the executable's own directory, or the current working directory) — these are used only for reading/importing older data.
-3. Fall back to the project's bundled `config/` directory.
-4. Create default files if none exist.
-
-The legacy `~/Documents/N.E.K.O/` path (resolved on Windows via the Windows API `SHGetFolderPathW`) is now only a legacy-data import candidate, not the primary storage location.
+Never commit personal `core_config.json`, character data, or credentials.

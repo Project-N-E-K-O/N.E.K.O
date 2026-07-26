@@ -2,19 +2,19 @@
 
 from __future__ import annotations
 
+import importlib.util
+import ipaddress
+import os
+import shutil
 import subprocess
 import sys
+import threading
 import time
-import ipaddress
 import urllib.error
 import urllib.parse
 import urllib.request
-import os
-import shutil
-import importlib.util
-import threading
 from pathlib import Path
-from typing import Any, Callable, IO
+from typing import IO, Any, Callable
 
 from ..core.contracts import WtConfig
 
@@ -126,6 +126,7 @@ class EmbeddedDataLayerProcess:
     def terminate(self) -> None:
         self._terminated = True
         self.httpd.shutdown()
+        self.httpd.server_close()
         self.service.stop()
 
     def kill(self) -> None:
@@ -246,6 +247,7 @@ class DataLayerProcessManager:
             self._started_by_plugin = False
             self._mode = "failed"
             self._last_error = f"{type(exc).__name__}: {exc}"
+            self._close_log_handles()
             return self.snapshot()
 
         deadline = time.monotonic() + self.config.data_layer_startup_timeout_seconds
@@ -269,6 +271,7 @@ class DataLayerProcessManager:
 
     def stop(self) -> dict[str, Any]:
         if not self._started_by_plugin or self._process is None:
+            self._close_log_handles()
             return self.snapshot()
 
         proc = self._process
@@ -287,6 +290,28 @@ class DataLayerProcessManager:
             self._last_health = False
             self._close_log_handles()
         return self.snapshot()
+
+    def observe_health(self, healthy: bool) -> None:
+        """Refresh runtime health from the plugin's normal telemetry poll."""
+
+        self._last_health = bool(healthy)
+        if self._started_by_plugin and self._process is not None:
+            returncode = self._process.poll()
+            if returncode is not None:
+                self._mode = "failed"
+                self._last_error = self._format_exit_error(returncode)
+                self._process = None
+                self._started_by_plugin = False
+                self._close_log_handles()
+                return
+            self._mode = "managed"
+            if healthy:
+                self._last_error = None
+            return
+
+        if healthy:
+            self._mode = "external"
+            self._last_error = None
 
     def snapshot(self) -> dict[str, Any]:
         pid = getattr(self._process, "pid", None) if self._process is not None else None
@@ -310,10 +335,6 @@ class DataLayerProcessManager:
             raise FileNotFoundError(str(script))
 
         bind_host = _bind_host_from_url(self.config.data_layer_url)
-        self._prepare_log_files()
-        assert self._stdout_handle is not None
-        assert self._stderr_handle is not None
-
         python_prefixes = _python_command_prefixes()
         if not python_prefixes:
             self._python_cmd = ["embedded"]
@@ -323,6 +344,9 @@ class DataLayerProcessManager:
                 port=int(_port_from_url(self.config.data_layer_url)),
             )
 
+        self._prepare_log_files()
+        assert self._stdout_handle is not None
+        assert self._stderr_handle is not None
         self._python_cmd = python_prefixes[0]
         cmd = [
             *self._python_cmd,

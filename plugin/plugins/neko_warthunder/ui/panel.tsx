@@ -536,6 +536,11 @@ const PANEL_STYLES = `
     .wt-onboarding-task-head { display: grid; }
     .wt-control-guide-row { grid-template-columns: 1fr; gap: 6px; }
   }
+  @media (max-width: 360px) {
+    .wt-tabs { padding-inline: 10px; gap: 10px; }
+    .wt-tab { min-width: 52px; font-size: 16px; }
+    .wt-settings-trigger { width: 34px; height: 34px; }
+  }
 `
 
 function actionById(actions: HostedAction[], id: string): HostedAction | undefined {

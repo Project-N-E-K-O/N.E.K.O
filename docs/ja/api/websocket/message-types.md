@@ -1,198 +1,186 @@
-# WebSocket メッセージタイプ
+# WebSocket Message Types
 
-オーディオペイロードを除き、メッセージは JSON テキストフレームです。オーディオの場合、サーバーはまず `audio_chunk` JSON ヘッダーフレームを送信し、続いて PCM バイトを運ぶ独立した生のバイナリフレームを送信します（詳細は下記の `audio_chunk` セクションを参照）。
+Client text frame は `action`、server text frame は `type` を使います。以下は main handler と同梱 frontend から reverse-enumerate したものです。internal とした field は first-party UI flow で、public protocol version の安定性を保証しません。
 
-## クライアント → サーバー
+## Client → server
 
-### `start_session`
+### Conversation action
 
-LLM セッションを初期化します。
+#### `start_session`
 
 ```json
-{
-  "action": "start_session",
-  "input_type": "audio",
-  "new_session": true
-}
+{ "action": "start_session", "input_type": "audio", "new_session": false }
 ```
 
-### `stream_data`
+有効 `input_type`: `audio`、`screen`、`camera`、`text`、`avatar_drop_image`、`user_image`。
 
-ユーザー入力（オーディオチャンクまたはテキスト）を送信します。
+#### `stream_data`
 
-**オーディオ入力:**
-```json
-{
-  "action": "stream_data",
-  "input_type": "audio",
-  "data": "<base64 encoded PCM audio>"
-}
-```
+Text:
 
-**テキスト入力:**
 ```json
 {
   "action": "stream_data",
   "input_type": "text",
-  "data": "Hello, how are you?"
+  "data": "こんにちは",
+  "request_id": "client-turn-id",
+  "memory_text": "scaffold の代わりに記録する任意 text",
+  "source": "optional-source"
 }
 ```
 
-**画面データ:**
+Image (`screen`、`camera`、`avatar_drop_image`、`user_image`):
+
 ```json
 {
   "action": "stream_data",
-  "input_type": "screen",
-  "data": "<base64 encoded screenshot>"
+  "input_type": "user_image",
+  "data": "data:image/jpeg;base64,...",
+  "request_id": "client-turn-id",
+  "avatar_position": { "x": 10, "y": 20, "width": 300, "height": 500 }
 }
 ```
 
-### `end_session`
-
-現在のセッションを終了します。
+Audio は signed 16-bit PCM **sample 数値配列**で、base64 でも client binary frame でもありません。
 
 ```json
-{ "action": "end_session" }
+{ "action": "stream_data", "input_type": "audio", "data": [0, -12, 48, 103] }
 ```
 
-### `pause_session`
+`avatar_position` は fresh screen/image と対になる任意 metadata。省略すると以前の cached position を clear します。
 
-接続を閉じずに処理を一時停止します。
+#### `end_session` / `pause_session`
+
+```json
+{ "action": "end_session", "reason": "user_stop", "goodbye_active": false }
+```
 
 ```json
 { "action": "pause_session" }
 ```
 
-### `ping`
+いずれも現在 provider session を終了し、`pause_session` は manager を idle にします。Application WebSocket は接続を維持します。
 
-キープアライブハートビート。
+#### `avatar_interaction`
+
+Ephemeral avatar gesture/touch request。同梱 payload は `interaction_id`、`tool_id`、`action_id`、`target: "avatar"`、`timestamp`、`intensity`、必要に応じ `touch_zone`/`pointer`。結果は `avatar_interaction_ack`。
+
+### UI / lifecycle action
+
+| Action | 主な field | 挙動 |
+|---|---|---|
+| `ping` | — | `pong` を返します。 |
+| `language_update` | `language` | universal language update 後は no-op dispatch。 |
+| `greeting_check` | `is_switch`、`reason`、`language` | character switch または reconnect gap >15 秒で greeting。first-party focus/agent state も同期。 |
+| `cat_greeting_check` | `cat_duration_seconds`、`tier`、`was_auto` | cat form から戻る greeting。duration は 0–7 日へ clamp。 |
+| `goodbye_state` | `active`、`reason` | silent-goodbye delivery gate を設定/解除。 |
+| `voice_play_start` | `turnId`/`turn_id`、`source` | frontend buffered audio が実際に再生開始。 |
+| `voice_play_end` | `turnId`/`turn_id`、`source` | frontend audio queue が完全に drain。 |
+
+Playback boundary は proactive arbitration に重要です。Upstream generation end は audible playback end より早いためです。
+
+### Capture bridge action（internal）
+
+| Action | 用途 |
+|---|---|
+| `capture_bridge_status` | frontend capture client/capability を登録・更新。 |
+| `capture_bridge_response` | correlation field で request を resolve。 |
+| `screenshot_response` | legacy `request_screenshot` を resolve。`data` は data URL/base64 image、任意 `avatar_position`。 |
+
+### `telemetry`（internal、best effort）
 
 ```json
-{ "action": "ping" }
+{ "action": "telemetry", "kind": "counter", "name": "chat_sent", "value": 1, "dims": { "surface": "index_wide" } }
 ```
 
-## サーバー → クライアント
+`kind` は `counter`、`histogram`、`event`（event は `fields`）。backend は name/key/value/count を cap し、unsupported type/non-finite value を drop、ack は返しません。User text や character name を telemetry に入れないでください。
 
-### `gemini_response`
+任意 action に `language` を付けられます。
 
-LLM からのストリーミングテキストレスポンス。
+## Server → client
+
+### Session lifecycle
+
+| Type | Field | 意味 |
+|---|---|---|
+| `session_preparing` | `input_mode` | Provider startup 中。 |
+| `session_started` | `input_mode` | `audio` / `text` mode ready。 |
+| `session_failed` | `input_mode` | Startup failure。通常 detail は `status`。 |
+| `session_ended_by_server` | `input_mode` | Backend/upstream が provider session を終了。 |
+| `catgirl_switched` | `new_catgirl`、`old_catgirl` | 新 character route へ reconnect。 |
+| `pong` | — | `ping` response。 |
+
+### Text、audio、recovery
+
+#### `gemini_response`
+
+名称は歴史的で、現在は複数 provider の streamed assistant text に使います。
 
 ```json
 {
   "type": "gemini_response",
-  "text": "Hi there! How can I help you?",
+  "text": "こんにちは",
   "isNewMessage": true,
-  "turn_id": "<turn id>",
-  "request_id": "<request id>"
+  "turn_id": "server-turn-id",
+  "request_id": "client-turn-id",
+  "metadata": { "source": "optional" }
 }
 ```
 
-### `audio_chunk`
+最初の visible chunk は `isNewMessage: true`、後続は同じ `turn_id` へ append。Proactive/server-origin turn は `request_id: null` の場合があります。
 
-オーディオレスポンス（TTS 出力または直接 LLM オーディオ）。サーバーはまずこの JSON ヘッダーフレームを送信し、続いて生の PCM オーディオバイトを独立したバイナリ WebSocket フレームとして送信します（base64 として埋め込まれません）。`speech_id` は割り込み（barge-in）時にこのターンの音声を正確に照合するために使われます。
+#### `audio_chunk`
+
+```json
+{ "type": "audio_chunk", "speech_id": "speech-id" }
+```
+
+直後に binary audio frame が 1 つ続きます。`speech_id` で対応付けます。[Audio Streaming](./audio-streaming) を参照。
+
+#### Recovery / transcript event
+
+| Type | 主な field | 用途 |
+|---|---|---|
+| `response_discarded` | `reason`、`attempt`、`max_attempts`、`will_retry`、`message`、`request_id` | rejected partial response を rollback/clear、または retry 準備。`message` 自体が structured JSON の場合あり。 |
+| `user_transcript` | transcript/turn metadata | First-party live transcript 表示。 |
+| `user_activity` | turn/interruption metadata | Barge-in / user activity coordination。 |
+| `auto_close_mic` | `reason_code`、`api_type`、`message` | Silence timeout で voice session close。 |
+| `repetition_warning` | `name` | Repetition recovery で conversation state reset。 |
+
+### Status / display
+
+| Type | 主な field | 用途 |
+|---|---|---|
+| `status` | `message` | `message` は `{ code, details? }` を含む **JSON encoded string**。再 parse 必須。 |
+| `expression` | expression payload | Live2D/VRM/MMD/PNGTuber expression 駆動。 |
+| `focus_state` | `active` | Focus cognition display enter/leave。 |
+| `focus_charge` | `charge` と timing/mode | Edge glow charge 更新。 |
+| `focus_thinking` | `active` | Transient thinking indicator。 |
+| `topic_hint` | `author`、`turn_id` | Frontend-only teaser。chat memory には入りません。 |
+| `cancel_topic_hint` | `turn_id` | orphan teaser を削除。 |
+| `reload_page` | `message` | Config change。`message` は status-style JSON string。 |
+
+### First-party workflow event
+
+現在の UI integration event で、stable external contract ではありません。
+
+- Agent: `agent_notification`、`agent_task_update`、`agent_status_update`。
+- Capture: `request_screenshot`、`capture_bridge_request`、`screen_share_error`。
+- Mini-game: `mini_game_invite_options`、`mini_game_invite_resolved`、`game_window_state_change`。
+- Music/tool: `music_play_url`、`music_allowlist_add`。
+- Activity/onboarding: `activity_context_prompt`。
+- Legacy/sync: `system`、`cozy_audio`。
+
+`avatar_interaction_ack` も first-party ですが envelope は小さく明示的です。
 
 ```json
 {
-  "type": "audio_chunk",
-  "speech_id": "<このターンの speech_id>"
+  "type": "avatar_interaction_ack",
+  "interaction_id": "id",
+  "accepted": true,
+  "reason": "accepted",
+  "turn_id": "turn-id"
 }
 ```
 
-その後にバイナリフレーム（生の PCM バイト）が続きます。クライアントは上記のヘッダーフレームを受信した後、次のバイナリフレームを読み取ってデコードし再生します。
-
-### `status`
-
-セッション状態に関するステータスメッセージ。
-
-```json
-{
-  "type": "status",
-  "message": "Session started successfully"
-}
-```
-
-### `emotion`
-
-モデルの表情を駆動するための感情ラベル。
-
-```json
-{
-  "type": "emotion",
-  "emotion": "happy"
-}
-```
-
-### `catgirl_switched`
-
-サーバー側でアクティブなキャラクターが変更された通知。
-
-```json
-{
-  "type": "catgirl_switched",
-  "new_catgirl": "new_character",
-  "old_catgirl": "old_character"
-}
-```
-
-クライアントは `/ws/{new_catgirl}` に再接続する必要があります。
-
-### `reload_page`
-
-サーバーがクライアントにページの更新を要求します。
-
-```json
-{
-  "type": "reload_page",
-  "message": "Configuration changed, please refresh"
-}
-```
-
-### `agent_notification`
-
-エージェントタスクの更新通知。
-
-```json
-{
-  "type": "agent_notification",
-  "text": "Found relevant information about...",
-  "source": "web_search",
-  "status": "completed"
-}
-```
-
-### `agent_task_update`
-
-エージェントタスクの詳細ステータス。
-
-```json
-{
-  "type": "agent_task_update",
-  "task": {
-    "id": "task-uuid",
-    "status": "running",
-    "progress": 50
-  }
-}
-```
-
-### `agent_status_update`
-
-エージェントシステムのステータススナップショット。
-
-```json
-{
-  "type": "agent_status_update",
-  "snapshot": {
-    "active_tasks": 1,
-    "flags": { "agent_enabled": true }
-  }
-}
-```
-
-### `pong`
-
-`ping` に対するレスポンス。
-
-```json
-{ "type": "pong" }
-```
+Additive UI event で壊れないよう、unknown server `type` は安全に無視してください。

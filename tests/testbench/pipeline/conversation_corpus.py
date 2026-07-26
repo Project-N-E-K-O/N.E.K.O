@@ -57,7 +57,6 @@ _DEFAULT_LIMIT_ROWS = 5000
 # SQLAlchemy row list and the normalized trace list at the same time.
 _TIME_INDEX_BATCH_SIZE = 256
 
-
 def _normalize_role(raw_type: Any) -> str:
     """Map LangChain message ``type`` to the trace graph's role vocabulary."""
     t = str(raw_type or "").lower()

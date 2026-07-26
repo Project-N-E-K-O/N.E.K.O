@@ -1,26 +1,16 @@
 # デプロイ概要
 
-N.E.K.O. は環境やニーズに応じて複数の方法でデプロイできます。
+| 方法 | 用途 | Entry |
+| --- | --- | --- |
+| Desktop release | End user | Electron UI + packaged backend |
+| Source launcher | Local development | `uv run python launcher.py` |
+| Docker Compose | Headless/server | Nginx + Python services |
+| Standalone modules | Isolation | memory/main/agent separately |
 
-| 方法 | 最適な用途 | プラットフォーム |
-|--------|----------|----------|
-| [Docker](/ja/deployment/docker) | 本番環境、サーバー、ヘッドレス | Linux、macOS |
-| [手動セットアップ](/ja/deployment/manual) | 開発、カスタマイズ | 全プラットフォーム |
-| [Windows 実行ファイル](/ja/deployment/windows-exe) | エンドユーザー | Windows |
+Cross-platform workflow は Windows、macOS、Linux を build します。Scheduled output は **nightly prerelease** で、stable promise ではありません。
 
-## 最小要件
+Source は Python 3.11、`uv`、frontend lockfile に適合する Node（plugin manager は `^20.19.0 || >=22.12.0`）が必要です。Local vectors は optional CPU path で、無効でも BM25 は利用できます。
 
-- **CPU**: 2 コア以上
-- **RAM**: 最小 4 GB、推奨 8 GB
-- **Python**: 3.11（手動セットアップの場合）
-- **ネットワーク**: API 呼び出しのためのインターネット接続（ローカル LLM を使用する場合を除く）
+Source preferred ports は main 48911、memory 48912、agent/tool 48915、user-plugin 48916。Docker host 48911/48912 は Nginx HTTP/HTTPS mapping で、source process table とは異なります。
 
-## 使用ポート
-
-| ポート | サービス | 必須 |
-|------|---------|----------|
-| 48911 | メインサーバー（Web UI） | はい |
-| 48912 | メモリサーバー | はい |
-| 48913 | モニターサーバー | オプション |
-| 48915 | エージェントサーバー | オプション |
-| 48916 | プラグインサーバー | オプション |
+N.E.K.O. は主に local companion です。外部公開前に authentication、proxy headers、TLS、firewall と privacy impact を確認してください。

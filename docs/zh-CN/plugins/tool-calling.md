@@ -4,6 +4,10 @@
 LLM 在用户问"北京天气怎么样"时会自动调用，等待返回结果，再用返回值生成
 最终回复。
 
+::: warning 它不同于插件入口
+`@llm_tool(name="get_weather")` 把对话期工具注册到 main_server 的 `/api/tools` registry。`@plugin_entry(id="get_weather")` 声明的是供插件管理器、跨插件调用和独立用户插件 Agent 路由使用的运行时入口。SDK 内部为了复用 IPC，会把 LLM tool handler 存成保留前缀的动态入口（`__llm_tool__...`），但这项实现细节不会把两套公开 API 合并成一套。
+:::
+
 本机制由 `main_logic/tool_calling.py` 的 `ToolRegistry` 支撑，对所有支持工具
 调用的 provider（OpenAI / Gemini / GLM / Qwen Omni / StepFun 等）统一抽象。
 
@@ -312,6 +316,7 @@ mgr.register_tool(ToolDefinition(
 
 - **不要在工具名里放敏感信息**：LLM 会在生成时把工具名写进 tool_calls，
   最终持久化进对话历史
+- **不要返回或抛出密钥**：工具输出和错误文本会送回 LLM，也可能进入对话历史。请返回脱敏后的稳定错误码，并且不要把原始隐私 payload 写进 logger。
 - **`callback_url` 必须指向本机 loopback**：服务端会用 `urlparse` +
   `ipaddress.ip_address` 校验 host 在 `127.0.0.0/8` / `::1` / 字面量
   `localhost` 之内，否则注册请求会被 422 拒绝。这是**两道独立闸门**：

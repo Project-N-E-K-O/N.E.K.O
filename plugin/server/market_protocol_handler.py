@@ -131,7 +131,7 @@ def _handle_install(params: dict) -> int:
     published_at = params.get("published_at")
     expected_plugin_toml_id = params.get("expected_plugin_toml_id")
     mode = params.get("mode", "install")
-    on_conflict = params.get("on_conflict", "rename")
+    on_conflict = params.get("on_conflict", "fail")
 
     logger.info("Protocol install: plugin={} version={} url={}", plugin_id, version, url)
 

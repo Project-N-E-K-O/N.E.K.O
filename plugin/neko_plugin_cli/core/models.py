@@ -451,7 +451,7 @@ class InstallResult(_BaseModel):
     metadata_found: bool = False
     payload_hash: OptionalPayloadHashValue = ""
     payload_hash_verified: bool | None = None
-    conflict_strategy: ConflictStrategyValue = "rename"
+    conflict_strategy: ConflictStrategyValue = "fail"
 
     @model_validator(mode="after")
     def _validate_layout(self) -> InstallResult:

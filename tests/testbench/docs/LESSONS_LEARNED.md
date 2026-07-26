@@ -11,12 +11,18 @@
 > 覆盖率 smoke 派生 + P26 Commit 1 版本号落档/公共文档端点/4 象限分层派生 +
 > P26 C3 hotfix markdown pipeline + USER_MANUAL 深度事实对齐 +
 > **上游同步 2026-06 (testbench 对齐主程序 `main` 至 7 月): 记忆子系统语义合约覆盖派生**的
-> 候选元教训 (L28-L61, 登记于 §7.A 候选区, 未计入主编号 29 条;
+> 候选元教训 (L28-L62, 登记于 §7.A 候选区, 未计入主编号 29 条;
 > **L50 / L51 已升格为 §7.28 / §7.29**, 其余候选待 P27+ 二次复现后升格.
 > **上游同步派生 L56 (合约 smoke 单因子隔离) / L57 (按 import 副作用画像选 直接import vs copy+drift);
 > P27 Memory Trace 记忆分析子页 lineage 图 UI 打磨派生 L58 (别用隐藏数据治布局抱怨) /
 > L59 (分层布局须叶→根用已定稿子坐标重算重心) / L60 (抓运行进程状态喂纯函数离线复现 + 数值化不变量);
-> P29 收尾 v1.9.3 派生 L61 (LLM 失败回退一律不静默 + 一处反馈先做全族差集审计)**).
+> P29 收尾 v1.9.3 派生 L61 (LLM 失败回退一律不静默 + 一处反馈先做全族差集审计);
+> 上游同步 2026-07 派生 L62 (drift smoke 解析上游派生值时锚定"包"而非"单文件");
+> P30 记忆导出派生 L63 (只读端点严禁取写锁) / L64 (递归脱敏须覆盖 dict 键非只值) /
+> L65 (跨层脱敏须整包末步单一变换保一致) / L66 (需用户手势激活态的 API 须在任何 await 前调用);
+> P32 代码线索派生 L67 (由分析反推代码前必核对被反推方的真实 schema, 别凭直觉臆造不变量) /
+> L68 (新可滚动子页根元素须显式声明滚动契约: 定高 flex 父下 flex:1+min-height:0+overflow-y:auto) /
+> L69 (开发者 UI 链接文档须内外分离: 内部裁决文档不公开, 另写干净的面向使用者文档)**).
 >
 > **§7.25 特别说明**: 一周内已连续 **6** 次同族实锤 (字段名漂移 / envelope 漂移 /
 > LLM wire role 三次漂移 / **Prompt Preview "重建视图 ≠ 真实 stream" 架构级
@@ -44,10 +50,10 @@
 
 ---
 
-## 1. 核心方法论 (5 条, 超项目价值)
+## 1. 核心方法论 (7 条, 超项目价值)
 
-这 5 条方法论来自 P24 整合期的五轮审查, 适用于**任何规模 > 3 个月的 AI
-辅助软件项目**, 不限于本项目.
+这些方法论来自 P24 整合期的五轮审查 (1.1-1.6) + P32 追加的"设计前必读经验"
+前置总纲 (1.7), 适用于**任何规模 > 3 个月的 AI 辅助软件项目**, 不限于本项目.
 
 ### 1.1 Intent ≠ Reality
 
@@ -262,6 +268,34 @@
 >   "语义层必纳入, 运行时层 OOS, P25 新阶段交付". 新 P25 蓝图完整定义
 >   `POST /api/session/external-event` 统一端点 + session-level dedupe cache
 >   + dual-mode memory write (session vs recent).
+
+### 1.7 设计前必通读经验教训, 全程严守既有规范 (否则"经验写了不读 = 没写")
+
+**任何 AI agent 在开发 / 写设计草案 (蓝图 / plan) 之前, 必须先通读本项目已沉淀的
+经验教训与横切原则, 并在设计中逐条对照; 经验教训若"写了却不在下一次设计时被读取
+和应用", 与没写没有区别 — 集体记忆只有被 reflexively 载入当次工作内存才产生价值.**
+
+**必读清单 (动笔前)**:
+- 本文档 `LESSONS_LEARNED.md`: §1 方法论 / §2 架构原则 / §3-4 高频·低危 bug /
+  §5 AI 特有坑 / §7 元教训 + §7.A 候选.
+- `AGENT_NOTES §3A` 横切原则 + §4 踩点案例; `PROGRESS.md` 当前断点; 相关
+  `PNN_BLUEPRINT.md`.
+
+**全程严守 (草案 → 实装 → smoke → 回写)** 本项目一贯规范:
+- 单一 chokepoint / 只读边界 / fail-loud 不 silent fallback / 蓝图 §A 多轮自审 +
+  RAG 停机判据 / 三份 docs 同步 / 编号约定 / `i18n(key,...args)` 单调用 /
+  subpage teardown 显式 / 跨边界 shape 必 rg 消费方.
+
+**落地机制 (强制)**:
+- 每份 `PNN_BLUEPRINT.md` 的 §A 必含一节 **"本阶段对照 LESSONS 的逐条核对"**
+  (命中的教训编号 + 已满足项), 不允许"我觉得没问题"式空过; **缺这节 = 蓝图不
+  完整, 不得开工**.
+- 用户下达开发任务时, agent 的**第一步是"载入集体记忆"而非直接动笔**.
+
+**元归纳**: 本条是 §1.1 (Intent≠Reality 反射性 grep) 与 L31 (审查锚定初衷) 的
+**前置总纲** — 那两条管"审查 / 实装时怎么不漂", 本条管"**动笔前必须先把集体记忆
+载入工作内存**". 反模式: agent 凭训练直觉 + 蓝图草稿拼, 不读项目已有教训 → 把前人
+踩平的坑再踩一遍 (本项目 §7.25 "一周六次同族" 正是"读了不用 / 没读"的代价).
 
 ---
 
@@ -658,7 +692,7 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
         - §1.4 "覆盖度 RAG 灯" 的**文档版本** — 文档起草也可做 RAG 自检: 章节覆盖 UI 区域的比例 / 章节实锤的代码引用行数 / 章节手测通过的 pass 轮次. 绿黄红三灯对齐.
     - **对应 Cursor skill**: `docs-code-reality-grep-before-draft` (2026-04-24 post-push 整理期同批抽出, `~/.cursor/skills/docs-code-reality-grep-before-draft/SKILL.md`, 四层防御全量落纸; 与 §7.28 `server-boot-id-for-ui-state` 同为"升格条目 → 可机械化 skill"第二个实证).
 
-### §7.A 候选追加 (P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理 UTF-8 事件 + P25 Day 1 subagent 并行开发 + P25 Day 1 fixup mirror shape + P25 Day 2 前端面板派生 + P25 Day 2 polish r1-r6 手测派生 + P26 Commit 1 版本号落档 / 公共文档端点 / 4 象限文档分层派生 + **P26 Commit 3 USER_MANUAL + C3 hotfix 链接锚点图片 pipeline 派生 (L50/L51 已于 post-push 整理期升格为 §7.28/§7.29)** + **上游同步 2026-06 记忆子系统覆盖派生 L56/L57** + **P27 Memory Trace 记忆分析子页 lineage 图 UI 打磨派生 L58/L59/L60** + **P29 收尾 v1.9.3 LLM 回退可见性派生 L61**, 待二次复现后并入主编号)
+### §7.A 候选追加 (P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理 UTF-8 事件 + P25 Day 1 subagent 并行开发 + P25 Day 1 fixup mirror shape + P25 Day 2 前端面板派生 + P25 Day 2 polish r1-r6 手测派生 + P26 Commit 1 版本号落档 / 公共文档端点 / 4 象限文档分层派生 + **P26 Commit 3 USER_MANUAL + C3 hotfix 链接锚点图片 pipeline 派生 (L50/L51 已于 post-push 整理期升格为 §7.28/§7.29)** + **上游同步 2026-06 记忆子系统覆盖派生 L56/L57** + **P27 Memory Trace 记忆分析子页 lineage 图 UI 打磨派生 L58/L59/L60** + **P29 收尾 v1.9.3 LLM 回退可见性派生 L61** + **上游同步 2026-07 drift smoke 锚点粒度派生 L62**, 待二次复现后并入主编号)
 
 > 纪律: 本文档 §7 只记录 "**已经踩过 ≥ 2 次**的同族教训". 下列候选 (L28-L52)
 > 多数仍为**单次派生** (源自 P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理
@@ -1375,6 +1409,75 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
     - `audit-chokepoint-invariant` skill —— 把"一处反馈 → 全族差集审计"固化为反射动作, 防"打地鼠式只修被点名那处"。
     - §7.A L58/L59 家族("先怀疑算法本身") —— 同属"别用治标手段(藏数据 / 静默降级)掩盖应当透明暴露的事实"。
 - **进入主编号条件**: 需要在后续任一阶段再命中一次"某处降级/失败被静默, 收到反馈后做同族差集审计统一补透出"同族, 才升级为主编号。
+
+**L62 (新候选) "drift smoke 解析上游派生值时, 锚定'包'而非'单文件' —— 上游把常量的字面定义在包内搬家(定义处 → re-export 处), 硬编码单文件的解析器会失锚"** (上游同步 2026-07 `p25_avatar_dedupe_drift` 二次失锚派生, 详见 `UPSTREAM_SYNC_2026-07.md`):
+
+- **场景**: L30 "copy + drift smoke" 对照里, 上游侧常量已从字面量演化为**别名到 config 包**(`AVATAR_INTERACTION_MEMORY_DEDUPE_WINDOW_MS = AVATAR_INTERACTION_DEDUPE_WINDOW_MS`), smoke 需把别名**解析回整数**才能与副本的字面量 8000 比对(见 §7.A L56 家族 / 2026-06 sync 的 R2/R3 解析值改造)。
+- **失败模式**: 2026-06 的修法把"去哪里取整数"**硬编码成 `config/__init__.py`**。2026-07 上游把真正的 `= 8000` 字面量迁到 `config/session_settings.py`, `config/__init__.py` 退化为 `from .session_settings import ...` 的纯 re-export。解析器只认 `NAME = <int>` 赋值行、遇 import 行返回 None → R2/R3 拿不到上游值、R5 合成 exec 因缺别名绑定 `NameError`。**值(8000)与函数体全程没变, 纯粹是"定义位置在包内搬家"击穿了单文件锚点。**
+- **修法 / 归纳**:
+    1. **锚定包不锚定文件**: 解析器改为按 `__init__.py` → 各 `config/*.py` 顺序**扫描整个 config 包**定位字面量(`_resolve_config_int`), 容忍常量在包内任意子模块间迁移。凡"跨包取某个上游单一真相值"的静态解析, 默认锚定**包/命名空间**, 而非它此刻恰好所在的那个文件。
+    2. **re-export ≠ 定义处**: 一个符号能 `from pkg import X` 不代表 `pkg/__init__.py` 里有它的字面定义; 静态(非 import)解析必须追到真正的赋值语句所在模块。
+    3. **上游同步后跑全套 drift smoke 就是为了逮这类"锚点失效"**: 这类红不是功能 bug, 是 testbench 与上游结构演化脱锚的**预期信号**, 修 testbench 侧解析器即可, 主程序不动。
+- **关联**:
+    - §7.A L56/L57 家族(上游同步 2026-06 派生) —— L62 是同一 drift smoke 在**下一次**上游同步中因"同类改造留了硬编码单文件锚点"再度失锚, 属"锚点粒度选错"的具体复现。
+    - §1.1 Intent≠Reality —— "副本应等价于上游"是 Intent, "上游常量搬家后解析器失锚"是 Reality; drift smoke 正是把这个 gap 变红的机制。
+- **进入主编号条件**: 需再命中一次"drift/对照类校验因锚定单文件而非包/命名空间, 在上游结构迁移后失锚", 才升级为主编号。
+
+**L63 (新候选) "只读端点严禁取写锁 — 会话锁往往捆绑 autosave/审计等副作用, 把'纯读'悄悄变成'读+写'"** (P30 记忆导出端点初版误用 `session_operation` 引入 `source=memory.export` autosave 派生, 2026-07-15, 单次实锤):
+
+- **场景**: 新增一个语义上**纯读**的端点 (导出/快照/分析), 出于"和其它写端点保持一致"的惯性套用了项目里的会话锁上下文 (`session_operation` / `with lock:`)。
+- **失败模式**: 该锁上下文并非只做互斥, 它在退出时**顺带触发 autosave** (以及 diagnostics 审计等)。结果一个"导出"操作给被导出的会话留下了 `source=memory.export` 的自动存档写入 —— 与蓝图明写的"纯读、不落盘、无副作用"直接冲突, 且并发下还平白阻塞其它请求。
+- **修法 / 归纳**: 只读端点应对齐**同类只读端点**的骨架 (本项目 `/overview` `/lineage`: `_require_session` + `_require_character` + `asyncio.to_thread(...)`, **不进任何写锁上下文**)。写锁上下文要在 docstring 里**明列它的全部副作用** (锁 + autosave + 审计), 让调用方一眼看出"取这个锁 = 会写盘"。判据: 新端点接锁前先问"这个锁除了互斥还做了什么?"
+- **关联**: §3A F7 "fail-loud" 的对偶 —— 这里是"side-effect-loud": 副作用捆绑在通用上下文里而不显性化, 是"隐式写"的温床。与 §1.1 Intent≠Reality 同源 (Intent="纯读", Reality="读+autosave")。对应 skill 候选: `read-only-endpoint-no-write-lock` (待抽)。
+- **进入主编号条件**: 需再命中一次"只读路径因套用通用上下文而带出写副作用", 才升级为主编号。
+
+**L64 (新候选) "递归改写/脱敏对象树时必须同时覆盖 dict 的键, 不能只改值 — 键里也可能藏着要改的标识"** (P30 身份假名化在 persona.json 泄漏派生, 2026-07-15, 单次实锤):
+
+- **场景**: 写一个递归 walk 对象树的变换 (脱敏 / 假名化 / 归一化), 直觉上"要改的是内容", 于是只对字符串**值**做替换, 对 dict 的遍历只递归其 `values()`。
+- **失败模式**: `persona.json` 用**实体名作 dict 键** (`{"张三": {...}}`)。初版 `apply_identity_map` 只替换值 → 真实姓名作为键**原样残留**在导出包里, 身份泄漏。sanity check 才发现 manifest/README 干净但 persona 键脏。
+- **修法 / 归纳**: 递归变换 dict 时**键与值都要过同一变换**并重建 dict (`{transform(k): walk(v) for k,v in d.items()}`)。写这类 walker 时把"数据可能以键的形式承载语义 (name-as-key / id-as-key)"列为默认假设, 并在测试里**专门塞一个以敏感标识作键的结构**。
+- **关联**: §7.A "单一 chokepoint 覆盖所有写入源"的**结构完整性**变体 —— chokepoint 覆盖了所有*源*, 但变换本身漏了一类*承载位置* (键 vs 值)。与 single-writer-choke-point skill 互补。
+- **进入主编号条件**: 需再命中一次"递归变换漏了键/其它非值承载位置", 才升级为主编号。
+
+**L65 (新候选) "跨层脱敏必须是'整包末步的单一变换'且保证跨层一致 — 分层各自脱敏会制造'对话说 A、事实说 B'的错位"** (P30 R-Consistency 用户强约束派生, 2026-07-15, 单次实锤):
+
+- **场景**: 导出/分享同时包含"原始层" (对话) 与"派生层" (事实/反思/人设/分析结论) 的数据, 每层都含同一批身份标识, 需要脱敏。
+- **失败模式 (预防性)**: 若各层在生成时**各自**脱敏 (对话用映射 M1、事实用 M2……), 或先脱敏主体再另外拼装 manifest/README/summary 用的仍是**原始字符串**, 就会出现"对话里叫 `<用户>`、事实里却还叫真名"或反查错位, 破坏分析可信度 (用户明确要求"绝不能字面 A 记忆 B")。
+- **修法 / 归纳**: 脱敏做成**整包组装完成后的单一末步变换** (`redact_export_bundle`), 用**同一套映射**一次性覆盖所有嵌入文本 (含分析结论里引用的正文、含事后拼的 manifest/README/summary)。强分层撤除 (strict) 时也**整层撤原始转录、整层保派生**, 而不是逐字段部分擦除, 从根上杜绝层间错位。
+- **关联**: §7.A single-writer / 单 chokepoint 家族在**变换侧**的应用 —— 不只"写入走一个口", 变换也"走一个口且最后一步做"。§1.2 "唯一真相源"的脱敏映射版。对应 skill 候选: `single-transform-cross-layer-consistency` (待抽)。
+- **进入主编号条件**: 需再命中一次"多层数据分别变换致跨层不一致", 才升级为主编号。
+
+**L66 (新候选) "需用户手势激活态的浏览器 API (showSaveFilePicker 等) 必须在任何 await 之前调用, 否则 await 耗尽激活态 → 抛异常被吞 → 静默降级"** (P30 记忆导出"另存为窗口没出现"用户实测派生, 2026-07-15, 单次实锤):
+
+- **场景**: 用 File System Access 的 `window.showSaveFilePicker` (或 `navigator.clipboard.write` / 全屏 / 剪贴板等**需 transient user activation** 的 API) 时, 顺手写成"点击 → `await fetch(拿数据)` → `showSaveFilePicker`"。
+- **失败模式**: `await fetch(...)` 跨了任务边界, transient activation 已过期/被消费; `showSaveFilePicker` 抛 `SecurityError: Must be handling a user gesture`。若 catch 里为了健壮性做了"回退普通下载", 就变成**静默降级**: 文件确实下载了 (名字还对), 但**弹窗从不出现**, 且没有任何报错 —— 用户只会说"那个窗口没出来", 极难从日志定位。
+- **修法 / 归纳**: 把激活态 API 提到**第一个 `await` 之前**调用 (点击处理器同步段内): 先弹 `showSaveFilePicker` 拿到句柄, **再** `await fetch` 拿数据, **最后**写句柄。代价: `suggestedName` 只能用点击时已知的信息 (前端预先算, 不能依赖响应头) —— 可接受, 因为最终文件名用户可改。判据: 任何"需要用户手势"的 Web API, 审查其调用点**在它之前有没有 `await`**; 有就是 bug。
+- **关联**: §3A F7 "fail-loud" 的**又一反例** —— 这里是"降级太安静": catch 里的 fallback 本意是健壮, 却把一个可诊断的 `SecurityError` 变成了无声的行为差异。修 catch 时要区分"预期的用户取消 (`AbortError`, 静默 OK)" vs "非预期失败 (应 loud 或至少不静默改变行为)"。与 L63 (只读端点副作用) 同属"隐式行为 ≠ 表面契约"家族。对应 skill 候选: `user-activation-api-before-await` (待抽)。
+- **进入主编号条件**: 需再命中一次"激活态 API 因排在 await 之后而静默失效", 才升级为主编号。
+
+**L67 (新候选) "由分析结果反推被分析方 (主程序) 的代码问题前, 必须先核对被反推方的真实 schema / 数据形状, 别凭训练直觉臆造不变量"** (P32 代码线索 §A 自审派生, 2026-07-15, 一次实锤两处):
+
+- **场景**: testbench 想从记忆分析发现反推"主程序记忆代码可能哪里有 bug"。初版蓝图凭直觉列了两个检查: ① "events.ndjson 游标单调性" ② "persona `source_id` 直查断裂晋升 (D5)"。
+- **失败模式**: 动笔 grep 真实代码后两个都塌: ① `events.ndjson` 实际形状是 `{event_id:uuid4, type, ts, payload}`, **根本没有单调序号/游标字段** —— 真正的游标持久化在另一个文件 `cursors.json` (`memory/cursors.py`); 凭"事件日志应该有游标"的直觉臆造了一个不存在的不变量。② 直查 `source_id` 与 P29 概况 D2 冗余, 且会**重现一个已被 P39 O5 守护掉的 merge 假阳性** (合并晋升人设的 `source_id` 已在合并中消解, 真实来源在 `merged_from_ids`) —— 没读"下游 chokepoint 已经怎么定案"(§7.25)。
+- **修法 / 归纳**: 反推 = 从 A 的现象倒推 B 的代码, 其可靠性**完全取决于对 B 真实结构的了解**。动笔前对每个拟检查的不变量做两步实证: (a) `grep`/读 B 侧真实写入模块与磁盘 schema, 确认该不变量**在 B 的数据里真的存在且可判定**; (b) 确认它**没有被 A 侧已有 chokepoint/检查覆盖** (否则要么冗余、要么会重现已知假阳性)。臆造的不变量比没有检查更糟 —— 它会让代码人员去查一个根本不存在的东西。
+- **关联**: §1.1 Intent≠Reality 的**跨系统反推特例** (被反推方是"别人的代码", 更容易凭直觉臆造); §1.7 (设计前必通读经验教训) 的**具体落地** (先读真实代码再下笔); §7.25 (别重算 chokepoint 已定关系) 的**反推场景复现**。对应 skill 候选: `verify-target-schema-before-reverse-inference` (待抽)。
+- **进入主编号条件**: 需再命中一次"反推/诊断类功能因未核对被诊断方真实 schema 而臆造不变量", 才升级为主编号。
+
+**L68 (新候选) "新加的可滚动子页/面板, 其根元素必须显式声明滚动契约 (定高 flex 父下 = `flex:1 + min-height:0 + overflow-y:auto`), 否则内容超一屏被父级 `overflow:hidden` 静默截断"** (P32 代码线索子页交付后用户手测"无法下滚"派生, 2026-07-15, 单次实锤):
+
+- **场景**: 往一个**定高、`overflow:hidden` 的 flex 列容器** (`.memory-analysis-pane`, `height:calc(100vh-…)`) 里挂新子页; 子页根元素只写了 `padding`, 没写溢出/伸缩行为。既有兄弟页 (`.memory-overview`) 因为写了 `overflow:auto` 能滚, 新页 (`.memory-code-leads`) 照抄了个只有 `padding` 的规则。
+- **失败模式**: 子页高度=内容高度, 作为 flex 子项**不被约束到父高**, 内容超一屏后**下半页被父级 `overflow:hidden` 直接裁掉**, 且**没有滚动条**——用户只会说"下面的看不到、滚不动", 页面本身不报任何错。jsdom smoke (p46) 无布局引擎, 天然测不出。
+- **修法 / 归纳**: 定高 flex 列父下的可滚子项统一三件套 `flex:1 1 auto; min-height:0; overflow-y:auto` (`min-height:0` 是关键——覆盖 flex item `min-height:auto` 默认值, 否则仍被内容撑破不滚)。**每新增一个挂进既有布局壳的子页, 显式确认它的滚动归属** (自己滚 / 父滚 / 内部区域滚), 不要只抄兄弟页的"看起来能用"的片段。此类布局 bug **必须真实浏览器手测** (LR-8/§5.3: jsdom 测不出)。
+- **关联**: §5.3 (jsdom≠真实浏览器, 布局/滚动必手测); skill `css-grid-template-child-sync` 的同族 (往既有布局容器加新子元素时的尺寸/溢出契约漏配)。对应 skill 候选: `scroll-container-contract-on-new-subpage` (待抽)。
+- **进入主编号条件**: 再命中一次"新子页/面板因根元素滚动契约缺失被截断", 升主编号。
+
+**L69 (新候选) "开发者 UI 需要链接说明文档时, 不要把内部设计/裁决文档直接塞进对外文档端点 —— 内外分离: 内部文档保持不公开, 另写一份干净的面向使用者文档"** (P32 代码线索"警告里的文档指引做成超链接"用户反馈派生, 2026-07-15, 单次实锤):
+
+- **场景**: 一个开发者向 UI (代码线索子页) 顶部警告引用了内部裁决文档 `MEMORY_CODE_INFERENCE_FEASIBILITY.md` 的文件名 (纯文本), 用户反馈"难找到、应做成可点的超链接"。最省事的做法是把该内部文档加进 `_PUBLIC_DOCS` 直接开链。
+- **失败模式 (被及时否决)**: 内部裁决/蓝图类文档含 phase 编号、blueprint 引用、自审 gate、内部术语, **不该出现在 testbench 对外提供的文档面上**; 直接开放会把内部开发语汇泄漏给使用者, 且破坏"内部文档刻意不进 `/docs` 白名单"这个已在多处 (AGENT_NOTES/PROGRESS/PLAN/BLUEPRINT/USER_MANUAL) 反复登记的决策。用户明确纠正: "即使这子页是给开发相关人员看的, 也和对外的 Testbench 文档面分开; 专门写一份说明性文档"。
+- **修法 / 归纳**: **内外分离**——(a) 内部设计/裁决文档留在 `internal_only_docs`, 继续不公开; (b) 另写一份**干净的、面向使用者的**说明 (`code_leads_guide.md`: 讲怎么用/怎么读/局限, 不含蓝图/phase/自审等内部术语), 进 `_PUBLIC_DOCS`; (c) UI 链接指向这份干净文档 (`/docs/<guide>`)。判据: **"这份文档会不会出现在用户能打开的 URL 上"** —— 会, 就必须是无内部语汇的使用者视角文档。呼应 §7.29 (文档是用户契约, 先扫真实代码再写) + skill `docs-code-reality-grep-before-draft` (对外文档不得泄漏内部 phase/blueprint 术语)。
+- **关联**: §7.29 (文档作为用户契约); L63/§6.3 (docs 分层同步); ARCHITECTURE 文档责任矩阵新增 `code_leads_guide.md` 行 (受众=代码相关人员, 明标内部裁决文档不公开)。对应 skill 候选: `internal-vs-public-doc-separation` (待抽)。
+- **进入主编号条件**: 再命中一次"UI 需链接文档时须内外分离, 另写公开版", 升主编号。
 
 ---
 

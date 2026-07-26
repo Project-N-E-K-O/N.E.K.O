@@ -109,6 +109,9 @@ class _RollingStream:
             self._fh.close()
         except Exception:
             pass
+        self._compression_threads = [
+            thread for thread in self._compression_threads if thread.is_alive()
+        ]
         # 后台压缩已完成的段，不阻塞调用线程（轮询线程）
         thread = threading.Thread(target=_gzip_file, args=(path,), daemon=True)
         thread.start()

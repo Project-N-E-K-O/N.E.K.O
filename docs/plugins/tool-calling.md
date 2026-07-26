@@ -6,6 +6,10 @@ will automatically invoke it when the user asks "what's the weather in
 Beijing", wait for the result, then use the returned value to generate
 its final reply.
 
+::: warning Different from a plugin entry
+`@llm_tool(name="get_weather")` registers a conversation-time tool in main_server's `/api/tools` registry. `@plugin_entry(id="get_weather")` declares a runtime entry for Plugin Manager, cross-plugin calls, and the separate user-plugin Agent route. The SDK implements an LLM tool handler internally as a reserved dynamic entry (`__llm_tool__...`) for IPC reuse, but that implementation detail does not merge the two public APIs.
+:::
+
 This mechanism is backed by `ToolRegistry` in
 `main_logic/tool_calling.py` and unified across every provider that
 supports tool calling (OpenAI / Gemini / GLM / Qwen Omni / StepFun, etc.).
@@ -344,6 +348,9 @@ To `await` until the wire-level sync completes, use
 - **Don't put sensitive information in tool names**: the LLM writes
   tool names into `tool_calls`, which gets persisted into conversation
   history.
+- **Don't return or raise secrets**: tool output and error text are fed back
+  to the LLM and can be persisted in conversation history. Return a redacted,
+  stable error code and keep raw private payloads out of the logger.
 - **`callback_url` must point to local loopback**: the server validates
   the host using `urlparse` + `ipaddress.ip_address`, accepting only
   `127.0.0.0/8` / `::1` / literal `localhost`. Otherwise the request

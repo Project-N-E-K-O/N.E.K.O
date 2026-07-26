@@ -49,6 +49,7 @@
             viewportWaitFallbackTimer: null,
             transitionCleanupTimer: null,
             dragSessionToken: 0,
+            dragActivity: null,
             dragRecoveryTimer: null,
             lastPointerEventAt: 0,
             suppressDomClickTimer: null,
@@ -77,6 +78,51 @@
 
         function restoreSavedBallStyle() {
             I.restoreSavedReturnBallStyle(container, state);
+        }
+
+        function startReturnBallDragActivity(dragToken, screenX, screenY) {
+            const startedAt = Date.now();
+            state.dragActivity = {
+                activityId: `return-cat-drag-native:${startedAt}:${dragToken}`,
+                dragToken: dragToken,
+                startedAt: startedAt,
+                startX: screenX,
+                startY: screenY,
+                lastX: screenX,
+                lastY: screenY,
+                pathDistancePx: 0,
+                terminalReported: false
+            };
+        }
+
+        function recordReturnBallDragActivityPoint(dragToken, screenX, screenY) {
+            const activity = state.dragActivity;
+            if (!activity || activity.dragToken !== dragToken || activity.terminalReported ||
+                !Number.isFinite(screenX) || !Number.isFinite(screenY)) {
+                return;
+            }
+            if (Number.isFinite(activity.lastX) && Number.isFinite(activity.lastY)) {
+                activity.pathDistancePx += Math.hypot(screenX - activity.lastX, screenY - activity.lastY);
+            }
+            activity.lastX = screenX;
+            activity.lastY = screenY;
+        }
+
+        function finishReturnBallDragActivity(dragToken, screenX, screenY) {
+            recordReturnBallDragActivityPoint(dragToken, screenX, screenY);
+            const activity = state.dragActivity;
+            if (!activity || activity.dragToken !== dragToken || activity.terminalReported) return null;
+            activity.terminalReported = true;
+            const endedAt = Date.now();
+            return {
+                activityId: activity.activityId,
+                pathDistancePx: Math.max(0, activity.pathDistancePx),
+                displacementPx: Math.hypot(
+                    activity.lastX - activity.startX,
+                    activity.lastY - activity.startY
+                ),
+                durationMs: Math.max(0, endedAt - activity.startedAt)
+            };
         }
 
         function dispatchReturnBallRevealFailed(reason, error) {
@@ -399,6 +445,8 @@
                 return;
             }
 
+            startReturnBallDragActivity(dragToken, screenX, screenY);
+
             I.restoreNekoIdleCat1EdgePeekBeforeDrag(container);
             window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
                 detail: {
@@ -511,6 +559,7 @@
             markDragPointerActivity();
             state.releaseScreenX = screenX;
             state.releaseScreenY = screenY;
+            recordReturnBallDragActivityPoint(state.dragSessionToken, screenX, screenY);
             sendReturnBallNativeDragMove(screenX, screenY);
 
             const dx = screenX - state.startScreenX;
@@ -562,6 +611,12 @@
             state.releaseScreenX = screenX;
             state.releaseScreenY = screenY;
             const dragToken = state.dragSessionToken;
+            const dragActivityFacts = finishReturnBallDragActivity(dragToken, screenX, screenY) || {
+                activityId: `return-cat-drag-native:${Date.now()}:${dragToken}`,
+                pathDistancePx: 0,
+                displacementPx: 0,
+                durationMs: 0
+            };
             I.clearReturnBallDragRecoveryTimer(state);
             I.clearMultiWindowReturnBallDeferredWork(state);
 
@@ -604,7 +659,8 @@
                                 reason: 'return-ball-drag-end',
                                 container: container,
                                 movedDistancePx: 0,
-                                dragCancelled: true
+                                dragCancelled: true,
+                                ...dragActivityFacts
                             }
                         }));
                     } else {
@@ -682,7 +738,8 @@
                             reason: 'return-ball-drag-end',
                             container: container,
                             movedDistancePx: movedDistancePx,
-                            dragCancelled: suppressClick
+                            dragCancelled: suppressClick,
+                            ...dragActivityFacts
                         }
                     }));
                     revealReturnBallDragWindow();
@@ -701,7 +758,8 @@
                         reason: 'return-ball-drag-end',
                         container: container,
                         movedDistancePx: movedDistancePx,
-                        dragCancelled: suppressClick
+                        dragCancelled: suppressClick,
+                        ...dragActivityFacts
                     }
                 }));
                 revealReturnBallDragWindow();

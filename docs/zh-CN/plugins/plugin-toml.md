@@ -1,6 +1,10 @@
 # 插件配置 (plugin.toml)
 
-每个插件的根目录下都有一个 `plugin.toml`。它告诉 N.E.K.O 你的插件是什么、怎么加载、有什么能力。
+每个插件的根目录下都有一个 `plugin.toml`。它告诉 N.E.K.O 这个包是什么、宿主应导入哪个 Python 类，以及它暴露哪些可选能力。
+
+::: warning 两种不同的 entry
+`[plugin].entry = "module.path:ClassName"` 是**宿主加载入口**，插件进程启动时用它导入一个 `NekoPluginBase` 类。`greet` 这类运行时入口 ID 来自 `@plugin_entry(id="greet")` 或 `register_dynamic_entry(...)`；插件加载成功后，Agent 才会选择这些 ID。
+:::
 
 下面是一个虚构的"智能笔记"插件的完整配置。这个插件能搜索笔记、创建笔记，有自己的 UI 面板，支持中英文，还能被 AI 主动调用。
 
@@ -10,6 +14,7 @@
 [plugin]
 id = "smart_notes"
 name = "智能笔记"
+type = "plugin"
 description = "管理你的笔记：搜索、创建、整理，支持 AI 自动归类。"
 short_description = "Note management with AI-powered organization."
 keywords = ["笔记", "note", "记录", "备忘", "memo", "メモ"]
@@ -66,7 +71,9 @@ name = "智能笔记"
 entry = "plugin.plugins.smart_notes:SmartNotesPlugin"
 ```
 
-这三个字段是**必填**的。`id` 必须和文件夹名一致，`entry` 告诉系统去哪里找你的 Python 类。
+这三个字段是**必填**的。`id` 必须符合 `^[A-Za-z0-9_-]+$` 且全局唯一。强烈建议让它与目录名一致：不一致时运行时仍可能加载，但 profile 查找和工具可能假定路径是 `<plugin.id>/plugin.toml`。`entry` 必须是 `module.path:ClassName`，并解析到 `NekoPluginBase` 子类；不能直接把 `PluginRouter` 当作启动类。
+
+普通插件的 `type = "plugin"` 可省略，因为它是默认值。只有 Adapter 包才使用 `type = "adapter"`。已删除的 `extension` 类型和 `[plugin.host]` 表会被拒绝。
 
 ```toml
 description = "管理你的笔记：搜索、创建、整理，支持 AI 自动归类。"
@@ -74,13 +81,15 @@ short_description = "Note management with AI-powered organization."
 keywords = ["笔记", "note", "记录", "备忘", "memo", "メモ"]
 ```
 
-这三个字段决定了 **AI agent 能不能找到你的插件**：
+这些字段在宿主完成加载后参与 Agent 路由：
 
-- `short_description` — AI 用它来判断"这个插件能做什么"，要简洁准确
-- `keywords` — AI 用它来匹配用户意图。用户说"帮我记一下"，如果你的 keywords 里有"记"，就会匹配上
-- `description` — 给人看的完整描述，显示在插件管理面板
+- `description` — 完整描述，同时用于插件元数据和 Agent 精筛。
+- `short_description` — 粗筛使用的短描述；缺失时 Agent 可以根据 `description` 生成并缓存。
+- `keywords` — 正则表达式模式。命中项会并入第一阶段候选集，但不会跳过第二阶段，也不保证执行。
 
-如果你的插件不需要被 AI 主动调用（比如纯监听类），可以不写这些，再加上 `passive = true`。
+纯监听/集成插件可设置 `passive = true`，使其完全不参与 Agent 分派。非 passive 插件还必须至少有一个 Agent 可见的运行时入口，才会成为候选。
+
+Agent 第二阶段最终返回 `plugin_id` 和运行时 `entry_id`。两者都会严格对照本轮候选集校验；第一次不合法时只纠正重试一次，仍不合法就拒绝执行。
 
 ```toml
 version = "1.2.0"
@@ -109,12 +118,14 @@ recommended = ">=0.1.0,<0.2.0"
 supported = ">=0.1.0,<0.3.0"
 ```
 
-告诉系统你的插件是为哪个 SDK 版本写的。如果用户的 N.E.K.O 版本太旧或太新，系统会警告或拒绝加载。
+告诉宿主这个包支持哪些插件 SDK 版本。值使用 Python packaging 的版本范围语法。
 
-- `supported` — 低于这个范围就拒绝加载
-- `recommended` — 在这个范围内体验最好
-- `untested` — 允许但会提示"未经测试"
-- `conflicts` — 明确不兼容的版本
+- `supported` — 正式支持范围
+- `recommended` — 最充分测试的范围；超出时告警
+- `untested` — 额外允许但会告警的范围
+- `conflicts` — 明确拒绝的范围，即使同时命中其他范围也拒绝
+
+如果声明了 `supported`，宿主版本必须落入 `supported` 或 `untested`，否则插件不加载；无效的版本范围也会被拒绝。
 
 ---
 
@@ -124,10 +135,16 @@ supported = ">=0.1.0,<0.3.0"
 [plugin_runtime]
 enabled = true
 auto_start = true
+priority = 0
+timeout = 10
+startup_failure = "warn"
 ```
 
 - `enabled` — 设为 `false` 可以临时禁用插件，不用删文件
 - `auto_start` — 设为 `true` 时 N.E.K.O 启动就自动运行；否则需要在面板中手动启动
+- `priority` — 可选的整数运行时顺序提示
+- `timeout` — 等待启动就绪的秒数，必须满足 `0 < timeout <= 300`；省略时使用系统默认值
+- `startup_failure` — `startup` 钩子失败后的策略：`warn`（默认，保留进程并标记降级）、`fail`（终止启动）或 `ignore`（仅记录）
 
 ---
 
@@ -203,7 +220,7 @@ max_per_page = 20
 auto_classify = true
 ```
 
-框架不认识的段会被当作你的业务配置。在代码中这样读取：
+额外的顶层 section 会作为业务配置保留。在代码中这样读取：
 
 ```python
 cfg = await self.config.dump()
@@ -231,4 +248,4 @@ plugin/plugins/smart_notes/
 └── data/                    ← 运行时数据（自动创建，self.data_path() 指向这里）
 ```
 
-只有 `plugin.toml` 和 `__init__.py` 是必须的。其他目录按需创建。
+必需的是 `plugin.toml` 和 `[plugin].entry` 指向的可导入 Python 模块。模块不一定非得是 `__init__.py`，只是这种布局最常见。

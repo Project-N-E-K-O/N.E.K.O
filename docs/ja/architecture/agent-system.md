@@ -1,97 +1,98 @@
 # エージェントシステム
 
-エージェントシステムにより、N.E.K.O. のキャラクターはバックグラウンドタスク — Webブラウジング、コンピューター操作、独立したエージェントチャネルへの委譲、外部ツールの呼び出し — を会話コンテキストに基づいて実行できます。
+エージェントシステムは、完了した会話ターンを任意のバックグラウンドタスクへ変換します。チャットセッションとユーザーへの配信を担う Main Server と、要求判定・ツール実行・タスク状態管理を担う Agent Server に分かれています。
 
-## アーキテクチャ
+## ランタイム構成
 
-```
-Main Server                          Agent Server
-┌────────────────┐                  ┌────────────────────┐
-│ LLMSession     │                  │ TaskExecutor        │
-│ Manager        │  ZeroMQ          │   ├── Planner       │
-│   │            │ ──────────────>  │   ├── Processor     │
-│   │ agent_flags│  PUB/SUB         │   ├── Analyzer      │
-│   │            │                  │   └── Deduper        │
-│   │ callbacks  │ <──────────────  │                      │
-│   │            │  PUSH/PULL       │ Adapters:            │
-└────────────────┘                  │   ├── Computer Use   │
-                                    │   ├── Browser Use    │
-                                    │   ├── OpenClaw       │
-                                    │   ├── OpenFang       │
-                                    │   └── User Plugin    │
-                                    └────────────────────┘
+```text
+Main Server                                  Agent Server (:48915)
+┌──────────────────────────┐                 ┌──────────────────────────────┐
+│ LLMSessionManager        │                 │ DirectTaskExecutor           │
+│ cross_server.py          │  analyze queue  │  ├─ unified channel assess  │
+│ MainServerAgentBridge    │ ──────────────> │  ├─ user-plugin assess      │
+│                          │ <────────────── │  └─ dedupe / task tracking  │
+│ pending_agent_callbacks  │  result/events  │                              │
+└──────────────────────────┘                 │ channel adapters             │
+                                             └──────────────────────────────┘
 ```
 
-## 機能フラグ
+現在の実行器は `brain/task_executor.py` の `DirectTaskExecutor` です。旧 Planner / Processor / Analyzer パイプラインは存在しません。`TaskDeduper` は残っていますが、重複ディスパッチの防止用であり、実行後の Analyzer ではありません。
 
-エージェント機能は、`/api/agent/flags` エンドポイントを通じて管理されるフラグで切り替えできます：
+Agent Server は `app/agent_server/__main__.py` から起動されます。実装は `api_runtime.py`、`api_routes.py`、`channels/`、`registry.py`、`tracker.py`、`results.py` に分割されています。
 
-| フラグ | デフォルト | 説明 |
-|--------|----------|------|
-| `agent_enabled` | false | エージェントシステムのマスタースイッチ |
-| `computer_use_enabled` | false | スクリーンショット分析、マウス/キーボード |
-| `browser_use_enabled` | false | Webブラウジング自動化 |
-| `user_plugin_enabled` | false | プラグイン / Model Context Protocol ツール呼び出し |
-| `openclaw_enabled` | false | OpenClaw 独立エージェントチャネル |
-| `openfang_enabled` | false | OpenFang 独立エージェントチャネル |
+## 会話からタスクまで
 
-## タスク実行パイプライン
+1. `main_logic/cross_server.py` が `turn end` または `session end` でサイズ制限付きの直近メッセージを構築し、当該ターンのユーザー画像を添付できます。
+2. `publish_analyze_request_reliably()` が `event_id` 付き `analyze_request` を送信します。Main Server は短時間 `analyze_ack` を待ち、タイムアウト時に一度再試行します。
+3. マスタースイッチがオフなら Agent Server は判定を行いません。以前キャンセルされたユーザーターンの除去と直近タスクの重複判定も行います。
+4. `DirectTaskExecutor.analyze_and_execute()` が有効なチャネルを判定します。ユーザープラグインは独立した検出・2段階エントリ選択を使い、その他は統一判定を使います。
+5. 選択されたチャネルは registry タスクを作成し、`task_update` を送信し、実行後に構造化 `task_result` を送信します。
+6. Main Server はライブ更新をブラウザへ転送し、結果を該当する `LLMSessionManager` にキューします。テキストセッションでは即時配信でき、音声セッションでは注入またはホットスワップ境界まで遅延する場合があります。
 
-1. **トリガー**: メインサーバーが会話内の実行可能なリクエストを検出し、ZeroMQ経由で分析リクエストをパブリッシュします。
+エージェント結果のコールバックは再解析されないため、結果配信が再帰的に別タスクを生成することはありません。
 
-2. **計画**: `Planner` がリクエストを順序付きのステップを持つタスクプランに分解します。
+## トランスポート
 
-3. **実行**: `Processor` が適切なアダプターを通じて各ステップを実行します：
-   - **Computer Use** — スクリーンショットを撮影し、ビジョンモデルで分析し、マウス/キーボード操作を実行
-   - **Browser Use** — Webページのナビゲーション、コンテンツの抽出、フォームの入力
-   - **OpenClaw / OpenFang** — タスクを独立したエージェントチャネルに委譲
-   - **User Plugin** — ユーザーがインストールしたプラグイン（Model Context Protocol）経由で外部ツールを呼び出し
+プロセス間ブリッジは同期 ZeroMQ socket とバックグラウンド受信スレッドを使用し、Windows Proactor イベントループにも対応します。
 
-4. **分析**: `Analyzer` がタスクの目標が達成されたかどうかを評価します。
+| 既定アドレス | パターン | 方向 | 用途 |
+|---|---|---|---|
+| `tcp://127.0.0.1:48961` | PUB / SUB | Main → Agent | セッション・ライフサイクルイベント |
+| `tcp://127.0.0.1:48963` | PUSH / PULL | Main → Agent | 信頼性付き `analyze_request` キュー |
+| `tcp://127.0.0.1:48962` | PUSH / PULL | Agent → Main | ACK、状態、タスク更新、結果 |
 
-5. **重複排除**: `Deduper` が冗長な結果の送信を防止します。
+各ポートは `NEKO_ZMQ_SESSION_PUB_PORT`、`NEKO_ZMQ_ANALYZE_PUSH_PORT`、`NEKO_ZMQ_AGENT_PUSH_PORT` で上書きできます。Agent HTTP 制御は既定で `127.0.0.1:48915`、組み込みユーザープラグインサービスは `127.0.0.1:48916` です。
 
-6. **返却**: 結果がZeroMQ PUSH/PULL経由でメインサーバーにストリーミングで返されます。
+Agent → Main の結果配信には HTTP フォールバックがありません。ZeroMQ ブリッジが利用できない場合、イベントは配信されません。
 
-## ZeroMQソケットマップ
+## 機能状態
 
-| アドレス | タイプ | 方向 | 用途 |
-|---------|--------|------|------|
-| `tcp://127.0.0.1:48961` | PUB/SUB | Main → Agent | セッションイベント、タスクリクエスト |
-| `tcp://127.0.0.1:48962` | PUSH/PULL | Agent → Main | タスク結果、ステータス更新 |
-| `tcp://127.0.0.1:48963` | PUSH/PULL | Main → Agent | 分析リクエストキュー |
+権威ある状態は Main Server の `/api/agent/*` プロキシから取得します。フロントエンドは `/api/agent/command` で変更し、`/api/agent/state` で更新します。ローカルのチェックボックス状態を正として扱ってはいけません。
 
-## Computer Use
+| 状態 | 意味 |
+|---|---|
+| `analyzer_enabled` / UI `agent_enabled` | 判定のマスタースイッチ |
+| `computer_use_enabled` | 視覚ベースのデスクトップ操作 |
+| `browser_use_enabled` | ブラウザ自動操作 |
+| `user_plugin_enabled` | インストール済みユーザープラグイン実行 |
+| `openclaw_enabled` | OpenClaw スタンドアロンチャネル |
+| `openfang_enabled` | OpenFang マルチエージェントチャネル |
 
-Computer Useアダプター（`brain/computer_use.py`）はビジョンベースのコンピューターインタラクションを実現します：
+Manager と Agent Server は構築時にすべてオフです。ただし最初の実ユーザー `greeting_check` 後に永続化された runtime intent を復元できるため、ページ更新のたびに設定がリセットされるわけではありません。
 
-1. デスクトップのスクリーンショットをキャプチャ
-2. ビジョンモデル（例：`qwen3-vl-plus`）に送信して分析
-3. 視覚的理解に基づいてマウス/キーボード操作を計画
-4. `pyautogui` 経由でアクションを実行
+スイッチだけでなく API readiness とチャネル capability probe も実行可否に影響します。OpenClaw は有効化 probe 中に独立した readiness 状態を持ちます。
 
-Computer Useモデルの設定については、[モデル設定](/config/model-config)リファレンスを参照してください。
+## ルーティング規則
 
-## Browser Use
+非プラグインチャネルでは、実行可能な最初の結果が次の順序で選ばれます。
 
-Browser Useアダプター（`brain/browser_use_adapter.py`）は、Web自動化のための `browser-use` ライブラリをラップしています：
+```python
+_CHANNEL_PRIORITY = ["qwenpaw", "openfang", "browser_use", "computer_use"]
+```
 
-- URLへのナビゲーション
-- ページコンテンツの抽出
-- フォームの入力
-- 要素のクリック
-- ページスクリーンショットの撮影
+`qwenpaw` は OpenClaw アダプターに対応します。ユーザープラグインは別経路で判定され、`_CHANNEL_PRIORITY` には含まれません。
 
-## OpenClaw
+ユーザープラグインは最初に `brain/plugin_filter.py` の決定的フィルターを通り、その後 LLM がエントリを選択します。`plugin_id`、`entry_id`、引数は厳密に検証されます。実行タイムアウトはエントリメタデータがあればそれを使い、なければプロジェクト既定値です。
 
-OpenClaw アダプター（`brain/openclaw_adapter.py`）は、実行可能なタスクを OpenClaw 独立エージェントチャネル（内部では `qwenpaw` として参照）に委譲します。
+## 並行性・キャンセル・保持
 
-## OpenFang
+- 判定とディスパッチは直列化され、同時刻の turn-end が重複タスクを作るのを防ぎます。
+- Computer Use は明示的なキューを持ち、デスクトップ操作は一度に1件です。Browser とリモート Agent も独自の active-task guard を持ちます。
+- キャンセルは registry を先に `cancelled` にし、wrapper task を止めてから provider 固有の teardown をバックグラウンドで開始します。遅延結果は終端状態を上書きできません。
+- 完了・失敗・キャンセル済み registry は5分保持され、クリーンアップは最大でも1分に1回です。
+- ユーザープラグインは `deferred: true` を返せます。`/api/agent/tasks/{task_id}/complete` が呼ばれるか、1時間の timeout で失敗するまで `running` のままです。
 
-OpenFang アダプター（`brain/openfang_adapter.py`）は、実行可能なタスクを OpenFang 独立エージェントチャネルに委譲します。
+## 実装マップ
 
-チャネル選択の優先順位は `brain/task_executor.py` で `_CHANNEL_PRIORITY = ["qwenpaw", "openfang", "browser_use", "computer_use"]` として定義されています。プラグイン / MCP ツール呼び出し（`user_plugin_enabled`）は別の経路でディスパッチされ、`_CHANNEL_PRIORITY` には**含まれません**。
+| 関心事 | 現在の実装 |
+|---|---|
+| turn-end と直近コンテキスト | `main_logic/cross_server.py` |
+| ZeroMQ ブリッジと ACK/再試行 | `main_logic/agent_event_bus.py` |
+| 判定とルーティング | `brain/task_executor.py` |
+| プラグイン候補フィルター | `brain/plugin_filter.py` |
+| Agent lifecycle / HTTP API | `app/agent_server/api_runtime.py`、`api_routes.py` |
+| チャネル実行 | `app/agent_server/channels/` |
+| タスク registry と保持 | `app/agent_server/registry.py` |
+| チャットへの結果配信 | `main_logic/core/proactive.py` |
 
-## APIエンドポイント
-
-完全なエンドポイントリファレンスについては、[エージェントREST API](/api/rest/agent)を参照してください。
+公開制御 API は [Agent REST API](/api/rest/agent)、表示側は [Task HUD System](/architecture/task-hud-system) を参照してください。

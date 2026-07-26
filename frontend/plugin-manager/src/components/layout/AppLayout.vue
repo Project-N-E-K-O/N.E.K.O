@@ -7,6 +7,19 @@
       </div>
       <div class="titlebar-controls">
         <button
+          v-if="pinAvailable"
+          class="titlebar-control titlebar-control--pin"
+          :class="{ 'is-pinned': isPinned }"
+          type="button"
+          :title="pinLabel"
+          :aria-label="pinLabel"
+          :aria-pressed="isPinned"
+          :disabled="pinPending"
+          @click="togglePin"
+        >
+          <span class="titlebar-pin-icon" aria-hidden="true"></span>
+        </button>
+        <button
           class="titlebar-control"
           type="button"
           :title="t('common.minimize')"
@@ -75,7 +88,15 @@ import { useConnectionStore } from '@/stores/connection'
 
 const { t } = useI18n()
 const connectionStore = useConnectionStore()
+const PIN_STATE_RETRY_DELAYS_MS = [50, 150, 350, 750]
 const isMaximized = ref(false)
+const pinAvailable = ref(false)
+const isPinned = ref(false)
+const pinPending = ref(false)
+let pinRequestGeneration = 0
+let pinRetryTimer: number | null = null
+let pinDisposed = false
+const pinLabel = computed(() => isPinned.value ? t('common.unpinWindow') : t('common.pinWindow'))
 const maximizeLabel = computed(() => isMaximized.value ? t('common.restore') : t('common.maximize'))
 
 function getWindowControlApi() {
@@ -90,6 +111,83 @@ async function refreshMaximizeState() {
   } catch {
     // 非桌面窗口环境下忽略状态查询失败
   }
+}
+
+function applyPinState(state: NekoWindowControlResult | null | undefined) {
+  if (!state) {
+    pinAvailable.value = false
+    isPinned.value = false
+    return
+  }
+  pinAvailable.value = !!state.available
+  isPinned.value = !!state.pinned
+}
+
+function clearPinStateRetry() {
+  if (pinRetryTimer === null) return
+  window.clearTimeout(pinRetryTimer)
+  pinRetryTimer = null
+}
+
+function schedulePinStateRetry(generation: number, retryIndex: number) {
+  if (
+    pinDisposed
+    || generation !== pinRequestGeneration
+    || retryIndex >= PIN_STATE_RETRY_DELAYS_MS.length
+  ) return
+  clearPinStateRetry()
+  pinRetryTimer = window.setTimeout(() => {
+    pinRetryTimer = null
+    if (pinDisposed || generation !== pinRequestGeneration) return
+    void refreshPinState({ generation, retryIndex: retryIndex + 1 })
+  }, PIN_STATE_RETRY_DELAYS_MS[retryIndex])
+}
+
+async function refreshPinState(retryContext?: { generation: number; retryIndex: number }) {
+  if (pinPending.value) return
+  const isRetry = !!(
+    retryContext
+    && retryContext.generation === pinRequestGeneration
+    && Number.isInteger(retryContext.retryIndex)
+  )
+  if (!isRetry) clearPinStateRetry()
+  const generation = isRetry ? retryContext.generation : ++pinRequestGeneration
+  const retryIndex = isRetry ? retryContext.retryIndex : 0
+  const api = getWindowControlApi()
+  if (!api || typeof api.getPinState !== 'function') {
+    if (generation === pinRequestGeneration) applyPinState(null)
+    schedulePinStateRetry(generation, retryIndex)
+    return
+  }
+  try {
+    const state = await api.getPinState()
+    if (pinDisposed || generation !== pinRequestGeneration) return
+    applyPinState(state)
+    if (!state || !state.available) schedulePinStateRetry(generation, retryIndex)
+  } catch {
+    if (pinDisposed || generation !== pinRequestGeneration) return
+    applyPinState(null)
+    schedulePinStateRetry(generation, retryIndex)
+  }
+}
+
+async function togglePin() {
+  const api = getWindowControlApi()
+  if (!api || typeof api.togglePin !== 'function') return
+  if (pinPending.value) return
+  clearPinStateRetry()
+  pinPending.value = true
+  const generation = ++pinRequestGeneration
+  let refreshAfterFailure = false
+  try {
+    const state = await api.togglePin()
+    if (generation === pinRequestGeneration) applyPinState(state)
+  } catch {
+    refreshAfterFailure = true
+  } finally {
+    if (generation === pinRequestGeneration) pinPending.value = false
+  }
+  if (refreshAfterFailure && generation === pinRequestGeneration) await refreshPinState()
 }
 
 async function minimizeWindow() {
@@ -121,17 +219,28 @@ function handleWindowResize() {
   void refreshMaximizeState()
 }
 
+function handleWindowFocus() {
+  void refreshPinState()
+}
+
 function closeWindow() {
   window.close()
 }
 
 onMounted(() => {
+  void refreshPinState()
   void refreshMaximizeState()
   window.addEventListener('resize', handleWindowResize)
+  window.addEventListener('focus', handleWindowFocus)
 })
 
 onBeforeUnmount(() => {
+  pinDisposed = true
+  pinRequestGeneration += 1
+  clearPinStateRetry()
+  pinPending.value = false
   window.removeEventListener('resize', handleWindowResize)
+  window.removeEventListener('focus', handleWindowFocus)
 })
 </script>
 
@@ -210,7 +319,10 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   border-radius: 6px;
-  transition: background 0.18s, color 0.18s;
+  transition:
+    background 0.18s ease,
+    color 0.18s ease,
+    box-shadow 0.18s ease;
 }
 
 .titlebar-control:hover {
@@ -224,6 +336,75 @@ onBeforeUnmount(() => {
 
 .titlebar-control--close:hover {
   background: rgba(255, 255, 255, 0.22);
+}
+
+.titlebar-control--pin {
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.titlebar-control--pin.is-pinned {
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0.18));
+  color: #fff;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.32),
+    0 3px 10px rgba(15, 79, 120, 0.16);
+}
+
+.titlebar-control--pin.is-pinned:hover {
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.24));
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.4),
+    0 4px 12px rgba(15, 79, 120, 0.2);
+}
+
+.titlebar-control--pin:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.92);
+  outline-offset: 2px;
+}
+
+.titlebar-pin-icon {
+  position: relative;
+  display: block;
+  width: 16px;
+  height: 16px;
+  background-color: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%23000'%20stroke-width='1.8'%20stroke-linecap='round'%20stroke-linejoin='round'%3E%3Cpath%20d='M8%203h8l-1%206%203%204H6l3-4-1-6Z'%2F%3E%3Cpath%20d='M12%2013v8'%2F%3E%3C%2Fsvg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%23000'%20stroke-width='1.8'%20stroke-linecap='round'%20stroke-linejoin='round'%3E%3Cpath%20d='M8%203h8l-1%206%203%204H6l3-4-1-6Z'%2F%3E%3Cpath%20d='M12%2013v8'%2F%3E%3C%2Fsvg%3E") center / contain no-repeat;
+  transform: rotate(-40deg);
+  transform-origin: 50% 68%;
+  filter: drop-shadow(0 1px 1px rgba(15, 58, 82, 0.2));
+  transition:
+    transform 0.24s cubic-bezier(0.22, 1, 0.36, 1),
+    filter 0.2s ease;
+  will-change: transform;
+}
+
+@keyframes neko-plugin-pin-lock {
+  0% {
+    transform: rotate(-40deg) translateY(0) scale(0.96);
+  }
+  68% {
+    transform: rotate(5deg) translateY(-1px) scale(1.06);
+  }
+  100% {
+    transform: rotate(0deg) translateY(-1px) scale(1);
+  }
+}
+
+.titlebar-control--pin.is-pinned .titlebar-pin-icon {
+  transform: rotate(0deg) translateY(-1px);
+  filter: drop-shadow(0 2px 2px rgba(15, 58, 82, 0.26));
+  animation: neko-plugin-pin-lock 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .titlebar-pin-icon {
+    transition: none;
+  }
+
+  .titlebar-control--pin.is-pinned .titlebar-pin-icon {
+    animation: none;
+  }
 }
 
 .titlebar-minimize-icon {

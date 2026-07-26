@@ -163,8 +163,8 @@ def handle_sync(args: argparse.Namespace) -> int:
 
     pyproject_path = plugin_dir / "pyproject.toml"
     if not pyproject_path.is_file():
-        print(f"[FAIL] {plugin_dir.name}: pyproject.toml not found.", file=sys.stderr)
-        return 1
+        print(f"[OK] {plugin_dir.name}: no external dependencies to sync")
+        return 0
 
     # 1. Read declared dependencies
     all_deps = _read_dependencies(pyproject_path)

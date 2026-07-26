@@ -1,4 +1,4 @@
-"""常驻 LLM 场景上下文（D-B4 / neko_roast 同款"常驻 read + 每事件 respond"）。
+"""常驻 LLM 场景上下文（D-B4 / neko_live 同款"常驻 read + 每事件 respond"）。
 
 启动注入常驻场景（ai_behavior="read"），关闭发 restore，避免关掉后还把普通对话当战雷事件。
 """

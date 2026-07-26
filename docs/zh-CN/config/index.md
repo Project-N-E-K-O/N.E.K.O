@@ -1,30 +1,21 @@
 # 配置概览
 
-N.E.K.O. 使用分层配置系统，支持多种配置来源。配置值按优先级从高到低的顺序解析。
+N.E.K.O. 有三套不同的配置入口，它们不共享一条万能优先级链。
 
-## 优先级链
+| 配置面 | 推荐方式 | 运行时来源 |
+| --- | --- | --- |
+| 用户设置、角色、API Key | Web UI | 选定数据根目录下的 JSON |
+| Provider 定义与模型角色默认值 | 维护者修改仓库数据 | `config/api_providers.json` 与代码回退 |
+| 端口和部分运行时开关 | 环境变量或桌面端端口设置 | `config/network.py`、`config/memory_settings.py`、`port_config.json` |
 
-1. **环境变量**（最高）— `NEKO_*` 前缀
-2. **用户配置文件** — `core_config.json`、`user_preferences.json`
-3. **API 提供商配置** — `api_providers.json`
-4. **代码默认值**（最低）— `config/__init__.py`
+普通安装请先启动 N.E.K.O.，再用 Web UI 配置。不要为了修改个人 API Key 而改仓库内置文件。
 
-## 快速参考
+- [配置文件](./config-files)
+- [API Provider](./api-providers)
+- [模型配置](./model-config)
+- [环境变量](./environment-vars)
+- [配置优先级](./config-priority)
 
-| 配置内容 | 位置 |
-|----------|------|
-| API 密钥和提供商 | [环境变量](./environment-vars) 或 Web UI `/api_key` 页面 |
-| 配置文件位置 | [配置文件](./config-files) |
-| 可用 AI 提供商 | [API 提供商](./api-providers) |
-| 按任务选择模型 | [模型配置](./model-config) |
-| 覆盖机制说明 | [配置优先级](./config-priority) |
-
-## Web UI 配置
-
-通过 Web UI 配置 N.E.K.O. 是最简便的方式：
-
-- **API 密钥：** `http://localhost:48911/api_key`
-- **角色设置：** `http://localhost:48911/character_card_manager`
-- **模型管理：** `http://localhost:48911/model_manager`
-
-通过 Web UI 所做的更改会自动保存到相应的配置文件中。
+::: warning 密钥
+不要把 API Key 提交到 Git，也不要放进截图、Issue 或日志。
+:::

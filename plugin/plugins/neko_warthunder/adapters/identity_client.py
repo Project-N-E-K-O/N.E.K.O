@@ -16,6 +16,7 @@ from .text_safety import sanitize_display_name
 
 
 IdentityFetcher = Callable[[str, float], dict[str, Any] | None]
+ACTION_HEADER = "X-Neko-Warthunder-Action"
 
 
 def build_identity_url(base_url: str, *, name: str | None = None, clear: bool = False) -> str:
@@ -28,7 +29,13 @@ def build_identity_url(base_url: str, *, name: str | None = None, clear: bool = 
 
 def fetch_identity(url: str, timeout: float) -> dict[str, Any] | None:
     try:
-        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        req = urllib.request.Request(
+            url,
+            headers={
+                "Accept": "application/json",
+                ACTION_HEADER: "1",
+            },
+        )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8", "replace"))
         return data if isinstance(data, dict) else None

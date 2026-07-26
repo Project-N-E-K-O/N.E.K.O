@@ -4,6 +4,8 @@
 
 GalGame mode endpoint. Given the recent dialogue, it generates three branching reply candidates for the player to pick from, in the style of a visual-novel choice menu. The React chat window calls this after a completed catgirl turn when the GalGame mode toggle is on.
 
+This is one first-party route, not a standalone public text-generation API. It sends recent conversation text to the configured summary-model provider, so callers must apply the same consent, privacy, and provider-quota expectations as the chat UI. The path has no trailing slash.
+
 ## Reply options
 
 ### `POST /api/galgame/options`

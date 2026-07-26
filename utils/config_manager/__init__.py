@@ -157,6 +157,9 @@ class ConfigManager(
     # 配额耗尽时给前端弹提示的节流：与 _agent_quota_lock 不同的锁，避免在持有配额锁时重入。
     # notifier 由 agent_server 在启动时注册（进程级），收到耗尽信号最多每 _quota_notify_interval_s 秒触发一次。
     _quota_notify_lock = threading.Lock()
+    # openclawUrl 8089→8088 落盘迁移的进程内串行化。_config_manager_migrated 那个标志
+    # 本身不是线程安全的，两个线程可能同时看到 False 各跑一遍迁移。
+    _openclaw_migration_lock = threading.Lock()
     _quota_notify_interval_s = 10.0
     _quota_notify_last_monotonic = 0.0
     _quota_exceeded_notifier = None
@@ -192,6 +195,20 @@ def _ensure_config_manager_migrated():
     _config_manager.migrate_config_files()
     _config_manager.migrate_default_card_faces()
     _config_manager.migrate_memory_files()
+    # openclawUrl 8089→8088 的落盘迁移。必须在这里而不是 get_core_config 里：那个方法
+    # 现在普遍经 asyncio.to_thread 调用，读路径写盘会和 /core_api 的保存互相顶掉。
+    # 失败只打日志，绝不阻塞启动（读路径仍会在内存里归一化）。
+    try:
+        _config_manager.migrate_openclaw_url_port()
+    except Exception as exc:
+        # "shouldn't happen"：该方法内部已吞掉并记录所有异常，这层只是兜住它自身
+        # 意外抛出的情况（例如 logger 配置坏掉）。不能让一次可选的落盘迁移拦住启动，
+        # 读路径无论如何都会在内存里归一化，功能不受影响。只打类名，避免 OSError 的
+        # str(exc) 带上 filename 泄露用户名。
+        logger.warning(
+            "[ConfigManager] migrate_openclaw_url_port 抛异常（已忽略）: %s",
+            type(exc).__name__,
+        )
     # 在 config/memory 基础迁移完成后，对遗留 Documents/AppData 路径下的
     # N.E.K.O/memory 做一次性软迁移：只迁移已关联角色的条目，未关联条目
     # 留给前端 legacy cleanup UI 手动清理（不在启动时自动清除）。

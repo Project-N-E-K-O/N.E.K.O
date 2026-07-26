@@ -180,8 +180,16 @@
                 };
                 this.override.currentName = currentName;
                 this.override.snapshotPayload = snapshotPayload;
-                this.override.proactiveSnapshot = snapshotProactiveState();
-                applyProactiveState(buildDisabledProactiveState());
+                const featureController = window.NekoHomeTutorialFeatureController;
+                const proactiveManagedByTutorialLifecycle = !!(
+                    featureController
+                    && typeof featureController.isActive === 'function'
+                    && featureController.isActive()
+                );
+                if (!proactiveManagedByTutorialLifecycle) {
+                    this.override.proactiveSnapshot = snapshotProactiveState();
+                    applyProactiveState(buildDisabledProactiveState());
+                }
 
                 if (!skipSourceModelFade) {
                     await Promise.resolve(this.fadeOutCurrentModel({

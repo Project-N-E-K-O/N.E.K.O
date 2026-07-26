@@ -431,6 +431,10 @@ async function _initLive2DModelInner() {
             return;
         }
     }
+    if (window.__nekoSevenDayTutorialStateReady
+        && typeof window.__nekoSevenDayTutorialStateReady.then === 'function') {
+        await window.__nekoSevenDayTutorialStateReady;
+    }
 
     if (window.NekoAvatarFloatingBoot && typeof window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot === 'function'
         && window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot()) {

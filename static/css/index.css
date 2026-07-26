@@ -102,9 +102,14 @@ body {
     opacity: 1;
     filter: brightness(0) invert(1);
     /* 将emoji变成纯白色，移除阴影 */
-    animation: pawBounce 1.5s ease-in-out infinite;
     z-index: 1;
     /* 确保猫爪在遮罩层之上 */
+}
+
+/* 弹跳动画只在 toast 可见时运行：默认态 toast 以 opacity:0 隐藏（非 display:none），
+   若动画挂在基础态上会在两个窗口里以显示器刷新率永久空转（合成器无法休眠）。 */
+#status-toast.show::before {
+    animation: pawBounce 1.5s ease-in-out infinite;
 }
 
 /* 小猫爪爪弹跳动画 */
@@ -507,6 +512,12 @@ button * {
     gap: 12px;
 }
 
+body.neko-live2d-peek #live2d-floating-buttons,
+body.neko-live2d-peek #live2d-lock-icon {
+    display: none !important;
+    pointer-events: none !important;
+}
+
 body.neko-game-active #live2d-container,
 body.neko-game-active #vrm-container,
 body.neko-game-active #mmd-container,
@@ -701,9 +712,9 @@ body.neko-game-active [id$="-lock-icon"] {
 /*
  * 只校准 GNOME 原生 58px 毛球路径。左侧接近的终点已经在 JS 中前移 34px；
  * 右侧的跨窗口视觉位置少 33px，因此待机和侧身素材都要补上这段距离。
- * 待机规则使用独立站位侧，而不是会在 settle 后重置的 facingRight，避免误伤左侧待机。
+ * 待机规则使用独立站位侧，而不是会在动作完成后重置的 facingRight，避免误伤左侧待机。
  */
-.neko-idle-return-btn[data-neko-cat1-native-yarn-visual-anchor="true"][data-neko-cat1-native-yarn-side="right"][data-neko-cat1-substate="idle"]:not(.is-cat1-playing):not(.is-cat1-eating):not(.is-drag-action) > .neko-idle-return-art {
+.neko-idle-return-btn[data-neko-cat1-native-yarn-visual-anchor="true"][data-neko-cat1-native-yarn-side="right"][data-neko-cat1-substate="idle"]:not(.is-cat1-playing):not(.is-cat1-eating):not(.is-cat1-stretching):not(.is-drag-action) > .neko-idle-return-art {
     left: 33px;
 }
 
@@ -747,6 +758,38 @@ body.neko-game-active [id$="-lock-icon"] {
 
 .neko-idle-return-btn.is-cat1-edge-peek-bottom-right > .neko-idle-return-art {
     --neko-idle-return-edge-transform: rotate(-60deg);
+}
+
+[data-neko-live2d-peek-anchor$="left"] .neko-idle-return-art {
+    --neko-idle-return-facing-transform: scaleX(-1);
+}
+
+[data-neko-live2d-peek-anchor$="right"] .neko-idle-return-art {
+    --neko-idle-return-facing-transform: scaleX(1);
+}
+
+[data-neko-live2d-peek-anchor="left"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(60deg);
+}
+
+[data-neko-live2d-peek-anchor="right"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(-60deg);
+}
+
+[data-neko-live2d-peek-anchor="top-left"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(45deg);
+}
+
+[data-neko-live2d-peek-anchor="top-right"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(-45deg);
+}
+
+[data-neko-live2d-peek-anchor="bottom-left"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(45deg);
+}
+
+[data-neko-live2d-peek-anchor="bottom-right"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(-45deg);
 }
 
 .neko-idle-thought-bubble {
@@ -1440,6 +1483,13 @@ body.subtitle-web-host #react-chat-window-shell.is-dragging {
     mask-image: linear-gradient(to right, #000 33%, transparent 50%);
     -webkit-mask-size: 300% 100%; mask-size: 300% 100%;
     -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+}
+.compact-chat-surface-shell.neko-compact-collapsing > .compact-chat-surface-frame,
+.compact-chat-surface-shell.neko-compact-expanding > .compact-chat-surface-frame {
+    /* Electron/Chromium 在 mask 动画首帧可能把 backdrop-filter 合成为矩形纹理；
+       仅在擦除期间强制胶囊裁剪，稳态移除 class 后外阴影仍可正常越界绘制。 */
+    -webkit-clip-path: inset(0 round 999px);
+    clip-path: inset(0 round 999px);
 }
 .compact-chat-surface-shell.neko-compact-collapsing {
     animation: neko-compact-collapse-wipe 280ms ease forwards;

@@ -159,6 +159,8 @@ class MyRouter(PluginRouter):
 
 Router 不是独立进程，它和主插件运行在同一个进程中，共享所有资源。
 
+Router 也不是 manifest 加载入口：`[plugin].entry` 必须解析到所属的 `NekoPluginBase` 类。把它指向 `PluginRouter` 子类会被宿主拒绝。`include_router()` 负责绑定并收集入口；Router 类上虽然存在 `on_mount` / `on_unmount` 方法，但这条基类挂载路径不会自动调用它们。
+
 ---
 
 ## 共享逻辑

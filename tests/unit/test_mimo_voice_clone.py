@@ -131,6 +131,60 @@ def test_mimo_worker_clone_uses_voiceclone_model_and_inlines_sample(monkeypatch)
     assert not thread.is_alive()
 
 
+@pytest.mark.unit
+def test_mimo_worker_design_preserves_text_without_persona_rewrite(monkeypatch):
+    """MiMo Voice Design must not let the voice description rewrite dialogue.
+
+    The design prompt is an acoustic/style descriptor only. Runtime TTS must
+    send the character's assistant text exactly and must not enable MiMo's text
+    preview optimization, otherwise voice style can leak into persona/content.
+    """
+    pcm_bytes = (np.arange(3000, dtype=np.int16)).tobytes()
+    transport = FakeMiMoTransport(pcm_bytes)
+    original_async_client = httpx.AsyncClient
+
+    def patched_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", patched_client)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = threading.Thread(
+        target=tts_client.mimo_tts_worker,
+        kwargs={
+            "request_queue": request_queue,
+            "response_queue": response_queue,
+            "audio_api_key": "mimo-key",
+            "voice_id": "mimo-design-abc",
+            "base_url": None,
+            "design_prompt": "an energetic sports girl voice",
+        },
+        daemon=True,
+    )
+    thread.start()
+
+    _wait_for_queue_item(response_queue, lambda item: item == ("__ready__", True))
+    request_queue.put(("speech-1", "今天我们继续聊项目。"))
+    request_queue.put((None, None))
+    _wait_for_queue_item(response_queue, lambda item: isinstance(item, bytes))
+
+    assert len(transport.requests) == 1
+    body = transport.requests[0]["body"]
+    assert body["model"] == "mimo-v2.5-tts-voicedesign"
+    assert body["audio"] == {"format": "pcm16"}
+    assert "optimize_text_preview" not in body
+    assert body["messages"] == [
+        {"role": "user", "content": "an energetic sports girl voice"},
+        {"role": "assistant", "content": "今天我们继续聊项目。"},
+    ]
+
+    request_queue.close()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+
 # ── dispatch: a MiMo clone voice routes to the voiceclone worker ──────────────
 
 def _mimo_clone_meta(sample: bytes, **extra):
@@ -179,6 +233,44 @@ def test_get_tts_worker_routes_mimo_clone_voice(monkeypatch):
     # the stored value is already base64 → the data URI just frames it (no re-encode)
     expected_uri = "data:audio/wav;base64," + base64.b64encode(sample).decode("ascii")
     assert worker.keywords["clone_voice"] == expected_uri
+
+
+@pytest.mark.unit
+def test_get_tts_worker_routes_mimo_design_voice(monkeypatch):
+    class _CM:
+        def get_core_config(self):
+            return {"assistApi": "qwen", "TTS_PROVIDER": "", "GPTSOVITS_ENABLED": False}
+
+        def get_model_api_config(self, model_type):
+            return {"is_custom": False}
+
+        def get_tts_api_key(self, provider):
+            assert provider == "mimo"
+            return "mimo-key"
+
+        def get_voices_for_current_api(self, for_listing=False):
+            return {
+                "mimo-design-aria-1234": {
+                    "provider": "mimo",
+                    "source": "design",
+                    "design_prompt": "a bright energetic anime girl voice",
+                    "mimo_base_url": "https://custom.mimo.example/v1",
+                }
+            }
+
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
+
+    worker, api_key, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen", has_custom_voice=True, voice_id="mimo-design-aria-1234",
+    )
+
+    assert isinstance(worker, partial)
+    assert worker.func is tts_client.mimo_tts_worker
+    assert provider_key == "mimo"
+    assert api_key == "mimo-key"
+    assert worker.keywords["base_url"] == "https://custom.mimo.example/v1"
+    assert worker.keywords["design_prompt"] == "a bright energetic anime girl voice"
+    assert "clone_voice" not in worker.keywords
 
 
 @pytest.mark.unit
@@ -336,7 +428,7 @@ def test_get_voices_merges_cosyvoice_provider_bucket_for_listing_when_main_cloud
 
 @pytest.mark.unit
 def test_registry_declares_clone_and_preset_for_mimo():
-    import utils.tts_provider_registry as reg
+    from utils.tts import provider_registry as reg
     mimo = reg.get("mimo")
     assert mimo is not None and "clone" in mimo.capabilities and "preset" in mimo.capabilities
     # clone is advertised in the UI metadata the source-first picker reads
@@ -346,7 +438,7 @@ def test_registry_declares_clone_and_preset_for_mimo():
 
 @pytest.mark.unit
 def test_mimo_chat_completions_url_maps_ws_to_https_not_plaintext():
-    from utils.mimo_tts_voices import mimo_chat_completions_url
+    from utils.tts.providers.mimo import mimo_chat_completions_url
     # ws:// must NOT downgrade to plaintext http:// (the api-key header would leak);
     # it maps to https:// just like wss://.
     assert mimo_chat_completions_url("ws://api.xiaomimimo.com/v1").startswith("https://")
@@ -392,7 +484,7 @@ async def test_mimo_validate_sample_requires_audio(monkeypatch):
 
 @pytest.mark.unit
 def test_mimo_voice_clone_data_uri_falls_back_on_blank_mime():
-    from utils.mimo_tts_voices import mimo_voice_clone_data_uri
+    from utils.tts.providers.mimo import mimo_voice_clone_data_uri
     # whitespace-only / empty mime must fall back to audio/wav, never "data:;base64,"
     assert mimo_voice_clone_data_uri(b"x", "   ").startswith("data:audio/wav;base64,")
     assert mimo_voice_clone_data_uri(b"x", "").startswith("data:audio/wav;base64,")
@@ -464,3 +556,73 @@ async def test_mimo_synthesize_preview_returns_audio(monkeypatch):
     assert transport.body["stream"] is False
     assert transport.body["audio"]["format"] == "wav"
     assert transport.body["audio"]["voice"].startswith("data:audio/wav;base64,")
+
+
+@pytest.mark.unit
+async def test_mimo_design_voice_preview_uses_voice_preview_template(monkeypatch):
+    """Voice Design previews must follow the same template as VoiceClone.
+
+    Even if an older saved design voice carries ``preview_text`` metadata,
+    provider-specific preview paths must speak the localized template from
+    ``config/prompts/prompts_voice.py``.
+    """
+    from starlette.requests import Request
+    from main_routers.characters_router import voice_preview as cr
+
+    voice_id = "mimo-design-aria-1234"
+    saved_preview_text = "Hello, this is the saved MiMo design preview template."
+    captured = {}
+
+    class _CM:
+        def get_voices_for_current_api(self, for_listing=False):
+            return {
+                voice_id: {
+                    "provider": "mimo",
+                    "source": "design",
+                    "design_prompt": "an energetic sports girl",
+                    "preview_text": saved_preview_text,
+                    "mimo_base_url": "https://stored.mimo.example/v1",
+                }
+            }
+
+        def get_model_api_config(self, model_type):
+            return {"api_key": ""}
+
+        async def aget_core_config(self):
+            return {"assistApi": "qwen", "OPENROUTER_URL": "https://active.example/v1"}
+
+        def get_tts_api_key(self, provider):
+            assert provider == "mimo"
+            return "mimo-key"
+
+        def voice_id_exists_in_any_storage(self, _voice_id):
+            return _voice_id == voice_id
+
+    class _FakeMimoClient:
+        def __init__(self, api_key, base_url=None):
+            captured["api_key"] = api_key
+            captured["base_url"] = base_url
+
+        async def synthesize_design_preview(self, design_prompt, *, text):
+            captured["design_prompt"] = design_prompt
+            captured["text"] = text
+            return b"RIFFfake-wav"
+
+    monkeypatch.setattr(cr, "get_config_manager", lambda: _CM())
+    monkeypatch.setattr(cr, "MimoVoiceDesignClient", _FakeMimoClient)
+
+    request = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/preview",
+        "query_string": b"language=zh-CN",
+        "headers": [],
+        "server": ("testserver", 80),
+    })
+    result = await cr.get_voice_preview(request, voice_id=voice_id, language="zh-CN")
+
+    assert result["success"] is True
+    assert captured["api_key"] == "mimo-key"
+    assert captured["base_url"] == "https://stored.mimo.example/v1"
+    assert captured["design_prompt"] == "an energetic sports girl"
+    assert captured["text"] == cr.VOICE_PREVIEW_TEXTS["zh-CN"]

@@ -247,7 +247,7 @@ class _StreamingMixin:
         try:
             from utils.config_manager import get_config_manager  # 延迟 import 防循环
             cfg_mgr = get_config_manager()
-            emotion_config = cfg_mgr.get_model_api_config('emotion') if cfg_mgr else None
+            emotion_config = await cfg_mgr.aget_model_api_config('emotion') if cfg_mgr else None
         except Exception as e:
             logger.warning("summary: 取 emotion 配置失败: %s", e)
             return None

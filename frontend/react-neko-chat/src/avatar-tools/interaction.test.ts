@@ -1,0 +1,374 @@
+import { describe, expect, it, vi } from 'vitest';
+import {
+  getAvatarToolRegistration,
+  type AvatarToolDefinition,
+} from './catalog';
+import {
+  AVATAR_TOOL_RANGE_EXIT_PADDING,
+  AVATAR_TOOL_RANGE_PADDING,
+  AVATAR_TOOL_RUNTIME_POLICY,
+  classifyAvatarTouchZone,
+  getAvatarRangeHit,
+  isPointInsideAvatarBounds,
+  isPointerOverAvatarToolUi,
+  normalizeAvatarToolBounds,
+  resolveAvatarToolCommit,
+  resolveAvatarToolPointerDown,
+  resolveAvatarToolPointerRelease,
+  validateAvatarToolRuntimePolicy,
+  type AvatarToolRuleContext,
+  type AvatarToolRuntimePolicy,
+} from './interaction';
+import { createAvatarToolProfileHandlers } from './profileInterpreter';
+
+describe('avatar tool runtime policy', () => {
+  it('serializes the explicit range, press, release, and forced-exit contract', () => {
+    expect(AVATAR_TOOL_RUNTIME_POLICY).toMatchObject({
+      policyVersion: 1,
+      range: {
+        geometry: {
+          shape: 'ellipse',
+          radiusXFromWidth: 0.3,
+          radiusYFromHeight: 0.475,
+          boundary: 'inclusive',
+        },
+        enterPadding: 100,
+        exitPadding: 116,
+        visualHold: {
+          durationMs: 180,
+          semantics: 'presentation-only',
+          grantsInteractionHit: false,
+        },
+        bounds: { cacheTtlMs: 80, missingGraceMs: 640 },
+        touchZones: {
+          coordinateSpace: 'normalized-avatar-bounds',
+          clampToBounds: true,
+          boundary: 'inclusive',
+          ear: { maxY: 0.24, leftMaxX: 0.24, rightMinX: 0.76 },
+          headMaxY: 0.34,
+          faceMaxY: 0.62,
+          fallback: 'body',
+        },
+        forcedExit: {
+          uiExclusion: 'immediate',
+          deactivation: 'immediate',
+          hostExit: 'immediate',
+        },
+      },
+      press: {
+        button: 0,
+        requiresRawHit: true,
+        matchingRelease: { pointerId: 'same-as-press', button: 'same-as-press' },
+        move: { thresholdPx: 6, comparison: 'strictly-greater' },
+      },
+      release: {
+        bounds: 'fresh',
+        heldVisualRangeIsHit: false,
+        touchZone: 'fresh-release-hit',
+        uiExclusion: 'reject',
+      },
+    });
+    expect(AVATAR_TOOL_RANGE_PADDING).toBe(100);
+    expect(AVATAR_TOOL_RANGE_EXIT_PADDING).toBe(116);
+  });
+
+  it('accepts its JSON form and rejects unsupported policy versions fail-closed', () => {
+    const serialized = JSON.parse(JSON.stringify(AVATAR_TOOL_RUNTIME_POLICY)) as unknown;
+    expect(() => validateAvatarToolRuntimePolicy(serialized)).not.toThrow();
+    const invalidVersion = {
+      ...(serialized as Record<string, unknown>),
+      policyVersion: 2,
+    };
+    expect(() => validateAvatarToolRuntimePolicy(invalidVersion)).toThrow();
+  });
+});
+const bounds = { left: 100, right: 200, top: 100, bottom: 200, width: 100, height: 100 };
+
+describe('avatar tool hit testing', () => {
+  it('normalizes finite positive bounds and rejects invalid input', () => {
+    expect(normalizeAvatarToolBounds({ left: 10, top: 20, width: 30, height: 40 })).toEqual(expect.objectContaining({
+      right: 40,
+      bottom: 60,
+      centerX: 25,
+      centerY: 40,
+    }));
+    expect(normalizeAvatarToolBounds({ left: 0, top: 0, width: 0, height: 20 })).toBeNull();
+    expect(normalizeAvatarToolBounds({ left: '0', top: 0, width: 20, height: 20 })).toBeNull();
+    expect(normalizeAvatarToolBounds({ left: 0, top: 0, width: 20, height: 20, right: 999 })).toMatchObject({
+      right: 20,
+      bottom: 20,
+      centerX: 10,
+      centerY: 10,
+    });
+  });
+
+  it('uses the shared ellipse and derives touch zones', () => {
+    expect(getAvatarRangeHit(150, 150, [bounds], 0)?.touchZone).toBe('face');
+    expect(getAvatarRangeHit(20, 20, [bounds], 0)).toBeNull();
+    expect(classifyAvatarTouchZone(bounds, 110, 110)).toBe('ear');
+    expect(classifyAvatarTouchZone(bounds, 150, 125)).toBe('head');
+    expect(classifyAvatarTouchZone(bounds, 150, 185)).toBe('body');
+  });
+
+  it('drives ellipse geometry and touch-zone thresholds from the supplied policy', () => {
+    expect(isPointInsideAvatarBounds(bounds, 180, 150, 0)).toBe(true);
+    expect(getAvatarRangeHit(185, 150, [bounds], 0)).toBeNull();
+
+    const policy = JSON.parse(JSON.stringify(AVATAR_TOOL_RUNTIME_POLICY)) as AvatarToolRuntimePolicy;
+    policy.range.geometry.radiusXFromWidth = 0.5;
+    policy.range.touchZones.ear.maxY = 0.05;
+    validateAvatarToolRuntimePolicy(policy);
+
+    expect(getAvatarRangeHit(185, 150, [bounds], 0, policy)).not.toBeNull();
+    expect(classifyAvatarTouchZone(bounds, 110, 110, policy)).toBe('head');
+  });
+
+  it('excludes window drag, resize, and tutorial shield surfaces from tool interaction', () => {
+    const dragHandle = document.createElement('div');
+    dragHandle.id = 'react-chat-window-drag-handle';
+    const resizeEdge = document.createElement('div');
+    resizeEdge.className = 'react-chat-resize-edge';
+    const tutorialShield = document.createElement('div');
+    tutorialShield.id = 'yui-guide-standalone-interaction-shield';
+
+    expect(isPointerOverAvatarToolUi(dragHandle)).toBe(true);
+    expect(isPointerOverAvatarToolUi(resizeEdge)).toBe(true);
+    expect(isPointerOverAvatarToolUi(tutorialShield)).toBe(true);
+  });
+
+  it('excludes the full chat window without excluding the whole compact window', () => {
+    const fullWindow = document.createElement('section');
+    fullWindow.className = 'chat-window chat-surface-mode-full';
+    const fullMessage = document.createElement('p');
+    fullWindow.appendChild(fullMessage);
+    const compactWindow = document.createElement('section');
+    compactWindow.className = 'chat-window chat-surface-mode-compact';
+
+    expect(isPointerOverAvatarToolUi(fullMessage)).toBe(true);
+    expect(isPointerOverAvatarToolUi(compactWindow)).toBe(false);
+  });
+});
+
+
+function context(overrides: Partial<AvatarToolRuleContext> = {}): AvatarToolRuleContext {
+  return {
+    toolId: 'lollipop',
+    clientX: 120,
+    clientY: 140,
+    hit: {
+      bounds: { left: 100, right: 200, top: 100, bottom: 200, width: 100, height: 100 },
+      touchZone: 'face',
+    },
+    rangeVariant: 'primary',
+    outsideVariant: 'primary',
+    visibleVariant: 'primary',
+    interactionLocked: false,
+    recordBurst: vi.fn(() => 1),
+    random: vi.fn(() => 0.9),
+    ...overrides,
+  };
+}
+
+describe('avatar tool runtime rules', () => {
+  it('interprets profile-declared actions, chance fields and zone subsets without tool-specific rules', () => {
+    const source = getAvatarToolRegistration('fist').definition;
+    if (source.interaction.kind !== 'press-release') throw new Error('invalid fixture');
+    const definition = {
+      ...source,
+      interaction: {
+        ...source.interaction,
+        actionId: 'future_poke',
+        burst: { ...source.interaction.burst, rapidThreshold: 2 },
+        touchZones: ['head'],
+        chance: { ...source.interaction.chance, field: 'bonusDrop', probability: 1 },
+      },
+    } as AvatarToolDefinition;
+    const handlers = createAvatarToolProfileHandlers(definition);
+    const command = handlers.commit(context({
+      toolId: 'fist',
+      hit: {
+        bounds: { left: 100, right: 200, top: 100, bottom: 200, width: 100, height: 100 },
+        touchZone: 'head',
+      },
+      recordBurst: () => 2,
+      random: () => 0.5,
+    }));
+
+    expect(command.commit).toEqual(expect.objectContaining({
+      toolId: 'fist',
+      actionId: 'future_poke',
+      intensity: 'rapid',
+      touchZone: 'head',
+      bonusDrop: true,
+    }));
+    expect(command.commit).not.toHaveProperty('rewardDrop');
+    expect(handlers.commit(context({ toolId: 'fist' }))).toEqual({});
+  });
+
+  it('keeps lollipop semantics isolated from touch-zone and reward fields', () => {
+    expect(resolveAvatarToolPointerDown(context())).toEqual({});
+    const command = resolveAvatarToolCommit(context());
+    expect(command.commit).toEqual(expect.objectContaining({ toolId: 'lollipop', actionId: 'offer' }));
+    expect(command.commit).not.toHaveProperty('touchZone');
+    expect(command.commit).not.toHaveProperty('rewardDrop');
+    expect(command.rangeVariant).toBe('secondary');
+  });
+
+  it('does not commit lollipop outside the avatar range', () => {
+    expect(resolveAvatarToolCommit(context({ hit: null }))).toEqual({});
+  });
+
+  it('fails closed when lollipop receives a variant without a declared stage', () => {
+    expect(resolveAvatarToolCommit(context({
+      rangeVariant: 'missing' as AvatarToolRuleContext['rangeVariant'],
+    }))).toEqual({});
+  });
+
+  it('keeps fist reward and touch-zone facts in the fist profile', () => {
+    expect(resolveAvatarToolPointerDown(context({ toolId: 'fist' }))).toEqual({
+      rangeVariant: 'secondary',
+      outsideVariant: 'secondary',
+      pressFeedback: 'until-pointer-release',
+    });
+    const command = resolveAvatarToolCommit(context({
+      toolId: 'fist',
+      random: () => 0.1,
+      recordBurst: () => 4,
+    }));
+    expect(command.commit).toEqual(expect.objectContaining({
+      toolId: 'fist',
+      actionId: 'poke',
+      intensity: 'rapid',
+      rewardDrop: true,
+      touchZone: 'face',
+    }));
+    expect(command.effect).toBe('fist-reward-drops');
+    expect(resolveAvatarToolPointerRelease('fist')).toEqual({
+      rangeVariant: 'primary',
+      outsideVariant: 'primary',
+    });
+  });
+
+  it('turns an outside hammer click into local feedback only', () => {
+    const command = resolveAvatarToolPointerDown(context({ toolId: 'hammer', hit: null }));
+    expect(command.commit).toBeUndefined();
+    expect(command.outsideVariant).toBe('secondary');
+    expect(command.resetOutsideVariantAfterMs).toBe(220);
+  });
+
+  it('freezes the visible rps choice and commits the same unique round facts', () => {
+    const random = vi.fn(() => 0.9);
+    expect(resolveAvatarToolPointerDown(context({
+      toolId: 'rps',
+      rangeVariant: 'tertiary',
+      visibleVariant: 'secondary',
+    }))).toEqual({
+      rangeVariant: 'secondary',
+      roundChoiceCycle: 'pause',
+    });
+    const command = resolveAvatarToolCommit(context({
+      toolId: 'rps',
+      rangeVariant: 'tertiary',
+      visibleVariant: 'secondary',
+      random,
+    }));
+    expect(command).toEqual({
+      commit: {
+        toolId: 'rps',
+        userGesture: 'scissors',
+        avatarGesture: 'paper',
+        roundResult: 'user_win',
+        clientX: 120,
+        clientY: 140,
+      },
+      rangeVariant: 'secondary',
+      roundChoiceConfirmation: {
+        userGesture: 'scissors',
+        userVariant: 'secondary',
+        avatarGesture: 'paper',
+        avatarVariant: 'tertiary',
+        roundResult: 'user_win',
+        revealEffect: 'rps-round-reveal',
+        resultSound: 'rps-user-win',
+      },
+      sound: 'rps-confirm',
+    });
+    expect(random).toHaveBeenCalledTimes(1);
+    expect(command.commit).toEqual(expect.objectContaining({
+      toolId: 'rps',
+      userGesture: 'scissors',
+      avatarGesture: 'paper',
+      roundResult: 'user_win',
+    }));
+
+    const invalidRandom = vi.fn(() => 0.5);
+    expect(resolveAvatarToolCommit(context({
+      toolId: 'rps',
+      hit: null,
+      random: invalidRandom,
+    }))).toEqual({});
+    expect(invalidRandom).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [0, 'rock', 'primary'],
+    [1 / 3, 'scissors', 'secondary'],
+    [2 / 3, 'paper', 'tertiary'],
+  ] as const)('maps rps random boundary %s to %s from the declared choice', (randomValue, gesture, variant) => {
+    const random = vi.fn(() => randomValue);
+    const command = resolveAvatarToolCommit(context({
+      toolId: 'rps',
+      visibleVariant: 'primary',
+      random,
+    }));
+
+    expect(command).toMatchObject({
+      roundChoiceConfirmation: {
+        avatarGesture: gesture,
+        avatarVariant: variant,
+      },
+    });
+    expect(random).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['rock', 0, 'draw'],
+    ['rock', 1 / 3, 'user_win'],
+    ['rock', 2 / 3, 'avatar_win'],
+    ['scissors', 0, 'avatar_win'],
+    ['scissors', 1 / 3, 'draw'],
+    ['scissors', 2 / 3, 'user_win'],
+    ['paper', 0, 'user_win'],
+    ['paper', 1 / 3, 'avatar_win'],
+    ['paper', 2 / 3, 'draw'],
+  ] as const)('computes the unique rps result for %s at random boundary %s', (userGesture, randomValue, result) => {
+    const profile = getAvatarToolRegistration('rps').definition.interaction;
+    if (profile.kind !== 'round-choice') throw new Error('invalid fixture');
+    const userChoice = profile.choices.find(choice => choice.gesture === userGesture);
+    if (!userChoice) throw new Error('invalid fixture');
+    const command = resolveAvatarToolCommit(context({
+      toolId: 'rps',
+      visibleVariant: userChoice.variant,
+      random: () => randomValue,
+    }));
+    expect(command.roundChoiceConfirmation?.roundResult).toBe(result);
+    expect(command.roundChoiceConfirmation?.resultSound).toBe(
+      result === 'user_win' ? 'rps-user-win' : 'rps-other-result',
+    );
+  });
+
+  it('applies interaction locks generically and preserves hammer-only easter eggs', () => {
+    expect(resolveAvatarToolCommit(context({ toolId: 'lollipop', interactionLocked: true }))).toEqual({});
+    expect(resolveAvatarToolPointerDown(context({ toolId: 'hammer' }))).toEqual({});
+    const command = resolveAvatarToolCommit(context({ toolId: 'hammer', random: () => 0.01 }));
+    expect(command.commit).toEqual(expect.objectContaining({
+      toolId: 'hammer',
+      actionId: 'bonk',
+      intensity: 'easter_egg',
+      easterEgg: true,
+    }));
+    expect(command.effect).toBe('hammer-swing');
+    expect(command.effectMode).toBe('easter-egg');
+    expect(command).not.toHaveProperty('hammerSwing');
+  });
+});

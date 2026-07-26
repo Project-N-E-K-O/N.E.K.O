@@ -4,6 +4,8 @@
 
 The jukebox is a per-character song / action library used for singing and canned actions. It manages uploaded **songs** (audio files), **actions** (animation files such as VMD/VRMA), the **bindings** between them, and config **import / export**.
 
+The router has 19 first-party local file-management routes. Every shorter path heading below is relative to `/api/jukebox`; no route has a trailing slash. Upload, import, delete, visibility, metadata, and binding calls mutate the local user library and have no separate authentication layer. Explicit route errors normally use FastAPI's `{ "detail": "..." }`; per-file upload failures can instead appear inside a successful batch response.
+
 Songs and actions each carry an MD5 index for deduplication. Resources shipped with the app are marked `isBuiltin` — deleting a built-in resource only hides it (`visible: false`) rather than removing the file.
 
 ::: info

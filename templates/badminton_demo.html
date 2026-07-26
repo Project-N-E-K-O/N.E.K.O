@@ -9,6 +9,9 @@
 <link rel="preload" as="image" href="/static/game/games/badminton/images/player-ice-powerup.png?v={{ static_asset_version }}">
 <link rel="preload" as="image" href="/static/game/games/badminton/images/yui-frozen-crystals.png?v={{ static_asset_version }}">
 <title>羽毛球挑战 - Badminton</title>
+<!-- 小游戏页豁免 avatar 空闲节流：gameplay 姿态由本页自有 rAF 循环驱动骨骼，
+     manager 的活动探测看不见它，节流会让挥拍/蓄力等动作以 30fps 渲染出卡顿 -->
+<script>window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ = true;</script>
 <script>
   (function () {
     var params = null;

@@ -1,41 +1,29 @@
+
 # コントリビューション
 
-Project N.E.K.O. は Apache License 2.0 のもとでオープンソースです。開発者、クリエイター、世界中のコミュニティメンバーからのコントリビューションを歓迎します。
+Project N.E.K.O. は、範囲を絞ったコード、ドキュメント、翻訳、テスト、コンテンツツールの貢献を受け付けています。
 
-## コントリビューションの方法
+## ワークフロー
 
-1. GitHub でリポジトリを **フォーク** します
-2. 機能や修正のための **ブランチを作成** します
-3. **環境をセットアップ** — Python 3.11 + [uv](https://docs.astral.sh/uv/)、[Node.js](https://nodejs.org/) >= 20.19（フロントエンドビルドに必要、`build_frontend.bat` / `build_frontend.sh` で実行）
-4. [コードスタイル](./code-style) ガイドラインに従って **変更を加えます**
-5. 変更を **テスト** します（`uv run pytest`）
-6. 明確な説明とともに **Pull Request を提出** します
+1. リポジトリを fork し、現在の `main` から一つの課題に集中したブランチを作成します。
+2. `.agent/rules/neko-guide.md` と、タスクに対応する `.agent/skills/*/SKILL.md` を読みます。
+3. Python 3.11 と `uv sync` で環境を準備し、リポジトリのスクリプトでフロントエンドをビルドします。
+4. 所有モジュール内で、最小かつ対称な変更を行います。
+5. 対象テストを先に実行し、その後に関連する lint／ビルドを実行します。
+6. 振る舞い、リスク、検証結果を説明する PR を作成します。
 
-::: tip AI支援開発
-プロジェクトにはAIコーディングアシスタント（Claude Code、Cursor など）向けの設定が組み込まれています。これらのツールで開発する場合、プロジェクトのルールとスキルセットが自動的に読み込まれます。詳細と他のAIツールへの適応方法は [AI支援開発](./ai-assisted-dev) を参照してください。
-:::
+Python コマンドはすべて `uv run` で実行します。ユーザー向け i18n の変更は 8 個の locale ファイルを同時に更新します。
 
-::: warning Nuitka パッケージング
-Python コードを含むディレクトリや動的 import を追加する前に、
-[Nuitka パッケージングの注意点](./nuitka-packaging) を必ずお読みください。
-Nuitka の `--include-data-dir` はデフォルトで `.py` ファイルを静かに脱落させ、
-ディレクトリ命名を誤ると standalone ビルドが壊れますが、ソースモードのテストは通ります。
-:::
+## PR ゲート
 
-## 求めている人材
+- `app/`、`main_logic/`、`memory/` 配下の Python を変更する場合、`scripts/check_pr_report.py` が要求する回帰レポート欄が PR 本文に必要です。
+- カウント対象が 20 ファイルを超える PR には、空でない「分割しない理由」が必要です。新規ファイル、認識されたテストファイル、同期された i18n locale グループは、ゲートの規則に従って除外されます。
+- 静的解析とプラグインテストは、古いチェックリストではなく現在の workflow を基準にします。
 
-- **バックエンド開発者** -- Python、FastAPI、WebSocket、AI/ML 統合
-- **フロントエンド開発者** -- JavaScript、Live2D/Three.js、CSS
-- **クリエイター** -- Live2D/3D モデラー、声優、キャラクターデザイナー
-- **翻訳者** -- i18n カバレッジの拡大を支援
-- **テスター** -- バグレポートと機能フィードバック
+該当領域を変更する前に、[テスト](./testing)、[コードスタイル](./code-style)、[ドキュメント保守](./documentation)、[Nuitka パッケージング](./nuitka-packaging)を読んでください。
 
-## コミュニティ
+## 報告とコミュニティ
 
-- **Discord**: [参加する](https://discord.gg/5kgHfepNJr)
-- **QQ グループ**: 1022939659
-- **GitHub Issues**: [バグ報告や機能リクエスト](https://github.com/Project-N-E-K-O/N.E.K.O/issues)
+再現可能な不具合や範囲の明確な提案には [GitHub Issues](https://github.com/Project-N-E-K-O/N.E.K.O/issues) を使用してください。環境、正確な revision／artifact、期待値と実際の結果、秘匿化したログ、最小再現を含めます。
 
-## ライセンス
-
-コアエンジンは **Apache License 2.0** のもとで提供され、オープンソースであり続けます。あなたのコントリビューションは、公式の Steam および App Store リリースに含まれる場合があります。
+貢献にはリポジトリの現在の `LICENSE` が適用されます。この文書から追加の配布保証を推測しないでください。

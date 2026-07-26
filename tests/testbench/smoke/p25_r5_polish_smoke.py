@@ -336,6 +336,7 @@ def check_r5b_banner_in_messages(client, mock_ext) -> list[str]:
             "tool_id": "fist",
             "action_id": "poke",
             "intensity": "normal",
+            "touch_zone": "head",
             "target": "avatar",
         })
         msgs = _get_messages(client)
@@ -405,6 +406,7 @@ def check_r5d_preview_matches_real(client, mock_ext) -> list[str]:
             "tool_id": "fist",
             "action_id": "poke",
             "intensity": "normal",
+            "touch_zone": "head",
             "target": "avatar",
             "text_context": "ctx",
             "reward_drop": True,
@@ -682,6 +684,7 @@ def check_r5g_injection_coverage(client, mock_ext) -> list[str]:
                     "tool_id": "fist",
                     "action_id": "poke",
                     "intensity": "normal",
+                    "touch_zone": "head",
                     "text_context": _INJECTION_PAYLOAD,
                     "reward_drop": True,
                 },

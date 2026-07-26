@@ -18,17 +18,23 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import gc
+import hashlib
 import json
 import os
 import platform
+import signal
 import socket
 import statistics
 import subprocess
+import sys
 import time
 import tracemalloc
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import weakref
 from collections import Counter
 from contextlib import suppress
 from pathlib import Path
@@ -39,6 +45,20 @@ import psutil
 
 MIB = 1024 * 1024
 DEFAULT_SAMPLE_INTERVAL = 0.25
+HEALTH_APP_SIGNATURE = "N.E.K.O"
+DEFAULT_SERVICE_ROLES = ("main", "memory", "agent")
+_PROBED_EMBEDDING_SERVICES: weakref.WeakSet[Any] = weakref.WeakSet()
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+
+_LOCAL_PROBE_OPENER = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}),
+    _NoRedirectHandler(),
+)
 
 
 def _mib(value: int | float | None) -> float | None:
@@ -81,6 +101,35 @@ def _process_row(process: psutil.Process) -> dict[str, Any] | None:
             uss = getattr(full, "uss", None)
         except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
             uss = None
+        try:
+            thread_count = process.num_threads()
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+            thread_count = None
+        try:
+            handle_count = (
+                process.num_handles() if hasattr(process, "num_handles") else None
+            )
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+            handle_count = None
+
+        onnx_map_count: int | None = 0
+        onnx_mapped_rss: int | None = 0
+        try:
+            for memory_map in process.memory_maps(grouped=True):
+                path = str(getattr(memory_map, "path", "") or "").lower()
+                if "onnxruntime" not in path and not path.endswith(".onnx"):
+                    continue
+                onnx_map_count += 1
+                onnx_mapped_rss += int(getattr(memory_map, "rss", 0) or 0)
+        except (
+            psutil.AccessDenied,
+            psutil.NoSuchProcess,
+            OSError,
+            NotImplementedError,
+        ):
+            # Preserve an unknown result when maps are unsupported or inaccessible.
+            onnx_map_count = None
+            onnx_mapped_rss = None
         return {
             "pid": process.pid,
             "ppid": process.ppid(),
@@ -88,6 +137,10 @@ def _process_row(process: psutil.Process) -> dict[str, Any] | None:
             "category": _process_category(process),
             "rss_mib": _mib(basic.rss),
             "uss_mib": _mib(uss),
+            "threads": thread_count,
+            "handles": handle_count,
+            "onnx_map_count": onnx_map_count,
+            "onnx_mapped_rss_mib": _mib(onnx_mapped_rss),
         }
     except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
         return None
@@ -123,19 +176,70 @@ def _sample(
     for row in rows:
         entry = categories.setdefault(
             row["category"],
-            {"count": 0, "rss_mib": 0.0, "uss_mib": 0.0, "uss_processes": 0},
+            {
+                "count": 0,
+                "rss_mib": 0.0,
+                "uss_mib": 0.0,
+                "uss_processes": 0,
+                "threads": 0,
+                "thread_processes": 0,
+                "handles": 0,
+                "handle_processes": 0,
+                "onnx_map_count": 0,
+                "onnx_map_processes": 0,
+                "onnx_mapped_rss_mib": 0.0,
+                "onnx_mapped_rss_processes": 0,
+            },
         )
         entry["count"] = int(entry["count"]) + 1
         entry["rss_mib"] = float(entry["rss_mib"]) + float(row["rss_mib"] or 0.0)
         if row["uss_mib"] is not None:
             entry["uss_mib"] = float(entry["uss_mib"]) + float(row["uss_mib"])
             entry["uss_processes"] = int(entry["uss_processes"]) + 1
+        if row["threads"] is not None:
+            entry["threads"] = int(entry["threads"]) + int(row["threads"])
+            entry["thread_processes"] = int(entry["thread_processes"]) + 1
+        if row["handles"] is not None:
+            entry["handles"] = int(entry["handles"]) + int(row["handles"])
+            entry["handle_processes"] = int(entry["handle_processes"]) + 1
+        if row["onnx_map_count"] is not None:
+            entry["onnx_map_count"] = int(entry["onnx_map_count"]) + int(
+                row["onnx_map_count"]
+            )
+            entry["onnx_map_processes"] = int(entry["onnx_map_processes"]) + 1
+        if row["onnx_mapped_rss_mib"] is not None:
+            entry["onnx_mapped_rss_mib"] = float(entry["onnx_mapped_rss_mib"]) + float(
+                row["onnx_mapped_rss_mib"]
+            )
+            entry["onnx_mapped_rss_processes"] = (
+                int(entry["onnx_mapped_rss_processes"]) + 1
+            )
     for entry in categories.values():
         if entry["uss_processes"] == 0:
             entry["uss_mib"] = None
+        if entry["thread_processes"] == 0:
+            entry["threads"] = None
+        if entry["handle_processes"] == 0:
+            entry["handles"] = None
+        if entry["onnx_map_processes"] == 0:
+            entry["onnx_map_count"] = None
+        if entry["onnx_mapped_rss_processes"] == 0:
+            entry["onnx_mapped_rss_mib"] = None
 
     total_rss = sum(float(row["rss_mib"] or 0.0) for row in rows)
-    total_uss_values = [float(row["uss_mib"]) for row in rows if row["uss_mib"] is not None]
+    total_uss_values = [
+        float(row["uss_mib"]) for row in rows if row["uss_mib"] is not None
+    ]
+    total_threads = [int(row["threads"]) for row in rows if row["threads"] is not None]
+    total_handles = [int(row["handles"]) for row in rows if row["handles"] is not None]
+    total_onnx_maps = [
+        int(row["onnx_map_count"]) for row in rows if row["onnx_map_count"] is not None
+    ]
+    total_onnx_rss = [
+        float(row["onnx_mapped_rss_mib"])
+        for row in rows
+        if row["onnx_mapped_rss_mib"] is not None
+    ]
     return {
         "elapsed_s": round(time.perf_counter(), 6),
         "categories": categories,
@@ -144,6 +248,16 @@ def _sample(
             "rss_mib": round(total_rss, 3),
             "uss_mib": round(sum(total_uss_values), 3) if total_uss_values else None,
             "uss_processes": len(total_uss_values),
+            "threads": sum(total_threads) if total_threads else None,
+            "thread_processes": len(total_threads),
+            "handles": sum(total_handles) if total_handles else None,
+            "handle_processes": len(total_handles),
+            "onnx_map_count": sum(total_onnx_maps) if total_onnx_maps else None,
+            "onnx_map_processes": len(total_onnx_maps),
+            "onnx_mapped_rss_mib": round(sum(total_onnx_rss), 3)
+            if total_onnx_rss
+            else None,
+            "onnx_mapped_rss_processes": len(total_onnx_rss),
         },
         "processes": rows,
     }
@@ -172,6 +286,28 @@ def _series_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
             int(sample["categories"].get(name, {}).get("count", 0))
             for sample in samples
         ]
+        thread_values = [
+            int(value)
+            for sample in samples
+            if (value := sample["categories"].get(name, {}).get("threads")) is not None
+        ]
+        handle_values = [
+            int(value)
+            for sample in samples
+            if (value := sample["categories"].get(name, {}).get("handles")) is not None
+        ]
+        onnx_map_values = [
+            int(value)
+            for sample in samples
+            if (value := sample["categories"].get(name, {}).get("onnx_map_count"))
+            is not None
+        ]
+        onnx_rss_values = [
+            float(value)
+            for sample in samples
+            if (value := sample["categories"].get(name, {}).get("onnx_mapped_rss_mib"))
+            is not None
+        ]
         categories[name] = {
             "median_count": int(statistics.median(count_values)),
             "max_count": max(count_values),
@@ -181,6 +317,24 @@ def _series_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
             if uss_values
             else None,
             "peak_uss_mib": round(max(uss_values), 3) if uss_values else None,
+            "median_threads": round(statistics.median(thread_values), 3)
+            if thread_values
+            else None,
+            "max_threads": max(thread_values) if thread_values else None,
+            "median_handles": round(statistics.median(handle_values), 3)
+            if handle_values
+            else None,
+            "max_handles": max(handle_values) if handle_values else None,
+            "median_onnx_map_count": round(statistics.median(onnx_map_values), 3)
+            if onnx_map_values
+            else None,
+            "max_onnx_map_count": max(onnx_map_values) if onnx_map_values else None,
+            "median_onnx_mapped_rss_mib": round(statistics.median(onnx_rss_values), 3)
+            if onnx_rss_values
+            else None,
+            "peak_onnx_mapped_rss_mib": round(max(onnx_rss_values), 3)
+            if onnx_rss_values
+            else None,
         }
 
     total_rss = [float(sample["total"]["rss_mib"] or 0.0) for sample in samples]
@@ -189,14 +343,56 @@ def _series_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
         for sample in samples
         if sample["total"]["uss_mib"] is not None
     ]
+    total_threads = [
+        int(value)
+        for sample in samples
+        if (value := sample["total"].get("threads")) is not None
+    ]
+    total_handles = [
+        int(value)
+        for sample in samples
+        if (value := sample["total"].get("handles")) is not None
+    ]
+    total_onnx_maps = [
+        int(value)
+        for sample in samples
+        if (value := sample["total"].get("onnx_map_count")) is not None
+    ]
+    total_onnx_rss = [
+        float(value)
+        for sample in samples
+        if (value := sample["total"].get("onnx_mapped_rss_mib")) is not None
+    ]
     return {
         "sample_count": len(samples),
         "categories": categories,
         "total": {
-            "median_rss_mib": round(statistics.median(total_rss), 3) if total_rss else 0.0,
+            "median_rss_mib": round(statistics.median(total_rss), 3)
+            if total_rss
+            else 0.0,
             "peak_rss_mib": round(max(total_rss), 3) if total_rss else 0.0,
-            "median_uss_mib": round(statistics.median(total_uss), 3) if total_uss else None,
+            "median_uss_mib": round(statistics.median(total_uss), 3)
+            if total_uss
+            else None,
             "peak_uss_mib": round(max(total_uss), 3) if total_uss else None,
+            "median_threads": round(statistics.median(total_threads), 3)
+            if total_threads
+            else None,
+            "max_threads": max(total_threads) if total_threads else None,
+            "median_handles": round(statistics.median(total_handles), 3)
+            if total_handles
+            else None,
+            "max_handles": max(total_handles) if total_handles else None,
+            "median_onnx_map_count": round(statistics.median(total_onnx_maps), 3)
+            if total_onnx_maps
+            else None,
+            "max_onnx_map_count": max(total_onnx_maps) if total_onnx_maps else None,
+            "median_onnx_mapped_rss_mib": round(statistics.median(total_onnx_rss), 3)
+            if total_onnx_rss
+            else None,
+            "peak_onnx_mapped_rss_mib": round(max(total_onnx_rss), 3)
+            if total_onnx_rss
+            else None,
         },
         "last_processes": samples[-1]["processes"] if samples else [],
     }
@@ -241,38 +437,191 @@ def _sample_window(
     return result
 
 
-def _metadata() -> dict[str, Any]:
+def _register_embedding_service(service: Any) -> None:
+    """Track direct probe services without extending their lifetime."""
+    _PROBED_EMBEDDING_SERVICES.add(service)
+
+
+def _runtime_resource_counts() -> dict[str, Any]:
+    """Return reference counts for heavy runtimes without importing them.
+
+    The process sampler reports mapped ONNX files and Chromium descendants.
+    These counters complement it with the owners that are visible in Python so
+    a released owner can be distinguished from a still-referenced model.
+    """
+    result: dict[str, Any] = {
+        "embedding_service_instances": 0,
+        "embedding_session_refs": 0,
+        "embedding_tokenizer_refs": 0,
+        "rapidocr_cache_entries": 0,
+        "rapidocr_cache_owners": 0,
+    }
+
+    services = list(_PROBED_EMBEDDING_SERVICES)
+    embeddings = sys.modules.get("memory.embeddings")
+    if embeddings is not None:
+        service = getattr(embeddings, "_SERVICE", None)
+        if service is not None and all(service is not item for item in services):
+            services.append(service)
+    result["embedding_service_instances"] = len(services)
+    result["embedding_session_refs"] = sum(
+        int(getattr(service, "_session", None) is not None) for service in services
+    )
+    result["embedding_tokenizer_refs"] = sum(
+        int(getattr(service, "_tokenizer", None) is not None) for service in services
+    )
+
+    seen_caches: set[int] = set()
+    for module_name in (
+        "plugin.plugins._shared.rapidocr.ocr_runtime_types",
+        "plugin.plugins.galgame_plugin.ocr_runtime_types",
+    ):
+        runtime_types = sys.modules.get(module_name)
+        if runtime_types is None:
+            continue
+        cache = getattr(runtime_types, "_RAPIDOCR_RUNTIME_CACHE", None)
+        owners = getattr(runtime_types, "_RAPIDOCR_RUNTIME_CACHE_OWNERS", None)
+        if not isinstance(cache, dict) or id(cache) in seen_caches:
+            continue
+        seen_caches.add(id(cache))
+        result["rapidocr_cache_entries"] += len(cache)
+        if isinstance(owners, dict):
+            result["rapidocr_cache_owners"] += sum(
+                max(0, int(value or 0)) for value in owners.values()
+            )
+    return result
+
+
+def _in_process_checkpoint(
+    label: str,
+    *,
+    seconds: float,
+    interval: float,
+    collect: bool = False,
+    root_pids: Iterable[int] | None = None,
+) -> dict[str, Any]:
+    if collect:
+        gc.collect()
+    sample_root_pids = list(root_pids) if root_pids is not None else [os.getpid()]
+    checkpoint = _sample_window(
+        label,
+        sample_root_pids,
+        seconds=seconds,
+        interval=interval,
+        traced_python_pid=os.getpid() if os.getpid() in sample_root_pids else None,
+    )
+    checkpoint["captured_perf_counter"] = round(time.perf_counter(), 6)
+    checkpoint["resources"] = _runtime_resource_counts()
+    checkpoint["gc_counts"] = list(gc.get_count())
+    return checkpoint
+
+
+def _sha256_file(path: Path) -> str | None:
     try:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def _git_provenance(path: Path) -> dict[str, Any]:
+    """Record enough source state to attribute a benchmark without copying diffs."""
+    try:
+        root = Path(
+            subprocess.check_output(
+                ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+        )
         commit = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            text=True,
+            stderr=subprocess.DEVNULL,
         ).strip()
+        status = subprocess.check_output(
+            [
+                "git",
+                "-C",
+                str(root),
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+            ],
+            stderr=subprocess.DEVNULL,
+        )
+        tracked_diff = subprocess.check_output(
+            ["git", "-C", str(root), "diff", "--binary", "HEAD"],
+            stderr=subprocess.DEVNULL,
+        )
     except (OSError, subprocess.SubprocessError):
-        commit = ""
+        return {
+            "commit": "",
+            "dirty": None,
+            "status_sha256": None,
+            "tracked_diff_sha256": None,
+            "uv_lock_sha256": _sha256_file(path / "uv.lock"),
+        }
+    return {
+        "commit": commit,
+        "dirty": bool(status),
+        "status_sha256": hashlib.sha256(status).hexdigest(),
+        "tracked_diff_sha256": hashlib.sha256(tracked_diff).hexdigest(),
+        "uv_lock_sha256": _sha256_file(root / "uv.lock"),
+    }
+
+
+def _metadata(args: argparse.Namespace) -> dict[str, Any]:
+    command = getattr(args, "command", None)
+    benchmark_source = _git_provenance(Path.cwd())
+    backend_source = (
+        _git_provenance(Path(args.backend_cwd).resolve())
+        if command == "stack"
+        else benchmark_source
+    )
     return {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "git_commit": commit,
+        "git_commit": backend_source["commit"],
+        "source": {
+            "benchmark": benchmark_source,
+            "backend": backend_source,
+        },
         "python": platform.python_version(),
         "platform": platform.platform(),
         "logical_cpu_count": psutil.cpu_count(),
         "ram_gib": round(psutil.virtual_memory().total / (1024**3), 3),
-        "sample_interval_s": DEFAULT_SAMPLE_INTERVAL,
+        "psutil": psutil.__version__,
+        "sample_interval_s": args.interval,
+        "sample_window_s": args.window,
+        "stack": (
+            {
+                "settle_s": args.settle,
+                "startup_timeout_s": args.timeout,
+                "shutdown_timeout_s": args.shutdown_timeout,
+                "topology": _parse_env(args.env).get("NEKO_MERGED", "auto"),
+            }
+            if command == "stack"
+            else None
+        ),
     }
 
 
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
+def _write_json(path: Path, payload: dict[str, Any], *, announce: bool = True) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(path.resolve())
+    if announce:
+        print(path.resolve())
 
 
 async def _embedding_scenario(args: argparse.Namespace) -> dict[str, Any]:
     checkpoints = [
-        _sample_window(
+        _in_process_checkpoint(
             "python_baseline",
-            [os.getpid()],
             seconds=args.window,
             interval=args.interval,
-            traced_python_pid=os.getpid(),
         )
     ]
 
@@ -285,12 +634,10 @@ async def _embedding_scenario(args: argparse.Namespace) -> dict[str, Any]:
     from memory.embeddings import EmbeddingService
 
     checkpoints.append(
-        _sample_window(
+        _in_process_checkpoint(
             "embedding_imported",
-            [os.getpid()],
             seconds=args.window,
             interval=args.interval,
-            traced_python_pid=os.getpid(),
         )
     )
     service = EmbeddingService(
@@ -301,16 +648,17 @@ async def _embedding_scenario(args: argparse.Namespace) -> dict[str, Any]:
         min_ram_gb=VECTORS_MIN_RAM_GB,
         profile_id=VECTORS_MODEL_PROFILE_ID,
     )
+    _register_embedding_service(service)
     ready = await service.request_load()
     if not ready:
-        raise RuntimeError(f"embedding service did not become READY: {service.disable_reason()}")
+        raise RuntimeError(
+            f"embedding service did not become READY: {service.disable_reason()}"
+        )
     checkpoints.append(
-        _sample_window(
+        _in_process_checkpoint(
             "embedding_ready",
-            [os.getpid()],
             seconds=args.window,
             interval=args.interval,
-            traced_python_pid=os.getpid(),
         )
     )
     vector = await service.embed("N.E.K.O runtime memory baseline")
@@ -319,21 +667,31 @@ async def _embedding_scenario(args: argparse.Namespace) -> dict[str, Any]:
             f"embedding inference failed after READY: {service.disable_reason()}"
         )
     checkpoints.append(
-        _sample_window(
+        _in_process_checkpoint(
             "embedding_first_inference",
-            [os.getpid()],
             seconds=args.window,
             interval=args.interval,
-            traced_python_pid=os.getpid(),
+        )
+    )
+    model_id = service.model_id()
+    await service.close()
+    vector_dimensions = len(vector)
+    del vector, service
+    checkpoints.append(
+        _in_process_checkpoint(
+            "embedding_released",
+            seconds=args.window,
+            interval=args.interval,
+            collect=True,
         )
     )
     return {
         "scenario": "embedding",
         "embedding": {
             "ready": ready,
-            "model_id": service.model_id(),
+            "model_id": model_id,
             "model_root": str(Path(args.embedding_root).resolve()),
-            "vector_dimensions": len(vector),
+            "vector_dimensions": vector_dimensions,
         },
         "checkpoints": checkpoints,
     }
@@ -341,12 +699,10 @@ async def _embedding_scenario(args: argparse.Namespace) -> dict[str, Any]:
 
 async def _ocr_scenario(args: argparse.Namespace) -> dict[str, Any]:
     checkpoints = [
-        _sample_window(
+        _in_process_checkpoint(
             "python_baseline",
-            [os.getpid()],
             seconds=args.window,
             interval=args.interval,
-            traced_python_pid=os.getpid(),
         )
     ]
     from PIL import Image
@@ -367,53 +723,56 @@ async def _ocr_scenario(args: argparse.Namespace) -> dict[str, Any]:
     )
     available = backend.is_available()
     checkpoints.append(
-        _sample_window(
+        _in_process_checkpoint(
             "ocr_imported",
-            [os.getpid()],
             seconds=args.window,
             interval=args.interval,
-            traced_python_pid=os.getpid(),
         )
     )
     if not available:
         raise RuntimeError("RapidOCR backend is not available")
     text = backend.extract_text(Image.new("RGB", (640, 360), "white"))
     checkpoints.append(
-        _sample_window(
+        _in_process_checkpoint(
             "ocr_ready_after_first_inference",
-            [os.getpid()],
             seconds=args.window,
             interval=args.interval,
-            traced_python_pid=os.getpid(),
+        )
+    )
+    synthetic_text_length = len(text)
+    backend.close()
+    del text, backend
+    checkpoints.append(
+        _in_process_checkpoint(
+            "ocr_released",
+            seconds=args.window,
+            interval=args.interval,
+            collect=True,
         )
     )
     return {
         "scenario": "ocr",
-        "ocr": {"available": available, "synthetic_text_length": len(text)},
+        "ocr": {"available": available, "synthetic_text_length": synthetic_text_length},
         "checkpoints": checkpoints,
     }
 
 
 async def _browser_scenario(args: argparse.Namespace) -> dict[str, Any]:
     checkpoints = [
-        _sample_window(
+        _in_process_checkpoint(
             "python_baseline",
-            [os.getpid()],
             seconds=args.window,
             interval=args.interval,
-            traced_python_pid=os.getpid(),
         )
     ]
     from brain.browser_use_adapter import BrowserUseAdapter
 
     adapter = BrowserUseAdapter(headless=not args.headed)
     checkpoints.append(
-        _sample_window(
+        _in_process_checkpoint(
             "browser_use_imported",
-            [os.getpid()],
             seconds=args.window,
             interval=args.interval,
-            traced_python_pid=os.getpid(),
         )
     )
     session = await adapter._get_browser_session()
@@ -421,16 +780,23 @@ async def _browser_scenario(args: argparse.Namespace) -> dict[str, Any]:
         await session.start()
         adapter._session_ever_started = True
         checkpoints.append(
-            _sample_window(
+            _in_process_checkpoint(
                 "browser_use_playwright_started",
-                [os.getpid()],
                 seconds=args.window,
                 interval=args.interval,
-                traced_python_pid=os.getpid(),
             )
         )
     finally:
         await adapter.close()
+    del session, adapter
+    checkpoints.append(
+        _in_process_checkpoint(
+            "browser_use_released",
+            seconds=args.window,
+            interval=args.interval,
+            collect=True,
+        )
+    )
     return {
         "scenario": "browser_use",
         "browser": {"headless": not args.headed},
@@ -438,14 +804,87 @@ async def _browser_scenario(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def _ports_ready(ports: list[int]) -> bool:
-    for port in ports:
+def _probe_health(port: int, *, timeout: float = 0.25) -> dict[str, Any] | None:
+    try:
+        with _LOCAL_PROBE_OPENER.open(
+            f"http://127.0.0.1:{port}/health",
+            timeout=timeout,
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, ValueError, urllib.error.URLError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("app") != HEALTH_APP_SIGNATURE or payload.get("status") != "ok":
+        return None
+    return payload
+
+
+def _service_health_state(
+    ports: list[int],
+    roles: list[str],
+) -> tuple[bool, dict[str, dict[str, Any]]]:
+    state: dict[str, dict[str, Any]] = {}
+    instance_ids: set[str] = set()
+    for port, expected_role in zip(ports, roles):
+        health = _probe_health(port)
+        actual_role = str((health or {}).get("service") or "")
+        instance_id = str((health or {}).get("instance_id") or "")
+        role_ready = bool(health and actual_role == expected_role and instance_id)
+        state[expected_role] = {
+            "port": port,
+            "ready": role_ready,
+            "actual_service": actual_role or None,
+        }
+        if role_ready:
+            instance_ids.add(instance_id)
+    all_ready = all(item["ready"] for item in state.values())
+    same_instance = all_ready and len(instance_ids) == 1
+    return same_instance, state
+
+
+def _probe_http_paths(port: int, paths: list[str]) -> dict[str, dict[str, Any]]:
+    results: dict[str, dict[str, Any]] = {}
+    for raw_path in paths:
+        path = raw_path if raw_path.startswith("/") else f"/{raw_path}"
         try:
-            with socket.create_connection(("127.0.0.1", port), timeout=0.25):
-                pass
-        except OSError:
-            return False
-    return True
+            with _LOCAL_PROBE_OPENER.open(
+                f"http://127.0.0.1:{port}{path}",
+                timeout=5.0,
+            ) as response:
+                body = response.read()
+                results[path] = {
+                    "status": int(response.status),
+                    "content_type": response.headers.get_content_type(),
+                    "body_bytes": len(body),
+                }
+        except urllib.error.HTTPError as exc:
+            body = exc.read()
+            results[path] = {
+                "status": int(exc.code),
+                "content_type": exc.headers.get_content_type(),
+                "body_bytes": len(body),
+                "error": type(exc).__name__,
+            }
+        except (OSError, urllib.error.URLError) as exc:
+            results[path] = {
+                "status": None,
+                "content_type": None,
+                "body_bytes": 0,
+                "error": type(exc).__name__,
+            }
+    return results
+
+
+def _http_probe_validation_errors(
+    probes: dict[str, dict[str, Any]],
+) -> list[str]:
+    failed_paths = [
+        path for path, probe in probes.items() if probe.get("status") != 200
+    ]
+    if not failed_paths:
+        return []
+    return ["HTTP route probes failed: " + ", ".join(failed_paths)]
 
 
 def _assert_ports_available(ports: list[int]) -> None:
@@ -467,11 +906,55 @@ def _assert_ports_available(ports: list[int]) -> None:
         )
 
 
+def _port_released(port: int) -> bool:
+    """Require both no listener and immediate exclusive re-bindability."""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+            return False
+    except OSError:
+        pass
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        probe.bind(("127.0.0.1", port))
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
+def _capture_process_tree(pid: int) -> list[psutil.Process]:
+    try:
+        root = psutil.Process(pid)
+    except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+        return []
+    try:
+        return [root, *root.children(recursive=True)]
+    except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+        return [root]
+
+
+def _process_is_alive(process: psutil.Process) -> bool:
+    try:
+        return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
+    except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+        return False
+
+
+def _alive_process_pids(processes: Iterable[psutil.Process]) -> list[int]:
+    return sorted(process.pid for process in processes if _process_is_alive(process))
+
+
 def _terminate_process_trees(
     processes: Iterable[subprocess.Popen[Any]],
     observed_processes: Iterable[psutil.Process],
     timeout: float = 12.0,
-) -> None:
+) -> tuple[list[int], list[int]]:
     targets: dict[tuple[int, float], psutil.Process] = {}
     for target in observed_processes:
         try:
@@ -489,7 +972,8 @@ def _terminate_process_trees(
                 targets[(target.pid, target.create_time())] = target
             except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
                 continue
-    target_list = list(targets.values())
+    target_list = [target for target in targets.values() if _process_is_alive(target)]
+    forced_pids = sorted(target.pid for target in target_list)
     # Teardown is best-effort because processes can exit between discovery and action.
     for target in reversed(target_list):
         with suppress(psutil.AccessDenied, psutil.NoSuchProcess, OSError):
@@ -498,6 +982,8 @@ def _terminate_process_trees(
     for target in alive:
         with suppress(psutil.AccessDenied, psutil.NoSuchProcess, OSError):
             target.kill()
+    _gone, residual = psutil.wait_procs(alive, timeout=2.0)
+    return forced_pids, sorted(target.pid for target in residual)
 
 
 async def _run_synthetic_chat(
@@ -511,6 +997,7 @@ async def _run_synthetic_chat(
     import websockets
 
     if not character:
+
         def _read_current_character() -> dict[str, Any]:
             with urllib.request.urlopen(
                 f"http://127.0.0.1:{port}/api/characters/current_catgirl", timeout=5
@@ -641,6 +1128,56 @@ def _parse_env(items: list[str]) -> dict[str, str]:
     return result
 
 
+def _request_graceful_shutdown(
+    process: subprocess.Popen[Any],
+    *,
+    ports: list[int],
+    timeout: float,
+) -> dict[str, Any]:
+    started_at = time.perf_counter()
+    signal_name = "SIGTERM"
+    tracked_processes = _capture_process_tree(process.pid)
+    tracked_pids = sorted(target.pid for target in tracked_processes)
+    try:
+        if os.name == "nt" and hasattr(signal, "CTRL_BREAK_EVENT"):
+            signal_name = "CTRL_BREAK_EVENT"
+            process.send_signal(signal.CTRL_BREAK_EVENT)
+        else:
+            process.send_signal(signal.SIGTERM)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {
+            "requested": True,
+            "signal": signal_name,
+            "graceful": False,
+            "elapsed_s": round(time.perf_counter() - started_at, 3),
+            "exit_code": process.poll(),
+            "ports_closed": False,
+            "tracked_pids": tracked_pids,
+            "alive_pids": _alive_process_pids(tracked_processes),
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    deadline = time.monotonic() + timeout
+    ports_closed = False
+    while time.monotonic() < deadline:
+        ports_closed = all(_port_released(port) for port in ports)
+        if process.poll() is not None and ports_closed:
+            break
+        time.sleep(0.1)
+    alive_pids = _alive_process_pids(tracked_processes)
+    return {
+        "requested": True,
+        "signal": signal_name,
+        "graceful": process.poll() == 0 and ports_closed and not alive_pids,
+        "elapsed_s": round(time.perf_counter() - started_at, 3),
+        "exit_code": process.poll(),
+        "ports_closed": ports_closed,
+        "tracked_pids": tracked_pids,
+        "alive_pids": alive_pids,
+        "error": None,
+    }
+
+
 def _spawn(
     command: list[str],
     *,
@@ -668,8 +1205,13 @@ def _stack(args: argparse.Namespace) -> dict[str, Any]:
     env = os.environ.copy()
     env.update(_parse_env(args.env))
     backend_command = _decode_command(args.backend_command)
-    electron_command = _decode_command(args.electron_command) if args.electron_command else None
+    electron_command = (
+        _decode_command(args.electron_command) if args.electron_command else None
+    )
     ports = _decode_ports(args.ports)
+    roles = [item.strip().lower() for item in args.services.split(",") if item.strip()]
+    if len(roles) != len(ports) or len(set(roles)) != len(roles):
+        raise ValueError("--services must contain one unique role for each --ports entry")
     _assert_ports_available(ports)
     processes: list[tuple[str, subprocess.Popen[Any], Any]] = []
     checkpoints: list[dict[str, Any]] = []
@@ -678,6 +1220,12 @@ def _stack(args: argparse.Namespace) -> dict[str, Any]:
     observed_processes: dict[tuple[int, float], psutil.Process] = {}
     started_at = time.perf_counter()
     ports_ready_elapsed_s: float | None = None
+    service_ready_elapsed_s: dict[str, float] = {}
+    final_health_state: dict[str, dict[str, Any]] = {}
+    shutdown_result: dict[str, Any] | None = None
+    http_probes: dict[str, dict[str, Any]] = {}
+    validation_errors: list[str] = []
+    result_payload: dict[str, Any] | None = None
 
     try:
         backend, backend_log = _spawn(
@@ -689,12 +1237,22 @@ def _stack(args: argparse.Namespace) -> dict[str, Any]:
         processes.append(("backend", backend, backend_log))
         roots.append(backend.pid)
         deadline = time.monotonic() + args.timeout
-        while not _ports_ready(ports):
+        while True:
+            services_ready, health_state = _service_health_state(ports, roles)
+            elapsed = time.perf_counter() - started_at
+            for role, state in health_state.items():
+                if state["ready"] and role not in service_ready_elapsed_s:
+                    service_ready_elapsed_s[role] = round(elapsed, 3)
+            final_health_state = health_state
+            if services_ready:
+                break
             startup_samples.append(
                 _sample(roots, observed_processes=observed_processes)
             )
             if backend.poll() is not None:
-                raise RuntimeError(f"backend exited before ready with code {backend.returncode}")
+                raise RuntimeError(
+                    f"backend exited before ready with code {backend.returncode}"
+                )
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"ports did not become ready: {ports}")
             time.sleep(args.interval)
@@ -722,7 +1280,9 @@ def _stack(args: argparse.Namespace) -> dict[str, Any]:
             roots.append(electron.pid)
             time.sleep(args.electron_settle)
             if electron.poll() is not None:
-                raise RuntimeError(f"Electron exited early with code {electron.returncode}")
+                raise RuntimeError(
+                    f"Electron exited early with code {electron.returncode}"
+                )
             checkpoints.append(
                 _sample_window(
                     "electron_attached",
@@ -735,6 +1295,9 @@ def _stack(args: argparse.Namespace) -> dict[str, Any]:
 
         chat_result = None
         if args.synthetic_chat:
+            if "main" not in roles:
+                raise ValueError("--synthetic-chat requires a main role in --services")
+
             def _record_live_first_chat() -> None:
                 time.sleep(args.settle)
                 checkpoints.append(
@@ -749,7 +1312,7 @@ def _stack(args: argparse.Namespace) -> dict[str, Any]:
 
             chat_result = asyncio.run(
                 _run_synthetic_chat(
-                    port=ports[0],
+                    port=ports[roles.index("main")],
                     character=args.chat_character,
                     prompt=args.chat_prompt,
                     timeout=args.chat_timeout,
@@ -757,24 +1320,77 @@ def _stack(args: argparse.Namespace) -> dict[str, Any]:
                 )
             )
 
-        return {
+        if args.probe_path:
+            if "main" not in roles:
+                raise ValueError("--probe-path requires a main role in --services")
+            http_probes = _probe_http_paths(
+                ports[roles.index("main")],
+                args.probe_path,
+            )
+            validation_errors.extend(
+                _http_probe_validation_errors(http_probes)
+            )
+
+        if args.graceful_shutdown:
+            shutdown_result = _request_graceful_shutdown(
+                backend,
+                ports=ports,
+                timeout=args.shutdown_timeout,
+            )
+            if not shutdown_result["graceful"]:
+                validation_errors.append(
+                    "graceful shutdown did not exit cleanly with every port released"
+                )
+
+        result_payload = {
             "scenario": "stack",
+            "ready_contract": "signed_health_same_instance",
             "ports_ready_elapsed_s": round(ports_ready_elapsed_s, 3),
+            "services_ready_elapsed_s": service_ready_elapsed_s,
+            "service_health": final_health_state,
             "measurement_elapsed_s": round(time.perf_counter() - started_at, 3),
             "ports": ports,
             "startup_window": _series_summary(startup_samples),
             "checkpoints": checkpoints,
             "synthetic_chat": chat_result,
+            "http_probes": http_probes,
+            "shutdown": shutdown_result,
+            "validation_errors": validation_errors,
             "logs": {
                 "backend": str(output.with_suffix(".backend.log")),
-                "electron": str(output.with_suffix(".electron.log")) if electron_command else None,
+                "electron": str(output.with_suffix(".electron.log"))
+                if electron_command
+                else None,
             },
         }
+        return result_payload
     finally:
-        _terminate_process_trees(
+        forced_pids, residual_pids = _terminate_process_trees(
             (process for _name, process, _log_file in processes),
             observed_processes.values(),
         )
+        residual_ports = [port for port in ports if not _port_released(port)]
+        if result_payload is not None:
+            shutdown_tracked_pids = set((shutdown_result or {}).get("tracked_pids", []))
+            shutdown_forced_pids = [
+                pid for pid in forced_pids if pid in shutdown_tracked_pids
+            ]
+            result_payload["forced_cleanup"] = {
+                "forced_pids": forced_pids,
+                "residual_pids": residual_pids,
+                "residual_ports": residual_ports,
+            }
+            if shutdown_result is not None:
+                shutdown_result["forced_pids"] = shutdown_forced_pids
+            if args.graceful_shutdown and shutdown_forced_pids:
+                validation_errors.append(
+                    "graceful shutdown required forced process cleanup: "
+                    + ", ".join(str(pid) for pid in shutdown_forced_pids)
+                )
+            if residual_pids or residual_ports:
+                validation_errors.append(
+                    "forced cleanup left residual processes or bound ports"
+                )
         for _name, _process, log_file in processes:
             log_file.close()
 
@@ -786,25 +1402,35 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--window", type=float, default=3.0)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    scenario = subparsers.add_parser("scenario", help="Run an in-process lazy feature scenario")
+    scenario = subparsers.add_parser(
+        "scenario", help="Run an in-process lazy feature scenario"
+    )
     scenario.add_argument("name", choices=("embedding", "ocr", "browser-use"))
     scenario.add_argument("--embedding-root", default="data/embedding_models")
     scenario.add_argument("--headed", action="store_true")
 
-    stack = subparsers.add_parser("stack", help="Measure a launcher/Electron process tree")
+    stack = subparsers.add_parser(
+        "stack", help="Measure a launcher/Electron process tree"
+    )
     stack.add_argument(
         "--backend-command",
         required=True,
         help="JSON array or a pipe-delimited command",
     )
     stack.add_argument("--backend-cwd", default=str(Path.cwd()))
-    stack.add_argument("--electron-command", help="JSON array or a pipe-delimited command")
+    stack.add_argument(
+        "--electron-command", help="JSON array or a pipe-delimited command"
+    )
     stack.add_argument("--electron-cwd", default=str(Path.cwd()))
     stack.add_argument("--ports", default="48911,48912,48915")
+    stack.add_argument("--services", default=",".join(DEFAULT_SERVICE_ROLES))
     stack.add_argument("--env", action="append", default=[], metavar="NAME=VALUE")
     stack.add_argument("--timeout", type=float, default=150.0)
     stack.add_argument("--settle", type=float, default=5.0)
     stack.add_argument("--electron-settle", type=float, default=12.0)
+    stack.add_argument("--graceful-shutdown", action="store_true")
+    stack.add_argument("--shutdown-timeout", type=float, default=40.0)
+    stack.add_argument("--probe-path", action="append", default=[])
     stack.add_argument("--synthetic-chat", action="store_true")
     stack.add_argument("--chat-character", default="")
     stack.add_argument(
@@ -820,6 +1446,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.interval <= 0 or args.window < 0:
         raise SystemExit("--interval must be positive and --window cannot be negative")
 
+    metadata = _metadata(args)
     if args.command == "scenario":
         tracemalloc.start(10)
         if args.name == "embedding":
@@ -831,8 +1458,11 @@ def main(argv: list[str] | None = None) -> int:
     else:
         result = _stack(args)
 
-    payload = {"metadata": _metadata(), **result}
+    payload = {"metadata": metadata, **result}
     _write_json(Path(args.output), payload)
+    if result.get("validation_errors"):
+        print("benchmark validation failed: " + "; ".join(result["validation_errors"]))
+        return 1
     return 0
 
 

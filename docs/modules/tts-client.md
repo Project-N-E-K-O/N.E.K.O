@@ -1,47 +1,68 @@
 # TTS Client
 
-**Module:** `main_logic/tts_client/` (Python package, ~5900 lines total across `__init__.py`, `_infra.py`, `_registry_meta.py`, `_telemetry.py`, and the `workers/` subpackage of per-provider worker modules). The factory function `get_tts_worker` is defined in `main_logic/tts_client/__init__.py`.
+**Package:** `main_logic/tts_client/`
 
-The TTS client handles text-to-speech synthesis across multiple providers with a unified queue-based interface.
+The TTS package resolves the external speech provider selected by the current core and voice configuration. It supplies worker functions with one queue contract; `LLMSessionManager` owns the queues, starts the daemon thread, and forwards produced PCM to the client.
 
-## Factory function
+Native-audio realtime models do not use this external TTS path.
+
+## Factory contract
 
 ```python
 from main_logic.tts_client import get_tts_worker
 
-worker = get_tts_worker(config)
+worker_fn, api_key_override, provider_key = get_tts_worker(
+    core_api_type="qwen",
+    has_custom_voice=False,
+    voice_id="",
+)
 ```
 
-Creates a TTS worker configured for the active provider and voice settings.
+`get_tts_worker()` does not create or start a worker object. It returns:
 
-## Supported providers
+1. the worker function to run in the session manager's thread;
+2. an optional API-key override required by that route;
+3. the canonical `provider_key` used for key resolution and diagnostics.
 
-| Provider | Module | Features |
-|----------|--------|----------|
-| DashScope CosyVoice | Cloud | High quality, voice cloning, streaming |
-| DashScope TTS V2 | Cloud | Lower latency variant |
-| GPT-SoVITS | Local | Fully offline, customizable |
-| Custom | HTTP | Any OpenAI-compatible TTS endpoint |
+Unsupported or unusable selections resolve to the dummy worker so the queue reports a controlled error instead of pretending synthesis succeeded.
 
-## Queue architecture
+## Provider selection
 
-The TTS client uses a producer-consumer pattern:
+Registered special routes are evaluated in priority order before native/core-provider fallback:
 
-1. **Request queue**: Text sentences enqueued by the session manager
-2. **Worker thread**: Dequeues text, calls the TTS API, produces audio chunks
-3. **Response queue**: Audio chunks ready for resampling and WebSocket delivery
+1. GPT-SoVITS
+2. vLLM-Omni
+3. MiniMax cloned voice
+4. ElevenLabs cloned voice
+5. CosyVoice cloned voice
+6. MiMo
+7. Doubao TTS
 
-## Voice cloning flow
+The remaining selection follows the active core route, including Qwen/Qwen International, free-route Step or Gemini behavior, Step, GLM/CogTTS, Gemini, OpenAI, and Grok. Voice metadata and the selected provider decide which clone route is valid; cloning is not DashScope-only.
 
-1. User uploads audio sample via `/api/characters/voice_clone`
-2. Audio is sent to DashScope's voice enrollment API
-3. A `voice_id` is returned and stored in character config
-4. Subsequent TTS calls include the `voice_id` for personalized synthesis
+Provider implementations live under `main_logic/tts_client/workers/`. They normalize their output to the PCM format expected by the application, including provider-specific decode and resampling to 48 kHz where required.
 
-## Interruption
+## Queue protocol
 
-When the user interrupts:
+The manager sends request items to the worker thread:
 
-1. Both queues are flushed
-2. Any in-progress TTS API call is cancelled
-3. The worker is immediately ready for new input
+| Request | Meaning |
+|---|---|
+| `(speech_id, text)` | Synthesize one text segment |
+| `(None, None)` | End the current utterance |
+| `("__interrupt__", None)` | Discard/mute the current utterance and reset worker state |
+| `("__shutdown__", None)` | Stop the worker |
+
+Workers return raw PCM chunks or tagged `("__audio__", speech_id, payload)` messages, plus control messages such as ready and error states. The `speech_id` lets the manager reject late audio from an interrupted or superseded response.
+
+## Thread and async boundary
+
+Model text is produced on the asyncio side. The session manager segments it and enqueues TTS requests; the selected synchronous worker consumes them in its dedicated thread. A manager response task reads the response queue without blocking the event loop and forwards accepted audio to WebSocket clients.
+
+The TTS package therefore does not own session lifecycle, WebSocket delivery, or the worker thread itself.
+
+## Interruption and errors
+
+On interruption, the manager drains queued output, sends the interrupt sentinel, waits for worker acknowledgement where supported, drains late chunks, and clears pending speech IDs. Provider workers differ: some can cancel an upstream request, while others can only stop emitting or mute its eventual result. The contract does not promise that every remote API call is physically cancelled.
+
+Startup and synthesis failures are returned through control/error messages. The manager decides whether to retry, surface status, restart the worker, or disable that speech path. Voice-enrollment HTTP routes and persistence of cloned `voice_id` values are separate from the runtime TTS queue.

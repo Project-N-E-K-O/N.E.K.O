@@ -50,7 +50,17 @@ MINECRAFT_TASK_SCHEMA: Dict[str, Any] = {
     "properties": {
         "task": {
             "type": "string",
-            "description": "A concrete, directly executable Minecraft goal in English.",
+            "description": (
+                "A plain-language Minecraft instruction. For a master-directed "
+                "action, copy only master's most recent message: it must be a new "
+                "explicit game instruction that has not already been dispatched, "
+                "using the exact original wording without added details. During "
+                "keep-going, a genuinely new autonomous action may instead be "
+                "formed from the current game state, but never by recovering or "
+                "replaying an older instruction or tool call. Never add in-game "
+                "coordinates unless master explicitly asked for coordinates in "
+                "the most recent message."
+            ),
         },
         "overwrite": {
             "type": "boolean",
@@ -73,28 +83,52 @@ MINECRAFT_TASK_DESCRIPTION = (
     "(cue). "
     "Do not infer or claim results from the task text itself — only from "
     "actually-observed cues and screenshots.\n\n"
+    "CRITICAL — this tool dispatches actions; it is not an awareness or heartbeat "
+    "tool. A screenshot, log, state update, idle reminder, or task-completion cue "
+    "is context only and is NEVER by itself a task to dispatch. Before "
+    "dispatching, account for the current task and recent feedback. If an action "
+    "may still be running, do not send another one.\n\n"
+    "TASK SOURCE AUTHORITY — for a master-directed action, use only master's most "
+    "recent message, and only when it contains a new explicit in-game instruction "
+    "that has not already been dispatched. The task must not come from an earlier "
+    "master message, an earlier tool call, task history, logs, screenshots, "
+    "telemetry, or a completion cue. During keep-going, you may instead form one "
+    "genuinely new autonomous action from the current game state when there is an "
+    "obvious next step. NEVER call back, recover, retry, or re-dispatch an older "
+    "master instruction or tool call, even if it failed or is mentioned by a "
+    "state reminder.\n\n"
+    "MASTER INSTRUCTION FIDELITY — when master (the user) gives an explicit "
+    "instruction in that most recent message, relay the exact original wording "
+    "in ``task``. Do not translate, "
+    "paraphrase, split, optimize, clarify on master's behalf, or add targets, "
+    "quantities, steps, tools, directions, or other details. The exact request "
+    "takes priority over the usual preference for a concrete single-step goal.\n\n"
+    "COORDINATE SAFETY — NEVER invent, infer, choose, or include in-game "
+    "coordinates unless master explicitly asked you to use or provide coordinates. "
+    "Coordinates visible in screenshots, logs, telemetry, or earlier agent output "
+    "do not count as master's request. Preserve relative wording such as 'come "
+    "here' exactly instead of turning it into coordinates.\n\n"
     "CRITICAL — never parrot the game's own logs. The Minecraft feed you see is "
     "the agent's internal telemetry: function-call lines (goToCoordinates(...), "
     "attackEntity(...)), '!commands', 'admin movement request', and coordinates it "
     "picked itself. NEVER copy any of that into a task — echoing a log line back "
-    "as a task creates a dispatch loop. A task must come from the user's actual "
-    "spoken request or a genuine decision of your own, written as a plain-language "
-    "goal (e.g. 'mine straight down 3 blocks then place 1 block below you'), never "
+    "as a task creates a dispatch loop. A task must come from master's most recent "
+    "spoken request or a genuinely new autonomous choice based on current game "
+    "state, written as a plain-language goal, never "
     "the game's raw command syntax or a coordinate you only saw in a log. If the "
     "user asked for a specific thing, do THAT — not whatever the log happens to say.\n\n"
-    "Use this tool when the user asks the character to do something in "
-    "the game, or when continuing an in-game activity that needs another "
-    "concrete step. Do NOT use it for chat, status questions, or "
-    "abstract intent — see ``query_inventory`` for inventory lookups.\n\n"
+    "Use this tool when master's most recent message asks the character to do "
+    "something new and that request has not already been dispatched, or when a "
+    "keep-going turn identifies a genuinely obvious new action from current game "
+    "state. Do NOT dispatch merely because a task finished or new awareness "
+    "context arrived. Do NOT use it for chat, status "
+    "questions, or abstract intent — see ``query_inventory`` for inventory lookups.\n\n"
     "Parameters:\n"
-    "  task (string, required): one concrete executable action in "
-    "English with specific targets — exact coordinates, specific block "
-    "or entity types, specific quantities. Vague intents ('find a good "
-    "place to build a house', 'find a blue block', 'come over here') "
-    "are not executable. Prefer single-step actions (one mine / one "
-    "craft / one walk) over long compound chains; chains complete "
-    "piece by piece and each step's real outcome must be observed "
-    "before claiming the next.\n"
+    "  task (string, required): master's exact original new instruction when "
+    "master-directed; otherwise one genuinely new autonomous action based on "
+    "current game state. Never source it from an older message or tool call, and "
+    "never repeat an already-dispatched command. Never add coordinates unless "
+    "master explicitly requested them in the most recent message.\n"
     "  overwrite (bool, default false): if a previous task is still in "
     "flight, false rejects this call with a 'busy' summary and the "
     "previous task keeps running. Set true when:\n"
@@ -417,14 +451,14 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
             return
         try:
             # ai_behavior="respond" + priority=7: the action just
-            # finished; the dialog LLM should immediately narrate the
-            # outcome to {MASTER_NAME} and (if appropriate) decide a
-            # next concrete action. Without ``respond`` the cue would
-            # only land in context as silent reading material; the
-            # human-facing report would be deferred to the next user
-            # turn, which feels unresponsive. Importance scale is
-            # HIGHER=more important (repo-wide): alert=9 (most important)
-            # > completion=7 > in_progress=4 > keep_going=3.
+            # finished, so the dialog LLM should immediately absorb and, when
+            # useful, narrate the outcome to {MASTER_NAME}. The prompt frames
+            # this as awareness rather than a command to dispatch another task;
+            # the later keep-going turn remains responsible for any genuinely
+            # new autonomous next action. Importance scale is HIGHER=more
+            # important (repo-wide):
+            # alert=9 (most important) > completion=7 > in_progress=4 >
+            # keep-going=3.
             self.push_message(
                 source="game_agent_minecraft",
                 visibility=[],

@@ -20,6 +20,8 @@ export default {
     minimize: '最小化',
     maximize: '最大化',
     restore: '恢復',
+    pinWindow: '置頂視窗',
+    unpinWindow: '取消置頂',
     toggleSelection: '切換選取狀態',
     success: '成功',
     error: '錯誤',
@@ -61,6 +63,13 @@ export default {
     loginFailed: '授權登入尚未完成，請稍後再試',
     loginPending: '授權登入等待時間有點久，請重新發起登入',
     logoutSuccess: '已在本機退出授權登入',
+    logoutFailed: '退出失敗，請稍後再試',
+    accountSummary: '帳戶資訊',
+    accountSummaryLoading: '正在更新帳戶資訊…',
+    accountMemberDays: '已加入 {days} 天',
+    accountPublished: '已發佈 {count} 個外掛',
+    logout: '退出登入',
+    logoutConfirm: '確認退出此裝置上的外掛市集授權登入嗎？',
     searchPlaceholder: '搜尋外掛...',
     notConfigured: '外掛市集未設定',
     configHint: '請將 NEKO_MARKET_API_URL 設定為外掛市集服務位址',
@@ -384,6 +393,20 @@ export default {
     }
   },
   package: {
+    install: {
+      safeUpgradeHint: '重複匯入同一外掛時會先檢查版本，並透過可回復的安全升級取代原目錄，不會建立帶後綴的副本。',
+      planFailed: '無法檢查安裝套件。',
+      upgradeTitle: '升級 {plugin}？',
+      upgradeBody: '版本 {current} 將替換為 {target}。正在執行的外掛會短暫重新啟動。',
+      upgradeConfirm: '升級外掛',
+      upgradeCancelled: '已取消升級。',
+      upgradeSucceeded: '{plugin} 已成功升級。',
+      blockedBundleConflict: '此整合包包含已安裝的外掛，請逐一升級其中的外掛。',
+      blockedDirectoryConflict: '目標目錄屬於另一個外掛，未進行任何變更。',
+      blockedLegacyPlugin: '仍安裝著此前版本的外掛。請先解除安裝 {plugin} 再繼續。',
+      rollbackCompleted: '升級失敗，已回復先前的版本。',
+      rollbackIncomplete: '升級失敗且回復未完整完成，請先檢查外掛狀態再繼續。'
+    },
     dialog: {
       title: '包管理執行記錄',
       subtitle: '保留最近 {count} 條執行結果'

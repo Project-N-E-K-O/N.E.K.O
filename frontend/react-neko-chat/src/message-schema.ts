@@ -1,4 +1,19 @@
 import { z } from 'zod';
+import {
+  avatarInteractionPayloadSchema,
+  avatarToolStatePayloadSchema,
+  type AvatarInteractionPayload,
+  type AvatarToolStatePayload,
+} from './avatar-tools/protocol';
+
+export {
+  avatarInteractionPayloadSchema,
+  avatarToolStatePayloadSchema,
+};
+export type {
+  AvatarInteractionPayload,
+  AvatarToolStatePayload,
+};
 
 const messageActionSchema = z.object({
   id: z.string().min(1),
@@ -134,78 +149,6 @@ const compactToolWheelIndexRequestSchema = z.object({
   reason: z.string().optional(),
 }).nullable();
 
-const avatarInteractionPayloadBaseSchema = z.object({
-  interactionId: z.string().min(1),
-  target: z.literal('avatar'),
-  pointer: z.object({
-    clientX: z.number().finite(),
-    clientY: z.number().finite(),
-  }),
-  textContext: z.string().optional(),
-  timestamp: z.number().finite(),
-  intensity: z.enum(['normal', 'rapid', 'burst', 'easter_egg']).optional(),
-});
-
-export const avatarInteractionPayloadSchema = z.discriminatedUnion('toolId', [
-  avatarInteractionPayloadBaseSchema.extend({
-    toolId: z.literal('lollipop'),
-    actionId: z.enum(['offer', 'tease', 'tap_soft']),
-  }).strict(),
-  avatarInteractionPayloadBaseSchema.extend({
-    toolId: z.literal('fist'),
-    actionId: z.enum(['poke']),
-    touchZone: z.enum(['ear', 'head', 'face', 'body']).optional(),
-    rewardDrop: z.boolean().optional(),
-  }).strict(),
-  avatarInteractionPayloadBaseSchema.extend({
-    toolId: z.literal('hammer'),
-    actionId: z.enum(['bonk']),
-    touchZone: z.enum(['ear', 'head', 'face', 'body']).optional(),
-    easterEgg: z.boolean().optional(),
-  }).strict(),
-]);
-
-const avatarToolIdSchema = z.enum(['lollipop', 'fist', 'hammer']);
-const avatarToolCursorVariantSchema = z.enum(['primary', 'secondary', 'tertiary']);
-const avatarToolImageKindSchema = z.enum(['cursor', 'icon']);
-
-const avatarToolDescriptorSchema = z.object({
-  id: avatarToolIdSchema,
-  label: z.string().optional(),
-  iconImagePath: z.string().min(1),
-  iconImagePathAlt: z.string().optional(),
-  iconImagePathAlt2: z.string().optional(),
-  cursorImagePath: z.string().min(1),
-  cursorImagePathAlt: z.string().optional(),
-  cursorImagePathAlt2: z.string().optional(),
-  cursorHotspotX: z.number().finite().optional(),
-  cursorHotspotY: z.number().finite().optional(),
-  cursorNaturalWidth: z.number().finite().positive().optional(),
-  cursorNaturalHeight: z.number().finite().positive().optional(),
-  cursorDisplayWidth: z.number().finite().positive().optional(),
-  cursorDisplayHeight: z.number().finite().positive().optional(),
-  menuIconScale: z.number().finite().positive().optional(),
-}).strict();
-
-export const avatarToolStatePayloadSchema = z.object({
-  active: z.boolean(),
-  toolId: avatarToolIdSchema.nullable().optional(),
-  variant: avatarToolCursorVariantSchema.optional(),
-  avatarRangeVariant: avatarToolCursorVariantSchema.optional(),
-  outsideRangeVariant: avatarToolCursorVariantSchema.optional(),
-  imageKind: avatarToolImageKindSchema.optional(),
-  withinAvatarRange: z.boolean().optional(),
-  overCompactZone: z.boolean().optional(),
-  insideHostWindow: z.boolean().optional(),
-  cursorClientX: z.number().finite().optional(),
-  cursorClientY: z.number().finite().optional(),
-  cursorScreenX: z.number().finite().optional(),
-  cursorScreenY: z.number().finite().optional(),
-  tool: avatarToolDescriptorSchema.nullable().optional(),
-  textContext: z.string().optional(),
-  timestamp: z.number().finite(),
-}).strict();
-
 export const messageBlockSchema = z.discriminatedUnion('type', [
   textBlockSchema,
   imageBlockSchema,
@@ -246,6 +189,7 @@ export const chatWindowPropsSchema = z.object({
   title: z.string().optional(),
   iconSrc: z.string().optional(),
   messages: z.array(chatMessageSchema).optional(),
+  assistantName: z.string().trim().min(1).optional(),
   inputPlaceholder: z.string().optional(),
   sendButtonLabel: z.string().optional(),
 
@@ -263,7 +207,7 @@ export const chatWindowPropsSchema = z.object({
   inputHint: z.string().optional(),
   rollbackDraft: z.string().optional(),
   _rollbackKey: z.string().optional(),
-  _toolCursorResetKey: z.string().optional(),
+  _avatarToolDeactivationKey: z.string().optional(),
   jukeboxButtonLabel: z.string().optional(),
   jukeboxButtonAriaLabel: z.string().optional(),
   avatarGeneratorButtonLabel: z.string().optional(),
@@ -273,6 +217,7 @@ export const chatWindowPropsSchema = z.object({
   composerHidden: z.boolean().optional(),
   composerDisabled: z.boolean().optional(),
   compactInputLocked: z.boolean().optional(),
+  catLocalTextOnly: z.boolean().optional(),
   chatSurfaceMode: chatSurfaceModeSchema.optional(),
   // host 折叠取消序号：必须在 schema 里声明，否则 z.object().parse() 默认 strip 未知键、
   // App 永远只看到默认 0，重开立即复位的 useLayoutEffect 不会触发（Codex P2）。
@@ -379,8 +324,6 @@ export type GalgameOption = z.infer<typeof galgameOptionSchema>;
 export type ChoiceOption = z.infer<typeof choiceOptionSchema>;
 export type ChoicePrompt = NonNullable<z.infer<typeof choicePromptSchema>>;
 export type ChoicePromptSource = ChoicePrompt['source'];
-export type AvatarInteractionPayload = z.infer<typeof avatarInteractionPayloadSchema>;
-export type AvatarToolStatePayload = z.infer<typeof avatarToolStatePayloadSchema>;
 export type MessageBlock = z.infer<typeof messageBlockSchema>;
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
 export type ComposerSubmitPayload = z.infer<typeof composerSubmitSchema>;
@@ -389,7 +332,6 @@ export type ChatWindowSchemaProps = z.infer<typeof chatWindowPropsSchema>;
 export function parseChatMessage(input: unknown): ChatMessage {
   return chatMessageSchema.parse(input);
 }
-
 const parsedCallbackCaches = new Map<string, WeakMap<object, unknown>>();
 
 function stabilizeParsedCallbackIdentities(

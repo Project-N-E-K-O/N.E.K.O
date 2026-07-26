@@ -11,10 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Platform cookies and Bilibili credential helpers."""
+"""Platform credentials and request protocol helpers."""
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import secrets
+import time
 from typing import TYPE_CHECKING, Any
 import os
 
@@ -26,6 +30,128 @@ from pathlib import Path
 import json
 
 from ._shared import logger
+
+
+_XHH_SIGNING_KEY = "AB45STUVWZEFGJ6CH01D237IXYPQRKLMN89"
+_XHH_TOKEN_PHRASES = ("唉？！云朵！", "哒哒哒哒哒，好想玩原神", "云！原！神！")
+
+
+def _xhh_vm(num: int) -> int:
+    return (255 & ((num << 1) ^ 27)) if num & 128 else num << 1
+
+
+def _xhh_qm(num: int) -> int:
+    return _xhh_vm(num) ^ num
+
+
+def _xhh_mm(num: int) -> int:
+    return _xhh_qm(_xhh_vm(num))
+
+
+def _xhh_ym(num: int) -> int:
+    return _xhh_mm(_xhh_qm(_xhh_vm(num)))
+
+
+def _xhh_gm(num: int) -> int:
+    return _xhh_ym(num) ^ _xhh_mm(num) ^ _xhh_qm(num)
+
+
+def _xhh_mixed(values: list[int]) -> list[int]:
+    return [
+        _xhh_gm(values[0]) ^ _xhh_ym(values[1]) ^ _xhh_mm(values[2]) ^ _xhh_qm(values[3]),
+        _xhh_qm(values[0]) ^ _xhh_gm(values[1]) ^ _xhh_ym(values[2]) ^ _xhh_mm(values[3]),
+        _xhh_mm(values[0]) ^ _xhh_qm(values[1]) ^ _xhh_gm(values[2]) ^ _xhh_ym(values[3]),
+        _xhh_ym(values[0]) ^ _xhh_mm(values[1]) ^ _xhh_qm(values[2]) ^ _xhh_gm(values[3]),
+        values[4],
+        values[5],
+    ]
+
+
+def _xhh_av(value: str, key: str, n: int) -> str:
+    pool = key[: len(key) + n]
+    return "".join(pool[ord(char) % len(pool)] for char in value)
+
+
+def _xhh_sv(value: str, key: str) -> str:
+    return "".join(key[ord(char) % len(key)] for char in value)
+
+
+def _xhh_interleave(values: list[str]) -> str:
+    output: list[str] = []
+    for index in range(len(values[2])):
+        for value in values:
+            if index < len(value):
+                output.append(value[index])
+    return "".join(output)
+
+
+def build_xhh_request_keys(
+    path: str,
+    *,
+    timestamp: int | None = None,
+    nonce: str | None = None,
+) -> tuple[str, str, int]:
+    """Build Xiaoheihe's hkey, nonce and request timestamp."""
+    request_time = int(timestamp or time.time())
+    request_nonce = nonce or hashlib.md5(
+        f"{request_time}{secrets.randbelow(max(2, int(time.time() * 1000)))}".encode()
+    ).hexdigest().upper()
+    values = [
+        _xhh_av(str(request_time), _XHH_SIGNING_KEY, -2),
+        _xhh_sv(path, _XHH_SIGNING_KEY),
+        _xhh_sv(request_nonce, _XHH_SIGNING_KEY),
+    ]
+    values.sort(key=len)
+    digest = hashlib.md5(_xhh_interleave(values).encode()[:20]).hexdigest()
+    checksum = sum(_xhh_mixed([ord(char) for char in digest[-6:]])) % 100
+    return f"{_xhh_av(digest[:5], _XHH_SIGNING_KEY, -4)}{checksum:02d}", request_nonce, request_time
+
+
+def build_xhh_token_id(*, timestamp: int | None = None) -> str:
+    """Build the short-lived browser token used by Xiaoheihe requests."""
+    current = int(timestamp or time.time())
+    raw = bytearray(hashlib.md5(str(current).encode()).digest())
+    for phrase in _XHH_TOKEN_PHRASES:
+        raw.extend(hashlib.md5(phrase.encode()).digest())
+    raw.append(0)
+    return base64.b64encode(bytes(raw)).decode("ascii")
+
+
+def build_xhh_request_params(
+    path: str,
+    *,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    hkey, nonce, request_time = build_xhh_request_keys(path)
+    params: dict[str, Any] = dict(extra or {})
+    params.update(
+        {
+            "os_type": "web",
+            "app": "web",
+            "client_type": "web",
+            "version": "999.0.4",
+            "web_version": "2.5",
+            "x_client_type": "web",
+            "x_app": "heybox_website",
+            "x_os_type": "Windows",
+            "device_info": "Chrome",
+            "hkey": hkey,
+            "_time": str(request_time),
+            "nonce": nonce,
+            "_notip": "true",
+        }
+    )
+    return params
+
+
+def build_xhh_cookie_header(cookies: dict[str, str]) -> str:
+    normalized = {
+        str(key).strip(): str(value).strip()
+        for key, value in (cookies or {}).items()
+        if str(key).strip() and str(value).strip()
+    }
+    normalized["x_xhh_tokenid"] = build_xhh_token_id()
+    return "; ".join(f"{key}={value}" for key, value in normalized.items())
 
 def _get_bilibili_credential() -> Any | None:
     try:

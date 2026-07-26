@@ -132,6 +132,15 @@ def build_lineage_snapshot(
     mem = _memory_dir(character)
 
     facts = _read_json(mem / "facts.json", expect=list, warnings=file_warnings)
+    # A fact absorbed into a reflection is *moved* out of facts.json into
+    # facts_archive.json (main-program memory lifecycle), yet the reflection
+    # keeps citing its original ``source_fact_ids``. Without the archive the
+    # graph can't draw the reflection<-fact edge, and the overview's D4 check
+    # mislabels every such citation as "referencing a deleted fact" (a P29
+    # false positive). Loaded here; only the referenced subset is materialised
+    # (lane 2.5) — never the whole archive.
+    facts_archive = _read_json(
+        mem / "facts_archive.json", expect=list, warnings=file_warnings)
     reflections = _read_json(
         mem / "reflections.json", expect=list, warnings=file_warnings)
     persona = _read_json(mem / "persona.json", expect=dict, warnings=file_warnings)
@@ -158,12 +167,14 @@ def build_lineage_snapshot(
         nodes.append(node)
 
     # ── lane 2: facts ──
+    active_fact_ids: set[str] = set()
     for f in facts:
         if not isinstance(f, dict):
             continue
         fid = f.get("id")
         if not fid:
             continue
+        active_fact_ids.add(str(fid))
         _add_node({
             "id": str(fid),
             "type": "fact",
@@ -180,6 +191,53 @@ def build_lineage_snapshot(
             },
             "warnings": [],
         })
+
+    # ── lane 2.5: archived facts a reflection still references ──
+    # Materialise ONLY the archived facts an existing reflection cites (not the
+    # whole archive: a heavy character archives hundreds, and an un-referenced
+    # archived fact adds no lineage while burning the node budget). These nodes
+    # carry a distinct ``fact_archived`` type + ``archived`` status so the
+    # reflection<-fact edge below resolves and D4 sees the fact as present,
+    # while every fact-quality/count metric keyed on ``type == "fact"``
+    # automatically excludes them. Placed before lane 3 so the edge pass finds
+    # them in ``node_ids``.
+    referenced_fact_ids: set[str] = set()
+    for r in reflections:
+        if not isinstance(r, dict):
+            continue
+        for x in (r.get("source_fact_ids") or []):
+            if x:
+                referenced_fact_ids.add(str(x))
+    need_archived = referenced_fact_ids - active_fact_ids
+    archived_fact_count = 0
+    if need_archived:
+        for f in facts_archive:
+            if not isinstance(f, dict):
+                continue
+            fid = f.get("id")
+            if not fid:
+                continue
+            fid = str(fid)
+            if fid not in need_archived or fid in node_ids:
+                continue
+            archived_fact_count += 1
+            _add_node({
+                "id": fid,
+                "type": "fact_archived",
+                "lane": LANE_FACT,
+                "label": _truncate(f.get("text", "")),
+                "status": "archived",
+                "entity": f.get("entity"),
+                "created_at": f.get("created_at"),
+                "meta": {
+                    "text": f.get("text", ""),
+                    "importance": f.get("importance"),
+                    "tags": f.get("tags") or [],
+                    "absorbed": True,
+                    "archived": True,
+                },
+                "warnings": [],
+            })
 
     # ── lane 3: reflections (+ fact -> reflection edges) ──
     for r in reflections:
@@ -354,6 +412,7 @@ def build_lineage_snapshot(
             "messages": message_count,
             "recent_memos": recent_memo_count,
             "facts": sum(1 for n in nodes if n["type"] == "fact"),
+            "facts_archived": archived_fact_count,
             "reflections": sum(1 for n in nodes if n["type"] == "reflection"),
             "persona": persona_count,
             "corrections": correction_count,

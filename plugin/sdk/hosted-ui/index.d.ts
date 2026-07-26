@@ -231,15 +231,15 @@ export function List<T = any>(props: CommonProps & { items?: T[]; render?: (item
 export function Progress(props: CommonProps & { label?: any; value?: number; indeterminate?: boolean }): any
 export function JsonView(props: CommonProps & { data?: any; value?: any }): any
 export function Field(props: CommonProps & { label?: any; help?: any; error?: any; required?: boolean }): any
-export function Input(props: CommonProps & { type?: string; value?: any; placeholder?: string; min?: number; max?: number; step?: number; invalid?: boolean; error?: any; onChange?: (value: string) => void }): any
-export function PasswordInput(props: CommonProps & { value?: any; placeholder?: string; invalid?: boolean; error?: any; onChange?: (value: string) => void }): any
-export function NumberInput(props: CommonProps & { value?: number | ""; placeholder?: string; min?: number; max?: number; step?: number; invalid?: boolean; error?: any; onChange?: (value: number | string) => void }): any
+export function Input(props: CommonProps & { type?: string; value?: any; placeholder?: string; min?: number; max?: number; step?: number; invalid?: boolean; error?: any; disabled?: boolean; onChange?: (value: string) => void }): any
+export function PasswordInput(props: CommonProps & { value?: any; placeholder?: string; invalid?: boolean; error?: any; disabled?: boolean; onChange?: (value: string) => void }): any
+export function NumberInput(props: CommonProps & { value?: number | ""; placeholder?: string; min?: number; max?: number; step?: number; invalid?: boolean; error?: any; disabled?: boolean; onChange?: (value: number | string) => void }): any
 export function Slider(props: CommonProps & { value?: number; min?: number; max?: number; step?: number; showValue?: boolean; disabled?: boolean; onChange?: (value: number) => void }): any
-export function Select(props: CommonProps & { value?: any; options?: UiOption[]; invalid?: boolean; error?: any; onChange?: (value: any) => void }): any
+export function Select(props: CommonProps & { value?: any; options?: UiOption[]; invalid?: boolean; error?: any; disabled?: boolean; onChange?: (value: any) => void }): any
 export function RadioGroup(props: CommonProps & { name?: string; value?: any; options?: UiOption[]; disabled?: boolean; onChange?: (value: any) => void }): any
 export function SegmentedControl(props: CommonProps & { value?: any; options?: UiOption[]; disabled?: boolean; onChange?: (value: any) => void }): any
-export function Textarea(props: CommonProps & { value?: any; placeholder?: string; invalid?: boolean; error?: any; onChange?: (value: string) => void }): any
-export function Switch(props: CommonProps & { checked?: boolean; label?: any; invalid?: boolean; error?: any; onChange?: (value: boolean) => void }): any
+export function Textarea(props: CommonProps & { value?: any; placeholder?: string; invalid?: boolean; error?: any; disabled?: boolean; onChange?: (value: string) => void }): any
+export function Switch(props: CommonProps & { checked?: boolean; label?: any; invalid?: boolean; error?: any; disabled?: boolean; onChange?: (value: boolean) => void }): any
 export function Checkbox(props: CommonProps & { checked?: boolean; value?: boolean; label?: any; invalid?: boolean; error?: any; disabled?: boolean; onChange?: (value: boolean) => void }): any
 export function CheckboxGroup(props: CommonProps & { value?: any[]; options?: UiOption[]; disabled?: boolean; onChange?: (value: any[]) => void }): any
 export function Accordion(props: CommonProps & { id?: string; title?: any; label?: any; open?: boolean }): any

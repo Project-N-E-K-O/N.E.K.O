@@ -1694,6 +1694,30 @@ def test_export_snapshot_emits_single_character_shards_and_meta(tmp_path):
 
 
 @pytest.mark.unit
+def test_export_snapshot_includes_external_import_state_sidecar(tmp_path):
+    # external_import_state sidecar（空/全去重天的逐日幂等账本）必须随 facts 一起
+    # 进快照，否则 cloudsave 用户换机/恢复后这些天丢指纹、重跑 LLM（修复对跨设备
+    # 场景不完整）。加入 MANAGED_MEMORY_FILENAMES 后应被采集。
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import export_local_cloudsave_snapshot
+
+    _write_runtime_state(cm, character_name="小满")
+    atomic_write_json(
+        Path(cm.memory_dir) / "小满" / "external_import_state.json",
+        {"version": 1, "daily": {"imported_day_fingerprints": ["fp-x"]}},
+        ensure_ascii=False, indent=2,
+    )
+    export_local_cloudsave_snapshot(cm)
+
+    staged = cm.cloudsave_dir / "characters" / "小满" / "memory" / "external_import_state.json"
+    assert staged.is_file()
+    assert json.loads(staged.read_text(encoding="utf-8"))["daily"][
+        "imported_day_fingerprints"
+    ] == ["fp-x"]
+
+
+@pytest.mark.unit
 def test_export_cloudsave_character_unit_updates_only_single_character_scope(tmp_path):
     cm = _make_config_manager(tmp_path)
 

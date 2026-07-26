@@ -1275,6 +1275,23 @@ class TestVoiceCloneKeyResolution:
         assert existing is not None
         assert existing[0] == 'voice-old-intl'
 
+    @pytest.mark.unit
+    async def test_async_voice_save_is_available_through_config_manager_facade(self, config_manager):
+        voice_data = {
+            'voice_id': 'voice-design-async',
+            'provider': 'cosyvoice',
+            'source': 'design',
+        }
+
+        await config_manager.asave_voice_for_api_key(
+            '__VOICE_DESIGN_TEST__',
+            'voice-design-async',
+            voice_data,
+        )
+
+        stored = config_manager.load_voice_storage()
+        assert stored['__VOICE_DESIGN_TEST__']['voice-design-async'] == voice_data
+
 
 # ---------------------------------------------------------------------------
 # 11. follow_core / follow_assist must NOT be misclassified as 'local' realtime

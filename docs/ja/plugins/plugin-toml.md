@@ -1,6 +1,10 @@
 # プラグイン設定 (plugin.toml)
 
-すべてのプラグインのルートには `plugin.toml` があります。これは N.E.K.O に「このプラグインは何か」「どう読み込むか」「どんな機能を持つか」を伝える設定ファイルです。
+すべてのプラグインのルートには `plugin.toml` があります。package の種類、host が import する Python class、公開する optional capability を N.E.K.O に伝えます。
+
+::: warning 2 種類の entry
+`[plugin].entry = "module.path:ClassName"` は **host-loading entry point** です。plugin process 起動時に 1 つの `NekoPluginBase` class を import します。`greet` のような runtime entry ID は `@plugin_entry(id="greet")` または `register_dynamic_entry(...)` から作られ、plugin のロード後に Agent が選択します。
+:::
 
 以下は架空の "Smart Notes" プラグインの完全な設定例です。このプラグインはノートの検索と作成、自分専用の UI、多言語対応、AI エージェントからの呼び出しに対応しています。
 
@@ -10,6 +14,7 @@
 [plugin]
 id = "smart_notes"
 name = "Smart Notes"
+type = "plugin"
 description = "Manage your notes: search, create, organize, with AI-powered classification."
 short_description = "Note management with AI-powered organization."
 keywords = ["note", "筆記", "memo", "record", "メモ"]
@@ -66,7 +71,9 @@ name = "Smart Notes"
 entry = "plugin.plugins.smart_notes:SmartNotesPlugin"
 ```
 
-この 3 つは **必須** です。`id` はフォルダー名と一致させます。`entry` は Python クラスの場所をシステムに伝えます。
+この 3 field は **必須** です。`id` は `^[A-Za-z0-9_-]+$` に一致し、一意でなければなりません。directory 名と揃えることを強く推奨します。不一致でも runtime load は可能ですが、profile lookup や tooling は `<plugin.id>/plugin.toml` を仮定する場合があります。`entry` は `module.path:ClassName` 形式で `NekoPluginBase` subclass を指す必要があり、`PluginRouter` は直接起動できません。
+
+通常の plugin では `type = "plugin"` は default なので省略できます。Adapter package のみ `type = "adapter"` を使います。削除済みの `extension` type と `[plugin.host]` table は拒否されます。
 
 ```toml
 description = "Manage your notes: search, create, organize, with AI-powered classification."
@@ -74,13 +81,15 @@ short_description = "Note management with AI-powered organization."
 keywords = ["note", "筆記", "memo", "record", "メモ"]
 ```
 
-この 3 つは **AI エージェントがプラグインを見つけられるか** に影響します。
+これらの field は host が plugin をロードした後の Agent routing に使われます。
 
-- `short_description` — AI が「このプラグインで何ができるか」を判断するために使います。短く正確に書きます。
-- `keywords` — ユーザー意図のマッチに使います。ユーザーが「メモして」と言い、keywords に "memo" があればマッチしやすくなります。
-- `description` — Plugin Manager に表示される、人間向けの詳しい説明です。
+- `description` — plugin metadata と Agent fine assessment に使う完全な説明です。
+- `short_description` — coarse screening 用の短い説明です。省略時は `description` から生成して cache される場合があります。
+- `keywords` — 正規表現 pattern です。hit は Stage 1 candidate に union されますが、Stage 2 を省略したり実行を保証したりしません。
 
-AI から呼び出される必要がないプラグイン、たとえば純粋なリスナーなら、これらを省略して `passive = true` を追加できます。
+listener/integration を Agent dispatch から完全に外すには `passive = true` を設定します。non-passive plugin も Agent-visible runtime entry が 1 つ以上なければ candidate になりません。
+
+Stage 2 の最終出力は `plugin_id` と runtime `entry_id` です。どちらも今回表示した candidate set と照合され、最初の不正値だけ correction retry を 1 回行い、それでも不正なら拒否されます。
 
 ```toml
 version = "1.2.0"
@@ -109,12 +118,14 @@ recommended = ">=0.1.0,<0.2.0"
 supported = ">=0.1.0,<0.3.0"
 ```
 
-このプラグインがどの SDK バージョン向けに書かれているかを伝えます。ユーザーの N.E.K.O が古すぎる、または新しすぎる場合、システムは警告したり読み込みを拒否したりします。
+package が対応する plugin SDK version を host に伝えます。値は Python packaging の specifier syntax です。
 
-- `supported` — この範囲外なら読み込みを拒否
-- `recommended` — この範囲が最も安定
-- `untested` — 読み込みは許可するが「未テスト」と警告
-- `conflicts` — 明示的に互換性がないバージョン
+- `supported` — 通常サポートする範囲
+- `recommended` — 最もよく検証した範囲。範囲外では warning
+- `untested` — 追加で許可する範囲。該当時は warning
+- `conflicts` — 他の範囲に一致していても明示的に拒否する範囲
+
+`supported` がある場合、host は `supported` または `untested` に入らなければロードされません。不正な specifier も拒否されます。
 
 ---
 
@@ -124,10 +135,16 @@ supported = ">=0.1.0,<0.3.0"
 [plugin_runtime]
 enabled = true
 auto_start = true
+priority = 0
+timeout = 10
+startup_failure = "warn"
 ```
 
 - `enabled` — `false` にすると、ファイルを削除せず一時的に無効化できます
 - `auto_start` — `true` なら N.E.K.O 起動時に自動開始、そうでなければパネルから手動開始します
+- `priority` — optional integer runtime ordering hint
+- `timeout` — startup readiness を待つ秒数。`0 < timeout <= 300` が必要で、省略時は system default
+- `startup_failure` — `startup` hook failure の扱い。`warn`（default、process を残して degraded）、`fail`（startup abort）、`ignore`（log only）
 
 ---
 
@@ -203,7 +220,7 @@ max_per_page = 20
 auto_classify = true
 ```
 
-フレームワークが認識しないセクションは、プラグイン固有の業務設定として扱われます。コードから読み取れます。
+追加の top-level section は business config として保持され、コードから読み取れます。
 
 ```python
 cfg = await self.config.dump()
@@ -231,4 +248,4 @@ plugin/plugins/smart_notes/
 └── data/                    ← 実行時データ（自動作成、self.data_path() が指す場所）
 ```
 
-必須なのは `plugin.toml` と `__init__.py` だけです。その他のディレクトリは必要に応じて作成します。
+必須なのは `plugin.toml` と `[plugin].entry` が指す import 可能な Python module です。一般的には `__init__.py` を使いますが、それに限定されません。

@@ -840,6 +840,45 @@
             }
         },
 
+        isHomePcCursorOutputSuppressedForExternalizedChat() {
+            return !!(
+                this.overlay
+                && this.overlay.pcCursorOutputSuppressed === true
+            );
+        },
+
+        releaseExternalizedChatCursorToHome() {
+            if (
+                !this.isHomeChatExternalized()
+                || !this.isHomePcCursorOutputSuppressedForExternalizedChat()
+            ) {
+                return false;
+            }
+
+            this.setHomePcCursorOutputSuppressedForExternalizedChat(false);
+            const currentCursorPoint = this.overlay && typeof this.overlay.getCursorPosition === 'function'
+                ? this.overlay.getCursorPosition()
+                : null;
+            if (
+                currentCursorPoint
+                && Number.isFinite(currentCursorPoint.x)
+                && Number.isFinite(currentCursorPoint.y)
+                && this.overlay
+                && typeof this.overlay.syncCursorPosition === 'function'
+            ) {
+                this.overlay.syncCursorPosition(currentCursorPoint.x, currentCursorPoint.y, true);
+            }
+            if (
+                this.interactionTakeover
+                && typeof this.interactionTakeover.setExternalizedChatCursor === 'function'
+            ) {
+                this.interactionTakeover.setExternalizedChatCursor('', {
+                    preservePcOverlayCursor: true
+                });
+            }
+            return true;
+        },
+
         clearHomeSpotlightsForExternalizedChat() {
             if (this.overlay && typeof this.overlay.clearSpotlight === 'function') {
                 this.overlay.clearSpotlight({
@@ -957,26 +996,6 @@
                 (
                     previousSceneId === 'day2_intro_context'
                     && nextSceneId === 'day2_screen_entry'
-                )
-                || (
-                    previousSceneId === 'day1_history_handle'
-                    && nextSceneId === 'day1_intro_basic_voice'
-                )
-                || (
-                    previousSceneId === 'day1_intro_basic_voice'
-                    && nextSceneId === 'day1_screen_entry'
-                )
-                || (
-                    previousSceneId === 'day1_screen_entry'
-                    && nextSceneId === 'day1_screen_entry_invite'
-                )
-                || (
-                    previousSceneId === 'day1_screen_entry_invite'
-                    && nextSceneId === 'day1_takeover_capture_cursor'
-                )
-                || (
-                    previousSceneId === 'day1_takeover_capture_cursor'
-                    && nextSceneId === 'day1_takeover_return_control'
                 )
                 || (
                     previousSceneId === 'day2_tool_toggle_intro'

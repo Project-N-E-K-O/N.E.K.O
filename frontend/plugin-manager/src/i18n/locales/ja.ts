@@ -20,6 +20,8 @@ export default {
     minimize: '最小化',
     maximize: '最大化',
     restore: '復元',
+    pinWindow: 'ウィンドウを最前面に固定',
+    unpinWindow: '最前面固定を解除',
     toggleSelection: '選択を切り替え',
     success: '成功',
     error: 'エラー',
@@ -61,6 +63,13 @@ export default {
     loginFailed: '認証ログインを完了できませんでした。時間をおいてもう一度お試しください',
     loginPending: '認証ログインに少し時間がかかっています。もう一度開始してください',
     logoutSuccess: 'この端末で認証ログインからサインアウトしました',
+    logoutFailed: 'サインアウトに失敗しました。もう一度お試しください',
+    accountSummary: 'アカウント情報',
+    accountSummaryLoading: 'アカウント情報を更新中…',
+    accountMemberDays: '登録から {days} 日',
+    accountPublished: '公開プラグイン {count} 件',
+    logout: 'ログアウト',
+    logoutConfirm: 'この端末のプラグインマーケット認証からログアウトしますか？',
     searchPlaceholder: 'プラグインを検索...',
     notConfigured: 'プラグインマーケットが未設定',
     configHint: 'NEKO_MARKET_API_URL にプラグインマーケットのサービスアドレスを設定してください',
@@ -384,6 +393,20 @@ export default {
     }
   },
   package: {
+    install: {
+      safeUpgradeHint: '同じプラグインを再度取り込むと、バージョンを確認してロールバック可能な安全な置換を行い、接尾辞付きのコピーは作成しません。',
+      planFailed: 'インストールパッケージを確認できませんでした。',
+      upgradeTitle: '{plugin} をアップグレードしますか？',
+      upgradeBody: 'バージョン {current} を {target} に置き換えます。実行中のプラグインは一時的に再起動します。',
+      upgradeConfirm: 'プラグインをアップグレード',
+      upgradeCancelled: 'アップグレードをキャンセルしました。',
+      upgradeSucceeded: '{plugin} を正常にアップグレードしました。',
+      blockedBundleConflict: 'このバンドルにはインストール済みのプラグインが含まれます。プラグインを1つずつアップグレードしてください。',
+      blockedDirectoryConflict: '対象ディレクトリは別のプラグインに属するため、変更しませんでした。',
+      blockedLegacyPlugin: 'このプラグインの以前のバージョンがまだインストールされています。続行する前に {plugin} をアンインストールしてください。',
+      rollbackCompleted: 'アップグレードに失敗したため、以前のバージョンを復元しました。',
+      rollbackIncomplete: 'アップグレードに失敗し、ロールバックも完了できませんでした。続行する前にプラグインの状態を確認してください。'
+    },
     dialog: {
       title: 'パッケージ操作履歴',
       subtitle: '最新の {count} 件の結果を表示中'

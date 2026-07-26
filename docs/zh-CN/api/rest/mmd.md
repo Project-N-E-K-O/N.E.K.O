@@ -4,6 +4,16 @@
 
 管理 MMD（MikuMikuDance）形象模型 —— PMX/PMD 模型、VMD 动画，以及每个模型的情感映射。
 
+这 11 个路由服务于 N.E.K.O. 第一方本地模型管理器。上传和删除会写入用户 MMD 目录；项目内置素材通过此 API 只读。
+
+| 方法 | 路由 |
+|---|---|
+| `POST` | `/upload`、`/upload_animation`、`/upload_zip`、`/emotion_mapping` |
+| `GET` | `/models`、`/animations`、`/animations/list`、`/config`、`/emotion_mapping` |
+| `DELETE` | `/model`、`/animation` |
+
+表内路径都相对于 `/api/model/mmd`，末尾没有 `/`。
+
 ::: info
 MMD 表情基于形变目标（morph target）/ 混合形状（blendshape）：每种情感通过驱动模型中具名的 morph 来呈现。下方的情感映射端点用于把情感标签关联到模型的 morph 目标。
 :::
@@ -130,6 +140,10 @@ ZIP 中必须至少包含一个 `.pmx`/`.pmd` 文件。同时应用 zip bomb 防
 `model` 为必填，且不得包含路径分隔符；`mapping` 必须是对象。
 
 **Response:** `{ "success": true, "message": "..." }`
+
+## 错误边界
+
+应用错误使用 `{ "success": false, "error": "..." }`。上传无效、路径不安全、文件类型不支持、尝试删除内置模型或映射请求体错误时通常返回 HTTP `400`；模型/动画不存在返回 `404`，存储或未预期错误返回 `500`。这些第一方路由没有单独认证层，不要把主服务器端口暴露给不可信客户端。
 
 ## 删除
 

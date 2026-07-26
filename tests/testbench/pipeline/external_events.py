@@ -119,7 +119,7 @@ class SimulationKind(str, Enum):
 #: reasons like "websocket closed" / "queue full" are OOS per §1.3.
 ReasonCode = Literal[
     "dedupe_window_hit",   # avatar: same dedupe_key inside 8000 ms window, same or lower rank
-    "invalid_payload",     # avatar: _normalize_avatar_interaction_payload returned None
+    "invalid_payload",     # avatar: authoritative payload normalizer returned None
     "empty_callbacks",     # agent_callback: no callback items in payload
     "pass_signaled",       # proactive: LLM returned [PASS] — recorded, not an error
     "llm_failed",          # wire assembled but target LLM call raised
@@ -132,11 +132,9 @@ ReasonCode = Literal[
 class CoerceInfo:
     """Payload-level coercion surfacing (LESSONS_LEARNED §7.14).
 
-    When ``_normalize_avatar_interaction_intensity`` silently corrects a
-    bad ``intensity``, or ``_normalize_prompt_language`` falls back to
-    English for unsupported languages, we return the before/after pair
-    here so the UI can show "you asked for intensity=crazy, we used
-    intensity=normal" rather than drop the fact on the floor.
+    Supported non-avatar normalizations, such as prompt-language fallback,
+    return the before/after pair here rather than hiding the applied value.
+    Avatar payload contract violations are rejected as ``invalid_payload``.
     """
 
     field: str
@@ -170,7 +168,7 @@ class SimulationResult:
       write memory / drive the LLM)? ``False`` on dedupe / pass / error.
     * ``reason`` — populated iff ``accepted=False`` (see :data:`ReasonCode`).
     * ``instruction`` — the wire-only prompt string that was sent to the
-      LLM for this event (avatar system wrapper, agent_callback prefix,
+      LLM for this event (avatar event fact, agent_callback prefix,
       or proactive prompt). Returned for UI preview / audit. NEVER enters
       ``session.messages`` (P25_BLUEPRINT §A.8 #2).
     * ``memory_pair`` — the ``{user, assistant}`` message pair persisted
@@ -519,8 +517,8 @@ async def simulate_avatar_interaction(
     """Simulate one avatar interaction (PR #769) end-to-end.
 
     Pipeline:
-      1. Normalise the raw UI payload via
-         ``_normalize_avatar_interaction_payload``. Invalid → reject.
+      1. Normalise the raw UI payload via the authoritative avatar-interaction
+         contract. Invalid → reject.
       2. Dedupe via ``_AvatarDedupeCache.should_persist`` (8000 ms window
          + rank upgrade). Dedupe hit → reject (no LLM call, no messages).
       3. Build instruction via ``_build_avatar_interaction_instruction``
@@ -676,14 +674,33 @@ async def simulate_avatar_interaction(
     # 必须在这里把真实 wire 快照一下, 让 preview 从 session.last_llm_wire
     # 读取, 否则就是"UI 承诺的预览 ≠ 实际发送的 wire"语义漂移.
     try:
+        interaction_facts = {
+            key: normalized[key]
+            for key in (
+                "action_id",
+                "intensity",
+                "user_gesture",
+                "avatar_gesture",
+                "round_result",
+            )
+            if key in normalized
+        }
+        if "action_id" in normalized:
+            preview_note = (
+                f"avatar:{normalized['tool_id']}+{normalized['action_id']}"
+                f"@{normalized['intensity']}"
+            )
+        else:
+            preview_note = (
+                f"avatar:{normalized['tool_id']} "
+                f"{normalized['user_gesture']}/{normalized['avatar_gesture']} "
+                f"result={normalized['round_result']}"
+            )
         record_last_llm_wire(
             session,
             base_wire,
             source="avatar_event",
-            note=(
-                f"avatar:{normalized['tool_id']}+{normalized['action_id']}"
-                f"@{normalized['intensity']}"
-            ),
+            note=preview_note,
         )
     except Exception as exc:  # noqa: BLE001 — observability must not block LLM
         python_logger().debug(
@@ -785,8 +802,7 @@ async def simulate_avatar_interaction(
         detail={
             "interaction_id": normalized.get("interaction_id"),
             "tool_id": normalized["tool_id"],
-            "action_id": normalized["action_id"],
-            "intensity": normalized["intensity"],
+            **interaction_facts,
             "reward_drop": normalized.get("reward_drop"),
             "easter_egg": normalized.get("easter_egg"),
             "reply_chars": len(reply_text),
@@ -1212,31 +1228,24 @@ def _build_avatar_instruction_bundle(
     :func:`build_external_event_preview` (dry-run path). Both paths see
     the exact same ``instruction_final`` string — that's the contract.
     """
+    from config.prompts.avatar_interaction_contract import (
+        normalize_avatar_interaction_payload,
+    )
     from config.prompts.prompts_avatar_interaction import (
         _build_avatar_interaction_instruction,
         _build_avatar_interaction_memory_meta,
-        _normalize_avatar_interaction_payload,
+        _sanitize_avatar_interaction_text_context,
     )
 
-    coerce_info: list[CoerceInfo] = []
     full_lang, _short_lang = _resolve_language(session)
     lanlan_name, master_name = _resolve_names(session)
 
-    normalized = _normalize_avatar_interaction_payload(payload)
+    normalized = normalize_avatar_interaction_payload(
+        payload,
+        sanitize_text_context=_sanitize_avatar_interaction_text_context,
+    )
     if normalized is None:
         return None
-
-    raw_intensity = str(payload.get("intensity") or "").strip().lower()
-    if raw_intensity and raw_intensity != normalized["intensity"]:
-        coerce_info.append(CoerceInfo(
-            field="intensity",
-            requested=raw_intensity,
-            applied=normalized["intensity"],
-            note=(
-                "intensity 被 _normalize_avatar_interaction_intensity 归一 — "
-                "原值不在 tool/action 允许集合中, 已回退到 'normal' 或合法子集."
-            ),
-        ))
 
     meta = _build_avatar_interaction_memory_meta(full_lang, normalized, master_name)
     memory_note = str(meta.get("memory_note") or "")
@@ -1246,16 +1255,13 @@ def _build_avatar_instruction_bundle(
     instruction = _build_avatar_interaction_instruction(
         full_lang, lanlan_name, master_name, normalized,
     )
-    # Avatar's "template_raw" in the preview UI sense is the main-program
-    # instruction helper output **before** any further UI polish. We don't
-    # currently expose the nine-helper intermediate templates separately
-    # (they're already fused by _build_avatar_interaction_instruction), so
-    # template_raw == instruction_final for avatar. The tester still sees
-    # the rich parameterised body through the payload summary.
+    # Avatar uses one direct event-fact builder with no later UI polish, so
+    # template_raw == instruction_final. The normalized payload summary stays
+    # separate for diagnostics and does not become part of the model prompt.
     return _InstructionBundle(
         template_raw=instruction,
         instruction_final=instruction,
-        coerce_info=coerce_info,
+        coerce_info=[],
         avatar_normalized=normalized,
         avatar_memory_note=memory_note,
         avatar_dedupe_key=dedupe_key,

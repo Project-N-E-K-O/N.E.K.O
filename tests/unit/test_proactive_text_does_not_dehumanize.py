@@ -241,16 +241,23 @@ def test_music_playing_hint_with_braced_track_name_survives_outer_format(lang: s
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 猫咪专属问候（从猫咪形态变回猫娘 / 请她回来时触发）—— 同样过反物化护栏。
-# 与 trigger_cat_greeting 一致：模板含 {reason_hint}/{elapsed}/{time_hint}/{master}，
-# reason_hint 先 .format(master=...) 再注入主模板，整体再 .format()。
+# 与 trigger_cat_greeting 一致：旧模板含 {reason_hint}/{elapsed}/{time_hint}/{master}；
+# 有 episode 的 scene 模板额外含 {cat_form_scene}。reason_hint 先
+# .format(master=...) 再注入主模板，整体再 .format()。
 # ─────────────────────────────────────────────────────────────────────────────
 
 from config.prompts.prompts_proactive import (  # noqa: E402
+    _CAT_GREETING_EPISODE_PROMPTS,
+    _CAT_GREETING_EPISODE_RETURN_TONES,
+    _CAT_GREETING_EPISODE_SCENES,
+    _CAT_GREETING_TABLES,
+    get_cat_greeting_episode_prompt,
+    get_cat_greeting_episode_scene,
     get_cat_greeting_prompt,
     get_cat_greeting_reason_hint,
 )
 
-# (behavior, duration_seconds) 覆盖清醒/打盹/熟睡三行为 × 短/久两档（> 3min 门槛）
+# (behavior, duration_seconds) 覆盖清醒/打盹/熟睡三行为 × 短/久两档。
 _CAT_GREETING_CASES = [
     ('awake', 300), ('awake', 1000),
     ('nap', 300), ('nap', 2000),
@@ -278,8 +285,214 @@ def test_cat_greeting_no_dehumanize_and_expands_master(lang, behavior, duration,
     _assert_no_forbidden(out, ctx=f"cat_greeting {behavior}/{duration}/{lang}/auto={was_auto}")
 
 
-def test_cat_greeting_silent_below_threshold() -> None:
-    """猫咪时长 < 3min 应静默（返回 None），不触发问候。"""
+def test_cat_greeting_silences_short_returns() -> None:
+    """Production cat return keeps the established three-minute silence gate."""
     for lang in LOCALES:
         assert get_cat_greeting_prompt('awake', 179, lang) is None
         assert get_cat_greeting_prompt('nap', 0, lang) is None
+        assert get_cat_greeting_prompt('awake', 180, lang) is not None
+
+
+_CAT_EPISODE_LOCALES = ('zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt')
+_CAT_EPISODE_CASES = [
+    {'kind': 'activity'},
+    {'kind': 'activity', 'highlight': 'played_yarn'},
+    {'kind': 'activity', 'highlight': 'ate_snack'},
+    {'kind': 'activity', 'highlight': 'small_move'},
+    {'kind': 'activity', 'highlight': 'social_ping'},
+    {'kind': 'rest_after_activity'},
+    {'kind': 'rest_after_activity', 'highlight': 'played_yarn'},
+    {'kind': 'rest_after_activity', 'highlight': 'ate_snack'},
+    {'kind': 'rest_after_activity', 'highlight': 'small_move'},
+    {'kind': 'rest_after_activity', 'highlight': 'social_ping'},
+    {'kind': 'rested'},
+]
+
+
+def test_cat_greeting_episode_prompt_tables_cover_all_normalized_locales() -> None:
+    expected_locales = set(_CAT_EPISODE_LOCALES)
+    expected_behavior_bands = {
+        ('awake', 'short'), ('awake', 'long'),
+        ('nap', 'short'), ('nap', 'long'),
+        ('sleep', 'short'), ('sleep', 'long'),
+    }
+    assert set(_CAT_GREETING_EPISODE_SCENES) == expected_locales
+    assert set(_CAT_GREETING_EPISODE_PROMPTS) == expected_locales
+    assert set(_CAT_GREETING_EPISODE_RETURN_TONES) == expected_locales
+    for lang in expected_locales:
+        assert set(_CAT_GREETING_EPISODE_SCENES[lang]) == {
+            'activity', 'rest_after_activity', 'rested',
+        }
+        assert set(_CAT_GREETING_EPISODE_RETURN_TONES[lang]) == expected_behavior_bands
+
+
+@pytest.mark.parametrize('lang', _CAT_EPISODE_LOCALES)
+@pytest.mark.parametrize('episode', _CAT_EPISODE_CASES)
+def test_cat_greeting_episode_scene_is_localized_and_contains_no_transport_detail(lang, episode) -> None:
+    scene = get_cat_greeting_episode_scene(episode, lang)
+    assert scene, f'lang={lang} episode={episode} missing localized scene'
+    assert '{' not in scene and '}' not in scene, f'lang={lang} leaked format placeholder: {scene!r}'
+    _assert_no_forbidden(scene, ctx=f'cat_episode_scene lang={lang} episode={episode}')
+    for forbidden_transport in (
+        'cat1_', 'cat2_', 'cat3_', 'actionId', 'requestId', 'runId',
+        'appetite', 'sleepiness', 'energy', 'social_need', 'stimulation_need',
+    ):
+        assert forbidden_transport not in scene, f'lang={lang} leaked {forbidden_transport}: {scene!r}'
+
+
+def test_cat_greeting_episode_scene_rejects_invalid_combinations_and_uses_english_fallback() -> None:
+    for episode in (
+        None,
+        [],
+        {'kind': 'unknown'},
+        {'kind': 'rested', 'highlight': 'played_yarn'},
+        {'kind': 'activity', 'highlight': 'raw text'},
+        {'kind': 'activity', 'highlight': None},
+    ):
+        assert get_cat_greeting_episode_scene(episode, 'zh') == ''
+
+    english = get_cat_greeting_episode_scene({'kind': 'rested'}, 'en')
+    assert get_cat_greeting_episode_scene({'kind': 'rested'}, 'fr-FR') == english
+    zh = get_cat_greeting_episode_scene({'kind': 'rested'}, 'zh')
+    assert get_cat_greeting_episode_scene({'kind': 'rested'}, 'zh-CN') == zh
+    assert get_cat_greeting_episode_scene({'kind': 'rested'}, 'zh-TW') == zh
+
+
+def test_cat_greeting_episode_scene_is_not_labeled_as_optional_background() -> None:
+    assert '补充经历' not in get_cat_greeting_episode_scene(
+        {'kind': 'activity', 'highlight': 'played_yarn'}, 'zh',
+    )
+    assert 'Additional episode background' not in get_cat_greeting_episode_scene(
+        {'kind': 'activity', 'highlight': 'played_yarn'}, 'en',
+    )
+
+
+def test_cat_greeting_episode_social_ping_does_not_claim_a_count() -> None:
+    for episode in (
+        {'kind': 'activity', 'highlight': 'social_ping'},
+        {'kind': 'rest_after_activity', 'highlight': 'social_ping'},
+    ):
+        assert '几声' not in get_cat_greeting_episode_scene(episode, 'zh')
+
+
+@pytest.mark.parametrize(
+    ('episode', 'included', 'excluded'),
+    [
+        ({'kind': 'activity', 'highlight': 'played_yarn'}, 'playing with yarn', 'quiet rest'),
+        ({'kind': 'activity'}, 'moving about', 'quiet rest'),
+        ({'kind': 'rest_after_activity', 'highlight': 'ate_snack'}, 'had a small snack', ''),
+        ({'kind': 'rested'}, 'quiet rest', 'moving about'),
+    ],
+)
+def test_cat_greeting_episode_scene_distinguishes_only_the_last_bounded_chapter(
+    episode, included, excluded,
+) -> None:
+    scene = get_cat_greeting_episode_scene(episode, 'en')
+    assert included in scene
+    if excluded:
+        assert excluded not in scene
+    if episode['kind'] == 'rest_after_activity':
+        assert scene.index('had a small snack') < scene.index('quiet rest')
+
+
+def test_cat_greeting_episode_rest_scenes_do_not_claim_duration_or_deep_sleep() -> None:
+    for lang in _CAT_EPISODE_LOCALES:
+        for episode in (
+            {'kind': 'rested'},
+            {'kind': 'rest_after_activity', 'highlight': 'played_yarn'},
+        ):
+            scene = get_cat_greeting_episode_scene(episode, lang)
+            assert not any(char.isdigit() for char in scene), f'lang={lang} duration leaked: {scene!r}'
+    english = get_cat_greeting_episode_scene(
+        {'kind': 'rest_after_activity', 'highlight': 'played_yarn'}, 'en',
+    )
+    assert english.index('played with yarn') < english.index('quiet rest')
+    assert 'deep' not in english.lower()
+
+
+@pytest.mark.parametrize('lang', _CAT_EPISODE_LOCALES)
+@pytest.mark.parametrize('behavior,duration', _CAT_GREETING_CASES)
+def test_cat_greeting_episode_scene_formats_inside_dedicated_prompt(lang, behavior, duration) -> None:
+    episode = {'kind': 'rest_after_activity', 'highlight': 'played_yarn'}
+    template = get_cat_greeting_episode_prompt(behavior, duration, lang)
+    assert template is not None
+    scene = get_cat_greeting_episode_scene(episode, lang)
+    rendered = template.format(
+        reason_hint=get_cat_greeting_reason_hint(False, lang).format(master=MASTER),
+        elapsed='10 分钟',
+        name='奈々',
+        master=MASTER,
+        time_hint='(time hint)',
+        cat_form_scene=scene,
+    )
+    assert scene in rendered
+    assert '{' not in rendered and '}' not in rendered
+    _assert_no_forbidden(
+        rendered,
+        ctx=f'cat_episode_prompt {behavior}/{duration}/{lang}',
+    )
+
+
+def test_cat_greeting_episode_prompt_does_not_keep_a_conflicting_sleep_fact() -> None:
+    episode = {'kind': 'activity', 'highlight': 'social_ping'}
+    template = get_cat_greeting_episode_prompt('nap', 300, 'en')
+    assert template is not None
+    rendered = template.format(
+        reason_hint=get_cat_greeting_reason_hint(False, 'en').format(master=MASTER),
+        elapsed='5 minutes',
+        name='奈々',
+        master=MASTER,
+        time_hint='(time hint)',
+        cat_form_scene=get_cat_greeting_episode_scene(episode, 'en'),
+    )
+    assert 'You gave a soft little response as a cat.' in rendered
+    assert 'dozed for 5 minutes' not in rendered
+
+
+_CAT_SHORT_RETURN_INPUT_LOCALES = ('zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt')
+_CAT_GREETING_END_MARKER = '======以上为环境提示======'
+
+
+def test_cat_greeting_source_templates_embed_chinese_environment_end_marker() -> None:
+    tables = (
+        *_CAT_GREETING_TABLES.values(),
+        _CAT_GREETING_EPISODE_PROMPTS,
+    )
+    for table in tables:
+        assert set(table) == set(_CAT_EPISODE_LOCALES)
+        for prompt in table.values():
+            marker_lines = [
+                line for line in prompt.splitlines() if line.startswith('======')
+            ]
+            assert len(marker_lines) == 2
+            assert marker_lines[-1] == _CAT_GREETING_END_MARKER
+            assert prompt.endswith(_CAT_GREETING_END_MARKER)
+            assert prompt.count(_CAT_GREETING_END_MARKER) == 1
+
+
+@pytest.mark.parametrize('lang', _CAT_SHORT_RETURN_INPUT_LOCALES)
+def test_cat_greeting_all_prompt_paths_preserve_embedded_environment_end_marker(lang) -> None:
+    prompts = (
+        get_cat_greeting_prompt('awake', 300, lang),
+        get_cat_greeting_episode_prompt('nap', 300, lang),
+    )
+    for prompt in prompts:
+        assert prompt is not None
+        marker_lines = [line for line in prompt.splitlines() if line.startswith('======')]
+        assert len(marker_lines) == 2
+        assert marker_lines[-1] == _CAT_GREETING_END_MARKER
+        assert prompt.endswith(_CAT_GREETING_END_MARKER)
+        assert prompt.count(_CAT_GREETING_END_MARKER) == 1
+        assert '猫形态返回系统提示' not in prompt
+
+
+@pytest.mark.parametrize('lang', _CAT_SHORT_RETURN_INPUT_LOCALES)
+@pytest.mark.parametrize('behavior', ('awake', 'nap', 'sleep'))
+def test_cat_greeting_episode_prompt_cannot_bypass_minimum_dwell_time(lang, behavior) -> None:
+    template = get_cat_greeting_episode_prompt(behavior, 10, lang)
+    assert template is None
+
+
+def test_cat_greeting_episode_prompt_keeps_unified_silence_boundary() -> None:
+    assert get_cat_greeting_episode_prompt('awake', 179, 'en') is None
+    assert get_cat_greeting_episode_prompt('awake', 180, 'en') is not None

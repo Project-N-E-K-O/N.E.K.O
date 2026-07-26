@@ -74,6 +74,10 @@ Object.assign(AvatarButtonMixin.methods, {
                         cancelAnimationFrame(mgr._uiUpdateLoopId);
                         mgr._uiUpdateLoopId = null;
                     }
+                    if (mgr._uiLoopIdleTimeout) {
+                        clearTimeout(mgr._uiLoopIdleTimeout);
+                        mgr._uiLoopIdleTimeout = null;
+                    }
                     if (mgr._floatingButtonsTicker && mgr.pixi_app && mgr.pixi_app.ticker) {
                         try { mgr.pixi_app.ticker.remove(mgr._floatingButtonsTicker); } catch (_) {}
                         mgr._floatingButtonsTicker = null;

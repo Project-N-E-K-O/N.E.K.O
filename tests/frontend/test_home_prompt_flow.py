@@ -58,7 +58,7 @@ _PAGE_BOOTSTRAP_TEMPLATE = """
         hasSeenTutorial: function() {
             return false;
         },
-        logPromptFlow: function() {},
+        logTutorialFlow: function() {},
         requestTutorialStart: async function() {
             return false;
         },
@@ -133,8 +133,13 @@ def _expand_script_dependencies(script_names: tuple[str, ...]) -> tuple[str, ...
             for dependency in _YUI_DIRECTOR_DEPENDENCIES:
                 if dependency not in expanded:
                     expanded.append(dependency)
-        if script_name == "tutorial/core/app-prompt.js" and "tutorial/core/lifecycle-state-store.js" not in expanded:
-            expanded.append("tutorial/core/lifecycle-state-store.js")
+        if script_name in (
+            "tutorial/core/home-tutorial-runtime.js",
+            "tutorial/core/avatar-floating-boot-predictor.js",
+            "tutorial/core/universal-manager.js",
+            "tutorial/avatar/floating-guide-reset.js",
+        ) and "tutorial/core/seven-day-state.js" not in expanded:
+            expanded.append("tutorial/core/seven-day-state.js")
         if script_name == "tutorial/core/universal-manager.js":
             for dependency in _UNIVERSAL_TUTORIAL_DEPENDENCIES:
                 if dependency not in expanded:
@@ -172,7 +177,7 @@ def _bootstrap_page(
         mock_page.evaluate(init_js)
 
 
-def _bootstrap_tutorial_prompt_page(
+def _bootstrap_home_runtime_page(
     mock_page: Page,
     *,
     setup_js: str = "",
@@ -188,7 +193,7 @@ def _bootstrap_tutorial_prompt_page(
         setup_js = setup_js + "\nwindow.nekoAutostartProvider = undefined;"
         script_names.append("app/app-autostart-provider.js")
     script_names.append("app/app-prompt-shared.js")
-    script_names.append("tutorial/core/app-prompt.js")
+    script_names.append("tutorial/core/home-tutorial-runtime.js")
     if include_autostart_prompt or include_autostart_provider:
         script_names.append("app/app-autostart-prompt.js")
     _bootstrap_page(
@@ -198,7 +203,6 @@ def _bootstrap_tutorial_prompt_page(
         script_names=tuple(script_names),
         init_js="""
             () => {
-                window.appTutorialPrompt.init();
                 if (window.appAutostartPrompt) {
                     window.appAutostartPrompt.init();
                 }
@@ -334,214 +338,10 @@ def test_changelog_notice_preserves_leading_list_item(mock_page: Page):
 
 
 @pytest.mark.frontend
-def test_home_prompt_queue_serializes_tutorial_and_autostart_prompts(
-    mock_page: Page,
-):
-    _bootstrap_tutorial_prompt_page(
-        mock_page,
-        include_common_dialogs=True,
-        include_autostart_prompt=True,
-        setup_js="""
-            window.__requestLog = [];
-            window.nekoAutostartProvider = {
-                getStatus: async function() {
-                    return {
-                        ok: true,
-                        supported: true,
-                        enabled: false,
-                        authoritative: true,
-                        provider: 'backend',
-                    };
-                },
-                enable: async function() {
-                    return {
-                        ok: true,
-                        supported: true,
-                        enabled: true,
-                        authoritative: true,
-                        provider: 'backend',
-                    };
-                },
-            };
-            window.universalTutorialManager = {
-                currentPage: 'home',
-                isTutorialRunning: false,
-                hasSeenTutorial: function() {
-                    return false;
-                },
-                logPromptFlow: function() {},
-                requestTutorialStart: async function(source) {
-                    this.isTutorialRunning = true;
-                    window.dispatchEvent(new CustomEvent('neko:tutorial-started', {
-                        detail: {
-                            page: 'home',
-                            source: source || 'manual',
-                        },
-                    }));
-                    return true;
-                },
-            };
-        """,
-        fetch_js="""
-            window.__requestLog.push({
-                url: requestUrl,
-                method: method,
-                body: body,
-            });
-
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: true,
-                    prompt_reason: 'idle_timeout',
-                    prompt_token: 'tutorial-token',
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/shown') {
-                return jsonResponse({
-                    ok: true,
-                    already_acknowledged: false,
-                    state: {
-                        status: 'prompted',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/decision') {
-                return jsonResponse({
-                    ok: true,
-                    state: {
-                        status: body && body.result === 'started' ? 'started' : 'prompted',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: body && body.result === 'started',
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/tutorial-started') {
-                return jsonResponse({
-                    ok: true,
-                    tutorial_run_token: 'tutorial-run-token',
-                    state: {
-                        status: 'started',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/autostart-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        autostart_enabled: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/autostart-prompt/heartbeat') {
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: true,
-                    prompt_reason: 'usage_timeout',
-                    prompt_token: 'autostart-token',
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        autostart_enabled: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/autostart-prompt/shown') {
-                return jsonResponse({
-                    ok: true,
-                    already_acknowledged: false,
-                    state: {
-                        status: 'prompted',
-                        never_remind: false,
-                        deferred_until: 0,
-                        autostart_enabled: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/autostart-prompt/decision') {
-                return jsonResponse({
-                    ok: true,
-                    state: {
-                        status: 'deferred',
-                        never_remind: false,
-                        deferred_until: Date.now() + 60000,
-                        autostart_enabled: false,
-                    },
-                });
-            }
-        """,
-    )
-
-    tutorial_title = mock_page.locator(".modal-title")
-    expect(tutorial_title).to_have_text("要不要开始主页新手引导？", timeout=5000)
-    expect(mock_page.locator(".modal-overlay")).to_have_count(1)
-
-    mock_page.get_by_role("button", name="开始引导").click()
-
-    expect(tutorial_title).to_have_text("要不要让 N.E.K.O. 开机自动启动？", timeout=5000)
-    expect(mock_page.locator(".modal-overlay")).to_have_count(1)
-    expect(mock_page.locator(".modal-dialog-autostart-retention")).to_have_count(1)
-    expect(mock_page.locator(".exit-retention-cat-character")).to_have_count(1)
-    expect(mock_page.locator(".exit-retention-cat-head-group")).to_have_count(1)
-    expect(mock_page.locator(".exit-retention-cat-mouth")).to_have_count(1)
-    expect(mock_page.locator(".exit-retention-cat-paw")).to_have_count(2)
-
-    dialog = mock_page.locator(".modal-dialog-autostart-retention")
-    mock_page.locator(".modal-body").hover()
-    expect(dialog).to_have_class(re.compile(r"\bstate-curious\b"))
-    mock_page.get_by_role("button", name="开启自启动").hover()
-    expect(dialog).to_have_class(re.compile(r"\bstate-happy\b"))
-    mock_page.get_by_role("button", name="以后提醒").hover()
-    expect(dialog).to_have_class(re.compile(r"\bstate-sad\b"))
-
-    mock_page.get_by_role("button", name="以后提醒").click()
-    expect(mock_page.locator(".modal-overlay")).to_have_count(0, timeout=5000)
-
-    request_log = mock_page.evaluate("() => window.__requestLog")
-    requested_urls = [entry["url"] for entry in request_log]
-
-    assert "/api/tutorial-prompt/heartbeat" in requested_urls
-    assert "/api/tutorial-prompt/tutorial-started" in requested_urls
-    assert "/api/autostart-prompt/heartbeat" in requested_urls
-    assert "/api/autostart-prompt/decision" in requested_urls
-
-
-@pytest.mark.frontend
 def test_autostart_prompt_offers_never_after_backend_allows_it(
     mock_page: Page,
 ):
-    _bootstrap_tutorial_prompt_page(
+    _bootstrap_home_runtime_page(
         mock_page,
         include_common_dialogs=True,
         include_autostart_prompt=True,
@@ -575,32 +375,6 @@ def test_autostart_prompt_offers_never_after_backend_allows_it(
                 body: body,
             });
 
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'completed',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: false,
-                    prompt_reason: 'tutorial_completed',
-                    prompt_token: null,
-                    state: {
-                        status: 'completed',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
             if (requestUrl === '/api/autostart-prompt/state') {
                 return jsonResponse({
                     state: {
@@ -673,1796 +447,6 @@ def test_autostart_prompt_offers_never_after_backend_allows_it(
 
     assert autostart_decisions
     assert autostart_decisions[-1]["body"]["decision"] == "never"
-
-
-@pytest.mark.frontend
-def test_home_prompt_later_locally_suppresses_repeat_before_autostart_prompt(
-    mock_page: Page,
-):
-    _bootstrap_tutorial_prompt_page(
-        mock_page,
-        include_common_dialogs=True,
-        include_autostart_prompt=True,
-        setup_js="""
-            window.__requestLog = [];
-            window.nekoAutostartProvider = {
-                getStatus: async function() {
-                    return {
-                        ok: true,
-                        supported: true,
-                        enabled: false,
-                        authoritative: true,
-                        provider: 'backend',
-                    };
-                },
-                enable: async function() {
-                    return {
-                        ok: true,
-                        supported: true,
-                        enabled: true,
-                        authoritative: true,
-                        provider: 'backend',
-                    };
-                },
-            };
-        """,
-        fetch_js="""
-            window.__requestLog.push({
-                url: requestUrl,
-                method: method,
-                body: body,
-            });
-
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: true,
-                    prompt_reason: 'idle_timeout',
-                    prompt_token: 'tutorial-token',
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/shown') {
-                return jsonResponse({
-                    ok: true,
-                    already_acknowledged: false,
-                    state: {
-                        status: 'prompted',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/decision') {
-                return jsonResponse({
-                    ok: true,
-                    state: {
-                        status: 'prompted',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/autostart-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        autostart_enabled: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/autostart-prompt/heartbeat') {
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: true,
-                    prompt_reason: 'usage_timeout',
-                    prompt_token: 'autostart-token',
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        autostart_enabled: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/autostart-prompt/shown') {
-                return jsonResponse({
-                    ok: true,
-                    already_acknowledged: false,
-                    state: {
-                        status: 'prompted',
-                        never_remind: false,
-                        deferred_until: 0,
-                        autostart_enabled: false,
-                    },
-                });
-            }
-        """,
-    )
-
-    prompt_title = mock_page.locator(".modal-title")
-    expect(prompt_title).to_have_text("要不要开始主页新手引导？", timeout=5000)
-
-    mock_page.get_by_role("button", name="稍后再说").click()
-
-    expect(prompt_title).to_have_text("要不要让 N.E.K.O. 开机自动启动？", timeout=5000)
-    assert mock_page.evaluate("window.appTutorialPrompt.shouldSuppressAutomaticHomeTutorialStart()") is True
-
-
-@pytest.mark.frontend
-def test_completed_home_tutorial_server_state_marks_versioned_home_storage_key_seen(
-    mock_page: Page,
-):
-    _bootstrap_tutorial_prompt_page(
-        mock_page,
-        setup_js="""
-            window.universalTutorialManager = {
-                currentPage: 'home',
-                isTutorialRunning: false,
-                getStorageKeysForPage: function(page) {
-                    return page === 'home' ? ['neko_tutorial_home_yui_v1'] : [];
-                },
-                hasSeenTutorial: function() {
-                    return false;
-                },
-                logPromptFlow: function() {},
-                requestTutorialStart: async function() {
-                    return false;
-                },
-            };
-        """,
-        fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'completed',
-                        completed_at: 1234,
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: false,
-                    prompt_reason: 'completed',
-                    state: {
-                        status: 'completed',
-                        completed_at: 1234,
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
-        """,
-    )
-
-    mock_page.wait_for_function(
-        "() => localStorage.getItem('neko_tutorial_home_yui_v1') === 'true'"
-    )
-
-    assert mock_page.evaluate(
-        """
-        () => ({
-            preferred: localStorage.getItem('neko_tutorial_home_yui_v1'),
-        })
-        """
-    ) == {
-        "preferred": "true",
-    }
-
-
-@pytest.mark.frontend
-def test_legacy_home_tutorial_storage_key_is_ignored(
-    mock_page: Page,
-):
-    _bootstrap_tutorial_prompt_page(
-        mock_page,
-        include_common_dialogs=True,
-        setup_js="""
-            window.__heartbeatBodies = [];
-            window.localStorage.setItem('neko_tutorial_home', 'true');
-            window.universalTutorialManager = {
-                currentPage: 'home',
-                isTutorialRunning: false,
-                getStorageKeysForPage: function(page) {
-                    return page === 'home' ? ['neko_tutorial_home_yui_v1'] : [];
-                },
-                getStorageKey: function() {
-                    return 'neko_tutorial_home_yui_v1';
-                },
-                hasSeenTutorial: function() {
-                    return false;
-                },
-                logPromptFlow: function() {},
-                requestTutorialStart: async function() {
-                    return false;
-                },
-            };
-        """,
-        fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                window.__heartbeatBodies.push(body);
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: true,
-                    prompt_reason: 'idle_timeout',
-                    prompt_token: 'legacy-ignored-token',
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-        """,
-    )
-
-    mock_page.wait_for_function("() => window.__heartbeatBodies.length > 0")
-
-    assert mock_page.evaluate("() => window.__heartbeatBodies[0].home_tutorial_completed") is False
-    expect(mock_page.locator(".modal-overlay")).to_be_visible()
-
-
-@pytest.mark.frontend
-def test_tutorial_prompt_prefers_window_t_over_safe_t(
-    mock_page: Page,
-):
-    _bootstrap_tutorial_prompt_page(
-        mock_page,
-        include_common_dialogs=True,
-        setup_js="""
-            window.t = function(key, fallback) {
-                return typeof fallback === 'string' ? fallback : key;
-            };
-            window.safeT = function(key) {
-                return key;
-            };
-            window.nekoAutostartProvider = {
-                getStatus: async function() {
-                    return {
-                        ok: true,
-                        supported: false,
-                        enabled: false,
-                        authoritative: false,
-                        provider: 'backend',
-                    };
-                },
-            };
-            window.universalTutorialManager = {
-                currentPage: 'home',
-                isTutorialRunning: false,
-                hasSeenTutorial: function() {
-                    return false;
-                },
-                logPromptFlow: function() {},
-                requestTutorialStart: async function() {
-                    return false;
-                },
-            };
-        """,
-        fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: true,
-                    prompt_reason: 'idle_timeout',
-                    prompt_token: 'tutorial-token',
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/shown') {
-                return jsonResponse({
-                    ok: true,
-                    already_acknowledged: false,
-                    state: {
-                        status: 'prompted',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/autostart-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        autostart_enabled: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/autostart-prompt/heartbeat') {
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: false,
-                    prompt_reason: 'provider_unsupported',
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        autostart_enabled: false,
-                    },
-                });
-            }
-        """,
-    )
-
-    expect(mock_page.locator(".modal-title")).to_have_text("要不要开始主页新手引导？", timeout=5000)
-
-
-@pytest.mark.frontend
-def test_tutorial_started_event_retries_failed_sync_on_heartbeat(
-    mock_page: Page,
-):
-    _bootstrap_tutorial_prompt_page(
-        mock_page,
-        setup_js="""
-            window.__tutorialStartedBodies = [];
-            window.__tutorialCompletedBodies = [];
-            window.__tutorialHeartbeatBodies = [];
-            window.nekoAutostartProvider = {
-                getStatus: async function() {
-                    return {
-                        ok: true,
-                        supported: false,
-                        enabled: false,
-                        authoritative: false,
-                        provider: 'backend',
-                    };
-                },
-            };
-            window.universalTutorialManager = {
-                currentPage: 'home',
-                isTutorialRunning: true,
-                hasSeenTutorial: function() {
-                    return true;
-                },
-                logPromptFlow: function() {},
-                requestTutorialStart: async function() {
-                    return false;
-                },
-            };
-        """,
-        fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'completed',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
-            if (requestUrl === '/api/autostart-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        autostart_enabled: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                window.__tutorialHeartbeatBodies.push(body);
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: false,
-                    state: {
-                        status: 'started',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/tutorial-started') {
-                window.__tutorialStartedBodies.push(body);
-                if (window.__tutorialStartedBodies.length === 1) {
-                    return jsonResponse({
-                        ok: false,
-                        error: 'temporary_failure',
-                    }, 500);
-                }
-                return jsonResponse({
-                    ok: true,
-                    tutorial_run_token: 'tutorial-run-token',
-                    state: {
-                        status: 'started',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/tutorial-completed') {
-                window.__tutorialCompletedBodies.push(body);
-                return jsonResponse({
-                    ok: true,
-                    state: {
-                        status: 'completed',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
-        """,
-    )
-
-    mock_page.wait_for_function(
-        "() => window.__tutorialHeartbeatBodies.length > 0",
-        timeout=5000,
-    )
-
-    mock_page.evaluate(
-        """
-        () => {
-            window.dispatchEvent(new CustomEvent('neko:tutorial-started', {
-                detail: {
-                    page: 'home',
-                    source: 'manual',
-                },
-            }));
-        }
-        """
-    )
-
-    mock_page.wait_for_function(
-        "() => window.__tutorialStartedBodies.length === 2",
-        timeout=5000,
-    )
-
-    mock_page.evaluate(
-        """
-        () => {
-            window.dispatchEvent(new CustomEvent('neko:tutorial-completed', {
-                detail: {
-                    page: 'home',
-                    source: 'manual',
-                },
-            }));
-        }
-        """
-    )
-
-    mock_page.wait_for_function(
-        "() => window.__tutorialCompletedBodies.length === 1",
-        timeout=5000,
-    )
-
-    result = mock_page.evaluate(
-        """
-        () => ({
-            tutorialStartedBodies: window.__tutorialStartedBodies.slice(),
-            tutorialCompletedBodies: window.__tutorialCompletedBodies.slice(),
-            tutorialHeartbeatBodies: window.__tutorialHeartbeatBodies.slice(),
-        })
-        """
-    )
-
-    assert len(result["tutorialStartedBodies"]) == 2
-    assert result["tutorialStartedBodies"][0]["source"] == "manual"
-    assert result["tutorialStartedBodies"][1]["source"] == "manual"
-    assert len(result["tutorialCompletedBodies"]) == 1
-    assert result["tutorialCompletedBodies"][0]["tutorial_run_token"] == "tutorial-run-token"
-    assert len(result["tutorialHeartbeatBodies"]) >= 2
-
-
-@pytest.mark.frontend
-def test_home_tutorial_skip_persists_completion_state(
-    mock_page: Page,
-):
-    _bootstrap_tutorial_prompt_page(
-        mock_page,
-        setup_js="""
-            window.__tutorialStartedBodies = [];
-            window.__tutorialCompletedBodies = [];
-            window.getTutorialStorageKeyForPage = function(page) {
-                return page === 'home' ? 'neko_tutorial_home_yui_v1' : 'neko_tutorial_' + page;
-            };
-            window.universalTutorialManager = {
-                currentPage: 'home',
-                isTutorialRunning: false,
-                hasSeenTutorial: function() {
-                    return false;
-                },
-                logPromptFlow: function() {},
-                requestTutorialStart: async function() {
-                    return false;
-                },
-            };
-        """,
-        fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: false,
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/tutorial-started') {
-                window.__tutorialStartedBodies.push(body);
-                return jsonResponse({
-                    ok: true,
-                    tutorial_run_token: 'skip-run-token',
-                    state: {
-                        status: 'started',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/tutorial-completed') {
-                window.__tutorialCompletedBodies.push(body);
-                return jsonResponse({
-                    ok: true,
-                    state: {
-                        status: 'completed',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
-        """,
-    )
-
-    mock_page.evaluate(
-        """
-        () => {
-            window.dispatchEvent(new CustomEvent('neko:tutorial-started', {
-                detail: {
-                    page: 'home',
-                    source: 'manual',
-                },
-            }));
-        }
-        """
-    )
-    mock_page.wait_for_function(
-        "() => window.__tutorialStartedBodies.length === 1",
-        timeout=5000,
-    )
-
-    mock_page.evaluate(
-        """
-        () => {
-            window.dispatchEvent(new CustomEvent('neko:tutorial-skipped', {
-                detail: {
-                    page: 'home',
-                    source: 'manual',
-                },
-            }));
-        }
-        """
-    )
-    mock_page.wait_for_function(
-        "() => window.__tutorialCompletedBodies.length === 1",
-        timeout=5000,
-    )
-
-    result = mock_page.evaluate(
-        """
-        () => ({
-            completedBodies: window.__tutorialCompletedBodies.slice(),
-            preferredSeen: window.localStorage.getItem('neko_tutorial_home_yui_v1'),
-        })
-        """
-    )
-
-    assert result["completedBodies"][0]["source"] == "manual"
-    assert result["completedBodies"][0]["tutorial_run_token"] == "skip-run-token"
-    assert result["preferredSeen"] == "true"
-
-
-@pytest.mark.frontend
-def test_home_tutorial_reset_refreshes_stale_csrf_token_once(mock_page: Page):
-    _bootstrap_page(
-        mock_page,
-        setup_js="""
-            window.pageConfigReady = Promise.resolve({
-                success: true,
-                autostart_csrf_token: 'stale-token',
-            });
-            window.__pageConfigFetchCount = 0;
-            window.__resetTokens = [];
-            window.__resetBodies = [];
-            window.alert = function(message) {
-                window.__lastAlert = String(message || '');
-            };
-        """,
-        fetch_js="""
-            const csrfToken = headers['X-CSRF-Token'] || headers['x-csrf-token'] || '';
-            if (requestUrl === '/api/config/page_config') {
-                window.__pageConfigFetchCount += 1;
-                return jsonResponse({
-                    success: true,
-                    autostart_csrf_token: 'fresh-token',
-                    model_path: '',
-                    model_type: 'live2d',
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/reset') {
-                window.__resetTokens.push(csrfToken);
-                window.__resetBodies.push(body);
-                if (csrfToken !== 'fresh-token') {
-                    return jsonResponse({
-                        ok: false,
-                        error_code: 'csrf_validation_failed',
-                    }, 403);
-                }
-                return jsonResponse({
-                    ok: true,
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-        """,
-        script_names=("app/app-prompt-shared.js", "tutorial/core/universal-manager.js"),
-    )
-
-    mock_page.evaluate(
-        """
-        async () => {
-            localStorage.setItem('neko_tutorial_home_yui_v1', 'true');
-            await resetTutorialForPage('home');
-        }
-        """
-    )
-
-    result = mock_page.evaluate(
-        """
-        () => ({
-            pageConfigFetchCount: window.__pageConfigFetchCount,
-            resetTokens: window.__resetTokens.slice(),
-            resetBodies: window.__resetBodies.slice(),
-            versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            manualIntent: localStorage.getItem('neko_tutorial_home_yui_v1_manual_intent'),
-        })
-        """
-    )
-
-    assert result["pageConfigFetchCount"] >= 1
-    assert result["resetTokens"] == ["stale-token", "fresh-token"]
-    assert result["resetBodies"][0]["reason"] == "manual_home_tutorial_reset"
-    assert result["resetBodies"][1]["reason"] == "manual_home_tutorial_reset"
-    assert result["versionedSeen"] is None
-    assert result["manualIntent"] == "true"
-
-
-@pytest.mark.frontend
-def test_home_tutorial_reset_without_manager_clears_versioned_home_key(mock_page: Page):
-    _bootstrap_page(
-        mock_page,
-        setup_js="""
-            window.pageConfigReady = Promise.resolve({
-                success: true,
-                autostart_csrf_token: 'test-token',
-            });
-            window.alert = function(message) {
-                window.__lastAlert = String(message || '');
-            };
-        """,
-        fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/reset') {
-                return jsonResponse({
-                    ok: true,
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-        """,
-        script_names=("app/app-prompt-shared.js", "tutorial/core/universal-manager.js"),
-    )
-
-    mock_page.evaluate(
-        """
-        async () => {
-            window.universalTutorialManager = null;
-            localStorage.setItem('neko_tutorial_home_yui_v1', 'true');
-            await resetTutorialForPage('home');
-        }
-        """
-    )
-
-    result = mock_page.evaluate(
-        """
-        () => ({
-            versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            manualIntent: localStorage.getItem('neko_tutorial_home_yui_v1_manual_intent'),
-        })
-        """
-    )
-
-    assert result["versionedSeen"] is None
-    assert result["manualIntent"] == "true"
-
-
-@pytest.mark.frontend
-def test_home_tutorial_reset_still_clears_state_without_custom_event(mock_page: Page):
-    _bootstrap_page(
-        mock_page,
-        setup_js="""
-            window.pageConfigReady = Promise.resolve({
-                success: true,
-                autostart_csrf_token: 'test-token',
-            });
-            Object.defineProperty(window, 'CustomEvent', {
-                configurable: true,
-                value: undefined,
-            });
-            window.alert = function(message) {
-                window.__lastAlert = String(message || '');
-            };
-        """,
-        fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/reset') {
-                return jsonResponse({
-                    ok: true,
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-        """,
-        script_names=("app/app-prompt-shared.js", "tutorial/core/universal-manager.js"),
-    )
-
-    mock_page.evaluate(
-        """
-        async () => {
-            localStorage.setItem('neko_tutorial_home_yui_v1', 'true');
-            await resetTutorialForPage('home');
-        }
-        """
-    )
-
-    result = mock_page.evaluate(
-        """
-        () => ({
-            versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            manualIntent: localStorage.getItem('neko_tutorial_home_yui_v1_manual_intent'),
-        })
-        """
-    )
-
-    assert result["versionedSeen"] is None
-    assert result["manualIntent"] == "true"
-
-
-@pytest.mark.frontend
-def test_home_tutorial_reset_event_prevents_stale_completion_heartbeat(mock_page: Page):
-    _bootstrap_tutorial_prompt_page(
-        mock_page,
-        setup_js="""
-            window.__heartbeatBodies = [];
-            Object.defineProperty(navigator, 'sendBeacon', {
-                configurable: true,
-                value: null,
-            });
-        """,
-        fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'completed',
-                        completed_at: 1234,
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                window.__heartbeatBodies.push(body);
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: false,
-                    prompt_reason: '',
-                    prompt_token: null,
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-        """,
-    )
-
-    mock_page.wait_for_function(
-        """
-        () => localStorage.getItem('neko_tutorial_home_yui_v1') === 'true'
-        """,
-        timeout=5000,
-    )
-    mock_page.evaluate(
-        """
-        () => {
-            window.dispatchEvent(new CustomEvent('neko:home-tutorial-reset', {
-                detail: { page: 'home', source: 'manual_home_tutorial_reset' },
-            }));
-            window.dispatchEvent(new Event('beforeunload'));
-        }
-        """
-    )
-    mock_page.wait_for_function(
-        "() => window.__heartbeatBodies.length >= 1",
-        timeout=5000,
-    )
-
-    result = mock_page.evaluate(
-        """
-        () => ({
-            versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            latestHeartbeat: window.__heartbeatBodies[window.__heartbeatBodies.length - 1],
-        })
-        """
-    )
-
-    assert result["versionedSeen"] is None
-    assert result["latestHeartbeat"]["home_tutorial_completed"] is False
-    assert result["latestHeartbeat"]["manual_home_tutorial_viewed"] is False
-
-
-@pytest.mark.frontend
-def test_home_tutorial_reset_event_re_resets_after_inflight_completed_heartbeat(mock_page: Page):
-    _bootstrap_tutorial_prompt_page(
-        mock_page,
-        setup_js="""
-            window.__heartbeatBodies = [];
-            window.__resetBodies = [];
-            window.__resolveHeartbeat = null;
-        """,
-        fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'completed',
-                        completed_at: 1234,
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                window.__heartbeatBodies.push(body);
-                return new Promise((resolve) => {
-                    window.__resolveHeartbeat = () => resolve(jsonResponse({
-                        ok: true,
-                        should_prompt: false,
-                        prompt_reason: '',
-                        prompt_token: null,
-                        state: {
-                            status: 'completed',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: true,
-                            home_tutorial_completed: true,
-                        },
-                    }));
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/reset') {
-                window.__resetBodies.push(body);
-                return jsonResponse({
-                    ok: true,
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-        """,
-    )
-
-    mock_page.wait_for_function(
-        "() => window.__heartbeatBodies.length >= 1 && typeof window.__resolveHeartbeat === 'function'",
-        timeout=5000,
-    )
-    mock_page.evaluate(
-        """
-        () => {
-            window.dispatchEvent(new CustomEvent('neko:home-tutorial-reset', {
-                detail: { page: 'home', source: 'manual_home_tutorial_reset' },
-            }));
-            window.__resolveHeartbeat();
-        }
-        """
-    )
-    mock_page.wait_for_function(
-        "() => window.__resetBodies.length >= 1",
-        timeout=5000,
-    )
-
-    result = mock_page.evaluate(
-        """
-        () => ({
-            staleHeartbeat: window.__heartbeatBodies[0],
-            resetBodies: window.__resetBodies.slice(),
-            versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            suppressAutoStart: window.appTutorialPrompt.shouldSuppressAutomaticHomeTutorialStart(),
-        })
-        """
-    )
-
-    assert result["staleHeartbeat"]["home_tutorial_completed"] is True
-    assert result["staleHeartbeat"]["manual_home_tutorial_viewed"] is True
-    assert result["resetBodies"][0]["reason"] == "manual_home_tutorial_reset"
-    assert result["versionedSeen"] is None
-    assert result["suppressAutoStart"] is False
-
-
-@pytest.mark.frontend
-def test_home_tutorial_reset_event_re_resets_after_inflight_completion_lifecycle(mock_page: Page):
-    _bootstrap_tutorial_prompt_page(
-        mock_page,
-        setup_js="""
-            window.__startedBodies = [];
-            window.__completedBodies = [];
-            window.__resetBodies = [];
-            window.__resolveCompletion = null;
-        """,
-        fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: false,
-                    prompt_reason: '',
-                    prompt_token: null,
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/tutorial-started') {
-                window.__startedBodies.push(body);
-                return jsonResponse({
-                    ok: true,
-                    tutorial_run_token: 'tutorial-run-token',
-                    state: {
-                        status: 'started',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/tutorial-completed') {
-                window.__completedBodies.push(body);
-                return new Promise((resolve) => {
-                    window.__resolveCompletion = () => resolve(jsonResponse({
-                        ok: true,
-                        state: {
-                            status: 'completed',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: true,
-                            home_tutorial_completed: true,
-                        },
-                    }));
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/reset') {
-                window.__resetBodies.push(body);
-                return jsonResponse({
-                    ok: true,
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-        """,
-    )
-
-    mock_page.evaluate(
-        """
-        () => {
-            window.dispatchEvent(new CustomEvent('neko:tutorial-started', {
-                detail: { page: 'home', source: 'manual' },
-            }));
-        }
-        """
-    )
-    mock_page.wait_for_function(
-        "() => window.__startedBodies.length === 1",
-        timeout=5000,
-    )
-    mock_page.evaluate(
-        """
-        () => {
-            window.dispatchEvent(new CustomEvent('neko:tutorial-completed', {
-                detail: { page: 'home', source: 'manual' },
-            }));
-        }
-        """
-    )
-    mock_page.wait_for_function(
-        "() => window.__completedBodies.length === 1 && typeof window.__resolveCompletion === 'function'",
-        timeout=5000,
-    )
-    mock_page.evaluate(
-        """
-        () => {
-            window.dispatchEvent(new CustomEvent('neko:home-tutorial-reset', {
-                detail: { page: 'home', source: 'manual_home_tutorial_reset' },
-            }));
-            window.__resolveCompletion();
-        }
-        """
-    )
-    mock_page.wait_for_function(
-        "() => window.__resetBodies.length >= 1",
-        timeout=5000,
-    )
-
-    result = mock_page.evaluate(
-        """
-        () => ({
-            completedBodies: window.__completedBodies.slice(),
-            resetBodies: window.__resetBodies.slice(),
-            versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            suppressAutoStart: window.appTutorialPrompt.shouldSuppressAutomaticHomeTutorialStart(),
-        })
-        """
-    )
-
-    assert result["completedBodies"][0]["tutorial_run_token"] == "tutorial-run-token"
-    assert result["resetBodies"][0]["reason"] == "manual_home_tutorial_reset"
-    assert result["versionedSeen"] is None
-    assert result["suppressAutoStart"] is False
-
-
-@pytest.mark.frontend
-def test_home_tutorial_reset_event_re_resets_after_inflight_started_lifecycle(mock_page: Page):
-    _bootstrap_tutorial_prompt_page(
-        mock_page,
-        setup_js="""
-            window.__startedBodies = [];
-            window.__resetBodies = [];
-            window.__resolveStarted = null;
-        """,
-        fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: false,
-                    prompt_reason: '',
-                    prompt_token: null,
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/tutorial-started') {
-                window.__startedBodies.push(body);
-                return new Promise((resolve) => {
-                    window.__resolveStarted = () => resolve(jsonResponse({
-                        ok: true,
-                        tutorial_run_token: 'stale-start-token',
-                        state: {
-                            status: 'started',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: true,
-                            home_tutorial_completed: false,
-                        },
-                    }));
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/reset') {
-                window.__resetBodies.push(body);
-                return jsonResponse({
-                    ok: true,
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-        """,
-    )
-
-    mock_page.evaluate(
-        """
-        () => {
-            window.dispatchEvent(new CustomEvent('neko:tutorial-started', {
-                detail: { page: 'home', source: 'manual' },
-            }));
-        }
-        """
-    )
-    mock_page.wait_for_function(
-        "() => window.__startedBodies.length === 1 && typeof window.__resolveStarted === 'function'",
-        timeout=5000,
-    )
-    mock_page.evaluate(
-        """
-        () => {
-            window.dispatchEvent(new CustomEvent('neko:home-tutorial-reset', {
-                detail: { page: 'home', source: 'manual_home_tutorial_reset' },
-            }));
-            window.__resolveStarted();
-        }
-        """
-    )
-    mock_page.wait_for_function(
-        "() => window.__resetBodies.length >= 1",
-        timeout=5000,
-    )
-
-    result = mock_page.evaluate(
-        """
-        () => ({
-            startedBodies: window.__startedBodies.slice(),
-            resetBodies: window.__resetBodies.slice(),
-            versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            suppressAutoStart: window.appTutorialPrompt.shouldSuppressAutomaticHomeTutorialStart(),
-        })
-        """
-    )
-
-    assert result["startedBodies"][0]["source"] == "manual"
-    assert result["resetBodies"][0]["reason"] == "manual_home_tutorial_reset"
-    assert result["versionedSeen"] is None
-    assert result["suppressAutoStart"] is False
-
-
-@pytest.mark.frontend
-def test_home_tutorial_reset_event_ignores_stale_initial_state_response(mock_page: Page):
-    _bootstrap_tutorial_prompt_page(
-        mock_page,
-        setup_js="""
-            window.__resolveInitialTutorialState = null;
-            window.__initialTutorialStateResolved = false;
-        """,
-        fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return new Promise((resolve) => {
-                    window.__resolveInitialTutorialState = () => {
-                        window.__initialTutorialStateResolved = true;
-                        resolve(jsonResponse({
-                            state: {
-                                status: 'completed',
-                                never_remind: false,
-                                deferred_until: 0,
-                                manual_home_tutorial_viewed: true,
-                                home_tutorial_completed: true,
-                            },
-                        }));
-                    };
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: false,
-                    prompt_reason: '',
-                    prompt_token: null,
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-        """,
-    )
-
-    mock_page.wait_for_function(
-        "() => typeof window.__resolveInitialTutorialState === 'function'",
-        timeout=5000,
-    )
-    mock_page.evaluate(
-        """
-        () => {
-            window.dispatchEvent(new CustomEvent('neko:home-tutorial-reset', {
-                detail: { page: 'home', source: 'manual_home_tutorial_reset' },
-            }));
-            window.__resolveInitialTutorialState();
-        }
-        """
-    )
-    mock_page.wait_for_function(
-        "() => window.__initialTutorialStateResolved === true",
-        timeout=5000,
-    )
-    mock_page.wait_for_timeout(100)
-
-    assert mock_page.evaluate(
-        """
-        () => ({
-            versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            suppressAutoStart: window.appTutorialPrompt.shouldSuppressAutomaticHomeTutorialStart(),
-        })
-        """
-    ) == {
-        "versionedSeen": None,
-        "suppressAutoStart": False,
-    }
-
-
-@pytest.mark.frontend
-def test_home_tutorial_reset_event_clears_seen_prompt_token(mock_page: Page):
-    _bootstrap_tutorial_prompt_page(
-        mock_page,
-        include_common_dialogs=True,
-        setup_js="""
-            window.__heartbeatCount = 0;
-        """,
-        fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                window.__heartbeatCount += 1;
-                if (window.__heartbeatCount > 1) {
-                    return jsonResponse({
-                        ok: true,
-                        should_prompt: false,
-                        prompt_reason: '',
-                        prompt_token: null,
-                        state: {
-                            status: 'started',
-                            never_remind: false,
-                            deferred_until: 0,
-                            manual_home_tutorial_viewed: true,
-                            home_tutorial_completed: false,
-                        },
-                    });
-                }
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: true,
-                    prompt_reason: 'idle_timeout',
-                    prompt_token: 'repeat-token',
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/shown') {
-                return jsonResponse({
-                    ok: true,
-                    already_acknowledged: false,
-                    state: {
-                        status: 'prompted',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/decision') {
-                return jsonResponse({
-                    ok: true,
-                    state: {
-                        status: 'prompted',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-        """,
-    )
-
-    expect(mock_page.locator(".modal-title")).to_have_text("要不要开始主页新手引导？", timeout=5000)
-    mock_page.get_by_role("button", name="稍后再说").click()
-    expect(mock_page.locator(".modal-overlay")).to_have_count(0, timeout=5000)
-
-    mock_page.evaluate(
-        """
-        () => {
-            window.dispatchEvent(new CustomEvent('neko:home-tutorial-reset', {
-                detail: { page: 'home', source: 'manual_home_tutorial_reset' },
-            }));
-        }
-        """
-    )
-
-    mock_page.wait_for_function(
-        "() => window.appTutorialPrompt.shouldSuppressAutomaticHomeTutorialStart() === false",
-        timeout=5000,
-    )
-
-
-@pytest.mark.frontend
-def test_home_tutorial_reset_event_ignores_open_prompt_decision(mock_page: Page):
-    _bootstrap_tutorial_prompt_page(
-        mock_page,
-        include_common_dialogs=True,
-        setup_js="""
-            window.__decisionBodies = [];
-        """,
-        fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: true,
-                    prompt_reason: 'idle_timeout',
-                    prompt_token: 'stale-open-token',
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/shown') {
-                return jsonResponse({
-                    ok: true,
-                    already_acknowledged: false,
-                    state: {
-                        status: 'prompted',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/decision') {
-                window.__decisionBodies.push(body);
-                return jsonResponse({
-                    ok: true,
-                    state: {
-                        status: 'deferred',
-                        never_remind: false,
-                        deferred_until: Date.now() + 60000,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-        """,
-    )
-
-    expect(mock_page.locator(".modal-title")).to_have_text("要不要开始主页新手引导？", timeout=5000)
-    mock_page.evaluate(
-        """
-        () => {
-            window.dispatchEvent(new CustomEvent('neko:home-tutorial-reset', {
-                detail: { page: 'home', source: 'manual_home_tutorial_reset' },
-            }));
-        }
-        """
-    )
-    mock_page.get_by_role("button", name="稍后再说").click()
-    expect(mock_page.locator(".modal-overlay")).to_have_count(0, timeout=5000)
-
-    result = mock_page.evaluate(
-        """
-        () => ({
-            suppressAutoStart: window.appTutorialPrompt.shouldSuppressAutomaticHomeTutorialStart(),
-            decisionBodies: window.__decisionBodies.slice(),
-        })
-        """
-    )
-
-    assert result["suppressAutoStart"] is False
-    assert result["decisionBodies"] == []
-
-
-@pytest.mark.frontend
-def test_home_tutorial_reset_broadcast_channel_is_closed_on_unload(mock_page: Page):
-    _bootstrap_tutorial_prompt_page(
-        mock_page,
-        setup_js="""
-            window.__resetBroadcastChannels = [];
-            window.BroadcastChannel = class {
-                constructor(name) {
-                    this.name = name;
-                    this.closed = false;
-                    this.listeners = {};
-                    window.__resetBroadcastChannels.push(this);
-                }
-                addEventListener(type, listener) {
-                    this.listeners[type] = listener;
-                }
-                close() {
-                    this.closed = true;
-                }
-            };
-        """,
-        fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-        """,
-    )
-
-    result = mock_page.evaluate(
-        """
-        () => {
-            window.dispatchEvent(new Event('beforeunload'));
-            return {
-                count: window.__resetBroadcastChannels.length,
-                closed: window.__resetBroadcastChannels[0] && window.__resetBroadcastChannels[0].closed,
-            };
-        }
-        """
-    )
-
-    assert result == {
-        "count": 1,
-        "closed": True,
-    }
-
-
-@pytest.mark.frontend
-def test_cross_window_home_tutorial_reset_event_prevents_stale_completion_heartbeat(mock_page: Page):
-    _bootstrap_tutorial_prompt_page(
-        mock_page,
-        setup_js="""
-            window.__heartbeatBodies = [];
-            Object.defineProperty(navigator, 'sendBeacon', {
-                configurable: true,
-                value: null,
-            });
-        """,
-        fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'completed',
-                        completed_at: 1234,
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                window.__heartbeatBodies.push(body);
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: false,
-                    prompt_reason: '',
-                    prompt_token: null,
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-        """,
-    )
-
-    mock_page.wait_for_function(
-        "() => localStorage.getItem('neko_tutorial_home_yui_v1') === 'true'",
-        timeout=5000,
-    )
-    mock_page.evaluate(
-        """
-        () => {
-            window.dispatchEvent(new StorageEvent('storage', {
-                key: 'neko_home_tutorial_reset_event',
-                newValue: JSON.stringify({
-                    page: 'home',
-                    source: 'manual_home_tutorial_reset',
-                    nonce: 'from-memory-browser-window',
-                }),
-            }));
-            window.dispatchEvent(new Event('beforeunload'));
-        }
-        """
-    )
-    mock_page.wait_for_function(
-        "() => window.__heartbeatBodies.length >= 1",
-        timeout=5000,
-    )
-
-    result = mock_page.evaluate(
-        """
-        () => ({
-            versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            latestHeartbeat: window.__heartbeatBodies[window.__heartbeatBodies.length - 1],
-        })
-        """
-    )
-
-    assert result["versionedSeen"] is None
-    assert result["latestHeartbeat"]["home_tutorial_completed"] is False
-    assert result["latestHeartbeat"]["manual_home_tutorial_viewed"] is False
-
-
-@pytest.mark.frontend
-def test_all_tutorial_reset_without_manager_clears_versioned_home_key(mock_page: Page):
-    _bootstrap_page(
-        mock_page,
-        setup_js="""
-            window.pageConfigReady = Promise.resolve({
-                success: true,
-                autostart_csrf_token: 'test-token',
-            });
-            window.alert = function(message) {
-                window.__lastAlert = String(message || '');
-            };
-        """,
-        fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/reset') {
-                return jsonResponse({
-                    ok: true,
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-        """,
-        script_names=("app/app-prompt-shared.js", "tutorial/core/universal-manager.js"),
-    )
-
-    mock_page.evaluate(
-        """
-        async () => {
-            window.universalTutorialManager = null;
-            localStorage.setItem('neko_tutorial_home_yui_v1', 'true');
-            localStorage.setItem('neko_tutorial_model_manager_mmd', 'true');
-            await resetAllTutorials();
-        }
-        """
-    )
-
-    result = mock_page.evaluate(
-        """
-        () => ({
-            versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            modelManagerMmdSeen: localStorage.getItem('neko_tutorial_model_manager_mmd'),
-            manualIntent: localStorage.getItem('neko_tutorial_home_yui_v1_manual_intent'),
-        })
-        """
-    )
-
-    assert result["versionedSeen"] is None
-    assert result["modelManagerMmdSeen"] is None
-    assert result["manualIntent"] == "true"
-
-
-@pytest.mark.frontend
-def test_home_tutorial_reset_with_manager_clears_versioned_home_key(mock_page: Page):
-    _bootstrap_page(
-        mock_page,
-        setup_js="""
-            window.pageConfigReady = Promise.resolve({
-                success: true,
-                autostart_csrf_token: 'test-token',
-            });
-            window.alert = function(message) {
-                window.__lastAlert = String(message || '');
-            };
-        """,
-        fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/reset') {
-                return jsonResponse({
-                    ok: true,
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-        """,
-        script_names=("app/app-prompt-shared.js", "tutorial/core/universal-manager.js"),
-    )
-
-    mock_page.evaluate(
-        """
-        async () => {
-            await initUniversalTutorialManager();
-            window.universalTutorialManager.getYuiGuideVersionedPageKey = () => null;
-            localStorage.setItem('neko_tutorial_home_yui_v1', 'true');
-            await resetTutorialForPage('home');
-        }
-        """
-    )
-
-    result = mock_page.evaluate(
-        """
-        () => ({
-            versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            manualIntent: localStorage.getItem('neko_tutorial_home_yui_v1_manual_intent'),
-        })
-        """
-    )
-
-    assert result["versionedSeen"] is None
-    assert result["manualIntent"] == "true"
 
 
 @pytest.mark.frontend
@@ -2600,7 +584,102 @@ def test_home_tutorial_input_lock_suppresses_galgame_options_without_tutorial_ev
 
 
 @pytest.mark.frontend
-def test_home_tutorial_feature_controller_restores_live_galgame_state_after_legacy_listener(
+def test_home_tutorial_input_lock_temporarily_reveals_hidden_compact_tools(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            document.body.innerHTML = `
+                <div id="react-chat-window-overlay" hidden>
+                    <div id="react-chat-window-shell">
+                        <div id="react-chat-window-drag-handle"></div>
+                        <div id="react-chat-window-root"></div>
+                    </div>
+                </div>
+            `;
+            window.NekoChatWindow = {
+                mount: (_root, props) => {
+                    window.__lastReactChatProps = props;
+                },
+            };
+        """,
+        script_names=("app/app-react-chat-window",),
+    )
+
+    mock_page.evaluate(
+        """
+        async () => {
+            await window.reactChatWindowHost.ensureBundleLoaded();
+            window.reactChatWindowHost.openWindow();
+        }
+        """
+    )
+    mock_page.wait_for_function("() => !!window.__lastReactChatProps", timeout=5000)
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const host = window.reactChatWindowHost;
+            const attachmentVisibilityEvents = [];
+            window.addEventListener('react-chat-window:composer-attachments-change', (event) => {
+                attachmentVisibilityEvents.push(event.detail && event.detail.hasAttachments);
+            });
+            host.setChatSurfaceMode('compact');
+            host.setComposerHidden(true);
+            host.setGoodbyeComposerHidden(true, 'pre-tutorial-goodbye');
+            host.setComposerAttachments([{
+                id: 'pre-tutorial-attachment',
+                url: 'data:image/png;base64,AA==',
+            }]);
+            host.setCompactChatState('options');
+
+            host.setHomeTutorialInputLocked(true, 'avatar-floating-guide-day2');
+            const hiddenDuringTutorial = window.__lastReactChatProps.composerHidden;
+            const attachmentsVisibleDuringTutorial = document.body.classList.contains('composer-has-attachments');
+            host.setCompactToolFanOpen(true, 'avatar-floating-guide-open-tool-fan');
+            const stateDuringTutorial = host.getState();
+            const propsDuringTutorial = window.__lastReactChatProps;
+            host.setCompactToolFanOpen(false, 'avatar-floating-guide-close-tool-fan');
+            const compactChatStateAfterFanClose = host.getState().compactChatState;
+            host.setCompactToolFanOpen(true, 'avatar-floating-guide-reopen-tool-fan');
+
+            host.setHomeTutorialInputLocked(false, 'avatar-floating-guide-day2-complete');
+
+            return {
+                hiddenDuringTutorial,
+                compactChatState: stateDuringTutorial.compactChatState,
+                fanOpen: propsDuringTutorial.compactToolFanOpenRequest.open,
+                compactChatStateAfterFanClose,
+                compactChatStateAfterTutorial: host.getState().compactChatState,
+                hiddenAfterTutorial: window.__lastReactChatProps.composerHidden,
+                attachmentsVisibleDuringTutorial,
+                attachmentsVisibleAfterTutorial: document.body.classList.contains('composer-has-attachments'),
+                attachmentVisibilityEvents,
+                composerHiddenRequestedAfterTutorial: host.getState().composerHiddenRequested,
+                goodbyeComposerHiddenAfterTutorial: host.getState().goodbyeComposerHidden,
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "hiddenDuringTutorial": False,
+        "compactChatState": "input",
+        "fanOpen": True,
+        "compactChatStateAfterFanClose": "options",
+        "compactChatStateAfterTutorial": "options",
+        "hiddenAfterTutorial": True,
+        "attachmentsVisibleDuringTutorial": True,
+        "attachmentsVisibleAfterTutorial": False,
+        "attachmentVisibilityEvents": [True, False],
+        "composerHiddenRequestedAfterTutorial": True,
+        "goodbyeComposerHiddenAfterTutorial": True,
+    }
+
+
+@pytest.mark.frontend
+def test_home_tutorial_feature_controller_restores_live_galgame_state(
     mock_page: Page,
 ):
     _bootstrap_page(
@@ -2612,33 +691,6 @@ def test_home_tutorial_feature_controller_restores_live_galgame_state_after_lega
             window.__agentCommandBodies = [];
         """,
         fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: false,
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/tutorial-started') {
-                return jsonResponse({ ok: true, tutorial_run_token: 'run-token' });
-            }
             if (requestUrl === '/api/agent/flags' && method === 'GET') {
                 return jsonResponse({
                     success: true,
@@ -2661,8 +713,7 @@ def test_home_tutorial_feature_controller_restores_live_galgame_state_after_lega
                 return jsonResponse({ success: true });
             }
         """,
-        script_names=("app/app-prompt-shared.js", "tutorial/core/app-prompt.js"),
-        init_js="() => window.appTutorialPrompt.init()",
+        script_names=("tutorial/core/home-tutorial-runtime.js",),
     )
     for script_name in _expand_script_dependencies(("app/app-react-chat-window",)):
         mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / script_name))
@@ -2689,10 +740,7 @@ def test_home_tutorial_feature_controller_restores_live_galgame_state_after_lega
     mock_page.evaluate(
         """
         () => {
-            window.universalTutorialManager.isTutorialRunning = true;
-            window.dispatchEvent(new CustomEvent('neko:tutorial-started', {
-                detail: { page: 'home' },
-            }));
+            window.NekoHomeTutorialFeatureController.begin('test-tutorial-started');
         }
         """
     )
@@ -2708,10 +756,7 @@ def test_home_tutorial_feature_controller_restores_live_galgame_state_after_lega
     mock_page.evaluate(
         """
         () => {
-            window.universalTutorialManager.isTutorialRunning = false;
-            window.dispatchEvent(new CustomEvent('neko:tutorial-skipped', {
-                detail: { page: 'home' },
-            }));
+            window.NekoHomeTutorialFeatureController.end('test-tutorial-skipped');
         }
         """
     )
@@ -2773,7 +818,7 @@ def test_home_tutorial_feature_controller_enforce_reapplies_suppression_after_ch
             window.stopProactiveVisionDuringSpeech = () => { window.stopProactiveVisionDuringSpeechCalls += 1; };
             window.releaseProactiveVisionStream = () => { window.releaseProactiveVisionStreamCalls += 1; };
         """,
-        script_names=("app/app-prompt-shared.js", "tutorial/core/app-prompt.js"),
+        script_names=("app/app-prompt-shared.js", "tutorial/core/home-tutorial-runtime.js"),
     )
 
     mock_page.evaluate(
@@ -5961,6 +4006,9 @@ def test_externalized_chat_cursor_reports_anchor_back_to_home(mock_page: Page):
             const updates = [];
             window.__externalChatAnchorRelays = relays;
             window.__externalChatOverlayUpdates = updates;
+            window.reactChatWindowHost = {
+                openWindow: () => {},
+            };
             window.nekoTutorialOverlay = {
                 getWindowMetricsSync: () => ({
                     bounds: { x: 100, y: 50, width: 1200, height: 800 },
@@ -5997,11 +4045,9 @@ def test_externalized_chat_cursor_reports_anchor_back_to_home(mock_page: Page):
                     tutorialRunId: 'test-run',
                 },
             }, '*');
-            await new Promise((resolve) => setTimeout(resolve, 80));
-            const raw = window.localStorage.getItem('neko_yui_guide_external_chat_cursor_screen_point_v1');
+            await new Promise((resolve) => setTimeout(resolve, 780));
             return {
                 relays: window.__externalChatAnchorRelays,
-                stored: raw ? JSON.parse(raw) : null,
                 updates: window.__externalChatOverlayUpdates,
             };
         }
@@ -6016,13 +4062,9 @@ def test_externalized_chat_cursor_reports_anchor_back_to_home(mock_page: Page):
     assert anchorRelays[-1]["x"] == 820
     assert anchorRelays[-1]["y"] == 530
     assert anchorRelays[-1]["kind"] == "window"
-    assert anchorRelays[-1]["effect"] == ""
-    assert anchorRelays[-1]["effectDurationMs"] == 0
+    assert anchorRelays[-1]["effect"] == "wobble"
+    assert anchorRelays[-1]["effectDurationMs"] == 2000
     assert anchorRelays[-1]["source"] == "external-chat"
-    assert result["stored"]["x"] == 820
-    assert result["stored"]["y"] == 530
-    assert result["stored"]["effect"] == ""
-    assert result["stored"]["effectDurationMs"] == 0
     assert any(
         update.get("payload", {}).get("cursor", {}).get("visible") is True
         and update["payload"]["cursor"]["x"] == 820
@@ -6031,6 +4073,14 @@ def test_externalized_chat_cursor_reports_anchor_back_to_home(mock_page: Page):
         and update["payload"]["cursor"].get("effectDurationMs") == 2000
         for update in result["updates"]
     )
+    cursor_updates = [
+        update["payload"]["cursor"]
+        for update in result["updates"]
+        if update.get("payload", {}).get("cursor")
+    ]
+    assert cursor_updates
+    assert cursor_updates[-1].get("effect") == "wobble"
+    assert cursor_updates[-1].get("effectDurationMs") == 2000
 
 
 @pytest.mark.frontend
@@ -6267,6 +4317,146 @@ def test_externalized_chat_cursor_explicit_duration_overrides_handoff_speed(
 
 
 @pytest.mark.frontend
+def test_externalized_chat_cursor_retries_position_without_replaying_click(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/chat');
+            window.__externalChatOverlayUpdates = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    contentBounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                update: (payload) => {
+                    window.__externalChatOverlayUpdates.push(payload);
+                    return Promise.resolve({ ok: true });
+                },
+                begin: () => Promise.resolve({ ok: true }),
+                clear: () => Promise.resolve({ ok: true }),
+            };
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'test-run');
+            document.body.innerHTML = `
+                <div id="react-chat-window-root">
+                    <button
+                        id="tutorial-tool-toggle"
+                        class="send-button-circle compact-input-tool-toggle"
+                        style="position:fixed; left:100px; top:200px; width:42px; height:42px;"
+                    ></button>
+                </div>
+            `;
+            window.reactChatWindowHost = {
+                openWindow: () => {
+                    window.setTimeout(() => {
+                        document.getElementById('tutorial-tool-toggle').style.left = '500px';
+                    }, 100);
+                },
+            };
+        """,
+        script_names=("app/app-interpage",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.postMessage({
+                __nekoTutorialOverlayRelay: true,
+                payload: {
+                    action: 'yui_guide_set_chat_cursor',
+                    kind: 'tool-toggle',
+                    effect: 'click',
+                    effectDurationMs: 420,
+                    durationMs: 0,
+                    timestamp: Date.now(),
+                    tutorialRunId: 'test-run',
+                },
+            }, '*');
+            await new Promise((resolve) => setTimeout(resolve, 850));
+            return window.__externalChatOverlayUpdates
+                .map((update) => update && update.payload && update.payload.cursor)
+                .filter((cursor) => cursor && cursor.visible === true);
+        }
+        """
+    )
+
+    assert len(result) >= 2
+    assert result[0]["x"] == 121
+    assert result[0]["effect"] == "click"
+    assert result[0]["effectDurationMs"] == 420
+    assert result[-1]["x"] == 521
+    assert result[-1]["effect"] == ""
+    assert result[-1]["effectDurationMs"] == 0
+
+
+@pytest.mark.frontend
+def test_externalized_chat_cursor_preserves_click_when_first_placement_fails(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/chat');
+            window.__externalChatOverlayUpdates = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    contentBounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                update: (payload) => {
+                    window.__externalChatOverlayUpdates.push(payload);
+                    return Promise.resolve({ ok: true });
+                },
+                begin: () => Promise.resolve({ ok: true }),
+                clear: () => Promise.resolve({ ok: true }),
+            };
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'test-run');
+            document.body.innerHTML = '<div id="react-chat-window-root"></div>';
+            window.reactChatWindowHost = {
+                openWindow: () => {
+                    window.setTimeout(() => {
+                        document.getElementById('react-chat-window-root').innerHTML = `
+                            <button
+                                class="send-button-circle compact-input-tool-toggle"
+                                style="position:fixed; left:500px; top:200px; width:42px; height:42px;"
+                            ></button>
+                        `;
+                    }, 100);
+                },
+            };
+        """,
+        script_names=("app/app-interpage",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.postMessage({
+                __nekoTutorialOverlayRelay: true,
+                payload: {
+                    action: 'yui_guide_set_chat_cursor',
+                    kind: 'tool-toggle',
+                    effect: 'click',
+                    effectDurationMs: 420,
+                    durationMs: 0,
+                    timestamp: Date.now(),
+                    tutorialRunId: 'test-run',
+                },
+            }, '*');
+            await new Promise((resolve) => setTimeout(resolve, 850));
+            return window.__externalChatOverlayUpdates
+                .map((update) => update && update.payload && update.payload.cursor)
+                .filter((cursor) => cursor && cursor.visible === true);
+        }
+        """
+    )
+
+    assert len(result) == 1
+    assert result[0]["x"] == 521
+    assert result[0]["effect"] == "click"
+    assert result[0]["effectDurationMs"] == 420
+
+
+@pytest.mark.frontend
 def test_externalized_chat_cursor_anchor_reports_after_pc_move_duration(
     mock_page: Page,
 ):
@@ -6403,7 +4593,7 @@ def test_home_director_receives_externalized_chat_cursor_anchor_event(
 
 
 @pytest.mark.frontend
-def test_home_director_owns_pc_cursor_for_externalized_chat_anchor(
+def test_home_director_accepts_cursor_anchor_while_externalized_chat_owns_pc_cursor(
     mock_page: Page,
 ):
     _bootstrap_page(
@@ -6424,6 +4614,7 @@ def test_home_director_owns_pc_cursor_for_externalized_chat_anchor(
                 },
                 begin: () => Promise.resolve({ ok: true }),
                 clear: () => Promise.resolve({ ok: true }),
+                relayToChat: () => true,
             };
         """,
         script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
@@ -6434,6 +4625,9 @@ def test_home_director_owns_pc_cursor_for_externalized_chat_anchor(
         async () => {
             const director = window.createYuiGuideDirector({ page: 'home' });
             director.currentSceneId = 'intro_basic';
+            director.interactionTakeover.setExternalizedChatCursor('input', {
+                effect: 'wobble',
+            });
             window.dispatchEvent(new CustomEvent('neko:yui-guide:external-chat-cursor-anchor', {
                 detail: {
                     x: 640,
@@ -6460,12 +4654,8 @@ def test_home_director_owns_pc_cursor_for_externalized_chat_anchor(
     assert result["currentPosition"] == {"x": 540, "y": 380}
     assert result["visible"] is True
     assert result["domExists"] is False
-    assert any(
-        update["payload"]["cursor"]["visible"] is True
-        and update["payload"]["cursor"]["x"] == 640
-        and update["payload"]["cursor"]["y"] == 430
-        and update["payload"]["cursor"].get("effect") == "wobble"
-        and update["payload"]["cursor"].get("effectDurationMs") == 2000
+    assert not any(
+        update.get("payload", {}).get("cursor", {}).get("visible") is True
         for update in result["updates"]
     )
 
@@ -7411,6 +5601,1116 @@ def test_externalized_chat_capsule_input_spotlight_uses_capsule_body_rect_withou
     assert spotlight["id"] == "external-chat-capsule-input"
     assert spotlight["x"] == 692
     assert spotlight["width"] == 446
+
+
+@pytest.mark.frontend
+def test_pc_overlay_begin_stale_response_does_not_duplicate_update(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'begin-stale-run');
+            window.__pcOverlayBegins = [];
+            window.__pcOverlayUpdates = [];
+            window.__pcOverlayBeginResolvers = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    contentBounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                begin: (payload) => {
+                    window.__pcOverlayBegins.push(payload);
+                    return new Promise((resolve) => window.__pcOverlayBeginResolvers.push(resolve));
+                },
+                update: (payload) => {
+                    window.__pcOverlayUpdates.push(payload);
+                    return new Promise(() => {});
+                },
+                clear: () => Promise.resolve({ ok: true }),
+            };
+        """,
+        script_names=("tutorial/yui-guide/overlay.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const overlay = new window.YuiGuideOverlay(document);
+            overlay.pcOverlayBridge.setSpotlights([{
+                kind: 'input',
+                rect: { left: 100, top: 120, width: 240, height: 56, radius: 18 },
+            }]);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const first = window.__pcOverlayUpdates[0];
+            window.__pcOverlayBeginResolvers[0]({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: first.tutorialRunId,
+                activeSequence: first.sequence,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return window.__pcOverlayUpdates.length;
+        }
+        """
+    )
+
+    assert result == 1
+
+
+@pytest.mark.frontend
+def test_pc_overlay_cursor_only_begin_stale_response_does_not_duplicate_update(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'cursor-only-begin-stale-run');
+            window.__pcOverlayUpdates = [];
+            window.__pcOverlayBeginResolvers = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    contentBounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                begin: () => new Promise((resolve) => window.__pcOverlayBeginResolvers.push(resolve)),
+                update: (payload) => {
+                    window.__pcOverlayUpdates.push(payload);
+                    return new Promise(() => {});
+                },
+                clear: () => Promise.resolve({ ok: true }),
+            };
+        """,
+        script_names=("tutorial/yui-guide/overlay.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const overlay = new window.YuiGuideOverlay(document);
+            overlay.pcOverlayBridge.moveCursorOnlyTo(240, 180, 0, 'click', 420);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const first = window.__pcOverlayUpdates[0];
+            window.__pcOverlayBeginResolvers[0]({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: first.tutorialRunId,
+                activeSequence: first.sequence,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return window.__pcOverlayUpdates.length;
+        }
+        """
+    )
+
+    assert result == 1
+
+
+@pytest.mark.frontend
+def test_pc_overlay_stale_update_retry_bypasses_ready_state_dedupe(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'dedupe-run');
+            window.__pcOverlayUpdates = [];
+            window.__pcOverlayUpdateResolvers = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    contentBounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                begin: () => Promise.resolve({ ok: true }),
+                update: (payload) => {
+                    window.__pcOverlayUpdates.push(payload);
+                    if (window.__pcOverlayUpdates.length === 1) {
+                        return Promise.resolve({ ok: true });
+                    }
+                    return new Promise((resolve) => window.__pcOverlayUpdateResolvers.push(resolve));
+                },
+                clear: () => Promise.resolve({ ok: true }),
+            };
+        """,
+        script_names=("tutorial/yui-guide/overlay.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const overlay = new window.YuiGuideOverlay(document);
+            overlay.pcOverlayBridge.setSpotlights([{
+                kind: 'input',
+                rect: { left: 100, top: 120, width: 240, height: 56, radius: 18 },
+            }]);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            overlay.pcOverlayBridge.setSpotlights([{
+                kind: 'input',
+                rect: { left: 420, top: 220, width: 240, height: 56, radius: 18 },
+            }]);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const staleUpdate = window.__pcOverlayUpdates[1];
+            window.__pcOverlayUpdateResolvers[0]({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: staleUpdate.tutorialRunId,
+                activeSequence: staleUpdate.sequence,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const firstRetry = window.__pcOverlayUpdates[2];
+            window.__pcOverlayUpdateResolvers[1]({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: firstRetry.tutorialRunId,
+                activeSequence: firstRetry.sequence,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return {
+                updates: window.__pcOverlayUpdates.length,
+                activeSequence: staleUpdate.sequence,
+                firstRetry,
+                secondRetry: window.__pcOverlayUpdates[3],
+            };
+        }
+        """
+    )
+
+    assert result["updates"] == 4
+    assert result["firstRetry"]["tutorialRunId"] == "dedupe-run"
+    assert result["secondRetry"]["tutorialRunId"] == "dedupe-run"
+    # Sequence also respects the persisted and wall-clock floors, so the contract is strictly newer.
+    assert result["firstRetry"]["sequence"] > result["activeSequence"]
+    assert result["secondRetry"]["sequence"] > result["firstRetry"]["sequence"]
+
+
+@pytest.mark.frontend
+def test_pc_overlay_ignores_late_same_run_stale_responses_from_older_requests(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'same-run');
+            window.__pcOverlayUpdates = [];
+            window.__pcOverlayUpdateResolvers = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    contentBounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                begin: () => Promise.resolve({ ok: true }),
+                update: (payload) => {
+                    window.__pcOverlayUpdates.push(payload);
+                    return new Promise((resolve) => window.__pcOverlayUpdateResolvers.push(resolve));
+                },
+                clear: () => Promise.resolve({ ok: true }),
+            };
+        """,
+        script_names=("tutorial/yui-guide/overlay.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const overlay = new window.YuiGuideOverlay(document);
+            overlay.pcOverlayBridge.setSpotlights([{
+                kind: 'input',
+                rect: { left: 100, top: 120, width: 240, height: 56, radius: 18 },
+            }]);
+            overlay.pcOverlayBridge.moveCursorOnlyTo(420, 220, 0, 'click', 420);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const newerCursorUpdate = window.__pcOverlayUpdates[1];
+            window.__pcOverlayUpdateResolvers[1]({ ok: true });
+            window.__pcOverlayUpdateResolvers[0]({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: newerCursorUpdate.tutorialRunId,
+                activeSequence: newerCursorUpdate.sequence,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const updatesAfterOlderSpotlightResponse = window.__pcOverlayUpdates.length;
+
+            overlay.pcOverlayBridge.moveCursorOnlyTo(520, 320, 0, 'click', 420);
+            overlay.pcOverlayBridge.setSpotlights([{
+                kind: 'window',
+                rect: { left: 300, top: 260, width: 360, height: 180, radius: 24 },
+            }]);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const newerSpotlightUpdate = window.__pcOverlayUpdates[3];
+            window.__pcOverlayUpdateResolvers[3]({ ok: true });
+            window.__pcOverlayUpdateResolvers[2]({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: newerSpotlightUpdate.tutorialRunId,
+                activeSequence: newerSpotlightUpdate.sequence,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return {
+                updatesAfterOlderSpotlightResponse,
+                updates: window.__pcOverlayUpdates,
+            };
+        }
+        """
+    )
+
+    assert result["updatesAfterOlderSpotlightResponse"] == 2
+    assert len(result["updates"]) == 4
+    assert result["updates"][1]["payload"]["cursor"]["x"] == 420
+    assert result["updates"][3]["payload"]["spotlights"][0]["kind"] == "window"
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("cursor_only", [False, True], ids=["complete-state", "cursor-only"])
+def test_pc_overlay_ignores_same_run_stale_response_superseded_by_other_bridge(
+    mock_page: Page,
+    cursor_only: bool,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'shared-run');
+            window.__pcOverlayUpdates = [];
+            window.__pcOverlayUpdateResolvers = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    contentBounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                begin: () => Promise.resolve({ ok: true }),
+                update: (payload) => {
+                    window.__pcOverlayUpdates.push(payload);
+                    return new Promise((resolve) => window.__pcOverlayUpdateResolvers.push(resolve));
+                },
+                clear: () => Promise.resolve({ ok: true }),
+            };
+        """,
+        script_names=("tutorial/yui-guide/overlay.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async (cursorOnly) => {
+            const overlay = new window.YuiGuideOverlay(document);
+            if (cursorOnly) {
+                overlay.pcOverlayBridge.moveCursorOnlyTo(420, 220, 0, 'click', 420);
+            } else {
+                overlay.pcOverlayBridge.setSpotlights([{
+                    kind: 'input',
+                    rect: { left: 100, top: 120, width: 240, height: 56, radius: 18 },
+                }]);
+            }
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const update = window.__pcOverlayUpdates[0];
+            window.__pcOverlayUpdateResolvers[0]({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: update.tutorialRunId,
+                activeSequence: update.sequence + 1000,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 80));
+            return window.__pcOverlayUpdates;
+        }
+        """,
+        cursor_only,
+    )
+
+    assert len(result) == 1
+
+
+@pytest.mark.frontend
+def test_pc_overlay_cursor_only_bounds_repeated_same_run_stale_retries(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'cursor-retry-run');
+            window.__pcOverlayUpdates = [];
+            window.__pcOverlayUpdateResolvers = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    contentBounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                begin: () => Promise.resolve({ ok: true }),
+                update: (payload) => {
+                    window.__pcOverlayUpdates.push(payload);
+                    return new Promise((resolve) => window.__pcOverlayUpdateResolvers.push(resolve));
+                },
+                clear: () => Promise.resolve({ ok: true }),
+            };
+        """,
+        script_names=("tutorial/yui-guide/overlay.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const overlay = new window.YuiGuideOverlay(document);
+            overlay.pcOverlayBridge.moveCursorOnlyTo(240, 180, 0, 'click', 420);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const first = window.__pcOverlayUpdates[0];
+            window.__pcOverlayUpdateResolvers[0]({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: first.tutorialRunId,
+                activeSequence: first.sequence,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const firstRetry = window.__pcOverlayUpdates[1];
+            window.__pcOverlayUpdateResolvers[1]({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: firstRetry.tutorialRunId,
+                activeSequence: firstRetry.sequence,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const secondRetry = window.__pcOverlayUpdates[2];
+            window.__pcOverlayUpdateResolvers[2]({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: secondRetry.tutorialRunId,
+                activeSequence: secondRetry.sequence,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const finalRetry = window.__pcOverlayUpdates[3];
+            window.__pcOverlayUpdateResolvers[3]({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: finalRetry.tutorialRunId,
+                activeSequence: finalRetry.sequence,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const beforeDeferredRetry = window.__pcOverlayUpdates.length;
+            await new Promise((resolve) => setTimeout(resolve, 80));
+            if (window.__pcOverlayUpdates[4]) {
+                const deferredRetry = window.__pcOverlayUpdates[4];
+                window.__pcOverlayUpdateResolvers[4]({
+                    ok: false,
+                    stale: true,
+                    reason: 'stale-sequence',
+                    activeTutorialRunId: deferredRetry.tutorialRunId,
+                    activeSequence: deferredRetry.sequence,
+                });
+                await new Promise((resolve) => setTimeout(resolve, 80));
+            }
+            if (window.__pcOverlayUpdates[5]) {
+                const deferredRetry = window.__pcOverlayUpdates[5];
+                window.__pcOverlayUpdateResolvers[5]({
+                    ok: false,
+                    stale: true,
+                    reason: 'stale-sequence',
+                    activeTutorialRunId: deferredRetry.tutorialRunId,
+                    activeSequence: deferredRetry.sequence,
+                });
+                await new Promise((resolve) => setTimeout(resolve, 80));
+            }
+            if (window.__pcOverlayUpdates[6]) {
+                const finalDeferredRetry = window.__pcOverlayUpdates[6];
+                window.__pcOverlayUpdateResolvers[6]({
+                    ok: false,
+                    stale: true,
+                    reason: 'stale-sequence',
+                    activeTutorialRunId: finalDeferredRetry.tutorialRunId,
+                    activeSequence: finalDeferredRetry.sequence,
+                });
+                await new Promise((resolve) => setTimeout(resolve, 80));
+            }
+            return {
+                beforeDeferredRetry,
+                updates: window.__pcOverlayUpdates,
+            };
+        }
+        """
+    )
+
+    assert result["beforeDeferredRetry"] == 4
+    assert len(result["updates"]) == 7
+    assert all(update["tutorialRunId"] == "cursor-retry-run" for update in result["updates"])
+    assert result["updates"][1]["sequence"] > result["updates"][0]["sequence"]
+    assert result["updates"][2]["sequence"] > result["updates"][1]["sequence"]
+    assert result["updates"][3]["sequence"] > result["updates"][2]["sequence"]
+    assert result["updates"][4]["sequence"] > result["updates"][3]["sequence"]
+    assert result["updates"][5]["sequence"] > result["updates"][4]["sequence"]
+    assert result["updates"][6]["sequence"] > result["updates"][5]["sequence"]
+
+
+@pytest.mark.frontend
+def test_pc_overlay_deferred_retry_yields_to_newer_shared_sequence(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'cursor-shared-sequence-run');
+            window.__pcOverlayUpdates = [];
+            window.__pcOverlayUpdateResolvers = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    contentBounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                begin: () => Promise.resolve({ ok: true }),
+                update: (payload) => {
+                    window.__pcOverlayUpdates.push(payload);
+                    return new Promise((resolve) => window.__pcOverlayUpdateResolvers.push(resolve));
+                },
+                clear: () => Promise.resolve({ ok: true }),
+            };
+        """,
+        script_names=("tutorial/yui-guide/overlay.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const overlay = new window.YuiGuideOverlay(document);
+            overlay.pcOverlayBridge.moveCursorOnlyTo(240, 180, 0, 'click', 420);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            for (let index = 0; index < 4; index += 1) {
+                const update = window.__pcOverlayUpdates[index];
+                window.__pcOverlayUpdateResolvers[index]({
+                    ok: false,
+                    stale: true,
+                    reason: 'stale-sequence',
+                    activeTutorialRunId: update.tutorialRunId,
+                    activeSequence: update.sequence,
+                });
+                await new Promise((resolve) => setTimeout(resolve, 0));
+            }
+            const latestRetry = window.__pcOverlayUpdates[3];
+            window.localStorage.setItem(
+                'yuiGuidePcOverlaySequence',
+                String(latestRetry.sequence + 1000),
+            );
+            await new Promise((resolve) => setTimeout(resolve, 80));
+            return window.__pcOverlayUpdates;
+        }
+        """
+    )
+
+    assert len(result) == 4
+
+
+@pytest.mark.frontend
+def test_external_chat_begin_stale_response_does_not_duplicate_update(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/chat');
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'external-begin-run');
+            window.__externalChatOverlayUpdates = [];
+            window.__externalChatBeginResolvers = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    contentBounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                begin: () => new Promise((resolve) => window.__externalChatBeginResolvers.push(resolve)),
+                update: (payload) => {
+                    window.__externalChatOverlayUpdates.push(payload);
+                    return new Promise(() => {});
+                },
+                clear: () => Promise.resolve({ ok: true }),
+            };
+            document.body.innerHTML = `
+                <div id="react-chat-window-root">
+                    <button
+                        class="send-button-circle compact-input-tool-toggle"
+                        style="position:fixed; left:100px; top:200px; width:42px; height:42px;"
+                    ></button>
+                </div>
+            `;
+        """,
+        script_names=("app/app-interpage",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.postMessage({
+                __nekoTutorialOverlayRelay: true,
+                payload: {
+                    action: 'yui_guide_set_chat_cursor',
+                    kind: 'tool-toggle',
+                    effect: 'click',
+                    effectDurationMs: 420,
+                    durationMs: 0,
+                    timestamp: Date.now(),
+                    tutorialRunId: 'external-begin-run',
+                },
+            }, '*');
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const first = window.__externalChatOverlayUpdates[0];
+            window.__externalChatBeginResolvers[0]({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: first.tutorialRunId,
+                activeSequence: first.sequence,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return window.__externalChatOverlayUpdates.length;
+        }
+        """
+    )
+
+    assert result == 1
+
+
+@pytest.mark.frontend
+def test_external_chat_reconciles_a_second_same_run_stale_response(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/chat');
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'external-retry-run');
+            window.__externalChatOverlayUpdates = [];
+            window.__externalChatUpdateResolvers = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    contentBounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                begin: () => Promise.resolve({ ok: true }),
+                update: (payload) => {
+                    window.__externalChatOverlayUpdates.push(payload);
+                    return new Promise((resolve) => window.__externalChatUpdateResolvers.push(resolve));
+                },
+                clear: () => Promise.resolve({ ok: true }),
+            };
+            document.body.innerHTML = `
+                <div id="react-chat-window-root">
+                    <button
+                        class="send-button-circle compact-input-tool-toggle"
+                        style="position:fixed; left:100px; top:200px; width:42px; height:42px;"
+                    ></button>
+                </div>
+            `;
+        """,
+        script_names=("app/app-interpage",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.postMessage({
+                __nekoTutorialOverlayRelay: true,
+                payload: {
+                    action: 'yui_guide_set_chat_cursor',
+                    kind: 'tool-toggle',
+                    effect: 'click',
+                    effectDurationMs: 420,
+                    durationMs: 0,
+                    timestamp: Date.now(),
+                    tutorialRunId: 'external-retry-run',
+                },
+            }, '*');
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const first = window.__externalChatOverlayUpdates[0];
+            window.__externalChatUpdateResolvers[0]({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: first.tutorialRunId,
+                activeSequence: first.sequence,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const firstRetry = window.__externalChatOverlayUpdates[1];
+            window.__externalChatUpdateResolvers[1]({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: firstRetry.tutorialRunId,
+                activeSequence: firstRetry.sequence,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const secondRetry = window.__externalChatOverlayUpdates[2];
+            window.__externalChatUpdateResolvers[2]({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: secondRetry.tutorialRunId,
+                activeSequence: secondRetry.sequence,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const finalRetry = window.__externalChatOverlayUpdates[3];
+            window.__externalChatUpdateResolvers[3]({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: finalRetry.tutorialRunId,
+                activeSequence: finalRetry.sequence,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const beforeDeferredRetry = window.__externalChatOverlayUpdates.length;
+            await new Promise((resolve) => setTimeout(resolve, 80));
+            if (window.__externalChatOverlayUpdates[4]) {
+                const deferredRetry = window.__externalChatOverlayUpdates[4];
+                window.__externalChatUpdateResolvers[4]({
+                    ok: false,
+                    stale: true,
+                    reason: 'stale-sequence',
+                    activeTutorialRunId: deferredRetry.tutorialRunId,
+                    activeSequence: deferredRetry.sequence,
+                });
+                await new Promise((resolve) => setTimeout(resolve, 80));
+            }
+            if (window.__externalChatOverlayUpdates[5]) {
+                const deferredRetry = window.__externalChatOverlayUpdates[5];
+                window.__externalChatUpdateResolvers[5]({
+                    ok: false,
+                    stale: true,
+                    reason: 'stale-sequence',
+                    activeTutorialRunId: deferredRetry.tutorialRunId,
+                    activeSequence: deferredRetry.sequence,
+                });
+                await new Promise((resolve) => setTimeout(resolve, 80));
+            }
+            if (window.__externalChatOverlayUpdates[6]) {
+                const finalDeferredRetry = window.__externalChatOverlayUpdates[6];
+                window.__externalChatUpdateResolvers[6]({
+                    ok: false,
+                    stale: true,
+                    reason: 'stale-sequence',
+                    activeTutorialRunId: finalDeferredRetry.tutorialRunId,
+                    activeSequence: finalDeferredRetry.sequence,
+                });
+                await new Promise((resolve) => setTimeout(resolve, 80));
+            }
+            return {
+                beforeDeferredRetry,
+                updates: window.__externalChatOverlayUpdates,
+            };
+        }
+        """
+    )
+
+    assert result["beforeDeferredRetry"] == 4
+    assert len(result["updates"]) == 7
+    assert all(update["tutorialRunId"] == "external-retry-run" for update in result["updates"])
+    assert result["updates"][1]["sequence"] > result["updates"][0]["sequence"]
+    assert result["updates"][2]["sequence"] > result["updates"][1]["sequence"]
+    assert result["updates"][3]["sequence"] > result["updates"][2]["sequence"]
+    assert result["updates"][4]["sequence"] > result["updates"][3]["sequence"]
+    assert result["updates"][5]["sequence"] > result["updates"][4]["sequence"]
+    assert result["updates"][6]["sequence"] > result["updates"][5]["sequence"]
+    assert all(
+        "effect" not in update["payload"]["cursor"]
+        for update in result["updates"][4:]
+    )
+
+
+@pytest.mark.frontend
+def test_external_chat_bounds_repeated_different_run_stale_reconciliation(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/chat');
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'external-different-run');
+            window.__externalChatOverlayBegins = [];
+            window.__externalChatOverlayUpdates = [];
+            window.__externalChatUpdateResolvers = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    contentBounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                begin: (payload) => {
+                    window.__externalChatOverlayBegins.push(payload);
+                    return Promise.resolve({ ok: true });
+                },
+                update: (payload) => {
+                    window.__externalChatOverlayUpdates.push(payload);
+                    return new Promise((resolve) => window.__externalChatUpdateResolvers.push(resolve));
+                },
+                clear: () => Promise.resolve({ ok: true }),
+            };
+            document.body.innerHTML = `
+                <div id="react-chat-window-root">
+                    <button
+                        class="send-button-circle compact-input-tool-toggle"
+                        style="position:fixed; left:100px; top:200px; width:42px; height:42px;"
+                    ></button>
+                </div>
+            `;
+        """,
+        script_names=("app/app-interpage",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.postMessage({
+                __nekoTutorialOverlayRelay: true,
+                payload: {
+                    action: 'yui_guide_set_chat_cursor',
+                    kind: 'tool-toggle',
+                    effect: 'click',
+                    effectDurationMs: 420,
+                    durationMs: 0,
+                    timestamp: Date.now(),
+                    tutorialRunId: 'external-different-run',
+                },
+            }, '*');
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            for (let index = 0; index < 7; index += 1) {
+                const update = window.__externalChatOverlayUpdates[index];
+                if (!update) {
+                    break;
+                }
+                window.__externalChatUpdateResolvers[index]({
+                    ok: false,
+                    stale: true,
+                    reason: 'stale-run',
+                    activeTutorialRunId: 'paired-active-run',
+                    activeSequence: update.sequence,
+                });
+                await new Promise((resolve) => setTimeout(resolve, 80));
+            }
+            return {
+                begins: window.__externalChatOverlayBegins,
+                updates: window.__externalChatOverlayUpdates,
+            };
+        }
+        """
+    )
+
+    assert len(result["updates"]) == 7
+    assert result["updates"][0]["tutorialRunId"] == "external-different-run"
+    retry_run_ids = {update["tutorialRunId"] for update in result["updates"][1:]}
+    assert len(retry_run_ids) == 1
+    assert next(iter(retry_run_ids)).startswith("yui-guide-chat-")
+    assert len(result["begins"]) == 7
+    assert all(
+        "effect" not in update["payload"]["cursor"]
+        for update in result["updates"][2:]
+    )
+
+
+@pytest.mark.frontend
+def test_external_chat_deferred_retry_yields_to_newer_shared_sequence(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/chat');
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'external-shared-sequence-run');
+            window.__externalChatOverlayUpdates = [];
+            window.__externalChatUpdateResolvers = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    contentBounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                begin: () => Promise.resolve({ ok: true }),
+                update: (payload) => {
+                    window.__externalChatOverlayUpdates.push(payload);
+                    return new Promise((resolve) => window.__externalChatUpdateResolvers.push(resolve));
+                },
+                clear: () => Promise.resolve({ ok: true }),
+            };
+            document.body.innerHTML = `
+                <div id="react-chat-window-root">
+                    <button
+                        class="send-button-circle compact-input-tool-toggle"
+                        style="position:fixed; left:100px; top:200px; width:42px; height:42px;"
+                    ></button>
+                </div>
+            `;
+        """,
+        script_names=("app/app-interpage",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.postMessage({
+                __nekoTutorialOverlayRelay: true,
+                payload: {
+                    action: 'yui_guide_set_chat_cursor',
+                    kind: 'tool-toggle',
+                    effect: 'click',
+                    effectDurationMs: 420,
+                    durationMs: 0,
+                    timestamp: Date.now(),
+                    tutorialRunId: 'external-shared-sequence-run',
+                },
+            }, '*');
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            for (let index = 0; index < 4; index += 1) {
+                const update = window.__externalChatOverlayUpdates[index];
+                window.__externalChatUpdateResolvers[index]({
+                    ok: false,
+                    stale: true,
+                    reason: 'stale-sequence',
+                    activeTutorialRunId: update.tutorialRunId,
+                    activeSequence: update.sequence,
+                });
+                await new Promise((resolve) => setTimeout(resolve, 0));
+            }
+            const latestRetry = window.__externalChatOverlayUpdates[3];
+            window.localStorage.setItem(
+                'yuiGuidePcOverlaySequence',
+                String(latestRetry.sequence + 1000),
+            );
+            await new Promise((resolve) => setTimeout(resolve, 80));
+            return window.__externalChatOverlayUpdates;
+        }
+        """
+    )
+
+    assert len(result) == 4
+
+
+@pytest.mark.frontend
+def test_external_chat_ignores_late_same_run_stale_response_from_older_request(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/chat');
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'external-same-run');
+            window.__externalChatOverlayUpdates = [];
+            window.__externalChatUpdateResolvers = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    contentBounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                begin: () => Promise.resolve({ ok: true }),
+                update: (payload) => {
+                    window.__externalChatOverlayUpdates.push(payload);
+                    return new Promise((resolve) => window.__externalChatUpdateResolvers.push(resolve));
+                },
+                clear: () => Promise.resolve({ ok: true }),
+            };
+            document.body.innerHTML = `
+                <div id="react-chat-window-root">
+                    <button
+                        class="send-button-circle compact-input-tool-toggle"
+                        style="position:fixed; left:100px; top:200px; width:42px; height:42px;"
+                    ></button>
+                </div>
+            `;
+        """,
+        script_names=("app/app-interpage",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const relayCursor = (effect, timestamp) => window.postMessage({
+                __nekoTutorialOverlayRelay: true,
+                payload: {
+                    action: 'yui_guide_set_chat_cursor',
+                    kind: 'tool-toggle',
+                    effect,
+                    effectDurationMs: 420,
+                    durationMs: 0,
+                    timestamp,
+                    tutorialRunId: 'external-same-run',
+                },
+            }, '*');
+            relayCursor('click', Date.now());
+            relayCursor('wobble', Date.now() + 1);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const newerUpdate = window.__externalChatOverlayUpdates[1];
+            window.__externalChatUpdateResolvers[1]({ ok: true });
+            window.__externalChatUpdateResolvers[0]({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: newerUpdate.tutorialRunId,
+                activeSequence: newerUpdate.sequence,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return window.__externalChatOverlayUpdates;
+        }
+        """
+    )
+
+    assert len(result) == 2
+    assert result[1]["payload"]["cursor"]["effect"] == "wobble"
+
+
+@pytest.mark.frontend
+def test_external_chat_ignores_same_run_stale_response_superseded_by_other_bridge(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/chat');
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'external-shared-run');
+            window.__externalChatOverlayUpdates = [];
+            window.__externalChatUpdateResolvers = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    contentBounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                begin: () => Promise.resolve({ ok: true }),
+                update: (payload) => {
+                    window.__externalChatOverlayUpdates.push(payload);
+                    return new Promise((resolve) => window.__externalChatUpdateResolvers.push(resolve));
+                },
+                clear: () => Promise.resolve({ ok: true }),
+            };
+            document.body.innerHTML = `
+                <div id="react-chat-window-root">
+                    <button
+                        class="send-button-circle compact-input-tool-toggle"
+                        style="position:fixed; left:100px; top:200px; width:42px; height:42px;"
+                    ></button>
+                </div>
+            `;
+        """,
+        script_names=("app/app-interpage",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.postMessage({
+                __nekoTutorialOverlayRelay: true,
+                payload: {
+                    action: 'yui_guide_set_chat_cursor',
+                    kind: 'tool-toggle',
+                    effect: 'click',
+                    effectDurationMs: 420,
+                    durationMs: 0,
+                    timestamp: Date.now(),
+                    tutorialRunId: 'external-shared-run',
+                },
+            }, '*');
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const update = window.__externalChatOverlayUpdates[0];
+            window.__externalChatUpdateResolvers[0]({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: update.tutorialRunId,
+                activeSequence: update.sequence + 1000,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 80));
+            return window.__externalChatOverlayUpdates;
+        }
+        """
+    )
+
+    assert len(result) == 1
+
+
+@pytest.mark.frontend
+def test_external_chat_ignores_late_stale_response_from_replaced_run(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/chat');
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'old-run');
+            window.__externalChatOverlayUpdates = [];
+            window.__externalChatUpdateResolvers = {};
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    contentBounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                begin: () => Promise.resolve({ ok: true }),
+                update: (payload) => {
+                    window.__externalChatOverlayUpdates.push(payload);
+                    return new Promise((resolve) => {
+                        window.__externalChatUpdateResolvers[payload.tutorialRunId] = resolve;
+                    });
+                },
+                clear: () => Promise.resolve({ ok: true }),
+            };
+            document.body.innerHTML = `
+                <div id="react-chat-window-root">
+                    <button
+                        class="send-button-circle compact-input-tool-toggle"
+                        style="position:fixed; left:100px; top:200px; width:42px; height:42px;"
+                    ></button>
+                </div>
+            `;
+        """,
+        script_names=("app/app-interpage",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const relayCursor = (runId, timestamp) => window.postMessage({
+                __nekoTutorialOverlayRelay: true,
+                payload: {
+                    action: 'yui_guide_set_chat_cursor',
+                    kind: 'tool-toggle',
+                    effect: 'click',
+                    effectDurationMs: 420,
+                    durationMs: 0,
+                    timestamp,
+                    tutorialRunId: runId,
+                },
+            }, '*');
+            relayCursor('old-run', Date.now());
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'new-run');
+            relayCursor('new-run', Date.now() + 1);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const beforeLateResponse = window.__externalChatOverlayUpdates.length;
+            const oldUpdate = window.__externalChatOverlayUpdates.find(
+                (update) => update.tutorialRunId === 'old-run'
+            );
+            window.__externalChatUpdateResolvers['old-run']({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: 'old-run',
+                activeSequence: oldUpdate.sequence,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const afterLateResponse = window.__externalChatOverlayUpdates.length;
+            const previousNewRunUpdate = window.__externalChatOverlayUpdates.find(
+                (update) => update.tutorialRunId === 'new-run'
+            );
+            relayCursor('new-run', Date.now() + 2);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const latestNewRunUpdate = window.__externalChatOverlayUpdates.at(-1);
+            return {
+                beforeLateResponse,
+                afterLateResponse,
+                previousNewRunUpdate,
+                latestNewRunUpdate,
+            };
+        }
+        """
+    )
+
+    assert result["afterLateResponse"] == result["beforeLateResponse"]
+    assert result["latestNewRunUpdate"]["tutorialRunId"] == "new-run"
+    assert result["latestNewRunUpdate"]["sequence"] > result["previousNewRunUpdate"]["sequence"]
 
 
 @pytest.mark.frontend
@@ -10831,7 +10131,7 @@ def test_day3_first_line_externalized_chat_uses_input_spotlight_and_cursor(
 
 
 @pytest.mark.frontend
-def test_day2_to_day7_first_line_externalized_chat_uses_input_spotlight_and_cursor(
+def test_day2_to_day7_first_line_externalized_chat_uses_capsule_input_spotlight_and_cursor(
     mock_page: Page,
 ):
     _bootstrap_page(
@@ -10857,8 +10157,8 @@ def test_day2_to_day7_first_line_externalized_chat_uses_input_spotlight_and_curs
         """
         async () => {
             const expectedFirstSceneIds = {
-                2: 'day2_intro_context',
-                3: 'day3_tool_toggle_intro',
+                2: 'day2_tool_toggle_intro',
+                3: 'day3_intro_context',
                 4: 'day4_intro_companion',
                 5: 'day5_character_settings',
                 6: 'day6_intro_agent',
@@ -10931,8 +10231,8 @@ def test_day2_to_day7_first_line_externalized_chat_uses_input_spotlight_and_curs
     )
 
     for day in ["2", "3", "4", "5", "6", "7"]:
-        assert "spotlight:input" in result[day]
-        assert "cursor:input::0" in result[day]
+        assert "spotlight:capsule-input" in result[day]
+        assert "cursor:capsule-input::0" in result[day]
 
 
 @pytest.mark.frontend
@@ -11939,6 +11239,186 @@ def test_externalized_chat_drag_message_omits_duration_when_not_supplied(
     assert result["effect"] == "click"
     assert result["effectDurationMs"] == 900
     assert "durationMs" not in result
+
+
+@pytest.mark.frontend
+def test_externalized_chat_cursor_commands_claim_and_release_home_cursor_ownership(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.__cursorOwnershipEvents = [];
+        """,
+        script_names=("tutorial/core/interaction-takeover.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const events = window.__cursorOwnershipEvents;
+            const controller = window.TutorialInteractionTakeover.createController({
+                page: 'home',
+                externalizedChatDetector: () => true,
+                externalChatChannelProvider: () => ({
+                    postMessage: (message) => {
+                        events.push({ type: 'message', action: message.action });
+                        return true;
+                    },
+                }),
+                onExternalizedChatCursorOwnershipChange: (detail) => events.push({
+                    type: 'ownership',
+                    owned: detail.owned,
+                    kind: detail.kind,
+                    action: detail.action,
+                }),
+            });
+            controller.setExternalizedChatCursor('tool-toggle', { durationMs: 1480 });
+            controller.dragExternalizedChatCursor('galgame', { durationMs: 420 });
+            controller.arcExternalizedChatCursor('galgame', { durationMs: 420 });
+            controller.setExternalizedChatCursor('', { preservePcOverlayCursor: true });
+            return events;
+        }
+        """
+    )
+
+    assert result == [
+        {"type": "ownership", "owned": True, "kind": "tool-toggle", "action": "set"},
+        {"type": "message", "action": "yui_guide_set_chat_cursor"},
+        {"type": "ownership", "owned": True, "kind": "galgame", "action": "drag"},
+        {"type": "message", "action": "yui_guide_drag_chat_cursor"},
+        {"type": "ownership", "owned": True, "kind": "galgame", "action": "arc"},
+        {"type": "message", "action": "yui_guide_arc_chat_cursor"},
+        {"type": "ownership", "owned": False, "kind": "", "action": "set"},
+        {"type": "message", "action": "yui_guide_set_chat_cursor"},
+    ]
+
+
+@pytest.mark.frontend
+def test_externalized_chat_commands_keep_tutorial_run_id_after_storage_is_cleared(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.__messages = [];
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'stable-tutorial-run');
+        """,
+        script_names=("tutorial/core/interaction-takeover.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const controller = window.TutorialInteractionTakeover.createController({
+                page: 'home',
+                externalizedChatDetector: () => true,
+                externalChatChannelProvider: () => ({
+                    postMessage: (message) => window.__messages.push(message),
+                }),
+            });
+            controller.setExternalizedChatCursor('capsule-input', { durationMs: 0 });
+            window.localStorage.removeItem('yuiGuidePcOverlayRunId');
+            controller.setExternalizedChatCursor('history', { durationMs: 760 });
+            controller.setExternalizedChatCompactHistoryOpen(true, 'day1-history');
+            controller.setExternalizedChatCursor('tool-toggle', { durationMs: 1480 });
+            controller.setExternalizedChatCompactToolFanOpen(true, 'day2-tool-fan');
+            return window.__messages;
+        }
+        """
+    )
+
+    assert [message["action"] for message in result] == [
+        "yui_guide_set_chat_cursor",
+        "yui_guide_set_chat_cursor",
+        "yui_guide_set_compact_history_open",
+        "yui_guide_set_chat_cursor",
+        "yui_guide_set_compact_tool_fan_open",
+    ]
+    assert {message.get("tutorialRunId") for message in result} == {"stable-tutorial-run"}
+    assert {message.get("pcOverlayRunId") for message in result} == {"stable-tutorial-run"}
+
+
+@pytest.mark.frontend
+def test_external_chat_replaces_temporary_chat_run_with_home_tutorial_run(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/chat');
+            window.__overlayUpdates = [];
+            window.localStorage.setItem(
+                'yuiGuidePcOverlayRunId',
+                'yui-guide-chat-temporary-run'
+            );
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    contentBounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                update: (payload) => {
+                    window.__overlayUpdates.push(payload);
+                    return Promise.resolve({ ok: true });
+                },
+                begin: () => Promise.resolve({ ok: true }),
+                clear: () => Promise.resolve({ ok: true }),
+            };
+            document.body.innerHTML = `
+                <div id="react-chat-window-root">
+                    <button
+                        class="send-button-circle compact-input-tool-toggle"
+                        style="position:fixed; left:600px; top:400px; width:42px; height:42px;"
+                    ></button>
+                </div>
+            `;
+        """,
+        script_names=("app/app-interpage",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const temporaryRunId = window.localStorage.getItem('yuiGuidePcOverlayRunId');
+            window.postMessage({
+                __nekoTutorialOverlayRelay: true,
+                payload: {
+                    action: 'yui_guide_tutorial_lifecycle_started',
+                    tutorialRunId: 'yui-guide-home-tutorial-run',
+                    timestamp: Date.now(),
+                },
+            }, '*');
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            window.postMessage({
+                __nekoTutorialOverlayRelay: true,
+                payload: {
+                    action: 'yui_guide_set_chat_cursor',
+                    kind: 'tool-toggle',
+                    effect: 'move',
+                    durationMs: 760,
+                    tutorialRunId: 'yui-guide-home-tutorial-run',
+                    pcOverlayRunId: 'yui-guide-home-tutorial-run',
+                    timestamp: Date.now(),
+                },
+            }, '*');
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            return {
+                temporaryRunId,
+                storedRunId: window.localStorage.getItem('yuiGuidePcOverlayRunId'),
+                updateRunIds: window.__overlayUpdates.map((update) => update.tutorialRunId),
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "temporaryRunId": "yui-guide-chat-temporary-run",
+        "storedRunId": "yui-guide-home-tutorial-run",
+        "updateRunIds": ["yui-guide-home-tutorial-run"],
+    }
 
 
 @pytest.mark.frontend
@@ -13206,7 +12686,7 @@ def test_day1_intro_basic_voice_waits_for_history_cursor_move_before_voice_butto
 
 
 @pytest.mark.frontend
-def test_day1_history_to_intro_basic_voice_preserves_externalized_cursor(mock_page: Page):
+def test_day1_history_to_intro_basic_voice_releases_externalized_cursor(mock_page: Page):
     _bootstrap_page(
         mock_page,
         setup_js="window.history.pushState({}, '', '/');",
@@ -13225,11 +12705,11 @@ def test_day1_history_to_intro_basic_voice_preserves_externalized_cursor(mock_pa
         """
     )
 
-    assert result is True
+    assert result is False
 
 
 @pytest.mark.frontend
-def test_day1_intro_basic_voice_to_screen_entry_preserves_externalized_cursor(mock_page: Page):
+def test_day1_intro_basic_voice_to_screen_entry_does_not_preserve_externalized_cursor(mock_page: Page):
     _bootstrap_page(
         mock_page,
         setup_js="window.history.pushState({}, '', '/');",
@@ -13248,11 +12728,11 @@ def test_day1_intro_basic_voice_to_screen_entry_preserves_externalized_cursor(mo
         """
     )
 
-    assert result is True
+    assert result is False
 
 
 @pytest.mark.frontend
-def test_day1_screen_entry_invite_preserves_externalized_cursor(mock_page: Page):
+def test_day1_screen_entry_invite_does_not_preserve_externalized_cursor(mock_page: Page):
     _bootstrap_page(
         mock_page,
         setup_js="window.history.pushState({}, '', '/');",
@@ -13271,11 +12751,11 @@ def test_day1_screen_entry_invite_preserves_externalized_cursor(mock_page: Page)
         """
     )
 
-    assert result is True
+    assert result is False
 
 
 @pytest.mark.frontend
-def test_day1_screen_entry_invite_to_takeover_capture_preserves_externalized_cursor(mock_page: Page):
+def test_day1_screen_entry_invite_to_takeover_capture_does_not_preserve_externalized_cursor(mock_page: Page):
     _bootstrap_page(
         mock_page,
         setup_js="window.history.pushState({}, '', '/');",
@@ -13294,7 +12774,7 @@ def test_day1_screen_entry_invite_to_takeover_capture_preserves_externalized_cur
         """
     )
 
-    assert result is True
+    assert result is False
 
 
 @pytest.mark.frontend
@@ -13553,9 +13033,13 @@ def test_home_owned_cursor_move_reenables_pc_overlay_after_externalized_handoff(
         """
         async () => {
             const director = window.createYuiGuideDirector({ page: 'home' });
+            const cursorCommands = [];
             director.interactionTakeover = {
                 setExternalizedChatSpotlight: () => {},
-                setExternalizedChatCursor: () => {},
+                setExternalizedChatCursor: (kind, options) => cursorCommands.push({
+                    kind: String(kind || ''),
+                    preservePcOverlayCursor: !!(options && options.preservePcOverlayCursor === true),
+                }),
             };
             director.waitUntilSceneResumed = async () => {};
             director.cursor.showAt(320, 280);
@@ -13565,14 +13049,66 @@ def test_home_owned_cursor_move_reenables_pc_overlay_after_externalized_handoff(
                 0,
                 { exactDuration: true }
             );
+            const beforeStaleAnchor = director.overlay.getCursorPosition();
+            window.dispatchEvent(new CustomEvent('neko:yui-guide:external-chat-cursor-anchor', {
+                detail: {
+                    x: 240,
+                    y: 300,
+                    kind: 'input',
+                    effect: '',
+                    source: 'external-chat',
+                    settled: true,
+                    timestamp: Date.now(),
+                },
+            }));
             await new Promise((resolve) => setTimeout(resolve, 30));
-            return window.__homeOverlayUpdates.map((update) => update.payload || {});
+            const afterStaleAnchor = director.overlay.getCursorPosition();
+            await director.cursor.resistTo(960, 520, { forcePcOverlay: true });
+            return {
+                cursorCommands,
+                beforeStaleAnchor,
+                afterStaleAnchor,
+                afterResistance: director.overlay.getCursorPosition(),
+                updates: window.__homeOverlayUpdates.map((update) => update.payload || {}),
+            };
         }
         """
     )
 
-    assert result[-1].get("cursor", {}).get("x") == 880
-    assert result[-1].get("cursor", {}).get("y") == 200
+    assert result["cursorCommands"] == [
+        {"kind": "input", "preservePcOverlayCursor": False},
+        {"kind": "", "preservePcOverlayCursor": True},
+    ]
+    assert result["beforeStaleAnchor"] == {"x": 780, "y": 150}
+    assert result["afterStaleAnchor"] == {"x": 780, "y": 150}
+    assert result["afterResistance"] == {"x": 780, "y": 150}
+    assert result["updates"][-1].get("cursor", {}).get("x") == 880
+    assert result["updates"][-1].get("cursor", {}).get("y") == 200
+
+
+@pytest.mark.frontend
+def test_day1_intro_basic_voice_explicitly_clears_externalized_cursor(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=(
+            "tutorial/yui-guide/overlay.js",
+            *_YUI_DIRECTOR_SCRIPTS,
+            "tutorial/yui-guide/days/day1-home-guide.js",
+        ),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const scenes = window.YuiGuideDailyGuides[1].round.scenes;
+            const scene = scenes.find((entry) => entry.id === 'day1_intro_basic_voice');
+            return !!(scene && scene.clearExternalizedChatCursorOnEnter === true);
+        }
+        """
+    )
+
+    assert result is True
 
 
 @pytest.mark.frontend
@@ -13935,7 +13471,7 @@ def test_day3_avatar_tools_props_opens_tools_on_click_then_closes_after_narratio
 
 
 @pytest.mark.frontend
-def test_react_chat_close_deactivates_active_tool_cursor(mock_page: Page):
+def test_react_chat_close_deactivates_active_avatar_tool(mock_page: Page):
     _bootstrap_page(
         mock_page,
         setup_js="""
@@ -13962,7 +13498,7 @@ def test_react_chat_close_deactivates_active_tool_cursor(mock_page: Page):
             const host = window.reactChatWindowHost;
             await host.ensureBundleLoaded();
             host.openWindow();
-            window.__toolCursorResetKeys = [];
+            window.__avatarToolDeactivationKeys = [];
             window.__avatarToolStateEvents = [];
             host.setOnAvatarToolStateChange((detail) => {
                 window.__avatarToolStateEvents.push(detail);
@@ -13978,10 +13514,10 @@ def test_react_chat_close_deactivates_active_tool_cursor(mock_page: Page):
         """
         () => {
             const host = window.reactChatWindowHost;
-            host.deactivateToolCursor();
-            window.__toolCursorResetKeys.push(window.__lastReactChatProps._toolCursorResetKey);
+            host.deactivateAvatarTool();
+            window.__avatarToolDeactivationKeys.push(window.__lastReactChatProps._avatarToolDeactivationKey);
             host.closeWindow();
-            window.__toolCursorResetKeys.push(window.__lastReactChatProps._toolCursorResetKey);
+            window.__avatarToolDeactivationKeys.push(window.__lastReactChatProps._avatarToolDeactivationKey);
         }
         """
     )
@@ -13989,110 +13525,25 @@ def test_react_chat_close_deactivates_active_tool_cursor(mock_page: Page):
     result = mock_page.evaluate(
         """
         () => ({
-            resetKeys: window.__toolCursorResetKeys.slice(),
+            deactivationKeys: window.__avatarToolDeactivationKeys.slice(),
             avatarToolStateEvents: window.__avatarToolStateEvents.slice(),
         })
         """
     )
 
-    assert len(result["resetKeys"]) == 2
-    assert result["resetKeys"][0]
-    assert result["resetKeys"][1]
-    assert result["resetKeys"][1] != result["resetKeys"][0]
+    assert len(result["deactivationKeys"]) == 2
+    assert result["deactivationKeys"][0]
+    assert result["deactivationKeys"][1]
+    assert result["deactivationKeys"][1] != result["deactivationKeys"][0]
     assert result["avatarToolStateEvents"][-1]["active"] is False
     assert result["avatarToolStateEvents"][-1]["toolId"] is None
-
-
-@pytest.mark.frontend
-def test_tutorial_heartbeat_does_not_report_completed_while_tutorial_is_running(
-    mock_page: Page,
-):
-    _bootstrap_tutorial_prompt_page(
-        mock_page,
-        setup_js="""
-            window.__tutorialHeartbeatBodies = [];
-            window.nekoAutostartProvider = {
-                getStatus: async function() {
-                    return {
-                        ok: true,
-                        supported: false,
-                        enabled: false,
-                        authoritative: false,
-                        provider: 'backend',
-                    };
-                },
-            };
-            window.universalTutorialManager = {
-                currentPage: 'home',
-                isTutorialRunning: true,
-                hasSeenTutorial: function() {
-                    return true;
-                },
-                logPromptFlow: function() {},
-                requestTutorialStart: async function() {
-                    return false;
-                },
-            };
-        """,
-        fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'started',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/autostart-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        autostart_enabled: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                window.__tutorialHeartbeatBodies.push(body);
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: false,
-                    state: {
-                        status: 'started',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-        """,
-    )
-
-    mock_page.wait_for_function(
-        "() => window.__tutorialHeartbeatBodies.length === 1",
-        timeout=5000,
-    )
-
-    result = mock_page.evaluate(
-        """
-        () => window.__tutorialHeartbeatBodies[0]
-        """
-    )
-
-    assert result["manual_home_tutorial_viewed"] is True
-    assert result["home_tutorial_completed"] is False
 
 
 @pytest.mark.frontend
 def test_autostart_foreground_timer_starts_after_character_onboarding_settles(
     mock_page: Page,
 ):
-    _bootstrap_tutorial_prompt_page(
+    _bootstrap_home_runtime_page(
         mock_page,
         include_autostart_prompt=True,
         setup_js="""
@@ -14127,30 +13578,6 @@ def test_autostart_foreground_timer_starts_after_character_onboarding_settles(
             };
         """,
         fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'completed',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: false,
-                    state: {
-                        status: 'completed',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
             if (requestUrl === '/api/autostart-prompt/state') {
                 return jsonResponse({
                     state: {
@@ -14209,7 +13636,7 @@ def test_autostart_foreground_timer_starts_after_character_onboarding_settles(
 def test_autostart_foreground_timer_starts_immediately_for_settled_character_onboarding(
     mock_page: Page,
 ):
-    _bootstrap_tutorial_prompt_page(
+    _bootstrap_home_runtime_page(
         mock_page,
         include_autostart_prompt=True,
         setup_js="""
@@ -14237,30 +13664,6 @@ def test_autostart_foreground_timer_starts_immediately_for_settled_character_onb
             };
         """,
         fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'completed',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: false,
-                    state: {
-                        status: 'completed',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
             if (requestUrl === '/api/autostart-prompt/state') {
                 return jsonResponse({
                     state: {
@@ -14314,7 +13717,7 @@ def test_autostart_foreground_timer_starts_immediately_for_settled_character_onb
 def test_autostart_prompt_display_continues_when_startup_gate_rejects(
     mock_page: Page,
 ):
-    _bootstrap_tutorial_prompt_page(
+    _bootstrap_home_runtime_page(
         mock_page,
         include_autostart_prompt=True,
         setup_js="""
@@ -14345,30 +13748,6 @@ def test_autostart_prompt_display_continues_when_startup_gate_rejects(
             };
         """,
         fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'completed',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: false,
-                    state: {
-                        status: 'completed',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
             if (requestUrl === '/api/autostart-prompt/state') {
                 return jsonResponse({
                     state: {
@@ -14414,54 +13793,10 @@ def test_autostart_prompt_display_continues_when_startup_gate_rejects(
 
 
 @pytest.mark.frontend
-def test_started_manual_home_tutorial_does_not_suppress_reload_auto_start(
-    mock_page: Page,
-):
-    _bootstrap_tutorial_prompt_page(
-        mock_page,
-        setup_js="""
-            window.universalTutorialManager = {
-                currentPage: 'home',
-                isTutorialRunning: false,
-                hasSeenTutorial: function() {
-                    return false;
-                },
-                logPromptFlow: function() {},
-                requestTutorialStart: async function() {
-                    return false;
-                },
-            };
-        """,
-        fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'started',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-        """,
-    )
-
-    mock_page.wait_for_function(
-        "() => window.appTutorialPrompt && window.appTutorialPrompt.shouldSuppressAutomaticHomeTutorialStart",
-        timeout=5000,
-    )
-
-    assert mock_page.evaluate(
-        "() => window.appTutorialPrompt.shouldSuppressAutomaticHomeTutorialStart()"
-    ) is False
-
-
-@pytest.mark.frontend
 def test_autostart_provider_enable_syncs_prompt_heartbeat_state(
     mock_page: Page,
 ):
-    _bootstrap_tutorial_prompt_page(
+    _bootstrap_home_runtime_page(
         mock_page,
         include_autostart_provider=True,
         setup_js="""
@@ -14508,7 +13843,7 @@ def test_autostart_provider_enable_syncs_prompt_heartbeat_state(
                 hasSeenTutorial: function() {
                     return false;
                 },
-                logPromptFlow: function() {},
+                logTutorialFlow: function() {},
                 requestTutorialStart: async function() {
                     return false;
                 },
@@ -14521,30 +13856,6 @@ def test_autostart_provider_enable_syncs_prompt_heartbeat_state(
                 body: body,
             });
 
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: false,
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
             if (requestUrl === '/api/autostart-prompt/state') {
                 return jsonResponse({
                     state: {
@@ -14594,7 +13905,7 @@ def test_autostart_provider_enable_syncs_prompt_heartbeat_state(
 def test_autostart_heartbeat_preserves_last_known_enabled_state_on_status_pull_failure(
     mock_page: Page,
 ):
-    _bootstrap_tutorial_prompt_page(
+    _bootstrap_home_runtime_page(
         mock_page,
         include_autostart_provider=True,
         setup_js="""
@@ -14616,37 +13927,13 @@ def test_autostart_heartbeat_preserves_last_known_enabled_state_on_status_pull_f
                 hasSeenTutorial: function() {
                     return true;
                 },
-                logPromptFlow: function() {},
+                logTutorialFlow: function() {},
                 requestTutorialStart: async function() {
                     return false;
                 },
             };
         """,
         fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'completed',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: false,
-                    state: {
-                        status: 'completed',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
             if (requestUrl === '/api/autostart-prompt/state') {
                 return jsonResponse({
                     state: {
@@ -14696,7 +13983,7 @@ def test_autostart_heartbeat_preserves_last_known_enabled_state_on_status_pull_f
 def test_desktop_autostart_status_event_syncs_prompt_heartbeat_state(
     mock_page: Page,
 ):
-    _bootstrap_tutorial_prompt_page(
+    _bootstrap_home_runtime_page(
         mock_page,
         include_autostart_provider=True,
         setup_js="""
@@ -14742,37 +14029,13 @@ def test_desktop_autostart_status_event_syncs_prompt_heartbeat_state(
                 hasSeenTutorial: function() {
                     return false;
                 },
-                logPromptFlow: function() {},
+                logTutorialFlow: function() {},
                 requestTutorialStart: async function() {
                     return false;
                 },
             };
         """,
         fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: false,
-                    state: {
-                        status: 'observing',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
             if (requestUrl === '/api/autostart-prompt/state') {
                 return jsonResponse({
                     state: {
@@ -15033,7 +14296,7 @@ def test_autostart_provider_desktop_status_event_uses_desktop_defaults_without_p
 def test_mutation_requests_refresh_csrf_token_once_after_validation_failure(
     mock_page: Page,
 ):
-    _bootstrap_tutorial_prompt_page(
+    _bootstrap_home_runtime_page(
         mock_page,
         include_autostart_provider=True,
         setup_js="""
@@ -15043,7 +14306,6 @@ def test_mutation_requests_refresh_csrf_token_once_after_validation_failure(
             });
             window.__pageConfigFetchCount = 0;
             window.__mutationTokens = [];
-            window.__tutorialHeartbeatBodies = [];
             window.__autostartHeartbeatBodies = [];
             window.universalTutorialManager = {
                 currentPage: 'home',
@@ -15051,7 +14313,7 @@ def test_mutation_requests_refresh_csrf_token_once_after_validation_failure(
                 hasSeenTutorial: function() {
                     return true;
                 },
-                logPromptFlow: function() {},
+                logTutorialFlow: function() {},
                 requestTutorialStart: async function() {
                     return false;
                 },
@@ -15078,17 +14340,6 @@ def test_mutation_requests_refresh_csrf_token_once_after_validation_failure(
                     model_type: 'live2d',
                 });
             }
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'completed',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
             if (requestUrl === '/api/autostart-prompt/state') {
                 return jsonResponse({
                     state: {
@@ -15096,27 +14347,6 @@ def test_mutation_requests_refresh_csrf_token_once_after_validation_failure(
                         never_remind: false,
                         deferred_until: 0,
                         autostart_enabled: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                if (csrfToken !== 'fresh-token') {
-                    return jsonResponse({
-                        ok: false,
-                        error_code: 'csrf_validation_failed',
-                        error: 'Request could not be verified',
-                    }, 403);
-                }
-                window.__tutorialHeartbeatBodies.push(body);
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: false,
-                    state: {
-                        status: 'completed',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
                     },
                 });
             }
@@ -15155,7 +14385,6 @@ def test_mutation_requests_refresh_csrf_token_once_after_validation_failure(
         () => ({
             pageConfigFetchCount: window.__pageConfigFetchCount,
             mutationTokens: window.__mutationTokens.slice(),
-            tutorialHeartbeatBodies: window.__tutorialHeartbeatBodies.slice(),
             autostartHeartbeatBodies: window.__autostartHeartbeatBodies.slice(),
         })
         """
@@ -15163,7 +14392,7 @@ def test_mutation_requests_refresh_csrf_token_once_after_validation_failure(
 
     assert result["pageConfigFetchCount"] >= 1
     assert "fresh-token" in result["mutationTokens"]
-    assert result["tutorialHeartbeatBodies"] or result["autostartHeartbeatBodies"]
+    assert result["autostartHeartbeatBodies"]
 
 
 @pytest.mark.frontend
@@ -15210,7 +14439,7 @@ def test_fire_and_forget_json_uses_cached_csrf_token_without_awaiting_during_unl
                 loggerName: 'HarnessPrompt',
             });
             window.dispatchEvent(new Event('beforeunload'));
-            void tools.fireAndForgetJson('/api/tutorial-prompt/heartbeat', {
+            void tools.fireAndForgetJson('/api/autostart-prompt/heartbeat', {
                 heartbeat_token: 'hb-token',
             });
         }
@@ -15228,7 +14457,7 @@ def test_fire_and_forget_json_uses_cached_csrf_token_without_awaiting_during_unl
     )
 
     assert result["fetchCalls"] == []
-    assert result["beacon"]["url"] == "/api/tutorial-prompt/heartbeat"
+    assert result["beacon"]["url"] == "/api/autostart-prompt/heartbeat"
     assert '"_csrf_token":"test-token"' in result["beacon"]["body"]
 
 
@@ -15298,7 +14527,7 @@ def test_autostart_provider_disable_without_desktop_bridge_method_updates_cached
 def test_autostart_prompt_acceptance_tracks_pending_system_approval_without_failure(
     mock_page: Page,
 ):
-    _bootstrap_tutorial_prompt_page(
+    _bootstrap_home_runtime_page(
         mock_page,
         include_common_dialogs=True,
         include_autostart_prompt=True,
@@ -15336,37 +14565,13 @@ def test_autostart_prompt_acceptance_tracks_pending_system_approval_without_fail
                 hasSeenTutorial: function() {
                     return true;
                 },
-                logPromptFlow: function() {},
+                logTutorialFlow: function() {},
                 requestTutorialStart: async function() {
                     return false;
                 },
             };
         """,
         fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'completed',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: false,
-                    state: {
-                        status: 'completed',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
             if (requestUrl === '/api/autostart-prompt/state') {
                 return jsonResponse({
                     state: {
@@ -15449,7 +14654,7 @@ def test_autostart_prompt_acceptance_tracks_pending_system_approval_without_fail
 def test_autostart_prompt_stays_suppressed_when_provider_reports_blocked_status(
     mock_page: Page,
 ):
-    _bootstrap_tutorial_prompt_page(
+    _bootstrap_home_runtime_page(
         mock_page,
         include_autostart_prompt=True,
         setup_js="""
@@ -15483,7 +14688,7 @@ def test_autostart_prompt_stays_suppressed_when_provider_reports_blocked_status(
                 hasSeenTutorial: function() {
                     return true;
                 },
-                logPromptFlow: function() {},
+                logTutorialFlow: function() {},
                 requestTutorialStart: async function() {
                     return false;
                 },
@@ -15492,30 +14697,6 @@ def test_autostart_prompt_stays_suppressed_when_provider_reports_blocked_status(
         fetch_js="""
             window.__requestLog.push(requestUrl);
 
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'completed',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: false,
-                    state: {
-                        status: 'completed',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
             if (requestUrl === '/api/autostart-prompt/state') {
                 return jsonResponse({
                     state: {
@@ -15572,7 +14753,7 @@ def test_autostart_prompt_stays_suppressed_when_provider_reports_blocked_status(
 def test_autostart_prompt_omits_never_button_and_keeps_later_action(
     mock_page: Page,
 ):
-    _bootstrap_tutorial_prompt_page(
+    _bootstrap_home_runtime_page(
         mock_page,
         include_autostart_prompt=True,
         setup_js="""
@@ -15608,37 +14789,13 @@ def test_autostart_prompt_omits_never_button_and_keeps_later_action(
                 hasSeenTutorial: function() {
                     return true;
                 },
-                logPromptFlow: function() {},
+                logTutorialFlow: function() {},
                 requestTutorialStart: async function() {
                     return false;
                 },
             };
         """,
         fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'completed',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: false,
-                    state: {
-                        status: 'completed',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
             if (requestUrl === '/api/autostart-prompt/state') {
                 return jsonResponse({
                     state: {
@@ -15717,7 +14874,7 @@ def test_autostart_prompt_omits_never_button_and_keeps_later_action(
 def test_autostart_prompt_plays_voice_on_show_and_stops_immediately_on_decision(
     mock_page: Page,
 ):
-    _bootstrap_tutorial_prompt_page(
+    _bootstrap_home_runtime_page(
         mock_page,
         include_common_dialogs=True,
         include_autostart_prompt=True,
@@ -15761,7 +14918,7 @@ def test_autostart_prompt_plays_voice_on_show_and_stops_immediately_on_decision(
                 hasSeenTutorial: function() {
                     return true;
                 },
-                logPromptFlow: function() {},
+                logTutorialFlow: function() {},
                 requestTutorialStart: async function() {
                     return false;
                 },
@@ -15770,30 +14927,6 @@ def test_autostart_prompt_plays_voice_on_show_and_stops_immediately_on_decision(
         fetch_js="""
             window.__requestLog.push(requestUrl);
 
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'completed',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: false,
-                    state: {
-                        status: 'completed',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
             if (requestUrl === '/api/autostart-prompt/state') {
                 return jsonResponse({
                     state: {
@@ -15870,7 +15003,7 @@ def test_autostart_prompt_plays_voice_on_show_and_stops_immediately_on_decision(
 def test_autostart_prompt_missing_voice_degrades_to_text_only(
     mock_page: Page,
 ):
-    _bootstrap_tutorial_prompt_page(
+    _bootstrap_home_runtime_page(
         mock_page,
         include_common_dialogs=True,
         include_autostart_prompt=True,
@@ -15907,37 +15040,13 @@ def test_autostart_prompt_missing_voice_degrades_to_text_only(
                 hasSeenTutorial: function() {
                     return true;
                 },
-                logPromptFlow: function() {},
+                logTutorialFlow: function() {},
                 requestTutorialStart: async function() {
                     return false;
                 },
             };
         """,
         fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'completed',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: false,
-                    state: {
-                        status: 'completed',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
             if (requestUrl === '/api/autostart-prompt/state') {
                 return jsonResponse({
                     state: {
@@ -15998,7 +15107,7 @@ def test_autostart_prompt_missing_voice_degrades_to_text_only(
 def test_autostart_decision_failure_retries_without_reopening_prompt(
     mock_page: Page,
 ):
-    _bootstrap_tutorial_prompt_page(
+    _bootstrap_home_runtime_page(
         mock_page,
         include_autostart_prompt=True,
         setup_js="""
@@ -16032,37 +15141,13 @@ def test_autostart_decision_failure_retries_without_reopening_prompt(
                 hasSeenTutorial: function() {
                     return true;
                 },
-                logPromptFlow: function() {},
+                logTutorialFlow: function() {},
                 requestTutorialStart: async function() {
                     return false;
                 },
             };
         """,
         fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'completed',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: false,
-                    state: {
-                        status: 'completed',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
             if (requestUrl === '/api/autostart-prompt/state') {
                 return jsonResponse({
                     state: {
@@ -16152,7 +15237,7 @@ def test_autostart_decision_failure_retries_without_reopening_prompt(
 def test_autostart_prompt_does_not_retry_later_decision_after_permanent_client_error(
     mock_page: Page,
 ):
-    _bootstrap_tutorial_prompt_page(
+    _bootstrap_home_runtime_page(
         mock_page,
         include_autostart_prompt=True,
         setup_js="""
@@ -16183,37 +15268,13 @@ def test_autostart_prompt_does_not_retry_later_decision_after_permanent_client_e
                 hasSeenTutorial: function() {
                     return true;
                 },
-                logPromptFlow: function() {},
+                logTutorialFlow: function() {},
                 requestTutorialStart: async function() {
                     return false;
                 },
             };
         """,
         fetch_js="""
-            if (requestUrl === '/api/tutorial-prompt/state') {
-                return jsonResponse({
-                    state: {
-                        status: 'completed',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: false,
-                    state: {
-                        status: 'completed',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
-                        home_tutorial_completed: true,
-                    },
-                });
-            }
             if (requestUrl === '/api/autostart-prompt/state') {
                 return jsonResponse({
                     state: {

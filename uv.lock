@@ -76,6 +76,30 @@ wheels = [
 ]
 
 [[package]]
+name = "aiotieba"
+version = "4.7.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "beautifulsoup4" },
+    { name = "cryptography" },
+    { name = "lxml" },
+    { name = "protobuf" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/60/6b/a821387a21650922f25cda835921365f851a262dcd56ab5aefbc267003a7/aiotieba-4.7.1.tar.gz", hash = "sha256:9e85fc034af1e439c153485b088d0ab5ab15d6f05b89d2b75839ea0908d5a2a1", size = 212080, upload-time = "2026-05-23T16:07:04.625Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ca/15/6052199a816ccf9de1a4af890bc05838872ed821d60f20146efbbef1b3a3/aiotieba-4.7.1-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:95524e4f0299f1aa9682ed8a8e9e4b3fd338166cef7ca9b73e883ee8370ca8d0", size = 311510, upload-time = "2026-05-23T16:06:08.529Z" },
+    { url = "https://files.pythonhosted.org/packages/d7/50/d80ae10fba2ded7f4bab13b0b491bcfdc610e3f182f64cc04599638a8647/aiotieba-4.7.1-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:3e83cb50ec04cfc1043cfb782e755146a78acdab240802aca45fa469172b7281", size = 311876, upload-time = "2026-05-23T16:06:10.124Z" },
+    { url = "https://files.pythonhosted.org/packages/e4/d4/6413ef9db2c2fe50443d2197254de9e859f8c55b1f2b7afa6c12ac85a586/aiotieba-4.7.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:47b28282b876fddb33340476bee7f2ebdfe07d24e41ddceb533a557d50f01863", size = 313182, upload-time = "2026-05-23T16:06:11.758Z" },
+    { url = "https://files.pythonhosted.org/packages/28/cb/524712d26f91d2fc063cebb18690142d537fb4a449f1e6440dd687570c20/aiotieba-4.7.1-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:0eec46c9178c04a24a63d61f18a90e2e628bb784fa890b355d8a2f8c6de0cfb0", size = 313332, upload-time = "2026-05-23T16:06:13.68Z" },
+    { url = "https://files.pythonhosted.org/packages/82/1a/27fd222cc05f51c0c56911ea6f34cf5c9ab31da4a8d37e729085edb894a8/aiotieba-4.7.1-cp311-cp311-win_amd64.whl", hash = "sha256:22c1a1d5c0ea833dbaafeaa74b6cdf36e2895aa65adc172e686ca032b3a45c62", size = 294597, upload-time = "2026-05-23T16:06:15.554Z" },
+    { url = "https://files.pythonhosted.org/packages/5a/6e/25d204da8e18d17b7f1f0ec7505854398380405142c4ebe8fa2eb982f847/aiotieba-4.7.1-pp311-pypy311_pp73-macosx_10_15_x86_64.whl", hash = "sha256:7417a819eb507e486fb50b0b417b49435eb17361065436500e29800a4211c8fe", size = 311593, upload-time = "2026-05-23T16:06:57.961Z" },
+    { url = "https://files.pythonhosted.org/packages/c1/4d/4911b34238920d112fd8533f46365d6031924c5fb1b94332e0f884098ede/aiotieba-4.7.1-pp311-pypy311_pp73-macosx_11_0_arm64.whl", hash = "sha256:2f15ec26bc4b619cae062d39c452e630bc74fe59e21abb76975b08184ebb149b", size = 311891, upload-time = "2026-05-23T16:06:59.59Z" },
+    { url = "https://files.pythonhosted.org/packages/7a/4e/1f4fafefa2f99a93fcef30c8b5e59cdf076443616f1357d6399eaf24fdf0/aiotieba-4.7.1-pp311-pypy311_pp73-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:dd41e79b5693d4b7592daa586ceb428f7b756180bb8a3a017c21b6113a79b2c8", size = 313195, upload-time = "2026-05-23T16:07:01.171Z" },
+    { url = "https://files.pythonhosted.org/packages/a7/88/1fc2ef921c49f32a8bbe9e83f13f0e7f518ba59f06e2e69a9f2a3f47160d/aiotieba-4.7.1-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:3ac4faae647700fd34aed8bdbf6dd1b342ec0325fb7c34cd6bd100a857c4393e", size = 294611, upload-time = "2026-05-23T16:07:02.886Z" },
+]
+
+[[package]]
 name = "altgraph"
 version = "0.17.5"
 source = { registry = "https://pypi.org/simple" }
@@ -633,8 +657,8 @@ name = "dxcam"
 version = "0.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "comtypes", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
-    { name = "numpy", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "comtypes" },
+    { name = "numpy" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/de/b7/b3d3e3fa42f347ac4b37fd639634935b4eefff1d5d61bdf72a6d8b906919/dxcam-0.3.0.tar.gz", hash = "sha256:d524da45adf70e044865e7d4e9098e655d6734951781155dda50c1292e20d8bd", size = 48742, upload-time = "2026-03-12T02:52:17.298Z" }
 wheels = [
@@ -1126,7 +1150,7 @@ name = "jinxed"
 version = "1.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "ansicon", marker = "sys_platform == 'win32'" },
+    { name = "ansicon" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/20/d0/59b2b80e7a52d255f9e0ad040d2e826342d05580c4b1d7d7747cfb8db731/jinxed-1.3.0.tar.gz", hash = "sha256:1593124b18a41b7a3da3b078471442e51dbad3d77b4d4f2b0c26ab6f7d660dbf", size = 80981, upload-time = "2024-07-31T22:39:18.854Z" }
 wheels = [
@@ -1250,7 +1274,7 @@ name = "macholib"
 version = "1.16.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "altgraph", marker = "sys_platform == 'darwin'" },
+    { name = "altgraph" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/10/2f/97589876ea967487978071c9042518d28b958d87b17dceb7cdc1d881f963/macholib-1.16.4.tar.gz", hash = "sha256:f408c93ab2e995cd2c46e34fe328b130404be143469e41bc366c807448979362", size = 59427, upload-time = "2025-11-22T08:28:38.373Z" }
 wheels = [
@@ -1414,6 +1438,7 @@ wheels = [
 name = "n-e-k-o"
 source = { editable = "." }
 dependencies = [
+    { name = "aiotieba" },
     { name = "anthropic" },
     { name = "backoff" },
     { name = "beautifulsoup4" },
@@ -1448,6 +1473,7 @@ dependencies = [
     { name = "pytesseract" },
     { name = "python-dotenv" },
     { name = "python-multipart" },
+    { name = "python-osc" },
     { name = "python-xlib", marker = "sys_platform == 'linux'" },
     { name = "pywin32", marker = "sys_platform == 'win32'" },
     { name = "pywinauto", marker = "sys_platform == 'win32'" },
@@ -1465,6 +1491,7 @@ dependencies = [
     { name = "tomli-w" },
     { name = "tornado" },
     { name = "translatepy" },
+    { name = "twitchio" },
     { name = "uvicorn" },
     { name = "websocket-client" },
     { name = "websockets" },
@@ -1487,6 +1514,7 @@ galgame = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiotieba", specifier = ">=4.7.1" },
     { name = "anthropic" },
     { name = "backoff" },
     { name = "beautifulsoup4", specifier = ">=4.12.0" },
@@ -1521,6 +1549,7 @@ requires-dist = [
     { name = "pytesseract" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
     { name = "python-multipart" },
+    { name = "python-osc", specifier = ">=1.9.0" },
     { name = "python-xlib", marker = "sys_platform == 'linux'" },
     { name = "pywin32", marker = "sys_platform == 'win32'" },
     { name = "pywinauto", marker = "sys_platform == 'win32'" },
@@ -1538,6 +1567,7 @@ requires-dist = [
     { name = "tomli-w", specifier = ">=1.2.0" },
     { name = "tornado", specifier = ">=6.5.4" },
     { name = "translatepy" },
+    { name = "twitchio", specifier = "==3.2.2" },
     { name = "uvicorn" },
     { name = "websocket-client", specifier = "~=1.8.0" },
     { name = "websockets", specifier = "~=15.0.1" },
@@ -4580,6 +4610,15 @@ wheels = [
 ]
 
 [[package]]
+name = "python-osc"
+version = "1.10.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a1/79/094503dc039c8ba9cead01f4b5e163d795a6a502563d3a31f35d20a1ecf8/python_osc-1.10.2.tar.gz", hash = "sha256:732548f4f467dda9f890a6b0b3bfb085ab117f4bd38a45a58d2ca0f3bd6a546d", size = 33716, upload-time = "2026-04-02T20:46:04.692Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1f/a2/ce26e437e36707f0da839dd88b072413825ea8986b73ce7b5c4f3cd1b7f4/python_osc-1.10.2-py3-none-any.whl", hash = "sha256:018b28e1cc06427c2c3d695f4e8d87d0caecfe604ff889acc45235cfd94183a2", size = 45467, upload-time = "2026-04-02T20:46:03.718Z" },
+]
+
+[[package]]
 name = "python-slugify"
 version = "8.0.4"
 source = { registry = "https://pypi.org/simple" }
@@ -4596,7 +4635,7 @@ name = "python-xlib"
 version = "0.33"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "six", marker = "sys_platform != 'darwin'" },
+    { name = "six" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/86/f5/8c0653e5bb54e0cbdfe27bf32d41f27bc4e12faa8742778c17f2a71be2c0/python-xlib-0.33.tar.gz", hash = "sha256:55af7906a2c75ce6cb280a584776080602444f75815a7aff4d287bb2d7018b32", size = 269068, upload-time = "2022-12-25T18:53:00.824Z" }
 wheels = [
@@ -4667,10 +4706,10 @@ name = "pywinauto"
 version = "0.6.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "comtypes", marker = "sys_platform == 'win32'" },
-    { name = "python-xlib", marker = "platform_machine != 'aarch64' and sys_platform == 'linux'" },
-    { name = "pywin32", marker = "sys_platform == 'win32'" },
-    { name = "six", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "comtypes" },
+    { name = "python-xlib", marker = "python_version < '0'" },
+    { name = "pywin32" },
+    { name = "six" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/2c/85/cc65e3b64e7473cc86c07f0b5c415d509402c03ef19dadc39c583835eb5f/pywinauto-0.6.9.tar.gz", hash = "sha256:94d710bfa796df245250f952ffa65d97233d9807bcd42e052b71b81af469b6de", size = 434734, upload-time = "2025-01-06T11:30:01.801Z" }
 wheels = [
@@ -5312,6 +5351,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/88/3d/ac1d26815f57373af98338d74b9f79bb7f87c599ea5a26027622ac8b9d13/translatepy-2.3.tar.gz", hash = "sha256:712313b0a8b8ff9b857f59469f5c3692a132c2e5637b6e939640d616085060b5", size = 770751, upload-time = "2022-03-26T15:27:01.003Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d3/74/7ced01dd85947f3a5f997322e4c269df8dc565f08f36c1660517cc95abd7/translatepy-2.3-py3-none-any.whl", hash = "sha256:a7faed206d3f15dbc6c5a90ba5439d5741763e7843b71ea8f001c686f9297457", size = 814438, upload-time = "2022-03-26T15:26:57.787Z" },
+]
+
+[[package]]
+name = "twitchio"
+version = "3.2.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d1/94/4226b2428f47bc4dde7c8efc6d4ff51b593d95a753b1df418d69153d8943/twitchio-3.2.2.tar.gz", hash = "sha256:44908f4581dcb85d106248bd5cbcccbd7cbbe6f0bea013085eb632f158d8c0c1", size = 248665, upload-time = "2026-04-14T05:46:16.764Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/44/50/2439df5d9169b82b07a4e72ae0815ec31838b56b9e8eddaf372429dadfcd/twitchio-3.2.2-py3-none-any.whl", hash = "sha256:a842fdd7dd9bd03e4d887f9490d42c616d58f9833bcf4ba6b187f77d4148ba7c", size = 320584, upload-time = "2026-04-14T05:46:15.12Z" },
 ]
 
 [[package]]

@@ -21,9 +21,8 @@ choices currently feed into nothing — they do not enter the memory system and 
 not influence the model. The point is to capture the signal now so future work
 can consume it incrementally, without having to retrofit a store later.
 
-The file lives next to ``tutorial_prompt.json`` (global config dir) but is keyed
-by ``lanlan_name`` so choices stay attributed to the character the user
-onboarded with.
+The file lives in the global config directory and is keyed by ``lanlan_name``
+so choices stay attributed to the character the user onboarded with.
 """
 from __future__ import annotations
 

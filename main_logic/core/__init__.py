@@ -30,11 +30,13 @@ import path ``main_logic.core`` is unchanged):
   (``context_append``, ``focus``, ``tts_runtime``, ``turn``,
   ``tool_calling``, ``lifecycle``, ``proactive``, ``greeting``,
   ``streaming``, ``notify``), which hold methods only.
-- ``__init__``: re-exports of every top-level name of the old module so
-  existing imports and test monkeypatches (``main_logic.core.<attr>``) keep
-  working unchanged -- mixin methods read the test-patchable symbols late
-  through this module's namespace (see the re-export block below), which is
-  exactly what tests patch.
+- ``__init__``: re-exports the supported compatibility surface of the old
+  module so retained imports and test monkeypatches
+  (``main_logic.core.<attr>``) keep working unchanged. Helpers explicitly
+  retired by later refactors are not recreated as facade aliases. Mixin
+  methods read supported test-patchable symbols late through this module's
+  namespace (see the re-export block below), which is exactly what tests
+  patch.
 """
 import asyncio
 import contextvars
@@ -127,7 +129,6 @@ from config.prompts.prompts_memory import (
 
 
 from config.prompts.prompts_avatar_interaction import (
-    _normalize_avatar_interaction_payload,
     _build_avatar_interaction_instruction,
     _build_avatar_interaction_memory_meta,
 )
@@ -159,10 +160,12 @@ import soxr
 import httpx
 
 
-# Re-exports from the package submodules. Everything the old single-file
-# module defined at top level stays importable as ``main_logic.core.<name>``,
-# so every import in this file is intentional even though the class body no
-# longer lives here (ruff F401 is not enforced on this facade).
+# Re-exports from the package submodules. Supported names retained from the
+# old single-file module stay importable as ``main_logic.core.<name>``. A
+# private helper deliberately replaced by a public contract API is not kept
+# merely because the old module imported it at top level. Every remaining
+# import in this file is intentional even though the class body no longer
+# lives here (ruff F401 is not enforced on this facade).
 #
 # Rebind/monkeypatch semantics: ``LLMSessionManager`` methods live in the
 # mixin modules, whose functions resolve globals against their OWN module

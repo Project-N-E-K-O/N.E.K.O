@@ -224,6 +224,7 @@ from .post_turn import (  # noqa: F401
 
 from . import routes  # noqa: F401
 from .routes import (  # noqa: F401
+    ExternalMemoryImportRequest,
     HistoryRequest,
     NEW_DIALOG_QPS_FLUSH_INTERVAL,
     QueryMemoryRequest,
@@ -241,6 +242,7 @@ from .routes import (  # noqa: F401
     get_persona,
     get_recent_history,
     get_settings,
+    import_external_markdown,
     last_conversation_gap,
     new_dialog,
     process_conversation,

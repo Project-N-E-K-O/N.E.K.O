@@ -20,6 +20,8 @@ export default {
     minimize: 'Minimizar',
     maximize: 'Maximizar',
     restore: 'Restaurar',
+    pinWindow: 'Fijar ventana',
+    unpinWindow: 'Desfijar ventana',
     toggleSelection: 'Alternar selección',
     success: 'Éxito',
     error: 'Error',
@@ -61,6 +63,13 @@ export default {
     loginFailed: 'No se completó el inicio de sesión autorizado. Inténtalo de nuevo más tarde.',
     loginPending: 'El inicio de sesión autorizado está tardando un poco. Inícialo de nuevo.',
     logoutSuccess: 'Has cerrado el inicio de sesión autorizado en este dispositivo',
+    logoutFailed: 'No se pudo cerrar la sesión. Inténtalo de nuevo.',
+    accountSummary: 'Detalles de la cuenta',
+    accountSummaryLoading: 'Actualizando los detalles de la cuenta…',
+    accountMemberDays: 'Miembro desde hace {days} días',
+    accountPublished: '{count} plugins publicados',
+    logout: 'Cerrar sesión',
+    logoutConfirm: '¿Cerrar sesión de autorización del mercado de plugins en este dispositivo?',
     searchPlaceholder: 'Buscar plugins...',
     notConfigured: 'Mercado no configurado',
     configHint: 'Define NEKO_MARKET_API_URL con la dirección del servicio del mercado de plugins',
@@ -384,6 +393,20 @@ export default {
     }
   },
   package: {
+    install: {
+      safeUpgradeHint: 'Al volver a importar el mismo plugin, se comprueba la versión y se realiza un reemplazo seguro y reversible sin crear copias con sufijo.',
+      planFailed: 'No se pudo inspeccionar el paquete de instalación.',
+      upgradeTitle: '¿Actualizar {plugin}?',
+      upgradeBody: 'La versión {current} se sustituirá por {target}. Si el plugin está en ejecución, se reiniciará brevemente.',
+      upgradeConfirm: 'Actualizar plugin',
+      upgradeCancelled: 'Actualización cancelada.',
+      upgradeSucceeded: '{plugin} se actualizó correctamente.',
+      blockedBundleConflict: 'Este paquete contiene un plugin instalado. Actualiza sus plugins uno por uno.',
+      blockedDirectoryConflict: 'La carpeta de destino pertenece a otro plugin y no se modificó.',
+      blockedLegacyPlugin: 'Todavía hay una versión anterior de este plugin instalada. Desinstala {plugin} antes de continuar.',
+      rollbackCompleted: 'La actualización falló y se restauró la versión anterior.',
+      rollbackIncomplete: 'La actualización falló y la reversión quedó incompleta. Comprueba el estado del plugin antes de continuar.'
+    },
     dialog: {
       title: 'Historial de operaciones de paquetes',
       subtitle: 'Mostrando los últimos {count} resultado(s)'

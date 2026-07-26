@@ -305,6 +305,7 @@ def check_pp2_avatar_event(client, mock_ext) -> list[str]:
             "tool_id": "fist",
             "action_id": "poke",
             "intensity": "normal",
+            "touch_zone": "head",
             "target": "avatar",
             "text_context": "(tester draft in composer)",
             "reward_drop": True,
@@ -328,12 +329,10 @@ def check_pp2_avatar_event(client, mock_ext) -> list[str]:
         )
         tail_content = str(tail.get("content") or "")
 
-        # The avatar instruction is the rendered prompt cue, not the short
-        # memory_note. In compact mode, compact_reply_line may be empty; then
-        # the avatar instruction can be only the event fact, such as the reward
-        # objective, without an extra reply sentence or verbose field-list
-        # bullets. text_context is excluded from the compact runtime prompt so
-        # composer drafts do not leak into this cue.
+        # The avatar instruction is the direct event fact, not the short
+        # memory_note. It has no reply sentence, wrapper, or verbose field-list
+        # bullets. text_context remains a compatibility payload field but is
+        # excluded from the model instruction so composer drafts do not leak.
         _check(
             "奖励" in tail_content,
             "PP2.reward_fact",
@@ -343,7 +342,7 @@ def check_pp2_avatar_event(client, mock_ext) -> list[str]:
         _check(
             "tester draft" not in tail_content,
             "PP2.no_text_context",
-            "tail leaked compact prompt text_context: "
+            "tail leaked compatibility text_context: "
             f"{tail_content[:200]!r}",
         )
         _check(
@@ -472,6 +471,7 @@ def check_pp5_source_flips_back(client, mock_ext) -> list[str]:
             "tool_id": "fist",
             "action_id": "poke",
             "intensity": "normal",
+            "touch_zone": "head",
             "target": "avatar",
         })
 

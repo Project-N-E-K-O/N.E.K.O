@@ -4134,6 +4134,20 @@ margin-top: 10px;
     filter: brightness(1.1);
 }
 
+@keyframes ccm-toast-spin {
+    to { transform: rotate(360deg); }
+}
+
+.ccm-toast-spinner {
+    animation: ccm-toast-spin 0.8s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .ccm-toast-spinner {
+        animation: none;
+    }
+}
+
 .chara-import-btn {
     display: flex;
     align-items: center;
@@ -7495,13 +7509,6 @@ margin-top: 10px;
 [data-theme="dark"] #snapshot-diff-area strong,
 [data-theme="dark"] #snapshot-diff-list {
     color: #facc15 !important;
-}
-
-[data-theme="dark"] .auto-save-toast {
-    background: #123a2a;
-    border-color: #34d399;
-    color: #a7f3d0;
-    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.36);
 }
 
 [data-theme="dark"] .tag,

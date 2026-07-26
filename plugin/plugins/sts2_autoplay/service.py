@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from hashlib import sha1
 from random import random
 from time import time
@@ -67,7 +68,7 @@ class STS2AutoplayService:
         except Exception:
             pass
         self._cfg = dict(cfg)
-        base_url = str(self._cfg.get("base_url") or self._state.base_url)
+        base_url = self._resolve_base_url()
         self._state.base_url = base_url
         self._apply_control_mode("program")
         self._client = STS2TransportClient(
@@ -97,6 +98,23 @@ class STS2AutoplayService:
             self._emit_status()
             return startup_result
         return startup_result
+
+    def _resolve_base_url(self) -> str:
+        env_base_url = str(os.environ.get("STS2_API_BASE_URL") or "").strip()
+        if env_base_url:
+            return env_base_url.rstrip("/")
+
+        env_port = str(os.environ.get("STS2_API_PORT") or "").strip()
+        if env_port:
+            try:
+                port = int(env_port)
+            except ValueError:
+                port = 0
+            if 0 < port <= 65535:
+                return f"http://127.0.0.1:{port}"
+
+        configured = str(self._cfg.get("base_url") or self._state.base_url).strip()
+        return configured.rstrip("/") if configured else self._state.base_url.rstrip("/")
 
     async def shutdown(self) -> None:
         await self._loop_runner.stop_background()

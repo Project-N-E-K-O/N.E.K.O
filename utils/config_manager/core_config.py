@@ -27,6 +27,7 @@ import asyncio
 import json
 import math
 import sys
+import time
 from copy import deepcopy
 from urllib.parse import urlparse, urlunparse
 
@@ -37,6 +38,12 @@ from utils.steam_state import get_steamworks
 from ._shared import _as_bool, logger
 
 
+# 启动期迁移的写盘重试：Windows 上 os.replace 会被杀软扫描短暂占用而抛
+# PermissionError(WinError 5)，一次就放弃会让旧端口留到下次启动。
+_OPENCLAW_MIGRATION_ATTEMPTS = 3
+_OPENCLAW_MIGRATION_RETRY_DELAY_S = 0.1
+
+
 class CoreConfigMixin:
     """Core config snapshot, geo checks and model API resolution."""
 
@@ -45,7 +52,108 @@ class CoreConfigMixin:
         async endpoints must offload it to avoid blocking the event loop."""
         return await asyncio.to_thread(self.get_core_config)
 
+    async def aget_model_api_config(self, model_type: str, *, core_config: dict | None = None) -> dict:
+        """Async wrapper for get_model_api_config, dual of aget_core_config.
+
+        get_model_api_config resolves everything on top of get_core_config, so it inherits
+        the same open()+json.load() on core_config.json; async callers must offload it to
+        avoid blocking the event loop.
+
+        Pass ``core_config`` to reuse a snapshot the caller already read (e.g. right after
+        aget_core_config): resolution is then pure dict work and needs no thread hop.
+        """
+        if core_config is not None:
+            return self.get_model_api_config(model_type, _core_config=core_config)
+        return await asyncio.to_thread(self.get_model_api_config, model_type)
+
     # --- Core config helpers ---
+
+    @staticmethod
+    def _migrated_openclaw_url(raw_url: object) -> str:
+        """Return the 8088 equivalent of a legacy 8089 openclawUrl, or '' if not applicable.
+
+        Pure: no file access, no side effects. Both the read path (in-memory only) and the
+        startup migration (which persists) derive the new URL from here.
+        """
+        if not isinstance(raw_url, str) or not raw_url.strip():
+            return ''
+        normalized = raw_url.strip().rstrip('/')
+        try:
+            parsed = urlparse(normalized)
+        except Exception:
+            return ''
+        if not parsed.netloc:
+            return ''
+        try:
+            if parsed.port != 8089:
+                return ''
+        except ValueError:
+            return ''
+        host = parsed.hostname or ""
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        userinfo = ""
+        if parsed.username:
+            userinfo = parsed.username
+            if parsed.password:
+                userinfo += f":{parsed.password}"
+            userinfo += "@"
+        return urlunparse(parsed._replace(netloc=f"{userinfo}{host}:8088"))
+
+    def migrate_openclaw_url_port(self) -> bool:
+        """Persist the legacy openclawUrl 8089 -> 8088 rewrite, once, at startup.
+
+        This used to live inside get_core_config, which made that method a
+        read-modify-write. Every async caller now reaches it through asyncio.to_thread,
+        so the write could interleave with a /core_api save on the loop and replace the
+        user's just-saved keys with the worker's older snapshot.
+
+        Scope of the guarantee, stated honestly:
+        - In-process it is serialized by _openclaw_migration_lock, and the servers
+          create the manager at module import, before uvicorn accepts connections.
+        - Cross-process it is NOT airtight: a second entry point (app/monitor.py has its
+          own __main__) can import while another process already serves /core_api, so a
+          save can still land between the load and the save below. The window is that
+          gap only, and only for a config still carrying the legacy 8089.
+        - No config write in this codebase takes a file lock -- /core_api itself is an
+          unlocked load-modify-save, so two concurrent saves already lose updates. Making
+          this airtight means introducing config-wide write locking, which belongs to
+          that shared write path, not to this one-shot migration.
+
+        get_core_config still normalizes in memory (see _migrated_openclaw_url) so a
+        config that somehow arrives with 8089 later is routed correctly regardless.
+        """
+        from utils.config_manager import ConfigManager
+        with ConfigManager._openclaw_migration_lock:
+            return self._migrate_openclaw_url_port_locked()
+
+    def _migrate_openclaw_url_port_locked(self) -> bool:
+        """Body of migrate_openclaw_url_port; the caller holds the migration lock."""
+        for attempt in range(_OPENCLAW_MIGRATION_ATTEMPTS):
+            try:
+                core_cfg = self.load_json_config('core_config.json', {})
+                if not isinstance(core_cfg, dict):
+                    return False
+                migrated = self._migrated_openclaw_url(core_cfg.get('openclawUrl'))
+                if not migrated:
+                    return False
+                core_cfg['openclawUrl'] = migrated
+                self.save_json_config('core_config.json', core_cfg)
+                logger.info("已自动将 openclawUrl 从 8089 迁移到 8088: %s", migrated)
+                return True
+            except Exception as exc:
+                last = attempt == _OPENCLAW_MIGRATION_ATTEMPTS - 1
+                logger.warning(
+                    "自动迁移 openclawUrl 到 8088 失败（第 %d/%d 次）: %s",
+                    attempt + 1, _OPENCLAW_MIGRATION_ATTEMPTS, exc,
+                )
+                if last:
+                    return False
+                # Windows: os.replace 撞上杀软/资源管理器占用会抛 PermissionError(WinError 5)，
+                # 扫描通常几十毫秒内结束，短暂退避后重试即可越过。POSIX 的 rename(2) 不受此限，
+                # 这里的重试对它是无害空转。
+                time.sleep(_OPENCLAW_MIGRATION_RETRY_DELAY_S * (attempt + 1))
+        return False
 
     @staticmethod
     def _check_ip_non_mainland_http():
@@ -453,36 +561,13 @@ class CoreConfigMixin:
             config['MCP_ROUTER_API_KEY'] = core_cfg['mcpToken']
 
         openclaw_url = core_cfg.get('openclawUrl')
-        if isinstance(openclaw_url, str) and openclaw_url.strip():
-            normalized_openclaw_url = openclaw_url.strip().rstrip('/')
-            try:
-                parsed_openclaw_url = urlparse(normalized_openclaw_url)
-            except Exception:
-                parsed_openclaw_url = None
-            if parsed_openclaw_url and parsed_openclaw_url.netloc:
-                try:
-                    if parsed_openclaw_url.port == 8089:
-                        host = parsed_openclaw_url.hostname or ""
-                        if ":" in host and not host.startswith("["):
-                            host = f"[{host}]"
-                        userinfo = ""
-                        if parsed_openclaw_url.username:
-                            userinfo = parsed_openclaw_url.username
-                            if parsed_openclaw_url.password:
-                                userinfo += f":{parsed_openclaw_url.password}"
-                            userinfo += "@"
-                        migrated_openclaw_url = urlunparse(
-                            parsed_openclaw_url._replace(netloc=f"{userinfo}{host}:8088")
-                        )
-                        core_cfg['openclawUrl'] = migrated_openclaw_url
-                        openclaw_url = migrated_openclaw_url
-                        try:
-                            self.save_json_config('core_config.json', core_cfg)
-                            logger.info("已自动将 openclawUrl 从 8089 迁移到 8088: %s", migrated_openclaw_url)
-                        except Exception as exc:
-                            logger.warning("自动迁移 openclawUrl 到 8088 失败: %s", exc)
-                except ValueError:
-                    pass
+        # 只在内存里归一化 8089→8088，绝不落盘：get_core_config 现在普遍跑在 to_thread
+        # 里，读路径写盘会和 /core_api 的保存互相顶掉。持久化交给启动期的
+        # migrate_openclaw_url_port（那时还没有并发写者）。
+        _migrated_openclaw_url = self._migrated_openclaw_url(openclaw_url)
+        if _migrated_openclaw_url:
+            core_cfg['openclawUrl'] = _migrated_openclaw_url
+            openclaw_url = _migrated_openclaw_url
         if isinstance(openclaw_url, str) and openclaw_url.strip():
             config['OPENCLAW_URL'] = openclaw_url.strip()
         try:
@@ -845,10 +930,10 @@ class CoreConfigMixin:
 
         return config
 
-    def get_model_api_config(self, model_type: str) -> dict:
+    def get_model_api_config(self, model_type: str, *, _core_config: dict | None = None) -> dict:
         """
         Get the API config for the given model type (automatically handling custom API priority)
-        
+
         Args:
             model_type: model type, one of:
                 - 'summary': summary model (falls back to assist API)
@@ -858,7 +943,10 @@ class CoreConfigMixin:
                 - 'realtime': realtime speech model (falls back to core API)
                 - 'tts_default': default TTS (falls back to core API, used by OmniOfflineClient)
                 - 'tts_custom': custom TTS (falls back to assist API, used for voice_id scenarios)
-                
+            _core_config: optional pre-read get_core_config snapshot, so a caller that already
+                holds one does not pay a second core_config.json read. Private: async callers
+                reach it through aget_model_api_config(core_config=...).
+
         Returns:
             dict: config containing:
                 - 'model': model name
@@ -872,7 +960,7 @@ class CoreConfigMixin:
         # resolvers and the tts_custom Qwen-profile fallback below).
         from utils.config_manager import get_assist_api_profiles, get_core_api_profiles
 
-        core_config = self.get_core_config()
+        core_config = self.get_core_config() if _core_config is None else _core_config
         enable_custom_api = core_config.get('ENABLE_CUSTOM_API', False)
 
         # GPT-SoVITS 启用时，tts_custom slot 视为自定义 API：UI 上勾 GSV 在产品语义上
@@ -1039,11 +1127,11 @@ class CoreConfigMixin:
         if model_type == 'game_main':
             provider = str(core_config.get('gameMainModelProvider') or 'follow_conversation').strip()
             if not treat_as_custom or provider == 'follow_conversation':
-                return self.get_model_api_config('conversation')
+                return self.get_model_api_config('conversation', _core_config=core_config)
         elif model_type == 'game_summary':
             provider = str(core_config.get('gameSummaryModelProvider') or 'follow_summary').strip()
             if not treat_as_custom or provider == 'follow_summary':
-                return self.get_model_api_config('summary')
+                return self.get_model_api_config('summary', _core_config=core_config)
         
         # agent 始终走专用字段（AGENT_MODEL_URL 有 lanlan.app 归一化），
         # 但 is_custom 仅在 enableCustomApi 开启时为 True。
@@ -1138,9 +1226,9 @@ class CoreConfigMixin:
                 'api_type': core_config.get('CORE_API_TYPE', '') if model_type == 'realtime' else None,
             }
         elif mapping['fallback_type'] == 'conversation':
-            return self.get_model_api_config('conversation')
+            return self.get_model_api_config('conversation', _core_config=core_config)
         elif mapping['fallback_type'] == 'summary':
-            return self.get_model_api_config('summary')
+            return self.get_model_api_config('summary', _core_config=core_config)
         else:
             # 回退到辅助 API 配置
             return {

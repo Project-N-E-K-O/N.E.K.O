@@ -175,7 +175,7 @@ location.reload();
 
 - `chara_manager.js` - 角色创建成就
 - `voice_clone.js` - 声音克隆成就
-- `static/js/model_manager/` - 自定义模型成就
+- `model_manager.js` - 自定义模型成就
 
 ## API 参考
 

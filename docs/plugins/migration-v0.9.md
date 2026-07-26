@@ -1,6 +1,6 @@
 # Plugin SDK migration to v0.9
 
-This page is the migration checklist for the plugin-system surface reduction. Some removals are already effective; the remaining `push_message` v1 compatibility parameters are scheduled for removal in v0.9.
+This historical path name is retained for inbound links. The page is a current migration checklist: some removals are already effective, while `push_message` v1 compatibility parameters still work with deprecation warnings. Do not infer an exact removal release from the filename.
 
 ## At a glance
 
@@ -11,9 +11,9 @@ This page is the migration checklist for the plugin-system surface reduction. So
 | Bus `where_*` helpers and list set operators | Removed | Compose `get()`, `filter()` / `where()`, `sort()`, `limit()`, and `watch()` |
 | `get_message_plane_all` | Removed | Use bounded `await self.bus.messages.get(...)` queries |
 | Bus incremental/local fast paths | Removed | Use the canonical bounded, replayable read/watch pipeline |
-| High-level `self.memory` / SDK `MemoryClient` | Removed | Use `self.bus.memory.get(...)` or `await self.ctx.query_memory(...)` |
+| High-level `self.memory` / SDK `MemoryClient` | Removed | Use `self.bus.memory.get(...)` only for recent in-memory user-context records; there is no plugin SDK replacement for persistent semantic recall |
 | Extension package type, `[plugin.host]`, and `plugin.sdk.extension` | Removed, no compatibility path | Merge the Router into its owning normal Plugin, or convert the package into a standalone Plugin |
-| `push_message` v1 fields | Deprecated; removal in v0.9 | Use `parts`, `visibility`, and `ai_behavior` |
+| `push_message` v1 fields | Deprecated but still translated in current source | Use `parts`, `visibility`, and `ai_behavior`; do not rely on an exact removal release |
 
 ## Package types
 
@@ -80,21 +80,18 @@ Removed helpers include `where_in`, `where_eq`, `where_contains`, `where_regex`,
 
 `get_message_plane_all` paged through the Message Plane `messages` store up to its `max_items` bound. It has no direct replacement because the incremental `after_seq` transport path was removed. Use bounded `await self.bus.messages.get(max_count=..., ...)` queries, then apply structured filters, `sort(by=...)`, and `limit()` as needed.
 
-The removed bus fast paths were acceleration branches such as BusList `fast_mode`, incremental reload cursors, the local message cache, and revision/delta shortcuts. Replay plans and traces remain because `watch()` needs them; `get()` / structured `filter(field=value)` / `sort(by=...)` / `limit()` form the replayable chain. These paths are not the same as the legacy `push_message(fast_mode=...)` flag. That push flag belongs to the v1 compatibility surface and is also scheduled for v0.9 removal; v2 uses the standard per-message host delivery path, so benchmark high-volume producers when dropping the old batching/backpressure optimization.
+The removed bus fast paths were acceleration branches such as BusList `fast_mode`, incremental reload cursors, the local message cache, and revision/delta shortcuts. Replay plans and traces remain because `watch()` needs them; `get()` / structured `filter(field=value)` / `sort(by=...)` / `limit()` form the replayable chain. These paths are not the same as the legacy `push_message(fast_mode=...)` flag. That push flag belongs to the deprecated v1 compatibility surface; v2 uses the standard per-message host delivery path, so benchmark high-volume producers when removing the old batching/backpressure optimization.
 
 ## Memory
 
-The combined SDK `MemoryClient` mixed record reads and semantic queries. Choose the operation explicitly:
+The old SDK `MemoryClient` mixed two different concepts. The supported replacement is the host's recent user-context snapshot:
 
 ```python
 # Recent records from one bucket
 records = await self.bus.memory.get(bucket_id="default", limit=20)
-
-# Semantic lookup
-matches = await self.ctx.query_memory("default", "what does the user prefer?")
 ```
 
-Memory record reads and typed records remain available through `self.bus.memory`; the removed surfaces are the high-level `self.memory` property and the SDK/runtime `MemoryClient` facade.
+These records are bounded, in-memory user-utterance events with a one-hour TTL. They are not the character's persistent facts, reflections, or persona. Memory record reads and typed records remain available through `self.bus.memory`; the removed surfaces are the high-level `self.memory` property and the SDK/runtime `MemoryClient` facade. `ctx.query_memory(...)` still exists for compatibility, but it reaches a deprecated placeholder endpoint and does not provide semantic recall. There is currently no public plugin SDK operation for structured persistent-memory recall.
 
 ## `push_message` v2
 

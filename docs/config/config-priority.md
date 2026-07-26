@@ -1,46 +1,28 @@
 # Config Priority
 
-N.E.K.O. resolves configuration values through a layered priority system. Higher-priority sources override lower ones.
+There is no project-wide “environment > user file > provider file > code” rule. Resolve precedence for the setting being changed.
 
-## Priority order
+## User and model settings
 
-```
-┌─────────────────────────────────┐  Highest priority
-│  1. Environment Variables       │  NEKO_* prefix
-│     (set in shell or .env)      │
-├─────────────────────────────────┤
-│  2. User Config Files           │  core_config.json
-│     (platform app-data/N.E.K.O/)│  user_preferences.json
-├─────────────────────────────────┤
-│  3. API Provider Config         │  config/api_providers.json
-│     (project directory)         │
-├─────────────────────────────────┤
-│  4. Code Defaults               │  config/__init__.py
-│     (hardcoded fallbacks)       │
-└─────────────────────────────────┘  Lowest priority
-```
+`utils/config_manager/` builds runtime settings from code defaults, the selected provider profile, and writable `core_config.json`. Provider choice, credentials, saved endpoint results, and supported per-role overrides are applied by that loader.
 
-The user config files live in the platform app-data directory: `%LOCALAPPDATA%/N.E.K.O/` on Windows, `~/Library/Application Support/N.E.K.O/` on macOS, and `~/.local/share/N.E.K.O/` on Linux. `~/Documents/N.E.K.O/` is now only a legacy fallback.
+Provider profiles come from `config/api_providers.json`. If it is absent or malformed, core/assist loaders use code fallbacks. Assist profiles merge JSON fields over same-key code defaults and retain code-only fallback profiles.
 
-## Example resolution
+## Ports
 
-For the summary model:
+For each port, `config/network.py` checks:
 
-1. Check `core_config.json` for a custom summary model URL/name
-2. Check the selected assist provider's `summary_model` in `api_providers.json`
-3. Fall back to `DEFAULT_SUMMARY_MODEL = "qwen-plus"` in `config/__init__.py`
+1. `NEKO_<PORT_NAME>`
+2. bare `<PORT_NAME>` for compatibility
+3. Electron's `port_config.json`
+4. the code default
 
-## When to use each layer
+The launcher may choose fallback ports when preferred ports are occupied and exports the selected values to child services.
 
-| Layer | Best for |
-|-------|----------|
-| Environment variables | Docker deployment, CI/CD, secrets management |
-| User config files | Web UI configuration (auto-managed) |
-| API provider config | Default model assignments per provider |
-| Code defaults | Fallback values when nothing else is configured |
+## Other runtime variables
 
-## Docker-specific notes
+String, list, and boolean helpers in `config/network.py` use the same prefixed-then-bare lookup only for names wired in code. Memory-vector switches are parsed independently by `config/memory_settings.py`.
 
-In Docker deployments, environment variables are the primary configuration mechanism. The `entrypoint.sh` script automatically generates `core_config.json` from `NEKO_*` environment variables at startup.
+## Docker initialization
 
-See [Docker Deployment](/deployment/docker) for details.
+`docker/entrypoint.sh` can generate `/app/config/core_config.json` from API-related `NEKO_*` values when that file is absent or `NEKO_FORCE_ENV_UPDATE` is set. This is initialization, not a universal live environment overlay. Persisted user data can already contain newer writable configuration; confirm effective values in the Web UI after startup.

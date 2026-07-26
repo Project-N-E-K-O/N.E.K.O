@@ -51,6 +51,7 @@ from .detectors.discrete.lifecycle import build_discrete_detectors
 
 _CONFIG_SECTION = "neko_warthunder"
 _RUNTIME_STATE_FILENAME = ".runtime_state.json"
+_URGENT_OUTPUT_TTS_MIGRATION_KEY = "urgent_output_tts_default_migrated_v1"
 _DIALOGUE_INTRUSION_PRESETS: dict[str, tuple[float, float]] = {
     "no_interrupt": (60.0, 30.0),
     "critical_only": (60.0, 30.0),
@@ -115,13 +116,16 @@ class NekoWarthunderPlugin(NekoPluginBase):
     # ------------------------------------------------------------------ 配置
     async def _reload_config(self) -> None:
         data: dict[str, Any] = {}
+        config_loaded = False
         try:
             dumped = await self.config.dump(timeout=5.0)
+            config_loaded = True
             if isinstance(dumped, dict) and isinstance(dumped.get(_CONFIG_SECTION), dict):
-                data = dumped[_CONFIG_SECTION]
+                data = dict(dumped[_CONFIG_SECTION])
         except Exception as exc:  # noqa: BLE001
             self.logger.warning(f"config load failed, using defaults: {type(exc).__name__}")
         runtime_state = self._load_runtime_state()
+        await self._migrate_urgent_output_tts_default(data, runtime_state, config_loaded=config_loaded)
         if not str(data.get("player_name") or "").strip():
             saved_player_name = str(runtime_state.get("player_name") or "").strip()
             if saved_player_name:
@@ -137,6 +141,35 @@ class NekoWarthunderPlugin(NekoPluginBase):
         if "broadcast_categories" in runtime_state:
             data["broadcast_categories"] = normalize_broadcast_categories(runtime_state.get("broadcast_categories"))
         self._apply_config(WtConfig.from_mapping(data))
+
+    async def _migrate_urgent_output_tts_default(
+        self,
+        data: dict[str, Any],
+        runtime_state: dict[str, Any],
+        *,
+        config_loaded: bool,
+    ) -> None:
+        if not config_loaded or runtime_state.get(_URGENT_OUTPUT_TTS_MIGRATION_KEY) is True:
+            return
+
+        if data.get("plugin_owned_urgent_output_enabled") is True:
+            data["plugin_owned_urgent_output_enabled"] = False
+            try:
+                await self.config.set(
+                    f"{_CONFIG_SECTION}.plugin_owned_urgent_output_enabled",
+                    False,
+                    timeout=5.0,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.logger.warning(f"urgent output TTS default migration failed: {type(exc).__name__}")
+                return
+
+        try:
+            self._save_runtime_state({_URGENT_OUTPUT_TTS_MIGRATION_KEY: True})
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning(
+                f"urgent output TTS migration marker save failed: {type(exc).__name__}"
+            )
 
     def _apply_config(self, cfg: WtConfig) -> None:
         prev_player = self.cfg.player_name
@@ -196,8 +229,24 @@ class NekoWarthunderPlugin(NekoPluginBase):
 
     @lifecycle(id="config_change")
     async def on_config_change(self, **_):
+        old_connection = (self.cfg.data_layer_url, self.cfg.data_layer_auto_start)
         await self._reload_config()
-        return Ok({"status": "reloaded", "dry_run": self.cfg.dry_run})
+        new_connection = (self.cfg.data_layer_url, self.cfg.data_layer_auto_start)
+        data_layer_status = self.data_layer_manager.snapshot()
+        identity_result: dict[str, Any] | None = None
+        if old_connection != new_connection and getattr(self, "_startup_completed", False):
+            self.data_layer_manager.stop()
+            data_layer_status = self.data_layer_manager.start_if_needed()
+            if data_layer_status.get("health"):
+                identity_result = self._restore_identity_to_data_layer()
+        return Ok(
+            {
+                "status": "reloaded",
+                "dry_run": self.cfg.dry_run,
+                "data_layer": data_layer_status,
+                "identity": identity_result,
+            }
+        )
 
     @message(id="chat_quiet_window", source="chat")
     def on_chat_message(self, **_):
@@ -296,6 +345,7 @@ class NekoWarthunderPlugin(NekoPluginBase):
                 self._instructions_injected = False
             return
         new_state = self.client.poll()
+        self.data_layer_manager.observe_health(new_state.connected)
         self.timeline.mark_tick()
         with self._state_lock:
             prev = self.state

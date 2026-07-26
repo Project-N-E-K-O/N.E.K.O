@@ -28,7 +28,6 @@ from .application import logger
 CONFIG_FILES = [
     'characters.json',
     'core_config.json',
-    'tutorial_prompt_config.json',
     'user_preferences.json',
     'voice_storage.json',
     'workshop_config.json',

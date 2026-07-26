@@ -8,6 +8,16 @@ local-text-retrieval-v1
 
 具体的な上流モデル名を設定ファイルやメモリキャッシュフィールドに書き込まないでください。この profile id は、ベクトル次元、プーリング方式、tokenizer の挙動、量子化方式の互換性契約です。将来のモデルが既存ベクトルと互換性を持たない場合は、profile id を上げてください（例：`local-text-retrieval-v2`）。
 
+## ランタイム動作
+
+- 推論はローカルで実行され、ONNX Runtime の `CPUExecutionProvider` のみを使用します。GPU provider は選択しません。
+- ベクトル経路は任意です。機能スイッチが無効、検出 RAM が 4 GiB 未満、既知のクラッシュ CPU ブロックリストに一致、`auto` モードで利用可能な INT8 SIMD 経路がない、依存関係/アセットが不完全、または読み込み/推論に失敗した場合に無効になります。ランタイム失敗後は、そのプロセスの残り期間にわたりベクトルが sticky-disable されます。
+- `VECTORS_QUANTIZATION=auto` は対応 SIMD 経路が利用できる場合に INT8 を選択します（x86 では AVX-VNNI または AVX2、ARM64 では NEON）。推奨環境変数 `NEKO_VECTORS_QUANTIZATION`（従来のプレフィックスなし名称も互換対応）は `auto`、`int8`、`fp32` を受け付け、FP32 を強制する場合は対応するモデルファイルが必要です。
+- ベクトルがなくても `recall_memory` は動作します。明示的なクエリ経路は BM25 の結果を保持し、cosine 結果がある場合は Reciprocal Rank Fusion（RRF）を使用します。この低遅延経路では意図的に LLM リランキングを追加しません。
+- 完全な app-data profile がバンドル版より優先されます。app-data 側が不完全な場合は、両者を混在させず、完全な bundle 全体へフォールバックします。
+
+候補プールと永続化の境界は[メモリシステム](/ja/architecture/memory-system)を参照してください。
+
 ## 開発環境の準備
 
 プロジェクト依存関係をインストールします（`onnxruntime` / `tokenizers` を含む。CPU SIMD 機能は numpy の `__cpu_features__` から読み取るため `py-cpuinfo` は不要）：

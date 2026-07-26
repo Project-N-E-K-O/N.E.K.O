@@ -30,7 +30,7 @@ let _apiSaveInProgress = false;
 const _aliyunUsApiWarningShownKeys = new Set();
 
 // 所有模型类型
-const MODEL_TYPES = ['conversation', 'summary', 'gameMain', 'gameSummary', 'correction', 'emotion', 'vision', 'agent', 'omni', 'tts'];
+const MODEL_TYPES = ['conversation', 'vision', 'summary', 'correction', 'emotion', 'omni', 'agent', 'tts', 'gameMain', 'gameSummary'];
 // Model types that support connectivity testing.
 // All model types including TTS are testable — TTS follows the same
 // provider resolution logic (follow_core/follow_assist/custom).
@@ -46,6 +46,18 @@ const MODEL_DEFAULT_PROVIDER = {
     omni: 'follow_core',
     gameMain: 'follow_conversation',
     gameSummary: 'follow_summary',
+};
+const MODEL_CONFIG_EXPANSION_PATHS = {
+    conversation: ['conversation'],
+    summary: ['summary'],
+    gameMain: ['game', 'game-main'],
+    gameSummary: ['game', 'game-summary'],
+    correction: ['correction'],
+    emotion: ['emotion'],
+    vision: ['vision'],
+    agent: ['agent'],
+    omni: ['omni'],
+    tts: ['tts'],
 };
 const MODEL_PROVIDER_FIELD_BY_TYPE = {
     conversation: 'conversation_model',
@@ -928,11 +940,23 @@ function expandAndScrollToKeyBook(options = {}) {
     }
 
     const section = document.getElementById('key-book-section');
-    if (section) {
-        section.scrollIntoView({
+    const providerKey = typeof options.providerKey === 'string' ? options.providerKey : '';
+    const targetInputId = providerKey === MIMO_TOKEN_PLAN_PROVIDER_KEY
+        ? 'mimoTokenPlanKeyInput'
+        : (providerKey ? `keyBookInput_${providerKey}` : '');
+    const targetInput = targetInputId ? document.getElementById(targetInputId) : null;
+    const scrollTarget = targetInput?.closest('.key-book-row, .field-row') || section;
+
+    if (scrollTarget) {
+        scrollTarget.scrollIntoView({
             behavior: options.instant ? 'auto' : 'smooth',
             block: 'center'
         });
+    }
+
+    if (targetInput) {
+        targetInput.focus({ preventScroll: true });
+        targetInput.select();
     }
 }
 
@@ -1278,12 +1302,12 @@ function onCustomModelProviderChange(modelType) {
     /**
      * 将 key 输入框设为 readonly 并显示管理簿提示 + 快捷跳转按钮
      */
-    const setKeyReadonly = (input, value) => {
+    const setKeyReadonly = (input, value, providerKey = '') => {
         if (!input) return;
         setMaskedInput(input, value || '');
         input.setAttribute('readonly', 'readonly');
         input.placeholder = window.t ? window.t('api.keyAutoFilledFromKeyBook') : 'Key从API管理簿自动填充';
-        ensureKeyBookLink(input);
+        ensureKeyBookLink(input, providerKey);
     };
 
     /**
@@ -1350,7 +1374,7 @@ function onCustomModelProviderChange(modelType) {
                     urlInput.setAttribute('readonly', 'readonly');
                 }
                 const coreBookKey = syncKeyFromBook(coreProviderKey);
-                setKeyReadonly(keyInput, coreBookKey);
+                setKeyReadonly(keyInput, coreBookKey, coreProviderKey);
             } else {
                 const pInfo = getProviderInfo(sourceProviderKey);
                 if (urlInput) {
@@ -1358,7 +1382,11 @@ function onCustomModelProviderChange(modelType) {
                     urlInput.setAttribute('readonly', 'readonly');
                 }
                 const bookKey = getEffectiveAssistKey(sourceProviderKey);
-                setKeyReadonly(keyInput, bookKey);
+                setKeyReadonly(
+                    keyInput,
+                    bookKey,
+                    getEffectiveAssistProviderKey(sourceProviderKey)
+                );
             }
         } else {
             // free or empty
@@ -1423,7 +1451,7 @@ function onCustomModelProviderChange(modelType) {
             }
         }
         const bookKey = getEffectiveAssistKey(provider, null, { useTokenPlan: false });
-        setKeyReadonly(keyInput, bookKey);
+        setKeyReadonly(keyInput, bookKey, provider);
     }
     if (modelType === 'tts') {
         updateTtsProviderFieldVisibility(provider);
@@ -1465,23 +1493,33 @@ window.addEventListener('localechange', updateGptSovitsTutorialLink);
 /**
  * 在 key 输入框旁添加"前往管理簿"快捷按钮（如果还没有）
  */
-function ensureKeyBookLink(input) {
+function ensureKeyBookLink(input, providerKey = '') {
     if (!input) return;
     const parent = input.parentElement;
     if (!parent) return;
-    if (parent.querySelector('.key-book-shortcut')) return;
+    const shortcutScope = input.closest('.field-row') || parent;
+    const existingLinks = Array.from(shortcutScope.querySelectorAll('.key-book-shortcut'));
 
-    const link = document.createElement('a');
-    link.href = 'javascript:void(0)';
-    link.className = 'key-book-shortcut';
-    link.setAttribute('data-i18n', 'api.goToKeyBook');
-    link.textContent = window.t ? window.t('api.goToKeyBook') : '前往管理簿';
-    link.style.cssText = 'font-size: 0.85em; color: #40C5F1; cursor: pointer; margin-left: 8px; white-space: nowrap;';
-    link.addEventListener('click', (e) => {
-        e.preventDefault();
-        expandAndScrollToKeyBook();
-    });
-    parent.appendChild(link);
+    let link = existingLinks.shift() || null;
+    existingLinks.forEach(extraLink => extraLink.remove());
+    if (!link) {
+        link = document.createElement('a');
+        link.href = 'javascript:void(0)';
+        link.className = 'key-book-shortcut';
+        link.setAttribute('data-i18n', 'api.goToKeyBook');
+        link.textContent = window.t ? window.t('api.goToKeyBook') : '前往管理簿';
+        link.style.cssText = 'font-size: 0.85em; color: #40C5F1; cursor: pointer; margin-left: 8px; white-space: nowrap;';
+        link.addEventListener('click', (e) => {
+            e.preventDefault();
+            expandAndScrollToKeyBook({ providerKey: link.dataset.providerKey || '' });
+        });
+    }
+
+    link.dataset.providerKey = providerKey || '';
+    link.dataset.sourceInputId = input.id || '';
+    if (link.parentElement !== parent) {
+        parent.appendChild(link);
+    }
 }
 
 /**
@@ -1491,8 +1529,8 @@ function removeKeyBookLink(input) {
     if (!input) return;
     const parent = input.parentElement;
     if (!parent) return;
-    const link = parent.querySelector('.key-book-shortcut');
-    if (link) link.remove();
+    const shortcutScope = input.closest('.field-row') || parent;
+    shortcutScope.querySelectorAll('.key-book-shortcut').forEach(link => link.remove());
 }
 
 // ==================== 加载API服务商选项 ====================
@@ -2215,7 +2253,7 @@ function toggleCustomApi(skipAutoFill) {
     const customApiContainer = document.getElementById('custom-api-container');
     if (customApiContainer) {
         if (isCustomEnabled) {
-            customApiContainer.style.display = 'block';
+            customApiContainer.style.display = 'grid';
             // 展开所有模型配置
             const modelContainers = document.querySelectorAll('.model-config-container');
             modelContainers.forEach(container => {
@@ -3119,6 +3157,37 @@ function positionTooltip(iconElement, tooltipElement) {
     tooltipElement.style.setProperty('--arrow-left', arrowLeft + 'px');
 }
 
+const MODEL_CONFIG_ROW_PAIRS = Object.freeze({
+    conversation: 'vision',
+    vision: 'conversation',
+    summary: 'correction',
+    correction: 'summary',
+    emotion: 'omni',
+    omni: 'emotion',
+    agent: 'tts',
+    tts: 'agent',
+});
+
+function finishModelConfigCollapse(content, pairedContent, transitionId) {
+    if (content.dataset.collapseTransitionId !== transitionId) return;
+
+    delete content.dataset.collapseTransitionId;
+    const expandedPair = pairedContent?.classList.contains('expanded') ? pairedContent : null;
+    if (expandedPair) {
+        expandedPair.classList.add('is-reflowing');
+        expandedPair.getBoundingClientRect();
+    }
+
+    content.classList.remove('is-collapsing');
+    content.style.removeProperty('max-height');
+
+    if (expandedPair) {
+        window.setTimeout(() => {
+            expandedPair.classList.remove('is-reflowing');
+        }, 260);
+    }
+}
+
 // 二级折叠功能：切换模型配置的展开/折叠状态
 function toggleModelConfig(modelType) {
     const content = document.getElementById(`${modelType}-model-content`);
@@ -3131,16 +3200,90 @@ function toggleModelConfig(modelType) {
     if (!icon) return;
 
     if (content.classList.contains('expanded')) {
+        const pairedType = MODEL_CONFIG_ROW_PAIRS[modelType];
+        const pairedContent = pairedType
+            ? document.getElementById(`${pairedType}-model-content`)
+            : null;
+        const transitionId = `${Date.now()}-${Math.random()}`;
+
+        content.dataset.collapseTransitionId = transitionId;
+        content.classList.add('is-collapsing');
+        content.style.maxHeight = `${content.scrollHeight}px`;
+        content.getBoundingClientRect();
         content.classList.remove('expanded');
         icon.style.transform = 'rotate(0deg)';
         header.setAttribute('aria-expanded', 'false');
         content.setAttribute('aria-hidden', 'true');
+
+        window.requestAnimationFrame(() => {
+            if (content.dataset.collapseTransitionId === transitionId) {
+                content.style.maxHeight = '0px';
+            }
+        });
+
+        const handleTransitionEnd = event => {
+            if (event.target !== content || event.propertyName !== 'max-height') return;
+            content.removeEventListener('transitionend', handleTransitionEnd);
+            finishModelConfigCollapse(content, pairedContent, transitionId);
+        };
+        content.addEventListener('transitionend', handleTransitionEnd);
+        window.setTimeout(() => {
+            content.removeEventListener('transitionend', handleTransitionEnd);
+            finishModelConfigCollapse(content, pairedContent, transitionId);
+        }, 360);
     } else {
+        delete content.dataset.collapseTransitionId;
+        content.classList.remove('is-collapsing');
+        content.style.removeProperty('max-height');
         content.classList.add('expanded');
         icon.style.transform = 'rotate(180deg)';
         header.setAttribute('aria-expanded', 'true');
         content.setAttribute('aria-hidden', 'false');
     }
+}
+
+function navigateToCustomModelConfig(modelType) {
+    const expansionPath = MODEL_CONFIG_EXPANSION_PATHS[modelType];
+    if (!expansionPath) return false;
+
+    const customApiOptions = document.getElementById('custom-api-options');
+    const customApiToggleBtn = document.getElementById('custom-api-toggle-btn');
+    if (customApiOptions && getComputedStyle(customApiOptions).display === 'none') {
+        customApiOptions.style.display = 'block';
+        if (customApiToggleBtn) customApiToggleBtn.classList.add('rotated');
+    }
+
+    const customApiContainer = document.getElementById('custom-api-container');
+    if (customApiContainer && getComputedStyle(customApiContainer).display === 'none') {
+        customApiContainer.style.display = 'grid';
+    }
+
+    let expandedConfig = false;
+    expansionPath.forEach(configType => {
+        const content = document.getElementById(`${configType}-model-content`);
+        if (content && !content.classList.contains('expanded')) {
+            toggleModelConfig(configType);
+            expandedConfig = true;
+        }
+    });
+
+    const targetType = expansionPath[expansionPath.length - 1];
+    const targetContent = document.getElementById(`${targetType}-model-content`);
+    const targetHeader = targetContent?.previousElementSibling;
+    if (!targetHeader) return false;
+    const targetPanel = targetHeader.closest(
+        '.nested-model-config-container, .model-config-container'
+    ) || targetHeader;
+
+    const prefersReducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    window.setTimeout(() => {
+        targetPanel.scrollIntoView({
+            behavior: prefersReducedMotion ? 'auto' : 'smooth',
+            block: 'center'
+        });
+    }, expandedConfig ? 320 : 0);
+
+    return true;
 }
 
 // 页面加载完成后初始化折叠状态
@@ -3233,16 +3376,16 @@ const LightStatus = {
 
 function getCustomModelDisplayLabel(modelType) {
     const labelMap = {
-        conversation: ['api.conversationModelConfig', '文本对话模型配置'],
-        summary: ['api.summaryModelConfig', '摘要模型配置'],
+        conversation: ['api.conversationModelConfig', '文本聊天模型'],
+        summary: ['api.summaryModelConfig', '摘要模型'],
         gameMain: ['api.gameMainModelConfig', '小游戏主模型配置'],
         gameSummary: ['api.gameSummaryModelConfig', '小游戏摘要模型配置'],
-        correction: ['api.correctionModelConfig', '纠错模型配置'],
-        emotion: ['api.emotionModelConfig', '情感模型配置'],
-        vision: ['api.visionModelConfig', '视觉模型配置'],
-        agent: ['api.agentApiConfigTitle', 'Agent API 配置（需支持视觉功能）'],
-        omni: ['api.realtimeModelConfig', '实时模型配置（Local模式）'],
-        tts: ['api.ttsModelConfig', 'TTS模型配置（双工流式）'],
+        correction: ['api.correctionModelConfig', '纠错模型'],
+        emotion: ['api.emotionModelConfig', '情感模型'],
+        vision: ['api.visionModelConfig', '视觉聊天模型'],
+        agent: ['api.agentApiConfigTitle', 'Agent API（需支持视觉功能）'],
+        omni: ['api.realtimeModelConfig', '实时全模态模型（Local模式）'],
+        tts: ['api.ttsModelConfig', 'TTS模型'],
     };
     const [key, fallback] = labelMap[modelType] || ['', modelType];
     if (!key || !window.t) return fallback;
@@ -3290,11 +3433,23 @@ function createIndicatorLight(inputElement, context) {
 
     // 将灯和 input 包在一个水平 flex 容器中，确保同行对齐
     if (inputElement && inputElement.parentNode) {
+        const fieldRow = inputElement.closest('.field-row');
         const wrapper = document.createElement('div');
         wrapper.className = 'connectivity-input-row';
         inputElement.parentNode.insertBefore(wrapper, inputElement);
         wrapper.appendChild(light);
         wrapper.appendChild(inputElement);
+
+        // 服务商配置可能先于连通性组件初始化。此时“前往管理簿”已经被
+        // 插入 field-row，需要一并移入横向容器，避免它留在输入框下一行。
+        const keyBookShortcut = fieldRow
+            ? Array.from(fieldRow.querySelectorAll('.key-book-shortcut')).find(
+                link => !link.dataset.sourceInputId || link.dataset.sourceInputId === inputElement.id
+            )
+            : null;
+        if (keyBookShortcut) {
+            wrapper.appendChild(keyBookShortcut);
+        }
     }
 
     return light;
@@ -3322,6 +3477,9 @@ function updateLightStatus(lightElement, status) {
     const fallback = fallbackMap[status] || status;
     const statusLabel = window.t ? window.t(tooltipKey, fallback) : fallback;
     lightElement.title = buildConnectivityLightTitle(lightElement, statusLabel);
+    if (lightElement.classList.contains('connectivity-summary-light')) {
+        lightElement.setAttribute('aria-label', lightElement.title);
+    }
 }
 
 // ==================== 连通性测试：错误信息展示 UI 组件 ====================
@@ -4370,12 +4528,19 @@ function initConnectivityLights() {
         summaryRow.id = 'customApiSummaryLights';
 
         CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
-            const summaryLight = document.createElement('span');
+            const summaryLight = document.createElement('button');
+            summaryLight.type = 'button';
             summaryLight.className = 'connectivity-summary-light';
             summaryLight.dataset.status = LightStatus.NOT_CONFIGURED;
             summaryLight.dataset.modelType = mt;
             summaryLight.dataset.tooltipLabel = getCustomModelDisplayLabel(mt);
+            const expansionPath = MODEL_CONFIG_EXPANSION_PATHS[mt];
+            const targetType = expansionPath?.[expansionPath.length - 1];
+            if (targetType) {
+                summaryLight.dataset.targetContentId = `${targetType}-model-content`;
+            }
             updateLightStatus(summaryLight, LightStatus.NOT_CONFIGURED);
+            summaryLight.addEventListener('click', () => navigateToCustomModelConfig(mt));
             summaryRow.appendChild(summaryLight);
         });
 
@@ -4383,8 +4548,6 @@ function initConnectivityLights() {
         const btnWrapper = document.createElement('div');
         btnWrapper.className = 'connectivity-test-btn-wrapper';
         btnWrapper.style.display = 'flex';
-        btnWrapper.style.alignItems = 'center';
-        btnWrapper.style.marginBottom = '12px';
 
         // Move button into wrapper (replace its position)
         testButton.style.marginBottom = '0';

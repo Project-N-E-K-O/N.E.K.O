@@ -32,8 +32,12 @@ dependencies = [
   "pywinauto; sys_platform == 'win32'",
   "pygetwindow; sys_platform == 'win32'",
   "pyrnnoise>=0.4.3",
+  "aiotieba>=4.7.1",
   "beautifulsoup4>=4.12.0",
   "bilibili-api-python>=17.4.0",
+  # Twitch read-only Helix/EventSub integration. OAuth Device Code Flow remains
+  # in-tree because TwitchIO 3.2 does not expose the client-secret-free flow.
+  "twitchio==3.2.2",
   "googletrans>=4.0.2",
   "translatepy",
   "tomli>=2.3.0",
@@ -84,6 +88,11 @@ dependencies = [
   # `uv sync` keeps dev installs lean while packaged builds can still bundle
   # the OCR backend with `uv sync --group galgame`.
   "imagehash>=4.3.2",
+  # VMC Protocol sender (main_logic/vmc_sender.py): streams VRM humanoid bone
+  # poses + blendshape weights via OSC over UDP to external VMC-compatible
+  # receivers (VSeeFace / waidayo / iFacialMocap / Unity with EVMC / Warudo). Default
+  # 127.0.0.1:39539.
+  "python-osc>=1.9.0",
 ]
 
 [tool.hatch.version]

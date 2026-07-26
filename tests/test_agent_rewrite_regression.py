@@ -1270,19 +1270,58 @@ def test_react_chat_templates_use_react_asset_version_for_chat_bundle():
             assert f"{asset_path}?v={static_version}" not in source
 
 
-def test_pages_router_react_chat_asset_version_tracks_avatar_tool_icons():
+def test_pages_router_react_chat_asset_version_tracks_avatar_tool_resources():
     source = Path("main_routers/pages_router.py").read_text(encoding="utf-8")
 
-    for asset_path in (
-        "static/icons/edit_tool_unified.png",
-        "static/icons/chat_sugar1.png",
-        "static/icons/cat_claw1.png",
-        "static/icons/chat_hammer1.png",
-        "static/app/app-chat-adapter.js",
-        "static/app/app-buttons.js",
-    ):
-        assert f'_PROJECT_ROOT / "{asset_path}"' in source
+    assert '*sorted(_PROJECT_ROOT.glob("static/assets/avatar-tools/**/*.png"))' in source
+    assert '*sorted(_PROJECT_ROOT.glob("static/sounds/avatar-tools/**/*.mp3"))' in source
+    assert '_PROJECT_ROOT / "static/app/app-chat-adapter.js"' in source
+    assert '_PROJECT_ROOT / "static/app/app-buttons.js"' in source
     assert 'glob("static/app/app-react-chat-window/*.js")' in source
+
+    for legacy_name in ("chat_sugar", "cat_claw", "chat_hammer", "cat_moneny", "_cursor.png"):
+        assert legacy_name not in source
+
+
+def test_avatar_tool_resource_references_are_canonical_and_exist():
+    source_paths = (
+        Path("frontend/react-neko-chat/src/avatar-tools/catalog.ts"),
+        Path("frontend/react-neko-chat/src/AvatarToolQuickbar.tsx"),
+        Path("static/js/card_maker.js"),
+    )
+    sources = "\n".join(path.read_text(encoding="utf-8") for path in source_paths)
+    resource_urls = set(re.findall(
+        r"/static/(?:assets|sounds)/avatar-tools/[a-z0-9_./-]+\.(?:png|mp3)",
+        sources,
+    ))
+
+    assert resource_urls
+    for resource_url in resource_urls:
+        assert Path(resource_url.removeprefix("/")).is_file(), resource_url
+
+    for legacy_name in (
+        "/sugar/",
+        "/claw/",
+        "chat_sugar",
+        "cat_claw",
+        "chat_hammer",
+        "cat_moneny",
+        "rps_",
+        "_cursor.png",
+        "edit_tool_unified.png",
+    ):
+        assert legacy_name not in sources
+
+    for bundle_path in (
+        Path("static/react/neko-chat/neko-chat-window.iife.js"),
+        Path("static/react/neko-chat/neko-chat-window.es.js"),
+    ):
+        if bundle_path.is_file():
+            bundle = bundle_path.read_text(encoding="utf-8")
+            assert "/static/icons/chat_sugar" not in bundle
+            assert "/static/icons/cat_claw" not in bundle
+            assert "/static/icons/chat_hammer" not in bundle
+            assert "/static/icons/edit_tool_unified.png" not in bundle
 
 
 def test_home_yui_guide_does_not_route_to_steam_workshop():
@@ -1295,10 +1334,11 @@ def test_home_yui_guide_does_not_route_to_steam_workshop():
     assert "#${p}-menu-steam-workshop" not in tutorial_source
 
 
-def test_home_tutorial_reset_also_clears_backend_prompt_state():
+def test_home_tutorial_reset_uses_unified_seven_day_state_only():
     tutorial_source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
 
-    assert "/api/tutorial-prompt/reset" in tutorial_source
+    assert "/api/tutorial-prompt/" not in tutorial_source
+    assert "getSevenDayTutorialStateApi().resetRound" in tutorial_source
 
 
 def test_tutorial_destroy_does_not_mark_seen_but_skip_does():
@@ -1446,6 +1486,7 @@ def test_character_card_manager_cloudsave_button_uses_icon_badge():
 
 def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     tutorial_source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
+    seven_day_state_source = Path("static/tutorial/core/seven-day-state.js").read_text(encoding="utf-8")
     avatar_reload_source = Path("static/tutorial/avatar/reload-controller.js").read_text(encoding="utf-8")
     interpage_source = read_js_parts(Path("static/app/app-interpage"))
     app_ui_source = read_js_parts(Path("static/app/app-ui"))
@@ -1578,15 +1619,15 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "this.revealPrepared();" in restore_block
     assert "live2d: this.tutorialModelName" in begin_block
     assert "TUTORIAL_YUI_LIVE2D_MODEL_PATH = '/static/yui-origin/yui-origin.model3.json'" in tutorial_source
-    assert "AVATAR_FLOATING_GUIDE_ROUND_COUNT = 7" in tutorial_source
+    assert "const ROUND_COUNT = 7" in seven_day_state_source
     launch_block = tutorial_source.split("const launchTutorial = () => {", 1)[1].split(
         "if (this.isI18nReady())",
         1,
     )[0]
     assert "this.startTutorial();" in launch_block
-    assert "this.shouldStartHomeAvatarFloatingGuideRound()" in launch_block
-    assert "const round = this.getHomeAvatarFloatingGuideLaunchRound();" in launch_block
-    assert "this.startAvatarFloatingGuideRound(round, { source })" in launch_block
+    assert "const homeRound = this.currentPage === 'home'" in launch_block
+    assert "this.getHomeAvatarFloatingGuideLaunchRound()" in launch_block
+    assert "this.startAvatarFloatingGuideRound(homeRound, { source })" in launch_block
     assert "shouldStartHomeAvatarFloatingGuideRound() {" in tutorial_source
     assert "getHomeAvatarFloatingGuideStartRound(options = {})" in tutorial_source
     assert "candidates.push(state.pendingRound, state.manualResetRound, 1);" in tutorial_source
@@ -1844,23 +1885,24 @@ def test_avatar_floating_tutorial_boot_predictor_loads_before_user_model_init():
     pages_router_source = Path("main_routers/pages_router.py").read_text(encoding="utf-8")
 
     predictor_script = "/static/tutorial/core/avatar-floating-boot-predictor.js"
+    state_script = "/static/tutorial/core/seven-day-state.js"
     assert predictor_script in index_source
+    assert state_script in index_source
+    assert index_source.index(state_script) < index_source.index(predictor_script)
     assert index_source.index(predictor_script) < index_source.index("/static/live2d/live2d-init.js")
     assert index_source.index(predictor_script) < index_source.index("/static/vrm/vrm-init.js")
     assert index_source.index(predictor_script) < index_source.index("/static/mmd/mmd-init.js")
     assert "static/tutorial/core/avatar-floating-boot-predictor.js" in pages_router_source
+    assert "static/tutorial/core/seven-day-state.js" in pages_router_source
 
 
 def test_avatar_floating_tutorial_boot_predictor_contract():
     predictor_source = Path("static/tutorial/core/avatar-floating-boot-predictor.js").read_text(encoding="utf-8")
     manager_source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
 
-    assert "AVATAR_FLOATING_GUIDE_STORAGE_KEY = 'neko_avatar_floating_guide_v1'" in predictor_source
-    assert "manualResetRound" in predictor_source
-    assert "pendingRound" in predictor_source
-    assert "completedRounds" in predictor_source
-    assert "skippedRounds" in predictor_source
-    assert "lastAutoShownDate" in predictor_source
+    assert "window.NekoSevenDayTutorialState" in predictor_source
+    assert "return sevenDayState.loadState();" in predictor_source
+    assert "sevenDayState.getNextAutoRound(" in predictor_source
     assert "window.NekoAvatarFloatingBoot" in predictor_source
     assert "shouldBootIntoTutorial" in predictor_source
     assert "shouldSkipUserModelBoot" in predictor_source
@@ -1891,12 +1933,10 @@ def test_avatar_floating_tutorial_boot_predictor_contract():
         "function getPredictedRound()",
         1,
     )[0]
-    assert compute_block.index("if (guideState.manualResetRound)") < compute_block.index(
-        "if (guideState.lastAutoShownDate === getTodayLocalDate())"
-    )
-    assert compute_block.index("if (guideState.lastAutoShownDate === getTodayLocalDate())") < compute_block.index(
-        "if (guideState.pendingRound"
-    )
+    assert "return sevenDayState.getNextAutoRound(" in compute_block
+    assert "sevenDayState.getTodayLocalDate()" in compute_block
+    assert "manualResetRound" not in compute_block
+    assert "pendingRound" not in compute_block
 
 
 def test_avatar_model_initializers_skip_user_model_when_tutorial_boot_is_predicted():
@@ -1961,8 +2001,10 @@ def test_avatar_floating_direct_tutorial_boot_uses_manager_recheck_and_user_mode
     assert "await this.waitForTutorialModelHostReady()" in start_round_block
     assert "await this.waitForFloatingButtons()" in start_round_block
     assert "this.claimDirectAvatarFloatingTutorialBoot(round, source);" in start_round_block
-    # round 预留会改变预测结果；direct-boot claim 必须覆盖胶囊 prepare 的异步等待窗口。
-    assert start_round_block.index("this.claimDirectAvatarFloatingTutorialBoot(round, source);") < start_round_block.index(
+    claim_index = start_round_block.index("this.claimDirectAvatarFloatingTutorialBoot(round, source);")
+    # round 预留会改变预测结果；direct-boot claim 必须覆盖状态同步和胶囊 prepare 的异步等待窗口。
+    assert claim_index < start_round_block.index("await stateApi.flush();")
+    assert claim_index < start_round_block.index(
         "await this.prepareYuiGuideCompactChatForTutorial()"
     )
     # prepare 期间取消时释放提前 claim，但保留已跳过用户模型的恢复标记。

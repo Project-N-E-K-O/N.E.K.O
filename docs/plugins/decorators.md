@@ -7,7 +7,7 @@ from plugin.sdk.plugin import (
     neko_plugin, plugin_entry, lifecycle, timer_interval, message,
     on_event, custom_event,
     hook, before_entry, after_entry, around_entry, replace_entry,
-    plugin,  # namespace-style alternative
+    plugin, quick_action,  # namespace-style alternative and command-palette hint
 )
 ```
 
@@ -33,8 +33,8 @@ Defines an externally callable entry point.
     input_schema={...},          # JSON Schema for validation
     params=MyParamsModel,        # Alternative: Pydantic model for input (auto-generates schema)
     kind="action",               # "action" | "service" | "hook" | "custom"
-    auto_start=False,            # Auto-start on load
-    persist=False,               # Persist across reloads
+    auto_start=False,            # Metadata flag; ordinary entries are not invoked at load
+    persist=False,               # Override post-call state snapshot policy
     model_validate=True,         # Enable Pydantic validation
     timeout=30.0,                # Execution timeout in seconds
     llm_result_fields=["text"],  # Fields to extract for LLM consumption
@@ -55,8 +55,8 @@ def process(self, data: str, **_):
 | `input_schema` | `dict` | `None` | JSON Schema for input validation |
 | `params` | `type` | `None` | Pydantic model (auto-generates `input_schema`) |
 | `kind` | `str` | `"action"` | Entry type |
-| `auto_start` | `bool` | `False` | Auto-start when loaded |
-| `persist` | `bool` | `None` | Persist state across reloads |
+| `auto_start` | `bool` | `False` | Metadata flag; ordinary `plugin_entry` handlers are not invoked automatically at load |
+| `persist` | `bool` | `None` | Override whether configured freezable state is saved after this entry runs |
 | `model_validate` | `bool` | `True` | Enable Pydantic validation |
 | `timeout` | `float` | `None` | Execution timeout (seconds) |
 | `llm_result_fields` | `list[str]` | `None` | Fields for LLM result extraction |
@@ -65,7 +65,7 @@ def process(self, data: str, **_):
 | `metadata` | `dict` | `None` | Additional metadata |
 
 ::: tip
-Always include `**_` in your function signature to capture unused parameters gracefully.
+Use `**_` only when the handler intentionally accepts extra host-supplied fields. The runtime filters unsupported keyword arguments for handlers with explicit signatures, so it is not mandatory.
 :::
 
 ## @lifecycle
@@ -119,7 +119,6 @@ Defines a handler for messages from the host system.
 @message(
     id="handle_chat",
     source="chat",           # Filter by message source
-    auto_start=True
 )
 def handle_chat(self, text: str, sender: str, **_):
     return Ok({"handled": True})
@@ -153,6 +152,19 @@ Specialized event handler with trigger method control.
 def on_refresh(self, source: str, **_):
     return Ok({"refreshed": True})
 ```
+
+## @quick_action
+
+Marks a plugin entry for prominent display in the command palette. Put it below `@plugin_entry` so Python applies it first:
+
+```python
+@plugin_entry(id="get_weather", name="Get Weather")
+@quick_action(icon="🌤️", priority=10)
+async def get_weather(self, city: str = ""):
+    return Ok({"city": city})
+```
+
+Larger `priority` values appear earlier. This decorator changes display metadata only; it does not alter Agent routing or execute the entry automatically.
 
 ---
 

@@ -39,6 +39,24 @@ Slay the Spire 2/
     mod_id.json
 ```
 
+### Configurar el puerto del mod
+
+Por defecto, el mod escucha en el puerto `8080`. Es un puerto muy usado, así que puede estar ocupado por otro software.
+
+Puedes abrir Variables de entorno y crear una nueva variable de sistema/global llamada `STS2_API_PORT`. Elige un puerto menos común, por ejemplo `18080` o `38080`.
+
+Ejemplo: nombre de variable `STS2_API_PORT`, valor `18080`.
+
+Nota: puedes abrir Variables de entorno rápidamente así:
+
+- Pulsa Win + R para abrir el cuadro Ejecutar.
+
+- Escribe el siguiente comando y pulsa Enter:
+
+```text
+rundll32 sysdm.cpl,EditEnvironmentVariables
+```
+
 ### Iniciar el juego y confirmar la interfaz
 
 Primero inicia el juego normalmente para que el Mod se cargue junto con él.

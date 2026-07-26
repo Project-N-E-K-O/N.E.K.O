@@ -4,6 +4,8 @@
 
 管理 PNGTuber 形象——基于 2D 图片的虚拟形象，通过切换图片状态（待机、说话、互动反应）来驱动外观。接口涵盖模型包上传、列出与删除。
 
+这是三个第一方本地模型管理路由：`POST /api/model/pngtuber/upload_model`、`GET /api/model/pngtuber/models` 和 `DELETE /api/model/pngtuber/model`。上传/删除会写入用户模型目录，失败结构为 `{ "success": false, "error": "..." }`，且没有单独认证层。路径末尾没有 `/`。
+
 ## 模型包
 
 PNGTuber 模型是一个文件夹（以多文件包形式上传），其中包含一个 `model.json`，且 `model_type` 为 `"pngtuber"`。`pngtuber` 配置块将各形象状态映射到对应图片文件。`idle_image` 为必填，其余状态均为可选。
@@ -144,3 +146,5 @@ uv run pytest tests\unit\test_pngtuber_static_contracts.py tests\unit\test_card_
 建议使用 `GET /models` 返回的 `folder` slug，或 model.json 的 `url` 来删除。不要依赖 `name`：`GET /models` 返回的 `name` 是显示名称，`folder` 才是磁盘上的 slug，二者可能不同——传入显示用的 `name` 仅在它恰好等于文件夹 slug 时才有效，因此只能作为可能存在歧义的最后兜底手段。解析出的路径必须仍位于 PNGTuber 目录之内。
 
 **Response:** `{ "success": true, "message": "..." }`。缺少标识或路径越界返回 `400`；模型不存在返回 `404`。
+
+导入、列表或文件系统发生未预期错误时返回 HTTP `500`。这是第一方文件管理 API，请勿向不可信客户端暴露。

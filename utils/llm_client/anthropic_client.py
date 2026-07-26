@@ -768,7 +768,15 @@ class ChatAnthropic:
         usage = getattr(resp, "usage", None)
         usage_dict = _anthropic_usage_to_dict(usage)
         _record_anthropic_token_usage(self.model, usage_dict)
-        return LLMResponse(content=content, response_metadata={"token_usage": usage_dict})
+        return LLMResponse(
+            content=content,
+            response_metadata={
+                "token_usage": usage_dict,
+                "finish_reason": _anthropic_stop_reason_to_finish_reason(
+                    getattr(resp, "stop_reason", None)
+                ),
+            },
+        )
 
     def invoke(self, messages: Any, **overrides: Any) -> LLMResponse:
         payload = self._build_payload_for_call(messages, overrides)
@@ -781,7 +789,15 @@ class ChatAnthropic:
         usage = getattr(resp, "usage", None)
         usage_dict = _anthropic_usage_to_dict(usage)
         _record_anthropic_token_usage(self.model, usage_dict)
-        return LLMResponse(content=content, response_metadata={"token_usage": usage_dict})
+        return LLMResponse(
+            content=content,
+            response_metadata={
+                "token_usage": usage_dict,
+                "finish_reason": _anthropic_stop_reason_to_finish_reason(
+                    getattr(resp, "stop_reason", None)
+                ),
+            },
+        )
 
     async def astream(self, messages: Any, **overrides: Any) -> AsyncIterator[LLMStreamChunk]:
         payload = self._build_payload_for_call(messages, overrides)

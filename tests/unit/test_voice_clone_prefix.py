@@ -1,4 +1,5 @@
 import io
+import re
 
 import pytest
 
@@ -7,6 +8,7 @@ from utils.voice_clone import (
     MinimaxVoiceCloneClient,
     sanitize_minimax_voice_prefix,
 )
+from utils.tts.providers.minimax import build_minimax_request_voice_id
 
 
 def test_sanitize_minimax_voice_prefix_keeps_ascii_alnum_only():
@@ -20,6 +22,13 @@ def test_sanitize_minimax_voice_prefix_strips_invalid_chars_and_truncates():
 
 def test_sanitize_minimax_voice_prefix_falls_back_when_empty():
     assert sanitize_minimax_voice_prefix("兔兔！！！") == "voice"
+
+
+def test_build_minimax_request_voice_id_applies_only_minimax_constraints():
+    original_prefix, voice_id = build_minimax_request_voice_id("兔兔_rabbit-01XYZ", "MiniMax")
+
+    assert original_prefix == "兔兔_rabbit-01XYZ"
+    assert re.fullmatch(r"rabbit01XY[0-9a-f]{8}", voice_id)
 
 
 @pytest.mark.asyncio

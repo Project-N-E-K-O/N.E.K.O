@@ -160,6 +160,8 @@ class MyRouter(PluginRouter):
 
 Router は別プロセスではありません。メインプラグインと同じプロセスで動き、すべてのリソースを共有します。
 
+Router は manifest loading entry でもありません。`[plugin].entry` は所有する `NekoPluginBase` class を指す必要があり、`PluginRouter` subclass を指定すると host に拒否されます。`include_router()` は bind と entry collection を行いますが、Router class にある `on_mount` / `on_unmount` method はこの base-class path から自動では呼ばれません。
+
 ---
 
 ## ロジックを共有する
