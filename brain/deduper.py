@@ -32,8 +32,10 @@ class TaskDeduper:
     """
 
     def __init__(self):
-        self._llm = None
-        self._llm_route = None
+        # (route, client) 收在**一个**元组里原子发布，不拆成两个属性——拆开的
+        # 两次赋值在并发刷新时会交错出「旧 client 配新 route 指纹」，之后每次
+        # 调用都把那个旧 client 误判为最新，钉死错误端点直到路由再次变化。
+        self._llm_cache = None
         # 构造时先建一次，保持原有「启动即就绪」的行为；真正的权威判定在 _get_llm。
         self._get_llm()
 
@@ -48,22 +50,31 @@ class TaskDeduper:
         that instant, for the lifetime of the process. Comparing the resolved
         route on each use costs a string compare and also makes an ordinary
         config change take effect without a restart.
+
+        The (route, client) pair is published as ONE tuple assignment on
+        purpose: two judges racing a route change with two separate attribute
+        writes can interleave into "old client tagged with the new route",
+        which every later call would trust as current — pinned to the wrong
+        regional endpoint until the route changes again. With the tuple swap a
+        concurrent rebuild merely wastes one client object (last writer wins);
+        the pair can never disagree.
         """
         api_config = get_config_manager().get_model_api_config('summary')
         route = (api_config.get('base_url'), api_config.get('model'),
                  api_config.get('api_key'), api_config.get('provider_type'))
-        if self._llm is not None and route == self._llm_route:
-            return self._llm
+        cached = self._llm_cache
+        if cached is not None and cached[0] == route:
+            return cached[1]
         from config import LLM_OUTPUT_GUARD_MAX_TOKENS
-        self._llm = create_chat_llm(
+        llm = create_chat_llm(
             api_config['model'], api_config['base_url'],
             api_config['api_key'], temperature=0, max_retries=0,
             timeout=30,
             max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; tiny JSON normally, but a thinking model's reasoning is covered too
             provider_type=api_config.get('provider_type'),
         )
-        self._llm_route = route
-        return self._llm
+        self._llm_cache = (route, llm)
+        return llm
 
     def _build_prompt(self, new_task: str, candidates: List[Tuple[str, str]]) -> str:
         # Input budget: cap each component so the dedup prompt can't blow up on a

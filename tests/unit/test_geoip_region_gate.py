@@ -1817,8 +1817,8 @@ def test_warmup_reports_success_when_no_region_is_needed():
     """Startup warmup on a custom/paid route: nothing to resolve is not a failure.
 
     Returning False there made ``_ensure_main_server_runtime_initialized`` log
-    "后续调用按退避重试" on every boot for users whose config never starts a
-    probe — there is no retry coming, and nothing was missing.
+    its retry-pending message on every boot for users whose config never
+    starts a probe — there is no retry coming, and nothing was missing.
     """
     probe = _Probe()
     probe.aget_core_config = _async_return(
@@ -1925,3 +1925,125 @@ def test_warmup_recognises_the_rewritten_free_snapshot_as_unsettled():
 
     assert ConfigManager._ip_probe_thread is None, '前置条件：没有探测在跑'
     assert asyncio.run(probe.awarmup_region_check(timeout=0.3)) is False
+
+
+@pytest.mark.unit
+def test_deduper_concurrent_refresh_never_mismatches_route_and_client(monkeypatch):
+    """Behavioural smoke: the cached (route, client) pair stays coherent under load.
+
+    Four threads hammer refreshes through 200 route flips with a shrunk GIL
+    switch interval, asserting every observed cache pair is self-consistent.
+    The mismatch window of a split-write implementation is microseconds wide,
+    so this hammer alone cannot reliably catch one — the atomicity guarantee
+    itself is pinned structurally by
+    ``test_deduper_cache_is_published_atomically``; this test covers the read
+    side (lookup and return path never hand out a client that contradicts the
+    published route) under real concurrency.
+    """
+    from brain import deduper as deduper_mod
+
+    route_holder = {'url': 'https://www.lanlan.tech/text/v1'}
+
+    class _CM:
+        def get_model_api_config(self, kind):
+            return {'model': 'm', 'base_url': route_holder['url'], 'api_key': 'k'}
+
+    monkeypatch.setattr(deduper_mod, 'get_config_manager', lambda *a, **kw: _CM())
+
+    class _Client:
+        def __init__(self, base_url):
+            self.built_for = base_url
+
+    def _fake_create(model, base_url, api_key, **kwargs):
+        real_time.sleep(0.0005)      # 拉开「构建」窗口，让并发刷新真正重叠
+        return _Client(base_url)
+
+    monkeypatch.setattr(deduper_mod, 'create_chat_llm', _fake_create)
+    d = deduper_mod.TaskDeduper()
+
+    old_interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)      # 放大线程抢占，让相邻两次属性写之间可被插队
+    stop = threading.Event()
+    seen_mismatch = []
+
+    def _hammer():
+        while not stop.is_set():
+            d._get_llm()
+            cached = d._llm_cache
+            # 不变量：任何时刻读到的缓存对都必须自洽（client 按 route 构建）。
+            # 分离写的实现在两次赋值之间必然暴露不自洽窗口，高频读能撞到。
+            if cached is not None and cached[1].built_for != cached[0][0]:
+                seen_mismatch.append((cached[1].built_for, cached[0][0]))
+
+    workers = [threading.Thread(target=_hammer, daemon=True) for _ in range(4)]
+    try:
+        for w in workers:
+            w.start()
+        urls = ('https://www.lanlan.app/text/v1', 'https://www.lanlan.tech/text/v1')
+        for i in range(200):
+            route_holder['url'] = urls[i % 2]
+            real_time.sleep(0.001)
+    finally:
+        stop.set()
+        for w in workers:
+            w.join(5)
+        sys.setswitchinterval(old_interval)
+
+    assert not seen_mismatch, f'缓存出现过 route/client 错配: {seen_mismatch[:3]}'
+    route, client = d._llm_cache
+    assert client.built_for == route[0], \
+        f'终态错配：client 按 {client.built_for} 构建，route 标记是 {route[0]}'
+
+
+@pytest.mark.unit
+def test_deduper_cache_is_published_atomically():
+    """The deduper's (route, client) cache must be one tuple, published whole.
+
+    Split ``_llm`` / ``_llm_route`` attributes — or a tuple write that reuses a
+    component of the previous cache — reintroduce the interleaving where an old
+    client ends up tagged with the new route fingerprint and every later call
+    trusts it as current. The mismatch window is microseconds wide, far below
+    what a probabilistic hammer can reliably hit, so the atomicity is pinned
+    structurally: one cache attribute, and every publish is a self-contained
+    two-tuple (or the None initializer).
+    """
+    import ast
+    import pathlib
+
+    source = pathlib.Path(__file__).resolve().parents[2] / 'brain' / 'deduper.py'
+    tree = ast.parse(source.read_text(encoding='utf-8'))
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == 'TaskDeduper':
+            cls = node
+            break
+    else:
+        pytest.fail('未找到 TaskDeduper，断言失效')
+
+    assigns = {}
+    for n in ast.walk(cls):
+        if isinstance(n, ast.Assign):
+            for t in n.targets:
+                if (isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name)
+                        and t.value.id == 'self'):
+                    assigns.setdefault(t.attr, []).append(n)
+
+    banned = {'_llm', '_llm_route'} & assigns.keys()
+    assert not banned, \
+        f'route 与 client 必须收在一个元组属性里原子发布，发现分离属性: {sorted(banned)}'
+
+    cache_writes = assigns.get('_llm_cache', [])
+    assert cache_writes, '未找到 _llm_cache 发布点，断言失效'
+    for n in cache_writes:
+        v = n.value
+        reuses_old_cache = isinstance(v, ast.Tuple) and any(
+            isinstance(e, ast.Attribute) and getattr(e.value, 'id', None) == 'self'
+            for elt in v.elts for e in ast.walk(elt)
+        )
+        whole = (isinstance(v, ast.Constant) and v.value is None) or (
+            isinstance(v, ast.Tuple) and len(v.elts) == 2 and not reuses_old_cache
+        )
+        assert whole, (
+            f'deduper.py:{n.lineno}: _llm_cache 的发布必须是不引用旧缓存分量的'
+            '完整二元组（部分更新会重新引入交错错配）'
+        )
