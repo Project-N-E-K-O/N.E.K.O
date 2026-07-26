@@ -473,7 +473,3 @@ class LLMSessionManager(
         # 真正进 session 前会再 refresh 一次，把 description 对齐到当时
         # 已知的 user_language。
         self._register_builtin_tools()
-
-    def note_user_engagement(self, *, at: float | None = None) -> None:
-        """Record a genuine user interaction for silence-aware proactive guards."""
-        self.last_user_engagement_time = float(time.time() if at is None else at)
