@@ -141,24 +141,25 @@ if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
 }
 
 const siteUrl = process.env[config.gsc.siteUrlEnv] || config.gsc.defaultSiteUrl
-const gsc = accessToken
-  ? await safely(() => collectGsc({
-    siteUrl,
-    sitemapUrl: config.site.sitemapUrl,
-    categoryQueryRegex: config.gsc.categoryQueryRegex,
-    opportunities: config.gsc.opportunities,
-  }, window, { accessToken }))
-  : unavailable(googleAuthError)
-
 const propertyId = process.env[config.ga4.propertyIdEnv]
-const ga4 = accessToken && propertyId
-  ? await safely(() => collectGa4({
-    propertyId,
-    hostname: config.site.hostname,
-    aiReferralRegex: config.ga4.aiReferralRegex,
-    ctaEvent: config.ga4.ctaEvent,
-  }, window, { accessToken }))
-  : unavailable(googleAuthError ?? `${config.ga4.propertyIdEnv} is not configured`)
+const [gsc, ga4] = await Promise.all([
+  accessToken
+    ? safely(() => collectGsc({
+      siteUrl,
+      sitemapUrl: config.site.sitemapUrl,
+      categoryQueryRegex: config.gsc.categoryQueryRegex,
+      opportunities: config.gsc.opportunities,
+    }, window, { accessToken }))
+    : unavailable(googleAuthError),
+  accessToken && propertyId
+    ? safely(() => collectGa4({
+      propertyId,
+      hostname: config.site.hostname,
+      aiReferralRegex: config.ga4.aiReferralRegex,
+      ctaEvent: config.ga4.ctaEvent,
+    }, window, { accessToken }))
+    : unavailable(googleAuthError ?? `${config.ga4.propertyIdEnv} is not configured`),
+])
 
 const report = buildMonitoringReport({
   config,

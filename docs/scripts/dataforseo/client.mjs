@@ -56,7 +56,7 @@ const FATAL_API_STATUS_CODES = new Set([
   40210, // Insufficient funds.
 ])
 
-function payloadCost(payload) {
+export function payloadCost(payload) {
   const topLevelCost = Number(payload?.cost)
   if (Number.isFinite(topLevelCost)) return topLevelCost
   return (payload?.tasks ?? []).reduce((sum, task) => {

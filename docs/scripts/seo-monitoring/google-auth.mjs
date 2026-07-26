@@ -1,6 +1,7 @@
 import { createPrivateKey, sign } from 'node:crypto'
 
 const TOKEN_URL = 'https://oauth2.googleapis.com/token'
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 
 function base64url(value) {
   return Buffer.from(value).toString('base64url')
@@ -26,6 +27,7 @@ export async function getGoogleAccessToken({
   scopes,
   fetchImpl = globalThis.fetch,
   nowSeconds = Math.floor(Date.now() / 1000),
+  timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
 }) {
   const account = parseServiceAccount(serviceAccount)
   if (!Array.isArray(scopes) || scopes.length === 0) {
@@ -54,6 +56,7 @@ export async function getGoogleAccessToken({
       grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
       assertion: `${unsigned}.${signature}`,
     }),
+    signal: AbortSignal.timeout(timeoutMs),
   })
   const source = await response.text()
   let payload = {}

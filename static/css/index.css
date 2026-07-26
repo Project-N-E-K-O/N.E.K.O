@@ -1484,6 +1484,13 @@ body.subtitle-web-host #react-chat-window-shell.is-dragging {
     -webkit-mask-size: 300% 100%; mask-size: 300% 100%;
     -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
 }
+.compact-chat-surface-shell.neko-compact-collapsing > .compact-chat-surface-frame,
+.compact-chat-surface-shell.neko-compact-expanding > .compact-chat-surface-frame {
+    /* Electron/Chromium 在 mask 动画首帧可能把 backdrop-filter 合成为矩形纹理；
+       仅在擦除期间强制胶囊裁剪，稳态移除 class 后外阴影仍可正常越界绘制。 */
+    -webkit-clip-path: inset(0 round 999px);
+    clip-path: inset(0 round 999px);
+}
 .compact-chat-surface-shell.neko-compact-collapsing {
     animation: neko-compact-collapse-wipe 280ms ease forwards;
 }

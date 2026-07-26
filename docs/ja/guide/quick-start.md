@@ -1,5 +1,7 @@
 # クイックスタート
 
+Steam、standalone release、source checkout のどれを使うか決めていない場合は、先に[導入方法の比較](./install-options)を確認してください。
+
 [開発環境](./dev-setup)を完了して実行します。
 
 ```bash
