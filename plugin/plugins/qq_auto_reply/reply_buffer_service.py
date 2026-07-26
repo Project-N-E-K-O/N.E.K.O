@@ -38,6 +38,42 @@ class QQReplyBufferService:
 
     DEFAULT_WAIT_SECONDS = 3.0      # 群聊默认等待 3 秒
     DEFAULT_WAIT_PRIVATE = 6.0      # 私聊默认等待 6 秒（对方往往在连续输出）
+
+    def _mark_latest_draft_undelivered(self, session_key: str) -> None:
+        """截停时给共享历史尾部的草稿 ai 行打未投递标。
+
+        多条合并场景只投递新生成的 summary，被取代的草稿从未离开进程，
+        却已经躺在会话历史里——digest/cache 若无差别序列化，会把没人见过
+        的话提取成持久记忆，之后的回复能"回忆"从未发生的披露。单条路径
+        真正投递后由 _clear_undelivered_marks 撤标。"""
+        user_data = (getattr(self.plugin, "_user_sessions", {}) or {}).get(
+            session_key
+        )
+        session = (user_data or {}).get("session")
+        history = getattr(session, "_conversation_history", None) or []
+        for msg in reversed(history):
+            if getattr(msg, "type", "") != "ai":
+                continue
+            kwargs = getattr(msg, "additional_kwargs", None)
+            if kwargs is None:
+                try:
+                    msg.additional_kwargs = {"neko_undelivered": True}
+                except Exception:
+                    pass
+            else:
+                kwargs["neko_undelivered"] = True
+            return
+
+    def _clear_undelivered_marks(self, session_key: str) -> None:
+        user_data = (getattr(self.plugin, "_user_sessions", {}) or {}).get(
+            session_key
+        )
+        session = (user_data or {}).get("session")
+        history = getattr(session, "_conversation_history", None) or []
+        for msg in history:
+            kwargs = getattr(msg, "additional_kwargs", None)
+            if kwargs and kwargs.get("neko_undelivered"):
+                kwargs.pop("neko_undelivered", None)
     MAX_WAIT_SECONDS = 10.0         # 最多等 10 秒
 
     def __init__(self, plugin: Any):
@@ -142,6 +178,9 @@ class QQReplyBufferService:
         clean_text = re.sub(r"<[^>]+>", "", str(reply_text or raw_text or "")).strip()
         if not clean_text:
             clean_text = str(reply_text or raw_text or "").strip()
+        # 这条回复被截停进缓冲、尚未投递——历史尾部的 ai 行先按未投递草稿
+        # 打标；单条路径真正送出后撤标，多条合并路径草稿永不投递、标留存。
+        self._mark_latest_draft_undelivered(session_key)
         existing = self._pending.get(session_key)
 
         if existing and existing.task and not existing.task.done():
@@ -266,6 +305,8 @@ class QQReplyBufferService:
                 fallback_to_text_on_voice_failure=True,
             )
             await self.plugin.reply_delivery_node.deliver(plan)
+            # 单条草稿真的送出去了：撤未投递标，digest/cache 照常序列化。
+            self._clear_undelivered_marks(session_key)
             self._pending.pop(session_key, None)
             return
 

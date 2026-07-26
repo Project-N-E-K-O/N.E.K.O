@@ -517,6 +517,12 @@ class QQAttentionGateService:
                     "group_memory_enabled", False,
                 )):
                     return 0
+                if (getattr(self.plugin, "_user_sessions", {}) or {}).get(
+                    session_key
+                ) is not s:
+                    # 等锁期间 finalizer/discard 可能已结算并弹出会话：
+                    # 陈旧引用继续推会重发已结算历史、推进无主游标。
+                    return 0
                 if s.get("pending_disable_settle"):
                     # opt-out 结算未完成（快速 re-enable 会让上面的 setting
                     # 检查重新通过）：digest 不碰，交转变任务按 cutoff 结算。

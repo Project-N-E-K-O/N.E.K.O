@@ -505,6 +505,14 @@ class QQSessionInstructionService:
                     her_name,
                     subjects=subjects,
                 )
+                if not bool(
+                    (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                        "group_memory_enabled", False,
+                    )
+                ):
+                    # 读后复检（对偶 _build_recalled_memory_text）：opt-out
+                    # 落在 fetch 飞行期间时丢弃已读回的数据。
+                    return ""
             else:
                 memory_context = await self.plugin.memory_bridge.fetch_bootstrap_memory(her_name)
             if not memory_context:

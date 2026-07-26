@@ -81,6 +81,12 @@ class QQSessionMemoryService:
             msg_type = getattr(msg, "type", "")
             if msg_type not in ("human", "ai"):
                 continue
+            if msg_type == "ai" and (
+                getattr(msg, "additional_kwargs", None) or {}
+            ).get("neko_undelivered"):
+                # 被 rapid-fire 合并取代的未投递草稿：没人见过的话不得
+                # 被提取成持久记忆（群 digest 与私聊 /cache 同源过滤）。
+                continue
             role = "user" if msg_type == "human" else "assistant"
             content = getattr(msg, "content", "")
             if isinstance(content, str):

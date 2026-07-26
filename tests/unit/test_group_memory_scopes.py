@@ -927,6 +927,26 @@ async def test_scoped_synthesis_rotates_between_subjects():
 
 
 @pytest.mark.asyncio
+async def test_scoped_synthesis_skips_malformed_rows():
+    """load_facts preserves legacy/hand-edited non-dict rows: one corrupted
+    row must not raise and disable scoped synthesis for the whole character
+    forever (the maintenance tick retries the same character every time)."""
+    group_a = MemorySubject.group_chat("qq", "100")
+    facts = ["corrupted-string-row"]
+    facts += [
+        {
+            "id": f"a{index}", "text": "a", "importance": 7,
+            "created_at": f"2026-07-27T00:00:0{index}",
+            **group_a.as_entry_fields(),
+        }
+        for index in range(5)
+    ]
+    harness = _ScopedSynthesisHarness(facts)
+    await harness.synthesize_scoped_reflections("Neko", max_subjects=1)
+    assert harness.seen == [group_a]
+
+
+@pytest.mark.asyncio
 async def test_stage2_observation_pool_respects_subject_boundary():
     """Real _aload_signal_targets (no mock): a scoped trigger batch may only
     see same-subject observation targets and a legacy batch only legacy
@@ -1795,6 +1815,86 @@ async def test_group_turns_always_refresh_session_prompt():
 
 
 @pytest.mark.asyncio
+async def test_undelivered_buffer_drafts_stay_out_of_memory():
+    """Rapid-fire merging delivers only the generated summary: the buffered
+    draft replies already sit in the shared history but no participant ever
+    saw them. They are marked at interception, unmarked only when the
+    single-draft path actually delivers, and the memory serializer skips
+    marked rows — undelivered text must never become a durable group fact."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import QQMessageBlock
+    from plugin.plugins.qq_auto_reply.reply_buffer_service import (
+        PendingReply,
+        QQReplyBufferService,
+    )
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    def _msg(msg_type, text):
+        return SimpleNamespace(
+            type=msg_type, content=text, additional_kwargs={},
+        )
+
+    history = [_msg("human", "问题一"), _msg("ai", "草稿一")]
+    plugin = SimpleNamespace(
+        _user_sessions={
+            "group:7788": {
+                "session": SimpleNamespace(_conversation_history=history),
+            },
+        },
+        _emit_log=lambda *a, **k: None,
+        reply_delivery_node=SimpleNamespace(deliver=AsyncMock()),
+    )
+    service = QQReplyBufferService.__new__(QQReplyBufferService)
+    service.plugin = plugin
+    service._pending = {}
+
+    await service.schedule_reply(
+        session_key="group:7788", reply_text="草稿一", raw_text="草稿一",
+        blocks=[QQMessageBlock(text="草稿一")], wait_seconds=999,
+        sender_id="1", is_group=True, group_id="7788",
+    )
+    assert history[1].additional_kwargs.get("neko_undelivered") is True
+
+    # Second draft buffered before the wait expires: marked as well.
+    history.append(_msg("human", "问题二"))
+    history.append(_msg("ai", "草稿二"))
+    await service.schedule_reply(
+        session_key="group:7788", reply_text="草稿二", raw_text="草稿二",
+        blocks=[QQMessageBlock(text="草稿二")], wait_seconds=999,
+        sender_id="1", is_group=True, group_id="7788",
+    )
+    assert history[3].additional_kwargs.get("neko_undelivered") is True
+    pending = service._pending.pop("group:7788")
+    if pending.task:
+        pending.task.cancel()
+
+    # The memory serializer skips marked ai rows for digest and /cache alike.
+    history.append(_msg("ai", "已投递的总结"))
+    memory_service = QQSessionMemoryService.__new__(QQSessionMemoryService)
+    memory_service.plugin = plugin
+    texts = [
+        m["content"][0]["text"]
+        for m in memory_service.conversation_slice_to_memory_messages(history, 0)
+    ]
+    assert texts == ["问题一", "问题二", "已投递的总结"]
+
+    # Single-draft path: the original draft IS delivered — unmark it.
+    single = PendingReply(
+        first_text="草稿一", wait_seconds=0, sender_id="1",
+        is_group=True, group_id="7788",
+    )
+    single.first_blocks = [QQMessageBlock(text="草稿一")]
+    single.wait_until = 0.0
+    service._pending["group:7788"] = single
+    await service._deliver_after_wait("group:7788", single)
+    plugin.reply_delivery_node.deliver.assert_awaited_once()
+    assert not any(
+        m.additional_kwargs.get("neko_undelivered") for m in history
+    )
+
+
+@pytest.mark.asyncio
 async def test_correction_dead_letter_redacts_scoped_text(tmp_path):
     """Dead-lettered corrections carrying subject fields hold participant-
     derived persona content: the WARN must log only domain identifiers and
@@ -1907,6 +2007,7 @@ async def test_scoped_reads_recheck_live_policy_before_fetch():
         _qq_settings={"group_memory_enabled": False},
         memory_bridge=bridge,
         logger=MagicMock(),
+        _should_skip_direct_llm_fallback_for_images=lambda **kwargs: False,
     )
     node = QQReplyContextNode.__new__(QQReplyContextNode)
     node.plugin = plugin
@@ -1932,6 +2033,46 @@ async def test_scoped_reads_recheck_live_policy_before_fetch():
         should_use_memory_context=True, her_name="Neko", master_name="M",
         context_ready_template="{name}/{master}", is_group=False,
     ) != ""
+
+    # Post-await recheck: the opt-out can land while the fetch itself is on
+    # the wire — data already read back must be dropped, not injected.
+    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryQueryResult
+
+    plugin._qq_settings["group_memory_enabled"] = True
+
+    async def _recall_and_flip(*args, **kwargs):
+        plugin._qq_settings["group_memory_enabled"] = False
+        return QQMemoryQueryResult(text="群规是不剧透", hit_count=1)
+
+    bridge.query_relevant_memory = AsyncMock(side_effect=_recall_and_flip)
+    bridge.group_subject.side_effect = (
+        lambda gid: {"subject_kind": "group_chat", "subject_id": f"qq:{gid}"}
+    )
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, sid: {"subject_kind": "group_participant"}
+    )
+    assert await node._build_recalled_memory_text(
+        her_name="Neko", message="hello",
+        should_use_memory_context=True, attachments=None,
+        is_group=True, group_id="7788", sender_id="1",
+    ) == ""
+    bridge.query_relevant_memory.assert_awaited_once()
+
+    plugin._qq_settings["group_memory_enabled"] = True
+
+    async def _bootstrap_and_flip(*args, **kwargs):
+        plugin._qq_settings["group_memory_enabled"] = False
+        return "群聊长期记忆"
+
+    bridge.fetch_scoped_bootstrap_memory = AsyncMock(
+        side_effect=_bootstrap_and_flip,
+    )
+    assert await instruction._build_core_memory_section(
+        should_use_memory_context=True, her_name="Neko", master_name="M",
+        context_ready_template="{name}/{master}", is_group=True,
+        group_id="7788", sender_id="1",
+    ) == ""
+    bridge.fetch_scoped_bootstrap_memory.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -2859,6 +3000,27 @@ async def test_focus_shift_digest_batches_never_skip_backlog():
     bridge.post_scoped_memory_history.assert_not_awaited()
     assert user_data["last_group_digest_index"] == 0
     user_data.pop("pending_enable_rebase", None)
+
+    # Stale capture: a finalizer/discard can settle and pop the session
+    # while the digest waits for the lock — the closure must re-read the
+    # registry and abort instead of re-sending finalized history through a
+    # detached dict.
+    replacement = {"session": session, "her_name": "Neko"}
+
+    async def _swapping_lock(session_key, fn):
+        plugin._user_sessions[session_key] = replacement
+        try:
+            return await fn()
+        finally:
+            plugin._user_sessions[session_key] = user_data
+
+    plugin._run_with_session_lock = _swapping_lock
+    user_data["last_group_digest_index"] = 0
+    bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
+    await gate._push_group_digest("7788")
+    bridge.post_scoped_memory_history.assert_not_awaited()
+    assert user_data["last_group_digest_index"] == 0
+    plugin._run_with_session_lock = _plain_lock
 
 
 @pytest.mark.asyncio

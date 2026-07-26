@@ -73,6 +73,12 @@ class SynthesisMixin:
         facts = await self._fact_store.aload_facts(lanlan_name)
         grouped: dict[tuple[str, str], dict] = {}
         for fact in facts or []:
+            if not isinstance(fact, dict):
+                # load_facts preserves legacy/hand-edited non-dict rows; one
+                # such row must not disable scoped synthesis for the whole
+                # character (the maintenance tick retries and re-raises
+                # forever). Recall and dedup already skip them.
+                continue
             if fact.get('absorbed') or safe_importance(fact, 0) < 5:
                 continue
             subject = subject_from_entry(fact)

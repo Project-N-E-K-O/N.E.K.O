@@ -62,6 +62,16 @@ class QQReplyContextNode:
                 normalized_message,
                 subjects=subjects,
             )
+            if is_group and not bool(
+                (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                    "group_memory_enabled", False,
+                )
+            ):
+                # 读后复检：opt-out 可能落在上面这次网络调用飞行期间——
+                # 数据已读回也要丢弃，不注入 opt-out 之后的群回复。此处是
+                # 读侧最后的收敛点：该轮的 persist 已由转变盖章+prime 门控
+                # 挡住。
+                return ""
             if not recall_result.text:
                 return ""
             self.plugin.logger.info(
