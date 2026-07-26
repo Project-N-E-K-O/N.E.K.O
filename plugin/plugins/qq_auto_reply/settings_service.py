@@ -20,12 +20,19 @@ class QQSettingsService:
         invalidation, so disabling both toggles at once (the UI links them)
         cannot drop buckets via a finalize that already sees the member
         option off."""
-        if settle_members:
-            await self.plugin.session_memory_service.settle_member_buckets_on_disable()
-        if group_transition:
-            await self.plugin.session_memory_service.invalidate_group_sessions(
-                enabled=group_enabled_after,
-            )
+        # 串行化连续开关切换：快速 OFF→ON 会让两个后台任务交错，后一个
+        # 转变可能在前一个结算完成前改写会话状态。
+        lock = getattr(self.plugin, "_memory_transition_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self.plugin._memory_transition_lock = lock
+        async with lock:
+            if settle_members:
+                await self.plugin.session_memory_service.settle_member_buckets_on_disable()
+            if group_transition:
+                await self.plugin.session_memory_service.invalidate_group_sessions(
+                    enabled=group_enabled_after,
+                )
 
     def _spawn_group_memory_sync_task(self, coro) -> None:
         """Run a privacy-critical session-sync coroutine in the background.

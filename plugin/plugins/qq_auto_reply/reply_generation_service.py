@@ -243,7 +243,12 @@ class QQReplyGenerationService:
         bridge = self.plugin.memory_bridge
         subjects = [bridge.group_subject(group_id)]
         sender_id = str(context.sender_id or "").strip()
-        if sender_id:
+        synthetic = getattr(context, "source_kind", "") in (
+            "proactive_speech", "rapid_fire_flush", "buffer_delayed",
+        )
+        if sender_id and not synthetic:
+            # 合成轮的名义 sender 不是真实发言人——mention 计数只按群域记，
+            # 与召回/写入侧的合成轮过滤对齐。
             subjects.append(bridge.group_participant_subject(group_id, sender_id))
         try:
             await bridge.post_scoped_mentions(

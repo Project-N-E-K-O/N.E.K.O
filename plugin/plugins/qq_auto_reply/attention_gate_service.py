@@ -503,6 +503,12 @@ class QQAttentionGateService:
             if not isinstance(s, dict):
                 return
             async def _push_delta() -> int:
+                # 锁内复检：外层 setting 检查通过后可能排队等锁，期间用户
+                # 关掉群记忆——opt-out 之后不得再推送 digest。
+                if not bool((getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                    "group_memory_enabled", False,
+                )):
+                    return 0
                 session = s.get("session")
                 if not session or not hasattr(session, "_conversation_history"):
                     return 0

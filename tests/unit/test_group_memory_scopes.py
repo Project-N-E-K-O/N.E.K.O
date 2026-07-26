@@ -2032,6 +2032,22 @@ async def test_group_reply_success_records_scoped_mentions_best_effort():
         "qq:7788", "qq:7788:2046",
     ]
 
+    # Synthetic turns record only the group subject: the nominal sender is
+    # not the real speaker.
+    bridge.post_scoped_mentions.reset_mock()
+    context_syn = SimpleNamespace(
+        is_group=True, group_id="7788", sender_id="2046", her_name="Neko",
+        permission_level="user", source_kind="rapid_fire_flush",
+    )
+    await service._sync_memory_after_success(
+        session_key="group:7788",
+        user_data={"memory_enabled": True},
+        context=context_syn,
+        reply_text="合并回复",
+    )
+    kwargs = bridge.post_scoped_mentions.await_args.kwargs
+    assert [s2["subject_id"] for s2 in kwargs["subjects"]] == ["qq:7788"]
+
     # Failure is swallowed (reply already delivered).
     bridge.post_scoped_mentions = AsyncMock(side_effect=RuntimeError("down"))
     await service._sync_memory_after_success(
@@ -2346,6 +2362,27 @@ async def test_focus_shift_digest_batches_never_skip_backlog():
     ])
     await gate._push_group_digest("7788")
     assert user_data["last_group_digest_index"] == 3
+
+    # In-lock recheck: the setting can flip off while the digest task waits
+    # for the session lock — nothing may be pushed after opt-out.
+    user_data["last_group_digest_index"] = 0
+    bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
+
+    async def _flipping_lock(session_key, fn):
+        plugin._qq_settings["group_memory_enabled"] = False
+        try:
+            return await fn()
+        finally:
+            plugin._qq_settings["group_memory_enabled"] = True
+
+    plugin._run_with_session_lock = _flipping_lock
+    await gate._push_group_digest("7788")
+    bridge.post_scoped_memory_history.assert_not_awaited()
+
+    async def _plain_lock(session_key, fn):
+        return await fn()
+
+    plugin._run_with_session_lock = _plain_lock
 
     # Bounded drain: one push sends at most 3 batches while holding the
     # session lock; the remainder stays for the next digest/finalize.
