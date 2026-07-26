@@ -152,12 +152,19 @@ def subject_from_entry(entry: Mapping[str, Any]) -> MemorySubject | None:
     """Return an explicit subject, or ``None`` for legacy/malformed data.
 
     A malformed partial descriptor fails closed as legacy-private, so corrupt
-    data cannot accidentally enter a group candidate pool.
+    data cannot accidentally enter a group candidate pool. Stored entries must
+    carry ALL THREE fields: a row missing only ``scope`` (partial write,
+    migration noise, hand edit) must not be silently normalized into the
+    default-scope domain — that would let a custom-scope row cross its
+    isolation boundary. Only request normalization (:func:`coerce_subject`)
+    may synthesize an omitted scope.
     """
     kind = entry.get("subject_kind")
     subject_id = entry.get("subject_id")
     scope = entry.get("scope")
     if kind is None and subject_id is None and scope is None:
+        return None
+    if kind is None or subject_id is None or scope is None:
         return None
     try:
         return MemorySubject.create(kind, subject_id, scope=scope)

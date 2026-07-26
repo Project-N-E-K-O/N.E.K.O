@@ -84,6 +84,21 @@ class QQSessionRuntimeService:
             return await coro_factory()
 
     async def discard_session(self, session_key: str, *, reason: str) -> None:
+        # 群会话的 scoped 缓冲只存在于 user_data（无 per-turn /cache）：
+        # 任何 discard 前先 best-effort 结算，否则唯一副本随 pop 消失。
+        # 集中在这里做，prompt 变更/登录身份变化/超时等所有 discard 入口
+        # 统一受益；ephemeral 与私聊（memory_enabled falsy）自然跳过；
+        # finalize 成功会自己弹出会话，下面的 pop 变成无害 no-op。
+        peek = self.plugin._user_sessions.get(session_key)
+        if peek and peek.get("is_group") and peek.get("memory_enabled"):
+            try:
+                await self.plugin.session_memory_service.finalize_user_memory_session(
+                    session_key, reason=f"discard:{reason}",
+                )
+            except Exception as exc:
+                self.plugin.logger.error(
+                    f"[{reason}] 丢弃前群记忆结算失败 ({session_key}): {exc}"
+                )
         user_data = self.plugin._user_sessions.pop(session_key, None)
         session = user_data.get("session") if user_data else None
         if session:

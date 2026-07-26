@@ -730,6 +730,32 @@ def test_qq_group_member_turns_are_opt_in_and_actor_attributed():
         "2046": "2046",
         "4096": "Bob(4096)",
     }
+    # Synthetic / group-facing turns (proactive control prompts) are not
+    # member speech and must never enter a member bucket.
+    service.record_group_member_turn(
+        user_data,
+        SimpleNamespace(
+            is_group=True, sender_id="9999",
+            message="[系统] 群聊已经安静了",
+            group_scene_mode="group_collective", group_facing=True,
+        ),
+    )
+    assert "9999" not in user_data["group_member_memory_messages"]
+
+
+def test_entry_missing_scope_fails_closed():
+    """A stored entry carrying subject_kind/subject_id but no scope must be
+    quarantined, not silently normalized into the default-scope domain — a
+    custom-scope row that lost its scope would otherwise cross its isolation
+    boundary."""
+    from memory.scopes import is_legacy_private_entry, subject_from_entry
+
+    partial = {"subject_kind": "group_chat", "subject_id": "qq:1"}
+    assert subject_from_entry(partial) is None
+    assert not is_legacy_private_entry(partial)
+    group = MemorySubject.group_chat("qq", "1")
+    assert filter_entries_for_subjects([partial], [group]) == []
+    assert filter_entries_for_subjects([partial]) == []
 
 
 @pytest.mark.asyncio
@@ -1735,6 +1761,23 @@ async def test_group_memory_toggle_syncs_existing_sessions():
     assert user_data["memory_enabled"] is False
     assert "group:7788" not in plugin._user_sessions
 
+    # Disable race: a request that slipped in after the OFF policy write
+    # already primed memory_enabled=False — the transition must still settle
+    # the opt-in-era buffer instead of trusting the cached flag.
+    history3 = [SimpleNamespace(type="human", content="consented turn")]
+    raced = {
+        "memory_enabled": False, "is_group": True, "group_id": "7788",
+        "her_name": "Neko", "last_group_digest_index": 0,
+        "session": SimpleNamespace(
+            _conversation_history=history3, close=AsyncMock(),
+        ),
+    }
+    plugin._user_sessions["group:7788"] = raced
+    bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
+    await service.invalidate_group_sessions(enabled=False)
+    bridge.post_scoped_memory_history.assert_awaited_once()
+    assert "group:7788" not in plugin._user_sessions
+
 
 @pytest.mark.asyncio
 async def test_fact_dedup_resolve_locks_batch_to_one_domain(tmp_path):
@@ -2068,68 +2111,52 @@ async def test_group_digest_batches_never_skip_backlog():
 
 
 @pytest.mark.asyncio
-async def test_generation_timeout_salvages_group_buffers_before_discard():
-    """Group sessions have no per-turn /cache: a timeout discard destroys the
-    only copy of unflushed scoped history and member buckets. The timeout
-    path must attempt a settle before discarding (and never for private or
-    memory-disabled sessions)."""
-    import asyncio as _asyncio
-
-    from plugin.plugins.qq_auto_reply.reply_generation_service import (
-        QQReplyGenerationService,
+async def test_discard_session_salvages_group_buffers_first():
+    """Group sessions have no per-turn /cache: every discard path (timeout,
+    prompt change, login change) destroys the only copy of unflushed scoped
+    buffers. discard_session itself must attempt a settle first — and never
+    for private or memory-disabled sessions."""
+    from plugin.plugins.qq_auto_reply.session_runtime_service import (
+        QQSessionRuntimeService,
     )
 
-    calls = []
-    finalize = AsyncMock(side_effect=lambda *a, **k: calls.append("finalize"))
-    discard = AsyncMock(side_effect=lambda *a, **k: calls.append("discard"))
-    user_data = {
-        "is_group": True, "memory_enabled": True, "lock": _asyncio.Lock(),
-    }
+    finalize_calls = []
 
-    async def _hang(message):
-        await _asyncio.sleep(10)
+    async def _finalize(session_key, reason):
+        finalize_calls.append(reason)
+        plugin._user_sessions.pop(session_key, None)
+        return True
 
-    session = SimpleNamespace(stream_text=_hang, _conversation_history=[])
+    session = SimpleNamespace(close=AsyncMock())
     plugin = SimpleNamespace(
-        logger=MagicMock(),
-        session_bootstrap_service=SimpleNamespace(
-            ensure_generation_session=AsyncMock(return_value=user_data),
-        ),
-        session_runtime_service=SimpleNamespace(
-            build_generation_session_key=lambda context: "group:7788",
-            prime_generation_session_state=MagicMock(return_value=(session, [])),
-            discard_session=discard,
-        ),
+        _user_sessions={
+            "group:7788": {
+                "is_group": True, "memory_enabled": True, "session": session,
+            },
+        },
         session_memory_service=SimpleNamespace(
-            finalize_user_memory_session=finalize,
+            finalize_user_memory_session=_finalize,
         ),
-        _user_sessions={"group:7788": user_data},
-        _queue_attachment_images=AsyncMock(return_value=0),
-        _ai_turn_timeout_seconds=0.05,
-        _wait_session_response_complete=AsyncMock(return_value=True),
+        logger=MagicMock(),
     )
-    service = QQReplyGenerationService(plugin)
-    context = SimpleNamespace(
-        is_group=True, group_id="7788", sender_id="1", her_name="Neko",
-        ephemeral_session=False, group_scene_mode="", attachments=None,
-        prompt_message="hi", system_prompt="sys", recalled_memory_text="",
-        recalled_memory_used=False, permission_level="user",
-    )
+    runtime = QQSessionRuntimeService.__new__(QQSessionRuntimeService)
+    runtime.plugin = plugin
 
-    result = await service.run_primary_session_call(context)
+    await runtime.discard_session("group:7788", reason="generation_timeout")
+    assert finalize_calls == ["discard:generation_timeout"]
+    assert "group:7788" not in plugin._user_sessions
 
-    assert result.timed_out is True
-    assert calls == ["finalize", "discard"]
-
-    # Private / memory-disabled sessions skip the salvage entirely.
-    calls.clear()
-    user_data["is_group"] = False
-    await service._salvage_group_buffers_before_discard("group:7788")
-    assert calls == []
-    user_data["is_group"] = True
-    user_data["memory_enabled"] = False
-    await service._salvage_group_buffers_before_discard("group:7788")
-    assert calls == []
+    # Private and memory-disabled sessions are discarded without salvage.
+    for extra in (
+        {"is_group": False, "memory_enabled": True},
+        {"is_group": True, "memory_enabled": False},
+    ):
+        plugin._user_sessions["k"] = {
+            **extra, "session": SimpleNamespace(close=AsyncMock()),
+        }
+        await runtime.discard_session("k", reason="prompt_override_changed")
+        assert finalize_calls == ["discard:generation_timeout"]
+        assert "k" not in plugin._user_sessions
 
 
 @pytest.mark.asyncio

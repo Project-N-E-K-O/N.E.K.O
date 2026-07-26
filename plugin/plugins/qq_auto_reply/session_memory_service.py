@@ -116,6 +116,13 @@ class QQSessionMemoryService:
             return
         if not getattr(context, "is_group", False):
             return
+        if (
+            getattr(context, "group_facing", False)
+            or getattr(context, "group_scene_mode", "") == "group_collective"
+        ):
+            # 群体面向/合成轮（proactive 的"[系统]…"控制指令等）不是成员
+            # 发言——按 sender 入 bucket 会把捏造的偏好挂到该成员 scope。
+            return
         sender_id = str(getattr(context, "sender_id", "") or "").strip()
         text = str(getattr(context, "message", "") or "").strip()
         if not sender_id or not text:
@@ -381,7 +388,11 @@ class QQSessionMemoryService:
                     current["memory_enabled"] = True
                     return
                 if not current.get("memory_enabled"):
-                    return
+                    # 竞态：settings 写 OFF 后、本任务运行前，抢先请求已把
+                    # 缓存 flag 刷成 False——buffer 里仍是 opt-in 期间的
+                    # 轮次。转变权威在策略不在 per-request 缓存：恢复 flag
+                    # 让 finalize 得以结算（对偶 enable 分支的无条件重定位）。
+                    current["memory_enabled"] = True
                 finalized = False
                 try:
                     finalized = await self.finalize_user_memory_session(
