@@ -1784,6 +1784,10 @@ async def test_group_memory_toggle_syncs_existing_sessions():
     user_data["pending_enable_rebase"] = 1
     await service.invalidate_group_sessions(enabled=True)
     assert user_data["last_group_digest_index"] == 1
+    # Corrupt negative boundary clamps to 0, never a negative cursor.
+    user_data["pending_enable_rebase"] = -5
+    await service.invalidate_group_sessions(enabled=True)
+    assert user_data["last_group_digest_index"] == 0
 
     # Unmarked session (created AFTER the transition): untouched in both
     # directions — no bogus rebase, no bogus settle.

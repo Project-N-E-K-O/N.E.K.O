@@ -407,7 +407,7 @@ class QQSessionMemoryService:
                     if boundary is True:
                         boundary = len(history)
                     current["last_group_digest_index"] = min(
-                        int(boundary), len(history),
+                        max(0, int(boundary)), len(history),
                     )
                     current["memory_enabled"] = True
                     return
