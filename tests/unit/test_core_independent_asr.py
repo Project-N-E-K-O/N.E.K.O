@@ -1,6 +1,8 @@
 import asyncio
 import inspect
 import json
+import logging
+import threading
 import time
 from dataclasses import replace
 from types import SimpleNamespace
@@ -5424,3 +5426,253 @@ async def test_settings_read_failure_keeps_noise_reduction_enabled(
 
     assert runtime._voice_input_noise_reduction_enabled is True
     assert runtime._voice_input_audio_pipeline.nr_enabled is True
+
+
+async def test_idle_backpressure_trailing_activity_is_dropped_cleanly(
+    monkeypatch,
+) -> None:
+    runtime, sessions, callbacks, detector = (
+        await _start_runtime_with_callback_candidates(
+            monkeypatch,
+            candidate_count=1,
+        )
+    )
+    component = runtime._asr_runtime
+    lifecycle = component._asr_lifecycle
+    assert lifecycle is not None
+    token = runtime._capture_ingress_token()
+    component._asr_current_ingress_token = token
+    on_activity = callbacks[0]["on_speech_activity"]
+    assert callable(on_activity)
+
+    await component._handle_audio_ingress_backpressure(token)
+
+    # The idle branch bumps the audio generation but keeps the session
+    # adopted so genuinely new speech keeps working.
+    assert lifecycle.snapshot.state is VoiceLifecycleState.LOCAL_LISTEN
+    assert component._asr_session is sessions[0]
+    assert not component._ingress_token_matches(token)
+
+    # Trailing session-side speech events with the stale generation must be
+    # dropped cleanly: without the identity gate the first event corrupts the
+    # lifecycle toward ACTIVE and the second raises an uncaught
+    # ASR_INGRESS_TOKEN_REQUIRED into the provider adapter.
+    await on_activity(SpeechActivityEvent.SPEECH_STARTED)
+    await on_activity(SpeechActivityEvent.SPEECH_STARTED)
+
+    assert lifecycle.snapshot.state is VoiceLifecycleState.LOCAL_LISTEN
+    assert component._asr_turn_prepared is False
+    runtime.session.handle_interruption.assert_not_awaited()
+    runtime.handle_new_message.assert_not_awaited()
+    assert all(
+        "ASR_INDEPENDENT_FAILED" not in call.args[0]
+        for call in runtime.send_status.await_args_list
+    )
+
+
+async def test_idle_backpressure_new_speech_still_wakes_adopted_session(
+    monkeypatch,
+) -> None:
+    runtime, sessions, callbacks, detector = (
+        await _start_runtime_with_callback_candidates(
+            monkeypatch,
+            candidate_count=1,
+        )
+    )
+    component = runtime._asr_runtime
+    lifecycle = component._asr_lifecycle
+    assert lifecycle is not None
+    stale_token = runtime._capture_ingress_token()
+    component._asr_current_ingress_token = stale_token
+    on_activity = callbacks[0]["on_speech_activity"]
+
+    await component._handle_audio_ingress_backpressure(stale_token)
+
+    # New speech re-arms the current ingress token through submit() before
+    # the provider observes it; the adopted session must then wake normally.
+    component._asr_current_ingress_token = runtime._capture_ingress_token()
+    await on_activity(SpeechActivityEvent.SPEECH_STARTED)
+
+    assert lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+    assert component._asr_turn_prepared is True
+    runtime.handle_new_message.assert_awaited_once()
+
+
+async def test_accepted_final_dropped_by_generation_bump_abandons_turn(
+    monkeypatch,
+) -> None:
+    runtime, sessions, callbacks, detector = (
+        await _start_runtime_with_callback_candidates(
+            monkeypatch,
+            candidate_count=1,
+        )
+    )
+    component = runtime._asr_runtime
+    lifecycle = component._asr_lifecycle
+    assert lifecycle is not None
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    component._asr_current_ingress_token = runtime._capture_ingress_token()
+    epoch = component._asr_session_epoch
+    on_activity = callbacks[0]["on_speech_activity"]
+    on_final = callbacks[0]["on_input_transcript"]
+
+    await on_activity(SpeechActivityEvent.SPEECH_STARTED)
+    assert lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+    sealed_turn_id = lifecycle.snapshot.turn_id
+    await component._handle_independent_asr_endpoint(epoch)
+    assert lifecycle.snapshot.state is VoiceLifecycleState.DRAINING
+
+    await on_final("hello world")
+
+    # The final was accepted, but the generation moves on before the serial
+    # transcript dispatcher delivers the queued envelope.
+    component._asr_audio_generation += 1
+    await component.wait_transcript_idle()
+
+    runtime.handle_input_transcript.assert_not_awaited()
+    runtime.session.abandon_external_voice_turn.assert_called_once_with(
+        f"asr-{epoch}-{sealed_turn_id}"
+    )
+
+
+async def test_accepted_final_identity_loss_before_dispatch_abandons_turn() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "qwen")
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    component = runtime._asr_runtime
+    epoch = component._asr_session_epoch
+    await _start_and_seal_turn(runtime, "qwen")
+    sealed_turn_id = component._asr_lifecycle.snapshot.turn_id
+    lease = component._asr_smart_turn_lease
+    assert lease is not None
+
+    async def bumping_release() -> None:
+        component._asr_audio_generation += 1
+
+    lease.release = bumping_release
+
+    await runtime._handle_independent_asr_final("hello", epoch, "qwen")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    runtime.handle_input_transcript.assert_not_awaited()
+    runtime.session.abandon_external_voice_turn.assert_called_once_with(
+        f"asr-{epoch}-{sealed_turn_id}"
+    )
+
+
+async def test_failed_lease_release_does_not_skip_accepted_final_delivery() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "qwen")
+    component = runtime._asr_runtime
+    epoch = component._asr_session_epoch
+    await _start_and_seal_turn(runtime, "qwen")
+    lease = component._asr_smart_turn_lease
+    assert lease is not None
+
+    async def raising_release() -> None:
+        raise RuntimeError("release boom")
+
+    lease.release = raising_release
+
+    await runtime._handle_independent_asr_final("hello", epoch, "qwen")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    assert component._asr_smart_turn_lease is None
+    assert (
+        component._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+    )
+    runtime.handle_input_transcript.assert_awaited_once_with(
+        "hello",
+        is_voice_source=True,
+        source="independent_asr",
+        metadata={"provider": "qwen"},
+    )
+    assert component._asr_warm_expiry_task is not None
+    component._asr_warm_expiry_task.cancel()
+
+
+async def test_transport_restart_task_failure_is_logged(caplog) -> None:
+    runtime = _Runtime()
+    component = runtime._asr_runtime
+
+    async def failing_restart() -> None:
+        raise RuntimeError("restart boom")
+
+    component._restart_transport = failing_restart
+    with caplog.at_level(logging.ERROR, logger="main_logic.asr_client._infra"):
+        component._ensure_transport_restart_task()
+        task = component._asr_transport_task
+        assert task is not None
+        await asyncio.wait([task])
+        await asyncio.sleep(0)
+
+    assert "independent-asr-transport-restart" in caplog.text
+    assert "restart boom" in caplog.text
+
+
+async def test_start_resolves_selection_off_event_loop(monkeypatch) -> None:
+    import main_logic.asr_client.runtime as runtime_module
+
+    runtime = _Runtime()
+    selection = _selection("qwen", "provider")
+    resolver_threads: list[threading.Thread] = []
+
+    def resolver(core_type: str):
+        assert core_type == "qwen"
+        resolver_threads.append(threading.current_thread())
+        return selection
+
+    session = SimpleNamespace(
+        is_ready=True,
+        connect=AsyncMock(),
+        close=AsyncMock(),
+    )
+    monkeypatch.setattr(runtime_module, "_resolve_asr_selection", resolver)
+    monkeypatch.setattr(
+        runtime_module,
+        "_create_asr_session_from_selection",
+        lambda _core_type, **_kwargs: session,
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "DetectorRuntime",
+        MagicMock(return_value=_ReadyDetector()),
+    )
+
+    result = await runtime._asr_runtime.start(
+        route_key="qwen",
+        resource_optimization_enabled=False,
+    )
+
+    assert result.status is AsrStartStatus.READY
+    assert len(resolver_threads) == 1
+    assert resolver_threads[0] is not threading.main_thread()
+
+
+async def test_teardown_routines_share_one_turn_state_reset() -> None:
+    import ast
+    import inspect as inspect_module
+
+    from main_logic.asr_client import runtime as runtime_module
+
+    source = inspect_module.getsource(runtime_module.IndependentAsrRuntime)
+    tree = ast.parse(source)
+    class_node = tree.body[0]
+    for method_name in (
+        "_close_independent_asr",
+        "_abort_transport",
+        "_handle_independent_asr_error",
+    ):
+        method = next(
+            node
+            for node in class_node.body
+            if isinstance(node, ast.AsyncFunctionDef)
+            and node.name == method_name
+        )
+        calls = {
+            node.func.attr
+            for node in ast.walk(method)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+        }
+        assert "_reset_asr_turn_state" in calls, method_name

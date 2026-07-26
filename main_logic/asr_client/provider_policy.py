@@ -50,6 +50,14 @@ class AsrProviderPolicy:
             )
 
 
+class AsrProviderUnavailableError(RuntimeError):
+    """Typed provider capability failure for callers that need policy."""
+
+    def __init__(self, availability: AsrProviderAvailability) -> None:
+        self.availability = availability
+        super().__init__(f"ASR_PROVIDER_{availability.value.upper()}")
+
+
 def resolve_provider_policy(
     provider_key: str,
     endpointing_mode: AsrEndpointingMode,
@@ -85,11 +93,3 @@ def resolve_provider_policy(
         connect_retry_base_seconds=meta.connect_retry_base_seconds,
         connect_retry_cap_seconds=meta.connect_retry_cap_seconds,
     )
-
-
-class AsrProviderUnavailableError(RuntimeError):
-    """Typed provider capability failure for callers that need policy."""
-
-    def __init__(self, availability: AsrProviderAvailability) -> None:
-        self.availability = availability
-        super().__init__(f"ASR_PROVIDER_{availability.value.upper()}")
