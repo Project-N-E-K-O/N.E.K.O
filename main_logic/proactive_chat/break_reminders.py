@@ -406,7 +406,8 @@ async def _deliver_break_reminder_via_llm(
             "[%s] break reminder abandoned after user interaction during generation",
             lanlan_name,
         )
-        await mgr.handle_new_message()
+        if not mgr.state.is_proactive_preempted(proactive_sid):
+            await mgr.handle_new_message()
         return BreakReminderDeliveryResult()
 
     anti_repeat_corpus = None

@@ -105,13 +105,15 @@ def test_merge_regen_avoid_terms_preserves_both_repeat_signals():
         "interaction_during_regen",
         "interaction_during_initial",
         "regen_returns_pass",
+        "preempted_after_initial",
     ),
     (
-        (False, False, False, False),
-        (True, False, False, False),
-        (False, True, False, False),
-        (False, False, True, False),
-        (False, False, False, True),
+        (False, False, False, False, False),
+        (True, False, False, False, False),
+        (False, True, False, False, False),
+        (False, False, True, False, False),
+        (False, False, False, True, False),
+        (False, False, True, False, True),
     ),
 )
 async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
@@ -120,6 +122,7 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
     interaction_during_regen,
     interaction_during_initial,
     regen_returns_pass,
+    preempted_after_initial,
 ):
     from main_logic.proactive_chat import break_reminders
 
@@ -175,9 +178,12 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
         lambda: corpus,
     )
 
+    preempted = MagicMock(return_value=False)
+    if preempted_after_initial:
+        preempted.side_effect = [False, True]
     state = SimpleNamespace(
         fire=AsyncMock(),
-        is_proactive_preempted=MagicMock(return_value=False),
+        is_proactive_preempted=preempted,
     )
     mgr = SimpleNamespace(
         prepare_proactive_delivery=AsyncMock(return_value=True),
@@ -216,7 +222,10 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
         assert result == break_reminders.BreakReminderDeliveryResult()
         mgr.feed_tts_chunk.assert_not_awaited()
         mgr.finish_proactive_delivery.assert_not_awaited()
-        mgr.handle_new_message.assert_awaited_once_with()
+        if preempted_after_initial:
+            mgr.handle_new_message.assert_not_awaited()
+        else:
+            mgr.handle_new_message.assert_awaited_once_with()
     elif interaction_during_regen:
         assert corpus.score_unanswered_proactive_draft.call_count == 1
         assert result == break_reminders.BreakReminderDeliveryResult()

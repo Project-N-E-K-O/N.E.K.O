@@ -550,6 +550,7 @@ async def icebreaker_choice(request: Request):
     Kept separate from ``/context`` (which feeds transient session history) so the
     pool stays an independent signal we can consume incrementally later.
     """
+    choice_arrival_time = time.time()
     try:
         data = await request.json()
     except Exception:
@@ -591,7 +592,22 @@ async def icebreaker_choice(request: Request):
     if stale_response:
         return stale_response
 
-    choice_arrival_time = time.time()
+    if not str(data.get("day") or "").strip():
+        return {
+            "ok": False,
+            "reason": "missing_day",
+            "source": ICEBREAKER_SOURCE,
+        }
+    if not (
+        str(data.get("node_id") or "").strip()
+        and str(data.get("choice") or "").strip()
+    ):
+        return {
+            "ok": False,
+            "reason": "invalid_choice",
+            "source": ICEBREAKER_SOURCE,
+        }
+
     payload = {
         "lanlan_name": lanlan_name,
         "session_id": data.get("session_id"),
@@ -605,6 +621,24 @@ async def icebreaker_choice(request: Request):
         "source": ICEBREAKER_SOURCE,
     }
     try:
+        mgr = get_session_manager().get(lanlan_name)
+    except Exception:
+        logger.debug(
+            "icebreaker choice manager lookup failed lanlan=%s",
+            lanlan_name,
+            exc_info=True,
+        )
+    else:
+        if mgr is not None:
+            # The choice is valid for the active route even if the downstream
+            # durable-state read or write later fails.
+            _note_icebreaker_user_engagement(
+                mgr,
+                lanlan_name,
+                at=choice_arrival_time,
+            )
+
+    try:
         result = await asyncio.to_thread(record_tutorial_choice, payload)
     except Exception as exc:
         logger.warning("icebreaker choice persist failed for %s: %s", lanlan_name, exc, exc_info=True)
@@ -616,22 +650,6 @@ async def icebreaker_choice(request: Request):
             "source": ICEBREAKER_SOURCE,
         }
     result.setdefault("source", ICEBREAKER_SOURCE)
-    if result.get("ok"):
-        try:
-            mgr = get_session_manager().get(lanlan_name)
-        except Exception:
-            logger.debug(
-                "icebreaker choice manager lookup failed lanlan=%s",
-                lanlan_name,
-                exc_info=True,
-            )
-        else:
-            if mgr is not None:
-                _note_icebreaker_user_engagement(
-                    mgr,
-                    lanlan_name,
-                    at=choice_arrival_time,
-                )
     return result
 
 

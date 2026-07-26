@@ -290,6 +290,11 @@ async def test_icebreaker_choice_records_user_engagement(monkeypatch):
     mgr = _FakeAppendContextManager()
     clock = {"now": 100.0}
 
+    class _DelayedJsonRequest(_FakeRequest):
+        async def json(self):
+            clock["now"] = 150.0
+            return self._payload
+
     monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
     monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
     monkeypatch.setattr(
@@ -314,7 +319,7 @@ async def test_icebreaker_choice_records_user_engagement(monkeypatch):
     icebreaker_route_state.activate_icebreaker_route("Lan", "icebreaker-day1-test")
 
     result = await icebreaker_router.icebreaker_choice(
-        _FakeRequest(
+        _DelayedJsonRequest(
             {
                 "lanlan_name": "Lan",
                 "session_id": "icebreaker-day1-test",
@@ -329,6 +334,45 @@ async def test_icebreaker_choice_records_user_engagement(monkeypatch):
     assert result["ok"] is True
     assert mgr.engagement_calls == 1
     assert mgr.engagement_times == [100.0]
+
+
+@pytest.mark.asyncio
+async def test_icebreaker_choice_write_failure_still_records_user_engagement(
+    monkeypatch,
+):
+    mgr = _FakeAppendContextManager()
+
+    monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+    monkeypatch.setattr(icebreaker_router.time, "time", lambda: 123.0)
+
+    def fail_record_choice(_payload):
+        raise OSError("state unavailable")
+
+    monkeypatch.setattr(
+        icebreaker_router,
+        "record_tutorial_choice",
+        fail_record_choice,
+    )
+    icebreaker_route_state.activate_icebreaker_route("Lan", "icebreaker-day1-test")
+
+    result = await icebreaker_router.icebreaker_choice(
+        _FakeRequest(
+            {
+                "lanlan_name": "Lan",
+                "session_id": "icebreaker-day1-test",
+                "day": "day1",
+                "node_id": "welcome",
+                "choice": "stay",
+            },
+            path="/api/icebreaker/choice",
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "choice_write_failed"
+    assert mgr.engagement_calls == 1
+    assert mgr.engagement_times == [123.0]
 
 
 @pytest.mark.asyncio
