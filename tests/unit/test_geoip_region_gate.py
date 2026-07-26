@@ -559,7 +559,10 @@ def test_every_session_preparation_path_settles_the_region():
     """Each path that builds a session (and freezes its base URL) settles first.
 
     Structural, because the real risk is a *new* path added later that a
-    behavioural test of the existing two would never notice.
+    behavioural test of the existing two would never notice. Compared by line
+    number, not by call-name membership: an unordered set only proves the
+    settle call exists somewhere — moving it *after* the config read that
+    freezes the route would keep a membership assertion green.
     """
     import ast
     import pathlib
@@ -572,12 +575,23 @@ def test_every_session_preparation_path_settles_the_region():
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        calls = {getattr(c.func, 'attr', None) for c in ast.walk(node) if isinstance(c, ast.Call)}
-        if 'aget_core_config' not in calls:
+        lines = {}
+        for c in ast.walk(node):
+            if isinstance(c, ast.Call):
+                name = getattr(c.func, 'attr', None)
+                if name:
+                    lines.setdefault(name, []).append(c.lineno)
+        if 'aget_core_config' not in lines:
             continue
         checked.append(node.name)
-        if 'aensure_region_resolved' not in calls:
-            missing.append(f'{node.name} (line {node.lineno})')
+        settles = lines.get('aensure_region_resolved')
+        if not settles:
+            missing.append(f'{node.name} (line {node.lineno}) 未落定')
+        elif min(settles) >= min(lines['aget_core_config']):
+            missing.append(
+                f'{node.name}: 落定在 line {min(settles)}，晚于首次配置读取'
+                f' line {min(lines["aget_core_config"])}'
+            )
 
     assert checked, '未找到任何会话准备路径，断言失效'
     assert not missing, f'这些路径会冻结会话线路却未先落定区域判定: {missing}'
@@ -585,7 +599,11 @@ def test_every_session_preparation_path_settles_the_region():
 
 @pytest.mark.unit
 def test_game_session_pool_settles_the_region():
-    """The game pool caches an OmniOfflineClient with its base_url — same freeze."""
+    """The game pool caches an OmniOfflineClient with its base_url — same freeze.
+
+    Line-ordered like the lifecycle guard above: the settle must precede the
+    session build that freezes the route, not merely exist in the function.
+    """
     import ast
     import pathlib
 
@@ -595,9 +613,20 @@ def test_game_session_pool_settles_the_region():
 
     for node in ast.walk(tree):
         if isinstance(node, ast.AsyncFunctionDef) and node.name == '_get_or_create_session':
-            calls = {getattr(c.func, 'attr', None) for c in ast.walk(node) if isinstance(c, ast.Call)}
-            assert 'aensure_region_resolved' in calls, \
-                '游戏会话池会缓存 base_url，必须先落定区域判定'
+            lines = {}
+            for c in ast.walk(node):
+                if isinstance(c, ast.Call):
+                    name = getattr(c.func, 'attr', None) or getattr(c.func, 'id', None)
+                    if name:
+                        lines.setdefault(name, []).append(c.lineno)
+            settles = lines.get('aensure_region_resolved')
+            builds = lines.get('_build_and_register_game_session')
+            assert settles, '游戏会话池会缓存 base_url，必须先落定区域判定'
+            assert builds, '未找到 _build_and_register_game_session 调用，锚点失效'
+            assert min(settles) < min(builds), (
+                f'落定(line {min(settles)}) 必须早于会话创建(line {min(builds)})，'
+                '否则冻结的线路用的还是落定前的结论'
+            )
             break
     else:
         pytest.fail('未找到 _get_or_create_session，断言失效')

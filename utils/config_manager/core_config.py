@@ -1402,6 +1402,12 @@ class CoreConfigMixin:
             try:
                 snapshot_non_mainland = self._check_non_mainland()
             except Exception:
+                # _check_non_mainland 内部已层层兜底，能抛到这里的都是真意外；
+                # 静默吞掉的话，海外用户整份快照钉在大陆线路且日志无痕——现场
+                # 只会看到「偶尔一整场很慢」。记一笔再兜底。
+                logger.warning(
+                    "[GeoIP] 区域判定抛出异常，本次快照按大陆线路组装", exc_info=True
+                )
                 snapshot_non_mainland = False
         for key, value in config.items():
             if key.endswith('_URL') and isinstance(value, str):
