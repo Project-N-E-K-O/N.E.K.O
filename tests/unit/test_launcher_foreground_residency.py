@@ -343,9 +343,22 @@ def test_guarded_process_dies_when_its_real_parent_dies(tmp_path):
     child_pid = int(middle.stdout.strip())
 
     assert _wait_for(armed), "guard never reported which mechanisms it armed"
-    assert armed.read_text(encoding="utf-8"), "no parent-death mechanism could be armed"
+    armed_mechanisms = armed.read_text(encoding="utf-8").split(",")
+    assert armed_mechanisms != [""], "no parent-death mechanism could be armed"
+    if sys.platform.startswith("linux"):
+        # The kernel trap is the point on Linux. If it silently stops being armed
+        # the guarantee quietly degrades to a poll, and every assertion below
+        # still passes because the poll covers for it.
+        assert "pdeathsig" in armed_mechanisms, armed_mechanisms
 
-    assert _wait_for(marker), "guarded process survived its parent"
+    # Not merely "did it exit" — it must have run its *callback*. A mechanism
+    # that kills the process without running cleanup (a parent-death signal
+    # armed with no handler installed for it) satisfies "exited" and still
+    # leaves every grandchild behind.
+    assert _wait_for(marker), (
+        f"guard armed {armed_mechanisms} but its callback never ran "
+        "(the process may have died without cleaning up)"
+    )
     assert marker.read_text(encoding="utf-8") in ("ppid_poll", "pdeathsig", "pdeathsig_late_install")
 
     deadline = time.monotonic() + 10

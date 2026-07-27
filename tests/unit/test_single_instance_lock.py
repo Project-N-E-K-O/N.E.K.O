@@ -31,7 +31,11 @@ _HOLDER_SCRIPT = textwrap.dedent(
     if handle is None:
         print("LOST", flush=True)
         raise SystemExit(3)
-    print("HELD", flush=True)
+    # Report our own pid: the identity under test is "the record names the
+    # process that holds the lock", and only that process can state it. The
+    # spawner's Popen.pid is a second-hand answer that is wrong wherever the
+    # interpreter is reached through a shim.
+    print("HELD", os.getpid(), flush=True)
     while True:
         time.sleep(0.05)
     """
@@ -60,7 +64,11 @@ def _start_holder(runtime_dir) -> subprocess.Popen:
         env=env,
     )
     line = proc.stdout.readline().strip()
-    assert line == "HELD", f"holder did not take the lock: {line!r} / {proc.stderr.read()!r}"
+    marker, _, reported = line.partition(" ")
+    assert marker == "HELD", f"holder did not take the lock: {line!r} / {proc.stderr.read()!r}"
+    # The pid the holder reports for itself. Usually identical to proc.pid, but
+    # not where sys.executable is a shim that re-launches the real interpreter.
+    proc.holder_pid = int(reported)
     return proc
 
 
@@ -120,7 +128,10 @@ def test_a_second_process_is_refused_and_learns_who_won(runtime_dir):
         status, record = single_instance.owner_status()
         assert status == single_instance.OWNER_OWNED
         assert record is not None
-        assert record["pid"] == holder.pid
+        assert record["pid"] == holder.holder_pid, (
+            f"record names pid {record['pid']}, holder reports {holder.holder_pid}, "
+            f"spawner saw {holder.pid}, this process is {os.getpid()}; record={record!r}"
+        )
         assert record["instance_id"] == "holder-instance"
         # This is the whole point: the loser is handed the winner's ports rather
         # than being told to go probe for them.

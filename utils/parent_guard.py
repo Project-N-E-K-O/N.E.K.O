@@ -72,6 +72,33 @@ DEFAULT_POLL_INTERVAL = 1.0
 
 _PR_SET_PDEATHSIG = 1
 
+
+def _owner_death_signal():
+    """The signal ``PR_SET_PDEATHSIG`` should raise in a *launcher*, or ``None``.
+
+    Deliberately not ``SIGTERM``. The launcher already gives ``SIGTERM`` a
+    meaning of its own — "somebody asked me to stop" — and installs its own
+    ordered-shutdown handler for it in ``register_shutdown_hooks()``. Reusing
+    it here collided in both directions: before those hooks are registered the
+    default disposition simply killed the process, so the parent-death callback
+    never ran at all, and afterwards the owner's death was indistinguishable
+    from an ordinary stop request and skipped the process-group sweep that only
+    ``_handle_owner_death`` performs.
+
+    A real-time signal has no default meaning to collide with, so "the owner
+    died" stays its own fact. ``SIGUSR2`` is the fallback for a libc without
+    real-time signals.
+
+    Note this applies to the launcher only: ``install_child_guard`` keeps
+    ``SIGTERM``, because in a child server SIGTERM *is* the wanted action — the
+    child installs a graceful-stop handler for it before arming the trap.
+    """
+    for name in ("SIGRTMIN", "SIGUSR2"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            return sig
+    return None
+
 # Windows constants
 _SYNCHRONIZE = 0x00100000
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
@@ -156,6 +183,9 @@ class ParentDeathGuard:
     def owner_is_direct_parent(self) -> bool:
         return self._owner_is_direct_parent
 
+    def _on_pdeathsig(self, _signum, _frame) -> None:
+        self.fire("pdeathsig")
+
     def _install_pdeathsig(self) -> bool:
         if not sys.platform.startswith("linux"):
             return False
@@ -164,6 +194,23 @@ class ParentDeathGuard:
         # replacement down with it.
         if not self._owner_is_direct_parent:
             return False
+
+        sig = _owner_death_signal()
+        if sig is None:
+            return False
+
+        # The handler must exist *before* the trap is armed. Every candidate
+        # signal terminates the process by default, so arming first would leave
+        # a window in which the owner's death kills us silently — which is
+        # exactly the bug this ordering exists to prevent.
+        try:
+            signal.signal(sig, self._on_pdeathsig)
+        except (ValueError, OSError, RuntimeError):
+            # Not the main thread, or the signal cannot be caught here. Refuse
+            # to arm rather than arm a signal that would kill us uncaught; the
+            # owner poll still covers this process.
+            return False
+
         try:
             libc = ctypes.CDLL(None, use_errno=True)
             prctl = libc.prctl
@@ -175,7 +222,7 @@ class ParentDeathGuard:
                 ctypes.c_ulong,
             ]
             prctl.restype = ctypes.c_int
-            if prctl(_PR_SET_PDEATHSIG, int(signal.SIGTERM), 0, 0, 0) != 0:
+            if prctl(_PR_SET_PDEATHSIG, int(sig), 0, 0, 0) != 0:
                 return False
         except Exception:
             return False

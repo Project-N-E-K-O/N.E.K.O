@@ -2076,8 +2076,29 @@ def cleanup_servers():
     # 退出时由内核关闭，那时终止整个 Job 正是我们要的语义。
 
 
+def _safe_getppid_for_owner_check() -> int:
+    try:
+        return int(os.getppid())
+    except Exception:
+        return 0
+
+
 def _handle_termination_signal(signum, _frame):
     """Handle termination signals, doing our best to ensure cleanup logic runs."""
+    # 兜底：属主已经死了，但送达的是普通 SIGTERM 而不是 guard 的专用信号
+    # （比如属主用组级 TERM 清扫）。属主之死需要组级清扫，而这条普通关闭路径
+    # 没有——所以改走 _handle_owner_death，它不会返回。
+    guard = _parent_death_guard
+    if (
+        guard is not None
+        and not guard.fired
+        and guard.parent_pid > 1
+        and os.name == "posix"
+        and _safe_getppid_for_owner_check() != guard.parent_pid
+    ):
+        _handle_owner_death("termination_signal_orphaned")
+        return
+
     _mark_expected_launcher_shutdown()
     print(f"\n收到终止信号 ({signum})，正在关闭...", flush=True)
     cleanup_servers()
