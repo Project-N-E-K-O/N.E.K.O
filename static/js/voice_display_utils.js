@@ -18,7 +18,6 @@ const VoiceDisplayUtils = (() => {
         grok: 'Grok',
         mimo: 'MiMo',
         vllm_omni: 'vLLM-Omni',
-        custom: 'OpenAI-compatible',
     });
 
     function t(key, fallback) {

@@ -268,9 +268,6 @@ class TTSProvider:
     # ``/voices`` endpoint and ``validate_voice_id`` query it instead of restating
     # the catalog elsewhere (see design doc §3 ``preset_catalog``).
     preset_catalog: "PresetCatalog | None" = None
-    # User-configured providers (for example custom OpenAI TTS / vLLM-Omni)
-    # expose the single value stored in ``voice_field`` as a preset voice.
-    configured_preset_voice: bool = False
 
     # Alternate provider ids that share this provider's implementation and
     # capabilities while retaining provider-specific runtime configuration.
@@ -383,57 +380,20 @@ def resolve_selected(
 # ``config_router``'s ``ui_metadata`` call site.
 
 
-def preset_catalog_for_ui(
-    provider_key: str | None,
-    core_config: Mapping[str, Any] | None = None,
-) -> "dict[str, dict[str, str | bool]] | None":
-    """Return the provider's UI preset catalog.
-
-    Static providers use ``preset_catalog``. A configured-preset provider
-    synthesizes one entry from ``core_config`` or ``default_voice``. ``None``
-    means the provider has no preset-catalog capability; ``{}`` means it has
-    one but no configured/default voice is currently available.
-    """
+def preset_catalog_for_ui(provider_key: str | None) -> "dict[str, dict[str, str | bool]] | None":
+    """The UI voice catalog for ``provider_key``'s preset_catalog, or None."""
     provider = get(provider_key)
-    if provider is None:
+    if provider is None or provider.preset_catalog is None:
         return None
-    if provider.preset_catalog is not None:
-        return provider.preset_catalog.catalog_for_ui(provider.key)
-    if not provider.configured_preset_voice:
-        return None
-    config = core_config or {}
-    voice_id = str(config.get(provider.voice_field) or provider.default_voice or "").strip()
-    if not voice_id:
-        return {}
-    return {
-        voice_id: {
-            "prefix": voice_id,
-            "provider": provider.key,
-            "provider_label": provider.key,
-            "gender": "",
-            "display_name": voice_id,
-            "builtin": True,
-        }
-    }
+    return provider.preset_catalog.catalog_for_ui(provider.key)
 
 
-def is_preset_voice(
-    provider_key: str | None,
-    voice_id: str | None,
-    core_config: Mapping[str, Any] | None = None,
-) -> bool:
-    """Whether ``voice_id`` belongs to the provider's static or configured catalog."""
+def is_preset_voice(provider_key: str | None, voice_id: str | None) -> bool:
+    """Whether ``voice_id`` is a built-in voice of ``provider_key``'s catalog."""
     provider = get(provider_key)
-    if provider is None:
+    if provider is None or provider.preset_catalog is None:
         return False
-    if provider.preset_catalog is not None:
-        return provider.preset_catalog.is_voice(voice_id)
-    if not provider.configured_preset_voice:
-        return False
-    configured_voice = str(
-        (core_config or {}).get(provider.voice_field) or provider.default_voice or ""
-    ).strip()
-    return bool(configured_voice and configured_voice == str(voice_id or "").strip())
+    return provider.preset_catalog.is_voice(voice_id)
 
 
 def selected_provider_key(
@@ -443,12 +403,11 @@ def selected_provider_key(
     """Key of the provider currently selected for ``core_config`` / ``cm``, or None.
 
     UI precedence helper: the ``/voices`` endpoint reads this to mirror dispatch —
-    if the winner exposes a static or configured catalog
-    (``preset_catalog_for_ui(key)`` non-None), show it. If a registry provider
-    wins but exposes no catalog (for example GPT-SoVITS), core-native voices
-    must still be suppressed because selecting one would be misrouted to that
-    winner. None means no registry provider won, so the UI may fall back to
-    core-native voices."""
+    if the winner ships a static catalog (``preset_catalog_for_ui(key)`` non-None)
+    show it; if a registry provider wins but ships no catalog (vLLM-Omni /
+    GPT-SoVITS — user-entered or self-hosted voices), core-native voices must be
+    suppressed too, since selecting one would be misrouted to that winner. None
+    means no registry provider won → fall back to core-native voices."""
     provider = selected_provider(DispatchContext(core_config=core_config, cm=cm))
     return provider.key if provider is not None else None
 
@@ -472,7 +431,7 @@ def selected_preset_provider_key(
     provider = selected_provider(
         DispatchContext(core_config=core_config, cm=cm, voice_id=voice_id or "")
     )
-    if provider is None or not is_preset_voice(provider.key, voice_id, core_config):
+    if provider is None or not is_preset_voice(provider.key, voice_id):
         return None
     return provider.key
 

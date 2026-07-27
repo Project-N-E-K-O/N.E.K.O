@@ -442,7 +442,6 @@ _tts_providers.register(_tts_providers.TTSProvider(
     probe_kind='ws_handshake',
     probe_sub_type='vllm_omni_tts',
     probe_ws_path='/audio/speech/stream',
-    configured_preset_voice=True,
 ))
 
 _tts_providers.register(_tts_providers.TTSProvider(
@@ -455,7 +454,6 @@ _tts_providers.register(_tts_providers.TTSProvider(
     editable_endpoint=True,
     probe_kind='http_tts',
     probe_sub_type='openai_tts',
-    configured_preset_voice=True,
     # The generic "custom" option is already inserted into every model dropdown.
     # Keep this registry entry available as metadata without adding a duplicate.
     tts_config_visible=False,

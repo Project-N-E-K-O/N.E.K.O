@@ -360,11 +360,18 @@ async def get_voices():
     result = {"voices": _config_manager.get_voices_for_current_api(for_listing=True)}
 
     core_config = await _config_manager.aget_core_config()
+    # 先看有没有自带静态预制目录的 provider 被选中（如 MiMo，hosted）。与 dispatch
+    # 同一优先级判定：选中的 provider 若有 preset_catalog 就用它，并压过 core-native
+    # （assistApi=mimo 在 dispatch 里 priority 60 也先于 native 命中）；GPT-SoVITS /
+    # vLLM 这类先命中、无静态目录的 provider 则不出目录（preset 为 None）。复用
+    # native_voices 通道——前端 source-first 选声器按 entry 的 provider/provider_label
+    # 自动分组成「<Provider> · 预制」，无需新增来源通道。
     # 选声目录与 dispatch 同一优先级：先看哪个注册表 provider 赢得当前配置。
-    #  - 赢家有静态目录（如 MiMo）或配置目录（如 vLLM-Omni/custom）→ 出该目录，
-    #    压过 core-native（用 is not None，空目录也算命中，不误回退）。
-    #  - 赢家无目录（如 GPT-SoVITS）→ 既不出目录、也不回退 core-native：dispatch
-    #    会路由到该赢家，露出 gemini 等原生音色会让用户选中后被误传给赢家。
+    #  - 赢家有静态预制目录（如 MiMo）→ 出该目录，压过 core-native（用 is not None，
+    #    空目录也算命中，不误回退）。
+    #  - 赢家无静态目录（vLLM-Omni / GPT-SoVITS，用户自填/自部署音色）→ 既不出目录、
+    #    也不回退 core-native：dispatch 会路由到该赢家，露出 gemini 等原生音色会让用户
+    #    选中后被误传给赢家触发 unsupported-voice（PR #1848 Codex review）。
     #  - 无注册表 provider 赢 → 回退 core-native（gemini/step/...）。
     # 复用 native_voices 通道——前端 source-first 选声器按 entry 的 provider/provider_label
     # 自动分组成「<Provider> · 预制」，无需新增来源通道。
@@ -372,7 +379,7 @@ async def get_voices():
         core_config or {}, _config_manager
     )
     selected_preset_catalog = (
-        tts_provider_registry.preset_catalog_for_ui(winning_provider_key, core_config)
+        tts_provider_registry.preset_catalog_for_ui(winning_provider_key)
         if winning_provider_key else None
     )
     active_native_provider = (

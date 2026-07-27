@@ -16,11 +16,10 @@
 
 from functools import partial
 
-import httpx
 import numpy as np
 import soxr
 
-from .._infra import _resample_audio, _run_sentence_tts_worker
+from .._infra import TTS_SHUTDOWN_SENTINEL, _resample_audio, _run_sentence_tts_worker
 from .._telemetry import _record_tts_telemetry
 from utils.config_manager import _as_bool
 from utils.logger_config import get_module_logger
@@ -28,9 +27,9 @@ from utils.openai_tts import (
     OPENAI_TTS_DEFAULT_BASE_URL,
     OPENAI_TTS_DEFAULT_MODEL,
     OPENAI_TTS_DEFAULT_VOICE,
-    build_openai_tts_payload,
-    openai_tts_headers,
-    openai_tts_speech_url,
+    OPENAI_TTS_PCM_SAMPLE_RATE,
+    openai_tts_base_url,
+    openai_tts_extra_body,
 )
 
 logger = get_module_logger(__name__, "Main")
@@ -42,35 +41,62 @@ def openai_tts_worker(
     audio_api_key,
     voice_id,
     *,
-    base_url=OPENAI_TTS_DEFAULT_BASE_URL,
+    base_url=None,
     model=OPENAI_TTS_DEFAULT_MODEL,
     voice=OPENAI_TTS_DEFAULT_VOICE,
 ):
     """OpenAI-compatible TTS: sentence input with a streamed PCM response."""
 
+    try:
+        from openai import AsyncOpenAI
+    except ImportError:
+        logger.error("❌ 无法导入 openai 库，OpenAI TTS 不可用")
+        response_queue.put(("__ready__", False))
+        while True:
+            try:
+                sid, _ = request_queue.get()
+                if sid == TTS_SHUTDOWN_SENTINEL:
+                    break
+            except Exception:
+                break
+        return
+
     effective_model = str(model or "").strip() or OPENAI_TTS_DEFAULT_MODEL
     effective_voice = str(voice_id or "").strip() or str(voice or "").strip()
 
     async def setup(response_queue):
-        # Validate the URL inside setup so the shared worker skeleton reports
-        # configuration failures through its normal __ready__ channel.
-        endpoint = openai_tts_speech_url(base_url)
-        client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=90.0))
+        client_kwargs = {
+            "api_key": audio_api_key or ("sk-placeholder" if base_url else audio_api_key),
+        }
+        if base_url:
+            # Validate/normalize inside setup so configuration failures travel
+            # through the shared worker skeleton's normal __ready__ channel.
+            client_kwargs["base_url"] = openai_tts_base_url(base_url)
+        client = AsyncOpenAI(**client_kwargs)
+        extra_body = openai_tts_extra_body(base_url or OPENAI_TTS_DEFAULT_BASE_URL)
 
         async def synthesize(text: str, speech_id: str) -> None:
-            payload = build_openai_tts_payload(text, effective_model, effective_voice)
-            async with client.stream(
-                "POST",
-                endpoint,
-                headers=openai_tts_headers(audio_api_key),
-                json=payload,
+            request_kwargs = {
+                "model": effective_model,
+                "voice": effective_voice,
+                "input": text,
+                "response_format": "pcm",
+            }
+            if extra_body:
+                request_kwargs["extra_body"] = extra_body
+            async with client.audio.speech.with_streaming_response.create(
+                **request_kwargs,
             ) as response:
-                response.raise_for_status()
                 _record_tts_telemetry(effective_model, len(text))
                 pending = b""
                 received_samples = False
-                resampler = soxr.ResampleStream(24000, 48000, 1, dtype="float32")
-                async for chunk in response.aiter_bytes(chunk_size=4096):
+                resampler = soxr.ResampleStream(
+                    OPENAI_TTS_PCM_SAMPLE_RATE,
+                    48000,
+                    1,
+                    dtype="float32",
+                )
+                async for chunk in response.iter_bytes(chunk_size=4096):
                     if chunk:
                         pcm = pending + chunk
                         even_length = len(pcm) - (len(pcm) % 2)
@@ -79,7 +105,12 @@ def openai_tts_worker(
                             continue
                         audio_array = np.frombuffer(pcm[:even_length], dtype="<i2")
                         received_samples = True
-                        resampled = _resample_audio(audio_array, 24000, 48000, resampler)
+                        resampled = _resample_audio(
+                            audio_array,
+                            OPENAI_TTS_PCM_SAMPLE_RATE,
+                            48000,
+                            resampler,
+                        )
                         if len(resampled):
                             response_queue.put(resampled)
 
@@ -90,7 +121,7 @@ def openai_tts_worker(
 
                 tail = _resample_audio(
                     np.empty(0, dtype=np.int16),
-                    24000,
+                    OPENAI_TTS_PCM_SAMPLE_RATE,
                     48000,
                     resampler,
                     last=True,
@@ -98,7 +129,7 @@ def openai_tts_worker(
                 if len(tail):
                     response_queue.put(tail)
 
-        return synthesize, client.aclose
+        return synthesize, client.close
 
     _run_sentence_tts_worker(request_queue, response_queue, setup, label="OpenAI TTS")
 

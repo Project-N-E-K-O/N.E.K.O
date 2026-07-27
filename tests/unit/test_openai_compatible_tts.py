@@ -3,6 +3,7 @@ import queue
 import threading
 import time
 from functools import partial
+from types import SimpleNamespace
 
 import httpx
 import numpy as np
@@ -10,40 +11,58 @@ import pytest
 
 from main_logic import tts_client
 from main_logic.tts_client.workers import openai as openai_worker_module
-from main_routers.config_router import connectivity as connectivity_module
-from main_routers.config_router.connectivity import (
-    ConnectivityTestRequest,
-    _resolve_openai_tts_probe_voice,
-    _test_connectivity_candidates,
-)
+from main_routers.config_router.connectivity import _test_connectivity_candidates
 from utils.openai_tts import (
+    OPENAI_TTS_PCM_SAMPLE_RATE,
     OpenAITtsConfigError,
     build_openai_tts_payload,
+    openai_tts_base_url,
+    openai_tts_extra_body,
     openai_tts_speech_url,
 )
 from utils.tts import provider_registry
 
 
 @pytest.mark.parametrize(
-    ("configured", "expected"),
+    ("configured", "expected_base", "expected_endpoint"),
     [
-        ("https://speech.example.com", "https://speech.example.com/v1/audio/speech"),
-        ("https://speech.example.com/v1", "https://speech.example.com/v1/audio/speech"),
+        (
+            "https://speech.example.com",
+            "https://speech.example.com/v1",
+            "https://speech.example.com/v1/audio/speech",
+        ),
+        (
+            "https://speech.example.com/v1",
+            "https://speech.example.com/v1",
+            "https://speech.example.com/v1/audio/speech",
+        ),
         (
             "https://speech.example.com/openai/v1/audio/speech/",
+            "https://speech.example.com/openai/v1",
             "https://speech.example.com/openai/v1/audio/speech",
         ),
-        ("http://127.0.0.1:8000/v1", "http://127.0.0.1:8000/v1/audio/speech"),
+        (
+            "http://127.0.0.1:8000/v1",
+            "http://127.0.0.1:8000/v1",
+            "http://127.0.0.1:8000/v1/audio/speech",
+        ),
     ],
 )
-def test_openai_tts_speech_url_normalization(configured, expected):
-    assert openai_tts_speech_url(configured) == expected
+def test_openai_tts_url_normalization(configured, expected_base, expected_endpoint):
+    assert openai_tts_base_url(configured) == expected_base
+    assert openai_tts_speech_url(configured) == expected_endpoint
 
 
 @pytest.mark.parametrize("configured", ["", "ws://speech.example.com/v1", "speech.example.com/v1"])
-def test_openai_tts_speech_url_rejects_non_http(configured):
+def test_openai_tts_url_rejects_non_http(configured):
     with pytest.raises(OpenAITtsConfigError):
         openai_tts_speech_url(configured)
+
+
+def test_openai_tts_endpoint_preserves_query_after_path_normalization():
+    assert openai_tts_speech_url("https://speech.example.com/v1?tenant=demo") == (
+        "https://speech.example.com/v1/audio/speech?tenant=demo"
+    )
 
 
 def test_openai_tts_payload_is_strict_pcm():
@@ -59,6 +78,14 @@ def test_openai_tts_payload_is_strict_pcm():
 def test_openai_tts_payload_requires_model_and_voice(model, voice):
     with pytest.raises(OpenAITtsConfigError):
         build_openai_tts_payload("hello", model, voice)
+
+
+def test_siliconflow_pins_streaming_pcm_sample_rate_without_polluting_other_providers():
+    assert openai_tts_extra_body("https://api.siliconflow.cn/v1") == {
+        "sample_rate": OPENAI_TTS_PCM_SAMPLE_RATE,
+        "stream": True,
+    }
+    assert openai_tts_extra_body("https://speech.example.com/v1") == {}
 
 
 class _CustomTtsConfigManager:
@@ -160,22 +187,6 @@ def test_custom_openai_tts_requires_an_effective_voice():
     assert openai_worker_module._custom_openai_tts_is_selected(ctx) is False
 
 
-def test_configured_custom_voice_is_exposed_as_preset():
-    cm = _CustomTtsConfigManager()
-    catalog = provider_registry.preset_catalog_for_ui("custom", cm.snapshot)
-    assert catalog == {
-        "vendor-voice": {
-            "prefix": "vendor-voice",
-            "provider": "custom",
-            "provider_label": "custom",
-            "gender": "",
-            "display_name": "vendor-voice",
-            "builtin": True,
-        }
-    }
-    assert provider_registry.is_preset_voice("custom", "vendor-voice", cm.snapshot) is True
-
-
 def _wait_for_item(q, predicate, timeout=5.0):
     deadline = time.time() + timeout
     seen = []
@@ -190,85 +201,131 @@ def _wait_for_item(q, predicate, timeout=5.0):
     raise AssertionError(f"timed out waiting for queue item; seen={seen!r}")
 
 
-def test_openai_tts_worker_posts_configured_endpoint_and_streams_pcm(monkeypatch):
-    requests = []
+def _install_fake_openai(monkeypatch, chunks):
+    import openai
 
-    async def handler(request: httpx.Request):
-        requests.append(request)
-        return httpx.Response(200, content=np.array([1, -2, 3], dtype="<i2").tobytes())
+    clients = []
 
-    transport = httpx.MockTransport(handler)
-    real_client = httpx.AsyncClient
-    monkeypatch.setattr(
-        openai_worker_module.httpx,
-        "AsyncClient",
-        lambda **kwargs: real_client(transport=transport, **kwargs),
+    class _FakeStreamingResponse:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, _exc_type, _exc, _tb):
+            return False
+
+        async def iter_bytes(self, chunk_size=4096):
+            del chunk_size
+            for chunk in chunks:
+                yield chunk
+
+    class _FakeCreate:
+        def __init__(self, calls):
+            self._calls = calls
+
+        def create(self, **kwargs):
+            self._calls.append(kwargs)
+            return _FakeStreamingResponse()
+
+    class _FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            self.client_kwargs = kwargs
+            self.create_calls = []
+            self.closed = False
+            self.audio = SimpleNamespace(
+                speech=SimpleNamespace(
+                    with_streaming_response=_FakeCreate(self.create_calls),
+                )
+            )
+            clients.append(self)
+
+        async def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(openai, "AsyncOpenAI", _FakeAsyncOpenAI)
+    return clients
+
+
+def _run_worker_once(monkeypatch, chunks, *, base_url=None, model=None, voice_id="character-voice"):
+    clients = _install_fake_openai(monkeypatch, chunks)
+    request_queue = queue.Queue()
+    response_queue = queue.Queue()
+    kwargs = {}
+    if base_url is not None:
+        kwargs["base_url"] = base_url
+    if model is not None:
+        kwargs["model"] = model
+    thread = threading.Thread(
+        target=tts_client.openai_tts_worker,
+        args=(request_queue, response_queue, "sk-test", voice_id),
+        kwargs=kwargs,
+        daemon=True,
     )
+    thread.start()
+    assert _wait_for_item(response_queue, lambda item: item == ("__ready__", True)) == (
+        "__ready__",
+        True,
+    )
+    request_queue.put(("speech-1", "hello world."))
+    request_queue.put((None, None))
+    return clients, request_queue, response_queue, thread
+
+
+def test_custom_worker_uses_openai_sdk_and_siliconflow_extensions(monkeypatch):
     monkeypatch.setattr(
         openai_worker_module,
         "_resample_audio",
         lambda audio, *_args, last=False: b"" if last else audio,
     )
-
-    request_queue = queue.Queue()
-    response_queue = queue.Queue()
-    worker = partial(
-        tts_client.openai_tts_worker,
-        base_url="https://speech.example.com/v1",
-        model="vendor-tts",
-        voice="fallback-voice",
+    clients, request_queue, response_queue, thread = _run_worker_once(
+        monkeypatch,
+        [np.array([1, -2, 3], dtype="<i2").tobytes()],
+        base_url="https://api.siliconflow.cn/v1/audio/speech",
+        model="FunAudioLLM/CosyVoice2-0.5B",
     )
-    thread = threading.Thread(
-        target=worker,
-        args=(request_queue, response_queue, "sk-test", "character-voice"),
-        daemon=True,
-    )
-    thread.start()
-    assert _wait_for_item(response_queue, lambda item: item == ("__ready__", True)) == ("__ready__", True)
-
-    request_queue.put(("speech-1", "hello world."))
-    request_queue.put((None, None))
     audio = _wait_for_item(response_queue, lambda item: isinstance(item, np.ndarray))
     request_queue.put((tts_client.TTS_SHUTDOWN_SENTINEL, None))
     thread.join(timeout=5)
 
     assert audio.tolist() == [1, -2, 3]
-    assert len(requests) == 1
-    assert str(requests[0].url) == "https://speech.example.com/v1/audio/speech"
-    assert requests[0].headers["authorization"] == "Bearer sk-test"
-    assert json.loads(requests[0].content) == {
-        "model": "vendor-tts",
-        "input": "hello world.",
-        "voice": "character-voice",
-        "response_format": "pcm",
+    assert clients[0].client_kwargs == {
+        "api_key": "sk-test",
+        "base_url": "https://api.siliconflow.cn/v1",
     }
+    assert clients[0].create_calls == [{
+        "model": "FunAudioLLM/CosyVoice2-0.5B",
+        "voice": "character-voice",
+        "input": "hello world.",
+        "response_format": "pcm",
+        "extra_body": {"sample_rate": 24000, "stream": True},
+    }]
+    assert clients[0].closed is True
 
 
-class _ChunkedPcmStream(httpx.AsyncByteStream):
-    def __init__(self, chunks):
-        self._chunks = chunks
+def test_builtin_openai_worker_keeps_sdk_default_endpoint_and_body(monkeypatch):
+    monkeypatch.setattr(
+        openai_worker_module,
+        "_resample_audio",
+        lambda audio, *_args, last=False: b"" if last else audio,
+    )
+    clients, request_queue, response_queue, thread = _run_worker_once(
+        monkeypatch,
+        [b"\x00\x00"],
+    )
+    _wait_for_item(response_queue, lambda item: isinstance(item, np.ndarray))
+    request_queue.put((tts_client.TTS_SHUTDOWN_SENTINEL, None))
+    thread.join(timeout=5)
 
-    async def __aiter__(self):
-        for chunk in self._chunks:
-            yield chunk
+    assert clients[0].client_kwargs == {"api_key": "sk-test"}
+    assert clients[0].create_calls == [{
+        "model": "gpt-4o-mini-tts",
+        "voice": "character-voice",
+        "input": "hello world.",
+        "response_format": "pcm",
+    }]
 
 
 def test_openai_tts_worker_reuses_one_resampler_across_transport_chunks(monkeypatch):
     pcm = np.arange(5000, dtype="<i2").tobytes()
-
-    async def handler(_request: httpx.Request):
-        return httpx.Response(
-            200,
-            stream=_ChunkedPcmStream([pcm[:3001], pcm[3001:7002], pcm[7002:]]),
-        )
-
-    transport = httpx.MockTransport(handler)
-    real_client = httpx.AsyncClient
-    monkeypatch.setattr(
-        openai_worker_module.httpx,
-        "AsyncClient",
-        lambda **kwargs: real_client(transport=transport, **kwargs),
-    )
     resample_calls = []
 
     def fake_resample(audio, _src_rate, _dst_rate, resampler, *, last=False):
@@ -276,19 +333,11 @@ def test_openai_tts_worker_reuses_one_resampler_across_transport_chunks(monkeypa
         return b"" if last else audio.tobytes()
 
     monkeypatch.setattr(openai_worker_module, "_resample_audio", fake_resample)
-
-    request_queue = queue.Queue()
-    response_queue = queue.Queue()
-    thread = threading.Thread(
-        target=tts_client.openai_tts_worker,
-        args=(request_queue, response_queue, "sk-test", "character-voice"),
-        kwargs={"base_url": "https://speech.example.com/v1"},
-        daemon=True,
+    _, request_queue, response_queue, thread = _run_worker_once(
+        monkeypatch,
+        [pcm[:3001], pcm[3001:7002], pcm[7002:]],
+        base_url="https://speech.example.com/v1",
     )
-    thread.start()
-    _wait_for_item(response_queue, lambda item: item == ("__ready__", True))
-    request_queue.put(("speech-1", "hello world."))
-    request_queue.put((None, None))
     _wait_for_item(response_queue, lambda item: isinstance(item, bytes) and bool(item))
     deadline = time.time() + 5
     while time.time() < deadline and not any(call[2] for call in resample_calls):
@@ -308,29 +357,11 @@ def test_openai_tts_worker_reuses_one_resampler_across_transport_chunks(monkeypa
     [(b"", "empty PCM response"), (b"\x01", "truncated PCM sample")],
 )
 def test_openai_tts_worker_rejects_empty_or_truncated_pcm(content, expected_error, monkeypatch):
-    async def handler(_request: httpx.Request):
-        return httpx.Response(200, content=content)
-
-    transport = httpx.MockTransport(handler)
-    real_client = httpx.AsyncClient
-    monkeypatch.setattr(
-        openai_worker_module.httpx,
-        "AsyncClient",
-        lambda **kwargs: real_client(transport=transport, **kwargs),
+    _, request_queue, response_queue, thread = _run_worker_once(
+        monkeypatch,
+        [content],
+        base_url="https://speech.example.com/v1",
     )
-
-    request_queue = queue.Queue()
-    response_queue = queue.Queue()
-    thread = threading.Thread(
-        target=tts_client.openai_tts_worker,
-        args=(request_queue, response_queue, "sk-test", "character-voice"),
-        kwargs={"base_url": "https://speech.example.com/v1"},
-        daemon=True,
-    )
-    thread.start()
-    _wait_for_item(response_queue, lambda item: item == ("__ready__", True))
-    request_queue.put(("speech-1", "hello world."))
-    request_queue.put((None, None))
     error = _wait_for_item(
         response_queue,
         lambda item: isinstance(item, tuple) and item[0] == "__error__",
@@ -361,7 +392,7 @@ def test_openai_tts_worker_reports_invalid_url_as_not_ready():
 
 
 @pytest.mark.asyncio
-async def test_connectivity_dispatches_openai_tts_probe(monkeypatch):
+async def test_connectivity_dispatches_siliconflow_compatible_tts_probe(monkeypatch):
     requests = []
 
     async def handler(request: httpx.Request):
@@ -377,88 +408,24 @@ async def test_connectivity_dispatches_openai_tts_probe(monkeypatch):
     )
 
     result = await _test_connectivity_candidates(
-        ["https://speech.example.com/v1"],
+        ["https://api.siliconflow.cn/v1"],
         "sk-probe",
-        "vendor-tts",
+        "FunAudioLLM/CosyVoice2-0.5B",
         "tts",
         False,
         sub_type="openai_tts",
-        voice_id="vendor-voice",
+        voice_id="FunAudioLLM/CosyVoice2-0.5B:anna",
     )
 
     assert result["success"] is True
-    assert result["resolved_url"] == "https://speech.example.com/v1"
-    assert str(requests[0].url) == "https://speech.example.com/v1/audio/speech"
-    assert json.loads(requests[0].content)["response_format"] == "pcm"
-
-
-@pytest.mark.asyncio
-async def test_connectivity_uses_current_character_voice_when_fallback_is_blank(monkeypatch):
-    class _CharacterConfigManager:
-        async def aload_characters(self):
-            return {
-                "当前猫娘": "Yui",
-                "猫娘": {
-                    "Yui": {
-                        "_reserved": {
-                            "voice_id": {
-                                "source": "preset",
-                                "provider": "custom",
-                                "ref": "character-voice",
-                            }
-                        }
-                    }
-                },
-            }
-
-        def get_voices_for_current_api(self):
-            return {}
-
-    captured = {}
-
-    async def fake_probe(urls, api_key, model, provider_type, is_free, **kwargs):
-        captured.update(
-            {
-                "urls": urls,
-                "api_key": api_key,
-                "model": model,
-                "provider_type": provider_type,
-                "is_free": is_free,
-                **kwargs,
-            }
-        )
-        return {"success": True}
-
-    monkeypatch.setattr(connectivity_module, "get_config_manager", lambda: _CharacterConfigManager())
-    monkeypatch.setattr(connectivity_module, "_test_connectivity_candidates", fake_probe)
-
-    result = await connectivity_module.test_connectivity(
-        ConnectivityTestRequest(
-            url="https://speech.example.com/v1",
-            api_key="sk-probe",
-            model="vendor-tts",
-            provider_type="tts",
-            sub_type="openai_tts",
-            voice_id="",
-        )
-    )
-
-    assert result["success"] is True
-    assert captured["voice_id"] == "character-voice"
-
-
-@pytest.mark.asyncio
-async def test_connectivity_does_not_borrow_a_stored_clone_for_openai_probe(monkeypatch):
-    class _CharacterConfigManager:
-        async def aload_characters(self):
-            return {
-                "当前猫娘": "Yui",
-                "猫娘": {"Yui": {"voice_id": "clone-voice"}},
-            }
-
-        def get_voices_for_current_api(self):
-            return {"clone-voice": {"provider": "cosyvoice", "source": "clone"}}
-
-    monkeypatch.setattr(connectivity_module, "get_config_manager", lambda: _CharacterConfigManager())
-
-    assert await _resolve_openai_tts_probe_voice("") == ""
+    assert result["resolved_url"] == "https://api.siliconflow.cn/v1"
+    assert str(requests[0].url) == "https://api.siliconflow.cn/v1/audio/speech"
+    assert requests[0].headers["authorization"] == "Bearer sk-probe"
+    assert json.loads(requests[0].content) == {
+        "model": "FunAudioLLM/CosyVoice2-0.5B",
+        "input": "测试",
+        "voice": "FunAudioLLM/CosyVoice2-0.5B:anna",
+        "response_format": "pcm",
+        "sample_rate": 24000,
+        "stream": True,
+    }

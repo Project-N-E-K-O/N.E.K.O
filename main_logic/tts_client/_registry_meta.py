@@ -23,7 +23,7 @@
 # ├─────────────┼──────────────┼──────────────┼──────────────────────────────┤
 # │ ws_bistream │ WS 流式推送   │ WS 流式回传   │ step, qwen, cosyvoice       │
 # │ http_sentence│ HTTP 按句请求 │ SSE/JSON 流式 │ cogtts, gemini, openai,     │
-# │             │              │ 或一次性返回   │ custom, minimax              │
+# │             │              │ 或一次性返回   │ custom, minimax             │
 # │ local       │ 各自实现      │ 各自实现      │ gptsovits, local_cosyvoice  │
 # └─────────────┴──────────────┴──────────────┴──────────────────────────────┘
 #
