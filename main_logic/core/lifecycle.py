@@ -715,7 +715,8 @@ class LifecycleMixin:
             tts_result, llm_result = await asyncio.gather(
                 self._start_session_start_tts_if_needed(),
                 self._start_session_start_llm(
-                    input_mode, core_config_snapshot, _new_dialog_task, _mem_start
+                    input_mode, core_config_snapshot, realtime_config,
+                    _new_dialog_task, _mem_start
                 ),
                 return_exceptions=True
             )
@@ -1179,6 +1180,7 @@ class LifecycleMixin:
         return resp.text
 
     async def _start_session_start_llm(self, input_mode, core_config_snapshot,
+                                       prepared_realtime_config,
                                        new_dialog_task, mem_start):
         """Asynchronously create and connect the LLM Session.
 
@@ -1318,7 +1320,7 @@ class LifecycleMixin:
             new_session.on_thinking_active = self._make_thinking_active_callback(new_session)
         else:
             # 同上：await 记忆拉取之后必须重读，不复用 prepare_runtime 的快照
-            _prev_realtime_base = str(realtime_config.get('base_url') or '')
+            _prev_realtime_base = str((prepared_realtime_config or {}).get('base_url') or '')
             realtime_config = await self._config_manager.aget_model_api_config('realtime')
             # 区域翻转诊断，与 text 分支对偶；realtime 的音色下发按本快照的
             # base_url 走配对闸门，错配不下发、落服务端默认（fail-safe）。
