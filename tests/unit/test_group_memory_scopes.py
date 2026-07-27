@@ -8843,8 +8843,11 @@ async def test_stripped_cross_group_section_leaves_no_dependency(monkeypatch):
         ),
     )
     bundle = SimpleNamespace(
-        system_prompt="正文\n\n跨群段原文", core_memory_text="",
-        cross_group_section="跨群段原文", used_member_subject=False,
+        system_prompt="正文\n\n跨群段原文\n\n活跃会话段原文",
+        core_memory_text="",
+        cross_group_section="跨群段原文",
+        cross_session_section="活跃会话段原文",
+        used_member_subject=False,
         context_ready_template="", traces=[], memory_context_used=False,
         scene_mode="group_directed", user_title="", character_prompt="",
     )
@@ -8879,6 +8882,10 @@ async def test_stripped_cross_group_section_leaves_no_dependency(monkeypatch):
     )
     assert "跨群段原文" not in context.system_prompt
     assert context.cross_group_section == ""
+    # The sessions block is cross-group content too: same strip, same
+    # cleared dependency.
+    assert "活跃会话段原文" not in context.system_prompt
+    assert context.cross_session_section == ""
 
     # Consent intact: the section stays and the dependency is recorded.
     plugin._qq_settings["allow_cross_group_context"] = True
@@ -8887,6 +8894,7 @@ async def test_stripped_cross_group_section_leaves_no_dependency(monkeypatch):
         is_group=True, group_id="7788",
     )
     assert context.cross_group_section == "跨群段原文"
+    assert context.cross_session_section == "活跃会话段原文"
 
 
 @pytest.mark.asyncio
@@ -9356,3 +9364,205 @@ async def test_session_instructions_build_executes_end_to_end():
     # ...and the other conversation stays undisclosed.
     assert "9900" not in bundle.system_prompt
     assert "别的群的人" not in bundle.system_prompt
+    # Nothing cross-group was disclosed, so there is no dependency to track.
+    assert bundle.cross_session_section == ""
+
+    # With consent the other conversation is listed AND recorded as a
+    # cross-group dependency, so revoking mid-generation can strip it and
+    # discard the draft.
+    plugin._qq_settings["allow_cross_group_context"] = True
+    bundle = await service.build_session_instructions(
+        her_name="Neko",
+        master_name="Master",
+        character_prompt="人设",
+        character_card_fields={},
+        permission_level="user",
+        sender_id="2046",
+        user_title="群友",
+        is_group=True,
+        group_id="7788",
+        use_memory_context=False,
+    )
+    assert "9900" in bundle.system_prompt
+    assert "9900" in bundle.cross_session_section
+
+
+@pytest.mark.asyncio
+async def test_session_metadata_counts_as_a_cross_group_dependency():
+    """With consent on, the sessions list names other conversations. That
+    makes the reply cross-group-derived: revoking mid-generation has to
+    strip it and discard the draft, exactly like the topic section — and
+    private turns have no topic section at all, so this was their only
+    dependency."""
+    from plugin.plugins.qq_auto_reply.reply_generation_service import (
+        QQReplyGenerationService,
+    )
+    from plugin.plugins.qq_auto_reply.session_instruction_service import (
+        QQSessionInstructionService,
+    )
+
+    plugin = SimpleNamespace(
+        _qq_settings={"allow_cross_group_context": True},
+        _user_sessions={
+            "group:7788": {"is_group": True, "group_id": "7788"},
+            "private:2046": {"is_group": False, "sender_id": "2046"},
+        },
+        logger=MagicMock(),
+        i18n=_default_i18n(),
+    )
+    instructions = QQSessionInstructionService(plugin)
+    assert instructions._sessions_section_discloses_others(
+        is_group=True, group_id="7788", sender_id="",
+    ) is True
+    # A private turn also sees the group listed -> still a dependency.
+    assert instructions._sessions_section_discloses_others(
+        is_group=False, group_id=None, sender_id="2046",
+    ) is True
+    # Only this conversation is active -> nothing cross-group about it.
+    plugin._user_sessions.pop("private:2046")
+    assert instructions._sessions_section_discloses_others(
+        is_group=True, group_id="7788", sender_id="",
+    ) is False
+
+    service = QQReplyGenerationService.__new__(QQReplyGenerationService)
+    service.plugin = plugin
+    context = SimpleNamespace(
+        is_group=False, core_memory_text="", recalled_memory_text="",
+        cross_group_section="", cross_session_section="## 活跃会话\n- 群聊 9900",
+        used_member_subject=False,
+    )
+    # Private turn, no topic section: the dependency now comes from the
+    # sessions block.
+    snapshot = service._consent_dependency_snapshot(
+        SimpleNamespace(**{**context.__dict__, "is_group": True})
+    )
+    assert snapshot.get("allow_cross_group_context") is True
+
+    # Live revocation strips it from the prompt before generation.
+    plugin._qq_settings["allow_cross_group_context"] = False
+    prompt, _ = service._sanitize_for_live_consent(
+        SimpleNamespace(**{**context.__dict__, "is_group": True}),
+        "正文\n\n## 活跃会话\n- 群聊 9900",
+        "",
+    )
+    assert "9900" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_default_reply_replaces_the_unsent_primary_row():
+    """A primary answer that sanitizes to nothing (all thinking tags, say)
+    still left its raw ai row in shared history while the user received a
+    canned line. used_default_message exempted that row from every
+    undelivered mark, so the digest persisted text nobody saw."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        QQDeliveryPlan,
+        QQDeliveryResult,
+        QQMessageBlock,
+        QQReplyOutcome,
+        QQReplyRequest,
+    )
+    from plugin.plugins.qq_auto_reply.reply_pipeline import (
+        QQReplyPipelineRunner,
+    )
+
+    mark = MagicMock()
+    append = MagicMock()
+    plugin = SimpleNamespace(
+        reply_buffer_service=None,
+        reply_delivery_node=SimpleNamespace(
+            deliver=AsyncMock(return_value=QQDeliveryResult(
+                delivered=True, target_type="group", target_id="7788",
+                reply_text="嗯嗯~",
+            )),
+        ),
+        reply_generation_service=SimpleNamespace(
+            record_scoped_mentions_on_delivery=AsyncMock(),
+            append_fallback_ai_row=append,
+        ),
+        session_memory_service=SimpleNamespace(
+            record_tail_undelivered_ai_row=mark,
+        ),
+        _build_session_key=(
+            lambda *, sender_id, is_group, group_id: f"group:{group_id}"
+        ),
+        _qq_settings={"group_memory_enabled": True},
+        logger=MagicMock(),
+    )
+    runner = QQReplyPipelineRunner(plugin)
+    request = QQReplyRequest(
+        message_text="hi", sender_id="2046", is_group=True, group_id="7788",
+    )
+    context = SimpleNamespace(
+        is_group=True, group_id="7788", consent_snapshot={},
+    )
+    await runner._run_delivery(
+        QQDeliveryPlan(
+            target_type="group", target_id="7788",
+            blocks=[QQMessageBlock(text="嗯嗯~")],
+        ),
+        request,
+        QQReplyOutcome(
+            action="reply", reply_text="嗯嗯~", used_default_message=True,
+            raw_reply_text="<think>用户在问什么</think>",
+        ),
+        context=context,
+    )
+    mark.assert_called_once_with("group:7788")
+    # ...and what the user actually received takes its place in history.
+    assert append.call_args.args[1] == "嗯嗯~"
+
+    # A default sent with no primary output at all has no row to replace.
+    mark.reset_mock()
+    append.reset_mock()
+    await runner._run_delivery(
+        QQDeliveryPlan(
+            target_type="group", target_id="7788",
+            blocks=[QQMessageBlock(text="嗯嗯~")],
+        ),
+        request,
+        QQReplyOutcome(
+            action="reply", reply_text="嗯嗯~", used_default_message=True,
+            raw_reply_text="",
+        ),
+        context=context,
+    )
+    mark.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_save_publishes_an_opt_in_that_did_land():
+    """The write is shielded, so cancelling the RPC does not cancel it. If
+    it succeeded, disk holds the opt-in — leaving the runtime off means the
+    switch turns itself on at the next restart instead."""
+    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
+
+    service = QQSettingsService.__new__(QQSettingsService)
+    published: list = []
+    service.plugin = SimpleNamespace(
+        _qq_settings={"group_memory_enabled": False},
+        _emit_log=lambda *a, **k: None,
+        logger=MagicMock(),
+    )
+    service._rollback_unpersisted_memory_toggles = lambda persisted, **kw: None
+    service._publish_consent_opt_ins = published.append
+    started = asyncio.Event()
+
+    async def _slow_success(overlay=None):
+        started.set()
+        await asyncio.sleep(0.05)
+        return True
+
+    service.persist_business_config = _slow_success
+    task = asyncio.create_task(
+        service._persist_with_consent_rollback(
+            deferred_opt_ins={"group_memory_enabled": True},
+            group_memory_before=False, group_memory_after=False,
+            member_memory_before=False, member_memory_after=False,
+            cross_group_before=False,
+        )
+    )
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert published == [{"group_memory_enabled": True}]

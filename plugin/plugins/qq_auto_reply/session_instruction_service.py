@@ -289,6 +289,20 @@ class QQSessionInstructionService:
                 sticker_catalog=self._load_sticker_catalog(),
             )
 
+        sessions_section = self._build_sessions_section(
+            is_group=is_group, group_id=group_id, sender_id=sender_id,
+        )
+        # 这段在跨群授权打开时会列出其他会话的 ID / 称谓 / 权限：它和话题段
+        # 一样是跨群内容，必须同样进授权依赖，否则生成或缓冲期间关掉开关，
+        # 一条被其他会话元数据影响的回复照样发得出去（私聊轮的话题段恒为
+        # 空，那条路径此前完全没有依赖可撤）。
+        cross_session_section = (
+            sessions_section
+            if self._sessions_section_discloses_others(
+                is_group=is_group, group_id=group_id, sender_id=sender_id,
+            )
+            else ""
+        )
         sections = [
             self._resolve_init_template(user_language).format(name=her_name),
             self._resolve_static_layer("role_prompt_section", ROLE_PROMPT_SECTION, user_language),
@@ -300,9 +314,7 @@ class QQSessionInstructionService:
                 login_self_id=login_self_id,
                 login_nickname=login_nickname,
             ),
-            self._build_sessions_section(
-                is_group=is_group, group_id=group_id, sender_id=sender_id,
-            ),
+            sessions_section,
             self._resolve_static_layer("character_prompt_section", CHARACTER_PROMPT_SECTION, user_language, character_prompt=base_prompt),
             self._resolve_time_section(user_language),
             self._build_chat_environment_section(
@@ -396,6 +408,7 @@ class QQSessionInstructionService:
             core_memory_text=core_memory_text,
             scene_mode=scene_mode,
             cross_group_section=cross_group_section,
+            cross_session_section=cross_session_section,
             used_member_subject=used_member_subject and bool(core_memory_text),
         )
 
@@ -423,6 +436,29 @@ class QQSessionInstructionService:
             f"- 当前 QQ 账号昵称：{login_nickname or '未知'}",
         ]
         return ACCOUNTS_PROMPT_SECTION.format(accounts="\n".join(account_lines))
+
+    def _sessions_section_discloses_others(
+        self, *, is_group: bool, group_id: str | None, sender_id: str,
+    ) -> bool:
+        """True when the rendered list names a conversation other than this
+        one — the judgement the consent dependency needs."""
+        if not bool(
+            (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                "allow_cross_group_context", False,
+            )
+        ):
+            return False
+        current_group = str(group_id or "").strip()
+        current_sender = str(sender_id or "").strip()
+        for item in list(getattr(self.plugin, "_user_sessions", {}).values())[:10]:
+            if bool(item.get("is_group")) != bool(is_group):
+                return True
+            if is_group:
+                if str(item.get("group_id") or "").strip() != current_group:
+                    return True
+            elif str(item.get("sender_id") or "").strip() != current_sender:
+                return True
+        return False
 
     def _build_sessions_section(
         self, *, is_group: bool = False, group_id: str | None = None,

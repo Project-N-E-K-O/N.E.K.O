@@ -401,6 +401,10 @@ class QQReplyContextNode:
             system_prompt,
             getattr(instruction_bundle, "cross_group_section", ""),
         )
+        system_prompt, cross_session_alive = self._strip_cross_group_if_revoked(
+            system_prompt,
+            getattr(instruction_bundle, "cross_session_section", ""),
+        )
         self.plugin._emit_log("INFO", f"[UserMsg] (system {len(system_prompt)}字) {prompt_message[:200]}")
 
         return QQReplyContext(
@@ -439,6 +443,10 @@ class QQReplyContextNode:
             cross_group_section=(
                 getattr(instruction_bundle, "cross_group_section", "")
                 if cross_group_alive else ""
+            ),
+            cross_session_section=(
+                getattr(instruction_bundle, "cross_session_section", "")
+                if cross_session_alive else ""
             ),
             used_member_subject=bool(
                 (

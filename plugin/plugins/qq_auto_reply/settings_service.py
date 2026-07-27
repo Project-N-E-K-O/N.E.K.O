@@ -51,6 +51,7 @@ class QQSettingsService:
         cross_group_before: bool | None, cross_group_after: bool | None = None,
         deferred_opt_ins: dict[str, bool] | None = None,
     ) -> bool:
+        # 取消路径也要能发布：写盘被 shield 保护，取消 await 不取消它。
         """Persist settings and roll consent back if the write did not land.
 
         Cancellation counts as "not written": CancelledError bypasses
@@ -83,6 +84,11 @@ class QQSettingsService:
                 self.plugin.logger.error(f"取消期间的配置写盘失败: {exc}")
                 success = False
             self._rollback_unpersisted_memory_toggles(success, **rollback_kwargs)
+            if success and deferred_opt_ins:
+                # 写盘真的落地了（shield 让它跑完）：磁盘已是新值，此处不
+                # 发布的话运行时会一直停在关闭，直到重启才突然打开——用户
+                # 眼里就是"取消了的操作过一阵自己生效了"。
+                self._publish_consent_opt_ins(deferred_opt_ins)
             raise
         except BaseException:
             self._rollback_unpersisted_memory_toggles(False, **rollback_kwargs)

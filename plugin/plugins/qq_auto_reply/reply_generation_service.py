@@ -309,7 +309,9 @@ class QQReplyGenerationService:
                 snapshot["group_member_memory_enabled"] = bool(
                     settings.get("group_member_memory_enabled", False)
                 )
-        if getattr(context, "cross_group_section", ""):
+        if getattr(context, "cross_group_section", "") or getattr(
+            context, "cross_session_section", "",
+        ):
             snapshot["allow_cross_group_context"] = bool(
                 settings.get("allow_cross_group_context", False)
             )
@@ -365,10 +367,11 @@ class QQReplyGenerationService:
             recalled_text = ""
             system_prompt = self._strip_section_text(system_prompt, core_text)
         if not settings.get("allow_cross_group_context", False):
-            system_prompt = self._strip_section_text(
-                system_prompt,
+            for section in (
                 getattr(context, "cross_group_section", "") or "",
-            )
+                getattr(context, "cross_session_section", "") or "",
+            ):
+                system_prompt = self._strip_section_text(system_prompt, section)
         return system_prompt, recalled_text
 
     @staticmethod

@@ -312,6 +312,26 @@ class QQReplyPipelineRunner:
             from .pipeline_models import QQDeliveryResult
             return QQDeliveryResult(delivered=True, target_type=delivery_plan.target_type, target_id=delivery_plan.target_id, reply_text=first_text)
 
+        if (
+            request is not None
+            and request.is_group
+            and outcome is not None
+            and getattr(outcome, "used_default_message", False)
+            and not getattr(outcome, "used_fallback", False)
+            and str(getattr(outcome, "raw_reply_text", "") or "").strip()
+        ):
+            # 主会话产出了非空文本、清洗后为空（例如整条都是思考标签），
+            # 于是改发默认回复：那条 raw ai 行已经躺在共享历史里且永远不会
+            # 被发出去。used_default_message 让它绕过了所有未投递打标——
+            # 下一次 digest 会把用户从没看到的内容（含隐藏推理）入库。
+            self.plugin.session_memory_service.record_tail_undelivered_ai_row(
+                self.plugin._build_session_key(
+                    sender_id=request.sender_id,
+                    is_group=True,
+                    group_id=request.group_id,
+                )
+            )
+
         if context is not None and self._consent_revoked_before_send(context):
             # 直投没有 buffer 的撤销闸：生成后复检到真正发出去之间还有
             # 后处理（XML 修复等再等一次 LLM）与计划构建，这段窗口里关掉
@@ -409,9 +429,12 @@ class QQReplyPipelineRunner:
             delivered_text = (
                 delivered_blocks_text(delivery_plan.blocks) or outcome.reply_text
             )
-            if getattr(outcome, "used_fallback", False):
-                # fallback 回复没有历史 ai 行：确认投递后补一行，否则群
-                # digest 只会存下半边对话，丢掉本轮回复披露的内容。
+            if getattr(outcome, "used_fallback", False) or getattr(
+                outcome, "used_default_message", False,
+            ):
+                # fallback / 默认回复都没有对应的历史 ai 行（默认回复那条
+                # raw 行刚被标成未投递）：确认投递后补上真正说出去的话，
+                # 否则群 digest 只会存下半边对话。
                 self.plugin.reply_generation_service.append_fallback_ai_row(
                     context, delivered_text,
                 )

@@ -109,6 +109,10 @@ class QQInstructionBundle:
     # 跨群上下文段原文（未注入时为空）：consent 是运行时开关，构建后到
     # 生成前的 await 窗口里可能被关掉/回滚，届时按原文从 prompt 中摘除。
     cross_group_section: str = ""
+    # 活跃会话清单里披露了其他会话时的原文：与话题段同为跨群内容，撤销时
+    # 一并撤除、同样计入授权依赖（私聊轮的话题段恒为空，此前那条路径根本
+    # 没有可撤的依赖）。
+    cross_session_section: str = ""
     # core memory 段是否含 participant 域内容：member 开关在后续 await
     # 窗口里被关掉时，该段要按同样方式撤除。
     used_member_subject: bool = False
@@ -152,6 +156,8 @@ class QQReplyContext:
     # 本轮 prompt 里的跨群段原文（未注入时为空）：生成前在会话锁内复检
     # 授权，撤销时按原文摘除。
     cross_group_section: str = ""
+    # 同上，活跃会话清单段。
+    cross_session_section: str = ""
     # core memory 段是否含 participant 域：member 授权在生成前被撤销时
     # 该段（及混合域召回）要一并撤除。
     used_member_subject: bool = False
