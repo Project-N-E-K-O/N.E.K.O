@@ -455,6 +455,18 @@ class QQMessageDispatcher:
                     gate.run_retroactive_review(shift.new_focus_group)
                 )
                 # 强引用+关机 join：回溯任务在会话锁内改历史/排除名单，
-                # stop 清锁表前必须等它收尾。
+                # stop 清锁表前必须等它收尾。完成回调消费异常——否则失败
+                # 静默丢弃，只留延迟的未取回异常告警。
                 retro_tasks.add(retro_task)
-                retro_task.add_done_callback(retro_tasks.discard)
+
+                def _on_retro_done(task: "asyncio.Task") -> None:
+                    retro_tasks.discard(task)
+                    if task.cancelled():
+                        return
+                    exc = task.exception()
+                    if exc is not None:
+                        self.plugin.logger.warning(
+                            f"[RetroReview] 回溯补回任务失败: {exc}"
+                        )
+
+                retro_task.add_done_callback(_on_retro_done)
