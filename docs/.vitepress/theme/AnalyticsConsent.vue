@@ -157,7 +157,7 @@ onBeforeUnmount(() => {
         <button
           ref="allowButton"
           class="NekoAnalyticsConsent-button"
-          :class="{ 'NekoAnalyticsConsent-button--primary': choice !== 'denied' }"
+          :class="{ 'NekoAnalyticsConsent-button--selected': choice === 'granted' }"
           type="button"
           :aria-pressed="choice === 'granted'"
           @click="accept"
@@ -274,19 +274,6 @@ onBeforeUnmount(() => {
 
 .NekoAnalyticsConsent-button--selected {
   box-shadow: inset 0 0 0 2px #1e293b;
-}
-
-.NekoAnalyticsConsent-button--primary {
-  border-color: #38bdf8;
-  color: #fff;
-  background: #0ea5e9;
-  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
-}
-
-.NekoAnalyticsConsent-button--primary:hover {
-  border-color: #7dd3fc;
-  color: #fff;
-  background: #0284c7;
 }
 
 .NekoAnalyticsConsent-close {
