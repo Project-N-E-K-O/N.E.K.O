@@ -320,6 +320,8 @@ def run_step_protocol_tts_worker(
                             audio_jitter.flush()  # 放掉缓冲区里不足 steady 阈值的尾音
                             response_done.set()
                 except websockets.exceptions.ConnectionClosed:
+                    # Normal when a speech-id change or shutdown closes the
+                    # socket while this receiver is awaiting the next frame.
                     pass
                 except asyncio.CancelledError:
                     cancelled = True
@@ -406,14 +408,18 @@ def run_step_protocol_tts_worker(
                     if ws:
                         try:
                             await ws.close()
-                        except:  # noqa: E722
-                            pass
+                        except Exception as e:
+                            # Reconnect below replaces this socket, so close
+                            # failures are non-fatal; cancellation still
+                            # propagates instead of being swallowed.
+                            logger.debug("关闭旧 TTS WebSocket 失败: %s", e)
                     if receive_task and not receive_task.done():
                         audio_jitter.flush()
                         receive_task.cancel()
                         try:
                             await receive_task
                         except asyncio.CancelledError:
+                            # Expected after the explicit cancel directly above.
                             pass
                     # 旧接收任务已完全停止后再重置流式状态：await ws.close() 会让出，
                     # 期间旧 receive_task 可能写入晚到的 audio.delta，若提前重置会被残留污染下一轮
@@ -437,8 +443,11 @@ def run_step_protocol_tts_worker(
                                         session_id = event.get("data", {}).get("session_id")
                                         session_ready.set()
                                         break
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                # The timeout/session_id checks below own the
+                                # reconnect decision; retain the exception only
+                                # as diagnostic context.
+                                logger.debug("等待新 TTS 连接确认失败: %s", e)
 
                         try:
                             await asyncio.wait_for(wait_conn(), timeout=1.0)
@@ -492,6 +501,8 @@ def run_step_protocol_tts_worker(
                                         audio_jitter.flush()  # 放掉缓冲区里不足 steady 阈值的尾音
                                         response_done.set()
                             except websockets.exceptions.ConnectionClosed:
+                                # Normal when reconnect/shutdown closes the
+                                # socket while the receiver is awaiting data.
                                 pass
                             except asyncio.CancelledError:
                                 cancelled = True
@@ -574,13 +585,15 @@ def run_step_protocol_tts_worker(
                 try:
                     await receive_task
                 except asyncio.CancelledError:
+                    # Expected after the explicit cancel directly above.
                     pass
 
             if ws:
                 try:
                     await ws.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    # Best-effort final cleanup; the worker is already exiting.
+                    logger.debug("关闭 TTS WebSocket 资源失败: %s", e)
 
     # 运行异步worker
     try:
