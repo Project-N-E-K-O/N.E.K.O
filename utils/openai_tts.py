@@ -6,7 +6,17 @@
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
 
-"""Shared helpers for OpenAI-compatible ``/v1/audio/speech`` endpoints."""
+"""Protocol helpers for OpenAI-compatible ``/v1/audio/speech`` endpoints.
+
+This module deliberately covers only the HTTP(S) Speech API contract shared by
+the runtime worker and the connectivity probe. WS(S) duplex providers have
+different request/stream semantics and remain in their provider-specific
+workers; accepting a WebSocket URL here would blur that routing boundary.
+
+Keep vendor-specific fields out of the common payload. A compatible provider
+should receive the standard OpenAI body unless it is explicitly recognized by
+``openai_tts_extra_body``.
+"""
 
 from __future__ import annotations
 
@@ -16,8 +26,14 @@ from urllib.parse import urlparse, urlunparse
 OPENAI_TTS_DEFAULT_BASE_URL = "https://api.openai.com/v1"
 OPENAI_TTS_DEFAULT_MODEL = "gpt-4o-mini-tts"
 OPENAI_TTS_DEFAULT_VOICE = "marin"
+# Raw PCM returned by the Speech API is fed into the project's 24 kHz -> 48 kHz
+# streaming resampler. Providers with a configurable rate must be pinned to the
+# same source rate or playback speed and pitch will be wrong.
 OPENAI_TTS_PCM_SAMPLE_RATE = 24000
 
+# Use exact host matching so SiliconFlow-only request fields are never leaked to
+# an unrelated OpenAI-compatible server whose hostname merely contains the same
+# text (for example, a user-controlled subdomain).
 _SILICONFLOW_TTS_HOSTS = frozenset({
     "api.siliconflow.cn",
     "api.siliconflow.com",
@@ -46,10 +62,17 @@ def openai_tts_base_url(base_url: str) -> str:
 
     path = (parsed.path or "").rstrip("/")
     if not path:
+        # A bare origin follows the conventional OpenAI API layout.
         path = "/v1"
     if path.endswith("/audio/speech"):
+        # AsyncOpenAI expects the API base, not the resource endpoint. The UI
+        # accepts either form, so strip only the known suffix and preserve any
+        # provider-specific prefix before it.
         path = path[:-len("/audio/speech")].rstrip("/") or "/v1"
 
+    # Rebuild from parsed components rather than concatenating the raw string;
+    # this keeps query parameters after the path where signed/proxied endpoints
+    # expect them.
     return urlunparse(
         (parsed.scheme, parsed.netloc, path, parsed.params, parsed.query, parsed.fragment)
     )
@@ -60,6 +83,8 @@ def openai_tts_speech_url(base_url: str) -> str:
 
     parsed = urlparse(openai_tts_base_url(base_url))
     path = f"{parsed.path.rstrip('/')}/audio/speech"
+    # The connectivity probe uses this full URL directly. Component-wise
+    # assembly avoids producing malformed URLs such as ``...?token=x/audio``.
     return urlunparse(
         (parsed.scheme, parsed.netloc, path, parsed.params, parsed.query, parsed.fragment)
     )
@@ -75,12 +100,20 @@ def openai_tts_extra_body(base_url: str) -> dict[str, int | bool]:
 
     parsed = urlparse(str(base_url or "").strip())
     if (parsed.hostname or "").lower() in _SILICONFLOW_TTS_HOSTS:
+        # SiliconFlow supports streaming PCM through the OpenAI-compatible HTTP
+        # endpoint but exposes these controls as extensions. Pin both explicitly
+        # so runtime playback and the connectivity probe exercise the same wire
+        # format. Do not send them to generic providers.
         return {"sample_rate": OPENAI_TTS_PCM_SAMPLE_RATE, "stream": True}
     return {}
 
 
 def build_openai_tts_payload(text: str, model: str, voice: str) -> dict[str, str]:
-    """Build the strict OpenAI speech request used by runtime and probes."""
+    """Build the strict OpenAI speech request used by runtime and probes.
+
+    Vendor extensions intentionally live in ``openai_tts_extra_body`` so the
+    baseline request remains portable across OpenAI-compatible operators.
+    """
 
     effective_model = str(model or "").strip()
     effective_voice = str(voice or "").strip()
@@ -97,7 +130,12 @@ def build_openai_tts_payload(text: str, model: str, voice: str) -> dict[str, str
 
 
 def openai_tts_headers(api_key: str) -> dict[str, str]:
-    """Return OpenAI-compatible request headers, allowing auth-free local APIs."""
+    """Return OpenAI-compatible request headers, allowing auth-free local APIs.
+
+    Do not invent an Authorization header when the key is empty: self-hosted
+    compatible endpoints commonly disable authentication, and the HTTP probe
+    should mirror the user's actual configuration.
+    """
 
     headers = {"Content-Type": "application/json", "Accept": "audio/*"}
     key = str(api_key or "").strip()
