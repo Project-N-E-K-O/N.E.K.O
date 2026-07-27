@@ -1,111 +1,159 @@
+import json
 import re
+import shutil
+import textwrap
 from pathlib import Path
+
+import pytest
+
+from tests.node_harness import run_node_stdin
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LIVE2D_INTERACTION = PROJECT_ROOT / "static" / "live2d" / "live2d-interaction.js"
 VRM_INTERACTION = PROJECT_ROOT / "static" / "vrm" / "vrm-interaction.js"
 
-_TOKENS = re.compile(
-    r"(?P<positive_guard>if\s*\(\s*isWheelPointOnCurrentModel\(event\)\s*\)\s*(?=\{))"
-    r"|(?P<early_return>if\s*\(\s*!\s*isWheelPointOnCurrentModel\(event\)\s*\)\s*return;)"
-    r"|(?P<consume>event\.preventDefault\(\);)"
-    r"|(?P<open>\{)"
-    r"|(?P<close>\})"
-)
-_COMMENTS_AND_STRINGS = re.compile(
-    r"//[^\n]*|/\*.*?\*/|'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|`(?:\\.|[^`\\])*`",
-    re.S,
-)
 
-
-def _blank_out_noise(block: str) -> str:
-    """Blank comments and string literals, preserving offsets.
-
-    Braces inside them are not block structure; counting them would desync the
-    scope stack below.
-    """
-    return _COMMENTS_AND_STRINGS.sub(lambda m: " " * len(m.group(0)), block)
-
-
-def _unguarded_prevent_defaults(block: str) -> tuple[int, list[str]]:
-    """Find preventDefault calls that no hit check actually controls.
-
-    Three weaker shapes were tried and each admitted a real regression:
-
-    * "some hit check appears earlier in the text" — the peek branch's own
-      check sits in a nested block and governs nothing once that block closes,
-      so a consume added after it still read as guarded.
-    * per-line brace depth — ``} else {`` nets to zero, leaving the positive
-      guard's depth in scope, so ``if (hit) {...} else { consume }`` read as
-      guarded even though the else branch runs exactly when the hit test fails.
-    * registering a line's guards before scanning it for consumes — the order
-      within a line was lost, so ``consume; if (!hit) return;`` read as guarded
-      despite consuming before testing.
-
-    So walk the tokens in source order over a real scope stack: a consume is
-    guarded only if some enclosing scope was opened by a positive hit check, or
-    an early-return guard has already fired in a scope still on the stack.
-    """
-    scrubbed = _blank_out_noise(block)
-    # 栈里每层记 (是否由正向命中检查开出, 该层是否已经过早退守卫)
-    scopes: list[dict[str, bool]] = [{"guarded": False, "early_returned": False}]
-    pending_guarded_open = False
-    total = 0
-    unguarded: list[str] = []
-
-    for match in _TOKENS.finditer(scrubbed):
-        kind = match.lastgroup
-        if kind == "positive_guard":
-            pending_guarded_open = True
-        elif kind == "early_return":
-            scopes[-1]["early_returned"] = True
-        elif kind == "open":
-            scopes.append({"guarded": pending_guarded_open, "early_returned": False})
-            pending_guarded_open = False
-        elif kind == "close":
-            if len(scopes) > 1:
-                scopes.pop()
-        elif kind == "consume":
-            total += 1
-            covered = any(s["guarded"] or s["early_returned"] for s in scopes)
-            if not covered:
-                lineno = scrubbed.count("\n", 0, match.start()) + 1
-                unguarded.append(f"line {lineno}: {block.splitlines()[lineno - 1].strip()}")
-
-    return total, unguarded
-
-
-def test_live2d_wheel_zoom_requires_model_hit_before_consuming_event():
+def _live2d_wheel_zoom_source() -> str:
     source = LIVE2D_INTERACTION.read_text(encoding="utf-8")
     start = source.index("Live2DManager.prototype.setupWheelZoom = function (model)")
     end = source.index("// 设置触摸缩放", start)
-    block = source[start:end]
+    return source[start:end]
 
+
+def _run_wheel_scenarios(scenarios: list[dict]) -> list[dict]:
+    """Drive the real setupWheelZoom in node and report what each event did.
+
+    Static text analysis was tried three times here and leaked every time —
+    per-line brace depth missed ``} else {``, registering a line's guards
+    before scanning it missed ``consume; if (!hit) return;``, and a regex-based
+    scrubber still had to keep up with comments, strings, regex literals and
+    automatic semicolon insertion.  That is a JavaScript parser, and a
+    half-written one reads as a passing guard.  Running the handler answers the
+    question the file actually claims to answer: does the wheel get consumed
+    when the pointer is not on the model?
+    """
+    node_path = shutil.which("node")
+    if not node_path:
+        pytest.skip("node is required for the wheel guard behaviour test")
+
+    harness = textwrap.dedent("""
+        const SCALE_LIMITS = { MIN: 0.1, MAX: 10 };
+        function Live2DManager() {}
+        __WHEEL_ZOOM_SOURCE__
+
+        const scenarios = __SCENARIOS__;
+        const results = [];
+
+        for (const scenario of scenarios) {
+            let registered = null;
+            const model = {
+                getBounds: () => ({ x: 100, y: 100, width: 200, height: 200,
+                                    left: 100, top: 100, right: 300, bottom: 300 }),
+                scale: { x: 1, set(next) { this.x = next; } },
+            };
+            const manager = new Live2DManager();
+            manager.isLocked = scenario.locked === true;
+            manager.currentModel = model;
+            manager.isLive2DPeekActive = () => scenario.peek === true;
+            manager._debouncedSnapCheck = () => {};
+            manager.pixi_app = {
+                renderer: { screen: { width: 400, height: 400 } },
+                view: {
+                    getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 400 }),
+                    addEventListener: (type, handler) => { if (type === 'wheel') registered = handler; },
+                    removeEventListener: () => {},
+                },
+            };
+
+            Live2DManager.prototype.setupWheelZoom.call(manager, model);
+            if (typeof registered !== 'function') {
+                throw new Error('setupWheelZoom did not register a wheel listener');
+            }
+
+            let prevented = false;
+            registered({
+                clientX: scenario.x,
+                clientY: scenario.y,
+                deltaY: -100,
+                preventDefault: () => { prevented = true; },
+            });
+
+            results.push({
+                name: scenario.name,
+                prevented,
+                zoomed: model.scale.x !== 1,
+            });
+        }
+
+        process.stdout.write(JSON.stringify(results));
+    """)
+    harness = harness.replace("__WHEEL_ZOOM_SOURCE__", _live2d_wheel_zoom_source())
+    harness = harness.replace("__SCENARIOS__", json.dumps(scenarios))
+
+    completed = run_node_stdin(
+        node_path,
+        harness,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+    assert completed.returncode == 0, (
+        f"wheel harness failed:\n{completed.stderr or completed.stdout}"
+    )
+    return json.loads(completed.stdout)
+
+
+@pytest.mark.unit
+def test_live2d_wheel_zoom_requires_model_hit_before_consuming_event():
+    """Off-model wheel events must reach the page; on-model ones must not."""
+    results = {
+        r["name"]: r
+        for r in _run_wheel_scenarios([
+            # 模型盒是 canvas 上的 100..300；中心点必然命中，远角必然不命中。
+            {"name": "on_model", "x": 200, "y": 200},
+            {"name": "off_model", "x": 20, "y": 20},
+            {"name": "on_model_peek", "x": 200, "y": 200, "peek": True},
+            {"name": "locked", "x": 200, "y": 200, "locked": True},
+        ])
+    }
+
+    assert results["off_model"]["prevented"] is False, (
+        "指针不在模型上时吞掉滚轮，页面就滚不动了"
+    )
+    assert results["off_model"]["zoomed"] is False
+
+    assert results["on_model"]["prevented"] is True, "命中模型必须消费掉滚轮"
+    assert results["on_model"]["zoomed"] is True, "命中模型必须真的缩放"
+
+    # 挂边探身（#2253）：吞掉滚轮但不缩放，且这一步同样以命中检查为前提。
+    assert results["on_model_peek"]["prevented"] is True
+    assert results["on_model_peek"]["zoomed"] is False
+
+    assert results["locked"]["prevented"] is False
+    assert results["locked"]["zoomed"] is False
+
+
+@pytest.mark.unit
+def test_live2d_wheel_hit_test_uses_canvas_relative_coordinates():
+    """Pin the mechanism the behaviour test cannot see from outside.
+
+    Reading the hit point off the canvas rect (rather than raw client
+    coordinates) is what keeps the check correct once the canvas is offset or
+    scaled; a regression there still passes a centred-canvas simulation.
+    """
+    block = _live2d_wheel_zoom_source()
     assert re.search(r"const\s+isWheelPointOnCurrentModel\s*=\s*\(event\)\s*=>\s*{", block)
     assert re.search(r"getBoundingClientRect\s*\(\)", block)
     assert re.search(r"event\.clientX\s*-\s*canvasRect\.left", block)
     assert re.search(r"event\.clientY\s*-\s*canvasRect\.top", block)
-    # 逐个消费点按「归它管的那个分支」判定，而不是拿首个 preventDefault 当
-    # "那一个"，也不是只比全文偏移：#2253 的挂边探身分支在缩放路径之前自带
-    # 一个 preventDefault（它自己在命中检查里面），首匹配写法会误判成守卫
-    # 失效；而只看"前面出现过命中检查"又会放过一个新加在探身块之后、早退
-    # 守卫之前的裸消费点——两种写法都比这条用例声称的主张弱。
-    total_prevents, unguarded = _unguarded_prevent_defaults(block)
-    assert total_prevents, "找不到任何 preventDefault，切片或实现已变"
-    assert not unguarded, (
-        f"这些 preventDefault 不在任何命中检查管辖的分支里，滚轮会在模型外被吞掉: {unguarded}"
-    )
-    prevent_sites = [m.start() for m in re.finditer(r"event\.preventDefault\(\);", block)]
-    guard_index = re.search(r"if\s*\(!isWheelPointOnCurrentModel\(event\)\)\s*return;", block).start()
-    scale_index = re.search(r"this\.currentModel\.scale\.set\(newScale\);", block).start()
-    assert guard_index < scale_index
-    assert any(guard_index < site < scale_index for site in prevent_sites), (
-        "缩放路径自己那一次 preventDefault 必须夹在早退守卫与 scale.set 之间"
-    )
 
 
+@pytest.mark.unit
 def test_vrm_wheel_zoom_requires_model_hit_before_consuming_event():
+    # VRM 侧只有一个 preventDefault，且守卫是同一层的早退，顺序比较足够表达
+    # 该不变量；live2d 那边换成行为验证是因为它有两条消费路径（缩放 + 挂边
+    # 探身），静态判定要区分它们就得真的解析 JS。
     source = VRM_INTERACTION.read_text(encoding="utf-8")
     start = source.index("this.wheelHandler = (e) => {")
     end = source.index("this.auxClickHandler = (e) => {", start)
@@ -117,3 +165,6 @@ def test_vrm_wheel_zoom_requires_model_hit_before_consuming_event():
     prevent_index = re.search(r"e\.preventDefault\(\);", block).start()
     scale_index = re.search(r"const\s+scaleFactor\s*=\s*e\.deltaY\s*>\s*0\s*\?\s*0\.95\s*:\s*1\.05;", block).start()
     assert guard_index < prevent_index < scale_index
+    assert block.count("e.preventDefault()") == 1, (
+        "VRM handler 出现了第二个消费点，顺序比较不再足够，改走行为验证"
+    )
