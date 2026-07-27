@@ -15,7 +15,7 @@ type ConsentLocale = 'en' | 'zh-CN' | 'ja'
 const messages = {
   en: {
     title: 'Analytics preferences',
-    body: 'Allow Google Analytics to help us improve these docs.',
+    body: 'We use Google Analytics to understand which documentation pages are useful and when visitors choose the Steam link. Google Analytics is not loaded until you accept, and advertising storage remains disabled.',
     accept: 'Allow',
     reject: 'Decline',
     settings: 'Cookie settings',
@@ -25,7 +25,7 @@ const messages = {
   },
   'zh-CN': {
     title: '分析偏好',
-    body: '允许 Google Analytics 帮助我们改进文档。',
+    body: '我们使用 Google Analytics 来了解哪些文档页面有用，以及访问者何时选择 Steam 链接。在你接受之前不会加载 Google Analytics，广告存储始终保持禁用。',
     accept: '允许',
     reject: '拒绝',
     settings: 'Cookie 设置',
@@ -35,7 +35,7 @@ const messages = {
   },
   ja: {
     title: '解析設定',
-    body: 'ドキュメント改善のため、Google Analytics の利用を許可してください。',
+    body: 'Google Analytics を使用して、どのドキュメントページが役立っているか、訪問者がいつ Steam リンクを選択したかを把握します。許可するまで Google Analytics は読み込まれず、広告用ストレージは無効のままです。',
     accept: '許可',
     reject: '拒否',
     settings: 'Cookie 設定',
@@ -132,13 +132,10 @@ onBeforeUnmount(() => {
       class="NekoAnalyticsConsent-banner"
       :class="{ 'NekoAnalyticsConsent-banner--revisit': choice !== null }"
       role="dialog"
-      aria-labelledby="neko-analytics-consent-title"
+      :aria-label="copy.title"
       aria-describedby="neko-analytics-consent-description"
     >
       <div class="NekoAnalyticsConsent-copy">
-        <h2 id="neko-analytics-consent-title">
-          {{ copy.title }}
-        </h2>
         <p id="neko-analytics-consent-description">
           {{ copy.body }}
           <a class="NekoAnalyticsConsent-privacy" :href="privacyPath">
@@ -169,7 +166,6 @@ onBeforeUnmount(() => {
           {{ copy.reject }}
         </button>
         <button
-          v-if="choice !== null"
           class="NekoAnalyticsConsent-close"
           type="button"
           :aria-label="copy.close"
@@ -209,13 +205,13 @@ onBeforeUnmount(() => {
   z-index: 1000;
   display: flex;
   align-items: center;
-  gap: 24px;
-  min-height: 64px;
-  padding: 12px max(20px, calc((100vw - 1440px) / 2));
-  border-top: 1px solid rgba(94, 129, 244, 0.22);
-  color: #f8fafc;
-  background: #090c20;
-  box-shadow: 0 -8px 24px rgba(3, 7, 18, 0.28);
+  gap: 32px;
+  min-height: 76px;
+  padding: 14px max(32px, calc((100vw - 1440px) / 2));
+  border: 1px solid #64748b;
+  color: #334155;
+  background: #fff;
+  box-shadow: 0 -6px 20px rgba(15, 23, 42, 0.18);
 }
 
 .NekoAnalyticsConsent-copy {
@@ -223,24 +219,17 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
-.NekoAnalyticsConsent-copy h2 {
-  margin: 0 0 4px;
-  border: 0;
-  color: #fff;
-  font-size: 16px;
-  line-height: 1.35;
-}
-
 .NekoAnalyticsConsent-copy p {
   margin: 0;
-  color: #dbe4f0;
-  font-size: 13px;
-  line-height: 1.5;
+  color: #475569;
+  font-size: 14px;
+  line-height: 1.55;
 }
 
 .NekoAnalyticsConsent-privacy {
   margin-left: 6px;
-  color: #7dd3fc;
+  color: #0369a1;
+  text-decoration: underline;
   white-space: nowrap;
 }
 
@@ -248,21 +237,21 @@ onBeforeUnmount(() => {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 7px;
+  gap: 10px;
 }
 
 .NekoAnalyticsConsent-button {
-  width: 88px;
-  min-width: 88px;
-  min-height: 32px;
-  padding: 5px 11px;
-  border: 1px solid #667085;
-  border-radius: 6px;
+  width: 124px;
+  min-width: 124px;
+  min-height: 46px;
+  padding: 10px 18px;
+  border: 1px solid #1e293b;
+  border-radius: 0;
   color: #f8fafc;
-  background: #1a2138;
+  background: #1e293b;
   cursor: pointer;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 14px;
+  font-weight: 700;
 }
 
 .NekoAnalyticsConsent-button:hover {
@@ -286,21 +275,22 @@ onBeforeUnmount(() => {
 
 .NekoAnalyticsConsent-close {
   display: grid;
-  width: 32px;
-  height: 32px;
+  width: 40px;
+  height: 46px;
   padding: 0;
   border: 0;
-  border-radius: 50%;
+  border-radius: 0;
   place-items: center;
-  color: #94a3b8;
+  color: #475569;
   background: transparent;
   cursor: pointer;
-  font-size: 20px;
+  font-size: 24px;
+  font-weight: 700;
 }
 
 .NekoAnalyticsConsent-close:hover {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.08);
+  color: #0f172a;
+  background: #e2e8f0;
 }
 
 .NekoAnalyticsConsent-footer {
@@ -329,7 +319,7 @@ onBeforeUnmount(() => {
 }
 
 .NekoAnalyticsConsent-spacer {
-  min-height: 76px;
+  min-height: 92px;
 }
 
 @media (max-width: 720px) {
@@ -338,7 +328,7 @@ onBeforeUnmount(() => {
     align-items: stretch;
     gap: 10px;
     min-height: 0;
-    padding: 12px 16px;
+    padding: 14px 16px;
   }
 
   .NekoAnalyticsConsent-actions {
@@ -346,23 +336,18 @@ onBeforeUnmount(() => {
   }
 
   .NekoAnalyticsConsent-spacer {
-    min-height: 132px;
+    min-height: 220px;
   }
 }
 
 @media (max-width: 520px) {
-  .NekoAnalyticsConsent-banner {
-    flex-direction: column;
+  .NekoAnalyticsConsent-button {
+    width: 112px;
+    min-width: 112px;
   }
 
   .NekoAnalyticsConsent-close {
-    position: absolute;
-    top: 8px;
-    right: 8px;
-  }
-
-  .NekoAnalyticsConsent-banner--revisit .NekoAnalyticsConsent-copy {
-    padding-right: 28px;
+    width: 34px;
   }
 }
 </style>
