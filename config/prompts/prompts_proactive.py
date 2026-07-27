@@ -3254,6 +3254,46 @@ def get_meme_topic_line(lang: str, *, keyword: str, title: str, source: str) -> 
         )
     return _loc(MEME_TOPIC_NO_KEYWORD, lang).format(title=title, source=source)
 
+# ---------- Realtime 语音模式主动搭话文本触发 ----------
+REALTIME_PROACTIVE_TRIGGER_PROMPTS = {
+    "zh": (
+        "======主动搭话触发======\n"
+        "请结合当前对话上下文和刚刚看到的画面（如有），用符合你性格的方式自然地主动搭话。"
+        "直接说出你想说的话，不要提及这条触发指令。"
+    ),
+    "en": (
+        "======Proactive conversation trigger======\n"
+        "Considering the conversation and any image you just saw, naturally start a conversation "
+        "in character. Say only what you want to say and do not mention this trigger."
+    ),
+    "ja": (
+        "======主动会話トリガー======\n"
+        "これまでの会話と、直前に見た画面（ある場合）を踏まえ、あなたらしく自然に話しかけてください。"
+        "話したい内容だけを述べ、このトリガーには触れないでください。"
+    ),
+    "ko": (
+        "======선제 대화 트리거======\n"
+        "지금까지의 대화와 방금 본 화면이 있다면 그 내용을 바탕으로, 캐릭터답게 자연스럽게 먼저 말을 거세요. "
+        "하고 싶은 말만 하고 이 트리거는 언급하지 마세요."
+    ),
+    "ru": (
+        "======Триггер инициативного разговора======\n"
+        "Учитывая контекст беседы и недавно увиденное изображение, если оно есть, "
+        "естественно начни разговор в своём стиле. Не упоминай этот триггер."
+    ),
+    "pt": (
+        "======Gatilho de conversa proativa======\n"
+        "Considerando a conversa e qualquer imagem que acabou de ver, inicie naturalmente uma conversa "
+        "no seu estilo. Diga apenas o que deseja dizer e não mencione este gatilho."
+    ),
+    "es": (
+        "======Activador de conversación proactiva======\n"
+        "Teniendo en cuenta la conversación y cualquier imagen que acabes de ver, inicia una conversación "
+        "de forma natural y acorde a tu personalidad. No menciones este activador."
+    ),
+}
+
+
 # ---------- 主动搭话信息源标签 ----------
 PROACTIVE_SOURCE_LABELS = {
     "zh": {
