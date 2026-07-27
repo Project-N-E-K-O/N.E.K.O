@@ -279,11 +279,16 @@ class QQReplyBufferService:
             if history_backed else None
         )
         existing = self._pending.get(session_key)
-        if not consented and existing is not None:
+        if existing is not None:
             # 必须早于 10-16 ack / 17+ 强制总结这两条内嵌 pipeline：它们在
             # 本函数中途就跑，且 17+ 分支直接 return——尾部再打标就来不及，
-            # 衍生 ai 行会漏出 include_ai_rows 清理。
-            existing.has_nonconsent_input = True
+            # 衍生 ai 行会漏出 include_ai_rows 清理，授权依赖也会在内嵌
+            # 总结跑完之后才并起来（那条总结的 prompt 里已经含着本轮这条
+            # 记忆派生草稿，而它自己的干净上下文没有可撤销的依赖）。
+            if not consented:
+                existing.has_nonconsent_input = True
+            if consent_snapshot is not None:
+                self._merge_consent_snapshot(existing, consent_snapshot)
 
         if existing and existing.task and not existing.task.done():
             # 已有缓冲 → 追加消息，转发子条数计入
@@ -409,16 +414,20 @@ class QQReplyBufferService:
         existing.mention_context = mention_context
         existing.used_fallback_reply = bool(used_fallback_reply)
         if consent_snapshot is not None:
-            # 并集而非覆盖：合并进同一缓冲的旧草稿可能依赖了此刻已撤销的
-            # 授权，用新快照（全 False）覆盖会让撤销检查看不到 true→false
-            # 的落差，旧草稿的内容还会被并进 summary prompt。
-            merged = dict(getattr(existing, "consent_snapshot", None) or {})
-            for key, was_enabled in consent_snapshot.items():
-                merged[key] = bool(merged.get(key)) or bool(was_enabled)
-            existing.consent_snapshot = merged
+            self._merge_consent_snapshot(existing, consent_snapshot)
         if not consented:
             existing.has_nonconsent_input = True
         existing.task = asyncio.create_task(self._deliver_after_wait(session_key, existing))
+
+    @staticmethod
+    def _merge_consent_snapshot(pending: PendingReply, snapshot: dict) -> None:
+        """并集而非覆盖：合并进同一缓冲的旧草稿可能依赖了此刻已撤销的授权，
+        用新快照（全 False）覆盖会让撤销检查看不到 true→false 的落差，旧
+        草稿的内容还会被并进 summary prompt。"""
+        merged = dict(getattr(pending, "consent_snapshot", None) or {})
+        for key, was_enabled in (snapshot or {}).items():
+            merged[key] = bool(merged.get(key)) or bool(was_enabled)
+        pending.consent_snapshot = merged
 
     async def _deliver_after_wait(self, session_key: str, pending: PendingReply) -> None:
         """等待暂停后，汇总缓冲消息让 LLM 生成最终回复并发送。"""

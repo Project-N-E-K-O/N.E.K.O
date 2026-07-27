@@ -112,6 +112,10 @@ class QQReplyContext:
     # core memory 段是否含 participant 域：member 授权在生成前被撤销时
     # 该段（及混合域召回）要一并撤除。
     used_member_subject: bool = False
+    # 生成时刻的授权依赖快照：直投路径在真正发出去之前再比一次（buffer
+    # 路径由 PendingReply.consent_snapshot 负责），"生成完成→发送"之间
+    # 的窗口也不得漏掉撤销。
+    consent_snapshot: dict[str, bool] = field(default_factory=dict)
     traces: list[QQPipelineStageTrace] = field(default_factory=list)
 
 

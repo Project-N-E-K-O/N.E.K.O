@@ -288,18 +288,7 @@ class QQReplyPipelineRunner:
                     getattr(outcome, "used_fallback", False) if outcome else False
                 ),
                 consent_snapshot=(
-                    {
-                        key: bool(
-                            (getattr(self.plugin, "_qq_settings", {}) or {}).get(
-                                key, False,
-                            )
-                        )
-                        for key in (
-                            "group_memory_enabled",
-                            "group_member_memory_enabled",
-                            "allow_cross_group_context",
-                        )
-                    }
+                    self._generation_consent_snapshot(context)
                     if request.is_group else None
                 ),
                 consented=bool(
@@ -309,6 +298,31 @@ class QQReplyPipelineRunner:
             )
             from .pipeline_models import QQDeliveryResult
             return QQDeliveryResult(delivered=True, target_type=delivery_plan.target_type, target_id=delivery_plan.target_id, reply_text=first_text)
+
+        if context is not None and self._consent_revoked_before_send(context):
+            # 直投没有 buffer 的撤销闸：生成后复检到真正发出去之间还有
+            # 后处理（XML 修复等再等一次 LLM）与计划构建，这段窗口里关掉
+            # 开关的话，带着已撤销记忆的回复照样会发出去。
+            self.plugin.logger.warning("发送前记忆授权已撤销，取消本轮投递")
+            if (
+                request is not None
+                and request.is_group
+                and outcome is not None
+                and not getattr(outcome, "used_fallback", False)
+                and not getattr(outcome, "used_default_message", False)
+            ):
+                self.plugin.session_memory_service.record_tail_undelivered_ai_row(
+                    self.plugin._build_session_key(
+                        sender_id=request.sender_id,
+                        is_group=True,
+                        group_id=request.group_id,
+                    )
+                )
+            from .pipeline_models import QQDeliveryResult
+            return QQDeliveryResult(
+                delivered=False, target_type=delivery_plan.target_type,
+                target_id=delivery_plan.target_id, reply_text=None,
+            )
 
         try:
             result = await self.plugin.reply_delivery_node.deliver(delivery_plan)
@@ -371,6 +385,39 @@ class QQReplyPipelineRunner:
                 context, outcome.reply_text,
             )
         return result
+
+    def _consent_revoked_before_send(self, context) -> bool:
+        """True when a switch this reply's prompt relied on went off since
+        generation — same judgement the buffer applies before a delayed
+        send, so the unbuffered direct path is not the weak link."""
+        snapshot = getattr(context, "consent_snapshot", None)
+        if not snapshot:
+            return False
+        settings = getattr(self.plugin, "_qq_settings", {}) or {}
+        return any(
+            was_enabled and not settings.get(key, False)
+            for key, was_enabled in snapshot.items()
+        )
+
+    def _generation_consent_snapshot(self, context) -> dict:
+        """本轮回复实际消费掉的授权，取自生成时刻而非此刻。
+
+        后处理（XML 修复等）会再等一次 LLM，这中间关掉的开关如果在这里
+        重新采样，缓冲的撤销检查就是 false 比 false——被撤销的记忆内容
+        照样随延迟投递发出去。生成路径拿不到快照时（合成/轻量 context）
+        才退回读当前设置。"""
+        snapshot = dict(getattr(context, "consent_snapshot", None) or {})
+        if snapshot:
+            return snapshot
+        settings = getattr(self.plugin, "_qq_settings", {}) or {}
+        return {
+            key: bool(settings.get(key, False))
+            for key in (
+                "group_memory_enabled",
+                "group_member_memory_enabled",
+                "allow_cross_group_context",
+            )
+        }
 
     def _resolve_sticker_path(self, sticker_id: str) -> str:
         """解析表情包 ID 到文件路径。"""

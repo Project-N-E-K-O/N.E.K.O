@@ -45,11 +45,22 @@ class QQReplyGenerationService:
                 fb_prompt, fb_recalled = self._sanitize_for_live_consent(
                     context, context.system_prompt, context.recalled_memory_text,
                 )
+                # 与主会话路径对偶：清洗只保证"调用发起时"的授权，调用期间
+                # 撤销的话返回文本里仍带着那些内容。
+                consent_before = self._consent_dependency_snapshot(context)
+                self._store_consent_snapshot(context, consent_before)
                 response = await llm.ainvoke([
                     {"role": "system", "content": self._compose_turn_instructions(fb_prompt, fb_recalled)},
                     {"role": "user", "content": context.prompt_message},
                 ])
                 fallback_reply = getattr(response, "content", "") or ""
+                if fallback_reply and self._consent_dependency_revoked(
+                    context, consent_before,
+                ):
+                    self.plugin.logger.warning(
+                        "生成期间记忆授权被撤销，丢弃 fallback 回复"
+                    )
+                    return None
                 if fallback_reply:
                     self.plugin.logger.info(f"Fallback 直连 LLM 生成成功 (length: {len(fallback_reply)})")
                     return fallback_reply
@@ -157,9 +168,16 @@ class QQReplyGenerationService:
                 # 抢救会立即 finalize：合成控制 prompt 行必须先进排除名单，
                 # 否则 pipeline 层跑完后的记录来不及、控制指令被提取成
                 # 参与者历史。
-                self.plugin.session_memory_service.record_synthetic_prompt_rows(
-                    session_key, synthetic_hist_before,
-                )
+                try:
+                    self.plugin.session_memory_service.record_synthetic_prompt_rows(
+                        session_key, synthetic_hist_before,
+                    )
+                except Exception as salvage_error:
+                    # 抢救标记失败不能连累丢弃：会话刚被强制取消，留着它
+                    # 下一轮必再超时，且未结算状态会一直挂着。
+                    self.plugin.logger.warning(
+                        f"超时轮合成 prompt 行标记失败: {salvage_error}"
+                    )
             discarded = await self.plugin.session_runtime_service.discard_session(session_key, reason="generation_timeout")
             if discarded is False:
                 # 结算失败被有意保留：但本会话的 stream 刚被 wait_for 强制
@@ -210,6 +228,10 @@ class QQReplyGenerationService:
             # 生成前的依赖快照：模型已经读到 scoped/跨群内容后，撤销才落
             # 下的话，回复本身仍带着那些内容——生成结束要再比一次。
             consent_before = self._consent_dependency_snapshot(context)
+            self._store_consent_snapshot(context, consent_before)
+            history_before = len(
+                getattr(user_session, "_conversation_history", []) or []
+            )
             restore_session_prompt = self._apply_turn_memory_context(
                 user_session, turn_system_prompt, turn_recalled_text,
                 always_refresh=context.is_group,
@@ -223,11 +245,21 @@ class QQReplyGenerationService:
                 completed = await self.plugin._wait_session_response_complete(user_session)
                 if self._consent_dependency_revoked(context, consent_before):
                     # 生成期间授权被撤销：这条回复的 prompt 里带着已撤销的
-                    # 内容，不能送出。历史行由上层的 discard/排除机制处理。
+                    # 内容，不能送出——清空出站文本只挡住了发送，stream_text
+                    # 早已把 ai 行写进共享历史，留着它等于让被撤销的内容既
+                    # 进 digest 又进后续轮次的上下文。本轮追加的 ai 行直接
+                    # 从历史里摘掉（human 行是用户自己的发言，保留）。
                     self.plugin.logger.warning(
                         f"生成期间记忆授权被撤销，丢弃本轮回复 ({session_key})"
                     )
                     reply_chunks.clear()
+                    history = getattr(user_session, "_conversation_history", None)
+                    if isinstance(history, list):
+                        while (
+                            len(history) > history_before
+                            and getattr(history[-1], "type", "") == "ai"
+                        ):
+                            history.pop()
                 if not completed:
                     # 只 raise 不在这里 discard：外层 except TimeoutError 会
                     # 统一走"先抢救群缓冲再丢弃"，这里先 pop 会让 user_data
@@ -267,6 +299,15 @@ class QQReplyGenerationService:
                 settings.get("allow_cross_group_context", False)
             )
         return snapshot
+
+    def _store_consent_snapshot(self, context: Any, snapshot: dict) -> None:
+        """Carry the generation-time snapshot to the pre-send gate."""
+        try:
+            context.consent_snapshot = dict(snapshot)
+        except Exception:
+            # 合成调用方可能传的是轻量对象：拿不到就退回"发送前不复检"，
+            # 生成后的复检仍在。
+            pass
 
     def _consent_dependency_revoked(self, context: Any, before: dict) -> bool:
         """True when a switch this prompt relied on went off since `before`."""
@@ -413,8 +454,11 @@ class QQReplyGenerationService:
         history = getattr(session, "_conversation_history", None)
         if history is None:
             return
-        marker = f"fallback:{id(context)}"
-        for msg in reversed(history[-4:]):
+        # 幂等键取本轮消息 ID：context 对象可能被重建（id() 就变了），而
+        # 重复的投递钩子未必紧挨着——扫最近几行也会漏。全历史精确匹配。
+        turn_id = str(getattr(context, "current_message_id", "") or "") or f"obj{id(context)}"
+        marker = f"fallback:{turn_id}"
+        for msg in reversed(history):
             if getattr(msg, "type", "") == "ai" and (
                 getattr(msg, "additional_kwargs", None) or {}
             ).get("neko_fallback_row") == marker:
@@ -442,6 +486,12 @@ class QQReplyGenerationService:
         阈值、错误地从后续上下文消失。best-effort：失败只影响该条目晚几轮
         进入"暂不主动提及"。"""
         if not context.is_group or not reply_text or context.ephemeral_session:
+            return
+        if not (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+            "group_memory_enabled", False,
+        ):
+            # mention 计数是对群域记忆元数据的写：开关关掉之后不得再改，
+            # 哪怕会话侧的 flag 还没被后台结算清掉。
             return
         session_key = self.plugin.session_runtime_service.build_generation_session_key(context)
         user_data = self.plugin._user_sessions.get(session_key)

@@ -17,35 +17,33 @@ class QQReplyDeliveryNode:
 
         blocks = plan.blocks
         first_text = ""
-        all_text_sent = True
-        any_text_attempted = False
+        # 判据分两条线：承载正文的块（文本/语音/按钮降级/卡片）决定
+        # delivered——记忆里存的那一行就是正文；装饰块（poke/表情包）发不
+        # 出去不该把已经送达的正文判成未投递（模板本来就让 poke 单独成块
+        # 跟在正文块前后，冷却期跳过会让活跃群每隔一条就丢一次记忆）。
+        # 纯装饰计划没有正文可判，就如实反映"到底有没有东西发出去"。
+        content_attempted = False
+        content_sent = True
+        decoration_sent = False
         for i, block in enumerate(blocks):
             if i > 0:
                 # 块间延迟：模拟真人打字间隔
                 await asyncio.sleep(random.uniform(2.0, 5.0))
 
             if block.poke:
-                # poke 只是装饰：冷却窗口内/私聊目标下会被有意跳过，那不是
-                # 投递失败——模板本来就让 poke 单独成块后跟正文块，把跳过
-                # 算失败会让整条（正文已送达的）回复被判未投递、真回复被
-                # 排除出记忆。只有"尝试了但发送失败"才算未确认。
-                sent, attempted = await self._send_poke(plan, block)
-                if attempted:
-                    any_text_attempted = True
-                    if not sent:
-                        all_text_sent = False
+                if await self._send_poke(plan, block):
+                    decoration_sent = True
                 continue
 
             if block.record:
-                any_text_attempted = True
+                content_attempted = True
                 if not await self._send_record(plan, block):
-                    all_text_sent = False
+                    content_sent = False
                 continue
 
             if block.sticker:
-                any_text_attempted = True
-                if not await self._send_sticker(plan, block):
-                    all_text_sent = False
+                if await self._send_sticker(plan, block):
+                    decoration_sent = True
                 continue
 
             # 文本块（可含 emoji + at + reply + keyboard）
@@ -54,8 +52,8 @@ class QQReplyDeliveryNode:
                 # 官方按钮只有群聊承载：私聊的 keyboard-only 块无处安放，
                 # 必须按未投递处理——与 ark 同一类判据，不能"什么都没发"
                 # 却清掉未投递标、把 mention 记进 scoped 提取。
-                any_text_attempted = True
-                all_text_sent = False
+                content_attempted = True
+                content_sent = False
                 self.plugin.logger.warning(
                     "keyboard-only 块不支持私聊投递，未发送（记忆按未投递处理）"
                 )
@@ -66,7 +64,7 @@ class QQReplyDeliveryNode:
                 # 无此字段，其 send_group_message_segments 收下 keyword 但
                 # 不读）——NapCat 侧把按钮文案降级成可读文本，别只发一个
                 # 空格。
-                any_text_attempted = True
+                content_attempted = True
                 labels = " / ".join(
                     part.strip()
                     for part in str(block.keyboard).split("|")
@@ -86,7 +84,7 @@ class QQReplyDeliveryNode:
                         plan.target_id, labels,
                     )
                 if not self._confirm_platform_result(sent):
-                    all_text_sent = False
+                    content_sent = False
                 continue
             if not text:
                 if block.ark:
@@ -94,24 +92,23 @@ class QQReplyDeliveryNode:
                     # 调用方，属本 PR 之外的既有缺陷）：这里只保证记忆侧
                     # 不把"什么都没发"记成已投递——草稿保持排除、不记
                     # mention。真正的卡片发送要另行接回。
-                    any_text_attempted = True
-                    all_text_sent = False
+                    content_attempted = True
+                    content_sent = False
                     self.plugin.logger.warning(
                         "Ark 卡片块没有投递实现，未发送（记忆按未投递处理）"
                     )
                 continue
             if i == 0:
                 first_text = text
-            any_text_attempted = True
+            content_attempted = True
             if not await self._send_text(plan, block, text, keyboard=block.keyboard):
-                all_text_sent = False
+                content_sent = False
 
-        # 开放平台单条发送失败返回 None（不抛异常）：只要有文本块未确认
+        # 开放平台单条发送失败返回 None（不抛异常）：只要有正文块未确认
         # 就不得报 delivered=True——buffer 会据此清未投递标并记 mention，
         # 而排除名单是整行粒度的，部分未发出的内容也会进 scoped 提取。
-        # 纯 poke/sticker 计划保持旧语义（其发送无结果通道，失败靠异常）。
         return QQDeliveryResult(
-            delivered=all_text_sent or not any_text_attempted,
+            delivered=content_sent if content_attempted else decoration_sent,
             target_type=plan.target_type,
             target_id=plan.target_id,
             reply_text=first_text,
@@ -214,33 +211,27 @@ class QQReplyDeliveryNode:
             has_result_channel=True,
         )
 
-    async def _send_poke(
-        self, plan: QQDeliveryPlan, block: QQMessageBlock,
-    ) -> tuple[bool, bool]:
-        """Returns (confirmed, attempted).
+    async def _send_poke(self, plan: QQDeliveryPlan, block: QQMessageBlock) -> bool:
+        """Returns True only when a poke actually reached the group.
 
-        A poke that is deliberately skipped (private target, cooldown) was
-        never attempted, so it must not drag the whole plan's delivery
-        verdict down — the accompanying text block usually did reach the
-        user."""
+        A skipped poke (private target, cooldown) reports False like a
+        failed one — pokes are decoration, so deliver() only consults this
+        when the plan carries no text at all."""
         if plan.target_type != "group" or not block.poke:
-            return False, False
+            return False
         # 冷却：同一群每 30 秒最多戳一次，避免刷屏
         now = __import__("time").time()
         key = f"poke_out:{plan.target_id}"
         last = getattr(self, "_last_poke_out", {}).get(key, 0)
         if now - last < 30:
             self.plugin._emit_log("INFO", f"戳一戳冷却中，跳过 (群{plan.target_id})")
-            return False, False
+            return False
         if not hasattr(self, "_last_poke_out"):
             self._last_poke_out = {}
         self._last_poke_out[key] = now
-        return (
-            self._confirm_platform_result(
-                await self.plugin.qq_client.send_group_poke(plan.target_id, block.poke),
-                has_result_channel=True,
-            ),
-            True,
+        return self._confirm_platform_result(
+            await self.plugin.qq_client.send_group_poke(plan.target_id, block.poke),
+            has_result_channel=True,
         )
 
     def _supports_keyboard(self) -> bool:

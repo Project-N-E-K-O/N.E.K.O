@@ -3072,6 +3072,25 @@ async def test_delivery_result_reflects_open_platform_send_failure():
     result = await sticker_node.deliver(sticker_plan)
     assert result.delivered is True
 
+    # A sticker that could not be sent alongside text that WAS sent leaves
+    # the verdict alone: stickers are decoration, the memory row is the
+    # text, and marking the whole reply undelivered would drop a reply the
+    # group actually read.
+    sticker_plugin.qq_client.send_group_image = AsyncMock(return_value=None)
+    sticker_plugin.qq_client.send_group_message = AsyncMock(return_value="mid")
+    result = await sticker_node.deliver(QQDeliveryPlan(
+        target_type="group", target_id="7788",
+        blocks=[QQMessageBlock(sticker="s1"), QQMessageBlock(text="正文")],
+    ))
+    assert result.delivered is True
+    # ...but a failed text block still decides the verdict, sticker or not.
+    sticker_plugin.qq_client.send_group_message = AsyncMock(return_value=None)
+    result = await sticker_node.deliver(QQDeliveryPlan(
+        target_type="group", target_id="7788",
+        blocks=[QQMessageBlock(sticker="s1"), QQMessageBlock(text="正文")],
+    ))
+    assert result.delivered is False
+
     # Private record block: send_private_record now propagates the Open
     # Platform result — a real send confirms (no false negative), a
     # swallowed failure does not.
@@ -3147,10 +3166,11 @@ async def test_delivery_result_reflects_open_platform_send_failure():
     )
     result = await poke_node.deliver(poke_group)
     assert result.delivered is True
-    # A skipped poke (cooldown, private target) was never attempted, so it
-    # must not drag the verdict down — the template pairs a poke block with
-    # a text block, and marking the whole reply undelivered would exclude
-    # a reply the user actually received.
+    # Poke + text: the poke is now inside its 30 s cooldown and is skipped,
+    # but the text landed. The template puts <poke> in its own block ahead
+    # of the text block, so in an active group this is the common shape —
+    # letting the skip decide the verdict would exclude a reply the group
+    # actually read from scoped memory on nearly every second turn.
     poke_plugin.qq_client.send_group_message = AsyncMock(return_value="mid")
     result = await poke_node.deliver(QQDeliveryPlan(
         target_type="group", target_id="7788",
@@ -3158,8 +3178,17 @@ async def test_delivery_result_reflects_open_platform_send_failure():
     ))
     assert result.delivered is True
     poke_plugin.qq_client.send_group_message.assert_awaited_once()
-    # A poke that WAS attempted and failed still counts as unconfirmed.
+    # Same for a poke the platform rejected: decoration never overrides a
+    # delivered text block.
     poke_plugin.qq_client.send_group_poke = AsyncMock(return_value=None)
+    poke_plugin.qq_client.send_group_message = AsyncMock(return_value="mid")
+    result = await poke_node.deliver(QQDeliveryPlan(
+        target_type="group", target_id="4455",
+        blocks=[QQMessageBlock(poke="2"), QQMessageBlock(text="正文")],
+    ))
+    assert result.delivered is True
+    # With no text to carry the verdict, a rejected poke means nothing was
+    # sent at all — that plan is undelivered.
     result = await poke_node.deliver(QQDeliveryPlan(
         target_type="group", target_id="9911",
         blocks=[QQMessageBlock(poke="2")],
@@ -4293,6 +4322,7 @@ async def test_delivered_fallback_reply_enters_shared_history():
     service.plugin = plugin
     context = SimpleNamespace(
         is_group=True, ephemeral_session=False, group_id="7788",
+        current_message_id="msg-1",
     )
     service.append_fallback_ai_row(context, "fallback 回复")
     assert [getattr(m, "type", "") for m in history] == ["human", "ai"]
@@ -4301,6 +4331,35 @@ async def test_delivered_fallback_reply_enters_shared_history():
     # Idempotent: a second delivery hook for the same turn adds nothing.
     service.append_fallback_ai_row(context, "fallback 回复")
     assert len(history) == 2
+
+    # Still idempotent when the duplicate hook arrives after later rows and
+    # through a REBUILT context object: the key is the turn's message id,
+    # not object identity or a fixed-size tail scan.
+    history.extend([
+        SimpleNamespace(type="human", content="后续发言"),
+        SimpleNamespace(type="ai", content="后续回复"),
+        SimpleNamespace(type="human", content="再一条"),
+        SimpleNamespace(type="ai", content="再一条回复"),
+    ])
+    service.append_fallback_ai_row(
+        SimpleNamespace(
+            is_group=True, ephemeral_session=False, group_id="7788",
+            current_message_id="msg-1",
+        ),
+        "fallback 回复",
+    )
+    assert len(history) == 6
+
+    # A genuinely different turn still gets its row.
+    service.append_fallback_ai_row(
+        SimpleNamespace(
+            is_group=True, ephemeral_session=False, group_id="7788",
+            current_message_id="msg-2",
+        ),
+        "另一轮的 fallback",
+    )
+    assert len(history) == 7
+    del history[2:]
 
     # Memory disabled: nothing is appended.
     plugin._user_sessions["group:7788"]["memory_enabled"] = False
@@ -4340,22 +4399,37 @@ async def test_generation_discards_reply_when_consent_revoked_mid_stream():
     )
 
     chunks: list = []
+    history = [SimpleNamespace(type="human", content="之前的发言")]
 
     async def _revoke_mid_stream(_msg):
-        # The model produced its reply from the scoped prompt...
+        # The model produced its reply from the scoped prompt, and the
+        # session wrote both rows into the shared history...
+        history.append(SimpleNamespace(type="human", content="hi"))
+        history.append(SimpleNamespace(type="ai", content="带着群记忆的回复"))
         chunks.append("带着群记忆的回复")
         # ...and only then does the switch go off.
         plugin._qq_settings["group_memory_enabled"] = False
 
+    session = SimpleNamespace(
+        stream_text=_revoke_mid_stream, _conversation_history=history,
+    )
     result = await service._run_session_generation(
         context=context,
         session_key="group:7788",
         user_data={"lock": asyncio.Lock()},
-        user_session=SimpleNamespace(stream_text=_revoke_mid_stream),
+        user_session=session,
         reply_chunks=chunks,
     )
     assert not result
     assert chunks == []
+    # Clearing the outbound chunks is not enough: the ai row written by
+    # stream_text would otherwise stay in the shared history and reach both
+    # the digest and every later turn's context. The human row (the user's
+    # own utterance) stays.
+    assert [row.type for row in history] == ["human", "human"]
+    assert all(
+        getattr(row, "content", "") != "带着群记忆的回复" for row in history
+    )
 
     # Consent unchanged: the reply survives.
     plugin._qq_settings["group_memory_enabled"] = True
@@ -4879,9 +4953,54 @@ async def test_unpersisted_memory_toggle_rolls_back():
         False,
         group_memory_before=False, group_memory_after=False,
         member_memory_before=False, member_memory_after=False,
-        cross_group_before=False,
+        cross_group_before=False, cross_group_after=True,
     )
     assert service.plugin._qq_settings["allow_cross_group_context"] is False
+
+    # A request that did NOT touch the switch must not restore its own
+    # stale reading: another save may have legitimately opted out (and
+    # persisted) in between — reviving it here leaves disk opted out while
+    # the runtime keeps disclosing other groups until restart.
+    service.plugin._qq_settings["allow_cross_group_context"] = False
+    service._rollback_unpersisted_memory_toggles(
+        False,
+        group_memory_before=False, group_memory_after=False,
+        member_memory_before=False, member_memory_after=False,
+        cross_group_before=True, cross_group_after=True,
+    )
+    assert service.plugin._qq_settings["allow_cross_group_context"] is False
+
+    # A LATER settings save that touched consent owns the state, even when
+    # it set the same value (value comparison cannot see that). The older
+    # failing request must keep its hands off: reviving its own "before"
+    # would re-enable memory the newer save just persisted as off, and
+    # plant settlement markers that transition never asked for.
+    ud.pop("group_settle_rollback_pending", None)
+    ud.pop("member_settle_rollback_pending", None)
+    my_txn = service._begin_consent_transaction()
+    service._begin_consent_transaction()  # a newer save arrives
+    service.plugin._qq_settings["group_memory_enabled"] = False
+    service.plugin._qq_settings["group_member_memory_enabled"] = False
+    service._rollback_unpersisted_memory_toggles(
+        False, txn=my_txn,
+        group_memory_before=True, group_memory_after=False,
+        member_memory_before=True, member_memory_after=False,
+    )
+    assert service.plugin._qq_settings["group_memory_enabled"] is False
+    assert service.plugin._qq_settings["group_member_memory_enabled"] is False
+    assert "group_settle_rollback_pending" not in ud
+    assert "member_settle_rollback_pending" not in ud
+
+    # The uncontested case still rolls back.
+    service._rollback_unpersisted_memory_toggles(
+        False, txn=service._begin_consent_transaction(),
+        group_memory_before=True, group_memory_after=False,
+        member_memory_before=True, member_memory_after=False,
+    )
+    assert service.plugin._qq_settings["group_memory_enabled"] is True
+    assert ud.get("group_settle_rollback_pending") is True
+    while spawned:
+        spawned.pop(0).close()
 
     # ON->OFF member save failure: the OFF stamp already snapshotted the
     # live buckets for opt-out settlement — those turns were collected
@@ -5358,9 +5477,14 @@ async def test_group_memory_toggle_syncs_existing_sessions():
     assert user_data["memory_enabled"] is False
     assert user_data["last_group_digest_index"] == len(history)
     assert "group_member_memory_messages" not in user_data
+    # The group digest and the member buckets settle independently: the
+    # failing digest must not stop the member queues (capped at 50) from
+    # being attempted, or continued traffic silently truncates them.
+    settle_attempts = bridge.post_scoped_memory_history.await_count
+    assert settle_attempts == 2
     # A later idle/shutdown sweep must now skip this session entirely.
     await service.flush_all_memory_sessions("shutdown")
-    bridge.post_scoped_memory_history.assert_awaited_once()  # only the settle try
+    assert bridge.post_scoped_memory_history.await_count == settle_attempts
 
     # OFF->ON on a session that accumulated turns while opted out.
     history.append(SimpleNamespace(type="human", content="opted-out turn"))
@@ -5704,7 +5828,9 @@ async def test_group_reply_success_records_scoped_mentions_best_effort():
         _cache_session_delta=AsyncMock(return_value=0),
     )
     service = QQReplyGenerationService(plugin)
-    plugin._qq_settings = {"group_member_memory_enabled": True}
+    plugin._qq_settings = {
+        "group_memory_enabled": True, "group_member_memory_enabled": True,
+    }
     context = SimpleNamespace(
         is_group=True, group_id="7788", sender_id="2046", her_name="Neko",
         permission_level="user", ephemeral_session=False,
@@ -5750,6 +5876,15 @@ async def test_group_reply_success_records_scoped_mentions_best_effort():
     kwargs = bridge.post_scoped_mentions.await_args.kwargs
     assert [s2["subject_id"] for s2 in kwargs["subjects"]] == ["qq:7788"]
     plugin._qq_settings["group_member_memory_enabled"] = True
+
+    # Group memory off: mention counting WRITES group-scope metadata, so it
+    # must stop the moment the switch flips — even before the background
+    # settlement clears the session's own flag.
+    bridge.post_scoped_mentions.reset_mock()
+    plugin._qq_settings["group_memory_enabled"] = False
+    await service.record_scoped_mentions_on_delivery(context, "她记得群规")
+    bridge.post_scoped_mentions.assert_not_awaited()
+    plugin._qq_settings["group_memory_enabled"] = True
 
     # Failure is swallowed (reply already delivered).
     bridge.post_scoped_mentions = AsyncMock(side_effect=RuntimeError("down"))
@@ -6658,3 +6793,274 @@ def test_persona_view_authorizes_scoped_entries_per_entry():
     # (mention recording depends on shared entry identity).
     facts_b[0]["recent_mentions"] = ["now"]
     assert section["facts"][1]["recent_mentions"] == ["now"]
+
+
+@pytest.mark.asyncio
+async def test_fallback_reply_dropped_when_consent_revoked_during_call(monkeypatch):
+    """The direct fallback sanitizes once, then awaits an LLM for up to a
+    minute: a switch turned off during that call leaves the returned text
+    carrying memory the user just revoked."""
+    import plugin.plugins.qq_auto_reply.reply_generation_service as rgs
+
+    plugin = SimpleNamespace(
+        _qq_settings={"group_memory_enabled": True},
+        logger=MagicMock(),
+        _ai_turn_timeout_seconds=5,
+        _should_skip_direct_llm_fallback_for_images=lambda **kw: False,
+    )
+    service = rgs.QQReplyGenerationService.__new__(rgs.QQReplyGenerationService)
+    service.plugin = plugin
+    context = SimpleNamespace(
+        is_group=True, message="hi", attachments=None, prompt_message="hi",
+        system_prompt="含群记忆的提示词", recalled_memory_text="召回内容",
+        core_memory_text="核心记忆", cross_group_section="",
+        used_member_subject=False, consent_snapshot={},
+    )
+
+    monkeypatch.setattr(rgs, "set_call_type", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "utils.config_manager.get_config_manager",
+        lambda: SimpleNamespace(get_model_api_config=lambda kind: {
+            "base_url": "http://x", "model": "m", "api_key": "k",
+        }),
+    )
+
+    class _LLM:
+        def __init__(self, revoke):
+            self._revoke = revoke
+
+        async def ainvoke(self, _messages):
+            if self._revoke:
+                plugin._qq_settings["group_memory_enabled"] = False
+            return SimpleNamespace(content="带着群记忆的回复")
+
+    monkeypatch.setattr(
+        rgs, "create_chat_llm_async", AsyncMock(return_value=_LLM(True)),
+    )
+    assert await service.generate_reply_fallback_direct_llm(context=context) is None
+
+    plugin._qq_settings["group_memory_enabled"] = True
+    monkeypatch.setattr(
+        rgs, "create_chat_llm_async", AsyncMock(return_value=_LLM(False)),
+    )
+    assert (
+        await service.generate_reply_fallback_direct_llm(context=context)
+        == "带着群记忆的回复"
+    )
+    # The generation-time snapshot travels on the context so the delivery
+    # gates compare against what the reply actually consumed.
+    assert context.consent_snapshot == {"group_memory_enabled": True}
+
+
+@pytest.mark.asyncio
+async def test_timeout_salvage_failure_still_discards_session():
+    """The salvage marking is best-effort: if it throws, the timed-out
+    session must still be discarded — its stream was force-cancelled, so
+    reusing it just times out again."""
+    from plugin.plugins.qq_auto_reply.reply_generation_service import (
+        QQReplyGenerationService,
+    )
+
+    discard = AsyncMock(return_value=True)
+    plugin = SimpleNamespace(
+        logger=MagicMock(),
+        _user_sessions={},
+        session_bootstrap_service=SimpleNamespace(
+            ensure_generation_session=AsyncMock(
+                return_value={"memory_enabled": False},
+            ),
+        ),
+        session_runtime_service=SimpleNamespace(
+            build_generation_session_key=lambda context: "group:7788",
+            prime_generation_session_state=lambda ud, **kw: (
+                SimpleNamespace(_conversation_history=[]), [],
+            ),
+            discard_session=discard,
+        ),
+        session_memory_service=SimpleNamespace(
+            record_synthetic_prompt_rows=MagicMock(
+                side_effect=RuntimeError("marking down"),
+            ),
+            record_group_member_turn=MagicMock(),
+        ),
+    )
+    service = QQReplyGenerationService.__new__(QQReplyGenerationService)
+    service.plugin = plugin
+
+    async def _timeout(**kwargs):
+        raise asyncio.TimeoutError
+
+    service._run_session_generation = _timeout
+    context = SimpleNamespace(
+        is_group=True, group_id="7788", ephemeral_session=False,
+        group_scene_mode="", source_kind="rapid_fire_flush",
+        recalled_memory_used=False, recalled_memory_text="",
+    )
+    result = await service.run_primary_session_call(context)
+    assert result.timed_out is True
+    discard.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_consent_union_precedes_nested_buffer_flush():
+    """The 10-16 acknowledgement and the 17+ forced summary run nested
+    pipelines from the middle of schedule_reply; a union at the tail is too
+    late (and the 17+ branch returns before reaching it), so the summary
+    could quote a memory-derived draft with nothing left to revoke."""
+    from plugin.plugins.qq_auto_reply.reply_buffer_service import (
+        PendingReply,
+        QQReplyBufferService,
+    )
+
+    service = QQReplyBufferService.__new__(QQReplyBufferService)
+    seen: list = []
+
+    async def _nested_run(_request):
+        seen.append(dict(service._pending["group:7788"].consent_snapshot))
+
+    service.plugin = SimpleNamespace(
+        _emit_log=lambda *a, **k: None,
+        _user_sessions={},
+        reply_pipeline=SimpleNamespace(run=_nested_run),
+        session_memory_service=SimpleNamespace(
+            record_synthetic_prompt_rows=MagicMock(),
+        ),
+    )
+    service._pending = {}
+    service._session_history_len = lambda key: 0
+    service._record_synthetic_prompt_rows = lambda key, before: None
+    service._mark_latest_draft_undelivered = lambda key: None
+    service._bind_draft_to_pending = lambda row, pending: None
+    service._topic_hint = lambda text: ""
+
+    pending = PendingReply(
+        first_text="之前的草稿", wait_seconds=1.0, sender_id="2046",
+        is_group=True, group_id="7788",
+    )
+    pending.task = asyncio.create_task(asyncio.sleep(999))
+    pending.buffered_texts = ["之前的草稿"]
+    pending.message_count = 9
+    pending.consent_snapshot = {}
+    service._pending["group:7788"] = pending
+
+    await service.schedule_reply(
+        session_key="group:7788", reply_text="新草稿", raw_text="新草稿",
+        blocks=[], wait_seconds=1.0, sender_id="2046", is_group=True,
+        group_id="7788", consent_snapshot={"group_memory_enabled": True},
+    )
+    pending.task.cancel()
+    # The nested acknowledgement saw the new draft's dependency already
+    # merged in — not an empty snapshot.
+    assert seen == [{"group_memory_enabled": True}]
+
+
+@pytest.mark.asyncio
+async def test_direct_delivery_gated_on_consent_at_send_time():
+    """Postprocessing (XML repair) awaits another LLM after the model-time
+    recheck, so the unbuffered direct path needs its own pre-send gate."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        QQDeliveryPlan,
+        QQDeliveryResult,
+        QQMessageBlock,
+        QQReplyOutcome,
+        QQReplyRequest,
+    )
+    from plugin.plugins.qq_auto_reply.reply_pipeline import (
+        QQReplyPipelineRunner,
+    )
+
+    deliver = AsyncMock()
+    mark = MagicMock()
+    plugin = SimpleNamespace(
+        reply_buffer_service=None,
+        reply_delivery_node=SimpleNamespace(deliver=deliver),
+        reply_generation_service=SimpleNamespace(
+            record_scoped_mentions_on_delivery=AsyncMock(),
+            append_fallback_ai_row=MagicMock(),
+        ),
+        session_memory_service=SimpleNamespace(
+            record_tail_undelivered_ai_row=mark,
+        ),
+        _build_session_key=(
+            lambda *, sender_id, is_group, group_id: f"group:{group_id}"
+        ),
+        _qq_settings={"group_memory_enabled": False},
+        logger=MagicMock(),
+    )
+    runner = QQReplyPipelineRunner(plugin)
+    context = SimpleNamespace(
+        is_group=True, group_id="7788",
+        consent_snapshot={"group_memory_enabled": True},
+    )
+    request = QQReplyRequest(
+        message_text="hi", sender_id="2046", is_group=True, group_id="7788",
+    )
+    plan = QQDeliveryPlan(
+        target_type="group", target_id="7788",
+        blocks=[QQMessageBlock(text="带着群记忆的回复")],
+    )
+    result = await runner._run_delivery(
+        plan, request, QQReplyOutcome(action="reply", reply_text="回复"),
+        context=context,
+    )
+    deliver.assert_not_awaited()
+    assert result.delivered is False
+    mark.assert_called_once_with("group:7788")
+
+    # Consent intact: delivery proceeds as usual.
+    plugin._qq_settings["group_memory_enabled"] = True
+    deliver.return_value = QQDeliveryResult(
+        delivered=True, target_type="group", target_id="7788", reply_text="回复",
+    )
+    result = await runner._run_delivery(
+        plan, request, QQReplyOutcome(action="reply", reply_text="回复"),
+        context=context,
+    )
+    deliver.assert_awaited_once()
+    assert result.delivered is True
+
+
+@pytest.mark.asyncio
+async def test_buffer_receives_generation_time_consent_snapshot():
+    """Resampling the switches after generation makes the buffered
+    revocation check compare false to false."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        QQDeliveryPlan,
+        QQMessageBlock,
+        QQReplyOutcome,
+        QQReplyRequest,
+    )
+    from plugin.plugins.qq_auto_reply.reply_pipeline import (
+        QQReplyPipelineRunner,
+    )
+
+    schedule = AsyncMock()
+    plugin = SimpleNamespace(
+        reply_buffer_service=SimpleNamespace(schedule_reply=schedule),
+        _build_session_key=(
+            lambda *, sender_id, is_group, group_id: f"group:{group_id}"
+        ),
+        _emit_log=lambda *a, **k: None,
+        _qq_settings={"group_memory_enabled": False},
+        logger=MagicMock(),
+    )
+    runner = QQReplyPipelineRunner(plugin)
+    context = SimpleNamespace(
+        is_group=True, group_id="7788",
+        consent_snapshot={"group_memory_enabled": True},
+    )
+    request = QQReplyRequest(
+        message_text="hi", sender_id="2046", is_group=True, group_id="7788",
+    )
+    plan = QQDeliveryPlan(
+        target_type="group", target_id="7788",
+        blocks=[QQMessageBlock(text="带着群记忆的回复")],
+    )
+    await runner._run_delivery(
+        plan, request,
+        QQReplyOutcome(action="reply", reply_text="回复", raw_reply_text="回复"),
+        context=context,
+    )
+    assert schedule.await_args.kwargs["consent_snapshot"] == {
+        "group_memory_enabled": True,
+    }

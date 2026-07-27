@@ -496,40 +496,22 @@ class QQSessionMemoryService:
                 # 保留，剩余留给下一轮 flush 重试。限批（5）：无界排水会
                 # 持会话锁数分钟、拖垮全局 semaphore 与关机串行 sweep；
                 # 剩余批次返回 False 留给下一轮继续（游标精确不丢）。
-                digest_batches_left = 5
-                while group_id:
-                    if digest_batches_left <= 0:
-                        self.plugin.logger.info(
-                            f"[{reason}] 群 {group_id} 本轮结算达批次上限，"
-                            f"剩余待下一轮"
-                        )
-                        return False
-                    digest_batches_left -= 1
-                    scoped_messages, next_index = self._slice_group_history_batch(
-                        conversation_history, last_group_digest_index,
-                        self.GROUP_HISTORY_MAX_MESSAGES,
-                        user_data=user_data,
+                # 群 digest 与成员 bucket 各自成败：某一批 history 反复提
+                # 取失败时，成员队列（上限 50）会被后续正当流量顶掉最早的
+                # 发言——它们的 scoped 请求本来是能成功的，不该被群侧的
+                # 故障连累。
+                try:
+                    group_settled = await self._settle_group_digest_batches(
+                        user_data=user_data, group_id=group_id,
+                        her_name=her_name, reason=reason,
+                        conversation_history=conversation_history,
+                        last_group_digest_index=last_group_digest_index,
                     )
-                    if not scoped_messages:
-                        if next_index > last_group_digest_index:
-                            # 尾部全是被过滤的行：推进游标即可，无须发送。
-                            user_data["last_group_digest_index"] = next_index
-                        break
-                    result = await self.plugin.memory_bridge.post_scoped_memory_history(
-                        her_name,
-                        scoped_messages,
-                        subject=self.plugin.memory_bridge.group_subject(group_id),
-                        timeout=30.0,
+                except Exception as digest_error:
+                    self.plugin.logger.error(
+                        f"[{reason}] 群 {group_id} scoped 结算失败: {digest_error}"
                     )
-                    if result.get("status") == "error":
-                        raise RuntimeError(result.get("message", "scoped history failed"))
-                    self.plugin.logger.info(
-                        f"[{reason}] 已为群 {group_id} 完成 scoped 记忆结算，"
-                        f"消息数: {len(scoped_messages)}"
-                    )
-                    user_data["last_group_digest_index"] = next_index
-                    last_group_digest_index = next_index
-                    user_data["group_memory_flushed"] = True
+                    group_settled = False
                 member_memory_enabled = bool(
                     (getattr(self.plugin, "_qq_settings", {}) or {}).get(
                         "group_member_memory_enabled", False,
@@ -560,6 +542,9 @@ class QQSessionMemoryService:
                         f"[{reason}] 群 {group_id} 仍有 "
                         f"{len(failed_member_ids)} 个成员记忆待重试"
                     )
+                    return False
+                if not group_settled:
+                    # 成员侧已经排空，群 digest 留给下一轮（游标精确）。
                     return False
             else:
                 last_synced_index = int(user_data.get("last_synced_index", 0))
@@ -600,6 +585,50 @@ class QQSessionMemoryService:
             await session.close()
         except Exception as e:
             self.plugin.logger.warning(f"[{reason}] 用户 {session_key} 的本地会话关闭失败: {e}")
+        return True
+
+    async def _settle_group_digest_batches(
+        self, *, user_data: dict[str, Any], group_id: str, her_name: str,
+        reason: str, conversation_history: list, last_group_digest_index: int,
+    ) -> bool:
+        """Push the group's pending history in batches, oldest first.
+
+        Returns False when batches remain (the cap keeps one flush from
+        holding the session lock for minutes); raises when a batch fails,
+        so the cursor stays at the last confirmed batch."""
+        digest_batches_left = 5
+        while group_id:
+            if digest_batches_left <= 0:
+                self.plugin.logger.info(
+                    f"[{reason}] 群 {group_id} 本轮结算达批次上限，剩余待下一轮"
+                )
+                return False
+            digest_batches_left -= 1
+            scoped_messages, next_index = self._slice_group_history_batch(
+                conversation_history, last_group_digest_index,
+                self.GROUP_HISTORY_MAX_MESSAGES,
+                user_data=user_data,
+            )
+            if not scoped_messages:
+                if next_index > last_group_digest_index:
+                    # 尾部全是被过滤的行：推进游标即可，无须发送。
+                    user_data["last_group_digest_index"] = next_index
+                break
+            result = await self.plugin.memory_bridge.post_scoped_memory_history(
+                her_name,
+                scoped_messages,
+                subject=self.plugin.memory_bridge.group_subject(group_id),
+                timeout=30.0,
+            )
+            if result.get("status") == "error":
+                raise RuntimeError(result.get("message", "scoped history failed"))
+            self.plugin.logger.info(
+                f"[{reason}] 已为群 {group_id} 完成 scoped 记忆结算，"
+                f"消息数: {len(scoped_messages)}"
+            )
+            user_data["last_group_digest_index"] = next_index
+            last_group_digest_index = next_index
+            user_data["group_memory_flushed"] = True
         return True
 
     async def invalidate_group_sessions(

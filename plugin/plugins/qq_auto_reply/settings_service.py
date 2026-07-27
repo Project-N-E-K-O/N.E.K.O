@@ -48,19 +48,25 @@ class QQSettingsService:
     async def _persist_with_consent_rollback(
         self, *, group_memory_before: bool, group_memory_after: bool,
         member_memory_before: bool, member_memory_after: bool,
-        cross_group_before: bool | None,
+        cross_group_before: bool | None, cross_group_after: bool | None = None,
     ) -> bool:
         """Persist settings and roll consent back if the write did not land.
 
         Cancellation counts as "not written": CancelledError bypasses
         persist_business_config's own except Exception, and leaving the
         runtime flags on an unpersisted opt-in would keep collecting."""
+        # 事务序号：并发保存里，较早的请求写盘失败时不得回滚——更晚的
+        # 那次已经带着自己的意图落盘了（哪怕它设的是同一个值，值比较也
+        # 看不出被超越）。序号只在触及 consent 开关的保存里递增。
+        txn = self._begin_consent_transaction()
         rollback_kwargs = dict(
+            txn=txn,
             group_memory_before=group_memory_before,
             group_memory_after=group_memory_after,
             member_memory_before=member_memory_before,
             member_memory_after=member_memory_after,
             cross_group_before=cross_group_before,
+            cross_group_after=cross_group_after,
         )
         # 写盘跑成独立 task：config_store.save 内部是 to_thread 的原子写，
         # 取消这个 await 并不会取消那个线程——它可能照样把新配置落盘。
@@ -86,11 +92,16 @@ class QQSettingsService:
         self._rollback_unpersisted_memory_toggles(success, **rollback_kwargs)
         return success
 
+    def _begin_consent_transaction(self) -> int:
+        self._consent_txn = getattr(self, "_consent_txn", 0) + 1
+        return self._consent_txn
+
     def _rollback_unpersisted_memory_toggles(
-        self, persisted: bool, *,
+        self, persisted: bool, *, txn: int | None = None,
         group_memory_before: bool, group_memory_after: bool,
         member_memory_before: bool, member_memory_after: bool,
         cross_group_before: bool | None = None,
+        cross_group_after: bool | None = None,
     ) -> None:
         """落盘失败时回滚记忆 consent 开关：重启会回到旧值，运行时若继续
         按新值收集，等于在"未成功保存的授权"下入库。回滚运行时政策并按
@@ -100,11 +111,21 @@ class QQSettingsService:
         分离的快照由结算任务照常入库。"""
         if persisted:
             return
-        if cross_group_before is not None:
-            cross_now = bool(
-                self.plugin._qq_settings.get("allow_cross_group_context", False)
+        if txn is not None and getattr(self, "_consent_txn", txn) != txn:
+            # 本次之后又有保存动过 consent 开关：那次请求（成功与否）自带
+            # 盖章与结算，状态归它管。这里再按旧值恢复会把它刚落盘的
+            # opt-out 顶回去，磁盘与运行时从此相反直到重启。
+            self.plugin._emit_log(
+                "WARNING",
+                "记忆开关写盘失败，但已被更晚的设置保存接管，跳过回滚",
             )
-            if cross_now != cross_group_before:
+            return
+        if cross_group_before is not None and cross_group_after is not None:
+            # 只回滚"本次请求确实改过"的开关：每个保存请求都会带上这个
+            # 字段（哪怕它没动这个开关），照旧值恢复会把另一个请求刚刚
+            # 成功落盘的 opt-out 顶回 ON——磁盘已退出、运行时却继续跨群
+            # 披露，直到重启才暴露。（被更晚的保存超越由事务序号挡住。）
+            if cross_group_before != cross_group_after:
                 # 跨群上下文也是 consent 开关：写盘失败后留着新值，群轮会
                 # 在"从未成功保存的授权"下注入其他群的最近消息。纯读取
                 # 开关，恢复 flag 即可（无会话级结算）。
@@ -484,6 +505,10 @@ class QQSettingsService:
             member_memory_before=member_memory_before,
             member_memory_after=member_memory_after,
             cross_group_before=cross_group_before,
+            cross_group_after=(
+                bool(self.plugin._qq_settings.get("allow_cross_group_context", False))
+                if cross_group_before is not None else None
+            ),
         )
         if self.plugin.attention_service:
             self.plugin.attention_service.cleanup_stale_cache()
