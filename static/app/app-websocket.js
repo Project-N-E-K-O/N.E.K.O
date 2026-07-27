@@ -743,6 +743,10 @@
         return true;
     }
 
+    // preview.asrTurnId 记录“屏幕上这个预览气泡属于哪一轮独立 ASR”。后端的
+    // final 经 transcript dispatcher 的独立 worker 回调，可能排在下一轮
+    // partial 之后才到达；带上轮次 id，过期轮次的清除信号才能被识别成 no-op。
+    // 后端未带 id（旧后端 / 轮次尚未 prepare）时保持空串 = 老的无条件移除语义。
     function upsertExternalAsrPreview(text) {
         var host = window.reactChatWindowHost;
         if (!host || typeof host.appendMessage !== 'function' ||
@@ -780,6 +784,7 @@
             parentNode: null,
             isConnected: true,
             textContent: cleanText,
+            asrTurnId: '',
             nodeType: 1
         };
     }
@@ -1992,18 +1997,38 @@
                 // -------- user_transcript_preview (independent ASR only) --------
                 } else if (response.type === 'user_transcript_preview') {
                     var externalPreviewText = String(response.text || '');
+                    var externalPreviewTurnId = String(response.asr_turn_id || '');
                     if (externalPreviewText === '') {
                         // 空 text 是后端的 preview-clear 信号（asr_runtime.py
                         // _send_core_asr_preview_clear）：空 final 结束的轮次不会注入
                         // user_transcript，唯有显式清除才能撤掉流式预览气泡；真实
                         // partial 后端保证非空，不会误触发。
-                        removeExternalAsrPreview();
+                        // Codex P2：final 走 transcript dispatcher 的独立 worker，
+                        // 可能排在下一轮 partial 之后才回调，于是上一轮的清除会抹掉
+                        // 新一轮的气泡。按 asr_turn_id 配对：只有清除信号指向的轮次
+                        // 仍是屏幕上这个气泡时才移除；过期的清除直接忽略。任一侧缺
+                        // id（旧后端 / 轮次未 prepare）时退回无条件移除的老行为。
+                        var displayedPreview = S.externalAsrPreviewMessage;
+                        var displayedPreviewTurnId = displayedPreview
+                            ? String(displayedPreview.asrTurnId || '')
+                            : '';
+                        if (!externalPreviewTurnId || !displayedPreviewTurnId ||
+                            externalPreviewTurnId === displayedPreviewTurnId) {
+                            removeExternalAsrPreview();
+                        }
                     } else {
                         S.externalAsrPreviewMessage = upsertExternalAsrPreview(externalPreviewText);
+                        if (S.externalAsrPreviewMessage) {
+                            S.externalAsrPreviewMessage.asrTurnId = externalPreviewTurnId;
+                        }
                     }
 
                 // -------- user_transcript --------
                 } else if (response.type === 'user_transcript') {
+                    // user_transcript 不带轮次身份（由 main_logic/core/turn.py 发出），
+                    // 这里无法配对，只能保持无条件移除；迟到 final 误删新一轮气泡的情况
+                    // 由后端在 user_transcript 之后补发该轮 preview 复原
+                    // （asr_runtime.py _restore_core_asr_preview_after_final）。
                     removeExternalAsrPreview();
                     // 语音转写也属于用户首次输入；这里只标记，成就仍等 AI 首次可见回复时触发
                     if (window.appChat && typeof window.appChat.isFirstUserInput === 'function' && window.appChat.isFirstUserInput()) {

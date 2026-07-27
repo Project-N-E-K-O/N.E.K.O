@@ -25,7 +25,7 @@ from main_logic.asr_client.lifecycle import (
     VoiceRouteMode,
     VoiceTurnToken,
 )
-from main_logic.voice_turn.contracts import VoiceTranscriptEvent
+from main_logic.voice_turn.contracts import VoicePartialEvent, VoiceTranscriptEvent
 from main_logic.asr_client.lifecycle import VoiceInputLifecycleController
 from main_logic.asr_client.provider_policy import resolve_provider_policy
 
@@ -1328,10 +1328,12 @@ def _transcript_event(mgr: LLMSessionManager, text: str, turn_id: int = 7):
 
 def _preview_clear_payload(mgr: LLMSessionManager, turn_id: int = 7) -> dict:
     epoch = mgr._capture_ingress_token().session_epoch
+    external_turn_id = f"asr-{epoch}-{turn_id}"
     return {
         "type": "user_transcript_preview",
         "text": "",
-        "turn_id": f"asr-{epoch}-{turn_id}",
+        "turn_id": external_turn_id,
+        "asr_turn_id": external_turn_id,
     }
 
 
@@ -1436,3 +1438,142 @@ async def test_preview_clear_send_failure_is_swallowed():
 
     mgr.handle_input_transcript.assert_not_awaited()
     mgr.session.submit_external_voice_turn.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Turn-keyed preview bubble (Codex P2, second dispatcher boundary)
+#
+# Finals reach Core on the TranscriptDispatcher's own worker task while
+# _handle_independent_asr_final already activated the pending turn, so a
+# previous turn's on_final can trail the NEXT turn's partials on the ordered
+# websocket. Both frontend removal paths used to erase the singleton preview
+# unconditionally, wiping the newer turn's bubble. Previews are now stamped
+# with the prepared turn id so a stale clear is a frontend no-op, and the
+# identity-free user_transcript path is repaired by re-sending the newer
+# turn's preview right behind the transcript.
+# ---------------------------------------------------------------------------
+
+
+def _make_preview_dispatch_manager() -> LLMSessionManager:
+    mgr = _make_transcript_dispatch_manager()
+    mgr._set_microphone_route("independent")
+    return mgr
+
+
+async def _prepare_preview_turn(mgr: LLMSessionManager, turn_id: int) -> str:
+    token = mgr._capture_ingress_token()
+    accepted = await mgr._prepare_core_voice_turn(
+        VoiceTurnToken(ingress=token, turn_id=turn_id)
+    )
+    assert accepted
+    return f"asr-{token.session_epoch}-{turn_id}"
+
+
+async def _send_preview_partial(mgr: LLMSessionManager, text: str) -> dict:
+    await mgr._send_core_asr_preview(
+        VoicePartialEvent(
+            text=text,
+            session_epoch=mgr._capture_ingress_token().session_epoch,
+        )
+    )
+    return mgr.websocket.send_json.await_args.args[0]
+
+
+async def test_preview_partial_and_clear_share_the_prepared_turn_id():
+    mgr = _make_preview_dispatch_manager()
+    external_turn_id = await _prepare_preview_turn(mgr, 7)
+
+    partial = await _send_preview_partial(mgr, "hello")
+    assert partial["asr_turn_id"] == external_turn_id
+    mgr.websocket.send_json.reset_mock()
+
+    # The turn's own empty final still clears its own bubble (matching id).
+    await mgr._dispatch_core_asr_transcript(_transcript_event(mgr, "  ", turn_id=7))
+
+    mgr.websocket.send_json.assert_awaited_once_with(_preview_clear_payload(mgr, 7))
+
+
+async def test_preview_without_prepared_turn_stays_unkeyed():
+    # Backward compat: no prepared turn -> no asr_turn_id, which keeps the
+    # frontend on the pre-existing unconditional removal path.
+    mgr = _make_preview_dispatch_manager()
+
+    partial = await _send_preview_partial(mgr, "hello")
+
+    assert "asr_turn_id" not in partial
+    assert partial["turn_id"]
+
+
+async def test_stale_empty_final_clear_does_not_target_the_newer_turn():
+    # Negative validation: the delayed turn-7 clear must carry turn 7, not the
+    # turn-8 bubble now on screen, so the frontend ignores it.
+    mgr = _make_preview_dispatch_manager()
+    old_turn_id = await _prepare_preview_turn(mgr, 7)
+    await _send_preview_partial(mgr, "old text")
+    new_turn_id = await _prepare_preview_turn(mgr, 8)
+    displayed = await _send_preview_partial(mgr, "new text")
+    assert displayed["asr_turn_id"] == new_turn_id
+    mgr.websocket.send_json.reset_mock()
+
+    await mgr._dispatch_core_asr_transcript(_transcript_event(mgr, "", turn_id=7))
+
+    clear = mgr.websocket.send_json.await_args.args[0]
+    assert clear["text"] == ""
+    assert clear["asr_turn_id"] == old_turn_id
+    assert clear["asr_turn_id"] != displayed["asr_turn_id"]
+
+
+async def test_late_accepted_final_restores_the_newer_turn_preview():
+    # The accepted final's user_transcript carries no turn identity, so the
+    # frontend removes whatever bubble is on screen; Core re-sends the newer
+    # turn's preview behind it instead of waiting for the next partial.
+    mgr = _make_preview_dispatch_manager()
+    await _prepare_preview_turn(mgr, 7)
+    await _send_preview_partial(mgr, "old text")
+    new_turn_id = await _prepare_preview_turn(mgr, 8)
+    await _send_preview_partial(mgr, "new text")
+    mgr.websocket.send_json.reset_mock()
+
+    await mgr._dispatch_core_asr_transcript(
+        _transcript_event(mgr, "old text", turn_id=7)
+    )
+
+    mgr.handle_input_transcript.assert_awaited_once()
+    assert mgr.websocket.send_json.await_count == 1
+    restored = mgr.websocket.send_json.await_args.args[0]
+    assert restored["text"] == "new text"
+    assert restored["asr_turn_id"] == new_turn_id
+    mgr.session.submit_external_voice_turn.assert_awaited_once()
+
+
+async def test_final_of_the_displayed_turn_sends_no_restore_preview():
+    # Negative validation: the normal single-turn flow is untouched -- the
+    # owning turn's user_transcript is the correct bubble removal, so Core
+    # must not re-send anything behind it.
+    mgr = _make_preview_dispatch_manager()
+    await _prepare_preview_turn(mgr, 7)
+    await _send_preview_partial(mgr, "hello")
+    mgr.websocket.send_json.reset_mock()
+
+    await mgr._dispatch_core_asr_transcript(
+        _transcript_event(mgr, "hello", turn_id=7)
+    )
+
+    mgr.websocket.send_json.assert_not_awaited()
+    mgr.session.submit_external_voice_turn.assert_awaited_once()
+
+
+async def test_restore_skipped_when_the_newer_turn_has_no_preview_yet():
+    # Negative validation: a prepared-but-silent newer turn owns no bubble,
+    # so the late final must not resurrect the previous turn's text.
+    mgr = _make_preview_dispatch_manager()
+    await _prepare_preview_turn(mgr, 7)
+    await _send_preview_partial(mgr, "old text")
+    await _prepare_preview_turn(mgr, 8)
+    mgr.websocket.send_json.reset_mock()
+
+    await mgr._dispatch_core_asr_transcript(
+        _transcript_event(mgr, "old text", turn_id=7)
+    )
+
+    mgr.websocket.send_json.assert_not_awaited()

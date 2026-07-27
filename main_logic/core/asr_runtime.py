@@ -233,6 +233,12 @@ class AsrRuntimeMixin:
             nr_enabled=self._voice_input_noise_reduction_enabled,
         )
         self._voice_input_pipeline_failed = False
+        # Identity of the independent-ASR turn that owns the frontend's
+        # singleton preview bubble, plus its last rendered text. Both are
+        # stamped/refreshed from the ordered partial stream so a late final
+        # can tell "my own bubble" from "the next turn already took it over".
+        self._core_asr_preview_turn_id = ""
+        self._core_asr_preview_text = ""
         callbacks = AsrRuntimeCallbacks(
             display_name=lambda: str(getattr(self, "lanlan_name", "core")),
             on_prepare_turn=self._prepare_core_voice_turn,
@@ -262,6 +268,10 @@ class AsrRuntimeMixin:
             self._last_hot_swap_rebind_drop_log_time = 0.0
         if not hasattr(self, "_independent_asr_handshake_override"):
             self._independent_asr_handshake_override = None
+        if not hasattr(self, "_core_asr_preview_turn_id"):
+            self._core_asr_preview_turn_id = ""
+        if not hasattr(self, "_core_asr_preview_text"):
+            self._core_asr_preview_text = ""
 
     def _begin_asr_route_operation(self) -> int:
         self._asr_route_operation_generation += 1
@@ -1581,6 +1591,12 @@ class AsrRuntimeMixin:
         session_ref = self.session
         transition_generation = self._voice_input_transition_generation
         external_turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+        # Turn preparation is the ordered boundary between two turns' partial
+        # streams, so every preview from here on belongs to this turn. Stamping
+        # the owner here is what lets a previous turn's delayed clear be
+        # recognized as stale by the frontend instead of erasing this bubble.
+        self._core_asr_preview_turn_id = external_turn_id
+        self._core_asr_preview_text = ""
 
         def operation_is_current() -> bool:
             return bool(
@@ -1679,6 +1695,8 @@ class AsrRuntimeMixin:
                 # next turn.
                 await self._send_core_asr_preview_clear(external_turn_id)
                 return
+            preview_owner_turn_id = self._core_asr_preview_turn_id
+            preview_owner_text = self._core_asr_preview_text
             accepted = await self.handle_input_transcript(
                 event.text,
                 is_voice_source=True,
@@ -1701,6 +1719,12 @@ class AsrRuntimeMixin:
                     # the preview bubble and the clear must not remove it.
                     await self._send_core_asr_preview_clear(external_turn_id)
                 return
+            await self._restore_core_asr_preview_after_final(
+                external_turn_id,
+                preview_owner_turn_id,
+                preview_owner_text,
+                session_epoch=token.session_epoch,
+            )
             await self._submit_core_voice_turn(
                 event.text,
                 turn_id=external_turn_id,
@@ -1727,13 +1751,61 @@ class AsrRuntimeMixin:
             getattr(self, "current_speech_id", None)
             or f"asr-preview-{event.session_epoch}"
         )
-        await send_json(
-            {
-                "type": "user_transcript_preview",
-                "text": event.text,
-                "turn_id": turn_id,
-            }
-        )
+        payload = {
+            "type": "user_transcript_preview",
+            "text": event.text,
+            "turn_id": turn_id,
+        }
+        # ``turn_id`` stays the Core speech id (unchanged legacy field). The
+        # ASR turn identity travels in its own key so the frontend compares
+        # like with like; it is omitted while no turn is prepared, which keeps
+        # an unkeyed bubble on the pre-existing unconditional-removal path.
+        preview_turn_id = self._core_asr_preview_turn_id
+        if preview_turn_id:
+            payload["asr_turn_id"] = preview_turn_id
+        await send_json(payload)
+        if preview_turn_id and self._core_asr_preview_turn_id == preview_turn_id:
+            self._core_asr_preview_text = event.text
+
+    async def _restore_core_asr_preview_after_final(
+        self,
+        finalized_turn_id: str,
+        preview_owner_turn_id: str,
+        preview_owner_text: str,
+        *,
+        session_epoch: int,
+    ) -> None:
+        """Re-render a newer turn's preview erased by a late user_transcript.
+
+        ``user_transcript`` is emitted by the injection path and carries no
+        turn identity, so the frontend cannot tell whether it belongs to the
+        bubble on screen; it removes the singleton preview unconditionally.
+        When the accepted final arrives through the transcript dispatcher
+        worker after the next turn already started streaming partials, that
+        removal erases the newer turn's bubble. Re-send the newer turn's last
+        preview text right behind the transcript on the ordered websocket so
+        the bubble comes back immediately instead of waiting for whichever
+        partial happens to arrive next.
+        """
+        if (
+            not preview_owner_turn_id
+            or not preview_owner_text
+            or preview_owner_turn_id == finalized_turn_id
+            or self._core_asr_preview_turn_id != preview_owner_turn_id
+        ):
+            return
+        try:
+            await self._send_core_asr_preview(
+                VoicePartialEvent(
+                    text=preview_owner_text,
+                    session_epoch=session_epoch,
+                )
+            )
+        except Exception:
+            logger.debug(
+                "[%s] independent ASR preview restore delivery failed",
+                self.lanlan_name,
+            )
 
     async def _send_core_asr_preview_clear(self, turn_id: str) -> None:
         """Ask the frontend to drop the streaming ASR preview bubble.
@@ -1742,22 +1814,26 @@ class AsrRuntimeMixin:
         text as the clear signal: genuine partials are never empty (the ASR
         runtime strips and drops blank partials before ``on_partial``), so
         the frontend can treat an empty preview as removal without a new
-        protocol message type. Identity note: the clear is emitted from the
-        serialized final dispatch for its own turn, which runs before the
-        next pending turn is activated, so on the ordered websocket it cannot
-        trail the next turn's partials in practice; even if it ever did, the
-        next cumulative partial recreates the preview bubble in full.
+        protocol message type. Identity note: finals reach Core through the
+        transcript dispatcher's own worker task, so this clear can trail the
+        NEXT turn's partials on the ordered websocket. It therefore carries
+        ``asr_turn_id`` and the frontend drops the bubble only while that id
+        still matches the displayed preview, which makes a stale clear a
+        no-op instead of erasing the newer turn's bubble.
         """
         websocket_ref = getattr(self, "websocket", None)
         send_json = getattr(websocket_ref, "send_json", None)
         if not callable(send_json):
             return
+        if self._core_asr_preview_turn_id == turn_id:
+            self._core_asr_preview_text = ""
         try:
             await send_json(
                 {
                     "type": "user_transcript_preview",
                     "text": "",
                     "turn_id": turn_id,
+                    "asr_turn_id": turn_id,
                 }
             )
         except Exception:
