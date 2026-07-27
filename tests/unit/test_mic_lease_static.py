@@ -128,6 +128,26 @@ def test_websocket_reconnect_resets_and_replays_authoritative_mic_lease() -> Non
     assert "_thisSocket" in onopen
 
 
+def test_lease_snapshot_stamps_engagement_marker_for_claim_gate() -> None:
+    source = CAPTURE.read_text(encoding="utf-8")
+    snapshot = source.split("function currentVoiceInputControlState()", 1)[1].split(
+        "function sendVoiceInputControlState", 1
+    )[0]
+    sender = source.split("function sendVoiceInputControlState", 1)[1].split(
+        "function syncVoiceInputControlState", 1
+    )[0]
+
+    # The snapshot derives `engaged` from recording / voice-start lifecycle
+    # state only, so a merely-opened auxiliary window provably stamps
+    # engaged: false and the backend suppresses its voice-connection claim.
+    assert "engaged:" in snapshot
+    assert "S.isRecording === true" in snapshot
+    assert "S.voiceStartPending === true" in snapshot
+    assert "window.isMicStarting === true" in snapshot
+    # The wire payload forwards the marker verbatim.
+    assert "engaged: state.engaged" in sender
+
+
 def test_game_owner_and_hard_mute_are_independent_state_fields() -> None:
     source = CAPTURE.read_text(encoding="utf-8")
     snapshot = source.split("function currentVoiceInputControlState()", 1)[1].split(

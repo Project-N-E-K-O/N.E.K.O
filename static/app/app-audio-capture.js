@@ -26,6 +26,17 @@
             focus_suppressed: (
                 S.focusModeEnabled === true
                 && S.isPlaying === true
+            ),
+            // Engagement marker for the backend voice-connection claim gate:
+            // the onopen force-sync also fires from windows that merely
+            // opened (second /chat_full window). A snapshot stamped
+            // engaged: false is provably passive — neither recording nor
+            // starting a voice session — and must not steal the voice
+            // connection identity from a window that is actively recording.
+            engaged: (
+                S.isRecording === true
+                || S.voiceStartPending === true
+                || window.isMicStarting === true
             )
         };
     }
@@ -42,6 +53,7 @@
             owner: state.owner,
             hard_muted: state.hard_muted,
             focus_suppressed: state.focus_suppressed,
+            engaged: state.engaged,
             lease_generation: voiceLeaseGeneration
         }));
         lastVoiceLeaseFingerprint = fingerprint;

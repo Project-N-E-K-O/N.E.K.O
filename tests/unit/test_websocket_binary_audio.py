@@ -599,6 +599,170 @@ async def test_reconnect_socket_claims_voice_connection_on_first_lease_sync(
     assert begins[0] != begins[1]
 
 
+_IDLE_LEASE_SYNC_MESSAGE = {
+    "action": "voice_input_control",
+    "event": "lease_sync",
+    "lease_generation": 1,
+    "owner": "none",
+    "hard_muted": False,
+    "focus_suppressed": False,
+    "engaged": False,
+}
+_ENGAGED_LEASE_SYNC_MESSAGE = {
+    **_LEASE_SYNC_MESSAGE,
+    "lease_generation": 2,
+    "engaged": True,
+}
+
+
+@pytest.mark.asyncio
+async def test_idle_auxiliary_socket_lease_sync_does_not_reset_recording(
+    monkeypatch,
+) -> None:
+    manager = _ProtocolManager()
+    recording_socket = _TwoPhaseWebSocket(
+        [_LEASE_SYNC_MESSAGE, _PCM_MESSAGE],
+        [_PCM_MESSAGE],
+    )
+    _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=recording_socket,
+    )
+
+    recording_task = asyncio.create_task(
+        websocket_router.websocket_endpoint(recording_socket, "Lan")
+    )
+    await _drain_until(
+        lambda: "stream_data" in [name for name, _payload in manager.calls]
+    )
+
+    # A second /chat_full window opens mid-recording: its onopen handler
+    # force-sends the passive snapshot (owner none, engaged false).
+    auxiliary_socket = _EventWebSocket([_IDLE_LEASE_SYNC_MESSAGE])
+    await websocket_router.websocket_endpoint(auxiliary_socket, "Lan")
+
+    # Negative validation: the idle snapshot neither claims the voice
+    # connection (no identity reset) nor is applied to the lease scope.
+    call_names = [name for name, _payload in manager.calls]
+    assert call_names.count("begin") == 1
+    assert call_names.count("control") == 1
+    assert manager.statuses == []
+
+    # The recording socket keeps streaming PCM undisturbed.
+    recording_socket.release.set()
+    await recording_task
+    call_names = [name for name, _payload in manager.calls]
+    assert call_names.count("begin") == 1
+    assert call_names.count("stream_data") == 2
+
+
+@pytest.mark.asyncio
+async def test_engaged_reconnect_lease_sync_still_claims_immediately(
+    monkeypatch,
+) -> None:
+    manager = _ProtocolManager()
+    first_socket = _EventWebSocket([_ENGAGED_LEASE_SYNC_MESSAGE, _PCM_MESSAGE])
+    _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=first_socket,
+    )
+
+    await websocket_router.websocket_endpoint(first_socket, "Lan")
+    # Mid-recording reconnect: the replacement socket's first lease_sync is
+    # stamped engaged: true (the window is still recording) and must claim
+    # the new connection identity immediately, exactly as before.
+    reconnect_socket = _EventWebSocket([_ENGAGED_LEASE_SYNC_MESSAGE])
+    await websocket_router.websocket_endpoint(reconnect_socket, "Lan")
+
+    assert [name for name, _payload in manager.calls] == [
+        "begin",
+        "control",
+        "stream_data",
+        "begin",
+        "control",
+    ]
+    begins = [payload for name, payload in manager.calls if name == "begin"]
+    assert begins[0] != begins[1]
+
+
+@pytest.mark.asyncio
+async def test_idle_socket_that_starts_recording_claims_and_takes_over(
+    monkeypatch,
+) -> None:
+    manager = _ProtocolManager()
+    recording_socket = _TwoPhaseWebSocket(
+        [_LEASE_SYNC_MESSAGE, _PCM_MESSAGE],
+        [],
+    )
+    _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=recording_socket,
+    )
+
+    recording_task = asyncio.create_task(
+        websocket_router.websocket_endpoint(recording_socket, "Lan")
+    )
+    await _drain_until(
+        lambda: "stream_data" in [name for name, _payload in manager.calls]
+    )
+
+    # The auxiliary window opens idle (passive snapshot: no claim), then the
+    # user starts recording there: refreshMicLease sends an engaged owner
+    # sync, which claims the identity and takes the recording over.
+    takeover_socket = _TwoPhaseWebSocket(
+        [_IDLE_LEASE_SYNC_MESSAGE, _ENGAGED_LEASE_SYNC_MESSAGE],
+        [],
+    )
+    takeover_task = asyncio.create_task(
+        websocket_router.websocket_endpoint(takeover_socket, "Lan")
+    )
+    await _drain_until(
+        lambda: [name for name, _payload in manager.calls].count("begin") == 2
+    )
+
+    recording_socket.release.set()
+    await recording_task
+    takeover_socket.release.set()
+    await takeover_task
+
+    controls = [payload for name, payload in manager.calls if name == "control"]
+    # The idle snapshot was dropped: only the recording socket's sync and
+    # the takeover socket's engaged sync were dispatched.
+    assert len(controls) == 2
+    assert controls[1]["generation"] == 2
+
+
+@pytest.mark.asyncio
+async def test_legacy_lease_sync_without_engaged_field_keeps_claiming(
+    monkeypatch,
+) -> None:
+    # Older frontends never send `engaged`; even an owner-none snapshot must
+    # keep the historical claim-on-first-control behavior (the gate is the
+    # explicit engaged: false stamp, not the snapshot content).
+    legacy_idle_sync = {
+        "action": "voice_input_control",
+        "event": "lease_sync",
+        "lease_generation": 1,
+        "owner": "none",
+        "hard_muted": False,
+        "focus_suppressed": False,
+    }
+    manager = _ProtocolManager()
+    websocket = _EventWebSocket([legacy_idle_sync])
+    _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=websocket,
+    )
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+
+    assert [name for name, _payload in manager.calls] == ["begin", "control"]
+
+
 @pytest.mark.asyncio
 async def test_stale_socket_after_voice_takeover_is_closed_without_reclaim(
     monkeypatch,

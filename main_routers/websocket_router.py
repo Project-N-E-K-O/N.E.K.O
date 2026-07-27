@@ -467,8 +467,9 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
     # an ongoing recording merely by opening: _begin_voice_input_connection
     # resets the lease owner to "none", drops queued PCM and suppresses
     # ingress. Instead the identity is claimed only when THIS socket first
-    # engages voice input (voice_input_control incl. the lease_sync the
-    # frontend force-sends on open, an audio-mode start_session, or audio
+    # engages voice input (voice_input_control — incl. the lease_sync the
+    # frontend force-sends on open, unless it is stamped engaged: false as
+    # a passive idle snapshot —, an audio-mode start_session, or audio
     # stream_data / a binary PCM frame). Until then the previous voice
     # socket's session continues undisturbed. Once a newer socket engages,
     # the takeover semantics are unchanged: newest engaging connection wins
@@ -807,9 +808,27 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
 
             elif action == "voice_input_control":
                 # Any MicLease control message engages voice input for this
-                # socket; the frontend force-sends lease_sync on socket open,
-                # so a reconnect claims the identity here immediately.
-                _claim_voice_input_connection()
+                # socket — except a provably-idle snapshot. The frontend
+                # force-sends lease_sync on socket open even from a window
+                # that merely opened (a second /chat_full window); such a
+                # snapshot stamps engaged: false, and claiming on it would
+                # let that auxiliary window reset the recording socket's
+                # lease (invalidating the active ASR start and dropping
+                # queued PCM). Absent or non-false `engaged` keeps the
+                # historical claim-on-first-control behavior: older
+                # frontends and mid-recording reconnects (engaged: true)
+                # still claim the identity here immediately.
+                if message.get("engaged") is not False:
+                    _claim_voice_input_connection()
+                if not voice_input_claimed:
+                    # Never-engaged socket: applying its idle snapshot
+                    # against the lease scope (owned by another socket, or
+                    # by nobody) could still supersede the owner's
+                    # generation and tear the recording down with owner
+                    # "none", so drop it entirely. Once this socket
+                    # engages, its later engaged: false controls (stopping
+                    # its own recording) dispatch normally below.
+                    continue
                 # MicLease 是音频路由的后端权威控制面；按 websocket 消息顺序
                 # 同步处理，避免控制事件之后的 PCM 抢先进入旧 turn。
                 # getattr 守卫与 _begin_voice_input_connection /
