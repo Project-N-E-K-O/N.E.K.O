@@ -2703,7 +2703,6 @@ async def test_force_summary_branch_binds_draft_before_settling():
     waiting.task = asyncio.create_task(asyncio.sleep(999))
     service._pending["group:7788"] = waiting
 
-    waiting.has_nonconsent_input = True
     summary_row = SimpleNamespace(type="ai", content="强制总结")
 
     async def _run_forced(request):
@@ -2712,10 +2711,13 @@ async def test_force_summary_branch_binds_draft_before_settling():
         return SimpleNamespace(action="reply", reply_text="强制总结")
 
     plugin.reply_pipeline.run = AsyncMock(side_effect=_run_forced)
+    # consented=False must be honoured BEFORE the forced-summary branch
+    # runs (it returns early, so a tail-set marker would be too late).
     await service.schedule_reply(
         session_key="group:7788", reply_text="第十七条的草稿",
         raw_text="第十七条的草稿", blocks=[QQMessageBlock(text="x")],
         wait_seconds=999, sender_id="1", is_group=True, group_id="7788",
+        consented=False,
     )
     assert "group:7788" not in service._pending
     # The draft stays permanently excluded, but the provisional barrier
@@ -3145,6 +3147,40 @@ async def test_delivery_result_reflects_open_platform_send_failure():
     sent_text = napcat_plugin.qq_client.send_group_message.await_args.args[1]
     assert "要看看哪个？" in sent_text
     assert "状态 / 配置 / 日志" in sent_text
+
+    # NapCat reports poke/sticker failures explicitly (unlike its
+    # fire-and-forget text send): those must not count as delivered.
+    fail_plugin = SimpleNamespace(
+        _get_reply_mode=lambda: "text",
+        _emit_log=lambda *a, **k: None,
+        logger=MagicMock(),
+        _resolve_sticker_path=lambda sid: "/tmp/s.png",
+        qq_client=SimpleNamespace(
+            needs_attention=True,
+            send_group_poke=AsyncMock(return_value=False),
+            send_group_image=AsyncMock(return_value=None),
+        ),
+    )
+    fail_node = QQReplyDeliveryNode.__new__(QQReplyDeliveryNode)
+    fail_node.plugin = fail_plugin
+    result = await fail_node.deliver(QQDeliveryPlan(
+        target_type="group", target_id="7788",
+        blocks=[QQMessageBlock(poke="2")],
+    ))
+    assert result.delivered is False
+    result = await fail_node.deliver(QQDeliveryPlan(
+        target_type="group", target_id="7788",
+        blocks=[QQMessageBlock(sticker="s1")],
+    ))
+    assert result.delivered is False
+    # Different group: the 30s poke cooldown is per-group, so this exercises
+    # the success path rather than the skip path.
+    fail_plugin.qq_client.send_group_poke = AsyncMock(return_value=True)
+    result = await fail_node.deliver(QQDeliveryPlan(
+        target_type="group", target_id="8899",
+        blocks=[QQMessageBlock(poke="3")],
+    ))
+    assert result.delivered is True
 
     # Ark-only plan: nothing is actually sent (no delivery implementation),
     # so it must not report delivered and clear the draft exclusion.
@@ -3809,6 +3845,98 @@ def test_generation_strips_scoped_sections_when_group_revoked():
 
 
 @pytest.mark.asyncio
+async def test_recall_reports_participant_usage_to_caller():
+    """The recall reports whether it actually queried the participant
+    subject, and build() ORs that into the context flag — binding the flag
+    to a nonempty bootstrap section would miss the empty-bootstrap +
+    participant-hit combination."""
+    import inspect
+
+    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryQueryResult
+    from plugin.plugins.qq_auto_reply.reply_context_node import (
+        QQReplyContextNode,
+    )
+
+    bridge = MagicMock()
+    bridge.group_subject.side_effect = (
+        lambda gid: {"subject_kind": "group_chat", "subject_id": f"qq:{gid}"}
+    )
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_kind": "group_participant"}
+    )
+    bridge.query_relevant_memory = AsyncMock(
+        return_value=QQMemoryQueryResult(text="成员偏好", hit_count=1),
+    )
+    plugin = SimpleNamespace(
+        memory_bridge=bridge,
+        logger=MagicMock(),
+        _qq_settings={
+            "group_memory_enabled": True,
+            "group_member_memory_enabled": True,
+        },
+        _should_skip_direct_llm_fallback_for_images=lambda **kwargs: False,
+    )
+    node = QQReplyContextNode(plugin)
+    flag: list = []
+    assert await node._build_recalled_memory_text(
+        used_member_subject_out=flag,
+        her_name="Neko", message="问题",
+        should_use_memory_context=True, attachments=None,
+        is_group=True, group_id="7788", sender_id="2046",
+    ) != ""
+    assert flag == [True]
+
+    # No sender: participant subject absent, nothing reported.
+    flag.clear()
+    await node._build_recalled_memory_text(
+        used_member_subject_out=flag,
+        her_name="Neko", message="问题",
+        should_use_memory_context=True, attachments=None,
+        is_group=True, group_id="7788", sender_id="",
+    )
+    assert flag == []
+
+    # Wiring: build() must OR the recall signal into the context flag.
+    src = inspect.getsource(QQReplyContextNode.build)
+    assert "recall_used_member and recalled_memory_text" in src
+
+
+def test_sanitizer_drops_recall_when_member_revoked_without_bootstrap():
+    """Participant authorization must be tracked from the recall itself:
+    an empty scoped bootstrap (no core-memory section) with a participant
+    recall hit still has to lose that recall when member memory is
+    revoked before generation."""
+    from plugin.plugins.qq_auto_reply.reply_generation_service import (
+        QQReplyGenerationService,
+    )
+
+    service = QQReplyGenerationService.__new__(QQReplyGenerationService)
+    service.plugin = SimpleNamespace(
+        _qq_settings={
+            "group_memory_enabled": True,
+            "group_member_memory_enabled": False,
+            "allow_cross_group_context": True,
+        },
+    )
+    context = SimpleNamespace(
+        is_group=True, core_memory_text="", cross_group_section="",
+        used_member_subject=True,
+    )
+    prompt, recalled = service._sanitize_for_live_consent(
+        context, "系统提示", "成员的私密偏好",
+    )
+    assert recalled == ""
+    assert prompt == "系统提示"
+
+    # Member still enabled: recall passes through.
+    service.plugin._qq_settings["group_member_memory_enabled"] = True
+    prompt, recalled = service._sanitize_for_live_consent(
+        context, "系统提示", "成员的私密偏好",
+    )
+    assert recalled == "成员的私密偏好"
+
+
+@pytest.mark.asyncio
 async def test_generation_recheck_wiring_drops_scoped_prompt():
     """Wiring guard for the generation-time recheck: the stripped prompt
     and the emptied recall must actually reach _apply_turn_memory_context
@@ -4021,6 +4149,51 @@ async def test_failed_disable_save_restores_pre_optout_cursor():
     ud["pending_enable_rebase"] = len(history)
     await service.invalidate_group_sessions(enabled=True)
     assert ud["last_group_digest_index"] == len(history)
+
+
+@pytest.mark.asyncio
+async def test_housekeeping_not_started_when_connect_fails():
+    """A failed start leaves _running False with no message task, so the
+    later stop_auto_reply takes its not_running early return — a
+    housekeeping task created before connect would then run forever while
+    auto-reply is stopped."""
+    from plugin.plugins.qq_auto_reply.runtime_ops_service import (
+        QQRuntimeOpsService,
+    )
+
+    plugin = SimpleNamespace(
+        _session_housekeeping_task=None,
+        _session_housekeeping_loop=AsyncMock(),
+        _running=False,
+        _message_task=None,
+        _qq_settings={"qq_connection_mode": "napcat"},
+        _ensure_qq_client_initialized=lambda: None,
+        qq_client=SimpleNamespace(
+            needs_attention=True,
+            connect=AsyncMock(side_effect=RuntimeError("no client")),
+            onebot_url="ws://x",
+        ),
+        attention_service=None,
+        attention_gate_service=None,
+        napcat_service=SimpleNamespace(get_startup_error=lambda: ""),
+        _emit_log=lambda *a, **k: None,
+        logger=MagicMock(),
+        i18n=SimpleNamespace(t=lambda key, default="", **kw: default),
+        _startup_error=None,
+    )
+    service = QQRuntimeOpsService(plugin)
+    result = await service.start_auto_reply()
+    assert result.is_err() if hasattr(result, "is_err") else True
+    assert plugin._session_housekeeping_task is None
+
+    # Successful start does create it.
+    plugin.qq_client.connect = AsyncMock()
+    plugin._process_messages = AsyncMock()
+    await service.start_auto_reply()
+    assert plugin._session_housekeeping_task is not None
+    plugin._session_housekeeping_task.cancel()
+    if plugin._message_task:
+        plugin._message_task.cancel()
 
 
 @pytest.mark.asyncio

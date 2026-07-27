@@ -257,6 +257,11 @@ class QQReplyBufferService:
             if history_backed else None
         )
         existing = self._pending.get(session_key)
+        if not consented and existing is not None:
+            # 必须早于 10-16 ack / 17+ 强制总结这两条内嵌 pipeline：它们在
+            # 本函数中途就跑，且 17+ 分支直接 return——尾部再打标就来不及，
+            # 衍生 ai 行会漏出 include_ai_rows 清理。
+            existing.has_nonconsent_input = True
 
         if existing and existing.task and not existing.task.done():
             # 已有缓冲 → 追加消息，转发子条数计入

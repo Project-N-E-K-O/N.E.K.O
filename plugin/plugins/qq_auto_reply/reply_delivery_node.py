@@ -173,7 +173,8 @@ class QQReplyDeliveryNode:
         if not sticker_path:
             return False
         return self._confirm_platform_result(
-            await self.plugin.qq_client.send_group_image(plan.target_id, sticker_path)
+            await self.plugin.qq_client.send_group_image(plan.target_id, sticker_path),
+            has_result_channel=True,
         )
 
     async def _send_poke(self, plan: QQDeliveryPlan, block: QQMessageBlock) -> bool:
@@ -190,7 +191,8 @@ class QQReplyDeliveryNode:
             self._last_poke_out = {}
         self._last_poke_out[key] = now
         return self._confirm_platform_result(
-            await self.plugin.qq_client.send_group_poke(plan.target_id, block.poke)
+            await self.plugin.qq_client.send_group_poke(plan.target_id, block.poke),
+            has_result_channel=True,
         )
 
     def _supports_keyboard(self) -> bool:
@@ -201,11 +203,17 @@ class QQReplyDeliveryNode:
         client = self.plugin.qq_client
         return bool(client and not client.needs_attention)
 
-    def _confirm_platform_result(self, result) -> bool:
-        """开放平台失败吞异常返回 None——只有那个显式 None 判未投递；
-        NapCat fire-and-forget（失败走异常），返回值一律视为确认。"""
+    def _confirm_platform_result(self, result, *, has_result_channel: bool = False) -> bool:
+        """开放平台失败吞异常返回 None——只有那个显式 None 判未投递。
+
+        NapCat 的纯文本发送是 fire-and-forget（无返回通道，失败走异常），
+        返回值一律视为确认；但 send_group_poke / send_group_image 这类
+        **有**返回通道的接口会把失败表达成 False/None，调用方传
+        has_result_channel=True 时要如实判未投递。"""
         if self.plugin.qq_client and not self.plugin.qq_client.needs_attention:
             return result is not None
+        if has_result_channel:
+            return bool(result)
         return True
 
     async def _send_record(self, plan: QQDeliveryPlan, block: QQMessageBlock) -> bool:

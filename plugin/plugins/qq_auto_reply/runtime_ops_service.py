@@ -29,9 +29,13 @@ class QQRuntimeOpsService:
                         self.plugin.logger.error(
                             f"housekeeping 循环曾异常退出: {exc}"
                         )
-            self.plugin._session_housekeeping_task = asyncio.create_task(
-                self.plugin._session_housekeeping_loop()
-            )
+            # 只登记"需要重建"，真正创建推迟到连接成功之后：连接失败时
+            # _running=False 且没有消息任务，后续 stop_auto_reply 走
+            # not_running 早退，永远不会取消它——idle flush / attention
+            # decay 会在"已停止"状态下继续跑。
+            needs_housekeeping = True
+        else:
+            needs_housekeeping = False
         if self.plugin._running:
             return Ok({"status": "already_running"})
         # 确保连接类型与当前配置一致
@@ -56,6 +60,10 @@ class QQRuntimeOpsService:
             self.plugin._startup_error = None
             self.plugin._running = True
             self.plugin._message_task = asyncio.create_task(self.plugin._process_messages())
+            if needs_housekeeping:
+                self.plugin._session_housekeeping_task = asyncio.create_task(
+                    self.plugin._session_housekeeping_loop()
+                )
             return Ok({"status": "started"})
         except Exception as e:
             self.plugin._emit_log("ERROR", f"启动失败: {e}")

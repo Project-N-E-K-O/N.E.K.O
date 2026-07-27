@@ -15,6 +15,7 @@ class QQReplyContextNode:
     async def _build_recalled_memory_text(
         self,
         *,
+        used_member_subject_out: list | None = None,
         her_name: str,
         message: str,
         should_use_memory_context: bool,
@@ -66,6 +67,11 @@ class QQReplyContextNode:
                         )
                     )
             used_member_subject = bool(subjects and len(subjects) > 1)
+            if used_member_subject and used_member_subject_out is not None:
+                # 回传给调用方：召回是否真的带上了 participant 域。绑定
+                # bootstrap 段是否非空是错的——bootstrap 为空、召回命中
+                # participant 的组合下，member 撤销时不会撤这段召回。
+                used_member_subject_out.append(True)
             recall_result = await self.plugin.memory_bridge.query_relevant_memory(
                 her_name,
                 normalized_message,
@@ -323,7 +329,9 @@ class QQReplyContextNode:
         system_prompt = instruction_bundle.system_prompt
         core_memory_text = instruction_bundle.core_memory_text
         memory_context_used = instruction_bundle.memory_context_used
+        recall_used_member: list = []
         recalled_memory_text = await self._build_recalled_memory_text(
+            used_member_subject_out=recall_used_member,
             her_name=her_name,
             message=message,
             should_use_memory_context=should_use_memory_context,
@@ -433,8 +441,11 @@ class QQReplyContextNode:
                 if cross_group_alive else ""
             ),
             used_member_subject=bool(
-                core_memory_alive
-                and getattr(instruction_bundle, "used_member_subject", False)
+                (
+                    core_memory_alive
+                    and getattr(instruction_bundle, "used_member_subject", False)
+                )
+                or (recall_used_member and recalled_memory_text)
             ),
             traces=traces,
         )
