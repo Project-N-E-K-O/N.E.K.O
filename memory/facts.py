@@ -279,14 +279,25 @@ class FactStore:
                                 f['id'] for f in disk_facts
                                 if isinstance(f, dict) and f.get('signal_processed')
                             }
+                            # 纸条只在磁盘上那条**还没被别人升级过**时算数：另一个
+                            # 进程可能已经用它自己的缓存升级完、Stage-2 也消费过了
+                            # （磁盘上是 user_observation + True）。此时本进程拿着
+                            # 旧缓存再升一次并放行回写，等于把一条已消费的 fact 重新
+                            # 排回 Stage-2——正是这段 read-merge 要挡的跨进程回归。
+                            disk_ai_disclosure_ids = {
+                                f['id'] for f in disk_facts
+                                if isinstance(f, dict)
+                                and f.get('source', self._SOURCE_DEFAULT) == 'ai_disclosure'
+                            }
                             if absorbed_ids or signal_processed_ids:
                                 for f in facts:
                                     if f.get('id') in absorbed_ids:
                                         f['absorbed'] = True
-                                    if (
-                                        f.get('id') in signal_processed_ids
-                                        and f.get('id') not in just_unsealed_ids
-                                    ):
+                                    unsealed = (
+                                        f.get('id') in just_unsealed_ids
+                                        and f.get('id') in disk_ai_disclosure_ids
+                                    )
+                                    if f.get('id') in signal_processed_ids and not unsealed:
                                         f['signal_processed'] = True
                     except (json.JSONDecodeError, OSError):
                         # Read-merge is best-effort: if the on-disk

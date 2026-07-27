@@ -1592,3 +1592,50 @@ def test_signal_check_one_triggers_path_b_after_n_ticks():
         "signal loop 必须记录 last_a_msg_ts 给 B 当窗口下游边界，"
         "不能用 wall-clock now（race 风险）"
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_unseal_marker_does_not_requeue_a_fact_another_process_already_consumed(tmp_path):
+    """The unseal exemption stops at a fact somebody else already upgraded.
+
+    Two processes can hold the same ai_disclosure fact. If the other one
+    upgrades it first and Stage-2 consumes it, disk carries
+    ``user_observation`` + ``signal_processed=True``. This process then
+    upgrading from its stale cache and honouring its own marker would push that
+    True back to False and re-queue an already-consumed fact — the very
+    cross-process regression the monotonic read-merge exists to prevent.
+    """
+    fs = _make_fact_store(facts={})
+    fs._config_manager.memory_dir = str(tmp_path)
+
+    # 磁盘：另一个进程已经升级并被 Stage-2 消费过。
+    fs._facts['悠怡'] = [{
+        'id': 'fact_shared',
+        'text': '博士喜欢三文鱼',
+        'source': 'user_observation',
+        'signal_processed': True,
+        'importance': 8,
+        'entity': 'master',
+    }]
+    fs.save_facts('悠怡')
+
+    # 本进程：旧缓存仍是 ai_disclosure，刚做完自己的升级并挂上纸条。
+    fs._facts['悠怡'] = [{
+        'id': 'fact_shared',
+        'text': '博士喜欢三文鱼',
+        'source': 'user_observation',
+        'signal_processed': False,
+        fs._SIGNAL_RESET_PENDING: True,
+        'importance': 8,
+        'entity': 'master',
+    }]
+    fs.save_facts('悠怡')
+
+    with open(fs._facts_path('悠怡'), encoding='utf-8') as handle:
+        persisted = json.load(handle)
+
+    assert persisted[0]['signal_processed'] is True, (
+        "磁盘上已经是 user_observation 说明别人升过了，纸条不许把它重新排回 Stage-2"
+    )
+    assert '_signal_reset_pending' not in persisted[0]
