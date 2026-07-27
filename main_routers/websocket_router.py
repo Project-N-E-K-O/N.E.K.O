@@ -80,6 +80,19 @@ def _fire_task(coro):
     return task
 
 
+def _stamp_user_input_ingress(message: dict) -> dict:
+    """Stamp text-like input before fire-and-forget task dispatch."""
+    if message.get("input_type") not in _TEXT_SESSION_INPUT_TYPES:
+        return message
+    captured_at = message.get("_user_input_ingress_time")
+    if isinstance(captured_at, (int, float)):
+        return message
+    return {
+        **message,
+        "_user_input_ingress_time": time.time(),
+    }
+
+
 def _schedule_greeting_task(lanlan_name: str, kind: str, coro_factory) -> bool:
     """Start at most one greeting-like task per character at a time.
 
@@ -429,6 +442,11 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
 
             elif action == "stream_data":
                 input_type = message.get("input_type")
+                # Plain text is dispatched with create_task below. Stamp the
+                # server-arrival time before yielding so an earlier user input
+                # can never look newer than a proactive commit merely because
+                # its task started later.
+                message = _stamp_user_input_ingress(message)
                 if is_game_route_active(lanlan_name):
                     if input_type == "audio":
                         await route_external_stream_message(lanlan_name, {"input_type": "audio", "stt_provider": "realtime"})

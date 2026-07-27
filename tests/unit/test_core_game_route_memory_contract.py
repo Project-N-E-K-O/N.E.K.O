@@ -760,6 +760,33 @@ async def test_cached_user_image_preserves_server_ingress_time(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_stream_data_preserves_router_stamped_text_ingress(monkeypatch):
+    """Task startup must not overwrite the timestamp sampled by the WS router."""
+    mgr = _make_manager()
+    mgr.session_ready = False
+    mgr._starting_session_count = 1
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = []
+    monkeypatch.setattr(
+        core_module.time,
+        "time",
+        lambda: FIXED_TS + 50.0,
+    )
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr,
+        {
+            "input_type": "text",
+            "data": "arrived before task start",
+            "_user_input_ingress_time": FIXED_TS,
+        },
+    )
+
+    assert mgr.pending_input_data[0]["_user_input_ingress_time"] == FIXED_TS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_text_mode_avatar_drop_image_is_metadata_only_in_analyzer_queue(monkeypatch):
     """Avatar Drop images must not put full base64 payloads into the sync queue."""
     mgr = _make_manager()
@@ -1634,6 +1661,34 @@ async def test_send_lanlan_response_can_explicitly_remember_voice_echo_with_tts(
 
     assert mgr._recent_ai_voice_echo_text == "确认已经播报的文本"
     assert mgr._recent_ai_voice_echo_at == FIXED_TS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_guard_rechecks_after_focus_cleanup():
+    """A guarded proactive bubble must not publish after engagement in its last await."""
+    mgr = _make_manager()
+    mgr.current_speech_id = "s-proactive"
+    mgr.last_user_engagement_time = FIXED_TS
+
+    async def engage_during_focus_cleanup(_active):
+        mgr.last_user_engagement_time = FIXED_TS + 1.0
+
+    mgr._push_focus_thinking = AsyncMock(
+        side_effect=engage_during_focus_cleanup,
+    )
+
+    published = await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "stale proactive",
+        is_first_chunk=True,
+        expected_speech_id="s-proactive",
+        expected_user_engagement_time=FIXED_TS,
+    )
+
+    assert published is None
+    assert mgr.sync_message_queue.empty()
+    assert mgr._current_ai_turn_text == ""
 
 
 @pytest.mark.unit

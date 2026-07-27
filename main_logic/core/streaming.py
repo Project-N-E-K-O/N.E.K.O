@@ -221,11 +221,13 @@ class StreamingMixin:
             or input_type in {"avatar_drop_image", "user_image"}
         ):
             # Preserve when the user action reached the server. Session startup,
-            # mode rebuilds, and pending-input flushes may delay actual handling.
+            # router task scheduling, mode rebuilds, and pending-input flushes
+            # may delay actual handling. Preserve a router-provided timestamp;
+            # direct/internal callers get a safe fallback sampled here.
             # Copy so callers cannot observe this internal transport metadata.
             message = {
                 **message,
-                "_user_input_ingress_time": time.time(),
+                "_user_input_ingress_time": self._user_input_ingress_time(message),
             }
         # 检查session是否就绪
         async with self.input_cache_lock:

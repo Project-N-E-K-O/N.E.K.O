@@ -14,6 +14,26 @@ from main_logic.core.lifecycle import LifecycleMixin
 from main_routers.websocket_router import _normalize_cat_greeting_check
 
 
+def test_text_ingress_is_stamped_before_async_dispatch(monkeypatch):
+    monkeypatch.setattr(websocket_router.time, "time", lambda: 123.5)
+    original = {"input_type": "text", "data": "hello"}
+
+    stamped = websocket_router._stamp_user_input_ingress(original)
+
+    assert stamped["_user_input_ingress_time"] == 123.5
+    assert "_user_input_ingress_time" not in original
+    already_stamped = {
+        "input_type": "text",
+        "_user_input_ingress_time": 100.0,
+    }
+    assert (
+        websocket_router._stamp_user_input_ingress(already_stamped)
+        is already_stamped
+    )
+    audio = {"input_type": "audio", "data": []}
+    assert websocket_router._stamp_user_input_ingress(audio) is audio
+
+
 class _GoodbyeCycleState(LifecycleMixin):
     lanlan_name = "Test"
     goodbye_silent = False

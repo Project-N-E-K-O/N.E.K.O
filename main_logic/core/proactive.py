@@ -261,9 +261,25 @@ class ProactiveMixin:
             self._tts_done_queued_for_turn = False
             self._tts_done_pending_until_ready = False
             claim_sid = self.current_speech_id
+            claim_user_engagement_time = self.last_user_engagement_time
         # 状态机：正式 claim turn。订阅者（诊断、frontend sync 等）在此之后
         # 观察到 proactive_sid 已与 current_speech_id 一致。
         await self.state.fire(SessionEvent.PROACTIVE_CLAIM, sid=claim_sid)
+        # ``fire`` may wait for the state-machine write lock. UI-only
+        # engagement does not rotate ``current_speech_id``, so without this
+        # post-await check a click arriving in that window would be treated as
+        # the baseline for the new proactive turn. Callers return immediately
+        # when prepare says False, so clean up the claim here.
+        if (
+            self.state.is_proactive_preempted(claim_sid)
+            or self.last_user_engagement_time != claim_user_engagement_time
+        ):
+            logger.info(
+                "[%s] prepare_proactive_delivery: user engaged while claiming",
+                self.lanlan_name,
+            )
+            await self.state.fire(SessionEvent.PROACTIVE_DONE)
+            return False
         return True
 
     async def feed_tts_chunk(
@@ -402,10 +418,24 @@ class ProactiveMixin:
             # turn 上、前端分组串掉。expected_speech_id 在 phase2 已经一路传到这里
             # 并且刚校验过，作为冻结快照最稳。
             commit_sid = expected_speech_id or self.current_speech_id
-            # 状态机：进入 COMMITTING 阶段；期间若用户抢占仍会 sticky 到 _preempted，
-            # 但本处 lock 内 sid 已校验过，commit 本身安全。
+            # 状态机：进入 COMMITTING 阶段。send_lanlan_response 会在它自身
+            # 最后一个 await 之后、同步队列写入之前再校验一次；这样 UI
+            # engagement 即使发生在 state.fire 或 Focus bubble 清理期间，
+            # 也不会漏出过期气泡。
             await self.state.fire(SessionEvent.PROACTIVE_COMMITTING)
-            await self.send_lanlan_response(full_text, is_first_chunk=True, turn_id=commit_sid)
+            published = await self.send_lanlan_response(
+                full_text,
+                is_first_chunk=True,
+                turn_id=commit_sid,
+                expected_speech_id=expected_speech_id,
+                expected_user_engagement_time=expected_user_engagement_time,
+            )
+            if published is None:
+                logger.info(
+                    "[%s] finish_proactive_delivery skip: final publish guard rejected",
+                    self.lanlan_name,
+                )
+                return False
 
             # Flush per-turn AI-text buffer to activity tracker. The regular
             # /api/proactive_chat path doesn't call handle_proactive_complete

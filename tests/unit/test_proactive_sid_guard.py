@@ -19,7 +19,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 
 from main_logic.core import LLMSessionManager, _proactive_expected_sid
 from main_logic.core import proactive as proactive_core
-from main_logic.session_state import SessionStateMachine
+from main_logic.session_state import ProactivePhase, SessionEvent, SessionStateMachine
 
 
 def _make_mgr() -> LLMSessionManager:
@@ -225,6 +225,47 @@ async def test_prepare_proactive_delivery_rechecks_ui_engagement_before_claim(
     assert mgr.current_speech_id is None
 
 
+async def test_prepare_proactive_delivery_rechecks_engagement_after_claim_wait(
+    monkeypatch,
+):
+    """A UI click while PROACTIVE_CLAIM waits must abort and release the phase."""
+    mgr = _make_mgr()
+    mgr.is_goodbye_silent = MagicMock(return_value=False)
+    mgr.is_active = False
+    mgr.websocket = object()
+    mgr.session = SimpleNamespace(_conversation_history=[])
+    mgr.last_user_activity_time = 10.0
+    mgr.last_user_engagement_time = None
+    monkeypatch.setattr(proactive_core.time, "time", lambda: 100.0)
+    assert await mgr.state.try_start_proactive() is True
+
+    claim_started = asyncio.Event()
+    release_claim = asyncio.Event()
+    original_fire = mgr.state.fire
+
+    async def blocked_fire(event, **payload):
+        if event is SessionEvent.PROACTIVE_CLAIM:
+            claim_started.set()
+            await release_claim.wait()
+        await original_fire(event, **payload)
+
+    mgr.state.fire = blocked_fire
+    prepare_task = asyncio.create_task(
+        LLMSessionManager.prepare_proactive_delivery(
+            mgr,
+            min_idle_secs=10.0,
+        )
+    )
+    await claim_started.wait()
+    mgr.last_user_engagement_time = 95.0
+    release_claim.set()
+
+    prepared = await prepare_task
+
+    assert prepared is False
+    assert mgr.state.phase is ProactivePhase.IDLE
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # handle_text_data (text mode) 的 contextvar guard
 # ─────────────────────────────────────────────────────────────────────────────
@@ -373,6 +414,56 @@ async def test_finish_proactive_delivery_engagement_mismatch_skips_all_writes():
     mgr.send_lanlan_response.assert_not_called()
     assert mgr.session._conversation_history == []
     assert mgr._tts_done_queued_for_turn is False
+    assert mgr.sync_message_queue.empty()
+
+
+async def test_finish_proactive_delivery_rechecks_after_committing_wait():
+    """Engagement during state.fire(COMMITTING) must lose at the publish guard."""
+    mgr = _make_mgr()
+    mgr.current_speech_id = "s_proactive"
+    mgr.last_user_engagement_time = 100.0
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = []
+    assert await mgr.state.try_start_proactive() is True
+    await mgr.state.fire(SessionEvent.PROACTIVE_CLAIM, sid="s_proactive")
+    await mgr.state.fire(SessionEvent.PROACTIVE_PHASE2)
+
+    committing_started = asyncio.Event()
+    release_committing = asyncio.Event()
+    original_fire = mgr.state.fire
+
+    async def blocked_fire(event, **payload):
+        if event is SessionEvent.PROACTIVE_COMMITTING:
+            committing_started.set()
+            await release_committing.wait()
+        await original_fire(event, **payload)
+
+    async def guarded_send(*_args, **kwargs):
+        if (
+            mgr.last_user_engagement_time
+            != kwargs["expected_user_engagement_time"]
+        ):
+            return None
+        return True
+
+    mgr.state.fire = blocked_fire
+    mgr.send_lanlan_response = AsyncMock(side_effect=guarded_send)
+    finish_task = asyncio.create_task(
+        LLMSessionManager.finish_proactive_delivery(
+            mgr,
+            "stale proactive",
+            expected_speech_id="s_proactive",
+            expected_user_engagement_time=100.0,
+        )
+    )
+    await committing_started.wait()
+    mgr.last_user_engagement_time = 200.0
+    release_committing.set()
+
+    committed = await finish_task
+
+    assert committed is False
+    assert mgr.session._conversation_history == []
     assert mgr.sync_message_queue.empty()
 
 

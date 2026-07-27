@@ -1177,6 +1177,8 @@ class TurnMixin:
         track_ai_turn: bool = True,
         cache_for_new_session: bool = True,
         remember_voice_echo: bool = False,
+        expected_speech_id: str | None = None,
+        expected_user_engagement_time: Any = Ellipsis,
     ):
         """Qwen output transcription callback: usable for frontend display/cache/sync.
 
@@ -1197,13 +1199,6 @@ class TurnMixin:
         ``request_id is None`` check.
         """
         text_clean = self.emotion_pattern.sub('', text)
-        # 累加到当前轮 AI 文本 buffer，turn end 时一并交给 activity tracker 做
-        # unfinished_thread 检测。emotion_pattern 已剥掉表情标签，但保留 <expr>
-        # 等可能的 markup——tracker 自己会做二次 strip。
-        if track_ai_turn:
-            self._current_ai_turn_text += text_clean
-            if remember_voice_echo:
-                self._remember_recent_ai_voice_echo(text_clean)
         effective_turn_id = turn_id or self.current_speech_id
         effective_request_id = (
             self._active_text_request_id
@@ -1228,6 +1223,33 @@ class TurnMixin:
             # (hidden) 凝神 thinking, so drop the thinking-dots bubble. Idempotent,
             # so this is a no-op on regular / proactive turns that never lit it.
             await self._push_focus_thinking(False)
+        # Guarded proactive delivery must revalidate at the actual internal
+        # publish boundary. There are no awaits between these checks and the
+        # sync queue write below, so a user click/text that arrived during
+        # state.fire(PROACTIVE_COMMITTING) or Focus cleanup wins cleanly.
+        # ``None`` is reserved for this guarded rejection; ``False`` still
+        # means the sync publish succeeded but the best-effort WebSocket send
+        # did not.
+        if (
+            expected_speech_id is not None
+            and self.current_speech_id != expected_speech_id
+        ):
+            return None
+        if (
+            expected_user_engagement_time is not Ellipsis
+            and self.last_user_engagement_time
+            != expected_user_engagement_time
+        ):
+            return None
+
+        # 累加到当前轮 AI 文本 buffer，turn end 时一并交给 activity tracker 做
+        # unfinished_thread 检测。Guarded publish 被拒绝时不能污染 buffer，因此
+        # 必须放在最终校验之后。emotion_pattern 已剥掉表情标签，但保留 <expr>
+        # 等可能的 markup——tracker 自己会做二次 strip。
+        if track_ai_turn:
+            self._current_ai_turn_text += text_clean
+            if remember_voice_echo:
+                self._remember_recent_ai_voice_echo(text_clean)
         self.sync_message_queue.put({"type": "json", "data": message})
         if cache_for_new_session and hasattr(self, 'is_preparing_new_session') and self.is_preparing_new_session:
             if not hasattr(self, 'message_cache_for_new_session'):
