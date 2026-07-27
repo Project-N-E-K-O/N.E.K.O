@@ -430,6 +430,57 @@ def _record_proactive_material(lanlan_name: str, source_tag: str, key: str) -> N
     per_tag[source_tag].append((time.time(), key))
 
 
+def _proactive_turn_still_owned(mgr: Any, proactive_sid: Any) -> bool:
+    """Whether cleanup may still target the rejected proactive turn safely."""
+    return (
+        mgr.current_speech_id == proactive_sid
+        and not mgr.state.is_proactive_preempted(proactive_sid)
+    )
+
+
+async def _enter_proactive_phase2(
+    mgr: Any,
+    proactive_sid: Any,
+    *,
+    log: Any = None,
+) -> bool:
+    """Enter Phase 2 only if user engagement stays unchanged across the await."""
+    from main_logic.session_state import SessionEvent
+
+    active_logger = log or logger
+    expected_user_engagement_time = getattr(
+        mgr,
+        "last_user_engagement_time",
+        None,
+    )
+    await mgr.state.fire(SessionEvent.PROACTIVE_PHASE2)
+    if (
+        mgr.state.is_proactive_preempted(proactive_sid)
+        or getattr(mgr, "last_user_engagement_time", None)
+        != expected_user_engagement_time
+    ):
+        active_logger.info(
+            "proactive Phase 2 abandoned: user engaged during transition"
+        )
+        if _proactive_turn_still_owned(mgr, proactive_sid):
+            await mgr.handle_new_message()
+        return False
+    return True
+
+
+def _proactive_feed_rejected_for_takeover(
+    mgr: Any,
+    proactive_sid: Any,
+    expected_user_engagement_time: Any,
+) -> bool:
+    """Distinguish a guarded-feed rejection from a local TTS enqueue failure."""
+    return (
+        not _proactive_turn_still_owned(mgr, proactive_sid)
+        or getattr(mgr, "last_user_engagement_time", None)
+        != expected_user_engagement_time
+    )
+
+
 def _proactive_chat_totals_path(
     *, memory_dir: str | Path | None = None
 ) -> Path:

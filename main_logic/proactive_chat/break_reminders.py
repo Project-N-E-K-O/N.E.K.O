@@ -16,16 +16,24 @@
 """Work-break / anti-slack reminder prompts and LLM delivery."""
 
 import asyncio
+from dataclasses import dataclass
 
 from config import (
+    ANTI_REPEAT_INJECT_TOP_K,
     PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
 )
 from config import (
     PROACTIVE_PHASE2_OUTPUT_MAX_TOKENS as PHASE2_OUTPUT_MAX_TOKENS,
 )
+from config.prompts.prompts_activity import BREAK_REMINDER_REGEN_INSTRUCTION
 from config.prompts.prompts_proactive import BEGIN_GENERATE
 from config.prompts.prompts_sys import _loc
-from main_logic.proactive_chat.state import _record_proactive_chat
+from main_logic.proactive_chat.state import (
+    _proactive_feed_rejected_for_takeover,
+    _proactive_turn_still_owned,
+    _record_proactive_chat,
+)
+from memory.anti_repeat import get_anti_repeat_corpus
 from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
 from utils.logger_config import get_module_logger
 from utils.tokenize import count_tokens
@@ -35,6 +43,17 @@ logger = get_module_logger(__name__, "Main")
 
 # ---------- Break-reminder rendering + minimal-Phase-2 delivery ----------
 # Two reminder paths emitted by ``main_logic/activity/tracker.py``:
+
+
+@dataclass(frozen=True, slots=True)
+class BreakReminderDeliveryResult:
+    """Outcome of one direct break-reminder delivery attempt."""
+
+    delivered_text: str | None = None
+    proactive_sid: str | None = None
+    repeat_suppressed: bool = False
+
+
 #   * Anti-slack — fired when state transitions focused_work → leisure
 #     after a real focus session. Higher priority (transition is more
 #     time-sensitive than the cumulative water-break trigger).
@@ -72,6 +91,45 @@ def _resolve_break_reminder_label(
     if label:
         return label
     return fallback_table.get(lang, fallback_table.get("en", ""))
+
+
+def _render_break_reminder_regen_instruction(
+    repeated_terms: tuple[str, ...],
+    lang: str,
+) -> str:
+    """Render a bounded rewrite request for a repeatedly ignored reminder."""
+    template = _loc(BREAK_REMINDER_REGEN_INSTRUCTION, lang)
+    terms = ", ".join(repeated_terms[:ANTI_REPEAT_INJECT_TOP_K])
+    return template.format(terms=terms)
+
+
+def _break_reminder_silence_since(mgr) -> float | None:
+    """Read the latest genuine-interaction cutoff shared with proactive chat."""
+    from main_logic.proactive_chat.generation import _proactive_silence_since
+
+    return _proactive_silence_since(mgr)
+
+
+def _score_unanswered_break_reminder(
+    *,
+    corpus,
+    lanlan_name: str,
+    text: str,
+    mgr,
+):
+    """Best-effort long-window score for a direct break-reminder draft."""
+    try:
+        return corpus.score_unanswered_proactive_draft(
+            lanlan_name,
+            text,
+            silence_since=_break_reminder_silence_since(mgr),
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug(
+            "[AntiRepeat] break-reminder unanswered score skipped: %s",
+            exc,
+        )
+        return None
 
 
 def _render_work_break_prompt(
@@ -201,15 +259,18 @@ async def _deliver_break_reminder_via_llm(
     channel: str,  # 'work_break' | 'anti_slack' | 'work_break_game_invite'
     lang: str,
     timeout_seconds: float = 25.0,
-) -> tuple[str | None, str | None]:
+) -> BreakReminderDeliveryResult:
     """Minimal Phase 2 LLM stream delivery for break reminders.
 
     No Phase 1, no sources, no full activity_state_section in the prompt — just
     ``character_prompt`` (already baked into ``system_prompt`` by the caller) +
     the env-notice block, so the model puts all attention on the single nudge.
 
-    Returns ``(delivered_text, proactive_sid)`` on success.
-    Returns ``(None, None)`` on:
+    Returns a result with text/SID on success. ``repeat_suppressed`` is true
+    when the long-window guard deliberately consumes a rejected rewrite
+    (explicit ``[PASS]`` or still-repetitive content); callers must consume
+    that reminder source instead of retrying it.
+    An empty default result means:
       * ``prepare_proactive_delivery`` rejection (user just spoke / WS offline /
         etc — leave the source pending alone, next round can retry)
       * LLM error / timeout / preempt
@@ -234,20 +295,21 @@ async def _deliver_break_reminder_via_llm(
                 "[%s] break reminder skipped: correction model misconfigured",
                 lanlan_name,
             )
-            return None, None
+            return BreakReminderDeliveryResult()
     except Exception as cfg_err:
         logger.warning(
             "[%s] break reminder skipped: model config fetch failed: %s",
             lanlan_name,
             cfg_err,
         )
-        return None, None
+        return BreakReminderDeliveryResult()
 
     # Idle gate (10s) — same threshold mini-game invite uses. If the user just
     # typed/spoke, don't interrupt.
     if not await mgr.prepare_proactive_delivery(min_idle_secs=10.0):
-        return None, None
+        return BreakReminderDeliveryResult()
 
+    silence_since_before_generation = _break_reminder_silence_since(mgr)
     proactive_sid = mgr.current_speech_id
     from main_logic.session_state import SessionEvent as _SE
 
@@ -317,17 +379,9 @@ async def _deliver_break_reminder_via_llm(
                             aborted = True
                             break
                         full_text += safe_text
-                        await mgr.feed_tts_chunk(
-                            safe_text,
-                            expected_speech_id=proactive_sid,
-                        )
         # Flush remaining pass_probe (if it doesn't itself contain [PASS]).
         if not aborted and pass_probe and "[PASS]" not in pass_probe.upper():
             full_text += pass_probe
-            await mgr.feed_tts_chunk(
-                pass_probe,
-                expected_speech_id=proactive_sid,
-            )
     except (asyncio.TimeoutError, Exception) as exc:
         logger.warning(
             "[%s] break reminder LLM stream failed (channel=%s): %s: %s",
@@ -339,24 +393,189 @@ async def _deliver_break_reminder_via_llm(
         aborted = True
 
     if aborted or not full_text.strip():
-        if not mgr.state.is_proactive_preempted(proactive_sid):
+        if _proactive_turn_still_owned(mgr, proactive_sid):
             await mgr.handle_new_message()
-        return None, None
+        return BreakReminderDeliveryResult()
 
     text = full_text.strip()
+    silence_since_after_generation = _break_reminder_silence_since(mgr)
+    if (
+        silence_since_after_generation is not None
+        and (
+            silence_since_before_generation is None
+            or silence_since_after_generation > silence_since_before_generation
+        )
+    ):
+        logger.info(
+            "[%s] break reminder abandoned after user interaction during generation",
+            lanlan_name,
+        )
+        if _proactive_turn_still_owned(mgr, proactive_sid):
+            await mgr.handle_new_message()
+        return BreakReminderDeliveryResult()
+
+    anti_repeat_corpus = None
+    unanswered_repeat_signal = None
+    try:
+        anti_repeat_corpus = get_anti_repeat_corpus()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("[AntiRepeat] break-reminder corpus unavailable: %s", exc)
+    if anti_repeat_corpus is not None:
+        unanswered_repeat_signal = _score_unanswered_break_reminder(
+            corpus=anti_repeat_corpus,
+            lanlan_name=lanlan_name,
+            text=text,
+            mgr=mgr,
+        )
+
+    if (
+        unanswered_repeat_signal is not None
+        and unanswered_repeat_signal.triggered
+    ):
+        instruction = _render_break_reminder_regen_instruction(
+            unanswered_repeat_signal.repeated_terms,
+            lang,
+        )
+        regen_messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=f"{instruction}\n\n{begin_text}"),
+        ]
+        if mgr.state.is_proactive_preempted(proactive_sid):
+            return BreakReminderDeliveryResult()
+        silence_since_before_regen = _break_reminder_silence_since(mgr)
+        regen_text = ""
+        regen_timeout = min(20.0, timeout_seconds)
+        try:
+            async with asyncio.timeout(regen_timeout):
+                async with await create_chat_llm_async(
+                    correction_model,
+                    correction_base_url,
+                    correction_api_key,
+                    provider_type=correction_provider_type,
+                    temperature=1.0,
+                    max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
+                    timeout=regen_timeout,
+                ) as regen_llm:
+                    regen_response = await regen_llm.ainvoke(regen_messages)
+                    regen_text = (
+                        regen_response.content
+                        if hasattr(regen_response, "content")
+                        else ""
+                    ) or ""
+        except Exception as exc:
+            logger.warning(
+                "[%s] break reminder regen failed (channel=%s): %s",
+                lanlan_name,
+                channel,
+                exc,
+            )
+
+        if mgr.state.is_proactive_preempted(proactive_sid):
+            return BreakReminderDeliveryResult()
+        silence_since_after_regen = _break_reminder_silence_since(mgr)
+        if (
+            silence_since_after_regen is not None
+            and (
+                silence_since_before_regen is None
+                or silence_since_after_regen > silence_since_before_regen
+            )
+        ):
+            logger.info(
+                "[%s] break reminder abandoned after user interaction during regen",
+                lanlan_name,
+            )
+            if _proactive_turn_still_owned(mgr, proactive_sid):
+                await mgr.handle_new_message()
+            return BreakReminderDeliveryResult()
+        cleaned = regen_text.strip()
+        if "[PASS]" in cleaned.upper():
+            if _proactive_turn_still_owned(mgr, proactive_sid):
+                await mgr.handle_new_message()
+            return BreakReminderDeliveryResult(repeat_suppressed=True)
+        if not cleaned or count_tokens(cleaned) > PHASE2_OUTPUT_MAX_TOKENS:
+            if _proactive_turn_still_owned(mgr, proactive_sid):
+                await mgr.handle_new_message()
+            return BreakReminderDeliveryResult()
+
+        regen_signal = _score_unanswered_break_reminder(
+            corpus=anti_repeat_corpus,
+            lanlan_name=lanlan_name,
+            text=cleaned,
+            mgr=mgr,
+        )
+        if regen_signal is not None and regen_signal.triggered:
+            logger.info(
+                "[%s] break reminder regen still repeats unanswered content; drop",
+                lanlan_name,
+            )
+            if _proactive_turn_still_owned(mgr, proactive_sid):
+                await mgr.handle_new_message()
+            return BreakReminderDeliveryResult(repeat_suppressed=True)
+        text = cleaned
+
+    # Withhold TTS until all repeat checks finish; otherwise a rejected initial
+    # draft can already be audible while the long-window guard is still running.
+    try:
+        expected_user_engagement_time = getattr(
+            mgr,
+            "last_user_engagement_time",
+            None,
+        )
+        tts_accepted = await mgr.feed_tts_chunk(
+            text,
+            expected_speech_id=proactive_sid,
+            expected_user_engagement_time=expected_user_engagement_time,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[%s] break reminder TTS feed failed (channel=%s): %s: %s",
+            lanlan_name,
+            channel,
+            type(exc).__name__,
+            exc,
+        )
+        if _proactive_turn_still_owned(mgr, proactive_sid):
+            await mgr.handle_new_message()
+        return BreakReminderDeliveryResult()
+    if tts_accepted is False and _proactive_feed_rejected_for_takeover(
+        mgr,
+        proactive_sid,
+        expected_user_engagement_time,
+    ):
+        logger.info(
+            "[%s] break reminder TTS dropped after user interaction or takeover",
+            lanlan_name,
+        )
+        if _proactive_turn_still_owned(mgr, proactive_sid):
+            await mgr.handle_new_message()
+        return BreakReminderDeliveryResult()
+    if tts_accepted is False:
+        logger.warning(
+            "[%s] break reminder TTS enqueue failed; committing text without audio",
+            lanlan_name,
+        )
     committed = await mgr.finish_proactive_delivery(
         text,
         expected_speech_id=proactive_sid,
+        expected_user_engagement_time=expected_user_engagement_time,
     )
     if not committed:
-        return None, None
+        if _proactive_turn_still_owned(mgr, proactive_sid):
+            # The guarded feed already queued this reminder. A UI interaction
+            # before commit must retract that stale TTS as well as skip display.
+            await mgr.handle_new_message()
+        return BreakReminderDeliveryResult()
 
     _record_proactive_chat(lanlan_name, text, channel=channel)
     print(f"[{lanlan_name}] break reminder delivered (channel={channel}): {text[:80]}…")
-    return text, proactive_sid
+    return BreakReminderDeliveryResult(
+        delivered_text=text,
+        proactive_sid=proactive_sid,
+    )
 
 
 __all__ = (
+    "BreakReminderDeliveryResult",
     "_deliver_break_reminder_via_llm",
     "_render_anti_slack_prompt",
     "_render_work_break_game_invite_prompt",

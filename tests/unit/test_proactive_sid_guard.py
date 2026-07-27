@@ -12,12 +12,14 @@ import asyncio
 import os
 import sys
 from queue import Queue
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 from main_logic.core import LLMSessionManager, _proactive_expected_sid
-from main_logic.session_state import SessionStateMachine
+from main_logic.core import proactive as proactive_core
+from main_logic.session_state import ProactivePhase, SessionEvent, SessionStateMachine
 
 
 def _make_mgr() -> LLMSessionManager:
@@ -42,6 +44,7 @@ def _make_mgr() -> LLMSessionManager:
     mgr._is_free_preset_voice = False
     mgr._tts_runtime_key = LLMSessionManager._build_tts_runtime_key(mgr)
     mgr.current_speech_id = None
+    mgr.last_user_engagement_time = None
     mgr._tts_done_queued_for_turn = False
     mgr.lanlan_name = "Test"
     mgr.session = None
@@ -92,6 +95,31 @@ async def test_feed_tts_chunk_drops_when_sid_mismatches():
     mgr = _make_mgr()
     mgr.current_speech_id = "s_user"  # 用户已接管
     await LLMSessionManager.feed_tts_chunk(mgr, "proactive tail", expected_speech_id="s_proactive")
+    mgr._enqueue_tts_text_chunk.assert_not_called()
+    assert mgr.tts_pending_chunks == []
+
+
+async def test_feed_tts_chunk_drops_when_engagement_advances_while_waiting():
+    mgr = _make_mgr()
+    mgr.current_speech_id = "s_proactive"
+    mgr.last_user_engagement_time = 100.0
+
+    await mgr.tts_cache_lock.acquire()
+    feed_task = asyncio.create_task(
+        LLMSessionManager.feed_tts_chunk(
+            mgr,
+            "stale reminder",
+            expected_speech_id="s_proactive",
+            expected_user_engagement_time=100.0,
+        )
+    )
+    await asyncio.sleep(0)
+    mgr.last_user_engagement_time = 200.0
+    mgr.tts_cache_lock.release()
+
+    accepted = await feed_task
+
+    assert accepted is False
     mgr._enqueue_tts_text_chunk.assert_not_called()
     assert mgr.tts_pending_chunks == []
 
@@ -152,6 +180,90 @@ def test_cannot_preserve_tts_ready_when_runtime_identity_changed():
     mgr.voice_id = "voice-b"
 
     assert LLMSessionManager._can_preserve_tts_ready_for_session_start(mgr) is False
+
+
+async def test_prepare_proactive_delivery_counts_recent_ui_engagement(
+    monkeypatch,
+):
+    mgr = _make_mgr()
+    mgr.is_goodbye_silent = MagicMock(return_value=False)
+    mgr.last_user_activity_time = 10.0
+    mgr.last_user_engagement_time = 95.0
+    monkeypatch.setattr(proactive_core.time, "time", lambda: 100.0)
+
+    prepared = await LLMSessionManager.prepare_proactive_delivery(
+        mgr,
+        min_idle_secs=10.0,
+    )
+
+    assert prepared is False
+
+
+async def test_prepare_proactive_delivery_rechecks_ui_engagement_before_claim(
+    monkeypatch,
+):
+    mgr = _make_mgr()
+    mgr.is_goodbye_silent = MagicMock(return_value=False)
+    mgr.is_active = False
+    mgr.websocket = object()
+    mgr.last_user_activity_time = 10.0
+    mgr.last_user_engagement_time = None
+    monkeypatch.setattr(proactive_core.time, "time", lambda: 100.0)
+
+    async def start_session_after_engagement(*_args, **_kwargs):
+        mgr.session = SimpleNamespace(_conversation_history=[])
+        mgr.last_user_engagement_time = 95.0
+
+    mgr.start_session = AsyncMock(side_effect=start_session_after_engagement)
+
+    prepared = await LLMSessionManager.prepare_proactive_delivery(
+        mgr,
+        min_idle_secs=10.0,
+    )
+
+    assert prepared is False
+    assert mgr.current_speech_id is None
+
+
+async def test_prepare_proactive_delivery_rechecks_engagement_after_claim_wait(
+    monkeypatch,
+):
+    """A UI click while PROACTIVE_CLAIM waits must abort and release the phase."""
+    mgr = _make_mgr()
+    mgr.is_goodbye_silent = MagicMock(return_value=False)
+    mgr.is_active = False
+    mgr.websocket = object()
+    mgr.session = SimpleNamespace(_conversation_history=[])
+    mgr.last_user_activity_time = 10.0
+    mgr.last_user_engagement_time = None
+    monkeypatch.setattr(proactive_core.time, "time", lambda: 100.0)
+    assert await mgr.state.try_start_proactive() is True
+
+    claim_started = asyncio.Event()
+    release_claim = asyncio.Event()
+    original_fire = mgr.state.fire
+
+    async def blocked_fire(event, **payload):
+        if event is SessionEvent.PROACTIVE_CLAIM:
+            claim_started.set()
+            await release_claim.wait()
+        await original_fire(event, **payload)
+
+    mgr.state.fire = blocked_fire
+    prepare_task = asyncio.create_task(
+        LLMSessionManager.prepare_proactive_delivery(
+            mgr,
+            min_idle_secs=10.0,
+        )
+    )
+    await claim_started.wait()
+    mgr.last_user_engagement_time = 95.0
+    release_claim.set()
+
+    prepared = await prepare_task
+
+    assert prepared is False
+    assert mgr.state.phase is ProactivePhase.IDLE
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -263,6 +375,45 @@ async def test_finish_proactive_delivery_sid_match_runs_all():
     assert len(mgr.session._conversation_history) == 1
 
 
+async def test_finish_records_proactive_at_sync_publication_time(monkeypatch):
+    """An immediate user response must remain newer than the delivered item."""
+    import memory.anti_repeat as anti_repeat
+
+    mgr = _make_mgr()
+    mgr.current_speech_id = "s_proactive"
+    mgr.last_user_engagement_time = None
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = []
+    corpus = MagicMock()
+    monkeypatch.setattr(
+        anti_repeat,
+        "get_anti_repeat_corpus",
+        lambda: corpus,
+    )
+
+    async def publish_then_engage(*_args, **kwargs):
+        kwargs["on_published"](100.0)
+        mgr.last_user_engagement_time = 101.0
+        return True
+
+    mgr.send_lanlan_response = AsyncMock(side_effect=publish_then_engage)
+
+    result = await LLMSessionManager.finish_proactive_delivery(
+        mgr,
+        "delivered before immediate reply",
+        expected_speech_id="s_proactive",
+        expected_user_engagement_time=None,
+    )
+
+    assert result is True
+    corpus.record_output.assert_called_once_with(
+        "Test",
+        "delivered before immediate reply",
+        is_proactive=True,
+        now=100.0,
+    )
+
+
 async def test_finish_proactive_delivery_sid_mismatch_skips_all_writes():
     """关键：Phase 2 结束→finish 之间用户打断，finish 内所有副作用必须跳过，且返回 False。
 
@@ -280,6 +431,78 @@ async def test_finish_proactive_delivery_sid_mismatch_skips_all_writes():
     mgr.send_lanlan_response.assert_not_called()
     assert mgr.session._conversation_history == []
     assert mgr._tts_done_queued_for_turn is False
+    assert mgr.sync_message_queue.empty()
+
+
+async def test_finish_proactive_delivery_engagement_mismatch_skips_all_writes():
+    """UI-only engagement after TTS feed must block the final visible commit."""
+    mgr = _make_mgr()
+    mgr.current_speech_id = "s_proactive"
+    mgr.last_user_engagement_time = 200.0
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = []
+
+    result = await LLMSessionManager.finish_proactive_delivery(
+        mgr,
+        "stale proactive",
+        expected_speech_id="s_proactive",
+        expected_user_engagement_time=100.0,
+    )
+
+    assert result is False
+    mgr.send_lanlan_response.assert_not_called()
+    assert mgr.session._conversation_history == []
+    assert mgr._tts_done_queued_for_turn is False
+    assert mgr.sync_message_queue.empty()
+
+
+async def test_finish_proactive_delivery_rechecks_after_committing_wait():
+    """Engagement during state.fire(COMMITTING) must lose at the publish guard."""
+    mgr = _make_mgr()
+    mgr.current_speech_id = "s_proactive"
+    mgr.last_user_engagement_time = 100.0
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = []
+    assert await mgr.state.try_start_proactive() is True
+    await mgr.state.fire(SessionEvent.PROACTIVE_CLAIM, sid="s_proactive")
+    await mgr.state.fire(SessionEvent.PROACTIVE_PHASE2)
+
+    committing_started = asyncio.Event()
+    release_committing = asyncio.Event()
+    original_fire = mgr.state.fire
+
+    async def blocked_fire(event, **payload):
+        if event is SessionEvent.PROACTIVE_COMMITTING:
+            committing_started.set()
+            await release_committing.wait()
+        await original_fire(event, **payload)
+
+    async def guarded_send(*_args, **kwargs):
+        if (
+            mgr.last_user_engagement_time
+            != kwargs["expected_user_engagement_time"]
+        ):
+            return None
+        return True
+
+    mgr.state.fire = blocked_fire
+    mgr.send_lanlan_response = AsyncMock(side_effect=guarded_send)
+    finish_task = asyncio.create_task(
+        LLMSessionManager.finish_proactive_delivery(
+            mgr,
+            "stale proactive",
+            expected_speech_id="s_proactive",
+            expected_user_engagement_time=100.0,
+        )
+    )
+    await committing_started.wait()
+    mgr.last_user_engagement_time = 200.0
+    release_committing.set()
+
+    committed = await finish_task
+
+    assert committed is False
+    assert mgr.session._conversation_history == []
     assert mgr.sync_message_queue.empty()
 
 

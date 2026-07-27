@@ -37,6 +37,16 @@ from .callback_render import _build_callback_instruction, _select_callbacks_with
 class ProactiveMixin:
     """Proactive delivery methods (see module docstring)."""
 
+    def note_user_engagement(self, *, at: float | None = None) -> None:
+        """Record a genuine user interaction for silence-aware proactive guards."""
+        engagement_at = float(time.time() if at is None else at)
+        previous = self.last_user_engagement_time
+        self.last_user_engagement_time = (
+            engagement_at
+            if previous is None
+            else max(float(previous), engagement_at)
+        )
+
     def _park_proactive_for_goodbye(self) -> None:
         """While cat-mode silent, move the manager's pending-release callbacks into the persistent queue, so nothing is dropped or released on timeout during the silence."""
         try:
@@ -183,6 +193,18 @@ class ProactiveMixin:
 
     async def prepare_proactive_delivery(self, min_idle_secs: float = 10.0) -> bool:
         """Pre-checks before Phase 2 streaming + speech_id generation. Returns True if it's OK to proceed."""
+        def _user_active_recently() -> bool:
+            now = time.time()
+            activity_times = (
+                self.last_user_activity_time,
+                self.last_user_engagement_time,
+            )
+            return any(
+                timestamp is not None
+                and now - float(timestamp) < min_idle_secs
+                for timestamp in activity_times
+            )
+
         if self.is_goodbye_silent():
             logger.info("[%s] prepare_proactive_delivery: goodbye silent", self.lanlan_name)
             return False
@@ -194,10 +216,9 @@ class ProactiveMixin:
         if self.state.is_proactive_preempted():
             logger.info("[%s] prepare_proactive_delivery: preempted before claim", self.lanlan_name)
             return False
-        if self.last_user_activity_time is not None:
-            if time.time() - self.last_user_activity_time < min_idle_secs:
-                logger.info("[%s] prepare_proactive_delivery: user active recently", self.lanlan_name)
-                return False
+        if _user_active_recently():
+            logger.info("[%s] prepare_proactive_delivery: user active recently", self.lanlan_name)
+            return False
         if self.is_active and isinstance(self.session, OmniRealtimeClient):
             logger.info("[%s] prepare_proactive_delivery: voice session active", self.lanlan_name)
             return False
@@ -228,16 +249,45 @@ class ProactiveMixin:
             if self.state.is_proactive_preempted():
                 logger.info("[%s] prepare_proactive_delivery: preempted in claim lock", self.lanlan_name)
                 return False
+            # UI-only engagement does not rotate the proactive SID, so repeat
+            # the shared idle check after session startup and lock waiting.
+            if _user_active_recently():
+                logger.info(
+                    "[%s] prepare_proactive_delivery: user active before claim",
+                    self.lanlan_name,
+                )
+                return False
             self.current_speech_id = str(uuid4())
             self._tts_done_queued_for_turn = False
             self._tts_done_pending_until_ready = False
             claim_sid = self.current_speech_id
+            claim_user_engagement_time = self.last_user_engagement_time
         # 状态机：正式 claim turn。订阅者（诊断、frontend sync 等）在此之后
         # 观察到 proactive_sid 已与 current_speech_id 一致。
         await self.state.fire(SessionEvent.PROACTIVE_CLAIM, sid=claim_sid)
+        # ``fire`` may wait for the state-machine write lock. UI-only
+        # engagement does not rotate ``current_speech_id``, so without this
+        # post-await check a click arriving in that window would be treated as
+        # the baseline for the new proactive turn. Callers return immediately
+        # when prepare says False, so clean up the claim here.
+        if (
+            self.state.is_proactive_preempted(claim_sid)
+            or self.last_user_engagement_time != claim_user_engagement_time
+        ):
+            logger.info(
+                "[%s] prepare_proactive_delivery: user engaged while claiming",
+                self.lanlan_name,
+            )
+            await self.state.fire(SessionEvent.PROACTIVE_DONE)
+            return False
         return True
 
-    async def feed_tts_chunk(self, text: str, expected_speech_id: str | None = None):
+    async def feed_tts_chunk(
+        self,
+        text: str,
+        expected_speech_id: str | None = None,
+        expected_user_engagement_time: Any = Ellipsis,
+    ) -> bool:
         """Feed text to the TTS pipeline only, without sending it to the frontend display.
 
         expected_speech_id: if not None and it doesn't match the current
@@ -246,26 +296,46 @@ class ProactiveMixin:
         chunk and return. The check happens inside the lock to stay atomic with
         the enqueue, so proactive text can't be mislabeled with the new turn's
         speech_id and flow into the user's normal reply audio.
+
+        expected_user_engagement_time: when supplied (including an expected
+        ``None``), drop if genuine UI engagement advanced while this call waited
+        for the TTS lock. Returns whether the chunk was accepted.
         """
         if not self.use_tts:
-            return
+            return True
         async with self.tts_cache_lock:
             if expected_speech_id is not None and self.current_speech_id != expected_speech_id:
                 logger.debug(
                     "feed_tts_chunk drop: expected_sid=%s current_sid=%s len=%d",
                     expected_speech_id, self.current_speech_id, len(text),
                 )
-                return
+                return False
+            if (
+                expected_user_engagement_time
+                is not Ellipsis
+                and self.last_user_engagement_time
+                != expected_user_engagement_time
+            ):
+                logger.debug(
+                    "feed_tts_chunk drop: user engagement advanced "
+                    "expected=%s current=%s len=%d",
+                    expected_user_engagement_time,
+                    self.last_user_engagement_time,
+                    len(text),
+                )
+                return False
             if self.tts_ready and self.tts_thread and self.tts_thread.is_alive():
                 try:
                     self._enqueue_tts_text_chunk(self.current_speech_id, text)
                 except Exception as e:
                     logger.warning(f"⚠️ feed_tts_chunk 失败: {e}")
+                    return False
             else:
                 self.tts_pending_chunks.append((self.current_speech_id, text))
                 # Worker 已死亡则尝试拉起（受 12 秒冷却限制，不会风暴重连）
                 if self.tts_thread and not self.tts_thread.is_alive():
                     self._respawn_tts_worker()
+            return True
 
     async def finish_proactive_delivery(
         self,
@@ -274,6 +344,7 @@ class ProactiveMixin:
         action_note: str | None = None,
         source_tag: str | None = None,
         vision_screenshot_b64: str | None = None,
+        expected_user_engagement_time: Any = Ellipsis,
     ) -> bool:
         """Wrap-up after streaming completes: deliver the full text in one shot + record history + TTS/turn end signals.
 
@@ -285,6 +356,11 @@ class ProactiveMixin:
         text bubble would appear after the user's reply, history would be
         polluted, and TTS done would wrongly terminate the user's in-progress
         reply.
+
+        expected_user_engagement_time: when supplied (including an expected
+        ``None``), skip the commit if genuine UI engagement advanced before the
+        final commit boundary. The caller must clear any TTS chunk already queued
+        before this check.
 
         action_note: optional; when non-empty it is appended to the tail of that
         AIMessage's content in _conversation_history (history-only — never enters
@@ -321,6 +397,20 @@ class ProactiveMixin:
                     self.lanlan_name, expected_speech_id, self.current_speech_id,
                 )
                 return False
+            if (
+                expected_user_engagement_time
+                is not Ellipsis
+                and self.last_user_engagement_time
+                != expected_user_engagement_time
+            ):
+                logger.info(
+                    "[%s] finish_proactive_delivery skip: user engagement advanced "
+                    "(expected=%s current=%s)",
+                    self.lanlan_name,
+                    expected_user_engagement_time,
+                    self.last_user_engagement_time,
+                )
+                return False
             # 冻结 commit 用的 turn_id：current_speech_id 由 self.lock 保护，不在
             # _proactive_write_lock 范围内，下面 send_lanlan_response 之前若用户经
             # handle_new_message/stream_text 抢占完成 sid 轮换，再让 send_lanlan_response
@@ -328,10 +418,26 @@ class ProactiveMixin:
             # turn 上、前端分组串掉。expected_speech_id 在 phase2 已经一路传到这里
             # 并且刚校验过，作为冻结快照最稳。
             commit_sid = expected_speech_id or self.current_speech_id
-            # 状态机：进入 COMMITTING 阶段；期间若用户抢占仍会 sticky 到 _preempted，
-            # 但本处 lock 内 sid 已校验过，commit 本身安全。
+            # 状态机：进入 COMMITTING 阶段。send_lanlan_response 会在它自身
+            # 最后一个 await 之后、同步队列写入之前再校验一次；这样 UI
+            # engagement 即使发生在 state.fire 或 Focus bubble 清理期间，
+            # 也不会漏出过期气泡。
             await self.state.fire(SessionEvent.PROACTIVE_COMMITTING)
-            await self.send_lanlan_response(full_text, is_first_chunk=True, turn_id=commit_sid)
+            publication_times: list[float] = []
+            published = await self.send_lanlan_response(
+                full_text,
+                is_first_chunk=True,
+                turn_id=commit_sid,
+                expected_speech_id=expected_speech_id,
+                expected_user_engagement_time=expected_user_engagement_time,
+                on_published=publication_times.append,
+            )
+            if published is None:
+                logger.info(
+                    "[%s] finish_proactive_delivery skip: final publish guard rejected",
+                    self.lanlan_name,
+                )
+                return False
 
             # Flush per-turn AI-text buffer to activity tracker. The regular
             # /api/proactive_chat path doesn't call handle_proactive_complete
@@ -368,7 +474,14 @@ class ProactiveMixin:
                     try:
                         from memory.anti_repeat import get_anti_repeat_corpus
                         get_anti_repeat_corpus().record_output(
-                            self.lanlan_name, full_text, is_proactive=True,
+                            self.lanlan_name,
+                            full_text,
+                            is_proactive=True,
+                            now=(
+                                publication_times[0]
+                                if publication_times
+                                else None
+                            ),
                         )
                     except Exception as _exc:  # pragma: no cover
                         logger.debug("[AntiRepeat] record proactive skipped: %s", _exc)

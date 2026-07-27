@@ -175,6 +175,7 @@ def _make_manager():
     mgr.user_activity = []
     mgr.last_user_activity_time = None
     mgr.last_user_message_time = None
+    mgr.last_user_engagement_time = None
 
     async def send_user_activity(interrupted_speech_id):
         mgr.user_activity.append(interrupted_speech_id)
@@ -355,6 +356,7 @@ async def test_takeover_dispatcher_handles_voice_transcript_and_skips_ordinary_u
     assert mgr._activity_tracker.voice_rms_count == 1
     assert mgr._activity_tracker.user_messages == []
     assert mgr._session_turn_count == 0
+    assert mgr.last_user_engagement_time is not None
     mgr._publish_user_utterance_to_plugin_bus.assert_not_called()
     assert mgr.sync_message_queue.messages == []
 
@@ -387,6 +389,7 @@ async def test_takeover_dispatcher_receives_voice_echo_match_before_suppression(
     assert mgr._activity_tracker.voice_rms_count == 1
     assert mgr._activity_tracker.user_messages == []
     assert mgr._session_turn_count == 0
+    assert mgr.last_user_engagement_time == FIXED_TS
     mgr._publish_user_utterance_to_plugin_bus.assert_not_called()
     assert mgr.sync_message_queue.messages == []
 
@@ -644,8 +647,12 @@ async def test_text_input_transcript_callback_uses_non_voice_path(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_text_mode_image_input_is_mirrored_to_analyzer_queue(monkeypatch):
-    """Text-mode screenshots must stay available to turn-end analysis."""
+@pytest.mark.parametrize("input_type", ["screen", "camera"])
+async def test_text_mode_live_vision_input_is_mirrored_without_engagement(
+    monkeypatch,
+    input_type,
+):
+    """Automatic vision frames remain analyzable but are not user engagement."""
     mgr = _make_manager()
     mgr.session = object.__new__(core_module.OmniOfflineClient)
     mgr.session.stream_image = AsyncMock()
@@ -657,19 +664,163 @@ async def test_text_mode_image_input_is_mirrored_to_analyzer_queue(monkeypatch):
 
     await core_module.LLMSessionManager._process_stream_data_internal(
         mgr,
-        {"input_type": "screen", "data": "raw-image"},
+        {"input_type": input_type, "data": "raw-image"},
     )
 
     mgr.session.stream_image.assert_awaited_once_with("img-b64")
     assert mgr.sync_message_queue.messages == [{
         "type": "user",
         "data": {
-            "input_type": "screen",
+            "input_type": input_type,
             "data": "data:image/jpeg;base64,img-b64",
             "has_image": True,
             "mime_type": "image/jpeg",
         },
     }]
+    assert mgr.last_user_engagement_time is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("input_type", ["avatar_drop_image", "user_image"])
+async def test_one_shot_user_image_records_engagement(
+    monkeypatch,
+    input_type,
+):
+    """Accepted user images preserve arrival time across asynchronous staging."""
+    mgr = _make_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session.stream_image = AsyncMock()
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    clock = {"now": FIXED_TS + 25.0}
+
+    async def _process_after_clock_advance(_data):
+        clock["now"] = FIXED_TS + 50.0
+        return "img-b64"
+
+    monkeypatch.setattr(core_module, "process_screen_data", _process_after_clock_advance)
+    monkeypatch.setattr(core_module.time, "time", lambda: clock["now"])
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {
+            "input_type": input_type,
+            "data": "raw-image",
+            "_user_input_ingress_time": FIXED_TS,
+        },
+    )
+
+    mgr.session.stream_image.assert_awaited_once_with("img-b64")
+    assert mgr.last_user_engagement_time == FIXED_TS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("input_type", ["avatar_drop_image", "user_image"])
+async def test_cached_user_image_preserves_server_ingress_time(
+    monkeypatch,
+    input_type,
+):
+    """Session-start caching must preserve a user image's server arrival time."""
+    mgr = _make_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session.stream_image = AsyncMock()
+    mgr.is_active = True
+    mgr.session_ready = False
+    mgr._starting_session_count = 1
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = []
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    clock = {"now": FIXED_TS}
+    monkeypatch.setattr(core_module.time, "time", lambda: clock["now"])
+    monkeypatch.setattr(
+        core_module,
+        "process_screen_data",
+        AsyncMock(return_value="img-b64"),
+    )
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr,
+        {"input_type": input_type, "data": "raw-image"},
+    )
+
+    assert mgr.pending_input_data[0]["_user_input_ingress_time"] == FIXED_TS
+    clock["now"] = FIXED_TS + 50.0
+    mgr._starting_session_count = 0
+    mgr.session_ready = True
+    await core_module.LLMSessionManager._flush_pending_input_data(mgr)
+
+    mgr.session.stream_image.assert_awaited_once_with("img-b64")
+    assert mgr.last_user_engagement_time == FIXED_TS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stream_data_preserves_router_stamped_text_ingress(monkeypatch):
+    """Task startup must not overwrite the timestamp sampled by the WS router."""
+    mgr = _make_manager()
+    mgr.session_ready = False
+    mgr._starting_session_count = 1
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = []
+    monkeypatch.setattr(
+        core_module.time,
+        "time",
+        lambda: FIXED_TS + 50.0,
+    )
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr,
+        {
+            "input_type": "text",
+            "data": "arrived before task start",
+            "_user_input_ingress_time": FIXED_TS,
+        },
+    )
+
+    assert mgr.pending_input_data[0]["_user_input_ingress_time"] == FIXED_TS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("input_type", "data"),
+    [
+        ("text", "arrived while startup is circuit-broken"),
+        ("avatar_drop_image", "raw-image"),
+        ("user_image", "raw-image"),
+    ],
+)
+async def test_one_shot_input_records_engagement_before_startup_failure(
+    input_type,
+    data,
+):
+    """Fallible session startup cannot erase genuine input engagement."""
+    mgr = _make_transcript_manager()
+    mgr.session = None
+    mgr.is_active = False
+    mgr.session_ready = False
+    mgr._starting_session_count = 0
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = []
+    mgr._session_start_circuit_open = True
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr.last_user_engagement_time = None
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr,
+        {
+            "input_type": input_type,
+            "data": data,
+            "_user_input_ingress_time": FIXED_TS,
+        },
+    )
+
+    assert mgr.last_user_engagement_time == FIXED_TS
 
 
 @pytest.mark.unit
@@ -732,6 +883,115 @@ async def test_non_voice_transcript_reuse_preserves_avatar_drop_source():
             "metadata": {"source": "avatar-drop"},
         },
     }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cached_text_preserves_server_ingress_time(monkeypatch):
+    """Session-start caching must not move engagement past later proactive output."""
+    mgr = _make_transcript_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session._pending_images = []
+    mgr.session.update_max_response_length = Mock()
+    mgr.session.stream_text = AsyncMock()
+    mgr.is_active = True
+    mgr.session_ready = False
+    mgr._starting_session_count = 1
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = []
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=True)
+    mgr.agent_flags = {"openclaw_enabled": True, "openclaw_ready": False}
+    mgr.pending_agent_callbacks = []
+    mgr._fire_task = Mock()
+    clock = {"now": FIXED_TS}
+    monkeypatch.setattr(core_module.time, "time", lambda: clock["now"])
+    monkeypatch.setattr(
+        core_module,
+        "dispatch_text_user_message",
+        lambda name, text: None,
+    )
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr,
+        {"input_type": "text", "data": "/openclaw stop", "request_id": "req-1"},
+    )
+
+    assert mgr.pending_input_data[0]["_user_input_ingress_time"] == FIXED_TS
+    clock["now"] = FIXED_TS + 50.0
+    mgr._starting_session_count = 0
+    mgr.session_ready = True
+    await core_module.LLMSessionManager._flush_pending_input_data(mgr)
+
+    assert mgr.last_user_activity_time == FIXED_TS
+    assert mgr.last_user_message_time == FIXED_TS
+    assert mgr.last_user_engagement_time == FIXED_TS
+
+    mgr.last_user_activity_time = FIXED_TS + 100.0
+    mgr.last_user_message_time = FIXED_TS + 100.0
+    mgr.last_user_engagement_time = FIXED_TS + 100.0
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {
+            "input_type": "text",
+            "data": "older request resumed",
+            "_user_input_ingress_time": FIXED_TS,
+        },
+    )
+
+    assert mgr.last_user_activity_time == FIXED_TS + 100.0
+    assert mgr.last_user_message_time == FIXED_TS + 100.0
+    assert mgr.last_user_engagement_time == FIXED_TS + 100.0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cached_text_dropped_for_voice_still_records_engagement():
+    """A typed response remains engagement even when voice startup discards it."""
+    mgr = _make_transcript_manager()
+    mgr.session = object.__new__(core_module.OmniRealtimeClient)
+    mgr.is_active = True
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = [
+        {
+            "input_type": "text",
+            "data": "我在这里",
+            "_user_input_ingress_time": FIXED_TS,
+        }
+    ]
+    mgr.last_user_engagement_time = None
+
+    await core_module.LLMSessionManager._flush_pending_input_data(mgr)
+
+    assert mgr.pending_input_data == []
+    assert mgr.last_user_engagement_time == FIXED_TS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("input_type", ["avatar_drop_image", "user_image"])
+async def test_cached_user_image_dropped_for_voice_still_records_engagement(
+    input_type,
+):
+    """A submitted image remains engagement when voice startup discards it."""
+    mgr = _make_transcript_manager()
+    mgr.session = object.__new__(core_module.OmniRealtimeClient)
+    mgr.is_active = True
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = [
+        {
+            "input_type": input_type,
+            "data": "raw-image",
+            "_user_input_ingress_time": FIXED_TS,
+        }
+    ]
+    mgr.last_user_engagement_time = None
+
+    await core_module.LLMSessionManager._flush_pending_input_data(mgr)
+
+    assert mgr.pending_input_data == []
+    assert mgr.last_user_engagement_time == FIXED_TS
 
 
 @pytest.mark.unit
@@ -1228,15 +1488,13 @@ async def test_genuine_voice_transcript_stamps_last_user_message_time(monkeypatc
 
     assert mgr.last_user_activity_time == FIXED_TS
     assert mgr.last_user_message_time == FIXED_TS
+    assert mgr.last_user_engagement_time == FIXED_TS
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_ai_echo_transcript_does_not_stamp_last_user_message_time(monkeypatch):
-    """关键回归：AI 念邀请台词被麦克风录回的回声会刷 last_user_activity_time
-    （顶部无条件），但**不能**刷 last_user_message_time——否则语音模式下用户还
-    没点「现在不想玩」按钮，隐式 dismiss 就因回声误判用户已回应、把 pending 邀请
-    清掉撤按钮，用户随后点击落到 expired、邀请 5min 后反复重来。"""
+    """An AI voice echo is activity, but never a genuine user response."""
     mgr = _make_transcript_manager()
     monkeypatch.setattr(core_module, "HIDE_DIRTY_VOICE_TRANSCRIPTS", True)
     monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
@@ -1251,12 +1509,13 @@ async def test_ai_echo_transcript_does_not_stamp_last_user_message_time(monkeypa
     assert mgr.last_user_activity_time == FIXED_TS
     # 但真消息时间戳保持干净
     assert mgr.last_user_message_time is None
+    assert mgr.last_user_engagement_time is None
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_empty_voice_transcript_does_not_stamp_last_user_message_time(monkeypatch):
-    """空转录（VAD 误触发 / 转录失败）刷 activity 但不刷真消息时间戳。"""
+    """An empty voice transcript is activity, but not a genuine user response."""
     mgr = _make_transcript_manager()
     monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
 
@@ -1266,15 +1525,18 @@ async def test_empty_voice_transcript_does_not_stamp_last_user_message_time(monk
 
     assert mgr.last_user_activity_time == FIXED_TS
     assert mgr.last_user_message_time is None
+    assert mgr.last_user_engagement_time is None
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_last_user_message_time_uses_transcript_arrival_not_post_await(monkeypatch):
-    """takeover dispatcher 注册但未消费该转写时，last_user_message_time 必须用转写
-    到达时刻（await 之前），不能用 await 之后的 time.time()——否则 await 期间投递的
-    invite 会把 invite 之前的发言误记成之后的回应、提前清掉 pending invite（codex
-    P2）。time.time() 每次递增，断言两个时间戳都锁在首次（到达）取值 101。"""
+    """Use transcript arrival time without regressing newer engagement.
+
+    A takeover dispatcher may delay normal transcript processing. The message
+    timestamp must retain the pre-await arrival time, while a newer interaction
+    recorded during that await must remain the latest engagement signal.
+    """
     mgr = _make_transcript_manager()
     calls = {"n": 0}
 
@@ -1287,6 +1549,7 @@ async def test_last_user_message_time_uses_transcript_arrival_not_post_await(mon
 
     async def _dispatcher(name, text, request_id=None):
         core_module.time.time()  # 模拟 await 期间时钟流逝
+        mgr.note_user_engagement(at=200.0)
         return False             # 未处理 → 继续普通流程走到真消息块
 
     mgr._takeover_input_dispatcher = _dispatcher
@@ -1298,6 +1561,7 @@ async def test_last_user_message_time_uses_transcript_arrival_not_post_await(mon
 
     assert mgr.last_user_activity_time == 101.0
     assert mgr.last_user_message_time == 101.0
+    assert mgr.last_user_engagement_time == 200.0
 
 
 @pytest.mark.unit
@@ -1461,6 +1725,75 @@ async def test_send_lanlan_response_can_explicitly_remember_voice_echo_with_tts(
 
     assert mgr._recent_ai_voice_echo_text == "确认已经播报的文本"
     assert mgr._recent_ai_voice_echo_at == FIXED_TS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_reports_sync_publication_time(monkeypatch):
+    """The publication timestamp is sampled at the sync queue boundary."""
+    mgr = _make_manager()
+    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    publication_times = []
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "published before websocket await",
+        on_published=publication_times.append,
+    )
+
+    assert publication_times == [FIXED_TS]
+    queued = mgr.sync_message_queue.get_nowait()
+    assert queued["data"]["text"] == "published before websocket await"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_rejects_before_stale_focus_cleanup():
+    """A replaced proactive turn cannot hide the new user's thinking bubble."""
+    mgr = _make_manager()
+    mgr.current_speech_id = "s-user"
+    mgr.last_user_engagement_time = FIXED_TS + 1.0
+    mgr._push_focus_thinking = AsyncMock()
+
+    published = await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "stale proactive",
+        is_first_chunk=True,
+        expected_speech_id="s-proactive",
+        expected_user_engagement_time=FIXED_TS,
+    )
+
+    assert published is None
+    mgr._push_focus_thinking.assert_not_awaited()
+    assert mgr.sync_message_queue.empty()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_guard_rechecks_after_focus_cleanup():
+    """A guarded proactive bubble must not publish after engagement in its last await."""
+    mgr = _make_manager()
+    mgr.current_speech_id = "s-proactive"
+    mgr.last_user_engagement_time = FIXED_TS
+
+    async def engage_during_focus_cleanup(_active):
+        mgr.last_user_engagement_time = FIXED_TS + 1.0
+
+    mgr._push_focus_thinking = AsyncMock(
+        side_effect=engage_during_focus_cleanup,
+    )
+
+    published = await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "stale proactive",
+        is_first_chunk=True,
+        expected_speech_id="s-proactive",
+        expected_user_engagement_time=FIXED_TS,
+    )
+
+    assert published is None
+    assert mgr.sync_message_queue.empty()
+    assert mgr._current_ai_turn_text == ""
 
 
 @pytest.mark.unit

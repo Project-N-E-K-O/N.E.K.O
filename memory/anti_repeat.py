@@ -59,8 +59,10 @@ Design notes
 
 Not extracted
 ------
-- Too-short drafts (< ``ANTI_REPEAT_MIN_DRAFT_TOKENS`` ngrams): the BM25 signal is
-  unstable there, and short replies don't naturally "repeat"; pass with ``score=0``
+- Too-short regular drafts (< ``ANTI_REPEAT_MIN_DRAFT_TOKENS`` ngrams): the BM25
+  signal is unstable there, and short replies don't naturally "repeat"; pass
+  with ``score=0``. The separate unanswered-proactive scorer uses its lower
+  proactive-only threshold so concise reminders remain detectable.
 - Empty corpus: BM25 degrades to 0; every draft passes
 """  # noqa: DOCSTRING_CJK
 from __future__ import annotations
@@ -70,6 +72,7 @@ import math
 import os
 import threading
 import time
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from config import (
@@ -80,6 +83,11 @@ from config import (
     ANTI_REPEAT_FG_WINDOW,
     ANTI_REPEAT_INJECT_TOP_K,
     ANTI_REPEAT_MIN_DRAFT_TOKENS,
+    ANTI_REPEAT_UNANSWERED_MAX_AGE_SECONDS,
+    ANTI_REPEAT_UNANSWERED_MIN_DRAFT_TOKENS,
+    ANTI_REPEAT_UNANSWERED_MIN_MATCHES,
+    ANTI_REPEAT_UNANSWERED_SIMILARITY_THRESHOLD,
+    ANTI_REPEAT_UNANSWERED_WINDOW,
 )
 from utils.config_manager import get_config_manager
 from utils.file_utils import atomic_write_json
@@ -95,6 +103,17 @@ _SCHEMA_VERSION = 1
 # lanlan_name 缺失时，proactive corpus 仍然要落地（否则 BM25 regen / soft
 # hint 在该 session 静默失效，codex P2）。
 _DEFAULT_KEY = "default"
+
+
+@dataclass(frozen=True, slots=True)
+class UnansweredProactiveRepeatSignal:
+    """Long-window evidence that the user keeps ignoring the same content shape."""
+
+    triggered: bool = False
+    match_count: int = 0
+    considered_count: int = 0
+    best_similarity: float = 0.0
+    repeated_terms: tuple[str, ...] = ()
 
 
 def _resolve_name(name: Optional[str]) -> Optional[str]:
@@ -346,8 +365,11 @@ class AntiRepeatCorpus:
     ) -> None:
         """Register one AI output (written into the background corpus and used in later scoring).
 
-        - Too-short text (ngrams < ``ANTI_REPEAT_MIN_DRAFT_TOKENS``) is not stored —
-          keeps utterances like "嗯" / "好" from diluting DF
+        - Regular outputs shorter than ``ANTI_REPEAT_MIN_DRAFT_TOKENS`` are not
+          stored. Proactive outputs use the lower
+          ``ANTI_REPEAT_UNANSWERED_MIN_DRAFT_TOKENS`` threshold so concise
+          whitespace-delimited reminders remain available to the long-window
+          unanswered scorer while "嗯" / "好" still cannot dilute DF.
         - After insertion, pop the oldest once the window exceeds ``ANTI_REPEAT_BG_WINDOW``
         - Empty names normalize to ``_DEFAULT_KEY`` (consistent with the
           user_directives sink / injection path); otherwise BM25 / soft hints would
@@ -357,7 +379,12 @@ class AntiRepeatCorpus:
             return
         name = _resolve_name(name)
         ngrams = _ngrams(text)
-        if len(ngrams) < ANTI_REPEAT_MIN_DRAFT_TOKENS:
+        min_tokens = (
+            ANTI_REPEAT_UNANSWERED_MIN_DRAFT_TOKENS
+            if is_proactive
+            else ANTI_REPEAT_MIN_DRAFT_TOKENS
+        )
+        if len(ngrams) < min_tokens:
             return
         ts = float(now if now is not None else _now())
         entry = {
@@ -443,6 +470,88 @@ class AntiRepeatCorpus:
         if not fg_docs:
             return 0.0, {}
         return bm25_score(draft_ngrams, fg_docs, bg_docs)
+
+    def score_unanswered_proactive_draft(
+        self,
+        name: str,
+        draft_text: str,
+        *,
+        silence_since: Optional[float],
+        now: Optional[float] = None,
+        max_age_seconds: float = ANTI_REPEAT_UNANSWERED_MAX_AGE_SECONDS,
+        window: int = ANTI_REPEAT_UNANSWERED_WINDOW,
+        similarity_threshold: float = ANTI_REPEAT_UNANSWERED_SIMILARITY_THRESHOLD,
+        min_matches: int = ANTI_REPEAT_UNANSWERED_MIN_MATCHES,
+    ) -> UnansweredProactiveRepeatSignal:
+        """Detect recurring proactive content while the user remains silent.
+
+        This is deliberately separate from the short-lived BM25 foreground:
+        BM25 prevents back-to-back topic repetition, while this signal catches a
+        recurring template that reappears every few turns or hours. Only
+        proactive outputs delivered after ``silence_since`` participate, so any
+        genuine user message resets the evidence without mutating the corpus.
+        """
+        if (
+            silence_since is None
+            or not draft_text
+            or not draft_text.strip()
+            or window <= 0
+            or min_matches <= 0
+        ):
+            return UnansweredProactiveRepeatSignal()
+
+        name = _resolve_name(name)
+        draft_ngrams = set(_ngrams(draft_text))
+        if len(draft_ngrams) < ANTI_REPEAT_UNANSWERED_MIN_DRAFT_TOKENS:
+            return UnansweredProactiveRepeatSignal()
+
+        ref = float(now if now is not None else _now())
+        lower_bound = max(float(silence_since), ref - max(0.0, max_age_seconds))
+        with self._get_lock(name):
+            corpus = self._load_unlocked(name)
+            candidates = [
+                entry
+                for entry in corpus
+                if entry.get("is_proactive")
+                and lower_bound < float(entry.get("ts", 0.0)) <= ref
+            ][-window:]
+
+        matches: list[tuple[float, set[str]]] = []
+        for entry in candidates:
+            old_ngrams = set(entry.get("ngrams") or ())
+            if not old_ngrams:
+                continue
+            overlap = draft_ngrams & old_ngrams
+            similarity = (2.0 * len(overlap)) / (
+                len(draft_ngrams) + len(old_ngrams)
+            )
+            if similarity >= similarity_threshold:
+                matches.append((similarity, old_ngrams))
+
+        if not matches:
+            return UnansweredProactiveRepeatSignal(
+                considered_count=len(candidates),
+            )
+
+        term_frequency: dict[str, int] = {}
+        for _similarity, old_ngrams in matches:
+            for term in draft_ngrams & old_ngrams:
+                term_frequency[term] = term_frequency.get(term, 0) + 1
+        repeated_terms = tuple(
+            term
+            for term, _count in sorted(
+                term_frequency.items(),
+                key=lambda item: (-item[1], -len(item[0]), item[0]),
+            )[:ANTI_REPEAT_INJECT_TOP_K]
+        )
+        match_count = len(matches)
+        return UnansweredProactiveRepeatSignal(
+            triggered=match_count >= min_matches,
+            match_count=match_count,
+            considered_count=len(candidates),
+            best_similarity=max(similarity for similarity, _ in matches),
+            repeated_terms=repeated_terms,
+        )
 
     def top_recent_topics(
         self,
