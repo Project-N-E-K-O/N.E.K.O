@@ -197,8 +197,10 @@ def run_step_protocol_tts_worker(
                     _record_tts_telemetry(provider_key, len(pending_text_buffer))
                 except Exception as e:
                     # delta 发失败时连接多半已断，调用方不能继续发 tts.text.done；
-                    # 返回 False 让 sid=None/文本发送路径都走 continue 触发重连。
+                    # 回滚 create 状态但保留 pending_text_buffer，让下一次调用
+                    # 重试完整的 create + 首段文本，而不是静默丢掉句首。
                     logger.error(f"刷出缓冲文本失败: {e}")
+                    session_created = False
                     return False
             pending_text_buffer = ""
             return True

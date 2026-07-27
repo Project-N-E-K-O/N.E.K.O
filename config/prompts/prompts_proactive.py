@@ -3267,7 +3267,7 @@ REALTIME_PROACTIVE_TRIGGER_PROMPTS = {
         "in character. Say only what you want to say and do not mention this trigger."
     ),
     "ja": (
-        "======主动会話トリガー======\n"
+        "======話しかけトリガー======\n"
         "これまでの会話と、直前に見た画面（ある場合）を踏まえ、あなたらしく自然に話しかけてください。"
         "話したい内容だけを述べ、このトリガーには触れないでください。"
     ),

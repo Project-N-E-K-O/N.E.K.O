@@ -127,6 +127,25 @@ async def test_delayed_inject_rejection_returns_false_and_preserves_image():
 
 
 @pytest.mark.unit
+async def test_sync_inject_failure_returns_false_and_preserves_image():
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+
+    async def fail_inject(_text, *, on_rejected, on_completed):
+        raise RuntimeError("websocket disconnected")
+
+    client.inject_text_and_request_response = fail_inject
+
+    delivered = await client.prompt_ephemeral("describe what you notice")
+
+    assert delivered is False
+    assert client._proactive_image_consumed is False
+    assert client._latest_image_b64 == DUMMY_IMAGE_B64
+    await client.close()
+
+
+@pytest.mark.unit
 async def test_standard_stepfun_uses_annotation_text_before_trigger():
     client = _make_client(api_type="step", model="step-realtime")
     client._image_recognized_this_turn = True

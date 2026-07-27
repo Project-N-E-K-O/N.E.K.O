@@ -627,11 +627,18 @@ class _ResponseMixin:
         def _on_completed() -> None:
             outcome_observed.set()
 
-        await self.inject_text_and_request_response(
-            text,
-            on_rejected=_on_rejected,
-            on_completed=_on_completed,
-        )
+        try:
+            await self.inject_text_and_request_response(
+                text,
+                on_rejected=_on_rejected,
+                on_completed=_on_completed,
+            )
+        except Exception as exc:
+            logger.warning(
+                "prompt_ephemeral: proactive text inject failed; keeping visual context for retry: %s",
+                exc,
+            )
+            return False
         try:
             await asyncio.wait_for(
                 outcome_observed.wait(),
