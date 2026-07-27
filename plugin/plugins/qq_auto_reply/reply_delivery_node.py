@@ -102,7 +102,7 @@ class QQReplyDeliveryNode:
                     sent = await self.plugin.qq_client.send_group_message(
                         plan.target_id, labels,
                     )
-                if not self._confirm_platform_result(sent):
+                if not self._confirm_platform_result(sent, has_result_channel=True):
                     content_sent = False
                 continue
             if not text:
@@ -160,10 +160,6 @@ class QQReplyDeliveryNode:
         message was not delivered."""
         if not text:
             return False
-        explicit_result = bool(
-            self.plugin.qq_client
-            and not self.plugin.qq_client.needs_attention
-        )
         mode = self.plugin._get_reply_mode()
         if mode == "voice":
             # voice-only 模式：走 TTS 发送语音——确认结果一路传播（开放
@@ -215,9 +211,9 @@ class QQReplyDeliveryNode:
                 result = await self.plugin.qq_client.send_group_message(plan.target_id, text)
         else:
             result = await self.plugin.qq_client.send_message(plan.target_id, text)
-        if explicit_result:
-            return result is not None
-        return True
+        # 两个平台的文本发送现在都有回执：开放平台失败吞异常返回 None，
+        # NapCat 走 echo 往返（超时返回 None）。显式 None = 未确认送达。
+        return result is not None
 
     async def _send_sticker(self, plan: QQDeliveryPlan, block: QQMessageBlock) -> bool:
         if plan.target_type != "group":

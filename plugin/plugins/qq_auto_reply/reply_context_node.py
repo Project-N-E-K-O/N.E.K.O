@@ -138,10 +138,13 @@ class QQReplyContextNode:
 
     def _strip_cross_group_if_revoked(
         self, system_prompt: str, cross_group_section: str,
-    ) -> str:
-        # 注：返回值只是 prompt；段是否仍在由调用方按同一实时判据复算
-        # （撤除后 context 不再携带原文，生成前的锁内复检便无事可做）。
-        """Remove the cross-group section when the opt-in is no longer live.
+    ) -> tuple[str, bool]:
+        """Returns (prompt, section_kept).
+
+        The caller needs the second value: judging "does this reply depend
+        on cross-group consent" from the bundle alone marks a reply that
+        never saw the section as cross-group-derived, and a later opt-out
+        then discards it for nothing. One judgement, one place.
 
         The section is composed before the login/bootstrap/recall awaits;
         the switch can be turned off — or rolled back after a failed
@@ -149,13 +152,13 @@ class QQReplyContextNode:
         would expose other groups' content under consent that is not in
         effect."""
         if not cross_group_section:
-            return system_prompt
+            return system_prompt, False
         if bool(
             (getattr(self.plugin, "_qq_settings", {}) or {}).get(
                 "allow_cross_group_context", False,
             )
         ):
-            return system_prompt
+            return system_prompt, True
         separator = "\n\n"
         for candidate in (
             separator + cross_group_section,
@@ -166,7 +169,7 @@ class QQReplyContextNode:
                 system_prompt = system_prompt.replace(candidate, "", 1)
                 break
         self.plugin.logger.info("跨群上下文已在生成前撤除（授权已关闭）")
-        return system_prompt
+        return system_prompt, False
 
     async def build(
         self,
@@ -394,10 +397,7 @@ class QQReplyContextNode:
         if not core_memory_alive:
             core_memory_text = ""
             memory_context_used = False
-        cross_group_alive = bool(
-            getattr(instruction_bundle, "cross_group_section", "")
-        )
-        system_prompt = self._strip_cross_group_if_revoked(
+        system_prompt, cross_group_alive = self._strip_cross_group_if_revoked(
             system_prompt,
             getattr(instruction_bundle, "cross_group_section", ""),
         )

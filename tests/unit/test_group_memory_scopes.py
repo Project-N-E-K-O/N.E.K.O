@@ -3074,8 +3074,12 @@ async def test_delivery_result_reflects_open_platform_send_failure():
     # Open Platform success -> delivered.
     result = await _node(False, "msgid").deliver(plan)
     assert result.delivered is True
-    # NapCat fire-and-forget None -> still delivered.
+    # NapCat now has a receipt too (the CQ-string senders do the same echo
+    # round-trip as the segment ones), so a missing message id means the
+    # action never came back: unconfirmed, not delivered.
     result = await _node(True, None).deliver(plan)
+    assert result.delivered is False
+    result = await _node(True, "napcat-mid").deliver(plan)
     assert result.delivered is True
 
     # Voice mode: the TTS chain now propagates confirmation — an Open
@@ -3275,15 +3279,21 @@ async def test_delivery_result_reflects_open_platform_send_failure():
         logger=MagicMock(),
         qq_client=SimpleNamespace(
             needs_attention=True,
-            send_group_message=AsyncMock(return_value=None),
+            send_group_message=AsyncMock(return_value="napcat-mid"),
             send_group_message_segments=AsyncMock(return_value=None),
         ),
     )
     napcat_node = QQReplyDeliveryNode.__new__(QQReplyDeliveryNode)
     napcat_node.plugin = napcat_plugin
     result = await napcat_node.deliver(kb_plan)
-    assert result.delivered is True  # NapCat is fire-and-forget
+    assert result.delivered is True
+    # ...and an action that never came back is unconfirmed here too.
+    napcat_plugin.qq_client.send_group_message = AsyncMock(return_value=None)
+    result = await napcat_node.deliver(kb_plan)
+    assert result.delivered is False
+    napcat_plugin.qq_client.send_group_message = AsyncMock(return_value="napcat-mid")
     napcat_plugin.qq_client.send_group_message_segments.assert_not_awaited()
+    await napcat_node.deliver(kb_plan)
     assert napcat_plugin.qq_client.send_group_message.await_args.args[1] == "要 / 不要"
 
     # Text + keyboard on NapCat: the choices are appended to the text
@@ -4075,9 +4085,13 @@ async def test_cross_group_section_removed_when_consent_revoked():
     separator = chr(10) * 2
     prompt = "前段" + separator + section + separator + "后段"
     # Still consented: untouched.
-    assert node._strip_cross_group_if_revoked(prompt, section) == prompt
+    assert node._strip_cross_group_if_revoked(prompt, section) == (prompt, True)
     plugin._qq_settings["allow_cross_group_context"] = False
-    stripped = node._strip_cross_group_if_revoked(prompt, section)
+    stripped, kept = node._strip_cross_group_if_revoked(prompt, section)
+    # The caller needs to know the section is gone: treating the reply as
+    # cross-group-derived would make a later opt-out discard it although
+    # the model never saw that content.
+    assert kept is False
     assert "烤肉" not in stripped
     assert "前段" in stripped and "后段" in stripped
 
@@ -8787,3 +8801,128 @@ async def test_draft_row_marks_are_pruned_when_rows_leave_history():
     await service.cache_session_delta("group:7788", ud)
     assert ud["undelivered_draft_rows"] == [live_row]
     assert ud["provisional_draft_rows"] == []
+
+
+@pytest.mark.asyncio
+async def test_stripped_cross_group_section_leaves_no_dependency(monkeypatch):
+    """A reply whose cross-group section was stripped before generation
+    does not depend on that consent. Keeping the field set makes a later
+    opt-out discard a reply the model never saw the section in."""
+    from plugin.plugins.qq_auto_reply import reply_context_node as rcn
+
+    monkeypatch.setattr(
+        rcn, "get_config_manager",
+        lambda: SimpleNamespace(
+            get_character_data=lambda: (
+                "Master", "Neko", None, {}, None, {}, None, None, None,
+            ),
+        ),
+    )
+    bundle = SimpleNamespace(
+        system_prompt="正文\n\n跨群段原文", core_memory_text="",
+        cross_group_section="跨群段原文", used_member_subject=False,
+        context_ready_template="", traces=[], memory_context_used=False,
+        scene_mode="group_directed", user_title="", character_prompt="",
+    )
+    plugin = SimpleNamespace(
+        logger=MagicMock(),
+        _emit_log=lambda *a, **k: None,
+        _qq_settings={
+            "group_memory_enabled": True,
+            "allow_cross_group_context": False,  # revoked during build
+        },
+        i18n=_default_i18n(),
+        permission_mgr=SimpleNamespace(
+            get_user_title=lambda *a, **k: "", get_nickname=lambda *a, **k: None,
+        ),
+        qq_client=SimpleNamespace(needs_attention=False),
+        memory_bridge=MagicMock(),
+        _build_user_title=lambda *a, **k: "",
+        _build_character_card_fields=lambda *a, **k: {},
+        _should_use_memory_context=lambda *a, **k: False,
+        _should_persist_memory=lambda *a, **k: False,
+        _fetch_login_status_payload=AsyncMock(return_value={}),
+        _normalize_login_identity=lambda payload: ("online", "10000", "Neko"),
+        _build_qq_session_instructions=AsyncMock(return_value=bundle),
+        _build_prompt_message=lambda *a, **k: "用户消息",
+    )
+    node = rcn.QQReplyContextNode.__new__(rcn.QQReplyContextNode)
+    node.plugin = plugin
+
+    context = await node.build(
+        message="hi", permission_level="user", sender_id="2046",
+        is_group=True, group_id="7788",
+    )
+    assert "跨群段原文" not in context.system_prompt
+    assert context.cross_group_section == ""
+
+    # Consent intact: the section stays and the dependency is recorded.
+    plugin._qq_settings["allow_cross_group_context"] = True
+    context = await node.build(
+        message="hi", permission_level="user", sender_id="2046",
+        is_group=True, group_id="7788",
+    )
+    assert context.cross_group_section == "跨群段原文"
+
+
+@pytest.mark.asyncio
+async def test_cq_string_senders_wait_for_the_echo_receipt():
+    """The CQ-string senders keep their encoding (routing them through the
+    segments API would render [CQ:at,qq=...] as literal text) but they now
+    take the same echo round-trip, so a send that never comes back is
+    reported as unconfirmed instead of assumed delivered."""
+    import json as _json
+
+    from plugin.plugins.qq_auto_reply.qq_client import QQClient
+
+    client = QQClient.__new__(QQClient)
+    client._pending_actions = {}
+    client.logger = None
+    client._sent_message_ids = []
+    client.record_sent_message_id = client._sent_message_ids.append
+    sent: list = []
+
+    class _WS:
+        @staticmethod
+        async def send(raw):
+            payload = _json.loads(raw)
+            sent.append(payload)
+            future = client._pending_actions.get(payload.get("echo"))
+            if future and not future.done():
+                future.set_result({"data": {"message_id": "mid-1"}})
+
+    client._main_client = _WS()
+    assert await client.send_group_message("7788", "[CQ:at,qq=1]你好") == "mid-1"
+    assert sent[-1]["action"] == "send_group_msg"
+    # The encoding is untouched: still a CQ string, not a segment array.
+    assert sent[-1]["params"]["message"] == "[CQ:at,qq=1]你好"
+    # A confirmed group send records its id (self-message dedup).
+    assert client._sent_message_ids == ["mid-1"]
+
+    assert await client.send_message("2046", "你好") == "mid-1"
+    assert sent[-1]["action"] == "send_private_msg"
+    assert not client._pending_actions
+
+    # No receipt -> None.
+    class _SilentWS:
+        @staticmethod
+        async def send(raw):
+            sent.append(_json.loads(raw))
+
+    client._main_client = _SilentWS()
+    import plugin.plugins.qq_auto_reply.qq_client as qc
+
+    original_wait_for = qc.asyncio.wait_for
+
+    async def _instant_timeout(awaitable, timeout=None):
+        task = qc.asyncio.ensure_future(awaitable)
+        task.cancel()
+        raise qc.asyncio.TimeoutError
+
+    qc.asyncio.wait_for = _instant_timeout
+    try:
+        assert await client.send_group_message("7788", "你好") is None
+        assert await client.send_message("2046", "你好") is None
+    finally:
+        qc.asyncio.wait_for = original_wait_for
+    assert not client._pending_actions
