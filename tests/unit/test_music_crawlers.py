@@ -216,7 +216,7 @@ async def test_soundcloud_crawler_token_logic():
     
     # 模拟搜索响应
     mock_search = MagicMock(status_code=200)
-    mock_search.json.return_value = {"collection": [{"title": "SC Song", "media": {"transcodings": [{"url": "http://sc.url/stream"}]}}]}
+    mock_search.json.return_value = {"collection": [{"title": "SC Song", "media": {"transcodings": [{"url": "http://sc.url/stream", "format": {"protocol": "progressive", "mime_type": "audio/mpeg"}}]}}]}
     
     # 模拟音频流 URL 响应
     mock_stream = MagicMock(status_code=200)
@@ -242,12 +242,12 @@ async def test_soundcloud_crawler_skips_ten_minute_candidates_before_stream_reso
             {
                 "title": "Long DJ Set",
                 "duration": 10 * 60 * 1000,
-                "media": {"transcodings": [{"url": "http://sc.url/long"}]},
+                "media": {"transcodings": [{"url": "http://sc.url/long", "format": {"protocol": "progressive", "mime_type": "audio/mpeg"}}]},
             },
             {
                 "title": "Normal Track",
                 "duration": 5 * 60 * 1000,
-                "media": {"transcodings": [{"url": "http://sc.url/normal"}]},
+                "media": {"transcodings": [{"url": "http://sc.url/normal", "format": {"protocol": "progressive", "mime_type": "audio/mpeg"}}]},
             },
         ]
     }

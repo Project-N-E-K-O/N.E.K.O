@@ -44,8 +44,22 @@ def test_vrm_load_model_uses_entry_token_without_blocking_queue():
     assert "previousLoad" not in source
     assert "_loadModelExclusive" not in source
 
-    # loadModel 包装体必须极薄：bump token → 直接委派，中间不 await 任何前序加载
-    wrapper = source.split("async loadModel(modelUrl, options = {})", 1)[1]
+    # loadModel 包装体必须极薄：bump token → 直接委派，中间不 await 任何前序加载。
+    # #2253 之后 loadModel 与 token 分配之间多了一层只记在飞计数的薄包装
+    # (_loadModelImplementation)，所以两段分开断言——包装层唯一允许的 await 就是
+    # 那一次委派，token 分配层仍然一个 await 都不许有。
+    outer = source.split("async loadModel(modelUrl, options = {})", 1)[1]
+    outer = outer.split("async _loadModelImplementation", 1)[0]
+    assert "return await this._loadModelImplementation(modelUrl, options);" in outer, (
+        "loadModel 包装层必须直接委派给 _loadModelImplementation"
+    )
+    outer_rest = outer.replace(
+        "return await this._loadModelImplementation(modelUrl, options);", ""
+    )
+    assert "await this." not in outer_rest, "loadModel 包装层除委派外不得 await 任何东西"
+    assert ".then(" not in outer, "loadModel 不得挂 promise 链（否则重现阻塞队列）"
+
+    wrapper = source.split("async _loadModelImplementation", 1)[1]
     wrapper = wrapper.split("async _loadModelInternal", 1)[0]
     assert "await this." not in wrapper, "loadModel 不得 await 前序加载（否则重现阻塞）"
     assert ".then(" not in wrapper, "loadModel 不得挂 promise 链（否则重现阻塞队列）"
