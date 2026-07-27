@@ -953,6 +953,38 @@ test('display change rebuilds the active anchor against the refreshed display', 
     assert.equal(model.interactive, false);
 });
 
+test('non-display clear invalidates a pending display anchor restore', async () => {
+    const currentDisplay = {
+        screenX: 0,
+        screenY: 0,
+        width: 1000,
+        height: 800,
+        workArea: { x: 0, y: 0, width: 1000, height: 800 }
+    };
+    const harness = createHarness({ currentDisplay });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+    harness.window.live2dManager = manager;
+    manager.currentModel = model;
+
+    const enterPromise = manager._tryApplyLive2DPeek(model);
+    for (let attempt = 0; attempt < 10 && harness.rafQueue.length === 0; attempt += 1) {
+        await Promise.resolve();
+    }
+    flushNextFrame(harness);
+    await enterPromise;
+
+    harness.window.dispatchEvent({ type: 'electron-display-changed' });
+    await new Promise((resolve) => setImmediate(resolve));
+    harness.window.nekoLive2DPeek.clear('model-reload');
+    await new Promise((resolve) => setTimeout(resolve, 180));
+
+    assert.equal(manager.isLive2DPeekActive(), false);
+    assert.equal(harness.rafQueue.length, 0);
+    assert.equal(model.x, 0);
+    assert.equal(model.y, 120);
+});
+
 test('core model bounds are null while an anchor is hiding or hidden', () => {
     const harness = createCoreHarness();
     const manager = new harness.Live2DManager();

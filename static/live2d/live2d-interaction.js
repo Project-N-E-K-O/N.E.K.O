@@ -917,6 +917,17 @@ Live2DManager.prototype._tryApplyLive2DPeek = async function (model) {
 };
 
 function clearLive2DPeek(reason, options) {
+    const clearReason = String(reason || '');
+    const preservesDisplayRestore = (
+        clearReason === 'display-changed'
+        || clearReason.startsWith('viewport-changed:electron-display-changed')
+    );
+    if (!preservesDisplayRestore) {
+        // Drag/reload/disable/manual clears represent newer user or lifecycle
+        // intent and must win over an in-flight cross-display restoration.
+        live2DPeekPendingDisplayRestoreAnchor = null;
+        live2DPeekDisplayReconcileId += 1;
+    }
     const manager = window.live2dManager;
     if (manager && typeof manager.clearLive2DPeek === 'function') {
         manager.clearLive2DPeek(reason, options);
