@@ -1729,6 +1729,25 @@ async def test_send_lanlan_response_can_explicitly_remember_voice_echo_with_tts(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_send_lanlan_response_reports_sync_publication_time(monkeypatch):
+    """The publication timestamp is sampled at the sync queue boundary."""
+    mgr = _make_manager()
+    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    publication_times = []
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "published before websocket await",
+        on_published=publication_times.append,
+    )
+
+    assert publication_times == [FIXED_TS]
+    queued = mgr.sync_message_queue.get_nowait()
+    assert queued["data"]["text"] == "published before websocket await"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_send_lanlan_response_guard_rechecks_after_focus_cleanup():
     """A guarded proactive bubble must not publish after engagement in its last await."""
     mgr = _make_manager()

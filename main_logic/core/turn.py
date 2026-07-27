@@ -24,7 +24,7 @@ import json
 import re
 import time
 from collections import deque
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from datetime import datetime
 from fastapi import WebSocketDisconnect
 from main_logic.omni_realtime_client import OmniRealtimeClient
@@ -1179,6 +1179,7 @@ class TurnMixin:
         remember_voice_echo: bool = False,
         expected_speech_id: str | None = None,
         expected_user_engagement_time: Any = Ellipsis,
+        on_published: Callable[[float], None] | None = None,
     ):
         """Qwen output transcription callback: usable for frontend display/cache/sync.
 
@@ -1250,7 +1251,10 @@ class TurnMixin:
             self._current_ai_turn_text += text_clean
             if remember_voice_echo:
                 self._remember_recent_ai_voice_echo(text_clean)
+        published_at = time.time()
         self.sync_message_queue.put({"type": "json", "data": message})
+        if on_published is not None:
+            on_published(published_at)
         if cache_for_new_session and hasattr(self, 'is_preparing_new_session') and self.is_preparing_new_session:
             if not hasattr(self, 'message_cache_for_new_session'):
                 self.message_cache_for_new_session = []

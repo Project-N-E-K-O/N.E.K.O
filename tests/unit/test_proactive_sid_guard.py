@@ -375,6 +375,45 @@ async def test_finish_proactive_delivery_sid_match_runs_all():
     assert len(mgr.session._conversation_history) == 1
 
 
+async def test_finish_records_proactive_at_sync_publication_time(monkeypatch):
+    """An immediate user response must remain newer than the delivered item."""
+    import memory.anti_repeat as anti_repeat
+
+    mgr = _make_mgr()
+    mgr.current_speech_id = "s_proactive"
+    mgr.last_user_engagement_time = None
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = []
+    corpus = MagicMock()
+    monkeypatch.setattr(
+        anti_repeat,
+        "get_anti_repeat_corpus",
+        lambda: corpus,
+    )
+
+    async def publish_then_engage(*_args, **kwargs):
+        kwargs["on_published"](100.0)
+        mgr.last_user_engagement_time = 101.0
+        return True
+
+    mgr.send_lanlan_response = AsyncMock(side_effect=publish_then_engage)
+
+    result = await LLMSessionManager.finish_proactive_delivery(
+        mgr,
+        "delivered before immediate reply",
+        expected_speech_id="s_proactive",
+        expected_user_engagement_time=None,
+    )
+
+    assert result is True
+    corpus.record_output.assert_called_once_with(
+        "Test",
+        "delivered before immediate reply",
+        is_proactive=True,
+        now=100.0,
+    )
+
+
 async def test_finish_proactive_delivery_sid_mismatch_skips_all_writes():
     """关键：Phase 2 结束→finish 之间用户打断，finish 内所有副作用必须跳过，且返回 False。
 

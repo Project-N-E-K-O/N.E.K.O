@@ -423,12 +423,14 @@ class ProactiveMixin:
             # engagement 即使发生在 state.fire 或 Focus bubble 清理期间，
             # 也不会漏出过期气泡。
             await self.state.fire(SessionEvent.PROACTIVE_COMMITTING)
+            publication_times: list[float] = []
             published = await self.send_lanlan_response(
                 full_text,
                 is_first_chunk=True,
                 turn_id=commit_sid,
                 expected_speech_id=expected_speech_id,
                 expected_user_engagement_time=expected_user_engagement_time,
+                on_published=publication_times.append,
             )
             if published is None:
                 logger.info(
@@ -472,7 +474,14 @@ class ProactiveMixin:
                     try:
                         from memory.anti_repeat import get_anti_repeat_corpus
                         get_anti_repeat_corpus().record_output(
-                            self.lanlan_name, full_text, is_proactive=True,
+                            self.lanlan_name,
+                            full_text,
+                            is_proactive=True,
+                            now=(
+                                publication_times[0]
+                                if publication_times
+                                else None
+                            ),
                         )
                     except Exception as _exc:  # pragma: no cover
                         logger.debug("[AntiRepeat] record proactive skipped: %s", _exc)
