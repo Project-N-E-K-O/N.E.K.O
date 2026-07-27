@@ -75,8 +75,9 @@ class QQSettingsService:
         if group_memory_before != group_memory_after:
             self.plugin._qq_settings["group_memory_enabled"] = group_memory_before
             self.plugin._qq_settings["group_member_memory_enabled"] = member_memory_before
-            if not group_memory_before:
-                # 回滚回 ON：并发的 disable 结算若失败，会把游标推到
+            if group_memory_before:
+                # 回滚方向是"回到 ON"（before 是旧值：ON→OFF 保存失败时
+                # 它为 True）。并发的 disable 结算若失败会把游标推到
                 # len(history) 当 opt-out 清理——标记让 rebase 恢复
                 # opt-out 之前的位置，别让这段已授权历史被永久跳过。
                 for ud in list(

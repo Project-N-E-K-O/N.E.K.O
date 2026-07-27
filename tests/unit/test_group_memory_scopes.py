@@ -1021,6 +1021,45 @@ async def test_scoped_synthesis_rotates_between_subjects():
 
 
 @pytest.mark.asyncio
+async def test_scoped_promotion_is_idempotent_after_partial_commit():
+    """The persona write and the reflection status flip are two stores. If
+    the reflections save fails after the entry landed, the retry's
+    aadd_fact sees its own text and returns QUEUED_CORRECTION forever —
+    the reflection would stay confirmed and re-queue a self-correction on
+    every tick. An existing entry with this reflection's source_id in the
+    same subject counts as already promoted."""
+    from memory.persona import PersonaManager
+    from memory.reflection.promotion import PromotionMixin
+
+    subject = MemorySubject.group_chat("qq", "7788")
+    mixin = PromotionMixin.__new__(PromotionMixin)
+    mixin._persona_manager = SimpleNamespace(
+        aensure_persona=AsyncMock(return_value={
+            subject.persona_section_key: {
+                "facts": [
+                    {
+                        "id": "p1", "text": "群里常聊摄影",
+                        "source_id": "r-1", **subject.as_entry_fields(),
+                    },
+                ],
+            },
+        }),
+    )
+    assert await mixin._ascoped_promotion_already_applied(
+        "Neko", "r-1", subject,
+    ) is True
+    # A different reflection id, or another subject's entry, does not count.
+    assert await mixin._ascoped_promotion_already_applied(
+        "Neko", "r-2", subject,
+    ) is False
+    other = MemorySubject.group_chat("qq", "9999")
+    assert await mixin._ascoped_promotion_already_applied(
+        "Neko", "r-1", other,
+    ) is False
+    assert PersonaManager.FACT_QUEUED_CORRECTION is not None
+
+
+@pytest.mark.asyncio
 async def test_scoped_synthesis_runs_when_legacy_synthesis_raises():
     """A persistent legacy-only failure (e.g. a hand-edited fact without an
     id raising inside the legacy pass) must not starve the scoped pass —
@@ -3007,6 +3046,24 @@ async def test_delivery_result_reflects_open_platform_send_failure():
     result = await kb_node.deliver(kb_plan)
     assert result.delivered is False
 
+    # NapCat cannot render official buttons (its segments sender ignores the
+    # kwarg): send the labels as readable text instead of a bare space.
+    napcat_plugin = SimpleNamespace(
+        _get_reply_mode=lambda: "text",
+        logger=MagicMock(),
+        qq_client=SimpleNamespace(
+            needs_attention=True,
+            send_group_message=AsyncMock(return_value=None),
+            send_group_message_segments=AsyncMock(return_value=None),
+        ),
+    )
+    napcat_node = QQReplyDeliveryNode.__new__(QQReplyDeliveryNode)
+    napcat_node.plugin = napcat_plugin
+    result = await napcat_node.deliver(kb_plan)
+    assert result.delivered is True  # NapCat is fire-and-forget
+    napcat_plugin.qq_client.send_group_message_segments.assert_not_awaited()
+    assert napcat_plugin.qq_client.send_group_message.await_args.args[1] == "要 / 不要"
+
     # Ark-only plan: nothing is actually sent (no delivery implementation),
     # so it must not report delivered and clear the draft exclusion.
     ark_plugin = SimpleNamespace(
@@ -3714,8 +3771,30 @@ async def test_generation_recheck_wiring_drops_scoped_prompt():
     assert "群里说过的事" not in applied["prompt"]
     assert applied["recalled"] == ""
 
+    # Cross-group revoked while queued on the session lock: that section
+    # is stripped inside the lock too.
+    plugin._qq_settings["group_memory_enabled"] = True
+    plugin._qq_settings["allow_cross_group_context"] = False
+    xg = "## 其他群聊动态" + chr(10) + "- 群 9 最近在聊: 烤肉"
+    xg_context = SimpleNamespace(
+        is_group=True, attachments=None, prompt_message="hi",
+        system_prompt="头部" + sep + xg + sep + "尾部",
+        recalled_memory_text="召回内容",
+        core_memory_text="",
+        cross_group_section=xg,
+    )
+    await service._run_session_generation(
+        context=xg_context,
+        session_key="group:7788",
+        user_data={"lock": asyncio.Lock()},
+        user_session=SimpleNamespace(stream_text=AsyncMock()),
+        reply_chunks=[],
+    )
+    assert "烤肉" not in applied["prompt"]
+
     # Group memory still on: the composed prompt and recall pass through.
     plugin._qq_settings["group_memory_enabled"] = True
+    plugin._qq_settings["allow_cross_group_context"] = True
     await service._run_session_generation(
         context=context,
         session_key="group:7788",
@@ -4095,6 +4174,35 @@ async def test_unpersisted_memory_toggle_rolls_back():
     assert ud["group_member_memory_messages"]["5"][0]["content"][0]["text"] == "旧五"
     assert "pending_settle_buckets" not in ud
     assert "member_settle_rollback_pending" not in ud
+
+    # ON->OFF whose save failed: the rollback direction is back to ON, so
+    # the sessions must be stamped for the cursor restore (the marker
+    # condition keys on the OLD value, which is True here).
+    ud.pop("group_settle_rollback_pending", None)
+    service.plugin._qq_settings["group_memory_enabled"] = False
+    service._rollback_unpersisted_memory_toggles(
+        False,
+        group_memory_before=True, group_memory_after=False,
+        member_memory_before=False, member_memory_after=False,
+    )
+    assert ud["group_settle_rollback_pending"] is True
+    assert service.plugin._qq_settings["group_memory_enabled"] is True
+    while spawned:
+        spawned.pop(0).close()
+    ud.pop("group_settle_rollback_pending", None)
+    ud.pop("pending_disable_settle", None)
+
+    # OFF->ON whose save failed rolls back to OFF: no cursor restore is
+    # involved, so no marker.
+    service.plugin._qq_settings["group_memory_enabled"] = True
+    service._rollback_unpersisted_memory_toggles(
+        False,
+        group_memory_before=False, group_memory_after=True,
+        member_memory_before=False, member_memory_after=False,
+    )
+    assert "group_settle_rollback_pending" not in ud
+    while spawned:
+        spawned.pop(0).close()
 
     # Cross-group context also rolls back on persist failure — it is a
     # consent switch too, and a lingering new value injects other groups'

@@ -387,6 +387,34 @@ class PromotionMixin:
 
         return transitions
 
+    async def _ascoped_promotion_already_applied(
+        self, lanlan_name: str, reflection_id: str, subject,
+    ) -> bool:
+        """True when this reflection already produced a scoped persona entry.
+
+        The persona write and the reflection status flip are two stores; a
+        failure between them leaves a durable entry whose retry would be
+        rejected as a self-contradiction forever."""
+        try:
+            persona = await self._persona_manager.aensure_persona(lanlan_name)
+        except Exception:
+            return False
+        if not isinstance(persona, dict):
+            return False
+        from memory.scopes import entry_matches_subject
+
+        for section in persona.values():
+            if not isinstance(section, dict):
+                continue
+            for fact in section.get('facts') or []:
+                if not isinstance(fact, dict):
+                    continue
+                if fact.get('source_id') != reflection_id:
+                    continue
+                if entry_matches_subject(fact, subject):
+                    return True
+        return False
+
     async def _abump_reflection_recheck_attempts(
         self, lanlan_name: str, rid: str, reason: str,
     ) -> None:

@@ -211,6 +211,18 @@ class QQReplyGenerationService:
                 turn_system_prompt = self._strip_scoped_sections(
                     turn_system_prompt, context,
                 )
+            if context.is_group and not bool(
+                (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                    "allow_cross_group_context", False,
+                )
+            ):
+                # 跨群段同样在锁内复检：本轮可能排在别的生成之后，build
+                # 时的撤除判断已过期——别的群的内容不得在授权撤销之后
+                # 进入本轮 prompt。
+                turn_system_prompt = self._strip_section_text(
+                    turn_system_prompt,
+                    getattr(context, "cross_group_section", "") or "",
+                )
             restore_session_prompt = self._apply_turn_memory_context(
                 user_session, turn_system_prompt, turn_recalled_text,
                 always_refresh=context.is_group,
@@ -241,22 +253,28 @@ class QQReplyGenerationService:
             return "".join(reply_chunks)
 
     @staticmethod
+    def _strip_section_text(system_prompt: str, section_text: str) -> str:
+        """Remove one composed section (with its separator) from a prompt."""
+        if not section_text or section_text not in system_prompt:
+            return system_prompt
+        separator = "\n\n"
+        for candidate in (
+            separator + section_text, section_text + separator, section_text,
+        ):
+            if candidate in system_prompt:
+                return system_prompt.replace(candidate, "", 1)
+        return system_prompt
+
+    @staticmethod
     def _strip_scoped_sections(system_prompt: str, context: Any) -> str:
         """Remove scoped-memory sections from an already-composed prompt.
 
         Used when group memory is revoked between context construction and
         generation: the bootstrap section is the only scoped block left in
         the prompt (recall is passed separately and simply dropped)."""
-        core_text = getattr(context, "core_memory_text", "") or ""
-        if not core_text or core_text not in system_prompt:
-            return system_prompt
-        separator = "\n\n"
-        for candidate in (
-            separator + core_text, core_text + separator, core_text,
-        ):
-            if candidate in system_prompt:
-                return system_prompt.replace(candidate, "", 1)
-        return system_prompt
+        return QQReplyGenerationService._strip_section_text(
+            system_prompt, getattr(context, "core_memory_text", "") or "",
+        )
 
     def _apply_turn_memory_context(
         self, user_session: Any, system_prompt: str, recalled_memory_text: str,

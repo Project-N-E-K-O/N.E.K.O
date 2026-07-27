@@ -133,6 +133,8 @@ class QQReplyContextNode:
     def _strip_cross_group_if_revoked(
         self, system_prompt: str, cross_group_section: str,
     ) -> str:
+        # 注：返回值只是 prompt；段是否仍在由调用方按同一实时判据复算
+        # （撤除后 context 不再携带原文，生成前的锁内复检便无事可做）。
         """Remove the cross-group section when the opt-in is no longer live.
 
         The section is composed before the login/bootstrap/recall awaits;
@@ -385,6 +387,9 @@ class QQReplyContextNode:
         if not core_memory_alive:
             core_memory_text = ""
             memory_context_used = False
+        cross_group_alive = bool(
+            getattr(instruction_bundle, "cross_group_section", "")
+        )
         system_prompt = self._strip_cross_group_if_revoked(
             system_prompt,
             getattr(instruction_bundle, "cross_group_section", ""),
@@ -423,5 +428,9 @@ class QQReplyContextNode:
             force_reply=force_reply,
             source_kind=source_kind,
             member_memory_enabled=member_memory_snapshot,
+            cross_group_section=(
+                getattr(instruction_bundle, "cross_group_section", "")
+                if cross_group_alive else ""
+            ),
             traces=traces,
         )

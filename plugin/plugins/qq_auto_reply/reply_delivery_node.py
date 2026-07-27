@@ -47,16 +47,28 @@ class QQReplyDeliveryNode:
             # 文本块（可含 emoji + at + reply + keyboard）
             text = self._compose_text(block)
             if not text and block.keyboard and plan.target_type == "group":
-                # keyboard-only 块：仍要真发（两端 send_group_message_segments
-                # 都支持 keyboard），否则既没送出去又被算成已投递。
+                # keyboard-only 块必须真发出点什么，否则既没送出去又被算成
+                # 已投递。官方按钮只有开放平台能渲染（NapCat/OneBot 协议
+                # 无此字段，其 send_group_message_segments 收下 keyword 但
+                # 不读）——NapCat 侧把按钮文案降级成可读文本，别只发一个
+                # 空格。
                 any_text_attempted = True
-                if not self._confirm_platform_result(
-                    await self.plugin.qq_client.send_group_message_segments(
+                if self._supports_keyboard():
+                    sent = await self.plugin.qq_client.send_group_message_segments(
                         plan.target_id,
                         [{"type": "text", "data": {"text": " "}}],
                         keyboard=block.keyboard,
                     )
-                ):
+                else:
+                    labels = " / ".join(
+                        part.strip()
+                        for part in str(block.keyboard).split("|")
+                        if part.strip()
+                    )
+                    sent = await self.plugin.qq_client.send_group_message(
+                        plan.target_id, labels or str(block.keyboard),
+                    )
+                if not self._confirm_platform_result(sent):
                     all_text_sent = False
                 continue
             if not text:
@@ -127,9 +139,10 @@ class QQReplyDeliveryNode:
                 return bool(await self.plugin._deliver_group_reply(plan.target_id, text, fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure))
             return bool(await self.plugin._deliver_private_reply(plan.target_id, text, fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure))
         if plan.target_type == "group":
-            if keyboard:
-                # keyboard 只有 segments 接口承载：带按钮的文本块走它，
-                # 否则按钮被静默丢弃（输出模板明确鼓励按钮回复）。
+            if keyboard and self._supports_keyboard():
+                # keyboard 只有开放平台的 segments 接口承载：带按钮的文本
+                # 块走它。NapCat 不支持按钮，走普通文本（内容照发，按钮
+                # 能力缺失是协议限制，不是静默丢弃逻辑）。
                 result = await self.plugin.qq_client.send_group_message_segments(
                     plan.target_id,
                     [{"type": "text", "data": {"text": text}}],
@@ -169,6 +182,14 @@ class QQReplyDeliveryNode:
         return self._confirm_platform_result(
             await self.plugin.qq_client.send_group_poke(plan.target_id, block.poke)
         )
+
+    def _supports_keyboard(self) -> bool:
+        """Only the Open Platform renders official keyboard buttons.
+
+        NapCat/OneBot has no such field — its send_group_message_segments
+        accepts the kwarg for interface parity but never reads it."""
+        client = self.plugin.qq_client
+        return bool(client and not client.needs_attention)
 
     def _confirm_platform_result(self, result) -> bool:
         """开放平台失败吞异常返回 None——只有那个显式 None 判未投递；
