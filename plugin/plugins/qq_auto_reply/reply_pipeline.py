@@ -158,6 +158,9 @@ class QQReplyPipelineRunner:
             member_memory_at_receipt=getattr(
                 request, "member_memory_at_receipt", None,
             ),
+            inherited_consent_snapshot=getattr(
+                request, "inherited_consent_snapshot", None,
+            ),
         )
 
     async def _run_model(self, context: QQReplyContext) -> QQModelResult:

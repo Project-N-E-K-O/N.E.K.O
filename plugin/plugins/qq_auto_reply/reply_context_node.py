@@ -187,6 +187,7 @@ class QQReplyContextNode:
         force_reply: bool = False,
         source_kind: str = "",
         member_memory_at_receipt: bool | None = None,
+        inherited_consent_snapshot: dict[str, bool] | None = None,
     ) -> QQReplyContext:
         # member 记忆 consent 快照优先取消息接收边界（process_messages 在
         # task 创建前盖章——handler 排队期间 OFF→ON 不得让收到时无授权的
@@ -403,9 +404,7 @@ class QQReplyContextNode:
         self.plugin._emit_log("INFO", f"[UserMsg] (system {len(system_prompt)}字) {prompt_message[:200]}")
 
         return QQReplyContext(
-            consent_snapshot=dict(
-                getattr(request, "inherited_consent_snapshot", None) or {}
-            ) or None,
+            consent_snapshot=dict(inherited_consent_snapshot or {}) or None,
             message=message,
             attachments=attachments,
             permission_level=permission_level,

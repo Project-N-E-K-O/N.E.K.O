@@ -7862,3 +7862,84 @@ async def test_record_senders_return_the_segment_result():
     client.send_private_message_segments = AsyncMock(return_value=None)
     assert await client.send_group_record("7788", "file:///a.wav") is None
     assert await client.send_private_record("2046", "file:///a.wav") is None
+
+
+@pytest.mark.asyncio
+async def test_context_build_executes_end_to_end(monkeypatch):
+    """A smoke test that actually RUNS build().
+
+    The inherited-consent wiring shipped as a reference to a `request`
+    object that build() never receives — a NameError on every reply, and
+    the source-level guard could not see it because nothing here executed
+    the function. This test exists to make that class of defect
+    impossible: it drives build() with fakes and asserts the context it
+    returns."""
+    from plugin.plugins.qq_auto_reply import reply_context_node as rcn
+
+    monkeypatch.setattr(
+        rcn, "get_config_manager",
+        lambda: SimpleNamespace(
+            get_character_data=lambda: (
+                "Master", "Neko", None, {}, None, {}, None, None, None,
+            ),
+        ),
+    )
+
+    plugin = SimpleNamespace(
+        logger=MagicMock(),
+        _emit_log=lambda *a, **k: None,
+        _qq_settings={
+            "group_memory_enabled": True,
+            "group_member_memory_enabled": True,
+        },
+        i18n=_default_i18n(),
+        permission_mgr=SimpleNamespace(
+            get_user_title=lambda *a, **k: "",
+            get_nickname=lambda *a, **k: None,
+        ),
+        qq_client=SimpleNamespace(needs_attention=False),
+        memory_bridge=MagicMock(),
+        _build_user_title=lambda *a, **k: "",
+        _build_character_card_fields=lambda *a, **k: {},
+        _should_use_memory_context=lambda *a, **k: False,
+        _should_persist_memory=lambda *a, **k: False,
+        _fetch_login_status_payload=AsyncMock(return_value={}),
+        _normalize_login_identity=lambda payload: ("online", "10000", "Neko"),
+        _build_qq_session_instructions=AsyncMock(
+            return_value=SimpleNamespace(
+                system_prompt="系统提示词", core_memory_text="",
+                cross_group_section="", used_member_subject=False,
+                context_ready_template="", traces=[],
+                memory_context_used=False, scene_mode="group_directed",
+                user_title="", character_prompt="",
+            )
+        ),
+        _build_prompt_message=lambda *a, **k: "用户消息",
+    )
+    node = rcn.QQReplyContextNode.__new__(rcn.QQReplyContextNode)
+    node.plugin = plugin
+
+    context = await node.build(
+        message="hi",
+        permission_level="user",
+        sender_id="2046",
+        is_group=True,
+        group_id="7788",
+        source_kind="rapid_fire_flush",
+        inherited_consent_snapshot={"group_member_memory_enabled": True},
+    )
+    assert context.is_group is True
+    assert context.consent_snapshot == {"group_member_memory_enabled": True}
+    # Synthetic turns drop the nominal sender for memory purposes.
+    assert context.turn_uid
+
+    # No inherited snapshot -> None (not an empty dict), so the pipeline
+    # still knows generation has not stored its own snapshot yet.
+    context = await node.build(
+        message="hi",
+        permission_level="user",
+        sender_id="2046",
+        is_group=True,
+        group_id="7788",
+    )
+    assert context.consent_snapshot is None
