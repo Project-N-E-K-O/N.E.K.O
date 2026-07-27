@@ -154,9 +154,16 @@ class QQSessionInstructionService:
             # 落 bucket）要么一致地被排除，绝不在 stream_text 改写历史时
             # 中途弹出会话。
             async def _locked_discard(key: str = session_key) -> None:
-                await self.plugin.session_runtime_service.discard_session(
+                discarded = await self.plugin.session_runtime_service.discard_session(
                     key, reason="prompt_override_changed",
                 )
+                if discarded is False:
+                    # 结算失败被有意保留：不打粘性标记的话，持续活跃的
+                    # 会话会无限期沿用旧 system prompt（活跃阻止 idle
+                    # finalizer 替换它）。下轮 bootstrap 先重试 discard。
+                    kept = self.plugin._user_sessions.get(key)
+                    if kept is not None:
+                        kept["pending_identity_discard"] = True
 
             task = asyncio.create_task(
                 self.plugin._run_with_session_lock(session_key, _locked_discard)

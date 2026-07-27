@@ -1686,6 +1686,17 @@ async def test_extract_facts_fail_closed_raises_on_terminal_failure(tmp_path):
         with pytest.raises(FactExtractionFailed):
             await fs.extract_facts([msg], "Neko", fail_closed=True)
 
+        # Non-string text (e.g. {"text": 123}) passes a str()-based check
+        # but persistence calls .strip() on the ORIGINAL value and raises
+        # mid-batch, after earlier entries already mutated the in-memory
+        # list and FTS index — reject it up front as retryable.
+        async def _nonstring_text(prompt, lanlan_name, **kwargs):
+            return [{"text": 123, "importance": 5}]
+
+        fs._allm_call_with_retries = _nonstring_text
+        with pytest.raises(FactExtractionFailed):
+            await fs.extract_facts([msg], "Neko", fail_closed=True)
+
 
 @pytest.mark.asyncio
 async def test_correction_batches_partition_by_isolation_domain(tmp_path):
@@ -2977,6 +2988,36 @@ async def test_timeout_discard_failure_marks_sticky_retry():
 
 
 @pytest.mark.asyncio
+async def test_prompt_change_discard_failure_marks_sticky_retry():
+    """A prompt-override discard whose settlement fails keeps the session —
+    without the sticky marker a continuously active session would use the
+    old system prompt indefinitely (activity blocks the idle finalizer)."""
+    from plugin.plugins.qq_auto_reply.session_instruction_service import (
+        QQSessionInstructionService,
+    )
+
+    kept = {"is_group": False, "memory_enabled": True}
+
+    async def _lock(session_key, fn):
+        return await fn()
+
+    plugin = SimpleNamespace(
+        _user_sessions={"private:1": kept},
+        session_runtime_service=SimpleNamespace(
+            discard_session=AsyncMock(return_value=False),
+        ),
+        _run_with_session_lock=_lock,
+        _emit_log=lambda *a, **k: None,
+    )
+    service = QQSessionInstructionService.__new__(QQSessionInstructionService)
+    service.plugin = plugin
+    service._discard_all_sessions_for_prompt_change()
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert kept["pending_identity_discard"] is True
+
+
+@pytest.mark.asyncio
 async def test_rollback_discard_drops_failed_optin_interval():
     """The enable-save-failure rollback must DISCARD the failed interval,
     not settle it — an ordinary OFF settlement would digest precisely the
@@ -3118,6 +3159,18 @@ async def test_unpersisted_memory_toggle_rolls_back():
     assert service.plugin._qq_settings["group_member_memory_enabled"] is False
     assert ud["pending_disable_settle"] is True
     assert len(spawned) == 1
+
+    # Cross-group context also rolls back on persist failure — it is a
+    # consent switch too, and a lingering new value injects other groups'
+    # messages under a never-saved opt-in.
+    service.plugin._qq_settings["allow_cross_group_context"] = True
+    service._rollback_unpersisted_memory_toggles(
+        False,
+        group_memory_before=False, group_memory_after=False,
+        member_memory_before=False, member_memory_after=False,
+        cross_group_before=False,
+    )
+    assert service.plugin._qq_settings["allow_cross_group_context"] is False
 
     # Member-only failure rolls back the flag AND discards live buckets
     # collected during the failed opt-in window — re-enabling later must
@@ -4198,6 +4251,17 @@ async def test_login_change_bootstrap_keeps_session_when_discard_fails():
     existing["login_self_id"] = "new"
     await service.ensure_generation_session(context, "group:7788")
     assert plugin.session_runtime_service.discard_session.await_count == 2
+
+    # Character switch invalidates too: same login id, different active
+    # catgirl — reusing the session would post the new character's turns
+    # into the old character's memory store.
+    existing.pop("pending_identity_discard", None)
+    existing["her_name"] = "旧角色"
+    char_context = SimpleNamespace(
+        ephemeral_session=False, login_self_id="new", her_name="新角色",
+    )
+    await service.ensure_generation_session(char_context, "group:7788")
+    assert plugin.session_runtime_service.discard_session.await_count == 3
 
 
 @pytest.mark.asyncio

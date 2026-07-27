@@ -21,8 +21,12 @@ class QQSessionBootstrapService:
         existing_session = None if context.ephemeral_session else self.plugin._user_sessions.get(session_key)
         if existing_session and (
             existing_session.get("login_self_id") != context.login_self_id
+            or existing_session.get("her_name") != getattr(context, "her_name", existing_session.get("her_name"))
             or existing_session.get("pending_identity_discard")
         ):
+            # her_name 失配=活跃角色切换：旧会话的 scoped 缓冲仍属旧角色，
+            # discard 内的集中抢救会以旧 her_name 结算——新角色的对话绝不
+            # 能入旧角色的记忆库。
             discarded = await self.plugin.session_runtime_service.discard_session(session_key, reason="登录身份变化")
             if discarded is False:
                 # 粘性标记：prime 会把 login_self_id 刷成新值，若只靠 id

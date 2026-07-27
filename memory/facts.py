@@ -1435,7 +1435,11 @@ class FactStore:
             # 提取，去重机制兜住有效项的重复（对齐 daily import 语义）。
             malformed = [
                 f for f in extracted
-                if not (isinstance(f, dict) and str(f.get('text') or '').strip())
+                if not (
+                    isinstance(f, dict)
+                    and isinstance(f.get('text'), str)
+                    and f['text'].strip()
+                )
             ]
             if malformed:
                 raise FactExtractionFailed(

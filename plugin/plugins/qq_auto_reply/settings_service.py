@@ -49,6 +49,7 @@ class QQSettingsService:
         self, persisted: bool, *,
         group_memory_before: bool, group_memory_after: bool,
         member_memory_before: bool, member_memory_after: bool,
+        cross_group_before: bool | None = None,
     ) -> None:
         """落盘失败时回滚记忆 consent 开关：重启会回到旧值，运行时若继续
         按新值收集，等于在"未成功保存的授权"下入库。回滚运行时政策并按
@@ -58,6 +59,19 @@ class QQSettingsService:
         分离的快照由结算任务照常入库。"""
         if persisted:
             return
+        if cross_group_before is not None:
+            cross_now = bool(
+                self.plugin._qq_settings.get("allow_cross_group_context", False)
+            )
+            if cross_now != cross_group_before:
+                # 跨群上下文也是 consent 开关：写盘失败后留着新值，群轮会
+                # 在"从未成功保存的授权"下注入其他群的最近消息。纯读取
+                # 开关，恢复 flag 即可（无会话级结算）。
+                self.plugin._qq_settings["allow_cross_group_context"] = cross_group_before
+                self.plugin._emit_log(
+                    "WARNING",
+                    "跨群上下文开关变更未能写盘，已回滚运行时策略",
+                )
         if group_memory_before != group_memory_after:
             self.plugin._qq_settings["group_memory_enabled"] = group_memory_before
             self.plugin._qq_settings["group_member_memory_enabled"] = member_memory_before
@@ -285,6 +299,9 @@ class QQSettingsService:
         member_memory_before = bool(
             self.plugin._qq_settings.get("group_member_memory_enabled", False)
         )
+        cross_group_before = bool(
+            self.plugin._qq_settings.get("allow_cross_group_context", False)
+        )
         for key in (
             "group_memory_enabled",
             "group_member_memory_enabled",
@@ -349,6 +366,7 @@ class QQSettingsService:
             group_memory_after=group_memory_after,
             member_memory_before=member_memory_before,
             member_memory_after=member_memory_after,
+            cross_group_before=cross_group_before,
         )
         if self.plugin.attention_service:
             self.plugin.attention_service.cleanup_stale_cache()
