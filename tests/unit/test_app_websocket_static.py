@@ -933,7 +933,13 @@ def test_rapid_asr_toggle_double_flip_persists_final_state_harness():
             console: { log() {}, warn() {}, error() {} },
             setInterval() { return 0; },
             clearInterval() {},
-            setTimeout,
+            setTimeout(fn, ms) {
+              // Unref'd so a pending gate timer cannot hold the process open;
+              // the harness then exits naturally and stdout always flushes.
+              const t = setTimeout(fn, ms);
+              if (t && typeof t.unref === 'function') t.unref();
+              return t;
+            },
             clearTimeout,
             localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
             document: { getElementById() { return null; } },
@@ -1033,14 +1039,14 @@ def test_rapid_asr_toggle_double_flip_persists_final_state_harness():
           await pp;
 
           console.log('HARNESS_OK');
-          // The bounded settings-POST gate leaves a real timer per context;
-          // exit explicitly so the process does not linger on it.
-          process.exit(0);
+          // Timers in the sandbox are unref'd, so the process exits naturally
+          // once main() returns and piped stdout is fully flushed.
+          process.exitCode = 0;
         }
 
         main().catch((err) => {
           console.error(err && err.stack ? err.stack : String(err));
-          process.exit(1);
+          process.exitCode = 1;
         });
         """
     ).replace("__APP_SETTINGS_PATH__", json.dumps(str(APP_SETTINGS_PATH)))
@@ -1083,7 +1089,13 @@ def test_cross_window_asr_flip_authoritative_over_pending_get_harness():
             console: { log() {}, warn() {}, error() {} },
             setInterval() { return 0; },
             clearInterval() {},
-            setTimeout,
+            setTimeout(fn, ms) {
+              // Unref'd so a pending gate timer cannot hold the process open;
+              // the harness then exits naturally and stdout always flushes.
+              const t = setTimeout(fn, ms);
+              if (t && typeof t.unref === 'function') t.unref();
+              return t;
+            },
             clearTimeout,
             localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
             document: { getElementById() { return null; } },
@@ -1165,14 +1177,14 @@ def test_cross_window_asr_flip_authoritative_over_pending_get_harness():
           ctx2.postCalls[0].resolve(okPost);
 
           console.log('HARNESS_OK');
-          // The bounded settings-POST gate leaves a real timer per context;
-          // exit explicitly so the process does not linger on it.
-          process.exit(0);
+          // Timers in the sandbox are unref'd, so the process exits naturally
+          // once main() returns and piped stdout is fully flushed.
+          process.exitCode = 0;
         }
 
         main().catch((err) => {
           console.error(err && err.stack ? err.stack : String(err));
-          process.exit(1);
+          process.exitCode = 1;
         });
         """
     ).replace("__APP_SETTINGS_PATH__", json.dumps(str(APP_SETTINGS_PATH)))
@@ -1218,7 +1230,13 @@ def test_unrelated_change_during_pending_get_preserves_server_asr_harness():
             console: { log() {}, warn() {}, error() {} },
             setInterval() { return 0; },
             clearInterval() {},
-            setTimeout,
+            setTimeout(fn, ms) {
+              // Unref'd so a pending gate timer cannot hold the process open;
+              // the harness then exits naturally and stdout always flushes.
+              const t = setTimeout(fn, ms);
+              if (t && typeof t.unref === 'function') t.unref();
+              return t;
+            },
             clearTimeout,
             localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
             document: { getElementById() { return null; } },
@@ -1325,14 +1343,14 @@ def test_unrelated_change_during_pending_get_preserves_server_asr_harness():
           await p;
 
           console.log('HARNESS_OK');
-          // The bounded settings-POST gate leaves a real timer per context;
-          // exit explicitly so the process does not linger on it.
-          process.exit(0);
+          // Timers in the sandbox are unref'd, so the process exits naturally
+          // once main() returns and piped stdout is fully flushed.
+          process.exitCode = 0;
         }
 
         main().catch((err) => {
           console.error(err && err.stack ? err.stack : String(err));
-          process.exit(1);
+          process.exitCode = 1;
         });
         """
     ).replace("__APP_SETTINGS_PATH__", json.dumps(str(APP_SETTINGS_PATH)))
