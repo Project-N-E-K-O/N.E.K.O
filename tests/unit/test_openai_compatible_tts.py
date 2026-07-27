@@ -129,6 +129,32 @@ def test_custom_openai_tts_does_not_override_stored_clone():
     assert openai_worker_module._custom_openai_tts_is_selected(ctx) is False
 
 
+def test_custom_openai_tts_uses_character_voice_without_configured_fallback():
+    cm = _CustomTtsConfigManager()
+    cm.snapshot["ttsVoiceId"] = ""
+    ctx = provider_registry.DispatchContext(
+        core_config=cm.snapshot,
+        cm=cm,
+        voice_id="character-voice",
+        has_custom_voice=False,
+    )
+
+    assert openai_worker_module._custom_openai_tts_is_selected(ctx) is True
+
+
+def test_custom_openai_tts_requires_an_effective_voice():
+    cm = _CustomTtsConfigManager()
+    cm.snapshot["ttsVoiceId"] = ""
+    ctx = provider_registry.DispatchContext(
+        core_config=cm.snapshot,
+        cm=cm,
+        voice_id="",
+        has_custom_voice=False,
+    )
+
+    assert openai_worker_module._custom_openai_tts_is_selected(ctx) is False
+
+
 def test_configured_custom_voice_is_exposed_as_preset():
     cm = _CustomTtsConfigManager()
     catalog = provider_registry.preset_catalog_for_ui("custom", cm.snapshot)
@@ -173,7 +199,11 @@ def test_openai_tts_worker_posts_configured_endpoint_and_streams_pcm(monkeypatch
         "AsyncClient",
         lambda **kwargs: real_client(transport=transport, **kwargs),
     )
-    monkeypatch.setattr(openai_worker_module, "_resample_audio", lambda audio, *_args: audio)
+    monkeypatch.setattr(
+        openai_worker_module,
+        "_resample_audio",
+        lambda audio, *_args, last=False: b"" if last else audio,
+    )
 
     request_queue = queue.Queue()
     response_queue = queue.Queue()
@@ -207,6 +237,103 @@ def test_openai_tts_worker_posts_configured_endpoint_and_streams_pcm(monkeypatch
         "voice": "character-voice",
         "response_format": "pcm",
     }
+
+
+class _ChunkedPcmStream(httpx.AsyncByteStream):
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    async def __aiter__(self):
+        for chunk in self._chunks:
+            yield chunk
+
+
+def test_openai_tts_worker_reuses_one_resampler_across_transport_chunks(monkeypatch):
+    pcm = np.arange(5000, dtype="<i2").tobytes()
+
+    async def handler(_request: httpx.Request):
+        return httpx.Response(
+            200,
+            stream=_ChunkedPcmStream([pcm[:3001], pcm[3001:7002], pcm[7002:]]),
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        openai_worker_module.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=transport, **kwargs),
+    )
+    resample_calls = []
+
+    def fake_resample(audio, _src_rate, _dst_rate, resampler, *, last=False):
+        resample_calls.append((audio.copy(), resampler, last))
+        return b"" if last else audio.tobytes()
+
+    monkeypatch.setattr(openai_worker_module, "_resample_audio", fake_resample)
+
+    request_queue = queue.Queue()
+    response_queue = queue.Queue()
+    thread = threading.Thread(
+        target=tts_client.openai_tts_worker,
+        args=(request_queue, response_queue, "sk-test", "character-voice"),
+        kwargs={"base_url": "https://speech.example.com/v1"},
+        daemon=True,
+    )
+    thread.start()
+    _wait_for_item(response_queue, lambda item: item == ("__ready__", True))
+    request_queue.put(("speech-1", "hello world."))
+    request_queue.put((None, None))
+    _wait_for_item(response_queue, lambda item: isinstance(item, bytes) and bool(item))
+    deadline = time.time() + 5
+    while time.time() < deadline and not any(call[2] for call in resample_calls):
+        time.sleep(0.01)
+    request_queue.put((tts_client.TTS_SHUTDOWN_SENTINEL, None))
+    thread.join(timeout=5)
+
+    assert len(resample_calls) >= 4
+    assert len({id(call[1]) for call in resample_calls}) == 1
+    assert all(not call[2] for call in resample_calls[:-1])
+    assert resample_calls[-1][2] is True
+    assert np.concatenate([call[0] for call in resample_calls[:-1]]).tobytes() == pcm
+
+
+@pytest.mark.parametrize(
+    ("content", "expected_error"),
+    [(b"", "empty PCM response"), (b"\x01", "truncated PCM sample")],
+)
+def test_openai_tts_worker_rejects_empty_or_truncated_pcm(content, expected_error, monkeypatch):
+    async def handler(_request: httpx.Request):
+        return httpx.Response(200, content=content)
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        openai_worker_module.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=transport, **kwargs),
+    )
+
+    request_queue = queue.Queue()
+    response_queue = queue.Queue()
+    thread = threading.Thread(
+        target=tts_client.openai_tts_worker,
+        args=(request_queue, response_queue, "sk-test", "character-voice"),
+        kwargs={"base_url": "https://speech.example.com/v1"},
+        daemon=True,
+    )
+    thread.start()
+    _wait_for_item(response_queue, lambda item: item == ("__ready__", True))
+    request_queue.put(("speech-1", "hello world."))
+    request_queue.put((None, None))
+    error = _wait_for_item(
+        response_queue,
+        lambda item: isinstance(item, tuple) and item[0] == "__error__",
+    )
+    request_queue.put((tts_client.TTS_SHUTDOWN_SENTINEL, None))
+    thread.join(timeout=5)
+
+    assert expected_error in error[1]
 
 
 def test_openai_tts_worker_reports_invalid_url_as_not_ready():

@@ -18,6 +18,7 @@ from functools import partial
 
 import httpx
 import numpy as np
+import soxr
 
 from .._infra import _resample_audio, _run_sentence_tts_worker
 from .._telemetry import _record_tts_telemetry
@@ -67,6 +68,8 @@ def openai_tts_worker(
                 response.raise_for_status()
                 _record_tts_telemetry(effective_model, len(text))
                 pending = b""
+                received_samples = False
+                resampler = soxr.ResampleStream(24000, 48000, 1, dtype="float32")
                 async for chunk in response.aiter_bytes(chunk_size=4096):
                     if chunk:
                         pcm = pending + chunk
@@ -75,7 +78,25 @@ def openai_tts_worker(
                         if not even_length:
                             continue
                         audio_array = np.frombuffer(pcm[:even_length], dtype="<i2")
-                        response_queue.put(_resample_audio(audio_array, 24000, 48000))
+                        received_samples = True
+                        resampled = _resample_audio(audio_array, 24000, 48000, resampler)
+                        if len(resampled):
+                            response_queue.put(resampled)
+
+                if pending:
+                    raise RuntimeError("OpenAI TTS returned a truncated PCM sample")
+                if not received_samples:
+                    raise RuntimeError("OpenAI TTS returned an empty PCM response")
+
+                tail = _resample_audio(
+                    np.empty(0, dtype=np.int16),
+                    24000,
+                    48000,
+                    resampler,
+                    last=True,
+                )
+                if len(tail):
+                    response_queue.put(tail)
 
         return synthesize, client.aclose
 
@@ -97,10 +118,11 @@ def _custom_openai_tts_is_selected(ctx) -> bool:
         return False
     if ctx.voice_id and configured_voice and str(ctx.voice_id).strip() != configured_voice:
         return False
+    effective_voice = str(ctx.voice_id or "").strip() or configured_voice
     return bool(
         str(ctx.core_config.get("ttsModelUrl") or "").strip()
         and str(ctx.core_config.get("ttsModelId") or "").strip()
-        and configured_voice
+        and effective_voice
     )
 
 

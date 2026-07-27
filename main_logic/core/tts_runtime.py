@@ -285,13 +285,16 @@ class TtsRuntimeMixin:
         )
 
     @staticmethod
-    def _is_custom_openai_tts_enabled(core_config: dict) -> bool:
+    def _is_custom_openai_tts_enabled(core_config: dict, voice_id: str = '') -> bool:
         return _as_bool(core_config.get('ENABLE_CUSTOM_API'), False) and (
             str(core_config.get('ttsModelProvider') or '').strip() == 'custom'
         ) and bool(
             str(core_config.get('ttsModelUrl') or '').strip()
             and str(core_config.get('ttsModelId') or '').strip()
-            and str(core_config.get('ttsVoiceId') or '').strip()
+            and (
+                str(voice_id or '').strip()
+                or str(core_config.get('ttsVoiceId') or '').strip()
+            )
         )
 
     @classmethod
@@ -655,7 +658,7 @@ class TtsRuntimeMixin:
         if self._is_vllm_omni_tts_enabled(core_config_snapshot):
             logger.info(f"{log_prefix}🔊 语音模式：检测到 vLLM-Omni TTS provider，将使用外部 TTS")
             return True
-        if self._is_custom_openai_tts_enabled(core_config_snapshot):
+        if self._is_custom_openai_tts_enabled(core_config_snapshot, self.voice_id):
             logger.info(f"{log_prefix}🔊 语音模式：检测到 OpenAI-compatible TTS provider，将使用外部 TTS")
             return True
         base_url = realtime_config.get('base_url', '')

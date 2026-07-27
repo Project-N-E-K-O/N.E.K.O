@@ -46,7 +46,8 @@ def _parse_env_float(env_name: str, default: float, min_value: float) -> float:
     return max(value, min_value)
 
 def _resample_audio(audio_int16: np.ndarray, src_rate: int, dst_rate: int,
-                    resampler: 'soxr.ResampleStream | None' = None) -> bytes:
+                    resampler: 'soxr.ResampleStream | None' = None,
+                    *, last: bool = False) -> bytes:
     """High-quality audio resampling using soxr
     
     Args:
@@ -54,6 +55,7 @@ def _resample_audio(audio_int16: np.ndarray, src_rate: int, dst_rate: int,
         src_rate: source sample rate
         dst_rate: target sample rate
         resampler: optional streaming resampler, maintains state across chunks
+        last: flush the streaming resampler after the final input chunk
         
     Returns:
         resampled bytes
@@ -66,7 +68,7 @@ def _resample_audio(audio_int16: np.ndarray, src_rate: int, dst_rate: int,
     
     if resampler is not None:
         # 使用流式重采样器（维护 chunk 边界状态）
-        resampled_float = resampler.resample_chunk(audio_float)
+        resampled_float = resampler.resample_chunk(audio_float, last=last)
     else:
         # 无状态重采样（不推荐用于流式音频）
         resampled_float = soxr.resample(audio_float, src_rate, dst_rate, quality='HQ')
