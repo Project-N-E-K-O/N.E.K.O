@@ -515,7 +515,7 @@ def test_settings_hydration_marked_on_server_merge_and_user_change():
     #       later fails (a user action is authoritative even pre-hydration);
     #   (3) a cross-window independent-ASR flip arrived via the 'storage'
     #       listener — the originating window's user action, pinned by
-    #       test_cross_window_asr_flip_marks_hydration_and_bumps_generation.
+    #       test_cross_window_asr_flip_marks_hydration_and_asr_dirty.
     settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
     capture_source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
 
@@ -662,77 +662,123 @@ def test_user_toggle_during_get_failure_marks_hydration_posts_and_stamps():
     assert "msg.independent_asr_enabled = S.independentAsrEnabled === true;" in wrapper
 
 
-def test_stale_settings_get_merge_dropped_after_user_change():
-    # Codex P2: the conversation-settings GET may read the server BEFORE a
-    # user toggle POSTs the new value, yet resolve AFTER it. Without a guard
-    # the merge callback would treat that stale snapshot as authoritative,
-    # overwrite S.independentAsrEnabled and POST the stale value back via
-    # saveSettings(). Pin the generation gate: every userInitiated change
-    # bumps a local settings generation; the GET snapshots it at issue time
-    # and the merge callback drops the whole stale merge when it advanced.
+def test_user_dirty_keys_survive_boot_get_merge_field_level():
+    # Codex P2 (field-level authority): the conversation-settings GET may read
+    # the server BEFORE a user change POSTs its new value, yet resolve AFTER
+    # it. The earlier whole-merge-drop design discarded the ENTIRE server
+    # merge as soon as ANY userInitiated change happened while the GET was in
+    # flight — so changing one unrelated preference made the full local
+    # snapshot (including a boot-default independentAsrEnabled) authoritative
+    # and the POST clobbered the persisted ASR choice. Pin the replacement:
+    # a dirty-key set records exactly which settings the user changed, and the
+    # merge applies server values to NON-dirty keys while preserving dirty
+    # ones.
     settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
 
-    # (1) The generation is bumped only inside the userInitiated gate of
-    # syncSettingsToServer, synchronously alongside the hydration mark.
+    # (1) Dirty keys are recorded only inside the userInitiated gate of
+    # syncSettingsToServer, synchronously alongside the hydration mark and
+    # before any await.
     sync_fn = settings_source.split(
         "async function syncSettingsToServer(options)", 1
     )[1].split("function startPeriodicSync()", 1)[0]
-    assert sync_fn.count("_localSettingsGeneration += 1;") == 1
+    assert sync_fn.count("_markUserDirtySettings();") == 1
     user_initiated_gate = sync_fn.split("if (userInitiated) {", 1)[1].split("}", 1)[0]
-    assert "_localSettingsGeneration += 1;" in user_initiated_gate
-    assert sync_fn.index("_localSettingsGeneration += 1;") < sync_fn.index(
-        "await fetch("
-    )
+    assert "_markUserDirtySettings();" in user_initiated_gate
+    assert sync_fn.index("_markUserDirtySettings();") < sync_fn.index("await fetch(")
 
-    # (2) loadSettings snapshots the generation before issuing the GET.
+    # (2) loadSettings snapshots the pre-GET settings as the diff baseline
+    # before issuing the GET, so keys changed while it is pending diverge
+    # from the snapshot and get marked dirty.
     load_fn = settings_source.split("function loadSettings()", 1)[1]
-    snapshot_index = load_fn.index(
-        "const _generationAtGetStart = _localSettingsGeneration;"
-    )
+    snapshot_index = load_fn.index("_settingsBaseline = getConversationSettings();")
     get_index = load_fn.index("loadSettingsFromServer().then(serverResult => {")
     assert snapshot_index < get_index
 
-    # (3) The merge callback drops the stale merge before ANY state is
-    # touched: after the null-guard, before the hydration mark, the server
-    # merge loop and the saveSettings() POST-back.
+    # (3) The merge is field-level: the per-key dirty skip runs before the S
+    # mutation, the subtitle-bridge mirrors carry the same dirty gating, and
+    # the baseline is rolled to the merged state BEFORE the writeback
+    # saveSettings() so server-applied values are never misattributed as
+    # user-dirty by the writeback's own userInitiated diff.
     merge_block = settings_source.split(
         "loadSettingsFromServer().then(serverResult => {", 1
     )[1].split(".finally(", 1)[0]
     null_guard_index = merge_block.index("if (!serverResult) return;")
-    stale_guard_index = merge_block.index(
-        "if (_localSettingsGeneration !== _generationAtGetStart) {"
-    )
     hydrate_index = merge_block.index("S.settingsHydrated = true;")
-    merge_loop_index = merge_block.index("for (const key of Object.keys(serverSettings))")
-    save_index = merge_block.index("saveSettings();")
-    assert null_guard_index < stale_guard_index < hydrate_index
-    assert stale_guard_index < merge_loop_index
-    assert stale_guard_index < save_index
-    stale_guard_block = merge_block[stale_guard_index:hydrate_index]
-    assert "return;" in stale_guard_block
-    # The drop must not itself mutate settings state or POST anything.
-    assert "S." not in stale_guard_block.replace("S.settingsHydrated", "")
-    assert "saveSettings" not in stale_guard_block
-    assert "syncSettingsToServer" not in stale_guard_block
+    assert null_guard_index < hydrate_index
+    skip_index = merge_block.index("if (_dirtySettingsKeys.has(key)) continue;")
+    assert skip_index < merge_block.index("S[key] = serverSettings[key];")
+    assert "!_dirtySettingsKeys.has('subtitleEnabled')" in merge_block
+    assert "!_dirtySettingsKeys.has('userLanguage')" in merge_block
+    roll_index = merge_block.index("_settingsBaseline = getConversationSettings();")
+    assert skip_index < roll_index < merge_block.index("saveSettings();")
+    # The whole-merge drop is gone: no early return between the null-guard
+    # and the hydration mark, and the old drop log no longer exists.
+    after_null_guard = null_guard_index + len("if (!serverResult) return;")
+    assert "return;" not in merge_block[after_null_guard:hydrate_index]
+    assert "丢弃过期的服务器合并" not in settings_source
+    assert "_localSettingsGeneration" not in settings_source
 
-    # (4) Negative validation — no-user-change and first-launch flows stay
-    # untouched: the periodic tick never bumps the generation (a tick POST is
-    # not a user change), and the boot-time skipServerSync save bypasses
-    # syncSettingsToServer entirely so it cannot bump either.
+    # (4) Negative validation — non-user flows never dirty keys: the periodic
+    # tick passes no options (its POST is not a user change), the boot-time
+    # skipServerSync save bypasses syncSettingsToServer entirely, and the set
+    # is monotone (no delete/clear), so a toggle-and-back stays authoritative.
     tick_body = settings_source.split("_syncTimerId = setInterval(() => {", 1)[1].split(
         "}, SYNC_INTERVAL_MS);", 1
     )[0]
-    assert "_localSettingsGeneration" not in tick_body
+    assert "_markUserDirtySettings" not in tick_body
+    assert "_dirtySettingsKeys" not in tick_body
     first_launch_block = settings_source.split(
         "console.log('未找到保存的设置，使用默认值');", 1
     )[1].split("} catch (error) {", 1)[0]
-    assert "_localSettingsGeneration" not in first_launch_block
+    assert "_dirtySettingsKeys" not in first_launch_block
     assert "saveSettings({ skipServerSync: true });" in first_launch_block
-    # The guard compares against the snapshot, not against zero: a merge that
-    # resolves with no interleaved user change (generation unchanged) still
-    # applies exactly as before.
-    assert "_localSettingsGeneration !== _generationAtGetStart" in merge_block
-    assert "_localSettingsGeneration !== 0" not in merge_block
+    assert "_dirtySettingsKeys.delete" not in settings_source
+    assert "_dirtySettingsKeys.clear" not in settings_source
+
+
+def test_settings_post_snapshot_waits_bounded_for_boot_get_merge():
+    # Codex P2 (merge-before-post): a POST issued while the boot GET is still
+    # pending used to snapshot pure local state, so unchanged fields carried
+    # boot defaults. The queued runSync now awaits a bounded, never-rejecting
+    # gate that settles when the GET's merge settled — the send-time snapshot
+    # is therefore assembled AFTER the merge whenever the GET has resolved,
+    # and unchanged fields carry server truth. If the GET outlives the bound
+    # the POST proceeds with local state and the merge's writeback
+    # saveSettings() converges the server afterwards.
+    settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
+
+    assert "let _settingsGetGate = Promise.resolve();" in settings_source
+    assert "const SETTINGS_GET_GATE_TIMEOUT_MS = 3000;" in settings_source
+
+    # The gate await sits inside the queued runSync, before the send-time
+    # snapshot and the fetch.
+    sync_fn = settings_source.split(
+        "async function syncSettingsToServer(options)", 1
+    )[1].split("function startPeriodicSync()", 1)[0]
+    run_sync_body = sync_fn.split("const runSync = async () =>", 1)[1]
+    gate_index = run_sync_body.index("await _settingsGetGate;")
+    snapshot_index = run_sync_body.index("const settings = getConversationSettings();")
+    fetch_index = run_sync_body.index("await fetch(")
+    assert gate_index < snapshot_index < fetch_index
+
+    # The gate is armed at GET issue time as a race between the settled merge
+    # chain (with a catch so it can never reject) and the bounded timeout.
+    load_fn = settings_source.split("function loadSettings()", 1)[1]
+    assert "const mergeSettled = loadSettingsFromServer().then(serverResult => {" in load_fn
+    gate_assign_index = load_fn.index("_settingsGetGate = Promise.race([")
+    assert load_fn.index("startPeriodicSync();") < gate_assign_index
+    gate_block = load_fn[gate_assign_index:].split("]);", 1)[0]
+    assert "mergeSettled.catch(() => { })" in gate_block
+    assert "setTimeout(resolve, SETTINGS_GET_GATE_TIMEOUT_MS)" in gate_block
+
+    # Negative: the synchronous hydration/dirty marks stay at call time —
+    # only the POST body waits for the merge, never the authority marks.
+    assert sync_fn.index("S.settingsHydrated = true;") < sync_fn.index(
+        "const runSync = async () =>"
+    )
+    assert sync_fn.index("_markUserDirtySettings();") < sync_fn.index(
+        "const runSync = async () =>"
+    )
 
 
 def test_settings_posts_serialize_so_a_stale_body_cannot_win_persistence():
@@ -771,17 +817,17 @@ def test_settings_posts_serialize_so_a_stale_body_cannot_win_persistence():
     fetch_index = sync_fn.index("await fetch(")
     assert run_sync_index < snapshot_index < fetch_index
 
-    # Negative: the synchronous hydration mark and generation bump stay at
-    # call time, BEFORE the queued body — deferring them would reopen the
+    # Negative: the synchronous hydration mark and dirty-key recording stay
+    # at call time, BEFORE the queued body — deferring them would reopen the
     # stale-GET-merge window and the pre-hydration handshake gap.
     assert sync_fn.index("S.settingsHydrated = true;") < run_sync_index
-    assert sync_fn.index("_localSettingsGeneration += 1;") < run_sync_index
+    assert sync_fn.index("_markUserDirtySettings();") < run_sync_index
 
 
-def test_cross_window_asr_flip_marks_hydration_and_bumps_generation():
+def test_cross_window_asr_flip_marks_hydration_and_asr_dirty():
     # Codex P2: a cross-window independent-ASR toggle arrives via the
     # 'storage' listener, which used to copy the value into S without marking
-    # S.settingsHydrated or bumping _localSettingsGeneration. In the receiving
+    # S.settingsHydrated or the key's authority. In the receiving
     # window that meant (a) the next start_session omitted the handshake field
     # (the stamp is gated on S.settingsHydrated, pinned by
     # test_start_session_handshake_omitted_until_settings_hydrated), so the
@@ -789,8 +835,9 @@ def test_cross_window_asr_flip_marks_hydration_and_bumps_generation():
     # was still in flight, and (b) a still-pending settings GET later merged
     # the stale server snapshot over the flip and POSTed it back via
     # saveSettings(). Pin the fix: the flip is detected before the apply and
-    # treated as an authoritative hydration + generation event, with no POST
-    # from the receiving window.
+    # treated as an authoritative hydration event that marks the ASR key
+    # dirty (so the field-level merge preserves it), with no POST from the
+    # receiving window.
     settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
 
     listener_block = settings_source.split(
@@ -808,14 +855,14 @@ def test_cross_window_asr_flip_marks_hydration_and_bumps_generation():
         "applySharedRuntimeSettings(settings)"
     )
 
-    # Hydration mark + generation bump sit inside the ASR-flip gate only.
+    # Hydration mark + ASR dirty mark sit inside the ASR-flip gate only.
     flip_gate = listener_block.split("if (asrChangedByOtherWindow) {", 1)[1].split(
         "}", 1
     )[0]
     assert "S.settingsHydrated = true;" in flip_gate
-    assert "_localSettingsGeneration += 1;" in flip_gate
+    assert "_dirtySettingsKeys.add('independentAsrEnabled');" in flip_gate
     assert listener_block.count("S.settingsHydrated = true;") == 1
-    assert listener_block.count("_localSettingsGeneration += 1;") == 1
+    assert listener_block.count("_dirtySettingsKeys.add('independentAsrEnabled');") == 1
 
     # No POST from the receiving window: the originating window owns
     # persistence, and a receiving-window POST would duplicate writes and
@@ -832,14 +879,15 @@ def test_cross_window_asr_flip_marks_hydration_and_bumps_generation():
 
     # Negative: applySharedRuntimeSettings itself must stay authority-neutral —
     # other shared keys (and non-flip events) keep syncing values across
-    # windows without marking hydration or bumping the generation, so a
+    # windows without marking hydration or dirtying keys, so a
     # first-launch boot-defaults write in another window can never arm this
     # window's periodic sync or handshake.
     apply_fn = settings_source.split(
         "function applySharedRuntimeSettings(settings) {", 1
     )[1].split("function isManualScreenShareActive()", 1)[0]
     assert "settingsHydrated" not in apply_fn
-    assert "_localSettingsGeneration" not in apply_fn
+    assert "_dirtySettingsKeys" not in apply_fn
+    assert "_markUserDirtySettings" not in apply_fn
 
 
 def _run_settings_node_harness(script: str) -> subprocess.CompletedProcess[str]:
@@ -875,10 +923,12 @@ def test_rapid_asr_toggle_double_flip_persists_final_state_harness():
         }
 
         function makeContext() {
-          // Module load runs loadSettings(), which issues a boot GET that we
-          // leave pending forever (its merge never runs); assertions below
-          // therefore look only at the POST calls.
+          // Module load runs loadSettings(), which issues a boot GET; the
+          // harness settles it (as a failure) so the bounded settings-POST
+          // gate opens without waiting for its timeout, and assertions below
+          // look only at the POST calls.
           const postCalls = [];
+          const getCalls = [];
           const sandbox = {
             console: { log() {}, warn() {}, error() {} },
             setInterval() { return 0; },
@@ -891,6 +941,8 @@ def test_rapid_asr_toggle_double_flip_persists_final_state_harness():
               return new Promise((resolve, reject) => {
                 if (opts && opts.method === 'POST') {
                   postCalls.push({ url, body: opts.body, resolve, reject });
+                } else {
+                  getCalls.push({ url, resolve, reject });
                 }
               });
             },
@@ -904,17 +956,29 @@ def test_rapid_asr_toggle_double_flip_persists_final_state_harness():
           };
           vm.createContext(sandbox);
           vm.runInContext(source, sandbox);
-          // Boot leaves the GET pending; the harness drives hydration and the
-          // toggle state explicitly from a clean baseline.
+          // The harness drives hydration and the toggle state explicitly from
+          // a clean baseline.
           sandbox.window.appState.settingsHydrated = false;
-          return { postCalls, S: sandbox.window.appState, mod: sandbox.window.appSettings };
+          return { postCalls, getCalls, S: sandbox.window.appState, mod: sandbox.window.appSettings };
         }
 
         const okResponse = { ok: true, json: async () => ({ success: true }) };
         const tick = () => new Promise((resolve) => setImmediate(resolve));
 
+        async function settleBootGet(ctx) {
+          // Fail the boot GET (null result: no merge, no hydration) so the
+          // settings-POST gate settles deterministically.
+          assert(ctx.getCalls.length === 1, 'boot must issue the settings GET');
+          ctx.getCalls[0].resolve({ ok: false });
+          await tick();
+          await tick();
+        }
+
         async function main() {
-          const { postCalls, S, mod } = makeContext();
+          const ctx = makeContext();
+          const { postCalls, S, mod } = ctx;
+          await settleBootGet(ctx);
+          assert(S.settingsHydrated === false, 'a failed boot GET must not mark hydration');
 
           // First flip: POST issued with the pre-second-flip snapshot.
           S.independentAsrEnabled = true;
@@ -960,6 +1024,7 @@ def test_rapid_asr_toggle_double_flip_persists_final_state_harness():
           // Negative: a non-userInitiated (periodic-style) call serializes the
           // same way but never marks hydration.
           const fresh = makeContext();
+          await settleBootGet(fresh);
           const pp = fresh.mod.syncSettingsToServer();
           await tick();
           assert(fresh.S.settingsHydrated === false, 'periodic-style sync must not mark hydration');
@@ -968,6 +1033,9 @@ def test_rapid_asr_toggle_double_flip_persists_final_state_harness():
           await pp;
 
           console.log('HARNESS_OK');
+          // The bounded settings-POST gate leaves a real timer per context;
+          // exit explicitly so the process does not linger on it.
+          process.exit(0);
         }
 
         main().catch((err) => {
@@ -991,10 +1059,11 @@ def test_cross_window_asr_flip_authoritative_over_pending_get_harness():
     # in a vm sandbox, deliver a 'storage' event carrying another window's
     # independent-ASR flip while this window's boot GET is still pending, then
     # resolve that GET with the stale pre-flip server value. The flip must mark
-    # hydration (arming the start_session handshake stamp), the stale merge
-    # must be dropped by the generation guard, and the receiving window must
-    # never POST. Negative: a storage event that does NOT flip the toggle
-    # stays non-authoritative and the pending GET still merges normally.
+    # hydration (arming the start_session handshake stamp), the field-level
+    # merge must preserve the flipped key (marked dirty by the flip gate), and
+    # the receiving window must never POST. Negative: a storage event that
+    # does NOT flip the toggle stays non-authoritative and the pending GET
+    # still merges normally.
     harness = textwrap.dedent(
         """
         const fs = require('node:fs');
@@ -1064,7 +1133,8 @@ def test_cross_window_asr_flip_authoritative_over_pending_get_harness():
           assert(ctx.postCalls.length === 0, 'the receiving window must not POST (originating window owns persistence)');
 
           // The GET now resolves with the server value read BEFORE the other
-          // window's POST landed: the whole stale merge must be dropped.
+          // window's POST landed: the flipped key is dirty, so the field-level
+          // merge must preserve it.
           ctx.getCalls[0].resolve({
             ok: true,
             json: async () => ({ success: true, settings: { independentAsrEnabled: false }, telemetryBranch: null }),
@@ -1095,6 +1165,9 @@ def test_cross_window_asr_flip_authoritative_over_pending_get_harness():
           ctx2.postCalls[0].resolve(okPost);
 
           console.log('HARNESS_OK');
+          // The bounded settings-POST gate leaves a real timer per context;
+          // exit explicitly so the process does not linger on it.
+          process.exit(0);
         }
 
         main().catch((err) => {
@@ -1107,6 +1180,166 @@ def test_cross_window_asr_flip_authoritative_over_pending_get_harness():
     result = _run_settings_node_harness(harness)
     assert result.returncode == 0, (
         "cross-window ASR flip harness failed\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "HARNESS_OK" in result.stdout
+
+
+def test_unrelated_change_during_pending_get_preserves_server_asr_harness():
+    # Behavioral pin for the field-level authority fix (Codex P2): with the
+    # old whole-merge-drop, changing ANY unrelated preference while the boot
+    # settings GET was pending made the full saveSettings() POST authoritative
+    # — the entire server merge was discarded and the POST (built from local
+    # state including the boot-default independentAsrEnabled=false) overwrote
+    # the persisted ASR choice. Drive the real module: the user POST must be
+    # gated until the GET settles, the merge must hydrate the untouched ASR
+    # key from the server while preserving the user's dirty key, and every
+    # POST body must then carry the server's ASR value. On the pre-fix code
+    # these assertions fail (the POST fires immediately with ASR=false and the
+    # merge is dropped wholesale). Second scenario: the ASR-toggle-while-
+    # pending flow is unchanged — the toggled key stays authoritative over the
+    # stale merge and its POST carries the user's choice.
+    harness = textwrap.dedent(
+        """
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+
+        const source = fs.readFileSync(__APP_SETTINGS_PATH__, 'utf8');
+
+        function assert(cond, msg) {
+          if (!cond) throw new Error('ASSERT: ' + msg);
+        }
+
+        function makeContext() {
+          const postCalls = [];
+          const getCalls = [];
+          const sandbox = {
+            console: { log() {}, warn() {}, error() {} },
+            setInterval() { return 0; },
+            clearInterval() {},
+            setTimeout,
+            clearTimeout,
+            localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
+            document: { getElementById() { return null; } },
+            fetch(url, opts) {
+              return new Promise((resolve, reject) => {
+                if (opts && opts.method === 'POST') {
+                  postCalls.push({ url, body: opts.body, resolve, reject });
+                } else {
+                  getCalls.push({ url, resolve, reject });
+                }
+              });
+            },
+          };
+          sandbox.window = {
+            appState: { independentAsrEnabled: false, settingsHydrated: false },
+            appConst: {},
+            appUtils: { mapRenderQualityToFollowPerf() { return 'medium'; } },
+            addEventListener() {},
+            removeEventListener() {},
+            dispatchEvent() {},
+          };
+          vm.createContext(sandbox);
+          vm.runInContext(source, sandbox);
+          return {
+            postCalls,
+            getCalls,
+            S: sandbox.window.appState,
+            win: sandbox.window,
+            mod: sandbox.window.appSettings,
+          };
+        }
+
+        const okPost = { ok: true, json: async () => ({ success: true }) };
+        const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+        async function main() {
+          // Scenario 1: unrelated preference changed while the boot GET is
+          // pending; the server holds independentAsrEnabled=true, this boot
+          // only has the default false.
+          const ctx = makeContext();
+          assert(ctx.getCalls.length === 1, 'boot must issue the settings GET');
+
+          ctx.win.mergeMessagesEnabled = true; // the settings-popup mirror
+          ctx.mod.saveSettings();              // full user path -> userInitiated POST
+          assert(ctx.S.settingsHydrated === true, 'a user change still hydrates synchronously');
+          await tick();
+          assert(ctx.postCalls.length === 0, 'the user POST must wait (bounded) for the pending GET, not fire with boot defaults');
+
+          ctx.getCalls[0].resolve({
+            ok: true,
+            json: async () => ({
+              success: true,
+              settings: { independentAsrEnabled: true, mergeMessagesEnabled: false },
+              telemetryBranch: null,
+            }),
+          });
+          await tick();
+          await tick();
+
+          assert(ctx.S.independentAsrEnabled === true, 'the untouched ASR key must hydrate from the server, not stay a boot default');
+          assert(ctx.S.mergeMessagesEnabled === true, 'the user-changed (dirty) key must survive the merge');
+          assert(ctx.postCalls.length === 1, 'the gated user POST goes out once the GET settled');
+          const body1 = JSON.parse(ctx.postCalls[0].body);
+          assert(body1.independentAsrEnabled === true, 'the send-time snapshot must carry the SERVER ASR value, not the boot default');
+          assert(body1.mergeMessagesEnabled === true, 'the send-time snapshot must carry the user change');
+
+          // The merge writeback POST (queued behind the user POST) carries the
+          // same merged state, converging the server.
+          ctx.postCalls[0].resolve(okPost);
+          await tick();
+          await tick();
+          assert(ctx.postCalls.length === 2, 'the merge writeback POST follows the user POST');
+          const body2 = JSON.parse(ctx.postCalls[1].body);
+          assert(body2.independentAsrEnabled === true, 'the writeback keeps the server ASR value');
+          assert(body2.mergeMessagesEnabled === true, 'the writeback keeps the user change');
+          ctx.postCalls[1].resolve(okPost);
+          await tick();
+
+          // Scenario 2: the ASR-toggle-while-GET-pending flow is unchanged —
+          // the toggled key is dirty, so the stale merge cannot revert it and
+          // its POST carries the user's choice.
+          const ctx2 = makeContext();
+          ctx2.S.independentAsrEnabled = true;
+          ctx2.mod.saveSettings({ skipServerSync: true });
+          const p = ctx2.mod.syncSettingsToServer({ userInitiated: true });
+          assert(ctx2.S.settingsHydrated === true, 'the toggle must hydrate synchronously at call time');
+          await tick();
+          assert(ctx2.postCalls.length === 0, 'the toggle POST is gated behind the pending GET too');
+
+          ctx2.getCalls[0].resolve({
+            ok: true,
+            json: async () => ({
+              success: true,
+              settings: { independentAsrEnabled: false },
+              telemetryBranch: null,
+            }),
+          });
+          await tick();
+          await tick();
+          assert(ctx2.S.independentAsrEnabled === true, 'the stale merge must not revert the user toggle');
+          assert(ctx2.postCalls.length === 1, 'a merge that only skipped the dirty key must not add a writeback POST');
+          assert(JSON.parse(ctx2.postCalls[0].body).independentAsrEnabled === true, 'the toggle POST carries the user choice');
+          ctx2.postCalls[0].resolve(okPost);
+          await p;
+
+          console.log('HARNESS_OK');
+          // The bounded settings-POST gate leaves a real timer per context;
+          // exit explicitly so the process does not linger on it.
+          process.exit(0);
+        }
+
+        main().catch((err) => {
+          console.error(err && err.stack ? err.stack : String(err));
+          process.exit(1);
+        });
+        """
+    ).replace("__APP_SETTINGS_PATH__", json.dumps(str(APP_SETTINGS_PATH)))
+
+    result = _run_settings_node_harness(harness)
+    assert result.returncode == 0, (
+        "unrelated-change-during-pending-GET harness failed\n"
         f"stdout:\n{result.stdout}\n"
         f"stderr:\n{result.stderr}"
     )

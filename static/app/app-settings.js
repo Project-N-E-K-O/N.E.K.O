@@ -17,12 +17,28 @@
     let _syncTimerId = null;
     // 周期同步因「设置未水合」被跳过时只 log 一次，避免 GET 持续失败刷屏
     let _periodicSyncSkippedUnhydratedLogged = false;
-    // 本地设置代数：每次用户显式改设置（syncSettingsToServer userInitiated: true）
-    // 单调 +1。loadSettings 发起 server GET 时快照当前代数，GET 决议时若代数已前进，
-    // 说明用户在 GET 在途期间改过设置——此时 GET 读到的是改动前的服务器旧值，合并会
-    // 用陈旧值覆写 S 并经 saveSettings POST 回服务器，握手和持久化都会与用户显式
-    // 选择相悖（Codex P2），所以整体丢弃这次 stale merge，让用户已 POST 的状态生效。
-    let _localSettingsGeneration = 0;
+    // Field-level user authority (Codex P2): _dirtySettingsKeys records which
+    // conversation-settings keys the user explicitly changed since boot. Every
+    // userInitiated sync diffs the current settings against _settingsBaseline
+    // (snapshotted right before the boot GET, rolled forward on every diff and
+    // after the server merge) and adds the keys that diverged. The boot GET's
+    // merge callback applies server values to NON-dirty keys only and
+    // preserves the dirty ones, so changing one unrelated preference while
+    // the GET is in flight no longer makes the whole boot-default snapshot
+    // authoritative (the earlier whole-merge-drop design let a boot-default
+    // independentAsrEnabled clobber the server-persisted ASR choice and later
+    // handshakes then stamped the wrong route).
+    const _dirtySettingsKeys = new Set();
+    let _settingsBaseline = null;
+    // Bounded gate for the boot settings GET: settings POST bodies are built
+    // at send time AFTER awaiting this gate, so once the GET settled the merge
+    // has already run and fields the user never touched carry server truth
+    // instead of boot defaults. If the GET is still pending past the bound the
+    // POST proceeds with local state and the post-merge writeback converges
+    // the server afterwards. Starts resolved (no GET in flight yet) and never
+    // rejects, so the sync chain can never stall on it.
+    let _settingsGetGate = Promise.resolve();
+    const SETTINGS_GET_GATE_TIMEOUT_MS = 3000;
     // Serialization tail for conversation-settings POSTs (Codex P2): rapid
     // successive syncSettingsToServer calls used to issue concurrent POSTs,
     // and the backend saves each one in its own asyncio.to_thread, so the
@@ -104,6 +120,34 @@
             settings.userLanguage = S.userLanguage;
         }
         return settings;
+    }
+
+    /**
+     * Record which conversation-settings keys the user explicitly changed by
+     * diffing the current state against _settingsBaseline, then roll the
+     * baseline forward. Runs synchronously inside every userInitiated sync,
+     * so a toggle-and-back still leaves its key dirty (the set is monotone —
+     * a key the user touched stays user-authoritative for the boot merge).
+     */
+    function _markUserDirtySettings() {
+        const current = getConversationSettings();
+        if (_settingsBaseline) {
+            const keys = new Set(
+                Object.keys(current).concat(Object.keys(_settingsBaseline))
+            );
+            keys.forEach((key) => {
+                const cur = Object.prototype.hasOwnProperty.call(current, key)
+                    ? current[key]
+                    : undefined;
+                const base = Object.prototype.hasOwnProperty.call(_settingsBaseline, key)
+                    ? _settingsBaseline[key]
+                    : undefined;
+                if (cur !== base) {
+                    _dirtySettingsKeys.add(key);
+                }
+            });
+        }
+        _settingsBaseline = current;
     }
 
     function applySharedRuntimeSettings(settings) {
@@ -232,19 +276,28 @@
         // 首启初始化那次 saveSettings 走 skipServerSync 不进这里，不会误标记。
         if (userInitiated) {
             S.settingsHydrated = true;
-            // 与 settingsHydrated 同理在 await 前同步 +1：让在途 GET 的合并回调
-            // 能感知「用户已在 GET 之后改过设置」并丢弃陈旧合并。
-            _localSettingsGeneration += 1;
+            // Synchronously (before any await) record WHICH keys this user
+            // change touched: the in-flight boot GET's merge preserves exactly
+            // these dirty keys while still hydrating every untouched field
+            // from the server, instead of dropping the whole merge.
+            _markUserDirtySettings();
         }
         // Serialize the POST behind any in-flight sync (Codex P2): the
         // settings snapshot is built inside runSync, at SEND time — after the
         // predecessor completed — so the last-issued request always carries
         // the final local state and at most one request is in flight, making
         // completion order equal issue order (a stale body can never win the
-        // backend persistence race). The hydration/generation marks above
+        // backend persistence race). The hydration/dirty-key marks above
         // stay synchronous at call time so the handshake stamp and the
-        // stale-GET-merge guard keep their pre-await semantics.
+        // field-level merge guard keep their pre-await semantics.
         const runSync = async () => {
+            // Wait (bounded, never rejecting) for the boot settings GET to
+            // settle before building the send-time snapshot: after the merge,
+            // fields the user never touched carry server truth, so this POST
+            // cannot overwrite persisted preferences with boot defaults. When
+            // the GET outlives the bound the POST proceeds with local state
+            // and the merge's writeback converges the server afterwards.
+            await _settingsGetGate;
             try {
                 const controller = window.NekoHomeTutorialFeatureController;
                 if (controller && typeof controller.isActive === 'function' && controller.isActive()) {
@@ -716,20 +769,14 @@
         const _firstLaunchPending = (() => {
             try { return localStorage.getItem(_FIRST_LAUNCH_PENDING_KEY) === '1'; } catch (_) { return false; }
         })();
-        // 发起 GET 前快照本地设置代数：合并回调用它判断 GET 在途期间用户是否改过设置
-        const _generationAtGetStart = _localSettingsGeneration;
+        // Snapshot the pre-GET settings as the dirty-diff baseline: keys the
+        // user changes while the GET is in flight diverge from this snapshot,
+        // get recorded in _dirtySettingsKeys, and are preserved by the
+        // field-level merge below.
+        _settingsBaseline = getConversationSettings();
         try {
-            loadSettingsFromServer().then(serverResult => {
+            const mergeSettled = loadSettingsFromServer().then(serverResult => {
                 if (!serverResult) return;
-                if (_localSettingsGeneration !== _generationAtGetStart) {
-                    // 用户在 GET 在途期间显式改过设置（userInitiated 路径已同步标记
-                    // settingsHydrated 并自行 POST）：这次 GET 携带的是改动前的服务器
-                    // 旧值，若照常合并会覆写 S 并把陈旧值 POST 回服务器。整体丢弃，
-                    // 用户已 POST 的状态就是权威状态。首启决议（telemetryBranch/
-                    // marker）随之顺延到下次启动，与 GET 失败同一兜底路径（fail-closed）。
-                    console.log('[app-settings] 设置 GET 在途期间用户已改过设置，丢弃过期的服务器合并');
-                    return;
-                }
                 // server GET 成功返回：前端从此持有权威设置视图，标记水合
                 // （S.settingsHydrated，见 app-state.js），start_session 握手才允许携带
                 // independent_asr_enabled。GET 永久失败时 serverResult 为 null，这里
@@ -756,21 +803,35 @@
                 }
 
                 if (serverSettings) {
-                    // 用服务器设置覆盖本地设置
+                    // Field-level merge (Codex P2): apply server values to the
+                    // keys the user never touched, preserve the dirty ones. A
+                    // user change during the in-flight GET therefore keeps its
+                    // own keys authoritative while every other field still
+                    // hydrates from the server — the old whole-merge-drop let
+                    // one unrelated toggle turn the entire boot-default
+                    // snapshot into the POSTed truth.
                     for (const key of Object.keys(serverSettings)) {
-                        if (serverSettings[key] !== undefined && S[key] !== serverSettings[key]) {
+                        if (serverSettings[key] === undefined) continue;
+                        if (_dirtySettingsKeys.has(key)) continue;
+                        if (S[key] !== serverSettings[key]) {
                             S[key] = serverSettings[key];
                             hasUpdate = true;
                         }
                     }
-                    // 同步字幕设置到 subtitle.js（内部闭包变量）
-                    if (serverSettings.subtitleEnabled !== undefined && window.subtitleBridge) {
+                    // Subtitle bridge mirrors follow the same dirty gating so
+                    // a user-changed subtitle preference survives the merge.
+                    if (serverSettings.subtitleEnabled !== undefined && !_dirtySettingsKeys.has('subtitleEnabled') && window.subtitleBridge) {
                         window.subtitleBridge.setSubtitleEnabled(serverSettings.subtitleEnabled);
                     }
-                    if (serverSettings.userLanguage !== undefined && window.subtitleBridge) {
+                    if (serverSettings.userLanguage !== undefined && !_dirtySettingsKeys.has('userLanguage') && window.subtitleBridge) {
                         window.subtitleBridge.setUserLanguage(serverSettings.userLanguage);
                     }
                 }
+
+                // Roll the baseline to the merged state BEFORE the writeback
+                // save below: server-applied values must not be misattributed
+                // as user-dirty by the writeback's own userInitiated diff.
+                _settingsBaseline = getConversationSettings();
 
                 if (hasUpdate) {
                     console.log('[app-settings] 已从服务器合并对话设置');
@@ -819,6 +880,13 @@
                 // 设置合并，marker 也可能错误留存。GET 走 finally 后周期同步才安全
                 startPeriodicSync();
             });
+            // Gate settings POSTs (bounded) behind the GET+merge so their
+            // send-time snapshots carry server truth for untouched fields;
+            // the catch keeps the gate non-rejecting if the merge throws.
+            _settingsGetGate = Promise.race([
+                mergeSettled.catch(() => { }),
+                new Promise((resolve) => { setTimeout(resolve, SETTINGS_GET_GATE_TIMEOUT_MS); })
+            ]);
         } catch (error) {
             console.error('服务器设置同步启动失败:', error);
             // GET 链路本身就挂了，至少把 periodic sync 起来兜底，
@@ -849,9 +917,10 @@
                 // value (app-websocket.js attachStartSessionHandshake gates on
                 // S.settingsHydrated; without it the backend would read the OLD
                 // persisted value while the other window's POST is in flight),
-                // and bump the generation so this window's still-pending settings
-                // GET drops its stale merge instead of overwriting the flip and
-                // POSTing the old value back via saveSettings(). Deliberately no
+                // and mark the key dirty so this window's still-pending settings
+                // GET preserves the flip during its field-level merge instead of
+                // overwriting it and POSTing the old value back via
+                // saveSettings(). Deliberately no
                 // POST from here: the originating window owns persistence, and a
                 // receiving-window POST would duplicate writes and loop storage
                 // events. Other shared keys stay non-authoritative — they never
@@ -859,7 +928,7 @@
                 // a first-launch write in another window arm this window's
                 // periodic sync with non-authoritative boot values.
                 S.settingsHydrated = true;
-                _localSettingsGeneration += 1;
+                _dirtySettingsKeys.add('independentAsrEnabled');
             }
             stopVisionAfterPrivacyEnabled();
             if (changed && typeof window.scheduleProactiveChat === 'function') {
