@@ -285,7 +285,14 @@ class QQOpenPlatformConnection(QQConnectionBase):
         if keyboard:
             buttons = [b.strip() for b in keyboard.split("|") if b.strip()][:4]
             if buttons:
-                body.setdefault("msg_type", 2)
+                if "msg_type" not in body:
+                    # 按钮只能挂在 type-2 上，而 type-2 的正文放在
+                    # markdown.content（见上面的 Markdown 分支）——强行改
+                    # msg_type 却把正文留在 content 里，发出去的是一个没有
+                    # 正文体的 type-2 载荷：平台不返回 message id，投递侧
+                    # 据此判未投递，回复既没送出也进不了记忆。
+                    body["msg_type"] = 2
+                    body["markdown"] = {"content": body.pop("content", "")}
                 body["keyboard"] = {
                     "content": {
                         "rows": [{

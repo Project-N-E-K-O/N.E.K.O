@@ -120,6 +120,12 @@ def test_rejects_legacy_private_as_a_new_subject_scope():
         MemorySubject.create("group_chat", "qq:7788", scope=LEGACY_PRIVATE_SCOPE)
 
 
+def _default_i18n():
+    """Stand-in for the plugin i18n facade: a missing key yields the
+    caller's default template, exactly like the real resolver."""
+    return SimpleNamespace(t=lambda key, default="", **kw: default)
+
+
 async def _passthrough_session_lock(session_key, coro_factory):
     """Stand-in for the plugin helper: run the body, no real lock."""
     return await coro_factory()
@@ -424,6 +430,7 @@ async def test_qq_group_bootstrap_never_reads_legacy_private_memory():
     bridge.fetch_bootstrap_memory = AsyncMock(return_value="私人长期记忆")
     plugin = SimpleNamespace(
         memory_bridge=bridge, logger=MagicMock(),
+        i18n=_default_i18n(),
         _qq_settings={
             "group_memory_enabled": True,
             "group_member_memory_enabled": True,
@@ -479,7 +486,10 @@ async def test_qq_private_bootstrap_keeps_legacy_behavior():
     bridge = MagicMock()
     bridge.fetch_bootstrap_memory = AsyncMock(return_value="旧私人记忆")
     bridge.fetch_scoped_bootstrap_memory = AsyncMock()
-    plugin = SimpleNamespace(memory_bridge=bridge, logger=MagicMock())
+    plugin = SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(), i18n=_default_i18n(),
+        _qq_settings={},
+    )
     service = QQSessionInstructionService(plugin)
 
     rendered = await service._build_core_memory_section(
@@ -5234,6 +5244,7 @@ async def test_scoped_reads_recheck_live_policy_before_fetch():
         _qq_settings={"group_memory_enabled": False},
         memory_bridge=bridge,
         logger=MagicMock(),
+        i18n=_default_i18n(),
         _should_skip_direct_llm_fallback_for_images=lambda **kwargs: False,
     )
     node = QQReplyContextNode.__new__(QQReplyContextNode)
@@ -7382,3 +7393,137 @@ async def test_concurrent_settings_saves_serialize_the_consent_transaction():
     assert observed_before == [(False, True, False), (False, True, True)]
     assert settings["group_memory_enabled"] is True
     assert order == ["A:write-start", "A:write-fail", "B:write-ok"]
+
+
+@pytest.mark.asyncio
+async def test_core_memory_section_reads_the_localized_template():
+    """The long-term memory block went through a bare .format() on the
+    Chinese constant, so every locale bundle entry for it was dead. It now
+    resolves through the same static-layer path as the other prompt
+    sections — including the required-placeholder guard."""
+    from plugin.plugins.qq_auto_reply.session_instruction_service import (
+        QQSessionInstructionService,
+    )
+
+    bridge = MagicMock()
+    bridge.fetch_bootstrap_memory = AsyncMock(return_value="长期记忆内容")
+    bridge.fetch_scoped_bootstrap_memory = AsyncMock()
+    bundle = {
+        "core_memory_section": "## Long-term memory\n{memory_context}\n{context_ready}",
+    }
+    plugin = SimpleNamespace(
+        memory_bridge=bridge,
+        logger=MagicMock(),
+        _qq_settings={},
+        i18n=SimpleNamespace(
+            t=lambda key, default="", **kw: bundle.get(key, default)
+        ),
+    )
+    service = QQSessionInstructionService(plugin)
+
+    rendered = await service._build_core_memory_section(
+        should_use_memory_context=True,
+        her_name="Neko",
+        master_name="Master",
+        context_ready_template="{name}/{master}",
+        locale="en",
+    )
+    assert "Long-term memory" in rendered
+    assert "长期记忆内容" in rendered
+    assert "Neko/Master" in rendered
+
+    # A translation that dropped a placeholder must not silently swallow
+    # the memory: the guard falls back to the shipped template.
+    bundle["core_memory_section"] = "## Long-term memory\n{context_ready}"
+    rendered = await service._build_core_memory_section(
+        should_use_memory_context=True,
+        her_name="Neko",
+        master_name="Master",
+        context_ready_template="{name}/{master}",
+        locale="en",
+    )
+    assert "长期记忆内容" in rendered
+
+    # ...and neither must a translation carrying an unknown placeholder.
+    bundle["core_memory_section"] = (
+        "## Long-term memory\n{memory_context}\n{context_ready}\n{unknown}"
+    )
+    rendered = await service._build_core_memory_section(
+        should_use_memory_context=True,
+        her_name="Neko",
+        master_name="Master",
+        context_ready_template="{name}/{master}",
+        locale="en",
+    )
+    assert "长期记忆内容" in rendered
+
+
+def test_core_memory_section_key_exists_in_every_locale_bundle():
+    """The wiring is only worth anything if every bundle carries the key
+    with both placeholders."""
+    import json
+    from pathlib import Path
+
+    i18n_dir = (
+        Path(__file__).resolve().parents[2]
+        / "plugin" / "plugins" / "qq_auto_reply" / "i18n"
+    )
+    bundles = sorted(i18n_dir.glob("*.json"))
+    assert len(bundles) >= 9
+    for path in bundles:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        template = data.get("core_memory_section")
+        assert isinstance(template, str) and template.strip(), path.name
+        assert "{memory_context}" in template, path.name
+        assert "{context_ready}" in template, path.name
+
+
+@pytest.mark.asyncio
+async def test_open_platform_keyboard_message_carries_a_markdown_body():
+    """Attaching a keyboard forces msg_type=2, and a type-2 payload puts
+    its text in markdown.content. Leaving the text in `content` produced a
+    body-less type-2 message: no message id came back, so the delivery
+    layer reported it undelivered and the reply was excluded from memory."""
+    from plugin.plugins.qq_auto_reply.qq_open_plat import (
+        QQOpenPlatformConnection,
+    )
+
+    sent: list = []
+
+    class _Resp:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"id": "msg-1"}
+
+    class _HTTP:
+        @staticmethod
+        async def post(url, json=None, headers=None):
+            sent.append(json)
+            return _Resp()
+
+    conn = QQOpenPlatformConnection.__new__(QQOpenPlatformConnection)
+    conn._http = _HTTP()
+    conn._ensure_token = AsyncMock()
+    conn._auth_headers = lambda: {}
+    conn.logger = MagicMock()
+
+    await conn.send_group_message_segments(
+        "7788", [{"type": "text", "data": {"text": "要看看哪个？"}}],
+        keyboard="状态|配置",
+    )
+    body = sent[-1]
+    assert body["msg_type"] == 2
+    assert body["markdown"] == {"content": "要看看哪个？"}
+    assert "content" not in body
+    assert body["keyboard"]["content"]["rows"][0]["buttons"]
+
+    # Plain text without a keyboard is untouched (type 0, content field).
+    sent.clear()
+    await conn.send_group_message_segments(
+        "7788", [{"type": "text", "data": {"text": "普通回复"}}],
+    )
+    body = sent[-1]
+    assert body.get("content") == "普通回复"
+    assert "msg_type" not in body and "markdown" not in body

@@ -56,6 +56,7 @@ class QQSessionInstructionService:
         {"id": "scene_private",         "i18n_key": "prompts.private.body",  "required_placeholders": ["{her_name}", "{master_name}", "{sender_id}", "{user_title}"], "format_after": True},
         {"id": "naming_with_title",     "i18n_key": "prompts.group.naming_with_title", "required_placeholders": ["{user_title}"],       "format_after": False},
         {"id": "naming_without_title",  "i18n_key": "prompts.group.naming_without_title", "required_placeholders": [],                "format_after": False},
+        {"id": "core_memory_section",   "i18n_key": "core_memory_section",    "required_placeholders": ["{memory_context}", "{context_ready}"], "format_after": True},
         # === 运行时层（只读，不参与覆盖） ===
         {"id": "accounts",              "i18n_key": "__runtime__",            "required_placeholders": [], "runtime": True},
         {"id": "sessions",              "i18n_key": "__runtime__",            "required_placeholders": [], "runtime": True},
@@ -336,6 +337,7 @@ class QQSessionInstructionService:
             is_group=is_group,
             group_id=group_id,
             sender_id=core_sender_id,
+            locale=user_language,
         )
         if core_memory_text:
             sections.append(core_memory_text)
@@ -503,6 +505,7 @@ class QQSessionInstructionService:
         is_group: bool = False,
         group_id: str | None = None,
         sender_id: str = "",
+        locale: str = "",
     ) -> str:
         if not should_use_memory_context:
             return ""
@@ -549,10 +552,27 @@ class QQSessionInstructionService:
                 memory_context = await self.plugin.memory_bridge.fetch_bootstrap_memory(her_name)
             if not memory_context:
                 return ""
-            return CORE_MEMORY_SECTION.format(
-                memory_context=memory_context,
-                context_ready=context_ready_template.format(name=her_name, master=master_name),
+            # 走本地化静态层（与其余 prompt 段同一条解析路径）：裸 format
+            # 会让 bundle 里的翻译永远读不到，也吃不到必需占位符护栏。
+            context_ready = context_ready_template.format(
+                name=her_name, master=master_name,
             )
+            try:
+                return self._resolve_static_layer(
+                    "core_memory_section", CORE_MEMORY_SECTION, locale,
+                    memory_context=memory_context,
+                    context_ready=context_ready,
+                )
+            except Exception as render_error:
+                # 翻译/覆盖里多写一个未知占位符会让 format 抛 KeyError，而
+                # 外层的 except 会把整段记忆静默吞掉。宁可回退中文默认模板
+                # 也不能让长期记忆凭空消失。
+                self.plugin.logger.warning(
+                    f"core_memory_section 模板渲染失败，回退默认模板: {render_error}"
+                )
+                return CORE_MEMORY_SECTION.format(
+                    memory_context=memory_context, context_ready=context_ready,
+                )
         except Exception as e:
             self.plugin.logger.warning(f"读取 Memory Server 上下文失败: {e}")
             return ""
