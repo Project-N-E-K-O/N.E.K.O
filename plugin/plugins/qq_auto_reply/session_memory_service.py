@@ -635,6 +635,11 @@ class QQSessionMemoryService:
                 group_id = str(current.get("group_id") or "").strip()
                 her_name = current.get("her_name")
                 snapshot = current.get("pending_settle_buckets") or {}
+                # 清掉进来之前就挂着的标记：那可能是一次**上限排空**失败后
+                # 顶上来的同一批数据，正是这次结算要处理的。留着它，等这次
+                # 重试也失败时就会被误认成"更晚的一代"而保留下来，绕过
+                # fail-closed 丢弃。只认这次结算过程中才产生的提升。
+                current.pop("member_settle_generation_promoted", None)
                 failed: list[str] = []
                 if group_id and her_name and snapshot:
                     failed = await self._flush_member_buckets(

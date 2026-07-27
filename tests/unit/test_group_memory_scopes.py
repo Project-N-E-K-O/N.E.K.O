@@ -10424,3 +10424,109 @@ async def test_private_prompt_is_refreshed_after_cross_group_opt_out():
         reply_chunks=[],
     )
     assert applied == [False]
+
+
+@pytest.mark.asyncio
+async def test_pending_is_detached_before_the_settlement_await():
+    """The settlement is shielded, but this coroutine can still be
+    cancelled while it waits for the session lock. If the pending entry is
+    still registered then, pre_buffer reuses it and appends the next
+    message to buffered_texts — which holds the bot's own delivered reply,
+    so the replacement task summarizes that reply as incoming."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import QQDeliveryResult
+    from plugin.plugins.qq_auto_reply.reply_buffer_service import (
+        PendingReply,
+        QQReplyBufferService,
+    )
+
+    seen_registry: list = []
+    lock_reached = asyncio.Event()
+
+    async def _slow_lock(session_key, coro_factory):
+        # The registry state at this moment is what pre_buffer would see.
+        seen_registry.append(dict(service._pending))
+        lock_reached.set()
+        await asyncio.sleep(0.05)
+        return await coro_factory()
+
+    service = QQReplyBufferService.__new__(QQReplyBufferService)
+    service.plugin = SimpleNamespace(
+        _emit_log=lambda *a, **k: None,
+        _user_sessions={"group:7788": {}},
+        _qq_settings={"group_memory_enabled": True},
+        _run_with_session_lock=_slow_lock,
+        _spawn_memory_sync_task=lambda coro: asyncio.ensure_future(coro),
+        reply_delivery_node=SimpleNamespace(
+            deliver=AsyncMock(return_value=QQDeliveryResult(
+                delivered=True, target_type="group", target_id="7788",
+                reply_text="回复",
+            )),
+        ),
+        reply_generation_service=SimpleNamespace(
+            append_fallback_ai_row=MagicMock(),
+            record_scoped_mentions_on_delivery=AsyncMock(),
+        ),
+    )
+    service._pending = {}
+    service._clear_undelivered_marks = lambda key, pending: None
+    service._settle_provisional = staticmethod(lambda ud, p: None)
+    service._consent_revoked_since = lambda pending: False
+
+    pending = PendingReply(
+        first_text="回复", wait_seconds=0.0, sender_id="2046",
+        is_group=True, group_id="7788",
+    )
+    pending.buffered_texts = ["回复"]
+    pending.message_count = 1
+    pending.wait_until = 0.0
+    pending.mention_context = SimpleNamespace(
+        is_group=True, group_id="7788", ephemeral_session=False,
+    )
+    service._pending["group:7788"] = pending
+
+    task = asyncio.create_task(
+        service._deliver_after_wait("group:7788", pending)
+    )
+    await lock_reached.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    # Already detached by the time the settlement started waiting.
+    assert seen_registry == [{}]
+    assert "group:7788" not in service._pending
+
+
+@pytest.mark.asyncio
+async def test_failed_optout_retry_is_not_mistaken_for_a_newer_generation():
+    """A cap-triggered flush that failed promotes its own buckets. The
+    opt-out settlement then retries exactly those; if the retry fails too,
+    that is the documented fail-closed drop — not a successor epoch."""
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    ud = {
+        "is_group": True,
+        "group_id": "7788",
+        "her_name": "Neko",
+        "pending_disable_settle": True,
+        "pending_settle_buckets": {"2046": [{"role": "user", "content": "冲不出去"}]},
+        "pending_settle_labels": {"2046": "2046"},
+        "pending_member_settle": True,
+        # Left behind by the cap flush that promoted these very buckets.
+        "member_settle_generation_promoted": True,
+    }
+
+    async def _run_with_session_lock(session_key, fn):
+        return await fn()
+
+    service = QQSessionMemoryService(SimpleNamespace(
+        _user_sessions={"group:7788": ud},
+        _qq_settings={"group_member_memory_enabled": False},
+        _run_with_session_lock=_run_with_session_lock,
+        logger=MagicMock(),
+    ))
+    service._flush_member_buckets = AsyncMock(return_value=["2046"])
+    await service.settle_member_buckets_on_disable()
+    assert "pending_settle_buckets" not in ud
+    assert "member_settle_generation_promoted" not in ud

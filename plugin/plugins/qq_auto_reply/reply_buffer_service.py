@@ -525,6 +525,12 @@ class QQReplyBufferService:
                 )
                 self._pending.pop(session_key, None)
                 return
+            # 投递一确认就把 pending 摘掉：结算被 shield 保住了，但**本
+            # 协程**仍可能在等会话锁时被取消，pop 就轮不到执行。那之后
+            # pre_buffer 会复用这个 pending，把新消息追加进 buffered_texts
+            # ——而里面装的是 bot 自己刚发出去的回复，替补任务于是把自己的
+            # 回复当成"对方又发了一条"去总结。
+            self._pending.pop(session_key, None)
             # 单条草稿真的送出去了：只撤本次 pending 的未投递记录——此前
             # 合并场景留下的旧记录必须留存。
             async def _settle_delivered() -> None:
@@ -571,7 +577,6 @@ class QQReplyBufferService:
                 self.plugin._run_with_session_lock(session_key, _settle_delivered)
             )
             await asyncio.shield(settle_task)
-            self._pending.pop(session_key, None)
             return
 
         # 多条缓冲 → 走 pipeline 生成总结（兼容 Lanlan）
