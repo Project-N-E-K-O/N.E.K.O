@@ -1695,8 +1695,6 @@ class AsrRuntimeMixin:
                 # next turn.
                 await self._send_core_asr_preview_clear(external_turn_id)
                 return
-            preview_owner_turn_id = self._core_asr_preview_turn_id
-            preview_owner_text = self._core_asr_preview_text
             accepted = await self.handle_input_transcript(
                 event.text,
                 is_voice_source=True,
@@ -1721,8 +1719,6 @@ class AsrRuntimeMixin:
                 return
             await self._restore_core_asr_preview_after_final(
                 external_turn_id,
-                preview_owner_turn_id,
-                preview_owner_text,
                 session_epoch=token.session_epoch,
             )
             await self._submit_core_voice_turn(
@@ -1735,7 +1731,12 @@ class AsrRuntimeMixin:
                 session_ref=session_ref,
             )
 
-    async def _send_core_asr_preview(self, event: VoicePartialEvent) -> None:
+    async def _send_core_asr_preview(
+        self,
+        event: VoicePartialEvent,
+        *,
+        remember: bool = True,
+    ) -> None:
         if (
             event.session_epoch != self._capture_ingress_token().session_epoch
             or self._voice_lease_owner != "core"
@@ -1764,14 +1765,20 @@ class AsrRuntimeMixin:
         if preview_turn_id:
             payload["asr_turn_id"] = preview_turn_id
         await send_json(payload)
-        if preview_turn_id and self._core_asr_preview_turn_id == preview_turn_id:
+        # ``remember=False`` is used by the repair re-send, which only mirrors
+        # what the cache already holds: it must never write its own (possibly
+        # older, since ``send_json`` above is awaited) text back over a partial
+        # that landed in the meantime.
+        if (
+            remember
+            and preview_turn_id
+            and self._core_asr_preview_turn_id == preview_turn_id
+        ):
             self._core_asr_preview_text = event.text
 
     async def _restore_core_asr_preview_after_final(
         self,
         finalized_turn_id: str,
-        preview_owner_turn_id: str,
-        preview_owner_text: str,
         *,
         session_epoch: int,
     ) -> None:
@@ -1786,12 +1793,20 @@ class AsrRuntimeMixin:
         preview text right behind the transcript on the ordered websocket so
         the bubble comes back immediately instead of waiting for whichever
         partial happens to arrive next.
+
+        Owner and text are read here, after the injection await, never
+        snapshotted before it: the injection yields, so the newer turn can
+        stream further partials (or hand the bubble to a turn newer still)
+        while it is in flight. Re-sending a pre-await snapshot would push the
+        visible preview backwards -- until the next partial, or forever if the
+        turn has stopped producing them.
         """
+        preview_owner_turn_id = self._core_asr_preview_turn_id
+        preview_owner_text = self._core_asr_preview_text
         if (
             not preview_owner_turn_id
             or not preview_owner_text
             or preview_owner_turn_id == finalized_turn_id
-            or self._core_asr_preview_turn_id != preview_owner_turn_id
         ):
             return
         try:
@@ -1799,7 +1814,8 @@ class AsrRuntimeMixin:
                 VoicePartialEvent(
                     text=preview_owner_text,
                     session_epoch=session_epoch,
-                )
+                ),
+                remember=False,
             )
         except Exception:
             logger.debug(

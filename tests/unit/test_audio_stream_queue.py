@@ -1577,3 +1577,101 @@ async def test_restore_skipped_when_the_newer_turn_has_no_preview_yet():
     )
 
     mgr.websocket.send_json.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Repair freshness (Codex P2 follow-up on the repair itself)
+#
+# handle_input_transcript is awaited, so the newer turn keeps streaming --
+# possibly handing the bubble to a turn newer still -- while the injection is
+# in flight. The repair therefore reads the owning turn id and its text at
+# restore time; a pre-await snapshot would re-send stale text and, worse,
+# write it back into the cache, regressing the visible preview until the next
+# partial (permanently if none follows).
+# ---------------------------------------------------------------------------
+
+
+def _sent_preview_payloads(mgr: LLMSessionManager) -> list[dict]:
+    return [call.args[0] for call in mgr.websocket.send_json.await_args_list]
+
+
+async def test_restore_resends_the_partial_that_landed_during_injection():
+    mgr = _make_preview_dispatch_manager()
+    await _prepare_preview_turn(mgr, 7)
+    await _send_preview_partial(mgr, "old text")
+    new_turn_id = await _prepare_preview_turn(mgr, 8)
+    await _send_preview_partial(mgr, "new")
+
+    async def _inject_then_stream(*args, **kwargs):
+        await _send_preview_partial(mgr, "new text")
+        return True
+
+    mgr.handle_input_transcript = AsyncMock(side_effect=_inject_then_stream)
+    mgr.websocket.send_json.reset_mock()
+
+    await mgr._dispatch_core_asr_transcript(
+        _transcript_event(mgr, "old text", turn_id=7)
+    )
+
+    payloads = _sent_preview_payloads(mgr)
+    # The in-flight partial, then the repair mirroring it -- never "new".
+    assert [payload["text"] for payload in payloads] == ["new text", "new text"]
+    assert payloads[-1]["asr_turn_id"] == new_turn_id
+    # Negative validation: the repair must not push its own copy back in.
+    assert mgr._core_asr_preview_text == "new text"
+    mgr.session.submit_external_voice_turn.assert_awaited_once()
+
+
+async def test_restore_follows_a_turn_handover_during_injection():
+    # The bubble can change owner mid-injection; the repair belongs to
+    # whichever turn owns it when the transcript actually went out.
+    mgr = _make_preview_dispatch_manager()
+    epoch = mgr._capture_ingress_token().session_epoch
+    await _prepare_preview_turn(mgr, 7)
+    await _send_preview_partial(mgr, "old text")
+    await _prepare_preview_turn(mgr, 8)
+    await _send_preview_partial(mgr, "new text")
+
+    async def _inject_then_hand_over(*args, **kwargs):
+        await _prepare_preview_turn(mgr, 9)
+        await _send_preview_partial(mgr, "newest text")
+        return True
+
+    mgr.handle_input_transcript = AsyncMock(side_effect=_inject_then_hand_over)
+    mgr.websocket.send_json.reset_mock()
+
+    await mgr._dispatch_core_asr_transcript(
+        _transcript_event(mgr, "old text", turn_id=7)
+    )
+
+    payloads = _sent_preview_payloads(mgr)
+    # Turn 9's own partial, then the repair behind the transcript -- a repair
+    # keyed to the pre-await owner would have been skipped outright here.
+    assert [payload["text"] for payload in payloads] == ["newest text"] * 2
+    assert payloads[-1]["asr_turn_id"] == f"asr-{epoch}-9"
+    assert mgr._core_asr_preview_text == "newest text"
+
+
+async def test_restore_skipped_when_the_newer_preview_cleared_during_injection():
+    # Negative validation: the newer turn's bubble was legitimately cleared
+    # while the injection was in flight, so there is nothing to repair and the
+    # cleared text must not be resurrected.
+    mgr = _make_preview_dispatch_manager()
+    await _prepare_preview_turn(mgr, 7)
+    await _send_preview_partial(mgr, "old text")
+    new_turn_id = await _prepare_preview_turn(mgr, 8)
+    await _send_preview_partial(mgr, "new text")
+
+    async def _inject_then_clear(*args, **kwargs):
+        await mgr._send_core_asr_preview_clear(new_turn_id)
+        return True
+
+    mgr.handle_input_transcript = AsyncMock(side_effect=_inject_then_clear)
+    mgr.websocket.send_json.reset_mock()
+
+    await mgr._dispatch_core_asr_transcript(
+        _transcript_event(mgr, "old text", turn_id=7)
+    )
+
+    assert [payload["text"] for payload in _sent_preview_payloads(mgr)] == [""]
+    assert mgr._core_asr_preview_text == ""
