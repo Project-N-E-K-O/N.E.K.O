@@ -987,7 +987,13 @@ async def test_unabsorbed_getter_skips_malformed_rows():
     }
     fs = FactStore.__new__(FactStore)
     no_id = {"text": "b", "importance": 7, **group_a.as_entry_fields()}
-    fs.aload_facts = AsyncMock(return_value=["corrupted-row", no_id, good])
+    bad_importance = {
+        "id": "c0", "text": "c", "importance": "high",
+        **group_a.as_entry_fields(),
+    }
+    fs.aload_facts = AsyncMock(
+        return_value=["corrupted-row", no_id, bad_importance, good],
+    )
     result = await fs.aget_unabsorbed_facts("Neko", subject=group_a)
     assert result == [good]
 
@@ -2358,6 +2364,15 @@ async def test_force_summary_branch_binds_draft_before_settling():
     waiting.task = asyncio.create_task(asyncio.sleep(999))
     service._pending["group:7788"] = waiting
 
+    waiting.has_nonconsent_input = True
+    summary_row = SimpleNamespace(type="ai", content="强制总结")
+
+    async def _run_forced(request):
+        history.append(SimpleNamespace(type="human", content="[synthetic]"))
+        history.append(summary_row)
+        return SimpleNamespace(action="reply", reply_text="强制总结")
+
+    plugin.reply_pipeline.run = AsyncMock(side_effect=_run_forced)
     await service.schedule_reply(
         session_key="group:7788", reply_text="第十七条的草稿",
         raw_text="第十七条的草稿", blocks=[QQMessageBlock(text="x")],
@@ -2368,6 +2383,11 @@ async def test_force_summary_branch_binds_draft_before_settling():
     # is lifted — the settle step found the row via the pending binding.
     assert draft17 in user_data["undelivered_draft_rows"]
     assert user_data.get("provisional_draft_rows") == []
+    # Nonconsent buffered input: the eager forced summary's ai row is
+    # excluded too (same rule as the delayed merge flush).
+    assert any(
+        r is summary_row for r in user_data["undelivered_draft_rows"]
+    )
 
 
 @pytest.mark.asyncio
@@ -2804,6 +2824,30 @@ async def test_buffer_keeps_draft_excluded_when_delivery_unconfirmed():
     plugin.reply_generation_service.record_scoped_mentions_on_delivery.assert_not_awaited()
     assert "group:7788" not in service._pending
 
+    # A raising send (NapCat surfaces transport failures as exceptions)
+    # must run the same cleanup: mark kept, provisional settled, pending
+    # popped — otherwise the barrier wedges every later digest.
+    from plugin.plugins.qq_auto_reply.reply_buffer_service import PendingReply as _PR
+
+    user_data["provisional_draft_rows"] = [draft]
+    plugin.reply_delivery_node.deliver = AsyncMock(
+        side_effect=RuntimeError("transport down"),
+    )
+    single2 = _PR(
+        first_text="草稿", wait_seconds=0, sender_id="1",
+        is_group=True, group_id="7788",
+    )
+    single2.first_blocks = list(single.first_blocks)
+    single2.wait_until = 0.0
+    single2.draft_rows = [draft]
+    single2.mention_context = object()
+    service._pending["group:7788"] = single2
+    await service._deliver_after_wait("group:7788", single2)
+    assert user_data["undelivered_draft_rows"] == [draft]
+    assert user_data["provisional_draft_rows"] == []
+    assert "group:7788" not in service._pending
+    plugin.reply_generation_service.record_scoped_mentions_on_delivery.assert_not_awaited()
+
 
 @pytest.mark.asyncio
 async def test_private_flush_prompt_not_excluded_and_cache_lags_tail_draft():
@@ -3218,6 +3262,10 @@ async def test_unpersisted_memory_toggle_rolls_back():
         "session": SimpleNamespace(_conversation_history=hist),
         "pending_enable_rebase": 1,
     }
+
+    async def _lock(session_key, fn):
+        return await fn()
+
     service.plugin = SimpleNamespace(
         _qq_settings={
             "group_memory_enabled": True,
@@ -3225,10 +3273,9 @@ async def test_unpersisted_memory_toggle_rolls_back():
         },
         _user_sessions={"group:1": ud},
         _emit_log=lambda *a, **k: None,
+        _run_with_session_lock=_lock,
     )
-    service._spawn_group_memory_sync_task = lambda coro: (
-        spawned.append(coro), coro.close(),
-    )
+    service._spawn_group_memory_sync_task = lambda coro: spawned.append(coro)
 
     # Persist OK: nothing happens.
     service._rollback_unpersisted_memory_toggles(
@@ -3251,6 +3298,7 @@ async def test_unpersisted_memory_toggle_rolls_back():
     assert service.plugin._qq_settings["group_member_memory_enabled"] is False
     assert ud["pending_disable_settle"] is True
     assert len(spawned) == 1
+    spawned.pop(0).close()  # reverse-transition coroutine, not under test here
 
     # Cross-group context also rolls back on persist failure — it is a
     # consent switch too, and a lingering new value injects other groups'
@@ -3284,6 +3332,10 @@ async def test_unpersisted_memory_toggle_rolls_back():
         member_memory_before=True, member_memory_after=False,
     )
     assert service.plugin._qq_settings["group_member_memory_enabled"] is True
+    # The restoration runs as a serialized background task (transition +
+    # session locks) — drive the spawned coroutine.
+    while spawned:
+        await spawned.pop(0)
     merged = ud["group_member_memory_messages"]["9"]
     assert [m["content"][0]["text"] for m in merged] == ["旧", "新"]
     assert ud["group_member_memory_labels"]["9"] == "九"
@@ -3308,7 +3360,7 @@ async def test_unpersisted_memory_toggle_rolls_back():
     assert "group_member_memory_labels" not in ud
     # The pending snapshot belongs to a previously saved era: untouched.
     assert "pending_settle_buckets" in ud
-    assert len(spawned) == 1
+    assert not spawned
 
 
 def test_dispatcher_group_policy_snapshot_taken_before_first_await():

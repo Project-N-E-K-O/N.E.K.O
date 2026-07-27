@@ -98,26 +98,12 @@ class QQSettingsService:
                 # 关闭保存失败：OFF 盖章已把活 bucket 快照进 pending 槽，
                 # 排队的 opt-out 结算失败时会按 opt-out 丢弃它们——但这些
                 # 轮次是在先前已保存的 consent 下收集的，保存失败后应留在
-                # 活 bucket 等正常结算。合并回去（快照在前保持时序）并撤
-                # 掉排队结算的标记（迟到的结算任务拿不到快照即 no-op）。
-                for ud in list(
-                    getattr(self.plugin, "_user_sessions", {}).values()
-                ):
-                    if not ud.get("is_group"):
-                        continue
-                    snapshot = ud.pop("pending_settle_buckets", None)
-                    snap_labels = ud.pop("pending_settle_labels", None) or {}
-                    ud.pop("pending_member_settle", None)
-                    if not snapshot:
-                        continue
-                    live = ud.setdefault("group_member_memory_messages", {})
-                    for sender, msgs in snapshot.items():
-                        live[sender] = list(msgs) + list(live.get(sender, []))
-                    live_labels = ud.setdefault(
-                        "group_member_memory_labels", {}
-                    )
-                    for sender, label in snap_labels.items():
-                        live_labels.setdefault(sender, label)
+                # 活 bucket 等正常结算。恢复必须与在途结算串行（转变锁+
+                # 会话锁）：无锁复制会与 awaiting HTTP 的 flush 任务共享
+                # 快照对象，flush 成功只清旧对象、live 副本残留重复提取。
+                self._spawn_group_memory_sync_task(
+                    self._restore_member_snapshots()
+                )
             if not member_memory_before:
                 # 开启保存失败：失败窗口内收集的 bucket 属于"从未成功保存
                 # 的 opt-in"——留着的话，之后成功开启时会与新授权项混合
@@ -133,6 +119,43 @@ class QQSettingsService:
                 "WARNING",
                 "成员记忆开关变更未能写盘，已回滚运行时策略",
             )
+
+    async def _restore_member_snapshots(self) -> None:
+        """Merge pending settlement snapshots back into live buckets.
+
+        Only for the member ON->OFF save-failure rollback. Runs under the
+        transition lock (serialized with any in-flight settlement) and the
+        per-session lock; a settlement that completed first has already
+        consumed or dropped the snapshot, making this a no-op."""
+        lock = getattr(self.plugin, "_memory_transition_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self.plugin._memory_transition_lock = lock
+        async with lock:
+            for session_key in list(
+                getattr(self.plugin, "_user_sessions", {}).keys()
+            ):
+                async def _restore_one(key: str = session_key) -> None:
+                    ud = self.plugin._user_sessions.get(key)
+                    if not isinstance(ud, dict) or not ud.get("is_group"):
+                        return
+                    snapshot = ud.pop("pending_settle_buckets", None)
+                    snap_labels = ud.pop("pending_settle_labels", None) or {}
+                    ud.pop("pending_member_settle", None)
+                    if not snapshot:
+                        return
+                    live = ud.setdefault("group_member_memory_messages", {})
+                    for sender, msgs in snapshot.items():
+                        live[sender] = list(msgs) + list(live.get(sender, []))
+                    live_labels = ud.setdefault(
+                        "group_member_memory_labels", {}
+                    )
+                    for sender, label in snap_labels.items():
+                        live_labels.setdefault(sender, label)
+
+                await self.plugin._run_with_session_lock(
+                    session_key, _restore_one,
+                )
 
     async def _sync_memory_transitions(
         self, *, settle_members: bool, group_transition: bool,

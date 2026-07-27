@@ -300,6 +300,12 @@ class QQReplyBufferService:
                     self.plugin._emit_log("WARN", f"[Buffer] 简短确认失败: {e}")
                 finally:
                     self._record_synthetic_prompt_rows(session_key, hist_before)
+                    if existing.has_nonconsent_input:
+                        # ack 的 prompt 内嵌了缓冲内容摘录：OFF 时代输入
+                        # 存在时其 ai 行按同一口径排除。
+                        self.plugin.session_memory_service.record_synthetic_prompt_rows(
+                            session_key, hist_before, include_ai_rows=True,
+                        )
 
             # 17+ 条 → 走 pipeline 强制总结 + 清空缓冲
             if n >= 17:
@@ -327,6 +333,12 @@ class QQReplyBufferService:
                     self.plugin._emit_log("WARN", f"[Buffer] 强制总结失败: {e}")
                 finally:
                     self._record_synthetic_prompt_rows(session_key, hist_before)
+                    if existing.has_nonconsent_input:
+                        # 与 _deliver_after_wait 的合并分支对齐：缓冲含
+                        # OFF 时代输入时，衍生总结的 ai 行同样不得入库。
+                        self.plugin.session_memory_service.record_synthetic_prompt_rows(
+                            session_key, hist_before, include_ai_rows=True,
+                        )
                     self._settle_provisional(
                         (getattr(self.plugin, "_user_sessions", {}) or {}).get(
                             session_key
@@ -401,7 +413,13 @@ class QQReplyBufferService:
                 blocks=blocks,
                 fallback_to_text_on_voice_failure=True,
             )
-            delivery = await self.plugin.reply_delivery_node.deliver(plan)
+            try:
+                delivery = await self.plugin.reply_delivery_node.deliver(plan)
+            except Exception as e:
+                # NapCat 传输失败以异常上浮：与"未确认"同等对待——不跑
+                # 清理会让 provisional 屏障永久卡死后续 digest。
+                self.plugin._emit_log("WARN", f"[Buffer] 单条投递失败: {e}")
+                delivery = None
             if delivery is None or not getattr(delivery, "delivered", False):
                 # 发送未确认（开放平台失败返回 None 不抛异常）：草稿仍属
                 # 未投递——排除记录保留、mention 不记，没送出去的回复不得

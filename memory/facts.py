@@ -2056,7 +2056,9 @@ class FactStore:
             if isinstance(f, dict)
             and f.get('id')
             and not f.get('absorbed')
-            and f.get('importance', 0) >= min_importance
+            # safe_importance：手改行的非数值 importance（如 "high"）在
+            # 原生比较下 TypeError，会让该角色的 scoped 合成每 tick 全灭。
+            and safe_importance(f, 0) >= min_importance
             and entry_matches_subject(f, subject)
         ]
 
