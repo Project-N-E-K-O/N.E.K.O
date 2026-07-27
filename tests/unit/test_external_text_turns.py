@@ -813,6 +813,140 @@ async def test_late_item_error_without_terminal_fails_closed():
             await asyncio.wait_for(future, 0.5)
 
 
+async def _spawn_suspended_late_error_cancel(arbiter, cancel_entered):
+    """Drive the late-item-error path until its cancel send is suspended."""
+
+    ticket = await arbiter.enqueue(
+        source="external_asr",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "event_id": "item-event",
+                "item": {"id": "item-target", "role": "user"},
+            },
+        ),
+        response_event={"type": "response.create", "event_id": "response-event"},
+        ack_expected=True,
+        expected_item_id="item-target",
+        expected_item_role="user",
+        item_ack_timeout=0.01,
+    )
+    await asyncio.wait_for(ticket.sent, 0.5)
+    arbiter.notify_error("item-event", "item rejected late")
+    with pytest.raises(RuntimeError, match="item rejected late"):
+        await asyncio.wait_for(ticket.done, 0.2)
+    # The best-effort cancel send is now parked inside send_event, the way
+    # a real one parks on the transport send semaphore.
+    await asyncio.wait_for(cancel_entered.wait(), 0.5)
+    assert len(arbiter._cancel_send_tasks) == 1
+
+
+@pytest.mark.asyncio
+async def test_stale_cancel_send_does_not_fire_into_new_connection():
+    sent = []
+    cancel_gate = asyncio.Event()
+    cancel_entered = asyncio.Event()
+
+    async def send(event):
+        if event["type"] == "response.cancel":
+            cancel_entered.set()
+            await cancel_gate.wait()
+        sent.append(dict(event))
+
+    arbiter = RealtimeResponseArbiter(send)
+    await _spawn_suspended_late_error_cancel(arbiter, cancel_entered)
+
+    # The connection drops while the cancel send is still suspended, then the
+    # reusable client reconnects and reopens the arbiter.
+    arbiter.notify_connection_lost("socket lost mid-cancel")
+    arbiter.reset_connection_state()
+    assert not arbiter._cancel_send_tasks
+    cancel_gate.set()
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    # The stale cancel must never reach the new connection.
+    assert "response.cancel" not in [event["type"] for event in sent]
+
+    # A late error on the new connection must still cancel best-effort: the
+    # guard removes only stale sends, not the mechanism itself. The gate is
+    # open now, so this cancel goes straight through.
+    ticket = await arbiter.enqueue(
+        source="external_asr",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "event_id": "item-event-2",
+                "item": {"id": "item-target", "role": "user"},
+            },
+        ),
+        response_event={"type": "response.create", "event_id": "response-event-2"},
+        ack_expected=True,
+        expected_item_id="item-target",
+        expected_item_role="user",
+        item_ack_timeout=0.01,
+    )
+    await asyncio.wait_for(ticket.sent, 0.5)
+    arbiter.notify_error("item-event-2", "item rejected late")
+    with pytest.raises(RuntimeError, match="item rejected late"):
+        await asyncio.wait_for(ticket.done, 0.2)
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert [event["type"] for event in sent].count("response.cancel") == 1
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_stops_suspended_cancel_send():
+    sent = []
+    cancel_gate = asyncio.Event()
+    cancel_entered = asyncio.Event()
+
+    async def send(event):
+        if event["type"] == "response.cancel":
+            cancel_entered.set()
+            await cancel_gate.wait()
+        sent.append(dict(event))
+
+    arbiter = RealtimeResponseArbiter(send)
+    await _spawn_suspended_late_error_cancel(arbiter, cancel_entered)
+    (cancel_task,) = arbiter._cancel_send_tasks
+
+    await arbiter.shutdown()
+
+    # Shutdown must cancel and settle the suspended send, not leave it
+    # runnable behind the released gate.
+    assert cancel_task.done()
+    assert not arbiter._cancel_send_tasks
+    cancel_gate.set()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert "response.cancel" not in [event["type"] for event in sent]
+
+
+@pytest.mark.asyncio
+async def test_cancel_send_refuses_stale_connection_generation():
+    sent = []
+
+    async def send(event):
+        sent.append(dict(event))
+
+    arbiter = RealtimeResponseArbiter(send)
+    stale_generation = arbiter._connection_generation
+    arbiter.notify_connection_lost("socket lost")
+    arbiter.reset_connection_state()
+
+    # Even a send task that outlived its cancellation must not fire into the
+    # newer connection.
+    await arbiter._send_cancel_best_effort(stale_generation)
+    assert sent == []
+
+    # The current generation still sends, so the guard is not over-broad.
+    await arbiter._send_cancel_best_effort(arbiter._connection_generation)
+    assert [event["type"] for event in sent] == ["response.cancel"]
+    await arbiter.shutdown()
+
+
 @pytest.mark.asyncio
 async def test_post_send_create_rejection_still_releases_lane():
     sent = []

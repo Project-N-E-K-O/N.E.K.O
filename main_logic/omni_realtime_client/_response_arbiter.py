@@ -130,8 +130,16 @@ class RealtimeResponseArbiter:
         self._stale_release_handle: asyncio.TimerHandle | None = None
         # Best-effort ``response.cancel`` sends spawned from the synchronous
         # notify_error path; referenced here so they are not garbage-collected
-        # mid-flight.
+        # mid-flight, and cancelled on connection loss so a task suspended
+        # inside ``send_event`` (e.g. on the transport send semaphore) cannot
+        # resume after a reconnect and cancel an unrelated response on the
+        # replacement connection.
         self._cancel_send_tasks: set[asyncio.Task[None]] = set()
+        # Monotonic counter bumped on every connection loss. A cancel-send
+        # task captures it at creation and re-checks it before sending, so a
+        # task that somehow outlives its cancellation never fires into a
+        # newer connection.
+        self._connection_generation = 0
         self._connection_available = True
         self._dispatch_allowed = asyncio.Event()
         self._dispatch_allowed.set()
@@ -263,12 +271,14 @@ class RealtimeResponseArbiter:
     async def shutdown(self, reason: str = "response arbiter shut down") -> None:
         """Fail pending work and stop the queue consumer."""
 
+        stale = list(self._cancel_send_tasks)
         self._mark_connection_lost(reason, fail_current_tickets=True)
         worker, self._worker = self._worker, None
-        if worker is None or worker is asyncio.current_task():
-            return
-        worker.cancel()
-        await asyncio.gather(worker, return_exceptions=True)
+        if worker is not None and worker is not asyncio.current_task():
+            worker.cancel()
+            stale.append(worker)
+        if stale:
+            await asyncio.gather(*stale, return_exceptions=True)
 
     def notify_item_created(self, event: dict[str, Any]) -> None:
         current = self._current
@@ -493,11 +503,17 @@ class RealtimeResponseArbiter:
             return
         target.interrupted = True
         target.interrupt_event.set()
-        task = asyncio.create_task(self._send_cancel_best_effort())
+        task = asyncio.create_task(
+            self._send_cancel_best_effort(self._connection_generation)
+        )
         self._cancel_send_tasks.add(task)
         task.add_done_callback(self._cancel_send_tasks.discard)
 
-    async def _send_cancel_best_effort(self) -> None:
+    async def _send_cancel_best_effort(self, generation: int) -> None:
+        if generation != self._connection_generation:
+            # The connection this cancel was aimed at is gone; sending now
+            # would cancel an unrelated response on its replacement.
+            return
         try:
             await self._send_event({"type": "response.cancel"})
         except Exception as exc:
@@ -510,6 +526,19 @@ class RealtimeResponseArbiter:
     def notify_connection_lost(self, reason: str = "realtime connection lost") -> None:
         self._mark_connection_lost(reason, fail_current_tickets=True)
 
+    def _cancel_pending_cancel_sends(self) -> None:
+        """Stop best-effort cancel sends aimed at a now-dead connection.
+
+        A cancel-send task can be suspended inside ``send_event`` (e.g. on
+        the transport send semaphore) across a close/reconnect; left alone it
+        would resume and send ``response.cancel`` into the new session.
+        """
+
+        tasks = list(self._cancel_send_tasks)
+        self._cancel_send_tasks.clear()
+        for task in tasks:
+            task.cancel()
+
     def _mark_connection_lost(
         self,
         reason: str,
@@ -517,6 +546,8 @@ class RealtimeResponseArbiter:
         fail_current_tickets: bool,
     ) -> None:
         self._connection_available = False
+        self._connection_generation += 1
+        self._cancel_pending_cancel_sends()
         # Wake a worker parked behind the dispatch barrier so it can observe
         # the failed connection and complete its selected ticket.
         self._dispatch_allowed.set()
@@ -541,6 +572,9 @@ class RealtimeResponseArbiter:
         self._fail_queued(exc)
 
     def reset_connection_state(self) -> None:
+        # Defensive: a cancel send spawned against a previous connection must
+        # never fire into the replacement one.
+        self._cancel_pending_cancel_sends()
         self._connection_available = True
         self._dispatch_allowed.set()
         self._server_response_ids.clear()
