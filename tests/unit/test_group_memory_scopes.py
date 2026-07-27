@@ -3289,6 +3289,7 @@ async def test_unpersisted_memory_toggle_rolls_back():
     assert ud["group_member_memory_labels"]["9"] == "九"
     assert "pending_settle_buckets" not in ud
     assert "pending_member_settle" not in ud
+    assert "pending_settle_labels" not in ud
 
     # Member-only failure rolls back the flag AND discards live buckets
     # collected during the failed opt-in window — re-enabling later must
