@@ -12,7 +12,7 @@ seoSchemaType: WebPage
 
 ## 在你作出选择之前
 
-网站不会加载 Google Analytics，也不会向 Google Analytics 发送请求。在你点击**同意分析统计**或**拒绝**之前，同意面板不会保存选择。
+网站不会加载 Google Analytics，也不会向 Google Analytics 发送请求。在你点击**允许**或**拒绝**之前，同意横幅不会保存选择。
 
 ## 同意分析统计后
 
@@ -36,6 +36,6 @@ Google Analytics 可能处理页面网址和标题、来源页面、浏览器与
 
 ## 修改或撤回选择
 
-使用任意文档页面底部的**分析统计设置**按钮，即可随时同意或拒绝。拒绝分析统计不会影响文档的正常使用。
+使用任意文档页面页脚中的 **Cookie 设置**链接，即可随时允许或拒绝。拒绝分析统计不会影响文档的正常使用。
 
 如对本说明有疑问，请通过 [Project N.E.K.O. GitHub 仓库](https://github.com/Project-N-E-K-O/N.E.K.O/issues)联系项目。
