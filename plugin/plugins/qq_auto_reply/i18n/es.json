@@ -56,6 +56,7 @@
   "errors.proactive_invalid_message": "message no puede estar vacío",
   "errors.proactive_not_ready": "{error}",
   "errors.proactive_send_failed": "{error}",
+  "errors.send_unconfirmed": "El mensaje se envió pero no se recibió acuse de entrega; verifica antes de reintentar.",
   "ui.actions.open": "Abrir UI",
   "ui.open_path.message": "La interfaz está disponible",
   "ui.unavailable.message": "La interfaz no está disponible",

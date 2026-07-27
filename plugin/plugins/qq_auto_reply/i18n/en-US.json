@@ -74,6 +74,7 @@
   "errors.proactive_invalid_message": "message cannot be empty",
   "errors.proactive_not_ready": "{error}",
   "errors.proactive_send_failed": "{error}",
+  "errors.send_unconfirmed": "The message was sent but no delivery receipt came back; please verify before retrying.",
   "prompts.default_master": "Master",
   "prompts.default_qq_user": "QQ User",
   "prompts.default_ai_assistant": "AI Assistant",

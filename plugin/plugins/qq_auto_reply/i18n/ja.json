@@ -56,6 +56,7 @@
   "errors.proactive_invalid_message": "message は空にできません",
   "errors.proactive_not_ready": "{error}",
   "errors.proactive_send_failed": "{error}",
+  "errors.send_unconfirmed": "メッセージを送信しましたが送信受領が返ってきませんでした。確認してから再試行してください。",
   "ui.actions.open": "UI を開く",
   "ui.open_path.message": "UI は利用可能です",
   "ui.unavailable.message": "UI は利用できません",

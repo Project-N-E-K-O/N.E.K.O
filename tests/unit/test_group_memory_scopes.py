@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -10530,3 +10531,181 @@ async def test_failed_optout_retry_is_not_mistaken_for_a_newer_generation():
     await service.settle_member_buckets_on_disable()
     assert "pending_settle_buckets" not in ud
     assert "member_settle_generation_promoted" not in ud
+
+
+@pytest.mark.asyncio
+async def test_new_message_during_summary_is_not_stranded_by_the_old_task():
+    """A new message cancels the flushing task and starts a replacement on
+    the same PendingReply. The cancelled one used to pop the registry from
+    its finally, so the replacement returned at its ownership check and that
+    message was never answered."""
+    from plugin.plugins.qq_auto_reply.reply_buffer_service import (
+        PendingReply,
+        QQReplyBufferService,
+    )
+
+    in_flight = asyncio.Event()
+    release = asyncio.Event()
+    prompts: list[str] = []
+    settled: list[str] = []
+
+    async def _run(request):
+        prompts.append(request.message_text)
+        if len(prompts) == 1:
+            in_flight.set()
+            await release.wait()
+        return None
+
+    service = QQReplyBufferService.__new__(QQReplyBufferService)
+    service.plugin = SimpleNamespace(
+        _emit_log=lambda *a, **k: None,
+        _user_sessions={"group:7788": {}},
+        _qq_settings={"group_memory_enabled": True},
+        _run_with_session_lock=_passthrough_session_lock,
+        reply_pipeline=SimpleNamespace(run=_run),
+        session_memory_service=SimpleNamespace(
+            record_synthetic_prompt_rows=MagicMock(),
+        ),
+    )
+    service._pending = {}
+    service._session_history_len = lambda key: 0
+    service._record_synthetic_prompt_rows = MagicMock()
+    service._settle_provisional = lambda ud, p: settled.append("settled")
+    service._consent_revoked_since = lambda pending: False
+
+    pending = PendingReply(
+        first_text="回复", wait_seconds=0.0, sender_id="2046",
+        is_group=True, group_id="7788",
+    )
+    pending.buffered_texts = ["回复", "在吗"]
+    pending.message_count = 2
+    pending.wait_until = 0.0
+    service._pending["group:7788"] = pending
+
+    first = asyncio.create_task(service._deliver_after_wait("group:7788", pending))
+    pending.task = first
+    await in_flight.wait()
+
+    # pre_buffer: append, cancel the running task, start a replacement on the
+    # very same PendingReply.
+    pending.buffered_texts.append("怎么不理我")
+    pending.message_count += 1
+    first.cancel()
+    second = asyncio.create_task(service._deliver_after_wait("group:7788", pending))
+    pending.task = second
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    # The stale generation kept its hands off the slot and the barrier.
+    assert service._pending.get("group:7788") is pending
+    assert settled == []
+    # ...but still marked the rows its own prompt wrote into history.
+    service._record_synthetic_prompt_rows.assert_called_once_with("group:7788", 0)
+
+    await second
+    # The replacement answered, and the new message is in what it summarised.
+    assert len(prompts) == 2
+    assert "怎么不理我" in prompts[1]
+    assert settled == ["settled"]
+    assert "group:7788" not in service._pending
+
+
+def test_converted_notice_types_take_the_group_session_lock():
+    """The session key is resolved before handle_message rewrites a notice
+    into a group turn, so every rewritten notice_type must be recognised
+    here — otherwise that turn runs with no session lock at all."""
+    import re
+
+    from plugin.plugins.qq_auto_reply import session_runtime_service as srs
+
+    source = Path(
+        srs.__file__
+    ).with_name("message_dispatcher.py").read_text(encoding="utf-8")
+    rewritten = set(re.findall(
+        r'notice_type"\)\s*==\s*"([a-z_]+)"', source
+    ))
+    # Guard the guard: a rewrite of the dispatcher that hides these
+    # comparisons must not silently turn this test into a no-op.
+    assert len(rewritten) >= 2, rewritten
+    assert rewritten <= srs.CONVERTED_NOTICE_TYPES, (
+        rewritten - srs.CONVERTED_NOTICE_TYPES
+    )
+
+    service = srs.QQSessionRuntimeService(SimpleNamespace(
+        _build_session_key=(
+            lambda *, sender_id, is_group, group_id=None: (
+                f"group:{group_id}" if is_group else f"private:{sender_id}"
+            )
+        ),
+    ))
+    for notice_type in sorted(srs.CONVERTED_NOTICE_TYPES):
+        assert service.message_session_key({
+            "message_type": "notice", "notice_type": notice_type,
+            "group_id": "7788", "user_id": "2046",
+        }) == "group:7788", notice_type
+    # A notice that never becomes a turn still needs no lock.
+    assert service.message_session_key({
+        "message_type": "notice", "notice_type": "friend_add",
+        "group_id": "7788", "user_id": "2046",
+    }) is None
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_backlog_reply_keeps_the_item_and_reports_failure():
+    """The operator's manual reply exists only as this backlog item. An
+    unconfirmed send (NapCat echo timeout / no message id) used to delete it
+    and answer status=sent, losing the reply with no trace."""
+    from plugin.plugins.qq_auto_reply.relay_service import QQRelayService
+
+    item = {
+        "source_type": "group", "target_id": "7788", "sender_id": "2046",
+        "original_message": "原消息",
+    }
+    reviewed = AsyncMock()
+    trace = MagicMock()
+    plugin = SimpleNamespace(
+        _ensure_qq_client_connected=lambda: None,
+        _validate_outbound_message=lambda text: text,
+        _relay_backlog_items=[dict(item)],
+        _deliver_group_reply=AsyncMock(return_value=False),
+        _deliver_private_reply=AsyncMock(return_value=True),
+        backlog_store=SimpleNamespace(mark_group_reviewed=reviewed),
+        runtime_service=SimpleNamespace(record_manual_trace=trace),
+        _emit_log=lambda *a, **k: None,
+        logger=MagicMock(),
+        i18n=SimpleNamespace(t=lambda key, default="", **kw: default),
+    )
+    service = QQRelayService(plugin)
+    result = await service.send_backlog_reply_direct(
+        source_type="group", target_id="7788", original_message="原消息",
+        reply_text="人工回复", sender_id="2046",
+    )
+    assert result.is_err()
+    assert "SEND_FAILED" in str(result.error)
+    assert plugin._relay_backlog_items == [item]
+    reviewed.assert_not_awaited()
+    trace.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_relay_reports_false_and_keeps_the_backlog_item():
+    """Returning True regardless of the receipt marked a relay that never
+    reached the admin as delivered."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import QQRelayPlan
+    from plugin.plugins.qq_auto_reply.relay_service import QQRelayService
+
+    plugin = SimpleNamespace(
+        _relay_backlog_items=[],
+        _deliver_private_reply=AsyncMock(return_value=False),
+        _emit_log=lambda *a, **k: None,
+        logger=MagicMock(),
+    )
+    service = QQRelayService(plugin)
+    relayed = await service.execute_relay_plan(QQRelayPlan(
+        source_type="group", source_id="7788", sender_id="2046",
+        original_message="原消息", relay_text="转达文本",
+        relay_probability=1.0, target_admin_qq="10001",
+    ))
+    assert relayed is False
+    # The panel is now the only place this message still exists.
+    assert len(plugin._relay_backlog_items) == 1

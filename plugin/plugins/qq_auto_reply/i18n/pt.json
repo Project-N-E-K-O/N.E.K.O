@@ -56,6 +56,7 @@
   "errors.proactive_invalid_message": "message não pode estar vazio",
   "errors.proactive_not_ready": "{error}",
   "errors.proactive_send_failed": "{error}",
+  "errors.send_unconfirmed": "A mensagem foi enviada, mas nenhum recibo de entrega retornou; verifique antes de tentar novamente.",
   "ui.actions.open": "Abrir UI",
   "ui.open_path.message": "A interface está disponível",
   "ui.unavailable.message": "A interface não está disponível",

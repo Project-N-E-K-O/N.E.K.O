@@ -7,18 +7,36 @@ from typing import Any
 from .pipeline_models import QQReplyContext
 
 
+# 会被 handle_message 就地改写成 group 轮的通知类型：会话键必须与
+# 改写后一致，否则这些轮次全程无锁。新增改写分支时同步补进来（
+# test_converted_notice_types_take_the_group_session_lock 会盯着）。
+CONVERTED_NOTICE_TYPES = frozenset({"group_increase", "poke"})
+
+
 class QQSessionRuntimeService:
     def __init__(self, plugin: Any):
         self.plugin = plugin
 
     def message_session_key(self, message: dict[str, Any]) -> str | None:
+        """Session lock key for a raw inbound message.
+
+        Notices that handle_message rewrites into real group turns must
+        resolve here too: the key is taken before that rewrite, so leaving
+        them unkeyed runs the converted turn with no session lock at all."""
         message_type = str(message.get("message_type") or "").strip()
         sender_id = str(message.get("user_id") or "").strip()
         if not sender_id:
             return None
         if message_type == "private":
             return self.plugin._build_session_key(sender_id=sender_id, is_group=False)
-        if message_type == "group":
+        if message_type == "group" or (
+            message_type == "notice"
+            and str(message.get("notice_type") or "").strip() in CONVERTED_NOTICE_TYPES
+        ):
+            # 入群通知/戳一戳会在 handle_message 里就地改写成 group 轮，而
+            # 会话键在那之前就取好了：不认这两类通知，转换出来的真实群轮
+            # 就绕开了会话锁，与同群普通消息并发跑历史——合成轮的排除窗口
+            # 会把对方那一轮的真人发言一起圈进去，永久排除出 scoped 记忆。
             group_id = str(message.get("group_id") or "").strip()
             if not group_id:
                 return None

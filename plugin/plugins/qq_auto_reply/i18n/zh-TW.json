@@ -56,6 +56,7 @@
   "errors.proactive_invalid_message": "message 不能為空",
   "errors.proactive_not_ready": "{error}",
   "errors.proactive_send_failed": "{error}",
+  "errors.send_unconfirmed": "訊息已送出但未收到發送回執，請確認後重試",
   "ui.actions.open": "打開 UI",
   "ui.open_path.message": "UI 已註冊",
   "ui.unavailable.message": "UI 未註冊",

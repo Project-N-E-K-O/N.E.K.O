@@ -56,6 +56,7 @@
   "errors.proactive_invalid_message": "message не может быть пустым",
   "errors.proactive_not_ready": "{error}",
   "errors.proactive_send_failed": "{error}",
+  "errors.send_unconfirmed": "Сообщение отправлено, но подтверждение доставки не получено; проверьте перед повторной попыткой.",
   "ui.actions.open": "Открыть UI",
   "ui.open_path.message": "Интерфейс доступен",
   "ui.unavailable.message": "Интерфейс недоступен",

@@ -75,6 +75,7 @@
   "errors.proactive_invalid_message": "message 不能为空",
   "errors.proactive_not_ready": "{error}",
   "errors.proactive_send_failed": "{error}",
+  "errors.send_unconfirmed": "消息已发出但未收到发送回执，请确认后重试",
   "prompts.default_master": "主人",
   "prompts.default_qq_user": "QQ用户{sender_id}",
   "prompts.default_ai_assistant": "你是一个友好的AI助手",

@@ -451,6 +451,34 @@ class QQReplyBufferService:
         existing.task = asyncio.create_task(self._deliver_after_wait(session_key, existing))
 
     @staticmethod
+    def _is_current_generation(pending: PendingReply) -> bool:
+        """True when the running coroutine is still this buffer's live task."""
+        task = getattr(pending, "task", None)
+        if task is None:
+            return True
+        try:
+            current = asyncio.current_task()
+        except RuntimeError:
+            return True
+        return current is None or current is task
+
+    def _detach_pending(self, session_key: str, pending: PendingReply) -> bool:
+        """Give up the registry slot, but only for the generation that owns it.
+
+        A new message cancels the running task and starts a replacement **on
+        the same PendingReply** (both pre_buffer and schedule_reply reuse the
+        object and only swap `task`), so object identity cannot tell the two
+        apart. Popping from the cancelled generation strands that message: the
+        replacement finds the slot empty at its own ownership check, returns,
+        and nobody ever answers. Returns whether we are still the owner, so
+        callers can gate the settlement the same way."""
+        if not self._is_current_generation(pending):
+            return False
+        if self._pending.get(session_key) is pending:
+            self._pending.pop(session_key, None)
+        return True
+
+    @staticmethod
     def _merge_consent_snapshot(pending: PendingReply, snapshot: dict) -> None:
         """并集而非覆盖：合并进同一缓冲的旧草稿可能依赖了此刻已撤销的授权，
         用新快照（全 False）覆盖会让撤销检查看不到 true→false 的落差，旧
@@ -469,7 +497,12 @@ class QQReplyBufferService:
         except asyncio.CancelledError:
             return  # 新消息打断了等待
 
-        if self._pending.get(session_key) is not pending:
+        if (
+            self._pending.get(session_key) is not pending
+            or not self._is_current_generation(pending)
+        ):
+            # 两道都要：换了 pending 对象（缓冲已作废）与同对象换了代际
+            # （新消息就地重建了任务）是两回事，后者对象身份分辨不出。
             return
 
         if self._consent_revoked_since(pending):
@@ -479,11 +512,13 @@ class QQReplyBufferService:
             self.plugin._emit_log(
                 "WARN", "[Buffer] 记忆授权已撤销，丢弃缓冲中的旧回复",
             )
-            self._settle_provisional(
-                (getattr(self.plugin, "_user_sessions", {}) or {}).get(session_key),
-                pending,
-            )
-            self._pending.pop(session_key, None)
+            if self._detach_pending(session_key, pending):
+                self._settle_provisional(
+                    (getattr(self.plugin, "_user_sessions", {}) or {}).get(
+                        session_key
+                    ),
+                    pending,
+                )
             return
 
         # 汇总缓冲内容
@@ -517,20 +552,25 @@ class QQReplyBufferService:
                 # 发送未确认（开放平台失败返回 None 不抛异常）：草稿仍属
                 # 未投递——排除记录保留、mention 不记，没送出去的回复不得
                 # 进 scoped 提取。命运已定（不重试），解除游标屏障。
-                self._settle_provisional(
-                    (getattr(self.plugin, "_user_sessions", {}) or {}).get(
-                        session_key
-                    ),
-                    pending,
-                )
-                self._pending.pop(session_key, None)
+                if self._detach_pending(session_key, pending):
+                    # 屏障与 pending 同进退：替补代际还在缓冲时草稿命运未
+                    # 定，解除屏障会让游标越过一条随后可能被投递的行。
+                    self._settle_provisional(
+                        (getattr(self.plugin, "_user_sessions", {}) or {}).get(
+                            session_key
+                        ),
+                        pending,
+                    )
                 return
             # 投递一确认就把 pending 摘掉：结算被 shield 保住了，但**本
             # 协程**仍可能在等会话锁时被取消，pop 就轮不到执行。那之后
             # pre_buffer 会复用这个 pending，把新消息追加进 buffered_texts
             # ——而里面装的是 bot 自己刚发出去的回复，替补任务于是把自己的
             # 回复当成"对方又发了一条"去总结。
-            self._pending.pop(session_key, None)
+            # 投递期间就来了新消息（已有替补）时摘不掉：那条已投递的回复会
+            # 混进替补的总结素材里，比起把新消息整条丢掉不回，这是更轻的
+            # 代价——正常无替补路径不受影响。
+            self._detach_pending(session_key, pending)
             # 单条草稿真的送出去了：只撤本次 pending 的未投递记录——此前
             # 合并场景留下的旧记录必须留存。
             async def _settle_delivered() -> None:
@@ -618,13 +658,18 @@ class QQReplyBufferService:
             # 合并定局（无论成败）：pending 必须出表、屏障必须解除——
             # 异常路径漏掉任何一个都会让 digest 永远停在死草稿行前。
             # 草稿永久未投递（排除名单保留）。
-            self._pending.pop(session_key, None)
-            self._settle_provisional(
-                (getattr(self.plugin, "_user_sessions", {}) or {}).get(
-                    session_key
-                ),
-                pending,
-            )
+            # ⚠️只在自己仍是当代任务时定局：等总结 pipeline 期间新消息会
+            # 取消本任务、就地建替补，此时定局的该是替补而不是我们——无条件
+            # 收摊会把替补摘出表，它随即在归属检查处直接返回，那条新消息既
+            # 没回复也没人再管。synthetic 标记不受归属影响：那些行是本轮
+            # 真写进历史的，不标就会被当成用户发言进 digest。
+            if self._detach_pending(session_key, pending):
+                self._settle_provisional(
+                    (getattr(self.plugin, "_user_sessions", {}) or {}).get(
+                        session_key
+                    ),
+                    pending,
+                )
 
     # ── LLM 合并决策 ──
 

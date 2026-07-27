@@ -56,6 +56,7 @@
   "errors.proactive_invalid_message": "message는 비어 있을 수 없습니다",
   "errors.proactive_not_ready": "{error}",
   "errors.proactive_send_failed": "{error}",
+  "errors.send_unconfirmed": "메시지를 보냈지만 전송 확인 응답이 오지 않았습니다. 확인 후 다시 시도해 주세요.",
   "ui.actions.open": "UI 열기",
   "ui.open_path.message": "UI를 사용할 수 있습니다",
   "ui.unavailable.message": "UI를 사용할 수 없습니다",
