@@ -501,6 +501,28 @@ def test_explicit_custom_openai_tts_uses_character_voice_without_fallback():
     )
 
 
+def test_custom_openai_tts_fallback_does_not_override_a_different_native_voice():
+    mgr = _make_mgr("Puck")
+    realtime_config = {"base_url": "https://generativelanguage.googleapis.com"}
+
+    assert (
+        LLMSessionManager._resolve_session_use_tts(
+            mgr,
+            "audio",
+            realtime_config,
+            {
+                "ENABLE_CUSTOM_API": True,
+                "ttsModelProvider": "custom",
+                "ttsModelUrl": "https://speech.example.com/v1",
+                "ttsModelId": "vendor-tts",
+                "ttsVoiceId": "vendor-voice",
+                "GPTSOVITS_ENABLED": False,
+            },
+        )
+        is False
+    )
+
+
 def test_vllm_runtime_key_tracks_raw_runtime_config(monkeypatch):
     class _CM:
         def __init__(self, url, model, voice_id, tts_model=""):

@@ -286,15 +286,16 @@ class TtsRuntimeMixin:
 
     @staticmethod
     def _is_custom_openai_tts_enabled(core_config: dict, voice_id: str = '') -> bool:
+        character_voice = str(voice_id or '').strip()
+        configured_voice = str(core_config.get('ttsVoiceId') or '').strip()
+        if character_voice and configured_voice and character_voice != configured_voice:
+            return False
         return _as_bool(core_config.get('ENABLE_CUSTOM_API'), False) and (
             str(core_config.get('ttsModelProvider') or '').strip() == 'custom'
         ) and bool(
             str(core_config.get('ttsModelUrl') or '').strip()
             and str(core_config.get('ttsModelId') or '').strip()
-            and (
-                str(voice_id or '').strip()
-                or str(core_config.get('ttsVoiceId') or '').strip()
-            )
+            and (character_voice or configured_voice)
         )
 
     @classmethod
