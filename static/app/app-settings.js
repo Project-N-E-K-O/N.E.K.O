@@ -51,19 +51,35 @@
     // never rejects, so the sync chain can never stall on it.
     let _settingsGetGate = Promise.resolve();
     const SETTINGS_GET_GATE_TIMEOUT_MS = 3000;
-    // Whether the boot GET chain has settled (merged or failed). The bound
-    // above only preserves liveness — it must never turn into authority: when
-    // it fires while the GET is still pending, the local snapshot still holds
-    // pre-merge values for untouched keys, and a FULL write would overwrite
-    // the server-persisted preferences. The backend resolves telemetry BEFORE
-    // reading the settings file (main_routers/config_router/preferences.py
-    // get_conversation_settings), so the resumed GET would then read back the
-    // file this POST just overwrote and the field-level merge could no longer
-    // restore the originals. While this flag is false the POST therefore
-    // carries ONLY the user-dirty keys (see _pickDirtySettings). The flag
-    // flips back to true as soon as the GET chain settles, so late-settling
-    // boots resume full writes and keep converging the server.
-    let _settingsGetSettled = true;
+    // Whether server values were actually MERGED into the local settings view.
+    // Deliberately NOT "the boot GET attempt finished" (Codex P2, round 16):
+    // those are different facts, and only the merge licenses a full-snapshot
+    // write. The bound above only preserves liveness — it must never turn into
+    // authority: while no merge has happened the local snapshot still holds
+    // pre-merge boot/localStorage values for untouched keys, and a FULL write
+    // would overwrite the server-persisted preferences (independentAsrEnabled
+    // included). That is true whether the GET is still in flight OR resolved to
+    // null (HTTP error, bad JSON, success:false, empty body) — a failed read
+    // teaches this client nothing about server truth, so it must not re-enable
+    // full writes. The backend also resolves telemetry BEFORE reading the
+    // settings file (main_routers/config_router/preferences.py
+    // get_conversation_settings), so a slow GET would resume by reading back
+    // the file such a POST just overwrote and the field-level merge could no
+    // longer restore the originals.
+    // While this flag is false every POST carries ONLY the user-dirty keys
+    // (see _pickDirtySettings), which loses nothing: the backend MERGES partial
+    // payloads, so each user change is persisted per key and untouched keys
+    // simply keep server truth. It starts false (nothing merged yet; loadSettings
+    // arms the boot GET at module load, below) and flips to true only inside the
+    // merge callback, i.e. exactly when a usable server result was applied —
+    // late-settling boots therefore still resume full writes and converge the
+    // server. A permanently failing GET keeps this window dirty-only for the
+    // whole session on purpose: that mode never blocks persistence, and the
+    // alternative (re-fetching from the periodic timer) would trade a
+    // guaranteed-safe path for extra requests without persisting anything the
+    // dirty-only path does not already persist. A fresh page load re-runs the
+    // GET and restores full writes on its first successful merge.
+    let _settingsMergedFromServer = false;
     // Serialization tail for conversation-settings POSTs (Codex P2): rapid
     // successive syncSettingsToServer calls used to issue concurrent POSTs,
     // and the backend saves each one in its own asyncio.to_thread, so the
@@ -244,10 +260,11 @@
     }
 
     /**
-     * Build the POST body for a sync that runs while the boot settings GET is
-     * still unsettled: only the keys the user explicitly changed are
-     * authoritative, every other local value is a pre-merge boot value that
-     * must not overwrite the server copy. Safe because the backend MERGES
+     * Build the POST body for a sync that runs before any server merge landed
+     * (GET still in flight, or it failed and none ever will): only the keys the
+     * user explicitly changed are authoritative, every other local value is a
+     * pre-merge boot value that must not overwrite the server copy. Safe
+     * because the backend MERGES
      * partial payloads instead of replacing the entry wholesale — see
      * utils/preferences.py save_global_conversation_settings, which copies the
      * existing global entry and applies `global_pref.update(filtered_settings)`
@@ -409,8 +426,9 @@
             // settle before building the send-time snapshot: after the merge,
             // fields the user never touched carry server truth, so this POST
             // cannot overwrite persisted preferences with boot defaults. When
-            // the GET outlives the bound the POST still goes out (liveness),
-            // but restricted to the user-dirty keys — see _settingsGetSettled.
+            // the GET outlives the bound (or fails outright) the POST still
+            // goes out (liveness), but restricted to the user-dirty keys —
+            // see _settingsMergedFromServer.
             await _settingsGetGate;
             try {
                 const controller = window.NekoHomeTutorialFeatureController;
@@ -422,14 +440,15 @@
                 // keep settings sync best-effort if the tutorial controller is unavailable
             }
             const settings = getConversationSettings();
-            // Full snapshot only once the boot GET chain settled. If the gate
-            // opened on its timeout instead, a full body would clobber every
+            // Full snapshot only once server values were actually merged. If
+            // the gate opened on its timeout instead — or the GET resolved to
+            // null and merged nothing — a full body would clobber every
             // untouched server-persisted preference with this boot's values
-            // (and the still-pending GET would then read the overwritten file
+            // (and a still-pending GET would then read the overwritten file
             // back, so the merge could not restore them). Send the dirty keys
             // alone — the backend merges partial payloads — and let the merge
-            // writeback converge the rest once the GET lands.
-            const payload = _settingsGetSettled ? settings : _pickDirtySettings(settings);
+            // writeback converge the rest if/once the GET lands.
+            const payload = _settingsMergedFromServer ? settings : _pickDirtySettings(settings);
             if (Object.keys(payload).length === 0) {
                 // Nothing the user explicitly changed yet, and no server truth
                 // to echo back: writing anything here could only overwrite
@@ -908,10 +927,13 @@
         // get recorded in _dirtySettingsKeys, and are preserved by the
         // field-level merge below.
         _settingsBaseline = getConversationSettings();
-        // A boot GET is now in flight: until its chain settles, POST bodies are
-        // restricted to the user-dirty keys so they cannot overwrite the
-        // server-persisted preferences this client has not read yet.
-        _settingsGetSettled = false;
+        // No re-arming of _settingsMergedFromServer here: it already starts
+        // false, and once a merge HAS happened the local snapshot holds server
+        // truth for untouched keys — a later re-read does not make that
+        // knowledge stale enough to justify dropping back to partial writes.
+        // Until the first merge lands, POST bodies stay restricted to the
+        // user-dirty keys so they cannot overwrite the server-persisted
+        // preferences this client has not read yet.
         try {
             const mergeSettled = loadSettingsFromServer().then(serverResult => {
                 if (!serverResult) return;
@@ -920,6 +942,18 @@
                 // independent_asr_enabled。GET 永久失败时 serverResult 为 null，这里
                 // 不会执行——字段保持省略、由后端持久化值兜底，正是期望行为。
                 S.settingsHydrated = true;
+                // Distinct from the hydration mark above (which a user action
+                // also sets, because a user choice is authoritative for the
+                // handshake even before any GET): THIS flag means server values
+                // were really merged into the local view, which is the only
+                // evidence that licenses full-snapshot POSTs. Set before the
+                // merge/writeback below so the writeback saveSettings() already
+                // posts the converged full snapshot. A serverResult with a
+                // telemetry branch but no settings counts too: the server holds
+                // no persisted conversation settings at all, so there is
+                // nothing a full write could clobber (and the first-launch
+                // forced push below depends on it).
+                _settingsMergedFromServer = true;
                 const serverSettings = serverResult.settings;
                 const telemetryBranch = serverResult.telemetryBranch;
                 let hasUpdate = false;
@@ -1013,11 +1047,14 @@
                     }));
                 }
             }).finally(() => {
-                // Runs on both the merged and the failed path, and before
-                // mergeSettled resolves, so a sync woken by the gate always
-                // observes the final value: full snapshots resume here, even
-                // for a GET that outlived the bound.
-                _settingsGetSettled = true;
+                // Runs on both the merged and the failed path — which is
+                // exactly why it must NOT touch _settingsMergedFromServer: on
+                // the failure path (serverResult === null) nothing was merged,
+                // so re-enabling full snapshots here would let the next user
+                // edit POST the whole boot snapshot and overwrite every
+                // untouched persisted preference. The merged path already set
+                // the flag inside the callback above, before mergeSettled
+                // resolves, so a sync woken by the gate observes it.
                 // 必须等 GET 解析后再起 periodic sync：否则 60s 间隔的 POST 可能比 GET 先到，
                 // 把首启本地默认值写到服务器；GET 回来读到自家 echo 误判「云端已有偏好」、干扰
                 // 设置合并，marker 也可能错误留存。GET 走 finally 后周期同步才安全
@@ -1032,10 +1069,11 @@
             ]);
         } catch (error) {
             console.error('服务器设置同步启动失败:', error);
-            // The GET never got off the ground, so no in-flight read can be
-            // clobbered and none will land later to be misled: release the
-            // dirty-only restriction (the gate itself is still resolved here).
-            _settingsGetSettled = true;
+            // The GET never got off the ground, so nothing was merged either:
+            // _settingsMergedFromServer stays false and POSTs stay dirty-only.
+            // (No in-flight read can be clobbered here, but the local snapshot
+            // is still pre-merge, so a full write would overwrite server-side
+            // preferences with this boot's values just the same.)
             // GET 链路本身就挂了，至少把 periodic sync 起来兜底，
             // 避免用户的本地修改永远上不了服务器
             startPeriodicSync();

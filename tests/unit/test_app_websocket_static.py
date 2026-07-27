@@ -1027,16 +1027,52 @@ def test_rapid_asr_toggle_double_flip_persists_final_state_harness():
           await p3;
           await p4;
 
-          // Negative: a non-userInitiated (periodic-style) call serializes the
-          // same way but never marks hydration.
+          // Negative: a non-userInitiated (periodic-style) call never marks
+          // hydration — and after a FAILED boot GET, with nothing the user
+          // touched, it writes nothing at all (round 16: an attempt that
+          // merged no server value must not license a full snapshot). Its
+          // promise still resolves.
           const fresh = makeContext();
           await settleBootGet(fresh);
           const pp = fresh.mod.syncSettingsToServer();
           await tick();
+          await tick();
           assert(fresh.S.settingsHydrated === false, 'periodic-style sync must not mark hydration');
-          assert(fresh.postCalls.length === 1, 'periodic-style sync still POSTs through the chain');
-          fresh.postCalls[0].resolve(okResponse);
+          assert(
+            fresh.postCalls.length === 0,
+            'no merged server value and no dirty key means there is nothing safe to write'
+          );
           await pp;
+
+          // ... but once a real merge licensed full snapshots, the
+          // periodic-style call still POSTs and still serializes behind an
+          // in-flight sync (the chain itself is unchanged).
+          const merged = makeContext();
+          assert(merged.getCalls.length === 1, 'boot must issue the settings GET');
+          merged.getCalls[0].resolve({
+            ok: true,
+            json: async () => ({
+              success: true,
+              settings: { independentAsrEnabled: true },
+              telemetryBranch: null,
+            }),
+          });
+          await tick();
+          await tick();
+          assert(merged.postCalls.length === 1, 'the merge writeback POST goes out first');
+          const mp = merged.mod.syncSettingsToServer();
+          await tick();
+          assert(merged.postCalls.length === 1, 'the periodic-style sync queues behind it');
+          merged.postCalls[0].resolve(okResponse);
+          await tick();
+          await tick();
+          assert(merged.postCalls.length === 2, 'it goes out once the predecessor settled');
+          assert(
+            JSON.parse(merged.postCalls[1].body).independentAsrEnabled === true,
+            'and carries the merged full snapshot'
+          );
+          merged.postCalls[1].resolve(okResponse);
+          await mp;
 
           console.log('HARNESS_OK');
           // Timers in the sandbox are unref'd, so the process exits naturally
@@ -1740,29 +1776,44 @@ def test_settings_get_gate_timeout_downgrades_post_to_dirty_keys_only():
     # save_global_conversation_settings -> global_pref.update(filtered_settings)).
     settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
 
-    # The unsettled-GET flag starts released (no GET armed yet) and is cleared
-    # before the boot GET is issued.
-    assert "let _settingsGetSettled = true;" in settings_source
+    # Round 16 (Codex P2 follow-up): the gate flag must track a SUCCESSFUL
+    # merge, not merely "the GET attempt finished". It starts false (nothing
+    # merged yet) and is never re-armed in loadSettings — a merge that already
+    # happened stays valid.
+    assert "let _settingsMergedFromServer = false;" in settings_source
+    assert "_settingsGetSettled" not in settings_source
     load_fn = settings_source.split("function loadSettings()", 1)[1]
-    arm_index = load_fn.index("_settingsGetSettled = false;")
-    assert arm_index < load_fn.index("loadSettingsFromServer()")
-    # It is released again when the GET chain settles — in the finally, so both
-    # the merged and the failed path resume full writes even after the bound
-    # already elapsed (late-settling boots keep converging the server).
+    assert "_settingsMergedFromServer = false;" not in load_fn
+    # It flips to true ONLY inside the merge callback, past the
+    # `if (!serverResult) return;` guard, i.e. only when server values were
+    # really applied — and before the merge writeback so that POST is full.
+    merge_cb = load_fn.split("loadSettingsFromServer().then(serverResult => {", 1)[1].split(
+        "}).finally(() => {", 1
+    )[0]
+    assert "if (!serverResult) return;" in merge_cb
+    assert merge_cb.index("if (!serverResult) return;") < merge_cb.index(
+        "_settingsMergedFromServer = true;"
+    )
+    assert merge_cb.index("_settingsMergedFromServer = true;") < merge_cb.index(
+        "saveSettings();"
+    )
+    # Negative: the failure paths must NOT re-enable full snapshots. The
+    # finally runs for merged AND failed GETs, so it may not touch the flag;
+    # neither may the synchronous-throw catch, where nothing was ever read.
     finally_block = load_fn.split("}).finally(() => {", 1)[1].split("});", 1)[0]
-    assert "_settingsGetSettled = true;" in finally_block
-    # ... and on the synchronous-throw path, where no GET is in flight at all.
+    assert "_settingsMergedFromServer =" not in finally_block
+    assert "startPeriodicSync();" in finally_block
     startup_catch = load_fn.split("console.error('服务器设置同步启动失败:', error);", 1)[1]
-    assert "_settingsGetSettled = true;" in startup_catch
+    assert "_settingsMergedFromServer = true;" not in startup_catch
 
-    # The send-time body: full snapshot only when the GET chain settled,
+    # The send-time body: full snapshot only when server values were merged,
     # dirty-keys-only otherwise, and the fetch must post THAT body.
     sync_fn = settings_source.split(
         "async function syncSettingsToServer(options)", 1
     )[1].split("function startPeriodicSync()", 1)[0]
     run_sync_body = sync_fn.split("const runSync = async () =>", 1)[1]
     assert (
-        "const payload = _settingsGetSettled ? settings : _pickDirtySettings(settings);"
+        "const payload = _settingsMergedFromServer ? settings : _pickDirtySettings(settings);"
         in run_sync_body
     )
     assert "body: JSON.stringify(payload)" in run_sync_body
@@ -2006,6 +2057,287 @@ def test_never_settling_get_posts_only_dirty_keys_harness():
     result = _run_settings_node_harness(harness)
     assert result.returncode == 0, (
         "never-settling-GET dirty-only harness failed\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "HARNESS_OK" in result.stdout
+
+
+def test_failed_boot_get_keeps_posts_dirty_only_harness():
+    # Codex P2 (round 16): the round-15 flag was released in the merge chain's
+    # `finally`, which also runs when the GET resolved to null (HTTP error,
+    # network error, success:false, unparsable body). The settings view was
+    # then marked "settled" without a single server value having been merged,
+    # so the next user edit POSTed the FULL boot/localStorage snapshot and a
+    # POST succeeding after a transient GET failure overwrote every untouched
+    # persisted preference — independentAsrEnabled included.
+    #
+    # Pin the split: "the GET attempt finished" and "server values were merged"
+    # are different facts, and only the latter licenses full snapshots.
+    # Scenario 1: HTTP-failed GET + later unrelated user edits -> every POST
+    # (including the periodic one) carries only the dirty keys, so untouched
+    # persisted values survive. Scenario 2: application-level failure
+    # (success:false) + ASR toggle -> the toggle IS persisted. Scenario 3:
+    # network-error GET -> still dirty-only, and the periodic timer only POSTs
+    # (it never re-fetches), which is why the chosen recovery model is "stay
+    # dirty-only for this session" — safe because the backend merges partial
+    # payloads per key. Scenario 4 (recovery): a GET that fails the bound but
+    # eventually SUCCEEDS flips back to full snapshots on its merge.
+    harness = textwrap.dedent(
+        """
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+
+        const source = fs.readFileSync(__APP_SETTINGS_PATH__, 'utf8');
+
+        function assert(cond, msg) {
+          if (!cond) throw new Error('ASSERT: ' + msg);
+        }
+
+        function makeContext() {
+          const postCalls = [];
+          const getCalls = [];
+          const timers = [];
+          const intervals = [];
+          const sandbox = {
+            console: { log() {}, warn() {}, error() {} },
+            setInterval(fn, ms) { intervals.push({ fn, ms }); return 1; },
+            clearInterval() {},
+            setTimeout(fn, ms) { timers.push({ fn, ms }); return { unref() {} }; },
+            clearTimeout() {},
+            localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
+            document: { getElementById() { return null; } },
+            fetch(url, opts) {
+              return new Promise((resolve, reject) => {
+                if (opts && opts.method === 'POST') {
+                  postCalls.push({ url, body: opts.body, resolve, reject });
+                } else {
+                  getCalls.push({ url, resolve, reject });
+                }
+              });
+            },
+          };
+          sandbox.window = {
+            appState: { independentAsrEnabled: false, settingsHydrated: false },
+            appConst: {},
+            appUtils: { mapRenderQualityToFollowPerf() { return 'medium'; } },
+            addEventListener() {},
+            removeEventListener() {},
+            dispatchEvent() {},
+          };
+          vm.createContext(sandbox);
+          vm.runInContext(source, sandbox);
+          return {
+            postCalls,
+            getCalls,
+            S: sandbox.window.appState,
+            win: sandbox.window,
+            mod: sandbox.window.appSettings,
+            fireGateTimeout() {
+              assert(timers.length === 1, 'exactly one bounded gate timer must be armed');
+              assert(timers[0].ms === 3000, 'the gate bound must stay the 3s constant');
+              timers.shift().fn();
+            },
+            firePeriodicTick() {
+              assert(intervals.length === 1, 'exactly one periodic sync timer must be armed');
+              intervals[0].fn();
+            },
+          };
+        }
+
+        const okPost = { ok: true, json: async () => ({ success: true }) };
+        const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+        async function main() {
+          // ---- Scenario 1: HTTP-failed boot GET, then unrelated user edits.
+          const ctx = makeContext();
+          assert(ctx.getCalls.length === 1, 'boot must issue the settings GET');
+          ctx.getCalls[0].resolve({ ok: false, status: 500 });
+          await tick();
+          await tick();
+          assert(
+            ctx.S.settingsHydrated === false,
+            'a failed GET must not hydrate the handshake view'
+          );
+          assert(ctx.postCalls.length === 0, 'a failed GET must not POST anything by itself');
+
+          ctx.win.mergeMessagesEnabled = true;   // settings-popup mirror
+          ctx.mod.saveSettings();                // user path -> userInitiated POST
+          assert(ctx.S.settingsHydrated === true, 'the user change hydrates synchronously');
+          await tick();
+          await tick();
+          assert(ctx.postCalls.length === 1, 'the user edit must still be persisted (liveness)');
+          const body1 = JSON.parse(ctx.postCalls[0].body);
+          assert(body1.mergeMessagesEnabled === true, 'the dirty key must be persisted');
+          assert(
+            !('independentAsrEnabled' in body1),
+            'a failed GET must NOT license a full snapshot: the untouched ASR preference '
+              + 'would clobber the persisted value, got: ' + JSON.stringify(body1)
+          );
+          assert(
+            Object.keys(body1).length === 1,
+            'only the dirty key may travel, got: ' + JSON.stringify(body1)
+          );
+          ctx.postCalls[0].resolve(okPost);
+          await tick();
+
+          // The restriction does not decay: a LATER, second edit is still
+          // dirty-only (both touched keys, nothing else).
+          ctx.win.focusModeEnabled = true;
+          ctx.mod.saveSettings();
+          await tick();
+          await tick();
+          assert(ctx.postCalls.length === 2, 'the second user edit is persisted too');
+          const body2 = JSON.parse(ctx.postCalls[1].body);
+          assert(body2.focusModeEnabled === true, 'the newly dirtied key is persisted');
+          assert(body2.mergeMessagesEnabled === true, 'the earlier dirty key stays authoritative');
+          assert(
+            Object.keys(body2).length === 2,
+            'still only user-touched keys, got: ' + JSON.stringify(body2)
+          );
+          ctx.postCalls[1].resolve(okPost);
+          await tick();
+
+          // ... and the periodic sync (no userInitiated) never widens the body
+          // either, and never rejects.
+          const pp = ctx.mod.syncSettingsToServer();
+          await tick();
+          await tick();
+          assert(ctx.postCalls.length === 3, 'the periodic-style sync still writes the dirty keys');
+          const body3 = JSON.parse(ctx.postCalls[2].body);
+          assert(
+            Object.keys(body3).length === 2,
+            'the periodic sync must not widen the body, got: ' + JSON.stringify(body3)
+          );
+          ctx.postCalls[2].resolve(okPost);
+          await pp;
+
+          // ---- Scenario 2: application-level failure + the ASR toggle.
+          const ctx2 = makeContext();
+          ctx2.getCalls[0].resolve({
+            ok: true,
+            json: async () => ({ success: false, error: 'boom' }),
+          });
+          await tick();
+          await tick();
+          ctx2.S.independentAsrEnabled = true;
+          ctx2.mod.saveSettings({ skipServerSync: true });   // toggle handler persists locally
+          const p2 = ctx2.mod.syncSettingsToServer({ userInitiated: true });
+          assert(
+            ctx2.S.settingsHydrated === true,
+            'the user toggle is authoritative for the handshake even without a merge'
+          );
+          await tick();
+          await tick();
+          assert(ctx2.postCalls.length === 1, 'the ASR toggle must be persisted after a failed GET');
+          const asrBody = JSON.parse(ctx2.postCalls[0].body);
+          assert(asrBody.independentAsrEnabled === true, 'the toggle carries the user choice');
+          assert(
+            Object.keys(asrBody).length === 1,
+            'the toggle POST carries nothing else, got: ' + JSON.stringify(asrBody)
+          );
+          ctx2.postCalls[0].resolve(okPost);
+          await p2;
+
+          // ---- Scenario 3: network-error GET; the periodic timer only POSTs.
+          const ctx3 = makeContext();
+          ctx3.getCalls[0].reject(new Error('offline'));
+          await tick();
+          await tick();
+          ctx3.win.mergeMessagesEnabled = true;
+          ctx3.mod.saveSettings();
+          await tick();
+          await tick();
+          assert(ctx3.postCalls.length === 1, 'the edit is persisted after a network-error GET');
+          assert(
+            Object.keys(JSON.parse(ctx3.postCalls[0].body)).length === 1,
+            'a rejected GET keeps POSTs dirty-only'
+          );
+          ctx3.postCalls[0].resolve(okPost);
+          await tick();
+          ctx3.firePeriodicTick();
+          await tick();
+          await tick();
+          assert(
+            ctx3.getCalls.length === 1,
+            'no path re-fetches the settings GET, so dirty-only must be permanently safe '
+              + 'rather than a temporary state (recovery is a fresh page load)'
+          );
+          assert(ctx3.postCalls.length === 2, 'the periodic tick still POSTs (persistence never blocks)');
+          assert(
+            Object.keys(JSON.parse(ctx3.postCalls[1].body)).length === 1,
+            'the periodic tick stays dirty-only after a failed GET'
+          );
+          ctx3.postCalls[1].resolve(okPost);
+          await tick();
+
+          // ---- Scenario 4 (recovery): the bound elapses, the POST goes out
+          // dirty-only, and the GET LATER succeeds -> full snapshots resume.
+          const ctx4 = makeContext();
+          ctx4.win.mergeMessagesEnabled = true;
+          ctx4.mod.saveSettings();
+          await tick();
+          ctx4.fireGateTimeout();
+          await tick();
+          await tick();
+          assert(ctx4.postCalls.length === 1, 'the bound releases the POST');
+          assert(
+            Object.keys(JSON.parse(ctx4.postCalls[0].body)).length === 1,
+            'an unmerged view posts dirty keys only'
+          );
+          ctx4.postCalls[0].resolve(okPost);
+          ctx4.getCalls[0].resolve({
+            ok: true,
+            json: async () => ({
+              success: true,
+              settings: { independentAsrEnabled: true, mergeMessagesEnabled: false },
+              telemetryBranch: null,
+            }),
+          });
+          await tick();
+          await tick();
+          assert(ctx4.S.independentAsrEnabled === true, 'the untouched key hydrates from the server');
+          assert(ctx4.S.mergeMessagesEnabled === true, 'the dirty key survives the late merge');
+          assert(ctx4.postCalls.length === 2, 'the merge writeback POST follows');
+          const recovered = JSON.parse(ctx4.postCalls[1].body);
+          assert(
+            Object.keys(recovered).length > 2,
+            'a real merge restores full snapshots, got: ' + JSON.stringify(recovered)
+          );
+          assert(recovered.independentAsrEnabled === true, 'the writeback carries the server value');
+          ctx4.postCalls[1].resolve(okPost);
+          await tick();
+          ctx4.win.focusModeEnabled = true;
+          ctx4.mod.saveSettings();
+          await tick();
+          await tick();
+          assert(ctx4.postCalls.length === 3, 'the post-recovery user edit POSTs');
+          const afterRecovery = JSON.parse(ctx4.postCalls[2].body);
+          assert(
+            Object.keys(afterRecovery).length > 2,
+            'post-recovery edits keep using full snapshots, got: ' + JSON.stringify(afterRecovery)
+          );
+          assert(
+            afterRecovery.independentAsrEnabled === true,
+            'the full snapshot carries the merged server value, not the boot default'
+          );
+          ctx4.postCalls[2].resolve(okPost);
+          await tick();
+
+          console.log('HARNESS_OK');
+          process.exitCode = 0;
+        }
+
+        main().catch((err) => {
+          console.error(err && err.stack ? err.stack : String(err));
+          process.exitCode = 1;
+        });
+        """
+    ).replace("__APP_SETTINGS_PATH__", json.dumps(str(APP_SETTINGS_PATH)))
+
+    result = _run_settings_node_harness(harness)
+    assert result.returncode == 0, (
+        "failed-boot-GET dirty-only harness failed\n"
         f"stdout:\n{result.stdout}\n"
         f"stderr:\n{result.stderr}"
     )
