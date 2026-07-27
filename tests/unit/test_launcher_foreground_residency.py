@@ -546,6 +546,7 @@ def test_owner_death_cleans_up_then_exits(monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(os.name != "posix", reason="killpg/SIGKILL are POSIX-only")
 def test_owner_death_escalates_term_then_kill_across_the_group(monkeypatch):
     """Grandchildren the launcher never recorded get an ordered chance first."""
     from launcher_core import runtime as launcher
