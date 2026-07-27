@@ -781,7 +781,7 @@ async def test_recording_survives_chat_window_open_and_close(
         [_LEASE_SYNC_MESSAGE, _PCM_MESSAGE],
         [_PCM_MESSAGE],
     )
-    _install_protocol_endpoint(
+    session_ids, _route_external_calls = _install_protocol_endpoint(
         monkeypatch,
         manager=manager,
         websocket=recording_socket,
@@ -794,12 +794,19 @@ async def test_recording_survives_chat_window_open_and_close(
         lambda: "stream_data" in [name for name, _payload in manager.calls]
     )
 
-    # The chat window opens AND closes again: its disconnect pops the global
-    # session_id entirely. The still-recording voice socket must not be
-    # mistaken for a renamed/deleted character's connection.
+    # The chat window opens AND closes again: its disconnect must NOT run the
+    # manager-wide teardown (which would end the session/ASR the recording
+    # runs on). Instead the global identity is handed back to the still-open
+    # voice socket and teardown is deferred to that socket's own disconnect.
     chat_socket = _EventWebSocket([{"action": "ping"}])
     await websocket_router.websocket_endpoint(chat_socket, "Lan")
-    assert manager.cleanup_calls == 1
+    # Negative validation: no end_session/websocket-clearing cleanup ran.
+    assert manager.cleanup_calls == 0
+    # Manager websocket sanity: statuses/responses now reach the recorder.
+    assert manager.websocket is recording_socket
+    # The recorder is the current socket again, so its later disconnect
+    # performs the full teardown instead of leaking the session.
+    assert "Lan" in session_ids
 
     recording_socket.release.set()
     await recording_task
@@ -808,6 +815,105 @@ async def test_recording_survives_chat_window_open_and_close(
     assert [
         payload for name, payload in manager.calls if name == "stream_data"
     ] == [_PCM_MESSAGE, _PCM_MESSAGE]
+    # The voice-owning socket's own disconnect still tears down fully.
+    assert manager.cleanup_calls == 1
+    assert "Lan" not in session_ids
+
+
+@pytest.mark.asyncio
+async def test_chat_close_hands_identity_back_and_recording_keeps_dispatching(
+    monkeypatch,
+) -> None:
+    manager = _ProtocolManager()
+    recording_socket = _TwoPhaseWebSocket(
+        [_LEASE_SYNC_MESSAGE, _PCM_MESSAGE],
+        [_PCM_MESSAGE, _PCM_MESSAGE],
+    )
+    session_ids, _route_external_calls = _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=recording_socket,
+    )
+
+    recording_task = asyncio.create_task(
+        websocket_router.websocket_endpoint(recording_socket, "Lan")
+    )
+    await _drain_until(
+        lambda: "stream_data" in [name for name, _payload in manager.calls]
+    )
+
+    # The chat window takes over the global session_id, actually uses it for
+    # text, then disconnects while the recording is still live.
+    chat_socket = _EventWebSocket(
+        [
+            {"action": "start_session", "input_type": "text"},
+            {"action": "ping"},
+        ]
+    )
+    await websocket_router.websocket_endpoint(chat_socket, "Lan")
+
+    # Negative validation: the manager-wide teardown (end_session + websocket
+    # clearing) must NOT have run — the recorder's session/ASR survive.
+    assert manager.cleanup_calls == 0
+    assert manager.websocket is recording_socket
+    assert "Lan" in session_ids
+
+    recording_socket.release.set()
+    await recording_task
+
+    # PCM kept dispatching after the chat window closed and the recorder was
+    # never stale-closed.
+    assert recording_socket.closed is False
+    assert [
+        payload for name, payload in manager.calls if name == "stream_data"
+    ] == [_PCM_MESSAGE, _PCM_MESSAGE, _PCM_MESSAGE]
+    # The voice-owning socket's own disconnect performs the full teardown.
+    assert manager.cleanup_calls == 1
+    assert "Lan" not in session_ids
+
+
+@pytest.mark.asyncio
+async def test_chat_close_after_recorder_left_still_tears_down(
+    monkeypatch,
+) -> None:
+    manager = _ProtocolManager()
+    recording_socket = _TwoPhaseWebSocket(
+        [_LEASE_SYNC_MESSAGE, _PCM_MESSAGE],
+        [_PCM_MESSAGE],
+    )
+    session_ids, _route_external_calls = _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=recording_socket,
+    )
+
+    recording_task = asyncio.create_task(
+        websocket_router.websocket_endpoint(recording_socket, "Lan")
+    )
+    await _drain_until(
+        lambda: "stream_data" in [name for name, _payload in manager.calls]
+    )
+
+    chat_socket = _TwoPhaseWebSocket([{"action": "ping"}], [])
+    chat_task = asyncio.create_task(
+        websocket_router.websocket_endpoint(chat_socket, "Lan")
+    )
+    await _drain_until(lambda: bool(chat_socket.sent_text))
+
+    # The recorder leaves FIRST (while superseded): no teardown yet — the
+    # chat window still owns the manager going forward.
+    recording_socket.release.set()
+    await recording_task
+    assert manager.cleanup_calls == 0
+
+    # The chat window's later disconnect must not defer to the departed
+    # recorder: the stale voice registration is gone, so the full manager
+    # teardown runs and the session cannot leak.
+    chat_socket.release.set()
+    await chat_task
+    assert manager.cleanup_calls == 1
+    assert "Lan" not in session_ids
+    assert manager.websocket is chat_socket
 
 
 @pytest.mark.asyncio

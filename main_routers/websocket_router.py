@@ -299,6 +299,15 @@ _ws_disconnect_time: dict[str, float] = {}
 # greeting_check 是不是"真·新会话"：并发开第二个窗口时不能算新会话（否则会重置
 # 主动搭话预算被刷新/多窗口 farm）。单事件循环内 inc/dec 无 await 间隙，天然原子。
 _ws_active_count: dict[str, int] = {}
+# Per-character registry of the socket that last claimed the manager-wide
+# voice connection identity: lanlan_name -> (session uuid, websocket). Used
+# at disconnect time so a departing current socket can hand the global
+# identity (and the manager websocket) back to a still-open recording socket
+# instead of tearing the shared session down under it. The owning socket
+# removes its own entry in its finally block, so an entry can never outlive
+# its socket; entries are additionally validated against the manager's
+# _voice_lease_connection_id before any handover.
+_voice_connection_sockets: dict[str, tuple[uuid.UUID, WebSocket]] = {}
 
 # ---- Telemetry helpers ----
 
@@ -483,6 +492,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         )
         if callable(begin_voice_input):
             begin_voice_input(str(this_session_id))
+            _voice_connection_sockets[lanlan_name] = (this_session_id, websocket)
 
     def _owns_voice_connection() -> bool:
         """True while this socket still holds the manager voice identity.
@@ -1015,11 +1025,41 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         async with _lock:
             session_id = get_session_id()
             is_current = session_id.get(lanlan_name) == this_session_id
+            # Drop this socket's own voice registration first: teardown must
+            # never be deferred to the very socket that is disconnecting.
+            registered_voice = _voice_connection_sockets.get(lanlan_name)
+            if registered_voice is not None and registered_voice[0] == this_session_id:
+                _voice_connection_sockets.pop(lanlan_name, None)
+                registered_voice = None
+            # Current-socket disconnect while a DIFFERENT still-open socket
+            # owns the manager voice connection (closing the chat window while
+            # the pet window records): the manager-wide cleanup below would
+            # end the very session the recording runs on. Hand the global
+            # identity back to the voice-owning socket and defer teardown to
+            # that socket's own disconnect. Validated against the manager
+            # lease so a socket that already lost the voice identity (or a
+            # manager without the MicLease mixin) never receives the handover.
+            voice_handover = None
+            if is_current and registered_voice is not None and lanlan_name in session_manager:
+                manager_lease_id = getattr(
+                    session_manager[lanlan_name],
+                    "_voice_lease_connection_id",
+                    None,
+                )
+                if manager_lease_id == str(registered_voice[0]):
+                    voice_handover = registered_voice
             icebreaker_session_id = ""
-            if is_current:
+            if is_current and voice_handover is None:
                 icebreaker_session_id = get_active_icebreaker_route_session_id(lanlan_name)
             if is_current:
-                session_id.pop(lanlan_name, None)
+                if voice_handover is not None:
+                    # The voice-owning socket becomes the current socket: its
+                    # later disconnect then performs the full teardown, and
+                    # its non-voice messages work again (it is the only
+                    # remaining window for this character).
+                    session_id[lanlan_name] = voice_handover[0]
+                else:
+                    session_id.pop(lanlan_name, None)
 
         if is_current and icebreaker_session_id:
             try:
@@ -1032,4 +1072,27 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 logger.debug("[icebreaker] finalize on ws disconnect failed: %s", exc)
 
         if is_current and lanlan_name in session_manager:
-            await session_manager[lanlan_name].cleanup(expected_websocket=websocket)
+            if voice_handover is not None:
+                # Deferred teardown: keep the session/ASR alive for the
+                # recorder and repoint the manager websocket at it so
+                # statuses and responses reach the only remaining window.
+                # Guarded so a newer socket that already re-claimed the
+                # manager reference is never clobbered (mirrors cleanup's
+                # expected_websocket race protection).
+                voice_mgr = session_manager[lanlan_name]
+                owner_websocket = voice_handover[1]
+                websocket_lock = getattr(voice_mgr, "websocket_lock", None)
+                if websocket_lock:
+                    async with websocket_lock:
+                        if voice_mgr.websocket is websocket or voice_mgr.websocket is None:
+                            voice_mgr.websocket = owner_websocket
+                elif voice_mgr.websocket is websocket or voice_mgr.websocket is None:
+                    voice_mgr.websocket = owner_websocket
+                logger.info(
+                    "[%s] current socket closed while another socket owns the "
+                    "voice connection: deferring session teardown to the "
+                    "voice-owning socket",
+                    lanlan_name,
+                )
+            else:
+                await session_manager[lanlan_name].cleanup(expected_websocket=websocket)
