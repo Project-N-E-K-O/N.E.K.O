@@ -1329,7 +1329,7 @@ Live2DManager.prototype._checkAndPerformSnap = async function (model, options = 
 
 // 设置拖拽功能
 Live2DManager.prototype.setupDragAndDrop = function (model) {
-    this.clearLive2DPeek('model-reload');
+    clearLive2DPeek('model-reload');
     model.interactive = true;
     // 移除 stage.hitArea = screen，避免阻挡背景点击
     // this.pixi_app.stage.interactive = true;

@@ -236,7 +236,8 @@ def test_live2d_widget_mode_edge_peek_clears_on_disable_goodbye_reset_and_auto_c
     assert "window.addEventListener('live2d-goodbye-click', clearLive2DPeekOnGoodbye)" in interaction_source
     assert "clearLive2DPeek('widget-mode-disabled')" in interaction_source
     assert "clearLive2DPeek('live2d-goodbye')" in interaction_source
-    assert "this.clearLive2DPeek('model-reload')" in interaction_source
+    assert "clearLive2DPeek('model-reload')" in interaction_source
+    assert "this.clearLive2DPeek('model-reload')" not in interaction_source
     assert "this.clearLive2DPeek('reset-model-position')" in core_source
     assert "let lastViewportW = window.innerWidth;" in core_source
     assert "let lastViewportH = window.innerHeight;" in core_source

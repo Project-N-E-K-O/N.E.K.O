@@ -881,6 +881,7 @@ async def test_stale_truncated_recovery_does_not_mutate_newer_request_state():
         request_id="req-A",
     )
 
+    assert mgr._active_text_request_id == "req-B"
     assert mgr.current_speech_id == "speech-B"
     assert mgr._pending_turn_meta == {"kind": "text", "request_id": "req-B"}
     assert mgr.session._conversation_history == ["request-B-history"]
