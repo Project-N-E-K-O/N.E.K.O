@@ -313,6 +313,8 @@ class IndependentAsrRuntime:
         self._asr_pending_speech_confirmed = False
         self._asr_pending_detector_candidate = None
         self._asr_overlap_onset_token: VoiceIngressToken | None = None
+        self._asr_overlap_completed_token: VoiceIngressToken | None = None
+        self._asr_overlap_completed_turns = 0
         self._asr_sealed_turn_token: VoiceTransportToken | None = None
         self._asr_audio_sequence = 0
         self._asr_audio_generation = 0
@@ -361,6 +363,9 @@ class IndependentAsrRuntime:
             self._asr_pending_detector_candidate = None
         if not hasattr(self, "_asr_overlap_onset_token"):
             self._asr_overlap_onset_token = None
+        if not hasattr(self, "_asr_overlap_completed_token"):
+            self._asr_overlap_completed_token = None
+            self._asr_overlap_completed_turns = 0
         if not hasattr(self, "_asr_start_generation"):
             self._asr_start_generation = 0
 
@@ -1224,6 +1229,8 @@ class IndependentAsrRuntime:
         self._asr_pending_speech_confirmed = False
         self._asr_pending_detector_candidate = None
         self._asr_overlap_onset_token = None
+        self._asr_overlap_completed_token = None
+        self._asr_overlap_completed_turns = 0
         self._asr_audio_sequence = 0
         self._asr_current_ingress_token = None
         self._asr_accepted_final_keys.clear()
@@ -2054,8 +2061,24 @@ class IndependentAsrRuntime:
             if event is SpeechActivityEvent.CANDIDATE_PAUSE:
                 # Once local VAD observes a pause, a later provider final may
                 # simply be the current utterance ending, so replaying the
-                # remembered onset would wake a ghost turn.
+                # remembered onset at that final would wake a ghost turn. The
+                # onset must not be dropped outright either: when the pause
+                # closes a genuine overlapping utterance, its provider endpoint
+                # and final are still queued in the ordered FIFO behind the
+                # previous turn's final. Convert the onset into a
+                # completed-overlap credit; only a provider endpoint arriving
+                # in WARM_IDLE proves a queued turn exists and redeems it.
+                onset_token = self._asr_overlap_onset_token
                 self._asr_overlap_onset_token = None
+                if onset_token is not None:
+                    if onset_token == self._asr_overlap_completed_token:
+                        # Each additional onset+pause cycle observed while the
+                        # first turn stays ACTIVE queues one more provider
+                        # endpoint/final pair, so count credits per cycle.
+                        self._asr_overlap_completed_turns += 1
+                    else:
+                        self._asr_overlap_completed_token = onset_token
+                        self._asr_overlap_completed_turns = 1
             return
         if self._asr_turn_prepared:
             if (
@@ -2136,6 +2159,42 @@ class IndependentAsrRuntime:
         lifecycle = self._asr_lifecycle
         if lifecycle is None:
             return
+        if (
+            lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+            and self._asr_overlap_completed_turns > 0
+        ):
+            completed_token = self._asr_overlap_completed_token
+            if (
+                completed_token is None
+                or lifecycle.provider_policy.endpoint_authority != "provider"
+                or completed_token != self._asr_current_ingress_token
+                or not self._ingress_token_matches(completed_token)
+            ):
+                # The credit belongs to a superseded ingress generation (hard
+                # mute, abort, or route swap rotated the token), so drop it
+                # instead of waking a stale replacement turn.
+                self._asr_overlap_completed_token = None
+                self._asr_overlap_completed_turns = 0
+                return
+            # A provider endpoint reaching Core in WARM_IDLE means the ordered
+            # FIFO holds a turn whose local onset and pause both happened while
+            # the previous turn was still ACTIVE (its endpoint was queued
+            # behind that turn's delayed final). Redeem one completed-overlap
+            # credit: replay the onset so the lifecycle is ACTIVE and prepared,
+            # then fall through to seal immediately, letting the queued final
+            # right behind this endpoint find a DRAINING turn.
+            self._asr_overlap_completed_turns -= 1
+            if self._asr_overlap_completed_turns == 0:
+                self._asr_overlap_completed_token = None
+            await self._handle_independent_asr_activity(
+                SpeechActivityEvent.SPEECH_RESUMED,
+                epoch,
+            )
+            if (
+                epoch != self._asr_session_epoch
+                or self._asr_lifecycle is not lifecycle
+            ):
+                return
         if lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE:
             if not self._asr_turn_prepared:
                 # A rejected preparation keeps the lifecycle ACTIVE so the

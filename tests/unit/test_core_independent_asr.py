@@ -1665,7 +1665,7 @@ async def test_stale_overlap_onset_is_not_replayed_after_final() -> None:
     assert runtime.handle_new_message.await_count == 1
 
 
-async def test_candidate_pause_clears_overlap_onset_before_final() -> None:
+async def test_candidate_pause_defers_overlap_onset_without_ghost_wake() -> None:
     runtime = _Runtime()
     _install_ready_lifecycle(runtime, "openai")
     epoch = runtime._asr_session_epoch
@@ -1679,21 +1679,210 @@ async def test_candidate_pause_clears_overlap_onset_before_final() -> None:
         epoch,
     )
     # Local VAD then observes a pause: the provider final that follows may be
-    # the current utterance ending, so the onset must not wake a ghost turn.
+    # the current utterance ending, so replaying the onset at that final would
+    # wake a ghost turn. The onset converts into a completed-overlap credit
+    # that only a later provider endpoint in WARM_IDLE can redeem.
     await runtime._handle_independent_asr_activity(
         SpeechActivityEvent.CANDIDATE_PAUSE,
         epoch,
     )
+    assert runtime._asr_overlap_onset_token is None
+    assert runtime._asr_overlap_completed_turns == 1
 
     await runtime._handle_independent_asr_endpoint(epoch)
     await runtime._handle_independent_asr_final("hello", epoch, "openai")
     await runtime._wait_asr_transcript_dispatch_idle()
 
+    # No second endpoint arrived, so the credit must not wake anything.
     assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
     assert runtime._asr_turn_prepared is False
     assert [
         call.args[0] for call in runtime.handle_input_transcript.await_args_list
     ] == ["hello"]
+    assert runtime.handle_new_message.await_count == 1
+
+
+async def test_completed_overlap_before_delayed_final_delivers_both_finals() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    epoch = runtime._asr_session_epoch
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    assert runtime._asr_turn_prepared is True
+
+    # Turn 2 both starts and reaches local silence while turn 1 is still
+    # ACTIVE and prepared: its provider endpoint and final are queued in the
+    # ordered FIFO behind turn 1's delayed final.
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.CANDIDATE_PAUSE,
+        epoch,
+    )
+
+    # Turn 1's ordered callbacks arrive: endpoint immediately before final.
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("first", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    # The completed overlap is not replayed yet: only turn 2's own provider
+    # endpoint proves a queued turn exists.
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+    assert runtime._asr_turn_prepared is False
+
+    # Turn 2's queued endpoint redeems the credit: the turn activates,
+    # prepares, and seals so the final right behind it can deliver.
+    await runtime._handle_independent_asr_endpoint(epoch)
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.DRAINING
+    await runtime._handle_independent_asr_final("second", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    assert [
+        call.args[0] for call in runtime.handle_input_transcript.await_args_list
+    ] == ["first", "second"]
+    assert runtime.handle_new_message.await_count == 2
+    assert runtime._asr_overlap_completed_turns == 0
+
+
+async def test_two_completed_overlaps_replay_in_order_after_delayed_final() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    epoch = runtime._asr_session_epoch
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    # Turns 2 and 3 each start and reach local silence while turn 1 is still
+    # ACTIVE: one completed-overlap credit accumulates per onset+pause cycle.
+    for _ in range(2):
+        await runtime._handle_independent_asr_activity(
+            SpeechActivityEvent.SPEECH_RESUMED,
+            epoch,
+        )
+        await runtime._handle_independent_asr_activity(
+            SpeechActivityEvent.CANDIDATE_PAUSE,
+            epoch,
+        )
+    assert runtime._asr_overlap_completed_turns == 2
+
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("first", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    for text in ("second", "third"):
+        await runtime._handle_independent_asr_endpoint(epoch)
+        await runtime._handle_independent_asr_final(text, epoch, "openai")
+        await runtime._wait_asr_transcript_dispatch_idle()
+
+    assert [
+        call.args[0] for call in runtime.handle_input_transcript.await_args_list
+    ] == ["first", "second", "third"]
+    assert runtime.handle_new_message.await_count == 3
+    assert runtime._asr_overlap_completed_turns == 0
+
+
+async def test_hard_mute_clears_completed_overlap_credit() -> None:
+    runtime = _Runtime()
+    asr = type("Asr", (), {})()
+    asr.is_ready = True
+    asr.close = AsyncMock()
+    asr.stream_audio = AsyncMock()
+    runtime._asr_session = asr
+    _install_ready_lifecycle(runtime, "openai")
+    runtime._clear_audio_stream_queue = MagicMock()
+    runtime.hot_swap_audio_cache = []
+    epoch = runtime._asr_session_epoch
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.CANDIDATE_PAUSE,
+        epoch,
+    )
+    assert runtime._asr_overlap_completed_turns == 1
+
+    assert (
+        await runtime._handle_voice_input_control(
+            "lease_sync",
+            12,
+            owner="core",
+            hard_muted=True,
+            focus_suppressed=False,
+        )
+        is True
+    )
+    await runtime._route_microphone_audio(
+        b"\x01\x00" * 160,
+        sample_rate_hz=16_000,
+    )
+
+    # Hard mute tears the turn state down: neither the onset nor the credit
+    # may survive to wake a replacement turn.
+    assert runtime._asr_overlap_onset_token is None
+    assert runtime._asr_overlap_completed_token is None
+    assert runtime._asr_overlap_completed_turns == 0
+
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("ghost", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    # Turn 1's preparation before the mute awaited handle_new_message once;
+    # the muted ghost final must not deliver a transcript or a second turn.
+    assert runtime.handle_input_transcript.await_count == 0
+    assert runtime.handle_new_message.await_count == 1
+
+
+async def test_stale_completed_overlap_is_dropped_at_next_endpoint() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    epoch = runtime._asr_session_epoch
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.CANDIDATE_PAUSE,
+        epoch,
+    )
+    assert runtime._asr_overlap_completed_turns == 1
+
+    # The audio generation moves on before the delayed final, so the credit
+    # belongs to a stale ingress and must not wake a replacement turn.
+    component = runtime._asr_runtime
+    component._asr_audio_generation += 1
+    component._asr_current_ingress_token = runtime._capture_ingress_token()
+
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("first", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    await runtime._handle_independent_asr_endpoint(epoch)
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+    assert runtime._asr_turn_prepared is False
+    assert runtime._asr_overlap_completed_turns == 0
+    await runtime._handle_independent_asr_final("ghost", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    assert [
+        call.args[0] for call in runtime.handle_input_transcript.await_args_list
+    ] == ["first"]
     assert runtime.handle_new_message.await_count == 1
 
 
