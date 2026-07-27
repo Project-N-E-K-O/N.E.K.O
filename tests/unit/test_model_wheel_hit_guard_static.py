@@ -6,48 +6,72 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LIVE2D_INTERACTION = PROJECT_ROOT / "static" / "live2d" / "live2d-interaction.js"
 VRM_INTERACTION = PROJECT_ROOT / "static" / "vrm" / "vrm-interaction.js"
 
-_POSITIVE_GUARD_OPEN = re.compile(r"if\s*\(\s*isWheelPointOnCurrentModel\(event\)\s*\)\s*\{")
-_EARLY_RETURN_GUARD = re.compile(r"if\s*\(\s*!\s*isWheelPointOnCurrentModel\(event\)\s*\)\s*return;")
+_TOKENS = re.compile(
+    r"(?P<positive_guard>if\s*\(\s*isWheelPointOnCurrentModel\(event\)\s*\)\s*(?=\{))"
+    r"|(?P<early_return>if\s*\(\s*!\s*isWheelPointOnCurrentModel\(event\)\s*\)\s*return;)"
+    r"|(?P<consume>event\.preventDefault\(\);)"
+    r"|(?P<open>\{)"
+    r"|(?P<close>\})"
+)
+_COMMENTS_AND_STRINGS = re.compile(
+    r"//[^\n]*|/\*.*?\*/|'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|`(?:\\.|[^`\\])*`",
+    re.S,
+)
+
+
+def _blank_out_noise(block: str) -> str:
+    """Blank comments and string literals, preserving offsets.
+
+    Braces inside them are not block structure; counting them would desync the
+    scope stack below.
+    """
+    return _COMMENTS_AND_STRINGS.sub(lambda m: " " * len(m.group(0)), block)
 
 
 def _unguarded_prevent_defaults(block: str) -> tuple[int, list[str]]:
     """Find preventDefault calls that no hit check actually controls.
 
-    Comparing raw offsets ("some hit check appears earlier in the text") is
-    weaker than the invariant this file claims: the peek branch's own check
-    sits inside a nested block and governs nothing after that block closes, so
-    a new unguarded consume placed after it would still read as guarded.  Track
-    brace depth instead and only count a call as guarded when it sits inside a
-    block opened by a positive check, or after an early-return guard in an
-    enclosing scope.
+    Three weaker shapes were tried and each admitted a real regression:
+
+    * "some hit check appears earlier in the text" — the peek branch's own
+      check sits in a nested block and governs nothing once that block closes,
+      so a consume added after it still read as guarded.
+    * per-line brace depth — ``} else {`` nets to zero, leaving the positive
+      guard's depth in scope, so ``if (hit) {...} else { consume }`` read as
+      guarded even though the else branch runs exactly when the hit test fails.
+    * registering a line's guards before scanning it for consumes — the order
+      within a line was lost, so ``consume; if (!hit) return;`` read as guarded
+      despite consuming before testing.
+
+    So walk the tokens in source order over a real scope stack: a consume is
+    guarded only if some enclosing scope was opened by a positive hit check, or
+    an early-return guard has already fired in a scope still on the stack.
     """
-    depth = 0
-    guarded_depths: set[int] = set()
-    early_return_depths: set[int] = set()
+    scrubbed = _blank_out_noise(block)
+    # 栈里每层记 (是否由正向命中检查开出, 该层是否已经过早退守卫)
+    scopes: list[dict[str, bool]] = [{"guarded": False, "early_returned": False}]
+    pending_guarded_open = False
     total = 0
     unguarded: list[str] = []
 
-    for lineno, raw in enumerate(block.split("\n"), start=1):
-        line = raw.strip()
-        opens_guard = bool(_POSITIVE_GUARD_OPEN.search(line))
-        if opens_guard:
-            guarded_depths.add(depth + 1)
-        if _EARLY_RETURN_GUARD.search(line):
-            early_return_depths.add(depth)
-
-        if "event.preventDefault();" in line:
+    for match in _TOKENS.finditer(scrubbed):
+        kind = match.lastgroup
+        if kind == "positive_guard":
+            pending_guarded_open = True
+        elif kind == "early_return":
+            scopes[-1]["early_returned"] = True
+        elif kind == "open":
+            scopes.append({"guarded": pending_guarded_open, "early_returned": False})
+            pending_guarded_open = False
+        elif kind == "close":
+            if len(scopes) > 1:
+                scopes.pop()
+        elif kind == "consume":
             total += 1
-            effective_depth = depth + 1 if opens_guard else depth
-            covered = any(d <= effective_depth for d in early_return_depths) or any(
-                d <= effective_depth for d in guarded_depths
-            )
+            covered = any(s["guarded"] or s["early_returned"] for s in scopes)
             if not covered:
-                unguarded.append(f"line {lineno}: {line}")
-
-        depth += line.count("{") - line.count("}")
-        # 退出某层后，该层及更深处立下的守卫不再覆盖后续代码。
-        guarded_depths = {d for d in guarded_depths if d <= depth}
-        early_return_depths = {d for d in early_return_depths if d <= depth}
+                lineno = scrubbed.count("\n", 0, match.start()) + 1
+                unguarded.append(f"line {lineno}: {block.splitlines()[lineno - 1].strip()}")
 
     return total, unguarded
 
