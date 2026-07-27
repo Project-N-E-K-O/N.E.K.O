@@ -529,7 +529,11 @@ class TurnMixin:
         if may_clear_shared_output():
             await self._clear_tts_pipeline()
 
-        if self.websocket and hasattr(self.websocket, 'client_state') and \
+        # A request-bound discard is only relevant while that request still owns
+        # the shared response. Emitting a stale A notification after B becomes
+        # active would make the frontend clear B's bubble, buffers, and audio.
+        if may_clear_shared_output() and \
+                self.websocket and hasattr(self.websocket, 'client_state') and \
                 self.websocket.client_state == self.websocket.client_state.CONNECTED:
             try:
                 await self.websocket.send_json({

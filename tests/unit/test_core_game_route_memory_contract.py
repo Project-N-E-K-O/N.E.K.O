@@ -819,7 +819,7 @@ async def test_openclaw_magic_command_falls_back_when_openclaw_not_ready(monkeyp
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_text_stream_discard_callback_keeps_original_request_owner(monkeypatch):
-    """A late discard from request A must not inherit request B's shared owner."""
+    """A late discard from request A must not clear request B's frontend output."""
     mgr = _make_transcript_manager()
     mgr.session = object.__new__(core_module.OmniOfflineClient)
     mgr.session._pending_images = []
@@ -847,7 +847,7 @@ async def test_text_stream_discard_callback_keeps_original_request_owner(monkeyp
 
     await discard_callback("guard", 1, 3, False, None)
 
-    assert mgr.websocket.sent[-1]["request_id"] == "req-A"
+    assert mgr.websocket.sent == []
     assert mgr._active_text_request_id == "req-B"
     mgr._clear_tts_pipeline.assert_not_awaited()
     assert {
@@ -888,17 +888,7 @@ async def test_stale_truncated_recovery_does_not_mutate_newer_request_state():
     mgr._clear_tts_pipeline.assert_not_awaited()
     mgr._emit_turn_end.assert_not_awaited()
     mgr._finalize_turn_after_emit.assert_not_awaited()
-    assert mgr.websocket.sent == [
-        {
-            "type": "response_discarded",
-            "reason": "guard",
-            "attempt": 3,
-            "max_attempts": 3,
-            "will_retry": False,
-            "message": '{"code":"RESPONSE_LENGTH_TRUNCATED","text":"stale response A"}',
-            "request_id": "req-A",
-        }
-    ]
+    assert mgr.websocket.sent == []
 
 
 @pytest.mark.unit
