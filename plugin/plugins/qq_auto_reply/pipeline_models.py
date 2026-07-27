@@ -36,6 +36,10 @@ class QQReplyRequest:
     reply_message_id: str = ""
     at_user_id: str = ""
     fallback_to_text_on_voice_failure: bool = True
+    # 内嵌合成轮（ack / 强制总结 / 缓冲汇总）继承缓冲里那些草稿的授权
+    # 依赖：合成轮自己的 prompt 是干净的（快照为空），但它原样引用了
+    # 记忆派生的旧草稿，撤销必须能作用到它。
+    inherited_consent_snapshot: dict[str, bool] = field(default_factory=dict)
     permission_level_override: str | None = None
     force_reply: bool = False
     suppression_reason: str = ""
@@ -119,8 +123,10 @@ class QQReplyContext:
     turn_uid: str = field(default_factory=lambda: uuid.uuid4().hex)
     # 生成时刻的授权依赖快照：直投路径在真正发出去之前再比一次（buffer
     # 路径由 PendingReply.consent_snapshot 负责），"生成完成→发送"之间
-    # 的窗口也不得漏掉撤销。
-    consent_snapshot: dict[str, bool] = field(default_factory=dict)
+    # 的窗口也不得漏掉撤销。None=还没生成过（读当前设置兜底）；空 dict
+    # 是有意义的值——本轮没用任何记忆，撤销与它无关，不能当成"没快照"
+    # 而去采样当前开关，否则一条与记忆无关的草稿会被无谓丢弃。
+    consent_snapshot: dict[str, bool] | None = None
     traces: list[QQPipelineStageTrace] = field(default_factory=list)
 
 

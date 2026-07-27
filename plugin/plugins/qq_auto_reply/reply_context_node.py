@@ -405,6 +405,9 @@ class QQReplyContextNode:
         self.plugin._emit_log("INFO", f"[UserMsg] (system {len(system_prompt)}字) {prompt_message[:200]}")
 
         return QQReplyContext(
+            consent_snapshot=dict(
+                getattr(request, "inherited_consent_snapshot", None) or {}
+            ) or None,
             message=message,
             attachments=attachments,
             permission_level=permission_level,

@@ -301,9 +301,16 @@ class QQReplyGenerationService:
         return snapshot
 
     def _store_consent_snapshot(self, context: Any, snapshot: dict) -> None:
-        """Carry the generation-time snapshot to the pre-send gate."""
+        """Carry the generation-time snapshot to the pre-send gate.
+
+        Unions with whatever the context already carries: a nested
+        synthetic turn inherits the buffered drafts' dependencies, and its
+        own (clean) prompt must not erase them."""
         try:
-            context.consent_snapshot = dict(snapshot)
+            merged = dict(getattr(context, "consent_snapshot", None) or {})
+            for key, was_enabled in (snapshot or {}).items():
+                merged[key] = bool(merged.get(key)) or bool(was_enabled)
+            context.consent_snapshot = merged
         except Exception:
             # 合成调用方可能传的是轻量对象：拿不到就退回"发送前不复检"，
             # 生成后的复检仍在。

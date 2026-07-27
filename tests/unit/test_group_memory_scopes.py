@@ -7360,6 +7360,9 @@ async def test_concurrent_settings_saves_serialize_the_consent_transaction():
     async def _slow_failing_write():
         order.append("A:write-start")
         await asyncio.sleep(0.05)
+        # Persisting swaps in a freshly normalized settings dict, exactly
+        # like config_store.save + apply_runtime_settings do.
+        plugin._qq_settings = dict(plugin._qq_settings)
         order.append("A:write-fail")
         return False
 
@@ -7385,14 +7388,20 @@ async def test_concurrent_settings_saves_serialize_the_consent_transaction():
 
     task_a = asyncio.create_task(service.save_settings(group_memory_enabled=True))
     await asyncio.sleep(0)  # let A reach its write
-    task_b = asyncio.create_task(service.save_settings(group_memory_enabled=True))
+    task_b = asyncio.create_task(service.save_settings(
+        group_memory_enabled=True, onebot_url="ws://b",
+    ))
     await asyncio.gather(task_a, task_b)
 
     # A: before=False, after=True, write failed -> rolled back to False.
     # B then reads that rolled-back False as ITS before and persists True.
     assert observed_before == [(False, True, False), (False, True, True)]
-    assert settings["group_memory_enabled"] is True
+    assert plugin._qq_settings["group_memory_enabled"] is True
     assert order == ["A:write-start", "A:write-fail", "B:write-ok"]
+    # B applied its own fields only after taking the lock, so they landed
+    # in the dict A swapped in — mutating before the wait silently drops
+    # them.
+    assert plugin._qq_settings["onebot_url"] == "ws://b"
 
 
 @pytest.mark.asyncio
@@ -7527,3 +7536,208 @@ async def test_open_platform_keyboard_message_carries_a_markdown_body():
     body = sent[-1]
     assert body.get("content") == "普通回复"
     assert "msg_type" not in body and "markdown" not in body
+
+
+@pytest.mark.asyncio
+async def test_memory_free_turn_keeps_its_empty_consent_snapshot():
+    """A turn that used no memory stores an EMPTY snapshot, which means
+    "no dependencies" — not "no snapshot". Falling back to sampling the
+    live switches would make a later opt-out discard a draft that never
+    touched memory."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        QQDeliveryPlan,
+        QQMessageBlock,
+        QQReplyOutcome,
+        QQReplyRequest,
+    )
+    from plugin.plugins.qq_auto_reply.reply_pipeline import (
+        QQReplyPipelineRunner,
+    )
+
+    schedule = AsyncMock()
+    plugin = SimpleNamespace(
+        reply_buffer_service=SimpleNamespace(schedule_reply=schedule),
+        _build_session_key=(
+            lambda *, sender_id, is_group, group_id: f"group:{group_id}"
+        ),
+        _emit_log=lambda *a, **k: None,
+        _qq_settings={
+            "group_memory_enabled": True,
+            "group_member_memory_enabled": True,
+            "allow_cross_group_context": True,
+        },
+        logger=MagicMock(),
+    )
+    runner = QQReplyPipelineRunner(plugin)
+    request = QQReplyRequest(
+        message_text="hi", sender_id="2046", is_group=True, group_id="7788",
+    )
+    plan = QQDeliveryPlan(
+        target_type="group", target_id="7788",
+        blocks=[QQMessageBlock(text="没用到记忆的回复")],
+    )
+    await runner._run_delivery(
+        plan, request,
+        QQReplyOutcome(action="reply", reply_text="回复", raw_reply_text="回复"),
+        context=SimpleNamespace(
+            is_group=True, group_id="7788", consent_snapshot={},
+        ),
+    )
+    assert schedule.await_args.kwargs["consent_snapshot"] == {}
+
+    # A context that never reached generation (no snapshot at all) still
+    # falls back to the live switches.
+    schedule.reset_mock()
+    await runner._run_delivery(
+        plan, request,
+        QQReplyOutcome(action="reply", reply_text="回复", raw_reply_text="回复"),
+        context=SimpleNamespace(
+            is_group=True, group_id="7788", consent_snapshot=None,
+        ),
+    )
+    assert schedule.await_args.kwargs["consent_snapshot"] == {
+        "group_memory_enabled": True,
+        "group_member_memory_enabled": True,
+        "allow_cross_group_context": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_nested_synthetic_turn_inherits_buffered_consent_dependencies():
+    """The summary/ack prompts quote the buffered drafts, but their own
+    prompt is clean — so their own snapshot is empty and their gates can
+    never fire. They must inherit the pending's dependencies."""
+    from plugin.plugins.qq_auto_reply.reply_buffer_service import (
+        PendingReply,
+        QQReplyBufferService,
+    )
+
+    seen: list = []
+
+    async def _nested_run(request):
+        seen.append(dict(request.inherited_consent_snapshot or {}))
+
+    service = QQReplyBufferService.__new__(QQReplyBufferService)
+    service.plugin = SimpleNamespace(
+        _emit_log=lambda *a, **k: None,
+        _user_sessions={},
+        _qq_settings={
+            "group_memory_enabled": True, "group_member_memory_enabled": True,
+        },
+        reply_pipeline=SimpleNamespace(run=_nested_run),
+        session_memory_service=SimpleNamespace(
+            record_synthetic_prompt_rows=MagicMock(),
+        ),
+    )
+    service._pending = {}
+    service._session_history_len = lambda key: 0
+    service._record_synthetic_prompt_rows = lambda key, before: None
+    service._mark_latest_draft_undelivered = lambda key: None
+    service._bind_draft_to_pending = lambda row, pending: None
+    service._topic_hint = lambda text: ""
+
+    pending = PendingReply(
+        first_text="成员记忆派生的草稿", wait_seconds=1.0, sender_id="2046",
+        is_group=True, group_id="7788",
+    )
+    pending.task = asyncio.create_task(asyncio.sleep(999))
+    pending.buffered_texts = ["成员记忆派生的草稿"]
+    pending.message_count = 9
+    pending.consent_snapshot = {"group_member_memory_enabled": True}
+    service._pending["group:7788"] = pending
+
+    await service.schedule_reply(
+        session_key="group:7788", reply_text="新草稿", raw_text="新草稿",
+        blocks=[], wait_seconds=1.0, sender_id="2046", is_group=True,
+        group_id="7788", consent_snapshot={},
+    )
+    pending.task.cancel()
+    # rapid_fire_flush deliberately drops the nominal sender's member
+    # subject, so without this the member permission is untracked for the
+    # whole nested run.
+    assert seen == [{"group_member_memory_enabled": True}]
+
+
+@pytest.mark.asyncio
+async def test_inherited_consent_reaches_the_generated_context():
+    """The inherited snapshot only helps if the context carries it into
+    the gates, and the turn's own dependencies must be unioned on top."""
+    from plugin.plugins.qq_auto_reply.reply_generation_service import (
+        QQReplyGenerationService,
+    )
+
+    service = QQReplyGenerationService.__new__(QQReplyGenerationService)
+    service.plugin = SimpleNamespace(
+        _qq_settings={"group_memory_enabled": True}, logger=MagicMock(),
+    )
+    context = SimpleNamespace(
+        is_group=True,
+        consent_snapshot={"group_member_memory_enabled": True},
+    )
+    service._store_consent_snapshot(context, {"group_memory_enabled": True})
+    assert context.consent_snapshot == {
+        "group_member_memory_enabled": True, "group_memory_enabled": True,
+    }
+    # A later store with a now-false value must not erase the true one.
+    service._store_consent_snapshot(context, {"group_memory_enabled": False})
+    assert context.consent_snapshot["group_memory_enabled"] is True
+
+
+def test_scoped_card_contradiction_log_is_redacted(monkeypatch):
+    """Scoped group/participant text is deliberately kept out of the
+    ordinary Memory log; the character-card rejection line must record
+    lengths, not excerpts. (The module logger does not propagate, so the
+    log line is captured at the logger itself rather than via caplog.)"""
+    from memory.persona import facts as facts_mod
+    from memory.persona.manager import PersonaManager
+
+    lines: list = []
+    monkeypatch.setattr(
+        facts_mod, "logger",
+        SimpleNamespace(info=lambda msg, *a, **k: lines.append(str(msg))),
+    )
+    mixin = PersonaManager.__new__(PersonaManager)
+    card = [{"text": "她讨厌咖啡", "source": "character_card"}]
+
+    code, _ = mixin._evaluate_fact_contradiction(
+        "Neko", "她不讨厌咖啡", card, stop_names=[], redact_text=True,
+    )
+    assert code == PersonaManager.FACT_REJECTED_CARD
+    assert lines and "她不讨厌咖啡" not in lines[-1]
+    assert "她讨厌咖啡" not in lines[-1]
+    assert "new_len=" in lines[-1] and "card_len=" in lines[-1]
+
+    # The legacy private path keeps its excerpts (unchanged behaviour).
+    lines.clear()
+    mixin._evaluate_fact_contradiction(
+        "Neko", "她不讨厌咖啡", card, stop_names=[],
+    )
+    assert lines and "她不讨厌咖啡" in lines[-1]
+
+
+def test_context_construction_seeds_inherited_consent():
+    """The nested run's inherited dependencies only reach the generation
+    and pre-send gates if the context is seeded with them at construction.
+    Driving build() needs a dozen fakes, so the wiring is pinned on the
+    construction site itself — including WHERE the value comes from, so
+    replacing it with a constant fails too."""
+    import ast
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "plugin" / "plugins" / "qq_auto_reply" / "reply_context_node.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "QQReplyContext"
+    ]
+    assert len(calls) == 1
+    seeded = [kw for kw in calls[0].keywords if kw.arg == "consent_snapshot"]
+    assert seeded, "QQReplyContext must be seeded with the inherited snapshot"
+    assert "inherited_consent_snapshot" in ast.get_source_segment(
+        source, seeded[0].value
+    )

@@ -167,8 +167,13 @@ class FactsMixin:
 
     def _evaluate_fact_contradiction(
         self, name: str, text: str, section_facts: list, stop_names: list[str],
+        *, redact_text: bool = False,
     ) -> tuple[str | None, str | None]:
-        """Returns (rejection_code, conflicting_text) or (None, None) if OK."""
+        """Returns (rejection_code, conflicting_text) or (None, None) if OK.
+
+        redact_text=True for scoped (group/participant) input: that content
+        is deliberately kept out of the ordinary Memory log, so the
+        rejection line records lengths instead of excerpts."""
         for existing in section_facts:
             if isinstance(existing, dict):
                 old_text = existing.get('text', '')
@@ -178,10 +183,19 @@ class FactsMixin:
                 is_card = False
             if self._texts_may_contradict(old_text, text, stop_names=stop_names):
                 if is_card:
-                    logger.info(
-                        f"[Persona] {name}: 新条目与角色卡矛盾，无条件拒绝: "
-                        f"card=\"{old_text[:40]}\" vs new=\"{text[:40]}\""
-                    )
+                    if redact_text:
+                        # scoped 输入的正文不进普通 Memory 日志（与 scoped
+                        # 提取/落盘侧的脱敏口径一致），只记长度。
+                        logger.info(
+                            f"[Persona] {name}: scoped 新条目与角色卡矛盾，"
+                            f"无条件拒绝: card_len={len(old_text)} "
+                            f"new_len={len(text)}"
+                        )
+                    else:
+                        logger.info(
+                            f"[Persona] {name}: 新条目与角色卡矛盾，无条件拒绝: "
+                            f"card=\"{old_text[:40]}\" vs new=\"{text[:40]}\""
+                        )
                     return self.FACT_REJECTED_CARD, old_text
                 return self.FACT_QUEUED_CORRECTION, old_text
         return None, None
@@ -245,10 +259,14 @@ class FactsMixin:
             # 与固定人设冲突的群衍生断言必须在这里被拒。
             card_code, _card_text = self._evaluate_fact_contradiction(
                 name, text, self._collect_card_facts(persona), stop_names,
+                redact_text=True,
             )
             if card_code == self.FACT_REJECTED_CARD:
                 return self.FACT_REJECTED_CARD
-        code, old_text = self._evaluate_fact_contradiction(name, text, scan_facts, stop_names)
+        code, old_text = self._evaluate_fact_contradiction(
+            name, text, scan_facts, stop_names,
+            redact_text=memory_subject is not None,
+        )
         if code == self.FACT_REJECTED_CARD:
             return self.FACT_REJECTED_CARD
         if code == self.FACT_QUEUED_CORRECTION:
@@ -306,10 +324,14 @@ class FactsMixin:
                 # 群衍生断言会被当成普通新增。这里补一次角色卡校验。
                 card_code, card_text = self._evaluate_fact_contradiction(
                     name, text, self._collect_card_facts(persona), stop_names,
+                    redact_text=True,
                 )
                 if card_code == self.FACT_REJECTED_CARD:
                     return self.FACT_REJECTED_CARD
-            code, old_text = self._evaluate_fact_contradiction(name, text, scan_facts, stop_names)
+            code, old_text = self._evaluate_fact_contradiction(
+                name, text, scan_facts, stop_names,
+                redact_text=memory_subject is not None,
+            )
             if code == self.FACT_REJECTED_CARD:
                 return self.FACT_REJECTED_CARD
             if code == self.FACT_QUEUED_CORRECTION:

@@ -412,9 +412,10 @@ class QQReplyPipelineRunner:
         重新采样，缓冲的撤销检查就是 false 比 false——被撤销的记忆内容
         照样随延迟投递发出去。生成路径拿不到快照时（合成/轻量 context）
         才退回读当前设置。"""
-        snapshot = dict(getattr(context, "consent_snapshot", None) or {})
-        if snapshot:
-            return snapshot
+        snapshot = getattr(context, "consent_snapshot", None)
+        if snapshot is not None:
+            # 空 dict 也是结论（本轮没有任何记忆依赖），不是"没结论"。
+            return dict(snapshot)
         settings = getattr(self.plugin, "_qq_settings", {}) or {}
         return {
             key: bool(settings.get(key, False))

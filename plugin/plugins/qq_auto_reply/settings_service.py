@@ -351,6 +351,17 @@ class QQSettingsService:
         self.plugin._refresh_admin_qq()
 
     async def save_settings(self, **kwargs: Any) -> dict[str, Any]:
+        """Serialize the whole settings transaction.
+
+        Two overlapping RPCs would otherwise mutate the shared settings
+        dict, then race on the disk write: the loser's fields (connection
+        url, token, reply mode, probabilities) are silently dropped when
+        the winner replaces the dict, and the consent rollback cannot
+        reason about a `before` value another request already changed."""
+        async with self._consent_transaction_lock:
+            return await self._save_settings_locked(**kwargs)
+
+    async def _save_settings_locked(self, **kwargs: Any) -> dict[str, Any]:
         onebot_url = kwargs.get("onebot_url")
         token = kwargs.get("token")
         napcat_directory = kwargs.get("napcat_directory")
@@ -424,88 +435,83 @@ class QQSettingsService:
         retroactive_review_max_reply = kwargs.get("retroactive_review_max_reply")
         if retroactive_review_max_reply is not None:
             self.plugin._qq_settings["retroactive_review_max_reply"] = max(1, int(retroactive_review_max_reply))
-        # 整段 consent 事务串行：并发保存会把前一次尚未落盘的改动读成
-        # 自己的 before，回滚就永远修不对（后来者按被污染的旧值恢复，
-        # 磁盘与运行时从此相反）。锁内只有一处 await（写盘本身），派出去
-        # 的结算任务都是 fire-and-forget，不存在重入。
-        async with self._consent_transaction_lock:
-            group_memory_before = bool(
-                self.plugin._qq_settings.get("group_memory_enabled", False)
-            )
-            member_memory_before = bool(
-                self.plugin._qq_settings.get("group_member_memory_enabled", False)
-            )
-            cross_group_before = bool(
-                self.plugin._qq_settings.get("allow_cross_group_context", False)
-            )
-            for key in (
-                "group_memory_enabled",
-                "group_member_memory_enabled",
-                "allow_cross_group_context",
-            ):
-                value = kwargs.get(key)
-                if value is not None:
-                    self.plugin._qq_settings[key] = bool(value)
-            group_memory_after = bool(
-                self.plugin._qq_settings.get("group_memory_enabled", False)
-            )
-            member_memory_after = bool(
-                self.plugin._qq_settings.get("group_member_memory_enabled", False)
-            )
-            member_turning_off = member_memory_before and not member_memory_after
-            if member_turning_off:
-                # 同步打标：并发的 idle/discard finalizer 在后台结算任务拿到
-                # 锁之前跑到时，凭标记照常冲 bucket（finalize 侧配合读取）。
-                for ud in list(getattr(self.plugin, "_user_sessions", {}).values()):
-                    if ud.get("is_group") and ud.get("group_member_memory_messages"):
-                        # 快照分离：OFF 时代的 bucket 挪进 pending 槽。快速
-                        # re-enable 后新授权轮写全新的活 bucket，迟到的结算
-                        # 任务只消费快照，绝不吞新轮。
-                        fresh_buckets = ud.pop("group_member_memory_messages")
-                        fresh_labels = ud.pop("group_member_memory_labels", {})
-                        pending = ud.setdefault("pending_settle_buckets", {})
-                        for sender, msgs in fresh_buckets.items():
-                            # OFF→ON→OFF 连续切换时旧快照可能还没被结算：合并
-                            # 而非覆盖，先前授权的轮次不得被孤儿化。
-                            pending.setdefault(sender, []).extend(msgs)
-                        ud.setdefault("pending_settle_labels", {}).update(fresh_labels)
-                        ud["pending_member_settle"] = True
-            if group_memory_before != group_memory_after:
-                self._stamp_group_memory_transition(enabled_after=group_memory_after)
-            if member_turning_off or group_memory_after != group_memory_before:
-                # 记忆开关转变必须同步既有群会话（对偶私聊权限切换的
-                # _invalidate_private_session）。单协程顺序执行保证次序：
-                # member 结算必须先于群 invalidate——UI 关群记忆会联动取消
-                # member 勾选，若群 finalize 先跑，member 开关已 OFF 使 bucket
-                # 被替换成空映射随会话拆除丢弃。放后台跑，settings 保存不被
-                # per-group 结算（digest 分批 + 成员并发，仍可达数十秒）拖住。
-                self._spawn_group_memory_sync_task(
-                    self._sync_memory_transitions(
-                        settle_members=member_turning_off,
-                        group_transition=group_memory_after != group_memory_before,
-                        group_enabled_after=group_memory_after,
-                    )
+        group_memory_before = bool(
+            self.plugin._qq_settings.get("group_memory_enabled", False)
+        )
+        member_memory_before = bool(
+            self.plugin._qq_settings.get("group_member_memory_enabled", False)
+        )
+        cross_group_before = bool(
+            self.plugin._qq_settings.get("allow_cross_group_context", False)
+        )
+        for key in (
+            "group_memory_enabled",
+            "group_member_memory_enabled",
+            "allow_cross_group_context",
+        ):
+            value = kwargs.get(key)
+            if value is not None:
+                self.plugin._qq_settings[key] = bool(value)
+        group_memory_after = bool(
+            self.plugin._qq_settings.get("group_memory_enabled", False)
+        )
+        member_memory_after = bool(
+            self.plugin._qq_settings.get("group_member_memory_enabled", False)
+        )
+        member_turning_off = member_memory_before and not member_memory_after
+        if member_turning_off:
+            # 同步打标：并发的 idle/discard finalizer 在后台结算任务拿到
+            # 锁之前跑到时，凭标记照常冲 bucket（finalize 侧配合读取）。
+            for ud in list(getattr(self.plugin, "_user_sessions", {}).values()):
+                if ud.get("is_group") and ud.get("group_member_memory_messages"):
+                    # 快照分离：OFF 时代的 bucket 挪进 pending 槽。快速
+                    # re-enable 后新授权轮写全新的活 bucket，迟到的结算
+                    # 任务只消费快照，绝不吞新轮。
+                    fresh_buckets = ud.pop("group_member_memory_messages")
+                    fresh_labels = ud.pop("group_member_memory_labels", {})
+                    pending = ud.setdefault("pending_settle_buckets", {})
+                    for sender, msgs in fresh_buckets.items():
+                        # OFF→ON→OFF 连续切换时旧快照可能还没被结算：合并
+                        # 而非覆盖，先前授权的轮次不得被孤儿化。
+                        pending.setdefault(sender, []).extend(msgs)
+                    ud.setdefault("pending_settle_labels", {}).update(fresh_labels)
+                    ud["pending_member_settle"] = True
+        if group_memory_before != group_memory_after:
+            self._stamp_group_memory_transition(enabled_after=group_memory_after)
+        if member_turning_off or group_memory_after != group_memory_before:
+            # 记忆开关转变必须同步既有群会话（对偶私聊权限切换的
+            # _invalidate_private_session）。单协程顺序执行保证次序：
+            # member 结算必须先于群 invalidate——UI 关群记忆会联动取消
+            # member 勾选，若群 finalize 先跑，member 开关已 OFF 使 bucket
+            # 被替换成空映射随会话拆除丢弃。放后台跑，settings 保存不被
+            # per-group 结算（digest 分批 + 成员并发，仍可达数十秒）拖住。
+            self._spawn_group_memory_sync_task(
+                self._sync_memory_transitions(
+                    settle_members=member_turning_off,
+                    group_transition=group_memory_after != group_memory_before,
+                    group_enabled_after=group_memory_after,
                 )
-            # 猫娘动态策略配置
-            strategy_mode = kwargs.get("strategy_mode")
-            if strategy_mode is not None:
-                self.plugin._qq_settings["strategy_mode"] = self.plugin.config_store._normalize_strategy_mode(strategy_mode)
-                self.plugin._strategy_mode = self.plugin._qq_settings["strategy_mode"]
-                self.plugin._emit_log("INFO", f"策略模式已切换: {self.plugin._strategy_mode}")
-            self._enforce_attention_for_dynamic_mode()
-            self.plugin._qq_settings.pop("guide_step_settings_done", None)
-            self.plugin._ensure_qq_client_initialized()
-            success = await self._persist_with_consent_rollback(
-                group_memory_before=group_memory_before,
-                group_memory_after=group_memory_after,
-                member_memory_before=member_memory_before,
-                member_memory_after=member_memory_after,
-                cross_group_before=cross_group_before,
-                cross_group_after=(
-                    bool(self.plugin._qq_settings.get("allow_cross_group_context", False))
-                    if cross_group_before is not None else None
-                ),
             )
+        # 猫娘动态策略配置
+        strategy_mode = kwargs.get("strategy_mode")
+        if strategy_mode is not None:
+            self.plugin._qq_settings["strategy_mode"] = self.plugin.config_store._normalize_strategy_mode(strategy_mode)
+            self.plugin._strategy_mode = self.plugin._qq_settings["strategy_mode"]
+            self.plugin._emit_log("INFO", f"策略模式已切换: {self.plugin._strategy_mode}")
+        self._enforce_attention_for_dynamic_mode()
+        self.plugin._qq_settings.pop("guide_step_settings_done", None)
+        self.plugin._ensure_qq_client_initialized()
+        success = await self._persist_with_consent_rollback(
+            group_memory_before=group_memory_before,
+            group_memory_after=group_memory_after,
+            member_memory_before=member_memory_before,
+            member_memory_after=member_memory_after,
+            cross_group_before=cross_group_before,
+            cross_group_after=(
+                bool(self.plugin._qq_settings.get("allow_cross_group_context", False))
+                if cross_group_before is not None else None
+            ),
+        )
         if self.plugin.attention_service:
             self.plugin.attention_service.cleanup_stale_cache()
         if success:

@@ -333,6 +333,9 @@ class QQReplyBufferService:
                         is_at_bot=True,
                         source_kind="rapid_fire_flush",
                         fallback_to_text_on_voice_failure=True,
+                        inherited_consent_snapshot=dict(
+                            existing.consent_snapshot or {}
+                        ),
                     )
                     await self.plugin.reply_pipeline.run(request)  # handler 已持本会话锁，重取会自锁死
                 except Exception as e:
@@ -384,6 +387,9 @@ class QQReplyBufferService:
                         is_at_bot=True,
                         source_kind="rapid_fire_flush",
                         fallback_to_text_on_voice_failure=True,
+                        inherited_consent_snapshot=dict(
+                            existing.consent_snapshot or {}
+                        ),
                     )
                     await self.plugin.reply_pipeline.run(request)  # handler 已持本会话锁，重取会自锁死
                 except Exception as e:
@@ -564,6 +570,9 @@ class QQReplyBufferService:
                 is_at_bot=True,
                 source_kind="rapid_fire_flush",
                 fallback_to_text_on_voice_failure=True,
+                inherited_consent_snapshot=dict(
+                    pending.consent_snapshot or {}
+                ),
             )
             async def _run_flush() -> Any:
                 # before 必须在会话锁内取：锁外窗口插入的真实用户行会落进
