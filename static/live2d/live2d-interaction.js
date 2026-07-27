@@ -1430,7 +1430,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         edgePeekStartedDrag = edgePeekOnPointerDown;
         edgePeekDragCleared = false;
         if (!edgePeekOnPointerDown) {
-            this.clearLive2DPeek('drag-start');
+            clearLive2DPeek('drag-start');
         }
         this._isDraggingModel = true;
         if (typeof this.boostLinuxX11InteractiveFPS === 'function') {
