@@ -563,9 +563,14 @@ class QQReplyBufferService:
             # 时 pre_buffer 会取消这个仍在"活跃"的任务，若取消落在拿锁的
             # 等待里，撤未投递标、补 fallback 行、记 mention 全都不会跑——
             # 用户已经收到的回复会被永久当成未投递、进不了 scoped 记忆。
-            await asyncio.shield(
+            # 显式建 task 并登记：shield 自己会造一个内层 task，但那个
+            # task 没人跟踪——关机时外层被取消即算 done，_session_locks 会
+            # 被清掉，而它还在改历史；紧接着重启建的新锁拦不住它，正好撞上
+            # 这把锁本来要防的那个顺序竞态。
+            settle_task = self.plugin._spawn_memory_sync_task(
                 self.plugin._run_with_session_lock(session_key, _settle_delivered)
             )
+            await asyncio.shield(settle_task)
             self._pending.pop(session_key, None)
             return
 

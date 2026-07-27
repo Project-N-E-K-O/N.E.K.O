@@ -249,7 +249,20 @@ class QQReplyGenerationService:
             user_data["human_row_accepted"] = False
             restore_session_prompt = self._apply_turn_memory_context(
                 user_session, turn_system_prompt, turn_recalled_text,
-                always_refresh=context.is_group,
+                # 私聊会话的 prompt 是建会话时烙进去的：跨群授权打开时建的
+                # 那条里带着别的群/联系人的清单，opt-out 之后本轮虽然构建了
+                # 剥离版，不换上去 stream_text 用的还是旧的；而新 context 的
+                # cross_session_section 已被剥空，两道 consent 闸也看不出
+                # 依赖。开关关着时私聊也强制换。
+                always_refresh=(
+                    context.is_group
+                    or bool(getattr(context, "cross_session_section", ""))
+                    or not bool(
+                        (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                            "allow_cross_group_context", False,
+                        )
+                    )
+                ),
             )
             try:
                 await asyncio.wait_for(

@@ -594,20 +594,28 @@ class QQSessionMemoryService:
 
     @staticmethod
     def _finish_member_flush_generation(user_data: dict[str, Any]) -> None:
-        """Promote the epoch that accumulated while a flush was in flight."""
+        """Snapshot what the finished flush left behind, if an opt-out asked.
+
+        The settings path defers its snapshot while a flush is in flight —
+        popping the live mapping there would hand the in-flight request's
+        own payload to a second submission. Whatever remains here (entries
+        it failed to commit, plus turns written during it) is what the
+        opt-out settlement should carry."""
         user_data.pop("member_flush_in_progress", None)
-        next_buckets = user_data.pop("pending_settle_buckets_next", None)
-        next_labels = user_data.pop("pending_settle_labels_next", None)
-        if next_buckets:
-            pending = user_data.setdefault("pending_settle_buckets", {})
-            for sender, msgs in next_buckets.items():
-                pending.setdefault(sender, []).extend(msgs)
-            user_data["pending_member_settle"] = True
-            # 供结算侧区分"这些是冲刷失败的残留（按 opt-out 丢弃）"与
-            # "这是冲刷期间新攒的一代（必须留着排队）"。
-            user_data["member_settle_generation_promoted"] = True
-        if next_labels:
-            user_data.setdefault("pending_settle_labels", {}).update(next_labels)
+        if not user_data.pop("member_snapshot_due", None):
+            return
+        fresh_buckets = user_data.pop("group_member_memory_messages", None) or {}
+        fresh_labels = user_data.pop("group_member_memory_labels", None) or {}
+        if not fresh_buckets:
+            return
+        pending = user_data.setdefault("pending_settle_buckets", {})
+        for sender, msgs in fresh_buckets.items():
+            pending.setdefault(sender, []).extend(msgs)
+        user_data.setdefault("pending_settle_labels", {}).update(fresh_labels)
+        user_data["pending_member_settle"] = True
+        # 供结算侧区分"这些是冲刷失败的残留（按 opt-out 丢弃）"与"这是
+        # 冲刷结束后才快照出来的一代（必须留着排队）"。
+        user_data["member_settle_generation_promoted"] = True
 
     async def settle_member_buckets_on_disable(self) -> None:
         """group_member_memory_enabled ON->OFF transition: settle buckets

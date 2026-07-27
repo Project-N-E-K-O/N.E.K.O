@@ -126,6 +126,11 @@ def _default_i18n():
     return SimpleNamespace(t=lambda key, default="", **kw: default)
 
 
+def _passthrough_memory_task(coro):
+    """Stand-in for the plugin task registry: run it, keep the handle."""
+    return asyncio.ensure_future(coro)
+
+
 async def _passthrough_session_lock(session_key, coro_factory):
     """Stand-in for the plugin helper: run the body, no real lock."""
     return await coro_factory()
@@ -2282,6 +2287,7 @@ async def test_undelivered_buffer_drafts_stay_out_of_memory():
         _emit_log=lambda *a, **k: None,
         reply_delivery_node=SimpleNamespace(deliver=AsyncMock()),
         _run_with_session_lock=_passthrough_session_lock,
+        _spawn_memory_sync_task=_passthrough_memory_task,
     )
     service = QQReplyBufferService.__new__(QQReplyBufferService)
     service.plugin = plugin
@@ -2390,6 +2396,7 @@ async def test_flush_prompt_excluded_but_delivered_ack_kept():
         reply_pipeline=SimpleNamespace(run=AsyncMock(side_effect=_run_ack)),
         reply_delivery_node=SimpleNamespace(deliver=AsyncMock()),
         _run_with_session_lock=_passthrough_session_lock,
+        _spawn_memory_sync_task=_passthrough_memory_task,
     )
     memory_service = QQSessionMemoryService.__new__(QQSessionMemoryService)
     memory_service.plugin = plugin
@@ -2544,6 +2551,7 @@ async def test_fallback_buffered_reply_does_not_mark_previous_row():
         _emit_log=lambda *a, **k: None,
         reply_delivery_node=SimpleNamespace(deliver=AsyncMock()),
         _run_with_session_lock=_passthrough_session_lock,
+        _spawn_memory_sync_task=_passthrough_memory_task,
     )
     memory_service = QQSessionMemoryService.__new__(QQSessionMemoryService)
     memory_service.plugin = plugin
@@ -2650,6 +2658,7 @@ async def test_nonconsent_buffered_input_excludes_summary_ai_row():
         _user_sessions={"group:7788": user_data},
         _emit_log=lambda *a, **k: None,
         _run_with_session_lock=_lock,
+        _spawn_memory_sync_task=_passthrough_memory_task,
         reply_pipeline=SimpleNamespace(run=AsyncMock(side_effect=_run)),
     )
     memory_service = QQSessionMemoryService.__new__(QQSessionMemoryService)
@@ -2732,6 +2741,7 @@ async def test_merge_flush_cleanup_runs_even_on_pipeline_failure():
         _user_sessions={"group:7788": user_data},
         _emit_log=lambda *a, **k: None,
         _run_with_session_lock=_boom,
+        _spawn_memory_sync_task=_passthrough_memory_task,
         reply_pipeline=SimpleNamespace(run=AsyncMock()),
     )
     service = QQReplyBufferService.__new__(QQReplyBufferService)
@@ -2863,6 +2873,7 @@ async def test_proactive_prompt_row_excluded_from_digest():
         _admin_qq="1",
         reply_pipeline=SimpleNamespace(run=AsyncMock(side_effect=_run)),
         _run_with_session_lock=_lock,
+        _spawn_memory_sync_task=_passthrough_memory_task,
         runtime_service=SimpleNamespace(record_pipeline_outcome=lambda **k: None),
     )
     memory_service = QQSessionMemoryService.__new__(QQSessionMemoryService)
@@ -2913,6 +2924,7 @@ async def test_retro_replay_honors_receipt_time_policy():
         _user_sessions={"group:g7": user_data},
         reply_pipeline=SimpleNamespace(run=AsyncMock(side_effect=_run)),
         _run_with_session_lock=_lock,
+        _spawn_memory_sync_task=_passthrough_memory_task,
         runtime_service=SimpleNamespace(record_pipeline_outcome=lambda **k: None),
     )
     memory_service = QQSessionMemoryService.__new__(QQSessionMemoryService)
@@ -3546,6 +3558,7 @@ async def test_buffered_draft_dropped_when_consent_revoked():
         _emit_log=lambda *a, **k: None,
         reply_delivery_node=SimpleNamespace(deliver=AsyncMock()),
         _run_with_session_lock=_passthrough_session_lock,
+        _spawn_memory_sync_task=_passthrough_memory_task,
         reply_generation_service=SimpleNamespace(
             record_scoped_mentions_on_delivery=AsyncMock(),
         ),
@@ -3958,6 +3971,7 @@ async def test_prompt_change_discard_failure_marks_sticky_retry():
             discard_session=AsyncMock(return_value=False),
         ),
         _run_with_session_lock=_lock,
+        _spawn_memory_sync_task=_passthrough_memory_task,
         _emit_log=lambda *a, **k: None,
     )
     service = QQSessionInstructionService.__new__(QQSessionInstructionService)
@@ -3996,6 +4010,7 @@ async def test_failed_settlement_keeps_snapshot_for_pending_rollback():
     plugin = SimpleNamespace(
         _user_sessions={"group:7788": ud},
         _run_with_session_lock=_lock,
+        _spawn_memory_sync_task=_passthrough_memory_task,
         logger=MagicMock(),
     )
     service = QQSessionMemoryService.__new__(QQSessionMemoryService)
@@ -4665,6 +4680,7 @@ async def test_failed_disable_save_restores_pre_optout_cursor():
         _user_sessions={"group:7788": ud},
         _qq_settings={},
         _run_with_session_lock=_lock,
+        _spawn_memory_sync_task=_passthrough_memory_task,
         memory_bridge=bridge,
         logger=MagicMock(),
     )
@@ -4769,6 +4785,7 @@ async def test_shutdown_drains_pending_disable_sessions():
         _user_sessions={"group:7788": ud},
         _qq_settings={},
         _run_with_session_lock=_lock,
+        _spawn_memory_sync_task=_passthrough_memory_task,
         memory_bridge=bridge,
         logger=MagicMock(),
     )
@@ -4829,6 +4846,7 @@ async def test_rollback_discard_drops_failed_optin_interval():
         _user_sessions={"group:7788": user_data},
         _qq_settings={},
         _run_with_session_lock=_run_with_session_lock,
+        _spawn_memory_sync_task=_passthrough_memory_task,
         memory_bridge=bridge,
         logger=MagicMock(),
     )
@@ -4925,6 +4943,7 @@ async def test_unpersisted_memory_toggle_rolls_back():
         _user_sessions={"group:1": ud},
         _emit_log=lambda *a, **k: None,
         _run_with_session_lock=_lock,
+        _spawn_memory_sync_task=_passthrough_memory_task,
     )
     service._spawn_group_memory_sync_task = lambda coro: spawned.append(coro)
 
@@ -5442,6 +5461,7 @@ async def test_enable_rebase_consumes_dead_cutoff_and_keeps_cursor_monotonic():
         _user_sessions={"group:7788": user_data},
         _qq_settings={},
         _run_with_session_lock=_run_with_session_lock,
+        _spawn_memory_sync_task=_passthrough_memory_task,
         memory_bridge=bridge,
         logger=MagicMock(),
     )
@@ -5561,6 +5581,7 @@ async def test_group_memory_toggle_syncs_existing_sessions():
         _user_sessions={"group:7788": user_data},
         _qq_settings={"group_member_memory_enabled": True},
         _run_with_session_lock=_run_with_session_lock,
+        _spawn_memory_sync_task=_passthrough_memory_task,
         memory_bridge=bridge,
         logger=MagicMock(),
     )
@@ -6311,6 +6332,7 @@ async def test_focus_shift_digest_batches_never_skip_backlog():
         _qq_settings={"group_memory_enabled": True},
         _user_sessions={"group:7788": user_data},
         _run_with_session_lock=_run_with_session_lock,
+        _spawn_memory_sync_task=_passthrough_memory_task,
         memory_bridge=bridge,
         logger=MagicMock(),
     )
@@ -6649,6 +6671,7 @@ async def test_member_toggle_off_settles_buckets_before_clearing():
         _user_sessions={"group:7788": user_data},
         _qq_settings={},
         _run_with_session_lock=_run_with_session_lock,
+        _spawn_memory_sync_task=_passthrough_memory_task,
         memory_bridge=bridge,
         logger=MagicMock(),
     )
@@ -6761,6 +6784,7 @@ async def test_prompt_change_discard_actually_runs():
         logger=MagicMock(),
         _emit_log=MagicMock(),
         _run_with_session_lock=_run_with_session_lock,
+        _spawn_memory_sync_task=_passthrough_memory_task,
     )
     service = QQSessionInstructionService(plugin)
     service._discard_all_sessions_for_prompt_change()
@@ -7385,6 +7409,7 @@ async def test_buffered_fallback_row_is_appended_under_the_session_lock():
         _user_sessions={"group:7788": {}},
         _qq_settings={"group_memory_enabled": True},
         _run_with_session_lock=_locked,
+        _spawn_memory_sync_task=_passthrough_memory_task,
         reply_delivery_node=SimpleNamespace(
             deliver=AsyncMock(return_value=QQDeliveryResult(
                 delivered=True, target_type="group", target_id="7788",
@@ -8115,6 +8140,7 @@ async def test_failed_opt_out_settlement_drops_the_pending_snapshot():
     service = QQSessionMemoryService(SimpleNamespace(
         _user_sessions={"group:7788": ud},
         _run_with_session_lock=_run_with_session_lock,
+        _spawn_memory_sync_task=_passthrough_memory_task,
         logger=MagicMock(),
         _qq_settings={},
     ))
@@ -8505,6 +8531,7 @@ async def test_mention_scan_covers_later_blocks_on_both_delivery_paths():
         _emit_log=lambda *a, **k: None,
         _user_sessions={"group:7788": {}},
         _run_with_session_lock=_locked,
+        _spawn_memory_sync_task=_passthrough_memory_task,
         reply_delivery_node=SimpleNamespace(
             deliver=AsyncMock(return_value=QQDeliveryResult(
                 delivered=True, target_type="group", target_id="7788",
@@ -8589,6 +8616,7 @@ async def test_backlog_drain_defers_to_pending_transitions_and_barriers():
         _user_sessions={"group:7788": ud},
         _qq_settings={"group_memory_enabled": True},
         _run_with_session_lock=_run_with_session_lock,
+        _spawn_memory_sync_task=_passthrough_memory_task,
         logger=MagicMock(),
     )
     service = QQSessionMemoryService(plugin)
@@ -8809,6 +8837,7 @@ async def test_failed_member_drain_is_rearmed():
             "group_memory_enabled": True, "group_member_memory_enabled": True,
         },
         _run_with_session_lock=_run_with_session_lock,
+        _spawn_memory_sync_task=_passthrough_memory_task,
         logger=MagicMock(),
     ))
     service._flush_member_buckets = AsyncMock(return_value=["2046"])
@@ -9761,6 +9790,7 @@ async def test_post_delivery_settlement_survives_cancellation():
         _user_sessions={"group:7788": {}},
         _qq_settings={"group_memory_enabled": True},
         _run_with_session_lock=_slow_lock,
+        _spawn_memory_sync_task=_passthrough_memory_task,
         reply_delivery_node=SimpleNamespace(
             deliver=AsyncMock(return_value=QQDeliveryResult(
                 delivered=True, target_type="group", target_id="7788",
@@ -9827,9 +9857,12 @@ async def test_member_snapshot_merge_does_not_join_an_in_flight_flush():
     merged_during_flight: list = []
 
     async def _post(*a, **k):
-        # While the request is in flight, a second OFF stamps its epoch.
+        # While the request is in flight, a second OFF asks for a snapshot.
+        # It must NOT touch the live mapping: that mapping may BE this
+        # request's payload, and copying it means submitting twice.
         assert ud.get("member_flush_in_progress") is True
-        ud.setdefault("pending_settle_buckets_next", {}).setdefault(
+        ud["member_snapshot_due"] = True
+        ud.setdefault("group_member_memory_messages", {}).setdefault(
             "2046", []
         ).append({"role": "user", "content": "第二代"})
         merged_during_flight.append(True)
@@ -9849,12 +9882,14 @@ async def test_member_snapshot_merge_does_not_join_an_in_flight_flush():
     # The promotion is flagged so the settlement path can tell "a newer
     # epoch is queued" from "the flush failed and left leftovers".
     assert ud.get("member_settle_generation_promoted") is True
-    # The second epoch survived the first one's success and is queued.
+    # Only what remained after the flush is queued — the in-flight payload
+    # was not copied into a second submission.
     assert ud["pending_settle_buckets"]["2046"] == [
         {"role": "user", "content": "第二代"}
     ]
     assert ud.get("pending_member_settle") is True
     assert "member_flush_in_progress" not in ud
+    assert "member_snapshot_due" not in ud
 
 
 def test_delivered_text_includes_keyboard_labels():
@@ -9911,13 +9946,16 @@ async def test_settings_stamp_detaches_epoch_from_an_in_flight_flush():
 
     await service.save_settings(group_member_memory_enabled=False)
 
-    # The in-flight epoch is untouched; the new one waits its turn.
+    # The live mapping is left alone while a flush owns it — that mapping
+    # may be the in-flight request's own payload, so stealing it here
+    # submits the same messages twice.
+    assert ud["group_member_memory_messages"]["2046"] == [
+        {"role": "user", "content": "第二代"}
+    ]
     assert ud["pending_settle_buckets"]["2046"] == [
         {"role": "user", "content": "第一代"}
     ]
-    assert ud["pending_settle_buckets_next"]["2046"] == [
-        {"role": "user", "content": "第二代"}
-    ]
+    assert ud.get("member_snapshot_due") is True
     assert ud.get("pending_member_settle") is True
 
 
@@ -10089,6 +10127,7 @@ async def test_promoted_generation_survives_the_settlement_cleanup():
         _user_sessions={"group:7788": ud},
         _qq_settings={"group_member_memory_enabled": False},
         _run_with_session_lock=_run_with_session_lock,
+        _spawn_memory_sync_task=_passthrough_memory_task,
         logger=MagicMock(),
     ))
 
@@ -10249,3 +10288,123 @@ async def test_image_message_does_not_carry_a_keyboard_payload():
     assert "keyboard" not in body
     # The options are degraded into readable text rather than vanishing.
     assert "甲 / 乙" in body["content"]
+
+
+@pytest.mark.asyncio
+async def test_shielded_settlement_is_registered_for_shutdown_join():
+    """asyncio.shield spawns its own inner task that nobody tracks: at
+    shutdown the outer task counts as done, the session locks get cleared,
+    and the settlement keeps mutating history against a lock nobody holds."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import QQDeliveryResult
+    from plugin.plugins.qq_auto_reply.reply_buffer_service import (
+        PendingReply,
+        QQReplyBufferService,
+    )
+
+    registered: list = []
+
+    def _spawn(coro):
+        task = asyncio.ensure_future(coro)
+        registered.append(task)
+        return task
+
+    async def _locked(session_key, coro_factory):
+        return await coro_factory()
+
+    service = QQReplyBufferService.__new__(QQReplyBufferService)
+    service.plugin = SimpleNamespace(
+        _emit_log=lambda *a, **k: None,
+        _user_sessions={"group:7788": {}},
+        _qq_settings={"group_memory_enabled": True},
+        _run_with_session_lock=_locked,
+        _spawn_memory_sync_task=_spawn,
+        reply_delivery_node=SimpleNamespace(
+            deliver=AsyncMock(return_value=QQDeliveryResult(
+                delivered=True, target_type="group", target_id="7788",
+                reply_text="回复",
+            )),
+        ),
+        reply_generation_service=SimpleNamespace(
+            append_fallback_ai_row=MagicMock(),
+            record_scoped_mentions_on_delivery=AsyncMock(),
+        ),
+    )
+    service._pending = {}
+    service._clear_undelivered_marks = lambda key, pending: None
+    service._settle_provisional = staticmethod(lambda ud, p: None)
+    service._consent_revoked_since = lambda pending: False
+
+    pending = PendingReply(
+        first_text="回复", wait_seconds=0.0, sender_id="2046",
+        is_group=True, group_id="7788",
+    )
+    pending.buffered_texts = ["回复"]
+    pending.message_count = 1
+    pending.wait_until = 0.0
+    pending.mention_context = SimpleNamespace(
+        is_group=True, group_id="7788", ephemeral_session=False,
+    )
+    service._pending["group:7788"] = pending
+
+    await service._deliver_after_wait("group:7788", pending)
+    assert len(registered) == 1
+
+
+@pytest.mark.asyncio
+async def test_private_prompt_is_refreshed_after_cross_group_opt_out():
+    """A private session built while cross-group was on carries the other
+    conversations in its persisted instructions. Without a refresh,
+    stream_text keeps using that stale prompt — and the freshly stripped
+    context has no section left for the consent gates to notice."""
+    from plugin.plugins.qq_auto_reply.reply_generation_service import (
+        QQReplyGenerationService,
+    )
+
+    service = QQReplyGenerationService.__new__(QQReplyGenerationService)
+    applied: list = []
+    service.plugin = SimpleNamespace(
+        _qq_settings={"allow_cross_group_context": False},
+        _queue_attachment_images=AsyncMock(return_value=0),
+        _wait_session_response_complete=AsyncMock(return_value=True),
+        _ai_turn_timeout_seconds=5,
+        logger=MagicMock(),
+    )
+    service._apply_turn_memory_context = (
+        lambda session, prompt, recalled, *, always_refresh=False: (
+            applied.append(always_refresh) or (lambda: None)
+        )
+    )
+    context = SimpleNamespace(
+        is_group=False, attachments=None, prompt_message="hi",
+        system_prompt="私聊提示词", recalled_memory_text="",
+        core_memory_text="", cross_group_section="",
+        cross_session_section="", used_member_subject=False,
+        consent_snapshot=None,
+    )
+
+    async def _stream(_msg):
+        pass
+
+    await service._run_session_generation(
+        context=context, session_key="private:2046",
+        user_data={"lock": asyncio.Lock()},
+        user_session=SimpleNamespace(
+            stream_text=_stream, _conversation_history=[],
+        ),
+        reply_chunks=[],
+    )
+    assert applied == [True]
+
+    # With consent live and no section in this turn, the old behaviour
+    # (keep the session's own prompt) is preserved.
+    applied.clear()
+    service.plugin._qq_settings["allow_cross_group_context"] = True
+    await service._run_session_generation(
+        context=context, session_key="private:2046",
+        user_data={"lock": asyncio.Lock()},
+        user_session=SimpleNamespace(
+            stream_text=_stream, _conversation_history=[],
+        ),
+        reply_chunks=[],
+    )
+    assert applied == [False]

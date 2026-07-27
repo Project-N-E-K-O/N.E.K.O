@@ -506,26 +506,24 @@ class QQSettingsService:
                     # 快照分离：OFF 时代的 bucket 挪进 pending 槽。快速
                     # re-enable 后新授权轮写全新的活 bucket，迟到的结算
                     # 任务只消费快照，绝不吞新轮。
+                    if ud.get("member_flush_in_progress"):
+                        # 有冲刷在飞：**别碰**活 bucket。上限触发的排空冲的
+                        # 就是这个映射本身，这里把它 pop 走等于把在途请求
+                        # 的载荷复制一份——那次成功后只弹走旧映射，复制件
+                        # 随后被当成新一代重交，同一批消息进两次。改为记一
+                        # 个待办，等冲刷结束时把**剩下的**（失败的 + 期间
+                        # 新写的）快照出来。
+                        ud["member_snapshot_due"] = True
+                        ud["pending_member_settle"] = True
+                        continue
                     fresh_buckets = ud.pop("group_member_memory_messages")
                     fresh_labels = ud.pop("group_member_memory_labels", {})
                     pending = ud.setdefault("pending_settle_buckets", {})
                     for sender, msgs in fresh_buckets.items():
                         # OFF→ON→OFF 连续切换时旧快照可能还没被结算：合并
                         # 而非覆盖，先前授权的轮次不得被孤儿化。
-                        # ⚠️不能往**正在被冲刷**的那个列表里追加：上一代
-                        # 的结算请求已经带着旧内容发出去了，它成功后会整桶
-                        # pop 掉，新追加的这一代跟着一起消失。冲刷进行中就
-                        # 另起一代，各自独立结算。
-                        target = pending
-                        if ud.get("member_flush_in_progress"):
-                            target = ud.setdefault("pending_settle_buckets_next", {})
-                        target.setdefault(sender, []).extend(msgs)
-                    if ud.get("member_flush_in_progress"):
-                        ud.setdefault("pending_settle_labels_next", {}).update(
-                            fresh_labels
-                        )
-                    else:
-                        ud.setdefault("pending_settle_labels", {}).update(fresh_labels)
+                        pending.setdefault(sender, []).extend(msgs)
+                    ud.setdefault("pending_settle_labels", {}).update(fresh_labels)
                     ud["pending_member_settle"] = True
         if group_memory_before != group_memory_after:
             self._stamp_group_memory_transition(enabled_after=group_memory_after)
