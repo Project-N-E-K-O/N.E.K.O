@@ -886,9 +886,18 @@ class FactStore:
             new_facts.append(fact_entry)
 
             if self._time_indexed is not None:
-                await self._time_indexed.aindex_fact(
-                    lanlan_name, fact_entry['id'], text,
-                )
+                try:
+                    await self._time_indexed.aindex_fact(
+                        lanlan_name, fact_entry['id'], text,
+                    )
+                except Exception:
+                    # 索引失败也必须回滚：本行已进缓存/hash 集合，留着会让
+                    # fail-closed 重试撞去重拿"空成功"、调用方推游标，而
+                    # facts.json 从未收到它（维护模式等场景）。
+                    await self._rollback_uncommitted_facts(
+                        lanlan_name, new_facts, existing_hashes,
+                    )
+                    raise
 
         # Save if we either added new facts OR upgraded existing ones'
         # source field. Without the upgrade path: A 后 B 跑时撞到 hash 但
@@ -903,30 +912,9 @@ class FactStore:
                 # 并推进游标，而磁盘上什么都没有，重启即永久丢失。回滚
                 # 本批新增（upgrade 的 in-place 字段改动保留：字段级幂等，
                 # 重试会重做），让重试重新走完整提取+持久化。
-                added_ids = {
-                    nf.get('id') for nf in new_facts if isinstance(nf, dict)
-                }
-                cache = self._facts.get(lanlan_name)
-                if cache is not None:
-                    cache[:] = [
-                        f for f in cache
-                        if not (
-                            isinstance(f, dict) and f.get('id') in added_ids
-                        )
-                    ]
-                if self._time_indexed is not None:
-                    for fact_id in added_ids:
-                        if not fact_id:
-                            continue
-                        try:
-                            await self._time_indexed.adelete_fact_from_index(
-                                lanlan_name, fact_id,
-                            )
-                        except Exception:
-                            logger.warning(
-                                f"[FactStore] {lanlan_name}: 回滚 FTS 索引失败 "
-                                f"({fact_id})"
-                            )
+                await self._rollback_uncommitted_facts(
+                    lanlan_name, new_facts, existing_hashes,
+                )
                 raise
         if new_facts:
             logger.info(
@@ -2071,6 +2059,45 @@ class FactStore:
             and f.get('importance', 0) >= min_importance
             and entry_matches_subject(f, subject)
         ]
+
+    async def _rollback_uncommitted_facts(
+        self, lanlan_name: str, new_facts: list, existing_hashes: set,
+    ) -> None:
+        """Undo in-memory effects of a batch that never reached disk.
+
+        The fail-closed callers retry on error; if the cache and hash set
+        keep the uncommitted rows, that retry deduplicates into an empty
+        success and the caller advances a volatile cursor over facts that
+        facts.json never received. Upgrades are left alone (field-level
+        idempotent, redone by the retry)."""
+        added_ids = {
+            nf.get('id') for nf in new_facts if isinstance(nf, dict)
+        }
+        added_hashes = {
+            nf.get('hash') for nf in new_facts
+            if isinstance(nf, dict) and nf.get('hash')
+        }
+        cache = self._facts.get(lanlan_name)
+        if cache is not None:
+            cache[:] = [
+                f for f in cache
+                if not (isinstance(f, dict) and f.get('id') in added_ids)
+            ]
+        for content_hash in added_hashes:
+            existing_hashes.discard(content_hash)
+        if self._time_indexed is not None:
+            for fact_id in added_ids:
+                if not fact_id:
+                    continue
+                try:
+                    await self._time_indexed.adelete_fact_from_index(
+                        lanlan_name, fact_id,
+                    )
+                except Exception:
+                    logger.warning(
+                        f"[FactStore] {lanlan_name}: 回滚 FTS 索引失败 "
+                        f"({fact_id})"
+                    )
 
     async def aget_unabsorbed_facts(
         self,

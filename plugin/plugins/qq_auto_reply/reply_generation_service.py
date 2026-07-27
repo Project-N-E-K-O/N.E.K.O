@@ -103,21 +103,32 @@ class QQReplyGenerationService:
                 else None
             )
 
-            ai_reply = await self._run_session_generation(
-                context=context,
-                session_key=session_key,
-                user_data=user_data,
-                user_session=user_session,
-                reply_chunks=reply_chunks,
-            )
-            if user_data.get("memory_enabled"):
-                # 成员发言的收集绑定"会话已接受该 human 行"，不绑回复非
-                # 空：空回复轮（含 fallback 也空）里成员的话已进共享历史、
-                # 会进群 digest，却会从 participant bucket 永久缺席。单点
-                # 记录（成功钩子不再重复记）。
-                self.plugin.session_memory_service.record_group_member_turn(
-                    user_data, context,
+            try:
+                ai_reply = await self._run_session_generation(
+                    context=context,
+                    session_key=session_key,
+                    user_data=user_data,
+                    user_session=user_session,
+                    reply_chunks=reply_chunks,
                 )
+            finally:
+                # 成员发言的收集绑定"会话已接受该 human 行"（stream_text 在
+                # 发起网络流之前就把它追加进历史），不绑回复非空、也不绑
+                # 生成成功：空回复轮与流异常/超时轮里成员的话都已进共享
+                # 历史、会进群 digest，却会从 participant bucket 永久缺席。
+                # 单点记录（成功钩子不再重复记）；recorder 自身按 sender
+                # 追加，重复调用会重复入桶，故只此一处。
+                if user_data.get("memory_enabled"):
+                    try:
+                        self.plugin.session_memory_service.record_group_member_turn(
+                            user_data, context,
+                        )
+                    except Exception as record_error:
+                        # 绝不掩盖原始异常（finally 里抛出会替换掉
+                        # TimeoutError，超时抢救与 trace 全部走偏）。
+                        self.plugin.logger.warning(
+                            f"成员发言记录失败: {record_error}"
+                        )
             stage_trace.metadata["recalled_memory_used"] = context.recalled_memory_used
             stage_trace.metadata["recalled_memory_length"] = len(context.recalled_memory_text)
             if not ai_reply:

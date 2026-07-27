@@ -1722,6 +1722,31 @@ async def test_extract_facts_fail_closed_raises_on_terminal_failure(tmp_path):
         created = await fs.extract_facts([msg], "Neko", fail_closed=True)
         assert any(f.get("text") == "有效事实" for f in created)
 
+        # An indexing failure (maintenance mode etc.) happens BEFORE the
+        # save and must roll back the same way — the row is already in the
+        # cache and hash set at that point.
+        async def _another(prompt, lanlan_name, **kwargs):
+            return [{"text": "索引失败的事实", "importance": 6}]
+
+        fs._allm_call_with_retries = _another
+        fs._time_indexed = SimpleNamespace(
+            aindex_fact=AsyncMock(side_effect=RuntimeError("maintenance")),
+            adelete_fact_from_index=AsyncMock(),
+            asearch_facts=AsyncMock(return_value=[]),
+        )
+        with pytest.raises(RuntimeError):
+            await fs.extract_facts([msg], "Neko", fail_closed=True)
+        cached = await fs.aload_facts("Neko")
+        assert not any(
+            isinstance(f, dict) and f.get("text") == "索引失败的事实"
+            for f in cached
+        )
+        # The hash set no longer blocks the retry: with indexing healthy
+        # the same content persists.
+        fs._time_indexed = None
+        created = await fs.extract_facts([msg], "Neko", fail_closed=True)
+        assert any(f.get("text") == "索引失败的事实" for f in created)
+
 
 @pytest.mark.asyncio
 async def test_correction_batches_partition_by_isolation_domain(tmp_path):
@@ -2107,6 +2132,59 @@ async def test_production_model_node_runs_fallback_memory_hooks():
     assert result.reply_text == "备用回复"
     assert result.used_fallback is True
     hooks.assert_awaited_once_with(context, "备用回复")
+
+
+@pytest.mark.asyncio
+async def test_default_reply_is_not_history_backed():
+    """A forced turn that falls through to the default message appended no
+    ai row for this turn (primary raised/timed out): scheduling it as
+    history-backed would mark an older, already delivered reply as the
+    pending draft and could exclude it from scoped history forever."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        QQDeliveryPlan,
+        QQMessageBlock,
+        QQReplyOutcome,
+        QQReplyRequest,
+    )
+    from plugin.plugins.qq_auto_reply.reply_pipeline import (
+        QQReplyPipelineRunner,
+    )
+
+    captured = {}
+
+    async def _schedule(**kwargs):
+        captured.update(kwargs)
+
+    plugin = SimpleNamespace(
+        reply_buffer_service=SimpleNamespace(schedule_reply=_schedule),
+        _build_session_key=(
+            lambda *, sender_id, is_group, group_id: f"group:{group_id}"
+        ),
+        _emit_log=lambda *a, **k: None,
+    )
+    runner = QQReplyPipelineRunner(plugin)
+    request = QQReplyRequest(
+        message_text="hi", sender_id="1", is_group=True, group_id="7788",
+        persist_memory=True,
+    )
+    plan = QQDeliveryPlan(
+        target_type="group", target_id="7788",
+        blocks=[QQMessageBlock(text="嗯嗯~")],
+    )
+    outcome = QQReplyOutcome(
+        action="reply", reply_text="嗯嗯~", used_default_message=True,
+        raw_reply_text="嗯嗯~",
+    )
+    await runner._run_delivery(plan, request, outcome, context=None)
+    assert captured["history_backed"] is False
+
+    # A normal generated reply stays history-backed.
+    captured.clear()
+    normal = QQReplyOutcome(
+        action="reply", reply_text="真回复", raw_reply_text="真回复",
+    )
+    await runner._run_delivery(plan, request, normal, context=None)
+    assert captured["history_backed"] is True
 
 
 @pytest.mark.asyncio
@@ -3206,6 +3284,153 @@ async def test_prompt_change_discard_failure_marks_sticky_retry():
 
 
 @pytest.mark.asyncio
+async def test_failed_settlement_keeps_snapshot_for_pending_rollback():
+    """When the settings save also failed, the opt-out settlement must not
+    drop a failed snapshot: the queued rollback restores those turns
+    (collected under previously persisted consent). Without a pending
+    rollback the fail-closed drop still applies."""
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    async def _lock(session_key, fn):
+        return await fn()
+
+    def _session(rollback_pending):
+        return {
+            "is_group": True, "group_id": "7788", "her_name": "Neko",
+            "pending_settle_buckets": {"1": [{"role": "user", "content": []}]},
+            "pending_settle_labels": {"1": "一"},
+            "pending_member_settle": True,
+            **(
+                {"member_settle_rollback_pending": True}
+                if rollback_pending else {}
+            ),
+        }
+
+    ud = _session(True)
+    plugin = SimpleNamespace(
+        _user_sessions={"group:7788": ud},
+        _run_with_session_lock=_lock,
+        logger=MagicMock(),
+    )
+    service = QQSessionMemoryService.__new__(QQSessionMemoryService)
+    service.plugin = plugin
+    service._flush_member_buckets = AsyncMock(return_value=["1"])
+    await service.settle_member_buckets_on_disable()
+    assert ud["pending_settle_buckets"]  # kept for the rollback
+    assert ud["pending_settle_labels"]
+
+    # No pending rollback: opt-out semantics drop the failed snapshot.
+    ud2 = _session(False)
+    plugin._user_sessions = {"group:7788": ud2}
+    await service.settle_member_buckets_on_disable()
+    assert "pending_settle_buckets" not in ud2
+    assert "pending_member_settle" not in ud2
+
+
+@pytest.mark.asyncio
+async def test_cross_group_section_removed_when_consent_revoked():
+    """The cross-group section is built before later context awaits; if the
+    opt-in is switched off (or rolled back after a failed save) during
+    them, the section must be stripped before generation."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import QQInstructionBundle
+    from plugin.plugins.qq_auto_reply.session_instruction_service import (
+        QQSessionInstructionService,
+    )
+
+    plugin = SimpleNamespace(
+        _qq_settings={"allow_cross_group_context": True},
+        _user_sessions={
+            "group:1": {
+                "is_group": True, "group_id": "1",
+                "session": SimpleNamespace(_conversation_history=[
+                    SimpleNamespace(role="user", content="别的群在聊烤肉"),
+                ]),
+            },
+        },
+        i18n=SimpleNamespace(t=lambda key, default="", **kw: default),
+    )
+    service = QQSessionInstructionService.__new__(QQSessionInstructionService)
+    service.plugin = plugin
+    sections: list[str] = []
+    section = service._append_cross_group_section(sections, "7788", True)
+    assert section and section in sections
+    assert "烤肉" in section
+
+    # Post-await revocation: the node strips the exact section text.
+    from plugin.plugins.qq_auto_reply.reply_context_node import (
+        QQReplyContextNode,
+    )
+
+    node = QQReplyContextNode.__new__(QQReplyContextNode)
+    node.plugin = SimpleNamespace(
+        _qq_settings=plugin._qq_settings, logger=MagicMock(),
+    )
+    separator = chr(10) * 2
+    prompt = "前段" + separator + section + separator + "后段"
+    # Still consented: untouched.
+    assert node._strip_cross_group_if_revoked(prompt, section) == prompt
+    plugin._qq_settings["allow_cross_group_context"] = False
+    stripped = node._strip_cross_group_if_revoked(prompt, section)
+    assert "烤肉" not in stripped
+    assert "前段" in stripped and "后段" in stripped
+
+
+
+@pytest.mark.asyncio
+async def test_discard_cancels_pending_buffered_reply():
+    """A teardown discard (prompt/character change) must resolve the
+    in-flight delayed reply first: otherwise the buffer task can deliver
+    after the session is gone and its unmark finds no user_data, leaving a
+    delivered reply permanently excluded from scoped memory."""
+    from plugin.plugins.qq_auto_reply.reply_buffer_service import (
+        PendingReply,
+        QQReplyBufferService,
+    )
+    from plugin.plugins.qq_auto_reply.session_runtime_service import (
+        QQSessionRuntimeService,
+    )
+
+    draft = SimpleNamespace(type="ai", content="草稿")
+    ud = {
+        "is_group": True, "memory_enabled": False,
+        "session": SimpleNamespace(
+            _conversation_history=[draft], close=AsyncMock(),
+        ),
+        "provisional_draft_rows": [draft],
+        "undelivered_draft_rows": [draft],
+    }
+    plugin = SimpleNamespace(
+        _user_sessions={"group:7788": ud},
+        logger=MagicMock(),
+    )
+    buffer_service = QQReplyBufferService.__new__(QQReplyBufferService)
+    buffer_service.plugin = plugin
+    pending = PendingReply(
+        first_text="草稿", wait_seconds=999, sender_id="1",
+        is_group=True, group_id="7788",
+    )
+    pending.draft_rows = [draft]
+    pending.task = asyncio.create_task(asyncio.sleep(999))
+    buffer_service._pending = {"group:7788": pending}
+    plugin.reply_buffer_service = buffer_service
+
+    runtime = QQSessionRuntimeService.__new__(QQSessionRuntimeService)
+    runtime.plugin = plugin
+    assert await runtime.discard_session("group:7788", reason="prompt") is True
+    # Bounded wait: a discard that fails to cancel would otherwise hang the
+    # suite on the 999s sleep instead of failing.
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(pending.task, timeout=1.0)
+    assert pending.task.cancelled()
+    assert "group:7788" not in buffer_service._pending
+    # The draft stays excluded (never delivered) but the barrier is lifted.
+    assert ud["provisional_draft_rows"] == []
+    assert ud["undelivered_draft_rows"] == [draft]
+
+
+@pytest.mark.asyncio
 async def test_member_turn_recorded_once_even_on_empty_generation():
     """Member-turn collection binds to 'the session accepted the human
     row', not to a nonempty reply: an empty generation (fallback empty
@@ -3262,6 +3487,20 @@ async def test_member_turn_recorded_once_even_on_empty_generation():
     service._record_scoped_mentions_best_effort = AsyncMock()
     result = await service.run_primary_session_call(context)
     assert result.reply_text == "正常回复"
+    record.assert_called_once()
+
+    # A raising/timing-out stream already appended the human row: the
+    # recorder must still run (exception-safe point) without masking the
+    # original error.
+    record.reset_mock()
+    plugin.session_runtime_service.discard_session = AsyncMock(return_value=True)
+
+    async def _boom(**kwargs):
+        raise asyncio.TimeoutError()
+
+    service._run_session_generation = _boom
+    result = await service.run_primary_session_call(context)
+    assert result.timed_out is True
     record.assert_called_once()
 
 

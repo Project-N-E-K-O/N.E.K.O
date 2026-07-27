@@ -110,6 +110,21 @@ class QQSessionRuntimeService:
         # flag 打成 False，但 cutoff 前的已授权缓冲还在等排队的 OFF 结算——
         # 此刻 pop+close 会销毁唯一副本。放行后 finalize 因 flag False 返回
         # False，走下面的保留分支，会话留给转变任务按 cutoff 结算。
+        # 在途的延迟回复必须先定局：会话被销毁后 buffer 任务仍可能成功
+        # 送出回复，而 _clear_undelivered_marks 已无 user_data 可更新——
+        # 参与者真收到的回复会永久缺席 scoped 记忆。这里取消它（与
+        # stop_runtime 同口径：草稿保持未投递、屏障解除），再结算。
+        buffer_service = getattr(self.plugin, "reply_buffer_service", None)
+        pending_map = getattr(buffer_service, "_pending", None)
+        if isinstance(pending_map, dict):
+            pending = pending_map.pop(session_key, None)
+            if pending is not None:
+                task = getattr(pending, "task", None)
+                if task is not None and not task.done():
+                    task.cancel()
+                buffer_service._settle_provisional(
+                    self.plugin._user_sessions.get(session_key), pending,
+                )
         peek = self.plugin._user_sessions.get(session_key)
         finalized = False
         if peek and (

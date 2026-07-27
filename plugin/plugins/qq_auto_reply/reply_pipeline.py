@@ -278,7 +278,10 @@ class QQReplyPipelineRunner:
                 group_id=request.group_id or "",
                 extra_count=fwd_count,
                 history_backed=not bool(
-                    getattr(outcome, "used_fallback", False) if outcome else False
+                    (
+                        getattr(outcome, "used_fallback", False)
+                        or getattr(outcome, "used_default_message", False)
+                    ) if outcome else False
                 ),
                 mention_context=context,
                 consented=bool(
@@ -300,6 +303,7 @@ class QQReplyPipelineRunner:
                 and request.is_group
                 and outcome is not None
                 and not getattr(outcome, "used_fallback", False)
+                and not getattr(outcome, "used_default_message", False)
             ):
                 session_key = self.plugin._build_session_key(
                     sender_id=request.sender_id,
@@ -317,6 +321,7 @@ class QQReplyPipelineRunner:
             and request.is_group
             and outcome is not None
             and not getattr(outcome, "used_fallback", False)
+            and not getattr(outcome, "used_default_message", False)
         ):
             # 直投失败（合成轮/无 buffer 的 history-backed 回复）：ai 行已
             # 躺在共享历史里，不记名单的话下一次 digest/finalize 会把没

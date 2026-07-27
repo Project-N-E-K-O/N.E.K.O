@@ -63,6 +63,9 @@ class QQInstructionBundle:
     memory_context_used: bool
     core_memory_text: str
     scene_mode: str
+    # 跨群上下文段原文（未注入时为空）：consent 是运行时开关，构建后到
+    # 生成前的 await 窗口里可能被关掉/回滚，届时按原文从 prompt 中摘除。
+    cross_group_section: str = ""
 
 
 @dataclass(slots=True)

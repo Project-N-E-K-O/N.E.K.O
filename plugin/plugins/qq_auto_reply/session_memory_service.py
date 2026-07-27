@@ -396,6 +396,7 @@ class QQSessionMemoryService:
                 group_id = str(current.get("group_id") or "").strip()
                 her_name = current.get("her_name")
                 snapshot = current.get("pending_settle_buckets") or {}
+                failed: list[str] = []
                 if group_id and her_name and snapshot:
                     failed = await self._flush_member_buckets(
                         current, group_id=group_id, her_name=her_name,
@@ -409,6 +410,15 @@ class QQSessionMemoryService:
                             f"{len(failed)} 个成员 bucket 结算失败，按 opt-out "
                             f"丢弃"
                         )
+                if failed and current.get("member_settle_rollback_pending"):
+                    # 设置写盘失败的回滚正在排队：这些轮次是在先前已保存
+                    # 的 consent 下收集的，结算又失败——清掉快照会让回滚
+                    # 任务无从恢复、永久丢失。保留待回滚合并。
+                    self.plugin.logger.warning(
+                        f"[member_memory_disabled] 群 {group_id} 结算失败且"
+                        f"回滚待处理，保留快照待恢复"
+                    )
+                    return
                 # 只清快照与标记；re-enable 后新授权轮写入的活 bucket
                 # 不受迟到结算任务影响。
                 current.pop("pending_settle_buckets", None)

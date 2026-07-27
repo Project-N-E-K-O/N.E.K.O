@@ -84,6 +84,36 @@ class QQReplyContextNode:
             self.plugin.logger.warning(f"QQ 长期记忆召回失败: {e}")
             return ""
 
+    def _strip_cross_group_if_revoked(
+        self, system_prompt: str, cross_group_section: str,
+    ) -> str:
+        """Remove the cross-group section when the opt-in is no longer live.
+
+        The section is composed before the login/bootstrap/recall awaits;
+        the switch can be turned off — or rolled back after a failed
+        settings write — during them. Generating with the stale prompt
+        would expose other groups' content under consent that is not in
+        effect."""
+        if not cross_group_section:
+            return system_prompt
+        if bool(
+            (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                "allow_cross_group_context", False,
+            )
+        ):
+            return system_prompt
+        separator = "\n\n"
+        for candidate in (
+            separator + cross_group_section,
+            cross_group_section + separator,
+            cross_group_section,
+        ):
+            if candidate in system_prompt:
+                system_prompt = system_prompt.replace(candidate, "", 1)
+                break
+        self.plugin.logger.info("跨群上下文已在生成前撤除（授权已关闭）")
+        return system_prompt
+
     async def build(
         self,
         *,
@@ -290,6 +320,10 @@ class QQReplyContextNode:
             )
         )
 
+        system_prompt = self._strip_cross_group_if_revoked(
+            system_prompt,
+            getattr(instruction_bundle, "cross_group_section", ""),
+        )
         self.plugin._emit_log("INFO", f"[UserMsg] (system {len(system_prompt)}字) {prompt_message[:200]}")
 
         return QQReplyContext(

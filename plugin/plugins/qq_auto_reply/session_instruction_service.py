@@ -590,12 +590,15 @@ class QQSessionInstructionService:
                 lines.append(f"- 群 {gid} 最近在聊: {last_msg}")
             else:
                 lines.append(f"- 群 {gid} 有活跃对话")
-        if lines:
-            sections.append(
-                self.plugin.i18n.t("prompts.cross_group",
-                    default="## 其他群聊动态（Cross-Group Context）\n以下是其他群最近的话题，如果相关可以在回复中少量自然提及，但不要生硬插入：\n")
-                + "\n".join(lines[:5])
-            )
+        if not lines:
+            return ""
+        section = (
+            self.plugin.i18n.t("prompts.cross_group",
+                default="## 其他群聊动态（Cross-Group Context）\n以下是其他群最近的话题，如果相关可以在回复中少量自然提及，但不要生硬插入：\n")
+            + "\n".join(lines[:5])
+        )
+        sections.append(section)
+        return section
 
     def _append_blacklist_section(self, sections: list[str]) -> None:
         """追加黑名单词汇，告诉 LLM 不要在回复中使用"""

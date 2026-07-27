@@ -101,6 +101,13 @@ class QQSettingsService:
                 # 活 bucket 等正常结算。恢复必须与在途结算串行（转变锁+
                 # 会话锁）：无锁复制会与 awaiting HTTP 的 flush 任务共享
                 # 快照对象，flush 成功只清旧对象、live 副本残留重复提取。
+                # 同步打标（早于结算任务拿转变锁）：结算失败时不得按
+                # opt-out 丢弃快照——回滚任务随后要用它恢复。
+                for ud in list(
+                    getattr(self.plugin, "_user_sessions", {}).values()
+                ):
+                    if ud.get("is_group"):
+                        ud["member_settle_rollback_pending"] = True
                 self._spawn_group_memory_sync_task(
                     self._restore_member_snapshots()
                 )
@@ -139,6 +146,7 @@ class QQSettingsService:
                     ud = self.plugin._user_sessions.get(key)
                     if not isinstance(ud, dict) or not ud.get("is_group"):
                         return
+                    ud.pop("member_settle_rollback_pending", None)
                     snapshot = ud.pop("pending_settle_buckets", None)
                     snap_labels = ud.pop("pending_settle_labels", None) or {}
                     ud.pop("pending_member_settle", None)
