@@ -56,18 +56,46 @@ def _mentions_node(call: ast.Call) -> bool:
     return False
 
 
+# 全部 subprocess 入口，不只是 run：漏一个（比如 check_call）就等于给新
+# harness 留了一条绕过这条契约、退回 node -e 的合法路径（Codex P2）。
+_ENTRY_POINTS = frozenset({"run", "Popen", "check_output", "check_call", "call"})
+
+
+def _subprocess_bindings(tree: ast.AST) -> tuple[set[str], set[str]]:
+    """本文件里哪些名字指向 subprocess。
+
+    模块名不一定叫 subprocess：``import subprocess as sp`` 与
+    ``from subprocess import run`` 都是常见写法，只认字面量 "subprocess."
+    等于把这两条路留给新 harness 当后门（Codex P2）。
+    """
+    module_aliases = {"subprocess"}
+    direct_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "subprocess":
+                    module_aliases.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module == "subprocess":
+            for alias in node.names:
+                if alias.name in _ENTRY_POINTS:
+                    direct_names.add(alias.asname or alias.name)
+    return module_aliases, direct_names
+
+
 def _subprocess_run_calls(tree: ast.AST):
+    module_aliases, direct_names = _subprocess_bindings(tree)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        name = getattr(func, "attr", None) or getattr(func, "id", None)
-        # 全部 subprocess 入口，不只是 run：漏一个（比如 check_call）就等于给
-        # 新 harness 留了一条绕过这条契约、退回 node -e 的合法路径（Codex P2）。
-        if name in {"run", "Popen", "check_output", "check_call", "call"}:
-            module = getattr(getattr(func, "value", None), "id", None)
-            if module == "subprocess" or name == "Popen":
+        if isinstance(func, ast.Attribute):
+            if (
+                func.attr in _ENTRY_POINTS
+                and getattr(func.value, "id", None) in module_aliases
+            ):
                 yield node
+        elif isinstance(func, ast.Name) and func.id in direct_names:
+            yield node
 
 
 def test_node_harnesses_go_through_the_shared_launcher():
