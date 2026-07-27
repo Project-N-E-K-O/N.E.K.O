@@ -2234,6 +2234,54 @@ async def test_retro_replay_honors_receipt_time_policy():
     assert len(user_data["undelivered_draft_rows"]) == excluded_before
 
 
+@pytest.mark.asyncio
+async def test_run_delivery_direct_branch_records_mentions_on_success():
+    """The direct-delivery branch (no buffer service / skip_buffer) must
+    record scoped mentions after a confirmed delivery — the wiring itself,
+    not just the underlying recorder, needs a pin."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        QQDeliveryPlan,
+        QQDeliveryResult,
+        QQMessageBlock,
+        QQReplyOutcome,
+    )
+    from plugin.plugins.qq_auto_reply.reply_pipeline import (
+        QQReplyPipelineRunner,
+    )
+
+    plugin = SimpleNamespace(
+        reply_buffer_service=None,
+        reply_delivery_node=SimpleNamespace(
+            deliver=AsyncMock(return_value=QQDeliveryResult(
+                delivered=True, target_type="group", target_id="7788",
+                reply_text="回复",
+            )),
+        ),
+        reply_generation_service=SimpleNamespace(
+            record_scoped_mentions_on_delivery=AsyncMock(),
+        ),
+    )
+    runner = QQReplyPipelineRunner(plugin)
+    context = SimpleNamespace(is_group=True, group_id="7788")
+    outcome = QQReplyOutcome(action="reply", reply_text="回复")
+    plan = QQDeliveryPlan(
+        target_type="group", target_id="7788",
+        blocks=[QQMessageBlock(text="回复")],
+    )
+    await runner._run_delivery(plan, None, outcome, context=context)
+    plugin.reply_generation_service.record_scoped_mentions_on_delivery.assert_awaited_once_with(
+        context, "回复",
+    )
+
+    # Failed delivery records nothing.
+    plugin.reply_generation_service.record_scoped_mentions_on_delivery.reset_mock()
+    plugin.reply_delivery_node.deliver = AsyncMock(return_value=QQDeliveryResult(
+        delivered=False, target_type="group", target_id="7788", reply_text=None,
+    ))
+    await runner._run_delivery(plan, None, outcome, context=context)
+    plugin.reply_generation_service.record_scoped_mentions_on_delivery.assert_not_awaited()
+
+
 def test_dispatcher_group_policy_snapshot_taken_before_first_await():
     """handle_group_message must read the group-memory policy before its
     first await (gate evaluate / interjection checks): a mid-processing
