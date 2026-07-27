@@ -51,11 +51,26 @@ def _input_texts(events):
     return texts
 
 
+async def _prompt_and_complete(client, *args, **kwargs):
+    task = asyncio.create_task(client.prompt_ephemeral(*args, **kwargs))
+    for _ in range(20):
+        if any(
+            event.get("type") == "response.create"
+            for event in _sent_events(client)
+        ):
+            break
+        await asyncio.sleep(0)
+    else:
+        raise AssertionError("prompt_ephemeral did not send response.create")
+    client._sweep_inject_rejection_handlers()
+    return await task
+
+
 @pytest.mark.unit
 async def test_prompt_ephemeral_injects_text_and_never_audio():
     client = _make_client()
 
-    delivered = await client.prompt_ephemeral(language="zh")
+    delivered = await _prompt_and_complete(client, language="zh")
 
     events = _sent_events(client)
     assert delivered is True
@@ -74,7 +89,7 @@ async def test_free_prompt_sends_native_image_before_text():
     client._latest_image_b64 = DUMMY_IMAGE_B64
     client._proactive_image_consumed = False
 
-    delivered = await client.prompt_ephemeral("describe what you notice")
+    delivered = await _prompt_and_complete(client, "describe what you notice")
 
     events = _sent_events(client)
     event_types = [event.get("type") for event in events]
@@ -88,14 +103,15 @@ async def test_free_prompt_sends_native_image_before_text():
 
 
 @pytest.mark.unit
-async def test_async_inject_rejection_returns_false_and_preserves_image():
+async def test_delayed_inject_rejection_returns_false_and_preserves_image():
     client = _make_client()
     client._latest_image_b64 = DUMMY_IMAGE_B64
     client._proactive_image_consumed = False
 
-    async def reject_after_send(_text, *, on_rejected):
+    async def reject_after_send(_text, *, on_rejected, on_completed):
         async def reject():
-            await asyncio.sleep(0)
+            # The rejection may arrive well after send_event() returned.
+            await asyncio.sleep(0.02)
             on_rejected("response_already_active")
 
         asyncio.create_task(reject())
@@ -116,7 +132,7 @@ async def test_standard_stepfun_uses_annotation_text_before_trigger():
     client._image_recognized_this_turn = True
     client._image_description = "画面里有一只猫。"
 
-    delivered = await client.prompt_ephemeral("start a conversation")
+    delivered = await _prompt_and_complete(client, "start a conversation")
 
     events = _sent_events(client)
     assert delivered is True

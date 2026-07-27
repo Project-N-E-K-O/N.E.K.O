@@ -373,6 +373,10 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # was optimistically pruned after send. Entries also self-expire to
         # avoid leaks if the server never acks.
         self._inject_rejection_handlers: Dict[str, Callable[[str], None]] = {}
+        # Matching success callbacks. A provider does not echo our client
+        # event_id on response.created, so response.done is the first lifecycle
+        # boundary that proves no asynchronous rejection can still arrive.
+        self._inject_completion_handlers: Dict[str, Callable[[], None]] = {}
         # One-shot gate for the no-event_id content fallback in
         # ``_route_inject_rejection``. True only between "a proactive inject
         # just sent its ``response.create``" and "that inject's outcome was
