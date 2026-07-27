@@ -539,9 +539,15 @@ async def soniox_asr_worker(
                         time.monotonic() - connected_at >= _SAFE_ROTATION_SECONDS
                         and len(replay_audio) <= replay_carryover_bytes
                     ):
-                        # No current-turn audio is buffered; a carried
-                        # inter-turn tail survives the rotation and is
-                        # replayed on the next connection like any reconnect.
+                        # No current-turn audio is buffered, so the buffer
+                        # holds at most a completed turn's carried tail.
+                        # Replaying that PCM on the planned fresh connection
+                        # would let the provider transcribe the finished
+                        # turn's final words as a new utterance, so drop it
+                        # here; unexpected-disconnect recovery still replays
+                        # the tail to protect the next turn's opening frames.
+                        replay_audio.clear()
+                        replay_carryover_bytes = 0
                         return "rotate"
                     await connection.send(json.dumps({"type": "keepalive"}))
                     continue

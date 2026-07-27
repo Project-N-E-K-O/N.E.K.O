@@ -4449,6 +4449,178 @@ async def test_soniox_retained_tail_does_not_complete_empty_turn(
     await _stop_worker(task, requests, responses, utterance_id=3)
 
 
+async def test_soniox_planned_rotation_drops_completed_turn_carryover(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(soniox, "_KEEPALIVE_SECONDS", 0.05)
+    first = _FakeWebSocket()
+    second = _FakeWebSocket()
+    connector = _FakeConnector(first, second)
+    monkeypatch.setattr(soniox.websockets, "connect", connector)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        soniox.soniox_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+        )
+    )
+    await _next_event(responses, "ready")
+    pcm1 = b"\x01\x00" * 160
+    await requests.put(
+        _AsrWorkerRequest(kind="audio", generation=0, utterance_id=1, audio=pcm1)
+    )
+    await _wait_until(lambda: pcm1 in first.sent)
+    await first.server_send(
+        {
+            "tokens": [
+                {"text": "first", "is_final": True},
+                {"text": "<end>", "is_final": True},
+            ]
+        }
+    )
+    assert (await _next_event(responses, "final")).text == "first"
+
+    # The buffer now holds only the completed turn's carried tail; the next
+    # keepalive timeout takes the planned rotation.
+    monkeypatch.setattr(soniox, "_SAFE_ROTATION_SECONDS", -1.0)
+    await _wait_until(lambda: len(connector.calls) == 2)
+    monkeypatch.setattr(soniox, "_SAFE_ROTATION_SECONDS", 10_000.0)
+    assert responses.empty()
+
+    pcm2 = b"\x02\x00" * 160
+    await requests.put(
+        _AsrWorkerRequest(kind="audio", generation=0, utterance_id=1, audio=pcm2)
+    )
+    await _wait_until(lambda: pcm2 in second.sent)
+    # The fresh connection must not replay the finished turn's PCM, or the
+    # provider could transcribe its final words as a duplicate utterance.
+    assert [
+        payload for payload in second.sent if isinstance(payload, bytes) and payload
+    ] == [pcm2]
+    await second.server_send(
+        {
+            "tokens": [
+                {"text": "second", "is_final": True},
+                {"text": "<end>", "is_final": True},
+            ]
+        }
+    )
+    final = await _next_event(responses, "final")
+    assert (final.utterance_id, final.text) == (2, "second")
+    await _stop_worker(task, requests, responses, utterance_id=3)
+
+
+async def test_soniox_unexpected_disconnect_still_replays_completed_turn_tail(
+    monkeypatch,
+) -> None:
+    first = _FakeWebSocket()
+    second = _FakeWebSocket()
+    connector = _FakeConnector(first, second)
+    monkeypatch.setattr(soniox.websockets, "connect", connector)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        soniox.soniox_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+        )
+    )
+    await _next_event(responses, "ready")
+    pcm = b"\x01\x00" * 160
+    await requests.put(
+        _AsrWorkerRequest(kind="audio", generation=0, utterance_id=1, audio=pcm)
+    )
+    await _wait_until(lambda: pcm in first.sent)
+    await first.server_send(
+        {
+            "tokens": [
+                {"text": "first", "is_final": True},
+                {"text": "<end>", "is_final": True},
+            ]
+        }
+    )
+    assert (await _next_event(responses, "final")).text == "first"
+    await first.server_end()
+
+    # An unexpected disconnect (not a planned rotation) keeps the carried
+    # tail so the next turn's opening frames cannot be replayed away.
+    await _wait_until(lambda: len(connector.calls) == 2)
+    await _wait_until(
+        lambda: any(isinstance(sent, bytes) and sent for sent in second.sent)
+    )
+    replayed = next(sent for sent in second.sent if isinstance(sent, bytes) and sent)
+    assert replayed == pcm
+    await second.server_send(
+        {
+            "tokens": [
+                {"text": "second", "is_final": True},
+                {"text": "<end>", "is_final": True},
+            ]
+        }
+    )
+    final = await _next_event(responses, "final")
+    assert (final.utterance_id, final.text) == (2, "second")
+    await _stop_worker(task, requests, responses, utterance_id=3)
+
+
+async def test_soniox_rotation_deferred_while_current_turn_audio_buffered(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(soniox, "_KEEPALIVE_SECONDS", 0.05)
+    first = _FakeWebSocket()
+    connector = _FakeConnector(first)
+    monkeypatch.setattr(soniox.websockets, "connect", connector)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        soniox.soniox_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+        )
+    )
+    await _next_event(responses, "ready")
+    pcm = b"\x01\x00" * 160
+    await requests.put(
+        _AsrWorkerRequest(kind="audio", generation=0, utterance_id=1, audio=pcm)
+    )
+    await _wait_until(lambda: pcm in first.sent)
+    monkeypatch.setattr(soniox, "_SAFE_ROTATION_SECONDS", -1.0)
+    sent_before = len(first.sent)
+    # With current-turn audio buffered the rotation gate must defer and send
+    # keepalives on the existing connection instead of rotating. Waiting for
+    # two keepalives guarantees at least one gate evaluation ran after the
+    # rotation threshold was lowered.
+    await _wait_until(
+        lambda: sum(
+            1
+            for payload in first.sent[sent_before:]
+            if isinstance(payload, str)
+            and json.loads(payload).get("type") == "keepalive"
+        )
+        >= 2,
+        timeout=2.0,
+    )
+    assert len(connector.calls) == 1
+    monkeypatch.setattr(soniox, "_SAFE_ROTATION_SECONDS", 10_000.0)
+    await first.server_send(
+        {
+            "tokens": [
+                {"text": "kept", "is_final": True},
+                {"text": "<end>", "is_final": True},
+            ]
+        }
+    )
+    assert (await _next_event(responses, "final")).text == "kept"
+    await _stop_worker(task, requests, responses, utterance_id=2)
+
+
 async def test_soniox_reconnect_replays_frame_cancelled_mid_send(monkeypatch) -> None:
     send_suspended = asyncio.Event()
 
