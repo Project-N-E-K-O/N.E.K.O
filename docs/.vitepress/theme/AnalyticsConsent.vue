@@ -20,7 +20,9 @@ const messages = {
     reject: 'Decline',
     settings: 'Cookie settings',
     close: 'Close',
-    privacy: 'Privacy',
+    detailsPrefix: 'If you would like to learn more, please see our ',
+    privacy: 'Privacy Policy',
+    detailsSuffix: '.',
     footer: 'Privacy options',
   },
   'zh-CN': {
@@ -30,7 +32,9 @@ const messages = {
     reject: '拒绝',
     settings: 'Cookie 设置',
     close: '关闭',
-    privacy: '隐私',
+    detailsPrefix: '如需了解更多信息，请查看我们的',
+    privacy: '隐私政策',
+    detailsSuffix: '。',
     footer: '隐私选项',
   },
   ja: {
@@ -40,7 +44,9 @@ const messages = {
     reject: '拒否',
     settings: 'Cookie 設定',
     close: '閉じる',
-    privacy: 'プライバシー',
+    detailsPrefix: '詳しくは、',
+    privacy: 'プライバシーポリシー',
+    detailsSuffix: 'をご覧ください。',
     footer: 'プライバシー設定',
   },
 } as const
@@ -138,9 +144,12 @@ onBeforeUnmount(() => {
       <div class="NekoAnalyticsConsent-copy">
         <p id="neko-analytics-consent-description">
           {{ copy.body }}
-          <a class="NekoAnalyticsConsent-privacy" :href="privacyPath">
-            {{ copy.privacy }}
-          </a>
+          <span class="NekoAnalyticsConsent-details">
+            {{ copy.detailsPrefix }}<a
+              class="NekoAnalyticsConsent-privacy"
+              :href="privacyPath"
+            >{{ copy.privacy }}</a>{{ copy.detailsSuffix }}
+          </span>
         </p>
       </div>
 
@@ -158,7 +167,7 @@ onBeforeUnmount(() => {
         <button
           ref="rejectButton"
           class="NekoAnalyticsConsent-button"
-          :class="{ 'NekoAnalyticsConsent-button--primary': choice === 'denied' }"
+          :class="{ 'NekoAnalyticsConsent-button--selected': choice === 'denied' }"
           type="button"
           :aria-pressed="choice === 'denied'"
           @click="reject"
@@ -227,10 +236,13 @@ onBeforeUnmount(() => {
 }
 
 .NekoAnalyticsConsent-privacy {
-  margin-left: 6px;
   color: #0369a1;
   text-decoration: underline;
   white-space: nowrap;
+}
+
+.NekoAnalyticsConsent-details {
+  margin-left: 6px;
 }
 
 .NekoAnalyticsConsent-actions {
@@ -245,19 +257,23 @@ onBeforeUnmount(() => {
   min-width: 124px;
   min-height: 46px;
   padding: 10px 18px;
-  border: 1px solid #1e293b;
+  border: 1px solid #38bdf8;
   border-radius: 0;
-  color: #f8fafc;
-  background: #1e293b;
+  color: #fff;
+  background: #0ea5e9;
   cursor: pointer;
   font-size: 14px;
   font-weight: 700;
 }
 
 .NekoAnalyticsConsent-button:hover {
-  border-color: #94a3b8;
+  border-color: #7dd3fc;
   color: #fff;
-  background: #232c48;
+  background: #0284c7;
+}
+
+.NekoAnalyticsConsent-button--selected {
+  box-shadow: inset 0 0 0 2px #1e293b;
 }
 
 .NekoAnalyticsConsent-button--primary {
