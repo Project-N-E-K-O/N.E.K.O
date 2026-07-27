@@ -566,14 +566,35 @@ class QQSessionMemoryService:
                     member_labels.pop(sender_id, None)
                 return None
 
+        # 冲刷进行中标记：设置侧的快照合并看它决定"追加进这一代"还是
+        # "另起一代"。往正在飞的那一代里追加会被它成功后的整桶 pop 带走。
+        user_data["member_flush_in_progress"] = True
         flush_jobs = [
             _flush_one_member(sender_id, member_messages)
             for sender_id, member_messages in list(member_buckets.items())
             if sender_id and member_messages
         ]
         if not flush_jobs:
+            self._finish_member_flush_generation(user_data)
             return []
-        return [sid for sid in await asyncio.gather(*flush_jobs) if sid]
+        try:
+            return [sid for sid in await asyncio.gather(*flush_jobs) if sid]
+        finally:
+            self._finish_member_flush_generation(user_data)
+
+    @staticmethod
+    def _finish_member_flush_generation(user_data: dict[str, Any]) -> None:
+        """Promote the epoch that accumulated while a flush was in flight."""
+        user_data.pop("member_flush_in_progress", None)
+        next_buckets = user_data.pop("pending_settle_buckets_next", None)
+        next_labels = user_data.pop("pending_settle_labels_next", None)
+        if next_buckets:
+            pending = user_data.setdefault("pending_settle_buckets", {})
+            for sender, msgs in next_buckets.items():
+                pending.setdefault(sender, []).extend(msgs)
+            user_data["pending_member_settle"] = True
+        if next_labels:
+            user_data.setdefault("pending_settle_labels", {}).update(next_labels)
 
     async def settle_member_buckets_on_disable(self) -> None:
         """group_member_memory_enabled ON->OFF transition: settle buckets

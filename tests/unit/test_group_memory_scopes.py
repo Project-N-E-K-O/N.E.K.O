@@ -2485,6 +2485,9 @@ async def test_default_reply_is_not_history_backed():
 
     plugin = SimpleNamespace(
         reply_buffer_service=SimpleNamespace(schedule_reply=_schedule),
+        session_memory_service=SimpleNamespace(
+            record_tail_undelivered_ai_row=MagicMock(),
+        ),
         _build_session_key=(
             lambda *, sender_id, is_group, group_id: f"group:{group_id}"
         ),
@@ -9426,26 +9429,32 @@ async def test_session_metadata_counts_as_a_cross_group_dependency():
 
     service = QQReplyGenerationService.__new__(QQReplyGenerationService)
     service.plugin = plugin
+    # A genuinely PRIVATE context: both helpers used to bail out on
+    # is_group=False, so this is the branch private replies actually take.
+    # (An earlier version of this test flipped is_group to True before
+    # calling them, which exercised a path they never reach.)
     context = SimpleNamespace(
         is_group=False, core_memory_text="", recalled_memory_text="",
-        cross_group_section="", cross_session_section="## 活跃会话\n- 群聊 9900",
+        cross_group_section="",
+        cross_session_section="## 活跃会话" + chr(10) + "- 群聊 9900",
         used_member_subject=False,
     )
-    # Private turn, no topic section: the dependency now comes from the
-    # sessions block.
-    snapshot = service._consent_dependency_snapshot(
-        SimpleNamespace(**{**context.__dict__, "is_group": True})
-    )
+    snapshot = service._consent_dependency_snapshot(context)
     assert snapshot.get("allow_cross_group_context") is True
 
-    # Live revocation strips it from the prompt before generation.
+    # Live revocation strips it from the private prompt before generation.
     plugin._qq_settings["allow_cross_group_context"] = False
     prompt, _ = service._sanitize_for_live_consent(
-        SimpleNamespace(**{**context.__dict__, "is_group": True}),
-        "正文\n\n## 活跃会话\n- 群聊 9900",
+        context,
+        "正文" + chr(10) * 2 + "## 活跃会话" + chr(10) + "- 群聊 9900",
         "",
     )
     assert "9900" not in prompt
+
+    # A private turn without the block has no dependency at all.
+    plugin._qq_settings["allow_cross_group_context"] = True
+    plain = SimpleNamespace(**{**context.__dict__, "cross_session_section": ""})
+    assert service._consent_dependency_snapshot(plain) == {}
 
 
 @pytest.mark.asyncio
@@ -9604,3 +9613,281 @@ def test_cross_group_section_normalizes_the_current_group_id():
     sections = []
     assert service._append_cross_group_section(sections, "   ", True) == ""
     assert sections == []
+
+
+@pytest.mark.asyncio
+async def test_buffered_default_reply_still_replaces_the_primary_row():
+    """The marking used to sit after the buffering branch, so a buffered
+    default reply returned before it ran: the hidden raw row stayed
+    eligible for the digest and the delivered default was never added."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        QQDeliveryPlan,
+        QQMessageBlock,
+        QQReplyOutcome,
+        QQReplyRequest,
+    )
+    from plugin.plugins.qq_auto_reply.reply_pipeline import (
+        QQReplyPipelineRunner,
+    )
+
+    mark = MagicMock()
+    schedule = AsyncMock()
+    plugin = SimpleNamespace(
+        reply_buffer_service=SimpleNamespace(schedule_reply=schedule),
+        session_memory_service=SimpleNamespace(
+            record_tail_undelivered_ai_row=mark,
+        ),
+        _build_session_key=(
+            lambda *, sender_id, is_group, group_id: f"group:{group_id}"
+        ),
+        _emit_log=lambda *a, **k: None,
+        _qq_settings={"group_memory_enabled": True},
+        logger=MagicMock(),
+    )
+    runner = QQReplyPipelineRunner(plugin)
+    await runner._run_delivery(
+        QQDeliveryPlan(
+            target_type="group", target_id="7788",
+            blocks=[QQMessageBlock(text="嗯嗯~")],
+        ),
+        QQReplyRequest(
+            message_text="hi", sender_id="2046", is_group=True, group_id="7788",
+        ),
+        QQReplyOutcome(
+            action="reply", reply_text="嗯嗯~", raw_reply_text="<think>隐藏推理</think>",
+            used_default_message=True,
+        ),
+        context=SimpleNamespace(
+            is_group=True, group_id="7788", consent_snapshot={},
+        ),
+    )
+    mark.assert_called_once_with("group:7788")
+    # ...and the buffered delivery knows it has to append what was sent.
+    assert schedule.await_args.kwargs["used_fallback_reply"] is True
+
+
+@pytest.mark.asyncio
+async def test_silent_turn_still_schedules_memory_housekeeping():
+    """The drains hang off the success path only. A model that keeps
+    choosing silence in a busy group would never drain, so the member
+    queue discards at its hard limit and the backlog waits for a reset."""
+    from plugin.plugins.qq_auto_reply.reply_generation_service import (
+        QQReplyGenerationService,
+    )
+
+    ud = {"is_group": True, "memory_enabled": True}
+    cache = AsyncMock(return_value=0)
+    plugin = SimpleNamespace(
+        logger=MagicMock(),
+        _user_sessions={"group:7788": ud},
+        _cache_session_delta=cache,
+        session_bootstrap_service=SimpleNamespace(
+            ensure_generation_session=AsyncMock(return_value=ud),
+        ),
+        session_runtime_service=SimpleNamespace(
+            build_generation_session_key=lambda context: "group:7788",
+            prime_generation_session_state=lambda u, **kw: (
+                SimpleNamespace(_conversation_history=[]), [],
+            ),
+        ),
+        session_memory_service=SimpleNamespace(
+            record_group_member_turn=MagicMock(),
+        ),
+    )
+    service = QQReplyGenerationService.__new__(QQReplyGenerationService)
+    service.plugin = plugin
+
+    async def _silent(**kwargs):
+        ud["human_row_accepted"] = True
+        return ""
+
+    service._run_session_generation = _silent
+    result = await service.run_primary_session_call(SimpleNamespace(
+        is_group=True, group_id="7788", ephemeral_session=False,
+        group_scene_mode="", source_kind="incoming_group",
+        recalled_memory_used=False, recalled_memory_text="",
+    ))
+    assert result.allow_fallback is True
+    cache.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_post_delivery_settlement_survives_cancellation():
+    """A new message cancels the still-'active' buffer task. If that lands
+    while the settlement waits for the session lock, a reply the user
+    already received stays marked undelivered forever."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import QQDeliveryResult
+    from plugin.plugins.qq_auto_reply.reply_buffer_service import (
+        PendingReply,
+        QQReplyBufferService,
+    )
+
+    settled: list = []
+    lock_reached = asyncio.Event()
+
+    async def _slow_lock(session_key, coro_factory):
+        lock_reached.set()
+        await asyncio.sleep(0.05)
+        return await coro_factory()
+
+    service = QQReplyBufferService.__new__(QQReplyBufferService)
+    service.plugin = SimpleNamespace(
+        _emit_log=lambda *a, **k: None,
+        _user_sessions={"group:7788": {}},
+        _qq_settings={"group_memory_enabled": True},
+        _run_with_session_lock=_slow_lock,
+        reply_delivery_node=SimpleNamespace(
+            deliver=AsyncMock(return_value=QQDeliveryResult(
+                delivered=True, target_type="group", target_id="7788",
+                reply_text="回复",
+            )),
+        ),
+        reply_generation_service=SimpleNamespace(
+            append_fallback_ai_row=MagicMock(),
+            record_scoped_mentions_on_delivery=AsyncMock(),
+        ),
+    )
+    service._pending = {}
+    service._clear_undelivered_marks = lambda key, pending: settled.append(key)
+    service._settle_provisional = staticmethod(lambda ud, p: None)
+    service._consent_revoked_since = lambda pending: False
+
+    pending = PendingReply(
+        first_text="回复", wait_seconds=0.0, sender_id="2046",
+        is_group=True, group_id="7788",
+    )
+    pending.buffered_texts = ["回复"]
+    pending.message_count = 1
+    pending.wait_until = 0.0
+    pending.mention_context = SimpleNamespace(
+        is_group=True, group_id="7788", ephemeral_session=False,
+    )
+    service._pending["group:7788"] = pending
+
+    task = asyncio.create_task(
+        service._deliver_after_wait("group:7788", pending)
+    )
+    await lock_reached.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    # The cancellation propagates immediately, but the shielded bookkeeping
+    # keeps running: wait for it rather than sampling too early.
+    for _ in range(50):
+        if settled:
+            break
+        await asyncio.sleep(0.01)
+    assert settled == ["group:7788"]
+
+
+@pytest.mark.asyncio
+async def test_member_snapshot_merge_does_not_join_an_in_flight_flush():
+    """A second OFF while the first settlement is still awaiting its
+    request used to append into the very list being flushed; the in-flight
+    request carried only the old messages, and its success popped the whole
+    bucket — including the epoch that had just been merged in."""
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    ud = {
+        "pending_settle_buckets": {"2046": [{"role": "user", "content": "第一代"}]},
+        "pending_settle_labels": {"2046": "2046"},
+        "pending_member_settle": True,
+    }
+    bridge = MagicMock()
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    merged_during_flight: list = []
+
+    async def _post(*a, **k):
+        # While the request is in flight, a second OFF stamps its epoch.
+        assert ud.get("member_flush_in_progress") is True
+        ud.setdefault("pending_settle_buckets_next", {}).setdefault(
+            "2046", []
+        ).append({"role": "user", "content": "第二代"})
+        merged_during_flight.append(True)
+        return {"status": "ok"}
+
+    bridge.post_scoped_memory_history = _post
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(),
+    ))
+    failed = await service._flush_member_buckets(
+        ud, group_id="7788", her_name="Neko", reason="test",
+        buckets=ud["pending_settle_buckets"],
+        labels=ud["pending_settle_labels"],
+    )
+    assert failed == []
+    assert merged_during_flight == [True]
+    # The second epoch survived the first one's success and is queued.
+    assert ud["pending_settle_buckets"]["2046"] == [
+        {"role": "user", "content": "第二代"}
+    ]
+    assert ud.get("pending_member_settle") is True
+    assert "member_flush_in_progress" not in ud
+
+
+def test_delivered_text_includes_keyboard_labels():
+    """Every delivery path exposes the options (buttons, appended text, or
+    spoken), so a fact disclosed only in the choices was received."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        QQMessageBlock,
+        delivered_blocks_text,
+    )
+
+    text = delivered_blocks_text([
+        QQMessageBlock(text="要看看哪个？", keyboard="今天的日程|昨天的日志"),
+    ])
+    assert "要看看哪个？" in text
+    assert "今天的日程 / 昨天的日志" in text
+
+
+@pytest.mark.asyncio
+async def test_settings_stamp_detaches_epoch_from_an_in_flight_flush():
+    """The settings side of the same race: while a settlement request is
+    in flight, a second OFF must stamp its buckets into a NEW epoch. Merging
+    into the list being flushed loses them when that flush pops the bucket."""
+    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
+
+    ud = {
+        "is_group": True,
+        "group_member_memory_messages": {"2046": [{"role": "user", "content": "第二代"}]},
+        "group_member_memory_labels": {"2046": "小张(2046)"},
+        "pending_settle_buckets": {"2046": [{"role": "user", "content": "第一代"}]},
+        "pending_settle_labels": {"2046": "小张(2046)"},
+        "member_flush_in_progress": True,
+    }
+    plugin = SimpleNamespace(
+        _qq_settings={
+            "group_memory_enabled": True, "group_member_memory_enabled": True,
+        },
+        _user_sessions={"group:7788": ud},
+        _emit_log=lambda *a, **k: None,
+        logger=MagicMock(),
+        attention_service=None,
+        qq_client=None,
+        _running=False,
+        _startup_error=None,
+        _strategy_mode="",
+        _ensure_qq_client_initialized=lambda: None,
+    )
+    service = QQSettingsService.__new__(QQSettingsService)
+    service.plugin = plugin
+    service._enforce_attention_for_dynamic_mode = lambda: None
+    service._stamp_group_memory_transition = lambda *, enabled_after: None
+    service._spawn_group_memory_sync_task = lambda coro: coro.close()
+    service._rollback_unpersisted_memory_toggles = lambda persisted, **kw: None
+    service.persist_business_config = AsyncMock(return_value=True)
+
+    await service.save_settings(group_member_memory_enabled=False)
+
+    # The in-flight epoch is untouched; the new one waits its turn.
+    assert ud["pending_settle_buckets"]["2046"] == [
+        {"role": "user", "content": "第一代"}
+    ]
+    assert ud["pending_settle_buckets_next"]["2046"] == [
+        {"role": "user", "content": "第二代"}
+    ]
+    assert ud.get("pending_member_settle") is True

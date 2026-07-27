@@ -512,8 +512,20 @@ class QQSettingsService:
                     for sender, msgs in fresh_buckets.items():
                         # OFF→ON→OFF 连续切换时旧快照可能还没被结算：合并
                         # 而非覆盖，先前授权的轮次不得被孤儿化。
-                        pending.setdefault(sender, []).extend(msgs)
-                    ud.setdefault("pending_settle_labels", {}).update(fresh_labels)
+                        # ⚠️不能往**正在被冲刷**的那个列表里追加：上一代
+                        # 的结算请求已经带着旧内容发出去了，它成功后会整桶
+                        # pop 掉，新追加的这一代跟着一起消失。冲刷进行中就
+                        # 另起一代，各自独立结算。
+                        target = pending
+                        if ud.get("member_flush_in_progress"):
+                            target = ud.setdefault("pending_settle_buckets_next", {})
+                        target.setdefault(sender, []).extend(msgs)
+                    if ud.get("member_flush_in_progress"):
+                        ud.setdefault("pending_settle_labels_next", {}).update(
+                            fresh_labels
+                        )
+                    else:
+                        ud.setdefault("pending_settle_labels", {}).update(fresh_labels)
                     ud["pending_member_settle"] = True
         if group_memory_before != group_memory_after:
             self._stamp_group_memory_transition(enabled_after=group_memory_after)

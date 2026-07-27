@@ -559,7 +559,13 @@ class QQReplyBufferService:
             # 无锁追加会把 fallback 行插进那一轮的 human/ai 中间——随后的
             # 反扫会把这条"已投递"的行当成未投递草稿标掉（真回复被排除出
             # digest），而那一轮自己的未投递草稿反倒没被标。
-            await self.plugin._run_with_session_lock(session_key, _settle_delivered)
+            # shield：投递已经确认了，这之后的清理不能被取消。新消息到达
+            # 时 pre_buffer 会取消这个仍在"活跃"的任务，若取消落在拿锁的
+            # 等待里，撤未投递标、补 fallback 行、记 mention 全都不会跑——
+            # 用户已经收到的回复会被永久当成未投递、进不了 scoped 记忆。
+            await asyncio.shield(
+                self.plugin._run_with_session_lock(session_key, _settle_delivered)
+            )
             self._pending.pop(session_key, None)
             return
 

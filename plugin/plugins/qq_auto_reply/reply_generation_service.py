@@ -155,6 +155,11 @@ class QQReplyGenerationService:
                 self.plugin.logger.warning("AI 未生成回复，准备进入 fallback")
                 stage_trace.status = "empty"
                 stage_trace.metadata["reply_length"] = 0
+                # 静默轮也要跑记忆管家：排空调度挂在这条路径上，一个模型
+                # 一直选择沉默（或 fallback 也为空）的活跃群，否则群积压
+                # 与成员队列永远不会被排空——队列到硬顶开始丢，历史被复读
+                # 守卫重置时也没人抢救过。
+                await self._run_memory_housekeeping(session_key, user_data)
                 return QQModelResult(reply_text=None, source="session", allow_fallback=True, traces=[stage_trace])
 
             await self._sync_memory_after_success(
@@ -293,12 +298,33 @@ class QQReplyGenerationService:
 
             return "".join(reply_chunks)
 
+    async def _run_memory_housekeeping(
+        self, session_key: str, user_data: dict[str, Any],
+    ) -> None:
+        """Schedule the backlog / member-bucket drains for this session.
+
+        Shared by the success path and the silent-turn path: the drains are
+        the only thing standing between an always-busy group and a queue
+        that discards at its hard limit."""
+        try:
+            await self.plugin._cache_session_delta(session_key, user_data)
+        except Exception as exc:
+            self.plugin.logger.warning(f"记忆管家调度失败（忽略）: {exc}")
+
     def _consent_dependency_snapshot(self, context: Any) -> dict:
-        """Which consent switches this turn's prompt actually depends on."""
-        if not getattr(context, "is_group", False):
-            return {}
+        """Which consent switches this turn's prompt actually depends on.
+
+        Not group-only: with cross-group consent on, a PRIVATE reply's
+        sessions block can name other groups and contacts, so that turn
+        depends on the switch too."""
         settings = getattr(self.plugin, "_qq_settings", {}) or {}
         snapshot: dict = {}
+        if getattr(context, "cross_session_section", ""):
+            snapshot["allow_cross_group_context"] = bool(
+                settings.get("allow_cross_group_context", False)
+            )
+        if not getattr(context, "is_group", False):
+            return snapshot
         if getattr(context, "core_memory_text", "") or getattr(
             context, "recalled_memory_text", "",
         ):
@@ -309,9 +335,7 @@ class QQReplyGenerationService:
                 snapshot["group_member_memory_enabled"] = bool(
                     settings.get("group_member_memory_enabled", False)
                 )
-        if getattr(context, "cross_group_section", "") or getattr(
-            context, "cross_session_section", "",
-        ):
+        if getattr(context, "cross_group_section", ""):
             snapshot["allow_cross_group_context"] = bool(
                 settings.get("allow_cross_group_context", False)
             )
@@ -351,9 +375,15 @@ class QQReplyGenerationService:
         One place for all three switches so every generation path (primary
         session call, direct fallback) enforces the same boundary — the
         per-path rechecks kept diverging as new paths appeared."""
+        settings = getattr(self.plugin, "_qq_settings", {}) or {}
+        if not settings.get("allow_cross_group_context", False):
+            # 私聊轮也可能带会话清单段（跨群开关打开时它会列出其他群与
+            # 联系人）：非群轮不能在这里直接返回，否则那段撤不掉。
+            system_prompt = self._strip_section_text(
+                system_prompt, getattr(context, "cross_session_section", "") or "",
+            )
         if not getattr(context, "is_group", False):
             return system_prompt, recalled_text
-        settings = getattr(self.plugin, "_qq_settings", {}) or {}
         core_text = getattr(context, "core_memory_text", "") or ""
         if not settings.get("group_memory_enabled", False):
             # 群记忆关闭：scoped 召回与 bootstrap 段全部撤除。
@@ -367,11 +397,9 @@ class QQReplyGenerationService:
             recalled_text = ""
             system_prompt = self._strip_section_text(system_prompt, core_text)
         if not settings.get("allow_cross_group_context", False):
-            for section in (
-                getattr(context, "cross_group_section", "") or "",
-                getattr(context, "cross_session_section", "") or "",
-            ):
-                system_prompt = self._strip_section_text(system_prompt, section)
+            system_prompt = self._strip_section_text(
+                system_prompt, getattr(context, "cross_group_section", "") or "",
+            )
         return system_prompt, recalled_text
 
     @staticmethod

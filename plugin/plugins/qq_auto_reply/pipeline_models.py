@@ -43,6 +43,16 @@ def delivered_blocks_text(blocks) -> str:
         value = record or str(getattr(block, "text", "") or "").strip()
         if value:
             parts.append(value)
+        # 选项文案也是用户真的收到的内容（开放平台渲染成按钮，NapCat/私聊/
+        # 语音路径把它并进正文或念出来）：只记 text 会漏掉只在选项里披露的
+        # 事实。归一化口径与投递侧一致。
+        labels = " / ".join(
+            part.strip()
+            for part in str(getattr(block, "keyboard", "") or "").split("|")
+            if part.strip()
+        )
+        if labels:
+            parts.append(labels)
     return "\n".join(parts)
 
 
