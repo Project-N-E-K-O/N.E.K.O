@@ -941,6 +941,15 @@ async def test_step_server_vad_expires_stalled_turn_with_empty_final(
     )
     assert (await _next_event(responses, "utterance_started")).utterance_id == 1
 
+    # The endpoint event arms the stalled-turn deadline; the trailing timeout
+    # sentinel guarantees speech_stopped is fully processed (armed at the
+    # current fake clock) before the test advances the clock.
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_stopped", "item_id": "step-audio-1"}
+    )
+    await websocket.server_timeout()
+    await _wait_until(lambda: websocket.incoming.empty())
+
     now["seconds"] = step._STEP_PENDING_TURN_TIMEOUT_SECONDS + 1.0
     await websocket.server_send(
         {"type": "input_audio_buffer.speech_started", "item_id": "step-audio-2"}
@@ -1048,7 +1057,16 @@ async def test_step_server_vad_expires_stalled_turn_without_inbound_frames(
     )
     assert (await _next_event(responses, "utterance_started")).utterance_id == 1
 
-    # No further inbound frames arrive after speech_started. The bounded
+    # committed is the alternate endpoint event and must arm the deadline
+    # too. The trailing timeout sentinel guarantees it is fully processed at
+    # the current fake clock before the test advances the clock.
+    await websocket.server_send(
+        {"type": "input_audio_buffer.committed", "item_id": "step-audio-1"}
+    )
+    await websocket.server_timeout()
+    await _wait_until(lambda: websocket.incoming.empty())
+
+    # No further inbound frames arrive after the endpoint. The bounded
     # receive wait times out at the pending-turn deadline and the sweep must
     # emit the empty final on its own.
     now["seconds"] = step._STEP_PENDING_TURN_TIMEOUT_SECONDS + 1.0
@@ -1112,12 +1130,236 @@ async def test_step_receive_wait_wakes_at_pending_turn_deadline(
         {"type": "input_audio_buffer.speech_started", "item_id": "step-audio-1"}
     )
     assert (await _next_event(responses, "utterance_started")).utterance_id == 1
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_stopped", "item_id": "step-audio-1"}
+    )
 
-    # No commits, no provider frames, nothing: the empty final must still
-    # arrive once the deadline elapses.
+    # After the endpoint: no commits, no provider frames, nothing. The empty
+    # final must still arrive once the deadline elapses.
     stalled_final = await _next_event(responses, "final")
     assert (stalled_final.utterance_id, stalled_final.text) == (1, "")
     await _stop_worker(task, requests, responses, utterance_id=2)
+
+
+async def test_step_server_vad_continuous_speech_never_expires_before_endpoint(
+    monkeypatch,
+) -> None:
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        if isinstance(payload, str) and json.loads(payload)["type"] == "session.update":
+            await ws.server_send({"type": "session.updated"})
+
+    now = {"seconds": 0.0}
+    websocket = _FakeWebSocket(on_send=on_send)
+    monkeypatch.setattr(step.websockets, "connect", _FakeConnector(websocket))
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        step.step_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+            clock=lambda: now["seconds"],
+        )
+    )
+    await _next_event(responses, "ready")
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_started", "item_id": "step-audio-1"}
+    )
+    assert (await _next_event(responses, "utterance_started")).utterance_id == 1
+
+    # The user keeps speaking past the stalled-turn bound with no endpoint
+    # event. The sweep runs (forced by the timeout sentinel) but must not
+    # expire the still-live turn mid-speech.
+    now["seconds"] = step._STEP_PENDING_TURN_TIMEOUT_SECONDS + 1.0
+    await websocket.server_timeout()
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.delta",
+            "item_id": "step-audio-1",
+            "text": "still talking",
+        }
+    )
+    event = await _next_event(responses)
+    assert (event.kind, event.utterance_id, event.text) == (
+        "partial",
+        1,
+        "still talking",
+    )
+
+    # Even far past the original bound, the eventual real transcript must be
+    # delivered instead of a mid-speech empty final.
+    now["seconds"] = 3 * step._STEP_PENDING_TURN_TIMEOUT_SECONDS
+    await websocket.server_timeout()
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "step-audio-1",
+            "transcript": "still talking done",
+        }
+    )
+    event = await _next_event(responses)
+    assert (event.kind, event.utterance_id, event.text) == (
+        "final",
+        1,
+        "still talking done",
+    )
+    assert responses.empty()
+    await _stop_worker(task, requests, responses, utterance_id=2)
+
+
+async def test_step_server_vad_delta_after_endpoint_defers_expiry(
+    monkeypatch,
+) -> None:
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        if isinstance(payload, str) and json.loads(payload)["type"] == "session.update":
+            await ws.server_send({"type": "session.updated"})
+
+    now = {"seconds": 0.0}
+    websocket = _FakeWebSocket(on_send=on_send)
+    monkeypatch.setattr(step.websockets, "connect", _FakeConnector(websocket))
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        step.step_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+            clock=lambda: now["seconds"],
+        )
+    )
+    await _next_event(responses, "ready")
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_started", "item_id": "step-audio-1"}
+    )
+    assert (await _next_event(responses, "utterance_started")).utterance_id == 1
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_stopped", "item_id": "step-audio-1"}
+    )
+    await websocket.server_timeout()
+    await _wait_until(lambda: websocket.incoming.empty())
+
+    # A transcription delta binds the turn and proves it is alive: the armed
+    # deadline must no longer be able to expire it.
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.delta",
+            "item_id": "step-audio-1",
+            "text": "midway",
+        }
+    )
+    assert (await _next_event(responses, "partial")).text == "midway"
+
+    now["seconds"] = step._STEP_PENDING_TURN_TIMEOUT_SECONDS + 1.0
+    await websocket.server_timeout()
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "step-audio-1",
+            "transcript": "midway done",
+        }
+    )
+    event = await _next_event(responses)
+    assert (event.kind, event.utterance_id, event.text) == (
+        "final",
+        1,
+        "midway done",
+    )
+    assert responses.empty()
+    await _stop_worker(task, requests, responses, utterance_id=2)
+
+
+async def test_step_manual_expired_commit_quarantines_late_items(
+    monkeypatch,
+) -> None:
+    commit_count = 0
+
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        nonlocal commit_count
+        assert isinstance(payload, str)
+        message = json.loads(payload)
+        if message["type"] == "session.update":
+            await ws.server_send({"type": "session.updated"})
+        elif message["type"] == "input_audio_buffer.commit":
+            commit_count += 1
+            if commit_count == 2:
+                # The expired commit's completed arrives only after the next
+                # commit was sent, then the next commit's own transcription.
+                await ws.server_send(
+                    {
+                        "type": (
+                            "conversation.item.input_audio_transcription.completed"
+                        ),
+                        "item_id": "step-transcript-old",
+                        "transcript": "stale speech",
+                    }
+                )
+                await ws.server_send(
+                    {
+                        "type": "conversation.item.input_audio_transcription.delta",
+                        "item_id": "step-transcript-new",
+                        "text": "second",
+                    }
+                )
+                await ws.server_send(
+                    {
+                        "type": (
+                            "conversation.item.input_audio_transcription.completed"
+                        ),
+                        "item_id": "step-transcript-new",
+                        "transcript": "second answer",
+                    }
+                )
+
+    now = {"seconds": 0.0}
+    websocket = _FakeWebSocket(on_send=on_send)
+    monkeypatch.setattr(step.websockets, "connect", _FakeConnector(websocket))
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        step.step_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="manual"),
+            clock=lambda: now["seconds"],
+        )
+    )
+    await _next_event(responses, "ready")
+    await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=1))
+    await _wait_until(lambda: commit_count == 1)
+
+    now["seconds"] = step._STEP_PENDING_TURN_TIMEOUT_SECONDS + 1.0
+    await websocket.server_timeout()
+    stalled_final = await _next_event(responses, "final")
+    assert (stalled_final.utterance_id, stalled_final.text) == (1, "")
+
+    # A late delta for the expired commit arrives while no commit is pending.
+    # It must be tombstoned, not parked as bindable for the next commit. The
+    # timeout sentinel guarantees it is fully processed before the commit.
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.delta",
+            "item_id": "step-transcript-old",
+            "text": "stale",
+        }
+    )
+    await websocket.server_timeout()
+    await _wait_until(lambda: websocket.incoming.empty())
+    assert responses.empty()
+
+    await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=2))
+    event = await _next_event(responses)
+    assert (event.kind, event.utterance_id, event.text) == ("partial", 2, "second")
+    event = await _next_event(responses)
+    assert (event.kind, event.utterance_id, event.text) == (
+        "final",
+        2,
+        "second answer",
+    )
+    assert responses.empty()
+    await _stop_worker(task, requests, responses, utterance_id=3)
 
 
 async def test_step_receiver_skips_valid_non_dict_json_events(monkeypatch) -> None:

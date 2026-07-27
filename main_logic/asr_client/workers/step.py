@@ -38,7 +38,10 @@ _STEP_SUPPORTED_LANGUAGES = frozenset({"en", "zh"})
 _STEP_PENDING_TURN_TIMEOUT_SECONDS = 30.0
 
 _ItemKey: TypeAlias = tuple[int, int, int]
-_PendingTurn: TypeAlias = tuple[_ItemKey, float]
+# The second element is the stalled-turn deadline anchor: None while the
+# utterance is still live (provider turns before their endpoint event), the
+# arming clock reading once the turn only awaits its transcription.
+_PendingTurn: TypeAlias = tuple[_ItemKey, float | None]
 
 
 @dataclass(slots=True)
@@ -56,6 +59,7 @@ class _StepConnectionState:
     unbound_manual_item_ids: deque[str] = field(default_factory=deque)
     unbound_manual_item_id_set: set[str] = field(default_factory=set)
     finalized_item_ids: set[str] = field(default_factory=set)
+    manual_commit_expired: bool = False
     configured: asyncio.Event = field(default_factory=asyncio.Event)
     intentional_close: asyncio.Event = field(default_factory=asyncio.Event)
     error_sent: asyncio.Event = field(default_factory=asyncio.Event)
@@ -88,6 +92,14 @@ def _step_manual_item_key(
     if key is not None:
         return key
     if item_id not in state.unbound_manual_item_id_set:
+        if state.manual_commit_expired and not state.pending_manual_commits:
+            # A manual commit expired on this connection and no commit is
+            # pending, so this unknown item may be the expired commit's late
+            # transcription. Parking it would let the NEXT commit bind it and
+            # inject the previous speech as the new turn; tombstone it instead
+            # (bounded loss, consistent with the provider-mode expiry path).
+            _step_remember_finalized_item(state, item_id)
+            return None
         state.unbound_manual_item_ids.append(item_id)
         state.unbound_manual_item_id_set.add(item_id)
     _step_bind_pending_manual_items(state)
@@ -124,6 +136,31 @@ def _step_provider_item_key(
     return key
 
 
+def _step_arm_pending_turn_deadline(
+    state: _StepConnectionState,
+    item_id: str,
+) -> None:
+    """Start the stalled-turn clock for a provider turn at its endpoint.
+
+    Server VAD reports speech_stopped/committed once the utterance is sealed
+    and only the transcription is outstanding. Arming the deadline here (and
+    never at speech_started) means a user speaking continuously can never be
+    expired mid-speech; the first endpoint event wins and re-arming is a
+    no-op, mirroring the OpenAI worker's stalled-item deadline.
+    """
+
+    if not item_id:
+        return
+    key = state.provider_audio_item_keys.get(item_id)
+    if key is None:
+        return
+    for index, (pending_key, armed_at) in enumerate(state.pending_provider_turns):
+        if pending_key == key:
+            if armed_at is None:
+                state.pending_provider_turns[index] = (key, state.clock())
+            return
+
+
 async def _step_expire_stalled_pending_turns(
     response_queue: asyncio.Queue[_AsrWorkerEvent],
     state: _StepConnectionState,
@@ -131,16 +168,31 @@ async def _step_expire_stalled_pending_turns(
     """Complete pending turns whose transcription never arrived.
 
     Step correlates transcription item ids to turns purely by FIFO order. A
-    turn that never receives a transcription event would pin the queue head
-    forever and shift every later binding by one slot, so a stalled head is
-    evicted after a bounded age and completed with an empty final to let the
-    upstream utterance lifecycle converge.
+    turn whose endpoint passed without any transcription event would pin the
+    queue head forever and shift every later binding by one slot, so a
+    stalled head is evicted a bounded age after its deadline was armed and
+    completed with an empty final to let the upstream utterance lifecycle
+    converge. Provider turns arm at speech_stopped/committed, manual commits
+    at the commit itself; an unarmed head is still live speech and is never
+    expired (a transcription delta binds it and removes it from the queue).
     """
 
     now = state.clock()
     for pending in (state.pending_provider_turns, state.pending_manual_commits):
-        while pending and now - pending[0][1] >= _STEP_PENDING_TURN_TIMEOUT_SECONDS:
-            key, _ = pending.popleft()
+        while pending:
+            key, armed_at = pending[0]
+            if (
+                armed_at is None
+                or now - armed_at < _STEP_PENDING_TURN_TIMEOUT_SECONDS
+            ):
+                break
+            pending.popleft()
+            if pending is state.pending_manual_commits:
+                # Quarantine late manual items: transcription events for this
+                # expired commit carry an item id we cannot know in advance,
+                # so until the next commit opens a new binding window any
+                # unknown item id must be tombstoned instead of parked.
+                state.manual_commit_expired = True
             audio_item_id = state.provider_audio_ids_by_key.pop(key, None)
             if audio_item_id is not None:
                 _step_remember_finalized_item(state, audio_item_id)
@@ -161,15 +213,20 @@ def _step_receive_timeout(state: _StepConnectionState) -> float | None:
 
     The stalled-turn sweep otherwise runs only when another inbound frame
     arrives (or a manual commit is sent), so an unbounded receive wait would
-    let a provider that goes silent after speech_started pin the FIFO queue
-    forever. Bounding the wait with this value guarantees the sweep runs at
-    the deadline even with no further provider events.
+    let a provider that goes silent after an utterance endpoint pin the FIFO
+    queue forever. Bounding the wait with this value guarantees the sweep
+    runs at the deadline even with no further provider events. Only queue
+    heads count, and an unarmed head (still-live speech) never bounds the
+    wait: the sweep cannot evict past it without breaking FIFO order.
     """
 
     earliest: float | None = None
     for pending in (state.pending_provider_turns, state.pending_manual_commits):
-        if pending and (earliest is None or pending[0][1] < earliest):
-            earliest = pending[0][1]
+        if not pending:
+            continue
+        armed_at = pending[0][1]
+        if armed_at is not None and (earliest is None or armed_at < earliest):
+            earliest = armed_at
     if earliest is None:
         return None
     remaining = earliest + _STEP_PENDING_TURN_TIMEOUT_SECONDS - state.clock()
@@ -340,6 +397,10 @@ async def _step_sender(
                         request.utterance_id,
                     )
                     state.pending_manual_commits.append((key, state.clock()))
+                    # A fresh commit opens a new binding window: unknown item
+                    # ids arriving from here on belong to this commit, so the
+                    # post-expiry quarantine ends now.
+                    state.manual_commit_expired = False
                     _step_bind_pending_manual_items(state)
                     await ws.send(
                         json.dumps(
@@ -489,7 +550,10 @@ async def _step_receiver(
                 state.last_utterance_id = key[2]
                 state.provider_audio_item_keys[item_id] = key
                 state.provider_audio_ids_by_key[key] = item_id
-                state.pending_provider_turns.append((key, state.clock()))
+                # Unarmed while speech is live: the stalled-turn deadline is
+                # armed by the endpoint event, never by speech_started, so a
+                # long continuous utterance cannot expire mid-speech.
+                state.pending_provider_turns.append((key, None))
                 await response_queue.put(
                     _AsrWorkerEvent(
                         kind="utterance_started",
@@ -500,10 +564,25 @@ async def _step_receiver(
                 )
                 continue
 
+            if event_type == "input_audio_buffer.speech_stopped":
+                # Server VAD sealed the turn; only the transcription is still
+                # outstanding, so the stalled-turn deadline starts here.
+                if config.endpointing_mode == "provider":
+                    _step_arm_pending_turn_deadline(
+                        state, str(event.get("item_id") or "")
+                    )
+                continue
+
             if event_type == "input_audio_buffer.committed":
                 # Step assigns this event to the committed audio item. Its
                 # transcription events use a different item_id, so manual
                 # utterances are bound when a transcription event arrives.
+                # In provider mode it is a turn endpoint too: arm the stalled
+                # deadline in case speech_stopped was never delivered.
+                if config.endpointing_mode == "provider":
+                    _step_arm_pending_turn_deadline(
+                        state, str(event.get("item_id") or "")
+                    )
                 continue
 
             if event_type == "conversation.item.input_audio_transcription.delta":
