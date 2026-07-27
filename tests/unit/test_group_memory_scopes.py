@@ -10302,6 +10302,7 @@ async def test_shielded_settlement_is_registered_for_shutdown_join():
     )
 
     registered: list = []
+    order: list = []
 
     def _spawn(coro):
         task = asyncio.ensure_future(coro)
@@ -10309,7 +10310,13 @@ async def test_shielded_settlement_is_registered_for_shutdown_join():
         return task
 
     async def _locked(session_key, coro_factory):
-        return await coro_factory()
+        # Slow on purpose: if the caller awaited something other than the
+        # registered task (or did not await at all), _deliver_after_wait
+        # would return before the settlement finished.
+        await asyncio.sleep(0.05)
+        result = await coro_factory()
+        order.append("settled")
+        return result
 
     service = QQReplyBufferService.__new__(QQReplyBufferService)
     service.plugin = SimpleNamespace(
@@ -10330,7 +10337,9 @@ async def test_shielded_settlement_is_registered_for_shutdown_join():
         ),
     )
     service._pending = {}
-    service._clear_undelivered_marks = lambda key, pending: None
+    service._clear_undelivered_marks = (
+        lambda key, pending: order.append("cleared")
+    )
     service._settle_provisional = staticmethod(lambda ud, p: None)
     service._consent_revoked_since = lambda pending: False
 
@@ -10347,7 +10356,14 @@ async def test_shielded_settlement_is_registered_for_shutdown_join():
     service._pending["group:7788"] = pending
 
     await service._deliver_after_wait("group:7788", pending)
+    # Exactly one task, registered where stop() joins it...
     assert len(registered) == 1
+    # ...it is the one that was awaited (it is finished on return, despite
+    # the slow lock)...
+    assert registered[0].done()
+    # ...and the settlement side effects actually ran.
+    assert order == ["cleared", "settled"]
+    service.plugin.reply_generation_service.record_scoped_mentions_on_delivery.assert_awaited_once()
 
 
 @pytest.mark.asyncio
