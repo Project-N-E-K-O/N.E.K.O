@@ -1364,6 +1364,291 @@ def test_unrelated_change_during_pending_get_preserves_server_asr_harness():
     assert "HARNESS_OK" in result.stdout
 
 
+def test_settings_get_gate_timeout_downgrades_post_to_dirty_keys_only():
+    # Codex P2 (round 15): the bounded gate preserves liveness, but on timeout
+    # it used to release a FULL boot snapshot — overwriting every preference
+    # the user never touched. The backend resolves the telemetry branch BEFORE
+    # reading the settings file (main_routers/config_router/preferences.py
+    # get_conversation_settings), so a slow GET resumes by reading the file the
+    # POST just overwrote and the field-level merge can no longer restore the
+    # originals. Pin the fix: while the GET chain is unsettled the POST body is
+    # restricted to the explicitly dirty keys, which is safe because the
+    # backend MERGES partial payloads (utils/preferences.py
+    # save_global_conversation_settings -> global_pref.update(filtered_settings)).
+    settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
+
+    # The unsettled-GET flag starts released (no GET armed yet) and is cleared
+    # before the boot GET is issued.
+    assert "let _settingsGetSettled = true;" in settings_source
+    load_fn = settings_source.split("function loadSettings()", 1)[1]
+    arm_index = load_fn.index("_settingsGetSettled = false;")
+    assert arm_index < load_fn.index("loadSettingsFromServer()")
+    # It is released again when the GET chain settles — in the finally, so both
+    # the merged and the failed path resume full writes even after the bound
+    # already elapsed (late-settling boots keep converging the server).
+    finally_block = load_fn.split("}).finally(() => {", 1)[1].split("});", 1)[0]
+    assert "_settingsGetSettled = true;" in finally_block
+    # ... and on the synchronous-throw path, where no GET is in flight at all.
+    startup_catch = load_fn.split("console.error('服务器设置同步启动失败:', error);", 1)[1]
+    assert "_settingsGetSettled = true;" in startup_catch
+
+    # The send-time body: full snapshot only when the GET chain settled,
+    # dirty-keys-only otherwise, and the fetch must post THAT body.
+    sync_fn = settings_source.split(
+        "async function syncSettingsToServer(options)", 1
+    )[1].split("function startPeriodicSync()", 1)[0]
+    run_sync_body = sync_fn.split("const runSync = async () =>", 1)[1]
+    assert (
+        "const payload = _settingsGetSettled ? settings : _pickDirtySettings(settings);"
+        in run_sync_body
+    )
+    assert "body: JSON.stringify(payload)" in run_sync_body
+    assert "JSON.stringify(settings)" not in run_sync_body
+    # Ordering: gate await -> snapshot -> payload choice -> fetch.
+    assert (
+        run_sync_body.index("await _settingsGetGate;")
+        < run_sync_body.index("const settings = getConversationSettings();")
+        < run_sync_body.index("const payload =")
+        < run_sync_body.index("await fetch(")
+    )
+    # An empty dirty set means nothing user-authoritative exists yet: skip the
+    # POST entirely rather than write pre-merge values.
+    assert "if (Object.keys(payload).length === 0) {" in run_sync_body
+    assert run_sync_body.index("if (Object.keys(payload).length === 0) {") < run_sync_body.index(
+        "await fetch("
+    )
+
+    # The picker copies ONLY dirty keys (negative: no fallback that would drag
+    # untouched keys back into the partial body).
+    pick_fn = settings_source.split("function _pickDirtySettings(settings) {", 1)[1].split(
+        "function applySharedRuntimeSettings", 1
+    )[0]
+    assert "_dirtySettingsKeys.forEach((key) => {" in pick_fn
+    assert "Object.prototype.hasOwnProperty.call(settings, key)" in pick_fn
+    assert "partial[key] = settings[key];" in pick_fn
+    assert "Object.keys(settings)" not in pick_fn
+    assert "Object.assign" not in pick_fn
+
+
+def test_never_settling_get_posts_only_dirty_keys_harness():
+    # Behavioral pin for the round-15 fix, driving the real module with a
+    # controllable fetch AND a controllable gate timer. Scenario 1: the boot GET
+    # never settles, the user changes ONE unrelated preference, and the bound
+    # elapses — the POST must still go out (liveness) but must carry only the
+    # changed key, so the server-persisted preferences this client never read
+    # survive; when the slow GET finally lands, its (intact) values hydrate the
+    # untouched keys and the writeback converges. On the pre-fix code the body
+    # was the full boot snapshot and independentAsrEnabled=false clobbered the
+    # persisted true. Scenario 2 (negative): no dirty keys -> no POST at all.
+    # Scenario 3: the normal fast-GET flow still posts the full snapshot.
+    # Scenario 4: the ASR toggle flow still persists the user's choice even
+    # when the bound elapses.
+    harness = textwrap.dedent(
+        """
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+
+        const source = fs.readFileSync(__APP_SETTINGS_PATH__, 'utf8');
+
+        function assert(cond, msg) {
+          if (!cond) throw new Error('ASSERT: ' + msg);
+        }
+
+        function makeContext() {
+          const postCalls = [];
+          const getCalls = [];
+          const timers = [];
+          const sandbox = {
+            console: { log() {}, warn() {}, error() {} },
+            setInterval() { return 0; },
+            clearInterval() {},
+            setTimeout(fn, ms) {
+              // Fully controllable: the bound never elapses on its own, so the
+              // harness decides when the timeout wins the gate race (and no
+              // pending timer can hold the process open).
+              timers.push({ fn, ms });
+              return { unref() {} };
+            },
+            clearTimeout() {},
+            localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
+            document: { getElementById() { return null; } },
+            fetch(url, opts) {
+              return new Promise((resolve, reject) => {
+                if (opts && opts.method === 'POST') {
+                  postCalls.push({ url, body: opts.body, resolve, reject });
+                } else {
+                  getCalls.push({ url, resolve, reject });
+                }
+              });
+            },
+          };
+          sandbox.window = {
+            appState: { independentAsrEnabled: false, settingsHydrated: false },
+            appConst: {},
+            appUtils: { mapRenderQualityToFollowPerf() { return 'medium'; } },
+            addEventListener() {},
+            removeEventListener() {},
+            dispatchEvent() {},
+          };
+          vm.createContext(sandbox);
+          vm.runInContext(source, sandbox);
+          return {
+            postCalls,
+            getCalls,
+            S: sandbox.window.appState,
+            win: sandbox.window,
+            mod: sandbox.window.appSettings,
+            fireGateTimeout() {
+              assert(timers.length === 1, 'exactly one bounded gate timer must be armed');
+              assert(timers[0].ms === 3000, 'the gate bound must stay the 3s constant');
+              timers.shift().fn();
+            },
+          };
+        }
+
+        const okPost = { ok: true, json: async () => ({ success: true }) };
+        const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+        async function main() {
+          // Scenario 1: slow (never-settling) GET + one unrelated user change.
+          const ctx = makeContext();
+          assert(ctx.getCalls.length === 1, 'boot must issue the settings GET');
+
+          ctx.win.mergeMessagesEnabled = true; // the settings-popup mirror
+          ctx.mod.saveSettings();              // full user path -> userInitiated POST
+          assert(ctx.S.settingsHydrated === true, 'a user change still hydrates synchronously');
+          await tick();
+          assert(ctx.postCalls.length === 0, 'the POST waits for the gate while the GET is pending');
+
+          ctx.fireGateTimeout();
+          await tick();
+          await tick();
+          assert(ctx.postCalls.length === 1, 'the bound must still release the POST (liveness)');
+          const body1 = JSON.parse(ctx.postCalls[0].body);
+          assert(body1.mergeMessagesEnabled === true, 'the dirty key must be persisted');
+          assert(
+            Object.keys(body1).length === 1,
+            'a timed-out gate must post ONLY the dirty keys, got: ' + JSON.stringify(body1)
+          );
+          assert(
+            !('independentAsrEnabled' in body1),
+            'the untouched ASR preference must not be overwritten by this boot default'
+          );
+          assert(
+            !('proactiveChatEnabled' in body1),
+            'no untouched preference may ride along in the timed-out body'
+          );
+
+          // The slow GET now lands. Because the partial POST left them alone,
+          // the server values for untouched keys are still the persisted ones.
+          ctx.postCalls[0].resolve(okPost);
+          ctx.getCalls[0].resolve({
+            ok: true,
+            json: async () => ({
+              success: true,
+              settings: { independentAsrEnabled: true, mergeMessagesEnabled: false },
+              telemetryBranch: null,
+            }),
+          });
+          await tick();
+          await tick();
+          assert(ctx.S.independentAsrEnabled === true, 'the untouched key hydrates from the surviving server value');
+          assert(ctx.S.mergeMessagesEnabled === true, 'the dirty key survives the late merge');
+          assert(ctx.postCalls.length === 2, 'the merge writeback POST follows');
+          const body2 = JSON.parse(ctx.postCalls[1].body);
+          assert(
+            Object.keys(body2).length > 1,
+            'once the GET settled, full snapshots resume and converge the server'
+          );
+          assert(body2.independentAsrEnabled === true, 'the writeback carries the server ASR value');
+          assert(body2.mergeMessagesEnabled === true, 'the writeback carries the user change');
+          ctx.postCalls[1].resolve(okPost);
+          await tick();
+
+          // Scenario 2 (negative): nothing dirty while the GET is unsettled —
+          // a periodic-style sync must not write pre-merge values at all, and
+          // its promise must still resolve (never-rejecting sync contract).
+          const ctx2 = makeContext();
+          const pp = ctx2.mod.syncSettingsToServer();
+          await tick();
+          ctx2.fireGateTimeout();
+          await tick();
+          await tick();
+          assert(ctx2.postCalls.length === 0, 'no dirty key means no POST while the GET is unsettled');
+          await pp;
+
+          // Scenario 3: the normal fast-GET flow is unchanged — the merge
+          // settles before the bound, so the user POST carries the FULL
+          // snapshot (server truth for untouched keys included).
+          const ctx3 = makeContext();
+          ctx3.getCalls[0].resolve({
+            ok: true,
+            json: async () => ({
+              success: true,
+              settings: { independentAsrEnabled: true },
+              telemetryBranch: null,
+            }),
+          });
+          await tick();
+          await tick();
+          assert(ctx3.postCalls.length === 1, 'the merge writeback POST goes out first');
+          ctx3.postCalls[0].resolve(okPost);
+          await tick();
+          await tick();
+          ctx3.win.mergeMessagesEnabled = true;
+          ctx3.mod.saveSettings();
+          await tick();
+          await tick();
+          assert(ctx3.postCalls.length === 2, 'the fast-GET user POST goes out');
+          const body3 = JSON.parse(ctx3.postCalls[1].body);
+          assert(Object.keys(body3).length > 1, 'a settled GET keeps posting the full snapshot');
+          assert(body3.independentAsrEnabled === true, 'the full snapshot carries the merged server value');
+          assert(body3.mergeMessagesEnabled === true, 'the full snapshot carries the user change');
+
+          // Scenario 4: the ASR toggle flow still persists the user's choice
+          // when the bound elapses (the toggled key is dirty).
+          const ctx4 = makeContext();
+          ctx4.S.independentAsrEnabled = true;
+          ctx4.mod.saveSettings({ skipServerSync: true });
+          const p4 = ctx4.mod.syncSettingsToServer({ userInitiated: true });
+          assert(ctx4.S.settingsHydrated === true, 'the toggle hydrates synchronously at call time');
+          await tick();
+          assert(ctx4.postCalls.length === 0, 'the toggle POST is gated behind the pending GET');
+          ctx4.fireGateTimeout();
+          await tick();
+          await tick();
+          assert(ctx4.postCalls.length === 1, 'the toggle POST goes out on the bound');
+          const body4 = JSON.parse(ctx4.postCalls[0].body);
+          assert(body4.independentAsrEnabled === true, 'the toggle POST carries the user choice');
+          assert(
+            Object.keys(body4).length === 1,
+            'the toggle POST carries nothing else, got: ' + JSON.stringify(body4)
+          );
+          ctx4.postCalls[0].resolve(okPost);
+          await p4;
+
+          console.log('HARNESS_OK');
+          // No live timers remain (the harness owns setTimeout), so the process
+          // exits naturally once main() returns and piped stdout is flushed.
+          process.exitCode = 0;
+        }
+
+        main().catch((err) => {
+          console.error(err && err.stack ? err.stack : String(err));
+          process.exitCode = 1;
+        });
+        """
+    ).replace("__APP_SETTINGS_PATH__", json.dumps(str(APP_SETTINGS_PATH)))
+
+    result = _run_settings_node_harness(harness)
+    assert result.returncode == 0, (
+        "never-settling-GET dirty-only harness failed\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "HARNESS_OK" in result.stdout
+
+
 def test_normal_teardown_paths_reset_independent_asr_route_flags():
     # ASR_INDEPENDENT_READY sets S.independentAsrActive; ordinary user stop,
     # server-side session end, and socket close must reset it (and the
