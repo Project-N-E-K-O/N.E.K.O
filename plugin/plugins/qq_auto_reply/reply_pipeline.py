@@ -244,9 +244,7 @@ class QQReplyPipelineRunner:
             request is not None
             and request.is_group
             and outcome is not None
-            and getattr(outcome, "used_default_message", False)
-            and not getattr(outcome, "used_fallback", False)
-            and str(getattr(outcome, "raw_reply_text", "") or "").strip()
+            and self._primary_row_superseded(outcome, delivery_plan)
         ):
             # 主会话产出了非空文本、清洗后为空（例如整条都是思考标签），
             # 于是改发默认回复：那条 raw ai 行已经躺在共享历史里且永远不会
@@ -311,7 +309,7 @@ class QQReplyPipelineRunner:
                 used_fallback_reply=bool(
                     (
                         getattr(outcome, "used_fallback", False)
-                        or getattr(outcome, "used_default_message", False)
+                        or self._primary_row_superseded(outcome, delivery_plan)
                     ) if outcome else False
                 ),
                 consent_snapshot=(
@@ -436,8 +434,8 @@ class QQReplyPipelineRunner:
             delivered_text = (
                 delivered_blocks_text(delivery_plan.blocks) or outcome.reply_text
             )
-            if getattr(outcome, "used_fallback", False) or getattr(
-                outcome, "used_default_message", False,
+            if getattr(outcome, "used_fallback", False) or (
+                self._primary_row_superseded(outcome, delivery_plan)
             ):
                 # fallback / 默认回复都没有对应的历史 ai 行（默认回复那条
                 # raw 行刚被标成未投递）：确认投递后补上真正说出去的话，
@@ -451,6 +449,24 @@ class QQReplyPipelineRunner:
                 context, delivered_text,
             )
         return result
+
+    @staticmethod
+    def _primary_row_superseded(outcome, delivery_plan) -> bool:
+        """True when the ai row this turn wrote is not what went out.
+
+        Two shapes: a default reply that replaced a nonempty primary answer,
+        and a block carrying both <text> and <record> — delivery sends the
+        record and continues, so that text reaches nobody while it sits in
+        the history row."""
+        if getattr(outcome, "used_fallback", False):
+            return False  # fallback turns have no history row of their own
+        if getattr(outcome, "used_default_message", False):
+            return bool(str(getattr(outcome, "raw_reply_text", "") or "").strip())
+        return any(
+            str(getattr(block, "record", "") or "").strip()
+            and str(getattr(block, "text", "") or "").strip()
+            for block in (getattr(delivery_plan, "blocks", None) or [])
+        )
 
     def _consent_revoked_before_send(self, context) -> bool:
         """True when a switch this reply's prompt relied on went off since

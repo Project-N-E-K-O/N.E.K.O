@@ -9954,3 +9954,96 @@ async def test_undelivered_marking_uses_this_turns_row_identity():
     ud.pop("current_turn_ai_row")
     service.record_tail_undelivered_ai_row("group:7788")
     assert ud["undelivered_draft_rows"] == [this_turn]
+
+
+@pytest.mark.asyncio
+async def test_mixed_block_primary_row_is_replaced_with_what_was_sent():
+    """A block carrying both <text> and <record>: delivery sends the record
+    and continues, so that text reached nobody — yet it sits in the history
+    row the digest reads."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        QQDeliveryPlan,
+        QQDeliveryResult,
+        QQMessageBlock,
+        QQReplyOutcome,
+        QQReplyRequest,
+    )
+    from plugin.plugins.qq_auto_reply.reply_pipeline import (
+        QQReplyPipelineRunner,
+    )
+
+    mark = MagicMock()
+    append = MagicMock()
+    plugin = SimpleNamespace(
+        reply_buffer_service=None,
+        reply_delivery_node=SimpleNamespace(
+            deliver=AsyncMock(return_value=QQDeliveryResult(
+                delivered=True, target_type="group", target_id="7788",
+                reply_text="",
+            )),
+        ),
+        reply_generation_service=SimpleNamespace(
+            record_scoped_mentions_on_delivery=AsyncMock(),
+            append_fallback_ai_row=append,
+        ),
+        session_memory_service=SimpleNamespace(
+            record_tail_undelivered_ai_row=mark,
+        ),
+        _build_session_key=(
+            lambda *, sender_id, is_group, group_id: f"group:{group_id}"
+        ),
+        _qq_settings={"group_memory_enabled": True},
+        logger=MagicMock(),
+    )
+    runner = QQReplyPipelineRunner(plugin)
+    request = QQReplyRequest(
+        message_text="hi", sender_id="2046", is_group=True, group_id="7788",
+    )
+    context = SimpleNamespace(is_group=True, group_id="7788", consent_snapshot={})
+    await runner._run_delivery(
+        QQDeliveryPlan(
+            target_type="group", target_id="7788",
+            blocks=[QQMessageBlock(text="没送出去的文本", record="用户听到的语音")],
+        ),
+        request,
+        QQReplyOutcome(action="reply", reply_text="没送出去的文本"),
+        context=context,
+    )
+    mark.assert_called_once_with("group:7788")
+    assert append.call_args.args[1] == "用户听到的语音"
+
+    # An ordinary text-only reply is left alone: its row IS what went out.
+    mark.reset_mock()
+    append.reset_mock()
+    await runner._run_delivery(
+        QQDeliveryPlan(
+            target_type="group", target_id="7788",
+            blocks=[QQMessageBlock(text="普通回复")],
+        ),
+        request,
+        QQReplyOutcome(action="reply", reply_text="普通回复"),
+        context=context,
+    )
+    mark.assert_not_called()
+    append.assert_not_called()
+
+
+def test_keyboard_labels_are_not_recorded_for_record_blocks():
+    """The delivery loop handles record blocks and continues, so a keyboard
+    on that block is never rendered or spoken."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        QQMessageBlock,
+        delivered_blocks_text,
+    )
+
+    text = delivered_blocks_text([
+        QQMessageBlock(record="用户听到的语音", keyboard="选项甲|选项乙"),
+    ])
+    assert "用户听到的语音" in text
+    assert "选项甲" not in text
+
+    # On a text block they DO reach the user, so they stay.
+    text = delivered_blocks_text([
+        QQMessageBlock(text="要看看哪个？", keyboard="选项甲|选项乙"),
+    ])
+    assert "选项甲 / 选项乙" in text
