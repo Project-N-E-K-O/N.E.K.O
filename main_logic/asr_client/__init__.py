@@ -40,11 +40,23 @@ from .provider_policy import resolve_provider_policy
 from .workers.dummy import dummy_asr_worker as _dummy_asr_worker
 from .workers.gemini import gemini_asr_worker as _gemini_asr_worker
 from .workers.glm import glm_asr_worker as _glm_asr_worker
-from .workers.grok import grok_asr_worker as _grok_asr_worker
-from .workers.openai import openai_asr_worker as _openai_asr_worker
-from .workers.qwen import qwen_asr_worker as _qwen_asr_worker
+from .workers.grok import (
+    _normalize_grok_language,
+    grok_asr_worker as _grok_asr_worker,
+)
+from .workers.openai import (
+    _normalize_openai_language,
+    openai_asr_worker as _openai_asr_worker,
+)
+from .workers.qwen import (
+    _qwen_language_code,
+    qwen_asr_worker as _qwen_asr_worker,
+)
 from .workers.soniox import soniox_asr_worker as _soniox_asr_worker
-from .workers.step import step_asr_worker as _step_asr_worker
+from .workers.step import (
+    _step_language_code,
+    step_asr_worker as _step_asr_worker,
+)
 
 
 __all__ = [
@@ -52,6 +64,47 @@ __all__ = [
     "RealtimeAsrSession",
     "create_asr_session",
 ]
+
+
+# Providers with a restricted language matrix reuse their worker's own
+# validator, so the session hint can never desync from what the worker will
+# accept at connect time. Providers absent here (soniox, glm, gemini, dummy)
+# either accept any normalized hint or ignore the language entirely.
+_PROVIDER_LANGUAGE_VALIDATORS: dict[str, Callable[[str], str | None]] = {
+    "qwen": _qwen_language_code,
+    "openai": _normalize_openai_language,
+    "step": _step_language_code,
+    "grok": _normalize_grok_language,
+}
+
+
+def _resolve_session_language(
+    provider_key: str,
+    user_language: str | None,
+) -> str:
+    """Map a caller-supplied language onto one provider's accepted hint.
+
+    Empty, malformed, or provider-unsupported values fall back to ``"auto"``
+    (provider-side detection) instead of failing the session at connect time.
+    """
+
+    candidate = str(user_language or "").strip()
+    if not candidate:
+        return "auto"
+    try:
+        normalized = AsrSessionConfig(language=candidate).language
+    except ValueError:
+        return "auto"
+    if normalized == "auto":
+        return "auto"
+    validator = _PROVIDER_LANGUAGE_VALIDATORS.get(provider_key)
+    if validator is None:
+        return normalized
+    try:
+        validator(normalized)
+    except ValueError:
+        return "auto"
+    return normalized
 
 
 _IMPLEMENTED_WORKERS: dict[str, _AsrWorkerFn] = {
@@ -306,6 +359,7 @@ def create_asr_session(
     on_turn_endpointed: Callable[[], Awaitable[None]] | None = None,
     external_endpointing_runtime: bool = False,
     user_region: str | None = None,
+    user_language: str | None = None,
 ) -> RealtimeAsrSession:
     """Create an isolated ASR session or fail fast for unsupported routes."""
 
@@ -316,6 +370,7 @@ def create_asr_session(
         core_type,
         selection=selection,
         config=config,
+        user_language=user_language,
         on_input_transcript=on_input_transcript,
         on_connection_error=on_connection_error,
         on_status_message=on_status_message,
@@ -336,6 +391,7 @@ def _create_asr_session_from_selection(
     on_speech_activity: Callable[[SpeechActivityEvent], Awaitable[None]] | None = None,
     on_turn_endpointed: Callable[[], Awaitable[None]] | None = None,
     external_endpointing_runtime: bool = False,
+    user_language: str | None = None,
 ) -> RealtimeAsrSession:
     """Build one session from an already-resolved, immutable selection."""
 
@@ -344,7 +400,11 @@ def _create_asr_session_from_selection(
     if config is not None and not isinstance(config, AsrSessionConfig):
         raise TypeError("ASR_INVALID_CONFIG: config must be AsrSessionConfig")
     session_config = config or AsrSessionConfig(
-        endpointing_mode=selection.endpointing_mode
+        language=_resolve_session_language(
+            selection.provider_key,
+            user_language,
+        ),
+        endpointing_mode=selection.endpointing_mode,
     )
     provider_key = selection.provider_key
     provider_meta = _ASR_PROVIDER_REGISTRY.get(provider_key)

@@ -450,6 +450,102 @@ def test_builder_uses_resolved_snapshot_without_rereading_routing_config(
 
 
 @pytest.mark.parametrize(
+    ("provider_key", "user_language", "expected"),
+    [
+        ("qwen", "zh-CN", "zh-CN"),
+        ("qwen", "ja", "ja"),
+        ("qwen", "AUTO", "auto"),
+        ("qwen", None, "auto"),
+        ("qwen", "   ", "auto"),
+        ("qwen", "not a language!!", "auto"),
+        # Valid BCP-47 shape but outside the Qwen matrix must not fail the
+        # session; it degrades to provider-side detection.
+        ("qwen", "tlh", "auto"),
+        ("openai", "zh-CN", "zh-CN"),
+        ("openai", "en-US", "en-US"),
+        ("openai", "ja", "auto"),
+        ("step", "en", "en"),
+        ("step", "ja", "auto"),
+        ("grok", "zh", "zh"),
+        ("grok", "ko", "auto"),
+        ("soniox", "ja", "ja"),
+        ("gemini", "ko", "ko"),
+        ("dummy", "ja", "ja"),
+    ],
+)
+def test_session_language_resolves_against_provider_matrix(
+    provider_key,
+    user_language,
+    expected,
+):
+    resolved = asr_client._resolve_session_language(provider_key, user_language)
+
+    assert resolved == expected
+
+
+def test_builder_maps_user_language_onto_session_config(monkeypatch):
+    callback = AsyncMock()
+    monkeypatch.delenv("ASR_PROVIDER", raising=False)
+    monkeypatch.delenv("ASR_USER_REGION", raising=False)
+    monkeypatch.delenv("SONIOX_API_KEY", raising=False)
+    monkeypatch.setattr(
+        asr_client,
+        "_load_core_config",
+        lambda: {"ASSIST_API_KEY_OPENAI": "openai-key"},
+    )
+    selection = asr_client._resolve_asr_selection("openai")
+
+    supported = asr_client._create_asr_session_from_selection(
+        "openai",
+        selection=selection,
+        on_input_transcript=callback,
+        on_connection_error=callback,
+        user_language="zh-CN",
+    )
+    unsupported = asr_client._create_asr_session_from_selection(
+        "openai",
+        selection=selection,
+        on_input_transcript=callback,
+        on_connection_error=callback,
+        user_language="ja",
+    )
+    unset = asr_client._create_asr_session_from_selection(
+        "openai",
+        selection=selection,
+        on_input_transcript=callback,
+        on_connection_error=callback,
+    )
+    explicit = asr_client._create_asr_session_from_selection(
+        "openai",
+        selection=selection,
+        config=AsrSessionConfig(language="en", endpointing_mode="provider"),
+        on_input_transcript=callback,
+        on_connection_error=callback,
+        user_language="ja",
+    )
+
+    assert supported._config.language == "zh-CN"
+    assert unsupported._config.language == "auto"
+    assert unset._config.language == "auto"
+    # An explicit config always wins over the user-language hint.
+    assert explicit._config.language == "en"
+
+
+def test_public_factory_forwards_user_language(monkeypatch):
+    callback = AsyncMock()
+    monkeypatch.setenv("ASR_PROVIDER", "dummy")
+
+    session = create_asr_session(
+        "qwen",
+        on_input_transcript=callback,
+        on_connection_error=callback,
+        user_language="ja",
+    )
+
+    assert session._config.language == "ja"
+
+
+@pytest.mark.parametrize(
     ("provider_key", "endpointing_mode", "requires_smart_turn"),
     [
         ("dummy", "manual", True),
@@ -1906,6 +2002,79 @@ async def test_old_connect_failure_after_new_start_has_no_failure_status(
     assert [event.code for event in statuses] == ["ASR_INDEPENDENT_READY"]
     first.close.assert_awaited_once_with()
     second.close.assert_not_awaited()
+    await runtime.close()
+
+
+async def test_runtime_start_threads_user_language_into_session_factory(
+    monkeypatch,
+) -> None:
+    candidates = [_RuntimeStartCandidate(), _RuntimeStartCandidate()]
+    selection = _runtime_selection()
+    builder_calls: list[dict] = []
+
+    def builder(_core_type, **kwargs):
+        builder_calls.append(kwargs)
+        return candidates[len(builder_calls) - 1]
+
+    monkeypatch.setattr(
+        asr_runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=selection),
+    )
+    monkeypatch.setattr(
+        asr_runtime_module,
+        "_create_asr_session_from_selection",
+        builder,
+    )
+    runtime = IndependentAsrRuntime(_runtime_callbacks())
+
+    result = await runtime.start(
+        route_key="qwen",
+        resource_optimization_enabled=True,
+        user_language="ja",
+    )
+
+    assert result.status is AsrStartStatus.READY
+    assert builder_calls[0]["user_language"] == "ja"
+    # Recovery candidates built from the stored factory must keep the
+    # start-time language.
+    factory = runtime._asr_session_factory
+    assert factory is not None
+    factory(selection)
+    assert builder_calls[1]["user_language"] == "ja"
+    await runtime.close()
+
+
+async def test_runtime_start_defaults_user_language_to_unset(
+    monkeypatch,
+) -> None:
+    candidate = _RuntimeStartCandidate()
+    selection = _runtime_selection()
+    builder_calls: list[dict] = []
+
+    def builder(_core_type, **kwargs):
+        builder_calls.append(kwargs)
+        return candidate
+
+    monkeypatch.setattr(
+        asr_runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=selection),
+    )
+    monkeypatch.setattr(
+        asr_runtime_module,
+        "_create_asr_session_from_selection",
+        builder,
+    )
+    runtime = IndependentAsrRuntime(_runtime_callbacks())
+
+    result = await runtime.start(
+        route_key="qwen",
+        resource_optimization_enabled=True,
+    )
+
+    assert result.status is AsrStartStatus.READY
+    assert builder_calls[0]["user_language"] is None
     await runtime.close()
 
 

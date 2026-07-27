@@ -515,6 +515,10 @@ class AsrRuntimeMixin:
         result = await self._asr_runtime.start(
             route_key=core_type,
             resource_optimization_enabled=optimization_value is not False,
+            # Session language follows the Core-tracked user language; the
+            # asr_client factory maps it per provider and falls back to
+            # automatic detection when it is unset or unsupported.
+            user_language=getattr(self, "user_language", None),
         )
         current_epoch = self._capture_ingress_token().session_epoch
         if not core_start_is_current():

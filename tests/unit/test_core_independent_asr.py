@@ -2726,6 +2726,59 @@ async def test_runtime_builds_primary_candidate_from_its_single_selection(
     assert runtime._asr_route_mode == "independent"
 
 
+async def _start_bridge_and_capture_builder_call(monkeypatch, runtime):
+    import main_logic.asr_client.runtime as runtime_module
+
+    asr = type("Asr", (), {})()
+    asr.connect = AsyncMock()
+    asr.close = AsyncMock()
+    builder = MagicMock(return_value=asr)
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=_selection("gemini")),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_create_asr_session_from_selection",
+        builder,
+    )
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    assert runtime._asr_route_mode == "independent"
+    return builder.call_args.kwargs
+
+
+async def test_start_forwards_core_user_language_to_session_builder(
+    monkeypatch,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    runtime.user_language = "ja"
+
+    kwargs = await _start_bridge_and_capture_builder_call(monkeypatch, runtime)
+
+    assert kwargs["user_language"] == "ja"
+
+
+async def test_start_without_user_language_builds_session_without_hint(
+    monkeypatch,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    assert getattr(runtime, "user_language", None) is None
+
+    kwargs = await _start_bridge_and_capture_builder_call(monkeypatch, runtime)
+
+    assert kwargs["user_language"] is None
+
+
 async def test_startup_close_window_is_blocked_before_settings_resolution(
     monkeypatch,
 ) -> None:
@@ -3650,8 +3703,9 @@ class _HotSwapRuntimeStub:
         *,
         route_key: str,
         resource_optimization_enabled: bool,
+        user_language: str | None = None,
     ) -> AsrStartResult:
-        _ = (route_key, resource_optimization_enabled)
+        _ = (route_key, resource_optimization_enabled, user_language)
         self.active_provider = (
             "provider-b" if self.start_status is AsrStartStatus.READY else None
         )

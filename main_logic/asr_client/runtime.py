@@ -857,8 +857,14 @@ class IndependentAsrRuntime:
         *,
         route_key: str,
         resource_optimization_enabled: bool,
+        user_language: str | None = None,
     ) -> AsrStartResult:
-        """Resolve and start one independent-ASR route."""
+        """Resolve and start one independent-ASR route.
+
+        ``user_language`` is the caller's normalized language preference; the
+        session factory maps it onto each provider's accepted hints and falls
+        back to automatic detection when it is unknown or unsupported.
+        """
 
         self._ensure_asr_runtime_state()
         operation_generation = self._begin_asr_start_operation()
@@ -1023,6 +1029,7 @@ class IndependentAsrRuntime:
                 external_endpointing_runtime=(
                     candidate_policy.endpoint_authority == "smart_turn"
                 ),
+                user_language=user_language,
             )
             _attach_partial_callback(candidate_session, on_partial)
             return candidate_session
