@@ -56,6 +56,7 @@
     let memoryRoleHoverPreviewOpen = false;
     let memoryRoleHoverCloseTimer = 0;
     let memoryRolePanelInitialized = false;
+    let memoryRoleListRequestId = 0;
     const MEMORY_AUXILIARY_PANEL_NAMES = ['settings', 'guide', 'import'];
     let activeMemoryAuxiliaryPanel = '';
     let memoryAuxiliaryPanelOpener = null;
@@ -2166,6 +2167,13 @@
         return window.t(key);
     }
 
+    function getMemoryRoleSourceText(origin) {
+        const sourceLabel = getMemoryRoleOriginLabel(origin);
+        return window.t
+            ? window.t('memory.roleSourceTooltip', { source: sourceLabel })
+            : `Source: ${sourceLabel}`;
+    }
+
     function createMemoryRoleSourceIcon(origin) {
         const svgNamespace = 'http://www.w3.org/2000/svg';
         const svg = document.createElementNS(svgNamespace, 'svg');
@@ -2206,7 +2214,51 @@
         return svg;
     }
 
+    function syncMemoryRoleSourceCopy(button) {
+        if (!button) return;
+        const origin = button.dataset.memoryRoleOrigin;
+        if (!MEMORY_ROLE_ORIGIN_KEYS[origin]) return;
+
+        const catName = button.dataset.catname || '';
+        const sourceText = getMemoryRoleSourceText(origin);
+        const tooltip = button.querySelector('.memory-role-source-tooltip');
+        if (tooltip) tooltip.textContent = sourceText;
+        button.setAttribute('aria-label', `${catName}. ${sourceText}`);
+    }
+
+    function syncMemoryRoleSourceCopies() {
+        document.querySelectorAll(
+            '#memory-file-list .cat-btn[data-memory-role-origin]'
+        ).forEach(syncMemoryRoleSourceCopy);
+    }
+
+    function applyMemoryRoleSources(cardMetas, requestId) {
+        if (requestId !== memoryRoleListRequestId) return;
+        document.querySelectorAll('#memory-file-list .cat-btn[data-catname]').forEach(
+            function (button, index) {
+                const catName = button.dataset.catname || '';
+                const origin = cardMetas?.[catName]?.origin;
+                if (!MEMORY_ROLE_ORIGIN_KEYS[origin]) return;
+
+                button.dataset.memoryRoleOrigin = origin;
+                const source = document.createElement('span');
+                source.className = `memory-role-source is-${origin}`;
+                source.setAttribute('aria-hidden', 'true');
+                const sourceIcon = createMemoryRoleSourceIcon(origin);
+                const sourceTooltip = document.createElement('span');
+                sourceTooltip.id = `memory-role-source-tooltip-${index}`;
+                sourceTooltip.className = 'memory-role-source-tooltip';
+                sourceTooltip.setAttribute('role', 'tooltip');
+                source.append(sourceIcon, sourceTooltip);
+                button.appendChild(source);
+                syncMemoryRoleSourceCopy(button);
+                syncMemoryRoleNameOverflow(button);
+            }
+        );
+    }
+
     async function loadMemoryFileList() {
+        const roleListRequestId = ++memoryRoleListRequestId;
         const ul = document.getElementById('memory-file-list');
         ul.innerHTML = `<li style="color:#888; padding: 8px;">${window.t ? window.t('memory.loading') : '加载中...'}</li>`;
         try {
@@ -2214,6 +2266,19 @@
             const data = await resp.json();
             ul.innerHTML = '';
             if (data.files && data.files.length) {
+                const cardMetasPromise = fetch('/api/characters/card-metas')
+                    .then(function (response) {
+                        if (!response.ok) return {};
+                        return response.json();
+                    })
+                    .then(function (metasData) {
+                        return metasData?.metas || {};
+                    })
+                    .catch(function (error) {
+                        console.error('Failed to load character origins:', error);
+                        return {};
+                    });
+
                 // 获取当前猫娘名称
                 let currentCatgirl = null;
                 try {
@@ -2224,19 +2289,8 @@
                     console.error('获取当前猫娘失败:', e);
                 }
 
-                let cardMetas = null;
-                try {
-                    const metasResp = await fetch('/api/characters/card-metas');
-                    if (metasResp.ok) {
-                        const metasData = await metasResp.json();
-                        cardMetas = metasData?.metas || {};
-                    }
-                } catch (e) {
-                    console.error('Failed to load character origins:', e);
-                }
-
                 let foundCurrentCatgirl = false;
-                data.files.forEach((f, index) => {
+                data.files.forEach((f) => {
                     // 提取猫娘名
                     let match = f.match(/^recent_(.+)\.json$/);
                     let catName = match ? match[1] : f;
@@ -2255,26 +2309,6 @@
                     roleName.title = catName;
                     roleNameViewport.appendChild(roleName);
                     btn.appendChild(roleNameViewport);
-
-                    const cardOrigin = cardMetas?.[catName]?.origin;
-                    if (MEMORY_ROLE_ORIGIN_KEYS[cardOrigin]) {
-                        const sourceLabel = getMemoryRoleOriginLabel(cardOrigin);
-                        const sourceText = window.t
-                            ? window.t('memory.roleSourceTooltip', { source: sourceLabel })
-                            : `Source: ${sourceLabel}`;
-                        const source = document.createElement('span');
-                        source.className = `memory-role-source is-${cardOrigin}`;
-                        source.setAttribute('aria-hidden', 'true');
-                        const sourceIcon = createMemoryRoleSourceIcon(cardOrigin);
-                        const sourceTooltip = document.createElement('span');
-                        sourceTooltip.id = `memory-role-source-tooltip-${index}`;
-                        sourceTooltip.className = 'memory-role-source-tooltip';
-                        sourceTooltip.setAttribute('role', 'tooltip');
-                        sourceTooltip.textContent = sourceText;
-                        source.append(sourceIcon, sourceTooltip);
-                        btn.appendChild(source);
-                        btn.setAttribute('aria-label', `${catName}. ${sourceText}`);
-                    }
 
                     const syncNameOverflow = () => syncMemoryRoleNameOverflow(btn);
                     btn.addEventListener('pointerenter', syncNameOverflow);
@@ -2295,6 +2329,9 @@
                             requestMemoryFileSelection(f, li, catName);
                         }, 100);
                     }
+                });
+                void cardMetasPromise.then(function (cardMetas) {
+                    applyMemoryRoleSources(cardMetas, roleListRequestId);
                 });
             } else {
                 ul.innerHTML = `<li style="color:#888; padding: 8px;">${window.t ? window.t('memory.noFiles') : '无文件'}</li>`;
@@ -3639,6 +3676,7 @@
             syncTutorialResetCascader();
             syncExternalMemoryFormatDropdown();
             syncMemoryRoleTriggerLabel();
+            syncMemoryRoleSourceCopies();
         });
 
         const externalFiles = document.getElementById('external-memory-files');

@@ -3935,8 +3935,34 @@ def test_memory_browser_role_sources_and_overflow_name_have_compact_feedback(
             "创意工坊角色": "steam",
         },
     )
+    mock_page.add_init_script(
+        """
+        (() => {
+            const nativeFetch = window.fetch.bind(window);
+            window.fetch = (input, init) => {
+                if (String(input).includes('/api/characters/card-metas')) {
+                    return new Promise(resolve => {
+                        window.__releaseMemoryRoleMetas = () => {
+                            resolve(nativeFetch(input, init));
+                        };
+                    });
+                }
+                return nativeFetch(input, init);
+            };
+        })();
+        """
+    )
 
     mock_page.goto(f"{running_server}/memory_browser")
+    expect(mock_page.locator("#memory-file-list .cat-btn")).to_have_count(
+        3,
+        timeout=10000,
+    )
+    expect(mock_page.locator("#memory-file-list .memory-role-source")).to_have_count(0)
+    mock_page.wait_for_function(
+        "() => typeof window.__releaseMemoryRoleMetas === 'function'"
+    )
+    mock_page.evaluate("window.__releaseMemoryRoleMetas()")
     expect(mock_page.locator("#memory-file-list .memory-role-source")).to_have_count(
         3,
         timeout=10000,
@@ -3976,6 +4002,29 @@ def test_memory_browser_role_sources_and_overflow_name_have_compact_feedback(
     imported_source = mock_page.locator(".memory-role-source.is-imported")
     imported_source.hover()
     expect(imported_source.locator(".memory-role-source-tooltip")).to_be_visible()
+    mock_page.evaluate(
+        """
+        () => {
+            const originalTranslate = window.t;
+            window.t = (key, params) => {
+                if (key === 'character.cardOriginImported') return 'IMPORTED';
+                if (key === 'memory.roleSourceTooltip') {
+                    return `SOURCE: ${params.source}`;
+                }
+                return originalTranslate(key, params);
+            };
+            window.dispatchEvent(new Event('localechange'));
+        }
+        """
+    )
+    expect(imported_source.locator(".memory-role-source-tooltip")).to_have_text(
+        "SOURCE: IMPORTED"
+    )
+    expect(
+        mock_page.locator(
+            "#memory-file-list .cat-btn[data-catname='外部角色']"
+        )
+    ).to_have_attribute("aria-label", "外部角色. SOURCE: IMPORTED")
 
     long_role = mock_page.locator(
         f"#memory-file-list .cat-btn[data-catname='{long_name}']"
@@ -4061,6 +4110,8 @@ def test_memory_browser_task4_static_visual_contract() -> None:
     assert "memory-role-source-tooltip" in css
     assert "memory-role-name-viewport" in js
     assert "/api/characters/card-metas" in js
+    assert "await fetch('/api/characters/card-metas')" not in js
+    assert "syncMemoryRoleSourceCopies();" in js
     assert "mask-image" not in css.split(".memory-role-source", 1)[1].split(
         ".review-toggle", 1
     )[0]
