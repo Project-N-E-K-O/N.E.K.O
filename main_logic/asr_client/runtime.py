@@ -2305,6 +2305,14 @@ class IndependentAsrRuntime:
         async with self._asr_final_lock:
             if epoch != self._asr_session_epoch:
                 return
+            asr_session = self._asr_session
+            if asr_session is not None:
+                # Segmented sessions advance the cumulative wire counter at
+                # the seal-time physical-segment commit, which runs after the
+                # dispatcher's last per-chunk sample. Re-sample here so the
+                # sealed turn's provider wire audio reaches lifecycle metrics;
+                # the monotonic delta keeps streaming providers unaffected.
+                self._sync_provider_wire_metrics(asr_session)
             lifecycle_ref = self._asr_lifecycle
             sealed_token = self._asr_sealed_turn_token
             if (

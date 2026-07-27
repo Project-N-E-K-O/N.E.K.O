@@ -2349,6 +2349,45 @@ async def test_accepted_final_is_recorded_and_injected_once() -> None:
     runtime.session.create_response.assert_awaited_once_with("hello")
 
 
+async def test_final_records_segmented_wire_audio_committed_at_seal() -> None:
+    runtime = _Runtime()
+    session = SimpleNamespace(is_ready=True, provider_wire_audio_ms=0)
+    runtime._asr_session = session
+    epoch = runtime._asr_session_epoch
+    await _start_and_seal_turn(runtime, "glm")
+    # Segmented sessions advance the cumulative counter only at the seal-time
+    # physical-segment commit, after the dispatcher's last per-chunk sample.
+    session.provider_wire_audio_ms = 480
+
+    await runtime._handle_independent_asr_final("hello", epoch, "glm")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    metrics = runtime._asr_lifecycle.metrics
+    assert metrics.provider_wire_audio_ms == 480
+    assert metrics.cloud_audio_ms == 480
+    assert runtime._asr_last_provider_wire_audio_ms == 480
+
+
+async def test_final_does_not_double_count_sampled_streaming_wire_audio() -> None:
+    runtime = _Runtime()
+    session = SimpleNamespace(is_ready=True, provider_wire_audio_ms=480)
+    runtime._asr_session = session
+    epoch = runtime._asr_session_epoch
+    await _start_and_seal_turn(runtime, "qwen")
+    # Streaming sessions advance the counter inside stream_audio, so the
+    # per-chunk dispatcher sample has already recorded the full amount.
+    runtime._sync_provider_wire_metrics(session)
+    assert runtime._asr_lifecycle.metrics.provider_wire_audio_ms == 480
+
+    await runtime._handle_independent_asr_final("hello", epoch, "qwen")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    metrics = runtime._asr_lifecycle.metrics
+    assert metrics.provider_wire_audio_ms == 480
+    assert metrics.cloud_audio_ms == 480
+    assert runtime._asr_last_provider_wire_audio_ms == 480
+
+
 async def test_identical_text_in_consecutive_turns_is_delivered_twice() -> None:
     runtime = _Runtime()
     _install_ready_lifecycle(runtime, "qwen")
