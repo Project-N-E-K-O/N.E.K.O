@@ -7437,8 +7437,15 @@ async def test_concurrent_settings_saves_serialize_the_consent_transaction():
     observed_before: list = []
     order: list = []
 
+    seen_during_write: list = []
+
     async def _slow_failing_write():
         order.append("A:write-start")
+        # An in-flight message handler does not take the settings lock: it
+        # reads the live switches right here. An opt-in that has not landed
+        # on disk must not be visible to it — a reply generated from scoped
+        # memory cannot be un-sent by any rollback.
+        seen_during_write.append(plugin._qq_settings.get("group_memory_enabled"))
         await asyncio.sleep(0.05)
         # Persisting swaps in a freshly normalized settings dict, exactly
         # like config_store.save + apply_runtime_settings do.
@@ -7448,6 +7455,7 @@ async def test_concurrent_settings_saves_serialize_the_consent_transaction():
 
     async def _ok_write():
         order.append("B:write-ok")
+        seen_during_write.append(plugin._qq_settings.get("group_memory_enabled"))
         return True
 
     writes = [_slow_failing_write, _ok_write]
@@ -7473,9 +7481,12 @@ async def test_concurrent_settings_saves_serialize_the_consent_transaction():
     ))
     await asyncio.gather(task_a, task_b)
 
-    # A: before=False, after=True, write failed -> rolled back to False.
-    # B then reads that rolled-back False as ITS before and persists True.
-    assert observed_before == [(False, True, False), (False, True, True)]
+    # Neither request published the opt-in while its write was in flight.
+    assert seen_during_write == [False, False]
+    # The rollback therefore has nothing to undo in the ON direction: both
+    # requests report before == after (nothing was applied yet).
+    assert observed_before == [(False, False, False), (False, False, True)]
+    # B's write landed, so its opt-in is published afterwards.
     assert plugin._qq_settings["group_memory_enabled"] is True
     assert order == ["A:write-start", "A:write-fail", "B:write-ok"]
     # B applied its own fields only after taking the lock, so they landed
@@ -9001,3 +9012,204 @@ async def test_text_fallbacks_after_voice_failure_need_their_own_receipt():
     node_text.return_value = "mid"
     result = await node.deliver(plan)
     assert result.delivered is True
+
+
+@pytest.mark.asyncio
+async def test_opt_outs_apply_immediately_but_opt_ins_wait_for_the_write():
+    """Fail-closed asymmetry: turning memory OFF must take effect at once
+    (being conservative for a moment costs nothing), while turning it ON
+    may only become visible once the write landed."""
+    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
+
+    settings = {
+        "group_memory_enabled": True,
+        "group_member_memory_enabled": True,
+        "allow_cross_group_context": False,
+    }
+    seen: list = []
+    plugin = SimpleNamespace(
+        _qq_settings=settings,
+        _user_sessions={},
+        _emit_log=lambda *a, **k: None,
+        logger=MagicMock(),
+        attention_service=None,
+        qq_client=None,
+        _running=False,
+        _startup_error=None,
+        _strategy_mode="",
+        _ensure_qq_client_initialized=lambda: None,
+    )
+    service = QQSettingsService.__new__(QQSettingsService)
+    service.plugin = plugin
+    service._enforce_attention_for_dynamic_mode = lambda: None
+    service._stamp_group_memory_transition = lambda *, enabled_after: None
+    service._spawn_group_memory_sync_task = lambda coro: coro.close()
+    service._rollback_unpersisted_memory_toggles = lambda persisted, **kw: None
+
+    async def _write(ok=True):
+        seen.append(dict(plugin._qq_settings))
+        return ok
+
+    # OFF is visible to handlers during the write.
+    service.persist_business_config = lambda: _write(True)
+    await service.save_settings(group_memory_enabled=False)
+    assert seen[-1]["group_memory_enabled"] is False
+
+    # ON is not — and stays off when the write fails.
+    service.persist_business_config = lambda: _write(False)
+    await service.save_settings(group_memory_enabled=True)
+    assert seen[-1]["group_memory_enabled"] is False
+    assert plugin._qq_settings["group_memory_enabled"] is False
+
+    # ...and is published once a write succeeds.
+    service.persist_business_config = lambda: _write(True)
+    await service.save_settings(group_memory_enabled=True)
+    assert seen[-1]["group_memory_enabled"] is False
+    assert plugin._qq_settings["group_memory_enabled"] is True
+
+    # Cross-group has no session cleanup at all, so the same rule applies.
+    service.persist_business_config = lambda: _write(False)
+    await service.save_settings(allow_cross_group_context=True)
+    assert plugin._qq_settings["allow_cross_group_context"] is False
+
+
+@pytest.mark.asyncio
+async def test_full_participant_table_does_not_lock_newcomers_out_forever():
+    """Eight people who each said a little and stopped can hold every slot
+    without any bucket reaching the drain trigger, while the group stays
+    too busy to go idle. Rejecting the ninth speaker outright disabled
+    participant memory for them permanently."""
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    cap = QQSessionMemoryService.GROUP_MEMBER_MAX_PARTICIPANTS
+    ud = {
+        "is_group": True,
+        "memory_enabled": True,
+        "group_id": "7788",
+        "her_name": "Neko",
+        "group_member_memory_messages": {
+            str(i): [{"role": "user"}] for i in range(cap)
+        },
+        "group_member_memory_labels": {str(i): str(i) for i in range(cap)},
+    }
+    plugin = SimpleNamespace(
+        _qq_settings={
+            "group_memory_enabled": True, "group_member_memory_enabled": True,
+        },
+        logger=MagicMock(),
+        permission_mgr=SimpleNamespace(get_nickname=lambda *a, **k: None),
+    )
+    service = QQSessionMemoryService(plugin)
+    context = SimpleNamespace(
+        is_group=True, sender_id="newcomer", member_memory_enabled=True,
+        source_kind="incoming_group", group_facing=False,
+        group_scene_mode="", message="第九个人的发言",
+    )
+
+    service.record_group_member_turn(ud, context)
+    assert "newcomer" not in ud["group_member_memory_messages"]
+    # A drain was requested, so the slots free up and the next turn lands.
+    assert ud.get("member_flush_due") is True
+
+    ud["group_member_memory_messages"].pop("0")
+    ud.pop("member_flush_due")
+    service.record_group_member_turn(ud, context)
+    assert "newcomer" in ud["group_member_memory_messages"]
+
+
+@pytest.mark.asyncio
+async def test_member_flush_success_pops_bucket_and_label():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    ud = {
+        "group_member_memory_messages": {"2046": [{"role": "user"}]},
+        "group_member_memory_labels": {"2046": "小张(2046)"},
+    }
+    bridge = MagicMock()
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(),
+    ))
+    failed = await service._flush_member_buckets(
+        ud, group_id="7788", her_name="Neko", reason="test",
+    )
+    assert failed == []
+    assert ud["group_member_memory_messages"] == {}
+    assert ud["group_member_memory_labels"] == {}
+
+    # A failed flush keeps both, so the retry still has the speaker label.
+    ud["group_member_memory_messages"]["2046"] = [{"role": "user"}]
+    ud["group_member_memory_labels"]["2046"] = "小张(2046)"
+    bridge.post_scoped_memory_history = AsyncMock(
+        side_effect=RuntimeError("server down")
+    )
+    failed = await service._flush_member_buckets(
+        ud, group_id="7788", her_name="Neko", reason="test",
+    )
+    assert failed == ["2046"]
+    assert ud["group_member_memory_labels"]["2046"] == "小张(2046)"
+
+
+@pytest.mark.asyncio
+async def test_buffered_consent_uses_the_resolved_value():
+    """retroactive_review requests carry no persist_memory; reading the raw
+    request field marks an authorized replay as non-consented input, and
+    the merged summary's ai row is then excluded from scoped history."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        QQDeliveryPlan,
+        QQMessageBlock,
+        QQReplyOutcome,
+        QQReplyRequest,
+    )
+    from plugin.plugins.qq_auto_reply.reply_pipeline import (
+        QQReplyPipelineRunner,
+    )
+
+    schedule = AsyncMock()
+    plugin = SimpleNamespace(
+        reply_buffer_service=SimpleNamespace(schedule_reply=schedule),
+        _build_session_key=(
+            lambda *, sender_id, is_group, group_id: f"group:{group_id}"
+        ),
+        _emit_log=lambda *a, **k: None,
+        _qq_settings={"group_memory_enabled": True},
+        logger=MagicMock(),
+    )
+    runner = QQReplyPipelineRunner(plugin)
+    request = QQReplyRequest(
+        message_text="[回溯补回] hi", sender_id="2046", is_group=True,
+        group_id="7788", source_kind="retroactive_review",
+    )
+    assert request.persist_memory is None
+    plan = QQDeliveryPlan(
+        target_type="group", target_id="7788",
+        blocks=[QQMessageBlock(text="回复")],
+    )
+    await runner._run_delivery(
+        plan, request,
+        QQReplyOutcome(action="reply", reply_text="回复", raw_reply_text="回复"),
+        context=SimpleNamespace(
+            is_group=True, group_id="7788", consent_snapshot={},
+            persist_memory=True,
+        ),
+    )
+    assert schedule.await_args.kwargs["consented"] is True
+
+    # A genuinely non-consented turn still marks the buffer.
+    schedule.reset_mock()
+    await runner._run_delivery(
+        plan, request,
+        QQReplyOutcome(action="reply", reply_text="回复", raw_reply_text="回复"),
+        context=SimpleNamespace(
+            is_group=True, group_id="7788", consent_snapshot={},
+            persist_memory=False,
+        ),
+    )
+    assert schedule.await_args.kwargs["consented"] is False

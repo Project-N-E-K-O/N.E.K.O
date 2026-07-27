@@ -318,6 +318,15 @@ class QQSessionMemoryService:
             return
         buckets = user_data.setdefault("group_member_memory_messages", {})
         if sender_id not in buckets and len(buckets) >= self.GROUP_MEMBER_MAX_PARTICIPANTS:
+            # 名额满：八个只说过几句的人各占一格、谁都到不了排空线，而群
+            # 一直活跃也等不到 idle 结算——照原样直接 return 会把第九个
+            # （可能很活跃的）发言人永久挡在成员记忆之外。改为催一次排空，
+            # 排空成功会腾空名额，本轮先跳过、下一轮就能进。
+            user_data["member_flush_due"] = True
+            self.plugin.logger.info(
+                f"成员记忆名额已满（{len(buckets)}），已请求排空，"
+                f"{sender_id} 本轮跳过"
+            )
             return
         # 记录发言人展示名（备注名 > 群昵称 > 纯 QQ 号），finalize 时作为
         # speaker_label 传给提取端点——不带则提取 prompt 会把成员发言当私聊
@@ -550,6 +559,11 @@ class QQSessionMemoryService:
                     )
                     return sender_id
                 member_buckets.pop(sender_id, None)
+                # label 与 bucket 同生命周期：只弹 bucket 的话，活跃群会
+                # 让 label 映射无限增长，而参与者名额是按 bucket 数算的，
+                # 关闭成员记忆时（bucket 已空）也没人清这些残留。
+                if isinstance(member_labels, dict):
+                    member_labels.pop(sender_id, None)
                 return None
 
         flush_jobs = [

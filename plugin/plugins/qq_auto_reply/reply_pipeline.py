@@ -297,7 +297,16 @@ class QQReplyPipelineRunner:
                 ),
                 consented=bool(
                     not request.is_group
-                    or getattr(request, "persist_memory", None)
+                    or (
+                        # 解析后的判据：retroactive_review 等路径的 request
+                        # 不带 persist_memory（None），照原样读会把已授权的
+                        # 回放轮标成"非授权输入"，合并出来的总结 ai 行反而
+                        # 被排除出 scoped 历史。
+                        getattr(context, "persist_memory", None)
+                        if context is not None
+                        and getattr(context, "persist_memory", None) is not None
+                        else getattr(request, "persist_memory", None)
+                    )
                 ),
             )
             from .pipeline_models import QQDeliveryResult

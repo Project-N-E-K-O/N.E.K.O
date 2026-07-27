@@ -87,6 +87,33 @@ class QQSettingsService:
         self._rollback_unpersisted_memory_toggles(success, **rollback_kwargs)
         return success
 
+    def _publish_consent_opt_ins(self, opt_ins: dict[str, bool]) -> None:
+        """Apply opt-ins that were held back until the write landed.
+
+        Stamping and session sync happen here too: doing them before the
+        write would let a failed save leave marked sessions behind for a
+        consent that never took effect."""
+        group_before = bool(
+            self.plugin._qq_settings.get("group_memory_enabled", False)
+        )
+        for key in opt_ins:
+            self.plugin._qq_settings[key] = True
+        group_after = bool(
+            self.plugin._qq_settings.get("group_memory_enabled", False)
+        )
+        if group_after != group_before:
+            self._stamp_group_memory_transition(enabled_after=True)
+            self._spawn_group_memory_sync_task(
+                self._sync_memory_transitions(
+                    settle_members=False,
+                    group_transition=True,
+                    group_enabled_after=True,
+                )
+            )
+        self.plugin._emit_log(
+            "INFO", f"记忆开关已开启并写盘: {sorted(opt_ins)}"
+        )
+
     @property
     def _consent_transaction_lock(self) -> asyncio.Lock:
         """Serializes read-before → mutate → persist → rollback."""
@@ -421,14 +448,23 @@ class QQSettingsService:
         cross_group_before = bool(
             self.plugin._qq_settings.get("allow_cross_group_context", False)
         )
+        # 授权方向不对称：关掉立刻生效（多关一会儿只是保守），打开必须等
+        # 写盘成功——消息处理不取设置事务锁，写盘期间到达的轮次会照新开关
+        # 读 scoped/跨群记忆并把回复**发出去**，而回滚只能清本地状态，收不
+        # 回已经说出去的话（跨群更是连会话清理都没有）。
+        deferred_opt_ins: dict[str, bool] = {}
         for key in (
             "group_memory_enabled",
             "group_member_memory_enabled",
             "allow_cross_group_context",
         ):
             value = kwargs.get(key)
-            if value is not None:
-                self.plugin._qq_settings[key] = bool(value)
+            if value is None:
+                continue
+            if bool(value) and not bool(self.plugin._qq_settings.get(key, False)):
+                deferred_opt_ins[key] = True
+                continue
+            self.plugin._qq_settings[key] = bool(value)
         group_memory_after = bool(
             self.plugin._qq_settings.get("group_memory_enabled", False)
         )
@@ -478,6 +514,7 @@ class QQSettingsService:
         self._enforce_attention_for_dynamic_mode()
         self.plugin._qq_settings.pop("guide_step_settings_done", None)
         self.plugin._ensure_qq_client_initialized()
+        # 落盘成功之前，opt-in 对处理链不可见（上面已把它们扣下）。
         success = await self._persist_with_consent_rollback(
             group_memory_before=group_memory_before,
             group_memory_after=group_memory_after,
@@ -489,6 +526,14 @@ class QQSettingsService:
                 if cross_group_before is not None else None
             ),
         )
+        if deferred_opt_ins:
+            if success:
+                self._publish_consent_opt_ins(deferred_opt_ins)
+            else:
+                self.plugin._emit_log(
+                    "WARNING",
+                    "记忆开关开启未能写盘，已放弃本次开启（运行时保持关闭）",
+                )
         if self.plugin.attention_service:
             self.plugin.attention_service.cleanup_stale_cache()
         if success:
