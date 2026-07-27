@@ -2162,6 +2162,111 @@ async def test_used_fallback_survives_every_postprocess_path():
 
 
 @pytest.mark.asyncio
+async def test_merge_flush_cleanup_runs_even_on_pipeline_failure():
+    """A failing merge-flush pipeline must still pop the pending entry and
+    settle the provisional barrier — leaking either wedges the digest
+    cursor in front of a dead draft row forever."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import QQMessageBlock
+    from plugin.plugins.qq_auto_reply.reply_buffer_service import (
+        PendingReply,
+        QQReplyBufferService,
+    )
+
+    draft = SimpleNamespace(type="ai", content="草稿")
+    history = [SimpleNamespace(type="human", content="u1"), draft]
+    user_data = {
+        "is_group": True,
+        "session": SimpleNamespace(_conversation_history=history),
+        "undelivered_draft_rows": [draft],
+        "provisional_draft_rows": [draft],
+    }
+
+    async def _boom(session_key, fn):
+        raise RuntimeError("pipeline down")
+
+    plugin = SimpleNamespace(
+        _user_sessions={"group:7788": user_data},
+        _emit_log=lambda *a, **k: None,
+        _run_with_session_lock=_boom,
+        reply_pipeline=SimpleNamespace(run=AsyncMock()),
+    )
+    service = QQReplyBufferService.__new__(QQReplyBufferService)
+    service.plugin = plugin
+    service._pending = {}
+    pending = PendingReply(
+        first_text="草稿", wait_seconds=0, sender_id="1",
+        is_group=True, group_id="7788",
+    )
+    pending.message_count = 2
+    pending.buffered_texts = ["草稿", "第二条"]
+    pending.first_blocks = [QQMessageBlock(text="草稿")]
+    pending.wait_until = 0.0
+    pending.draft_rows = [draft]
+    service._pending["group:7788"] = pending
+
+    await service._deliver_after_wait("group:7788", pending)
+    assert "group:7788" not in service._pending
+    assert user_data["provisional_draft_rows"] == []
+    assert user_data["undelivered_draft_rows"] == [draft]
+
+
+@pytest.mark.asyncio
+async def test_force_summary_branch_binds_draft_before_settling():
+    """The 17+ forced-summary branch returns before the tail association:
+    it must bind the just-recorded draft row to the pending first, or the
+    settle step cannot find it and the provisional barrier never lifts."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import QQMessageBlock
+    from plugin.plugins.qq_auto_reply.reply_buffer_service import (
+        PendingReply,
+        QQReplyBufferService,
+    )
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    draft17 = SimpleNamespace(type="ai", content="第十七条的草稿")
+    history = [SimpleNamespace(type="human", content="u1"), draft17]
+    user_data = {
+        "is_group": True,
+        "session": SimpleNamespace(_conversation_history=history),
+    }
+    plugin = SimpleNamespace(
+        _user_sessions={"group:7788": user_data},
+        _emit_log=lambda *a, **k: None,
+        reply_pipeline=SimpleNamespace(
+            run=AsyncMock(return_value=SimpleNamespace(
+                action="reply", reply_text="总结",
+            )),
+        ),
+    )
+    memory_service = QQSessionMemoryService.__new__(QQSessionMemoryService)
+    memory_service.plugin = plugin
+    plugin.session_memory_service = memory_service
+    service = QQReplyBufferService.__new__(QQReplyBufferService)
+    service.plugin = plugin
+    service._pending = {}
+    waiting = PendingReply(
+        first_text="旧草稿", wait_seconds=999, sender_id="1",
+        is_group=True, group_id="7788",
+    )
+    waiting.message_count = 16
+    waiting.buffered_texts = [f"旧{i}" for i in range(16)]
+    waiting.task = asyncio.create_task(asyncio.sleep(999))
+    service._pending["group:7788"] = waiting
+
+    await service.schedule_reply(
+        session_key="group:7788", reply_text="第十七条的草稿",
+        raw_text="第十七条的草稿", blocks=[QQMessageBlock(text="x")],
+        wait_seconds=999, sender_id="1", is_group=True, group_id="7788",
+    )
+    assert "group:7788" not in service._pending
+    # The draft stays permanently excluded, but the provisional barrier
+    # is lifted — the settle step found the row via the pending binding.
+    assert draft17 in user_data["undelivered_draft_rows"]
+    assert user_data.get("provisional_draft_rows") == []
+
+
+@pytest.mark.asyncio
 async def test_proactive_prompt_row_excluded_from_digest():
     """The silence-timer proactive turn appends a synthetic system-
     instruction human row to the shared history; like rapid-fire control

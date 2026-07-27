@@ -298,6 +298,10 @@ class QQReplyBufferService:
 
             # 17+ 条 → 走 pipeline 强制总结 + 清空缓冲
             if n >= 17:
+                # 本分支提前 return，函数尾部的补关联不会执行——先把本轮
+                # 草稿行绑上，否则 settle 按 draft_rows 清 provisional 时
+                # 漏掉它，游标屏障永久卡死、此后所有消息进不了 scoped 记忆。
+                self._bind_draft_to_pending(draft_row, existing)
                 existing.task.cancel()
                 self._pending.pop(session_key, None)
                 hist_before = self._session_history_len(session_key)
@@ -441,17 +445,19 @@ class QQReplyBufferService:
                     self._record_synthetic_prompt_rows(session_key, hist_before)
 
             await self.plugin._run_with_session_lock(session_key, _run_flush)
+        except Exception as e:
+            self.plugin._emit_log("WARN", f"[Buffer] 总结pipeline失败: {e}")
+        finally:
+            # 合并定局（无论成败）：pending 必须出表、屏障必须解除——
+            # 异常路径漏掉任何一个都会让 digest 永远停在死草稿行前。
+            # 草稿永久未投递（排除名单保留）。
             self._pending.pop(session_key, None)
-            # 合并定局：草稿永久未投递（排除名单保留），解除游标屏障，
-            # 否则 digest 永远停在死草稿行前。
             self._settle_provisional(
                 (getattr(self.plugin, "_user_sessions", {}) or {}).get(
                     session_key
                 ),
                 pending,
             )
-        except Exception as e:
-            self.plugin._emit_log("WARN", f"[Buffer] 总结pipeline失败: {e}")
 
     # ── LLM 合并决策 ──
 
