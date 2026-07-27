@@ -314,6 +314,20 @@ class QQSessionInstructionService:
                 login_nickname=login_nickname,
             ),
         ]
+        core_sender_id = (
+            memory_sender_id if memory_sender_id is not None else sender_id
+        )
+        # 该段是否会含 participant 域：调用方据此在后续 await 窗口里
+        # member 被关掉时撤除本段。判据与 _build_core_memory_section 内
+        # 的 subject 组装条件一致。
+        used_member_subject = bool(
+            is_group
+            and str(group_id or "").strip()
+            and str(core_sender_id or "").strip()
+            and (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                "group_member_memory_enabled", False,
+            )
+        )
         core_memory_text = await self._build_core_memory_section(
             should_use_memory_context=should_use_memory_context,
             her_name=her_name,
@@ -321,7 +335,7 @@ class QQSessionInstructionService:
             context_ready_template=context_ready_template,
             is_group=is_group,
             group_id=group_id,
-            sender_id=(memory_sender_id if memory_sender_id is not None else sender_id),
+            sender_id=core_sender_id,
         )
         if core_memory_text:
             sections.append(core_memory_text)
@@ -354,7 +368,9 @@ class QQSessionInstructionService:
         )
         self._append_blacklist_section(sections)
         self._append_group_custom_prompt_section(sections, group_id, is_group)
-        self._append_cross_group_section(sections, group_id, is_group)
+        cross_group_section = self._append_cross_group_section(
+            sections, group_id, is_group,
+        )
         self._append_fatigue_section(sections, sender_id, is_group, group_id)
         self._append_attention_context_section(sections, group_id, is_group)
         sections.append(self._resolve_static_layer("detail_constraints_section", DETAIL_CONSTRAINTS_SECTION, user_language))
@@ -375,6 +391,8 @@ class QQSessionInstructionService:
             memory_context_used=bool(core_memory_text),
             core_memory_text=core_memory_text,
             scene_mode=scene_mode,
+            cross_group_section=cross_group_section,
+            used_member_subject=used_member_subject and bool(core_memory_text),
         )
 
     def _compose_sections(self, sections: list[str]) -> str:
@@ -550,14 +568,18 @@ class QQSessionInstructionService:
             return "shared_group"
         return "directed_group"
 
-    def _append_cross_group_section(self, sections: list[str], current_group_id: str | None, is_group: bool) -> None:
-        """群聊时注入其他群的最新话题摘要（跨群共享记忆）"""
+    def _append_cross_group_section(self, sections: list[str], current_group_id: str | None, is_group: bool) -> str:
+        """群聊时注入其他群的最新话题摘要（跨群共享记忆）。
+
+        Returns the injected section text (empty when nothing was added) so
+        the caller can strip it if the opt-in is revoked while later
+        context-building awaits are still running."""
         if not is_group or not current_group_id:
-            return
+            return ""
         if not bool((getattr(self.plugin, "_qq_settings", {}) or {}).get(
             "allow_cross_group_context", False,
         )):
-            return
+            return ""
         sessions = getattr(self.plugin, "_user_sessions", {}) or {}
         lines: list[str] = []
         for key, s in sessions.items():

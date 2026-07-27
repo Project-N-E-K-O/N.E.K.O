@@ -44,8 +44,21 @@ class QQReplyDeliveryNode:
                     all_text_sent = False
                 continue
 
-            # 文本块（可含 emoji + at + reply）
+            # 文本块（可含 emoji + at + reply + keyboard）
             text = self._compose_text(block)
+            if not text and block.keyboard and plan.target_type == "group":
+                # keyboard-only 块：仍要真发（两端 send_group_message_segments
+                # 都支持 keyboard），否则既没送出去又被算成已投递。
+                any_text_attempted = True
+                if not self._confirm_platform_result(
+                    await self.plugin.qq_client.send_group_message_segments(
+                        plan.target_id,
+                        [{"type": "text", "data": {"text": " "}}],
+                        keyboard=block.keyboard,
+                    )
+                ):
+                    all_text_sent = False
+                continue
             if not text:
                 if block.ark:
                     # Ark 卡片目前没有投递实现（_send_ark 自 #2429 起无
@@ -61,7 +74,7 @@ class QQReplyDeliveryNode:
             if i == 0:
                 first_text = text
             any_text_attempted = True
-            if not await self._send_text(plan, block, text):
+            if not await self._send_text(plan, block, text, keyboard=block.keyboard):
                 all_text_sent = False
 
         # 开放平台单条发送失败返回 None（不抛异常）：只要有文本块未确认
@@ -90,7 +103,10 @@ class QQReplyDeliveryNode:
             parts.append(f"[CQ:face,id={block.emoji}]")
         return "".join(parts)
 
-    async def _send_text(self, plan: QQDeliveryPlan, block: QQMessageBlock, text: str) -> bool:
+    async def _send_text(
+        self, plan: QQDeliveryPlan, block: QQMessageBlock, text: str,
+        *, keyboard: str = "",
+    ) -> bool:
         """Returns True when the send is confirmed or fire-and-forget.
 
         NapCat sends return None by design (failure surfaces as an
@@ -111,7 +127,16 @@ class QQReplyDeliveryNode:
                 return bool(await self.plugin._deliver_group_reply(plan.target_id, text, fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure))
             return bool(await self.plugin._deliver_private_reply(plan.target_id, text, fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure))
         if plan.target_type == "group":
-            result = await self.plugin.qq_client.send_group_message(plan.target_id, text)
+            if keyboard:
+                # keyboard 只有 segments 接口承载：带按钮的文本块走它，
+                # 否则按钮被静默丢弃（输出模板明确鼓励按钮回复）。
+                result = await self.plugin.qq_client.send_group_message_segments(
+                    plan.target_id,
+                    [{"type": "text", "data": {"text": text}}],
+                    keyboard=keyboard,
+                )
+            else:
+                result = await self.plugin.qq_client.send_group_message(plan.target_id, text)
         else:
             result = await self.plugin.qq_client.send_message(plan.target_id, text)
         if explicit_result:

@@ -65,11 +65,20 @@ class QQReplyContextNode:
                             group_id, member_sender,
                         )
                     )
+            used_member_subject = bool(subjects and len(subjects) > 1)
             recall_result = await self.plugin.memory_bridge.query_relevant_memory(
                 her_name,
                 normalized_message,
                 subjects=subjects,
             )
+            if used_member_subject and not bool(
+                (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                    "group_member_memory_enabled", False,
+                )
+            ):
+                # member 侧读后复检：召回结果混合群域与 participant 域、
+                # 事后无法拆分，opt-out 落在这次调用飞行期间时整体丢弃。
+                return ""
             if is_group and not bool(
                 (getattr(self.plugin, "_qq_settings", {}) or {}).get(
                     "group_memory_enabled", False,
@@ -91,6 +100,35 @@ class QQReplyContextNode:
         except Exception as e:
             self.plugin.logger.warning(f"QQ 长期记忆召回失败: {e}")
             return ""
+
+    def _strip_section_if_member_revoked(
+        self, system_prompt: str, section_text: str, used_member_subject: bool,
+    ) -> tuple[str, bool]:
+        """Drop a participant-derived section when member consent is gone.
+
+        The scoped bootstrap section is composed before the recall/login
+        awaits; a member opt-out during them must not leave participant-
+        derived text in the prompt. Returns the prompt and whether the
+        section survived."""
+        if not section_text or not used_member_subject:
+            return system_prompt, bool(section_text)
+        if bool(
+            (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                "group_member_memory_enabled", False,
+            )
+        ):
+            return system_prompt, True
+        separator = "\n\n"
+        for candidate in (
+            separator + section_text,
+            section_text + separator,
+            section_text,
+        ):
+            if candidate in system_prompt:
+                system_prompt = system_prompt.replace(candidate, "", 1)
+                break
+        self.plugin.logger.info("成员记忆已关闭，核心记忆段在生成前撤除")
+        return system_prompt, False
 
     def _strip_cross_group_if_revoked(
         self, system_prompt: str, cross_group_section: str,
@@ -339,6 +377,14 @@ class QQReplyContextNode:
             )
         )
 
+        system_prompt, core_memory_alive = self._strip_section_if_member_revoked(
+            system_prompt,
+            core_memory_text,
+            bool(getattr(instruction_bundle, "used_member_subject", False)),
+        )
+        if not core_memory_alive:
+            core_memory_text = ""
+            memory_context_used = False
         system_prompt = self._strip_cross_group_if_revoked(
             system_prompt,
             getattr(instruction_bundle, "cross_group_section", ""),

@@ -563,6 +563,24 @@ async def test_qq_group_recall_passes_group_and_member_subjects():
     )
     kwargs = bridge.query_relevant_memory.await_args.kwargs
     assert kwargs["subjects"][1]["subject_id"] == "qq:7788:2046"
+
+    # Member opt-out DURING the recall await: the result mixes group and
+    # participant text and cannot be split afterwards — drop it whole.
+    async def _recall_then_revoke(*args, **kwargs):
+        plugin._qq_settings["group_member_memory_enabled"] = False
+        return QQMemoryQueryResult(text="成员私密偏好", hit_count=1)
+
+    plugin._qq_settings["group_member_memory_enabled"] = True
+    bridge.query_relevant_memory = AsyncMock(side_effect=_recall_then_revoke)
+    assert await QQReplyContextNode(plugin)._build_recalled_memory_text(
+        her_name="Neko",
+        message="群规是什么？",
+        should_use_memory_context=True,
+        attachments=None,
+        is_group=True,
+        group_id="7788",
+        sender_id="2046",
+    ) == ""
     bridge.query_relevant_memory.assert_awaited_once_with(
         "Neko",
         "群规是什么？",
@@ -2932,6 +2950,31 @@ async def test_delivery_result_reflects_open_platform_send_failure():
     result = await poke_node.deliver(poke_group)
     assert result.delivered is False
 
+    # Keyboard-only block: the segments API carries buttons, so it must be
+    # sent (and confirmed) instead of silently counting as delivered.
+    kb_plugin = SimpleNamespace(
+        _get_reply_mode=lambda: "text",
+        logger=MagicMock(),
+        qq_client=SimpleNamespace(
+            needs_attention=False,
+            send_group_message_segments=AsyncMock(return_value="mid"),
+        ),
+    )
+    kb_node = QQReplyDeliveryNode.__new__(QQReplyDeliveryNode)
+    kb_node.plugin = kb_plugin
+    kb_plan = QQDeliveryPlan(
+        target_type="group", target_id="7788",
+        blocks=[QQMessageBlock(keyboard="要|不要")],
+    )
+    result = await kb_node.deliver(kb_plan)
+    assert result.delivered is True
+    assert kb_plugin.qq_client.send_group_message_segments.await_args.kwargs[
+        "keyboard"
+    ] == "要|不要"
+    kb_plugin.qq_client.send_group_message_segments = AsyncMock(return_value=None)
+    result = await kb_node.deliver(kb_plan)
+    assert result.delivered is False
+
     # Ark-only plan: nothing is actually sent (no delivery implementation),
     # so it must not report delivered and clear the draft exclusion.
     ark_plugin = SimpleNamespace(
@@ -3456,12 +3499,57 @@ async def test_cross_group_section_removed_when_consent_revoked():
     assert section and section in sections
     assert "烤肉" in section
 
+    # Core-memory section built with participant subjects is dropped when
+    # the member switch is revoked during the later awaits, and the
+    # bundle-derived fields are cleared with it (a lingering
+    # memory_context_used would claim memory was used).
+    from plugin.plugins.qq_auto_reply.reply_context_node import (
+        QQReplyContextNode as _CtxNode,
+    )
+
+    node = _CtxNode.__new__(_CtxNode)
+    node.plugin = SimpleNamespace(
+        _qq_settings={"group_member_memory_enabled": True},
+        logger=MagicMock(),
+    )
+    sep = chr(10) * 2
+    core_section = "## 核心记忆" + chr(10) + "成员偏好：不吃香菜"
+    prompt = "头部" + sep + core_section + sep + "尾部"
+    kept, alive = node._strip_section_if_member_revoked(
+        prompt, core_section, True,
+    )
+    assert alive is True and kept == prompt
+    node.plugin._qq_settings["group_member_memory_enabled"] = False
+    kept, alive = node._strip_section_if_member_revoked(
+        prompt, core_section, True,
+    )
+    assert alive is False
+    assert "不吃香菜" not in kept
+    # A section that never used participant subjects is untouched.
+    kept, alive = node._strip_section_if_member_revoked(
+        prompt, core_section, False,
+    )
+    assert alive is True and kept == prompt
+
+    # Wiring guard: the builder's return value must actually reach the
+    # bundle (a correct helper that nobody wires up is dead code).
+    import inspect
+
+    from plugin.plugins.qq_auto_reply.session_instruction_service import (
+        QQSessionInstructionService as _Svc,
+    )
+
+    bundle_src = inspect.getsource(_Svc.build_session_instructions)
+    assert "cross_group_section = self._append_cross_group_section(" in bundle_src
+    assert "cross_group_section=cross_group_section" in bundle_src
+    assert "used_member_subject=used_member_subject" in bundle_src
+
     # Post-await revocation: the node strips the exact section text.
     from plugin.plugins.qq_auto_reply.reply_context_node import (
         QQReplyContextNode,
     )
 
-    node = QQReplyContextNode.__new__(QQReplyContextNode)
+    node = _CtxNode.__new__(_CtxNode)
     node.plugin = SimpleNamespace(
         _qq_settings=plugin._qq_settings, logger=MagicMock(),
     )

@@ -66,6 +66,9 @@ class QQInstructionBundle:
     # 跨群上下文段原文（未注入时为空）：consent 是运行时开关，构建后到
     # 生成前的 await 窗口里可能被关掉/回滚，届时按原文从 prompt 中摘除。
     cross_group_section: str = ""
+    # core memory 段是否含 participant 域内容：member 开关在后续 await
+    # 窗口里被关掉时，该段要按同样方式撤除。
+    used_member_subject: bool = False
 
 
 @dataclass(slots=True)
