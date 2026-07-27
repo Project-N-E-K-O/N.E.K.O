@@ -30,6 +30,20 @@
     // handshakes then stamped the wrong route).
     const _dirtySettingsKeys = new Set();
     let _settingsBaseline = null;
+    // Cross-window write metadata (Codex P2): saveSettings() writes EVERY
+    // conversation key into the shared localStorage snapshot, so a receiving
+    // window cannot tell a real independentAsrEnabled toggle from the
+    // incidental copy that rides along with an unrelated preference save.
+    // Inferring intent from a value difference alone let an UNHYDRATED
+    // window's unrelated save (carrying a pre-merge boot default) look like an
+    // explicit ASR flip to a window that had already merged the server value:
+    // the receiver adopted the stale value, marked the key user-dirty and
+    // stamped the wrong route on the next handshake. Every write now carries
+    // the keys the writing user EXPLICITLY changed plus a monotonic write id,
+    // and the listener grants ASR authority only on that evidence.
+    const _SHARED_WRITE_META_KEY = '_sharedWriteMeta';
+    let _lastSharedWriteId = 0;
+    let _lastAppliedSharedWriteId = 0;
     // Bounded gate for the boot settings GET: settings POST bodies are built
     // at send time AFTER awaiting this gate, so once the GET settled the merge
     // has already run and fields the user never touched carry server truth
@@ -159,6 +173,74 @@
             });
         }
         _settingsBaseline = current;
+    }
+
+    /**
+     * Monotonic id for shared-settings writes. The wall clock keeps ids
+     * comparable across windows (same browser profile, one clock) and the
+     * max()-style bump keeps them strictly increasing inside a window when two
+     * saves land in the same millisecond, so a receiver can always tell which
+     * of two snapshots is newer than the last one it applied.
+     */
+    function _nextSharedWriteId() {
+        let now = 0;
+        try { now = Date.now(); } catch (_) { now = 0; }
+        _lastSharedWriteId = now > _lastSharedWriteId ? now : _lastSharedWriteId + 1;
+        return _lastSharedWriteId;
+    }
+
+    /**
+     * Keys of `snapshot` this window may claim explicit user authority over:
+     * the monotone _dirtySettingsKeys set plus keys that diverge from the
+     * current dirty-diff baseline. The divergence term matters because the
+     * independent-ASR toggle handler persists locally (saveSettings with
+     * skipServerSync) BEFORE its userInitiated sync runs _markUserDirtySettings,
+     * so at write time the diff is the only evidence the key was just toggled.
+     */
+    function _collectExplicitSharedKeys(snapshot) {
+        const keys = [];
+        _SHARED_SETTINGS_KEYS.forEach((key) => {
+            if (!Object.prototype.hasOwnProperty.call(snapshot, key)) return;
+            const divergedFromBaseline = !!_settingsBaseline
+                && Object.prototype.hasOwnProperty.call(_settingsBaseline, key)
+                && _settingsBaseline[key] !== snapshot[key];
+            if (_dirtySettingsKeys.has(key) || divergedFromBaseline) {
+                keys.push(key);
+            }
+        });
+        return keys;
+    }
+
+    /**
+     * Persist the shared settings snapshot with its write metadata. `hydrated`
+     * records whether this window already held server truth when it wrote:
+     * an unhydrated writer's untouched fields are still pre-merge boot
+     * defaults, which a hydrated receiver must not adopt.
+     */
+    function _writeSharedSettings(snapshot, explicitKeys) {
+        const payload = Object.assign({}, snapshot);
+        payload[_SHARED_WRITE_META_KEY] = {
+            writeId: _nextSharedWriteId(),
+            changedKeys: explicitKeys || [],
+            hydrated: S.settingsHydrated === true
+        };
+        localStorage.setItem('project_neko_settings', JSON.stringify(payload));
+    }
+
+    /**
+     * Read the write metadata of an incoming shared snapshot. Returns null for
+     * payloads that carry none — a window still running the previous build —
+     * so those keep falling back to the legacy value-difference detection.
+     */
+    function _readSharedWriteMeta(settings) {
+        const meta = settings ? settings[_SHARED_WRITE_META_KEY] : null;
+        if (!meta || typeof meta !== 'object') return null;
+        if (typeof meta.writeId !== 'number' || !isFinite(meta.writeId)) return null;
+        return {
+            writeId: meta.writeId,
+            changedKeys: Array.isArray(meta.changedKeys) ? meta.changedKeys : [],
+            hydrated: meta.hydrated === true
+        };
     }
 
     /**
@@ -563,7 +645,11 @@
             subtitleEnabled: currentSubtitleEnabled,
             userLanguage: currentUserLanguage
         };
-        localStorage.setItem('project_neko_settings', JSON.stringify(settings));
+        // Stamp the keys the user explicitly changed (plus a monotonic write id)
+        // into the shared snapshot: every save copies independentAsrEnabled
+        // along, so the receiving window needs this metadata to tell a real
+        // cross-window toggle from an unrelated save's incidental copy.
+        _writeSharedSettings(settings, _collectExplicitSharedKeys(settings));
 
         // 同步回共享状态，保持一致性
         S.proactiveChatEnabled = currentProactive;
@@ -658,9 +744,11 @@
                     }
                 }
 
-                // 如果进行了迁移，持久化更新后的设置
+                // 如果进行了迁移，持久化更新后的设置。走 _writeSharedSettings 带上写入
+                // 元数据：迁移发生在水合之前、也不是用户显式改动，其他窗口据此不会把这份
+                // 快照里的 independentAsrEnabled 当成一次跨窗口开关翻转
                 if (needsSave) {
-                    localStorage.setItem('project_neko_settings', JSON.stringify(settings));
+                    _writeSharedSettings(settings, []);
                 }
 
                 // 使用 ?? 运算符提供更好的默认值处理（避免将 false 误判为需要使用默认值）
@@ -962,17 +1050,50 @@
             const settings = JSON.parse(event.newValue);
             // Cross-window independent-ASR flips are authoritative (Codex P2):
             // detect the flip BEFORE applySharedRuntimeSettings mutates S.
-            const asrChangedByOtherWindow =
+            const meta = _readSharedWriteMeta(settings);
+            const asrValueDiffers =
                 Object.prototype.hasOwnProperty.call(settings, 'independentAsrEnabled') &&
                 S.independentAsrEnabled !== settings.independentAsrEnabled;
-            const changed = applySharedRuntimeSettings(settings);
+            const asrMarkedExplicit = !!meta
+                && meta.changedKeys.indexOf('independentAsrEnabled') !== -1;
+            const asrWriteIsNewer = !meta || meta.writeId > _lastAppliedSharedWriteId;
+            // With metadata, a value difference alone proves nothing — every
+            // saveSettings() copies independentAsrEnabled into the snapshot.
+            // Require the writer to have marked the key as an explicit user
+            // change AND the write to be newer than the last one applied here
+            // (out-of-order or replayed snapshots must not re-flip a route).
+            // Metadata-less payloads come from a window still running the
+            // previous build: keep the legacy value-difference behaviour so a
+            // genuine toggle from such a window is not silently dropped.
+            const asrChangedByOtherWindow = meta
+                ? (asrValueDiffers && asrMarkedExplicit && asrWriteIsNewer)
+                : asrValueDiffers;
+            // Drop the key from the apply set when the snapshot's ASR value
+            // carries neither user intent nor trustworthy server truth: an
+            // already-superseded write, or one made before its own window
+            // hydrated (pre-merge boot default for every key the user did not
+            // touch) while this window already merged the server value. A
+            // hydrated writer's non-explicit value still propagates as before,
+            // and every other shared key keeps syncing untouched.
+            const asrValueIsStale = !!meta
+                && !asrChangedByOtherWindow
+                && (!asrWriteIsNewer || (!meta.hydrated && S.settingsHydrated === true));
+            if (meta && meta.writeId > _lastAppliedSharedWriteId) {
+                _lastAppliedSharedWriteId = meta.writeId;
+            }
+            let incoming = settings;
+            if (asrValueIsStale) {
+                incoming = Object.assign({}, settings);
+                delete incoming.independentAsrEnabled;
+            }
+            const changed = applySharedRuntimeSettings(incoming);
             if (asrChangedByOtherWindow) {
-                // The snapshot that flips independentAsrEnabled always comes from
-                // an already-hydrated writer (the toggle handler's userInitiated
-                // sync or a server-merge writeback) — first-launch skipServerSync
-                // saves carry the same boot default this window has, so they never
-                // flip it. Treat it exactly like a local user change: mark
-                // hydration so the next start_session handshake stamps the new
+                // The writer marked independentAsrEnabled as an explicit user
+                // change (or is a metadata-less legacy window, where a value
+                // difference is the only signal available). Either way this is
+                // a real cross-window toggle, not the incidental copy an
+                // unrelated save carries. Treat it exactly like a local user
+                // change: mark hydration so the next start_session handshake stamps the new
                 // value (app-websocket.js attachStartSessionHandshake gates on
                 // S.settingsHydrated; without it the backend would read the OLD
                 // persisted value while the other window's POST is in flight),

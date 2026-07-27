@@ -852,7 +852,7 @@ def test_cross_window_asr_flip_marks_hydration_and_asr_dirty():
     )
     assert "S.independentAsrEnabled !== settings.independentAsrEnabled" in listener_block
     assert listener_block.index("const asrChangedByOtherWindow") < listener_block.index(
-        "applySharedRuntimeSettings(settings)"
+        "applySharedRuntimeSettings(incoming)"
     )
 
     # Hydration mark + ASR dirty mark sit inside the ASR-flip gate only.
@@ -1192,6 +1192,369 @@ def test_cross_window_asr_flip_authoritative_over_pending_get_harness():
     result = _run_settings_node_harness(harness)
     assert result.returncode == 0, (
         "cross-window ASR flip harness failed\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "HARNESS_OK" in result.stdout
+
+
+def test_shared_settings_writes_carry_explicit_change_metadata():
+    # Codex P2 (follow-up): saveSettings() writes independentAsrEnabled into
+    # EVERY localStorage snapshot, so the receiving window could not tell a real
+    # cross-window toggle from the incidental copy an unrelated save carries.
+    # Pin the metadata contract: every shared write goes through
+    # _writeSharedSettings, which stamps a monotonic write id, the keys the user
+    # explicitly changed, and whether the writer had hydrated.
+    settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
+
+    # No raw write of the shared key may bypass the metadata stamp.
+    assert (
+        "localStorage.setItem('project_neko_settings', JSON.stringify(settings))"
+        not in settings_source
+    )
+    assert settings_source.count("_writeSharedSettings(") == 3  # 1 def + 2 writes
+    assert (
+        "_writeSharedSettings(settings, _collectExplicitSharedKeys(settings));"
+        in settings_source
+    )
+    # The pre-hydration migration write is explicitly non-authoritative.
+    assert "_writeSharedSettings(settings, []);" in settings_source
+
+    write_fn = settings_source.split("function _writeSharedSettings(snapshot, explicitKeys) {", 1)[
+        1
+    ].split("\n    }", 1)[0]
+    assert "writeId: _nextSharedWriteId()," in write_fn
+    assert "changedKeys: explicitKeys || []," in write_fn
+    assert "hydrated: S.settingsHydrated === true" in write_fn
+    assert "localStorage.setItem('project_neko_settings', JSON.stringify(payload));" in write_fn
+
+    # The write id must be strictly increasing within a window and comparable
+    # across windows (one wall clock per browser profile).
+    id_fn = settings_source.split("function _nextSharedWriteId() {", 1)[1].split("\n    }", 1)[0]
+    assert "Date.now()" in id_fn
+    assert "_lastSharedWriteId = now > _lastSharedWriteId ? now : _lastSharedWriteId + 1;" in id_fn
+
+    # Explicit keys = the monotone dirty set PLUS the divergence from the
+    # dirty-diff baseline (the ASR toggle handler persists locally before its
+    # userInitiated sync rolls that baseline).
+    collect_fn = settings_source.split("function _collectExplicitSharedKeys(snapshot) {", 1)[
+        1
+    ].split("\n    }", 1)[0]
+    assert "_dirtySettingsKeys.has(key)" in collect_fn
+    assert "_settingsBaseline[key] !== snapshot[key]" in collect_fn
+    # Negative: only shared keys may be claimed, never the whole snapshot.
+    assert "_SHARED_SETTINGS_KEYS.forEach" in collect_fn
+    assert "Object.keys(snapshot)" not in collect_fn
+
+    # Metadata-less payloads (a window still running the previous build) parse
+    # to null, which routes the listener back to the legacy fallback.
+    read_fn = settings_source.split("function _readSharedWriteMeta(settings) {", 1)[1].split(
+        "\n    }", 1
+    )[0]
+    assert "if (!meta || typeof meta !== 'object') return null;" in read_fn
+    assert "typeof meta.writeId !== 'number'" in read_fn
+    assert "Array.isArray(meta.changedKeys) ? meta.changedKeys : []" in read_fn
+
+    listener_block = settings_source.split(
+        "window.addEventListener('storage', function (event) {", 1
+    )[1].split("});", 1)[0]
+    # Authority requires explicit intent + freshness; absent metadata falls back
+    # to today's value-difference behaviour.
+    assert (
+        "const asrChangedByOtherWindow = meta\n"
+        "                ? (asrValueDiffers && asrMarkedExplicit && asrWriteIsNewer)\n"
+        "                : asrValueDiffers;" in listener_block
+    )
+    assert "meta.changedKeys.indexOf('independentAsrEnabled') !== -1" in listener_block
+    assert "meta.writeId > _lastAppliedSharedWriteId" in listener_block
+    # Freshness bookkeeping happens AFTER the authority decision, never before.
+    assert listener_block.index("const asrChangedByOtherWindow") < listener_block.index(
+        "_lastAppliedSharedWriteId = meta.writeId;"
+    )
+    assert listener_block.index("const asrValueIsStale") < listener_block.index(
+        "_lastAppliedSharedWriteId = meta.writeId;"
+    )
+    # A stale/superseded ASR value is dropped from the apply set rather than
+    # applied — and only that key, so other shared keys keep syncing.
+    assert "delete incoming.independentAsrEnabled;" in listener_block
+    assert "applySharedRuntimeSettings(incoming)" in listener_block
+
+
+def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
+    # Behavioral pin for the Codex P2 follow-up, driven end-to-end across two
+    # real module instances: the WRITER's actual localStorage payload is fed to
+    # the RECEIVER's storage listener, so the metadata contract is exercised,
+    # not mocked.
+    #
+    # Scenario 1 (the bug): an unhydrated window saves one unrelated preference.
+    # Its snapshot carries the boot-default independentAsrEnabled, which the
+    # receiving window had already merged as `true` from the server. On the
+    # pre-fix code the value difference alone read as an explicit toggle: the
+    # receiver adopted `false`. Now the writer's metadata says only the
+    # unrelated key changed, so the ASR value is ignored.
+    # Scenario 2 (negative, dirty marking): same stale snapshot delivered to a
+    # window whose boot GET is still unsettled — the ASR key must NOT enter the
+    # dirty set, observable because unsettled POST bodies carry dirty keys only.
+    # Scenario 3: a genuine cross-window toggle stays authoritative (hydration
+    # marked, key dirtied so a stale merge cannot revert it).
+    # Scenario 4: an already-superseded (older write id) snapshot is ignored.
+    # Scenario 5: a metadata-less legacy payload keeps today's behaviour.
+    harness = textwrap.dedent(
+        """
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+
+        const source = fs.readFileSync(__APP_SETTINGS_PATH__, 'utf8');
+
+        function assert(cond, msg) {
+          if (!cond) throw new Error('ASSERT: ' + msg);
+        }
+
+        function makeContext() {
+          const postCalls = [];
+          const getCalls = [];
+          const listeners = [];
+          const timers = [];
+          const writes = [];
+          const sandbox = {
+            console: { log() {}, warn() {}, error() {} },
+            setInterval() { return 0; },
+            clearInterval() {},
+            setTimeout(fn, ms) {
+              // Fully controllable: no pending timer can hold the process open.
+              timers.push({ fn, ms });
+              return { unref() {} };
+            },
+            clearTimeout() {},
+            localStorage: {
+              getItem() { return null; },
+              setItem(key, value) { writes.push({ key, value }); },
+              removeItem() {},
+            },
+            document: { getElementById() { return null; } },
+            fetch(url, opts) {
+              return new Promise((resolve, reject) => {
+                if (opts && opts.method === 'POST') {
+                  postCalls.push({ url, body: opts.body, resolve, reject });
+                } else {
+                  getCalls.push({ url, resolve, reject });
+                }
+              });
+            },
+          };
+          sandbox.window = {
+            appState: { independentAsrEnabled: false, settingsHydrated: false },
+            appConst: {},
+            appUtils: { mapRenderQualityToFollowPerf() { return 'medium'; } },
+            addEventListener(type, fn) { listeners.push({ type, fn }); },
+            removeEventListener() {},
+            dispatchEvent() {},
+          };
+          vm.createContext(sandbox);
+          vm.runInContext(source, sandbox);
+          const storage = listeners.filter((entry) => entry.type === 'storage');
+          assert(storage.length === 1, 'module must register exactly one storage listener');
+          return {
+            postCalls,
+            getCalls,
+            S: sandbox.window.appState,
+            win: sandbox.window,
+            mod: sandbox.window.appSettings,
+            lastSharedWrite() {
+              const shared = writes.filter((w) => w.key === 'project_neko_settings');
+              assert(shared.length > 0, 'the module must persist the shared settings snapshot');
+              return shared[shared.length - 1].value;
+            },
+            fireStorage(newValue) {
+              storage[0].fn({ key: 'project_neko_settings', newValue });
+            },
+            fireGateTimeout() {
+              assert(timers.length >= 1, 'a bounded gate timer must be armed');
+              timers.shift().fn();
+            },
+          };
+        }
+
+        const okPost = { ok: true, json: async () => ({ success: true }) };
+        const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+        async function hydrateFromServer(ctx, settings) {
+          assert(ctx.getCalls.length === 1, 'boot must issue the settings GET');
+          ctx.getCalls[0].resolve({
+            ok: true,
+            json: async () => ({ success: true, settings, telemetryBranch: null }),
+          });
+          await tick();
+          await tick();
+          assert(ctx.S.settingsHydrated === true, 'a successful GET must hydrate the window');
+          while (ctx.postCalls.length) {
+            ctx.postCalls.shift().resolve(okPost);
+            await tick();
+          }
+        }
+
+        async function main() {
+          // ---- Scenario 1: unrelated save from an UNHYDRATED window ----
+          const receiver = makeContext();
+          await hydrateFromServer(receiver, { independentAsrEnabled: true });
+          assert(receiver.S.independentAsrEnabled === true, 'receiver merged the server ASR value');
+
+          const writer = makeContext();      // boot GET left pending -> unhydrated
+          writer.win.mergeMessagesEnabled = true;
+          writer.mod.saveSettings();         // an UNRELATED preference
+          const stalePayload = writer.lastSharedWrite();
+          const staleParsed = JSON.parse(stalePayload);
+          assert(
+            staleParsed.independentAsrEnabled === false,
+            'saveSettings still copies the ASR key into every snapshot (that is the trap)'
+          );
+          const receiverPostsBefore = receiver.postCalls.length;
+          receiver.fireStorage(stalePayload);
+          assert(
+            receiver.S.independentAsrEnabled === true,
+            'the hydrated ASR value must survive an unrelated save from an unhydrated window'
+          );
+          assert(
+            receiver.S.mergeMessagesEnabled === true,
+            'every other shared key must still sync across windows'
+          );
+          assert(
+            receiver.postCalls.length === receiverPostsBefore,
+            'the receiving window must never POST from the storage listener'
+          );
+
+          // The metadata that made the decision possible.
+          const staleMeta = staleParsed._sharedWriteMeta;
+          assert(staleMeta && typeof staleMeta.writeId === 'number', 'the write must carry metadata');
+          assert(
+            staleMeta.changedKeys.indexOf('mergeMessagesEnabled') !== -1,
+            'the explicitly changed key must be declared'
+          );
+          assert(
+            staleMeta.changedKeys.indexOf('independentAsrEnabled') === -1,
+            'an unrelated save must NOT declare the ASR key as user-changed'
+          );
+          assert(staleMeta.hydrated === false, 'the writer had not merged the server settings yet');
+
+          // ---- Scenario 2 (negative): the ASR key must not be dirtied ----
+          // Observability: while the boot GET is unsettled the POST body is
+          // restricted to the user-dirty keys, so a wrongly dirtied ASR key
+          // would show up there.
+          const pending = makeContext();     // boot GET stays pending
+          pending.win.mergeMessagesEnabled = true;
+          pending.mod.saveSettings();        // hydrates this window, dirties ONE key
+          assert(pending.S.settingsHydrated === true, 'a user change hydrates synchronously');
+          pending.fireGateTimeout();
+          await tick();
+          await tick();
+          assert(pending.postCalls.length === 1, 'the bounded gate must release the POST');
+          const dirtyBody1 = JSON.parse(pending.postCalls[0].body);
+          assert(
+            !('independentAsrEnabled' in dirtyBody1),
+            'baseline: the untouched ASR key is not dirty yet'
+          );
+          pending.postCalls[0].resolve(okPost);
+          await tick();
+          // This window already holds the authoritative ASR value; its own GET
+          // has not landed, so set the state the listener reads directly.
+          pending.S.independentAsrEnabled = true;
+
+          pending.fireStorage(stalePayload);
+          assert(
+            pending.S.independentAsrEnabled === true,
+            'the stale snapshot must not overwrite the authoritative value here either'
+          );
+          const pp = pending.mod.syncSettingsToServer();  // periodic-style: no dirty marking
+          await tick();
+          await tick();
+          assert(pending.postCalls.length === 2, 'the follow-up sync must POST');
+          const dirtyBody2 = JSON.parse(pending.postCalls[1].body);
+          assert(
+            !('independentAsrEnabled' in dirtyBody2),
+            'the stale cross-window snapshot must NOT mark the ASR key user-dirty, got: '
+              + JSON.stringify(dirtyBody2)
+          );
+          assert(dirtyBody2.mergeMessagesEnabled === true, 'the genuine dirty key still posts');
+          pending.postCalls[1].resolve(okPost);
+          await pp;
+
+          // ---- Scenario 3: a genuine cross-window toggle stays authoritative ----
+          const toggler = makeContext();
+          await hydrateFromServer(toggler, { independentAsrEnabled: false });
+          // Mirror app-audio-capture.js: local persist first, then the POST.
+          toggler.S.independentAsrEnabled = true;
+          toggler.mod.saveSettings({ skipServerSync: true });
+          const togglePayload = toggler.lastSharedWrite();
+          const toggleMeta = JSON.parse(togglePayload)._sharedWriteMeta;
+          assert(
+            toggleMeta.changedKeys.indexOf('independentAsrEnabled') !== -1,
+            'a real toggle must declare the ASR key as explicitly changed'
+          );
+
+          const receiver2 = makeContext();   // boot GET still pending
+          receiver2.fireStorage(togglePayload);
+          assert(receiver2.S.independentAsrEnabled === true, 'a real toggle must be applied');
+          assert(
+            receiver2.S.settingsHydrated === true,
+            'a real toggle must arm the start_session handshake stamp'
+          );
+          assert(receiver2.postCalls.length === 0, 'still no POST from the receiving window');
+          // The key must be dirty: the stale server merge cannot revert it.
+          receiver2.getCalls[0].resolve({
+            ok: true,
+            json: async () => ({
+              success: true,
+              settings: { independentAsrEnabled: false },
+              telemetryBranch: null,
+            }),
+          });
+          await tick();
+          await tick();
+          assert(
+            receiver2.S.independentAsrEnabled === true,
+            'the flipped key must be dirty so the stale merge preserves it'
+          );
+
+          // ---- Scenario 4: a superseded (older) write is ignored ----
+          const replay = JSON.parse(togglePayload);
+          replay.independentAsrEnabled = false;
+          replay._sharedWriteMeta = {
+            writeId: toggleMeta.writeId - 1,
+            changedKeys: ['independentAsrEnabled'],
+            hydrated: true,
+          };
+          receiver2.fireStorage(JSON.stringify(replay));
+          assert(
+            receiver2.S.independentAsrEnabled === true,
+            'an already-superseded write must not re-flip the route'
+          );
+
+          // ---- Scenario 5: metadata-less legacy payload keeps today's behaviour ----
+          const legacy = makeContext();
+          legacy.fireStorage(JSON.stringify({ independentAsrEnabled: true }));
+          assert(legacy.S.independentAsrEnabled === true, 'legacy payloads still apply the value');
+          assert(
+            legacy.S.settingsHydrated === true,
+            'legacy payloads keep the value-difference authority fallback'
+          );
+          assert(legacy.postCalls.length === 0, 'legacy fallback still never POSTs from the listener');
+
+          console.log('HARNESS_OK');
+          // Every sandbox timer is harness-controlled, so the process exits
+          // naturally once main() returns and piped stdout is fully flushed.
+          process.exitCode = 0;
+        }
+
+        main().catch((err) => {
+          console.error(err && err.stack ? err.stack : String(err));
+          process.exitCode = 1;
+        });
+        """
+    ).replace("__APP_SETTINGS_PATH__", json.dumps(str(APP_SETTINGS_PATH)))
+
+    result = _run_settings_node_harness(harness)
+    assert result.returncode == 0, (
+        "unrelated-save-from-unhydrated-window harness failed\n"
         f"stdout:\n{result.stdout}\n"
         f"stderr:\n{result.stderr}"
     )
