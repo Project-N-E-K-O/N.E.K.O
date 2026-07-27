@@ -84,9 +84,9 @@ def _stamp_user_input_ingress(message: dict) -> dict:
     """Stamp text-like input before fire-and-forget task dispatch."""
     if message.get("input_type") not in _TEXT_SESSION_INPUT_TYPES:
         return message
-    captured_at = message.get("_user_input_ingress_time")
-    if isinstance(captured_at, (int, float)):
-        return message
+    # This is a client trust boundary: never preserve a JSON-supplied private
+    # timestamp. A future-dated value would suppress idle/proactive behavior.
+    # Downstream internal dispatch preserves this server-owned stamp.
     return {
         **message,
         "_user_input_ingress_time": time.time(),
