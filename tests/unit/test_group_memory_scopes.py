@@ -8255,12 +8255,29 @@ async def test_member_bucket_cap_flushes_instead_of_dropping():
     await service.cache_session_delta("group:7788", ud)
     assert len(spawned) == 1
     assert "member_flush_due" not in ud
+
+    # While that drain is in flight, further turns must not pile up more
+    # tasks: with a slow memory server they would all queue on the same
+    # session lock and grow without bound.
+    service.record_group_member_turn(ud, context)
+    assert ud.get("member_flush_due") is True
+    await service.cache_session_delta("group:7788", ud)
+    assert len(spawned) == 1
+    # ...and the pending signal is kept, not swallowed.
+    assert ud.get("member_flush_due") is True
+
     flushed: list = []
     service._flush_member_buckets = AsyncMock(
         side_effect=lambda user_data, **kw: flushed.append(kw["reason"]) or []
     )
     await spawned.pop()
     assert flushed == ["member_bucket_cap"]
+    assert "member_drain_in_flight" not in ud
+
+    # Once it finished, the next turn can schedule again.
+    await service.cache_session_delta("group:7788", ud)
+    assert len(spawned) == 1
+    await spawned.pop()
 
     # Only past the hard limit (persistent flush failure) is anything
     # discarded, and it is logged.

@@ -341,9 +341,17 @@ class QQSessionMemoryService:
                 self.plugin._spawn_memory_sync_task(
                     self._drain_group_digest(session_key)
                 )
-            if user_data.pop("member_flush_due", False):
+            if user_data.get("member_flush_due") and not user_data.get(
+                "member_drain_in_flight"
+            ):
                 # 每轮都会走到这里（legacy /cache 对群是 no-op），拿它当
                 # 排空点：后台跑，不拖慢本轮回复；取会话锁避免与结算撞车。
+                # in-flight 去重与 digest 排空同口径——记忆服务变慢时，连续
+                # 轮次会不断排队新 task，全都堵在同一把会话锁上无界堆积。
+                # 判据必须在建协程**之前**，否则重复时会留下没人 await 的
+                # 协程。在飞时不清 due 标：下一轮再判，别把信号吞掉。
+                user_data.pop("member_flush_due", None)
+                user_data["member_drain_in_flight"] = True
                 self.plugin._spawn_memory_sync_task(
                     self._drain_member_buckets(session_key)
                 )
@@ -421,28 +429,33 @@ class QQSessionMemoryService:
         oldest authorized turns of a group that never goes idle."""
         async def _drain() -> None:
             user_data = self.plugin._user_sessions.get(session_key)
-            if not user_data or not user_data.get("is_group"):
+            if not user_data:
                 return
-            if not user_data.get("memory_enabled"):
-                return
-            if not (getattr(self.plugin, "_qq_settings", {}) or {}).get(
-                "group_member_memory_enabled", False,
-            ):
-                return
-            group_id = str(user_data.get("group_id") or "").strip()
-            her_name = user_data.get("her_name")
-            if not group_id or not her_name:
-                return
-            failed = await self._flush_member_buckets(
-                user_data, group_id=group_id, her_name=her_name,
-                reason="member_bucket_cap",
-            )
-            if failed:
-                # 冲失败的桶留在原地等下一轮（硬顶兜底防无界增长）。
-                self.plugin.logger.warning(
-                    f"[member_bucket_cap] 群 {group_id} 有 {len(failed)} 个"
-                    f"成员队列冲刷失败，留待下轮"
+            try:
+                if not user_data.get("is_group") or not user_data.get(
+                    "memory_enabled"
+                ):
+                    return
+                if not (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                    "group_member_memory_enabled", False,
+                ):
+                    return
+                group_id = str(user_data.get("group_id") or "").strip()
+                her_name = user_data.get("her_name")
+                if not group_id or not her_name:
+                    return
+                failed = await self._flush_member_buckets(
+                    user_data, group_id=group_id, her_name=her_name,
+                    reason="member_bucket_cap",
                 )
+                if failed:
+                    # 冲失败的桶留在原地等下一轮（硬顶兜底防无界增长）。
+                    self.plugin.logger.warning(
+                        f"[member_bucket_cap] 群 {group_id} 有 {len(failed)} 个"
+                        f"成员队列冲刷失败，留待下轮"
+                    )
+            finally:
+                user_data.pop("member_drain_in_flight", None)
 
         await self.plugin._run_with_session_lock(session_key, _drain)
 
