@@ -62,7 +62,9 @@ def _subprocess_run_calls(tree: ast.AST):
             continue
         func = node.func
         name = getattr(func, "attr", None) or getattr(func, "id", None)
-        if name in {"run", "Popen", "check_output", "call"}:
+        # 全部 subprocess 入口，不只是 run：漏一个（比如 check_call）就等于给
+        # 新 harness 留了一条绕过这条契约、退回 node -e 的合法路径（Codex P2）。
+        if name in {"run", "Popen", "check_output", "check_call", "call"}:
             module = getattr(getattr(func, "value", None), "id", None)
             if module == "subprocess" or name == "Popen":
                 yield node
