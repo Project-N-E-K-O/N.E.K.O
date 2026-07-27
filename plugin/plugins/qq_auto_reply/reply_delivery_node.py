@@ -47,6 +47,16 @@ class QQReplyDeliveryNode:
             # 文本块（可含 emoji + at + reply）
             text = self._compose_text(block)
             if not text:
+                if block.ark:
+                    # Ark 卡片目前没有投递实现（_send_ark 自 #2429 起无
+                    # 调用方，属本 PR 之外的既有缺陷）：这里只保证记忆侧
+                    # 不把"什么都没发"记成已投递——草稿保持排除、不记
+                    # mention。真正的卡片发送要另行接回。
+                    any_text_attempted = True
+                    all_text_sent = False
+                    self.plugin.logger.warning(
+                        "Ark 卡片块没有投递实现，未发送（记忆按未投递处理）"
+                    )
                 continue
             if i == 0:
                 first_text = text

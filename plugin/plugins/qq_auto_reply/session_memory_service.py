@@ -45,13 +45,26 @@ class QQSessionMemoryService:
 
     async def flush_all_memory_sessions(self, reason: str):
         for session_key, user_data in list(self.plugin._user_sessions.items()):
-            if not user_data.get("memory_enabled"):
+            # pending_disable_settle 会话也要排：opt-out 之后到达的轮次会
+            # 把 memory_enabled 打成 False，但 cutoff 之前的已授权前缀只
+            # 存在于内存里，等着转变任务结算。关机只 join 有限时间，任务
+            # 卡住/失败时这里是最后一次机会（finalize 用 cutoff 截断，
+            # 不会带出 opt-out 之后的内容）。
+            if not user_data.get("memory_enabled") and not user_data.get(
+                "pending_disable_settle"
+            ):
                 continue
 
             async def _finalize_existing() -> bool:
                 current = self.plugin._user_sessions.get(session_key)
-                if not current or not current.get("memory_enabled"):
+                if not current:
                     return False
+                if not current.get("memory_enabled"):
+                    if not current.get("pending_disable_settle"):
+                        return False
+                    # 关机兜底：临时按 opt-in 结算，cutoff 保证只带出
+                    # opt-out 之前的历史。
+                    current["memory_enabled"] = True
                 # 关机只有一次机会：撞上每轮批次上限（返回 False 但游标有
                 # 进展）就继续排，零进展才停——上限是防饥饿，不是弃数据。
                 prev_cursor = int(

@@ -1785,6 +1785,25 @@ async def test_extract_facts_fail_closed_raises_on_terminal_failure(tmp_path):
         created = await fs.extract_facts([msg], "Neko", fail_closed=True)
         assert any(f.get("text") == "有效事实" for f in created)
 
+        # In-place upgrades roll back too: leaving the upgraded source in
+        # the cache makes the retry hit the upgrade guard, record zero
+        # upgrades, skip the save entirely — and report success.
+        fs._time_indexed = None
+        cached = await fs.aload_facts("Neko")
+        target = next(
+            f for f in cached
+            if isinstance(f, dict) and f.get("text") == "有效事实"
+        )
+        target["source"] = "ai_disclosure"
+        fs.asave_facts = AsyncMock(side_effect=RuntimeError("disk full"))
+        with pytest.raises(RuntimeError):
+            await fs.extract_facts([msg], "Neko", fail_closed=True)
+        assert target["source"] == "ai_disclosure"
+        fs.asave_facts = AsyncMock(return_value=None)
+        await fs.extract_facts([msg], "Neko", fail_closed=True)
+        assert target["source"] == "user_observation"
+        fs.asave_facts.assert_awaited()
+
         # An indexing failure (maintenance mode etc.) happens BEFORE the
         # save and must roll back the same way — the row is already in the
         # cache and hash set at that point.
@@ -2913,6 +2932,22 @@ async def test_delivery_result_reflects_open_platform_send_failure():
     result = await poke_node.deliver(poke_group)
     assert result.delivered is False
 
+    # Ark-only plan: nothing is actually sent (no delivery implementation),
+    # so it must not report delivered and clear the draft exclusion.
+    ark_plugin = SimpleNamespace(
+        _get_reply_mode=lambda: "text",
+        logger=MagicMock(),
+        qq_client=SimpleNamespace(needs_attention=False),
+    )
+    ark_node = QQReplyDeliveryNode.__new__(QQReplyDeliveryNode)
+    ark_node.plugin = ark_plugin
+    ark_plan = QQDeliveryPlan(
+        target_type="group", target_id="7788",
+        blocks=[QQMessageBlock(ark={"title": "卡片"})],
+    )
+    result = await ark_node.deliver(ark_plan)
+    assert result.delivered is False
+
     # Multi-block partial failure: ALL attempted text blocks must confirm —
     # the exclusion list is whole-row, so a half-sent reply must not clear
     # its mark and enter extraction.
@@ -3568,6 +3603,68 @@ async def test_member_turn_recorded_once_even_on_empty_generation():
 
 
 @pytest.mark.asyncio
+async def test_shutdown_drains_pending_disable_sessions():
+    """A session whose transition settlement is still pending keeps its
+    pre-cutoff authorized prefix only in memory; a post-opt-out turn may
+    already have flipped memory_enabled off. Shutdown must still settle it
+    (bounded by the stored cutoff) — otherwise a stalled transition task
+    loses the only copy at process exit."""
+    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    history = [SimpleNamespace(type="human", content=f"m{i}") for i in range(4)]
+    ud = {
+        "memory_enabled": False,          # post-opt-out turn flipped it
+        "pending_disable_settle": True,   # transition task has not run yet
+        "group_opt_out_cutoff": 2,
+        "is_group": True, "group_id": "7788", "her_name": "Neko",
+        "session": SimpleNamespace(
+            _conversation_history=history, close=AsyncMock(),
+        ),
+        "last_group_digest_index": 0,
+    }
+
+    async def _lock(session_key, fn):
+        return await fn()
+
+    bridge = MagicMock()
+    bridge.group_subject.side_effect = QQMemoryBridge.group_subject
+    bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
+    plugin = SimpleNamespace(
+        _user_sessions={"group:7788": ud},
+        _qq_settings={},
+        _run_with_session_lock=_lock,
+        memory_bridge=bridge,
+        logger=MagicMock(),
+    )
+    service = QQSessionMemoryService(plugin)
+    await service.flush_all_memory_sessions("shutdown")
+    settled = [
+        m["content"][0]["text"]
+        for call in bridge.post_scoped_memory_history.await_args_list
+        for m in call.args[1]
+    ]
+    # Only the pre-cutoff prefix is settled.
+    assert settled == ["m0", "m1"]
+
+    # A plain memory-disabled session (no pending settlement) stays skipped.
+    bridge.post_scoped_memory_history.reset_mock()
+    plugin._user_sessions = {
+        "group:9": {
+            "memory_enabled": False, "is_group": True, "group_id": "9",
+            "her_name": "Neko",
+            "session": SimpleNamespace(
+                _conversation_history=list(history), close=AsyncMock(),
+            ),
+        },
+    }
+    await service.flush_all_memory_sessions("shutdown")
+    bridge.post_scoped_memory_history.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_rollback_discard_drops_failed_optin_interval():
     """The enable-save-failure rollback must DISCARD the failed interval,
     not settle it — an ordinary OFF settlement would digest precisely the
@@ -3713,6 +3810,31 @@ async def test_unpersisted_memory_toggle_rolls_back():
     assert ud["pending_disable_settle"] is True
     assert len(spawned) == 1
     spawned.pop(0).close()  # reverse-transition coroutine, not under test here
+
+    # Combined OFF (group + member) whose save fails: the member snapshot
+    # must be protected and restored exactly like the member-only branch —
+    # otherwise the queued opt-out settlement drops turns collected under
+    # the previously persisted consent.
+    ud.pop("pending_disable_settle", None)
+    ud["pending_settle_buckets"] = {
+        "5": [{"role": "user", "content": [{"type": "text", "text": "旧五"}]}],
+    }
+    ud["pending_settle_labels"] = {"5": "五"}
+    service.plugin._qq_settings["group_memory_enabled"] = False
+    service.plugin._qq_settings["group_member_memory_enabled"] = False
+    service._rollback_unpersisted_memory_toggles(
+        False,
+        group_memory_before=True, group_memory_after=False,
+        member_memory_before=True, member_memory_after=False,
+    )
+    assert ud["member_settle_rollback_pending"] is True
+    assert len(spawned) == 2
+    restore_coro = spawned.pop(0)
+    spawned.pop(0).close()  # reverse-transition coroutine
+    await restore_coro
+    assert ud["group_member_memory_messages"]["5"][0]["content"][0]["text"] == "旧五"
+    assert "pending_settle_buckets" not in ud
+    assert "member_settle_rollback_pending" not in ud
 
     # Cross-group context also rolls back on persist failure — it is a
     # consent switch too, and a lingering new value injects other groups'

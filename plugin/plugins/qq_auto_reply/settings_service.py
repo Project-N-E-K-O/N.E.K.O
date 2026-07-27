@@ -75,6 +75,19 @@ class QQSettingsService:
         if group_memory_before != group_memory_after:
             self.plugin._qq_settings["group_memory_enabled"] = group_memory_before
             self.plugin._qq_settings["group_member_memory_enabled"] = member_memory_before
+            if member_memory_before and not member_memory_after:
+                # 双开关同关（UI 联动）后写盘失败：member 侧的 bucket 已被
+                # 挪进 pending 快照，排队的 opt-out 结算会按 opt-out 语义
+                # 清掉它们——与 member-only 分支同样需要保护+恢复，否则
+                # 先前已保存 consent 下收集的轮次永久丢失。
+                for ud in list(
+                    getattr(self.plugin, "_user_sessions", {}).values()
+                ):
+                    if ud.get("is_group"):
+                        ud["member_settle_rollback_pending"] = True
+                self._spawn_group_memory_sync_task(
+                    self._restore_member_snapshots()
+                )
             self._stamp_group_memory_transition(enabled_after=group_memory_before)
             # 回滚到 OFF（开启保存失败）时用 discard 语义：失败窗口内收到
             # 的消息是在"从未成功保存的 opt-in"下入历史的，普通 OFF 结算

@@ -625,6 +625,9 @@ class FactStore:
 
         new_facts: list[dict] = []
         upgraded_count = 0
+        # (entry, 原 source, 原 signal_processed)：落盘/索引失败时还原
+        # in-place 升级，否则重试撞守卫直接跳过保存。
+        upgraded_snapshots: list[tuple[dict, Any, Any]] = []
         existing_facts = await self.aload_facts(lanlan_name)
         existing_hashes = {f.get('hash') for f in existing_facts if f.get('hash')}
         # hash → fact 的快查表（仅 upgrade 路径用）。aload_facts 已经 in-place
@@ -708,6 +711,11 @@ class FactStore:
                     # → 升级 source + 重新进 Stage-2 evidence loop。
                     # scoped fact 例外：简化管线不进 Stage-2，升级 source 但
                     # 保持 signal_processed=True。
+                    upgraded_snapshots.append((
+                        existing,
+                        existing.get('source', self._SOURCE_DEFAULT),
+                        existing.get('signal_processed'),
+                    ))
                     existing['source'] = 'user_observation'
                     existing['signal_processed'] = memory_subject is not None
                     # 若这条印证来自外部导入，补上 external_import provenance——否则
@@ -896,6 +904,7 @@ class FactStore:
                     # facts.json 从未收到它（维护模式等场景）。
                     await self._rollback_uncommitted_facts(
                         lanlan_name, new_facts, existing_hashes,
+                        upgraded_snapshots,
                     )
                     raise
 
@@ -914,6 +923,7 @@ class FactStore:
                 # 重试会重做），让重试重新走完整提取+持久化。
                 await self._rollback_uncommitted_facts(
                     lanlan_name, new_facts, existing_hashes,
+                    upgraded_snapshots,
                 )
                 raise
         if new_facts:
@@ -2062,6 +2072,7 @@ class FactStore:
 
     async def _rollback_uncommitted_facts(
         self, lanlan_name: str, new_facts: list, existing_hashes: set,
+        upgraded_snapshots: list | None = None,
     ) -> None:
         """Undo in-memory effects of a batch that never reached disk.
 
@@ -2070,6 +2081,15 @@ class FactStore:
         success and the caller advances a volatile cursor over facts that
         facts.json never received. Upgrades are left alone (field-level
         idempotent, redone by the retry)."""
+        for entry, prev_source, prev_signal in (upgraded_snapshots or []):
+            # in-place 升级同样要还原：留着的话重试会撞升级守卫（source
+            # 已是 user_observation）→ upgraded_count=0 → 整轮跳过保存，
+            # 调用方拿到"成功"推游标，磁盘上的 fact 却仍未被印证。
+            entry['source'] = prev_source
+            if prev_signal is None:
+                entry.pop('signal_processed', None)
+            else:
+                entry['signal_processed'] = prev_signal
         added_ids = {
             nf.get('id') for nf in new_facts if isinstance(nf, dict)
         }
