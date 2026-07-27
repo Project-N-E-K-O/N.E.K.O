@@ -1594,6 +1594,137 @@ async def test_final_without_observed_pending_preserves_racing_next_onset() -> N
     detector.release_deferred_turn.assert_awaited_once_with()
 
 
+async def test_active_onset_before_delayed_provider_final_starts_next_turn() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    epoch = runtime._asr_session_epoch
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    assert runtime._asr_turn_prepared is True
+
+    # Provider VAD already ended turn 1, but its ordered endpoint callback is
+    # delivered only right before the delayed final. The local detector sees
+    # the next turn's onset while Core is still ACTIVE and prepared.
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+
+    # Turn 1's ordered callbacks arrive: endpoint immediately before final.
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("first", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    # The remembered onset was replayed: turn 2 is ACTIVE and prepared.
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+    assert runtime._asr_turn_prepared is True
+
+    # Turn 2's ordered callbacks now seal and deliver instead of no-oping.
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("second", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    assert [
+        call.args[0] for call in runtime.handle_input_transcript.await_args_list
+    ] == ["first", "second"]
+    assert runtime.handle_new_message.await_count == 2
+
+
+async def test_stale_overlap_onset_is_not_replayed_after_final() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    epoch = runtime._asr_session_epoch
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+
+    # The audio generation moves on before the delayed final, so the recorded
+    # onset belongs to a stale ingress and must not wake a replacement turn.
+    component = runtime._asr_runtime
+    component._asr_audio_generation += 1
+    component._asr_current_ingress_token = runtime._capture_ingress_token()
+
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("first", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+    assert runtime._asr_turn_prepared is False
+    assert [
+        call.args[0] for call in runtime.handle_input_transcript.await_args_list
+    ] == ["first"]
+    assert runtime.handle_new_message.await_count == 1
+
+
+async def test_candidate_pause_clears_overlap_onset_before_final() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    epoch = runtime._asr_session_epoch
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+    # Local VAD then observes a pause: the provider final that follows may be
+    # the current utterance ending, so the onset must not wake a ghost turn.
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.CANDIDATE_PAUSE,
+        epoch,
+    )
+
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("hello", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+    assert runtime._asr_turn_prepared is False
+    assert [
+        call.args[0] for call in runtime.handle_input_transcript.await_args_list
+    ] == ["hello"]
+    assert runtime.handle_new_message.await_count == 1
+
+
+async def test_smart_turn_active_resumed_is_not_recorded_for_replay() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "qwen")
+    epoch = runtime._asr_session_epoch
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    # SmartTurn authority orders activity and endpoint through one detector
+    # queue, so a mid-turn resume is same-turn speech and must stay a no-op.
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("hello", epoch, "qwen")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+    assert runtime._asr_turn_prepared is False
+    assert [
+        call.args[0] for call in runtime.handle_input_transcript.await_args_list
+    ] == ["hello"]
+    assert runtime.handle_new_message.await_count == 1
+
+
 async def test_draining_pending_turn_overflow_discards_candidate_and_reports_backpressure() -> (
     None
 ):

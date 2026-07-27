@@ -312,6 +312,7 @@ class IndependentAsrRuntime:
         self._asr_final_watchdog_task: asyncio.Task[None] | None = None
         self._asr_pending_speech_confirmed = False
         self._asr_pending_detector_candidate = None
+        self._asr_overlap_onset_token: VoiceIngressToken | None = None
         self._asr_sealed_turn_token: VoiceTransportToken | None = None
         self._asr_audio_sequence = 0
         self._asr_audio_generation = 0
@@ -358,6 +359,8 @@ class IndependentAsrRuntime:
             )
             self._asr_audio_sequence = 0
             self._asr_pending_detector_candidate = None
+        if not hasattr(self, "_asr_overlap_onset_token"):
+            self._asr_overlap_onset_token = None
         if not hasattr(self, "_asr_start_generation"):
             self._asr_start_generation = 0
 
@@ -1220,6 +1223,7 @@ class IndependentAsrRuntime:
         self._asr_received_audio = False
         self._asr_pending_speech_confirmed = False
         self._asr_pending_detector_candidate = None
+        self._asr_overlap_onset_token = None
         self._asr_audio_sequence = 0
         self._asr_current_ingress_token = None
         self._asr_accepted_final_keys.clear()
@@ -2043,14 +2047,28 @@ class IndependentAsrRuntime:
             ):
                 self._asr_turn_audio_started_at = time.monotonic()
                 self._asr_first_partial_recorded = False
-        if (
-            event
-            not in {
-                SpeechActivityEvent.SPEECH_STARTED,
-                SpeechActivityEvent.SPEECH_RESUMED,
-            }
-            or self._asr_turn_prepared
-        ):
+        if event not in {
+            SpeechActivityEvent.SPEECH_STARTED,
+            SpeechActivityEvent.SPEECH_RESUMED,
+        }:
+            if event is SpeechActivityEvent.CANDIDATE_PAUSE:
+                # Once local VAD observes a pause, a later provider final may
+                # simply be the current utterance ending, so replaying the
+                # remembered onset would wake a ghost turn.
+                self._asr_overlap_onset_token = None
+            return
+        if self._asr_turn_prepared:
+            if (
+                lifecycle is not None
+                and lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+                and lifecycle.provider_policy.endpoint_authority == "provider"
+            ):
+                # Provider-VAD endpoints ride the ordered callback FIFO right
+                # before their own final, so a genuine next-turn onset can
+                # reach Core while the previous turn is still ACTIVE and
+                # prepared. Remember the onset (ingress-fenced) so the delayed
+                # final can replay it instead of dropping the next turn.
+                self._asr_overlap_onset_token = self._asr_current_ingress_token
             return
         if (
             lifecycle is not None
@@ -2430,6 +2448,8 @@ class IndependentAsrRuntime:
             return
 
         await self._activate_pending_independent_turn(epoch)
+        overlap_token = self._asr_overlap_onset_token
+        self._asr_overlap_onset_token = None
         if (
             detector_ref is not None
             and self._asr_lifecycle is lifecycle_ref
@@ -2452,6 +2472,23 @@ class IndependentAsrRuntime:
                 return
             if not self._runtime_identity_matches(identity):
                 return
+        if (
+            overlap_token is None
+            or self._asr_lifecycle is not lifecycle_ref
+            or lifecycle_ref.snapshot.state is not VoiceLifecycleState.WARM_IDLE
+            or overlap_token != self._asr_current_ingress_token
+            or not self._ingress_token_matches(overlap_token)
+        ):
+            return
+        # An onset recorded while the finished turn was still ACTIVE means the
+        # provider had already ended that turn but its ordered endpoint was
+        # delayed behind this final. Replay the onset now that the lifecycle
+        # reached WARM_IDLE so the next turn's ordered endpoint and final find
+        # an ACTIVE, prepared turn instead of discarding the utterance.
+        await self._handle_independent_asr_activity(
+            SpeechActivityEvent.SPEECH_RESUMED,
+            epoch,
+        )
 
     async def _dispatch_asr_transcript_envelope(
         self,
