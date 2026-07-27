@@ -190,6 +190,20 @@ jobs:
             --output-root data/embedding_models \
             --variant int8
 
+      # Voice-turn ONNX weights (Silero VAD + Smart Turn) are arch-independent,
+      # so prepare them once on the native runner (same cache key scheme as
+      # build-desktop*.yml); they ride into both platform builds via the build
+      # context and the in-image step (Dockerfile 6c) verifies them offline
+      # instead of downloading under QEMU.
+      - name: Cache voice-turn model weights
+        uses: actions/cache@v4
+        with:
+          path: data/vad_models/*.onnx
+          key: voice-turn-models-${{ runner.os }}-${{ hashFiles('data/vad_models/manifest.json') }}
+
+      - name: Prepare verified voice-turn assets
+        run: python3 tools/voice_eval/prepare_voice_turn_assets.py
+
       - name: Check if Dockerfile exists
         id: check-dockerfile
         run: |
@@ -332,6 +346,20 @@ jobs:
             --profile-id "$EMBEDDING_MODEL_PROFILE_ID" \
             --output-root data/embedding_models \
             --variant both
+
+      # Voice-turn ONNX weights (Silero VAD + Smart Turn) are arch-independent,
+      # so prepare them once on the native runner (same cache key scheme as
+      # build-desktop*.yml); they ride into both platform builds via the build
+      # context and the in-image step (Dockerfile.full 6c) verifies them offline
+      # instead of downloading under QEMU.
+      - name: Cache voice-turn model weights
+        uses: actions/cache@v4
+        with:
+          path: data/vad_models/*.onnx
+          key: voice-turn-models-${{ runner.os }}-${{ hashFiles('data/vad_models/manifest.json') }}
+
+      - name: Prepare verified voice-turn assets
+        run: python3 tools/voice_eval/prepare_voice_turn_assets.py
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
