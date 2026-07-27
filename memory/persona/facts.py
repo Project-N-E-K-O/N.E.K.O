@@ -147,6 +147,24 @@ class FactsMixin:
         d['text'] = str(entry)
         return d
 
+    def _collect_card_facts(self, persona: dict) -> list[dict]:
+        """All protected character-card entries, whatever section holds them.
+
+        Scoped writes only scan their own @subject section, so without this
+        a group-derived claim that contradicts the fixed character
+        definition (stored under master/neko/relationship) would be added
+        instead of rejected."""
+        card_facts: list[dict] = []
+        if not isinstance(persona, dict):
+            return card_facts
+        for section in persona.values():
+            if not isinstance(section, dict):
+                continue
+            for fact in section.get('facts') or []:
+                if isinstance(fact, dict) and fact.get('source') == 'character_card':
+                    card_facts.append(fact)
+        return card_facts
+
     def _evaluate_fact_contradiction(
         self, name: str, text: str, section_facts: list, stop_names: list[str],
     ) -> tuple[str | None, str | None]:
@@ -222,6 +240,14 @@ class FactsMixin:
                 e for e in section_facts
                 if isinstance(e, dict) and entry_matches_subject(e, memory_subject)
             ]
+        if memory_subject is not None:
+            # 对偶 aadd_fact：scoped 扫描面看不到角色卡条目所在的 section，
+            # 与固定人设冲突的群衍生断言必须在这里被拒。
+            card_code, _card_text = self._evaluate_fact_contradiction(
+                name, text, self._collect_card_facts(persona), stop_names,
+            )
+            if card_code == self.FACT_REJECTED_CARD:
+                return self.FACT_REJECTED_CARD
         code, old_text = self._evaluate_fact_contradiction(name, text, scan_facts, stop_names)
         if code == self.FACT_REJECTED_CARD:
             return self.FACT_REJECTED_CARD
@@ -274,6 +300,15 @@ class FactsMixin:
                     e for e in section_facts
                     if isinstance(e, dict) and entry_matches_subject(e, memory_subject)
                 ]
+            if memory_subject is not None:
+                # scoped 写入的扫描面被限制在自己的隔离域，看不到 master /
+                # neko / relationship 下的角色卡条目——与固定人设冲突的
+                # 群衍生断言会被当成普通新增。这里补一次角色卡校验。
+                card_code, card_text = self._evaluate_fact_contradiction(
+                    name, text, self._collect_card_facts(persona), stop_names,
+                )
+                if card_code == self.FACT_REJECTED_CARD:
+                    return self.FACT_REJECTED_CARD
             code, old_text = self._evaluate_fact_contradiction(name, text, scan_facts, stop_names)
             if code == self.FACT_REJECTED_CARD:
                 return self.FACT_REJECTED_CARD

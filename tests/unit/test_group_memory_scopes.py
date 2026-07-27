@@ -1021,6 +1021,48 @@ async def test_scoped_synthesis_rotates_between_subjects():
 
 
 @pytest.mark.asyncio
+async def test_scoped_fact_rejected_by_character_card(tmp_path):
+    """A scoped write only scans its own @subject section, so a group-
+    derived claim contradicting the fixed character definition (stored
+    under master/neko/relationship) must still be rejected by an explicit
+    card check — otherwise it becomes a durable scoped persona entry."""
+    from memory.persona import PersonaManager
+
+    subject = MemorySubject.group_chat("qq", "7788")
+    pm = PersonaManager()
+    pm._config_manager = _build_scope_mock_cm(str(tmp_path))
+    name = "neko_card_guard"
+    persona = await pm.aensure_persona(name)
+    persona["neko"] = {
+        "facts": [
+            {
+                "id": "card1", "text": "她讨厌吃香菜",
+                "source": "character_card",
+            },
+        ],
+    }
+    await pm.asave_persona(name, persona)
+
+    code = await pm.aadd_fact(
+        name, "她讨厌吃香菜是假的，她喜欢吃香菜",
+        entity="group_chat", source="reflection_time_driven",
+        source_id="r-card", subject=subject,
+    )
+    assert code == PersonaManager.FACT_REJECTED_CARD
+    persona = await pm.aensure_persona(name)
+    scoped_section = persona.get(subject.persona_section_key) or {}
+    assert not (scoped_section.get("facts") or [])
+
+    # A non-conflicting scoped claim still lands.
+    code = await pm.aadd_fact(
+        name, "群里周五常常聊摄影",
+        entity="group_chat", source="reflection_time_driven",
+        source_id="r-ok", subject=subject,
+    )
+    assert code == PersonaManager.FACT_ADDED
+
+
+@pytest.mark.asyncio
 async def test_scoped_promotion_is_idempotent_after_partial_commit():
     """The persona write and the reflection status flip are two stores. If
     the reflections save fails after the entry landed, the retry's
@@ -1058,14 +1100,34 @@ async def test_scoped_promotion_is_idempotent_after_partial_commit():
     ) is False
     assert PersonaManager.FACT_QUEUED_CORRECTION is not None
 
-    # Wiring guard: the guard must be CALLED from the time-driven promote
-    # path — a correct helper nobody invokes changes nothing (this exact
-    # gap shipped once already).
-    import inspect
+    # Behavioural check on the real promote path: a QUEUED_CORRECTION for
+    # a reflection whose entry already exists completes the transition
+    # instead of looping self-corrections forever.
+    from datetime import datetime, timedelta
 
-    src = inspect.getsource(PromotionMixin.aauto_promote_time_driven)
-    assert "_ascoped_promotion_already_applied(" in src
-    assert "FACT_QUEUED_CORRECTION" in src
+    from config import WEAK_MEMORY_AUTO_PROMOTE_DAYS
+
+    old_ts = (
+        datetime.now() - timedelta(days=WEAK_MEMORY_AUTO_PROMOTE_DAYS + 1)
+    ).isoformat()
+    reflections = [{
+        "id": "r-1", "status": "confirmed", "text": "群里常聊摄影",
+        "entity": "group_chat", "confirmed_at": old_ts,
+        **subject.as_entry_fields(),
+    }]
+    engine = PromotionMixin.__new__(PromotionMixin)
+    engine._persona_manager = SimpleNamespace(
+        aensure_persona=mixin._persona_manager.aensure_persona,
+        aadd_fact=AsyncMock(
+            return_value=PersonaManager.FACT_QUEUED_CORRECTION,
+        ),
+    )
+    engine._get_alock = lambda name: asyncio.Lock()
+    engine._aload_reflections_full = AsyncMock(return_value=reflections)
+    engine.asave_reflections = AsyncMock()
+    engine._abatch_mark_surfaced_handled = AsyncMock()
+    await engine.aauto_promote_time_driven("Neko", scoped_only=True)
+    assert reflections[0]["status"] == "promoted"
 
 
 @pytest.mark.asyncio
@@ -3072,6 +3134,17 @@ async def test_delivery_result_reflects_open_platform_send_failure():
     assert result.delivered is True  # NapCat is fire-and-forget
     napcat_plugin.qq_client.send_group_message_segments.assert_not_awaited()
     assert napcat_plugin.qq_client.send_group_message.await_args.args[1] == "要 / 不要"
+
+    # Text + keyboard on NapCat: the choices are appended to the text
+    # instead of vanishing (buttons cannot render on this protocol).
+    napcat_plugin.qq_client.send_group_message = AsyncMock(return_value=None)
+    await napcat_node.deliver(QQDeliveryPlan(
+        target_type="group", target_id="7788",
+        blocks=[QQMessageBlock(text="要看看哪个？", keyboard="状态|配置|日志")],
+    ))
+    sent_text = napcat_plugin.qq_client.send_group_message.await_args.args[1]
+    assert "要看看哪个？" in sent_text
+    assert "状态 / 配置 / 日志" in sent_text
 
     # Ark-only plan: nothing is actually sent (no delivery implementation),
     # so it must not report delivered and clear the draft exclusion.
@@ -5356,9 +5429,15 @@ async def test_login_change_bootstrap_keeps_session_when_discard_fails():
     char_context = SimpleNamespace(
         ephemeral_session=False, login_self_id="new", her_name="新角色",
     )
-    await service.ensure_generation_session(char_context, "group:7788")
+    plugin.logger = MagicMock()
+    result = await service.ensure_generation_session(char_context, "group:7788")
     assert plugin.session_runtime_service.discard_session.await_count == 3
     assert existing["pending_identity_discard"] is True
+    # Character switch + failed salvage: the turn must NOT run on the old
+    # character's session — its rows would settle into the old character's
+    # memory store when the sticky retry finally succeeds.
+    assert result is None
+    assert plugin._user_sessions["group:7788"] is existing
 
 
 @pytest.mark.asyncio

@@ -27,11 +27,24 @@ class QQSessionBootstrapService:
             # her_name 失配=活跃角色切换：旧会话的 scoped 缓冲仍属旧角色，
             # discard 内的集中抢救会以旧 her_name 结算——新角色的对话绝不
             # 能入旧角色的记忆库。
+            character_changed = existing_session.get("her_name") != getattr(
+                context, "her_name", existing_session.get("her_name"),
+            )
             discarded = await self.plugin.session_runtime_service.discard_session(session_key, reason="登录身份变化")
             if discarded is False:
                 # 粘性标记：prime 会把 login_self_id 刷成新值，若只靠 id
                 # 不匹配做重试条件，下一轮就再也进不来这里了。
                 existing_session["pending_identity_discard"] = True
+                if character_changed:
+                    # 角色切换 + 抢救失败：绝不能拿旧角色的会话生成——
+                    # 新轮的 human/ai 行会挂在 her_name 仍是旧角色的
+                    # user_data 上，之后的重试结算会把它们写进旧角色的
+                    # 记忆库。本轮放弃生成，等下轮重试抢救。
+                    self.plugin.logger.warning(
+                        f"角色已切换但旧会话结算失败，跳过本轮生成待重试 "
+                        f"({session_key})"
+                    )
+                    return None
                 # 结算失败被有意保留：覆盖 key 会销毁缓冲唯一副本并泄漏
                 # 旧 client。本轮沿用旧会话，身份行至多滞后一轮，下次重试。
                 return existing_session

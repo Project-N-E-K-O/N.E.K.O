@@ -139,6 +139,16 @@ class QQReplyDeliveryNode:
                 return bool(await self.plugin._deliver_group_reply(plan.target_id, text, fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure))
             return bool(await self.plugin._deliver_private_reply(plan.target_id, text, fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure))
         if plan.target_type == "group":
+            if keyboard and not self._supports_keyboard():
+                # NapCat 渲染不了官方按钮：把选项文案追加进正文，别让
+                # "要看看哪个？<keyboard>A|B|C</keyboard>" 变成一句没有
+                # 任何可选项的话。
+                labels = " / ".join(
+                    part.strip() for part in str(keyboard).split("|")
+                    if part.strip()
+                )
+                if labels:
+                    text = text + "\n" + labels
             if keyboard and self._supports_keyboard():
                 # keyboard 只有开放平台的 segments 接口承载：带按钮的文本
                 # 块走它。NapCat 不支持按钮，走普通文本（内容照发，按钮
