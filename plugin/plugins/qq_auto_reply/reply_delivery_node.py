@@ -102,7 +102,7 @@ class QQReplyDeliveryNode:
                     sent = await self.plugin.qq_client.send_group_message(
                         plan.target_id, labels,
                     )
-                if not self._confirm_platform_result(sent, has_result_channel=True):
+                if not self._confirm_platform_result(sent):
                     content_sent = False
                 continue
             if not text:
@@ -223,7 +223,6 @@ class QQReplyDeliveryNode:
             return False
         return self._confirm_platform_result(
             await self.plugin.qq_client.send_group_image(plan.target_id, sticker_path),
-            has_result_channel=True,
         )
 
     async def _send_poke(self, plan: QQDeliveryPlan, block: QQMessageBlock) -> bool:
@@ -246,7 +245,6 @@ class QQReplyDeliveryNode:
         self._last_poke_out[key] = now
         return self._confirm_platform_result(
             await self.plugin.qq_client.send_group_poke(plan.target_id, block.poke),
-            has_result_channel=True,
         )
 
     def _supports_keyboard(self) -> bool:
@@ -257,18 +255,16 @@ class QQReplyDeliveryNode:
         client = self.plugin.qq_client
         return bool(client and not client.needs_attention)
 
-    def _confirm_platform_result(self, result, *, has_result_channel: bool = False) -> bool:
-        """开放平台失败吞异常返回 None——只有那个显式 None 判未投递。
+    @staticmethod
+    def _confirm_platform_result(result) -> bool:
+        """Falsy result == the send was never confirmed.
 
-        NapCat 的纯文本发送是 fire-and-forget（无返回通道，失败走异常），
-        返回值一律视为确认；但 send_group_poke / send_group_image 这类
-        **有**返回通道的接口会把失败表达成 False/None，调用方传
-        has_result_channel=True 时要如实判未投递。"""
-        if self.plugin.qq_client and not self.plugin.qq_client.needs_attention:
-            return result is not None
-        if has_result_channel:
-            return bool(result)
-        return True
+        Every sender now reports one: the Open Platform returns the message
+        id (None when it swallowed a failure), and the NapCat client does an
+        echo round-trip for messages / returns a bool for pokes. Keeping a
+        per-call "does this one have a receipt?" flag is what let text
+        fallbacks silently count as delivered."""
+        return bool(result)
 
     async def _send_record(self, plan: QQDeliveryPlan, block: QQMessageBlock) -> bool:
         if not block.record:
@@ -279,7 +275,7 @@ class QQReplyDeliveryNode:
                 result = await self.plugin.qq_client.send_group_record(plan.target_id, file_uri)
             else:
                 result = await self.plugin.qq_client.send_private_record(plan.target_id, file_uri)
-            if self._confirm_platform_result(result, has_result_channel=True):
+            if self._confirm_platform_result(result):
                 # 语音走 segments 接口（群/私聊都带 echo 回执）：超时返回
                 # None 是"没确认送达"，不能当 fire-and-forget 放行，否则
                 # 用户没听到的回复既不回退文本、还被记成已投递。

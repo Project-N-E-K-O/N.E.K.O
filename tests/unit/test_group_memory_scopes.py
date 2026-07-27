@@ -7892,11 +7892,14 @@ async def test_napcat_voice_send_failure_is_not_reported_as_delivered():
     service.plugin = SimpleNamespace(
         qq_client=SimpleNamespace(needs_attention=True),  # NapCat
     )
-    # Fire-and-forget text sends keep the old semantics.
-    assert service._confirm_send(None) is True
-    # ...but the record senders DO report failure through their return.
-    assert service._confirm_send(None, has_result_channel=True) is False
-    assert service._confirm_send("msg-1", has_result_channel=True) is True
+    # One rule for every sender now that all of them report a receipt:
+    # falsy == not confirmed. The per-call "does this one have a channel?"
+    # flag is gone, so a fallback path cannot forget to pass it.
+    assert service._confirm_send(None) is False
+    assert service._confirm_send("") is False
+    assert service._confirm_send(False) is False
+    assert service._confirm_send("msg-1") is True
+    assert service._confirm_send(True) is True
 
 
 @pytest.mark.asyncio
@@ -8926,3 +8929,75 @@ async def test_cq_string_senders_wait_for_the_echo_receipt():
     finally:
         qc.asyncio.wait_for = original_wait_for
     assert not client._pending_actions
+
+
+@pytest.mark.asyncio
+async def test_text_fallbacks_after_voice_failure_need_their_own_receipt():
+    """Both fallback paths Codex flagged: a private voice failure falling
+    back to text, and a <record> block falling back to text. If the
+    fallback send itself never comes back, the reply reached nobody and
+    must not be reported as delivered."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        QQDeliveryPlan,
+        QQMessageBlock,
+    )
+    from plugin.plugins.qq_auto_reply.reply_delivery_node import (
+        QQReplyDeliveryNode,
+    )
+    from plugin.plugins.qq_auto_reply.voice_reply_service import (
+        QQVoiceReplyService,
+    )
+
+    # 1) private voice -> text fallback
+    send_text = AsyncMock(return_value=None)  # echo timeout
+    voice = QQVoiceReplyService.__new__(QQVoiceReplyService)
+    voice.plugin = SimpleNamespace(
+        logger=MagicMock(),
+        _get_reply_mode=lambda: "voice",
+        _validate_outbound_message=lambda text: text,
+        qq_client=SimpleNamespace(
+            needs_attention=True,
+            send_private_record=AsyncMock(return_value=None),
+            send_message=send_text,
+        ),
+    )
+    voice.synthesize_reply_voice_file = AsyncMock(
+        return_value=("file:///a.wav", "audio/wav")
+    )
+    assert await voice.deliver_private_reply(
+        "2046", "回复", fallback_to_text_on_voice_failure=True,
+    ) is False
+    send_text.assert_awaited()
+    send_text.return_value = "mid"
+    assert await voice.deliver_private_reply(
+        "2046", "回复", fallback_to_text_on_voice_failure=True,
+    ) is True
+
+    # 2) <record> block -> text fallback inside the delivery node
+    node_text = AsyncMock(return_value=None)
+    node = QQReplyDeliveryNode.__new__(QQReplyDeliveryNode)
+    node.plugin = SimpleNamespace(
+        _get_reply_mode=lambda: "text",
+        logger=MagicMock(),
+        qq_client=SimpleNamespace(
+            needs_attention=True,
+            send_group_record=AsyncMock(return_value=None),
+            send_group_message=node_text,
+        ),
+        voice_reply_service=SimpleNamespace(
+            synthesize_reply_voice_file=AsyncMock(
+                return_value=("file:///a.wav", "audio/wav")
+            ),
+        ),
+    )
+    plan = QQDeliveryPlan(
+        target_type="group", target_id="7788",
+        blocks=[QQMessageBlock(record="要说的话")],
+        fallback_to_text_on_voice_failure=True,
+    )
+    result = await node.deliver(plan)
+    assert result.delivered is False
+    node_text.assert_awaited()
+    node_text.return_value = "mid"
+    result = await node.deliver(plan)
+    assert result.delivered is True
