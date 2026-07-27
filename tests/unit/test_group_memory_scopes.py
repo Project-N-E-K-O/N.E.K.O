@@ -10124,9 +10124,9 @@ async def test_promoted_generation_survives_the_settlement_cleanup():
 
 @pytest.mark.asyncio
 async def test_open_platform_record_falls_back_to_the_spoken_text():
-    """No voice channel there. Sending a '[语音消息]' placeholder and
-    taking its receipt as success meant the group got a placeholder while
-    memory recorded the sentence."""
+    """No voice channel there. Sending a placeholder message and taking its
+    receipt as success meant the group got that placeholder while memory
+    recorded the spoken sentence."""
     from plugin.plugins.qq_auto_reply.pipeline_models import (
         QQDeliveryPlan,
         QQMessageBlock,
