@@ -903,6 +903,97 @@ async def test_stale_truncated_recovery_does_not_mutate_newer_request_state():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_truncated_recovery_stops_when_new_request_starts_during_ui_send():
+    """Request A must re-check ownership after yielding to its recovery UI send."""
+    mgr = _make_manager()
+    mgr.websocket = _FakeConnectedWebSocket()
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = ["history-before-A"]
+    mgr._active_text_request_id = "req-A"
+    mgr.current_speech_id = "speech-A"
+    mgr._pending_turn_meta = {"kind": "text", "request_id": "req-A"}
+    mgr._clear_tts_pipeline = AsyncMock()
+    mgr._emit_turn_end = AsyncMock()
+    mgr._finalize_turn_after_emit = AsyncMock()
+
+    async def send_recovery_then_start_request_b(
+        text,
+        is_first_chunk=False,
+        turn_id=None,
+        metadata=None,
+        **kwargs,
+    ):
+        mgr.sent_responses.append({
+            "text": text,
+            "is_first_chunk": is_first_chunk,
+            "turn_id": turn_id,
+            "metadata": metadata,
+            "request_id": kwargs.get("request_id"),
+        })
+        mgr._active_text_request_id = "req-B"
+        mgr.current_speech_id = "speech-B"
+        mgr._pending_turn_meta = {"kind": "text", "request_id": "req-B"}
+        mgr.session._conversation_history.append("request-B-history")
+
+    mgr.send_lanlan_response = send_recovery_then_start_request_b
+
+    await core_module.LLMSessionManager.handle_response_discarded(
+        mgr,
+        "guard",
+        3,
+        3,
+        False,
+        '{"code":"RESPONSE_LENGTH_TRUNCATED","text":"recovery response A"}',
+        request_id="req-A",
+    )
+
+    assert mgr._active_text_request_id == "req-B"
+    assert mgr.current_speech_id == "speech-B"
+    assert mgr._pending_turn_meta == {"kind": "text", "request_id": "req-B"}
+    assert mgr.session._conversation_history == [
+        "history-before-A",
+        "request-B-history",
+    ]
+    assert mgr.sent_responses == [{
+        "text": "recovery response A",
+        "is_first_chunk": True,
+        "turn_id": "speech-A",
+        "metadata": None,
+        "request_id": "req-A",
+    }]
+    mgr._emit_turn_end.assert_not_awaited()
+    mgr._finalize_turn_after_emit.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_owned_truncated_recovery_still_finalizes_when_owner_stays_current():
+    """Dynamic ownership checks must not suppress A's normal turn finalization."""
+    mgr = _make_manager()
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = []
+    mgr._active_text_request_id = "req-A"
+    mgr._clear_tts_pipeline = AsyncMock()
+    mgr._emit_turn_end = AsyncMock()
+    mgr._finalize_turn_after_emit = AsyncMock()
+
+    await core_module.LLMSessionManager.handle_response_discarded(
+        mgr,
+        "guard",
+        3,
+        3,
+        False,
+        '{"code":"RESPONSE_LENGTH_TRUNCATED","text":"recovery response A"}',
+        request_id="req-A",
+    )
+
+    mgr._emit_turn_end.assert_awaited_once_with("req-A")
+    mgr._finalize_turn_after_emit.assert_awaited_once()
+    assert mgr._active_text_request_id is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_unowned_discard_callback_keeps_global_clear_behavior():
     """Legacy/proactive discard callbacks still clear shared output globally."""
     mgr = _make_manager()

@@ -595,6 +595,8 @@ class TurnMixin:
                     turn_id=recovery_turn_id,
                     request_id=active_request_id,
                 )
+                if not may_clear_shared_output():
+                    return
 
                 # 仅当本轮**不是** ephemeral（即非 avatar_interaction 等
                 # persist_response=False 的路径）时才写历史。avatar_interaction
@@ -611,19 +613,31 @@ class TurnMixin:
                 # 的 done 会结束新轮的 TTS（首句被截 / 整轮静音）。
                 if self.use_tts:
                     await self.feed_tts_chunk(body_text, expected_speech_id=recovery_turn_id)
+                    if not may_clear_shared_output():
+                        return
                     await self._request_tts_done_for_turn(
                         "handle_response_discarded:length_truncated"
                         if _truncated_text is not None
                         else "handle_response_discarded:too_long_final",
                         expected_speech_id=recovery_turn_id,
                     )
+                    if not may_clear_shared_output():
+                        return
 
                 # turn end —— 复用 _emit_turn_end helper（同 handle_response_complete
                 # 走同一套语义；sync queue 和 WS 都带相同 meta）。
                 # 注：上面读 pending_meta 已经触发 is_ephemeral 判定，但这里
                 # _emit_turn_end 自己会再读一次 _pending_turn_meta 做透传 + 清空，
                 # 二者读的是同一个值，幂等。
+                if not may_clear_shared_output():
+                    return
                 await self._emit_turn_end(active_request_id)
+                if not may_clear_shared_output():
+                    return
+                # Recovery / too-long-final is a completed turn and still needs
+                # the regular renew/prewarm + agent-callback wrap-up. Run it
+                # only while this request still owns the shared session state.
+                await self._finalize_turn_after_emit()
             except Exception as e:
                 logger.warning(f"⚠️ {'RESPONSE_LENGTH_TRUNCATED' if _truncated_text is not None else 'RESPONSE_TOO_LONG'} 回复发送失败: {e}")
             finally:
@@ -641,16 +655,6 @@ class TurnMixin:
             # Compare-and-clear：仅当共享字段仍是本轮快照时才清空。
             if self._active_text_request_id == active_request_id:
                 self._active_text_request_id = None
-
-        # Recovery / too-long-final 路径相当于"这一轮 LLM 已完成"——必须
-        # 跑跟 handle_response_complete 同款的 turn 后置流程（renew/prewarm
-        # 判断 + agent callback 投递），否则连续多轮走 RESPONSE_LENGTH_TRUNCATED
-        # / RESPONSE_TOO_LONG 时 session 不归档/不预热，会卡进"上下文越来越
-        # 大→一直截断恢复"的死循环。普通 will_retry / RESPONSE_INVALID 路径
-        # 还会重试同轮，不算 turn 真正结束，跳过 finalize。
-        if recovery_owns_shared_state:
-            await self._finalize_turn_after_emit()
-
 
     async def handle_audio_data(self, audio_data: bytes):
         """Qwen audio callback: push audio to the WebSocket frontend"""
