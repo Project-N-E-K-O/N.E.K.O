@@ -1603,8 +1603,8 @@ class IndependentAsrRuntime:
                 exc_info=(type(error), error, error.__traceback__),
             )
 
-    async def _restart_transport(self, *, max_attempts: int = 3) -> None:
-        if max_attempts <= 0:
+    async def _restart_transport(self, *, max_attempts: int | None = None) -> None:
+        if max_attempts is not None and max_attempts <= 0:
             raise ValueError("max_attempts must be positive")
         async with self._asr_transport_lock:
             lifecycle = self._asr_lifecycle
@@ -1630,6 +1630,11 @@ class IndependentAsrRuntime:
                     expected_identity=identity,
                 )
                 return
+            # Mirror initial startup: the active provider policy decides the
+            # attempt budget and backoff ladder unless the caller overrides it.
+            policy = lifecycle.provider_policy
+            if max_attempts is None:
+                max_attempts = policy.connect_max_attempts
 
             for attempt in range(max_attempts):
                 if not self._runtime_identity_matches(identity):
@@ -1757,7 +1762,12 @@ class IndependentAsrRuntime:
                         if not self._runtime_identity_matches(identity):
                             return
                     if attempt + 1 < max_attempts:
-                        await asyncio.sleep(min(1.0, 0.25 * (2**attempt)))
+                        await asyncio.sleep(
+                            min(
+                                policy.connect_retry_cap_seconds,
+                                policy.connect_retry_base_seconds * (2**attempt),
+                            )
+                        )
                         if not self._runtime_identity_matches(identity):
                             return
                         continue

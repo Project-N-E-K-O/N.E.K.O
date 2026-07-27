@@ -3235,6 +3235,124 @@ async def test_restart_closes_not_ready_session_before_replacement() -> None:
     assert runtime._asr_session is candidate
 
 
+def _install_failing_restart_candidates(
+    runtime: _Runtime,
+    provider: str,
+    *,
+    failure_count: int,
+) -> list[SimpleNamespace]:
+    runtime._asr_session = SimpleNamespace(is_ready=False, close=AsyncMock())
+    _install_ready_lifecycle(runtime, provider)
+    candidates: list[SimpleNamespace] = []
+
+    def build_candidate(_selection):
+        candidate = SimpleNamespace(
+            is_ready=True,
+            connect=AsyncMock(
+                side_effect=RuntimeError("private restart connect detail")
+            ),
+            close=AsyncMock(),
+        )
+        candidates.append(candidate)
+        assert len(candidates) <= failure_count
+        return candidate
+
+    runtime._asr_session_factory = MagicMock(side_effect=build_candidate)
+    runtime._asr_transport_selection = _selection(provider)
+    return candidates
+
+
+async def test_restart_default_attempts_follow_single_attempt_policy(
+    monkeypatch,
+) -> None:
+    import main_logic.asr_client.runtime as runtime_module
+
+    runtime = _Runtime()
+    sleep = AsyncMock()
+    monkeypatch.setattr(runtime_module.asyncio, "sleep", sleep)
+    candidates = _install_failing_restart_candidates(runtime, "qwen", failure_count=1)
+    assert runtime._asr_lifecycle.provider_policy.connect_max_attempts == 1
+
+    await runtime._restart_transport()
+    while runtime._asr_runtime._asr_close_tasks:
+        await asyncio.gather(
+            *tuple(runtime._asr_runtime._asr_close_tasks),
+            return_exceptions=True,
+        )
+
+    assert len(candidates) == 1
+    candidates[0].connect.assert_awaited_once_with()
+    candidates[0].close.assert_awaited_once_with()
+    sleep.assert_not_awaited()
+    statuses = [
+        json.loads(call.args[0]) for call in runtime.send_status.await_args_list
+    ]
+    assert statuses[-1]["code"] == "ASR_INDEPENDENT_FAILED"
+    assert "private restart connect detail" not in str(
+        runtime.send_status.await_args_list
+    )
+
+
+async def test_restart_default_attempts_follow_soniox_policy_ladder(
+    monkeypatch,
+) -> None:
+    import main_logic.asr_client.runtime as runtime_module
+
+    runtime = _Runtime()
+    sleep = AsyncMock()
+    monkeypatch.setattr(runtime_module.asyncio, "sleep", sleep)
+    candidates = _install_failing_restart_candidates(
+        runtime, "soniox", failure_count=3
+    )
+    assert runtime._asr_lifecycle.provider_policy.connect_max_attempts == 3
+
+    await runtime._restart_transport()
+    while runtime._asr_runtime._asr_close_tasks:
+        await asyncio.gather(
+            *tuple(runtime._asr_runtime._asr_close_tasks),
+            return_exceptions=True,
+        )
+
+    assert len(candidates) == 3
+    for candidate in candidates:
+        candidate.connect.assert_awaited_once_with()
+        candidate.close.assert_awaited_once_with()
+    assert [call.args for call in sleep.await_args_list] == [(0.25,), (0.5,)]
+    statuses = [
+        json.loads(call.args[0]) for call in runtime.send_status.await_args_list
+    ]
+    assert statuses[-1]["code"] == "ASR_INDEPENDENT_FAILED"
+
+
+async def test_restart_explicit_attempt_override_beats_policy(monkeypatch) -> None:
+    import main_logic.asr_client.runtime as runtime_module
+
+    runtime = _Runtime()
+    sleep = AsyncMock()
+    monkeypatch.setattr(runtime_module.asyncio, "sleep", sleep)
+    candidates = _install_failing_restart_candidates(
+        runtime, "soniox", failure_count=1
+    )
+
+    await runtime._restart_transport(max_attempts=1)
+    while runtime._asr_runtime._asr_close_tasks:
+        await asyncio.gather(
+            *tuple(runtime._asr_runtime._asr_close_tasks),
+            return_exceptions=True,
+        )
+
+    assert len(candidates) == 1
+    candidates[0].connect.assert_awaited_once_with()
+    sleep.assert_not_awaited()
+
+
+async def test_restart_rejects_non_positive_attempt_override() -> None:
+    runtime = _Runtime()
+
+    with pytest.raises(ValueError, match="max_attempts must be positive"):
+        await runtime._restart_transport(max_attempts=0)
+
+
 async def test_not_ready_close_cannot_overwrite_replacement_generation() -> None:
     runtime = _Runtime()
     close_started = asyncio.Event()
