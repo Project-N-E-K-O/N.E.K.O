@@ -41,6 +41,7 @@ TESTS_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = TESTS_ROOT.parent
 # The launcher itself is the one place allowed to call subprocess.run on node.
 EXEMPT = {TESTS_ROOT / "node_harness.py"}
+_SUBPROCESS_ENTRYPOINTS = {"run", "Popen", "check_output", "check_call", "call"}
 
 
 def _mentions_node(call: ast.Call) -> bool:
@@ -56,18 +57,60 @@ def _mentions_node(call: ast.Call) -> bool:
     return False
 
 
+def _subprocess_imports(tree: ast.AST) -> tuple[set[str], set[str]]:
+    """Return imported subprocess module aliases and entry-point names."""
+    module_aliases = {"subprocess"}
+    entrypoint_aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "subprocess":
+                    module_aliases.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module == "subprocess":
+            for alias in node.names:
+                if alias.name == "*":
+                    entrypoint_aliases.update(_SUBPROCESS_ENTRYPOINTS)
+                elif alias.name in _SUBPROCESS_ENTRYPOINTS:
+                    entrypoint_aliases.add(alias.asname or alias.name)
+    return module_aliases, entrypoint_aliases
+
+
 def _subprocess_run_calls(tree: ast.AST):
+    module_aliases, entrypoint_aliases = _subprocess_imports(tree)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        name = getattr(func, "attr", None) or getattr(func, "id", None)
-        # 全部 subprocess 入口，不只是 run：漏一个（比如 check_call）就等于给
-        # 新 harness 留了一条绕过这条契约、退回 node -e 的合法路径（Codex P2）。
-        if name in {"run", "Popen", "check_output", "check_call", "call"}:
-            module = getattr(getattr(func, "value", None), "id", None)
-            if module == "subprocess" or name == "Popen":
+        if isinstance(func, ast.Attribute):
+            module = func.value
+            if (
+                isinstance(module, ast.Name)
+                and module.id in module_aliases
+                and func.attr in _SUBPROCESS_ENTRYPOINTS
+            ):
                 yield node
+        elif isinstance(func, ast.Name) and func.id in entrypoint_aliases:
+            yield node
+
+
+def test_subprocess_call_discovery_tracks_module_and_entrypoint_aliases():
+    tree = ast.parse(
+        """
+import subprocess as sp
+from subprocess import check_call as invoke
+
+sp.run([node_executable, "-"])
+invoke([node_executable, "-e", script])
+
+def run(command):
+    return command
+
+run(node_executable)
+"""
+    )
+
+    calls = list(_subprocess_run_calls(tree))
+    assert [call.lineno for call in calls] == [5, 6]
 
 
 def test_node_harnesses_go_through_the_shared_launcher():
