@@ -1639,3 +1639,83 @@ async def test_unseal_marker_does_not_requeue_a_fact_another_process_already_con
         "磁盘上已经是 user_observation 说明别人升过了，纸条不许把它重新排回 Stage-2"
     )
     assert '_signal_reset_pending' not in persisted[0]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("malformed", [
+    {'text': '缺 id 的 ai 披露', 'source': 'ai_disclosure', 'signal_processed': True},
+    {'text': '缺 id 且已吸收', 'source': 'user_observation', 'absorbed': True},
+    {'text': '缺 id 且已处理', 'source': 'user_observation', 'signal_processed': True},
+])
+async def test_save_survives_disk_rows_without_ids(tmp_path, malformed):
+    """A legacy or hand-edited row without ``id`` must not break persistence.
+
+    The read-merge indexes disk rows by id. Reading that field unconditionally
+    turns one malformed row into a permanent outage: the KeyError escapes the
+    inner handler (which only covers JSON/OS errors), the outer one evicts the
+    cache and re-raises, and every later save reloads the same row and dies
+    again — no new fact ever reaches disk.
+    """
+    fs = _make_fact_store(facts={})
+    fs._config_manager.memory_dir = str(tmp_path)
+
+    path = fs._facts_path('悠怡')
+    with open(path, 'w', encoding='utf-8') as handle:
+        json.dump([malformed], handle, ensure_ascii=False)
+
+    fs._facts['悠怡'] = [{
+        'id': 'fact_new',
+        'text': '博士喜欢三文鱼',
+        'source': 'user_observation',
+        'signal_processed': False,
+        'importance': 8,
+        'entity': 'master',
+    }]
+    fs.save_facts('悠怡')
+
+    with open(path, encoding='utf-8') as handle:
+        persisted = json.load(handle)
+    assert [f['id'] for f in persisted] == ['fact_new']
+    assert persisted[0]['signal_processed'] is False, (
+        "磁盘上那条没有 id，不该凭空命中 read-merge 的任何集合"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_id_less_disk_rows_do_not_contaminate_other_id_less_rows(tmp_path):
+    """A missing id must not act as a key that every other id-less row matches.
+
+    Indexing the read-merge by ``.get('id')`` without dropping ``None`` puts a
+    single key in the set that every id-less in-memory row compares equal to,
+    so one stale malformed row on disk would flip unrelated ones to processed.
+    """
+    fs = _make_fact_store(facts={})
+    fs._config_manager.memory_dir = str(tmp_path)
+
+    path = fs._facts_path('悠怡')
+    with open(path, 'w', encoding='utf-8') as handle:
+        json.dump([{
+            'text': '盘上那条没有 id 且已处理',
+            'source': 'user_observation',
+            'signal_processed': True,
+            'absorbed': True,
+        }], handle, ensure_ascii=False)
+
+    fs._facts['悠怡'] = [{
+        'text': '内存里另一条也没有 id，但没被处理过',
+        'source': 'user_observation',
+        'signal_processed': False,
+        'importance': 6,
+        'entity': 'master',
+    }]
+    fs.save_facts('悠怡')
+
+    with open(path, encoding='utf-8') as handle:
+        persisted = json.load(handle)
+
+    assert persisted[0]['signal_processed'] is False, (
+        "两条都没有 id 不代表它们是同一条，不该被 read-merge 串到一起"
+    )
+    assert not persisted[0].get('absorbed'), "absorbed 同理，不该凭空被回写"

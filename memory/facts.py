@@ -271,13 +271,20 @@ class FactStore:
                         with open(path, encoding='utf-8') as f:
                             disk_facts = json.load(f)
                         if isinstance(disk_facts, list):
+                            # 一律 .get('id') 且滤掉 None：手改/半损坏的 legacy 行可能
+                            # 没有 id，f['id'] 会抛 KeyError——而内层只接 JSON/OS 错误，
+                            # 它会一路冒到外层把缓存清掉并重抛，此后每次存盘都死在同一
+                            # 行，新 fact 再也落不了盘。None 也必须滤掉：内存里同样没有
+                            # id 的行会与它相等，凭空命中这些集合。
                             absorbed_ids = {
-                                f['id'] for f in disk_facts
+                                f.get('id') for f in disk_facts
                                 if isinstance(f, dict) and f.get('absorbed')
+                                and f.get('id') is not None
                             }
                             signal_processed_ids = {
-                                f['id'] for f in disk_facts
+                                f.get('id') for f in disk_facts
                                 if isinstance(f, dict) and f.get('signal_processed')
+                                and f.get('id') is not None
                             }
                             # ⚠残留窗口：这次读盘与下面的 atomic_write_json 之间没有
                             # 跨进程锁（self._get_lock 只挡同进程的线程），所以理论上
@@ -296,9 +303,10 @@ class FactStore:
                             # 旧缓存再升一次并放行回写，等于把一条已消费的 fact 重新
                             # 排回 Stage-2——正是这段 read-merge 要挡的跨进程回归。
                             disk_ai_disclosure_ids = {
-                                f['id'] for f in disk_facts
+                                f.get('id') for f in disk_facts
                                 if isinstance(f, dict)
                                 and f.get('source', self._SOURCE_DEFAULT) == 'ai_disclosure'
+                                and f.get('id') is not None
                             }
                             if absorbed_ids or signal_processed_ids:
                                 for f in facts:
