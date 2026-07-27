@@ -3115,6 +3115,10 @@ async def test_delivery_result_reflects_open_platform_send_failure():
     assert kb_plugin.qq_client.send_group_message_segments.await_args.kwargs[
         "keyboard"
     ] == "要|不要"
+    # Content must be non-blank: the Open Platform sender strips whitespace
+    # and returns None before building the keyboard payload.
+    sent_segments = kb_plugin.qq_client.send_group_message_segments.await_args.args[1]
+    assert sent_segments[0]["data"]["text"].strip()
     kb_plugin.qq_client.send_group_message_segments = AsyncMock(return_value=None)
     result = await kb_node.deliver(kb_plan)
     assert result.delivered is False
@@ -3250,6 +3254,75 @@ async def test_unconfirmed_voice_send_falls_back_to_text():
     )
     assert ok is False
     plugin.qq_client.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_buffered_draft_dropped_when_consent_revoked():
+    """A draft generated under scoped/cross-group consent sits in the
+    delay buffer; revoking either switch has no session teardown for
+    cross-group at all, so the send itself must compare the snapshot and
+    drop the draft instead of disclosing revoked memory."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import QQMessageBlock
+    from plugin.plugins.qq_auto_reply.reply_buffer_service import (
+        PendingReply,
+        QQReplyBufferService,
+    )
+
+    draft = SimpleNamespace(type="ai", content="含跨群内容的回复")
+    user_data = {
+        "is_group": True,
+        "session": SimpleNamespace(_conversation_history=[draft]),
+        "undelivered_draft_rows": [draft],
+        "provisional_draft_rows": [draft],
+    }
+    plugin = SimpleNamespace(
+        _user_sessions={"group:7788": user_data},
+        _qq_settings={
+            "group_memory_enabled": True,
+            "allow_cross_group_context": False,   # revoked while waiting
+        },
+        _emit_log=lambda *a, **k: None,
+        reply_delivery_node=SimpleNamespace(deliver=AsyncMock()),
+        reply_generation_service=SimpleNamespace(
+            record_scoped_mentions_on_delivery=AsyncMock(),
+        ),
+    )
+    service = QQReplyBufferService.__new__(QQReplyBufferService)
+    service.plugin = plugin
+    service._pending = {}
+    pending = PendingReply(
+        first_text="回复", wait_seconds=0, sender_id="1",
+        is_group=True, group_id="7788",
+    )
+    pending.first_blocks = [QQMessageBlock(text="回复")]
+    pending.wait_until = 0.0
+    pending.draft_rows = [draft]
+    pending.mention_context = object()
+    pending.consent_snapshot = {
+        "group_memory_enabled": True,
+        "allow_cross_group_context": True,
+    }
+    service._pending["group:7788"] = pending
+
+    await service._deliver_after_wait("group:7788", pending)
+    plugin.reply_delivery_node.deliver.assert_not_awaited()
+    plugin.reply_generation_service.record_scoped_mentions_on_delivery.assert_not_awaited()
+    assert user_data["undelivered_draft_rows"] == [draft]
+    assert user_data["provisional_draft_rows"] == []
+    assert "group:7788" not in service._pending
+
+    # Unchanged consent: the draft ships normally.
+    plugin._qq_settings["allow_cross_group_context"] = True
+    pending2 = PendingReply(
+        first_text="回复", wait_seconds=0, sender_id="1",
+        is_group=True, group_id="7788",
+    )
+    pending2.first_blocks = [QQMessageBlock(text="回复")]
+    pending2.wait_until = 0.0
+    pending2.consent_snapshot = dict(pending.consent_snapshot)
+    service._pending["group:7788"] = pending2
+    await service._deliver_after_wait("group:7788", pending2)
+    plugin.reply_delivery_node.deliver.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -4472,6 +4545,34 @@ async def test_unpersisted_memory_toggle_rolls_back():
     assert "group_settle_rollback_pending" not in ud
     while spawned:
         spawned.pop(0).close()
+
+    # Cancellation during persistence bypasses persist's own except
+    # Exception, but still means "not written" — the rollback must run.
+    cancel_service = QQSettingsService.__new__(QQSettingsService)
+    cancel_service.plugin = service.plugin
+    rolled: list = []
+    cancel_service._rollback_unpersisted_memory_toggles = (
+        lambda persisted, **kw: rolled.append(persisted)
+    )
+    cancel_service.persist_business_config = AsyncMock(
+        side_effect=asyncio.CancelledError(),
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await cancel_service._persist_with_consent_rollback(
+            group_memory_before=True, group_memory_after=False,
+            member_memory_before=False, member_memory_after=False,
+            cross_group_before=False,
+        )
+    assert rolled == [False]
+    # A clean save reports success through to the rollback helper (no-op).
+    rolled.clear()
+    cancel_service.persist_business_config = AsyncMock(return_value=True)
+    assert await cancel_service._persist_with_consent_rollback(
+        group_memory_before=True, group_memory_after=False,
+        member_memory_before=False, member_memory_after=False,
+        cross_group_before=False,
+    ) is True
+    assert rolled == [True]
 
     # Cross-group context also rolls back on persist failure — it is a
     # consent switch too, and a lingering new value injects other groups'

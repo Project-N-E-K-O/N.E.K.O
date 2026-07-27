@@ -45,6 +45,31 @@ class QQSettingsService:
                 ud["pending_disable_settle"] = True
                 ud.pop("pending_enable_rebase", None)
 
+    async def _persist_with_consent_rollback(
+        self, *, group_memory_before: bool, group_memory_after: bool,
+        member_memory_before: bool, member_memory_after: bool,
+        cross_group_before: bool | None,
+    ) -> bool:
+        """Persist settings and roll consent back if the write did not land.
+
+        Cancellation counts as "not written": CancelledError bypasses
+        persist_business_config's own except Exception, and leaving the
+        runtime flags on an unpersisted opt-in would keep collecting."""
+        rollback_kwargs = dict(
+            group_memory_before=group_memory_before,
+            group_memory_after=group_memory_after,
+            member_memory_before=member_memory_before,
+            member_memory_after=member_memory_after,
+            cross_group_before=cross_group_before,
+        )
+        try:
+            success = await self.persist_business_config()
+        except BaseException:
+            self._rollback_unpersisted_memory_toggles(False, **rollback_kwargs)
+            raise
+        self._rollback_unpersisted_memory_toggles(success, **rollback_kwargs)
+        return success
+
     def _rollback_unpersisted_memory_toggles(
         self, persisted: bool, *,
         group_memory_before: bool, group_memory_after: bool,
@@ -437,9 +462,7 @@ class QQSettingsService:
         self._enforce_attention_for_dynamic_mode()
         self.plugin._qq_settings.pop("guide_step_settings_done", None)
         self.plugin._ensure_qq_client_initialized()
-        success = await self.persist_business_config()
-        self._rollback_unpersisted_memory_toggles(
-            success,
+        success = await self._persist_with_consent_rollback(
             group_memory_before=group_memory_before,
             group_memory_after=group_memory_after,
             member_memory_before=member_memory_before,

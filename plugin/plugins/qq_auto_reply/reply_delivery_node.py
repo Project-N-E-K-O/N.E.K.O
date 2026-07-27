@@ -53,20 +53,23 @@ class QQReplyDeliveryNode:
                 # 不读）——NapCat 侧把按钮文案降级成可读文本，别只发一个
                 # 空格。
                 any_text_attempted = True
+                labels = " / ".join(
+                    part.strip()
+                    for part in str(block.keyboard).split("|")
+                    if part.strip()
+                ) or str(block.keyboard)
                 if self._supports_keyboard():
+                    # 内容不能是空白：开放平台 sender 会 strip 后判空直接
+                    # 返回 None，连带按钮 payload 都不构造——既没按钮也没
+                    # 文本，还被当成发送失败。用选项文案当正文。
                     sent = await self.plugin.qq_client.send_group_message_segments(
                         plan.target_id,
-                        [{"type": "text", "data": {"text": " "}}],
+                        [{"type": "text", "data": {"text": labels}}],
                         keyboard=block.keyboard,
                     )
                 else:
-                    labels = " / ".join(
-                        part.strip()
-                        for part in str(block.keyboard).split("|")
-                        if part.strip()
-                    )
                     sent = await self.plugin.qq_client.send_group_message(
-                        plan.target_id, labels or str(block.keyboard),
+                        plan.target_id, labels,
                     )
                 if not self._confirm_platform_result(sent):
                     all_text_sent = False

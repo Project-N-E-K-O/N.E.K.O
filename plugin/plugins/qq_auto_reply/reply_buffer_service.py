@@ -19,7 +19,8 @@ class PendingReply:
     """待发送的回复（缓冲模式：收消息时不合成，等暂停后统一生成回复）"""
     __slots__ = ("buffered_texts", "wait_until", "task", "topic_hint", "message_count",
                  "sender_id", "is_group", "group_id", "_acked", "first_blocks",
-                 "draft_rows", "mention_context", "has_nonconsent_input")
+                 "draft_rows", "mention_context", "has_nonconsent_input",
+                 "consent_snapshot")
 
     def __init__(self, first_text: str, wait_seconds: float, sender_id: str, is_group: bool, group_id: str):
         self.buffered_texts: list[str] = [first_text]  # 缓冲的消息文本
@@ -42,6 +43,11 @@ class PendingReply:
         # 输入衍生，若投递前切 ON，其 ai 行会落在 rebase 边界之后——不标
         # 记的话 OFF 时代内容经 summary 间接入库。
         self.has_nonconsent_input = False
+        # 生成这条草稿时所依赖的记忆授权快照（{开关: 值}）：草稿在缓冲里
+        # 等待期间授权可能被撤销，届时不得把已注入的 scoped/跨群内容送
+        # 出去。开关本身没有会话级 teardown（尤其 cross-group），只能在
+        # 投递前比对。
+        self.consent_snapshot: dict = {}
 
 
 class QQReplyBufferService:
@@ -89,6 +95,17 @@ class QQReplyBufferService:
                 pending.draft_rows.append(msg)
             return msg
         return None
+
+    def _consent_revoked_since(self, pending) -> bool:
+        """True when any consent switch this draft relied on is now off."""
+        snapshot = getattr(pending, "consent_snapshot", None)
+        if not snapshot:
+            return False
+        settings = getattr(self.plugin, "_qq_settings", {}) or {}
+        for key, was_enabled in snapshot.items():
+            if was_enabled and not settings.get(key, False):
+                return True
+        return False
 
     @staticmethod
     def _settle_provisional(user_data, pending) -> None:
@@ -238,6 +255,7 @@ class QQReplyBufferService:
         history_backed: bool = True,
         mention_context=None,
         consented: bool = True,
+        consent_snapshot: dict | None = None,
     ) -> None:
         """缓冲一条消息。如果已有等待中的缓冲，追加消息并重置等待计时。
 
@@ -385,6 +403,8 @@ class QQReplyBufferService:
         # 单条投递后可精确撤销。
         self._bind_draft_to_pending(draft_row, existing)
         existing.mention_context = mention_context
+        if consent_snapshot is not None:
+            existing.consent_snapshot = dict(consent_snapshot)
         if not consented:
             existing.has_nonconsent_input = True
         existing.task = asyncio.create_task(self._deliver_after_wait(session_key, existing))
@@ -399,6 +419,20 @@ class QQReplyBufferService:
             return  # 新消息打断了等待
 
         if self._pending.get(session_key) is not pending:
+            return
+
+        if self._consent_revoked_since(pending):
+            # 等待期间授权被撤销：这条草稿是在旧授权下生成的（prompt 里
+            # 可能带 scoped/跨群内容），不得再送出。草稿保持未投递、屏障
+            # 解除、不记 mention。
+            self.plugin._emit_log(
+                "WARN", "[Buffer] 记忆授权已撤销，丢弃缓冲中的旧回复",
+            )
+            self._settle_provisional(
+                (getattr(self.plugin, "_user_sessions", {}) or {}).get(session_key),
+                pending,
+            )
+            self._pending.pop(session_key, None)
             return
 
         # 汇总缓冲内容

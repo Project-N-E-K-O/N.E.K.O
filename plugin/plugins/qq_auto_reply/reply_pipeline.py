@@ -284,6 +284,21 @@ class QQReplyPipelineRunner:
                     ) if outcome else False
                 ),
                 mention_context=context,
+                consent_snapshot=(
+                    {
+                        key: bool(
+                            (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                                key, False,
+                            )
+                        )
+                        for key in (
+                            "group_memory_enabled",
+                            "group_member_memory_enabled",
+                            "allow_cross_group_context",
+                        )
+                    }
+                    if request.is_group else None
+                ),
                 consented=bool(
                     not request.is_group
                     or getattr(request, "persist_memory", None)
