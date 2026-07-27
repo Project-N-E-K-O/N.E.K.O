@@ -4475,10 +4475,11 @@ async def test_generation_discards_reply_when_consent_revoked_mid_stream():
     session = SimpleNamespace(
         stream_text=_revoke_mid_stream, _conversation_history=history,
     )
+    ud_revoked = {"lock": asyncio.Lock()}
     result = await service._run_session_generation(
         context=context,
         session_key="group:7788",
-        user_data={"lock": asyncio.Lock()},
+        user_data=ud_revoked,
         user_session=session,
         reply_chunks=chunks,
     )
@@ -4493,21 +4494,34 @@ async def test_generation_discards_reply_when_consent_revoked_mid_stream():
         getattr(row, "content", "") != "带着群记忆的回复" for row in history
     )
 
+    # The revoked turn left no ai row behind, and that is recorded: the
+    # undelivered marking must not fall back to scanning for "the newest
+    # ai row" and hit a previously delivered one.
+    assert ud_revoked["current_turn_ai_row"] is None
+
     # Consent unchanged: the reply survives.
     plugin._qq_settings["group_memory_enabled"] = True
     chunks2: list = []
+    history2 = [SimpleNamespace(type="ai", content="上一轮已投递的回复")]
+    ud_normal = {"lock": asyncio.Lock()}
 
     async def _normal_stream(_msg):
+        history2.append(SimpleNamespace(type="human", content="hi"))
+        history2.append(SimpleNamespace(type="ai", content="正常回复"))
         chunks2.append("正常回复")
 
     result = await service._run_session_generation(
         context=context,
         session_key="group:7788",
-        user_data={"lock": asyncio.Lock()},
-        user_session=SimpleNamespace(stream_text=_normal_stream),
+        user_data=ud_normal,
+        user_session=SimpleNamespace(
+            stream_text=_normal_stream, _conversation_history=history2,
+        ),
         reply_chunks=chunks2,
     )
     assert result == "正常回复"
+    # The row recorded is THIS turn's, not the older delivered one.
+    assert ud_normal["current_turn_ai_row"] is history2[-1]
 
 
 @pytest.mark.asyncio
@@ -9891,3 +9905,52 @@ async def test_settings_stamp_detaches_epoch_from_an_in_flight_flush():
         {"role": "user", "content": "第二代"}
     ]
     assert ud.get("pending_member_settle") is True
+
+
+@pytest.mark.asyncio
+async def test_undelivered_marking_uses_this_turns_row_identity():
+    """Marking 'the newest ai row' is an inference. When the current turn
+    wrote no row (timeout, or a default reply with no primary output), that
+    inference lands on the PREVIOUS — already delivered — reply and drops
+    it from every future digest."""
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    delivered_before = SimpleNamespace(type="ai", content="上一条已投递的回复")
+    this_turn = SimpleNamespace(type="ai", content="本轮未投递的回复")
+    history = [
+        SimpleNamespace(type="human", content="上一条提问"),
+        delivered_before,
+        SimpleNamespace(type="human", content="本轮提问"),
+        this_turn,
+    ]
+    ud = {
+        "is_group": True,
+        "session": SimpleNamespace(_conversation_history=history),
+        "current_turn_ai_row": this_turn,
+    }
+    service = QQSessionMemoryService(SimpleNamespace(
+        _user_sessions={"group:7788": ud}, logger=MagicMock(),
+    ))
+
+    service.record_tail_undelivered_ai_row("group:7788")
+    marked = ud["undelivered_draft_rows"]
+    assert len(marked) == 1 and marked[0] is this_turn
+
+    # This turn wrote no ai row at all: nothing may be marked.
+    ud["undelivered_draft_rows"] = []
+    ud["current_turn_ai_row"] = None
+    service.record_tail_undelivered_ai_row("group:7788")
+    assert ud["undelivered_draft_rows"] == []
+
+    # A row that was popped from history (revoked consent) is not marked
+    # either — it is already gone.
+    ud["current_turn_ai_row"] = SimpleNamespace(type="ai", content="已被摘掉")
+    service.record_tail_undelivered_ai_row("group:7788")
+    assert ud["undelivered_draft_rows"] == []
+
+    # Paths that never ran generation this turn keep the tail behaviour.
+    ud.pop("current_turn_ai_row")
+    service.record_tail_undelivered_ai_row("group:7788")
+    assert ud["undelivered_draft_rows"] == [this_turn]

@@ -280,6 +280,16 @@ class QQSessionMemoryService:
             return
         session = user_data.get("session")
         history = getattr(session, "_conversation_history", None) or []
+        if "current_turn_ai_row" in user_data:
+            # 生成路径记下了本轮到底写没写 ai 行：按身份标，没写就什么都不
+            # 标。扫"最新一条 ai"在本轮无行时会打到上一条已投递的回复上。
+            row = user_data.get("current_turn_ai_row")
+            if row is None or not any(existing is row for existing in history):
+                return
+            rows = user_data.setdefault("undelivered_draft_rows", [])
+            if not any(existing is row for existing in rows):
+                rows.append(row)
+            return
         for msg in reversed(history):
             if getattr(msg, "type", "") != "ai":
                 continue

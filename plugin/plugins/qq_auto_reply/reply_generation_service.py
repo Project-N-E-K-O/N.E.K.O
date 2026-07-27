@@ -284,9 +284,18 @@ class QQReplyGenerationService:
             finally:
                 restore_session_prompt()
                 history_now = getattr(user_session, "_conversation_history", []) or []
+                appended = list(history_now)[history_before:]
                 user_data["human_row_accepted"] = any(
-                    getattr(row, "type", "") == "human"
-                    for row in list(history_now)[history_before:]
+                    getattr(row, "type", "") == "human" for row in appended
+                )
+                # 本轮真正写进历史的那条 ai 行（没有就是 None）。未投递打标
+                # 按它的身份来：用"raw 输出非空"去推断历史里有行，是推断而
+                # 不是证据——推断错了就会把上一条**已投递**的回复标成未投递，
+                # 那条回复从此再也进不了 digest。
+                user_data["current_turn_ai_row"] = next(
+                    (row for row in reversed(appended)
+                     if getattr(row, "type", "") == "ai"),
+                    None,
                 )
                 if context.is_group and not user_data.get("memory_enabled"):
                     # 未授权边界在 finally 记：异常/空回复的 human 行也已
