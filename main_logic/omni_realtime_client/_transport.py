@@ -896,6 +896,18 @@ class _TransportMixin:
                         event_response_id
                         and event_response_id != self._current_response_id
                     ):
+                        if event_type == "response.done":
+                            # A terminal event must reach the arbiter even when
+                            # a newer response has become current (crossed
+                            # response.created events): the arbiter tracks every
+                            # live server response id, and an undelivered
+                            # terminal would hold the lane closed until its
+                            # staleness timer. The arbiter attributes terminals
+                            # by response id, so a mismatched id releases only
+                            # that response and never completes the current
+                            # owner. Content of the stale response stays
+                            # filtered below.
+                            self._response_arbiter.notify_response_terminal(event)
                         logger.info(
                             "Dropping stale response event type=%s response_id=%s current_response_id=%s",
                             event_type,
