@@ -66,19 +66,6 @@ async def mini_game_invite_respond(request: Request):
         _set_no_store_headers(validation_error)
         return validation_error
     data = payload if isinstance(payload, dict) else {}
-    try:
-        config_manager = get_config_manager()
-        _, her_name_default, _, _, _, _, _, _, _ = (
-            await config_manager.aget_character_data()
-        )
-    except Exception:
-        her_name_default = ''
-    lanlan_name = (data.get('lanlan_name') or her_name_default or '').strip()
-    if not lanlan_name:
-        return JSONResponse(
-            {"success": False, "error": "lanlan_name missing"},
-            status_code=400,
-        )
     choice = (data.get('choice') or '').strip().lower()
     if choice not in ('accept', 'decline', 'later'):
         return JSONResponse(
@@ -89,6 +76,21 @@ async def mini_game_invite_respond(request: Request):
                     f"got {choice!r}"
                 ),
             },
+            status_code=400,
+        )
+    lanlan_name = (data.get('lanlan_name') or '').strip()
+    if not lanlan_name:
+        try:
+            config_manager = get_config_manager()
+            _, her_name_default, _, _, _, _, _, _, _ = (
+                await config_manager.aget_character_data()
+            )
+        except Exception:
+            her_name_default = ''
+        lanlan_name = (her_name_default or '').strip()
+    if not lanlan_name:
+        return JSONResponse(
+            {"success": False, "error": "lanlan_name missing"},
             status_code=400,
         )
     mgr = None

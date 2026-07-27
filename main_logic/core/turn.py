@@ -1199,6 +1199,24 @@ class TurnMixin:
         to distinguish "not passed" from "explicit None", unlike a plain
         ``request_id is None`` check.
         """
+        def guarded_delivery_is_current() -> bool:
+            if (
+                expected_speech_id is not None
+                and self.current_speech_id != expected_speech_id
+            ):
+                return False
+            return not (
+                expected_user_engagement_time is not Ellipsis
+                and self.last_user_engagement_time
+                != expected_user_engagement_time
+            )
+
+        # A stale proactive callback must not clear a replacement user turn's
+        # Focus bubble. Recheck again after the cleanup await below to retain
+        # the actual publish-boundary guarantee.
+        if not guarded_delivery_is_current():
+            return None
+
         text_clean = self.emotion_pattern.sub('', text)
         effective_turn_id = turn_id or self.current_speech_id
         effective_request_id = (
@@ -1231,16 +1249,7 @@ class TurnMixin:
         # ``None`` is reserved for this guarded rejection; ``False`` still
         # means the sync publish succeeded but the best-effort WebSocket send
         # did not.
-        if (
-            expected_speech_id is not None
-            and self.current_speech_id != expected_speech_id
-        ):
-            return None
-        if (
-            expected_user_engagement_time is not Ellipsis
-            and self.last_user_engagement_time
-            != expected_user_engagement_time
-        ):
+        if not guarded_delivery_is_current():
             return None
 
         # 累加到当前轮 AI 文本 buffer，turn end 时一并交给 activity tracker 做

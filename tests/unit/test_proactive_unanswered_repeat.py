@@ -277,17 +277,19 @@ def test_merge_regen_avoid_terms_preserves_both_repeat_signals():
         "tts_feed_rejected",
         "tts_feed_failed_locally",
         "finish_rejected",
+        "replacement_sid_during_regen",
     ),
     (
-        (False, False, False, False, False, False, False, False),
-        (True, False, False, False, False, False, False, False),
-        (False, True, False, False, False, False, False, False),
-        (False, False, True, False, False, False, False, False),
-        (False, False, False, True, False, False, False, False),
-        (False, False, True, False, True, False, False, False),
-        (False, False, False, False, False, True, False, False),
-        (False, False, False, False, False, False, True, False),
-        (False, False, False, False, False, False, False, True),
+        (False, False, False, False, False, False, False, False, False),
+        (True, False, False, False, False, False, False, False, False),
+        (False, True, False, False, False, False, False, False, False),
+        (False, True, False, False, False, False, False, False, True),
+        (False, False, True, False, False, False, False, False, False),
+        (False, False, False, True, False, False, False, False, False),
+        (False, False, True, False, True, False, False, False, False),
+        (False, False, False, False, False, True, False, False, False),
+        (False, False, False, False, False, False, True, False, False),
+        (False, False, False, False, False, False, False, True, False),
     ),
 )
 async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
@@ -300,6 +302,7 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
     tts_feed_rejected,
     tts_feed_failed_locally,
     finish_rejected,
+    replacement_sid_during_regen,
 ):
     from main_logic.proactive_chat import break_reminders
 
@@ -314,6 +317,8 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
     def on_regen():
         if interaction_during_regen:
             manager_holder["mgr"].last_user_engagement_time = 250.0
+            if replacement_sid_during_regen:
+                manager_holder["mgr"].current_speech_id = "avatar-sid"
 
     make_llm = AsyncMock(
         side_effect=[
@@ -416,7 +421,10 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
         assert result == break_reminders.BreakReminderDeliveryResult()
         mgr.feed_tts_chunk.assert_not_awaited()
         mgr.finish_proactive_delivery.assert_not_awaited()
-        mgr.handle_new_message.assert_awaited_once_with()
+        if replacement_sid_during_regen:
+            mgr.handle_new_message.assert_not_awaited()
+        else:
+            mgr.handle_new_message.assert_awaited_once_with()
     elif regen_returns_pass:
         assert corpus.score_unanswered_proactive_draft.call_count == 1
         assert result.delivered_text is None
@@ -570,6 +578,7 @@ async def test_guard_regenerates_then_drops_still_unanswered_repeat(monkeypatch)
     )
 
     mgr = SimpleNamespace(
+        current_speech_id="sid",
         state=_NeverPreemptedState(),
         last_user_message_time=None,
         proactive_engagement_observation_started_at=100.0,
@@ -789,6 +798,7 @@ async def test_regenerated_music_without_material_keeps_text_rechecks(monkeypatc
     )
 
     mgr = SimpleNamespace(
+        current_speech_id="sid",
         state=_NeverPreemptedState(),
         last_user_message_time=None,
         last_user_engagement_time=None,
@@ -932,6 +942,7 @@ async def test_regenerated_delivery_aborts_when_engagement_cutoff_advances(
     )
 
     mgr = SimpleNamespace(
+        current_speech_id="sid",
         state=_NeverPreemptedState(),
         last_user_message_time=None,
         last_user_engagement_time=None,
@@ -1121,6 +1132,7 @@ async def test_mini_game_button_response_records_user_engagement(monkeypatch):
 
     assert response.status_code == 200
     mgr.note_user_engagement.assert_called_once_with(at=123.0)
+    config_manager.aget_character_data.assert_not_awaited()
     push_resolved.assert_awaited_once()
 
 

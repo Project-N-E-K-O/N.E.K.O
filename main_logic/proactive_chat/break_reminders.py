@@ -484,7 +484,8 @@ async def _deliver_break_reminder_via_llm(
                 "[%s] break reminder abandoned after user interaction during regen",
                 lanlan_name,
             )
-            await mgr.handle_new_message()
+            if _proactive_turn_still_owned(mgr, proactive_sid):
+                await mgr.handle_new_message()
             return BreakReminderDeliveryResult()
         cleaned = regen_text.strip()
         if "[PASS]" in cleaned.upper():

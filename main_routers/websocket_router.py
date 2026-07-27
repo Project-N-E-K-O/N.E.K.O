@@ -114,20 +114,20 @@ def _reserve_avatar_interaction_ingress(
         return False
 
 
-def _record_text_engagement_ingress(
+def _record_stream_engagement_ingress(
     manager,
     message: dict,
     *,
     lanlan_name: str,
 ) -> bool:
-    """Expose genuine text engagement before background stream dispatch."""
-    if message.get("input_type") != "text":
+    """Expose genuine one-shot text/image engagement before stream routing."""
+    if message.get("input_type") not in _TEXT_SESSION_INPUT_TYPES:
         return False
     try:
         return bool(manager.note_stream_input_ingress(message))
     except Exception as exc:
         logger.warning(
-            "[%s] text ingress engagement failed: %s",
+            "[%s] text/image ingress engagement failed: %s",
             lanlan_name,
             exc,
         )
@@ -489,7 +489,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 # its task started later.
                 message = _stamp_user_input_ingress(message)
                 stream_mgr = session_manager[lanlan_name]
-                _record_text_engagement_ingress(
+                _record_stream_engagement_ingress(
                     stream_mgr,
                     message,
                     lanlan_name=lanlan_name,

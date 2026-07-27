@@ -1748,6 +1748,28 @@ async def test_send_lanlan_response_reports_sync_publication_time(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_send_lanlan_response_rejects_before_stale_focus_cleanup():
+    """A replaced proactive turn cannot hide the new user's thinking bubble."""
+    mgr = _make_manager()
+    mgr.current_speech_id = "s-user"
+    mgr.last_user_engagement_time = FIXED_TS + 1.0
+    mgr._push_focus_thinking = AsyncMock()
+
+    published = await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "stale proactive",
+        is_first_chunk=True,
+        expected_speech_id="s-proactive",
+        expected_user_engagement_time=FIXED_TS,
+    )
+
+    assert published is None
+    mgr._push_focus_thinking.assert_not_awaited()
+    assert mgr.sync_message_queue.empty()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_send_lanlan_response_guard_rechecks_after_focus_cleanup():
     """A guarded proactive bubble must not publish after engagement in its last await."""
     mgr = _make_manager()

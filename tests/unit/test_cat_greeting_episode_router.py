@@ -52,7 +52,15 @@ def test_avatar_ingress_failure_isolated_from_websocket_loop():
     assert reserved is False
 
 
-def test_text_engagement_is_visible_before_background_dispatch():
+@pytest.mark.parametrize(
+    ("input_type", "data"),
+    (
+        ("text", "hello"),
+        ("avatar_drop_image", "data:image/png;base64,abc"),
+        ("user_image", "data:image/png;base64,xyz"),
+    ),
+)
+def test_one_shot_engagement_is_visible_before_stream_routing(input_type, data):
     class Manager:
         def __init__(self):
             self.engagement_times = []
@@ -63,12 +71,12 @@ def test_text_engagement_is_visible_before_background_dispatch():
 
     manager = Manager()
     message = {
-        "input_type": "text",
-        "data": "hello",
+        "input_type": input_type,
+        "data": data,
         "_user_input_ingress_time": 123.5,
     }
 
-    recorded = websocket_router._record_text_engagement_ingress(
+    recorded = websocket_router._record_stream_engagement_ingress(
         manager,
         message,
         lanlan_name="Test",

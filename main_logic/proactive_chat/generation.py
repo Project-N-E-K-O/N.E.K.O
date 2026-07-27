@@ -74,6 +74,7 @@ from .state import (
     _is_recent_proactive_material,
     _is_similar_to_recent_proactive_chat,
     _proactive_material_key,
+    _proactive_turn_still_owned,
 )
 
 logger = get_module_logger(__name__, "Main")
@@ -589,7 +590,7 @@ async def _run_phase2_generation(
             "during generation",
             lanlan_name,
         )
-        if not mgr.state.is_proactive_preempted(proactive_sid):
+        if _proactive_turn_still_owned(mgr, proactive_sid):
             await mgr.handle_new_message()
         return Phase2GuardedOutput(
             result=ProactiveChatResult(
@@ -992,7 +993,7 @@ async def _generate_phase2_stream(
     )
     if aborted or not full_text.strip():
         final_reason = abort_reason_code or PROACTIVE_REASON_PASS_GENERATION_EMPTY
-        if not mgr.state.is_proactive_preempted(proactive_sid):
+        if _proactive_turn_still_owned(mgr, proactive_sid):
             await mgr.handle_new_message()
             active_logger.debug(
                 "[%s] Phase 2 abort，已中断 TTS + 前端音频", lanlan_name
@@ -1017,7 +1018,7 @@ async def _generate_phase2_stream(
         source_tag = leak_tag
     response_text = _strip_proactive_intent_label_leak(full_text.strip())
     if not response_text:
-        if not mgr.state.is_proactive_preempted(proactive_sid):
+        if _proactive_turn_still_owned(mgr, proactive_sid):
             await mgr.handle_new_message()
         else:
             active_logger.info(
@@ -1153,7 +1154,7 @@ async def _guard_phase2_output(
             f"(similarity={similarity_score:.3f}, "
             f"threshold={_PROACTIVE_SIMILARITY_THRESHOLD:.2f})"
         )
-        if not mgr.state.is_proactive_preempted(proactive_sid):
+        if _proactive_turn_still_owned(mgr, proactive_sid):
             await mgr.handle_new_message()
         else:
             active_logger.info(
@@ -1334,7 +1335,7 @@ async def _guard_phase2_output(
                 "[%s] proactive regen abandoned after user interaction",
                 lanlan_name,
             )
-            if not mgr.state.is_proactive_preempted(proactive_sid):
+            if _proactive_turn_still_owned(mgr, proactive_sid):
                 await mgr.handle_new_message()
             return _output(
                 result=ProactiveChatResult(
@@ -1373,7 +1374,7 @@ async def _guard_phase2_output(
                 "[%s] proactive BM25 regen returned empty/PASS/untagged, drop",
                 lanlan_name,
             )
-            if not mgr.state.is_proactive_preempted(proactive_sid):
+            if _proactive_turn_still_owned(mgr, proactive_sid):
                 await mgr.handle_new_message()
             return _output(
                 result=ProactiveChatResult(
@@ -1425,7 +1426,7 @@ async def _guard_phase2_output(
                 lanlan_name,
                 regen_total,
             )
-            if not mgr.state.is_proactive_preempted(proactive_sid):
+            if _proactive_turn_still_owned(mgr, proactive_sid):
                 await mgr.handle_new_message()
             return _output(
                 result=ProactiveChatResult(
@@ -1463,7 +1464,7 @@ async def _guard_phase2_output(
                 regen_unanswered_repeat_signal.considered_count,
                 regen_unanswered_repeat_signal.best_similarity,
             )
-            if not mgr.state.is_proactive_preempted(proactive_sid):
+            if _proactive_turn_still_owned(mgr, proactive_sid):
                 await mgr.handle_new_message()
             return _output(
                 result=ProactiveChatResult(
@@ -1491,7 +1492,7 @@ async def _guard_phase2_output(
                 lanlan_name,
                 regen_similarity,
             )
-            if not mgr.state.is_proactive_preempted(proactive_sid):
+            if _proactive_turn_still_owned(mgr, proactive_sid):
                 await mgr.handle_new_message()
             return _output(
                 result=ProactiveChatResult(
@@ -1530,7 +1531,7 @@ async def _guard_phase2_output(
         is_music_used = False
         music_content = None
         source_tag = "PASS"
-        if not mgr.state.is_proactive_preempted(proactive_sid):
+        if _proactive_turn_still_owned(mgr, proactive_sid):
             await mgr.handle_new_message()
         else:
             active_logger.info(
