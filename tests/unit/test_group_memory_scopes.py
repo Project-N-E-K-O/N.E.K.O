@@ -8152,3 +8152,46 @@ async def test_record_block_delivery_respects_the_result_channel():
     send_record.return_value = "mid"
     result = await node.deliver(plan)
     assert result.delivered is True
+
+
+@pytest.mark.asyncio
+async def test_voice_failure_fallback_keeps_the_keyboard():
+    """Falling back to text because the voice send failed must not drop
+    the choice buttons: the user would be asked "which one?" with nothing
+    to pick."""
+    from plugin.plugins.qq_auto_reply.voice_reply_service import (
+        QQVoiceReplyService,
+    )
+
+    send_segments = AsyncMock(return_value="mid")
+    service = QQVoiceReplyService.__new__(QQVoiceReplyService)
+    service.plugin = SimpleNamespace(
+        logger=MagicMock(),
+        _get_reply_mode=lambda: "voice",
+        _validate_outbound_message=lambda text: text,
+        qq_client=SimpleNamespace(
+            needs_attention=False,
+            send_group_message_segments=send_segments,
+            send_group_record=AsyncMock(return_value=None),  # unconfirmed
+        ),
+    )
+    service.synthesize_reply_voice_file = AsyncMock(
+        return_value=("file:///a.wav", "audio/wav")
+    )
+
+    assert await service.deliver_group_reply(
+        "7788", "要看看哪个？", keyboard="状态|配置",
+        fallback_to_text_on_voice_failure=True,
+    ) is True
+    assert send_segments.await_args.kwargs.get("keyboard") == "状态|配置"
+
+    # Same for the exception path.
+    send_segments.reset_mock()
+    service.synthesize_reply_voice_file = AsyncMock(
+        side_effect=RuntimeError("tts down")
+    )
+    assert await service.deliver_group_reply(
+        "7788", "要看看哪个？", keyboard="状态|配置",
+        fallback_to_text_on_voice_failure=True,
+    ) is True
+    assert send_segments.await_args.kwargs.get("keyboard") == "状态|配置"

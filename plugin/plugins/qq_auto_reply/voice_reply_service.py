@@ -431,16 +431,22 @@ class QQVoiceReplyService:
                 return True
             if mode == "voice" and fallback_to_text_on_voice_failure:
                 # 对偶私聊路径：未确认（开放平台吞异常返回 None）也回退文本。
+                # 回退的这条同样要带 keyboard——否则语音一失败，用户拿到的
+                # 是一句"想看哪个？"却一个按钮都没有。
                 self.plugin.logger.warning("QQ 纯语音群聊发送未确认，回退文本")
                 return self._confirm_send(
-                    await self.plugin.qq_client.send_group_message_segments(group_id, text_segments)
+                    await self.plugin.qq_client.send_group_message_segments(
+                        group_id, text_segments, keyboard=keyboard,
+                    )
                 )
             return False
         except Exception:
             if mode == "voice" and fallback_to_text_on_voice_failure:
                 self.plugin.logger.warning("QQ 纯语音群聊发送失败，回退文本", exc_info=True)
                 return self._confirm_send(
-                    await self.plugin.qq_client.send_group_message_segments(group_id, text_segments)
+                    await self.plugin.qq_client.send_group_message_segments(
+                        group_id, text_segments, keyboard=keyboard,
+                    )
                 )
             if mode == "both":
                 self.plugin.logger.warning("QQ 复合群聊中的语音发送失败，已保留文本", exc_info=True)
