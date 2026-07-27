@@ -19,7 +19,7 @@ class PendingReply:
     """待发送的回复（缓冲模式：收消息时不合成，等暂停后统一生成回复）"""
     __slots__ = ("buffered_texts", "wait_until", "task", "topic_hint", "message_count",
                  "sender_id", "is_group", "group_id", "_acked", "first_blocks",
-                 "draft_rows", "mention_context")
+                 "draft_rows", "mention_context", "has_nonconsent_input")
 
     def __init__(self, first_text: str, wait_seconds: float, sender_id: str, is_group: bool, group_id: str):
         self.buffered_texts: list[str] = [first_text]  # 缓冲的消息文本
@@ -38,6 +38,10 @@ class PendingReply:
         # 最近一次截停轮的 context：单条路径真投递后补记 scoped mention
         # （合并场景丢弃——草稿没人看到，不推进 suppression 计数）。
         self.mention_context = None
+        # 缓冲期内任一输入是在群记忆 OFF 时收到的：合并 summary 由这些
+        # 输入衍生，若投递前切 ON，其 ai 行会落在 rebase 边界之后——不标
+        # 记的话 OFF 时代内容经 summary 间接入库。
+        self.has_nonconsent_input = False
 
 
 class QQReplyBufferService:
@@ -233,6 +237,7 @@ class QQReplyBufferService:
         extra_count: int = 0,
         history_backed: bool = True,
         mention_context=None,
+        consented: bool = True,
     ) -> None:
         """缓冲一条消息。如果已有等待中的缓冲，追加消息并重置等待计时。
 
@@ -363,6 +368,8 @@ class QQReplyBufferService:
         # 单条投递后可精确撤销。
         self._bind_draft_to_pending(draft_row, existing)
         existing.mention_context = mention_context
+        if not consented:
+            existing.has_nonconsent_input = True
         existing.task = asyncio.create_task(self._deliver_after_wait(session_key, existing))
 
     async def _deliver_after_wait(self, session_key: str, pending: PendingReply) -> None:
@@ -443,6 +450,12 @@ class QQReplyBufferService:
                     return await self.plugin.reply_pipeline.run(request)
                 finally:
                     self._record_synthetic_prompt_rows(session_key, hist_before)
+                    if pending.has_nonconsent_input:
+                        # 缓冲含 OFF 时代输入：summary 的 ai 行由它们衍生，
+                        # 投递前切 ON 会让该行落在 rebase 边界后——同样排除。
+                        self.plugin.session_memory_service.record_synthetic_prompt_rows(
+                            session_key, hist_before, include_ai_rows=True,
+                        )
 
             await self.plugin._run_with_session_lock(session_key, _run_flush)
         except Exception as e:

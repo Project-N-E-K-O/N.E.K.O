@@ -2173,6 +2173,99 @@ async def test_used_fallback_survives_every_postprocess_path():
 
 
 @pytest.mark.asyncio
+async def test_nonconsent_buffered_input_excludes_summary_ai_row():
+    """Messages buffered while group memory was OFF can be merged after an
+    ON flip: the summary's ai row derives from pre-opt-in input and lands
+    past the rebase boundary — it must join the exclusion list alongside
+    the synthetic prompt."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import QQMessageBlock
+    from plugin.plugins.qq_auto_reply.reply_buffer_service import (
+        PendingReply,
+        QQReplyBufferService,
+    )
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    def _msg(msg_type, text):
+        return SimpleNamespace(type=msg_type, content=text)
+
+    history = [_msg("human", "u1")]
+    user_data = {
+        "is_group": True,
+        "session": SimpleNamespace(_conversation_history=history),
+    }
+    sys_row = _msg("human", "[synthetic merge prompt]")
+    summary_row = _msg("ai", "衍生总结")
+
+    async def _run(request):
+        history.append(sys_row)
+        history.append(summary_row)
+        return SimpleNamespace(action="reply", reply_text="衍生总结")
+
+    async def _lock(session_key, fn):
+        return await fn()
+
+    plugin = SimpleNamespace(
+        _user_sessions={"group:7788": user_data},
+        _emit_log=lambda *a, **k: None,
+        _run_with_session_lock=_lock,
+        reply_pipeline=SimpleNamespace(run=AsyncMock(side_effect=_run)),
+    )
+    memory_service = QQSessionMemoryService.__new__(QQSessionMemoryService)
+    memory_service.plugin = plugin
+    plugin.session_memory_service = memory_service
+    service = QQReplyBufferService.__new__(QQReplyBufferService)
+    service.plugin = plugin
+    service._pending = {}
+    pending = PendingReply(
+        first_text="草稿", wait_seconds=0, sender_id="1",
+        is_group=True, group_id="7788",
+    )
+    pending.message_count = 2
+    pending.buffered_texts = ["OFF 时代输入", "第二条"]
+    pending.first_blocks = [QQMessageBlock(text="草稿")]
+    pending.wait_until = 0.0
+    pending.has_nonconsent_input = True
+    service._pending["group:7788"] = pending
+
+    await service._deliver_after_wait("group:7788", pending)
+    rows = user_data["undelivered_draft_rows"]
+    assert any(r is sys_row for r in rows)
+    assert any(r is summary_row for r in rows)
+
+    # Fully consented buffers keep the delivered summary in memory.
+    history2 = [_msg("human", "u1")]
+    user_data2 = {
+        "is_group": True,
+        "session": SimpleNamespace(_conversation_history=history2),
+    }
+    sys_row2 = _msg("human", "[synthetic merge prompt]")
+    summary_row2 = _msg("ai", "正常总结")
+
+    async def _run2(request):
+        history2.append(sys_row2)
+        history2.append(summary_row2)
+        return SimpleNamespace(action="reply", reply_text="正常总结")
+
+    plugin._user_sessions = {"group:7788": user_data2}
+    plugin.reply_pipeline = SimpleNamespace(run=AsyncMock(side_effect=_run2))
+    pending2 = PendingReply(
+        first_text="草稿", wait_seconds=0, sender_id="1",
+        is_group=True, group_id="7788",
+    )
+    pending2.message_count = 2
+    pending2.buffered_texts = ["a", "b"]
+    pending2.first_blocks = [QQMessageBlock(text="草稿")]
+    pending2.wait_until = 0.0
+    service._pending["group:7788"] = pending2
+    await service._deliver_after_wait("group:7788", pending2)
+    rows2 = user_data2["undelivered_draft_rows"]
+    assert any(r is sys_row2 for r in rows2)
+    assert not any(r is summary_row2 for r in rows2)
+
+
+@pytest.mark.asyncio
 async def test_merge_flush_cleanup_runs_even_on_pipeline_failure():
     """A failing merge-flush pipeline must still pop the pending entry and
     settle the provisional barrier — leaking either wedges the digest
@@ -3170,6 +3263,32 @@ async def test_unpersisted_memory_toggle_rolls_back():
         cross_group_before=False,
     )
     assert service.plugin._qq_settings["allow_cross_group_context"] is False
+
+    # ON->OFF member save failure: the OFF stamp already snapshotted the
+    # live buckets for opt-out settlement — those turns were collected
+    # under a previously SAVED consent, so the rollback must merge the
+    # snapshot back into live buckets (snapshot first, order preserved)
+    # and cancel the queued settlement markers.
+    service.plugin._qq_settings["group_member_memory_enabled"] = False
+    ud["pending_settle_buckets"] = {
+        "9": [{"role": "user", "content": [{"type": "text", "text": "旧"}]}],
+    }
+    ud["pending_settle_labels"] = {"9": "九"}
+    ud["pending_member_settle"] = True
+    ud["group_member_memory_messages"] = {
+        "9": [{"role": "user", "content": [{"type": "text", "text": "新"}]}],
+    }
+    service._rollback_unpersisted_memory_toggles(
+        False,
+        group_memory_before=False, group_memory_after=False,
+        member_memory_before=True, member_memory_after=False,
+    )
+    assert service.plugin._qq_settings["group_member_memory_enabled"] is True
+    merged = ud["group_member_memory_messages"]["9"]
+    assert [m["content"][0]["text"] for m in merged] == ["旧", "新"]
+    assert ud["group_member_memory_labels"]["9"] == "九"
+    assert "pending_settle_buckets" not in ud
+    assert "pending_member_settle" not in ud
 
     # Member-only failure rolls back the flag AND discards live buckets
     # collected during the failed opt-in window — re-enabling later must

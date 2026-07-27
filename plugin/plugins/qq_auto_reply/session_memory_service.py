@@ -172,6 +172,7 @@ class QQSessionMemoryService:
 
     def record_synthetic_prompt_rows(
         self, session_key: str, history_len_before: int,
+        *, include_ai_rows: bool = False,
     ) -> None:
         """Synthetic control turns (rapid-fire flush / proactive speech) run
         the full pipeline, appending a fabricated human instruction row to
@@ -195,7 +196,12 @@ class QQSessionMemoryService:
         history = getattr(session, "_conversation_history", None) or []
         rows = user_data.setdefault("undelivered_draft_rows", [])
         for msg in history[max(0, history_len_before):]:
-            if getattr(msg, "type", "") != "human":
+            msg_type = getattr(msg, "type", "")
+            if msg_type != "human" and not (
+                include_ai_rows and msg_type == "ai"
+            ):
+                # include_ai_rows：合并 summary 由 OFF 时代缓冲输入衍生时，
+                # 其 ai 行也不得入库（调用方判定 consent 时代）。
                 continue
             if not any(existing is msg for existing in rows):
                 rows.append(msg)

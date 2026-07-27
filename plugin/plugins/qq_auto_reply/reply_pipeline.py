@@ -281,6 +281,10 @@ class QQReplyPipelineRunner:
                     getattr(outcome, "used_fallback", False) if outcome else False
                 ),
                 mention_context=context,
+                consented=bool(
+                    not request.is_group
+                    or getattr(request, "persist_memory", None)
+                ),
             )
             from .pipeline_models import QQDeliveryResult
             return QQDeliveryResult(delivered=True, target_type=delivery_plan.target_type, target_id=delivery_plan.target_id, reply_text=first_text)

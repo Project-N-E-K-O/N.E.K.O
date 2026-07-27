@@ -94,6 +94,30 @@ class QQSettingsService:
             )
         elif member_memory_before != member_memory_after:
             self.plugin._qq_settings["group_member_memory_enabled"] = member_memory_before
+            if member_memory_before:
+                # 关闭保存失败：OFF 盖章已把活 bucket 快照进 pending 槽，
+                # 排队的 opt-out 结算失败时会按 opt-out 丢弃它们——但这些
+                # 轮次是在先前已保存的 consent 下收集的，保存失败后应留在
+                # 活 bucket 等正常结算。合并回去（快照在前保持时序）并撤
+                # 掉排队结算的标记（迟到的结算任务拿不到快照即 no-op）。
+                for ud in list(
+                    getattr(self.plugin, "_user_sessions", {}).values()
+                ):
+                    if not ud.get("is_group"):
+                        continue
+                    snapshot = ud.pop("pending_settle_buckets", None)
+                    snap_labels = ud.pop("pending_settle_labels", None) or {}
+                    ud.pop("pending_member_settle", None)
+                    if not snapshot:
+                        continue
+                    live = ud.setdefault("group_member_memory_messages", {})
+                    for sender, msgs in snapshot.items():
+                        live[sender] = list(msgs) + list(live.get(sender, []))
+                    live_labels = ud.setdefault(
+                        "group_member_memory_labels", {}
+                    )
+                    for sender, label in snap_labels.items():
+                        live_labels.setdefault(sender, label)
             if not member_memory_before:
                 # 开启保存失败：失败窗口内收集的 bucket 属于"从未成功保存
                 # 的 opt-in"——留着的话，之后成功开启时会与新授权项混合
