@@ -131,6 +131,52 @@ def test_dynamic_import_violations_sees_function_local_importlib_aliases(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "source",
+    [
+        # Plain assignment re-binding of the module.
+        "import importlib\n"
+        "def load():\n"
+        "    il = importlib\n"
+        "    return il.import_module('main_logic.core')",
+        # Annotated assignment must not disable the gate.
+        "import importlib\n"
+        "from types import ModuleType\n"
+        "def load():\n"
+        "    il: ModuleType = importlib\n"
+        "    return il.import_module('main_logic.core')",
+        # Walrus binding, then a read through the bound name.
+        "import importlib\n"
+        "def load():\n"
+        "    if (il := importlib):\n"
+        "        return il.import_module('main_logic.core')",
+        # Re-binding the entry-point attribute itself.
+        "import importlib\n"
+        "def load():\n"
+        "    im = importlib.import_module\n"
+        "    return im('main_logic.core')",
+        # Chained re-aliasing needs the fixpoint pass.
+        "import importlib\n"
+        "def load():\n"
+        "    a = importlib\n"
+        "    b = a\n"
+        "    return b.import_module('main_logic.core')",
+        # The __import__ builtin under an assigned alias.
+        "def load():\n"
+        "    f = __import__\n"
+        "    return f('main_logic.core')",
+    ],
+)
+def test_dynamic_import_violations_sees_assignment_rebindings(
+    contract_checker,
+    source: str,
+) -> None:
+    assert _dynamic_import_violation_messages(contract_checker, source) == [
+        "asr_client must not import main_logic.core (dynamic import)"
+    ]
+
+
+@pytest.mark.unit
 def test_dynamic_import_violations_ignores_non_importlib_local_alias(
     contract_checker,
 ) -> None:
@@ -159,6 +205,50 @@ def test_asr_runtime_alias_reads_flags_single_assignment_alias(contract_checker)
     )
 
     assert sorted(attr for _line, _col, attr in sites) == ["lifecycle", "route_mode"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "alias_stmt",
+    [
+        "rt: IndependentAsrRuntime = self._asr_runtime",
+        "rt = self._asr_runtime",
+        "(rt := self._asr_runtime)",
+    ],
+)
+def test_asr_runtime_alias_reads_flags_annotated_and_walrus_aliases(
+    contract_checker,
+    alias_stmt: str,
+) -> None:
+    source = (
+        "class Bridge:\n"
+        "    def peek(self):\n"
+        f"        {alias_stmt}\n"
+        "        return rt.lifecycle\n"
+    )
+    fn = ast.parse(source).body[0].body[0]
+
+    sites = contract_checker._asr_runtime_alias_reads(fn, {"lifecycle"})
+
+    assert [attr for _line, _col, attr in sites] == ["lifecycle"]
+
+
+@pytest.mark.unit
+def test_asr_runtime_alias_reads_ignores_valueless_annotation_and_augassign(
+    contract_checker,
+) -> None:
+    # A bare annotation binds nothing, and ``+=`` never creates a fresh alias;
+    # neither may turn ``rt`` into a tracked runtime alias.
+    source = (
+        "class Bridge:\n"
+        "    def peek(self, rt):\n"
+        "        other: IndependentAsrRuntime\n"
+        "        rt += self._asr_runtime\n"
+        "        return rt.lifecycle, other\n"
+    )
+    fn = ast.parse(source).body[0].body[0]
+
+    assert contract_checker._asr_runtime_alias_reads(fn, {"lifecycle"}) == []
 
 
 @pytest.mark.unit

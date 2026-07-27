@@ -428,6 +428,27 @@ def _dynamic_import_target(node: ast.AST, alias_paths: dict[str, str]) -> tuple[
     return None, True
 
 
+def _name_binding(node: ast.AST) -> tuple[str, ast.AST] | None:
+    """(target name, value expr) for a simple single-name binding, else None.
+
+    Covers plain ``x = v``, annotated ``x: T = v`` (a bare annotation without a
+    value binds nothing), and walrus ``(x := v)``. ``ast.AugAssign`` is
+    deliberately excluded: ``x += v`` requires ``x`` to be bound already and
+    never creates a fresh alias to ``v``.
+    """
+    if isinstance(node, ast.Assign) and len(node.targets) == 1:
+        target, value = node.targets[0], node.value
+    elif isinstance(node, ast.AnnAssign) and node.value is not None:
+        target, value = node.target, node.value
+    elif isinstance(node, ast.NamedExpr):
+        target, value = node.target, node.value
+    else:
+        return None
+    if not isinstance(target, ast.Name):
+        return None
+    return target.id, value
+
+
 def _importlib_alias_paths(tree: ast.Module) -> dict[str, str]:
     """importlib-related bindings from ANY scope → absolute dotted path.
 
@@ -439,6 +460,12 @@ def _importlib_alias_paths(tree: ast.Module) -> dict[str, str]:
     over-approximation is the right trade — flagging a shadowed name is better
     than a blind spot. Only importlib bindings are collected, so unrelated
     local names never resolve to a dynamic-import entry point.
+
+    Assignment re-bindings are covered too: ``il = importlib``,
+    ``il: ModuleType = importlib``, ``(il := importlib)``,
+    ``im = importlib.import_module`` and ``f = __import__`` all resolve to the
+    same entry points (iterated to a fixpoint so chained re-aliases like
+    ``a = importlib; b = a`` cannot dodge the gate either).
     """
     out: dict[str, str] = {}
     for node in ast.walk(tree):
@@ -454,6 +481,25 @@ def _importlib_alias_paths(tree: ast.Module) -> dict[str, str]:
             for a in node.names:
                 if a.name != "*":
                     out[a.asname or a.name] = f"{node.module}.{a.name}"
+    changed = True
+    while changed:
+        changed = False
+        for node in ast.walk(tree):
+            binding = _name_binding(node)
+            if binding is None:
+                continue
+            name, value = binding
+            chain = dotted_node_path(value)
+            if chain is None:
+                continue
+            resolved = resolve_chain(chain, out) or (
+                "__import__" if chain == "__import__" else None)
+            if (resolved
+                    and (resolved == "__import__" or resolved == "importlib"
+                         or resolved.startswith("importlib."))
+                    and out.get(name) != resolved):
+                out[name] = resolved
+                changed = True
     return out
 
 
@@ -494,21 +540,23 @@ def _asr_runtime_alias_reads(fn: ast.AST, forbidden: set[str]) -> list[tuple[int
 
     ``rt = self._asr_runtime; rt.lifecycle`` dodges the exact three-node
     ``self._asr_runtime.<attr>`` pattern the bridge scan matches. Track simple
-    single-target Name assignments from ``self._asr_runtime`` within one
-    function scope (order-insensitive and without reassignment tracking — a
-    deliberately conservative over-approximation for a gate).
+    single-target Name bindings from ``self._asr_runtime`` — plain, annotated
+    (``rt: T = self._asr_runtime``) and walrus assignments alike, via
+    ``_name_binding`` — within one function scope (order-insensitive and
+    without reassignment tracking — a deliberately conservative
+    over-approximation for a gate).
     """
-    aliases = {
-        child.targets[0].id
-        for child in ast.walk(fn)
-        if isinstance(child, ast.Assign)
-        and len(child.targets) == 1
-        and isinstance(child.targets[0], ast.Name)
-        and isinstance(child.value, ast.Attribute)
-        and isinstance(child.value.value, ast.Name)
-        and child.value.value.id == "self"
-        and child.value.attr == "_asr_runtime"
-    }
+    aliases = set()
+    for child in ast.walk(fn):
+        binding = _name_binding(child)
+        if binding is None:
+            continue
+        name, value = binding
+        if (isinstance(value, ast.Attribute)
+                and isinstance(value.value, ast.Name)
+                and value.value.id == "self"
+                and value.attr == "_asr_runtime"):
+            aliases.add(name)
     if not aliases:
         return []
     return [
