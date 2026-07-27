@@ -15,6 +15,14 @@
 
     // 定时同步到服务器的 timer ID
     let _syncTimerId = null;
+    // 周期同步因「设置未水合」被跳过时只 log 一次，避免 GET 持续失败刷屏
+    let _periodicSyncSkippedUnhydratedLogged = false;
+    // 本地设置代数：每次用户显式改设置（syncSettingsToServer userInitiated: true）
+    // 单调 +1。loadSettings 发起 server GET 时快照当前代数，GET 决议时若代数已前进，
+    // 说明用户在 GET 在途期间改过设置——此时 GET 读到的是改动前的服务器旧值，合并会
+    // 用陈旧值覆写 S 并经 saveSettings POST 回服务器，握手和持久化都会与用户显式
+    // 选择相悖（Codex P2），所以整体丢弃这次 stale merge，让用户已 POST 的状态生效。
+    let _localSettingsGeneration = 0;
     // 同步间隔（毫秒）：60秒
     const SYNC_INTERVAL_MS = 60000;
     // 「首启等 settings/telemetry 决议」专属 marker：只有 localStorage 走过首启分支才会写
@@ -198,18 +206,29 @@
     /**
      * 将对话设置同步到服务器（异步，不阻塞）
      * 用于定期备份和跨会话持久化
+     *
+     * @param {{ userInitiated?: boolean }} [options] 用户显式改设置的路径必须传
+     *   userInitiated: true——只有这类调用才把设置标记为已水合（S.settingsHydrated）。
+     *   周期同步 startPeriodicSync 不传，永远不标记。
      */
-    async function syncSettingsToServer() {
-        // 走到这里即认为设置已水合（S.settingsHydrated，见 app-state.js）：调用点只有
-        // (a) 用户显式改设置的路径（saveSettings 完整路径、app-audio-capture.js 的独立
-        //     ASR 开关 handler）——用户动作即使发生在 server GET 之前也是权威值，且本
-        //     POST 会把完整本地设置对象覆写到服务器；POST 失败也要立刻算权威，否则
-        //     start_session 握手退回省略字段、后端读到的还是用户刚改掉的旧持久化值，
-        //     握手兜底（attachStartSessionHandshake）就失效了，所以在 await 前同步标记；
-        // (b) 周期同步 startPeriodicSync——只在 server GET 决议之后启动，且首启 pending
-        //     期间跳过，不会把未水合的启动默认值当成权威。
+    async function syncSettingsToServer(options) {
+        const userInitiated = !!(options && options.userInitiated);
+        // 只有用户显式改设置的路径（saveSettings 完整路径、app-audio-capture.js 的独立
+        // ASR 开关 handler，均传 userInitiated: true）才标记设置已水合
+        // （S.settingsHydrated，见 app-state.js）：用户动作即使发生在 server GET 之前
+        // 也是权威值，且本 POST 会把完整本地设置对象覆写到服务器；POST 失败也要立刻
+        // 算权威，否则 start_session 握手退回省略字段、后端读到的还是用户刚改掉的旧
+        // 持久化值，握手兜底（attachStartSessionHandshake）就失效了，所以在 await 前
+        // 同步标记。周期同步 startPeriodicSync 不传 userInitiated、不标记——GET 持续
+        // 失败（catch/finally 也会启动 periodic）时它跑的是未水合的启动默认值，标记
+        // 会让握手把 boot 默认 false 盖掉后端持久化的 true。
         // 首启初始化那次 saveSettings 走 skipServerSync 不进这里，不会误标记。
-        S.settingsHydrated = true;
+        if (userInitiated) {
+            S.settingsHydrated = true;
+            // 与 settingsHydrated 同理在 await 前同步 +1：让在途 GET 的合并回调
+            // 能感知「用户已在 GET 之后改过设置」并丢弃陈旧合并。
+            _localSettingsGeneration += 1;
+        }
         try {
             const controller = window.NekoHomeTutorialFeatureController;
             if (controller && typeof controller.isActive === 'function' && controller.isActive()) {
@@ -246,10 +265,22 @@
      * POST：否则会把首启本地默认值抢先推到服务器，下次 GET 读到自家 echo 误判「云端已有
      * 偏好」、干扰设置合并与首启决议时序。用户主动改设置走的 saveSettings 不受影响（那条
      * 路径就是要持久化用户显式选择）。
+     *
+     * 设置未水合（S.settingsHydrated 为 false：GET 从没成功、用户也没改过设置）时同样
+     * 跳过：GET 持续失败时 catch/finally 也会启动 periodic，若照常 POST 会把 boot 默认
+     * 值（如 independentAsrEnabled=false）覆写掉服务器持久化的用户偏好。水合后（任一
+     * 来源）恢复正常同步。
      */
     function startPeriodicSync() {
         if (_syncTimerId !== null) return; // 防止重复启动
         _syncTimerId = setInterval(() => {
+            if (S.settingsHydrated !== true) {
+                if (!_periodicSyncSkippedUnhydratedLogged) {
+                    _periodicSyncSkippedUnhydratedLogged = true;
+                    console.log('[app-settings] 设置尚未水合（server GET 未成功且用户未改过设置），跳过周期同步，避免用启动默认值覆盖服务器设置');
+                }
+                return;
+            }
             try {
                 if (localStorage.getItem(_FIRST_LAUNCH_PENDING_KEY) === '1') {
                     return;
@@ -445,9 +476,13 @@
             });
         }
 
-        // 同步到服务器（异步，不阻塞）；首启走 skipServerSync 等 branch 解析后再 POST
+        // 同步到服务器（异步，不阻塞）；首启走 skipServerSync 等 branch 解析后再 POST。
+        // userInitiated: true——不走 skipServerSync 的 saveSettings 调用要么来自用户显式
+        // 改设置的 UI 路径（设置弹窗、字幕开关、聊天窗翻译开关等），要么来自 server merge
+        // 成功后的回写（那时 settingsHydrated 已在 merge 回调里标记，重复标记无副作用），
+        // 都是合法的水合来源。
         if (!skipServerSync) {
-            syncSettingsToServer();
+            syncSettingsToServer({ userInitiated: true });
         }
     }
 
@@ -657,9 +692,20 @@
         const _firstLaunchPending = (() => {
             try { return localStorage.getItem(_FIRST_LAUNCH_PENDING_KEY) === '1'; } catch (_) { return false; }
         })();
+        // 发起 GET 前快照本地设置代数：合并回调用它判断 GET 在途期间用户是否改过设置
+        const _generationAtGetStart = _localSettingsGeneration;
         try {
             loadSettingsFromServer().then(serverResult => {
                 if (!serverResult) return;
+                if (_localSettingsGeneration !== _generationAtGetStart) {
+                    // 用户在 GET 在途期间显式改过设置（userInitiated 路径已同步标记
+                    // settingsHydrated 并自行 POST）：这次 GET 携带的是改动前的服务器
+                    // 旧值，若照常合并会覆写 S 并把陈旧值 POST 回服务器。整体丢弃，
+                    // 用户已 POST 的状态就是权威状态。首启决议（telemetryBranch/
+                    // marker）随之顺延到下次启动，与 GET 失败同一兜底路径（fail-closed）。
+                    console.log('[app-settings] 设置 GET 在途期间用户已改过设置，丢弃过期的服务器合并');
+                    return;
+                }
                 // server GET 成功返回：前端从此持有权威设置视图，标记水合
                 // （S.settingsHydrated，见 app-state.js），start_session 握手才允许携带
                 // independent_asr_enabled。GET 永久失败时 serverResult 为 null，这里

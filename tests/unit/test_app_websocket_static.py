@@ -347,6 +347,38 @@ def test_external_asr_preview_clears_only_on_current_session_terminals():
     assert "removeExternalAsrPreview();" not in onerror_block
 
 
+def test_empty_preview_message_clears_streaming_preview_bubble():
+    # Codex P2: a turn that ends with an EMPTY final (OpenAI/Step stalled-item
+    # timeouts) deliberately injects no user_transcript, yet user_transcript
+    # was the only per-turn message removing the streaming preview bubble —
+    # it lingered forever and got reused by the next turn. The backend now
+    # sends user_transcript_preview with empty text as an explicit clear
+    # (asr_runtime.py _send_core_asr_preview_clear); pin the handler split.
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    event_block = source.split("// -------- user_transcript_preview", 1)[1].split(
+        "// -------- user_transcript --------", 1
+    )[0]
+
+    # Empty text removes the preview...
+    empty_branch = event_block.split("if (externalPreviewText === '') {", 1)[1].split(
+        "} else {", 1
+    )[0]
+    assert "removeExternalAsrPreview();" in empty_branch
+    assert "upsertExternalAsrPreview" not in empty_branch
+
+    # ... and ONLY empty text: non-empty partials still upsert (negative:
+    # the upsert sits in the else branch, so a clear can never spawn a new
+    # empty bubble and a partial can never be dropped).
+    else_branch = event_block.split("} else {", 1)[1]
+    assert (
+        "S.externalAsrPreviewMessage = upsertExternalAsrPreview(externalPreviewText);"
+        in else_branch
+    )
+    assert "removeExternalAsrPreview" not in else_branch
+    assert event_block.count("upsertExternalAsrPreview(") == 1
+
+
 def test_independent_asr_toggle_awaits_server_sync_before_next_session():
     # Session start reads the SERVER-persisted independentAsrEnabled value
     # (asr_runtime.py _start_independent_asr_if_enabled), so the toggle must
@@ -361,7 +393,7 @@ def test_independent_asr_toggle_awaits_server_sync_before_next_session():
         1,
     )[1].split("asrRow.appendChild(asrLabel);", 1)[0]
     assert "window.appSettings.saveSettings({ skipServerSync: true });" in toggle_block
-    assert "window.appSettings.syncSettingsToServer()" in toggle_block
+    assert "window.appSettings.syncSettingsToServer({ userInitiated: true })" in toggle_block
     assert "S.pendingSettingsSyncPromise = syncPromise;" in toggle_block
     # Completion clears the gate only when it still owns it (a newer toggle
     # may have replaced the pending promise meanwhile).
@@ -473,9 +505,9 @@ def test_settings_hydration_marked_on_server_merge_and_user_change():
     #   (1) the conversation-settings GET succeeded (server values merged);
     #   (2) the user explicitly changed a setting — the independent-ASR toggle
     #       handler (app-audio-capture.js) runs saveSettings({skipServerSync})
-    #       + syncSettingsToServer(), so the synchronous marker at the top of
-    #       syncSettingsToServer covers it even when the POST later fails
-    #       (a user action is authoritative even pre-hydration).
+    #       + syncSettingsToServer({ userInitiated: true }), so the synchronous
+    #       marker inside syncSettingsToServer covers it even when the POST
+    #       later fails (a user action is authoritative even pre-hydration).
     settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
     capture_source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
 
@@ -493,23 +525,32 @@ def test_settings_hydration_marked_on_server_merge_and_user_change():
 
     # (2) syncSettingsToServer marks hydration synchronously, before any
     # await, so a failed POST still leaves the user's choice authoritative
-    # and the start_session handshake keeps carrying it.
-    sync_fn = settings_source.split("async function syncSettingsToServer()", 1)[1].split(
+    # and the start_session handshake keeps carrying it — but ONLY for
+    # userInitiated callers. The periodic timer passes no options and must
+    # never mark hydration (pinned by
+    # test_periodic_sync_skips_post_and_never_marks_hydration_while_unhydrated).
+    sync_fn = settings_source.split(
+        "async function syncSettingsToServer(options)", 1
+    )[1].split(
         "function startPeriodicSync()",
         1,
     )[0]
-    assert "S.settingsHydrated = true;" in sync_fn
+    assert sync_fn.count("S.settingsHydrated = true;") == 1
+    user_initiated_gate = sync_fn.split("if (userInitiated) {", 1)[1].split("}", 1)[0]
+    assert "S.settingsHydrated = true;" in user_initiated_gate, (
+        "the hydration mark must sit inside the userInitiated gate"
+    )
     assert sync_fn.index("S.settingsHydrated = true;") < sync_fn.index("await fetch(")
 
     # The independent-ASR toggle handler reaches that marker via
-    # syncSettingsToServer; the saveSettings call it makes skips the internal
-    # server sync, so the direct call is the seam.
+    # syncSettingsToServer({ userInitiated: true }); the saveSettings call it
+    # makes skips the internal server sync, so the direct call is the seam.
     toggle_handler = capture_source.split(
         "asrInput.addEventListener('change', function () {",
         1,
     )[1].split("asrRow.appendChild(", 1)[0]
     assert "S.independentAsrEnabled = asrInput.checked;" in toggle_handler
-    assert "window.appSettings.syncSettingsToServer()" in toggle_handler
+    assert "window.appSettings.syncSettingsToServer({ userInitiated: true })" in toggle_handler
 
     # Boot must NOT mark hydration: the first-launch initialization save goes
     # through saveSettings({ skipServerSync: true }) which bypasses
@@ -528,6 +569,162 @@ def test_settings_hydration_marked_on_server_merge_and_user_change():
         1,
     )[0]
     assert "S.settingsHydrated" not in sync_load_body
+
+
+def test_periodic_sync_skips_post_and_never_marks_hydration_while_unhydrated():
+    # Persistent GET failure: loadSettingsFromServer resolves null (or the
+    # whole chain throws), yet BOTH failure paths still start the periodic
+    # task (the .finally() after the merge callback, and the outer catch).
+    # Before the userInitiated split, syncSettingsToServer's entry marked
+    # S.settingsHydrated unconditionally, so the 60s tick (a) uploaded the
+    # boot default independentAsrEnabled=false over the server-persisted
+    # true and (b) falsely armed the start_session handshake with that
+    # default. Pin the two-part fix.
+    settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
+
+    # Both GET-failure paths do start the periodic task — that is exactly why
+    # the tick itself must carry the guard.
+    finally_block = settings_source.split(".finally(() => {", 1)[1].split(
+        "});", 1
+    )[0]
+    assert "startPeriodicSync();" in finally_block
+    load_catch_block = settings_source.split(
+        "console.error('服务器设置同步启动失败:', error);", 1
+    )[1].split("}", 1)[0]
+    assert "startPeriodicSync();" in load_catch_block
+
+    # (1) The tick refuses to POST while settings were never hydrated (no
+    # successful GET and no user change), logging the skip only once.
+    tick_body = settings_source.split("_syncTimerId = setInterval(() => {", 1)[1].split(
+        "}, SYNC_INTERVAL_MS);",
+        1,
+    )[0]
+    hydration_guard_index = tick_body.index("if (S.settingsHydrated !== true) {")
+    sync_call_index = tick_body.index("syncSettingsToServer();")
+    assert hydration_guard_index < sync_call_index, (
+        "the unhydrated guard must run before the periodic POST"
+    )
+    guard_block = tick_body[hydration_guard_index:sync_call_index]
+    assert "return;" in guard_block
+    assert "_periodicSyncSkippedUnhydratedLogged" in guard_block
+
+    # (2) The periodic caller passes no options, so even a tick that does run
+    # (post-hydration, or if the guard ever regressed) can never be the event
+    # that marks hydration — only userInitiated callers mark (pinned in
+    # test_settings_hydration_marked_on_server_merge_and_user_change).
+    assert "userInitiated" not in tick_body
+
+
+def test_user_toggle_during_get_failure_marks_hydration_posts_and_stamps():
+    # Round-10 semantics must survive the userInitiated split: an explicit
+    # user change is an authoritative hydration source even while the settings
+    # GET keeps failing. The independent-ASR toggle marks S.settingsHydrated
+    # synchronously (before its POST awaits) and publishes the POST; the
+    # start_session handshake then stamps the user's choice.
+    capture_source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
+    settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    # The toggle's direct sync call is user-initiated and still POSTs.
+    toggle_block = capture_source.split(
+        "asrInput.addEventListener('change', function () {",
+        1,
+    )[1].split("asrRow.appendChild(asrLabel);", 1)[0]
+    assert "window.appSettings.syncSettingsToServer({ userInitiated: true })" in toggle_block
+
+    # saveSettings' full (non-skipServerSync) path is the other user seam —
+    # the settings popup, subtitle toggles and chat-window toggles all route
+    # through it — so it must pass userInitiated too.
+    save_fn = settings_source.split("function saveSettings(options)", 1)[1].split(
+        "function loadSettings()",
+        1,
+    )[0]
+    assert "syncSettingsToServer({ userInitiated: true });" in save_fn
+    # ... while the first-launch boot save keeps skipping the sync entirely,
+    # so boot defaults still never mark hydration.
+    assert "saveSettings({ skipServerSync: true });" in settings_source
+
+    # And the handshake stamp keys off exactly that flag, so the toggle's
+    # pre-hydration change reaches the backend on the next start_session.
+    wrapper = websocket_source.split(
+        "function attachStartSessionHandshake(ws)",
+        1,
+    )[1].split("function connectWebSocket()", 1)[0]
+    assert "msg.action === 'start_session' && S.settingsHydrated === true" in wrapper
+    assert "msg.independent_asr_enabled = S.independentAsrEnabled === true;" in wrapper
+
+
+def test_stale_settings_get_merge_dropped_after_user_change():
+    # Codex P2: the conversation-settings GET may read the server BEFORE a
+    # user toggle POSTs the new value, yet resolve AFTER it. Without a guard
+    # the merge callback would treat that stale snapshot as authoritative,
+    # overwrite S.independentAsrEnabled and POST the stale value back via
+    # saveSettings(). Pin the generation gate: every userInitiated change
+    # bumps a local settings generation; the GET snapshots it at issue time
+    # and the merge callback drops the whole stale merge when it advanced.
+    settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
+
+    # (1) The generation is bumped only inside the userInitiated gate of
+    # syncSettingsToServer, synchronously alongside the hydration mark.
+    sync_fn = settings_source.split(
+        "async function syncSettingsToServer(options)", 1
+    )[1].split("function startPeriodicSync()", 1)[0]
+    assert sync_fn.count("_localSettingsGeneration += 1;") == 1
+    user_initiated_gate = sync_fn.split("if (userInitiated) {", 1)[1].split("}", 1)[0]
+    assert "_localSettingsGeneration += 1;" in user_initiated_gate
+    assert sync_fn.index("_localSettingsGeneration += 1;") < sync_fn.index(
+        "await fetch("
+    )
+
+    # (2) loadSettings snapshots the generation before issuing the GET.
+    load_fn = settings_source.split("function loadSettings()", 1)[1]
+    snapshot_index = load_fn.index(
+        "const _generationAtGetStart = _localSettingsGeneration;"
+    )
+    get_index = load_fn.index("loadSettingsFromServer().then(serverResult => {")
+    assert snapshot_index < get_index
+
+    # (3) The merge callback drops the stale merge before ANY state is
+    # touched: after the null-guard, before the hydration mark, the server
+    # merge loop and the saveSettings() POST-back.
+    merge_block = settings_source.split(
+        "loadSettingsFromServer().then(serverResult => {", 1
+    )[1].split(".finally(", 1)[0]
+    null_guard_index = merge_block.index("if (!serverResult) return;")
+    stale_guard_index = merge_block.index(
+        "if (_localSettingsGeneration !== _generationAtGetStart) {"
+    )
+    hydrate_index = merge_block.index("S.settingsHydrated = true;")
+    merge_loop_index = merge_block.index("for (const key of Object.keys(serverSettings))")
+    save_index = merge_block.index("saveSettings();")
+    assert null_guard_index < stale_guard_index < hydrate_index
+    assert stale_guard_index < merge_loop_index
+    assert stale_guard_index < save_index
+    stale_guard_block = merge_block[stale_guard_index:hydrate_index]
+    assert "return;" in stale_guard_block
+    # The drop must not itself mutate settings state or POST anything.
+    assert "S." not in stale_guard_block.replace("S.settingsHydrated", "")
+    assert "saveSettings" not in stale_guard_block
+    assert "syncSettingsToServer" not in stale_guard_block
+
+    # (4) Negative validation — no-user-change and first-launch flows stay
+    # untouched: the periodic tick never bumps the generation (a tick POST is
+    # not a user change), and the boot-time skipServerSync save bypasses
+    # syncSettingsToServer entirely so it cannot bump either.
+    tick_body = settings_source.split("_syncTimerId = setInterval(() => {", 1)[1].split(
+        "}, SYNC_INTERVAL_MS);", 1
+    )[0]
+    assert "_localSettingsGeneration" not in tick_body
+    first_launch_block = settings_source.split(
+        "console.log('未找到保存的设置，使用默认值');", 1
+    )[1].split("} catch (error) {", 1)[0]
+    assert "_localSettingsGeneration" not in first_launch_block
+    assert "saveSettings({ skipServerSync: true });" in first_launch_block
+    # The guard compares against the snapshot, not against zero: a merge that
+    # resolves with no interleaved user change (generation unchanged) still
+    # applies exactly as before.
+    assert "_localSettingsGeneration !== _generationAtGetStart" in merge_block
+    assert "_localSettingsGeneration !== 0" not in merge_block
 
 
 def test_normal_teardown_paths_reset_independent_asr_route_flags():

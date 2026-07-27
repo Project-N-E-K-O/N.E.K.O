@@ -1991,7 +1991,16 @@
 
                 // -------- user_transcript_preview (independent ASR only) --------
                 } else if (response.type === 'user_transcript_preview') {
-                    S.externalAsrPreviewMessage = upsertExternalAsrPreview(response.text || '');
+                    var externalPreviewText = String(response.text || '');
+                    if (externalPreviewText === '') {
+                        // 空 text 是后端的 preview-clear 信号（asr_runtime.py
+                        // _send_core_asr_preview_clear）：空 final 结束的轮次不会注入
+                        // user_transcript，唯有显式清除才能撤掉流式预览气泡；真实
+                        // partial 后端保证非空，不会误触发。
+                        removeExternalAsrPreview();
+                    } else {
+                        S.externalAsrPreviewMessage = upsertExternalAsrPreview(externalPreviewText);
+                    }
 
                 // -------- user_transcript --------
                 } else if (response.type === 'user_transcript') {

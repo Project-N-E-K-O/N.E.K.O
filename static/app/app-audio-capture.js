@@ -1946,8 +1946,11 @@
                         // locally first, then run the POST ourselves and publish it as
                         // S.pendingSettingsSyncPromise; ensureWebSocketOpen()
                         // (app-websocket.js) awaits it before any start_session send.
+                        // userInitiated: true marks settings hydrated so the
+                        // start_session handshake stamps this explicit choice
+                        // even while the settings GET is failing.
                         window.appSettings.saveSettings({ skipServerSync: true });
-                        var syncPromise = Promise.resolve(window.appSettings.syncSettingsToServer())
+                        var syncPromise = Promise.resolve(window.appSettings.syncSettingsToServer({ userInitiated: true }))
                             .catch(function () { /* syncSettingsToServer already logs failures */ })
                             .then(function () {
                                 if (S.pendingSettingsSyncPromise === syncPromise) {
