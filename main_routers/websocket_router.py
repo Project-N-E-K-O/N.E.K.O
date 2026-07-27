@@ -123,6 +123,20 @@ def _fire_task(coro):
     return task
 
 
+def _is_voice_path_message(message: dict) -> bool:
+    """True for messages gated by the voice connection identity.
+
+    Exactly the message classes MicLease owns: lease control events and PCM
+    (JSON stream_data with audio input_type, or a decoded binary frame).
+    Everything else — including an audio-mode start_session — stays on the
+    newest-socket-wins global session identity.
+    """
+    action = message.get("action")
+    if action == "voice_input_control":
+        return True
+    return action == "stream_data" and message.get("input_type") == "audio"
+
+
 def _stamp_user_input_ingress(message: dict) -> dict:
     """Stamp genuine user input before fire-and-forget task dispatch."""
     if (
@@ -450,8 +464,11 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
     # socket's session continues undisturbed. Once a newer socket engages,
     # the takeover semantics are unchanged: newest engaging connection wins
     # and the superseded socket is closed on its next message by the
-    # session-id check below (which runs before dispatch for every message,
-    # so a stale socket can never claim or reach any voice path).
+    # session-id check below. The two identities are deliberately separate:
+    # the global session_id is the NON-VOICE identity (text sessions, UI
+    # actions — newest socket always wins those), while voice-path messages
+    # are gated against the voice connection identity, so a socket that lost
+    # session_id but still holds the voice claim keeps its recording alive.
     voice_input_claimed = False
 
     def _claim_voice_input_connection() -> None:
@@ -466,6 +483,78 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         )
         if callable(begin_voice_input):
             begin_voice_input(str(this_session_id))
+
+    def _owns_voice_connection() -> bool:
+        """True while this socket still holds the manager voice identity.
+
+        Requires both that THIS socket engaged voice input and that no newer
+        socket has re-claimed the identity since (a takeover moves
+        _voice_lease_connection_id, immediately failing this check).
+        Managers without the MicLease mixin never grant ownership.
+        """
+        if not voice_input_claimed:
+            return False
+        lease_connection_id = getattr(
+            session_manager[lanlan_name],
+            "_voice_lease_connection_id",
+            None,
+        )
+        return lease_connection_id == str(this_session_id)
+
+    async def _dispatch_voice_message_while_superseded(message: dict) -> None:
+        """Dispatch one voice-path message for the superseded voice socket.
+
+        Deliberately narrower than the main dispatch loop: no engagement
+        claim, no ingress stamping, no avatar-position writes and no manager
+        state that belongs to the newer session_id owner — only MicLease
+        control and PCM keep flowing.
+        """
+        voice_mgr = session_manager[lanlan_name]
+        if message.get("action") == "voice_input_control":
+            handle_voice_input_control = getattr(
+                voice_mgr,
+                "_handle_voice_input_control",
+                None,
+            )
+            if not callable(handle_voice_input_control):
+                return
+            control_applied = await handle_voice_input_control(
+                message.get("event", ""),
+                message.get("lease_generation", -1),
+                owner=message.get("owner"),
+                hard_muted=message.get("hard_muted"),
+                focus_suppressed=message.get("focus_suppressed"),
+            )
+            if not control_applied:
+                # manager.send_status targets manager.websocket, which the
+                # newer socket now owns; the rejection belongs to THIS
+                # socket, so send the same status envelope directly.
+                # Best-effort like send_status.
+                try:
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "type": "status",
+                                "message": json.dumps(
+                                    {
+                                        "code": "VOICE_INPUT_CONTROL_REJECTED",
+                                        "details": {
+                                            "reason": "invalid_or_stale_control"
+                                        },
+                                    }
+                                ),
+                            }
+                        )
+                    )
+                except Exception:
+                    pass
+            return
+        if is_game_route_active(lanlan_name):
+            await route_external_stream_message(
+                lanlan_name,
+                {"input_type": "audio", "stt_provider": "realtime"},
+            )
+        await voice_mgr.stream_data(message)
 
     if mgr.pending_agent_callbacks:
         logger.info(f"[{lanlan_name}] websocket reconnect: {len(mgr.pending_agent_callbacks)} pending callbacks, scheduling delivery")
@@ -505,11 +594,25 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 data = await websocket.receive_text()
                 message = json.loads(data)
             # 安全检查：如果角色已被重命名或删除，lanlan_name 可能不再存在
-            if lanlan_name not in session_id or lanlan_name not in session_manager:
+            if lanlan_name not in session_manager:
                 logger.info(f"角色 {lanlan_name} 已被重命名或删除，关闭旧连接")
                 await websocket.close()
                 break
-            if session_id[lanlan_name] != this_session_id:
+            if session_id.get(lanlan_name) != this_session_id:
+                # Separate connection identities: losing the global session_id
+                # (a newer window opened, or the newer window since closed and
+                # popped it) must not terminate an ongoing recording. While
+                # this socket still owns the voice connection, its voice-path
+                # messages keep dispatching through the narrow helper above;
+                # any non-voice message from it, or any message once a newer
+                # socket re-claims voice, closes it exactly as before.
+                if _is_voice_path_message(message) and _owns_voice_connection():
+                    await _dispatch_voice_message_while_superseded(message)
+                    continue
+                if lanlan_name not in session_id:
+                    logger.info(f"角色 {lanlan_name} 已被重命名或删除，关闭旧连接")
+                    await websocket.close()
+                    break
                 await session_manager[lanlan_name].send_status(json.dumps({"code": "CHARACTER_SWITCHING_TERMINAL", "details": {"name": lanlan_name}}))
                 await websocket.close()
                 break

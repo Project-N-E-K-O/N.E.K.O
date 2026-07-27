@@ -26,9 +26,13 @@ class _ProtocolManager:
         self.calls: list[tuple[str, object]] = []
         self.statuses: list[dict] = []
         self.cleanup_calls = 0
+        # Mirrors the real MicLease mixin: the currently claimed voice
+        # connection identity, moved on every engagement claim.
+        self._voice_lease_connection_id = ""
 
     def _begin_voice_input_connection(self, connection_id: str) -> None:
         self.calls.append(("begin", connection_id))
+        self._voice_lease_connection_id = connection_id
 
     async def _ensure_voice_input_session_authorized(
         self,
@@ -677,6 +681,228 @@ async def test_binary_pcm_frame_claims_voice_connection_before_dispatch(
             "data": [1, -1],
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_recording_survives_second_text_socket_and_its_text_message(
+    monkeypatch,
+) -> None:
+    manager = _ProtocolManager()
+    superseded_pcm = {
+        "action": "stream_data",
+        "input_type": "audio",
+        "sample_rate_hz": 16_000,
+        "data": [2, -2],
+        "avatar_position": {"x": 1},
+    }
+    recording_socket = _TwoPhaseWebSocket(
+        [_LEASE_SYNC_MESSAGE, _PCM_MESSAGE],
+        [superseded_pcm, _LEASE_SYNC_MESSAGE],
+    )
+    _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=recording_socket,
+    )
+
+    recording_task = asyncio.create_task(
+        websocket_router.websocket_endpoint(recording_socket, "Lan")
+    )
+    await _drain_until(
+        lambda: "stream_data" in [name for name, _payload in manager.calls]
+    )
+
+    # A chat window opens mid-recording, takes over the global session_id
+    # AND actually uses it: text session start plus a text message.
+    chat_socket = _TwoPhaseWebSocket(
+        [
+            {"action": "start_session", "input_type": "text"},
+            {
+                "action": "stream_data",
+                "input_type": "text",
+                "data": "hello",
+            },
+            {"action": "ping"},
+        ],
+        [],
+    )
+    chat_task = asyncio.create_task(
+        websocket_router.websocket_endpoint(chat_socket, "Lan")
+    )
+    await _drain_until(
+        lambda: any(
+            json.loads(payload) == {"type": "pong"}
+            for payload in chat_socket.sent_text
+        )
+    )
+
+    # Negative validation: the superseded voice dispatch must not touch
+    # non-voice manager state even when the frame carries avatar_position
+    # (the normal dispatch path would overwrite this sentinel).
+    sentinel = object()
+    manager._avatar_position = sentinel
+
+    recording_socket.release.set()
+    await recording_task
+
+    # The recording socket kept streaming: its post-takeover PCM and lease
+    # control both dispatched, and it was never stale-closed.
+    assert recording_socket.closed is False
+    stream_payloads = [
+        payload for name, payload in manager.calls if name == "stream_data"
+    ]
+    assert superseded_pcm in stream_payloads
+    assert [name for name, _payload in manager.calls].count("control") == 2
+    assert manager._avatar_position is sentinel
+    assert {
+        "code": "CHARACTER_SWITCHING_TERMINAL",
+        "details": {"name": "Lan"},
+    } not in manager.statuses
+
+    # The chat window's text takeover worked unchanged: text session started
+    # and its text message dispatched, without ever claiming voice.
+    assert "start_session" in [name for name, _payload in manager.calls]
+    assert any(
+        payload.get("input_type") == "text" for payload in stream_payloads
+    )
+    assert [name for name, _payload in manager.calls].count("begin") == 1
+
+    chat_socket.release.set()
+    await chat_task
+    assert manager.cleanup_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_recording_survives_chat_window_open_and_close(
+    monkeypatch,
+) -> None:
+    manager = _ProtocolManager()
+    recording_socket = _TwoPhaseWebSocket(
+        [_LEASE_SYNC_MESSAGE, _PCM_MESSAGE],
+        [_PCM_MESSAGE],
+    )
+    _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=recording_socket,
+    )
+
+    recording_task = asyncio.create_task(
+        websocket_router.websocket_endpoint(recording_socket, "Lan")
+    )
+    await _drain_until(
+        lambda: "stream_data" in [name for name, _payload in manager.calls]
+    )
+
+    # The chat window opens AND closes again: its disconnect pops the global
+    # session_id entirely. The still-recording voice socket must not be
+    # mistaken for a renamed/deleted character's connection.
+    chat_socket = _EventWebSocket([{"action": "ping"}])
+    await websocket_router.websocket_endpoint(chat_socket, "Lan")
+    assert manager.cleanup_calls == 1
+
+    recording_socket.release.set()
+    await recording_task
+
+    assert recording_socket.closed is False
+    assert [
+        payload for name, payload in manager.calls if name == "stream_data"
+    ] == [_PCM_MESSAGE, _PCM_MESSAGE]
+
+
+@pytest.mark.asyncio
+async def test_superseded_voice_socket_control_rejection_goes_to_own_socket(
+    monkeypatch,
+) -> None:
+    manager = _ProtocolManager(control_result=False)
+    recording_socket = _TwoPhaseWebSocket(
+        [_PCM_MESSAGE],
+        [_LEASE_SYNC_MESSAGE],
+    )
+    _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=recording_socket,
+    )
+
+    recording_task = asyncio.create_task(
+        websocket_router.websocket_endpoint(recording_socket, "Lan")
+    )
+    await _drain_until(
+        lambda: "stream_data" in [name for name, _payload in manager.calls]
+    )
+
+    chat_socket = _TwoPhaseWebSocket([{"action": "ping"}], [])
+    chat_task = asyncio.create_task(
+        websocket_router.websocket_endpoint(chat_socket, "Lan")
+    )
+    await _drain_until(lambda: bool(chat_socket.sent_text))
+
+    recording_socket.release.set()
+    await recording_task
+
+    # The rejection is delivered on the superseded socket itself, not via
+    # manager.send_status (whose websocket the chat window now owns).
+    rejected = {
+        "code": "VOICE_INPUT_CONTROL_REJECTED",
+        "details": {"reason": "invalid_or_stale_control"},
+    }
+    assert rejected not in manager.statuses
+    own_socket_statuses = [
+        json.loads(json.loads(payload)["message"])
+        for payload in recording_socket.sent_text
+        if json.loads(payload).get("type") == "status"
+    ]
+    assert rejected in own_socket_statuses
+
+    chat_socket.release.set()
+    await chat_task
+
+
+@pytest.mark.asyncio
+async def test_superseded_voice_socket_non_voice_message_is_still_closed(
+    monkeypatch,
+) -> None:
+    manager = _ProtocolManager()
+    recording_socket = _TwoPhaseWebSocket(
+        [_LEASE_SYNC_MESSAGE, _PCM_MESSAGE],
+        [{"action": "start_session", "input_type": "audio"}],
+    )
+    _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=recording_socket,
+    )
+
+    recording_task = asyncio.create_task(
+        websocket_router.websocket_endpoint(recording_socket, "Lan")
+    )
+    await _drain_until(
+        lambda: "stream_data" in [name for name, _payload in manager.calls]
+    )
+
+    chat_socket = _TwoPhaseWebSocket([{"action": "ping"}], [])
+    chat_task = asyncio.create_task(
+        websocket_router.websocket_endpoint(chat_socket, "Lan")
+    )
+    await _drain_until(lambda: bool(chat_socket.sent_text))
+
+    recording_socket.release.set()
+    await recording_task
+
+    # Voice ownership only shields voice-path messages: an audio-mode
+    # start_session stays on newest-socket-wins and stale-closes the socket
+    # before any authorization or session start.
+    assert recording_socket.closed is True
+    assert "authorize" not in [name for name, _payload in manager.calls]
+    assert "start_session" not in [name for name, _payload in manager.calls]
+    assert {
+        "code": "CHARACTER_SWITCHING_TERMINAL",
+        "details": {"name": "Lan"},
+    } in manager.statuses
+
+    chat_socket.release.set()
+    await chat_task
 
 
 @pytest.mark.asyncio
