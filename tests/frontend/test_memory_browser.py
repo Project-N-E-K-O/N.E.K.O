@@ -235,6 +235,7 @@ def _install_ready_memory_browser_routes(
     *,
     recent_files: list[str] | None = None,
     current_catgirl: str | None = None,
+    card_origins: dict[str, str] | None = None,
     tutorial_seen: bool = True,
 ) -> None:
     """Mock storage + memory APIs so the page (or whole context) is tested in ready mode."""
@@ -275,6 +276,24 @@ def _install_ready_memory_browser_routes(
             json={"current_catgirl": current_catgirl or "测试猫娘"},
         )
 
+    def handle_card_metas(route):
+        filenames = recent_files or ["recent_测试猫娘.json"]
+        role_names = [
+            filename.removeprefix("recent_").removesuffix(".json")
+            for filename in filenames
+        ]
+        origins = card_origins or {}
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "metas": {
+                    name: {"origin": origins.get(name, "self")}
+                    for name in role_names
+                }
+            },
+        )
+
     def handle_recent_file(route):
         route.fulfill(
             status=200,
@@ -312,6 +331,7 @@ def _install_ready_memory_browser_routes(
     page.route("**/api/storage/location/bootstrap", handle_bootstrap)
     page.route("**/api/memory/recent_files", handle_recent_files)
     page.route("**/api/characters/current_catgirl", handle_current_catgirl)
+    page.route("**/api/characters/card-metas", handle_card_metas)
     page.route("**/api/memory/recent_file?**", handle_recent_file)
     page.route("**/api/memory/review_config", handle_review_config)
     page.route("**/api/memory/powerful_memory_config", handle_powerful_memory_config)
@@ -813,6 +833,7 @@ def test_memory_browser_header_actions_fit_all_localized_labels_without_clipping
     mock_page.set_viewport_size({"width": 720, "height": 560})
     mock_page.goto(f"{running_server}/memory_browser")
     mock_page.wait_for_function("window.i18next && window.i18next.isInitialized")
+    _open_auxiliary_panel(mock_page, "settings")
 
     expected_labels = {
         "en": ["Guide", "Export logs", "Settings"],
@@ -831,6 +852,16 @@ def test_memory_browser_header_actions_fit_all_localized_labels_without_clipping
             "(locale) => window.i18next.language === locale",
             arg=locale,
         )
+        mock_page.wait_for_function(
+            """
+            () => {
+                const panel = document.getElementById('memory-settings-panel');
+                const utilityBar = document.querySelector('.memory-utility-bar');
+                return panel.getBoundingClientRect().top
+                    >= utilityBar.getBoundingClientRect().bottom;
+            }
+            """
+        )
         geometry_by_locale[locale] = mock_page.evaluate(
             """
             () => {
@@ -841,6 +872,12 @@ def test_memory_browser_header_actions_fit_all_localized_labels_without_clipping
                 const widths = buttons.map(
                     button => Math.round(button.getBoundingClientRect().width)
                 );
+                const utilityBarRect = document.querySelector(
+                    '.memory-utility-bar'
+                ).getBoundingClientRect();
+                const panelRect = document.getElementById(
+                    'memory-settings-panel'
+                ).getBoundingClientRect();
                 return {
                     labels: buttons.map(button => button.textContent.trim()),
                     equalWidths:
@@ -861,6 +898,10 @@ def test_memory_browser_header_actions_fit_all_localized_labels_without_clipping
                     noPageOverflow:
                         document.documentElement.scrollWidth
                         <= document.documentElement.clientWidth,
+                    panelBelowUtilityBar:
+                        panelRect.top >= utilityBarRect.bottom,
+                    panelInsideViewport:
+                        panelRect.bottom <= window.innerHeight - 8,
                 };
             }
             """
@@ -874,6 +915,8 @@ def test_memory_browser_header_actions_fit_all_localized_labels_without_clipping
             "singleRow": True,
             "noActionOverflow": True,
             "noPageOverflow": True,
+            "panelBelowUtilityBar": True,
+            "panelInsideViewport": True,
         }
         for locale in expected_labels
     }
@@ -1379,7 +1422,7 @@ def test_memory_browser_wide_role_button_toggles_the_full_sidebar(
 
 
 @pytest.mark.frontend
-@pytest.mark.parametrize(("width", "height"), [(720, 560), (767, 600)])
+@pytest.mark.parametrize(("width", "height"), [(720, 560), (768, 600), (839, 600)])
 def test_memory_browser_compact_role_panel_reuses_selection_and_restores_focus(
     mock_page: Page,
     running_server: str,
@@ -1815,6 +1858,28 @@ def test_memory_browser_wide_collapsed_sidebar_has_hover_preview_without_reflow(
     main = mock_page.locator(".main")
     utility_bar = mock_page.locator(".memory-utility-bar")
 
+    mock_page.evaluate(
+        """
+        () => {
+            const target = document.getElementById('memory-role-hover-target');
+            const original = target.getBoundingClientRect.bind(target);
+            window.__memoryHoverRectReads = 0;
+            target.getBoundingClientRect = () => {
+                window.__memoryHoverRectReads += 1;
+                return original();
+            };
+            const event = new MouseEvent('mousemove', {
+                bubbles: true,
+                clientX: 80,
+                clientY: 200,
+            });
+            Object.defineProperty(event, 'movementX', { value: 100 });
+            document.dispatchEvent(event);
+        }
+        """
+    )
+    assert mock_page.evaluate("window.__memoryHoverRectReads") == 0
+
     trigger.click()
     expect(sidebar).to_be_hidden()
     expect(hover_target).to_be_visible()
@@ -1851,6 +1916,7 @@ def test_memory_browser_wide_collapsed_sidebar_has_hover_preview_without_reflow(
     )
     expect(sidebar).to_be_hidden(timeout=1000)
 
+    mock_page.evaluate("window.__memoryHoverRectReads = 0")
     mock_page.evaluate(
         """
         ({ x, y }) => {
@@ -1869,6 +1935,7 @@ def test_memory_browser_wide_collapsed_sidebar_has_hover_preview_without_reflow(
         },
     )
     expect(sidebar).to_be_visible()
+    assert mock_page.evaluate("window.__memoryHoverRectReads") == 1
     editor.evaluate(
         "element => element.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, relatedTarget: null }))"
     )
@@ -2020,7 +2087,9 @@ def test_memory_browser_compact_drawer_coalesces_position_measurement(
         ])
         """
     )
-    assert mock_page.evaluate("window.__memoryRolePanelPositionReads") == 0
+    # The shared measurement also positions settings/guide/import panels, so it
+    # runs while the compact role drawer is closed, but burst events coalesce.
+    assert mock_page.evaluate("window.__memoryRolePanelPositionReads") == 1
 
     mock_page.locator("#memory-role-panel-trigger").click()
     expect(mock_page.locator("#memory-role-panel")).to_be_visible()
@@ -2416,6 +2485,7 @@ def test_memory_browser_responsive_motion_static_performance_contract() -> None:
     project_root = Path(__file__).parents[2]
     css = (project_root / "static/css/memory_browser.css").read_text(encoding="utf-8")
     js = (project_root / "static/js/memory_browser.js").read_text(encoding="utf-8")
+    template = (project_root / "templates/memory_browser.html").read_text(encoding="utf-8")
     responsive_live_css = css.split(
         "body.is-memory-responsive-transitioning .main", 1
     )[1].split('body[data-memory-layout="wide"][data-memory-sidebar="expanded"]', 1)[0]
@@ -2465,10 +2535,39 @@ def test_memory_browser_responsive_motion_static_performance_contract() -> None:
     )
     assert position_scheduler is not None
     assert "requestAnimationFrame" in position_scheduler.group("body")
-    assert "trigger.getAttribute('aria-expanded') !== 'true'" in position_scheduler.group("body")
+    assert "trigger.getAttribute('aria-expanded') !== 'true'" not in position_scheduler.group("body")
+    assert "--memory-floating-panel-top" in js
     assert "window.addEventListener('resize', scheduleMemoryRolePanelPositionSync)" in js
+    assert "window.addEventListener('localechange', scheduleMemoryRolePanelPositionSync)" in js
     assert "window.addEventListener('resize', syncMemoryRolePanelPosition)" not in js
     assert "new ResizeObserver(syncMemoryRolePanelPosition)" not in js
+    assert "@media (max-width: 767px)" not in css
+    assert "@media (max-width: 839px)" in css
+    assert "var(--memory-floating-panel-top, 148px)" in css
+    assert template.count("'(max-width: 839px)'") == 1
+    assert "window.__memoryRoleCompactMediaQuery" in template
+    assert "window.__memoryRoleCompactMediaQuery" in js
+
+
+def test_memory_browser_post_merge_cleanup_static_contract() -> None:
+    project_root = Path(__file__).parents[2]
+    js = (project_root / "static/js/memory_browser.js").read_text(encoding="utf-8")
+    template = (project_root / "templates/memory_browser.html").read_text(encoding="utf-8")
+
+    export_trigger = re.search(
+        r'<button[^>]+id="memory-export-logs-trigger"[^>]*>',
+        template,
+    )
+    assert export_trigger is not None
+    assert 'data-i18n-title="memory.exportLogsReview"' in export_trigger.group(0)
+    assert 'data-i18n-aria="memory.exportLogsAria"' in export_trigger.group(0)
+    assert 'data-memory-export-label data-i18n="memory.exportLogs"' in template
+    assert "statusState || window.t" not in js
+    assert "document.querySelector('.tutorial-section .file-list-title')" not in js
+    assert "pendingMemorySelection.li" not in js
+    assert "pendingMemorySelection = { filename, catName }" in js
+    assert 'data-i18n-aria="memory.autoReviewTooltipLabel"' in template
+    assert 'data-i18n-aria="memory.strongMemoryTooltipLabel"' in template
 
 
 @pytest.mark.frontend
@@ -3465,6 +3564,14 @@ def test_memory_browser_unsaved_role_switch_dialog_guards_discard_and_save(
 
     target.click()
     expect(dialog).to_be_visible()
+    target.evaluate(
+        """
+        button => {
+            const item = button.closest('li');
+            item.replaceWith(item.cloneNode(true));
+        }
+        """
+    )
     mock_page.locator("#memory-unsaved-switch-discard").click()
     expect(dialog).to_be_hidden()
     expect(target).to_have_attribute("aria-current", "true", timeout=5000)
@@ -3754,41 +3861,24 @@ def test_memory_browser_delete_respects_reduced_motion_synchronously(
 
 
 @pytest.mark.frontend
-def test_memory_browser_selected_role_owns_card_face_and_reclick_does_not_reselect(
+def test_memory_browser_reclick_does_not_reselect(
     mock_page: Page,
     running_server: str,
     seed_memory_file,
 ):
-    """Only the selected role owns art, and refresh does not replay selection state."""
+    """Refreshing the current role must not replay selection state."""
     _install_ready_memory_browser_routes(
         mock_page,
         seed_memory_file,
         recent_files=["recent_测试猫娘.json", "recent_备用猫娘.json"],
         current_catgirl="测试猫娘",
     )
-    one_pixel_png = (
-        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
-        b"\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
-        b"\x00\x00\x00\rIDAT\x08\xd7c\xf8\xcf\xc0\xf0\x1f\x00\x05"
-        b"\x00\x01\xff\x89\x99=\x1d\x00\x00\x00\x00IEND\xaeB`\x82"
-    )
-    mock_page.route(
-        "**/api/characters/catgirl/*/card-face",
-        lambda route: route.fulfill(status=200, content_type="image/png", body=one_pixel_png),
-    )
-
     mock_page.goto(f"{running_server}/memory_browser")
     selected = mock_page.locator("#memory-file-list .cat-btn[aria-current='true']")
     unselected = mock_page.locator("#memory-file-list .cat-btn[aria-current='false']")
     expect(selected).to_have_count(1, timeout=10000)
     expect(unselected).to_have_count(1)
-    artwork = selected.locator("img.memory-role-card-face")
-    expect(artwork).to_have_count(1)
-    expect(artwork).to_be_visible()
-    assert artwork.get_attribute("src") == mock_page.evaluate(
-        "name => `/api/characters/catgirl/${encodeURIComponent(name)}/card-face`",
-        "测试猫娘",
-    )
+    expect(selected.locator("img.memory-role-card-face")).to_have_count(0)
     expect(unselected.locator("img.memory-role-card-face")).to_have_count(0)
 
     mock_page.evaluate(
@@ -3819,7 +3909,108 @@ def test_memory_browser_selected_role_owns_card_face_and_reclick_does_not_resele
         """
     )
     assert mutations == []
-    expect(selected.locator("img.memory-role-card-face")).to_have_count(1)
+    expect(selected.locator("img.memory-role-card-face")).to_have_count(0)
+
+
+@pytest.mark.frontend
+def test_memory_browser_role_sources_and_overflow_name_have_compact_feedback(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    long_name = "这是一个用于验证角色名称悬停滚动效果的非常非常长的角色名称"
+    recent_files = [
+        f"recent_{long_name}.json",
+        "recent_外部角色.json",
+        "recent_创意工坊角色.json",
+    ]
+    _install_ready_memory_browser_routes(
+        mock_page,
+        seed_memory_file,
+        recent_files=recent_files,
+        current_catgirl=long_name,
+        card_origins={
+            long_name: "self",
+            "外部角色": "imported",
+            "创意工坊角色": "steam",
+        },
+    )
+
+    mock_page.goto(f"{running_server}/memory_browser")
+    expect(mock_page.locator("#memory-file-list .memory-role-source")).to_have_count(
+        3,
+        timeout=10000,
+    )
+    expect(mock_page.locator(".memory-role-source.is-self")).to_have_count(1)
+    expect(mock_page.locator(".memory-role-source.is-imported")).to_have_count(1)
+    expect(mock_page.locator(".memory-role-source.is-steam")).to_have_count(1)
+    expect(mock_page.locator(".memory-role-source.is-self svg")).to_have_count(1)
+    expect(mock_page.locator(".memory-role-source.is-imported svg")).to_have_count(1)
+    expect(mock_page.locator(".memory-role-source.is-steam svg")).to_have_count(1)
+    expect(
+        mock_page.locator(
+            '.memory-role-source.is-steam svg path[fill="currentColor"]'
+        )
+    ).to_have_count(1)
+
+    source_layout = mock_page.locator(
+        "#memory-file-list .cat-btn[data-catname='外部角色']"
+    ).evaluate(
+        """
+        button => {
+            const nameRect = button.querySelector('.memory-role-name-viewport').getBoundingClientRect();
+            const sourceRect = button.querySelector('.memory-role-source').getBoundingClientRect();
+            const buttonRect = button.getBoundingClientRect();
+            return {
+                sourceAfterName: sourceRect.left >= nameRect.right,
+                sourceAtTrailingEdge: buttonRect.right - sourceRect.right <= 13,
+            };
+        }
+        """
+    )
+    assert source_layout == {
+        "sourceAfterName": True,
+        "sourceAtTrailingEdge": True,
+    }
+
+    imported_source = mock_page.locator(".memory-role-source.is-imported")
+    imported_source.hover()
+    expect(imported_source.locator(".memory-role-source-tooltip")).to_be_visible()
+
+    long_role = mock_page.locator(
+        f"#memory-file-list .cat-btn[data-catname='{long_name}']"
+    )
+    long_role.hover()
+    expect(long_role).to_have_class(re.compile(r"\bis-name-overflowing\b"))
+    assert long_role.locator(".memory-role-name").evaluate(
+        """
+        element => Number.parseFloat(
+            element.style.getPropertyValue('--memory-role-name-shift')
+        ) < 0
+        """
+    )
+    mock_page.wait_for_timeout(700)
+    assert long_role.locator(".memory-role-name").evaluate(
+        """
+        element => {
+            const style = getComputedStyle(element);
+            return style.animationName === 'memory-role-name-marquee'
+                && style.transform !== 'none';
+        }
+        """
+    )
+    mock_page.mouse.move(1, 1)
+    assert long_role.locator(".memory-role-name").evaluate(
+        """
+        element => {
+            const style = getComputedStyle(element);
+            const matrix = new DOMMatrixReadOnly(style.transform);
+            return Math.abs(matrix.m41) < 0.01
+                && style.animationName === 'none'
+                && style.transitionDuration === '0s';
+        }
+        """
+    )
 
 
 def test_memory_browser_task4_static_visual_contract() -> None:
@@ -3865,6 +4056,14 @@ def test_memory_browser_task4_static_visual_contract() -> None:
     assert "memory-particle-canvas" not in js
     assert "blur(" not in css
     assert "cubic-bezier(0.34, 1.56" not in css
+    assert '.cat-btn[aria-current="true"]::after' not in css
+    assert "mask: url('/static/icons/paw_ui.png')" not in css
+    assert "memory-role-source-tooltip" in css
+    assert "memory-role-name-viewport" in js
+    assert "/api/characters/card-metas" in js
+    assert "mask-image" not in css.split(".memory-role-source", 1)[1].split(
+        ".review-toggle", 1
+    )[0]
     row_exit_duration = int(re.search(r"MEMORY_ROW_EXIT_MS\s*=\s*(\d+)", js).group(1))
     assert 140 <= row_exit_duration <= 180
     memory_dark_section = dark_css.split("Memory Browser ", 1)[1].split("当前角色", 1)[0]
