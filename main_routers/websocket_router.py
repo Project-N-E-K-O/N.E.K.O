@@ -96,6 +96,24 @@ def _stamp_user_input_ingress(message: dict) -> dict:
     }
 
 
+def _reserve_avatar_interaction_ingress(
+    manager,
+    message: dict,
+    *,
+    lanlan_name: str,
+) -> bool:
+    """Keep defensive ingress failures inside the current WS message."""
+    try:
+        return bool(manager.note_avatar_interaction_ingress(message))
+    except Exception as exc:
+        logger.warning(
+            "[%s] note_avatar_interaction_ingress failed: %s",
+            lanlan_name,
+            exc,
+        )
+        return False
+
+
 def _schedule_greeting_task(lanlan_name: str, kind: str, coro_factory) -> bool:
     """Start at most one greeting-like task per character at a time.
 
@@ -486,7 +504,11 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 # the background handler can lose a scheduling race to a ready
                 # proactive commit. Reserve the interaction ID in that same
                 # synchronous step so rapid retransmits cannot reset silence.
-                reserved = avatar_mgr.note_avatar_interaction_ingress(message)
+                reserved = _reserve_avatar_interaction_ingress(
+                    avatar_mgr,
+                    message,
+                    lanlan_name=lanlan_name,
+                )
                 message = {
                     **message,
                     "_avatar_interaction_ingress_reserved": reserved,

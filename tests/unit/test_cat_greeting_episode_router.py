@@ -37,6 +37,21 @@ def test_text_ingress_is_stamped_before_async_dispatch(monkeypatch):
     assert websocket_router._stamp_user_input_ingress(audio) is audio
 
 
+def test_avatar_ingress_failure_isolated_from_websocket_loop():
+    class FailingManager:
+        @staticmethod
+        def note_avatar_interaction_ingress(_message):
+            raise RuntimeError("boom")
+
+    reserved = websocket_router._reserve_avatar_interaction_ingress(
+        FailingManager(),
+        {"action": "avatar_interaction"},
+        lanlan_name="Test",
+    )
+
+    assert reserved is False
+
+
 class _GoodbyeCycleState(LifecycleMixin):
     lanlan_name = "Test"
     goodbye_silent = False

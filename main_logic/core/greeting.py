@@ -84,10 +84,10 @@ class GreetingMixin:
         # The WebSocket dispatch loop calls this synchronously. Reserve before
         # scheduling the handler so a second frame with the same ID is already
         # a duplicate even when the first task has not started yet.
-        self._remember_avatar_interaction_id(interaction_id)
         self.note_user_engagement(
             at=self._avatar_interaction_ingress_time(payload)
         )
+        self._remember_avatar_interaction_id(interaction_id)
         return True
 
     async def handle_avatar_interaction(self, payload: dict) -> dict:
