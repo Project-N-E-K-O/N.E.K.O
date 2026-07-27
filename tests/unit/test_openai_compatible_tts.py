@@ -10,7 +10,12 @@ import pytest
 
 from main_logic import tts_client
 from main_logic.tts_client.workers import openai as openai_worker_module
-from main_routers.config_router.connectivity import _test_connectivity_candidates
+from main_routers.config_router import connectivity as connectivity_module
+from main_routers.config_router.connectivity import (
+    ConnectivityTestRequest,
+    _resolve_openai_tts_probe_voice,
+    _test_connectivity_candidates,
+)
 from utils.openai_tts import (
     OpenAITtsConfigError,
     build_openai_tts_payload,
@@ -385,3 +390,75 @@ async def test_connectivity_dispatches_openai_tts_probe(monkeypatch):
     assert result["resolved_url"] == "https://speech.example.com/v1"
     assert str(requests[0].url) == "https://speech.example.com/v1/audio/speech"
     assert json.loads(requests[0].content)["response_format"] == "pcm"
+
+
+@pytest.mark.asyncio
+async def test_connectivity_uses_current_character_voice_when_fallback_is_blank(monkeypatch):
+    class _CharacterConfigManager:
+        async def aload_characters(self):
+            return {
+                "当前猫娘": "Yui",
+                "猫娘": {
+                    "Yui": {
+                        "_reserved": {
+                            "voice_id": {
+                                "source": "preset",
+                                "provider": "custom",
+                                "ref": "character-voice",
+                            }
+                        }
+                    }
+                },
+            }
+
+        def voice_id_exists_in_any_storage(self, _voice_id):
+            return False
+
+    captured = {}
+
+    async def fake_probe(urls, api_key, model, provider_type, is_free, **kwargs):
+        captured.update(
+            {
+                "urls": urls,
+                "api_key": api_key,
+                "model": model,
+                "provider_type": provider_type,
+                "is_free": is_free,
+                **kwargs,
+            }
+        )
+        return {"success": True}
+
+    monkeypatch.setattr(connectivity_module, "get_config_manager", lambda: _CharacterConfigManager())
+    monkeypatch.setattr(connectivity_module, "_test_connectivity_candidates", fake_probe)
+
+    result = await connectivity_module.test_connectivity(
+        ConnectivityTestRequest(
+            url="https://speech.example.com/v1",
+            api_key="sk-probe",
+            model="vendor-tts",
+            provider_type="tts",
+            sub_type="openai_tts",
+            voice_id="",
+        )
+    )
+
+    assert result["success"] is True
+    assert captured["voice_id"] == "character-voice"
+
+
+@pytest.mark.asyncio
+async def test_connectivity_does_not_borrow_a_stored_clone_for_openai_probe(monkeypatch):
+    class _CharacterConfigManager:
+        async def aload_characters(self):
+            return {
+                "当前猫娘": "Yui",
+                "猫娘": {"Yui": {"voice_id": "clone-voice"}},
+            }
+
+        def voice_id_exists_in_any_storage(self, voice_id):
+            return voice_id == "clone-voice"
+
+    monkeypatch.setattr(connectivity_module, "get_config_manager", lambda: _CharacterConfigManager())
+
+    assert await _resolve_openai_tts_probe_voice("") == ""

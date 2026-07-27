@@ -27,6 +27,8 @@ import urllib.parse
 from typing import Any, Optional
 from pydantic import BaseModel
 
+from ..shared_state import get_config_manager
+
 
 _MIMO_TOKEN_PLAN_HOSTS = {
     "token-plan-cn.xiaomimimo.com",
@@ -491,6 +493,49 @@ async def _test_openai_tts_connectivity(
         return {"success": False, "error": str(exc), "error_code": "unknown"}
 
 
+async def _resolve_openai_tts_probe_voice(voice_id: str) -> str:
+    """Resolve the same effective voice that runtime can obtain from a character.
+
+    ``ttsVoiceId`` is only a fallback. When it is blank, the custom OpenAI TTS
+    worker can still use the current character's voice, so connectivity probes
+    must not reject the otherwise valid configuration before contacting the
+    endpoint. Stored clone/design voices keep ownership of their own provider
+    route and therefore are not borrowed for this probe.
+    """
+
+    explicit_voice = str(voice_id or "").strip()
+    if explicit_voice:
+        return explicit_voice
+
+    from utils.config_manager import get_reserved
+    from utils.voice_config import read_legacy_voice_id
+
+    try:
+        config_manager = get_config_manager()
+        characters = await config_manager.aload_characters()
+        current_name = str(characters.get("当前猫娘") or "").strip()
+        current_character = characters.get("猫娘", {}).get(current_name, {})
+        character_voice = read_legacy_voice_id(
+            get_reserved(
+                current_character,
+                "voice_id",
+                default="",
+                legacy_keys=("voice_id",),
+            )
+        ).strip()
+        if not character_voice:
+            return ""
+        is_stored_clone = await asyncio.to_thread(
+            config_manager.voice_id_exists_in_any_storage,
+            character_voice,
+        )
+        if is_stored_clone:
+            return ""
+        return character_voice
+    except Exception:
+        return ""
+
+
 def _normalize_provider_url_candidates(profile: dict[str, Any], primary_field: str) -> list[str]:
     """Read the provider's primary URL and candidate URLs, removing blanks and duplicates while preserving order."""
     raw_candidates: list[Any] = [profile.get(primary_field)]
@@ -927,6 +972,10 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
     if not (req.provider_key and req.provider_scope):
         sub_type = (req.sub_type or "").strip().lower()
 
+    voice_id = (req.voice_id or "").strip()
+    if provider_type == "tts" and sub_type == "openai_tts":
+        voice_id = await _resolve_openai_tts_probe_voice(voice_id)
+
     try:
         result = await _test_connectivity_candidates(
             url_candidates or [url_stripped],
@@ -935,7 +984,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
             provider_type,
             is_free,
             sub_type=sub_type,
-            voice_id=(req.voice_id or "").strip(),
+            voice_id=voice_id,
         )
     except Exception as e:
         logger.exception("[ConnectivityTest] 未预期的异常")
