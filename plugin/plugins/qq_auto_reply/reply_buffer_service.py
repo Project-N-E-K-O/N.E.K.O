@@ -312,7 +312,14 @@ class QQReplyBufferService:
             self.plugin._emit_log("DEBUG", f"缓冲追加（共{n}条），等待 {extra:.1f}s")
 
             # 10-16 条 → 走 pipeline 发简短确认
-            if 10 <= n < 17 and not getattr(existing, "_acked", False):
+            if (
+                10 <= n < 17
+                and not getattr(existing, "_acked", False)
+                and not self._consent_revoked_since(existing)
+            ):
+                # 内嵌轮的 prompt 里嵌着缓冲里的旧草稿（那是 bot 自己带着
+                # 记忆生成的回复文本）。它会为自己重算一份干净快照，闸恒
+                # 不响——授权已撤销时唯一正确的做法是根本不跑这一轮。
                 existing._acked = True
                 hist_before = self._session_history_len(session_key)
                 try:
@@ -340,6 +347,24 @@ class QQReplyBufferService:
                         )
 
             # 17+ 条 → 走 pipeline 强制总结 + 清空缓冲
+            if n >= 17 and self._consent_revoked_since(existing):
+                # 与 ack 同理：总结的 prompt 会原样引用这些记忆派生的旧
+                # 草稿。授权撤销后不总结、不投递，草稿保持未投递（排除
+                # 记录留存）并解除游标屏障——与 _deliver_after_wait 的
+                # 撤销分支同一口径。
+                self.plugin._emit_log(
+                    "WARN", "[Buffer] 记忆授权已撤销，丢弃缓冲中的旧回复（强制总结轮）",
+                )
+                self._bind_draft_to_pending(draft_row, existing)
+                existing.task.cancel()
+                self._pending.pop(session_key, None)
+                self._settle_provisional(
+                    (getattr(self.plugin, "_user_sessions", {}) or {}).get(
+                        session_key
+                    ),
+                    existing,
+                )
+                return
             if n >= 17:
                 # 本分支提前 return，函数尾部的补关联不会执行——先把本轮
                 # 草稿行绑上，否则 settle 按 draft_rows 清 provisional 时
@@ -473,7 +498,10 @@ class QQReplyBufferService:
                 fallback_to_text_on_voice_failure=True,
             )
             try:
-                delivery = await self.plugin.reply_delivery_node.deliver(plan)
+                delivery = await self.plugin.reply_delivery_node.deliver(
+                    plan,
+                    consent_gate=lambda: self._consent_revoked_since(pending),
+                )
             except Exception as e:
                 # NapCat 传输失败以异常上浮：与"未确认"同等对待——不跑
                 # 清理会让 provisional 屏障永久卡死后续 digest。
@@ -493,8 +521,10 @@ class QQReplyBufferService:
                 return
             # 单条草稿真的送出去了：只撤本次 pending 的未投递记录——此前
             # 合并场景留下的旧记录必须留存。
-            self._clear_undelivered_marks(session_key, pending)
-            if pending.mention_context is not None and texts:
+            async def _settle_delivered() -> None:
+                self._clear_undelivered_marks(session_key, pending)
+                if pending.mention_context is None or not texts:
+                    return
                 if pending.used_fallback_reply:
                     # 对偶直投路径：fallback 草稿此刻才真正送达，补历史行。
                     try:
@@ -512,6 +542,12 @@ class QQReplyBufferService:
                     )
                 except Exception as e:
                     self.plugin._emit_log("WARN", f"[Buffer] mention 补记失败: {e}")
+
+            # 必须在会话锁内：等待期间到达的群消息会照常跑完整条 pipeline，
+            # 无锁追加会把 fallback 行插进那一轮的 human/ai 中间——随后的
+            # 反扫会把这条"已投递"的行当成未投递草稿标掉（真回复被排除出
+            # digest），而那一轮自己的未投递草稿反倒没被标。
+            await self.plugin._run_with_session_lock(session_key, _settle_delivered)
             self._pending.pop(session_key, None)
             return
 

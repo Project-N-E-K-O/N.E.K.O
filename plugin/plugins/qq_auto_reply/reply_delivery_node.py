@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+from collections.abc import Callable
 from typing import Any
 
 from .pipeline_models import QQDeliveryPlan, QQDeliveryResult, QQMessageBlock
@@ -11,7 +12,14 @@ class QQReplyDeliveryNode:
     def __init__(self, plugin: Any):
         self.plugin = plugin
 
-    async def deliver(self, plan: QQDeliveryPlan | None) -> QQDeliveryResult | None:
+    async def deliver(
+        self, plan: QQDeliveryPlan | None, *,
+        consent_gate: Callable[[], bool] | None = None,
+    ) -> QQDeliveryResult | None:
+        """consent_gate 返回 True 表示本轮回复依赖的记忆授权已被撤销。
+
+        多块计划的块间有 2-5 秒拟人停顿，撤销可能落在任意一段停顿里——
+        闸只放在发送前，后面几块照样会在 opt-out 之后发出去。"""
         if not plan or not plan.blocks:
             return None
 
@@ -29,6 +37,17 @@ class QQReplyDeliveryNode:
             if i > 0:
                 # 块间延迟：模拟真人打字间隔
                 await asyncio.sleep(random.uniform(2.0, 5.0))
+
+            if consent_gate is not None and consent_gate():
+                # 撤销落在块间停顿里：剩余块不再发出，并且整条按未投递
+                # 处理——已发出的部分同样带着被撤销的记忆内容，历史里那
+                # 一行不该再进提取。
+                self.plugin.logger.warning(
+                    "记忆授权在分块投递途中被撤销，剩余消息块不再发送"
+                )
+                content_attempted = True
+                content_sent = False
+                break
 
             if block.poke:
                 if await self._send_poke(plan, block):

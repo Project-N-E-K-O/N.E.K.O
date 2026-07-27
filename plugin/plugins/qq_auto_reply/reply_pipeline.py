@@ -325,7 +325,13 @@ class QQReplyPipelineRunner:
             )
 
         try:
-            result = await self.plugin.reply_delivery_node.deliver(delivery_plan)
+            result = await self.plugin.reply_delivery_node.deliver(
+                delivery_plan,
+                consent_gate=(
+                    (lambda: self._consent_revoked_before_send(context))
+                    if context is not None else None
+                ),
+            )
         except Exception:
             # NapCat 传输失败以异常上浮：history-backed 回复的 ai 行已在
             # 共享历史里，先按投递失败记入排除名单再传播异常，否则下一次

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -112,6 +113,10 @@ class QQReplyContext:
     # core memory 段是否含 participant 域：member 授权在生成前被撤销时
     # 该段（及混合域召回）要一并撤除。
     used_member_subject: bool = False
+    # 本轮上下文的唯一标识：投递钩子的幂等键。绝不能用 id(context)——
+    # CPython 会把刚释放的同尺寸对象原样发回，下一轮的 context 常常拿到
+    # 同一地址，幂等扫描会把新一轮的行误判成"已经补过了"。
+    turn_uid: str = field(default_factory=lambda: uuid.uuid4().hex)
     # 生成时刻的授权依赖快照：直投路径在真正发出去之前再比一次（buffer
     # 路径由 PendingReply.consent_snapshot 负责），"生成完成→发送"之间
     # 的窗口也不得漏掉撤销。

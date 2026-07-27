@@ -454,26 +454,39 @@ class QQReplyGenerationService:
         history = getattr(session, "_conversation_history", None)
         if history is None:
             return
-        # 幂等键取本轮消息 ID：context 对象可能被重建（id() 就变了），而
-        # 重复的投递钩子未必紧挨着——扫最近几行也会漏。全历史精确匹配。
-        turn_id = str(getattr(context, "current_message_id", "") or "") or f"obj{id(context)}"
+        # 幂等键取本轮消息 ID：context 对象可能被重建（构造时的 turn_uid
+        # 就变了），而重复的投递钩子未必紧挨着——扫最近几行也会漏，故全
+        # 历史精确匹配。没有消息 ID 的轮次（主动发言/合成轮/平台缺字段）
+        # 退到 context 构造时生成的 turn_uid：绝不能用 id(context)，地址
+        # 复用会让后续每一条 fallback 行都被误判成重复而永久丢失。
+        turn_id = (
+            str(getattr(context, "current_message_id", "") or "")
+            or str(getattr(context, "turn_uid", "") or "")
+        )
+        if not turn_id:
+            history.append(self._build_fallback_row(reply_text, ""))
+            return
         marker = f"fallback:{turn_id}"
         for msg in reversed(history):
             if getattr(msg, "type", "") == "ai" and (
                 getattr(msg, "additional_kwargs", None) or {}
             ).get("neko_fallback_row") == marker:
                 return
+        history.append(self._build_fallback_row(reply_text, marker))
+
+    @staticmethod
+    def _build_fallback_row(reply_text: str, marker: str):
         try:
             from langchain_core.messages import AIMessage
 
             row = AIMessage(content=reply_text)
             row.additional_kwargs["neko_fallback_row"] = marker
+            return row
         except Exception:
-            row = SimpleNamespace(
+            return SimpleNamespace(
                 type="ai", content=reply_text,
                 additional_kwargs={"neko_fallback_row": marker},
             )
-        history.append(row)
 
     async def record_scoped_mentions_on_delivery(
         self, context: QQReplyContext, reply_text: str,
