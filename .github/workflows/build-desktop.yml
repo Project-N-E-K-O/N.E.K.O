@@ -1149,3 +1149,37 @@ jobs:
               --target "${GITHUB_SHA}" \
               --generate-notes
           fi
+
+      # Register the assets only after GitHub has finished creating the release.
+      # NEKO_UPDATE_MIRROR_IDS must contain only mirrors whose assets have already
+      # been uploaded and verified by the distribution pipeline.
+      - name: Sync stable release to update service
+        env:
+          NEKO_UPDATE_SERVER: ${{ vars.NEKO_UPDATE_SERVER }}
+          NEKO_UPDATE_ADMIN_TOKEN: ${{ secrets.NEKO_UPDATE_ADMIN_TOKEN }}
+          NEKO_UPDATE_MIRROR_IDS: ${{ vars.NEKO_UPDATE_MIRROR_IDS }}
+          NEKO_UPDATE_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${NEKO_UPDATE_SERVER:-}" || -z "${NEKO_UPDATE_ADMIN_TOKEN:-}" ]]; then
+            echo "::warning::Skipping update-service sync: configure NEKO_UPDATE_SERVER and NEKO_UPDATE_ADMIN_TOKEN to enable it."
+            exit 0
+          fi
+          if [[ "$NEKO_UPDATE_SERVER" != https://* ]]; then
+            echo "::error::NEKO_UPDATE_SERVER must be an HTTPS URL"
+            exit 1
+          fi
+
+          mirror_ids="$(jq -cn --arg values "${NEKO_UPDATE_MIRROR_IDS:-}" \
+            '$values | split(",") | map(gsub("^\\s+|\\s+$"; "") | select(length > 0))')"
+          payload="$(jq -cn \
+            --arg version "$NEKO_UPDATE_VERSION" \
+            --argjson mirror_ids "$mirror_ids" \
+            '{version: $version, mirror_ids: $mirror_ids}')"
+
+          curl --fail-with-body --retry 3 --retry-all-errors --connect-timeout 10 --max-time 60 \
+            --silent --show-error \
+            --request POST "${NEKO_UPDATE_SERVER%/}/v1/admin/N.E.K.O/stable/sync" \
+            --header "Authorization: Bearer $NEKO_UPDATE_ADMIN_TOKEN" \
+            --header 'Content-Type: application/json' \
+            --data "$payload"
