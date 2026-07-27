@@ -185,6 +185,25 @@ async def test_rps_payload_reaches_the_runtime_delivered_result_without_action_f
     runtime.engagement_times = []
     runtime.note_user_engagement = lambda *, at=None: runtime.engagement_times.append(at)
 
+    assert runtime.note_avatar_interaction_ingress(
+        {"interactionId": "invalid"}
+    ) is False
+    assert runtime.engagement_times == []
+
+    ingress_payload = {
+        "interactionId": "rps-runtime-ingress",
+        "toolId": "rps",
+        "target": "avatar",
+        "timestamp": 1,
+        "userGesture": "rock",
+        "avatarGesture": "scissors",
+        "roundResult": "user_win",
+        "_user_input_ingress_time": 120.0,
+    }
+    assert runtime.note_avatar_interaction_ingress(ingress_payload) is True
+    assert runtime.engagement_times == [120.0]
+    runtime.engagement_times.clear()
+
     result = await runtime.handle_avatar_interaction({
         "interactionId": "rps-runtime-delivery",
         "toolId": "rps",

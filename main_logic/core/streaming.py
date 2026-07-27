@@ -55,6 +55,33 @@ class StreamingMixin:
             return float(captured_at)
         return time.time()
 
+    def _note_one_shot_input_engagement(self, message: dict) -> bool:
+        """Record nonblank text/image input before fallible staging."""
+        input_type = message.get("input_type")
+        if input_type == "text":
+            memory_text = self._clean_frontend_memory_text(
+                message.get("memory_text")
+            )
+            content = memory_text or message.get("data")
+        elif input_type in {"avatar_drop_image", "user_image"}:
+            content = message.get("data")
+        else:
+            return False
+
+        if isinstance(content, str):
+            has_content = bool(content.strip())
+        elif isinstance(content, (bytes, bytearray)):
+            has_content = bool(content)
+        else:
+            has_content = False
+        if not has_content:
+            return False
+
+        self.note_user_engagement(
+            at=self._user_input_ingress_time(message)
+        )
+        return True
+
     def _emit_cooldown_turn_end_if_needed(self):
         """Deduplicated turn_end emission during cooldown, at most once per second. Returns True when currently cooling down."""
         if not self._memory_error_retry_after or time.time() >= self._memory_error_retry_after:
@@ -101,18 +128,7 @@ class StreamingMixin:
                             await self._enqueue_audio_stream_data(message)
                         else:
                             if is_voice_session and msg_input_type in _TEXT_SESSION_INPUT_TYPES:
-                                if msg_input_type == "text":
-                                    memory_text = self._clean_frontend_memory_text(
-                                        message.get("memory_text")
-                                    )
-                                    record_data = memory_text or message.get("data")
-                                    if (
-                                        isinstance(record_data, str)
-                                        and record_data.strip()
-                                    ):
-                                        self.note_user_engagement(
-                                            at=self._user_input_ingress_time(message)
-                                        )
+                                self._note_one_shot_input_engagement(message)
                                 dropped_text_for_voice += 1
                                 continue
                             await self._process_stream_data_internal(message)
@@ -216,10 +232,7 @@ class StreamingMixin:
         input_type = message.get("input_type")
         if self._should_drop_live_vision_stream(input_type):
             return
-        if (
-            input_type in _TEXT_SESSION_INPUT_TYPES
-            or input_type in {"avatar_drop_image", "user_image"}
-        ):
+        if input_type in _TEXT_SESSION_INPUT_TYPES:
             # Preserve when the user action reached the server. Session startup,
             # router task scheduling, mode rebuilds, and pending-input flushes
             # may delay actual handling. Preserve a router-provided timestamp;
@@ -229,6 +242,10 @@ class StreamingMixin:
                 **message,
                 "_user_input_ingress_time": self._user_input_ingress_time(message),
             }
+            # Genuine one-shot input must reset unanswered evidence even if a
+            # circuit breaker, failed startup, or final voice-mode flush drops
+            # it before the normal text/image processing branches are reached.
+            self._note_one_shot_input_engagement(message)
         # 检查session是否就绪
         async with self.input_cache_lock:
             if not self.session_ready:

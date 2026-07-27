@@ -81,8 +81,11 @@ def _fire_task(coro):
 
 
 def _stamp_user_input_ingress(message: dict) -> dict:
-    """Stamp text-like input before fire-and-forget task dispatch."""
-    if message.get("input_type") not in _TEXT_SESSION_INPUT_TYPES:
+    """Stamp genuine user input before fire-and-forget task dispatch."""
+    if (
+        message.get("input_type") not in _TEXT_SESSION_INPUT_TYPES
+        and message.get("action") != "avatar_interaction"
+    ):
         return message
     # This is a client trust boundary: never preserve a JSON-supplied private
     # timestamp. A future-dated value would suppress idle/proactive behavior.
@@ -477,7 +480,13 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     _fire_task(session_manager[lanlan_name].stream_data(message))
 
             elif action == "avatar_interaction":
-                _fire_task(session_manager[lanlan_name].handle_avatar_interaction(message))
+                message = _stamp_user_input_ingress(message)
+                avatar_mgr = session_manager[lanlan_name]
+                # Validate and expose genuine engagement synchronously, before
+                # the background handler can lose a scheduling race to a ready
+                # proactive commit. The handler preserves the same server stamp.
+                avatar_mgr.note_avatar_interaction_ingress(message)
+                _fire_task(avatar_mgr.handle_avatar_interaction(message))
 
             elif action == "end_session":
                 session_manager[lanlan_name].active_session_is_idle = False

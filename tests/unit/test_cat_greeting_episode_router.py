@@ -29,6 +29,10 @@ def test_text_ingress_is_stamped_before_async_dispatch(monkeypatch):
     restamped = websocket_router._stamp_user_input_ingress(already_stamped)
     assert restamped["_user_input_ingress_time"] == 123.5
     assert already_stamped["_user_input_ingress_time"] == 999_999_999_999.0
+    avatar = {"action": "avatar_interaction", "interactionId": "tap-1"}
+    stamped_avatar = websocket_router._stamp_user_input_ingress(avatar)
+    assert stamped_avatar["_user_input_ingress_time"] == 123.5
+    assert "_user_input_ingress_time" not in avatar
     audio = {"input_type": "audio", "data": []}
     assert websocket_router._stamp_user_input_ingress(audio) is audio
 

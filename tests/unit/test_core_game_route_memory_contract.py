@@ -787,6 +787,44 @@ async def test_stream_data_preserves_router_stamped_text_ingress(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("input_type", "data"),
+    [
+        ("text", "arrived while startup is circuit-broken"),
+        ("avatar_drop_image", "raw-image"),
+        ("user_image", "raw-image"),
+    ],
+)
+async def test_one_shot_input_records_engagement_before_startup_failure(
+    input_type,
+    data,
+):
+    """Fallible session startup cannot erase genuine input engagement."""
+    mgr = _make_transcript_manager()
+    mgr.session = None
+    mgr.is_active = False
+    mgr.session_ready = False
+    mgr._starting_session_count = 0
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = []
+    mgr._session_start_circuit_open = True
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr.last_user_engagement_time = None
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr,
+        {
+            "input_type": input_type,
+            "data": data,
+            "_user_input_ingress_time": FIXED_TS,
+        },
+    )
+
+    assert mgr.last_user_engagement_time == FIXED_TS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_text_mode_avatar_drop_image_is_metadata_only_in_analyzer_queue(monkeypatch):
     """Avatar Drop images must not put full base64 payloads into the sync queue."""
     mgr = _make_manager()
@@ -919,6 +957,32 @@ async def test_cached_text_dropped_for_voice_still_records_engagement():
         {
             "input_type": "text",
             "data": "我在这里",
+            "_user_input_ingress_time": FIXED_TS,
+        }
+    ]
+    mgr.last_user_engagement_time = None
+
+    await core_module.LLMSessionManager._flush_pending_input_data(mgr)
+
+    assert mgr.pending_input_data == []
+    assert mgr.last_user_engagement_time == FIXED_TS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("input_type", ["avatar_drop_image", "user_image"])
+async def test_cached_user_image_dropped_for_voice_still_records_engagement(
+    input_type,
+):
+    """A submitted image remains engagement when voice startup discards it."""
+    mgr = _make_transcript_manager()
+    mgr.session = object.__new__(core_module.OmniRealtimeClient)
+    mgr.is_active = True
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = [
+        {
+            "input_type": input_type,
+            "data": "raw-image",
             "_user_input_ingress_time": FIXED_TS,
         }
     ]
