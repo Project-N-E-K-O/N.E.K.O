@@ -543,8 +543,11 @@ class QQReplyBufferService:
                         )
                 # mention 计数绑定实际投递：单条路径此刻才真正送达。
                 try:
+                    from .pipeline_models import delivered_blocks_text
+
                     await self.plugin.reply_generation_service.record_scoped_mentions_on_delivery(
-                        pending.mention_context, texts[0],
+                        pending.mention_context,
+                        delivered_blocks_text(pending.first_blocks) or texts[0],
                     )
                 except Exception as e:
                     self.plugin._emit_log("WARN", f"[Buffer] mention 补记失败: {e}")

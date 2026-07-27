@@ -11,6 +11,14 @@ class QQSessionMemoryService:
     GROUP_HISTORY_MAX_MESSAGES = 200
     GROUP_MEMBER_MAX_PARTICIPANTS = 8
     GROUP_MEMBER_MAX_MESSAGES = 50
+    # 冲不出去时的硬顶：服务端挂掉的情况下也不能无界增长，但要留出比
+    # 触发线更大的余量，别一到线就开始丢。
+    GROUP_MEMBER_HARD_LIMIT = 150
+    # 未结算的群历史积压到这个数就后台冲一次。复读守卫（main_logic 的
+    # omni client，全模式共享）会把 _conversation_history 整个换成只剩
+    # 系统消息，此前未落盘的轮次当场消失；在它之前主动落盘，能把损失从
+    # "整场会话"压到最多这么多轮。
+    GROUP_DIGEST_BACKLOG_TRIGGER = 40
 
     def __init__(self, plugin: Any):
         self.plugin = plugin
@@ -304,14 +312,41 @@ class QQSessionMemoryService:
             "role": "user",
             "content": [{"type": "text", "text": text}],
         })
-        if len(messages) > self.GROUP_MEMBER_MAX_MESSAGES:
-            del messages[:-self.GROUP_MEMBER_MAX_MESSAGES]
+        if len(messages) >= self.GROUP_MEMBER_MAX_MESSAGES:
+            # 活跃群永远等不到 idle 结算，焦点 digest 又只冲群历史：到线
+            # 就丢最早的，等于在服务端完全健康的情况下永久丢掉已授权的
+            # 成员发言。标记待冲，由每轮的异步钩子后台排空。
+            user_data["member_flush_due"] = True
+        if len(messages) > self.GROUP_MEMBER_HARD_LIMIT:
+            self.plugin.logger.warning(
+                f"成员 {sender_id} 的记忆队列超过硬顶（冲刷持续失败），"
+                f"丢弃最早的 {len(messages) - self.GROUP_MEMBER_HARD_LIMIT} 条"
+            )
+            del messages[:-self.GROUP_MEMBER_HARD_LIMIT]
 
     async def cache_session_delta(self, session_key: str, user_data: dict[str, Any]) -> int:
         # Busy group chats use one scoped extraction at session finalization.
         # Feeding each group turn into the legacy /cache pipeline would both
         # increase LLM cost and contaminate legacy-private memory.
         if user_data.get("is_group"):
+            session = user_data.get("session")
+            history = getattr(session, "_conversation_history", []) or []
+            backlog = len(history) - int(
+                user_data.get("last_group_digest_index", 0) or 0
+            )
+            if backlog >= self.GROUP_DIGEST_BACKLOG_TRIGGER and not user_data.get(
+                "group_digest_draining"
+            ):
+                user_data["group_digest_draining"] = True
+                self.plugin._spawn_memory_sync_task(
+                    self._drain_group_digest(session_key)
+                )
+            if user_data.pop("member_flush_due", False):
+                # 每轮都会走到这里（legacy /cache 对群是 no-op），拿它当
+                # 排空点：后台跑，不拖慢本轮回复；取会话锁避免与结算撞车。
+                self.plugin._spawn_memory_sync_task(
+                    self._drain_member_buckets(session_key)
+                )
             return 0
         session = user_data.get("session")
         her_name = user_data.get("her_name")
@@ -340,6 +375,76 @@ class QQSessionMemoryService:
         user_data["last_synced_index"] = history_upper
         user_data["has_cached_memory"] = True
         return len(delta_messages)
+
+    async def _drain_group_digest(self, session_key: str) -> None:
+        """Push the group's backlog before it can be lost.
+
+        The repetition guard swaps the whole conversation history for a
+        bare system message; anything not yet persisted at that moment is
+        gone. Draining on a backlog threshold does not remove that window
+        (the guard lives in the shared omni client), it bounds it."""
+        async def _drain() -> None:
+            user_data = self.plugin._user_sessions.get(session_key)
+            if not user_data:
+                return
+            try:
+                if not user_data.get("is_group") or not user_data.get(
+                    "memory_enabled"
+                ):
+                    return
+                group_id = str(user_data.get("group_id") or "").strip()
+                her_name = user_data.get("her_name")
+                session = user_data.get("session")
+                history = getattr(session, "_conversation_history", []) or []
+                if not group_id or not her_name or not history:
+                    return
+                await self._settle_group_digest_batches(
+                    user_data=user_data, group_id=group_id, her_name=her_name,
+                    reason="digest_backlog",
+                    conversation_history=history,
+                    last_group_digest_index=int(
+                        user_data.get("last_group_digest_index", 0) or 0
+                    ),
+                )
+            except Exception as exc:
+                # 失败留待下一轮/idle 结算：游标停在最后一个成功批次。
+                self.plugin.logger.warning(
+                    f"[digest_backlog] 群积压冲刷失败 ({session_key}): {exc}"
+                )
+            finally:
+                user_data.pop("group_digest_draining", None)
+
+        await self.plugin._run_with_session_lock(session_key, _drain)
+
+    async def _drain_member_buckets(self, session_key: str) -> None:
+        """Flush member buckets that hit the cap, instead of dropping the
+        oldest authorized turns of a group that never goes idle."""
+        async def _drain() -> None:
+            user_data = self.plugin._user_sessions.get(session_key)
+            if not user_data or not user_data.get("is_group"):
+                return
+            if not user_data.get("memory_enabled"):
+                return
+            if not (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                "group_member_memory_enabled", False,
+            ):
+                return
+            group_id = str(user_data.get("group_id") or "").strip()
+            her_name = user_data.get("her_name")
+            if not group_id or not her_name:
+                return
+            failed = await self._flush_member_buckets(
+                user_data, group_id=group_id, her_name=her_name,
+                reason="member_bucket_cap",
+            )
+            if failed:
+                # 冲失败的桶留在原地等下一轮（硬顶兜底防无界增长）。
+                self.plugin.logger.warning(
+                    f"[member_bucket_cap] 群 {group_id} 有 {len(failed)} 个"
+                    f"成员队列冲刷失败，留待下轮"
+                )
+
+        await self.plugin._run_with_session_lock(session_key, _drain)
 
     async def _flush_member_buckets(
         self, user_data: dict[str, Any], *, group_id: str, her_name: str,

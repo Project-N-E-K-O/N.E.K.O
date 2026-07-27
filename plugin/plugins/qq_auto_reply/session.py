@@ -38,6 +38,31 @@ class QQAutoReplySessionMixin:
         except Exception as exc:
             self.logger.error(f"Message handler task failed: {exc}")
 
+    def _spawn_memory_sync_task(self, coro) -> None:
+        """Run a privacy-critical memory coroutine in the background.
+
+        One registry for every producer (settings transitions, member
+        bucket drains): the event loop holds tasks weakly, and stop() joins
+        exactly this set."""
+        task = asyncio.create_task(coro)
+        sync_tasks = getattr(self, "_group_memory_sync_tasks", None)
+        if sync_tasks is None:
+            sync_tasks = set()
+            self._group_memory_sync_tasks = sync_tasks
+        sync_tasks.add(task)
+
+        def _on_sync_done(done_task: asyncio.Task) -> None:
+            # 消费异常：后台任务若在 per-session 处理之外炸掉（锁包装/
+            # 迭代层），静默丢弃会让工作半途而废且无日志。
+            sync_tasks.discard(done_task)
+            if done_task.cancelled():
+                return
+            exc = done_task.exception()
+            if exc is not None:
+                self._emit_log("ERROR", f"记忆后台任务失败: {exc}")
+
+        task.add_done_callback(_on_sync_done)
+
     async def _run_with_session_lock(self, session_key: str, coro_factory) -> Any:
         return await self.session_runtime_service.run_with_session_lock(session_key, coro_factory)
 

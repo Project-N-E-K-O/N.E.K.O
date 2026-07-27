@@ -389,9 +389,14 @@ class QQReplyPipelineRunner:
                     context, outcome.reply_text,
                 )
             # mention 计数绑定实际投递（非 buffer 直投与合成轮都走这里；
-            # buffer 路径由 _deliver_after_wait 在真投递后补记）。
+            # buffer 路径由 _deliver_after_wait 在真投递后补记）。扫描整条
+            # 计划的正文：outcome.reply_text 只有首块，后续块里披露的事实
+            # 不记就永远进不了 suppression。
+            from .pipeline_models import delivered_blocks_text
+
             await self.plugin.reply_generation_service.record_scoped_mentions_on_delivery(
-                context, outcome.reply_text,
+                context,
+                delivered_blocks_text(delivery_plan.blocks) or outcome.reply_text,
             )
         return result
 

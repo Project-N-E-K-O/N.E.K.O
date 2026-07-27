@@ -27,6 +27,22 @@ SYNTHETIC_SOURCE_KINDS = frozenset({
 })
 
 
+def delivered_blocks_text(blocks) -> str:
+    """All user-visible text of a plan, not just the first block.
+
+    A `<msg>` reply can span several blocks; postprocess keeps only the
+    first one in `reply_text`. Anything disclosed in a later text/voice
+    block would otherwise never bump its scoped mention counter and never
+    reach anti-repeat suppression."""
+    parts: list[str] = []
+    for block in blocks or []:
+        for value in (getattr(block, "text", ""), getattr(block, "record", "")):
+            value = str(value or "").strip()
+            if value:
+                parts.append(value)
+    return "\n".join(parts)
+
+
 def is_synthetic_source(source_kind: str | None) -> bool:
     """True when the turn's nominal sender did not actually say anything."""
     return str(source_kind or "") in SYNTHETIC_SOURCE_KINDS

@@ -397,7 +397,8 @@ class QQVoiceReplyService:
         text_segments.append({"type": "text", "data": {"text": f" {normalized_text}" if at_user_id else normalized_text}})
         if mode == "text":
             return self._confirm_send(
-                await self.plugin.qq_client.send_group_message_segments(group_id, text_segments, keyboard=keyboard)
+                await self.plugin.qq_client.send_group_message_segments(group_id, text_segments, keyboard=keyboard),
+                has_result_channel=True,
             )
         # both 模式：LLM 自主决定 → 有 <record> 则语音，否则纯文字
         if mode == "both":
@@ -406,7 +407,8 @@ class QQVoiceReplyService:
                 text_ok = False
                 if normalized_text:
                     text_ok = self._confirm_send(
-                        await self.plugin.qq_client.send_group_message_segments(group_id, text_segments, keyboard=keyboard)
+                        await self.plugin.qq_client.send_group_message_segments(group_id, text_segments, keyboard=keyboard),
+                        has_result_channel=True,
                     )
                 try:
                     file_uri, _ = await self.synthesize_reply_voice_file(voice_content)
@@ -419,7 +421,8 @@ class QQVoiceReplyService:
                     return text_ok
             else:
                 return self._confirm_send(
-                    await self.plugin.qq_client.send_group_message_segments(group_id, text_segments, keyboard=keyboard)
+                    await self.plugin.qq_client.send_group_message_segments(group_id, text_segments, keyboard=keyboard),
+                    has_result_channel=True,
                 )
         try:
             file_uri, _ = await self.synthesize_reply_voice_file(normalized_text)
@@ -437,7 +440,8 @@ class QQVoiceReplyService:
                 return self._confirm_send(
                     await self.plugin.qq_client.send_group_message_segments(
                         group_id, text_segments, keyboard=keyboard,
-                    )
+                    ),
+                    has_result_channel=True,
                 )
             return False
         except Exception:
@@ -446,7 +450,8 @@ class QQVoiceReplyService:
                 return self._confirm_send(
                     await self.plugin.qq_client.send_group_message_segments(
                         group_id, text_segments, keyboard=keyboard,
-                    )
+                    ),
+                    has_result_channel=True,
                 )
             if mode == "both":
                 self.plugin.logger.warning("QQ 复合群聊中的语音发送失败，已保留文本", exc_info=True)

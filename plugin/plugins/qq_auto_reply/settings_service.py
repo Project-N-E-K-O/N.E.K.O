@@ -265,30 +265,7 @@ class QQSettingsService:
                 )
 
     def _spawn_group_memory_sync_task(self, coro) -> None:
-        """Run a privacy-critical session-sync coroutine in the background.
-
-        The event loop holds tasks weakly; without a strong reference the
-        settle/cleanup could be garbage-collected mid-flight."""
-        task = asyncio.create_task(coro)
-        sync_tasks = getattr(self.plugin, "_group_memory_sync_tasks", None)
-        if sync_tasks is None:
-            sync_tasks = set()
-            self.plugin._group_memory_sync_tasks = sync_tasks
-        sync_tasks.add(task)
-
-        def _on_sync_done(done_task: "asyncio.Task") -> None:
-            # 消费异常：转变任务若在 per-session 处理之外炸掉（锁包装/
-            # 迭代层），静默丢弃会让 consent 转变跨会话半途而废且无日志。
-            sync_tasks.discard(done_task)
-            if done_task.cancelled():
-                return
-            exc = done_task.exception()
-            if exc is not None:
-                self.plugin._emit_log(
-                    "ERROR", f"记忆转变后台任务失败: {exc}"
-                )
-
-        task.add_done_callback(_on_sync_done)
+        self.plugin._spawn_memory_sync_task(coro)
 
     async def load_business_config(self) -> dict[str, Any]:
         self.plugin._qq_settings = await self.plugin.config_store.load()

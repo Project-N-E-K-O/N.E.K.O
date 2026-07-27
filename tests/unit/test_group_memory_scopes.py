@@ -4818,13 +4818,20 @@ async def test_sync_task_spawn_reports_failures():
     """The transition-task registry must consume exceptions in its done
     callback — a silently dropped failure leaves the consent transition
     half-applied with no log."""
+    from plugin.plugins.qq_auto_reply.session import QQAutoReplySessionMixin
     from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
 
     logs = []
+
+    class _Plugin(QQAutoReplySessionMixin):
+        def _emit_log(self, level, msg):
+            logs.append((level, msg))
+
     service = QQSettingsService.__new__(QQSettingsService)
-    service.plugin = SimpleNamespace(
-        _emit_log=lambda level, msg: logs.append((level, msg)),
-    )
+    # One registry shared by every producer: the settings service and the
+    # member-bucket drain both go through the plugin facade, so stop()
+    # joins a single set.
+    service.plugin = _Plugin()
 
     async def _boom():
         raise RuntimeError("transition down")
@@ -8195,3 +8202,266 @@ async def test_voice_failure_fallback_keeps_the_keyboard():
         fallback_to_text_on_voice_failure=True,
     ) is True
     assert send_segments.await_args.kwargs.get("keyboard") == "状态|配置"
+
+
+@pytest.mark.asyncio
+async def test_member_bucket_cap_flushes_instead_of_dropping():
+    """A continuously active group never reaches the idle finalizer and
+    the focus-shift digest only flushes group history, so hitting the cap
+    used to silently delete a member's oldest authorized turns while the
+    memory server was perfectly healthy."""
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    spawned: list = []
+    ud = {
+        "is_group": True,
+        "memory_enabled": True,
+        "group_id": "7788",
+        "her_name": "Neko",
+        "group_member_memory_messages": {},
+        "group_member_memory_labels": {},
+    }
+
+    async def _run_with_session_lock(session_key, fn):
+        return await fn()
+
+    plugin = SimpleNamespace(
+        _user_sessions={"group:7788": ud},
+        _qq_settings={
+            "group_memory_enabled": True, "group_member_memory_enabled": True,
+        },
+        _run_with_session_lock=_run_with_session_lock,
+        _spawn_memory_sync_task=lambda coro: spawned.append(coro),
+        logger=MagicMock(),
+        permission_mgr=SimpleNamespace(get_nickname=lambda *a, **k: None),
+    )
+    service = QQSessionMemoryService(plugin)
+    context = SimpleNamespace(
+        is_group=True, sender_id="2046", member_memory_enabled=True,
+        source_kind="incoming_group", group_facing=False,
+        group_scene_mode="", message="发言",
+    )
+
+    for _ in range(QQSessionMemoryService.GROUP_MEMBER_MAX_MESSAGES):
+        service.record_group_member_turn(ud, context)
+    bucket = ud["group_member_memory_messages"]["2046"]
+    # Nothing was dropped, and a drain was requested.
+    assert len(bucket) == QQSessionMemoryService.GROUP_MEMBER_MAX_MESSAGES
+    assert ud.get("member_flush_due") is True
+
+    # The per-turn async hook schedules the drain in the background.
+    await service.cache_session_delta("group:7788", ud)
+    assert len(spawned) == 1
+    assert "member_flush_due" not in ud
+    flushed: list = []
+    service._flush_member_buckets = AsyncMock(
+        side_effect=lambda user_data, **kw: flushed.append(kw["reason"]) or []
+    )
+    await spawned.pop()
+    assert flushed == ["member_bucket_cap"]
+
+    # Only past the hard limit (persistent flush failure) is anything
+    # discarded, and it is logged.
+    ud["group_member_memory_messages"]["2046"] = [
+        {"role": "user"} for _ in range(QQSessionMemoryService.GROUP_MEMBER_HARD_LIMIT)
+    ]
+    service.record_group_member_turn(ud, context)
+    assert len(ud["group_member_memory_messages"]["2046"]) == (
+        QQSessionMemoryService.GROUP_MEMBER_HARD_LIMIT
+    )
+    assert plugin.logger.warning.called
+
+
+@pytest.mark.asyncio
+async def test_group_backlog_is_drained_before_it_can_be_lost():
+    """The repetition guard replaces the whole conversation history with a
+    bare system message. Draining on a backlog threshold does not close
+    that window (the guard lives in the shared omni client) but bounds the
+    loss to at most one trigger's worth of turns."""
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    trigger = QQSessionMemoryService.GROUP_DIGEST_BACKLOG_TRIGGER
+    history = [SimpleNamespace(type="human", content=f"m{i}") for i in range(trigger)]
+    ud = {
+        "is_group": True,
+        "memory_enabled": True,
+        "group_id": "7788",
+        "her_name": "Neko",
+        "session": SimpleNamespace(_conversation_history=history),
+        "last_group_digest_index": 0,
+    }
+    spawned: list = []
+
+    async def _run_with_session_lock(session_key, fn):
+        return await fn()
+
+    plugin = SimpleNamespace(
+        _user_sessions={"group:7788": ud},
+        _qq_settings={"group_memory_enabled": True},
+        _run_with_session_lock=_run_with_session_lock,
+        _spawn_memory_sync_task=lambda coro: spawned.append(coro),
+        logger=MagicMock(),
+    )
+    service = QQSessionMemoryService(plugin)
+    settled: list = []
+    service._settle_group_digest_batches = AsyncMock(
+        side_effect=lambda **kw: settled.append(kw["reason"]) or True
+    )
+
+    await service.cache_session_delta("group:7788", ud)
+    assert len(spawned) == 1
+    # A second turn while the drain is in flight must not pile up tasks.
+    await service.cache_session_delta("group:7788", ud)
+    assert len(spawned) == 1
+    await spawned.pop()
+    assert settled == ["digest_backlog"]
+    assert "group_digest_draining" not in ud
+
+    # Below the threshold nothing is scheduled.
+    ud["last_group_digest_index"] = len(history)
+    await service.cache_session_delta("group:7788", ud)
+    assert spawned == []
+
+
+def test_delivered_blocks_text_covers_every_content_block():
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        QQMessageBlock,
+        delivered_blocks_text,
+    )
+
+    text = delivered_blocks_text([
+        QQMessageBlock(text="第一句"),
+        QQMessageBlock(poke="2"),
+        QQMessageBlock(text="她记得群规是不剧透"),
+        QQMessageBlock(record="这句是语音"),
+    ])
+    assert "第一句" in text
+    assert "她记得群规是不剧透" in text
+    assert "这句是语音" in text
+    assert delivered_blocks_text([]) == ""
+
+
+@pytest.mark.asyncio
+async def test_mention_scan_covers_later_blocks_on_both_delivery_paths():
+    """postprocess keeps only the first block in reply_text; a fact
+    disclosed in a later block would never bump its mention counter and so
+    never reach anti-repeat suppression."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        QQDeliveryPlan,
+        QQDeliveryResult,
+        QQMessageBlock,
+        QQReplyOutcome,
+        QQReplyRequest,
+    )
+    from plugin.plugins.qq_auto_reply.reply_buffer_service import (
+        PendingReply,
+        QQReplyBufferService,
+    )
+    from plugin.plugins.qq_auto_reply.reply_pipeline import (
+        QQReplyPipelineRunner,
+    )
+
+    blocks = [
+        QQMessageBlock(text="嗯嗯"),
+        QQMessageBlock(text="她记得群规是不剧透"),
+    ]
+    mentions = AsyncMock()
+    plugin = SimpleNamespace(
+        reply_buffer_service=None,
+        reply_delivery_node=SimpleNamespace(
+            deliver=AsyncMock(return_value=QQDeliveryResult(
+                delivered=True, target_type="group", target_id="7788",
+                reply_text="嗯嗯",
+            )),
+        ),
+        reply_generation_service=SimpleNamespace(
+            record_scoped_mentions_on_delivery=mentions,
+            append_fallback_ai_row=MagicMock(),
+        ),
+        _qq_settings={"group_memory_enabled": True},
+        logger=MagicMock(),
+    )
+    runner = QQReplyPipelineRunner(plugin)
+    context = SimpleNamespace(is_group=True, group_id="7788", consent_snapshot={})
+    await runner._run_delivery(
+        QQDeliveryPlan(target_type="group", target_id="7788", blocks=blocks),
+        QQReplyRequest(
+            message_text="hi", sender_id="2046", is_group=True, group_id="7788",
+        ),
+        QQReplyOutcome(action="reply", reply_text="嗯嗯"),
+        context=context,
+    )
+    assert "她记得群规是不剧透" in mentions.await_args.args[1]
+
+    # Buffered single delivery has the same exposure (texts[0] is the
+    # first block too).
+    mentions.reset_mock()
+    service = QQReplyBufferService.__new__(QQReplyBufferService)
+
+    async def _locked(session_key, coro_factory):
+        return await coro_factory()
+
+    service.plugin = SimpleNamespace(
+        _emit_log=lambda *a, **k: None,
+        _user_sessions={"group:7788": {}},
+        _run_with_session_lock=_locked,
+        reply_delivery_node=SimpleNamespace(
+            deliver=AsyncMock(return_value=QQDeliveryResult(
+                delivered=True, target_type="group", target_id="7788",
+                reply_text="嗯嗯",
+            )),
+        ),
+        reply_generation_service=SimpleNamespace(
+            record_scoped_mentions_on_delivery=mentions,
+            append_fallback_ai_row=MagicMock(),
+        ),
+    )
+    service._pending = {}
+    service._clear_undelivered_marks = lambda key, pending: None
+    service._settle_provisional = staticmethod(lambda ud, p: None)
+    service._consent_revoked_since = lambda pending: False
+    pending = PendingReply(
+        first_text="嗯嗯", wait_seconds=0.0, sender_id="2046",
+        is_group=True, group_id="7788",
+    )
+    pending.buffered_texts = ["嗯嗯"]
+    pending.message_count = 1
+    pending.first_blocks = blocks
+    pending.wait_until = 0.0
+    pending.mention_context = context
+    service._pending["group:7788"] = pending
+    await service._deliver_after_wait("group:7788", pending)
+    assert "她记得群规是不剧透" in mentions.await_args.args[1]
+
+
+@pytest.mark.asyncio
+async def test_group_text_send_honours_the_segment_receipt():
+    """Group text goes out through the segments API, which reports a
+    timeout as None — treating that as fire-and-forget marks an unsent
+    reply delivered."""
+    from plugin.plugins.qq_auto_reply.voice_reply_service import (
+        QQVoiceReplyService,
+    )
+
+    send_segments = AsyncMock(return_value=None)
+    service = QQVoiceReplyService.__new__(QQVoiceReplyService)
+    service.plugin = SimpleNamespace(
+        logger=MagicMock(),
+        _get_reply_mode=lambda: "text",
+        _validate_outbound_message=lambda text: text,
+        qq_client=SimpleNamespace(
+            needs_attention=True,  # NapCat
+            send_group_message_segments=send_segments,
+        ),
+    )
+    assert await service.deliver_group_reply(
+        "7788", "回复", fallback_to_text_on_voice_failure=True,
+    ) is False
+    send_segments.return_value = "mid"
+    assert await service.deliver_group_reply(
+        "7788", "回复", fallback_to_text_on_voice_failure=True,
+    ) is True
