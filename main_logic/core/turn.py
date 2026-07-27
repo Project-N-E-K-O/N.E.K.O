@@ -489,6 +489,20 @@ class TurnMixin:
             if request_id is _REQUEST_ID_UNSET
             else request_id
         )
+        request_has_owner = (
+            request_id is not _REQUEST_ID_UNSET
+            and active_request_id is not None
+        )
+
+        def may_clear_shared_output() -> bool:
+            # Legacy / proactive callbacks have no request owner and keep their
+            # historical global-clear behavior. Request-bound callbacks may
+            # mutate shared TTS/queue state only while their owner is current.
+            return (
+                not request_has_owner
+                or self._active_text_request_id == active_request_id
+            )
+
         logger.warning(f"[{self.lanlan_name}] 响应异常已丢弃 (reason={reason}, attempt={attempt}/{max_attempts}, will_retry={will_retry})")
 
         # 检测是否为 RESPONSE_TOO_LONG 最终丢弃 / RESPONSE_LENGTH_TRUNCATED 截断恢复
@@ -512,7 +526,8 @@ class TurnMixin:
                 )
                 print(f"[response_discarded parse_err] raw: {message!r}")
 
-        await self._clear_tts_pipeline()
+        if may_clear_shared_output():
+            await self._clear_tts_pipeline()
 
         if self.websocket and hasattr(self.websocket, 'client_state') and \
                 self.websocket.client_state == self.websocket.client_state.CONNECTED:
@@ -612,7 +627,7 @@ class TurnMixin:
                 if self._active_text_request_id == active_request_id:
                     self._active_text_request_id = None
 
-        if self.sync_message_queue:
+        if self.sync_message_queue and may_clear_shared_output():
             self.sync_message_queue.put({
                 'type': 'system',
                 'data': 'response_discarded_clear'

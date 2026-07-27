@@ -145,6 +145,9 @@ const LIVE2D_PEEK_VISIBLE_MIN_PX = 96;
 const LIVE2D_PEEK_VISIBLE_MAX_PX = 180;
 const LIVE2D_PEEK_SIDE_ROTATION_DEGREES = 60;
 const LIVE2D_PEEK_CORNER_ROTATION_DEGREES = 45;
+// live2d-core.js performs its final cross-display renderer resize after 120ms.
+// Restore the semantic edge anchor only after that pass can no longer clear it.
+const LIVE2D_PEEK_DISPLAY_RESIZE_SETTLE_MS = 160;
 const LIVE2D_PEEK_TOP_CORNER_ROTATION_DEGREES = 135;
 const LIVE2D_PEEK_HEAD_Y_RATIO = 0.24;
 const LIVE2D_PEEK_VISIBLE_MARGIN_PX = 8;
@@ -153,6 +156,8 @@ const LIVE2D_PEEK_REVEAL_ANIMATION_MS = 300;
 const LIVE2D_PEEK_HIDE_ANIMATION_MS = 220;
 const LIVE2D_PEEK_RESTORE_ANIMATION_MS = 260;
 let live2DPeekDisplayContext = null;
+let live2DPeekDisplayReconcileId = 0;
+let live2DPeekPendingDisplayRestoreAnchor = null;
 let live2DPeekDisplayRefresh = null;
 
 function isLive2DPeekDesktopRuntime() {
@@ -1024,12 +1029,22 @@ async function restoreLive2DPeekAnchor(anchor) {
 }
 
 async function reconcileLive2DPeekAfterDisplayChange() {
+    const reconcileId = ++live2DPeekDisplayReconcileId;
     const restoreAnchor = captureLive2DPeekRestoreAnchor();
+    if (restoreAnchor) {
+        live2DPeekPendingDisplayRestoreAnchor = restoreAnchor;
+    }
     clearLive2DPeek('display-changed');
     live2DPeekDisplayContext = null;
     await refreshLive2DPeekDisplayContext(true);
-    if (restoreAnchor) {
-        await restoreLive2DPeekAnchor(restoreAnchor);
+    if (live2DPeekPendingDisplayRestoreAnchor) {
+        await new Promise((resolve) => {
+            setTimeout(resolve, LIVE2D_PEEK_DISPLAY_RESIZE_SETTLE_MS);
+        });
+        if (reconcileId !== live2DPeekDisplayReconcileId) return;
+        const pendingRestoreAnchor = live2DPeekPendingDisplayRestoreAnchor;
+        live2DPeekPendingDisplayRestoreAnchor = null;
+        await restoreLive2DPeekAnchor(pendingRestoreAnchor);
     }
 }
 

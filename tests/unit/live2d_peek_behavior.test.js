@@ -933,6 +933,14 @@ test('display change rebuilds the active anchor against the refreshed display', 
     harness.window.screen.height = 1000;
     harness.window.dispatchEvent({ type: 'electron-display-changed' });
     await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(
+        manager.isLive2DPeekActive(),
+        false,
+        'anchor restore must wait until the renderer delayed resize has settled'
+    );
+    harness.window.dispatchEvent({ type: 'electron-display-changed' });
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setTimeout(resolve, 180));
     flushNextFrame(harness);
     await new Promise((resolve) => setImmediate(resolve));
 

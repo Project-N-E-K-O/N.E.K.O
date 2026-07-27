@@ -843,11 +843,40 @@ async def test_text_stream_discard_callback_keeps_original_request_owner(monkeyp
     discard_callback = mgr.session.stream_text.await_args.kwargs["response_discarded_callback"]
     mgr._active_text_request_id = "req-B"
     mgr.websocket = _FakeConnectedWebSocket()
+    mgr._clear_tts_pipeline = AsyncMock()
 
     await discard_callback("guard", 1, 3, False, None)
 
     assert mgr.websocket.sent[-1]["request_id"] == "req-A"
     assert mgr._active_text_request_id == "req-B"
+    mgr._clear_tts_pipeline.assert_not_awaited()
+    assert {
+        "type": "system",
+        "data": "response_discarded_clear",
+    } not in mgr.sync_message_queue.messages
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_unowned_discard_callback_keeps_global_clear_behavior():
+    """Legacy/proactive discard callbacks still clear shared output globally."""
+    mgr = _make_manager()
+    mgr._active_text_request_id = "req-current"
+    mgr._clear_tts_pipeline = AsyncMock()
+
+    await core_module.LLMSessionManager.handle_response_discarded(
+        mgr,
+        "guard",
+        1,
+        3,
+        True,
+    )
+
+    mgr._clear_tts_pipeline.assert_awaited_once()
+    assert {
+        "type": "system",
+        "data": "response_discarded_clear",
+    } in mgr.sync_message_queue.messages
 
 
 @pytest.mark.unit
