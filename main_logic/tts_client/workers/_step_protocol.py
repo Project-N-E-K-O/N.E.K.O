@@ -175,6 +175,7 @@ def run_step_protocol_tts_worker(
                 try:
                     await receive_task
                 except asyncio.CancelledError:
+                    # Expected after the explicit cancellation above.
                     pass
                 receive_task = None
             if ws:
@@ -243,6 +244,7 @@ def run_step_protocol_tts_worker(
                                 audio_jitter.flush()
                                 response_done.set()
                     except websockets.exceptions.ConnectionClosed:
+                        # Expected while replacing or shutting down this socket.
                         pass
                     except asyncio.CancelledError:
                         cancelled = True
@@ -277,7 +279,8 @@ def run_step_protocol_tts_worker(
             force=True is for the sid=None early-wrap-up case: send even below MIN_CHARS.
             Returns True if the session is ready (created just now or previously).
             """
-            nonlocal ws, session_id, current_speech_id, session_created, pending_text_buffer
+            nonlocal ws, session_id, current_speech_id, receive_task
+            nonlocal session_created, pending_text_buffer
             if session_created:
                 return True
             if not ws or not session_id:
@@ -323,6 +326,7 @@ def run_step_protocol_tts_worker(
                         try:
                             await receive_task
                         except asyncio.CancelledError:
+                            # Expected after the explicit cancellation above.
                             pass
                         receive_task = None
                     if ws:
