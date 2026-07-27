@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import os
 import shutil
 import sys
@@ -14,14 +15,40 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
-from main_logic.voice_turn.asset_manifest import (  # noqa: E402
-    AssetManifestError,
-    load_manifest,
-    verify_asset,
-)
+
+def _load_asset_manifest_module():
+    """Load asset_manifest without importing main_logic.voice_turn.__init__.
+
+    Docker builds run this script before ``uv sync`` installs project
+    dependencies, and the package ``__init__`` pulls in NumPy through
+    ``audio_buffer``.  ``asset_manifest`` itself is stdlib-only, so load it
+    directly by file path to keep the preparer runnable on a bare Python.
+    """
+    module_name = "main_logic.voice_turn.asset_manifest"
+    existing = sys.modules.get(module_name)
+    if existing is not None:
+        return existing
+    module_path = PROJECT_ROOT / "main_logic" / "voice_turn" / "asset_manifest.py"
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load asset manifest module from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    # Register under the canonical dotted name so a later full-package import
+    # reuses this module object and exception identity stays consistent.
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(module_name, None)
+        raise
+    return module
+
+
+_asset_manifest = _load_asset_manifest_module()
+AssetManifestError = _asset_manifest.AssetManifestError
+load_manifest = _asset_manifest.load_manifest
+verify_asset = _asset_manifest.verify_asset
 
 
 def _download_verified(source: str, destination: Path, expected_sha256: str) -> None:
