@@ -1114,6 +1114,188 @@ async def test_provider_clear_drops_queued_endpoint_for_invalidated_keys():
     await session.close()
 
 
+def _make_provider_preview_session(events: list[str]) -> _RealtimeAsrSessionImpl:
+    session = _make_provider_endpoint_session(events)
+
+    async def on_partial(text: str) -> None:
+        events.append(f"partial:{text}")
+
+    session._on_partial_transcript = on_partial
+    return session
+
+
+async def test_provider_out_of_order_partial_waits_for_earlier_final():
+    events: list[str] = []
+    session = _make_provider_preview_session(events)
+    await session.connect()
+    assert session._response_queue is not None
+    common = {"generation": 0, "buffer_epoch": 0}
+    for event in (
+        _AsrWorkerEvent(kind="utterance_started", utterance_id=10, **common),
+        _AsrWorkerEvent(kind="utterance_started", utterance_id=11, **common),
+        # Turn 2 streams while turn 1 still heads the order; the frontend
+        # keeps one preview slot which turn 1's final unconditionally
+        # clears, so these must be held back (never delivered live).
+        _AsrWorkerEvent(kind="partial", utterance_id=11, text="sec", **common),
+        _AsrWorkerEvent(kind="partial", utterance_id=11, text="second live", **common),
+    ):
+        await session._response_queue.put(event)
+    await _drain_session_pipelines(session)
+    assert events == []
+    # A partial for the head turn keeps flowing immediately.
+    await session._response_queue.put(
+        _AsrWorkerEvent(kind="partial", utterance_id=10, text="first live", **common)
+    )
+    await _drain_session_pipelines(session)
+    assert events == ["partial:first live"]
+    # Turn 1's final releases turn 2's latest (coalesced) preview after it.
+    await session._response_queue.put(
+        _AsrWorkerEvent(kind="final", utterance_id=10, text="first", **common)
+    )
+    await _drain_session_pipelines(session)
+    assert events == [
+        "partial:first live",
+        "endpoint",
+        "final:first",
+        "partial:second live",
+    ]
+    await session._response_queue.put(
+        _AsrWorkerEvent(kind="final", utterance_id=11, text="second", **common)
+    )
+    await _drain_session_pipelines(session)
+    assert events == [
+        "partial:first live",
+        "endpoint",
+        "final:first",
+        "partial:second live",
+        "endpoint",
+        "final:second",
+    ]
+    await session.close()
+
+
+async def test_provider_in_order_partials_flow_immediately():
+    events: list[str] = []
+    session = _make_provider_preview_session(events)
+    await session.connect()
+    assert session._response_queue is not None
+    common = {"generation": 0, "buffer_epoch": 0}
+    for event in (
+        _AsrWorkerEvent(kind="utterance_started", utterance_id=10, **common),
+        _AsrWorkerEvent(kind="partial", utterance_id=10, text="one", **common),
+        _AsrWorkerEvent(kind="final", utterance_id=10, text="first", **common),
+        _AsrWorkerEvent(kind="utterance_started", utterance_id=11, **common),
+        _AsrWorkerEvent(kind="partial", utterance_id=11, text="two", **common),
+        _AsrWorkerEvent(kind="final", utterance_id=11, text="second", **common),
+    ):
+        await session._response_queue.put(event)
+    await _drain_session_pipelines(session)
+    assert events == [
+        "partial:one",
+        "endpoint",
+        "final:first",
+        "partial:two",
+        "endpoint",
+        "final:second",
+    ]
+    await session.close()
+
+
+async def test_provider_queued_partial_is_superseded_by_its_own_final():
+    events: list[str] = []
+    session = _make_provider_preview_session(events)
+    await session.connect()
+    assert session._response_queue is not None
+    common = {"generation": 0, "buffer_epoch": 0}
+    for event in (
+        _AsrWorkerEvent(kind="utterance_started", utterance_id=10, **common),
+        _AsrWorkerEvent(kind="utterance_started", utterance_id=11, **common),
+        _AsrWorkerEvent(kind="partial", utterance_id=11, text="held", **common),
+        _AsrWorkerEvent(kind="final", utterance_id=11, text="second", **common),
+        _AsrWorkerEvent(kind="final", utterance_id=10, text="first", **common),
+    ):
+        await session._response_queue.put(event)
+    await _drain_session_pipelines(session)
+    # Turn 2's final arrived before turn 1's, so its queued preview is
+    # obsolete and must never resurface after its own final.
+    assert events == ["endpoint", "final:first", "endpoint", "final:second"]
+    assert session._pending_partials == {}
+    await session.close()
+
+
+async def test_provider_clear_drops_queued_partials():
+    events: list[str] = []
+    session = _make_provider_preview_session(events)
+    await session.connect()
+    assert session._response_queue is not None
+    common = {"generation": 0, "buffer_epoch": 0}
+    for event in (
+        _AsrWorkerEvent(kind="utterance_started", utterance_id=10, **common),
+        _AsrWorkerEvent(kind="utterance_started", utterance_id=11, **common),
+        _AsrWorkerEvent(kind="partial", utterance_id=11, text="held", **common),
+    ):
+        await session._response_queue.put(event)
+    await _drain_session_pipelines(session)
+    assert events == []
+    assert session._pending_partials
+    await session.clear_audio_buffer()
+    assert session._pending_partials == {}
+    await _drain_session_pipelines(session)
+    # The invalidated preview must never be delivered after the clear.
+    assert events == []
+    # The next epoch's previews still flow immediately.
+    next_common = {"generation": 0, "buffer_epoch": session._buffer_epoch}
+    for event in (
+        _AsrWorkerEvent(kind="utterance_started", utterance_id=20, **next_common),
+        _AsrWorkerEvent(kind="partial", utterance_id=20, text="fresh", **next_common),
+    ):
+        await session._response_queue.put(event)
+    await _drain_session_pipelines(session)
+    assert events == ["partial:fresh"]
+    await session.close()
+
+
+async def test_manual_partial_for_next_utterance_waits_for_committed_final():
+    events: list[str] = []
+
+    async def on_transcript(text: str) -> None:
+        events.append(f"final:{text}")
+
+    async def on_partial(text: str) -> None:
+        events.append(f"partial:{text}")
+
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=_recording_worker,
+        api_key="",
+        config=AsrSessionConfig(),
+        on_input_transcript=on_transcript,
+        on_connection_error=AsyncMock(),
+    )
+    session._on_partial_transcript = on_partial
+    await session.connect()
+    await session.stream_audio(b"\x00\x00" * 160)
+    await session.signal_user_activity_end()
+    # Utterance 1 is committed and awaits its final; utterance 2 starts
+    # streaming, so its previews must wait behind the pending final.
+    await session.stream_audio(b"\x00\x00" * 160)
+    assert session._response_queue is not None
+    await session._response_queue.put(
+        _AsrWorkerEvent(
+            kind="partial", generation=0, buffer_epoch=0, utterance_id=2, text="next"
+        )
+    )
+    await _drain_session_pipelines(session)
+    assert events == []
+    await session._response_queue.put(
+        _AsrWorkerEvent(
+            kind="final", generation=0, buffer_epoch=0, utterance_id=1, text="first"
+        )
+    )
+    await _drain_session_pipelines(session)
+    assert events == ["final:first", "partial:next"]
+    await session.close()
+
+
 async def _wait_until(predicate) -> None:
     while not predicate():
         await asyncio.sleep(0)

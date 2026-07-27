@@ -316,8 +316,10 @@ class _CallbackItem:
     # "endpoint" items carry the deferred keyless seal notification through
     # the same FIFO as transcripts so it reaches the runtime only after every
     # earlier turn's final has been delivered (and the runtime has activated
-    # the turn this notification belongs to).
-    kind: Literal["transcript", "endpoint"] = "transcript"
+    # the turn this notification belongs to). "partial" items carry live
+    # preview text through the same FIFO so a preview can never overtake an
+    # earlier turn's final that is still queued for delivery.
+    kind: Literal["transcript", "endpoint", "partial"] = "transcript"
 
 
 class _RealtimeAsrSessionImpl:
@@ -372,6 +374,10 @@ class _RealtimeAsrSessionImpl:
         self._endpointed_turn_keys: set[_UtteranceKey] = set()
         self._utterance_order: deque[_UtteranceKey] = deque()
         self._pending_finals: dict[_UtteranceKey, str] = {}
+        # Latest preview text per turn that is NOT the current ordered turn;
+        # coalesced (one entry per key) and flushed by
+        # _drain_ready_partials_locked when the turn becomes current.
+        self._pending_partials: dict[_UtteranceKey, str] = {}
         self._logical_turn_id = 1
         self._physical_segment_audio_bytes = 0
         self._provider_wire_audio_bytes = 0
@@ -620,6 +626,7 @@ class _RealtimeAsrSessionImpl:
             self._endpointed_turn_keys.clear()
             self._utterance_order.clear()
             self._pending_finals.clear()
+            self._pending_partials.clear()
             self._logical_turn_id += 1
             self._clear_segment_aggregation_state()
             self._reset_resampler()
@@ -675,6 +682,7 @@ class _RealtimeAsrSessionImpl:
             self._endpointed_turn_keys.clear()
             self._utterance_order.clear()
             self._pending_finals.clear()
+            self._pending_partials.clear()
             self._clear_segment_aggregation_state()
             self._reset_resampler()
 
@@ -1088,16 +1096,19 @@ class _RealtimeAsrSessionImpl:
             return
         self._segment_aggregator.complete_turn(completed_turn_id)
         ready_texts = self._collect_ready_segmented_transcripts_locked()
-        if ready_texts:
+        ready_items: list[_CallbackItem] = [
+            _CallbackItem(
+                text=ready_text,
+                generation=self._generation,
+                buffer_epoch=self._buffer_epoch,
+            )
+            for ready_text in ready_texts
+        ]
+        ready_items.extend(self._drain_ready_partials_locked())
+        if ready_items:
             assert self._callback_queue is not None
-            for ready_text in ready_texts:
-                await self._callback_queue.put(
-                    _CallbackItem(
-                        text=ready_text,
-                        generation=self._generation,
-                        buffer_epoch=self._buffer_epoch,
-                    )
-                )
+            for ready_item in ready_items:
+                await self._callback_queue.put(ready_item)
         self._logical_turn_id += 1
         self._segment_aggregator.begin_turn(self._logical_turn_id)
         if self._voice_turn_adapter is None:
@@ -1122,11 +1133,48 @@ class _RealtimeAsrSessionImpl:
                 self._active_utterance_keys.discard(key)
                 self._committed_utterance_keys.discard(key)
                 self._pending_finals.pop(key, None)
+                self._pending_partials.pop(key, None)
                 try:
                     self._utterance_order.remove(key)
                 except ValueError:
                     pass
         return [transcript.text for transcript in ready_transcripts]
+
+    def _drain_ready_partials_locked(self) -> list[_CallbackItem]:
+        """Flush queued previews whose turn became current; drop stale ones.
+
+        Mirrors the deferred-endpoint handling: a queued partial belongs to
+        a turn behind the head of ``_utterance_order``. Once the head
+        advances, the newly-current turn's latest preview may flow, while
+        previews for turns that already delivered a final (or were
+        invalidated) must never resurface after that final.
+        """
+
+        if not self._pending_partials:
+            return []
+        for stale_key in [
+            queued_key
+            for queued_key in self._pending_partials
+            if queued_key not in self._active_utterance_keys
+            and queued_key not in self._committed_utterance_keys
+        ]:
+            del self._pending_partials[stale_key]
+        if self._utterance_order:
+            head_key = self._utterance_order[0]
+            ready_keys = [head_key] if head_key in self._pending_partials else []
+        else:
+            # No turn awaits a final anymore; any surviving preview belongs
+            # to a live utterance that has not entered the order yet.
+            ready_keys = sorted(self._pending_partials)
+        return [
+            _CallbackItem(
+                text=self._pending_partials.pop(ready_key),
+                generation=ready_key[0],
+                buffer_epoch=ready_key[1],
+                kind="partial",
+            )
+            for ready_key in ready_keys
+        ]
 
     def _clear_segment_aggregation_state(self) -> None:
         self._physical_segment_audio_bytes = 0
@@ -1194,6 +1242,12 @@ class _RealtimeAsrSessionImpl:
                         endpoint_callback = self._on_turn_endpointed
                         if endpoint_callback is not None:
                             await endpoint_callback()
+                    elif item.kind == "partial":
+                        partial_callback = getattr(
+                            self, "_on_partial_transcript", None
+                        )
+                        if partial_callback is not None:
+                            await partial_callback(item.text)
                     else:
                         await self._on_input_transcript(item.text)
             except asyncio.CancelledError:
@@ -1202,6 +1256,8 @@ class _RealtimeAsrSessionImpl:
                 logger.exception(
                     "ASR turn endpoint callback failed"
                     if item.kind == "endpoint"
+                    else "ASR partial callback failed"
+                    if item.kind == "partial"
                     else "ASR transcript callback failed"
                 )
             finally:
@@ -1250,20 +1306,52 @@ class _RealtimeAsrSessionImpl:
                     self._utterance_order.append(key)
             return False
         if event.kind == "partial":
-            callback = getattr(self, "_on_partial_transcript", None)
             text = event.text.strip()
             if (
-                callback is not None
-                and text
-                and self._state is _SessionState.READY
-                and event.buffer_epoch == self._buffer_epoch
+                getattr(self, "_on_partial_transcript", None) is None
+                or not text
+                or self._state is not _SessionState.READY
+                or event.buffer_epoch != self._buffer_epoch
             ):
-                try:
-                    await callback(text)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    logger.exception("ASR partial callback failed")
+                return False
+            async with self._operation_lock:
+                if (
+                    self._state is not _SessionState.READY
+                    or event.buffer_epoch != self._buffer_epoch
+                ):
+                    return False
+                key = (event.generation, event.buffer_epoch, event.utterance_id)
+                if (
+                    event.utterance_id is not None
+                    and self._utterance_order
+                    and key != self._utterance_order[0]
+                ):
+                    # The frontend keeps a single preview slot and every
+                    # delivered final clears it, so a preview for a turn
+                    # that is not the current ordered turn would display as
+                    # the current turn and then be erased by the earlier
+                    # turn's final. Coalesce to the latest text per key;
+                    # _drain_ready_partials_locked flushes it once the key
+                    # reaches the head of the order and drops it when the
+                    # key is invalidated.
+                    if (
+                        key in self._active_utterance_keys
+                        or key in self._committed_utterance_keys
+                    ):
+                        self._pending_partials[key] = text
+                    return False
+            # Route live previews through the ordered callback FIFO so a
+            # current-turn partial can never overtake an earlier turn's
+            # final that is still waiting for delivery.
+            assert self._callback_queue is not None
+            await self._callback_queue.put(
+                _CallbackItem(
+                    text=text,
+                    generation=event.generation,
+                    buffer_epoch=event.buffer_epoch,
+                    kind="partial",
+                )
+            )
             return False
         if event.kind == "final":
             if event.utterance_id is None:
@@ -1351,6 +1439,7 @@ class _RealtimeAsrSessionImpl:
                         )
                         self._active_utterance_keys.discard(ready_key)
                         self._committed_utterance_keys.discard(ready_key)
+                ready_items.extend(self._drain_ready_partials_locked())
             assert self._callback_queue is not None
             for ready_item in ready_items:
                 await self._callback_queue.put(ready_item)
@@ -1386,6 +1475,7 @@ class _RealtimeAsrSessionImpl:
         self._committed_utterance_keys.clear()
         self._utterance_order.clear()
         self._pending_finals.clear()
+        self._pending_partials.clear()
         self._clear_segment_aggregation_state()
         safe_code = (
             error_code
