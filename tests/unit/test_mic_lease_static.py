@@ -140,10 +140,15 @@ def test_lease_snapshot_stamps_engagement_marker_for_claim_gate() -> None:
     # The snapshot derives `engaged` from recording / voice-start lifecycle
     # state only, so a merely-opened auxiliary window provably stamps
     # engaged: false and the backend suppresses its voice-connection claim.
-    assert "engaged:" in snapshot
-    assert "S.isRecording === true" in snapshot
-    assert "S.voiceStartPending === true" in snapshot
-    assert "window.isMicStarting === true" in snapshot
+    # Strip line comments first: the explanatory comment above the property
+    # also contains "engaged:", which must not satisfy these assertions.
+    code_only = "\n".join(
+        line for line in snapshot.splitlines() if not line.strip().startswith("//")
+    )
+    assert "engaged: (" in code_only
+    assert "S.isRecording === true" in code_only
+    assert "S.voiceStartPending === true" in code_only
+    assert "window.isMicStarting === true" in code_only
     # The wire payload forwards the marker verbatim.
     assert "engaged: state.engaged" in sender
 
