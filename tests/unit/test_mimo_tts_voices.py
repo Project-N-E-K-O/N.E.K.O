@@ -29,6 +29,18 @@ class _CM:
     def get_core_config(self):
         return self._core_config
 
+    async def aget_core_config(self):
+        return self._core_config
+
+    async def aensure_region_resolved(self):
+        return True
+
+    def get_voices_for_current_api(self, for_listing=False):
+        return {}
+
+    async def aload_characters(self):
+        return {"猫娘": {}}
+
     def voice_id_exists_in_any_storage(self, voice_id):
         return voice_id in self._stored_voice_ids
 
@@ -143,14 +155,15 @@ def test_mimo_catalog_hidden_when_gptsovits_custom_tts_wins():
 
 
 @pytest.mark.unit
-def test_vllm_winner_exposes_its_configured_fallback_voice():
+@pytest.mark.asyncio
+async def test_vllm_winner_exposes_its_configured_fallback_voice(monkeypatch):
     # vLLM-Omni 没有服务端音色枚举接口；registry 将设置页的 ttsVoiceId
     # （缺省为 default）作为当前模型的一条预制音色，同时抑制 core-native。
     core_config = {"CORE_API_TYPE": "gemini", "ENABLE_CUSTOM_API": True}
     cm = _CM(core_config, raw_core_config={"ttsModelProvider": "vllm_omni"})
     key = tts_provider_registry.selected_provider_key(core_config, cm)
     assert key == "vllm_omni"
-    assert tts_provider_registry.preset_catalog_for_ui(key, core_config) == {
+    expected_catalog = {
         "default": {
             "prefix": "default",
             "provider": "vllm_omni",
@@ -160,6 +173,14 @@ def test_vllm_winner_exposes_its_configured_fallback_voice():
             "builtin": True,
         }
     }
+    assert tts_provider_registry.preset_catalog_for_ui(key, core_config) == expected_catalog
+
+    from main_routers.characters_router import voice_preview
+
+    monkeypatch.setattr(voice_preview, "get_config_manager", lambda: cm)
+    route_result = await voice_preview.get_voices()
+    assert route_result["native_voices"] == expected_catalog
+    assert "Puck" not in route_result["native_voices"]
 
 
 @pytest.mark.unit

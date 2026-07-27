@@ -87,14 +87,10 @@ def _custom_openai_tts_is_selected(ctx) -> bool:
 
     if not _as_bool(ctx.core_config.get("ENABLE_CUSTOM_API"), False):
         return False
-    try:
-        raw = ctx.cm.load_json_config("core_config.json", {}) or {}
-    except Exception:
-        raw = {}
-    if str(raw.get("ttsModelProvider") or "").strip() != "custom":
+    if str(ctx.core_config.get("ttsModelProvider") or "").strip() != "custom":
         return False
 
-    configured_voice = str(raw.get("ttsVoiceId") or "").strip()
+    configured_voice = str(ctx.core_config.get("ttsVoiceId") or "").strip()
     # A saved clone/design voice owns its provider route. The custom endpoint is
     # the configured fallback, not a blanket override of existing voice vendors.
     if ctx.voice_id and ctx.has_custom_voice and ctx.voice_meta:
@@ -102,8 +98,8 @@ def _custom_openai_tts_is_selected(ctx) -> bool:
     if ctx.voice_id and configured_voice and str(ctx.voice_id).strip() != configured_voice:
         return False
     return bool(
-        str(raw.get("ttsModelUrl") or "").strip()
-        and str(raw.get("ttsModelId") or "").strip()
+        str(ctx.core_config.get("ttsModelUrl") or "").strip()
+        and str(ctx.core_config.get("ttsModelId") or "").strip()
         and configured_voice
     )
 

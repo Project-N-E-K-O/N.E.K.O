@@ -58,6 +58,7 @@ def test_openai_tts_payload_requires_model_and_voice(model, voice):
 
 class _CustomTtsConfigManager:
     def __init__(self):
+        self.load_count = 0
         self.raw = {
             "enableCustomApi": True,
             "ttsModelProvider": "custom",
@@ -75,6 +76,7 @@ class _CustomTtsConfigManager:
         return dict(self.snapshot)
 
     def load_json_config(self, _name, _default):
+        self.load_count += 1
         return dict(self.raw)
 
     def get_voices_for_current_api(self):
@@ -100,6 +102,19 @@ def test_custom_openai_tts_dispatch_binds_config(monkeypatch):
     }
     assert api_key == "sk-custom"
     assert provider_key == "custom"
+
+
+def test_custom_openai_tts_selection_uses_snapshot_without_disk_read():
+    cm = _CustomTtsConfigManager()
+    ctx = provider_registry.DispatchContext(
+        core_config=cm.snapshot,
+        cm=cm,
+        voice_id="vendor-voice",
+        has_custom_voice=True,
+    )
+
+    assert openai_worker_module._custom_openai_tts_is_selected(ctx) is True
+    assert cm.load_count == 0
 
 
 def test_custom_openai_tts_does_not_override_stored_clone():
