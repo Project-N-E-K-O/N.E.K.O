@@ -74,12 +74,14 @@ def test_build_context_does_not_exclude_voice_turn_assets():
     # Negative contract: the host-prepared weights must actually reach the
     # Docker build context, so .dockerignore must not filter them out.
     dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
-    assert "vad_models" not in dockerignore
     patterns = [
         line.strip().rstrip("/")
         for line in dockerignore.splitlines()
         if line.strip() and not line.strip().startswith("#")
     ]
+    # Comments may (and do) mention vad_models to document this contract;
+    # only actual ignore patterns are forbidden from touching it.
+    assert not any("vad_models" in pattern for pattern in patterns)
     assert "data" not in patterns
     assert "data/*" not in patterns
 
