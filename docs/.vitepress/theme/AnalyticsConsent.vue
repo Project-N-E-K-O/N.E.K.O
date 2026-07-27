@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useData, withBase } from 'vitepress'
 import {
   ANALYTICS_CONSENT_EVENT,
@@ -49,6 +49,9 @@ const { lang } = useData()
 const ready = ref(false)
 const panelOpen = ref(false)
 const choice = ref<ConsentChoice>(null)
+const allowButton = ref<HTMLButtonElement | null>(null)
+const rejectButton = ref<HTMLButtonElement | null>(null)
+const settingsButton = ref<HTMLButtonElement | null>(null)
 
 const locale = computed<ConsentLocale>(() => {
   if (lang.value.toLowerCase().startsWith('zh')) return 'zh-CN'
@@ -67,16 +70,41 @@ function syncChoice(event?: Event) {
   choice.value = eventChoice || getAnalyticsConsent()
 }
 
-function accept() {
+async function restoreSettingsFocus() {
+  await nextTick()
+  settingsButton.value?.focus()
+}
+
+async function openSettings() {
+  panelOpen.value = true
+  await nextTick()
+  const selectedButton = choice.value === 'denied'
+    ? rejectButton.value
+    : allowButton.value
+  selectedButton?.focus()
+}
+
+async function closeSettings() {
+  panelOpen.value = false
+  await restoreSettingsFocus()
+}
+
+async function accept() {
+  const restoreFocus = choice.value !== null
   acceptGoogleAnalytics()
   choice.value = 'granted'
   panelOpen.value = false
+  if (restoreFocus) await restoreSettingsFocus()
 }
 
-function reject() {
+async function reject() {
+  const restoreFocus = choice.value !== null
   const wasActive = rejectGoogleAnalytics()
   choice.value = 'denied'
-  if (!wasActive) panelOpen.value = false
+  if (!wasActive) {
+    panelOpen.value = false
+    if (restoreFocus) await restoreSettingsFocus()
+  }
 }
 
 function syncStorageChoice(event: StorageEvent) {
@@ -121,15 +149,21 @@ onBeforeUnmount(() => {
 
       <div class="NekoAnalyticsConsent-actions">
         <button
-          class="NekoAnalyticsConsent-button NekoAnalyticsConsent-button--primary"
+          ref="allowButton"
+          class="NekoAnalyticsConsent-button"
+          :class="{ 'NekoAnalyticsConsent-button--primary': choice !== 'denied' }"
           type="button"
+          :aria-pressed="choice === 'granted'"
           @click="accept"
         >
           {{ copy.accept }}
         </button>
         <button
+          ref="rejectButton"
           class="NekoAnalyticsConsent-button"
+          :class="{ 'NekoAnalyticsConsent-button--primary': choice === 'denied' }"
           type="button"
+          :aria-pressed="choice === 'denied'"
           @click="reject"
         >
           {{ copy.reject }}
@@ -139,7 +173,7 @@ onBeforeUnmount(() => {
           class="NekoAnalyticsConsent-close"
           type="button"
           :aria-label="copy.close"
-          @click="panelOpen = false"
+          @click="closeSettings"
         >
           ×
         </button>
@@ -150,8 +184,9 @@ onBeforeUnmount(() => {
       <a :href="privacyPath">{{ copy.privacy }}</a>
       <span aria-hidden="true">·</span>
       <button
+        ref="settingsButton"
         type="button"
-        @click="panelOpen = true"
+        @click="openSettings"
       >
         {{ copy.settings }}
       </button>
