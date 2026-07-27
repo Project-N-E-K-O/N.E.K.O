@@ -1949,6 +1949,12 @@
                         // userInitiated: true marks settings hydrated so the
                         // start_session handshake stamps this explicit choice
                         // even while the settings GET is failing.
+                        // syncSettingsToServer serializes its POSTs internally
+                        // and snapshots settings at send time, so flipping the
+                        // toggle twice quickly cannot let the older request
+                        // finish last and persist the stale value; the newer
+                        // promise published below also resolves only after any
+                        // predecessor POST completed.
                         window.appSettings.saveSettings({ skipServerSync: true });
                         var syncPromise = Promise.resolve(window.appSettings.syncSettingsToServer({ userInitiated: true }))
                             .catch(function () { /* syncSettingsToServer already logs failures */ })

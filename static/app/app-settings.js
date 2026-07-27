@@ -23,6 +23,13 @@
     // 用陈旧值覆写 S 并经 saveSettings POST 回服务器，握手和持久化都会与用户显式
     // 选择相悖（Codex P2），所以整体丢弃这次 stale merge，让用户已 POST 的状态生效。
     let _localSettingsGeneration = 0;
+    // Serialization tail for conversation-settings POSTs (Codex P2): rapid
+    // successive syncSettingsToServer calls used to issue concurrent POSTs,
+    // and the backend saves each one in its own asyncio.to_thread, so the
+    // OLDER request could finish LAST and persist a stale toggle value. Every
+    // sync now queues behind this tail; runSync never rejects, so the tail
+    // can never become a permanently rejected promise that stalls the chain.
+    let _syncChainTail = Promise.resolve();
     // 同步间隔（毫秒）：60秒
     const SYNC_INTERVAL_MS = 60000;
     // 「首启等 settings/telemetry 决议」专属 marker：只有 localStorage 走过首启分支才会写
@@ -229,33 +236,50 @@
             // 能感知「用户已在 GET 之后改过设置」并丢弃陈旧合并。
             _localSettingsGeneration += 1;
         }
-        try {
-            const controller = window.NekoHomeTutorialFeatureController;
-            if (controller && typeof controller.isActive === 'function' && controller.isActive()) {
-                console.log('[app-settings] home tutorial suppression active, skip conversation settings sync');
-                return;
+        // Serialize the POST behind any in-flight sync (Codex P2): the
+        // settings snapshot is built inside runSync, at SEND time — after the
+        // predecessor completed — so the last-issued request always carries
+        // the final local state and at most one request is in flight, making
+        // completion order equal issue order (a stale body can never win the
+        // backend persistence race). The hydration/generation marks above
+        // stay synchronous at call time so the handshake stamp and the
+        // stale-GET-merge guard keep their pre-await semantics.
+        const runSync = async () => {
+            try {
+                const controller = window.NekoHomeTutorialFeatureController;
+                if (controller && typeof controller.isActive === 'function' && controller.isActive()) {
+                    console.log('[app-settings] home tutorial suppression active, skip conversation settings sync');
+                    return;
+                }
+            } catch (_) {
+                // keep settings sync best-effort if the tutorial controller is unavailable
             }
-        } catch (_) {
-            // keep settings sync best-effort if the tutorial controller is unavailable
-        }
-        const settings = getConversationSettings();
-        try {
-            const response = await fetch('/api/config/conversation-settings', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(settings)
-            });
-            if (!response.ok) {
-                console.error('[app-settings] 同步设置到服务器失败: HTTP', response.status);
-                return;
+            const settings = getConversationSettings();
+            try {
+                const response = await fetch('/api/config/conversation-settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(settings)
+                });
+                if (!response.ok) {
+                    console.error('[app-settings] 同步设置到服务器失败: HTTP', response.status);
+                    return;
+                }
+                const data = await response.json();
+                if (!data.success) {
+                    console.error('[app-settings] 同步设置到服务器失败:', data.error || '未知错误');
+                }
+            } catch (err) {
+                console.error('[app-settings] 同步设置到服务器失败:', err);
             }
-            const data = await response.json();
-            if (!data.success) {
-                console.error('[app-settings] 同步设置到服务器失败:', data.error || '未知错误');
-            }
-        } catch (err) {
-            console.error('[app-settings] 同步设置到服务器失败:', err);
-        }
+        };
+        // runSync swallows its own failures, so chaining with it on both
+        // fulfillment and rejection keeps the returned promise — the one the
+        // toggle handler publishes as S.pendingSettingsSyncPromise for the
+        // ensureWebSocketOpen gate — always resolving, never rejecting.
+        const chained = _syncChainTail.then(runSync, runSync);
+        _syncChainTail = chained;
+        return chained;
     }
 
     /**

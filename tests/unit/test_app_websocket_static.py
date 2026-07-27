@@ -1,5 +1,8 @@
 import json
 import re
+import shutil
+import subprocess
+import textwrap
 from pathlib import Path
 
 
@@ -725,6 +728,192 @@ def test_stale_settings_get_merge_dropped_after_user_change():
     # applies exactly as before.
     assert "_localSettingsGeneration !== _generationAtGetStart" in merge_block
     assert "_localSettingsGeneration !== 0" not in merge_block
+
+
+def test_settings_posts_serialize_so_a_stale_body_cannot_win_persistence():
+    # Codex P2 (round 13): flipping the ASR toggle twice before the first POST
+    # completed used to start two independent syncSettingsToServer calls with
+    # their own snapshots; the backend saves each in a separate
+    # asyncio.to_thread, so the OLDER request could finish LAST and persist the
+    # earlier toggle value. Pin the serialization fix: every sync queues behind
+    # a module-level chain tail and builds its settings snapshot at SEND time
+    # (inside the queued runSync), so at most one POST is in flight and the
+    # last-issued request always carries the final local state.
+    settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
+
+    # The chain tail starts resolved and is module-scoped (shared by the
+    # toggle path AND the periodic tick, so those cannot race each other
+    # either).
+    assert "let _syncChainTail = Promise.resolve();" in settings_source
+
+    sync_fn = settings_source.split(
+        "async function syncSettingsToServer(options)", 1
+    )[1].split("function startPeriodicSync()", 1)[0]
+
+    # Chaining structure: the queued body is attached on BOTH fulfillment and
+    # rejection so one failed sync cannot stall the tail, the tail advances to
+    # the newly chained promise, and the caller gets that promise back (the
+    # toggle handler publishes it as S.pendingSettingsSyncPromise for the
+    # ensureWebSocketOpen gate).
+    assert "const chained = _syncChainTail.then(runSync, runSync);" in sync_fn
+    assert "_syncChainTail = chained;" in sync_fn
+    assert "return chained;" in sync_fn
+
+    # The settings snapshot is built inside the queued runSync — at send time,
+    # after the predecessor completed — not at call time.
+    run_sync_index = sync_fn.index("const runSync = async () =>")
+    snapshot_index = sync_fn.index("const settings = getConversationSettings();")
+    fetch_index = sync_fn.index("await fetch(")
+    assert run_sync_index < snapshot_index < fetch_index
+
+    # Negative: the synchronous hydration mark and generation bump stay at
+    # call time, BEFORE the queued body — deferring them would reopen the
+    # stale-GET-merge window and the pre-hydration handshake gap.
+    assert sync_fn.index("S.settingsHydrated = true;") < run_sync_index
+    assert sync_fn.index("_localSettingsGeneration += 1;") < run_sync_index
+
+
+def _run_settings_node_harness(script: str) -> subprocess.CompletedProcess[str]:
+    node_path = shutil.which("node")
+    if not node_path:
+        raise AssertionError("node is required to run app-settings harness tests")
+    return subprocess.run(
+        [node_path, "-e", script],
+        cwd=str(Path(__file__).resolve().parents[2]),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_rapid_asr_toggle_double_flip_persists_final_state_harness():
+    # Behavioral pin for the Codex P2 fix: drive the real syncSettingsToServer
+    # with a controllable fetch and simulate the double-flip race. Before the
+    # fix both POSTs were in flight together and completing them in reverse
+    # order let the stale body be the backend's last save; now the second POST
+    # must not even be issued until the first settles, and its body must carry
+    # the final toggle state.
+    harness = textwrap.dedent(
+        """
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+
+        const source = fs.readFileSync(__APP_SETTINGS_PATH__, 'utf8');
+
+        function assert(cond, msg) {
+          if (!cond) throw new Error('ASSERT: ' + msg);
+        }
+
+        function makeContext() {
+          // Module load runs loadSettings(), which issues a boot GET that we
+          // leave pending forever (its merge never runs); assertions below
+          // therefore look only at the POST calls.
+          const postCalls = [];
+          const sandbox = {
+            console: { log() {}, warn() {}, error() {} },
+            setInterval() { return 0; },
+            clearInterval() {},
+            setTimeout,
+            clearTimeout,
+            localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
+            document: { getElementById() { return null; } },
+            fetch(url, opts) {
+              return new Promise((resolve, reject) => {
+                if (opts && opts.method === 'POST') {
+                  postCalls.push({ url, body: opts.body, resolve, reject });
+                }
+              });
+            },
+          };
+          sandbox.window = {
+            appState: { independentAsrEnabled: false, settingsHydrated: false },
+            appConst: {},
+            appUtils: { mapRenderQualityToFollowPerf() { return 'medium'; } },
+            addEventListener() {},
+            removeEventListener() {},
+          };
+          vm.createContext(sandbox);
+          vm.runInContext(source, sandbox);
+          // Boot leaves the GET pending; the harness drives hydration and the
+          // toggle state explicitly from a clean baseline.
+          sandbox.window.appState.settingsHydrated = false;
+          return { postCalls, S: sandbox.window.appState, mod: sandbox.window.appSettings };
+        }
+
+        const okResponse = { ok: true, json: async () => ({ success: true }) };
+        const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+        async function main() {
+          const { postCalls, S, mod } = makeContext();
+
+          // First flip: POST issued with the pre-second-flip snapshot.
+          S.independentAsrEnabled = true;
+          const p1 = mod.syncSettingsToServer({ userInitiated: true });
+          assert(S.settingsHydrated === true, 'hydration must be marked synchronously at call time');
+          await tick();
+          assert(postCalls.length === 1, 'first sync must POST immediately');
+          assert(JSON.parse(postCalls[0].body).independentAsrEnabled === true, 'first body snapshots true');
+
+          // Second flip while the first POST is still in flight.
+          S.independentAsrEnabled = false;
+          const p2 = mod.syncSettingsToServer({ userInitiated: true });
+          await tick();
+          assert(postCalls.length === 1, 'second POST must be queued, not concurrent (reordered completions impossible)');
+
+          // Only when the first settles does the second go out — carrying the
+          // FINAL state because the snapshot is taken at send time.
+          postCalls[0].resolve(okResponse);
+          await tick();
+          assert(postCalls.length === 2, 'queued sync must run after the predecessor completed');
+          assert(JSON.parse(postCalls[1].body).independentAsrEnabled === false, 'last-issued body must carry the final toggle state');
+          postCalls[1].resolve(okResponse);
+          await p1;
+          await p2;
+
+          // Negative: a predecessor that fails (network reject) must neither
+          // stall the chain nor reject the published promises.
+          S.independentAsrEnabled = true;
+          const p3 = mod.syncSettingsToServer({ userInitiated: true });
+          await tick();
+          S.independentAsrEnabled = false;
+          const p4 = mod.syncSettingsToServer({ userInitiated: true });
+          await tick();
+          assert(postCalls.length === 3, 'third sync in flight, fourth queued');
+          postCalls[2].reject(new Error('network down'));
+          await tick();
+          assert(postCalls.length === 4, 'a failed predecessor must not stall the queued sync');
+          assert(JSON.parse(postCalls[3].body).independentAsrEnabled === false, 'post-failure sync still carries the final state');
+          postCalls[3].resolve(okResponse);
+          await p3;
+          await p4;
+
+          // Negative: a non-userInitiated (periodic-style) call serializes the
+          // same way but never marks hydration.
+          const fresh = makeContext();
+          const pp = fresh.mod.syncSettingsToServer();
+          await tick();
+          assert(fresh.S.settingsHydrated === false, 'periodic-style sync must not mark hydration');
+          assert(fresh.postCalls.length === 1, 'periodic-style sync still POSTs through the chain');
+          fresh.postCalls[0].resolve(okResponse);
+          await pp;
+
+          console.log('HARNESS_OK');
+        }
+
+        main().catch((err) => {
+          console.error(err && err.stack ? err.stack : String(err));
+          process.exit(1);
+        });
+        """
+    ).replace("__APP_SETTINGS_PATH__", json.dumps(str(APP_SETTINGS_PATH)))
+
+    result = _run_settings_node_harness(harness)
+    assert result.returncode == 0, (
+        "settings sync harness failed\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "HARNESS_OK" in result.stdout
 
 
 def test_normal_teardown_paths_reset_independent_asr_route_flags():
