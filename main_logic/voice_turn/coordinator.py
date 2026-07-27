@@ -236,7 +236,11 @@ class TurnCoordinator:
                 return
             unload = getattr(self._predictor, "unload", None)
             if callable(unload):
-                await asyncio.to_thread(unload)
+                # Route through the cancellation-safe wrapper so a cancelled
+                # warm-unload keeps the inference lane owned until the unload
+                # thread exits; otherwise a concurrent prepare_predictor() can
+                # observe READY that the detached thread then clears.
+                await self._run_predictor_call(unload)
 
     async def close(self) -> None:
         async with self._state_lock:

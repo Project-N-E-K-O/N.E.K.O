@@ -143,6 +143,64 @@ async def test_cancelled_evaluation_keeps_lane_until_thread_finishes():
     assert predictor.max_active_calls == 1
 
 
+class _SlowUnloadPredictor(_Predictor):
+    def __init__(self):
+        super().__init__()
+        self.session_ready = True
+        self.unload_started = threading.Event()
+        self.unload_release = threading.Event()
+        self.events = []
+
+    def load(self):
+        self.events.append("load")
+        self.session_ready = True
+        return True
+
+    def unload(self):
+        self.unload_started.set()
+        assert self.unload_release.wait(timeout=5)
+        self.session_ready = False
+        self.events.append("unload_finished")
+        return True
+
+
+@pytest.mark.asyncio
+async def test_cancelled_unload_keeps_lane_until_thread_finishes():
+    predictor = _SlowUnloadPredictor()
+    coordinator = TurnCoordinator(predictor, SmartTurnConfig(enabled=True))
+    unload_task = asyncio.create_task(coordinator.unload_predictor())
+    await asyncio.to_thread(predictor.unload_started.wait, 2)
+
+    unload_task.cancel()
+    await asyncio.sleep(0)
+    prepare_task = asyncio.create_task(coordinator.prepare_predictor())
+    await asyncio.sleep(0.05)
+
+    # Cancellation must not release the lane while unload() still runs in its
+    # thread; otherwise prepare observes a session the detached thread clears.
+    assert unload_task.done() is False
+    assert prepare_task.done() is False
+
+    predictor.unload_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await unload_task
+    assert await asyncio.wait_for(prepare_task, 1) is True
+    assert predictor.events == ["unload_finished", "load"]
+    assert predictor.session_ready is True
+
+
+@pytest.mark.asyncio
+async def test_unload_predictor_normal_path_unchanged():
+    predictor = _SlowUnloadPredictor()
+    predictor.unload_release.set()
+    coordinator = TurnCoordinator(predictor, SmartTurnConfig(enabled=True))
+    await coordinator.unload_predictor()
+    assert predictor.events == ["unload_finished"]
+    assert predictor.session_ready is False
+    # A predictor without an unload hook keeps unload_predictor a no-op.
+    await TurnCoordinator(_Predictor(), SmartTurnConfig(enabled=True)).unload_predictor()
+
+
 @pytest.mark.asyncio
 async def test_reset_during_inflight_evaluation_is_stale():
     predictor = _BlockingPredictor()
