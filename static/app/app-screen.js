@@ -802,6 +802,7 @@
     async function startNativeScreenStreaming(provider, sourceId, inputType) {
         stopScreening();
         var generation = nativeCaptureGeneration;
+        var captureSocket = S.socket;
         activeNativeCaptureSourceId = sourceId;
 
         function isCurrentNativeCapture() {
@@ -809,12 +810,26 @@
                 && activeNativeCaptureSourceId === sourceId;
         }
 
+        function isCaptureSocketOpen() {
+            return !!(captureSocket
+                && captureSocket === S.socket
+                && captureSocket.readyState === WebSocket.OPEN);
+        }
+
         async function captureAndSend() {
             if (!isCurrentNativeCapture()) return false;
+            if (!isCaptureSocketOpen()) {
+                stopScreening();
+                return false;
+            }
             if (await stopLiveVisionStreamIfBlocked(inputType)) {
                 return false;
             }
             if (!isCurrentNativeCapture()) return false;
+            if (!isCaptureSocketOpen()) {
+                stopScreening();
+                return false;
+            }
             var result = await provider.captureSourceAsDataUrl(sourceId, {
                 maxWidth: C.MAX_SCREENSHOT_WIDTH || 1280,
                 quality: 80
@@ -822,6 +837,10 @@
             // stop/restart/source-switch may happen while native capture awaits.
             // Never let that obsolete frame reach the replacement session.
             if (!isCurrentNativeCapture()) return false;
+            if (!isCaptureSocketOpen()) {
+                stopScreening();
+                return false;
+            }
             if (!result || !result.success || !result.dataUrl) {
                 var errorMessage = result && result.error ? result.error : 'Screen capture failed';
                 if (errorMessage === 'Source not found') {
@@ -829,11 +848,13 @@
                 }
                 throw new Error(errorMessage);
             }
-            if (canSendLiveVisionStreamFrame(inputType)
-                && S.socket && S.socket.readyState === WebSocket.OPEN) {
-                S.socket.send(JSON.stringify(
+            if (canSendLiveVisionStreamFrame(inputType) && isCaptureSocketOpen()) {
+                captureSocket.send(JSON.stringify(
                     buildStreamDataMessage(result.dataUrl, inputType, sourceId)
                 ));
+            } else if (isCurrentNativeCapture()) {
+                stopScreening();
+                return false;
             }
             return true;
         }

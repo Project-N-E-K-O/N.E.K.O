@@ -69,6 +69,9 @@ def test_native_frame_stream_lifecycle_preserves_source_and_cancels_stale_frames
 
     assert "activeNativeCaptureSourceId = sourceId" in native_stream
     assert native_stream.count("if (!isCurrentNativeCapture()) return false;") >= 3
+    assert "var captureSocket = S.socket" in native_stream
+    assert "captureSocket === S.socket" in native_stream
+    assert "captureSocket.send(JSON.stringify(" in native_stream
     assert "buildStreamDataMessage(result.dataUrl, inputType, sourceId)" in native_stream
     assert "(S.screenCaptureStream || activeNativeCaptureSourceId)" in screen
 
