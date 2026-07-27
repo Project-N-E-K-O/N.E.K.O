@@ -279,6 +279,17 @@ class FactStore:
                                 f['id'] for f in disk_facts
                                 if isinstance(f, dict) and f.get('signal_processed')
                             }
+                            # ⚠残留窗口：这次读盘与下面的 atomic_write_json 之间没有
+                            # 跨进程锁（self._get_lock 只挡同进程的线程），所以理论上
+                            # 仍能被「读到 ai_disclosure → 别人升级并消费 → 我方写回
+                            # False」插进来。这不是本次豁免引入的新race：整段 read-merge
+                            # 从 #976 起就是「读盘-合并-覆盖写」的尽力而为，任何并发写
+                            # 者都能在同一窗口里丢掉合并结果。真要关掉它得给 facts.json
+                            # 加一把覆盖读+写全程的跨进程文件锁（portalocker，本仓库目前
+                            # 只在 galgame store 里用过）并让所有写者都走它——那是独立的
+                            # 架构改动，不在本次范围。豁免面已经收到「磁盘上那条仍是
+                            # ai_disclosure」这一个条件里，窗口比原来的整段合并更窄。
+                            #
                             # 纸条只在磁盘上那条**还没被别人升级过**时算数：另一个
                             # 进程可能已经用它自己的缓存升级完、Stage-2 也消费过了
                             # （磁盘上是 user_observation + True）。此时本进程拿着
