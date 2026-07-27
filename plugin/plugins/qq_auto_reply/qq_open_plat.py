@@ -282,6 +282,17 @@ class QQOpenPlatformConnection(QQConnectionBase):
         if reply_msg_id:
             body["msg_id"] = reply_msg_id
 
+        if keyboard and body.get("msg_type") == 7:
+            # 富媒体（图片）载荷挂不了按钮：按钮只在 type-2 富文本上有效，
+            # 硬带上去平台可能整条拒收。把选项降级成可读正文，至少不让用户
+            # 收到一条"问了却没有选项"的消息。
+            labels = " / ".join(
+                b.strip() for b in keyboard.split("|") if b.strip()
+            )
+            if labels:
+                existing = str(body.get("content") or "")
+                body["content"] = (existing + "\n" + labels).strip()
+            keyboard = ""
         if keyboard:
             buttons = [b.strip() for b in keyboard.split("|") if b.strip()][:4]
             if buttons:

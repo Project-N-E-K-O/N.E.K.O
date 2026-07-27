@@ -85,16 +85,9 @@ class QQReplyPostprocessNode:
 
             # <keyboard>
             kb_el = msg_el.find("keyboard")
-            # 归一化在解析处做一次：开放平台只渲染前 4 个按钮，投递与记忆
-            # 记录都从这里取值，多出来的选项不会有人看到。
             if kb_el is not None and kb_el.text:
-                block.keyboard = "|".join(
-                    part.strip()
-                    for part in str(kb_el.text or "").split("|")
-                    if part.strip()
-                )[:1000] if kb_el.text else ""
-                block.keyboard = "|".join(
-                    [p for p in block.keyboard.split("|") if p][:4]
+                block.keyboard = QQReplyPostprocessNode._normalize_keyboard(
+                    kb_el.text
                 )
 
             # <ark> with attrs
@@ -119,6 +112,18 @@ class QQReplyPostprocessNode:
             return [QQMessageBlock(text=text)]
 
         return blocks
+
+    @staticmethod
+    def _normalize_keyboard(raw: str | None) -> str:
+        """Trim, drop empties, and cap at what the platform renders (4).
+
+        Normalizing once at parse time keeps delivery and bookkeeping on
+        the same value — the Open Platform sender builds at most four
+        buttons, so a fifth option would be recorded but never shown."""
+        options = [
+            part.strip() for part in str(raw or "").split("|") if part.strip()
+        ]
+        return "|".join(options[:4])
 
     @classmethod
     def _parse_legacy_tags(cls, raw_text: str) -> list[QQMessageBlock]:
@@ -146,7 +151,11 @@ class QQReplyPostprocessNode:
         if m: voice_text = m.group(1).strip(); text = re.sub(r"<record>.*?</record>", "", text, count=1, flags=re.IGNORECASE)
 
         m = re.search(r"<keyboard>(.*?)</keyboard>", text, re.IGNORECASE)
-        if m: keyboard = m.group(1).strip(); text = re.sub(r"<keyboard>.*?</keyboard>", "", text, count=1, flags=re.IGNORECASE)
+        if m:
+            # 旧式标签走同一个归一化：否则老输入能留下第五个按钮或空选项，
+            # 而发送端只投前四个——投递与记忆记录又对不上了。
+            keyboard = cls._normalize_keyboard(m.group(1))
+            text = re.sub(r"<keyboard>.*?</keyboard>", "", text, count=1, flags=re.IGNORECASE)
 
         clean = text.strip()
         blocks: list[QQMessageBlock] = []

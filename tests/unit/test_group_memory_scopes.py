@@ -10179,3 +10179,73 @@ def test_keyboard_is_capped_at_what_the_platform_renders():
     )
     assert blocks[0].keyboard == "甲|乙|丙|丁"
     assert "戊" not in delivered_blocks_text(blocks)
+
+
+def test_legacy_keyboard_tags_are_normalized_too():
+    """Old-style <keyboard> went through a different parse path that kept
+    the raw string, so legacy input could carry a fifth button or an empty
+    option that the sender never renders."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        delivered_blocks_text,
+    )
+    from plugin.plugins.qq_auto_reply.reply_postprocess_node import (
+        QQReplyPostprocessNode,
+    )
+
+    node = QQReplyPostprocessNode.__new__(QQReplyPostprocessNode)
+    node.plugin = SimpleNamespace(logger=MagicMock(), _emit_log=lambda *a, **k: None)
+    blocks = node._parse_blocks(
+        "选哪个？<keyboard>甲| |乙|丙|丁|戊</keyboard>"
+    )
+    assert blocks[0].keyboard == "甲|乙|丙|丁"
+    assert "戊" not in delivered_blocks_text(blocks)
+
+
+@pytest.mark.asyncio
+async def test_image_message_does_not_carry_a_keyboard_payload():
+    """Buttons only apply to type-2 rich text. Riding along on a type-7
+    media payload risks the platform rejecting the whole message, and the
+    user would see neither the options nor the reply."""
+    import json as _json
+
+    from plugin.plugins.qq_auto_reply.qq_open_plat import (
+        QQOpenPlatformConnection,
+    )
+
+    sent: list = []
+
+    class _Resp:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"id": "msg-1"}
+
+    conn = QQOpenPlatformConnection.__new__(QQOpenPlatformConnection)
+    conn._ensure_token = AsyncMock()
+    conn._auth_headers = lambda: {}
+    conn.logger = MagicMock()
+    conn._upload_group_image = AsyncMock(return_value="file-info")
+    conn.record_sent_message_id = lambda mid: None
+
+    class _HTTP:
+        @staticmethod
+        async def post(url, json=None, headers=None):
+            sent.append(json)
+            return _Resp()
+
+    conn._http = _HTTP()
+
+    await conn.send_group_message_segments(
+        "7788",
+        [
+            {"type": "text", "data": {"text": "要看看哪个？"}},
+            {"type": "image", "data": {"file": "http://x/a.png"}},
+        ],
+        keyboard="甲|乙",
+    )
+    body = sent[-1]
+    assert body["msg_type"] == 7
+    assert "keyboard" not in body
+    # The options are degraded into readable text rather than vanishing.
+    assert "甲 / 乙" in body["content"]
