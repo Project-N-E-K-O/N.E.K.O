@@ -994,6 +994,126 @@ async def test_detector_handler_failure_still_delivers_fail_closed_notifications
     await _drain_fail_closed_teardown(runtime)
 
 
+def _make_provider_endpoint_session(events: list[str]) -> _RealtimeAsrSessionImpl:
+    async def on_transcript(text: str) -> None:
+        events.append(f"final:{text}")
+
+    async def on_endpoint() -> None:
+        events.append("endpoint")
+
+    return _RealtimeAsrSessionImpl(
+        worker_fn=_recording_worker,
+        api_key="",
+        config=AsrSessionConfig(endpointing_mode="provider"),
+        on_input_transcript=on_transcript,
+        on_connection_error=AsyncMock(),
+        on_turn_endpointed=on_endpoint,
+    )
+
+
+async def _drain_session_pipelines(session: _RealtimeAsrSessionImpl) -> None:
+    assert session._response_queue is not None
+    assert session._callback_queue is not None
+    await asyncio.wait_for(session._response_queue.join(), 1)
+    await asyncio.wait_for(session._callback_queue.join(), 1)
+
+
+async def test_provider_out_of_order_finals_seal_each_turn_in_order():
+    events: list[str] = []
+    session = _make_provider_endpoint_session(events)
+    await session.connect()
+    await session.stream_audio(b"\x00\x00" * 160)
+    assert session._response_queue is not None
+    common = {"generation": 0, "buffer_epoch": 0}
+    for event in (
+        _AsrWorkerEvent(kind="utterance_started", utterance_id=10, **common),
+        _AsrWorkerEvent(kind="utterance_started", utterance_id=11, **common),
+        # Turn 2 completes before turn 1: its endpoint must not fire while
+        # turn 1 is still the active ordered turn, or the runtime seals the
+        # wrong turn and turn 2's final is later discarded unsealed.
+        _AsrWorkerEvent(kind="final", utterance_id=11, text="second", **common),
+        _AsrWorkerEvent(kind="final", utterance_id=10, text="first", **common),
+    ):
+        await session._response_queue.put(event)
+    await asyncio.wait_for(_wait_until(lambda: len(events) == 4), 1)
+    assert events == ["endpoint", "final:first", "endpoint", "final:second"]
+    await session.close()
+
+
+async def test_provider_in_order_finals_keep_endpoint_before_each_final():
+    events: list[str] = []
+    session = _make_provider_endpoint_session(events)
+    await session.connect()
+    await session.stream_audio(b"\x00\x00" * 160)
+    assert session._response_queue is not None
+    common = {"generation": 0, "buffer_epoch": 0}
+    for event in (
+        _AsrWorkerEvent(kind="utterance_started", utterance_id=10, **common),
+        _AsrWorkerEvent(kind="final", utterance_id=10, text="first", **common),
+        _AsrWorkerEvent(kind="utterance_started", utterance_id=11, **common),
+        _AsrWorkerEvent(kind="final", utterance_id=11, text="second", **common),
+    ):
+        await session._response_queue.put(event)
+    await asyncio.wait_for(_wait_until(lambda: len(events) == 4), 1)
+    assert events == ["endpoint", "final:first", "endpoint", "final:second"]
+    await session.close()
+
+
+async def test_provider_expired_empty_final_releases_queued_endpoint():
+    events: list[str] = []
+    session = _make_provider_endpoint_session(events)
+    await session.connect()
+    assert session._response_queue is not None
+    common = {"generation": 0, "buffer_epoch": 0}
+    for event in (
+        _AsrWorkerEvent(kind="utterance_started", utterance_id=10, **common),
+        _AsrWorkerEvent(kind="utterance_started", utterance_id=11, **common),
+        _AsrWorkerEvent(kind="final", utterance_id=11, text="second", **common),
+    ):
+        await session._response_queue.put(event)
+    await _drain_session_pipelines(session)
+    # Turn 2's endpoint and final are both held behind the missing turn 1.
+    assert events == []
+    # The worker stalled-turn expiry completes turn 1 with an empty final;
+    # this must advance the ordered pipeline and release turn 2 as well.
+    await session._response_queue.put(
+        _AsrWorkerEvent(kind="final", utterance_id=10, text="", **common)
+    )
+    await asyncio.wait_for(_wait_until(lambda: len(events) == 4), 1)
+    assert events == ["endpoint", "final:", "endpoint", "final:second"]
+    await session.close()
+
+
+async def test_provider_clear_drops_queued_endpoint_for_invalidated_keys():
+    events: list[str] = []
+    session = _make_provider_endpoint_session(events)
+    await session.connect()
+    assert session._response_queue is not None
+    common = {"generation": 0, "buffer_epoch": 0}
+    for event in (
+        _AsrWorkerEvent(kind="utterance_started", utterance_id=10, **common),
+        _AsrWorkerEvent(kind="utterance_started", utterance_id=11, **common),
+        _AsrWorkerEvent(kind="final", utterance_id=11, text="second", **common),
+    ):
+        await session._response_queue.put(event)
+    await _drain_session_pipelines(session)
+    assert events == []
+    await session.clear_audio_buffer()
+    await _drain_session_pipelines(session)
+    # The invalidated keys must never seal or deliver after the clear.
+    assert events == []
+    # The next epoch's turn still seals and delivers normally.
+    next_common = {"generation": 0, "buffer_epoch": session._buffer_epoch}
+    for event in (
+        _AsrWorkerEvent(kind="utterance_started", utterance_id=20, **next_common),
+        _AsrWorkerEvent(kind="final", utterance_id=20, text="hello", **next_common),
+    ):
+        await session._response_queue.put(event)
+    await asyncio.wait_for(_wait_until(lambda: len(events) == 2), 1)
+    assert events == ["endpoint", "final:hello"]
+    await session.close()
+
+
 async def _wait_until(predicate) -> None:
     while not predicate():
         await asyncio.sleep(0)

@@ -313,6 +313,11 @@ class _CallbackItem:
     text: str
     generation: int
     buffer_epoch: int
+    # "endpoint" items carry the deferred keyless seal notification through
+    # the same FIFO as transcripts so it reaches the runtime only after every
+    # earlier turn's final has been delivered (and the runtime has activated
+    # the turn this notification belongs to).
+    kind: Literal["transcript", "endpoint"] = "transcript"
 
 
 class _RealtimeAsrSessionImpl:
@@ -1185,11 +1190,20 @@ class _RealtimeAsrSessionImpl:
                     item.generation == self._generation
                     and item.buffer_epoch == self._buffer_epoch
                 ):
-                    await self._on_input_transcript(item.text)
+                    if item.kind == "endpoint":
+                        endpoint_callback = self._on_turn_endpointed
+                        if endpoint_callback is not None:
+                            await endpoint_callback()
+                    else:
+                        await self._on_input_transcript(item.text)
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.exception("ASR transcript callback failed")
+                logger.exception(
+                    "ASR turn endpoint callback failed"
+                    if item.kind == "endpoint"
+                    else "ASR transcript callback failed"
+                )
             finally:
                 self._callback_queue.task_done()
             if self._state is _SessionState.CLOSED:
@@ -1278,7 +1292,12 @@ class _RealtimeAsrSessionImpl:
                         "ASR worker returned a final for an inactive utterance"
                     )
                     return False
-                if self._config.endpointing_mode == "provider":
+                if (
+                    self._config.endpointing_mode == "provider"
+                    and self._uses_segment_aggregation
+                ):
+                    # Segmented transport orders finals through the segment
+                    # aggregator, so the seal notification stays inline here.
                     await self._notify_turn_endpointed_locked(key)
                 if self._uses_segment_aggregation:
                     if not self._segment_aggregator.record_transcript(key, text):
@@ -1303,6 +1322,26 @@ class _RealtimeAsrSessionImpl:
                         and self._utterance_order[0] in self._pending_finals
                     ):
                         ready_key = self._utterance_order.popleft()
+                        if (
+                            self._config.endpointing_mode == "provider"
+                            and ready_key not in self._endpointed_turn_keys
+                        ):
+                            # Overlapping provider turns can finish out of
+                            # order while the endpoint callback carries no
+                            # key, so a seal fired at final receipt would
+                            # close whichever turn the runtime currently has
+                            # active. Defer it into the ordered callback
+                            # FIFO right before this key's final instead.
+                            self._endpointed_turn_keys.add(ready_key)
+                            if self._on_turn_endpointed is not None:
+                                ready_items.append(
+                                    _CallbackItem(
+                                        text="",
+                                        generation=ready_key[0],
+                                        buffer_epoch=ready_key[1],
+                                        kind="endpoint",
+                                    )
+                                )
                         ready_items.append(
                             _CallbackItem(
                                 text=self._pending_finals.pop(ready_key),
