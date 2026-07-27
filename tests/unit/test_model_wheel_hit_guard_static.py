@@ -17,10 +17,22 @@ def test_live2d_wheel_zoom_requires_model_hit_before_consuming_event():
     assert re.search(r"getBoundingClientRect\s*\(\)", block)
     assert re.search(r"event\.clientX\s*-\s*canvasRect\.left", block)
     assert re.search(r"event\.clientY\s*-\s*canvasRect\.top", block)
+    # 逐个消费点判定，而不是拿首个 preventDefault 当"那一个"：#2253 的挂边
+    # 探身分支在缩放路径之前自带一个 preventDefault（它自己也在命中检查里面），
+    # 首匹配写法会误判成守卫失效——测试比它声称的主张更弱。
+    hit_checks = [m.start() for m in re.finditer(r"isWheelPointOnCurrentModel\(event\)", block)]
+    prevent_sites = [m.start() for m in re.finditer(r"event\.preventDefault\(\);", block)]
+    assert prevent_sites, "找不到任何 preventDefault，切片或实现已变"
+    for site in prevent_sites:
+        assert any(check < site for check in hit_checks), (
+            f"offset {site} 处的 preventDefault 前面没有命中检查，滚轮会在模型外被吞掉"
+        )
     guard_index = re.search(r"if\s*\(!isWheelPointOnCurrentModel\(event\)\)\s*return;", block).start()
-    prevent_index = re.search(r"event\.preventDefault\(\);", block).start()
     scale_index = re.search(r"this\.currentModel\.scale\.set\(newScale\);", block).start()
-    assert guard_index < prevent_index < scale_index
+    assert guard_index < scale_index
+    assert any(guard_index < site < scale_index for site in prevent_sites), (
+        "缩放路径自己那一次 preventDefault 必须夹在早退守卫与 scale.set 之间"
+    )
 
 
 def test_vrm_wheel_zoom_requires_model_hit_before_consuming_event():

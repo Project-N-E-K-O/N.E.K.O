@@ -1325,6 +1325,15 @@ def test_day1_intro_externalized_chat_suppresses_home_pc_cursor_before_hiding_it
     )
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "#2434 一并删掉的 5 个 day1 pair 里，capture_cursor -> return_control 是 "
+        "PC->chat 反方向，没有被同 commit 新增的 releaseExternalizedChatCursorToHome() "
+        "接管，Ghost Cursor 的反向动画因此丢失。归属人在 issue #2490 决定按哪种形态修，"
+        "修好后这里会以 XPASS 转红，届时删掉本 marker。"
+    ),
+)
 def test_day1_return_control_preserves_externalized_cursor_from_capture_scene():
     source = read_director_source(ROOT)
     preserve_block = source.split("shouldPreserveExternalizedChatCursor(previousSceneId, scene)", 1)[1].split(

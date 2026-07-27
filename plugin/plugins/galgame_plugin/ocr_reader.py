@@ -377,12 +377,10 @@ class OcrReaderManager(
         return (repo_root / path).resolve()
 
     def close(self) -> None:
-        self._release_rapidocr_backend()
-        classifier = self.vision_classifier
-        self.vision_classifier = None
-        close_classifier = getattr(classifier, "close", None)
-        if callable(close_classifier):
-            close_classifier()
+        # 顺序与 ocr_manager_poll.shutdown() 对偶：先停前台监听线程与 capture
+        # 线程池，再释放它们可能仍在用的重依赖。两步重依赖释放原本裸奔在最前
+        # 面，任一抛错就把下面两段守卫整个跳过、线程与线程池全漏 —— 正是这
+        # 两段 try/except 当初要防的场景。
         try:
             self._stop_foreground_advance_monitor(join_timeout=1.0)
         except Exception as exc:
@@ -399,6 +397,20 @@ class OcrReaderManager(
             if callable(warning):
                 try:
                     warning("ocr_reader capture worker shutdown failed: {}", exc)
+                except Exception:
+                    pass
+        try:
+            self._release_rapidocr_backend()
+            classifier = self.vision_classifier
+            self.vision_classifier = None
+            close_classifier = getattr(classifier, "close", None)
+            if callable(close_classifier):
+                close_classifier()
+        except Exception as exc:
+            warning = getattr(getattr(self, "_logger", None), "warning", None)
+            if callable(warning):
+                try:
+                    warning("ocr_reader heavy backend release failed: {}", exc)
                 except Exception:
                     pass
 
