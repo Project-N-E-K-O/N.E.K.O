@@ -484,8 +484,13 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 avatar_mgr = session_manager[lanlan_name]
                 # Validate and expose genuine engagement synchronously, before
                 # the background handler can lose a scheduling race to a ready
-                # proactive commit. The handler preserves the same server stamp.
-                avatar_mgr.note_avatar_interaction_ingress(message)
+                # proactive commit. Reserve the interaction ID in that same
+                # synchronous step so rapid retransmits cannot reset silence.
+                reserved = avatar_mgr.note_avatar_interaction_ingress(message)
+                message = {
+                    **message,
+                    "_avatar_interaction_ingress_reserved": reserved,
+                }
                 _fire_task(avatar_mgr.handle_avatar_interaction(message))
 
             elif action == "end_session":

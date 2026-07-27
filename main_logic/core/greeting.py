@@ -64,7 +64,10 @@ class GreetingMixin:
         return {
             key: value
             for key, value in payload.items()
-            if key != "_user_input_ingress_time"
+            if key not in {
+                "_user_input_ingress_time",
+                "_avatar_interaction_ingress_reserved",
+            }
         }
 
     def note_avatar_interaction_ingress(self, payload: dict) -> bool:
@@ -75,8 +78,13 @@ class GreetingMixin:
         )
         if not raw:
             return False
-        if raw["interaction_id"] in self._recent_avatar_interaction_id_set:
+        interaction_id = raw["interaction_id"]
+        if interaction_id in self._recent_avatar_interaction_id_set:
             return False
+        # The WebSocket dispatch loop calls this synchronously. Reserve before
+        # scheduling the handler so a second frame with the same ID is already
+        # a duplicate even when the first task has not started yet.
+        self._remember_avatar_interaction_id(interaction_id)
         self.note_user_engagement(
             at=self._avatar_interaction_ingress_time(payload)
         )
@@ -95,15 +103,22 @@ class GreetingMixin:
 
         interaction_id = raw["interaction_id"]
         now_ms = int(time.time() * 1000)
+        ingress_reserved = (
+            payload.get("_avatar_interaction_ingress_reserved") is True
+        )
 
-        if interaction_id in self._recent_avatar_interaction_id_set:
+        if (
+            interaction_id in self._recent_avatar_interaction_id_set
+            and not ingress_reserved
+        ):
             logger.debug("[%s] handle_avatar_interaction: duplicate interaction_id=%s", self.lanlan_name, interaction_id)
             await self.send_avatar_interaction_ack(interaction_id, False, "duplicate")
             return {"accepted": False, "reason": "duplicate", "interaction_id": interaction_id}
 
-        self.note_user_engagement(
-            at=self._avatar_interaction_ingress_time(payload)
-        )
+        if not ingress_reserved:
+            self.note_user_engagement(
+                at=self._avatar_interaction_ingress_time(payload)
+            )
 
         if now_ms - self._last_avatar_interaction_at < self.avatar_interaction_cooldown_ms:
             logger.debug("[%s] handle_avatar_interaction: cooldown skip interaction_id=%s", self.lanlan_name, interaction_id)
