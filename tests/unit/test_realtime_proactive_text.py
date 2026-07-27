@@ -168,7 +168,7 @@ async def test_failed_response_done_returns_false_and_preserves_image():
 
 
 @pytest.mark.unit
-async def test_delivery_timeout_releases_inject_state_for_retry(monkeypatch):
+async def test_delivery_timeout_cancels_and_quarantines_until_lifecycle(monkeypatch):
     client = _make_client()
     monkeypatch.setattr(
         responses_module,
@@ -179,6 +179,14 @@ async def test_delivery_timeout_releases_inject_state_for_retry(monkeypatch):
     delivered = await client.prompt_ephemeral("retry after timeout")
 
     assert delivered is False
+    assert _sent_events(client)[-1]["type"] == "response.cancel"
+    assert client._proactive_inject_awaiting_outcome is True
+    assert client._inject_rejection_handlers
+    assert client._inject_completion_handlers
+
+    client._sweep_inject_rejection_handlers(
+        error_msg="response.done status=cancelled",
+    )
     assert client._proactive_inject_awaiting_outcome is False
     assert client._inject_rejection_handlers == {}
     assert client._inject_completion_handlers == {}

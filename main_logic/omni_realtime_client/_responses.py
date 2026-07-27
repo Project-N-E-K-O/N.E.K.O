@@ -688,14 +688,20 @@ class _ResponseMixin:
                 timeout=_PROACTIVE_INJECT_DELIVERY_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
-            # This inject is now conservatively treated as undelivered. Release
-            # its one-shot correlation state immediately so the caller's
-            # scheduled retries are not blocked until the 60s TTL backstop.
-            # Proactive injects are serialized, so these maps contain only this
-            # logical request.
-            self._proactive_inject_awaiting_outcome = False
-            self._inject_rejection_handlers.clear()
-            self._inject_completion_handlers.clear()
+            # Keep this request quarantined until its own terminal lifecycle
+            # arrives: clearing the shared maps here would let a late
+            # response.done sweep handlers registered by a retry. Ask the
+            # provider to terminate the hanging response so the normal
+            # response.done/error path releases the gate promptly. If even the
+            # cancel lifecycle never arrives, the existing 60s TTL remains the
+            # conservative final backstop.
+            try:
+                await self.cancel_response()
+            except Exception as cancel_exc:
+                logger.warning(
+                    "prompt_ephemeral: timed-out response cancel failed; keeping inject quarantined: %s",
+                    cancel_exc,
+                )
             logger.warning(
                 "prompt_ephemeral: proactive text delivery timed out; keeping visual context for retry"
             )
