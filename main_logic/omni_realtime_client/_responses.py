@@ -464,9 +464,11 @@ class _ResponseMixin:
                 _fire(handler)
             self._inject_rejection_handlers.clear()
 
-    def _sweep_inject_rejection_handlers(self) -> None:
-        """Drop all pending inject rejection handlers on a ``response.done``
-        lifecycle boundary.
+    def _sweep_inject_rejection_handlers(
+        self,
+        error_msg: Optional[str] = None,
+    ) -> None:
+        """Resolve pending inject handlers on a ``response.done`` boundary.
 
         (Only the WS-realtime ``response.done`` path calls this — the Gemini
         branch of ``inject_text_and_request_response`` returns early via
@@ -481,13 +483,31 @@ class _ResponseMixin:
         strictly LATER than the rejection. So by the time ANY response.done
         arrives, every pending rejection for a prior send has already fired
         (and its handler self-removed via ``_reject_once``). Whatever remains
-        in the dict belongs to an inject that SUCCEEDED (no rejection coming)
-        — exactly the leak the fixed TTL was meant to clean, now reaped
-        promptly and lifecycle-tied instead of on a wall clock."""
+        in the dict belongs to this completed response. Explicit failed,
+        cancelled, or incomplete response statuses are routed through
+        ``error_msg`` and must reject the delivery rather than acknowledge it.
+        """
         # The inject's outcome has been observed (a response completed), so
         # close the no-id content-fallback window too.
         self._proactive_inject_awaiting_outcome = False
         completion_handler_map = getattr(self, "_inject_completion_handlers", {})
+        if error_msg is not None:
+            rejection_handlers = list({
+                id(handler): handler
+                for handler in self._inject_rejection_handlers.values()
+            }.values())
+            for handler in rejection_handlers:
+                try:
+                    handler(error_msg)
+                except Exception as cb_exc:
+                    logger.warning(
+                        "proactive inject terminal failure handler raised: %s",
+                        cb_exc,
+                    )
+            self._inject_rejection_handlers.clear()
+            completion_handler_map.clear()
+            return
+
         completion_handlers = list({
             id(handler): handler
             for handler in completion_handler_map.values()
@@ -628,6 +648,13 @@ class _ResponseMixin:
             outcome_observed.set()
 
         try:
+            # Text-triggered turns do not produce the server-VAD
+            # speech_stopped event that normally starts a fresh TTS turn.
+            # Rotate through the lightweight callback before response.create
+            # so external TTS workers do not discard this response under the
+            # preceding turn's already-closed speech ID.
+            if self._has_server_vad and self.on_sid_rotate is not None:
+                await self.on_sid_rotate()
             await self.inject_text_and_request_response(
                 text,
                 on_rejected=_on_rejected,

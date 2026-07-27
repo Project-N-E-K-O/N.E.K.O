@@ -323,6 +323,27 @@ async def test_receive_text_delta(realtime_client):
     assert response_done_mock.called
 
 
+@pytest.mark.unit
+async def test_cancelled_response_done_rejects_pending_proactive_inject(
+    realtime_client,
+):
+    realtime_client.ws = AsyncMock()
+    realtime_client.ws.__aiter__.return_value = [
+        json.dumps({
+            "type": "response.done",
+            "response": {"id": "resp_cancelled", "status": "cancelled"},
+        }),
+    ]
+    realtime_client._sweep_inject_rejection_handlers = MagicMock()
+    realtime_client.on_response_done = AsyncMock()
+
+    await realtime_client.handle_messages()
+
+    realtime_client._sweep_inject_rejection_handlers.assert_called_once_with(
+        error_msg="response.done status=cancelled",
+    )
+
+
 # ──────────────────────────────────────────────────────────────────────
 # VAD MANUAL turn detection tests
 # ──────────────────────────────────────────────────────────────────────

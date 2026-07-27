@@ -103,6 +103,18 @@ async def test_free_prompt_sends_native_image_before_text():
 
 
 @pytest.mark.unit
+async def test_server_vad_prompt_rotates_tts_sid_before_text_response():
+    client = _make_client()
+    client.on_sid_rotate = AsyncMock()
+
+    delivered = await _prompt_and_complete(client, "start a new TTS turn")
+
+    assert delivered is True
+    client.on_sid_rotate.assert_awaited_once_with()
+    await client.close()
+
+
+@pytest.mark.unit
 async def test_delayed_inject_rejection_returns_false_and_preserves_image():
     client = _make_client()
     client._latest_image_b64 = DUMMY_IMAGE_B64
@@ -121,6 +133,34 @@ async def test_delayed_inject_rejection_returns_false_and_preserves_image():
     delivered = await client.prompt_ephemeral("describe what you notice")
 
     assert delivered is False
+    assert client._proactive_image_consumed is False
+    assert client._latest_image_b64 == DUMMY_IMAGE_B64
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_failed_response_done_returns_false_and_preserves_image():
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+
+    task = asyncio.create_task(
+        client.prompt_ephemeral("describe what you notice")
+    )
+    for _ in range(20):
+        if any(
+            event.get("type") == "response.create"
+            for event in _sent_events(client)
+        ):
+            break
+        await asyncio.sleep(0)
+    else:
+        raise AssertionError("prompt_ephemeral did not send response.create")
+    client._sweep_inject_rejection_handlers(
+        error_msg="response.done status=cancelled",
+    )
+
+    assert await task is False
     assert client._proactive_image_consumed is False
     assert client._latest_image_b64 == DUMMY_IMAGE_B64
     await client.close()

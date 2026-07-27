@@ -945,14 +945,27 @@ class _TransportMixin:
                 elif event_type == "response.done":
                     self._response_done_total += 1
                     self._last_response_done_time = time.time()
+                    resp_data = event.get("response", {})
+                    response_status = str(
+                        resp_data.get("status") or ""
+                    ).strip().lower()
                     # Lifecycle cleanup of proactive inject rejection handlers
-                    # (see _sweep_inject_rejection_handlers): any pending
-                    # rejection has already fired by now, so the remaining
-                    # entries belong to injects that succeeded — reap them.
-                    self._sweep_inject_rejection_handlers()
+                    # (see _sweep_inject_rejection_handlers). Some providers
+                    # omit status; explicit terminal non-success values must
+                    # reject the proactive delivery instead of consuming its
+                    # image/counters merely because response.done arrived.
+                    if response_status and response_status not in {
+                        "completed",
+                        "success",
+                        "succeeded",
+                    }:
+                        self._sweep_inject_rejection_handlers(
+                            error_msg=f"response.done status={response_status}",
+                        )
+                    else:
+                        self._sweep_inject_rejection_handlers()
                     # 解析实时 API 返回的 token 用量
                     try:
-                        resp_data = event.get("response", {})
                         _rt_usage = resp_data.get("usage")
                         if _rt_usage:
                             from utils.token_tracker import TokenTracker
