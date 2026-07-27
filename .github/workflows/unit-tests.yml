@@ -59,6 +59,16 @@ jobs:
         # need it and fail loudly rather than silently skipping if it is gone.
         run: uv sync
 
+      - name: Install pyclipper (in-tree rapidocr fork)
+        # tests/unit/test_galgame_dependency_slimming.py exercises the in-tree
+        # deps/rapidocr_pillow fork, whose det post-processing imports pyclipper
+        # at module scope. It ships with the galgame group, but that group also
+        # drags in opencv (~130 MB) which nothing else here needs. The wheel is
+        # ~260 KB on its own, so install just that and keep the four fork tests
+        # running instead of letting them skip in the one environment that
+        # would otherwise never exercise them.
+        run: uv pip install pyclipper
+
       - name: Run unit test suite
         # Separate pytest process from plugin/tests, which carries its own
         # pytest.ini.

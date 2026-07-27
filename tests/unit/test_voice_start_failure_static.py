@@ -7,6 +7,8 @@ from tests.static_app_parts import read_path_or_parts
 
 import pytest
 
+from tests.node_harness import run_node_stdin
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_AUDIO_CAPTURE_PATH = PROJECT_ROOT / "static" / "app" / "app-audio-capture.js"
 APP_BUTTONS_PATH = PROJECT_ROOT / "static" / "app" / "app-buttons.js"
@@ -254,10 +256,9 @@ runScenario()
   }});
 """
 
-    result = subprocess.run(
-        [node_executable, "-"],
-        input=node_harness,
-        text=True,
+    result = run_node_stdin(
+        node_executable,
+        node_harness,
         capture_output=True,
         check=False,
         timeout=10,

@@ -18,6 +18,15 @@ import yaml
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 RAPIDOCR_PILLOW_ROOT = ROOT / "deps" / "rapidocr_pillow"
 
+# The fork's det post-processing imports pyclipper at module scope, and
+# pyclipper only arrives with the galgame group (`uv sync --group galgame`),
+# which plain dev installs and CI deliberately skip — it drags in ~130 MB of
+# opencv. Without this guard those tests do not fail informatively, they raise
+# ModuleNotFoundError, and they only ever passed on machines that happened to
+# have the group installed. The CI workflow installs the single ~260 KB
+# pyclipper wheel so the cohort still runs there; everywhere else it skips.
+_HAS_PYCLIPPER = importlib.util.find_spec("pyclipper") is not None
+
 
 def _rapidocr_modnames() -> list[str]:
     return [
@@ -138,6 +147,7 @@ def test_rapidocr_pillow_source_has_no_removed_dependency_imports() -> None:
     assert sorted(offenders) == []
 
 
+@pytest.mark.skipif(not _HAS_PYCLIPPER, reason="pyclipper missing (galgame group not installed)")
 def test_pillow_cv_geometry_helpers_cover_shapely_and_perspective_replacements() -> None:
     from rapidocr_onnxruntime._pillow_cv import (
         dilate,
@@ -356,6 +366,7 @@ def test_rapidocr_pillow_verifier_can_build_manifest_from_category_dirs() -> Non
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+@pytest.mark.skipif(not _HAS_PYCLIPPER, reason="pyclipper missing (galgame group not installed)")
 def test_rapidocr_pillow_preprocess_accumulates_resize_ratios() -> None:
     from rapidocr_onnxruntime.main import RapidOCR
 
@@ -371,6 +382,7 @@ def test_rapidocr_pillow_preprocess_accumulates_resize_ratios() -> None:
     assert ratio_w == pytest.approx(8000 / 3968)
 
 
+@pytest.mark.skipif(not _HAS_PYCLIPPER, reason="pyclipper missing (galgame group not installed)")
 def test_rapidocr_call_uses_per_call_thresholds_without_mutating_instance() -> None:
     from rapidocr_onnxruntime.main import RapidOCR
 
@@ -406,6 +418,7 @@ def test_rapidocr_call_uses_per_call_thresholds_without_mutating_instance() -> N
     assert engine.text_score == 0.5
 
 
+@pytest.mark.skipif(not _HAS_PYCLIPPER, reason="pyclipper missing (galgame group not installed)")
 def test_rapidocr_cli_visualization_handles_empty_and_det_only_results(monkeypatch, tmp_path) -> None:
     from rapidocr_onnxruntime import main as rapidocr_main
 
