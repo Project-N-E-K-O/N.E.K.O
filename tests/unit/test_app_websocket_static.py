@@ -5,6 +5,8 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+import pytest
+
 
 APP_WEBSOCKET_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-websocket.js"
 APP_STATE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-state.js"
@@ -503,14 +505,17 @@ def test_start_session_handshake_omitted_until_settings_hydrated():
 
 
 def test_settings_hydration_marked_on_server_merge_and_user_change():
-    # S.settingsHydrated must flip true on exactly the two authoritative
+    # S.settingsHydrated must flip true on exactly the three authoritative
     # events, and never merely at boot:
     #   (1) the conversation-settings GET succeeded (server values merged);
     #   (2) the user explicitly changed a setting — the independent-ASR toggle
     #       handler (app-audio-capture.js) runs saveSettings({skipServerSync})
     #       + syncSettingsToServer({ userInitiated: true }), so the synchronous
     #       marker inside syncSettingsToServer covers it even when the POST
-    #       later fails (a user action is authoritative even pre-hydration).
+    #       later fails (a user action is authoritative even pre-hydration);
+    #   (3) a cross-window independent-ASR flip arrived via the 'storage'
+    #       listener — the originating window's user action, pinned by
+    #       test_cross_window_asr_flip_marks_hydration_and_bumps_generation.
     settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
     capture_source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
 
@@ -773,16 +778,81 @@ def test_settings_posts_serialize_so_a_stale_body_cannot_win_persistence():
     assert sync_fn.index("_localSettingsGeneration += 1;") < run_sync_index
 
 
+def test_cross_window_asr_flip_marks_hydration_and_bumps_generation():
+    # Codex P2: a cross-window independent-ASR toggle arrives via the
+    # 'storage' listener, which used to copy the value into S without marking
+    # S.settingsHydrated or bumping _localSettingsGeneration. In the receiving
+    # window that meant (a) the next start_session omitted the handshake field
+    # (the stamp is gated on S.settingsHydrated, pinned by
+    # test_start_session_handshake_omitted_until_settings_hydrated), so the
+    # backend read the OLD persisted value while the originating window's POST
+    # was still in flight, and (b) a still-pending settings GET later merged
+    # the stale server snapshot over the flip and POSTed it back via
+    # saveSettings(). Pin the fix: the flip is detected before the apply and
+    # treated as an authoritative hydration + generation event, with no POST
+    # from the receiving window.
+    settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
+
+    listener_block = settings_source.split(
+        "window.addEventListener('storage', function (event) {", 1
+    )[1].split("});", 1)[0]
+
+    # Flip detection: own-property guard plus strict inequality against S,
+    # computed BEFORE applySharedRuntimeSettings mutates S.
+    assert (
+        "Object.prototype.hasOwnProperty.call(settings, 'independentAsrEnabled')"
+        in listener_block
+    )
+    assert "S.independentAsrEnabled !== settings.independentAsrEnabled" in listener_block
+    assert listener_block.index("const asrChangedByOtherWindow") < listener_block.index(
+        "applySharedRuntimeSettings(settings)"
+    )
+
+    # Hydration mark + generation bump sit inside the ASR-flip gate only.
+    flip_gate = listener_block.split("if (asrChangedByOtherWindow) {", 1)[1].split(
+        "}", 1
+    )[0]
+    assert "S.settingsHydrated = true;" in flip_gate
+    assert "_localSettingsGeneration += 1;" in flip_gate
+    assert listener_block.count("S.settingsHydrated = true;") == 1
+    assert listener_block.count("_localSettingsGeneration += 1;") == 1
+
+    # No POST from the receiving window: the originating window owns
+    # persistence, and a receiving-window POST would duplicate writes and
+    # loop storage events between windows. (Assert on code lines only — the
+    # in-source comment legitimately names saveSettings.)
+    listener_code = "\n".join(
+        line
+        for line in listener_block.splitlines()
+        if not line.strip().startswith("//")
+    )
+    assert "saveSettings" not in listener_code
+    assert "syncSettingsToServer" not in listener_code
+    assert "fetch(" not in listener_code
+
+    # Negative: applySharedRuntimeSettings itself must stay authority-neutral —
+    # other shared keys (and non-flip events) keep syncing values across
+    # windows without marking hydration or bumping the generation, so a
+    # first-launch boot-defaults write in another window can never arm this
+    # window's periodic sync or handshake.
+    apply_fn = settings_source.split(
+        "function applySharedRuntimeSettings(settings) {", 1
+    )[1].split("function isManualScreenShareActive()", 1)[0]
+    assert "settingsHydrated" not in apply_fn
+    assert "_localSettingsGeneration" not in apply_fn
+
+
 def _run_settings_node_harness(script: str) -> subprocess.CompletedProcess[str]:
     node_path = shutil.which("node")
     if not node_path:
-        raise AssertionError("node is required to run app-settings harness tests")
+        pytest.skip("node is not installed; skipping app-settings harness test")
     return subprocess.run(
         [node_path, "-e", script],
         cwd=str(Path(__file__).resolve().parents[2]),
         capture_output=True,
         text=True,
         check=False,
+        timeout=60,
     )
 
 
@@ -910,6 +980,133 @@ def test_rapid_asr_toggle_double_flip_persists_final_state_harness():
     result = _run_settings_node_harness(harness)
     assert result.returncode == 0, (
         "settings sync harness failed\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "HARNESS_OK" in result.stdout
+
+
+def test_cross_window_asr_flip_authoritative_over_pending_get_harness():
+    # Behavioral pin for the cross-window Codex P2 fix: drive the real module
+    # in a vm sandbox, deliver a 'storage' event carrying another window's
+    # independent-ASR flip while this window's boot GET is still pending, then
+    # resolve that GET with the stale pre-flip server value. The flip must mark
+    # hydration (arming the start_session handshake stamp), the stale merge
+    # must be dropped by the generation guard, and the receiving window must
+    # never POST. Negative: a storage event that does NOT flip the toggle
+    # stays non-authoritative and the pending GET still merges normally.
+    harness = textwrap.dedent(
+        """
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+
+        const source = fs.readFileSync(__APP_SETTINGS_PATH__, 'utf8');
+
+        function assert(cond, msg) {
+          if (!cond) throw new Error('ASSERT: ' + msg);
+        }
+
+        function makeContext() {
+          const postCalls = [];
+          const getCalls = [];
+          const listeners = [];
+          const sandbox = {
+            console: { log() {}, warn() {}, error() {} },
+            setInterval() { return 0; },
+            clearInterval() {},
+            setTimeout,
+            clearTimeout,
+            localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
+            document: { getElementById() { return null; } },
+            fetch(url, opts) {
+              return new Promise((resolve, reject) => {
+                if (opts && opts.method === 'POST') {
+                  postCalls.push({ url, body: opts.body, resolve, reject });
+                } else {
+                  getCalls.push({ url, resolve, reject });
+                }
+              });
+            },
+          };
+          sandbox.window = {
+            appState: { independentAsrEnabled: false, settingsHydrated: false },
+            appConst: {},
+            appUtils: { mapRenderQualityToFollowPerf() { return 'medium'; } },
+            addEventListener(type, fn) { listeners.push({ type, fn }); },
+            removeEventListener() {},
+          };
+          vm.createContext(sandbox);
+          vm.runInContext(source, sandbox);
+          const storage = listeners.filter((entry) => entry.type === 'storage');
+          assert(storage.length === 1, 'module must register exactly one storage listener');
+          return {
+            postCalls,
+            getCalls,
+            S: sandbox.window.appState,
+            fireStorage(newValue) {
+              storage[0].fn({ key: 'project_neko_settings', newValue });
+            },
+          };
+        }
+
+        const okPost = { ok: true, json: async () => ({ success: true }) };
+        const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+        async function main() {
+          // Scenario 1: cross-window ASR flip while the boot GET is pending.
+          const ctx = makeContext();
+          assert(ctx.getCalls.length === 1, 'boot must issue the settings GET');
+          assert(ctx.S.settingsHydrated === false, 'boot alone must not mark hydration');
+
+          ctx.fireStorage(JSON.stringify({ independentAsrEnabled: true }));
+          assert(ctx.S.independentAsrEnabled === true, 'the flip must be applied to S');
+          assert(ctx.S.settingsHydrated === true, 'the flip must arm the start_session handshake stamp');
+          assert(ctx.postCalls.length === 0, 'the receiving window must not POST (originating window owns persistence)');
+
+          // The GET now resolves with the server value read BEFORE the other
+          // window's POST landed: the whole stale merge must be dropped.
+          ctx.getCalls[0].resolve({
+            ok: true,
+            json: async () => ({ success: true, settings: { independentAsrEnabled: false }, telemetryBranch: null }),
+          });
+          await tick();
+          await tick();
+          assert(ctx.S.independentAsrEnabled === true, 'the stale GET merge must not overwrite the cross-window flip');
+          assert(ctx.postCalls.length === 0, 'the dropped merge must not POST the stale value back');
+
+          // Scenario 2 (negative): a storage event without an ASR flip is
+          // non-authoritative — other shared keys still sync, hydration stays
+          // unmarked, and the pending GET then merges exactly as before.
+          const ctx2 = makeContext();
+          ctx2.fireStorage(JSON.stringify({ independentAsrEnabled: false, mergeMessagesEnabled: true }));
+          assert(ctx2.S.mergeMessagesEnabled === true, 'other shared keys must still sync across windows');
+          assert(ctx2.S.settingsHydrated === false, 'no ASR flip means no hydration mark');
+          assert(ctx2.postCalls.length === 0, 'a non-flip storage event must not POST either');
+
+          ctx2.getCalls[0].resolve({
+            ok: true,
+            json: async () => ({ success: true, settings: { independentAsrEnabled: true }, telemetryBranch: null }),
+          });
+          await tick();
+          await tick();
+          assert(ctx2.S.independentAsrEnabled === true, 'the normal server merge must still apply');
+          assert(ctx2.S.settingsHydrated === true, 'the normal server merge must still mark hydration');
+          assert(ctx2.postCalls.length === 1, 'the same-window merge write-back POST must be unchanged');
+          ctx2.postCalls[0].resolve(okPost);
+
+          console.log('HARNESS_OK');
+        }
+
+        main().catch((err) => {
+          console.error(err && err.stack ? err.stack : String(err));
+          process.exit(1);
+        });
+        """
+    ).replace("__APP_SETTINGS_PATH__", json.dumps(str(APP_SETTINGS_PATH)))
+
+    result = _run_settings_node_harness(harness)
+    assert result.returncode == 0, (
+        "cross-window ASR flip harness failed\n"
         f"stdout:\n{result.stdout}\n"
         f"stderr:\n{result.stderr}"
     )

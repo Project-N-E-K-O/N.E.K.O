@@ -833,7 +833,34 @@
         if (event.key !== 'project_neko_settings' || !event.newValue) return;
         try {
             const settings = JSON.parse(event.newValue);
+            // Cross-window independent-ASR flips are authoritative (Codex P2):
+            // detect the flip BEFORE applySharedRuntimeSettings mutates S.
+            const asrChangedByOtherWindow =
+                Object.prototype.hasOwnProperty.call(settings, 'independentAsrEnabled') &&
+                S.independentAsrEnabled !== settings.independentAsrEnabled;
             const changed = applySharedRuntimeSettings(settings);
+            if (asrChangedByOtherWindow) {
+                // The snapshot that flips independentAsrEnabled always comes from
+                // an already-hydrated writer (the toggle handler's userInitiated
+                // sync or a server-merge writeback) — first-launch skipServerSync
+                // saves carry the same boot default this window has, so they never
+                // flip it. Treat it exactly like a local user change: mark
+                // hydration so the next start_session handshake stamps the new
+                // value (app-websocket.js attachStartSessionHandshake gates on
+                // S.settingsHydrated; without it the backend would read the OLD
+                // persisted value while the other window's POST is in flight),
+                // and bump the generation so this window's still-pending settings
+                // GET drops its stale merge instead of overwriting the flip and
+                // POSTing the old value back via saveSettings(). Deliberately no
+                // POST from here: the originating window owns persistence, and a
+                // receiving-window POST would duplicate writes and loop storage
+                // events. Other shared keys stay non-authoritative — they never
+                // reach the handshake, and marking hydration for them would let
+                // a first-launch write in another window arm this window's
+                // periodic sync with non-authoritative boot values.
+                S.settingsHydrated = true;
+                _localSettingsGeneration += 1;
+            }
             stopVisionAfterPrivacyEnabled();
             if (changed && typeof window.scheduleProactiveChat === 'function') {
                 window.scheduleProactiveChat();
