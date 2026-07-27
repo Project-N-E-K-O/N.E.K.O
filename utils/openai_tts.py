@@ -18,6 +18,9 @@ should receive the standard OpenAI body unless it is explicitly recognized by
 ``openai_tts_extra_body``.
 """
 
+# 本模块只负责 HTTP(S) Speech API；WS(S) 双向流继续由各 provider 的专用
+# worker 处理。供应商专属字段也必须与标准 OpenAI 请求体隔离。
+
 from __future__ import annotations
 
 from urllib.parse import urlparse, urlunparse
@@ -26,14 +29,12 @@ from urllib.parse import urlparse, urlunparse
 OPENAI_TTS_DEFAULT_BASE_URL = "https://api.openai.com/v1"
 OPENAI_TTS_DEFAULT_MODEL = "gpt-4o-mini-tts"
 OPENAI_TTS_DEFAULT_VOICE = "marin"
-# Raw PCM returned by the Speech API is fed into the project's 24 kHz -> 48 kHz
-# streaming resampler. Providers with a configurable rate must be pinned to the
-# same source rate or playback speed and pitch will be wrong.
+# Speech API 返回的原始 PCM 会进入项目的 24 kHz -> 48 kHz 流式重采样器。
+# 对于支持配置采样率的供应商，必须固定相同的源采样率，否则播放速度和音调会出错。
 OPENAI_TTS_PCM_SAMPLE_RATE = 24000
 
-# Use exact host matching so SiliconFlow-only request fields are never leaked to
-# an unrelated OpenAI-compatible server whose hostname merely contains the same
-# text (for example, a user-controlled subdomain).
+# 使用精确域名匹配，避免把硅基流动专属字段发送给域名中仅碰巧包含相同文本的
+# 其他 OpenAI-compatible 服务（例如用户可控的子域名）。
 _SILICONFLOW_TTS_HOSTS = frozenset({
     "api.siliconflow.cn",
     "api.siliconflow.com",
@@ -62,17 +63,15 @@ def openai_tts_base_url(base_url: str) -> str:
 
     path = (parsed.path or "").rstrip("/")
     if not path:
-        # A bare origin follows the conventional OpenAI API layout.
+        # 只填写服务 origin 时，按照 OpenAI 的常规 API 结构补上 /v1。
         path = "/v1"
     if path.endswith("/audio/speech"):
-        # AsyncOpenAI expects the API base, not the resource endpoint. The UI
-        # accepts either form, so strip only the known suffix and preserve any
-        # provider-specific prefix before it.
+        # AsyncOpenAI 需要的是 API Base URL，而不是具体资源 endpoint。
+        # 配置页允许两种形式，因此只移除已知后缀，保留供应商在它之前的路径前缀。
         path = path[:-len("/audio/speech")].rstrip("/") or "/v1"
 
-    # Rebuild from parsed components rather than concatenating the raw string;
-    # this keeps query parameters after the path where signed/proxied endpoints
-    # expect them.
+    # 使用解析后的 URL 组件重建，避免直接拼接原始字符串导致 query 跑到路径中间。
+    # 某些带签名或代理的 endpoint 依赖 query 始终位于完整路径之后。
     return urlunparse(
         (parsed.scheme, parsed.netloc, path, parsed.params, parsed.query, parsed.fragment)
     )
@@ -83,8 +82,8 @@ def openai_tts_speech_url(base_url: str) -> str:
 
     parsed = urlparse(openai_tts_base_url(base_url))
     path = f"{parsed.path.rstrip('/')}/audio/speech"
-    # The connectivity probe uses this full URL directly. Component-wise
-    # assembly avoids producing malformed URLs such as ``...?token=x/audio``.
+    # 连通性探测会直接请求这个完整 URL。按组件组装可以避免生成
+    # ``...?token=x/audio`` 之类 query 与路径顺序错误的地址。
     return urlunparse(
         (parsed.scheme, parsed.netloc, path, parsed.params, parsed.query, parsed.fragment)
     )
@@ -100,10 +99,9 @@ def openai_tts_extra_body(base_url: str) -> dict[str, int | bool]:
 
     parsed = urlparse(str(base_url or "").strip())
     if (parsed.hostname or "").lower() in _SILICONFLOW_TTS_HOSTS:
-        # SiliconFlow supports streaming PCM through the OpenAI-compatible HTTP
-        # endpoint but exposes these controls as extensions. Pin both explicitly
-        # so runtime playback and the connectivity probe exercise the same wire
-        # format. Do not send them to generic providers.
+        # 硅基流动通过 OpenAI-compatible HTTP endpoint 返回流式 PCM，但将采样率
+        # 与流式开关作为扩展字段。这里显式固定二者，使运行时播放和连通性探测
+        # 使用相同的传输格式；这些字段不会发送给其他通用兼容供应商。
         return {"sample_rate": OPENAI_TTS_PCM_SAMPLE_RATE, "stream": True}
     return {}
 
