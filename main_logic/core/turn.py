@@ -468,15 +468,27 @@ class TurnMixin:
         if self.pending_agent_callbacks:
             self._fire_task(self.trigger_agent_callbacks())
 
-    async def handle_response_discarded(self, reason: str, attempt: int, max_attempts: int, will_retry: bool, message: Optional[str] = None):
+    async def handle_response_discarded(
+        self,
+        reason: str,
+        attempt: int,
+        max_attempts: int,
+        will_retry: bool,
+        message: Optional[str] = None,
+        *,
+        request_id: Any = _REQUEST_ID_UNSET,
+    ):
         """
         Handle the response-discarded notification: clear the TTS pipeline + frontend output, sending turn end if necessary
         """
-        # 快照本轮的 request_id，函数末尾只在仍等于快照时才清空——
-        # 防止用户在本轮 turn end 发出前就提交下一条文本时，新轮的
-        # request_id 被旧 discard 回调误抹掉（前端 rollback / clearPending
-        # rollback 会跨轮串掉）。
-        active_request_id = self._active_text_request_id
+        # 文本流在发起时显式绑定 request_id；旧调用者未传时才兼容回读共享字段。
+        # 不能只在函数入口快照 self._active_text_request_id：旧请求 A 的回调若在
+        # 新请求 B 启动后才进入本函数，入口快照本身就已经是 B，会让前端误取消 B。
+        active_request_id = (
+            self._active_text_request_id
+            if request_id is _REQUEST_ID_UNSET
+            else request_id
+        )
         logger.warning(f"[{self.lanlan_name}] 响应异常已丢弃 (reason={reason}, attempt={attempt}/{max_attempts}, will_retry={will_retry})")
 
         # 检测是否为 RESPONSE_TOO_LONG 最终丢弃 / RESPONSE_LENGTH_TRUNCATED 截断恢复

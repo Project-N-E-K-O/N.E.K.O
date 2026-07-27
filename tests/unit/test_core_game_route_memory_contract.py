@@ -818,6 +818,40 @@ async def test_openclaw_magic_command_falls_back_when_openclaw_not_ready(monkeyp
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_text_stream_discard_callback_keeps_original_request_owner(monkeypatch):
+    """A late discard from request A must not inherit request B's shared owner."""
+    mgr = _make_transcript_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session._pending_images = []
+    mgr.session.update_max_response_length = Mock()
+    mgr.session.stream_text = AsyncMock()
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=False)
+    mgr.agent_flags = {}
+    mgr.pending_agent_callbacks = []
+    mgr._fire_task = Mock()
+    monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda name, text: None)
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "request A", "request_id": "req-A"},
+    )
+
+    discard_callback = mgr.session.stream_text.await_args.kwargs["response_discarded_callback"]
+    mgr._active_text_request_id = "req-B"
+    mgr.websocket = _FakeConnectedWebSocket()
+
+    await discard_callback("guard", 1, 3, False, None)
+
+    assert mgr.websocket.sent[-1]["request_id"] == "req-A"
+    assert mgr._active_text_request_id == "req-B"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_explicit_openclaw_magic_command_reuses_adapter_aliases(monkeypatch):
     """The immediate fast path must map namespaced aliases to OpenClaw commands."""
     mgr = _make_transcript_manager()
