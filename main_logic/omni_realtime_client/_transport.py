@@ -528,7 +528,7 @@ class _TransportMixin:
                 if audio_processor.speech_probability > 0.4:
                     # B: 单帧 RNNoise 判定为语音就立即打点，独立于 sustain。
                     # _client_vad_active 仍需 500ms sustain，_user_recent_activity
-                    # 只看"最近是否发声"，fudge guard 用它兜住首 500ms 和停顿缝隙。
+                    # 只看"最近是否发声"，主动搭话 guard 用它兜住首 500ms 和停顿缝隙。
                     self._user_recent_activity_time = current_time
                     if self._speech_detect_start == 0.0:
                         self._speech_detect_start = current_time
@@ -549,10 +549,6 @@ class _TransportMixin:
                         # RMS 是唯一信号，也喂给 B 兜底。阈值已经是 500（较高），
                         # 一般环境噪音达不到。
                         self._user_recent_activity_time = current_time
-
-        # Suppress mic → server during proactive nudge injection (VAD above still updates)
-        if self._proactive_injecting:
-            return
 
         # 静音清 buffer：有 RNNoise 以 RNNoise 为准，否则 VAD + 连续本地静音（见 _should_clear_audio_buffer_on_silence）
         if self._should_clear_audio_buffer_on_silence(current_time, use_rnnoise_path):
@@ -632,7 +628,8 @@ class _TransportMixin:
         self._proactive_image_consumed = False
 
         try:
-            # Models without native vision (step, free on lanlan.tech) — first frame triggers VISION_MODEL analysis
+            # Standard StepFun is the only realtime provider without native
+            # vision; its first frame triggers VISION_MODEL analysis.
             if '实时屏幕截图或相机画面正在分析中' in self._image_description and not self._supports_native_image:
                 # 非原生视觉后端只需要本轮第一帧做分析；后续高频帧直接丢弃，避免并发刷爆 VISION_MODEL。
                 async with self._image_lock:
@@ -674,7 +671,7 @@ class _TransportMixin:
                             self._fatal_error_occurred = True
                 return
 
-            if self._is_free_proxy:
+            if self._is_free_provider:
                 append_event = {
                     "type": "input_image_buffer.append" ,
                     "image": image_b64
@@ -682,7 +679,7 @@ class _TransportMixin:
                 await self.send_event(append_event)
                 return
 
-            if self._audio_in_buffer:
+            if self._audio_in_buffer or bypass_rate_limit:
                 if "qwen" in self._model_lower:
                     append_event = {
                         "type": "input_image_buffer.append" ,
@@ -1064,12 +1061,7 @@ class _TransportMixin:
                     self._client_vad_active = True
                     self._client_vad_last_speech_time = self._last_speech_time
                     # B: server-VAD 也喂给 _user_recent_activity，保持各 VAD 源对称。
-                    # 但 fudge 注入期间 server 会对我们自己 append 的 fudge 音频
-                    # 回 speech_started —— 这不是真用户活动，若打点 prompt_ephemeral
-                    # 循环会检测到 _user_recent_activity_time > _inject_start 而自 abort，
-                    # 并在之后 8s 内阻塞下一次 fudge（入口 guard 一起被污染）。
-                    if not self._proactive_injecting:
-                        self._user_recent_activity_time = self._last_speech_time
+                    self._user_recent_activity_time = self._last_speech_time
                     if self._is_responding:
                         logger.info("Handling interruption")
                         await self.handle_interruption()
@@ -1082,10 +1074,7 @@ class _TransportMixin:
                     # Update timestamp so grace period starts from speech end
                     _now = time.time()
                     self._client_vad_last_speech_time = _now
-                    # 同 speech_started：fudge 自己的音频结束时 server 也会 emit
-                    # speech_stopped，不能当成真用户活动打点。
-                    if not self._proactive_injecting:
-                        self._user_recent_activity_time = _now
+                    self._user_recent_activity_time = _now
                 elif event_type == "conversation.item.input_audio_transcription.completed":
                     self._print_input_transcript = True
                     transcript = event.get("transcript", "")

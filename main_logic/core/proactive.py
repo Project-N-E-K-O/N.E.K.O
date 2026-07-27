@@ -78,17 +78,17 @@ class ProactiveMixin:
             pass
 
     # ------------------------------------------------------------------
-    # Voice-chat proactive audio nudge (dedicated path)
+    # Voice-chat proactive text trigger (dedicated path)
     # ------------------------------------------------------------------
 
     async def trigger_voice_proactive_nudge(self) -> bool:
-        """Inject a pre-recorded audio prompt to nudge the voice model into speaking.
+        """Inject a text prompt to nudge the voice model into speaking.
 
         This is the **only** caller of ``OmniRealtimeClient.prompt_ephemeral``
         for the voice-chat proactive feature.  It is completely independent of
         ``trigger_agent_callbacks`` (which handles agent task results).
 
-        Returns True if the audio was fully injected, False if skipped.
+        Returns True if the text turn was sent, False if skipped.
         """
         if not self.is_active or not isinstance(self.session, OmniRealtimeClient):
             return False
@@ -610,7 +610,7 @@ class ProactiveMixin:
         #
         # Gate：realtime API 同一时刻只允许一个 active response。如果 user 正在
         # 说话（server-VAD 触发 → 自动 response.create）或上一个 response 还
-        # 没结束（含 prompt_ephemeral 走的 fudge response），client 再发
+        # 没结束（含 prompt_ephemeral 触发的 proactive response），client 再发
         # response.create 会被 reject。phase != IDLE 时说明 text-mode proactive
         # 流水线在跑，也跳。两条都不满足时 callbacks 留在队列，等
         # _finalize_turn_after_emit 在 response.done 之后重新调用本函数重试。

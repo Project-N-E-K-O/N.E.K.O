@@ -528,7 +528,7 @@
     // 网络来回有延迟时前端守门先挡住，请求根本不发出去，省一个 round-trip。
     // `S.userRecentSpeechTime` 由 app-audio-capture.js 里的 monitorInputVolume 持续
     // 写入（RMS > 0.01 每帧打点），这里用一个稍宽于后端的窗口，保证"前端没挡住但
-    // 后端挡住"的 race 不至于频繁发生（fudge 空跑成本低，但可以省则省）。
+    // 后端挡住"的 race 不至于频繁发生（文本触发空跑成本低，但可以省则省）。
     var USER_RECENT_SPEECH_WINDOW_MS = 8000;
 
     function _isAssistantSpeaking() {
@@ -719,7 +719,7 @@
                     return;
                 }
                 // C: 前端麦克风 RMS 最近 8s 内超过语音阈值 → 用户正在说话或
-                // 刚说完，不发 fudge。与后端 _user_recent_activity_time guard
+                // 刚说完，不发主动文本触发。与后端 _user_recent_activity_time guard
                 // 对称（8s 窗口），请求根本不出门，省一次 round-trip。
                 // 同 AI-speaking 分支：不计入 no-response 计数，仍推进下一 tick。
                 if (_isUserRecentlySpeaking()) {
@@ -985,7 +985,7 @@
                 console.log('[ProactiveChat] 游戏路由 active，跳过普通主动搭话');
                 return;
             }
-            // ── 语音模式快速路径：直接发 voice_mode 请求，后端注入预录音频 ──
+            // ── 语音模式快速路径：直接发 voice_mode 请求，后端注入文本触发 ──
             if (S.isRecording) {
                 var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                 var voiceModes = [];

@@ -116,7 +116,10 @@ class QQVoiceReplyService:
         try:
             from utils.config_manager import get_config_manager
             from utils.tts.providers.stepfun import STEPFUN_TTS_DEFAULT_VOICE
-            from main_logic.tts_client.workers.step import _adjust_free_tts_url, _build_step_tts_create_data
+            from main_logic.tts_client.workers.free import (
+                _adjust_free_tts_url,
+                _build_step_tts_create_data,
+            )
 
             config_manager = get_config_manager()
 

@@ -28,7 +28,6 @@ dispatcher actually resolves.
 """
 import re
 import websockets
-from functools import partial
 
 from utils.config_manager import get_config_manager
 from utils.tts.native_voice_registry import get_native_tts_worker
@@ -54,6 +53,9 @@ from ._registry_meta import TTSProviderMeta, TTS_PROVIDER_REGISTRY
 # ── per-provider workers + their selection/resolution adapters ──────────────
 from .workers.step import (
     step_realtime_tts_worker,
+)
+from .workers.free import (
+    free_realtime_tts_worker,
     _adjust_free_tts_url,
     _get_tts_language_code,
     _build_step_tts_create_data,
@@ -147,7 +149,8 @@ __all__ = [
     "_run_sentence_tts_worker", "_record_tts_telemetry",
     "TTSProviderMeta", "TTS_PROVIDER_REGISTRY",
     # workers
-    "step_realtime_tts_worker", "grok_streaming_tts_worker", "qwen_realtime_tts_worker",
+    "step_realtime_tts_worker", "free_realtime_tts_worker",
+    "grok_streaming_tts_worker", "qwen_realtime_tts_worker",
     "cosyvoice_vc_tts_worker", "cogtts_tts_worker", "gemini_tts_worker",
     "openai_tts_worker", "vllm_omni_tts_worker", "mimo_tts_worker",
     "doubao_tts_worker",
@@ -371,10 +374,9 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     if core_api_type in ('qwen', 'qwen_intl'):
         return qwen_realtime_tts_worker, None, 'qwen'
     if core_api_type == 'free':
-        # provider_key 故意用 'free' 而非 'step'：'free' 不在 TTS_PROVIDER_REGISTRY 中，
-        # 使调用方 meta=None → normalizer 启用，因为 free 国外模式走 Gemini 后端需要
-        # CJK 空格清理。若改为 'step'（ws_bistream）则国外 free 用户的 normalizer 会被错误禁用。
-        return partial(step_realtime_tts_worker, free_mode=True), None, 'free'
+        # 免费服务拥有独立 worker；底层仍复用它与 StepFun 当前共有的流式
+        # wire transport，但 provider 路由、端点和音色选择不再伪装成 StepFun。
+        return free_realtime_tts_worker, None, 'free'
     elif core_api_type == 'step':
         return step_realtime_tts_worker, None, 'step'
     elif core_api_type == 'glm':

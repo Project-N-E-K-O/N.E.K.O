@@ -5078,7 +5078,7 @@ async def test_game_end_injects_postgame_context_into_active_realtime(monkeypatc
     await asyncio.wait_for(mgr.voice_nudge_event.wait(), timeout=1.0)
     assert mgr.voice_nudge_calls == 1
     # qwen_manual_commit/instruction surface was removed; the postgame nudge
-    # now relies on plain prompt_ephemeral (server VAD + WAV nudge). The
+    # now relies on plain prompt_ephemeral (guarded realtime text injection). The
     # postgame instruction reaches the model via prime_context (assert below).
     assert session.prime_context_calls
     assert mgr.append_context_calls[0]["source"] == "game.postgame"

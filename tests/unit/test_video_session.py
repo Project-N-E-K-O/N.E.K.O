@@ -184,6 +184,7 @@ def test_livestream_free_supports_native_vision():
         api_type="free",
         livestream_mode=True,
     )
+    assert client._is_free_provider is True
     assert client._is_free_proxy is True
     assert client._supports_native_image is True
     # livestream 自建上游是 Gemini 系，不应被当成有 server VAD 的 StepFun proxy
@@ -219,4 +220,70 @@ async def test_livestream_free_image_streaming():
             image_event_found = True
             assert msg["image"] == DUMMY_IMAGE_B64
     assert image_event_found, "Expected input_image_buffer.append event for livestream free"
+    await client.close()
+
+
+@pytest.mark.unit
+def test_domestic_free_supports_native_vision_without_gemini_proxy_vad():
+    """www.lanlan.tech free now accepts native images but keeps its own
+    server-VAD lifecycle instead of inheriting the lanlan.app Gemini proxy
+    behaviour."""
+    client = OmniRealtimeClient(
+        base_url="wss://www.lanlan.tech/api/v1/realtime",
+        api_key="test-key",
+        model="free-model",
+        turn_detection_mode=TurnDetectionMode.SERVER_VAD,
+        api_type="free",
+    )
+
+    assert client._is_free_provider is True
+    assert client._is_free_proxy is False
+    assert client._supports_native_image is True
+    assert client._has_server_vad is True
+
+
+@pytest.mark.unit
+async def test_domestic_free_image_streaming_bypasses_vision_model():
+    """Domestic free sends the same native image event as the other free
+    routes and never invokes the external VISION_MODEL annotator."""
+    client = OmniRealtimeClient(
+        base_url="wss://www.lanlan.tech/api/v1/realtime",
+        api_key="test-key",
+        model="free-model",
+        turn_detection_mode=TurnDetectionMode.SERVER_VAD,
+        api_type="free",
+    )
+    client.ws = AsyncMock()
+    client._audio_in_buffer = False
+    client._last_native_image_time = 0
+    client._analyze_image_with_vision_model = AsyncMock()
+
+    await client.stream_image(DUMMY_IMAGE_B64, bypass_rate_limit=True)
+
+    assert not client._analyze_image_with_vision_model.called
+    events = [
+        json.loads(call_args[0][0])
+        for call_args in client.ws.send.call_args_list
+    ]
+    assert any(
+        event.get("type") == "input_image_buffer.append"
+        and event.get("image") == DUMMY_IMAGE_B64
+        for event in events
+    )
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_proactive_native_image_can_send_without_audio_buffer():
+    """A deliberate proactive image is not coupled to microphone buffer state."""
+    client = _make_client("qwen-omni-turbo")
+    client._audio_in_buffer = False
+
+    await client.stream_image(DUMMY_IMAGE_B64, bypass_rate_limit=True)
+
+    events = [
+        json.loads(call_args[0][0])
+        for call_args in client.ws.send.call_args_list
+    ]
+    assert any(event.get("type") == "input_image_buffer.append" for event in events)
     await client.close()

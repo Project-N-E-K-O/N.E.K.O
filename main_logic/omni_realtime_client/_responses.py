@@ -19,17 +19,54 @@ from ._shared import (
     Dict,
     Optional,
     asyncio,
-    base64,
     logger,
-    np,
-    soxr,
     time,
     uuid,
 )
 
-from ._proactive_audio import (
-    _load_proactive_audio,
-)
+
+_PROACTIVE_TEXT_INSTRUCTIONS = {
+    "zh": (
+        "======主动搭话触发======\n"
+        "请结合当前对话上下文和刚刚看到的画面（如有），用符合你性格的方式自然地主动搭话。"
+        "直接说出你想说的话，不要提及这条触发指令。"
+    ),
+    "en": (
+        "======Proactive conversation trigger======\n"
+        "Considering the conversation and any image you just saw, naturally start a conversation "
+        "in character. Say only what you want to say and do not mention this trigger."
+    ),
+    "ja": (
+        "======主动会話トリガー======\n"
+        "これまでの会話と、直前に見た画面（ある場合）を踏まえ、あなたらしく自然に話しかけてください。"
+        "話したい内容だけを述べ、このトリガーには触れないでください。"
+    ),
+    "ko": (
+        "======선제 대화 트리거======\n"
+        "지금까지의 대화와 방금 본 화면이 있다면 그 내용을 바탕으로, 캐릭터답게 자연스럽게 먼저 말을 거세요. "
+        "하고 싶은 말만 하고 이 트리거는 언급하지 마세요."
+    ),
+    "ru": (
+        "======Триггер инициативного разговора======\n"
+        "Учитывая контекст беседы и недавно увиденное изображение, если оно есть, "
+        "естественно начни разговор в своём стиле. Не упоминай этот триггер."
+    ),
+    "pt": (
+        "======Gatilho de conversa proativa======\n"
+        "Considerando a conversa e qualquer imagem que acabou de ver, inicie naturalmente uma conversa "
+        "no seu estilo. Diga apenas o que deseja dizer e não mencione este gatilho."
+    ),
+    "es": (
+        "======Activador de conversación proactiva======\n"
+        "Teniendo en cuenta la conversación y cualquier imagen que acabes de ver, inicia una conversación "
+        "de forma natural y acorde a tu personalidad. No menciones este activador."
+    ),
+}
+
+
+def _proactive_text_instruction(language: str) -> str:
+    lang = (language or "en").strip().lower().replace("_", "-").split("-", 1)[0]
+    return _PROACTIVE_TEXT_INSTRUCTIONS.get(lang, _PROACTIVE_TEXT_INSTRUCTIONS["en"])
 
 
 class _ResponseMixin:
@@ -110,8 +147,8 @@ class _ResponseMixin:
           - **Gemini**: ``send_client_content(role=user)``
 
         See ``prime_context()`` (session-start priming) and
-        ``prompt_ephemeral()`` (fire-and-forget audio nudge) for the other
-        two injection channels.
+        ``prompt_ephemeral()`` (guarded proactive text turn) for the other two
+        injection channels.
         """
         # Gemini 使用 send_client_content 发送文本内容
         if self._is_gemini:
@@ -458,24 +495,24 @@ class _ResponseMixin:
         *,
         language: str = "zh",
     ) -> bool:
-        """Send a fire-and-forget audio nudge to trigger proactive AI speech.
+        """Inject a text turn and explicitly request proactive speech.
 
-        Injects a short WAV clip via ``input_audio_buffer.append`` so the
-        realtime model "hears" a conversational nudge and responds.  Bypasses
-        ``stream_audio()`` (no RNNoise / AGC) since the audio is clean.
+        Realtime providers now all accept text input, so proactive turns no
+        longer synthesize and upload a fake user WAV to trip server VAD.  This
+        avoids bogus ASR transcripts in the UI and removes the pacing/race
+        surface of a multi-chunk audio injection.
 
-        Unlike ``prime_context`` (session-start system-prompt injection) and
-        ``create_response`` (persistent mid-conversation message), this
-        channel is truly ephemeral — the audio prompt is consumed by the
-        model but never stored in conversation history.
-
-        Chunk pacing mirrors hot-swap flush: 1600 bytes/chunk, 0.025 s sleep,
-        40 chunks/s → 2× real-time delivery.
-
-        Returns True if the audio was fully sent, False if skipped or aborted.
+        Pending native visual context is sent immediately before the text turn.
+        Standard StepFun remains the only non-native realtime provider: when a
+        VISION_MODEL description is available, it is injected as text first.
         """
         # ── Guard checks ──────────────────────────────────────────────
-        if self._fatal_error_occurred or self.ws is None:
+        if self._fatal_error_occurred:
+            return False
+        if self._is_gemini:
+            if self._gemini_session is None:
+                return False
+        elif self.ws is None:
             return False
         if self._is_responding:
             logger.debug("prompt_ephemeral: skipped — already responding")
@@ -488,7 +525,7 @@ class _ResponseMixin:
         #   2. Gemini 长回复 sub-turn 间的 False 瞬间
         #   3. response.created 到首 content chunk 的空窗（_is_responding 已 True
         #      覆盖这一条，但加这层冗余保险无害）
-        # 3s 窗口覆盖上述抢跑 gap，避免 fudge 踩着 AI 尾巴打断自己。
+        # 3s 窗口覆盖上述抢跑 gap，避免主动文本踩着 AI 尾巴打断自己。
         if _now - self._ai_recent_activity_time < self._ai_recent_activity_window:
             logger.debug("prompt_ephemeral: skipped — AI recently active (%.2fs ago)",
                          _now - self._ai_recent_activity_time)
@@ -498,7 +535,7 @@ class _ResponseMixin:
         # 此信号不依赖 sustain，覆盖用户说话首 500ms 与句间停顿缝隙。
         # 适用所有 VAD 源（RNNoise / server-VAD / RMS），所以不再门控在
         # _rnnoise_vad_active 下 —— RMS 阈值 500 已较保守，误触可接受，
-        # 相比"fudge 切断用户说话"的体验损失值得。
+        # 相比主动搭话切断用户说话的体验损失值得。
         if _now - self._user_recent_activity_time < self._user_recent_activity_window:
             logger.debug("prompt_ephemeral: skipped — user recently active (%.2fs ago)",
                          _now - self._user_recent_activity_time)
@@ -519,47 +556,28 @@ class _ResponseMixin:
                 logger.debug("prompt_ephemeral: skipped — VAD grace period")
                 return False
 
-        # ── Choose audio file ─────────────────────────────────────────
+        # ── Resolve pending visual context ────────────────────────────
         # Vision context exists if an image was analyzed this turn (via
         # VISION_MODEL text description OR native image input) or we have
         # an unconsumed frame from stream_image().
         has_vision = self._image_recognized_this_turn or (
             self._latest_image_b64 is not None and not self._proactive_image_consumed
         )
-        # Only backends with native image support can receive raw screenshots;
-        # step / lanlan.tech+free consume vision context as text only.
-        can_inject_image = has_vision and self._supports_native_image
-
         # Snapshot the current image so concurrent stream_image() calls don't
         # cause us to mark a newer frame as consumed.
         snapshot_image_b64 = self._latest_image_b64 if has_vision else None
 
-        prompt_type = "vision" if has_vision else "general"
-        lang = (language or "zh")[:2]
-        filename = f"prompt_{prompt_type}_{lang}.wav"
-
-        try:
-            pcm_data = _load_proactive_audio(filename)
-        except FileNotFoundError:
-            try:
-                pcm_data = _load_proactive_audio(f"prompt_{prompt_type}_zh.wav")
-            except FileNotFoundError:
-                logger.warning("prompt_ephemeral: no audio file found for %s", filename)
-                return False
-
-        # Proactive WAVs are stored at 16kHz; for OpenAI's 24kHz-only uplink,
-        # upsample the whole clip once (stateless — it's a complete signal, so
-        # no chunk-boundary artifacts and no need to touch the mic-stream
-        # resampler). No-op for every 16kHz-native provider.
-        if self._uplink_sample_rate != 16000:
-            _clip = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32) / 32768.0
-            _clip = soxr.resample(_clip, 16000, self._uplink_sample_rate, quality='HQ')
-            pcm_data = (_clip * 32768.0).clip(-32768, 32767).astype(np.int16).tobytes()
-
-        # ── Non-native vision: inject text description before audio ───
-        # step / lanlan.tech+free can't receive raw images; send the
-        # VISION_MODEL text analysis so the model has visual context.
-        if has_vision and not can_inject_image and self._image_recognized_this_turn and self._image_description:
+        if has_vision and self._supports_native_image and snapshot_image_b64:
+            # ``bypass_rate_limit`` identifies this as one deliberate cue image.
+            # stream_image also owns the provider-specific wire event, including
+            # the dedicated free-service input_image_buffer.append route.
+            await self.stream_image(snapshot_image_b64, bypass_rate_limit=True)
+        elif (
+            has_vision
+            and self._image_recognized_this_turn
+            and self._image_description
+        ):
+            # Only standard StepFun reaches this path.
             await self.send_event({
                 "type": "conversation.item.create",
                 "item": {
@@ -568,109 +586,36 @@ class _ResponseMixin:
                     "content": [{"type": "input_text", "text": self._image_description}],
                 },
             })
-            logger.info("prompt_ephemeral: injected vision text description for non-native backend")
+            logger.info(
+                "prompt_ephemeral: injected StepFun vision-model description"
+            )
 
-        # ── Suppress mic input during injection ────────────────────────
-        self._proactive_injecting = True
+        # Re-check activity after any image await. A user or AI turn that won
+        # during the visual send must preempt this proactive response.create.
+        if (
+            self._is_responding
+            or self._user_recent_activity_time > _now
+            or self._ai_recent_activity_time > _now
+        ):
+            logger.info("prompt_ephemeral: skipped — activity started during visual inject")
+            return False
 
-        # ── Send audio chunks (same pacing as hot-swap flush) ─────────
-        # 10 ms @16-bit mono = (rate/100)*2 bytes, ×5 multiplier → 50 ms/chunk.
-        # Rate-derived so pacing stays 50 ms/chunk after the 24kHz upsample.
-        chunk_size = (self._uplink_sample_rate // 100) * 2 * 5  # 50 ms of audio
-        sleep_interval = 0.025  # 25 ms → 40 chunks/s, 2× real-time
+        text = instruction.strip() or _proactive_text_instruction(language)
 
-        logger.info(
-            "prompt_ephemeral: injecting %s (%d bytes, %s)",
-            filename, len(pcm_data), "vision" if has_vision else "general",
+        def _on_rejected(error_msg: str) -> None:
+            logger.warning("prompt_ephemeral: proactive text rejected: %s", error_msg)
+
+        await self.inject_text_and_request_response(
+            text,
+            on_rejected=_on_rejected,
         )
-
-        total_chunks = (len(pcm_data) + chunk_size - 1) // chunk_size
-        mid_chunk = total_chunks // 2  # Insert image at the midpoint
-        image_injected = False
-
-        try:
-            _inject_start = time.time()
-            for chunk_idx, i in enumerate(range(0, len(pcm_data), chunk_size)):
-                # Abort conditions:
-                #   - AI started responding (self-interrupt protection)
-                #   - _client_vad_active sustained-speech fired (RNNoise only)
-                #   - B: any VAD source detected a new speech frame SINCE injection started
-                #     —— 注入过程中用户突然开口也能丢弃残余 chunk，不至于把用户
-                #     语音与 fudge 音频混在一起喂给模型
-                if self._is_responding or (self._rnnoise_vad_active and self._client_vad_active):
-                    logger.info("prompt_ephemeral: aborted — user spoke or response started")
-                    await self.clear_audio_buffer()
-                    return False
-                if self._user_recent_activity_time > _inject_start:
-                    logger.info("prompt_ephemeral: aborted — user started speaking during injection")
-                    await self.clear_audio_buffer()
-                    return False
-                # Gemini 首 content chunk 到达前 _is_responding 仍是 False（上面那条
-                # 拦不住），但 _ai_recent_activity_time 会在首 chunk 抵达瞬间更新到
-                # > _inject_start，此时 abort 避免和刚起的 AI 响应抢麦。
-                if self._ai_recent_activity_time > _inject_start:
-                    logger.info("prompt_ephemeral: aborted — AI started responding during injection")
-                    await self.clear_audio_buffer()
-                    return False
-
-                chunk = pcm_data[i : i + chunk_size]
-                if self._is_gemini:
-                    if self._gemini_session:
-                        await self._gemini_session.send_realtime_input(
-                            audio={"data": chunk, "mime_type": "audio/pcm"}
-                        )
-                else:
-                    audio_b64 = base64.b64encode(chunk).decode()
-                    await self.send_event({
-                        "type": "input_audio_buffer.append",
-                        "audio": audio_b64,
-                    })
-
-                # Inject cached screenshot at midpoint (only for native-image backends)
-                if can_inject_image and not image_injected and chunk_idx >= mid_chunk and snapshot_image_b64:
-                    if self._is_gemini:
-                        if self._gemini_session:
-                            image_bytes = base64.b64decode(snapshot_image_b64)
-                            await self._gemini_session.send_realtime_input(
-                                media={"data": image_bytes, "mime_type": "image/jpeg"}
-                            )
-                    elif "gpt" in self._model_lower:
-                        await self.send_event({
-                            "type": "conversation.item.create",
-                            "item": {
-                                "type": "message",
-                                "role": "user",
-                                "content": [{
-                                    "type": "input_image",
-                                    "image_url": "data:image/jpeg;base64," + snapshot_image_b64,
-                                }],
-                            },
-                        })
-                    elif "qwen" in self._model_lower or self._is_free_proxy:
-                        await self.send_event({
-                            "type": "input_image_buffer.append",
-                            "image": snapshot_image_b64,
-                        })
-                    elif "glm" in self._model_lower:
-                        await self.send_event({
-                            "type": "input_audio_buffer.append_video_frame",
-                            "video_frame": snapshot_image_b64,
-                        })
-                    image_injected = True
-                    logger.info("prompt_ephemeral: injected screenshot at chunk %d/%d", chunk_idx, total_chunks)
-
-                await asyncio.sleep(sleep_interval)
-
-            # Mark vision context consumed only if the shared image hasn't been
-            # replaced by a newer frame from stream_image() during our async loop.
-            if has_vision and self._latest_image_b64 == snapshot_image_b64:
-                self._proactive_image_consumed = True
-            logger.info("prompt_ephemeral: audio injection complete (%s%s), waiting for VAD → response",
-                         "vision" if has_vision else "general",
-                         "+image" if image_injected else "")
-            return True
-        finally:
-            self._proactive_injecting = False
+        if has_vision and self._latest_image_b64 == snapshot_image_b64:
+            self._proactive_image_consumed = True
+        logger.info(
+            "prompt_ephemeral: proactive text injected (%s)",
+            "vision" if has_vision else "general",
+        )
+        return True
 
     async def cancel_response(self) -> None:
         """Cancel the current response."""

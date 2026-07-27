@@ -27,7 +27,10 @@ from main_logic.tts_client._infra import (
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 REALTIME_WORKERS = {
-    "step": PROJECT_ROOT / "main_logic/tts_client/workers/step.py",
+    # StepFun and Lanlan free expose dedicated worker entrypoints but share the
+    # Step-shaped websocket/jitter implementation.
+    "step": PROJECT_ROOT / "main_logic/tts_client/workers/_step_protocol.py",
+    "free": PROJECT_ROOT / "main_logic/tts_client/workers/_step_protocol.py",
     "qwen": PROJECT_ROOT / "main_logic/tts_client/workers/qwen.py",
     "grok": PROJECT_ROOT / "main_logic/tts_client/workers/grok.py",
     "elevenlabs": PROJECT_ROOT / "main_logic/tts_client/workers/elevenlabs.py",
@@ -171,7 +174,7 @@ def test_realtime_workers_guard_interrupt_close_windows():
         assert ".begin_interrupt()" in source, provider
         assert ".end_interrupt()" in source, provider
 
-    for provider in ("step", "qwen", "grok"):
+    for provider in ("step", "free", "qwen", "grok"):
         source = REALTIME_WORKERS[provider].read_text(encoding="utf-8")
         start = source.index('if sid == "__interrupt__":')
         end = source.index("continue", start)
@@ -194,6 +197,7 @@ def test_realtime_workers_guard_interrupt_close_windows():
 def test_realtime_workers_flush_jitter_on_non_cancelled_receiver_exit():
     expected_flush_guards = {
         "step": 2,
+        "free": 2,
         "qwen": 2,
         "grok": 1,
         "elevenlabs": 1,
@@ -209,7 +213,7 @@ def test_realtime_workers_flush_jitter_on_non_cancelled_receiver_exit():
 
 
 def test_realtime_workers_flush_tail_before_normal_receiver_cancel():
-    for provider in ("step", "qwen", "grok"):
+    for provider in ("step", "free", "qwen", "grok"):
         source = REALTIME_WORKERS[provider].read_text(encoding="utf-8")
         start = source.index("if current_speech_id != sid:")
         end = source.index("receive_task = asyncio.create_task", start)

@@ -24,6 +24,11 @@ from utils.stepfun_tts_voices import (
     normalize_stepfun_tts_voice,
 )
 from utils.tts.providers import stepfun as stepfun_provider
+from main_logic.tts_client import (
+    free_realtime_tts_worker,
+    get_tts_worker,
+    step_realtime_tts_worker,
+)
 
 
 def test_stepfun_and_free_catalogs_are_registered():
@@ -34,6 +39,17 @@ def test_stepfun_and_free_catalogs_are_registered():
     assert is_native_voice(STEPFUN_TTS_DEFAULT_VOICE, provider_key="free") is True
     assert is_native_voice("青春少女", provider_key="step") is True
     assert is_native_voice("中文男", provider_key="free") is True
+
+
+def test_stepfun_and_free_dispatch_to_dedicated_workers():
+    free_worker, free_key, free_provider = get_tts_worker(core_api_type="free")
+    step_worker, step_key, step_provider = get_tts_worker(core_api_type="step")
+
+    assert free_worker is free_realtime_tts_worker
+    assert step_worker is step_realtime_tts_worker
+    assert free_worker is not step_worker
+    assert (free_key, free_provider) == (None, "free")
+    assert (step_key, step_provider) == (None, "step")
 
 
 def test_stepfun_native_voice_aliases_route_to_canonical_ids():

@@ -64,12 +64,6 @@ from ._gemini_support import (  # noqa: F401 - preserve the legacy module namesp
     types,
 )
 
-from ._proactive_audio import (  # noqa: F401 - preserve the legacy module namespace
-    _PROACTIVE_AUDIO_CACHE,
-    _PROACTIVE_AUDIO_DIR,
-    _load_proactive_audio,
-)
-
 from ._client import OmniRealtimeClient  # noqa: F401
 
 __import__(
@@ -80,7 +74,6 @@ __import__(
     {
         "GEMINI_AVAILABLE": "_gemini_support",
         "_GEMINI_IMPORT_ERROR": "_gemini_support",
-        "_PROACTIVE_AUDIO_CACHE": "_proactive_audio",
         "_config_manager": "_gemini_support",
         "genai": "_gemini_support",
         "types": "_gemini_support",
