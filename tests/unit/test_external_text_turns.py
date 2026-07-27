@@ -11,6 +11,7 @@ from main_logic.omni_realtime_client._response_arbiter import (
     _SERVER_RESPONSE_ID_LIMIT,
     RealtimeResponseArbiter,
 )
+from main_logic.tool_calling import ToolResult
 
 
 async def _wait_for_arbiter_source(
@@ -1657,3 +1658,68 @@ async def test_force_abandon_without_record_reopens_existing_gate():
 
     assert client._response_arbiter._dispatch_allowed.is_set()
     await client._response_arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_tool_result_error_echoing_stamped_id_fails_ticket_fast():
+    client = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    client._response_arbiter = None
+    client._api_type = "gpt"
+    sent = []
+
+    async def send_event(_self, event):
+        sent.append(event)
+
+    client.send_event = MethodType(send_event, client)
+    result = ToolResult(call_id="call-1", name="lookup", output={"ok": True})
+
+    await client._send_tool_result_openai_realtime(result)
+
+    item_event, create_event = sent
+    assert item_event["type"] == "conversation.item.create"
+    assert create_event["type"] == "response.create"
+    item_id = item_event.get("event_id")
+    create_id = create_event.get("event_id")
+    assert item_id and create_id and item_id != create_id
+    arbiter = client._response_arbiter
+    owner = arbiter._response_owner
+    assert owner is not None
+    assert {item_id, create_id} <= owner.event_ids
+    # A provider rejection echoing the stamped create id must fail the
+    # ticket promptly instead of hanging until the started-timeout path
+    # fail-closes an otherwise usable connection.
+    arbiter.notify_error(create_id, "invalid_request_error: create rejected")
+    with pytest.raises(RuntimeError, match="create rejected"):
+        await asyncio.wait_for(owner.ticket.done, timeout=0.2)
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_enqueue_keeps_caller_stamped_event_ids_unchanged():
+    sent = []
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "response.create":
+            arbiter.notify_response_created({"type": "response.created"})
+            arbiter.notify_response_terminal({"type": "response.done"})
+
+    arbiter = RealtimeResponseArbiter(send)
+    item_event = {
+        "type": "conversation.item.create",
+        "event_id": "event_user_item_explicit",
+    }
+    ticket = await arbiter.enqueue(
+        source="explicit-ids",
+        events_before_response=(item_event,),
+        response_event={
+            "type": "response.create",
+            "event_id": "event_user_response_explicit",
+        },
+    )
+    await ticket.done
+
+    assert sent[0]["event_id"] == "event_user_item_explicit"
+    assert sent[1]["event_id"] == "event_user_response_explicit"
+    await arbiter.shutdown()

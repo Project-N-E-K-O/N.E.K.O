@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import logging
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
@@ -191,6 +192,20 @@ class RealtimeResponseArbiter:
         # longest-running owned response is allowed to live.
         if response_done_timeout > self._server_response_max_age:
             self._server_response_max_age = response_done_timeout
+        # Stamp a client event id on any event the caller left unstamped
+        # BEFORE freezing the correlation set below. The transport applies
+        # its fallback id only inside send_event, so an unstamped event
+        # would be missing from ``event_ids`` and a provider error echoing
+        # the generated id could never be matched back to this ticket in
+        # notify_error — the ticket would then hang until its started/
+        # terminal timeout fail-closed an otherwise usable connection.
+        # Stamping the caller's dicts here keeps a single source of truth
+        # (send_event's setdefault becomes a no-op for these events), and
+        # uuid-based ids avoid the same-millisecond collisions the
+        # transport's timestamp fallback allows, which would defeat
+        # _is_late_pre_response_error's create-vs-item discrimination.
+        for event in (*events_before_response, create_event):
+            event.setdefault("event_id", f"event_arbiter_{uuid.uuid4().hex}")
         ids = {
             str(event.get("event_id"))
             for event in (*events_before_response, create_event)
