@@ -110,6 +110,14 @@ class QQReplyGenerationService:
                 user_session=user_session,
                 reply_chunks=reply_chunks,
             )
+            if user_data.get("memory_enabled"):
+                # 成员发言的收集绑定"会话已接受该 human 行"，不绑回复非
+                # 空：空回复轮（含 fallback 也空）里成员的话已进共享历史、
+                # 会进群 digest，却会从 participant bucket 永久缺席。单点
+                # 记录（成功钩子不再重复记）。
+                self.plugin.session_memory_service.record_group_member_turn(
+                    user_data, context,
+                )
             stage_trace.metadata["recalled_memory_used"] = context.recalled_memory_used
             stage_trace.metadata["recalled_memory_length"] = len(context.recalled_memory_text)
             if not ai_reply:
@@ -243,9 +251,8 @@ class QQReplyGenerationService:
     ) -> None:
         if user_data.get("memory_enabled"):
             try:
-                self.plugin.session_memory_service.record_group_member_turn(
-                    user_data, context,
-                )
+                # member turn 已在主生成完成点单点记录（含空回复轮）；此处
+                # 只做 cache 同步，避免同一发言重复入 bucket。
                 count = await self.plugin._cache_session_delta(session_key, user_data)
                 if count:
                     self.plugin.logger.info(f"[管理员] 成功同步 {count} 条消息到 Memory Server (会话: {session_key})")

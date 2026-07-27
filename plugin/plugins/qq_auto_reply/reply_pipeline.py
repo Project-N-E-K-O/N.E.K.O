@@ -289,7 +289,27 @@ class QQReplyPipelineRunner:
             from .pipeline_models import QQDeliveryResult
             return QQDeliveryResult(delivered=True, target_type=delivery_plan.target_type, target_id=delivery_plan.target_id, reply_text=first_text)
 
-        result = await self.plugin.reply_delivery_node.deliver(delivery_plan)
+        try:
+            result = await self.plugin.reply_delivery_node.deliver(delivery_plan)
+        except Exception:
+            # NapCat 传输失败以异常上浮：history-backed 回复的 ai 行已在
+            # 共享历史里，先按投递失败记入排除名单再传播异常，否则下一次
+            # digest 会把没发出去的回复入库。
+            if (
+                request is not None
+                and request.is_group
+                and outcome is not None
+                and not getattr(outcome, "used_fallback", False)
+            ):
+                session_key = self.plugin._build_session_key(
+                    sender_id=request.sender_id,
+                    is_group=True,
+                    group_id=request.group_id,
+                )
+                self.plugin.session_memory_service.record_tail_undelivered_ai_row(
+                    session_key
+                )
+            raise
         if (
             result is not None
             and not getattr(result, "delivered", False)

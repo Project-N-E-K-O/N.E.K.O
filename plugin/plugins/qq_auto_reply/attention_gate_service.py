@@ -504,8 +504,11 @@ class QQAttentionGateService:
                     return await self.plugin.reply_pipeline.run(request)
                 finally:
                     if not consented_at_receipt:
+                        # ai 行同样衍生自 pre-opt-in 消息：一并排除，防止
+                        # 该消息经回复间接进入持久记忆。
                         svc.record_synthetic_prompt_rows(
                             f"group:{group_id}", before,
+                            include_ai_rows=True,
                         )
 
             outcome = await self.plugin._run_with_session_lock(

@@ -895,7 +895,39 @@ class FactStore:
         # 上下源不同会丢 in-place 改的字段，下次启动 reload facts.json 就
         # 把升级 wipe 了。
         if new_facts or upgraded_count:
-            await self.asave_facts(lanlan_name)
+            try:
+                await self.asave_facts(lanlan_name)
+            except Exception:
+                # 落盘失败：进程内缓存已 append、FTS 已索引——留着的话
+                # fail-closed 调用方重试会撞内容 hash 去重、拿到"空成功"
+                # 并推进游标，而磁盘上什么都没有，重启即永久丢失。回滚
+                # 本批新增（upgrade 的 in-place 字段改动保留：字段级幂等，
+                # 重试会重做），让重试重新走完整提取+持久化。
+                added_ids = {
+                    nf.get('id') for nf in new_facts if isinstance(nf, dict)
+                }
+                cache = self._facts.get(lanlan_name)
+                if cache is not None:
+                    cache[:] = [
+                        f for f in cache
+                        if not (
+                            isinstance(f, dict) and f.get('id') in added_ids
+                        )
+                    ]
+                if self._time_indexed is not None:
+                    for fact_id in added_ids:
+                        if not fact_id:
+                            continue
+                        try:
+                            await self._time_indexed.adelete_fact_from_index(
+                                lanlan_name, fact_id,
+                            )
+                        except Exception:
+                            logger.warning(
+                                f"[FactStore] {lanlan_name}: 回滚 FTS 索引失败 "
+                                f"({fact_id})"
+                            )
+                raise
         if new_facts:
             logger.info(
                 f"[FactStore] {lanlan_name}: 提取了 {len(new_facts)} 条新事实"

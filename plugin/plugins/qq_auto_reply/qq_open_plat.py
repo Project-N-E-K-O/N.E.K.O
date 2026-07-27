@@ -371,14 +371,14 @@ class QQOpenPlatformConnection(QQConnectionBase):
                 self.logger.warning(f"[QQOpenPlatform] 发送私聊失败: {e}")
             return None
 
-    async def send_group_poke(self, group_id: str, user_id: str) -> bool:
-        # QQ 开放平台不支持戳一戳
-        await self.send_group_message_segments(
+    async def send_group_poke(self, group_id: str, user_id: str) -> Optional[str]:
+        # QQ 开放平台不支持戳一戳——降级为文本。结果向上传播（None=失败
+        # 被吞），投递确认链据此决定是否清未投递标/记 mention。
+        return await self.send_group_message_segments(
             group_id,
             [{"type": "text", "data": {"text": f" (戳了戳 {user_id})"}}],
             record_sent=False,
         )
-        return True
 
     async def send_group_image(
         self, group_id: str, image_data: str, *, reply_message_id: str = "", at_user_id: str = ""

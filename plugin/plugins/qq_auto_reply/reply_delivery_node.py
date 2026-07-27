@@ -151,7 +151,17 @@ class QQReplyDeliveryNode:
                 result = await self.plugin.qq_client.send_group_record(plan.target_id, file_uri)
             else:
                 result = await self.plugin.qq_client.send_private_record(plan.target_id, file_uri)
-            return self._confirm_platform_result(result)
+            if self._confirm_platform_result(result):
+                return True
+            if plan.fallback_to_text_on_voice_failure:
+                # 未确认（开放平台吞异常返回 None）与异常同等对待：按请求
+                # 回退文本，而不是直接判未投递。
+                if plan.target_type == "group":
+                    fb = await self.plugin.qq_client.send_group_message(plan.target_id, block.record)
+                else:
+                    fb = await self.plugin.qq_client.send_message(plan.target_id, block.record)
+                return self._confirm_platform_result(fb)
+            return False
         except Exception:
             self.plugin.logger.warning("语音发送失败", exc_info=True)
             if plan.fallback_to_text_on_voice_failure and block.record:

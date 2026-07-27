@@ -1703,6 +1703,25 @@ async def test_extract_facts_fail_closed_raises_on_terminal_failure(tmp_path):
         with pytest.raises(FactExtractionFailed):
             await fs.extract_facts([msg], "Neko", fail_closed=True)
 
+        # Persistence failure rolls the cached additions back: without the
+        # rollback a retry hits the content-hash dedup in the still-mutated
+        # cache, returns an empty success, and the caller advances its
+        # cursor over facts that never reached disk.
+        async def _valid(prompt, lanlan_name, **kwargs):
+            return [{"text": "有效事实", "importance": 6}]
+
+        fs._allm_call_with_retries = _valid
+        fs.asave_facts = AsyncMock(side_effect=RuntimeError("disk full"))
+        with pytest.raises(RuntimeError):
+            await fs.extract_facts([msg], "Neko", fail_closed=True)
+        cached = await fs.aload_facts("Neko")
+        assert not any(
+            isinstance(f, dict) and f.get("text") == "有效事实" for f in cached
+        )
+        fs.asave_facts = AsyncMock(return_value=None)
+        created = await fs.extract_facts([msg], "Neko", fail_closed=True)
+        assert any(f.get("text") == "有效事实" for f in created)
+
 
 @pytest.mark.asyncio
 async def test_correction_batches_partition_by_isolation_domain(tmp_path):
@@ -2493,6 +2512,8 @@ async def test_retro_replay_honors_receipt_time_policy():
     ) is True
     rows = user_data["undelivered_draft_rows"]
     assert any(getattr(r, "type", "") == "human" for r in rows)
+    # The generated reply derives from the pre-opt-in message: excluded too.
+    assert any(getattr(r, "type", "") == "ai" for r in rows)
     excluded_before = len(rows)
 
     # Received under ON: replays normally, nothing new excluded.
@@ -2572,6 +2593,19 @@ async def test_run_delivery_direct_branch_records_mentions_on_success():
     )
     await runner._run_delivery(plan, failed_request, fb_outcome, context=context)
     plugin.session_memory_service.record_tail_undelivered_ai_row.assert_not_called()
+
+    # A RAISING transport (NapCat) marks the tail row before propagating —
+    # exiting at the await without marking would let the next digest
+    # persist the unsent reply.
+    plugin.session_memory_service.record_tail_undelivered_ai_row.reset_mock()
+    plugin.reply_delivery_node.deliver = AsyncMock(
+        side_effect=RuntimeError("transport down"),
+    )
+    with pytest.raises(RuntimeError):
+        await runner._run_delivery(plan, failed_request, outcome, context=context)
+    plugin.session_memory_service.record_tail_undelivered_ai_row.assert_called_once_with(
+        "group:7788"
+    )
 
 
 @pytest.mark.asyncio
@@ -2679,6 +2713,18 @@ async def test_delivery_result_reflects_open_platform_send_failure():
     result = await record_node.deliver(record_plan)
     assert result.delivered is False
 
+    # Unconfirmed record WITH the fallback flag: text fallback runs and
+    # its confirmation decides the verdict (same as voice mode).
+    record_plugin.qq_client.send_message = AsyncMock(return_value="mid")
+    record_fb_plan = QQDeliveryPlan(
+        target_type="private", target_id="10086",
+        blocks=[QQMessageBlock(record="早上好")],
+        fallback_to_text_on_voice_failure=True,
+    )
+    result = await record_node.deliver(record_fb_plan)
+    assert result.delivered is True
+    record_plugin.qq_client.send_message.assert_awaited_once()
+
     # Open Platform wrapper level: send_private_record must propagate the
     # segments result (its group twin already does) — a permanent None here
     # falsely marks every delivered private voice reply as unsent.
@@ -2691,6 +2737,12 @@ async def test_delivery_result_reflects_open_platform_send_failure():
     assert await plat.send_private_record("10086", "file://x") == "mid"
     plat.send_private_message_segments = AsyncMock(return_value=None)
     assert await plat.send_private_record("10086", "file://x") is None
+    # Poke fallback text propagates too — a swallowed failure must not
+    # report a hardcoded success.
+    plat.send_group_message_segments = AsyncMock(return_value=None)
+    assert await plat.send_group_poke("7788", "1") is None
+    plat.send_group_message_segments = AsyncMock(return_value="mid")
+    assert await plat.send_group_poke("7788", "1") == "mid"
 
     # Poke-only plan: a skipped poke (private target / cooldown) sends
     # nothing and must not report delivered; a confirmed group poke does.
@@ -3151,6 +3203,66 @@ async def test_prompt_change_discard_failure_marks_sticky_retry():
     service._discard_all_sessions_for_prompt_change()
     await asyncio.gather(*plugin._prompt_change_discard_tasks)
     assert kept["pending_identity_discard"] is True
+
+
+@pytest.mark.asyncio
+async def test_member_turn_recorded_once_even_on_empty_generation():
+    """Member-turn collection binds to 'the session accepted the human
+    row', not to a nonempty reply: an empty generation (fallback empty
+    too) already put the utterance into shared history and the group
+    digest — it must reach the participant bucket as well. And it is
+    recorded exactly once on the success path (single recording point)."""
+    from plugin.plugins.qq_auto_reply.reply_generation_service import (
+        QQReplyGenerationService,
+    )
+
+    ud = {"is_group": True, "memory_enabled": True}
+    record = MagicMock()
+    plugin = SimpleNamespace(
+        _user_sessions={"group:7788": ud},
+        session_runtime_service=SimpleNamespace(
+            build_generation_session_key=lambda context: "group:7788",
+            prime_generation_session_state=lambda u, *, session_key, context: (
+                SimpleNamespace(), []
+            ),
+        ),
+        session_bootstrap_service=SimpleNamespace(
+            ensure_generation_session=AsyncMock(return_value=ud),
+        ),
+        session_memory_service=SimpleNamespace(
+            record_group_member_turn=record,
+        ),
+        _cache_session_delta=AsyncMock(return_value=0),
+        logger=MagicMock(),
+    )
+    service = QQReplyGenerationService.__new__(QQReplyGenerationService)
+    service.plugin = plugin
+    context = SimpleNamespace(
+        is_group=True, group_id="7788", sender_id="1",
+        ephemeral_session=False, group_scene_mode="shared_context",
+        recalled_memory_used=False, recalled_memory_text="",
+    )
+
+    async def _empty(**kwargs):
+        return ""
+
+    service._run_session_generation = _empty
+    result = await service.run_primary_session_call(context)
+    assert result.allow_fallback is True
+    record.assert_called_once()
+
+    # Success path still records exactly once (no double-count via the
+    # post-success hook).
+    record.reset_mock()
+
+    async def _reply(**kwargs):
+        return "正常回复"
+
+    service._run_session_generation = _reply
+    service._record_scoped_mentions_best_effort = AsyncMock()
+    result = await service.run_primary_session_call(context)
+    assert result.reply_text == "正常回复"
+    record.assert_called_once()
 
 
 @pytest.mark.asyncio
