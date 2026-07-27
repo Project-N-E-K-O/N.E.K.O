@@ -136,7 +136,9 @@ class QQReplyGenerationService:
                 # 历史、会进群 digest，却会从 participant bucket 永久缺席。
                 # 单点记录（成功钩子不再重复记）；recorder 自身按 sender
                 # 追加，重复调用会重复入桶，故只此一处。
-                if user_data.get("memory_enabled"):
+                if user_data.get("memory_enabled") and user_data.pop(
+                    "human_row_accepted", False,
+                ):
                     try:
                         self.plugin.session_memory_service.record_group_member_turn(
                             user_data, context,
@@ -235,6 +237,11 @@ class QQReplyGenerationService:
             history_before = len(
                 getattr(user_session, "_conversation_history", []) or []
             )
+            # 成员发言的收集绑定"共享历史真的收下了这条 human 行"。锁等待
+            # 与附件排队都在 stream_text 之前，它们异常/取消/超时时这条消息
+            # 根本没进历史——此时入 participant bucket 会造出会话里不存在的
+            # 成员记忆。
+            user_data["human_row_accepted"] = False
             restore_session_prompt = self._apply_turn_memory_context(
                 user_session, turn_system_prompt, turn_recalled_text,
                 always_refresh=context.is_group,
@@ -271,6 +278,11 @@ class QQReplyGenerationService:
                     raise asyncio.TimeoutError
             finally:
                 restore_session_prompt()
+                history_now = getattr(user_session, "_conversation_history", []) or []
+                user_data["human_row_accepted"] = any(
+                    getattr(row, "type", "") == "human"
+                    for row in list(history_now)[history_before:]
+                )
                 if context.is_group and not user_data.get("memory_enabled"):
                     # 未授权边界在 finally 记：异常/空回复的 human 行也已
                     # 进历史，只在成功路径记会漏（超时路径会话随后被弃，

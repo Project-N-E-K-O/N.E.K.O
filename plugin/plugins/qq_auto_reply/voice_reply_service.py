@@ -317,9 +317,11 @@ class QQVoiceReplyService:
     def _confirm_send(self, result, *, has_result_channel: bool = False) -> bool:
         """开放平台失败吞异常返回 None——只有那个显式 None 判未投递；
         NapCat 的纯文本发送是 fire-and-forget（失败走异常），返回值一律
-        视为确认。但 send_*_record 走 segments 接口，超时会返回 None——
-        这类**有**返回通道的调用要传 has_result_channel=True 如实判断，
-        否则语音发失败也不会触发文本回退，还会被记成已投递。"""
+        视为确认。例外是 segments 接口：它带 echo 等回执，超时会返回
+        None，这类调用传 has_result_channel=True 如实判断，否则语音发失败
+        既不触发文本回退、还被记成已投递。
+
+        群与私聊的 segments 接口现在都带 echo 回执，两条语音路径同口径。"""
         if self.plugin.qq_client and not self.plugin.qq_client.needs_attention:
             return result is not None
         if has_result_channel:
@@ -347,7 +349,7 @@ class QQVoiceReplyService:
                     file_uri, _ = await self.synthesize_reply_voice_file(voice_content)
                     return self._confirm_send(
                         await self.plugin.qq_client.send_private_record(target_qq, file_uri),
-                        has_result_channel=True
+                        has_result_channel=True,
                     ) or text_ok
                 except Exception:
                     self.plugin.logger.warning("QQ both-语音私聊发送失败，已保留文本", exc_info=True)
@@ -361,7 +363,7 @@ class QQVoiceReplyService:
             file_uri, _ = await self.synthesize_reply_voice_file(normalized_text)
             voice_ok = self._confirm_send(
                 await self.plugin.qq_client.send_private_record(target_qq, file_uri),
-                has_result_channel=True
+                has_result_channel=True,
             )
             if voice_ok:
                 return True

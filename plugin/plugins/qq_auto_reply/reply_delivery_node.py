@@ -283,7 +283,10 @@ class QQReplyDeliveryNode:
                 result = await self.plugin.qq_client.send_group_record(plan.target_id, file_uri)
             else:
                 result = await self.plugin.qq_client.send_private_record(plan.target_id, file_uri)
-            if self._confirm_platform_result(result):
+            if self._confirm_platform_result(result, has_result_channel=True):
+                # 语音走 segments 接口（群/私聊都带 echo 回执）：超时返回
+                # None 是"没确认送达"，不能当 fire-and-forget 放行，否则
+                # 用户没听到的回复既不回退文本、还被记成已投递。
                 return True
             if plan.fallback_to_text_on_voice_failure:
                 # 未确认（开放平台吞异常返回 None）与异常同等对待：按请求

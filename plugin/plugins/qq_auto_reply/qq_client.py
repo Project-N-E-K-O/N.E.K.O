@@ -649,30 +649,44 @@ class QQClient(QQConnectionBase):
         if self.logger:
             self.logger.debug(f"Sent group message to {group_id}")
 
-    async def send_private_message_segments(self, user_id: str, segments: list[Dict[str, Any]]):
-        """发送私聊消息片段"""
+    async def send_private_message_segments(
+        self, user_id: str, segments: list[Dict[str, Any]],
+    ) -> Optional[str]:
+        """发送私聊消息片段，返回 message_id（与群版对偶）。
+
+        没有回执就没法区分"发出去了"和"没发出去"：语音回复因此会被无条件
+        当成已投递，失败时既不回退文本、还被记成用户已经听到。走与
+        send_group_message_segments 相同的 echo 往返（响应分发在 :388-391
+        按 echo 通用匹配，与 action 无关）。"""
         if not self._main_client:
             raise RuntimeError("No Napcat client connected")
 
+        echo = secrets.token_hex(8)
         payload = {
             "action": "send_private_msg",
             "params": {
                 "user_id": int(user_id),
                 "message": segments,
             },
+            "echo": echo,
         }
 
-        await self._main_client.send(json.dumps(payload))
-        if self.logger:
-            self.logger.debug(f"Sent segmented private message to {user_id}")
+        future: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._pending_actions[echo] = future
+        try:
+            await self._main_client.send(json.dumps(payload))
+            response = await asyncio.wait_for(future, timeout=10.0)
+            message_id = str((response.get("data") or {}).get("message_id") or "")
+            if self.logger:
+                self.logger.debug(f"Sent segmented private message to {user_id}")
+            return message_id if message_id else None
+        except asyncio.TimeoutError:
+            return None
+        finally:
+            self._pending_actions.pop(echo, None)
 
     async def send_private_record(self, user_id: str, file_uri: str) -> Optional[str]:
-        """发送私聊语音。
-
-        Returns the segmented-send result: an explicit None means the send
-        did not land (the segment API returns None on timeout), and the
-        delivery layer needs that to fall back to text instead of marking
-        an unheard reply delivered."""
+        """发送私聊语音，透传底层结果（None = 未确认送达）。"""
         return await self.send_private_message_segments(user_id, [{"type": "record", "data": {"file": str(file_uri or "")}}])
 
     async def send_group_record(

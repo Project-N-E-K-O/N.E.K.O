@@ -4532,6 +4532,9 @@ async def test_member_turn_recorded_once_even_on_empty_generation():
     )
 
     async def _empty(**kwargs):
+        # Production marks the row as accepted once stream_text has put it
+        # into the shared history; the stub mirrors that.
+        ud["human_row_accepted"] = True
         return ""
 
     service._run_session_generation = _empty
@@ -4544,6 +4547,7 @@ async def test_member_turn_recorded_once_even_on_empty_generation():
     record.reset_mock()
 
     async def _reply(**kwargs):
+        ud["human_row_accepted"] = True
         return "正常回复"
 
     service._run_session_generation = _reply
@@ -4552,19 +4556,35 @@ async def test_member_turn_recorded_once_even_on_empty_generation():
     assert result.reply_text == "正常回复"
     record.assert_called_once()
 
-    # A raising/timing-out stream already appended the human row: the
+    # A stream that raised AFTER the session took the human row: the
     # recorder must still run (exception-safe point) without masking the
     # original error.
     record.reset_mock()
     plugin.session_runtime_service.discard_session = AsyncMock(return_value=True)
 
     async def _boom(**kwargs):
+        ud["human_row_accepted"] = True
         raise asyncio.TimeoutError()
 
     service._run_session_generation = _boom
     result = await service.run_primary_session_call(context)
     assert result.timed_out is True
     record.assert_called_once()
+
+    # ...but a failure BEFORE the row was accepted (session lock wait,
+    # attachment queueing) records nothing: the utterance never entered
+    # the shared history, so a participant bucket entry would be a memory
+    # of something the session never saw.
+    record.reset_mock()
+
+    async def _boom_early(**kwargs):
+        ud["human_row_accepted"] = False
+        raise asyncio.TimeoutError()
+
+    service._run_session_generation = _boom_early
+    result = await service.run_primary_session_call(context)
+    assert result.timed_out is True
+    record.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -7855,6 +7875,7 @@ async def test_record_senders_return_the_segment_result():
     # look identical to a failure if we only tested the None case).
     client.send_group_message_segments = AsyncMock(return_value="gid")
     client.send_private_message_segments = AsyncMock(return_value="pid")
+    assert True
     assert await client.send_group_record("7788", "file:///a.wav") == "gid"
     assert await client.send_private_record("2046", "file:///a.wav") == "pid"
 
@@ -7943,3 +7964,191 @@ async def test_context_build_executes_end_to_end(monkeypatch):
         group_id="7788",
     )
     assert context.consent_snapshot is None
+
+
+def test_settlement_progress_counts_member_queues_not_just_the_cursor():
+    """A round can flush member buckets and still fail on the group side,
+    leaving the digest cursor untouched. Judging progress by the cursor
+    alone stops the shutdown retry loop and strands the rest."""
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    before = QQSessionMemoryService._settlement_progress({
+        "last_group_digest_index": 4,
+        "group_member_memory_messages": {"a": [], "b": []},
+        "pending_settle_buckets": {"c": []},
+    })
+    drained_one_member = QQSessionMemoryService._settlement_progress({
+        "last_group_digest_index": 4,
+        "group_member_memory_messages": {"b": []},
+        "pending_settle_buckets": {"c": []},
+    })
+    drained_snapshot = QQSessionMemoryService._settlement_progress({
+        "last_group_digest_index": 4,
+        "group_member_memory_messages": {"a": [], "b": []},
+        "pending_settle_buckets": {},
+    })
+    assert before != drained_one_member
+    assert before != drained_snapshot
+    # No movement anywhere is a real failure.
+    assert before == QQSessionMemoryService._settlement_progress({
+        "last_group_digest_index": 4,
+        "group_member_memory_messages": {"a": [], "b": []},
+        "pending_settle_buckets": {"c": []},
+    })
+
+
+@pytest.mark.asyncio
+async def test_failed_opt_out_settlement_drops_the_pending_snapshot():
+    """The failure path already discards the live member buckets
+    (fail-closed). Leaving the opt-out snapshot behind lets a later
+    finalize commit exactly the data this opt-out refused."""
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    history = [SimpleNamespace(type="human", content="opt-in 期间的发言")]
+    ud = {
+        "is_group": True,
+        "memory_enabled": True,
+        "group_id": "7788",
+        "her_name": "Neko",
+        "session": SimpleNamespace(_conversation_history=history),
+        "pending_disable_settle": True,
+        "group_member_memory_messages": {"2046": [{"role": "user"}]},
+        "group_member_memory_labels": {"2046": "2046"},
+        "pending_settle_buckets": {"2046": [{"role": "user"}]},
+        "pending_settle_labels": {"2046": "2046"},
+        "pending_member_settle": True,
+    }
+
+    async def _run_with_session_lock(session_key, fn):
+        return await fn()
+
+    service = QQSessionMemoryService(SimpleNamespace(
+        _user_sessions={"group:7788": ud},
+        _run_with_session_lock=_run_with_session_lock,
+        logger=MagicMock(),
+        _qq_settings={},
+    ))
+    service.finalize_user_memory_session = AsyncMock(return_value=False)
+
+    await service.invalidate_group_sessions(enabled=False)
+    assert "pending_settle_buckets" not in ud
+    assert "pending_settle_labels" not in ud
+    assert "pending_member_settle" not in ud
+    assert "group_member_memory_messages" not in ud
+
+    # With a rollback pending, the snapshot is the only copy of a
+    # previously SAVED consent era — it must survive for restoration.
+    ud.update({
+        "memory_enabled": True,
+        "pending_disable_settle": True,
+        "member_settle_rollback_pending": True,
+        "pending_settle_buckets": {"2046": [{"role": "user"}]},
+        "pending_settle_labels": {"2046": "2046"},
+        "pending_member_settle": True,
+    })
+    await service.invalidate_group_sessions(enabled=False)
+    assert ud.get("pending_settle_buckets")
+    assert ud.get("pending_member_settle") is True
+
+
+@pytest.mark.asyncio
+async def test_private_segments_send_waits_for_the_echo_receipt():
+    """Without a receipt there is no way to tell "sent" from "not sent",
+    so a failed private voice reply was reported as heard: no text
+    fallback, and the draft cleared into memory. The private path now uses
+    the same echo round-trip as the group twin."""
+    import json as _json
+
+    from plugin.plugins.qq_auto_reply.qq_client import QQClient
+
+    client = QQClient.__new__(QQClient)
+    client._pending_actions = {}
+    client.logger = None
+    sent: list = []
+
+    class _WS:
+        @staticmethod
+        async def send(raw):
+            payload = _json.loads(raw)
+            sent.append(payload)
+            echo = payload.get("echo")
+            assert echo, "private sends must carry an echo"
+            future = client._pending_actions.get(echo)
+            if future and not future.done():
+                future.set_result({"data": {"message_id": "pm-1"}})
+
+    client._main_client = _WS()
+    assert await client.send_private_record("2046", "file:///a.wav") == "pm-1"
+    assert sent[-1]["action"] == "send_private_msg"
+    assert not client._pending_actions  # no leaked futures
+
+    # No receipt -> None (the caller falls back to text).
+    class _SilentWS:
+        @staticmethod
+        async def send(raw):
+            sent.append(_json.loads(raw))
+
+    client._main_client = _SilentWS()
+    import plugin.plugins.qq_auto_reply.qq_client as qc
+
+    original_wait_for = qc.asyncio.wait_for
+
+    async def _instant_timeout(awaitable, timeout=None):
+        task = qc.asyncio.ensure_future(awaitable)
+        task.cancel()
+        raise qc.asyncio.TimeoutError
+
+    qc.asyncio.wait_for = _instant_timeout
+    try:
+        assert await client.send_private_record("2046", "file:///a.wav") is None
+    finally:
+        qc.asyncio.wait_for = original_wait_for
+    assert not client._pending_actions
+
+
+@pytest.mark.asyncio
+async def test_record_block_delivery_respects_the_result_channel():
+    """A <record> block goes out through the segments API, which reports a
+    timeout as None. Treating that as fire-and-forget marks a voice reply
+    nobody heard as delivered and skips the text fallback."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        QQDeliveryPlan,
+        QQMessageBlock,
+    )
+    from plugin.plugins.qq_auto_reply.reply_delivery_node import (
+        QQReplyDeliveryNode,
+    )
+
+    send_record = AsyncMock(return_value=None)
+    send_text = AsyncMock(return_value=None)
+    node = QQReplyDeliveryNode.__new__(QQReplyDeliveryNode)
+    node.plugin = SimpleNamespace(
+        _get_reply_mode=lambda: "text",
+        logger=MagicMock(),
+        qq_client=SimpleNamespace(
+            needs_attention=True,  # NapCat
+            send_group_record=send_record,
+            send_group_message=send_text,
+        ),
+        voice_reply_service=SimpleNamespace(
+            synthesize_reply_voice_file=AsyncMock(
+                return_value=("file:///a.wav", "audio/wav")
+            ),
+        ),
+    )
+    plan = QQDeliveryPlan(
+        target_type="group", target_id="7788",
+        blocks=[QQMessageBlock(record="要说的话")],
+        fallback_to_text_on_voice_failure=False,
+    )
+    result = await node.deliver(plan)
+    assert result.delivered is False
+
+    # A confirmed send is still delivered.
+    send_record.return_value = "mid"
+    result = await node.deliver(plan)
+    assert result.delivered is True

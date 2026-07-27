@@ -69,9 +69,7 @@ class QQSessionMemoryService:
                     current["memory_enabled"] = True
                 # 关机只有一次机会：撞上每轮批次上限（返回 False 但游标有
                 # 进展）就继续排，零进展才停——上限是防饥饿，不是弃数据。
-                prev_cursor = int(
-                    current.get("last_group_digest_index", 0) or 0
-                )
+                prev_progress = self._settlement_progress(current)
                 while True:
                     finalized = await self.finalize_user_memory_session(
                         session_key, reason=reason,
@@ -81,14 +79,28 @@ class QQSessionMemoryService:
                     survivor = self.plugin._user_sessions.get(session_key)
                     if not survivor:
                         return finalized
-                    new_cursor = int(
-                        survivor.get("last_group_digest_index", 0) or 0
-                    )
-                    if new_cursor <= prev_cursor:
+                    progress = self._settlement_progress(survivor)
+                    if progress == prev_progress:
                         return finalized
-                    prev_cursor = new_cursor
+                    prev_progress = progress
 
             await self.plugin._run_with_session_lock(session_key, _finalize_existing)
+
+    @staticmethod
+    def _settlement_progress(user_data: dict[str, Any] | None) -> tuple:
+        """What "made progress" means for one settlement round.
+
+        The group digest cursor alone is not enough: a round can flush
+        several member buckets and still fail on the group side, leaving
+        the cursor untouched. Stopping there strands the remaining member
+        memory for good at shutdown."""
+        if not isinstance(user_data, dict):
+            return ()
+        return (
+            int(user_data.get("last_group_digest_index", 0) or 0),
+            len(user_data.get("group_member_memory_messages") or {}),
+            len(user_data.get("pending_settle_buckets") or {}),
+        )
 
     def conversation_slice_to_memory_messages(
         self, conversation_history: list, start_index: int = 0,
@@ -718,9 +730,7 @@ class QQSessionMemoryService:
                 # 有标会话按转变结算，不信可变的 per-request flag。
                 current["memory_enabled"] = True
                 finalized = False
-                prev_cursor = int(
-                    current.get("last_group_digest_index", 0) or 0
-                )
+                prev_progress = self._settlement_progress(current)
                 while True:
                     # 每次迭代重读：ON 章由 settings 写入路径同步盖下，可能
                     # 落在本任务运行中途。有 ON 章 = 新时代已开启、rebase 任
@@ -742,15 +752,13 @@ class QQSessionMemoryService:
                     survivor = self.plugin._user_sessions.get(session_key)
                     if not survivor:
                         break
-                    new_cursor = int(
-                        survivor.get("last_group_digest_index", 0) or 0
-                    )
-                    if new_cursor <= prev_cursor:
-                        # 无进展 = 真失败；有进展 = 只是撞上每轮批次上限，
-                        # 继续排——上限是防锁饥饿的，不是放弃已授权数据的
-                        # 理由。
+                    progress = self._settlement_progress(survivor)
+                    if progress == prev_progress:
+                        # 无进展 = 真失败；有进展（游标推进**或**成员队列
+                        # 变短）= 只是撞上每轮批次上限，继续排——上限是防
+                        # 锁饥饿的，不是放弃已授权数据的理由。
                         break
-                    prev_cursor = new_cursor
+                    prev_progress = progress
                 # 成功路径 session 已被 finalize 弹出（retain 场景除外——
                 # 会话保留待 rebase）；仍把 flag 置 False：rebase 任务接手
                 # 前的窗口里，idle flush 不得把 OFF 期间的行当 opt-in 入库，
@@ -767,6 +775,15 @@ class QQSessionMemoryService:
                     current["last_group_digest_index"] = len(history)
                     current.pop("group_member_memory_messages", None)
                     current.pop("group_member_memory_labels", None)
+                    if not current.get("member_settle_rollback_pending"):
+                        # 快照与活 bucket 同一口径：这次 opt-out 结算失败按
+                        # fail-closed 丢弃，留着快照会让它在重新开启记忆或
+                        # 成员开关变化时被后续 finalize 提交，绕过本次
+                        # opt-out。回滚待办在场时保留——那条路径要靠它把
+                        # 上一个已保存时代的收集恢复回活 bucket。
+                        current.pop("pending_settle_buckets", None)
+                        current.pop("pending_settle_labels", None)
+                        current.pop("pending_member_settle", None)
 
             await self.plugin._run_with_session_lock(session_key, _sync_one)
 
