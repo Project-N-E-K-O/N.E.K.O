@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.node_harness import run_node_stdin
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LIVE2D_CORE_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-core.js"
@@ -17,17 +19,14 @@ def _run_node_harness(script: str) -> subprocess.CompletedProcess[str]:
     node_executable = shutil.which("node")
     if node_executable is None:
         pytest.skip("node not found")
-    return subprocess.run(
-        [node_executable, "-"],
-        input=script,
-        text=True,
+    return run_node_stdin(
+        node_executable,
+        script,
         capture_output=True,
         cwd=PROJECT_ROOT,
         timeout=10,
         check=False,
     )
-
-
 def test_saved_live2d_parameters_feed_appearance_baseline():
     core_source = LIVE2D_CORE_PATH.read_text(encoding="utf-8")
     model_source = LIVE2D_MODEL_PATH.read_text(encoding="utf-8")

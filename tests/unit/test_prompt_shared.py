@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.node_harness import run_node_stdin
+
 
 PROMPT_SHARED_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-prompt-shared.js"
 
@@ -66,15 +68,13 @@ runScenario()
   }});
 """
 
-    result = subprocess.run(
-        [node_executable, "-"],
-        input=node_harness,
-        text=True,
+    result = run_node_stdin(
+        node_executable,
+        node_harness,
         capture_output=True,
         check=False,
         timeout=10,
     )
-
     if result.returncode != 0:
         raise AssertionError(
             "Node prompt_shared scenario failed:\n"

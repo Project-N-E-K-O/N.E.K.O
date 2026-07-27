@@ -7,6 +7,8 @@ from tests.static_app_parts import read_js_parts
 
 from main_routers import pages_router
 
+from tests.node_harness import run_node_script
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_AUTO_GOODBYE_PATH = PROJECT_ROOT / "static" / "app" / "app-auto-goodbye.js"
@@ -20,8 +22,9 @@ def _run_node_harness(script: str) -> subprocess.CompletedProcess[str]:
     if not node_path:
         raise AssertionError("node is required to run app-auto-goodbye harness tests")
 
-    return subprocess.run(
-        [node_path, "-e", script],
+    return run_node_script(
+        node_path,
+        script,
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
