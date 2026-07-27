@@ -1269,6 +1269,10 @@
         return v == null ? '' : String(v);
     }
 
+    // Upper bound for the settings-sync gate below: a hung POST must never
+    // block session starts or socket-dependent flows for longer than this.
+    var SETTINGS_SYNC_GATE_TIMEOUT_MS = 3000;
+
     /**
      * Wait for the WebSocket to reach OPEN state.
      *   - Already OPEN  -> resolves immediately
@@ -1278,6 +1282,27 @@
      * @returns {Promise<void>}
      */
     function ensureWebSocketOpen(timeoutMs = 5000) {
+        // Settings-sync gate: toggling independent ASR publishes its in-flight
+        // settings POST as S.pendingSettingsSyncPromise (app-audio-capture.js).
+        // Every start_session send awaits ensureWebSocketOpen() first, and the
+        // backend reads the SERVER-persisted independentAsrEnabled value at
+        // session start (asr_runtime.py _start_independent_asr_if_enabled), so
+        // waiting here closes the race where the first voice session after the
+        // toggle silently used the previous route. The wait is bounded and the
+        // gated promise never rejects (syncSettingsToServer swallows errors).
+        var pendingSync = S.pendingSettingsSyncPromise;
+        if (pendingSync && typeof pendingSync.then === 'function') {
+            return Promise.race([
+                pendingSync.catch(function () { /* gate must never reject */ }),
+                new Promise(function (resolve) { setTimeout(resolve, SETTINGS_SYNC_GATE_TIMEOUT_MS); })
+            ]).then(function () {
+                return ensureWebSocketOpenNow(timeoutMs);
+            });
+        }
+        return ensureWebSocketOpenNow(timeoutMs);
+    }
+
+    function ensureWebSocketOpenNow(timeoutMs) {
         return new Promise(function (resolve, reject) {
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
                 return resolve();
@@ -3140,6 +3165,11 @@
                     console.log('[App] Session ended by server, input_mode:', response.input_mode);
                     window.dispatchEvent(new CustomEvent('neko:session-ended-by-server', { detail: response }));
                     removeExternalAsrPreview();
+                    // The server ended the session, so the independent-ASR route is
+                    // gone with it; reset the flags even when S.isRecording is already
+                    // false (paused mic) and the stopRecording() below won't run.
+                    S.independentAsrActive = false;
+                    S.independentAsrProvider = '';
                     S.isTextSessionActive = false;
                     S.voiceChatActive = false;
                     S.voiceStartPending = false;
@@ -3422,6 +3452,11 @@
             }
             console.log(window.t('console.websocketClosed'));
             removeExternalAsrPreview();
+            // Socket teardown ends the backend ASR route; drop the route flags so
+            // the mic settings hint stops reporting independent ASR as active. A
+            // reconnected session re-emits ASR_INDEPENDENT_* statuses on start.
+            S.independentAsrActive = false;
+            S.independentAsrProvider = '';
             clearAssistantLifecycleOnDisconnect('socket_close');
 
             // Clear heartbeat

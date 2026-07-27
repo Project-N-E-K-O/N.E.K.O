@@ -1221,6 +1221,15 @@
         if (typeof window.removeExternalAsrPreview === 'function') {
             window.removeExternalAsrPreview();
         }
+        // Ordinary user stop must also drop the independent-ASR route flags.
+        // Only failure paths (BLOCKED / terminal ASR_INDEPENDENT_* statuses in
+        // app-websocket.js) reset them otherwise, so the mic settings hint
+        // would keep claiming "Independent ASR active" after the session
+        // ended. The next voice session re-derives both fields from fresh
+        // ASR_INDEPENDENT_* status events (lifecycle.py _start_session_activate
+        // re-runs the route on every start_session).
+        S.independentAsrActive = false;
+        S.independentAsrProvider = '';
         if (!S.isRecording) return;
 
         S.isRecording = false;
@@ -1929,7 +1938,26 @@
                 asrSlider.style.backgroundColor = asrInput.checked ? '#4f8cff' : '#ccc';
                 asrKnob.style.left = asrInput.checked ? '18px' : '2px';
                 if (window.appSettings && typeof window.appSettings.saveSettings === 'function') {
-                    window.appSettings.saveSettings();
+                    if (typeof window.appSettings.syncSettingsToServer === 'function') {
+                        // Session start reads the SERVER-persisted value (asr_runtime.py
+                        // _start_independent_asr_if_enabled -> aload_global_conversation_settings),
+                        // so the fire-and-forget POST inside saveSettings() can race a
+                        // mic start and silently keep the previous route. Persist
+                        // locally first, then run the POST ourselves and publish it as
+                        // S.pendingSettingsSyncPromise; ensureWebSocketOpen()
+                        // (app-websocket.js) awaits it before any start_session send.
+                        window.appSettings.saveSettings({ skipServerSync: true });
+                        var syncPromise = Promise.resolve(window.appSettings.syncSettingsToServer())
+                            .catch(function () { /* syncSettingsToServer already logs failures */ })
+                            .then(function () {
+                                if (S.pendingSettingsSyncPromise === syncPromise) {
+                                    S.pendingSettingsSyncPromise = null;
+                                }
+                            });
+                        S.pendingSettingsSyncPromise = syncPromise;
+                    } else {
+                        window.appSettings.saveSettings();
+                    }
                 }
             });
 

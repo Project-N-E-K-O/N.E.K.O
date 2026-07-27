@@ -6,6 +6,7 @@ from pathlib import Path
 APP_WEBSOCKET_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-websocket.js"
 APP_STATE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-state.js"
 APP_AUDIO_CAPTURE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-audio-capture.js"
+APP_BUTTONS_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-buttons.js"
 LOCALES_PATH = Path(__file__).resolve().parents[2] / "static" / "locales"
 WEBSOCKET_ROUTER_PATH = Path(__file__).resolve().parents[2] / "main_routers" / "websocket_router.py"
 ASR_REGISTRY_META_PATH = Path(__file__).resolve().parents[2] / "main_logic" / "asr_client" / "_registry_meta.py"
@@ -343,6 +344,135 @@ def test_external_asr_preview_clears_only_on_current_session_terminals():
     assert "removeExternalAsrPreview();" not in stale_guard
     assert "removeExternalAsrPreview();" in current_close
     assert "removeExternalAsrPreview();" not in onerror_block
+
+
+def test_independent_asr_toggle_awaits_server_sync_before_next_session():
+    # Session start reads the SERVER-persisted independentAsrEnabled value
+    # (asr_runtime.py _start_independent_asr_if_enabled), so the toggle must
+    # not rely on the fire-and-forget POST inside saveSettings(): it persists
+    # locally, runs the POST itself, and publishes the in-flight promise for
+    # the session-start path to await.
+    capture_source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    toggle_block = capture_source.split(
+        "asrInput.addEventListener('change', function () {",
+        1,
+    )[1].split("asrRow.appendChild(asrLabel);", 1)[0]
+    assert "window.appSettings.saveSettings({ skipServerSync: true });" in toggle_block
+    assert "window.appSettings.syncSettingsToServer()" in toggle_block
+    assert "S.pendingSettingsSyncPromise = syncPromise;" in toggle_block
+    # Completion clears the gate only when it still owns it (a newer toggle
+    # may have replaced the pending promise meanwhile).
+    assert "if (S.pendingSettingsSyncPromise === syncPromise)" in toggle_block
+    assert "S.pendingSettingsSyncPromise = null;" in toggle_block
+    # Fallback when the settings module does not expose syncSettingsToServer.
+    assert "window.appSettings.saveSettings();" in toggle_block
+
+    gate_block = websocket_source.split(
+        "function ensureWebSocketOpen(timeoutMs = 5000)",
+        1,
+    )[1].split("function ensureWebSocketOpenNow(timeoutMs)", 1)[0]
+    assert "S.pendingSettingsSyncPromise" in gate_block
+    # Negative: only thenables gate; anything else falls through immediately.
+    assert "typeof pendingSync.then === 'function'" in gate_block
+    # The wait is bounded and never rejects, so a hung or failed POST cannot
+    # block session starts or socket-dependent flows.
+    assert "Promise.race([" in gate_block
+    assert "SETTINGS_SYNC_GATE_TIMEOUT_MS" in gate_block
+    assert "pendingSync.catch(" in gate_block
+    assert "return ensureWebSocketOpenNow(timeoutMs);" in gate_block
+    assert "var SETTINGS_SYNC_GATE_TIMEOUT_MS = 3000;" in websocket_source
+
+
+def test_every_start_session_send_sits_behind_the_ensure_websocket_gate():
+    # The settings-sync gate lives in ensureWebSocketOpen(), so it only closes
+    # the toggle-vs-session-start race if every start_session send awaits
+    # ensureWebSocketOpen() right before it.
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    buttons_source = APP_BUTTONS_PATH.read_text(encoding="utf-8")
+
+    checked = 0
+    for source, ensure_call in (
+        (websocket_source, "await ensureWebSocketOpen();"),
+        (buttons_source, "await window.ensureWebSocketOpen();"),
+    ):
+        for match in re.finditer(r"action: 'start_session'", source):
+            preceding = source[max(0, match.start() - 600):match.start()]
+            assert ensure_call in preceding, (
+                "start_session send not preceded by ensureWebSocketOpen(): ..."
+                + source[max(0, match.start() - 120):match.end()]
+            )
+            checked += 1
+    assert checked >= 4
+
+
+def test_normal_teardown_paths_reset_independent_asr_route_flags():
+    # ASR_INDEPENDENT_READY sets S.independentAsrActive; ordinary user stop,
+    # server-side session end, and socket close must reset it (and the
+    # provider) too, or the mic settings hint keeps claiming independent ASR
+    # is active until some later route status arrives.
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    capture_source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
+
+    stop_block = capture_source.split("function stopRecording(options)", 1)[1].split(
+        "function startMicVolumeVisualization",
+        1,
+    )[0]
+    pre_early_return = stop_block.split("if (!S.isRecording) return;", 1)[0]
+    assert "S.independentAsrActive = false;" in pre_early_return
+    assert "S.independentAsrProvider = '';" in pre_early_return
+    assert pre_early_return.index("window.removeExternalAsrPreview();") < pre_early_return.index(
+        "S.independentAsrActive = false;"
+    )
+
+    session_ended_block = websocket_source.split(
+        "// -------- session_ended_by_server --------",
+        1,
+    )[1].split("// -------- reload_page --------", 1)[0]
+    assert "S.independentAsrActive = false;" in session_ended_block
+    assert "S.independentAsrProvider = '';" in session_ended_block
+    # Reset must not hide behind the isRecording branch: a paused mic keeps
+    # S.isRecording false while the flags are still set.
+    assert session_ended_block.index("S.independentAsrActive = false;") < session_ended_block.index(
+        "if (S.isRecording)"
+    )
+
+    onclose_block = websocket_source.split("// ---- onclose ----", 1)[1].split(
+        "// ---- onerror ----",
+        1,
+    )[0]
+    stale_guard, current_close = onclose_block.split(
+        "console.log(window.t('console.websocketClosed'));", 1
+    )
+    # Negative: a stale socket's onclose must not touch the live session flags.
+    assert "S.independentAsrActive = false;" not in stale_guard
+    assert "S.independentAsrActive = false;" in current_close
+    assert "S.independentAsrProvider = '';" in current_close
+    assert current_close.index("S.independentAsrActive = false;") < current_close.index(
+        "if (S.isRecording || window.isMicStarting)"
+    )
+
+
+def test_failure_paths_keep_status_provided_asr_provider():
+    # Negative counterpart to the teardown reset: failure paths receive the
+    # provider from the status event and must keep it for the toasts/hint,
+    # so only the normal teardown clears S.independentAsrProvider.
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    lifecycle_block = source.split("if (statusCode === 'ASR_LIFECYCLE_STATE')", 1)[1].split(
+        "if (statusCode === 'VOICE_INPUT_LEASE_RESYNC_REQUIRED')",
+        1,
+    )[0]
+    blocked_branch = lifecycle_block.split("if (lifecycleState === 'blocked')", 1)[1]
+    assert "S.independentAsrProvider = ''" not in blocked_branch
+
+    prefix_block = source.split(
+        "if (statusCode && statusCode.indexOf('ASR_INDEPENDENT_') === 0)",
+        1,
+    )[1].split("if (statusCode === 'TTS_CONNECTION_FAILED')", 1)[0]
+    assert "S.independentAsrProvider = asrProvider;" in prefix_block
+    assert "S.independentAsrProvider = ''" not in prefix_block
 
 
 def test_startup_greeting_release_event_replaces_home_tutorial_block_state():
