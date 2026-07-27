@@ -28,6 +28,14 @@ from config.prompts.prompts_proactive import REALTIME_PROACTIVE_TRIGGER_PROMPTS
 from config.prompts.prompts_sys import _loc
 
 
+# Realtime providers report a conflicting ``response.create`` asynchronously.
+# In practice that error follows the send immediately (well below one second),
+# but returning before it arrives makes a rejected proactive nudge look
+# delivered to the scheduler. Keep the HTTP-side delivery decision open for a
+# bounded acknowledgement window; model generation still starts concurrently.
+_PROACTIVE_INJECT_REJECTION_WAIT_SECONDS = 1.0
+
+
 def _proactive_text_instruction(language: str) -> str:
     lang = (language or "en").strip().lower().replace("_", "-").split("-", 1)[0]
     return _loc(REALTIME_PROACTIVE_TRIGGER_PROMPTS, lang)
@@ -566,13 +574,32 @@ class _ResponseMixin:
 
         text = instruction.strip() or _proactive_text_instruction(language)
 
+        rejected = asyncio.Event()
+        rejection_message = ""
+
         def _on_rejected(error_msg: str) -> None:
+            nonlocal rejection_message
+            rejection_message = error_msg
             logger.warning("prompt_ephemeral: proactive text rejected: %s", error_msg)
+            rejected.set()
 
         await self.inject_text_and_request_response(
             text,
             on_rejected=_on_rejected,
         )
+        try:
+            await asyncio.wait_for(
+                rejected.wait(),
+                timeout=_PROACTIVE_INJECT_REJECTION_WAIT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            pass
+        else:
+            logger.info(
+                "prompt_ephemeral: proactive text delivery failed; keeping visual context for retry: %s",
+                rejection_message,
+            )
+            return False
         if has_vision and self._latest_image_b64 == snapshot_image_b64:
             self._proactive_image_consumed = True
         logger.info(

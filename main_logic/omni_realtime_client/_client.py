@@ -284,16 +284,31 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
 
         # Gemini Live API specific attributes
         self._is_gemini = self._api_type.lower() == 'gemini'
+        _base_url_lower = (base_url or '').lower()
+        _known_lanlan_free_route = (
+            'lanlan.tech' in _base_url_lower
+            or 'lanlan.app' in _base_url_lower
+            or bool(livestream_mode)
+        )
+        # ``api_type`` is the provider-ownership signal. The model name is
+        # user-configurable, so an arbitrary local model such as
+        # ``freeform-realtime`` must not inherit Lanlan's image wire protocol.
+        # Keep a narrow compatibility fallback only for old callers that omit
+        # api_type while targeting a known Lanlan/livestream route.
         self._is_free_provider = (
             self._api_type.lower() == 'free'
-            or 'free' in self._model_lower
+            or (
+                not self._api_type
+                and 'free' in self._model_lower
+                and _known_lanlan_free_route
+            )
         )
 
         # Only the international/livestream free routes proxy Gemini. This flag
         # remains about VAD/lifecycle behaviour, not image capability: every
         # Lanlan free route now accepts native input_image_buffer events.
         self._is_free_proxy = self._is_free_provider and (
-            'lanlan.app' in (base_url or '')
+            'lanlan.app' in _base_url_lower
             or bool(livestream_mode)
         )
 

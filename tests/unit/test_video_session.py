@@ -243,6 +243,42 @@ def test_domestic_free_supports_native_vision_without_gemini_proxy_vad():
 
 
 @pytest.mark.unit
+def test_custom_model_name_containing_free_is_not_lanlan_provider():
+    client = OmniRealtimeClient(
+        base_url="wss://custom.example/realtime",
+        api_key="test-key",
+        model="freeform-realtime",
+        turn_detection_mode=TurnDetectionMode.SERVER_VAD,
+        api_type="local",
+    )
+
+    assert client._is_free_provider is False
+    assert client._is_free_proxy is False
+    assert client._supports_native_image is False
+
+
+@pytest.mark.unit
+def test_legacy_free_model_fallback_requires_known_lanlan_route():
+    lanlan_client = OmniRealtimeClient(
+        base_url="wss://www.lanlan.tech/api/v1/realtime",
+        api_key="test-key",
+        model="free-model",
+        turn_detection_mode=TurnDetectionMode.SERVER_VAD,
+    )
+    custom_client = OmniRealtimeClient(
+        base_url="wss://custom.example/realtime",
+        api_key="test-key",
+        model="free-model",
+        turn_detection_mode=TurnDetectionMode.SERVER_VAD,
+    )
+
+    assert lanlan_client._is_free_provider is True
+    assert lanlan_client._supports_native_image is True
+    assert custom_client._is_free_provider is False
+    assert custom_client._supports_native_image is False
+
+
+@pytest.mark.unit
 async def test_domestic_free_image_streaming_bypasses_vision_model():
     """Domestic free sends the same native image event as the other free
     routes and never invokes the external VISION_MODEL annotator."""

@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
@@ -83,6 +84,29 @@ async def test_free_prompt_sends_native_image_before_text():
     )
     assert _input_texts(events) == ["describe what you notice"]
     assert client._proactive_image_consumed is True
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_async_inject_rejection_returns_false_and_preserves_image():
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+
+    async def reject_after_send(_text, *, on_rejected):
+        async def reject():
+            await asyncio.sleep(0)
+            on_rejected("response_already_active")
+
+        asyncio.create_task(reject())
+
+    client.inject_text_and_request_response = reject_after_send
+
+    delivered = await client.prompt_ephemeral("describe what you notice")
+
+    assert delivered is False
+    assert client._proactive_image_consumed is False
+    assert client._latest_image_b64 == DUMMY_IMAGE_B64
     await client.close()
 
 
