@@ -3012,8 +3012,7 @@ async def test_prompt_change_discard_failure_marks_sticky_retry():
     service = QQSessionInstructionService.__new__(QQSessionInstructionService)
     service.plugin = plugin
     service._discard_all_sessions_for_prompt_change()
-    for _ in range(10):
-        await asyncio.sleep(0)
+    await asyncio.gather(*plugin._prompt_change_discard_tasks)
     assert kept["pending_identity_discard"] is True
 
 
@@ -4262,6 +4261,7 @@ async def test_login_change_bootstrap_keeps_session_when_discard_fails():
     )
     await service.ensure_generation_session(char_context, "group:7788")
     assert plugin.session_runtime_service.discard_session.await_count == 3
+    assert existing["pending_identity_discard"] is True
 
 
 @pytest.mark.asyncio
