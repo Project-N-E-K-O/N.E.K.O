@@ -117,7 +117,15 @@ class QQReplyGenerationService:
         except asyncio.TimeoutError:
             # discard_session 内部会先结算群 scoped 缓冲再丢弃（集中抢救）。
             self.plugin.logger.warning(f"会话 {session_key} 处理超时，关闭并丢弃该会话")
-            await self.plugin.session_runtime_service.discard_session(session_key, reason="generation_timeout")
+            discarded = await self.plugin.session_runtime_service.discard_session(session_key, reason="generation_timeout")
+            if discarded is False:
+                # 结算失败被有意保留：但本会话的 stream 刚被 wait_for 强制
+                # 取消，直接复用会再次超时、陷入死循环。打粘性标记让下轮
+                # bootstrap 先重试 discard（含集中抢救），与登录身份变化
+                # 的 pending_identity_discard 模式对齐。
+                kept = self.plugin._user_sessions.get(session_key)
+                if kept is not None:
+                    kept["pending_identity_discard"] = True
             stage_trace.status = "timeout"
             return QQModelResult(reply_text=None, source="session", timed_out=True, traces=[stage_trace])
         except Exception as e:

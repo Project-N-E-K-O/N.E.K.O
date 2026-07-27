@@ -2507,6 +2507,43 @@ async def test_delivery_result_reflects_open_platform_send_failure():
     result = await sticker_node.deliver(sticker_plan)
     assert result.delivered is True
 
+    # Private record block: send_private_record now propagates the Open
+    # Platform result — a real send confirms (no false negative), a
+    # swallowed failure does not.
+    record_plugin = SimpleNamespace(
+        _get_reply_mode=lambda: "text",
+        voice_reply_service=SimpleNamespace(
+            synthesize_reply_voice_file=AsyncMock(return_value=("file://x", 0)),
+        ),
+        qq_client=SimpleNamespace(
+            needs_attention=False,
+            send_private_record=AsyncMock(return_value="mid"),
+        ),
+    )
+    record_node = QQReplyDeliveryNode.__new__(QQReplyDeliveryNode)
+    record_node.plugin = record_plugin
+    record_plan = QQDeliveryPlan(
+        target_type="private", target_id="10086",
+        blocks=[QQMessageBlock(record="早上好")],
+        fallback_to_text_on_voice_failure=False,
+    )
+    result = await record_node.deliver(record_plan)
+    assert result.delivered is True
+    record_plugin.qq_client.send_private_record = AsyncMock(return_value=None)
+    result = await record_node.deliver(record_plan)
+    assert result.delivered is False
+
+    # Open Platform wrapper level: send_private_record must propagate the
+    # segments result (its group twin already does) — a permanent None here
+    # falsely marks every delivered private voice reply as unsent.
+    from plugin.plugins.qq_auto_reply.qq_open_plat import (
+        QQOpenPlatformConnection,
+    )
+
+    plat = QQOpenPlatformConnection.__new__(QQOpenPlatformConnection)
+    plat.send_private_message_segments = AsyncMock(return_value="mid")
+    assert await plat.send_private_record("10086", "file://x") == "mid"
+
     # Multi-block partial failure: ALL attempted text blocks must confirm —
     # the exclusion list is whole-row, so a half-sent reply must not clear
     # its mark and enter extraction.
@@ -2735,6 +2772,57 @@ def test_stop_join_includes_retro_review_tasks():
 
     src = inspect.getsource(runtime_ops_service)
     assert "_retro_tasks" in src
+
+
+@pytest.mark.asyncio
+async def test_timeout_discard_failure_marks_sticky_retry():
+    """A timeout whose salvage-discard fails keeps the session — but its
+    stream was force-cancelled and direct reuse would loop timeouts until
+    the memory server recovers. The kept session gets the sticky
+    pending_identity_discard marker so the next bootstrap retries the
+    discard first."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import QQPipelineStageTrace
+    from plugin.plugins.qq_auto_reply.reply_generation_service import (
+        QQReplyGenerationService,
+    )
+
+    kept = {"is_group": True, "memory_enabled": True}
+    plugin = SimpleNamespace(
+        _user_sessions={"group:7788": kept},
+        session_runtime_service=SimpleNamespace(
+            build_generation_session_key=lambda context: "group:7788",
+            prime_generation_session_state=lambda ud, *, session_key, context: (
+                SimpleNamespace(), []
+            ),
+            discard_session=AsyncMock(return_value=False),
+        ),
+        session_bootstrap_service=SimpleNamespace(
+            ensure_generation_session=AsyncMock(return_value=kept),
+        ),
+        logger=MagicMock(),
+    )
+    service = QQReplyGenerationService.__new__(QQReplyGenerationService)
+    service.plugin = plugin
+
+    async def _timeout_generation(**kwargs):
+        raise asyncio.TimeoutError()
+
+    service._run_session_generation = _timeout_generation
+    context = SimpleNamespace(
+        is_group=True, group_id="7788", ephemeral_session=False,
+        group_scene_mode="shared_context",
+    )
+    result = await service.run_primary_session_call(context)
+    assert result.timed_out is True
+    plugin.session_runtime_service.discard_session.assert_awaited_once()
+    assert kept["pending_identity_discard"] is True
+
+    # A successful discard leaves no marker behind (the key is gone).
+    plugin._user_sessions.pop("group:7788", None)
+    plugin.session_runtime_service.discard_session = AsyncMock(return_value=True)
+    result = await service.run_primary_session_call(context)
+    assert result.timed_out is True
+    assert "group:7788" not in plugin._user_sessions
 
 
 @pytest.mark.asyncio

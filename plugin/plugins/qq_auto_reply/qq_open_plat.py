@@ -329,9 +329,12 @@ class QQOpenPlatformConnection(QQConnectionBase):
             group_id, [{"type": "text", "data": {"text": message}}],
         )
 
-    async def send_private_record(self, user_id: str, file_uri: str) -> None:
-        """发送私聊语音 — 开放平台不支持，降级为文本"""
-        await self.send_private_message_segments(
+    async def send_private_record(self, user_id: str, file_uri: str) -> Optional[str]:
+        """发送私聊语音 — 开放平台不支持，降级为文本。
+
+        结果向上传播（None=失败被吞）：投递确认链需要它，否则私聊语音块
+        恒判未投递（假阴性——已送达的回复被排除出记忆）。"""
+        return await self.send_private_message_segments(
             user_id, [{"type": "text", "data": {"text": "[语音消息]"}}],
         )
 
