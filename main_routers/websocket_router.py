@@ -428,6 +428,20 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             if action == "start_session":
                 session_manager[lanlan_name].active_session_is_idle = False
                 session_manager[lanlan_name].set_goodbye_silent(False, "start_session")
+                # Handshake: the frontend rides its authoritative independent-ASR
+                # toggle along on every start_session so the route decision cannot
+                # use a stale persisted value (settings POST failed or still in
+                # flight). Forward the raw field on every start_session — the
+                # setter strictly type-checks (bool only) and an absent or
+                # malformed field clears the override, keeping older frontends on
+                # the persisted-setting behavior.
+                handshake_setter = getattr(
+                    session_manager[lanlan_name],
+                    "set_independent_asr_handshake",
+                    None,
+                )
+                if callable(handshake_setter):
+                    handshake_setter(message.get("independent_asr_enabled"))
                 input_type = message.get("input_type", "audio")
                 if input_type in _SESSION_INPUT_TYPES:
                     if is_game_route_active(lanlan_name):

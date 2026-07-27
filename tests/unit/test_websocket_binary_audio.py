@@ -56,6 +56,9 @@ class _ProtocolManager:
     def reset_session_start_circuit(self) -> None:
         self.calls.append(("reset_start_circuit", None))
 
+    def set_independent_asr_handshake(self, value) -> None:
+        self.calls.append(("asr_handshake", value))
+
     def start_session(self, *_args, **_kwargs):
         self.calls.append(("start_session", None))
 
@@ -279,6 +282,39 @@ async def test_documented_legacy_audio_flow_authorizes_before_session_and_pcm(
     ] == [pcm_message]
     assert manager.statuses == []
     assert manager.cleanup_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_start_session_forwards_independent_asr_handshake_before_dispatch(
+    monkeypatch,
+) -> None:
+    manager = _ProtocolManager()
+    websocket = _EventWebSocket(
+        [
+            {
+                "action": "start_session",
+                "input_type": "audio",
+                "independent_asr_enabled": True,
+            },
+            {"action": "start_session", "input_type": "audio"},
+        ]
+    )
+    _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=websocket,
+    )
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+
+    # The raw field is forwarded on every start_session; an absent field is
+    # forwarded as None so a stale override from a previous session clears
+    # (the manager-side setter owns the strict bool validation).
+    assert [
+        payload for name, payload in manager.calls if name == "asr_handshake"
+    ] == [True, None]
+    call_names = [name for name, _payload in manager.calls]
+    assert call_names.index("asr_handshake") < call_names.index("start_session")
 
 
 @pytest.mark.asyncio

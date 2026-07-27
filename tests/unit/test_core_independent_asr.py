@@ -3706,6 +3706,103 @@ async def test_disabled_native_route_key_prevents_same_core_reconcile(
     assert runtime._omni_mic_audio_bytes == 320
 
 
+async def test_start_session_handshake_true_overrides_persisted_disabled(
+    monkeypatch,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": False}),
+    )
+    start_mock = AsyncMock(
+        return_value=AsrStartResult(
+            status=AsrStartStatus.FAILED,
+            failure_code="ASR_START_STALE",
+        )
+    )
+    monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
+
+    runtime.set_independent_asr_handshake(True)
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    # The handshake beats the stale persisted value: the independent runtime
+    # start is attempted instead of the native fallback.
+    start_mock.assert_awaited_once()
+    assert runtime._asr_route_mode != "native"
+
+
+async def test_start_session_handshake_false_overrides_persisted_enabled(
+    monkeypatch,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+    start_mock = AsyncMock()
+    monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
+
+    runtime.set_independent_asr_handshake(False)
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    start_mock.assert_not_awaited()
+    assert runtime._asr_route_mode == "native"
+
+
+async def test_start_session_handshake_missing_falls_back_to_persisted(
+    monkeypatch,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+    start_mock = AsyncMock(
+        return_value=AsrStartResult(
+            status=AsrStartStatus.FAILED,
+            failure_code="ASR_START_STALE",
+        )
+    )
+    monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
+
+    # An absent field (forwarded as None by the router) clears any override a
+    # previous session left behind, restoring the persisted-setting behavior.
+    runtime.set_independent_asr_handshake(True)
+    runtime.set_independent_asr_handshake(None)
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    start_mock.assert_awaited_once()
+
+
+@pytest.mark.parametrize("malformed", ["true", 1, 0, [True], {"enabled": True}])
+async def test_start_session_handshake_malformed_value_is_ignored(
+    monkeypatch,
+    malformed,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": False}),
+    )
+    start_mock = AsyncMock()
+    monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
+
+    # Strict bool typing: truthy non-bool values never enable the route.
+    runtime.set_independent_asr_handshake(malformed)
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    start_mock.assert_not_awaited()
+    assert runtime._asr_route_mode == "native"
+
+
 class _HotSwapRuntimeStub:
     def __init__(self, *, start_status: AsrStartStatus) -> None:
         self.session_epoch = 1

@@ -227,6 +227,7 @@ class AsrRuntimeMixin:
         self._asr_notification_lock = asyncio.Lock()
         self._independent_asr_provider: str | None = None
         self._independent_asr_route_key: str | None = None
+        self._independent_asr_handshake_override: bool | None = None
         self._voice_input_noise_reduction_enabled = True
         self._voice_input_audio_pipeline = VoiceInputAudioPipeline(
             nr_enabled=self._voice_input_noise_reduction_enabled,
@@ -259,6 +260,8 @@ class AsrRuntimeMixin:
             self._voice_input_noise_reduction_enabled = True
         if not hasattr(self, "_last_hot_swap_rebind_drop_log_time"):
             self._last_hot_swap_rebind_drop_log_time = 0.0
+        if not hasattr(self, "_independent_asr_handshake_override"):
+            self._independent_asr_handshake_override = None
 
     def _begin_asr_route_operation(self) -> int:
         self._asr_route_operation_generation += 1
@@ -416,6 +419,20 @@ class AsrRuntimeMixin:
             return None
         return self._voice_input_consumer_bindings.get("game")
 
+    def set_independent_asr_handshake(self, value: object) -> None:
+        # Record the frontend's authoritative independent-ASR toggle carried by
+        # the start_session message (websocket_router). Strictly typed: only a
+        # real bool is accepted; anything else (missing field from an older
+        # frontend, malformed payloads) clears the override so the route
+        # decision falls back to the persisted setting. The handshake is
+        # deliberately NOT persisted server-side: persistence stays the
+        # settings POST's job, this value only pins the route decision for the
+        # session the user just started.
+        self._ensure_asr_runtime_state()
+        self._independent_asr_handshake_override = (
+            value if isinstance(value, bool) else None
+        )
+
     async def _start_independent_asr_if_enabled(
         self,
         input_mode: str,
@@ -497,7 +514,14 @@ class AsrRuntimeMixin:
                 )
             if not core_start_is_current():
                 return
-        enabled = bool(settings.get("independentAsrEnabled", False))
+        handshake_enabled = self._independent_asr_handshake_override
+        if handshake_enabled is not None:
+            # The start_session handshake carries the frontend's authoritative
+            # toggle; it overrides the persisted read, which is stale when the
+            # settings POST failed or was still in flight at session start.
+            enabled = handshake_enabled
+        else:
+            enabled = bool(settings.get("independentAsrEnabled", False))
         optimization_value = settings.get(
             "voiceInputResourceOptimizationEnabled",
             True,

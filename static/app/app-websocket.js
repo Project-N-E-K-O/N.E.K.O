@@ -1413,6 +1413,33 @@
 
     // ========================  connectWebSocket  ========================
 
+    // Stamp the frontend's authoritative independent-ASR toggle onto every
+    // outgoing start_session payload. The bounded settings-sync gate in
+    // ensureWebSocketOpen() is best-effort only: when the settings POST fails
+    // or is still in flight past the bound, the backend would read a stale
+    // persisted independentAsrEnabled at session start. Carrying the toggle in
+    // the start_session handshake lets the backend override that read for this
+    // session (websocket_router -> asr_runtime.set_independent_asr_handshake).
+    // Wrapping send() at socket creation is the single seam that covers every
+    // start_session send site, including the ones in app-buttons.js.
+    function attachStartSessionHandshake(ws) {
+        var rawSend = ws.send.bind(ws);
+        ws.send = function (data) {
+            if (typeof data === 'string' && data.indexOf('start_session') !== -1) {
+                try {
+                    var msg = JSON.parse(data);
+                    if (msg && msg.action === 'start_session') {
+                        msg.independent_asr_enabled = S.independentAsrEnabled === true;
+                        data = JSON.stringify(msg);
+                    }
+                } catch (e) {
+                    // Non-JSON text frames pass through untouched.
+                }
+            }
+            return rawSend(data);
+        };
+    }
+
     function connectWebSocket() {
         var currentLanlanName = getWebSocketLanlanName();
         // 进入 connectWebSocket 即意味着"当前已经在主动重连"，排队中的 auto-reconnect 不再需要。
@@ -1460,6 +1487,7 @@
 
         console.log(window.t('console.websocketConnecting'), currentLanlanName, window.t('console.websocketUrl'), wsUrl);
         S.socket = new WebSocket(wsUrl);
+        attachStartSessionHandshake(S.socket);
         var _thisSocket = S.socket; // 闭包捕获，供 onclose 判断是否已被替换
 
         // ---- onopen ----

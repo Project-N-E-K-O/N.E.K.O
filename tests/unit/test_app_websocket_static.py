@@ -407,6 +407,33 @@ def test_every_start_session_send_sits_behind_the_ensure_websocket_gate():
     assert checked >= 4
 
 
+def test_start_session_payload_carries_independent_asr_handshake():
+    # The bounded settings-sync gate is best-effort: when the settings POST
+    # fails or outlives the bound, the backend would read a stale persisted
+    # independentAsrEnabled. The send() wrapper stamps the frontend's
+    # authoritative toggle onto every start_session payload so the backend can
+    # override that read (websocket_router -> set_independent_asr_handshake).
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    wrapper = websocket_source.split(
+        "function attachStartSessionHandshake(ws)",
+        1,
+    )[1].split("function connectWebSocket()", 1)[0]
+    # Strict-bool stamp taken from live S state at send time.
+    assert "msg.independent_asr_enabled = S.independentAsrEnabled === true;" in wrapper
+    # Only start_session text frames are rewritten; binary audio frames and
+    # other messages pass through untouched.
+    assert "typeof data === 'string'" in wrapper
+    assert "msg.action === 'start_session'" in wrapper
+
+    # The wrapper is attached at the single socket-creation seam, so every
+    # start_session send site (including the ones in app-buttons.js) carries
+    # the field.
+    creation_index = websocket_source.index("S.socket = new WebSocket(wsUrl);")
+    attach_index = websocket_source.index("attachStartSessionHandshake(S.socket);")
+    assert 0 < attach_index - creation_index < 200
+
+
 def test_normal_teardown_paths_reset_independent_asr_route_flags():
     # ASR_INDEPENDENT_READY sets S.independentAsrActive; ordinary user stop,
     # server-side session end, and socket close must reset it (and the
