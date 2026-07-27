@@ -62,11 +62,12 @@ _ENTRY_POINTS = frozenset({"run", "Popen", "check_output", "check_call", "call"}
 
 
 def _subprocess_bindings(tree: ast.AST) -> tuple[set[str], set[str]]:
-    """本文件里哪些名字指向 subprocess。
+    """Which names in this file resolve to subprocess.
 
-    模块名不一定叫 subprocess：``import subprocess as sp`` 与
-    ``from subprocess import run`` 都是常见写法，只认字面量 "subprocess."
-    等于把这两条路留给新 harness 当后门（Codex P2）。
+    The module is not always spelled ``subprocess``: ``import subprocess as sp``
+    and ``from subprocess import run`` are both ordinary, and matching only the
+    literal ``subprocess.`` prefix leaves either one as a way around this
+    contract.
     """
     module_aliases = {"subprocess"}
     direct_names: set[str] = set()
