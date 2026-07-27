@@ -32,6 +32,21 @@ Electron stores port overrides in `port_config.json` under `%APPDATA%\N.E.K.O` o
 Most shared boolean helpers accept `1/true/yes/on` and `0/false/no/off`.
 `NEKO_MERGED` itself accepts `1/true/yes` and `0/false/no`.
 
+## Process model and single instance
+
+The launcher is a foreground process: it never daemonizes, and it tears its whole
+service topology down when the process that owns it disappears. It also proves it
+is the only running runtime with an OS file lock, and publishes an authoritative
+record (pid, instance id, negotiated ports) next to that lock.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `NEKO_OWNER_PID` | this process's parent | The pid the parent-death guard watches. Set it when the owner is *not* the direct parent — for example the replacement launcher of a storage-migration handoff, whose spawner exits on purpose. |
+| `NEKO_OWNER_RELAUNCH` | unset | `1` declares that the owner will restart the runtime itself. A storage-migration restart then exits cleanly and waits to be relaunched instead of spawning its own replacement. |
+| `NEKO_PARENT_DEATH_GUARD` | `1` | Set to `0` to disable the parent-death guard entirely. Only for debuggers and profilers that re-parent their target; a runtime with the guard off can outlive its owner. |
+| `NEKO_LAUNCHER_RESTART_HANDOFF` | unset | Set by the outgoing launcher on its replacement so the replacement waits out the single-instance lock instead of concluding another instance is running. Not meant to be set by hand. |
+| `NEKO_RUNTIME_STATE_DIR` | per-user runtime dir | Overrides where `launcher.lock` and `launcher.json` live. Defaults to `%LOCALAPPDATA%\N.E.K.O\runtime` on Windows, `~/Library/Application Support/N.E.K.O/runtime` on macOS, and `$XDG_RUNTIME_DIR/neko` on Linux. |
+
 ## Runtime topology
 
 | Variable | Default | Description |

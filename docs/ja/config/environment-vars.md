@@ -18,6 +18,21 @@ Runtime では `NEKO_INSTANCE_ID`、`NEKO_AUTOSTART_CSRF_TOKEN`、`NEKO_AUTOSTAR
 
 Local vectors は `NEKO_VECTORS_ENABLED` と `NEKO_VECTORS_QUANTIZATION`（`auto/int8/fp32`）を受け付けます。Boolean は `1/true/yes/on` と `0/false/no/off` です。利用可能 RAM の下限は現在、固定の実行時定数 `VECTORS_MIN_RAM_GB = 4.0` であり、環境変数による上書きはありません。
 
+## プロセスモデルと単一インスタンス
+
+launcher は foreground プロセスです。daemon 化して親から離脱することはなく、所有者
+プロセスが消えた時点でサービス構成全体を片付けます。また OS のファイルロックで唯一性
+を自己証明し、その隣に権威ある runtime record（pid、instance id、確定したポート）を
+書き出します。
+
+| 変数 | デフォルト | 説明 |
+|------|------------|------|
+| `NEKO_OWNER_PID` | 本プロセスの親 | 親プロセス死亡ガードが監視する pid。所有者が直接の親で**ない**場合に設定します（例：storage 移行の世代交代で生成された次の launcher。その spawn 元は意図的に終了します）。 |
+| `NEKO_OWNER_RELAUNCH` | 未設定 | `1` は「所有者が自分で runtime を再起動する」という宣言です。storage 移行の再起動は自分で後継を spawn せず、クリーンに終了して再起動を待ちます。 |
+| `NEKO_PARENT_DEATH_GUARD` | `1` | `0` でガードを完全に無効化します。対象を再 parent 化する debugger / profiler 用のみ。無効化した runtime は所有者より長生きし得ます。 |
+| `NEKO_LAUNCHER_RESTART_HANDOFF` | 未設定 | 前世代の launcher が後継に設定します。後継は「別インスタンスが動作中」と結論せず、単一インスタンスロックの解放を待ちます。手動設定は想定していません。 |
+| `NEKO_RUNTIME_STATE_DIR` | ユーザーごとの runtime ディレクトリ | `launcher.lock` と `launcher.json` の場所を上書きします。既定は Windows `%LOCALAPPDATA%\N.E.K.O\runtime`、macOS `~/Library/Application Support/N.E.K.O/runtime`、Linux `$XDG_RUNTIME_DIR/neko`。 |
+
 ## ランタイム構成
 
 | 変数 | デフォルト | 説明 |

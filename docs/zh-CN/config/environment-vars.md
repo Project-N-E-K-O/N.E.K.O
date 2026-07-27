@@ -29,6 +29,19 @@ Electron 的 `port_config.json` 位于平台配置目录；显式环境变量优
 
 可用内存门槛目前是固定的运行时常量 `VECTORS_MIN_RAM_GB = 4.0`，没有对应的环境变量覆盖项。
 
+## 进程模型与单实例
+
+launcher 是前台进程：绝不守护化脱管，属主进程一消失就把整套服务拓扑拆掉；同时用
+操作系统文件锁自证唯一，并在锁旁边写出权威运行时记录（pid、实例 ID、协商后的端口）。
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `NEKO_OWNER_PID` | 本进程的父进程 | 父死守卫要盯的 pid。属主**不是**直接父进程时才需要设置——例如存储迁移交接产生的下一代 launcher，它的 spawn 者是故意退出的。 |
+| `NEKO_OWNER_RELAUNCH` | 未设置 | `1` 表示属主会自己负责重启运行时。此时存储迁移重启只干净退出、等待属主拉起，不再自旋出下一代。 |
+| `NEKO_PARENT_DEATH_GUARD` | `1` | 设为 `0` 完全关闭父死守卫。仅用于会重挂父进程的调试器/性能分析工具；关掉之后运行时可能活得比属主久。 |
+| `NEKO_LAUNCHER_RESTART_HANDOFF` | 未设置 | 由上一代 launcher 设在下一代身上，让它等待单实例锁释放，而不是判定"已有实例在跑"。不需要手工设置。 |
+| `NEKO_RUNTIME_STATE_DIR` | 按用户的运行时目录 | 覆盖 `launcher.lock` 与 `launcher.json` 的位置。默认 Windows `%LOCALAPPDATA%\N.E.K.O\runtime`、macOS `~/Library/Application Support/N.E.K.O/runtime`、Linux `$XDG_RUNTIME_DIR/neko`。 |
+
 ## 运行拓扑
 
 | 变量 | 默认值 | 说明 |
