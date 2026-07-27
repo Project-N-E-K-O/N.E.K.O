@@ -428,7 +428,37 @@ function createAdvancedSettingsSidePanel(manager, prefix, popup) {
 
     panel.appendChild(widgetModeItem);
 
+    const taskHudItem = manager._createSettingsToggleItem({
+        id: 'agent-taskhud',
+        label: window.t ? window.t('settings.toggles.showTaskHud') : '显示猫爪任务HUD',
+        labelKey: 'settings.toggles.showTaskHud',
+        alwaysTinted: true
+    });
+    const taskHudCheckbox = taskHudItem.querySelector(`#${prefix}-agent-taskhud`);
+    if (taskHudCheckbox) {
+        try {
+            taskHudCheckbox.checked = localStorage.getItem('neko-agent-taskhud-visible') !== 'false';
+        } catch (_) {
+            taskHudCheckbox.checked = true;
+        }
+        taskHudCheckbox.addEventListener('change', (event) => {
+            try {
+                localStorage.setItem('neko-agent-taskhud-visible', taskHudCheckbox.checked ? 'true' : 'false');
+            } catch (_) {}
+            if (typeof window.checkAndToggleTaskHUD === 'function') {
+                window.checkAndToggleTaskHUD(event);
+            } else if (!taskHudCheckbox.checked && window.AgentHUD && typeof window.AgentHUD.hideAgentTaskHUD === 'function') {
+                window.AgentHUD.hideAgentTaskHUD();
+            }
+        });
+    }
+    if (typeof taskHudItem._nekoUpdateSettingsToggleStyle === 'function') {
+        taskHudItem._nekoUpdateSettingsToggleStyle();
+    }
+    panel.appendChild(taskHudItem);
+
     panel._widgetModeToggleItem = widgetModeItem;
+    panel._taskHudToggleItem = taskHudItem;
     document.body.appendChild(panel);
     return panel;
 }
