@@ -24,10 +24,9 @@
     const SCREENSHOT_JPEG_QUALITIES = [0.8, 0.72, 0.64, 0.56, 0.48];
 
     function getDesktopProvider() {
-        if (typeof window.getDesktopCaptureProvider === 'function') {
-            return window.getDesktopCaptureProvider();
-        }
-        return window.tauriDesktopCapturer || window.electronDesktopCapturer || null;
+        return typeof window.getDesktopCaptureProvider === 'function'
+            ? window.getDesktopCaptureProvider()
+            : null;
     }
 
     let compactHistoryDropPayloadQueue = Promise.resolve();

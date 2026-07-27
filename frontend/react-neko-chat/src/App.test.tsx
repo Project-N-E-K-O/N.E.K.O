@@ -9000,6 +9000,40 @@ describe('App', () => {
     expect(input).toHaveValue('');
   });
 
+  it('uses the value diff fallback when WebKit omits inputType for a line break', () => {
+    const onComposerSubmit = vi.fn();
+    renderInputApp({ onComposerSubmit });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: 'Fallback send' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    fireEvent.input(input, {
+      target: { value: 'Fallback\n send' },
+    });
+    fireEvent.keyUp(input, { key: 'Enter', code: 'Enter' });
+
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Fallback send' });
+  });
+
+  it('treats an inputType-less text replacement as an IME candidate commit', () => {
+    const onComposerSubmit = vi.fn();
+    renderInputApp({ onComposerSubmit });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: '候选' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    fireEvent.input(input, {
+      target: { value: 'candidate' },
+    });
+    fireEvent.keyUp(input, { key: 'Enter', code: 'Enter' });
+
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+    expect(input).toHaveValue('candidate');
+
+    pressEnter(input);
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'candidate' });
+  });
+
   it('keeps a Shift+Enter line break without submitting', () => {
     const onComposerSubmit = vi.fn();
     renderInputApp({ onComposerSubmit });
@@ -9059,6 +9093,18 @@ describe('App', () => {
 
     pressEnter(input);
     expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'ok' });
+  });
+
+  it('allows an explicit pointer send while an IME composition is active', () => {
+    const onComposerSubmit = vi.fn();
+    renderInputApp({ onComposerSubmit });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.compositionStart(input);
+    fireEvent.change(input, { target: { value: '你好' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }), { detail: 1 });
+
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好' });
   });
 
   it('disables composer submission while the home tutorial owns interaction', () => {

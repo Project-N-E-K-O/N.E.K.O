@@ -1097,6 +1097,7 @@ function CompactChatApp({
   const composerEnterCycleShiftRef = useRef(false);
   const composerEnterCycleLineBreakRef = useRef(false);
   const composerEnterCycleDraftRef = useRef('');
+  const composerExplicitPointerSubmitRef = useRef(false);
   const lastRollbackKeyRef = useRef('');
   const lastAvatarToolMenuOpenRequestIdRef = useRef('');
   const lastCompactToolFanOpenRequestIdRef = useRef('');
@@ -5098,7 +5099,11 @@ function CompactChatApp({
         scheduleCompactInputToolFanTransientClose();
         scheduleCompactInputCollapse();
       }}
-      onClick={compactToolToggleActsAsSubmit ? undefined : () => {
+      onClick={compactToolToggleActsAsSubmit ? (event) => {
+        // A real pointer click is explicit user intent to send, even if an IME
+        // composition is still active. Implicit keyboard submits have detail=0.
+        composerExplicitPointerSubmitRef.current = event.detail > 0;
+      } : () => {
         // 拖动文本框后补发的 click 已在 origin-drag 里置位抑制，这里消费掉，避免误展开/收起轮盘。
         if (compactToolOriginSuppressClickRef.current) {
           compactToolOriginSuppressClickRef.current = false;
@@ -5949,12 +5954,15 @@ function CompactChatApp({
             {!isCompactSurface ? <div id="music-player-mount" className="composer-music-player-mount" /> : null}
             <form className="composer" onSubmit={(event) => {
               event.preventDefault();
+              const isExplicitPointerSubmit = composerExplicitPointerSubmitRef.current;
+              composerExplicitPointerSubmitRef.current = false;
               // WebKit can dispatch an implicit form submit while Enter is
               // still confirming an IME candidate. Keyboard submission is
               // decided on keyup after the full composition cycle is known.
-              if (composerEnterCycleActiveRef.current
-                || composerIsComposingRef.current
-                || composerImeCommitPendingRef.current) {
+              if (!isExplicitPointerSubmit
+                && (composerEnterCycleActiveRef.current
+                  || composerIsComposingRef.current
+                  || composerImeCommitPendingRef.current)) {
                 return;
               }
               submitDraft();

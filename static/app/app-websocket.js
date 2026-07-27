@@ -57,6 +57,12 @@
     function screenshotButton()   { return $id('screenshotButton'); }
     function chatContainer()      { return $id('chatContainer'); }
 
+    function resolveDesktopCaptureProvider() {
+        return typeof window.getDesktopCaptureProvider === 'function'
+            ? window.getDesktopCaptureProvider()
+            : null;
+    }
+
     function isGoodbyeUiSuppressed() {
         try {
             if (typeof window.isNekoGoodbyeResourceSuspendingOrSuspended === 'function' &&
@@ -1438,16 +1444,16 @@
             }).catch(function () { });
 
             // Capture bridge: tell the backend whether this renderer can
-            // service window-level captures via Electron's desktopCapturer.
+            // service window-level captures through the active desktop host.
             // The backend uses this to fail /api/capture/health fast when
-            // no Electron renderer is available (e.g. running in a plain
+            // no desktop renderer is available (e.g. running in a plain
             // browser tab), which matters for the galgame OCR fallback path
             // on Linux pure-Wayland where MSS / PyAutoGUI can't see other
             // windows.
-            // Note: intentionally broadcast for all renderers; non-Electron
+            // Note: intentionally broadcast for all renderers; non-desktop
             // environments send available=false and the backend ignores them.
             try {
-                var dc = window.electronDesktopCapturer;
+                var dc = resolveDesktopCaptureProvider();
                 var available = !!(dc && dc.getSources && dc.captureSourceAsDataUrl);
                 if (_thisSocket && _thisSocket.readyState === WebSocket.OPEN) {
                     _thisSocket.send(JSON.stringify({
@@ -2561,7 +2567,7 @@
                             return (typeof result.dataUrl === 'string' && result.dataUrl) ? result.dataUrl : null;
                         };
                         try {
-                            var dc = window.electronDesktopCapturer;
+                            var dc = resolveDesktopCaptureProvider();
                             if (!dc || !dc.getSources) {
                                 sendResp({ success: false, error: 'unavailable' });
                                 return;

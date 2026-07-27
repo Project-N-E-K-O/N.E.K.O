@@ -26,10 +26,9 @@
     const MEME_LOAD_FAILED_STICKER_URL = '/static/icons/meme-image-load-failed-sticker.png';
 
     function getDesktopProvider() {
-        if (typeof window.getDesktopCaptureProvider === 'function') {
-            return window.getDesktopCaptureProvider();
-        }
-        return window.tauriDesktopCapturer || window.electronDesktopCapturer || null;
+        return typeof window.getDesktopCaptureProvider === 'function'
+            ? window.getDesktopCaptureProvider()
+            : null;
     }
 
     // ======================== proactive leader election ========================

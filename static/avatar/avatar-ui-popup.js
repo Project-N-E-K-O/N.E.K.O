@@ -3047,7 +3047,7 @@ const AvatarPopupMixin = {
 
             const desktopProvider = typeof window.getDesktopCaptureProvider === 'function'
                 ? window.getDesktopCaptureProvider()
-                : (window.tauriDesktopCapturer || window.electronDesktopCapturer || null);
+                : null;
             if (!desktopProvider || typeof desktopProvider.getSources !== 'function') {
                 const noElectron = document.createElement('div');
                 noElectron.textContent = window.t ? window.t('app.screenSource.notAvailable') : '屏幕捕获不可用';

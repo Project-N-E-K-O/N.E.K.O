@@ -20,17 +20,19 @@
     const safeT = window.safeT;
     const isMobile = window.appUtils.isMobile;
 
-    function getDesktopCaptureProvider() {
-        if (typeof window.getDesktopCaptureProvider === 'function') {
-            return window.getDesktopCaptureProvider();
-        }
-        return window.tauriDesktopCapturer || window.electronDesktopCapturer || null;
+    function resolveDesktopCaptureProvider() {
+        return typeof window.getDesktopCaptureProvider === 'function'
+            ? window.getDesktopCaptureProvider()
+            : null;
     }
 
     function isNativeFrameProvider(provider) {
         return !!(provider && provider.nativeFrameCapture
             && typeof provider.captureSourceAsDataUrl === 'function');
     }
+
+    var nativeCaptureGeneration = 0;
+    var activeNativeCaptureSourceId = null;
 
     // ======================== DOM refs (lazy, filled on first use) ========================
     function dom(id) {
@@ -61,7 +63,7 @@
      */
     function pushSelectedSourceToMain(sourceId) {
         try {
-            var provider = getDesktopCaptureProvider();
+            var provider = resolveDesktopCaptureProvider();
             if (provider && typeof provider.setSelectedSource === 'function') {
                 Promise.resolve(provider.setSelectedSource(sourceId || null))
                     .catch(function (e) { console.warn('[屏幕源] 同步选中源到主进程失败:', e); });
@@ -132,19 +134,21 @@
                 updateScreenSourceListSelection();
             }
         } catch (_) { }
-        // 源切换时释放本窗口缓存的旧流（若有），强制下次用新源
-        if (S.screenCaptureStream && oldId !== newId) {
+        // 源切换时释放本窗口缓存的旧流或原生帧发送循环，强制下次用新源。
+        if ((S.screenCaptureStream || activeNativeCaptureSourceId) && oldId !== newId) {
             // 先停掉可能仍在跑的发送循环，否则 startScreenVideoStreaming 创建的临时
             // <video> 会保留在旧流上，interval 继续向 WebSocket 推送冻结帧；tracks 停止
             // 后 UI 和后端都会收到"还在分享但画面不动"的矛盾状态。
             stopScreening();
-            try {
-                if (typeof S.screenCaptureStream.getTracks === 'function') {
-                    S.screenCaptureStream.getTracks().forEach(function (track) {
-                        try { track.stop(); } catch (_) { }
-                    });
-                }
-            } catch (_) { }
+            if (S.screenCaptureStream) {
+                try {
+                    if (typeof S.screenCaptureStream.getTracks === 'function') {
+                        S.screenCaptureStream.getTracks().forEach(function (track) {
+                            try { track.stop(); } catch (_) { }
+                        });
+                    }
+                } catch (_) { }
+            }
             S.screenCaptureStream = null;
             S.screenCaptureStreamLastUsed = null;
             if (S.screenCaptureStreamIdleTimer) {
@@ -368,7 +372,7 @@
         // Native-frame providers such as Tauri do not expose a MediaStream and
         // must skip this Chromium-only branch.
         var selectedSourceId = S.selectedScreenSourceId;
-        var desktopProvider = getDesktopCaptureProvider();
+        var desktopProvider = resolveDesktopCaptureProvider();
         if (selectedSourceId && desktopProvider && !isNativeFrameProvider(desktopProvider)) {
             try {
                 var timedOut = false;
@@ -647,10 +651,9 @@
     mod.fetchBackendInteractiveScreenshot = fetchBackendInteractiveScreenshot;
 
     // ======================== stopScreening ========================
-    var nativeCaptureGeneration = 0;
-
     function stopScreening() {
         nativeCaptureGeneration += 1;
+        activeNativeCaptureSourceId = null;
         if (S.videoSenderInterval) {
             clearInterval(S.videoSenderInterval);
             clearTimeout(S.videoSenderInterval);
@@ -692,16 +695,19 @@
      * 与主动搭话截图（app-proactive.js）口径保持一致：仅桌面/全屏分享叠加注解，
      * 窗口分享 / 移动相机不含 Avatar（captureType 为 null → 不附带）。
      */
-    function buildStreamDataMessage(dataUrl, input_type) {
+    function buildStreamDataMessage(dataUrl, input_type, sourceId) {
         var msg = { action: 'stream_data', data: dataUrl, input_type: input_type };
         // 仅屏幕分享可能包含 Avatar；移动相机拍的是现实画面，无 Avatar
         if (input_type === 'screen') {
-            // 有前端流时按流/源判定；无前端流即 pyautogui 全屏兜底（后端截整屏），
+            // 原生帧按显式源判定；有前端流时按流/已选源判定。
+            // 两者都没有即 pyautogui 全屏兜底（后端截整屏），
             // 此时忽略可能残留的 selectedScreenSourceId（窗口源捕获失败才会进兜底，
             // 若仍读旧的 window:* 源会被判为 null 而漏标）
-            var captureType = S.screenCaptureStream
-                ? detectScreenshotCaptureType(S.screenCaptureStream, S.selectedScreenSourceId)
-                : 'screen';
+            var captureType = sourceId
+                ? detectScreenshotCaptureType(null, sourceId)
+                : (S.screenCaptureStream
+                    ? detectScreenshotCaptureType(S.screenCaptureStream, S.selectedScreenSourceId)
+                    : 'screen');
             var avatarPos = getAvatarScreenPosition(captureType);
             if (avatarPos) {
                 msg.avatar_position = avatarPos;
@@ -796,15 +802,26 @@
     async function startNativeScreenStreaming(provider, sourceId, inputType) {
         stopScreening();
         var generation = nativeCaptureGeneration;
+        activeNativeCaptureSourceId = sourceId;
+
+        function isCurrentNativeCapture() {
+            return generation === nativeCaptureGeneration
+                && activeNativeCaptureSourceId === sourceId;
+        }
 
         async function captureAndSend() {
+            if (!isCurrentNativeCapture()) return false;
             if (await stopLiveVisionStreamIfBlocked(inputType)) {
                 return false;
             }
+            if (!isCurrentNativeCapture()) return false;
             var result = await provider.captureSourceAsDataUrl(sourceId, {
                 maxWidth: C.MAX_SCREENSHOT_WIDTH || 1280,
                 quality: 80
             });
+            // stop/restart/source-switch may happen while native capture awaits.
+            // Never let that obsolete frame reach the replacement session.
+            if (!isCurrentNativeCapture()) return false;
             if (!result || !result.success || !result.dataUrl) {
                 var errorMessage = result && result.error ? result.error : 'Screen capture failed';
                 if (errorMessage === 'Source not found') {
@@ -814,14 +831,24 @@
             }
             if (canSendLiveVisionStreamFrame(inputType)
                 && S.socket && S.socket.readyState === WebSocket.OPEN) {
-                S.socket.send(JSON.stringify(buildStreamDataMessage(result.dataUrl, inputType)));
+                S.socket.send(JSON.stringify(
+                    buildStreamDataMessage(result.dataUrl, inputType, sourceId)
+                ));
             }
             return true;
         }
 
         // Wait for the first frame so permission and stale-source failures are
         // reported by the user-initiated start action.
-        var firstFrameSent = await captureAndSend();
+        var firstFrameSent;
+        try {
+            firstFrameSent = await captureAndSend();
+        } catch (error) {
+            if (isCurrentNativeCapture()) {
+                stopScreening();
+            }
+            throw error;
+        }
         if (!firstFrameSent) {
             return false;
         }
@@ -930,7 +957,7 @@
 
                     // Desktop/laptop: capture the user's chosen screen / window / tab.
                     var selectedSourceId = window.getSelectedScreenSourceId ? window.getSelectedScreenSourceId() : null;
-                    var desktopProvider = getDesktopCaptureProvider();
+                    var desktopProvider = resolveDesktopCaptureProvider();
 
                     // Native-frame shells do not expose Chromium's picker.
                     // Default to the first monitor when no source is persisted.
@@ -1204,7 +1231,7 @@
                         : '摄像头被其它应用占用？关闭扫码/拍照应用后重试';
                     break;
             }
-            if (!hint && isDesktop && isNativeFrameProvider(getDesktopCaptureProvider())) {
+            if (!hint && isDesktop && isNativeFrameProvider(resolveDesktopCaptureProvider())) {
                 hint = safeT(
                     'app.screenSource.captureFailed',
                     '屏幕捕获已停止，请检查系统权限或重新选择来源'
@@ -1440,7 +1467,7 @@
             return false;
         }
 
-        var desktopProvider = getDesktopCaptureProvider();
+        var desktopProvider = resolveDesktopCaptureProvider();
         if (!desktopProvider || typeof desktopProvider.getSources !== 'function') {
             screenPopup.innerHTML = '';
             var notAvailableItem = document.createElement('div');
