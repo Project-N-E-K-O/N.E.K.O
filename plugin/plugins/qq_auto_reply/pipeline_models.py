@@ -39,6 +39,9 @@ class QQReplyRequest:
     force_reply: bool = False
     suppression_reason: str = ""
     forward_sub_count: int = 0
+    # 接收边界的 member 记忆政策快照（None=旁路调用者，build 内回退实时
+    # 读）：handler 排队期间 OFF->ON 不得让收到时无授权的发言被收集。
+    member_memory_at_receipt: bool | None = None
 
 
 @dataclass(slots=True)

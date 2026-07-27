@@ -109,10 +109,12 @@ class QQMessageDispatcher:
                         # 会话锁上可能排队数秒，处理侧任何晚读都会把 OFF
                         # 时代收到的消息标成已授权。真正的接收边界在这里
                         # （task 创建之前），随消息本体传递。
+                        settings_now = getattr(self.plugin, "_qq_settings", {}) or {}
                         message["_group_memory_at_receipt"] = bool(
-                            (getattr(self.plugin, "_qq_settings", {}) or {}).get(
-                                "group_memory_enabled", False,
-                            )
+                            settings_now.get("group_memory_enabled", False)
+                        )
+                        message["_member_memory_at_receipt"] = bool(
+                            settings_now.get("group_member_memory_enabled", False)
                         )
                     task = __import__("asyncio").create_task(self.plugin._run_message_handler(message))
                     self.plugin.handler_runtime_service.track_handler_task(task)
@@ -255,6 +257,10 @@ class QQMessageDispatcher:
                     message.get("_group_memory_at_receipt")
                     if isinstance(message, dict) else None
                 ),
+                member_memory_at_receipt=(
+                    message.get("_member_memory_at_receipt")
+                    if isinstance(message, dict) else None
+                ),
                 synthetic_source=(
                     str(message.get("_synthetic_source") or "")
                     if isinstance(message, dict) else ""
@@ -318,6 +324,7 @@ class QQMessageDispatcher:
         message_timestamp: int = 0,
         forward_sub_count: int = 0,
         group_memory_at_receipt: bool | None = None,
+        member_memory_at_receipt: bool | None = None,
         synthetic_source: str = "",
     ):
         # 群记忆政策快照优先取消息接收边界（process_messages 在 task 创建
@@ -391,6 +398,7 @@ class QQMessageDispatcher:
             force_reply=force_reply,
             use_memory_context=group_memory_enabled,
             persist_memory=group_memory_enabled,
+            member_memory_at_receipt=member_memory_at_receipt,
         )
         if synthetic_source:
             # 合成控制轮（入群欢迎等）：prompt 行不是任何参与者的发言，
@@ -438,6 +446,15 @@ class QQMessageDispatcher:
             shift = await self.plugin.attention_gate_service.check_focus_shift()
             if shift and shift.new_focus_group:
                 import asyncio
-                asyncio.create_task(
-                    self.plugin.attention_gate_service.run_retroactive_review(shift.new_focus_group)
+                gate = self.plugin.attention_gate_service
+                retro_tasks = getattr(gate, "_retro_tasks", None)
+                if retro_tasks is None:
+                    retro_tasks = set()
+                    gate._retro_tasks = retro_tasks
+                retro_task = asyncio.create_task(
+                    gate.run_retroactive_review(shift.new_focus_group)
                 )
+                # 强引用+关机 join：回溯任务在会话锁内改历史/排除名单，
+                # stop 清锁表前必须等它收尾。
+                retro_tasks.add(retro_task)
+                retro_task.add_done_callback(retro_tasks.discard)

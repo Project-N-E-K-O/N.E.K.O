@@ -45,6 +45,41 @@ class QQSettingsService:
                 ud["pending_disable_settle"] = True
                 ud.pop("pending_enable_rebase", None)
 
+    def _rollback_unpersisted_memory_toggles(
+        self, persisted: bool, *,
+        group_memory_before: bool, group_memory_after: bool,
+        member_memory_before: bool, member_memory_after: bool,
+    ) -> None:
+        """落盘失败时回滚记忆 consent 开关：重启会回到旧值，运行时若继续
+        按新值收集，等于在"未成功保存的授权"下入库。回滚运行时政策并按
+        反向转变重新盖章+结算（与用户手动切回等价，标记模型天然支持连续
+        切换）。member 单独回滚：OFF 回滚（开失败）下新收集的活 bucket 在
+        finalize 被空映射替换、按 fail-closed 丢弃；ON 回滚（关失败）已
+        分离的快照由结算任务照常入库。"""
+        if persisted:
+            return
+        if group_memory_before != group_memory_after:
+            self.plugin._qq_settings["group_memory_enabled"] = group_memory_before
+            self.plugin._qq_settings["group_member_memory_enabled"] = member_memory_before
+            self._stamp_group_memory_transition(enabled_after=group_memory_before)
+            self._spawn_group_memory_sync_task(
+                self._sync_memory_transitions(
+                    settle_members=False,
+                    group_transition=True,
+                    group_enabled_after=group_memory_before,
+                )
+            )
+            self.plugin._emit_log(
+                "WARNING",
+                "群记忆开关变更未能写盘，已回滚运行时策略（保持磁盘与内存一致）",
+            )
+        elif member_memory_before != member_memory_after:
+            self.plugin._qq_settings["group_member_memory_enabled"] = member_memory_before
+            self.plugin._emit_log(
+                "WARNING",
+                "成员记忆开关变更未能写盘，已回滚运行时策略",
+            )
+
     async def _sync_memory_transitions(
         self, *, settle_members: bool, group_transition: bool,
         group_enabled_after: bool,
@@ -278,6 +313,13 @@ class QQSettingsService:
         self.plugin._qq_settings.pop("guide_step_settings_done", None)
         self.plugin._ensure_qq_client_initialized()
         success = await self.persist_business_config()
+        self._rollback_unpersisted_memory_toggles(
+            success,
+            group_memory_before=group_memory_before,
+            group_memory_after=group_memory_after,
+            member_memory_before=member_memory_before,
+            member_memory_after=member_memory_after,
+        )
         if self.plugin.attention_service:
             self.plugin.attention_service.cleanup_stale_cache()
         if success:

@@ -2575,6 +2575,83 @@ def test_receipt_snapshot_stamped_at_task_creation():
         message_dispatcher.QQMessageDispatcher.handle_message
     )
     assert "_group_memory_at_receipt" in handle_src
+    # Member policy is stamped at the same boundary and forwarded too —
+    # the handler can queue past an OFF->ON member-memory flip as well.
+    member_stamp_pos = process_src.find("_member_memory_at_receipt")
+    assert member_stamp_pos != -1 and member_stamp_pos < task_pos
+    assert "_member_memory_at_receipt" in handle_src
+
+
+def test_stop_join_includes_retro_review_tasks():
+    """The interactive stop must join retroactive-review tasks before
+    clearing the lock table — a review holds a group session lock while
+    appending history and updating exclusion state."""
+    import inspect
+
+    from plugin.plugins.qq_auto_reply import runtime_ops_service
+
+    src = inspect.getsource(runtime_ops_service)
+    assert "_retro_tasks" in src
+
+
+@pytest.mark.asyncio
+async def test_unpersisted_memory_toggle_rolls_back():
+    """A failed config-store write must roll the runtime consent back:
+    otherwise handlers collect scoped history under an opt-in that was
+    never saved (and a restart silently reverts it)."""
+    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
+
+    spawned = []
+    service = QQSettingsService.__new__(QQSettingsService)
+    hist = [SimpleNamespace(type="human", content="m")]
+    ud = {
+        "is_group": True,
+        "session": SimpleNamespace(_conversation_history=hist),
+        "pending_enable_rebase": 1,
+    }
+    service.plugin = SimpleNamespace(
+        _qq_settings={
+            "group_memory_enabled": True,
+            "group_member_memory_enabled": True,
+        },
+        _user_sessions={"group:1": ud},
+        _emit_log=lambda *a, **k: None,
+    )
+    service._spawn_group_memory_sync_task = lambda coro: (
+        spawned.append(coro), coro.close(),
+    )
+
+    # Persist OK: nothing happens.
+    service._rollback_unpersisted_memory_toggles(
+        True,
+        group_memory_before=False, group_memory_after=True,
+        member_memory_before=False, member_memory_after=True,
+    )
+    assert service.plugin._qq_settings["group_memory_enabled"] is True
+    assert not spawned
+
+    # Persist failed while enabling: runtime policy reverts, the reverse
+    # transition is stamped (disable marker on existing sessions) and a
+    # reverse sync task is spawned.
+    service._rollback_unpersisted_memory_toggles(
+        False,
+        group_memory_before=False, group_memory_after=True,
+        member_memory_before=False, member_memory_after=True,
+    )
+    assert service.plugin._qq_settings["group_memory_enabled"] is False
+    assert service.plugin._qq_settings["group_member_memory_enabled"] is False
+    assert ud["pending_disable_settle"] is True
+    assert len(spawned) == 1
+
+    # Member-only failure rolls back just the member flag.
+    service.plugin._qq_settings["group_member_memory_enabled"] = True
+    service._rollback_unpersisted_memory_toggles(
+        False,
+        group_memory_before=False, group_memory_after=False,
+        member_memory_before=False, member_memory_after=True,
+    )
+    assert service.plugin._qq_settings["group_member_memory_enabled"] is False
+    assert len(spawned) == 1
 
 
 def test_dispatcher_group_policy_snapshot_taken_before_first_await():

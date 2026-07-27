@@ -155,6 +155,9 @@ class QQReplyPipelineRunner:
             current_message_id=request.current_message_id,
             force_reply=request.force_reply,
             source_kind=getattr(request, "source_kind", ""),
+            member_memory_at_receipt=getattr(
+                request, "member_memory_at_receipt", None,
+            ),
         )
 
     async def _run_model(self, context: QQReplyContext) -> QQModelResult:

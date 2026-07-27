@@ -102,16 +102,17 @@ class QQReplyContextNode:
         current_message_id: str = "",
         force_reply: bool = False,
         source_kind: str = "",
+        member_memory_at_receipt: bool | None = None,
     ) -> QQReplyContext:
-        # member 记忆 consent 快照必须在第一个 await 之前取：build 内的
-        # login/bootstrap/recall 网络调用期间 OFF→ON 的切换不得让本轮
-        # （发言发生在 OFF 时代）事后获得收集授权。
-        member_memory_snapshot = bool(
-            is_group
-            and (getattr(self.plugin, "_qq_settings", {}) or {}).get(
-                "group_member_memory_enabled", False,
-            )
-        )
+        # member 记忆 consent 快照优先取消息接收边界（process_messages 在
+        # task 创建前盖章——handler 排队期间 OFF→ON 不得让收到时无授权的
+        # 发言被收集）；旁路调用者无消息级快照时至少在 build 第一个 await
+        # 之前定格（login/bootstrap/recall 网络调用期间的切换同理）。
+        if member_memory_at_receipt is None:
+            member_memory_at_receipt = (
+                getattr(self.plugin, "_qq_settings", {}) or {}
+            ).get("group_member_memory_enabled", False)
+        member_memory_snapshot = bool(is_group and member_memory_at_receipt)
         # 合成轮（rapid-fire/proactive/buffer 合并）复用首个 pending sender，
         # 但缓冲内容可能混有其他成员的发言——记忆读路径只授权群 subject，
         # 不得注入"名义 sender"的成员记忆（写侧已同样过滤）。
