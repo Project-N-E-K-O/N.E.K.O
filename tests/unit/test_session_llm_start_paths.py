@@ -183,25 +183,34 @@ async def test_session_creation_runs_end_to_end(monkeypatch, input_mode):
 @pytest.mark.unit
 @pytest.mark.asyncio
 @pytest.mark.parametrize("input_mode", ["audio", "text"])
-async def test_region_flip_between_prepare_and_connect_is_logged(monkeypatch, caplog, input_mode):
+async def test_region_flip_between_prepare_and_connect_is_logged(monkeypatch, input_mode):
     """The route-flip diagnostic fires when the region lands mid-start.
 
     The whole point of the diagnostic is to make a mid-start flip visible in the
     field, so it has to survive a real call — reading the snapshot handed down
     by ``_start_session_prepare_runtime`` rather than a name that only exists in
     the caller.
+
+    Records straight off the module logger rather than via ``caplog``: the app's
+    logging setup puts ``propagate=False`` on the ``N.E.K.O`` parent, so caplog's
+    root handler sees nothing once any test has pulled that setup in.
     """
     mgr = _make_manager(monkeypatch, input_mode=input_mode)
     prepare_core = {"CORE_URL": "https://www.lanlan.tech", "DISABLE_TTS": False}
     prepare_realtime = {"base_url": "wss://www.lanlan.tech/v1", "api_key": "k",
                         "model": "m", "api_type": "qwen"}
 
-    with caplog.at_level("WARNING", logger=lifecycle.logger.name):
-        await LLMSessionManager._start_session_start_llm(
-            mgr, input_mode, prepare_core, prepare_realtime,
-            asyncio.create_task(_new_dialog_task()), 0.0,
-        )
+    warnings = []
+    monkeypatch.setattr(
+        lifecycle.logger, "warning",
+        lambda msg, *a, **k: warnings.append(str(msg) % a if a else str(msg)),
+    )
 
-    assert any("[GeoIP]" in r.message for r in caplog.records), (
-        f"{input_mode} 分支的区域翻转诊断没有触发"
+    await LLMSessionManager._start_session_start_llm(
+        mgr, input_mode, prepare_core, prepare_realtime,
+        asyncio.create_task(_new_dialog_task()), 0.0,
+    )
+
+    assert any("[GeoIP]" in w for w in warnings), (
+        f"{input_mode} 分支的区域翻转诊断没有触发，实际: {warnings}"
     )
