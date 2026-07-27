@@ -300,7 +300,9 @@ class QQSessionInstructionService:
                 login_self_id=login_self_id,
                 login_nickname=login_nickname,
             ),
-            self._build_sessions_section(),
+            self._build_sessions_section(
+                is_group=is_group, group_id=group_id, sender_id=sender_id,
+            ),
             self._resolve_static_layer("character_prompt_section", CHARACTER_PROMPT_SECTION, user_language, character_prompt=base_prompt),
             self._resolve_time_section(user_language),
             self._build_chat_environment_section(
@@ -422,8 +424,36 @@ class QQSessionInstructionService:
         ]
         return ACCOUNTS_PROMPT_SECTION.format(accounts="\n".join(account_lines))
 
-    def _build_sessions_section(self) -> str:
+    def _build_sessions_section(
+        self, *, is_group: bool = False, group_id: str | None = None,
+        sender_id: str = "",
+    ) -> str:
+        """List active sessions — other conversations only with consent.
+
+        This section names other groups' ids and private contacts' titles
+        and permission levels. Leaving it ungated made
+        allow_cross_group_context a half-promise: the topic block was
+        withheld while the metadata of every other conversation still went
+        into each reply's prompt."""
         sessions = list(getattr(self.plugin, "_user_sessions", {}).values())[:10]
+        if not bool(
+            (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                "allow_cross_group_context", False,
+            )
+        ):
+            current_group = str(group_id or "").strip()
+            current_sender = str(sender_id or "").strip()
+            sessions = [
+                item for item in sessions
+                if (
+                    bool(item.get("is_group")) == bool(is_group)
+                    and (
+                        str(item.get("group_id") or "").strip() == current_group
+                        if is_group
+                        else str(item.get("sender_id") or "").strip() == current_sender
+                    )
+                )
+            ]
         if not sessions:
             return SESSIONS_PROMPT_SECTION.format(sessions="- 当前没有其他活跃 QQ 会话。")
         lines = []

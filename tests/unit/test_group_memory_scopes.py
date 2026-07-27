@@ -9245,3 +9245,114 @@ def test_mixed_block_records_only_what_was_actually_sent():
     assert "用户听到的是这句" in text
     assert "这段不会发出去" not in text
     assert "普通文本块" in text
+
+
+def test_sessions_section_hides_other_conversations_without_consent():
+    """The section names other groups' ids and private contacts' titles and
+    permission levels. Ungated, it made allow_cross_group_context a half
+    promise: the topic block was withheld while this metadata still went
+    into every reply's prompt."""
+    from plugin.plugins.qq_auto_reply.session_instruction_service import (
+        QQSessionInstructionService,
+    )
+
+    plugin = SimpleNamespace(
+        _qq_settings={"allow_cross_group_context": False},
+        _user_sessions={
+            "group:7788": {
+                "is_group": True, "group_id": "7788",
+                "user_title": "群友", "permission_level": "user",
+            },
+            "group:9900": {
+                "is_group": True, "group_id": "9900",
+                "user_title": "别的群的人", "permission_level": "admin",
+            },
+            "private:2046": {
+                "is_group": False, "sender_id": "2046",
+                "user_title": "老张", "permission_level": "trusted",
+            },
+        },
+        logger=MagicMock(),
+        i18n=_default_i18n(),
+    )
+    service = QQSessionInstructionService(plugin)
+
+    rendered = service._build_sessions_section(is_group=True, group_id="7788")
+    assert "7788" in rendered
+    assert "9900" not in rendered
+    assert "别的群的人" not in rendered
+    assert "老张" not in rendered
+
+    # A private turn sees only itself, not the groups.
+    rendered = service._build_sessions_section(is_group=False, sender_id="2046")
+    assert "老张" in rendered
+    assert "7788" not in rendered and "9900" not in rendered
+
+    # With cross-group consent the full picture comes back.
+    plugin._qq_settings["allow_cross_group_context"] = True
+    rendered = service._build_sessions_section(is_group=True, group_id="7788")
+    assert "9900" in rendered and "老张" in rendered
+
+
+@pytest.mark.asyncio
+async def test_session_instructions_build_executes_end_to_end():
+    """Smoke test for the other big assembly function.
+
+    build_session_instructions had no test that actually ran it, so a
+    wiring mistake there (a call site that stops passing the current
+    conversation's identity, say) reads as green. It also pins that the
+    sessions section is built for THIS conversation."""
+    from plugin.plugins.qq_auto_reply.session_instruction_service import (
+        QQSessionInstructionService,
+    )
+
+    plugin = SimpleNamespace(
+        logger=MagicMock(),
+        _emit_log=lambda *a, **k: None,
+        _qq_settings={
+            "group_memory_enabled": False,
+            "group_member_memory_enabled": False,
+            "allow_cross_group_context": False,
+        },
+        _user_sessions={
+            "group:7788": {
+                "is_group": True, "group_id": "7788",
+                "user_title": "群友", "permission_level": "user",
+            },
+            "group:9900": {
+                "is_group": True, "group_id": "9900",
+                "user_title": "别的群的人", "permission_level": "admin",
+            },
+        },
+        i18n=_default_i18n(),
+        memory_bridge=MagicMock(),
+        permission_mgr=SimpleNamespace(
+            get_nickname=lambda *a, **k: None, get_user_title=lambda *a, **k: "",
+        ),
+        qq_client=SimpleNamespace(needs_attention=False),
+        fatigue_service=None,
+        session_runtime_service=SimpleNamespace(),
+    )
+    service = QQSessionInstructionService(plugin)
+
+    bundle = await service.build_session_instructions(
+        her_name="Neko",
+        master_name="Master",
+        character_prompt="人设",
+        character_card_fields={},
+        permission_level="user",
+        sender_id="2046",
+        user_title="群友",
+        is_group=True,
+        group_id="7788",
+        use_memory_context=False,
+    )
+    assert bundle.system_prompt
+    # Assert on the sessions-section line itself: the group id alone also
+    # appears in the chat-environment section, so matching it proves
+    # nothing about this wiring.
+    assert "- 群聊 7788：当前对象 群友" in bundle.system_prompt
+    assert "当前没有其他活跃 QQ 会话" not in bundle.system_prompt
+    # ...and the other conversation stays undisclosed.
+    assert "9900" not in bundle.system_prompt
+    assert "别的群的人" not in bundle.system_prompt
