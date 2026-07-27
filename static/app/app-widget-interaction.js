@@ -241,6 +241,9 @@
         } else if (message.type === 'speech-cancel') {
             noteAssistantSpeechCancel(detail);
         } else if (message.type === 'cancel') {
+            if (getMetaRequestId(detail) && !matchesActiveLease(detail, false)) {
+                return;
+            }
             cancelInteraction(normalizeId(detail.reason) || 'remote-cancel');
         }
     }
@@ -302,9 +305,9 @@
             const detail = event && event.detail && typeof event.detail === 'object'
                 ? event.detail
                 : {};
-            publish('cancel', {
+            publish('cancel', Object.assign({}, detail, {
                 reason: normalizeId(detail.reason) || 'response-cancelled'
-            });
+            }));
         });
         window.addEventListener('neko:character-left', function () {
             publish('cancel', { reason: 'character-left' });

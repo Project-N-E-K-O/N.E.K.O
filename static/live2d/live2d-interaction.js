@@ -1013,6 +1013,16 @@ async function restoreLive2DPeekAnchor(anchor) {
     return await manager._tryApplyLive2DPeek(model);
 }
 
+async function reconcileLive2DPeekAfterDisplayChange() {
+    const restoreAnchor = captureLive2DPeekRestoreAnchor();
+    clearLive2DPeek('display-changed');
+    live2DPeekDisplayContext = null;
+    await refreshLive2DPeekDisplayContext(true);
+    if (restoreAnchor) {
+        await restoreLive2DPeekAnchor(restoreAnchor);
+    }
+}
+
 if (typeof window !== 'undefined') {
     window.nekoLive2DPeek = {
         clear: clearLive2DPeek,
@@ -1025,11 +1035,10 @@ if (typeof window !== 'undefined') {
     window.addEventListener('live2d-goodbye-click', clearLive2DPeekOnGoodbye);
     if (isLive2DPeekDesktopRuntime()) {
         void refreshLive2DPeekDisplayContext();
-        window.addEventListener('electron-display-changed', () => {
-            clearLive2DPeek('display-changed');
-            live2DPeekDisplayContext = null;
-            void refreshLive2DPeekDisplayContext(true);
-        });
+        window.addEventListener(
+            'electron-display-changed',
+            reconcileLive2DPeekAfterDisplayChange
+        );
     }
 }
 

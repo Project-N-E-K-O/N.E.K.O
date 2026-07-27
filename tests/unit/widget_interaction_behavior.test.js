@@ -276,6 +276,26 @@ test('continuous messages replace the lease and ignore completion from the older
     assert.equal(harness.state().phase, 'waiting');
 });
 
+test('request-scoped cancellation cannot clear a newer interaction lease', () => {
+    const harness = createHarness();
+
+    harness.dispatch('neko:user-content-sent', { requestId: 'request-old' });
+    harness.dispatch('neko:user-content-sent', { requestId: 'request-new' });
+    harness.dispatch('neko:assistant-response-cancelled', {
+        reason: 'response-discarded',
+        requestId: 'request-old'
+    });
+
+    assert.equal(harness.window.NekoWidgetInteraction.isActive(), true);
+    assert.equal(harness.state().requestId, 'request-new');
+
+    harness.dispatch('neko:assistant-response-cancelled', {
+        reason: 'response-discarded',
+        requestId: 'request-new'
+    });
+    assert.equal(harness.window.NekoWidgetInteraction.isActive(), false);
+});
+
 test('non-empty voice transcript accepts the next requestless assistant turn', () => {
     const harness = createHarness();
 
