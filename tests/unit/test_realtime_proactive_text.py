@@ -13,6 +13,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")
 
 from main_logic.omni_realtime_client import OmniRealtimeClient, TurnDetectionMode
 from main_logic.omni_realtime_client import _responses as responses_module
+from main_logic.omni_realtime_client import _transport as transport_module
 
 
 DUMMY_IMAGE_B64 = "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP/Z"
@@ -239,6 +240,29 @@ async def test_gemini_image_send_failure_preserves_snapshot_and_skips_text():
     assert delivered is False
     assert client._proactive_image_consumed is False
     client._gemini_session.send_client_content.assert_not_awaited()
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_oversized_native_image_drop_preserves_snapshot(monkeypatch):
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+    monkeypatch.setattr(transport_module, "OMNI_WS_FRAME_LIMIT_BYTES", 1)
+    monkeypatch.setattr(
+        type(client),
+        "_try_shrink_image_payload",
+        staticmethod(lambda _event, _payload: None),
+    )
+
+    delivered = await client.prompt_ephemeral("describe what you notice")
+
+    assert delivered is False
+    assert client._proactive_image_consumed is False
+    assert not any(
+        event.get("type") == "response.create"
+        for event in _sent_events(client)
+    )
     await client.close()
 
 

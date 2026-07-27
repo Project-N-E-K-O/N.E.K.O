@@ -374,7 +374,7 @@ class _TransportMixin:
             logger.warning("⚠️ 图片重压缩失败 type=%s: %s — 丢弃帧", etype, e)
             return None
 
-    async def send_event(self, event) -> None:
+    async def send_event(self, event, *, raise_on_oversize: bool = False) -> None:
         # 检查是否已发生致命错误，直接跳过发送
         if self._fatal_error_occurred:
             return
@@ -422,6 +422,10 @@ class _TransportMixin:
                         self._try_shrink_image_payload, event, payload
                     )
                     if payload is None:
+                        if raise_on_oversize:
+                            raise RuntimeError(
+                                "image payload exceeds realtime WebSocket frame limit"
+                            )
                         return
                 await self.ws.send(payload)
             except Exception as e:
@@ -677,7 +681,10 @@ class _TransportMixin:
                     "type": "input_image_buffer.append" ,
                     "image": image_b64
                 }
-                await self.send_event(append_event)
+                await self.send_event(
+                    append_event,
+                    raise_on_oversize=bypass_rate_limit,
+                )
                 return
 
             if self._audio_in_buffer or bypass_rate_limit:
@@ -747,7 +754,10 @@ class _TransportMixin:
                             await self.send_event(text_event)
                     return
 
-                await self.send_event(append_event)
+                await self.send_event(
+                    append_event,
+                    raise_on_oversize=bypass_rate_limit,
+                )
         except Exception as e:
             logger.error(f"Error streaming image: {e}")
             raise e

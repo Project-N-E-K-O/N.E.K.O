@@ -706,6 +706,8 @@
             console.log('[ProactiveChat] 语音模式：' + (delay / 1000) + '秒后触发（无退避，无回复计数：' + (S._voiceProactiveNoResponseCount || 0) + '/10）');
 
             S.proactiveChatTimer = setTimeout(async function () {
+                // setTimeout firing does not clear our stored handle.
+                S.proactiveChatTimer = null;
                 if (S.isProactiveChatRunning) return;
                 // 设计说明（by 用户意图）：
                 // 这里不"rearm-after-playback"——那样每句话说完都要严格等满一个固定间隔
@@ -858,6 +860,8 @@
         }
 
         S.proactiveChatTimer = setTimeout(async function () {
+            // setTimeout firing does not clear our stored handle.
+            S.proactiveChatTimer = null;
             // 双重检查锁：定时器触发时再次检查是否正在执行
             if (S.isProactiveChatRunning) {
                 console.log('主动搭话定时器触发时发现正在执行中，跳过本次');
