@@ -366,15 +366,12 @@ async def test_apersist_monotonic_source_upgrade_ai_to_user():
     """An incoming user_observation whose SHA-256 hits a stored ai_disclosure
     fact upgrades that fact's source in place and resets signal_processed.
 
-    Covers the in-memory reset only.  ``asave_facts`` is an AsyncMock here,
-    while the real one re-applies ``signal_processed=True`` from disk for any
-    id already marked there (the monotonic read-merge in facts.py) — which
-    lands on this very fact and erases the reset, so "re-enters Stage-2 after
-    the upgrade" does not actually hold once persisted.  That gap went
-    unnoticed for ten weeks precisely because the only test guarding it mocks
-    away the code that breaks it.  The fix is still open (exempt the upgrade
-    in read-merge / mark it at the upgrade site / retire the behaviour); once
-    it is settled this test should drive a real save round-trip instead.
+    In-memory semantics only — ``asave_facts`` is mocked here.  Whether the
+    reset survives persistence is a separate question, and one this shape of
+    test cannot answer: mocking the save is exactly what hid the monotonic
+    read-merge undoing it for ten weeks.  That half lives in
+    ``test_apersist_source_upgrade_survives_the_real_save``, which drives a
+    real file round-trip; keep both.
     """
     import hashlib
 
@@ -448,6 +445,87 @@ async def test_apersist_monotonic_source_upgrade_within_same_batch():
     )
     assert persisted[0]['signal_processed'] is False, (
         "升级后 signal_processed 必须 reset 成 False 让 Stage-2 重新评估"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_apersist_source_upgrade_survives_the_real_save(tmp_path):
+    """The unsealed signal_processed must still be False on disk afterwards.
+
+    Drives a real save round-trip instead of an AsyncMock. save_facts treats
+    signal_processed as a False-to-True-only field and re-applies True from
+    disk (guarding against a stale cache re-queueing facts Stage-2 already
+    consumed), which used to land on the very fact the upgrade had just
+    unsealed and silently undo it — the source label moved but the fact never
+    re-entered Stage-2.
+    """
+    import hashlib
+
+    fs = _make_fact_store(facts={})
+    fs._config_manager.memory_dir = str(tmp_path)
+
+    text = '博士喜欢三文鱼'
+    stored = {
+        'id': 'fact_old',
+        'text': text,
+        'hash': hashlib.sha256(text.encode()).hexdigest()[:16],
+        'source': 'ai_disclosure',
+        'signal_processed': True,
+        'importance': 8,
+        'entity': 'master',
+    }
+    fs._facts['悠怡'] = [stored]
+    fs.save_facts('悠怡')
+
+    await fs._apersist_new_facts('悠怡', [
+        {'text': text, 'importance': 8, 'entity': 'master'},
+    ])
+
+    with open(fs._facts_path('悠怡'), encoding='utf-8') as handle:
+        persisted = json.load(handle)
+
+    assert len(persisted) == 1
+    entry = persisted[0]
+    assert entry['source'] == 'user_observation'
+    assert entry['signal_processed'] is False, (
+        "解封必须活过 save_facts 的单调 read-merge，否则升级只换标签、永远回不到 Stage-2"
+    )
+    assert '_signal_reset_pending' not in entry, "内存内纸条不许落盘"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stale_cache_still_cannot_unset_signal_processed(tmp_path):
+    """The unseal exemption stays narrow: only the upgrade itself may reset.
+
+    Dual of the test above.  The monotonic read-merge exists so a stale
+    in-memory copy cannot re-queue facts Stage-2 already consumed, and an
+    exemption wide enough to also cover that case would trade one silent bug
+    for another.
+    """
+    fs = _make_fact_store(facts={})
+    fs._config_manager.memory_dir = str(tmp_path)
+
+    fs._facts['悠怡'] = [{
+        'id': 'fact_consumed',
+        'text': '博士在读研',
+        'source': 'user_observation',
+        'signal_processed': True,
+        'importance': 6,
+        'entity': 'master',
+    }]
+    fs.save_facts('悠怡')
+
+    # 模拟旧缓存：内存里这条还是「没处理过」，写盘时必须被磁盘的 True 顶回去。
+    fs._facts['悠怡'][0]['signal_processed'] = False
+    fs.save_facts('悠怡')
+
+    with open(fs._facts_path('悠怡'), encoding='utf-8') as handle:
+        persisted = json.load(handle)
+
+    assert persisted[0]['signal_processed'] is True, (
+        "没有解封纸条的 False 仍必须被单调回写顶回 True"
     )
 
 
