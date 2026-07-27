@@ -106,7 +106,10 @@ class QQBacklogService:
             is_at_bot=bool(message.get("is_at_bot")),
             category=category,
             group_memory_enabled_at_receipt=bool(
-                (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                message.get("_group_memory_at_receipt")
+                if isinstance(message, dict)
+                and message.get("_group_memory_at_receipt") is not None
+                else (getattr(self.plugin, "_qq_settings", {}) or {}).get(
                     "group_memory_enabled", False,
                 )
             ),

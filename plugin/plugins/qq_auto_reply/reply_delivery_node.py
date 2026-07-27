@@ -17,6 +17,8 @@ class QQReplyDeliveryNode:
 
         blocks = plan.blocks
         first_text = ""
+        any_text_sent = False
+        any_text_attempted = False
         for i, block in enumerate(blocks):
             if i > 0:
                 # 块间延迟：模拟真人打字间隔
@@ -40,10 +42,16 @@ class QQReplyDeliveryNode:
                 continue
             if i == 0:
                 first_text = text
-            await self._send_text(plan, block, text)
+            any_text_attempted = True
+            if await self._send_text(plan, block, text):
+                any_text_sent = True
 
+        # 开放平台单条发送失败返回 None（不抛异常）：文本块全部未确认时
+        # 不得报 delivered=True——buffer 会据此清未投递标并记 mention，
+        # 没送出去的回复就会进 scoped 提取。纯 poke/sticker 计划保持旧
+        # 语义（其发送无结果通道，失败靠异常）。
         return QQDeliveryResult(
-            delivered=True,
+            delivered=any_text_sent or not any_text_attempted,
             target_type=plan.target_type,
             target_id=plan.target_id,
             reply_text=first_text,
@@ -64,9 +72,19 @@ class QQReplyDeliveryNode:
             parts.append(f"[CQ:face,id={block.emoji}]")
         return "".join(parts)
 
-    async def _send_text(self, plan: QQDeliveryPlan, block: QQMessageBlock, text: str) -> None:
+    async def _send_text(self, plan: QQDeliveryPlan, block: QQMessageBlock, text: str) -> bool:
+        """Returns True when the send is confirmed or fire-and-forget.
+
+        NapCat sends return None by design (failure surfaces as an
+        exception); the Open Platform client returns the message id, or
+        None on a swallowed failure - only that explicit None means the
+        message was not delivered."""
         if not text:
-            return
+            return False
+        explicit_result = bool(
+            self.plugin.qq_client
+            and not self.plugin.qq_client.needs_attention
+        )
         mode = self.plugin._get_reply_mode()
         if mode == "voice":
             # voice-only 模式：走 TTS 发送语音
@@ -74,10 +92,14 @@ class QQReplyDeliveryNode:
                 await self.plugin._deliver_group_reply(plan.target_id, text, fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure)
             else:
                 await self.plugin._deliver_private_reply(plan.target_id, text, fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure)
-        elif plan.target_type == "group":
-            await self.plugin.qq_client.send_group_message(plan.target_id, text)
+            return True
+        if plan.target_type == "group":
+            result = await self.plugin.qq_client.send_group_message(plan.target_id, text)
         else:
-            await self.plugin.qq_client.send_message(plan.target_id, text)
+            result = await self.plugin.qq_client.send_message(plan.target_id, text)
+        if explicit_result:
+            return result is not None
+        return True
 
     async def _send_sticker(self, plan: QQDeliveryPlan, block: QQMessageBlock) -> None:
         if plan.target_type != "group":

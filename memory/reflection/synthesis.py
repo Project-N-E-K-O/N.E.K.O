@@ -81,6 +81,11 @@ class SynthesisMixin:
                 continue
             if fact.get('absorbed') or safe_importance(fact, 0) < 5:
                 continue
+            if not fact.get('id'):
+                # Hand-edited rows without a stable id pass the dict guard
+                # but synthesize_reflections sorts on f['id'] — one such row
+                # would keep the whole character's scoped synthesis failing.
+                continue
             subject = subject_from_entry(fact)
             if subject is None:
                 continue

@@ -2050,6 +2050,7 @@ class FactStore:
         return [
             f for f in facts
             if isinstance(f, dict)
+            and f.get('id')
             and not f.get('absorbed')
             and f.get('importance', 0) >= min_importance
             and entry_matches_subject(f, subject)

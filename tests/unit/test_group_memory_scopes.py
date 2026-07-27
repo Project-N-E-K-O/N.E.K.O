@@ -788,6 +788,18 @@ def test_qq_group_member_turns_are_opt_in_and_actor_attributed():
         ),
     )
     assert "7777" not in user_data["group_member_memory_messages"]
+    # Group-join welcome prompts are fabricated control instructions, not
+    # the joining member's speech.
+    service.record_group_member_turn(
+        user_data,
+        SimpleNamespace(
+            is_group=True, sender_id="6666",
+            message="[系统] 新成员 6666 加入了群聊",
+            group_scene_mode="shared_context", group_facing=False,
+            source_kind="group_join_notice", member_memory_enabled=True,
+        ),
+    )
+    assert "6666" not in user_data["group_member_memory_messages"]
 
 
 def test_entry_missing_scope_fails_closed():
@@ -933,6 +945,10 @@ async def test_scoped_synthesis_skips_malformed_rows():
     row must not raise and disable scoped synthesis for the whole character
     forever (the maintenance tick retries the same character every time)."""
     group_a = MemorySubject.group_chat("qq", "100")
+    # Sorts before group_a in the rotation: if the no-id row below were
+    # admitted, this subject would reach the readiness threshold and win
+    # the single per-tick slot — making the guard observable.
+    group_b = MemorySubject.group_chat("qq", "050")
     facts = ["corrupted-string-row"]
     facts += [
         {
@@ -942,6 +958,18 @@ async def test_scoped_synthesis_skips_malformed_rows():
         }
         for index in range(5)
     ]
+    facts += [
+        {
+            "id": f"b{index}", "text": "b", "importance": 7,
+            "created_at": f"2026-07-27T00:01:0{index}",
+            **group_b.as_entry_fields(),
+        }
+        for index in range(4)
+    ]
+    # Valid subject fields but no stable id: synthesize_reflections sorts
+    # on f['id'], so this row must be dropped at grouping — it must NOT
+    # count toward group_b's readiness threshold.
+    facts.append({"text": "no-id", "importance": 7, **group_b.as_entry_fields()})
     harness = _ScopedSynthesisHarness(facts)
     await harness.synthesize_scoped_reflections("Neko", max_subjects=1)
     assert harness.seen == [group_a]
@@ -958,7 +986,8 @@ async def test_unabsorbed_getter_skips_malformed_rows():
         **group_a.as_entry_fields(),
     }
     fs = FactStore.__new__(FactStore)
-    fs.aload_facts = AsyncMock(return_value=["corrupted-row", good])
+    no_id = {"text": "b", "importance": 7, **group_a.as_entry_fields()}
+    fs.aload_facts = AsyncMock(return_value=["corrupted-row", no_id, good])
     result = await fs.aget_unabsorbed_facts("Neko", subject=group_a)
     assert result == [good]
 
@@ -2280,6 +2309,121 @@ async def test_run_delivery_direct_branch_records_mentions_on_success():
     ))
     await runner._run_delivery(plan, None, outcome, context=context)
     plugin.reply_generation_service.record_scoped_mentions_on_delivery.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delivery_result_reflects_open_platform_send_failure():
+    """The Open Platform client returns None on a swallowed send failure:
+    deliver() must report delivered=False so the buffer keeps the draft
+    excluded and records no mentions. NapCat sends are fire-and-forget
+    (None by design) and keep reporting delivered=True; failures there
+    surface as exceptions."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        QQDeliveryPlan,
+        QQMessageBlock,
+    )
+    from plugin.plugins.qq_auto_reply.reply_delivery_node import (
+        QQReplyDeliveryNode,
+    )
+
+    def _node(needs_attention, send_result):
+        plugin = SimpleNamespace(
+            _get_reply_mode=lambda: "text",
+            qq_client=SimpleNamespace(
+                needs_attention=needs_attention,
+                send_group_message=AsyncMock(return_value=send_result),
+            ),
+        )
+        node = QQReplyDeliveryNode.__new__(QQReplyDeliveryNode)
+        node.plugin = plugin
+        return node
+
+    plan = QQDeliveryPlan(
+        target_type="group", target_id="7788",
+        blocks=[QQMessageBlock(text="回复")],
+    )
+    # Open Platform failure -> not delivered.
+    result = await _node(False, None).deliver(plan)
+    assert result.delivered is False
+    # Open Platform success -> delivered.
+    result = await _node(False, "msgid").deliver(plan)
+    assert result.delivered is True
+    # NapCat fire-and-forget None -> still delivered.
+    result = await _node(True, None).deliver(plan)
+    assert result.delivered is True
+
+
+@pytest.mark.asyncio
+async def test_buffer_keeps_draft_excluded_when_delivery_unconfirmed():
+    """A failed single-draft send must keep the undelivered record and
+    record no mentions — an unsent reply must never reach extraction."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        QQDeliveryResult,
+        QQMessageBlock,
+    )
+    from plugin.plugins.qq_auto_reply.reply_buffer_service import (
+        PendingReply,
+        QQReplyBufferService,
+    )
+
+    draft = SimpleNamespace(type="ai", content="草稿")
+    history = [SimpleNamespace(type="human", content="u1"), draft]
+    user_data = {
+        "session": SimpleNamespace(_conversation_history=history),
+        "undelivered_draft_rows": [draft],
+    }
+    plugin = SimpleNamespace(
+        _user_sessions={"group:7788": user_data},
+        _emit_log=lambda *a, **k: None,
+        reply_delivery_node=SimpleNamespace(
+            deliver=AsyncMock(return_value=QQDeliveryResult(
+                delivered=False, target_type="group", target_id="7788",
+                reply_text=None,
+            )),
+        ),
+        reply_generation_service=SimpleNamespace(
+            record_scoped_mentions_on_delivery=AsyncMock(),
+        ),
+    )
+    service = QQReplyBufferService.__new__(QQReplyBufferService)
+    service.plugin = plugin
+    service._pending = {}
+    single = PendingReply(
+        first_text="草稿", wait_seconds=0, sender_id="1",
+        is_group=True, group_id="7788",
+    )
+    single.first_blocks = [QQMessageBlock(text="草稿")]
+    single.wait_until = 0.0
+    single.draft_rows = [draft]
+    single.mention_context = object()
+    service._pending["group:7788"] = single
+
+    await service._deliver_after_wait("group:7788", single)
+    assert user_data["undelivered_draft_rows"] == [draft]
+    plugin.reply_generation_service.record_scoped_mentions_on_delivery.assert_not_awaited()
+    assert "group:7788" not in service._pending
+
+
+def test_receipt_snapshot_stamped_at_task_creation():
+    """process_messages must stamp the policy snapshot on the message dict
+    BEFORE creating the handler task, and handle_message must forward it —
+    the handler can queue on the global semaphore for seconds, so the top
+    of handle_group_message is not the real receipt boundary."""
+    import inspect
+
+    from plugin.plugins.qq_auto_reply import message_dispatcher
+
+    process_src = inspect.getsource(
+        message_dispatcher.QQMessageDispatcher.process_messages
+    )
+    stamp_pos = process_src.find("_group_memory_at_receipt")
+    task_pos = process_src.find("create_task")
+    assert stamp_pos != -1 and task_pos != -1
+    assert stamp_pos < task_pos
+    handle_src = inspect.getsource(
+        message_dispatcher.QQMessageDispatcher.handle_message
+    )
+    assert "_group_memory_at_receipt" in handle_src
 
 
 def test_dispatcher_group_policy_snapshot_taken_before_first_await():

@@ -367,7 +367,13 @@ class QQReplyBufferService:
                 blocks=blocks,
                 fallback_to_text_on_voice_failure=True,
             )
-            await self.plugin.reply_delivery_node.deliver(plan)
+            delivery = await self.plugin.reply_delivery_node.deliver(plan)
+            if delivery is None or not getattr(delivery, "delivered", False):
+                # 发送未确认（开放平台失败返回 None 不抛异常）：草稿仍属
+                # 未投递——排除记录保留、mention 不记，没送出去的回复不得
+                # 进 scoped 提取。
+                self._pending.pop(session_key, None)
+                return
             # 单条草稿真的送出去了：只撤本次 pending 的未投递记录——此前
             # 合并场景留下的旧记录必须留存。
             self._clear_undelivered_marks(session_key, pending)

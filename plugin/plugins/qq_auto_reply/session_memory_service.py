@@ -194,7 +194,7 @@ class QQSessionMemoryService:
             or getattr(context, "group_scene_mode", "") == "group_collective"
             or getattr(context, "source_kind", "") in (
                 "proactive_speech", "rapid_fire_flush", "buffer_delayed",
-                "retroactive_review",
+                "retroactive_review", "group_join_notice",
             )
         ):
             # 群体面向/合成轮（proactive 的"[系统]…"控制指令等）不是成员
