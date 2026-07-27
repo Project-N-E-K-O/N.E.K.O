@@ -525,11 +525,8 @@ async def _resolve_openai_tts_probe_voice(voice_id: str) -> str:
         ).strip()
         if not character_voice:
             return ""
-        is_stored_clone = await asyncio.to_thread(
-            config_manager.voice_id_exists_in_any_storage,
-            character_voice,
-        )
-        if is_stored_clone:
+        visible_voices = await asyncio.to_thread(config_manager.get_voices_for_current_api)
+        if isinstance(visible_voices.get(character_voice), dict):
             return ""
         return character_voice
     except Exception:

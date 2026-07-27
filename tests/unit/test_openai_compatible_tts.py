@@ -411,8 +411,8 @@ async def test_connectivity_uses_current_character_voice_when_fallback_is_blank(
                 },
             }
 
-        def voice_id_exists_in_any_storage(self, _voice_id):
-            return False
+        def get_voices_for_current_api(self):
+            return {}
 
     captured = {}
 
@@ -456,8 +456,8 @@ async def test_connectivity_does_not_borrow_a_stored_clone_for_openai_probe(monk
                 "猫娘": {"Yui": {"voice_id": "clone-voice"}},
             }
 
-        def voice_id_exists_in_any_storage(self, voice_id):
-            return voice_id == "clone-voice"
+        def get_voices_for_current_api(self):
+            return {"clone-voice": {"provider": "cosyvoice", "source": "clone"}}
 
     monkeypatch.setattr(connectivity_module, "get_config_manager", lambda: _CharacterConfigManager())
 
