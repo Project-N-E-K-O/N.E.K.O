@@ -52,6 +52,32 @@ def test_avatar_ingress_failure_isolated_from_websocket_loop():
     assert reserved is False
 
 
+def test_text_engagement_is_visible_before_background_dispatch():
+    class Manager:
+        def __init__(self):
+            self.engagement_times = []
+
+        def note_stream_input_ingress(self, message):
+            self.engagement_times.append(message["_user_input_ingress_time"])
+            return True
+
+    manager = Manager()
+    message = {
+        "input_type": "text",
+        "data": "hello",
+        "_user_input_ingress_time": 123.5,
+    }
+
+    recorded = websocket_router._record_text_engagement_ingress(
+        manager,
+        message,
+        lanlan_name="Test",
+    )
+
+    assert recorded is True
+    assert manager.engagement_times == [123.5]
+
+
 class _GoodbyeCycleState(LifecycleMixin):
     lanlan_name = "Test"
     goodbye_silent = False

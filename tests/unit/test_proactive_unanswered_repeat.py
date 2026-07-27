@@ -169,6 +169,50 @@ async def test_normal_delivery_commits_text_when_local_tts_enqueue_fails():
     assert result.delivery is not None
 
 
+@pytest.mark.asyncio
+async def test_materialless_music_delivery_is_committed_as_chat_evidence():
+    """A bare MUSIC tag cannot exclude ordinary text from the proactive corpus."""
+    mgr = SimpleNamespace(
+        current_speech_id="proactive-sid",
+        last_user_engagement_time=100.0,
+        state=_NeverPreemptedState(),
+        feed_tts_chunk=AsyncMock(return_value=True),
+        finish_proactive_delivery=AsyncMock(return_value=True),
+        handle_new_message=AsyncMock(),
+    )
+
+    result = await _commit_proactive_delivery(
+        mgr=mgr,
+        proactive_sid="proactive-sid",
+        lanlan_name="Neko",
+        response_text="没有实际曲目的普通主动搭话。",
+        source_tag="MUSIC",
+        active_channels=["music"],
+        selected_web_link=None,
+        selected_music_link=None,
+        selected_meme_link=None,
+        music_content=None,
+        is_music_used=True,
+        is_playing_music=False,
+        music_cooldown=False,
+        vision_content=None,
+        phase2_use_vision=False,
+        screenshot_b64=None,
+        proactive_lang="zh",
+        master_name="博士",
+    )
+
+    assert result.result is None
+    assert result.delivery is not None
+    assert result.delivery.delivered_tag == "CHAT"
+    assert result.delivery.delivered_music_link is None
+    assert result.delivery.is_music_used is False
+    assert (
+        mgr.finish_proactive_delivery.await_args.kwargs["source_tag"]
+        == "CHAT"
+    )
+
+
 class _FakeStreamingLlm:
     def __init__(self, *chunks: str, on_stream=None):
         self.chunks = chunks

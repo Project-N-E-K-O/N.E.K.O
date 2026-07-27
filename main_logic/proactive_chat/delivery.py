@@ -243,23 +243,21 @@ async def _commit_proactive_delivery(
         if not music_already_appended:
             _append_music_recommendations(source_links, music_content)
 
-    if is_music_used or primary_channel == "music":
+    delivered_music_link = selected_music_link or next(
+        (
+            link
+            for link in (source_links or [])
+            if isinstance(link, dict) and link.get("source") == "音乐推荐"
+        ),
+        None,
+    )
+    if (is_music_used or primary_channel == "music") and delivered_music_link:
         delivered_tag = "MUSIC"
     elif primary_channel == "meme" and selected_meme_link is not None:
         delivered_tag = "MEME"
     else:
         delivered_tag = "CHAT"
-
-    delivered_music_link = selected_music_link
-    if delivered_tag == "MUSIC" and not delivered_music_link:
-        delivered_music_link = next(
-            (
-                link
-                for link in (source_links or [])
-                if isinstance(link, dict) and link.get("source") == "音乐推荐"
-            ),
-            None,
-        )
+        is_music_used = False
 
     action_note = build_proactive_action_note(
         primary_channel=primary_channel,

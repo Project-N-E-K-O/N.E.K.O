@@ -643,6 +643,35 @@ async def test_maybe_deliver_chat_when_eligible(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_maybe_deliver_aborts_when_user_engages_during_phase2_transition(
+    monkeypatch,
+):
+    """The Phase 2 state-lock wait cannot adopt a newer engagement baseline."""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+    mgr = _make_mgr(sid='sid-phase2-race')
+
+    async def _fire_after_engagement(_event):
+        mgr.last_user_engagement_time = 101.0
+
+    mgr.state.fire.side_effect = _fire_after_engagement
+
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN,
+        mgr=mgr,
+        activity_snapshot=_make_snapshot(),
+        invite_lang='zh',
+        master_name=MASTER,
+    )
+
+    assert out is not None
+    assert out["action"] == "pass"
+    assert out["reason_code"] == sr.PROACTIVE_REASON_DELIVERY_PREEMPTED
+    mgr.feed_tts_chunk.assert_not_awaited()
+    mgr.finish_proactive_delivery.assert_not_awaited()
+    mgr.handle_new_message.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
 async def test_maybe_deliver_pass_when_prepare_refuses(monkeypatch):
     """prepare 拒绝（用户刚说过话 / 没 websocket / 等）→ 返回 pass，不写 state。"""
     monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)

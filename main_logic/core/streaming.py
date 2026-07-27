@@ -55,7 +55,7 @@ class StreamingMixin:
             return float(captured_at)
         return time.time()
 
-    def _note_one_shot_input_engagement(self, message: dict) -> bool:
+    def note_stream_input_ingress(self, message: dict) -> bool:
         """Record nonblank text/image input before fallible staging."""
         input_type = message.get("input_type")
         if input_type == "text":
@@ -128,7 +128,7 @@ class StreamingMixin:
                             await self._enqueue_audio_stream_data(message)
                         else:
                             if is_voice_session and msg_input_type in _TEXT_SESSION_INPUT_TYPES:
-                                self._note_one_shot_input_engagement(message)
+                                self.note_stream_input_ingress(message)
                                 dropped_text_for_voice += 1
                                 continue
                             await self._process_stream_data_internal(message)
@@ -245,7 +245,7 @@ class StreamingMixin:
             # Genuine one-shot input must reset unanswered evidence even if a
             # circuit breaker, failed startup, or final voice-mode flush drops
             # it before the normal text/image processing branches are reached.
-            self._note_one_shot_input_engagement(message)
+            self.note_stream_input_ingress(message)
         # 检查session是否就绪
         async with self.input_cache_lock:
             if not self.session_ready:

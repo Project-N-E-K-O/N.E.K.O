@@ -438,6 +438,36 @@ def _proactive_turn_still_owned(mgr: Any, proactive_sid: Any) -> bool:
     )
 
 
+async def _enter_proactive_phase2(
+    mgr: Any,
+    proactive_sid: Any,
+    *,
+    log: Any = None,
+) -> bool:
+    """Enter Phase 2 only if user engagement stays unchanged across the await."""
+    from main_logic.session_state import SessionEvent
+
+    active_logger = log or logger
+    expected_user_engagement_time = getattr(
+        mgr,
+        "last_user_engagement_time",
+        None,
+    )
+    await mgr.state.fire(SessionEvent.PROACTIVE_PHASE2)
+    if (
+        mgr.state.is_proactive_preempted(proactive_sid)
+        or getattr(mgr, "last_user_engagement_time", None)
+        != expected_user_engagement_time
+    ):
+        active_logger.info(
+            "proactive Phase 2 abandoned: user engaged during transition"
+        )
+        if _proactive_turn_still_owned(mgr, proactive_sid):
+            await mgr.handle_new_message()
+        return False
+    return True
+
+
 def _proactive_feed_rejected_for_takeover(
     mgr: Any,
     proactive_sid: Any,

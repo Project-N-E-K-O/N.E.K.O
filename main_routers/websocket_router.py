@@ -114,6 +114,26 @@ def _reserve_avatar_interaction_ingress(
         return False
 
 
+def _record_text_engagement_ingress(
+    manager,
+    message: dict,
+    *,
+    lanlan_name: str,
+) -> bool:
+    """Expose genuine text engagement before background stream dispatch."""
+    if message.get("input_type") != "text":
+        return False
+    try:
+        return bool(manager.note_stream_input_ingress(message))
+    except Exception as exc:
+        logger.warning(
+            "[%s] text ingress engagement failed: %s",
+            lanlan_name,
+            exc,
+        )
+        return False
+
+
 def _schedule_greeting_task(lanlan_name: str, kind: str, coro_factory) -> bool:
     """Start at most one greeting-like task per character at a time.
 
@@ -468,6 +488,12 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 # can never look newer than a proactive commit merely because
                 # its task started later.
                 message = _stamp_user_input_ingress(message)
+                stream_mgr = session_manager[lanlan_name]
+                _record_text_engagement_ingress(
+                    stream_mgr,
+                    message,
+                    lanlan_name=lanlan_name,
+                )
                 if is_game_route_active(lanlan_name):
                     if input_type == "audio":
                         await route_external_stream_message(lanlan_name, {"input_type": "audio", "stt_provider": "realtime"})
@@ -493,9 +519,9 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 else:
                     session_manager[lanlan_name]._avatar_position = None
                 if input_type in _ORDERED_STREAM_INPUT_TYPES:
-                    await session_manager[lanlan_name].stream_data(message)
+                    await stream_mgr.stream_data(message)
                 else:
-                    _fire_task(session_manager[lanlan_name].stream_data(message))
+                    _fire_task(stream_mgr.stream_data(message))
 
             elif action == "avatar_interaction":
                 message = _stamp_user_input_ingress(message)

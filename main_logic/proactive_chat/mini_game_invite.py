@@ -51,6 +51,7 @@ from .contracts import (
     _proactive_pass_body,
 )
 from .state import (
+    _enter_proactive_phase2,
     _ensure_proactive_chat_totals_loaded,
     _get_proactive_chat_total,
     _proactive_feed_rejected_for_takeover,
@@ -513,8 +514,15 @@ async def _attempt_mini_game_invite_delivery(
             message="mini-game invite skipped: prepare_proactive_delivery refused",
         )
     proactive_sid = mgr.current_speech_id
-    from main_logic.session_state import SessionEvent as _SE
-    await mgr.state.fire(_SE.PROACTIVE_PHASE2)
+    if not await _enter_proactive_phase2(
+        mgr,
+        proactive_sid,
+        log=logger,
+    ):
+        return _proactive_pass_body(
+            PROACTIVE_REASON_DELIVERY_PREEMPTED,
+            message="mini-game invite skipped: user engaged before Phase 2",
+        )
     expected_user_engagement_time = getattr(
         mgr,
         "last_user_engagement_time",

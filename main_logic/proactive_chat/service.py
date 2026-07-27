@@ -108,6 +108,7 @@ from main_logic.proactive_chat.music_recommendation import (
     _select_music_recommendation,
 )
 from main_logic.proactive_chat.state import (
+    _enter_proactive_phase2,
     _ensure_source_history_loaded,
     _format_recent_proactive_chats,
     _increment_proactive_chat_total,
@@ -2176,7 +2177,19 @@ async def handle_proactive_chat(
         # prepare_proactive_delivery 已经 fire(PROACTIVE_CLAIM, sid=...)；这里把
         # 状态机翻到 PHASE2，后续 astream 循环的抢占检查基于此阶段。
         proactive_sid = mgr.current_speech_id
-        await mgr.state.fire(_SE.PROACTIVE_PHASE2)
+        if not await _enter_proactive_phase2(
+            mgr,
+            proactive_sid,
+            log=logger,
+        ):
+            return await _end_proactive(
+                ProactiveChatResult(
+                    body=_proactive_pass_body(
+                        PROACTIVE_REASON_DELIVERY_PREEMPTED,
+                        message="用户在 Phase 2 状态切换期间恢复互动",
+                    )
+                )
+            )
 
         # Path B (idle) Focus 凝神：this round is now committed to speaking
         # (PHASE2 fired). Read-only: does this proactive reply run thinking-on?
