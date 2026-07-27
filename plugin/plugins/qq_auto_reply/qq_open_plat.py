@@ -390,14 +390,16 @@ class QQOpenPlatformConnection(QQConnectionBase):
 
     async def send_group_record(
         self, group_id: str, file_uri: str, *, reply_message_id: str = "", at_user_id: str = ""
-    ) -> None:
+    ) -> Optional[str]:
         segments: list[dict[str, Any]] = []
         if reply_message_id:
             segments.append({"type": "reply", "data": {"id": reply_message_id}})
         if at_user_id:
             segments.append({"type": "at", "data": {"qq": at_user_id}})
         segments.append({"type": "text", "data": {"text": "[语音消息]"}})
-        await self.send_group_message_segments(group_id, segments, record_sent=False)
+        # 结果向上传播：None=发送失败被吞——投递确认链（清未投递标/记
+        # mention 的前提）需要它。
+        return await self.send_group_message_segments(group_id, segments, record_sent=False)
 
     async def get_login_status(self) -> dict[str, Any]:
         if self._ws and self._self_id:

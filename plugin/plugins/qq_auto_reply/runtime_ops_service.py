@@ -124,11 +124,24 @@ class QQRuntimeOpsService:
         # 任务与新 handler 并发改写、甚至中途弹掉活跃会话。
         gate = getattr(self.plugin, "attention_gate_service", None)
         buffer_service = getattr(self.plugin, "reply_buffer_service", None)
-        buffer_tasks = [
-            p.task
-            for p in dict(getattr(buffer_service, "_pending", {}) or {}).values()
-            if getattr(p, "task", None) is not None and not p.task.done()
-        ]
+        buffer_tasks = []
+        if buffer_service is not None:
+            # 延迟投递不该活过 stop：client 已断开，任务醒来只能发送失败，
+            # 或在重启后把停机前的陈旧回复送/并进新运行。显式取消并定局
+            # （草稿保持未投递、解除游标屏障、清 pending 表），join 列表
+            # 仍等这些任务把 cancellation 走完。
+            for key, p in list(
+                dict(getattr(buffer_service, "_pending", {}) or {}).items()
+            ):
+                task = getattr(p, "task", None)
+                if task is not None and not task.done():
+                    task.cancel()
+                    buffer_tasks.append(task)
+                buffer_service._settle_provisional(
+                    (getattr(self.plugin, "_user_sessions", {}) or {}).get(key),
+                    p,
+                )
+            getattr(buffer_service, "_pending", {}).clear()
         pending_tasks = (
             list(getattr(self.plugin, "_group_memory_sync_tasks", ()) or ())
             + list(getattr(self.plugin, "_prompt_change_discard_tasks", ()) or ())

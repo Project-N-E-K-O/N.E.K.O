@@ -62,11 +62,16 @@ class QQSettingsService:
             self.plugin._qq_settings["group_memory_enabled"] = group_memory_before
             self.plugin._qq_settings["group_member_memory_enabled"] = member_memory_before
             self._stamp_group_memory_transition(enabled_after=group_memory_before)
+            # 回滚到 OFF（开启保存失败）时用 discard 语义：失败窗口内收到
+            # 的消息是在"从未成功保存的 opt-in"下入历史的，普通 OFF 结算
+            # 会把它们 digest 入库——恰好持久化了本该拒绝的数据。丢弃而非
+            # 结算。回滚到 ON（关闭保存失败）方向照常 rebase。
             self._spawn_group_memory_sync_task(
                 self._sync_memory_transitions(
                     settle_members=False,
                     group_transition=True,
                     group_enabled_after=group_memory_before,
+                    rollback_discard=not group_memory_before,
                 )
             )
             self.plugin._emit_log(
@@ -82,7 +87,7 @@ class QQSettingsService:
 
     async def _sync_memory_transitions(
         self, *, settle_members: bool, group_transition: bool,
-        group_enabled_after: bool,
+        group_enabled_after: bool, rollback_discard: bool = False,
     ) -> None:
         """Ordered transition sync: member buckets settle BEFORE the group
         invalidation, so disabling both toggles at once (the UI links them)
@@ -100,6 +105,7 @@ class QQSettingsService:
             if group_transition:
                 await self.plugin.session_memory_service.invalidate_group_sessions(
                     enabled=group_enabled_after,
+                    discard_only=rollback_discard,
                 )
 
     def _spawn_group_memory_sync_task(self, coro) -> None:
@@ -113,7 +119,20 @@ class QQSettingsService:
             sync_tasks = set()
             self.plugin._group_memory_sync_tasks = sync_tasks
         sync_tasks.add(task)
-        task.add_done_callback(sync_tasks.discard)
+
+        def _on_sync_done(done_task: "asyncio.Task") -> None:
+            # 消费异常：转变任务若在 per-session 处理之外炸掉（锁包装/
+            # 迭代层），静默丢弃会让 consent 转变跨会话半途而废且无日志。
+            sync_tasks.discard(done_task)
+            if done_task.cancelled():
+                return
+            exc = done_task.exception()
+            if exc is not None:
+                self.plugin._emit_log(
+                    "ERROR", f"记忆转变后台任务失败: {exc}"
+                )
+
+        task.add_done_callback(_on_sync_done)
 
     async def load_business_config(self) -> dict[str, Any]:
         self.plugin._qq_settings = await self.plugin.config_store.load()

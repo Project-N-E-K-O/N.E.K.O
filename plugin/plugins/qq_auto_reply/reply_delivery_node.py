@@ -29,11 +29,15 @@ class QQReplyDeliveryNode:
                 continue
 
             if block.record:
-                await self._send_record(plan, block)
+                any_text_attempted = True
+                if not await self._send_record(plan, block):
+                    all_text_sent = False
                 continue
 
             if block.sticker:
-                await self._send_sticker(plan, block)
+                any_text_attempted = True
+                if not await self._send_sticker(plan, block):
+                    all_text_sent = False
                 continue
 
             # 文本块（可含 emoji + at + reply）
@@ -87,12 +91,11 @@ class QQReplyDeliveryNode:
         )
         mode = self.plugin._get_reply_mode()
         if mode == "voice":
-            # voice-only 模式：走 TTS 发送语音
+            # voice-only 模式：走 TTS 发送语音——确认结果一路传播（开放
+            # 平台失败吞异常返回 None，语音回复也不得凭空算已投递）。
             if plan.target_type == "group":
-                await self.plugin._deliver_group_reply(plan.target_id, text, fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure)
-            else:
-                await self.plugin._deliver_private_reply(plan.target_id, text, fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure)
-            return True
+                return bool(await self.plugin._deliver_group_reply(plan.target_id, text, fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure))
+            return bool(await self.plugin._deliver_private_reply(plan.target_id, text, fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure))
         if plan.target_type == "group":
             result = await self.plugin.qq_client.send_group_message(plan.target_id, text)
         else:
@@ -101,12 +104,15 @@ class QQReplyDeliveryNode:
             return result is not None
         return True
 
-    async def _send_sticker(self, plan: QQDeliveryPlan, block: QQMessageBlock) -> None:
+    async def _send_sticker(self, plan: QQDeliveryPlan, block: QQMessageBlock) -> bool:
         if plan.target_type != "group":
-            return
+            return False
         sticker_path = self.plugin._resolve_sticker_path(block.sticker)
-        if sticker_path:
+        if not sticker_path:
+            return False
+        return self._confirm_platform_result(
             await self.plugin.qq_client.send_group_image(plan.target_id, sticker_path)
+        )
 
     async def _send_poke(self, plan: QQDeliveryPlan, block: QQMessageBlock) -> None:
         if plan.target_type != "group" or not block.poke:
@@ -123,20 +129,30 @@ class QQReplyDeliveryNode:
         self._last_poke_out[key] = now
         await self.plugin.qq_client.send_group_poke(plan.target_id, block.poke)
 
-    async def _send_record(self, plan: QQDeliveryPlan, block: QQMessageBlock) -> None:
+    def _confirm_platform_result(self, result) -> bool:
+        """开放平台失败吞异常返回 None——只有那个显式 None 判未投递；
+        NapCat fire-and-forget（失败走异常），返回值一律视为确认。"""
+        if self.plugin.qq_client and not self.plugin.qq_client.needs_attention:
+            return result is not None
+        return True
+
+    async def _send_record(self, plan: QQDeliveryPlan, block: QQMessageBlock) -> bool:
         if not block.record:
-            return
+            return False
         try:
             file_uri, _ = await self.plugin.voice_reply_service.synthesize_reply_voice_file(block.record)
             if plan.target_type == "group":
-                await self.plugin.qq_client.send_group_record(plan.target_id, file_uri)
+                result = await self.plugin.qq_client.send_group_record(plan.target_id, file_uri)
             else:
-                await self.plugin.qq_client.send_private_record(plan.target_id, file_uri)
+                result = await self.plugin.qq_client.send_private_record(plan.target_id, file_uri)
+            return self._confirm_platform_result(result)
         except Exception:
             self.plugin.logger.warning("语音发送失败", exc_info=True)
             if plan.fallback_to_text_on_voice_failure and block.record:
                 text = block.record
                 if plan.target_type == "group":
-                    await self.plugin.qq_client.send_group_message(plan.target_id, text)
+                    result = await self.plugin.qq_client.send_group_message(plan.target_id, text)
                 else:
-                    await self.plugin.qq_client.send_message(plan.target_id, text)
+                    result = await self.plugin.qq_client.send_message(plan.target_id, text)
+                return self._confirm_platform_result(result)
+            return False

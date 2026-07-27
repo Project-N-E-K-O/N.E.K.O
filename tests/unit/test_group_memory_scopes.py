@@ -2469,6 +2469,44 @@ async def test_delivery_result_reflects_open_platform_send_failure():
     result = await _node(True, None).deliver(plan)
     assert result.delivered is True
 
+    # Voice mode: the TTS chain now propagates confirmation — an Open
+    # Platform failure swallowed inside the wrappers must not report
+    # delivered=True.
+    voice_plugin = SimpleNamespace(
+        _get_reply_mode=lambda: "voice",
+        qq_client=SimpleNamespace(needs_attention=False),
+        _deliver_group_reply=AsyncMock(return_value=False),
+    )
+    voice_node = QQReplyDeliveryNode.__new__(QQReplyDeliveryNode)
+    voice_node.plugin = voice_plugin
+    result = await voice_node.deliver(plan)
+    assert result.delivered is False
+    voice_plugin._deliver_group_reply = AsyncMock(return_value=True)
+    result = await voice_node.deliver(plan)
+    assert result.delivered is True
+
+    # Pure sticker plan: media sends confirm too (Open Platform None = not
+    # delivered).
+    sticker_plugin = SimpleNamespace(
+        _get_reply_mode=lambda: "text",
+        _resolve_sticker_path=lambda sid: "/tmp/s.png",
+        qq_client=SimpleNamespace(
+            needs_attention=False,
+            send_group_image=AsyncMock(return_value=None),
+        ),
+    )
+    sticker_node = QQReplyDeliveryNode.__new__(QQReplyDeliveryNode)
+    sticker_node.plugin = sticker_plugin
+    sticker_plan = QQDeliveryPlan(
+        target_type="group", target_id="7788",
+        blocks=[QQMessageBlock(sticker="s1")],
+    )
+    result = await sticker_node.deliver(sticker_plan)
+    assert result.delivered is False
+    sticker_plugin.qq_client.send_group_image = AsyncMock(return_value="mid")
+    result = await sticker_node.deliver(sticker_plan)
+    assert result.delivered is True
+
     # Multi-block partial failure: ALL attempted text blocks must confirm —
     # the exclusion list is whole-row, so a half-sent reply must not clear
     # its mark and enter extraction.
@@ -2697,6 +2735,100 @@ def test_stop_join_includes_retro_review_tasks():
 
     src = inspect.getsource(runtime_ops_service)
     assert "_retro_tasks" in src
+
+
+@pytest.mark.asyncio
+async def test_rollback_discard_drops_failed_optin_interval():
+    """The enable-save-failure rollback must DISCARD the failed interval,
+    not settle it — an ordinary OFF settlement would digest precisely the
+    history received under the opt-in that never saved."""
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    history = [SimpleNamespace(type="human", content=f"m{i}") for i in range(4)]
+    user_data = {
+        "memory_enabled": True,
+        "is_group": True,
+        "group_id": "7788",
+        "her_name": "Neko",
+        "session": SimpleNamespace(_conversation_history=history, close=AsyncMock()),
+        "last_group_digest_index": 0,
+        "pending_disable_settle": True,
+        "group_opt_out_cutoff": 4,
+        "group_member_memory_messages": {"1": [{"role": "user", "content": []}]},
+        "group_member_memory_labels": {"1": "1"},
+    }
+
+    async def _run_with_session_lock(session_key, fn):
+        return await fn()
+
+    bridge = MagicMock()
+    bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
+    plugin = SimpleNamespace(
+        _user_sessions={"group:7788": user_data},
+        _qq_settings={},
+        _run_with_session_lock=_run_with_session_lock,
+        memory_bridge=bridge,
+        logger=MagicMock(),
+    )
+    service = QQSessionMemoryService(plugin)
+    await service.invalidate_group_sessions(enabled=False, discard_only=True)
+    bridge.post_scoped_memory_history.assert_not_awaited()
+    assert user_data["memory_enabled"] is False
+    assert user_data["last_group_digest_index"] == 4
+    assert "group_member_memory_messages" not in user_data
+    assert "group_opt_out_cutoff" not in user_data
+    assert "group:7788" in plugin._user_sessions
+
+
+def test_subject_components_encode_the_joiner():
+    """A component containing ':' must not collapse distinct owners into
+    one subject key — those conversations would read and overwrite each
+    other's memory."""
+    a = MemorySubject.group_chat("a:b", "c")
+    b = MemorySubject.group_chat("a", "b:c")
+    assert a.subject_id != b.subject_id
+    assert a.scope != b.scope
+    # Existing ids without the separator are unchanged.
+    plain = MemorySubject.group_chat("qq", "7788")
+    assert plain.subject_id == "qq:7788"
+
+
+@pytest.mark.asyncio
+async def test_sync_task_spawn_reports_failures():
+    """The transition-task registry must consume exceptions in its done
+    callback — a silently dropped failure leaves the consent transition
+    half-applied with no log."""
+    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
+
+    logs = []
+    service = QQSettingsService.__new__(QQSettingsService)
+    service.plugin = SimpleNamespace(
+        _emit_log=lambda level, msg: logs.append((level, msg)),
+    )
+
+    async def _boom():
+        raise RuntimeError("transition down")
+
+    service._spawn_group_memory_sync_task(_boom())
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert any(level == "ERROR" for level, _ in logs)
+    assert not getattr(service.plugin, "_group_memory_sync_tasks")
+
+
+def test_stop_cancels_buffer_tasks_and_settles_provisional():
+    """Stop must cancel delayed replies (the client is gone; a survivor
+    would fail or replay a stale pre-stop reply into the next run) and
+    settle their provisional barriers."""
+    import inspect
+
+    from plugin.plugins.qq_auto_reply import runtime_ops_service
+
+    src = inspect.getsource(runtime_ops_service)
+    assert "task.cancel()" in src
+    assert "_settle_provisional" in src
 
 
 @pytest.mark.asyncio

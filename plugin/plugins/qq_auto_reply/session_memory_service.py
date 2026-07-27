@@ -550,7 +550,9 @@ class QQSessionMemoryService:
             self.plugin.logger.warning(f"[{reason}] 用户 {session_key} 的本地会话关闭失败: {e}")
         return True
 
-    async def invalidate_group_sessions(self, *, enabled: bool) -> None:
+    async def invalidate_group_sessions(
+        self, *, enabled: bool, discard_only: bool = False,
+    ) -> None:
         """Sync existing group sessions with a group_memory_enabled flip.
 
         ON to OFF: settle buffers recorded under consent now (same one scoped
@@ -608,6 +610,18 @@ class QQSessionMemoryService:
                 if not current.pop("pending_disable_settle", None):
                     # 无标 = opt-out 之后才创建（memory_enabled 本就 False），
                     # 结算它会把 opt-out 后的内容入库——不碰。
+                    return
+                if discard_only:
+                    # 回滚路径（开启保存失败）：失败窗口的历史是在"从未
+                    # 成功保存的 opt-in"下收的，普通 OFF 结算会把它 digest
+                    # 入库——恰好持久化本该拒绝的数据。按未授权丢弃：游标
+                    # 推过窗口、清 bucket、flag 关。nonconsent floor 靠不
+                    # 住（窗口内轮次可能在 flag=True 下完成、没 bump）。
+                    current["memory_enabled"] = False
+                    current.pop("group_opt_out_cutoff", None)
+                    current["last_group_digest_index"] = len(history)
+                    current.pop("group_member_memory_messages", None)
+                    current.pop("group_member_memory_labels", None)
                     return
                 # 有标会话按转变结算，不信可变的 per-request flag。
                 current["memory_enabled"] = True

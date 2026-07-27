@@ -58,6 +58,20 @@ def _clean_component(value: Any, *, field: str) -> str:
     return value
 
 
+def _encode_component(value: str) -> str:
+    """Escape the subject-id joiner inside a single component.
+
+    ':' joins components into subject_id/scope keys: a component that
+    contains it collapses distinct owners into one key (group_chat("a:b",
+    "c") == group_chat("a", "b:c")) and those conversations would read and
+    overwrite each other's memory. Percent-encode unambiguously ('%' first
+    so decoding stays unique); current platform/conversation ids contain
+    neither character, so existing keys are unchanged."""
+    if '%' in value or ':' in value:
+        value = value.replace('%', '%25').replace(':', '%3A')
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class MemorySubject:
     """A stable memory owner and its isolation boundary."""
@@ -96,14 +110,16 @@ class MemorySubject:
 
     @classmethod
     def group_chat(cls, platform: str, conversation_id: str) -> "MemorySubject":
-        platform = _clean_component(platform, field="platform")
-        conversation_id = _clean_component(conversation_id, field="conversation_id")
+        platform = _encode_component(_clean_component(platform, field="platform"))
+        conversation_id = _encode_component(
+            _clean_component(conversation_id, field="conversation_id")
+        )
         return cls.create(SUBJECT_GROUP_CHAT, f"{platform}:{conversation_id}")
 
     @classmethod
     def participant(cls, platform: str, actor_id: str) -> "MemorySubject":
-        platform = _clean_component(platform, field="platform")
-        actor_id = _clean_component(actor_id, field="actor_id")
+        platform = _encode_component(_clean_component(platform, field="platform"))
+        actor_id = _encode_component(_clean_component(actor_id, field="actor_id"))
         return cls.create(SUBJECT_PARTICIPANT, f"{platform}:{actor_id}")
 
     @classmethod
@@ -113,9 +129,11 @@ class MemorySubject:
         conversation_id: str,
         actor_id: str,
     ) -> "MemorySubject":
-        platform = _clean_component(platform, field="platform")
-        conversation_id = _clean_component(conversation_id, field="conversation_id")
-        actor_id = _clean_component(actor_id, field="actor_id")
+        platform = _encode_component(_clean_component(platform, field="platform"))
+        conversation_id = _encode_component(
+            _clean_component(conversation_id, field="conversation_id")
+        )
+        actor_id = _encode_component(_clean_component(actor_id, field="actor_id"))
         return cls.create(
             SUBJECT_GROUP_PARTICIPANT,
             f"{platform}:{conversation_id}:{actor_id}",
