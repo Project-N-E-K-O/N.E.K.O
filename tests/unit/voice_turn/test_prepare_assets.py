@@ -115,6 +115,39 @@ def test_preparer_exception_identity_matches_package_module():
     assert sys.modules["main_logic.voice_turn.asset_manifest"] is asset_manifest
 
 
+def test_preparer_dynamic_load_first_shares_exception_identity():
+    # This process imports the package before the preparer, so the in-process
+    # identity test above never exercises the path-based loader. Run the
+    # reversed order in a subprocess: the preparer's dynamic load registers
+    # the module first, and the later package import must reuse it.
+    driver = textwrap.dedent(
+        """
+        import sys
+
+        import tools.voice_eval.prepare_voice_turn_assets as preparer
+
+        assert "main_logic.voice_turn.asset_manifest" in sys.modules, (
+            "preparer import must register the path-loaded manifest module"
+        )
+        import main_logic.voice_turn.asset_manifest as asset_manifest
+
+        assert preparer.AssetManifestError is asset_manifest.AssetManifestError
+        assert sys.modules["main_logic.voice_turn.asset_manifest"] is asset_manifest
+        print("identity-ok")
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", driver],
+        cwd=str(SCRIPT_PATH.parents[2]),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "identity-ok" in result.stdout
+
+
 def test_preparer_verifies_assets_without_numpy(tmp_path):
     # Docker builds run the preparer before project deps exist; it must work
     # end to end on a stdlib-only interpreter with numpy unimportable.

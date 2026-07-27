@@ -29,6 +29,16 @@ def _load_asset_manifest_module():
     existing = sys.modules.get(module_name)
     if existing is not None:
         return existing
+    try:
+        # Prefer the ordinary package import: whenever project dependencies
+        # exist it yields the canonical module with proper parent linkage, so
+        # a later ``import main_logic.voice_turn.asset_manifest as X`` cannot
+        # trip over a child registered without its parent package.
+        return importlib.import_module(module_name)
+    except ImportError:
+        pass
+    # Bare interpreter (Docker asset step runs before ``uv sync``): the
+    # package __init__ needs NumPy, so load the stdlib-only module by path.
     module_path = PROJECT_ROOT / "main_logic" / "voice_turn" / "asset_manifest.py"
     spec = importlib.util.spec_from_file_location(module_name, module_path)
     if spec is None or spec.loader is None:
