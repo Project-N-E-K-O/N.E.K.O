@@ -1422,13 +1422,26 @@
     // session (websocket_router -> asr_runtime.set_independent_asr_handshake).
     // Wrapping send() at socket creation is the single seam that covers every
     // start_session send site, including the ones in app-buttons.js.
+    //
+    // Hydration gate: the frontend toggle is only authoritative AFTER the
+    // async conversation-settings GET merged server values into S, or after
+    // the user explicitly changed a setting (S.settingsHydrated, set in
+    // app-settings.js). Before that — fresh browser profile, or an early
+    // start_session racing the still-pending GET — S.independentAsrEnabled is
+    // just the boot default false, and stamping it would override the
+    // backend's persisted true. Omit the field instead: websocket_router
+    // forwards an absent field as None and set_independent_asr_handshake
+    // falls back to the persisted setting (pinned by
+    // test_start_session_handshake_missing_falls_back_to_persisted). If the
+    // GET fails permanently the field simply stays omitted and the backend's
+    // persisted value keeps governing — the correct fallback.
     function attachStartSessionHandshake(ws) {
         var rawSend = ws.send.bind(ws);
         ws.send = function (data) {
             if (typeof data === 'string' && data.indexOf('start_session') !== -1) {
                 try {
                     var msg = JSON.parse(data);
-                    if (msg && msg.action === 'start_session') {
+                    if (msg && msg.action === 'start_session' && S.settingsHydrated === true) {
                         msg.independent_asr_enabled = S.independentAsrEnabled === true;
                         data = JSON.stringify(msg);
                     }

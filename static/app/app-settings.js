@@ -200,6 +200,16 @@
      * 用于定期备份和跨会话持久化
      */
     async function syncSettingsToServer() {
+        // 走到这里即认为设置已水合（S.settingsHydrated，见 app-state.js）：调用点只有
+        // (a) 用户显式改设置的路径（saveSettings 完整路径、app-audio-capture.js 的独立
+        //     ASR 开关 handler）——用户动作即使发生在 server GET 之前也是权威值，且本
+        //     POST 会把完整本地设置对象覆写到服务器；POST 失败也要立刻算权威，否则
+        //     start_session 握手退回省略字段、后端读到的还是用户刚改掉的旧持久化值，
+        //     握手兜底（attachStartSessionHandshake）就失效了，所以在 await 前同步标记；
+        // (b) 周期同步 startPeriodicSync——只在 server GET 决议之后启动，且首启 pending
+        //     期间跳过，不会把未水合的启动默认值当成权威。
+        // 首启初始化那次 saveSettings 走 skipServerSync 不进这里，不会误标记。
+        S.settingsHydrated = true;
         try {
             const controller = window.NekoHomeTutorialFeatureController;
             if (controller && typeof controller.isActive === 'function' && controller.isActive()) {
@@ -650,6 +660,11 @@
         try {
             loadSettingsFromServer().then(serverResult => {
                 if (!serverResult) return;
+                // server GET 成功返回：前端从此持有权威设置视图，标记水合
+                // （S.settingsHydrated，见 app-state.js），start_session 握手才允许携带
+                // independent_asr_enabled。GET 永久失败时 serverResult 为 null，这里
+                // 不会执行——字段保持省略、由后端持久化值兜底，正是期望行为。
+                S.settingsHydrated = true;
                 const serverSettings = serverResult.settings;
                 const telemetryBranch = serverResult.telemetryBranch;
                 let hasUpdate = false;

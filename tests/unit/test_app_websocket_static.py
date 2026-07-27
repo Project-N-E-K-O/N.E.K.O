@@ -5,6 +5,7 @@ from pathlib import Path
 
 APP_WEBSOCKET_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-websocket.js"
 APP_STATE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-state.js"
+APP_SETTINGS_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-settings.js"
 APP_AUDIO_CAPTURE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-audio-capture.js"
 APP_BUTTONS_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-buttons.js"
 LOCALES_PATH = Path(__file__).resolve().parents[2] / "static" / "locales"
@@ -419,7 +420,9 @@ def test_start_session_payload_carries_independent_asr_handshake():
         "function attachStartSessionHandshake(ws)",
         1,
     )[1].split("function connectWebSocket()", 1)[0]
-    # Strict-bool stamp taken from live S state at send time.
+    # Strict-bool stamp taken from live S state at send time — but only once
+    # settings are hydrated (see
+    # test_start_session_handshake_omitted_until_settings_hydrated).
     assert "msg.independent_asr_enabled = S.independentAsrEnabled === true;" in wrapper
     # Only start_session text frames are rewritten; binary audio frames and
     # other messages pass through untouched.
@@ -432,6 +435,99 @@ def test_start_session_payload_carries_independent_asr_handshake():
     creation_index = websocket_source.index("S.socket = new WebSocket(wsUrl);")
     attach_index = websocket_source.index("attachStartSessionHandshake(S.socket);")
     assert 0 < attach_index - creation_index < 200
+
+
+def test_start_session_handshake_omitted_until_settings_hydrated():
+    # On a fresh browser profile — or while the async conversation-settings
+    # GET is still pending — S.independentAsrEnabled is only the boot default
+    # false. Stamping that onto an early start_session would override the
+    # backend's persisted true. The stamp must therefore be gated on
+    # S.settingsHydrated; when the field is omitted the backend falls back to
+    # its persisted setting (websocket_router forwards the absent field as
+    # None; pinned by
+    # test_start_session_handshake_missing_falls_back_to_persisted). A
+    # permanently failing GET keeps the field omitted — persisted value
+    # governs, which is the correct fallback.
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    state_source = APP_STATE_PATH.read_text(encoding="utf-8")
+
+    wrapper = websocket_source.split(
+        "function attachStartSessionHandshake(ws)",
+        1,
+    )[1].split("function connectWebSocket()", 1)[0]
+
+    # The stamp exists exactly once and only inside the hydration-gated
+    # branch: no second, unconditional assignment path.
+    assert wrapper.count("msg.independent_asr_enabled") == 1
+    assert (
+        "msg.action === 'start_session' && S.settingsHydrated === true" in wrapper
+    ), "independent_asr_enabled stamp must be gated on S.settingsHydrated"
+
+    # The flag starts false so a pre-hydration start_session omits the field.
+    assert "settingsHydrated: false," in state_source
+
+
+def test_settings_hydration_marked_on_server_merge_and_user_change():
+    # S.settingsHydrated must flip true on exactly the two authoritative
+    # events, and never merely at boot:
+    #   (1) the conversation-settings GET succeeded (server values merged);
+    #   (2) the user explicitly changed a setting — the independent-ASR toggle
+    #       handler (app-audio-capture.js) runs saveSettings({skipServerSync})
+    #       + syncSettingsToServer(), so the synchronous marker at the top of
+    #       syncSettingsToServer covers it even when the POST later fails
+    #       (a user action is authoritative even pre-hydration).
+    settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
+    capture_source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
+
+    # (1) Server merge marks hydration only after the null-guard, i.e. only
+    # when the GET actually returned a usable result.
+    merge_block = settings_source.split(
+        "loadSettingsFromServer().then(serverResult => {",
+        1,
+    )[1].split(".finally(", 1)[0]
+    guard_index = merge_block.index("if (!serverResult) return;")
+    hydrate_index = merge_block.index("S.settingsHydrated = true;")
+    assert guard_index < hydrate_index, (
+        "hydration must only be marked after the serverResult null-guard"
+    )
+
+    # (2) syncSettingsToServer marks hydration synchronously, before any
+    # await, so a failed POST still leaves the user's choice authoritative
+    # and the start_session handshake keeps carrying it.
+    sync_fn = settings_source.split("async function syncSettingsToServer()", 1)[1].split(
+        "function startPeriodicSync()",
+        1,
+    )[0]
+    assert "S.settingsHydrated = true;" in sync_fn
+    assert sync_fn.index("S.settingsHydrated = true;") < sync_fn.index("await fetch(")
+
+    # The independent-ASR toggle handler reaches that marker via
+    # syncSettingsToServer; the saveSettings call it makes skips the internal
+    # server sync, so the direct call is the seam.
+    toggle_handler = capture_source.split(
+        "asrInput.addEventListener('change', function () {",
+        1,
+    )[1].split("asrRow.appendChild(", 1)[0]
+    assert "S.independentAsrEnabled = asrInput.checked;" in toggle_handler
+    assert "window.appSettings.syncSettingsToServer()" in toggle_handler
+
+    # Boot must NOT mark hydration: the first-launch initialization save goes
+    # through saveSettings({ skipServerSync: true }) which bypasses
+    # syncSettingsToServer, keeping the default-false value non-authoritative
+    # until the GET resolves or the user acts.
+    first_launch_block = settings_source.split(
+        "console.log('未找到保存的设置，使用默认值');",
+        1,
+    )[1].split("} catch (error) {", 1)[0]
+    assert "saveSettings({ skipServerSync: true });" in first_launch_block
+    assert "S.settingsHydrated" not in first_launch_block
+    # And nothing else in loadSettings' synchronous body marks hydration
+    # before the async GET callback runs.
+    sync_load_body = settings_source.split("function loadSettings()", 1)[1].split(
+        "loadSettingsFromServer().then(serverResult => {",
+        1,
+    )[0]
+    assert "S.settingsHydrated" not in sync_load_body
 
 
 def test_normal_teardown_paths_reset_independent_asr_route_flags():

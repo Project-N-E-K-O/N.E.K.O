@@ -84,6 +84,11 @@
         microphoneGainDb: 0,
         noiseReductionEnabled: true,
         independentAsrEnabled: false,
+        // 设置是否已"水合"：server GET 合并成功或用户显式改过设置后才为 true。
+        // 在此之前 S.independentAsrEnabled 只是启动默认值（false），不代表权威偏好，
+        // start_session 握手（app-websocket.js attachStartSessionHandshake）不得携带它，
+        // 否则新浏览器 profile 首个会话会用默认 false 覆盖后端持久化的 true。
+        settingsHydrated: false,
         independentAsrActive: false,
         independentAsrProvider: '',
         externalAsrPreviewMessage: null, // 独立 ASR 实时转写预览的消息句柄（app-websocket.js 维护）
