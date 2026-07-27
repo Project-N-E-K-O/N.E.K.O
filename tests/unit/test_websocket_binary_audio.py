@@ -275,6 +275,9 @@ async def test_documented_legacy_audio_flow_authorizes_before_session_and_pcm(
     await websocket_router.websocket_endpoint(websocket, "Lan")
 
     call_names = [name for name, _payload in manager.calls]
+    # An audio-mode start_session is a voice engagement: the connection
+    # identity claim must land before the legacy authorization check.
+    assert call_names.index("begin") < call_names.index("authorize")
     assert call_names.index("authorize") < call_names.index("start_session")
     assert call_names.index("start_session") < call_names.index("stream_data")
     assert [
@@ -460,9 +463,219 @@ async def test_game_audio_route_never_claims_legacy_core_lease(
     await websocket_router.websocket_endpoint(websocket, "Lan")
 
     assert "authorize" not in [name for name, _payload in manager.calls]
+    # Game voice still engages the connection identity exactly once even
+    # though it never claims the legacy core lease.
+    assert [name for name, _payload in manager.calls].count("begin") == 1
     assert route_external_calls == [
         {"input_type": "audio", "stt_provider": "realtime"},
         {"input_type": "audio", "stt_provider": "realtime"},
+    ]
+
+
+_LEASE_SYNC_MESSAGE = {
+    "action": "voice_input_control",
+    "event": "lease_sync",
+    "lease_generation": 1,
+    "owner": "core",
+    "hard_muted": False,
+    "focus_suppressed": False,
+}
+_PCM_MESSAGE = {
+    "action": "stream_data",
+    "input_type": "audio",
+    "sample_rate_hz": 16_000,
+    "data": [1, -1],
+}
+
+
+class _TwoPhaseWebSocket(_EventWebSocket):
+    """Socket that delivers a first burst, then holds until released.
+
+    Models a still-open recording socket: the first-phase messages flow
+    immediately, everything after (including the disconnect) waits for the
+    test to set ``release``.
+    """
+
+    def __init__(self, first: list[dict], second: list[dict]) -> None:
+        super().__init__(first + second)
+        self.release = asyncio.Event()
+        self._gate_after = len(first)
+        self._delivered = 0
+
+    async def receive(self) -> dict:
+        if self._delivered == self._gate_after:
+            await self.release.wait()
+        self._delivered += 1
+        return await super().receive()
+
+
+async def _drain_until(predicate, *, attempts: int = 500) -> None:
+    for _ in range(attempts):
+        if predicate():
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("condition not reached while draining event loop")
+
+
+@pytest.mark.asyncio
+async def test_second_non_voice_socket_does_not_reset_voice_connection(
+    monkeypatch,
+) -> None:
+    manager = _ProtocolManager()
+    recording_socket = _TwoPhaseWebSocket(
+        [_LEASE_SYNC_MESSAGE, _PCM_MESSAGE],
+        [],
+    )
+    _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=recording_socket,
+    )
+
+    recording_task = asyncio.create_task(
+        websocket_router.websocket_endpoint(recording_socket, "Lan")
+    )
+    await _drain_until(
+        lambda: "stream_data" in [name for name, _payload in manager.calls]
+    )
+    begins_mid_recording = [
+        payload for name, payload in manager.calls if name == "begin"
+    ]
+    assert len(begins_mid_recording) == 1
+
+    # A second window for the same character opens mid-recording and only
+    # ever uses text chat: it must not claim the voice connection, so the
+    # recording socket's lease/PCM state stays untouched.
+    chat_socket = _EventWebSocket(
+        [
+            {"action": "start_session", "input_type": "text"},
+            {"action": "ping"},
+        ]
+    )
+    await websocket_router.websocket_endpoint(chat_socket, "Lan")
+
+    # Negative validation: no additional identity reset happened at accept
+    # or on any non-voice message of the second socket.
+    assert [
+        payload for name, payload in manager.calls if name == "begin"
+    ] == begins_mid_recording
+    assert "authorize" not in [name for name, _payload in manager.calls]
+    assert json.loads(chat_socket.sent_text[-1]) == {"type": "pong"}
+
+    recording_socket.release.set()
+    await recording_task
+
+
+@pytest.mark.asyncio
+async def test_reconnect_socket_claims_voice_connection_on_first_lease_sync(
+    monkeypatch,
+) -> None:
+    manager = _ProtocolManager()
+    first_socket = _EventWebSocket([_LEASE_SYNC_MESSAGE, _PCM_MESSAGE])
+    _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=first_socket,
+    )
+
+    await websocket_router.websocket_endpoint(first_socket, "Lan")
+    # Reconnect: the frontend force-sends lease_sync on open, which is the
+    # engagement that claims the new connection identity.
+    reconnect_socket = _EventWebSocket([_LEASE_SYNC_MESSAGE])
+    await websocket_router.websocket_endpoint(reconnect_socket, "Lan")
+
+    assert [name for name, _payload in manager.calls] == [
+        "begin",
+        "control",
+        "stream_data",
+        "begin",
+        "control",
+    ]
+    begins = [payload for name, payload in manager.calls if name == "begin"]
+    assert begins[0] != begins[1]
+
+
+@pytest.mark.asyncio
+async def test_stale_socket_after_voice_takeover_is_closed_without_reclaim(
+    monkeypatch,
+) -> None:
+    manager = _ProtocolManager()
+    stale_socket = _TwoPhaseWebSocket(
+        [_LEASE_SYNC_MESSAGE, _PCM_MESSAGE],
+        [_PCM_MESSAGE],
+    )
+    _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=stale_socket,
+    )
+
+    stale_task = asyncio.create_task(
+        websocket_router.websocket_endpoint(stale_socket, "Lan")
+    )
+    await _drain_until(
+        lambda: "stream_data" in [name for name, _payload in manager.calls]
+    )
+
+    # A newer, still-open socket engages voice: takeover semantics stay as
+    # today (newest engaging connection wins).
+    takeover_socket = _TwoPhaseWebSocket([_LEASE_SYNC_MESSAGE], [])
+    takeover_task = asyncio.create_task(
+        websocket_router.websocket_endpoint(takeover_socket, "Lan")
+    )
+    await _drain_until(
+        lambda: [name for name, _payload in manager.calls].count("begin") == 2
+    )
+
+    # The superseded socket's next message is stale-closed before dispatch:
+    # its PCM never reaches the manager and it cannot re-claim the identity.
+    stale_socket.release.set()
+    await stale_task
+    takeover_socket.release.set()
+    await takeover_task
+
+    assert stale_socket.closed is True
+    call_names = [name for name, _payload in manager.calls]
+    assert call_names.count("begin") == 2
+    assert call_names.count("stream_data") == 1
+    assert {
+        "code": "CHARACTER_SWITCHING_TERMINAL",
+        "details": {"name": "Lan"},
+    } in manager.statuses
+
+
+@pytest.mark.asyncio
+async def test_binary_pcm_frame_claims_voice_connection_before_dispatch(
+    monkeypatch,
+) -> None:
+    manager = _ProtocolManager()
+    websocket = _EventWebSocket([])
+    websocket.events.insert(
+        0,
+        {
+            "type": "websocket.receive",
+            "bytes": struct.pack("<4sI2h", b"NEKO", 16_000, 1, -1),
+        },
+    )
+    _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=websocket,
+    )
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+
+    call_names = [name for name, _payload in manager.calls]
+    assert call_names.index("begin") < call_names.index("stream_data")
+    assert [
+        payload for name, payload in manager.calls if name == "stream_data"
+    ] == [
+        {
+            "action": "stream_data",
+            "input_type": "audio",
+            "sample_rate_hz": 16_000,
+            "data": [1, -1],
+        }
     ]
 
 

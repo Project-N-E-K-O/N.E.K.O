@@ -343,10 +343,36 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
     # 注意：这里设置后，即使cleanup()被调用，websocket也会在start_session时重新设置
     mgr = session_manager[lanlan_name]
     mgr.websocket = websocket
-    begin_voice_input = getattr(mgr, "_begin_voice_input_connection", None)
-    if callable(begin_voice_input):
-        begin_voice_input(str(this_session_id))
     logger.info(f"✅ 已设置 {lanlan_name} 的WebSocket连接")
+
+    # Engagement-deferred voice-input claim. Claiming the manager-wide voice
+    # connection identity at accept time would let a second socket for the
+    # same character (the separate chat window, or a reconnect overlap) kill
+    # an ongoing recording merely by opening: _begin_voice_input_connection
+    # resets the lease owner to "none", drops queued PCM and suppresses
+    # ingress. Instead the identity is claimed only when THIS socket first
+    # engages voice input (voice_input_control incl. the lease_sync the
+    # frontend force-sends on open, an audio-mode start_session, or audio
+    # stream_data / a binary PCM frame). Until then the previous voice
+    # socket's session continues undisturbed. Once a newer socket engages,
+    # the takeover semantics are unchanged: newest engaging connection wins
+    # and the superseded socket is closed on its next message by the
+    # session-id check below (which runs before dispatch for every message,
+    # so a stale socket can never claim or reach any voice path).
+    voice_input_claimed = False
+
+    def _claim_voice_input_connection() -> None:
+        nonlocal voice_input_claimed
+        if voice_input_claimed:
+            return
+        voice_input_claimed = True
+        begin_voice_input = getattr(
+            session_manager[lanlan_name],
+            "_begin_voice_input_connection",
+            None,
+        )
+        if callable(begin_voice_input):
+            begin_voice_input(str(this_session_id))
 
     if mgr.pending_agent_callbacks:
         logger.info(f"[{lanlan_name}] websocket reconnect: {len(mgr.pending_agent_callbacks)} pending callbacks, scheduling delivery")
@@ -451,6 +477,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                             continue
                         if input_type == "audio":
                             logger.info("[%s] game route active: starting ordinary realtime as STT provider for game voice", lanlan_name)
+                            _claim_voice_input_connection()
                             if session_manager[lanlan_name]._starting_session_count == 0:
                                 session_manager[lanlan_name].reset_session_start_circuit()
                             _fire_task(route_external_stream_message(lanlan_name, {"input_type": "audio", "stt_provider": "realtime"}))
@@ -460,6 +487,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     # 注意：音频模块由 main_server 后台预加载，Python import lock 会自动等待首次导入完成
                     mode = 'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio'
                     if mode == "audio":
+                        _claim_voice_input_connection()
                         ensure_voice_input_authorized = getattr(
                             session_manager[lanlan_name],
                             "_ensure_voice_input_session_authorized",
@@ -497,6 +525,11 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
 
             elif action == "stream_data":
                 input_type = message.get("input_type")
+                if input_type == "audio":
+                    # PCM (JSON or decoded binary frame) is a voice engagement:
+                    # first audio frame on this socket claims the voice input
+                    # connection identity.
+                    _claim_voice_input_connection()
                 if is_game_route_active(lanlan_name):
                     if input_type == "audio":
                         await route_external_stream_message(lanlan_name, {"input_type": "audio", "stt_provider": "realtime"})
@@ -541,6 +574,10 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 _fire_task(session_manager[lanlan_name].end_session())
 
             elif action == "voice_input_control":
+                # Any MicLease control message engages voice input for this
+                # socket; the frontend force-sends lease_sync on socket open,
+                # so a reconnect claims the identity here immediately.
+                _claim_voice_input_connection()
                 # MicLease 是音频路由的后端权威控制面；按 websocket 消息顺序
                 # 同步处理，避免控制事件之后的 PCM 抢先进入旧 turn。
                 # getattr 守卫与 _begin_voice_input_connection /
