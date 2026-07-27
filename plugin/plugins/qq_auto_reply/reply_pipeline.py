@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Any
 
@@ -327,6 +328,22 @@ class QQReplyPipelineRunner:
                 target_id=delivery_plan.target_id, reply_text=None,
             )
 
+        def _mark_tail_undelivered() -> None:
+            if (
+                request is not None
+                and request.is_group
+                and outcome is not None
+                and not getattr(outcome, "used_fallback", False)
+                and not getattr(outcome, "used_default_message", False)
+            ):
+                self.plugin.session_memory_service.record_tail_undelivered_ai_row(
+                    self.plugin._build_session_key(
+                        sender_id=request.sender_id,
+                        is_group=True,
+                        group_id=request.group_id,
+                    )
+                )
+
         try:
             result = await self.plugin.reply_delivery_node.deliver(
                 delivery_plan,
@@ -335,25 +352,18 @@ class QQReplyPipelineRunner:
                     if context is not None else None
                 ),
             )
+        except asyncio.CancelledError:
+            # 取消（stop_runtime 会显式取消所有 handler task）走的是
+            # BaseException，不会被下面的 except Exception 接住：用户可能
+            # 一个字没收到、也可能只收到前半条，而 ai 行已经躺在共享历史
+            # 里——不打标的话关机结算会把它当已投递入库。
+            _mark_tail_undelivered()
+            raise
         except Exception:
             # NapCat 传输失败以异常上浮：history-backed 回复的 ai 行已在
             # 共享历史里，先按投递失败记入排除名单再传播异常，否则下一次
             # digest 会把没发出去的回复入库。
-            if (
-                request is not None
-                and request.is_group
-                and outcome is not None
-                and not getattr(outcome, "used_fallback", False)
-                and not getattr(outcome, "used_default_message", False)
-            ):
-                session_key = self.plugin._build_session_key(
-                    sender_id=request.sender_id,
-                    is_group=True,
-                    group_id=request.group_id,
-                )
-                self.plugin.session_memory_service.record_tail_undelivered_ai_row(
-                    session_key
-                )
+            _mark_tail_undelivered()
             raise
         if (
             result is not None
@@ -382,21 +392,24 @@ class QQReplyPipelineRunner:
             and outcome is not None
             and outcome.reply_text
         ):
+            # 整条计划的正文：outcome.reply_text 只有首块，后续块里披露
+            # 的事实既进不了历史（digest 少半条），也记不到 mention（永远
+            # 到不了 suppression）。
+            from .pipeline_models import delivered_blocks_text
+
+            delivered_text = (
+                delivered_blocks_text(delivery_plan.blocks) or outcome.reply_text
+            )
             if getattr(outcome, "used_fallback", False):
                 # fallback 回复没有历史 ai 行：确认投递后补一行，否则群
                 # digest 只会存下半边对话，丢掉本轮回复披露的内容。
                 self.plugin.reply_generation_service.append_fallback_ai_row(
-                    context, outcome.reply_text,
+                    context, delivered_text,
                 )
             # mention 计数绑定实际投递（非 buffer 直投与合成轮都走这里；
-            # buffer 路径由 _deliver_after_wait 在真投递后补记）。扫描整条
-            # 计划的正文：outcome.reply_text 只有首块，后续块里披露的事实
-            # 不记就永远进不了 suppression。
-            from .pipeline_models import delivered_blocks_text
-
+            # buffer 路径由 _deliver_after_wait 在真投递后补记）。
             await self.plugin.reply_generation_service.record_scoped_mentions_on_delivery(
-                context,
-                delivered_blocks_text(delivery_plan.blocks) or outcome.reply_text,
+                context, delivered_text,
             )
         return result
 

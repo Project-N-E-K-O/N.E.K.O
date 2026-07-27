@@ -95,6 +95,30 @@ class QQSessionMemoryService:
             await self.plugin._run_with_session_lock(session_key, _finalize_existing)
 
     @staticmethod
+    def prune_draft_row_refs(user_data: dict[str, Any] | None) -> None:
+        """Drop marks whose rows are no longer in the session history.
+
+        The lists hold the row objects themselves (identity comparison), so
+        an active group that keeps merging or failing deliveries would grow
+        them forever — and with them the rows they pin in memory. A row the
+        history no longer contains can never be matched again, so it is
+        dead weight."""
+        if not isinstance(user_data, dict):
+            return
+        session = user_data.get("session")
+        history = getattr(session, "_conversation_history", None)
+        if not isinstance(history, list):
+            return
+        live = {id(row) for row in history}
+        for key in ("undelivered_draft_rows", "provisional_draft_rows"):
+            rows = user_data.get(key)
+            if not rows:
+                continue
+            kept = [row for row in rows if id(row) in live]
+            if len(kept) != len(rows):
+                rows[:] = kept
+
+    @staticmethod
     def _settlement_progress(user_data: dict[str, Any] | None) -> tuple:
         """What "made progress" means for one settlement round.
 
@@ -329,6 +353,7 @@ class QQSessionMemoryService:
         # Feeding each group turn into the legacy /cache pipeline would both
         # increase LLM cost and contaminate legacy-private memory.
         if user_data.get("is_group"):
+            self.prune_draft_row_refs(user_data)
             session = user_data.get("session")
             history = getattr(session, "_conversation_history", []) or []
             backlog = len(history) - int(
@@ -400,6 +425,15 @@ class QQSessionMemoryService:
                     "memory_enabled"
                 ):
                     return
+                if user_data.get("pending_disable_settle"):
+                    # opt-out 结算未完成（快速 re-enable 会让上面的 flag
+                    # 重新为真）：积压交转变任务按 cutoff 结算，实时排空
+                    # 用的是旧游标、没有 cutoff 也没有 nonconsent floor。
+                    return
+                if user_data.get("pending_enable_rebase") is not None:
+                    # retain 结算后、ON rebase 前的 limbo：游标还停在
+                    # opt-out 区间之前，此处推送会把 OFF 期间的行入库。
+                    return
                 group_id = str(user_data.get("group_id") or "").strip()
                 her_name = user_data.get("her_name")
                 session = user_data.get("session")
@@ -413,6 +447,10 @@ class QQSessionMemoryService:
                     last_group_digest_index=int(
                         user_data.get("last_group_digest_index", 0) or 0
                     ),
+                    # 在途草稿处停下：把它当"未投递"过滤掉却推进游标，会让
+                    # 随后真送出的那条回复永远留在游标之后、进不了 scoped
+                    # 历史。finalize/teardown 仍穿透（那里命运已定）。
+                    stop_at_provisional=True,
                 )
             except Exception as exc:
                 # 失败留待下一轮/idle 结算：游标停在最后一个成功批次。
@@ -449,7 +487,10 @@ class QQSessionMemoryService:
                     reason="member_bucket_cap",
                 )
                 if failed:
-                    # 冲失败的桶留在原地等下一轮（硬顶兜底防无界增长）。
+                    # 冲失败的桶留在原地等下一轮：due 标已经被调度器消费
+                    # 掉，不重新置起来的话要等这个成员再攒满一轮才会重试
+                    # （硬顶兜底防无界增长）。
+                    user_data["member_flush_due"] = True
                     self.plugin.logger.warning(
                         f"[member_bucket_cap] 群 {group_id} 有 {len(failed)} 个"
                         f"成员队列冲刷失败，留待下轮"
@@ -719,6 +760,7 @@ class QQSessionMemoryService:
     async def _settle_group_digest_batches(
         self, *, user_data: dict[str, Any], group_id: str, her_name: str,
         reason: str, conversation_history: list, last_group_digest_index: int,
+        stop_at_provisional: bool = False,
     ) -> bool:
         """Push the group's pending history in batches, oldest first.
 
@@ -737,6 +779,7 @@ class QQSessionMemoryService:
                 conversation_history, last_group_digest_index,
                 self.GROUP_HISTORY_MAX_MESSAGES,
                 user_data=user_data,
+                stop_at_provisional=stop_at_provisional,
             )
             if not scoped_messages:
                 if next_index > last_group_digest_index:

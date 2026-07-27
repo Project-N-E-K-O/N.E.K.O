@@ -531,11 +531,17 @@ class QQReplyBufferService:
                 self._clear_undelivered_marks(session_key, pending)
                 if pending.mention_context is None or not texts:
                     return
+                from .pipeline_models import delivered_blocks_text
+
+                delivered_text = (
+                    delivered_blocks_text(pending.first_blocks) or texts[0]
+                )
                 if pending.used_fallback_reply:
-                    # 对偶直投路径：fallback 草稿此刻才真正送达，补历史行。
+                    # 对偶直投路径：fallback 草稿此刻才真正送达，补历史行
+                    # （整条计划的正文，不只首块）。
                     try:
                         self.plugin.reply_generation_service.append_fallback_ai_row(
-                            pending.mention_context, texts[0],
+                            pending.mention_context, delivered_text,
                         )
                     except Exception as e:
                         self.plugin._emit_log(
@@ -543,11 +549,8 @@ class QQReplyBufferService:
                         )
                 # mention 计数绑定实际投递：单条路径此刻才真正送达。
                 try:
-                    from .pipeline_models import delivered_blocks_text
-
                     await self.plugin.reply_generation_service.record_scoped_mentions_on_delivery(
-                        pending.mention_context,
-                        delivered_blocks_text(pending.first_blocks) or texts[0],
+                        pending.mention_context, delivered_text,
                     )
                 except Exception as e:
                     self.plugin._emit_log("WARN", f"[Buffer] mention 补记失败: {e}")

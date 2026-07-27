@@ -7319,7 +7319,10 @@ async def test_buffered_fallback_row_is_appended_under_the_session_lock():
     under the session lock. Appending the fallback row without that lock
     interleaves it into the other turn's rows, and the next draft scan then
     marks the delivered reply as undelivered."""
-    from plugin.plugins.qq_auto_reply.pipeline_models import QQDeliveryResult
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        QQDeliveryResult,
+        QQMessageBlock,
+    )
     from plugin.plugins.qq_auto_reply.reply_buffer_service import (
         PendingReply,
         QQReplyBufferService,
@@ -7372,8 +7375,18 @@ async def test_buffered_fallback_row_is_appended_under_the_session_lock():
     pending.wait_until = 0.0
     service._pending["group:7788"] = pending
 
+    pending.first_blocks = [
+        QQMessageBlock(text="fallback 回复"),
+        QQMessageBlock(text="她记得群规是不剧透"),
+    ]
     await service._deliver_after_wait("group:7788", pending)
     assert order == ["lock:enter", "append", "mention", "lock:exit"]
+    # The appended row carries the WHOLE delivered plan, not just the
+    # first block (postprocess reduces reply_text to that one).
+    appended = (
+        service.plugin.reply_generation_service.append_fallback_ai_row.call_args
+    )
+    assert "她记得群规是不剧透" in appended.args[1]
 
 
 @pytest.mark.asyncio
@@ -8482,3 +8495,295 @@ async def test_group_text_send_honours_the_segment_receipt():
     assert await service.deliver_group_reply(
         "7788", "回复", fallback_to_text_on_voice_failure=True,
     ) is True
+
+
+@pytest.mark.asyncio
+async def test_backlog_drain_defers_to_pending_transitions_and_barriers():
+    """The live drain is a new digest producer, so it has to obey the same
+    boundaries as the focus-shift digest: not while a consent transition
+    is mid-flight, and not past a draft whose fate is still undecided."""
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    history = [SimpleNamespace(type="human", content=f"m{i}") for i in range(80)]
+    ud = {
+        "is_group": True,
+        "memory_enabled": True,
+        "group_id": "7788",
+        "her_name": "Neko",
+        "session": SimpleNamespace(_conversation_history=history),
+        "last_group_digest_index": 0,
+    }
+
+    async def _run_with_session_lock(session_key, fn):
+        return await fn()
+
+    plugin = SimpleNamespace(
+        _user_sessions={"group:7788": ud},
+        _qq_settings={"group_memory_enabled": True},
+        _run_with_session_lock=_run_with_session_lock,
+        logger=MagicMock(),
+    )
+    service = QQSessionMemoryService(plugin)
+    calls: list = []
+    service._settle_group_digest_batches = AsyncMock(
+        side_effect=lambda **kw: calls.append(kw) or True
+    )
+
+    # An opt-out settlement is queued: the transition task owns the cursor
+    # (it settles up to the cutoff), a live drain would use the stale one.
+    ud["pending_disable_settle"] = True
+    await service._drain_group_digest("group:7788")
+    assert calls == []
+    ud.pop("pending_disable_settle")
+
+    # Post-retain / pre-rebase limbo: the cursor still sits before the
+    # opt-out interval, so pushing here would persist OFF-era rows.
+    ud["pending_enable_rebase"] = 3
+    await service._drain_group_digest("group:7788")
+    assert calls == []
+    ud.pop("pending_enable_rebase")
+
+    # Clean session: the drain runs and stops at the provisional barrier,
+    # otherwise it filters the in-flight draft as undelivered yet advances
+    # the cursor past it — the reply that is about to be delivered would
+    # stay behind the cursor forever.
+    await service._drain_group_digest("group:7788")
+    assert len(calls) == 1
+    assert calls[0]["stop_at_provisional"] is True
+    assert calls[0]["reason"] == "digest_backlog"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_delivery_marks_the_history_row():
+    """stop_runtime cancels handler tasks outright. CancelledError is a
+    BaseException, so the failure branch never ran: the ai row stayed in
+    history unmarked and shutdown finalization would persist a reply the
+    user never (fully) received."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        QQDeliveryPlan,
+        QQMessageBlock,
+        QQReplyOutcome,
+        QQReplyRequest,
+    )
+    from plugin.plugins.qq_auto_reply.reply_pipeline import (
+        QQReplyPipelineRunner,
+    )
+
+    mark = MagicMock()
+    plugin = SimpleNamespace(
+        reply_buffer_service=None,
+        reply_delivery_node=SimpleNamespace(
+            deliver=AsyncMock(side_effect=asyncio.CancelledError()),
+        ),
+        reply_generation_service=SimpleNamespace(
+            record_scoped_mentions_on_delivery=AsyncMock(),
+            append_fallback_ai_row=MagicMock(),
+        ),
+        session_memory_service=SimpleNamespace(
+            record_tail_undelivered_ai_row=mark,
+        ),
+        _build_session_key=(
+            lambda *, sender_id, is_group, group_id: f"group:{group_id}"
+        ),
+        _qq_settings={"group_memory_enabled": True},
+        logger=MagicMock(),
+    )
+    runner = QQReplyPipelineRunner(plugin)
+    request = QQReplyRequest(
+        message_text="hi", sender_id="2046", is_group=True, group_id="7788",
+    )
+    plan = QQDeliveryPlan(
+        target_type="group", target_id="7788",
+        blocks=[QQMessageBlock(text="回复")],
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await runner._run_delivery(
+            plan, request, QQReplyOutcome(action="reply", reply_text="回复"),
+            context=SimpleNamespace(
+                is_group=True, group_id="7788", consent_snapshot={},
+            ),
+        )
+    mark.assert_called_once_with("group:7788")
+
+    # A fallback reply has no history row of its own: nothing to mark.
+    mark.reset_mock()
+    with pytest.raises(asyncio.CancelledError):
+        await runner._run_delivery(
+            plan, request,
+            QQReplyOutcome(action="reply", reply_text="回复", used_fallback=True),
+            context=None,
+        )
+    mark.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fallback_history_row_carries_every_delivered_block():
+    """postprocess keeps only the first block in reply_text; appending just
+    that leaves the rest of a delivered fallback out of scoped history."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        QQDeliveryPlan,
+        QQDeliveryResult,
+        QQMessageBlock,
+        QQReplyOutcome,
+        QQReplyRequest,
+    )
+    from plugin.plugins.qq_auto_reply.reply_pipeline import (
+        QQReplyPipelineRunner,
+    )
+
+    append = MagicMock()
+    plugin = SimpleNamespace(
+        reply_buffer_service=None,
+        reply_delivery_node=SimpleNamespace(
+            deliver=AsyncMock(return_value=QQDeliveryResult(
+                delivered=True, target_type="group", target_id="7788",
+                reply_text="嗯嗯",
+            )),
+        ),
+        reply_generation_service=SimpleNamespace(
+            record_scoped_mentions_on_delivery=AsyncMock(),
+            append_fallback_ai_row=append,
+        ),
+        _qq_settings={"group_memory_enabled": True},
+        logger=MagicMock(),
+    )
+    runner = QQReplyPipelineRunner(plugin)
+    await runner._run_delivery(
+        QQDeliveryPlan(
+            target_type="group", target_id="7788",
+            blocks=[
+                QQMessageBlock(text="嗯嗯"),
+                QQMessageBlock(text="她记得群规是不剧透"),
+            ],
+        ),
+        QQReplyRequest(
+            message_text="hi", sender_id="2046", is_group=True, group_id="7788",
+        ),
+        QQReplyOutcome(action="reply", reply_text="嗯嗯", used_fallback=True),
+        context=SimpleNamespace(
+            is_group=True, group_id="7788", consent_snapshot={},
+        ),
+    )
+    assert "她记得群规是不剧透" in append.call_args.args[1]
+
+
+@pytest.mark.asyncio
+async def test_digest_batches_stop_at_the_provisional_barrier_when_asked():
+    """The barrier only helps if the batcher actually forwards the flag to
+    the slicer — the drain's own call site is not enough."""
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    draft = SimpleNamespace(type="ai", content="在途草稿")
+    history = [
+        SimpleNamespace(type="human", content="已结算的发言"),
+        draft,
+    ]
+    ud = {
+        "is_group": True,
+        "memory_enabled": True,
+        "group_id": "7788",
+        "her_name": "Neko",
+        "session": SimpleNamespace(_conversation_history=history),
+        "last_group_digest_index": 0,
+        "provisional_draft_rows": [draft],
+    }
+    bridge = MagicMock()
+    bridge.group_subject.side_effect = lambda gid: {"subject_id": f"qq:{gid}"}
+    bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(), _qq_settings={},
+    ))
+
+    await service._settle_group_digest_batches(
+        user_data=ud, group_id="7788", her_name="Neko", reason="digest_backlog",
+        conversation_history=history, last_group_digest_index=0,
+        stop_at_provisional=True,
+    )
+    # The cursor stopped before the undecided draft, so the reply that is
+    # about to go out is still ahead of it.
+    assert ud["last_group_digest_index"] <= 1
+
+    # Without the barrier (finalize/teardown, where the fate is settled)
+    # the batcher walks past it.
+    ud["last_group_digest_index"] = 0
+    await service._settle_group_digest_batches(
+        user_data=ud, group_id="7788", her_name="Neko", reason="finalize",
+        conversation_history=history, last_group_digest_index=0,
+    )
+    assert ud["last_group_digest_index"] == len(history)
+
+
+@pytest.mark.asyncio
+async def test_failed_member_drain_is_rearmed():
+    """The scheduler consumes the due flag before spawning, so a drain that
+    fails must put it back — otherwise that member has to fill another
+    whole bucket before anything is retried."""
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    ud = {
+        "is_group": True,
+        "memory_enabled": True,
+        "group_id": "7788",
+        "her_name": "Neko",
+        "group_member_memory_messages": {"2046": [{"role": "user"}]},
+    }
+
+    async def _run_with_session_lock(session_key, fn):
+        return await fn()
+
+    service = QQSessionMemoryService(SimpleNamespace(
+        _user_sessions={"group:7788": ud},
+        _qq_settings={
+            "group_memory_enabled": True, "group_member_memory_enabled": True,
+        },
+        _run_with_session_lock=_run_with_session_lock,
+        logger=MagicMock(),
+    ))
+    service._flush_member_buckets = AsyncMock(return_value=["2046"])
+    await service._drain_member_buckets("group:7788")
+    assert ud.get("member_flush_due") is True
+    assert "member_drain_in_flight" not in ud
+
+    # A successful drain leaves nothing armed.
+    ud.pop("member_flush_due")
+    service._flush_member_buckets = AsyncMock(return_value=[])
+    await service._drain_member_buckets("group:7788")
+    assert "member_flush_due" not in ud
+
+
+@pytest.mark.asyncio
+async def test_draft_row_marks_are_pruned_when_rows_leave_history():
+    """The exclusion lists hold the row objects themselves, so an active
+    group that keeps merging drafts would grow them (and pin those rows)
+    forever. Rows the history no longer contains can never match again."""
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    live_row = SimpleNamespace(type="ai", content="还在历史里")
+    gone_row = SimpleNamespace(type="ai", content="已被复读守卫清掉")
+    history = [SimpleNamespace(type="human", content="发言"), live_row]
+    ud = {
+        "is_group": True,
+        "session": SimpleNamespace(_conversation_history=history),
+        "undelivered_draft_rows": [gone_row, live_row],
+        "provisional_draft_rows": [gone_row],
+        "last_group_digest_index": 0,
+    }
+    service = QQSessionMemoryService(SimpleNamespace(
+        _user_sessions={"group:7788": ud},
+        _qq_settings={"group_memory_enabled": True},
+        logger=MagicMock(),
+        _spawn_memory_sync_task=lambda coro: coro.close(),
+        _run_with_session_lock=None,
+    ))
+
+    await service.cache_session_delta("group:7788", ud)
+    assert ud["undelivered_draft_rows"] == [live_row]
+    assert ud["provisional_draft_rows"] == []
