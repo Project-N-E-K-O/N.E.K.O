@@ -67,7 +67,13 @@ jobs:
         # ~260 KB on its own, so install just that and keep the four fork tests
         # running instead of letting them skip in the one environment that
         # would otherwise never exercise them.
-        run: uv pip install pyclipper
+        #
+        # Pinned to the version uv.lock already resolved for the galgame group,
+        # so an index update cannot make an unchanged commit install a different
+        # release and turn this workflow red (Greptile P2). uv.lock stays the
+        # single source of truth: test_unit_tests_workflow_pins_locked_pyclipper
+        # fails if this pin and the lock ever drift apart.
+        run: uv pip install pyclipper==1.4.0
 
       - name: Run unit test suite
         # Separate pytest process from plugin/tests, which carries its own

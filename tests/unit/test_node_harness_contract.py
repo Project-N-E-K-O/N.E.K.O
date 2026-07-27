@@ -31,11 +31,14 @@ exactly what a new harness file would slip past.
 """
 
 import ast
+import re
+import tomllib
 from pathlib import Path
 
 import pytest
 
 TESTS_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = TESTS_ROOT.parent
 # The launcher itself is the one place allowed to call subprocess.run on node.
 EXEMPT = {TESTS_ROOT / "node_harness.py"}
 
@@ -84,6 +87,29 @@ def test_node_harnesses_go_through_the_shared_launcher():
     assert not offenders, (
         "这些地方直接用 subprocess 跑 node，绕开了 tests/node_harness 的"
         f"命令行长度与 UTF-8 兜底：{offenders}"
+    )
+
+
+def test_unit_tests_workflow_pins_locked_pyclipper():
+    """The workflow's standalone pyclipper install must track uv.lock.
+
+    It is installed outside ``uv sync`` because the group carrying it also
+    carries opencv, so nothing else keeps the two in step: an index update
+    could otherwise hand an unchanged commit a different release and turn the
+    workflow red. Pinning without this check just moves the drift somewhere
+    nobody looks.
+    """
+    workflow = (REPO_ROOT / ".github" / "workflows" / "unit-tests.yml").read_text(
+        encoding="utf-8"
+    )
+    pinned = re.search(r"uv pip install pyclipper==([\w.]+)", workflow)
+    assert pinned, "unit-tests.yml 里的 pyclipper 安装必须钉版本"
+
+    lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    locked = [p["version"] for p in lock["package"] if p["name"] == "pyclipper"]
+    assert locked, "uv.lock 里找不到 pyclipper，断言已失效"
+    assert pinned.group(1) == locked[0], (
+        f"workflow 钉的是 {pinned.group(1)}，uv.lock 解析的是 {locked[0]}"
     )
 
 
