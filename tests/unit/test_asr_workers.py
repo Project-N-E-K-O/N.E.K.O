@@ -1362,6 +1362,176 @@ async def test_step_manual_expired_commit_quarantines_late_items(
     await _stop_worker(task, requests, responses, utterance_id=3)
 
 
+async def test_step_server_vad_expired_turn_quarantines_late_distinct_ids(
+    monkeypatch,
+) -> None:
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        if isinstance(payload, str) and json.loads(payload)["type"] == "session.update":
+            await ws.server_send({"type": "session.updated"})
+
+    now = {"seconds": 0.0}
+    websocket = _FakeWebSocket(on_send=on_send)
+    monkeypatch.setattr(step.websockets, "connect", _FakeConnector(websocket))
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        step.step_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+            clock=lambda: now["seconds"],
+        )
+    )
+    await _next_event(responses, "ready")
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_started", "item_id": "step-audio-1"}
+    )
+    assert (await _next_event(responses, "utterance_started")).utterance_id == 1
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_stopped", "item_id": "step-audio-1"}
+    )
+    # Turn 2 enters the pending queue BEFORE the expiry so the FIFO fallback
+    # has a live turn a late event could wrongly consume.
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_started", "item_id": "step-audio-2"}
+    )
+    assert (await _next_event(responses, "utterance_started")).utterance_id == 2
+
+    now["seconds"] = step._STEP_PENDING_TURN_TIMEOUT_SECONDS + 1.0
+    await websocket.server_timeout()
+    stalled_final = await _next_event(responses, "final")
+    assert (stalled_final.utterance_id, stalled_final.text) == (1, "")
+
+    # The expired turn's late transcription arrives under a DISTINCT id with
+    # no exact audio mapping. It must be tombstoned, not FIFO-bound to the
+    # still-live turn 2.
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.delta",
+            "item_id": "step-late-1",
+            "text": "stale",
+        }
+    )
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "step-late-1",
+            "transcript": "stale done",
+        }
+    )
+    await _wait_until(lambda: websocket.incoming.empty())
+    assert responses.empty()
+
+    # Turn 2's own distinct-id transcription still binds through the FIFO
+    # fallback once the quarantine slot was consumed.
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "step-transcript-2",
+            "transcript": "second",
+        }
+    )
+    final = await _next_event(responses, "final")
+    assert (final.utterance_id, final.text) == (2, "second")
+
+    # Post-quarantine, the plain no-expiry distinct-id FIFO flow still works.
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_started", "item_id": "step-audio-3"}
+    )
+    assert (await _next_event(responses, "utterance_started")).utterance_id == 3
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "step-transcript-3",
+            "transcript": "third",
+        }
+    )
+    final = await _next_event(responses, "final")
+    assert (final.utterance_id, final.text) == (3, "third")
+    assert responses.empty()
+    await _stop_worker(task, requests, responses, utterance_id=4)
+
+
+async def test_step_server_vad_late_distinct_delta_tombstones_before_next_turn(
+    monkeypatch,
+) -> None:
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        if isinstance(payload, str) and json.loads(payload)["type"] == "session.update":
+            await ws.server_send({"type": "session.updated"})
+
+    now = {"seconds": 0.0}
+    websocket = _FakeWebSocket(on_send=on_send)
+    monkeypatch.setattr(step.websockets, "connect", _FakeConnector(websocket))
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        step.step_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+            clock=lambda: now["seconds"],
+        )
+    )
+    await _next_event(responses, "ready")
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_started", "item_id": "step-audio-1"}
+    )
+    assert (await _next_event(responses, "utterance_started")).utterance_id == 1
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_stopped", "item_id": "step-audio-1"}
+    )
+    await websocket.server_timeout()
+    await _wait_until(lambda: websocket.incoming.empty())
+
+    now["seconds"] = step._STEP_PENDING_TURN_TIMEOUT_SECONDS + 1.0
+    await websocket.server_timeout()
+    stalled_final = await _next_event(responses, "final")
+    assert (stalled_final.utterance_id, stalled_final.text) == (1, "")
+
+    # The late distinct-id delta arrives while NO turn is pending. It must be
+    # tombstoned immediately: merely dropping it would let its completed
+    # event outlive the quarantine and consume the next announced turn.
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.delta",
+            "item_id": "step-late-1",
+            "text": "stale",
+        }
+    )
+    await _wait_until(lambda: websocket.incoming.empty())
+    assert responses.empty()
+
+    # The next speech_started closes the quarantine window, but the
+    # tombstoned id must stay dead.
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_started", "item_id": "step-audio-2"}
+    )
+    assert (await _next_event(responses, "utterance_started")).utterance_id == 2
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "step-late-1",
+            "transcript": "stale done",
+        }
+    )
+    await _wait_until(lambda: websocket.incoming.empty())
+    assert responses.empty()
+
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "step-transcript-2",
+            "transcript": "second",
+        }
+    )
+    final = await _next_event(responses, "final")
+    assert (final.utterance_id, final.text) == (2, "second")
+    assert responses.empty()
+    await _stop_worker(task, requests, responses, utterance_id=3)
+
+
 async def test_step_receiver_skips_valid_non_dict_json_events(monkeypatch) -> None:
     async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
         if isinstance(payload, str) and json.loads(payload)["type"] == "session.update":
@@ -3435,6 +3605,133 @@ async def test_soniox_reconnects_once_and_replays_current_audio(monkeypatch) -> 
     assert (await _next_event(responses, "utterance_started")).generation == 4
     assert (await _next_event(responses, "final")).text == "replayed"
     await _stop_worker(task, requests, responses, generation=4, buffer_epoch=5)
+
+
+async def test_soniox_reconnect_preserves_next_turn_audio_sent_before_end(
+    monkeypatch,
+) -> None:
+    # A tiny retention tail proves both directions: the next turn's frames
+    # that reached the wire before <end> survive into the replay, while
+    # audio older than the tail is dropped at the turn boundary.
+    monkeypatch.setattr(soniox, "_REPLAY_TURN_TAIL_BYTES", 320)
+    first = _FakeWebSocket()
+    second = _FakeWebSocket()
+    connector = _FakeConnector(first, second)
+    monkeypatch.setattr(soniox.websockets, "connect", connector)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        soniox.soniox_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+        )
+    )
+    await _next_event(responses, "ready")
+    first_pcm = b"\x01\x00" * 160
+    await requests.put(
+        _AsrWorkerRequest(kind="audio", generation=0, utterance_id=1, audio=first_pcm)
+    )
+    await _wait_until(lambda: first_pcm in first.sent)
+    # Turn 2's opening frame reaches the wire while turn 1's <end> token is
+    # still in flight from the server.
+    turn2_prefix = b"\x02\x00" * 160
+    await requests.put(
+        _AsrWorkerRequest(
+            kind="audio", generation=0, utterance_id=1, audio=turn2_prefix
+        )
+    )
+    await _wait_until(lambda: turn2_prefix in first.sent)
+    await first.server_send(
+        {
+            "tokens": [
+                {"text": "first", "is_final": True},
+                {"text": "<end>", "is_final": True},
+            ]
+        }
+    )
+    assert (await _next_event(responses, "final")).text == "first"
+
+    turn2_rest = b"\x03\x00" * 160
+    await requests.put(
+        _AsrWorkerRequest(kind="audio", generation=0, utterance_id=1, audio=turn2_rest)
+    )
+    await _wait_until(lambda: turn2_rest in first.sent)
+    await first.server_end()
+
+    # The reconnect replay must contain turn 2's pre-<end> prefix, not only
+    # the frames sent after <end> was processed; turn 1's older audio beyond
+    # the retention tail is gone.
+    await _wait_until(lambda: len(connector.calls) == 2)
+    await _wait_until(
+        lambda: any(isinstance(sent, bytes) and sent for sent in second.sent)
+    )
+    replayed = next(sent for sent in second.sent if isinstance(sent, bytes) and sent)
+    assert replayed == turn2_prefix + turn2_rest
+
+    await second.server_send(
+        {
+            "tokens": [
+                {"text": "second turn", "is_final": True},
+                {"text": "<end>", "is_final": True},
+            ]
+        }
+    )
+    final = await _next_event(responses, "final")
+    assert (final.utterance_id, final.text) == (2, "second turn")
+    await _stop_worker(task, requests, responses, utterance_id=3)
+
+
+async def test_soniox_retained_tail_does_not_complete_empty_turn(
+    monkeypatch,
+) -> None:
+    websocket = _FakeWebSocket()
+    monkeypatch.setattr(soniox.websockets, "connect", _FakeConnector(websocket))
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        soniox.soniox_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+        )
+    )
+    await _next_event(responses, "ready")
+    pcm = b"\x01\x00" * 160
+    await requests.put(
+        _AsrWorkerRequest(kind="audio", generation=0, utterance_id=1, audio=pcm)
+    )
+    await _wait_until(lambda: pcm in websocket.sent)
+    await websocket.server_send(
+        {
+            "tokens": [
+                {"text": "first", "is_final": True},
+                {"text": "<end>", "is_final": True},
+            ]
+        }
+    )
+    assert (await _next_event(responses, "final")).text == "first"
+
+    # A stray <end> with no tokens (e.g. re-detected on the retained trailing
+    # audio) must not complete an empty turn off the carried tail alone.
+    await websocket.server_send({"tokens": [{"text": "<end>", "is_final": True}]})
+    await _wait_until(lambda: websocket.incoming.empty())
+    assert responses.empty()
+
+    await websocket.server_send(
+        {
+            "tokens": [
+                {"text": "second", "is_final": True},
+                {"text": "<end>", "is_final": True},
+            ]
+        }
+    )
+    started = await _next_event(responses, "utterance_started")
+    final = await _next_event(responses, "final")
+    assert (started.utterance_id, final.utterance_id, final.text) == (2, 2, "second")
+    await _stop_worker(task, requests, responses, utterance_id=3)
 
 
 async def test_soniox_reconnect_replays_frame_cancelled_mid_send(monkeypatch) -> None:

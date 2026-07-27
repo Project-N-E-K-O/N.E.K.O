@@ -60,6 +60,7 @@ class _StepConnectionState:
     unbound_manual_item_id_set: set[str] = field(default_factory=set)
     finalized_item_ids: set[str] = field(default_factory=set)
     manual_commit_expired: bool = False
+    expired_provider_turns: int = 0
     configured: asyncio.Event = field(default_factory=asyncio.Event)
     intentional_close: asyncio.Event = field(default_factory=asyncio.Event)
     error_sent: asyncio.Event = field(default_factory=asyncio.Event)
@@ -121,15 +122,32 @@ def _step_provider_item_key(
             if pending_key == audio_key:
                 del state.pending_provider_turns[index]
                 state.transcription_item_keys[item_id] = audio_key
+                # An exact audio-id binding proves this deployment reuses
+                # audio item ids for transcription events, so an expired
+                # turn's late transcription would carry its already
+                # tombstoned audio id; the quarantine window can close.
+                state.expired_provider_turns = 0
                 return audio_key
+    if state.expired_provider_turns:
+        # A provider turn expired on this connection without its
+        # transcription. Under a distinct-transcription-id deployment that
+        # late transcription is exactly an unknown id like this one, and
+        # FIFO-binding it would inject the expired turn's speech into the
+        # next live turn. Tombstone unknown ids, one per expired turn, until
+        # the quarantine drains, an exact binding succeeds, or the next
+        # speech_started opens a fresh binding window. Residual (the
+        # protocol exposes no correlation field): if the expired
+        # transcription never arrives, one live turn's transcription is
+        # tombstoned in its place and that turn expires empty (bounded
+        # loss); if it arrives after the window closed, FIFO may still
+        # misbind it.
+        state.expired_provider_turns -= 1
+        _step_remember_finalized_item(state, item_id)
+        return None
     if not state.pending_provider_turns:
         return None
     # Some Step deployments use a distinct transcription item ID. Preserve
     # FIFO fallback for those events after preferring an exact audio item ID.
-    # Once a pending audio turn has timed out, however, the protocol exposes
-    # no correlation field that can link a late distinct transcription ID to
-    # that evicted turn. Such a late event is inherently ambiguous and may
-    # consume the next FIFO entry; do not invent a heuristic association.
     # Exact audio IDs remain fail-closed through finalized_item_ids above.
     key, _ = state.pending_provider_turns.popleft()
     state.transcription_item_keys[item_id] = key
@@ -193,6 +211,12 @@ async def _step_expire_stalled_pending_turns(
                 # so until the next commit opens a new binding window any
                 # unknown item id must be tombstoned instead of parked.
                 state.manual_commit_expired = True
+            else:
+                # Provider analog of the manual quarantine: on a distinct-id
+                # deployment the expired turn's late transcription arrives
+                # with an unknown item id, so one unknown id per expired
+                # turn is tombstoned instead of FIFO-bound to a live turn.
+                state.expired_provider_turns += 1
             audio_item_id = state.provider_audio_ids_by_key.pop(key, None)
             if audio_item_id is not None:
                 _step_remember_finalized_item(state, audio_item_id)
@@ -550,6 +574,11 @@ async def _step_receiver(
                 state.last_utterance_id = key[2]
                 state.provider_audio_item_keys[item_id] = key
                 state.provider_audio_ids_by_key[key] = item_id
+                # A newly announced audio item opens a fresh binding window,
+                # mirroring the manual-commit quarantine reset at the next
+                # commit: unknown transcription ids from here on are expected
+                # to belong to live turns again.
+                state.expired_provider_turns = 0
                 # Unarmed while speech is live: the stalled-turn deadline is
                 # armed by the endpoint event, never by speech_started, so a
                 # long continuous utterance cannot expire mid-speech.

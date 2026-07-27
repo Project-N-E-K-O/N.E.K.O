@@ -51,6 +51,12 @@ _KEEPALIVE_SECONDS = 20.0
 _CLOSE_TIMEOUT_SECONDS = 0.5
 _SAFE_ROTATION_SECONDS = 295 * 60
 _MAX_REPLAY_BYTES = 16_000 * 2 * 30
+# Provider endpointing keeps streaming microphone audio while a turn's
+# ``<end>`` token is in flight, so the tail of the replay buffer at ``<end>``
+# processing time may already contain the next turn's opening frames. Two
+# seconds of 16 kHz PCM16 generously covers the endpoint silence window plus
+# token delivery latency.
+_REPLAY_TURN_TAIL_BYTES = 16_000 * 2 * 2
 _RETRY_BACKOFF_BASE_SECONDS = 0.5
 _RETRY_BACKOFF_CAP_SECONDS = 8.0
 
@@ -183,6 +189,10 @@ async def soniox_asr_worker(
     state = SonioxUtteranceState()
     replay_audio = bytearray()
     replay_complete = True
+    # Bytes at the front of replay_audio carried over from completed turns:
+    # they may belong to the next turn and are retained for reconnect replay,
+    # but do not count as audio sent for the current turn.
+    replay_carryover_bytes = 0
     provider_wire_audio_bytes = 0
     failure_sent = False
     ready_sent = False
@@ -281,7 +291,7 @@ async def soniox_asr_worker(
 
     async def complete_utterance() -> None:
         nonlocal pending_finalize, provider_wire_audio_bytes
-        nonlocal reconnect_attempted, replay_complete
+        nonlocal reconnect_attempted, replay_carryover_bytes, replay_complete
         if state.completed:
             return
         completion_identity = pending_finalize
@@ -298,7 +308,9 @@ async def soniox_asr_worker(
                 had_pending_finalize
                 or state.speech_started
                 or state.provisional_tokens
-                or replay_audio
+                # Audio was sent for this turn; the carried inter-turn tail
+                # alone must not complete an empty turn.
+                or len(replay_audio) > replay_carryover_bytes
             )
             if not should_complete_empty:
                 return
@@ -325,7 +337,21 @@ async def soniox_asr_worker(
             endpoint_ms,
             len(text),
         )
-        replay_audio.clear()
+        if config.endpointing_mode == "provider":
+            # The protocol exposes no byte-exact endpoint position, and
+            # microphone frames for the next turn may already sit in the
+            # replay buffer while this turn's <end> token was in flight.
+            # Retain a bounded tail so a disconnect during the next turn
+            # cannot replay away its opening frames; the residual is a short
+            # over-replay of this turn's trailing audio on reconnect, which
+            # is preferable to silently losing the next turn's speech.
+            del replay_audio[: max(0, len(replay_audio) - _REPLAY_TURN_TAIL_BYTES)]
+        else:
+            # Manual endpointing defers the next turn's audio until the
+            # pending finalize completes, so the buffer holds only this
+            # turn's frames and can be dropped whole.
+            replay_audio.clear()
+        replay_carryover_bytes = len(replay_audio)
         replay_complete = True
         provider_wire_audio_bytes = 0
         reconnect_attempted = False
@@ -412,7 +438,7 @@ async def soniox_asr_worker(
     async def send_requests(connection, connected_at: float) -> _ConnectionAction:
         nonlocal audio_bytes_sent, audio_frame_count, intentional_shutdown
         nonlocal pending_finalize, provider_wire_audio_bytes
-        nonlocal reconnect_attempted, replay_complete
+        nonlocal reconnect_attempted, replay_carryover_bytes, replay_complete
         while True:
             if deferred_requests and (
                 pending_finalize is None
@@ -511,8 +537,11 @@ async def soniox_asr_worker(
                 except asyncio.TimeoutError:
                     if (
                         time.monotonic() - connected_at >= _SAFE_ROTATION_SECONDS
-                        and not replay_audio
+                        and len(replay_audio) <= replay_carryover_bytes
                     ):
+                        # No current-turn audio is buffered; a carried
+                        # inter-turn tail survives the rotation and is
+                        # replayed on the next connection like any reconnect.
                         return "rotate"
                     await connection.send(json.dumps({"type": "keepalive"}))
                     continue
@@ -568,6 +597,7 @@ async def soniox_asr_worker(
                             else:
                                 replay_complete = False
                                 replay_audio.clear()
+                                replay_carryover_bytes = 0
                         provider_wire_audio_bytes += len(request.audio)
                         await connection.send(request.audio)
                         audio_frame_count += 1
@@ -593,6 +623,7 @@ async def soniox_asr_worker(
                     finalize_completed.set()
                     discard_deferred_requests()
                     replay_audio.clear()
+                    replay_carryover_bytes = 0
                     replay_complete = True
                     provider_wire_audio_bytes = 0
                     reconnect_attempted = False
