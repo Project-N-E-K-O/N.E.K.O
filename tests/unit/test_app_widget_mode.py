@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.node_harness import run_node_script
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_WIDGET_MODE_PATH = PROJECT_ROOT / "static" / "app" / "app-widget-mode.js"
@@ -17,8 +19,9 @@ def _run_node_harness(script: str) -> subprocess.CompletedProcess[str]:
     node = shutil.which("node")
     if not node:
         pytest.skip("node is required for the Widget Mode browser contract test")
-    return subprocess.run(
-        [node, "-e", script],
+    return run_node_script(
+        node,
+        script,
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
