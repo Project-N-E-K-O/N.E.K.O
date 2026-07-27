@@ -376,22 +376,6 @@ class OcrReaderManager(
         repo_root = Path(__file__).resolve().parents[3]
         return (repo_root / path).resolve()
 
-    def _warn_teardown_failed(self, what: str, exc: BaseException) -> None:
-        """Best-effort warning for one failed teardown step.
-
-        The logger itself is treated as unreliable here: close() runs while the
-        plugin is being torn down, so a logger that is already gone or raising
-        must not turn one failed step into a lost one.
-        """
-        warning = getattr(getattr(self, "_logger", None), "warning", None)
-        if callable(warning):
-            try:
-                warning(f"ocr_reader {what} failed: {{}}", exc)
-            except Exception:
-                # 记日志本身失败没有下一手可用——再往上抛就会把这次收尾变成
-                # 「一个步骤没关成，剩下的也别关了」，正是本函数要避免的。
-                pass
-
     def close(self) -> None:
         # 顺序与 ocr_manager_poll.shutdown() 对偶：先停前台监听线程与 capture
         # 线程池，再释放它们可能仍在用的重依赖。两步重依赖释放原本裸奔在最前
@@ -404,15 +388,15 @@ class OcrReaderManager(
         try:
             self._stop_foreground_advance_monitor(join_timeout=1.0)
         except Exception as exc:
-            self._warn_teardown_failed("foreground advance monitor shutdown", exc)
+            self._log_warning("ocr_reader foreground advance monitor shutdown failed: {}", exc)
         try:
             self._shutdown_capture_worker()
         except Exception as exc:
-            self._warn_teardown_failed("capture worker shutdown", exc)
+            self._log_warning("ocr_reader capture worker shutdown failed: {}", exc)
         try:
             self._release_rapidocr_backend()
         except Exception as exc:
-            self._warn_teardown_failed("rapidocr backend release", exc)
+            self._log_warning("ocr_reader rapidocr backend release failed: {}", exc)
         # 引用先摘掉再 close：close 失败也不能把一个已经宣告释放的 classifier
         # 继续挂在 self 上。getattr 兜底与本文件对 _logger 的取法一致——收尾
         # 路径不该假设自己被构造完整。
@@ -423,7 +407,7 @@ class OcrReaderManager(
             try:
                 close_classifier()
             except Exception as exc:
-                self._warn_teardown_failed("vision classifier close", exc)
+                self._log_warning("ocr_reader vision classifier close failed: {}", exc)
 
     def __enter__(self) -> "OcrReaderManager":
         return self
