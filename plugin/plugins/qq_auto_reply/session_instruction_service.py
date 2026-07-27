@@ -660,7 +660,11 @@ class QQSessionInstructionService:
         Returns the injected section text (empty when nothing was added) so
         the caller can strip it if the opt-in is revoked while later
         context-building awaits are still running."""
-        if not is_group or not current_group_id:
+        # 群号一律 strip 后比较（与本文件其余路径同一口径）：不规范化的话
+        # " 7788 " 匹配不上存下来的 "7788"，当前群自己的话题会被当成"其他
+        # 群"注入；而 "   " 这种全空白也会被当成有效群号放行。
+        current_group = str(current_group_id or "").strip()
+        if not is_group or not current_group:
             return ""
         if not bool((getattr(self.plugin, "_qq_settings", {}) or {}).get(
             "allow_cross_group_context", False,
@@ -673,8 +677,8 @@ class QQSessionInstructionService:
                 continue
             if not s.get("is_group"):
                 continue
-            gid = str(s.get("group_id") or "")
-            if gid == str(current_group_id or ""):
+            gid = str(s.get("group_id") or "").strip()
+            if gid == current_group:
                 continue  # 跳过当前群
             title = s.get("user_title") or gid
             last_msg = ""

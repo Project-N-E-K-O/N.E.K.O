@@ -9566,3 +9566,41 @@ async def test_cancelled_save_publishes_an_opt_in_that_did_land():
     with pytest.raises(asyncio.CancelledError):
         await task
     assert published == [{"group_memory_enabled": True}]
+
+
+def test_cross_group_section_normalizes_the_current_group_id():
+    """Group ids arrive with whitespace from several call paths. Comparing
+    them raw makes the CURRENT group look like another one, so its own
+    topics get injected back as cross-group context."""
+    from plugin.plugins.qq_auto_reply.session_instruction_service import (
+        QQSessionInstructionService,
+    )
+
+    def _session(gid, text):
+        return {
+            "is_group": True, "group_id": gid, "user_title": f"群{gid}",
+            "session": SimpleNamespace(_conversation_history=[
+                SimpleNamespace(role="user", content=text),
+            ]),
+        }
+
+    plugin = SimpleNamespace(
+        _qq_settings={"allow_cross_group_context": True},
+        _user_sessions={
+            "group:7788": _session("7788", "本群的话题"),
+            "group:9900": _session("9900", "别的群的话题"),
+        },
+        logger=MagicMock(),
+        i18n=_default_i18n(),
+    )
+    service = QQSessionInstructionService(plugin)
+
+    sections: list = []
+    rendered = service._append_cross_group_section(sections, " 7788 ", True)
+    assert "别的群的话题" in rendered
+    assert "本群的话题" not in rendered
+
+    # A blank id is not a group: nothing may be injected under it.
+    sections = []
+    assert service._append_cross_group_section(sections, "   ", True) == ""
+    assert sections == []
