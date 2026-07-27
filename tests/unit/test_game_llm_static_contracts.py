@@ -1,7 +1,9 @@
+import json
 import re
 from pathlib import Path
 
 import pytest
+from jinja2 import Environment, FileSystemLoader
 
 from config.prompts.prompts_soccer import (
     get_soccer_pregame_context_prompt,
@@ -14,6 +16,44 @@ from scripts import check_no_temperature
 
 
 ROOT = Path(__file__).resolve().parents[2]
+SOCCER_TEMPLATE_PATH = ROOT / "templates" / "soccer_demo.html"
+SOCCER_SCRIPT_PATH = ROOT / "static" / "game" / "games" / "soccer" / "soccer-demo.js"
+SOCCER_STYLE_PATH = ROOT / "static" / "game" / "games" / "soccer" / "soccer-demo.css"
+
+
+@pytest.mark.unit
+def test_soccer_template_loads_split_css_and_javascript_assets():
+    template = SOCCER_TEMPLATE_PATH.read_text(encoding="utf-8")
+    script = SOCCER_SCRIPT_PATH.read_text(encoding="utf-8")
+    style = SOCCER_STYLE_PATH.read_text(encoding="utf-8")
+
+    assert '/static/game/games/soccer/soccer-demo.css?v={{ static_asset_version }}' in template
+    assert '/static/game/games/soccer/soccer-demo.js?v={{ static_asset_version }}' in template
+    assert 'id="soccer-runtime-config" type="application/json"' in template
+    assert "<style" not in template
+    assert "window.SoccerDemo =" not in template
+    assert "window.SoccerDemo =" in script
+    assert "#soccer-start-button" in style
+
+
+@pytest.mark.unit
+def test_soccer_template_renders_runtime_config_and_asset_version():
+    rendered = Environment(loader=FileSystemLoader(ROOT)).get_template(
+        "templates/soccer_demo.html"
+    ).render(
+        vrm_defaults={"ambientIntensity": 1.25},
+        static_asset_version="test-version",
+    )
+    config_match = re.search(
+        r'<script id="soccer-runtime-config" type="application/json">(.*?)</script>',
+        rendered,
+        re.DOTALL,
+    )
+
+    assert config_match
+    assert json.loads(config_match.group(1))["vrm_defaults"]["ambientIntensity"] == 1.25
+    assert "soccer-demo.css?v=test-version" in rendered
+    assert "soccer-demo.js?v=test-version" in rendered
 
 
 @pytest.mark.unit
@@ -61,7 +101,7 @@ def test_soccer_quick_lines_and_pregame_prompts_are_localized():
 
 @pytest.mark.unit
 def test_soccer_realtime_context_posts_local_mutation_headers():
-    html = ROOT.joinpath("templates/soccer_demo.html").read_text(encoding="utf-8")
+    html = ROOT.joinpath("static/game/games/soccer/soccer-demo.js").read_text(encoding="utf-8")
     headers_block = html.split("function _getLocalMutationHeaders()", 1)[1].split(
         "function _refreshLocalMutationHeaders()",
         1,
@@ -76,7 +116,7 @@ def test_soccer_realtime_context_posts_local_mutation_headers():
     assert "headers['X-CSRF-Token'] = config.autostart_csrf_token;" in headers_block
     assert "cache: 'no-store'" in headers_block
     assert "credentials: 'same-origin'" in context_block
-    assert "headers,\n        body: bodyJson" in context_block
+    assert re.search(r"headers,\s+body: bodyJson", context_block)
     assert "await postWithHeaders(await _getLocalMutationHeaders())" in context_block
     assert "errorPayload.error_code === 'csrf_validation_failed'" in context_block
     assert "await postWithHeaders(await _refreshLocalMutationHeaders())" in context_block
@@ -84,7 +124,7 @@ def test_soccer_realtime_context_posts_local_mutation_headers():
 
 @pytest.mark.unit
 def test_soccer_template_posts_session_debug_errors():
-    html = ROOT.joinpath("templates/soccer_demo.html").read_text(encoding="utf-8")
+    html = ROOT.joinpath("static/game/games/soccer/soccer-demo.js").read_text(encoding="utf-8")
     debug_start_anchor = "function _sendSoccerDebugLog(payload)"
     debug_end_anchor = "function soccerSessionDebugLog"
     assert debug_start_anchor in html
@@ -137,7 +177,7 @@ def test_soccer_template_posts_session_debug_errors():
 
 @pytest.mark.unit
 def test_soccer_mood_rotation_only_runs_for_pure_game_fallback():
-    html = ROOT.joinpath("templates/soccer_demo.html").read_text(encoding="utf-8")
+    html = ROOT.joinpath("static/game/games/soccer/soccer-demo.js").read_text(encoding="utf-8")
 
     assert "function _shouldUsePureGameMoodRotationFallback()" in html
     assert "source === 'fallback' || !!error" in html
@@ -156,7 +196,7 @@ def test_soccer_mood_rotation_only_runs_for_pure_game_fallback():
 
 @pytest.mark.unit
 def test_soccer_passive_guard_writes_structured_debug_events():
-    html = ROOT.joinpath("templates/soccer_demo.html").read_text(encoding="utf-8")
+    html = ROOT.joinpath("static/game/games/soccer/soccer-demo.js").read_text(encoding="utf-8")
     router_source = ROOT.joinpath("main_routers/game_router/runtime.py").read_text(encoding="utf-8")
 
     assert "function _passiveGuardDebugLog(" in html

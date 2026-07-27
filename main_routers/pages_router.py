@@ -103,6 +103,8 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/jukebox/music_ui.js",
     _PROJECT_ROOT / "static/css/music_ui.css",
     _PROJECT_ROOT / "static/assets/music/music-cover-placeholder.png",
+    _PROJECT_ROOT / "static/game/games/soccer/soccer-demo.css",
+    _PROJECT_ROOT / "static/game/games/soccer/soccer-demo.js",
     *_PROJECT_ROOT.glob("static/app/app-react-chat-window/*.js"),
     _PROJECT_ROOT / "static/app/app-chat-export.js",
     *_AVATAR_UI_BUTTON_ASSET_PATHS,
@@ -268,6 +270,7 @@ async def soccer_demo(request: Request):
     return templates.TemplateResponse("templates/soccer_demo.html", {
         "request": request,
         **_vrm_defaults_ctx(),
+        **_static_assets_ctx(),
     })
 
 
