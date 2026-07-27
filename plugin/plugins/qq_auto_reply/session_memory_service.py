@@ -200,6 +200,29 @@ class QQSessionMemoryService:
             if not any(existing is msg for existing in rows):
                 rows.append(msg)
 
+    def record_tail_undelivered_ai_row(self, session_key: str) -> None:
+        """Mark the newest ai row as undelivered after a FAILED direct send.
+
+        History-backed replies that bypass the buffer (synthetic turns, or
+        no buffer service) already sit in the shared history when delivery
+        fails — without this, the next digest/finalize extracts the unsent
+        reply as durable memory. Failed sends are final (no retry), so the
+        row goes straight to the exclusion list, not the provisional set."""
+        user_data = (getattr(self.plugin, "_user_sessions", {}) or {}).get(
+            session_key
+        )
+        if not isinstance(user_data, dict) or not user_data.get("is_group"):
+            return
+        session = user_data.get("session")
+        history = getattr(session, "_conversation_history", None) or []
+        for msg in reversed(history):
+            if getattr(msg, "type", "") != "ai":
+                continue
+            rows = user_data.setdefault("undelivered_draft_rows", [])
+            if not any(existing is msg for existing in rows):
+                rows.append(msg)
+            return
+
     def record_group_member_turn(self, user_data: dict[str, Any], context: Any) -> None:
         """Keep bounded, actor-attributed user turns for optional member memory."""
         settings = getattr(self.plugin, "_qq_settings", {}) or {}

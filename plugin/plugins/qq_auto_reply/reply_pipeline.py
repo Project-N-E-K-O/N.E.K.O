@@ -288,6 +288,25 @@ class QQReplyPipelineRunner:
         result = await self.plugin.reply_delivery_node.deliver(delivery_plan)
         if (
             result is not None
+            and not getattr(result, "delivered", False)
+            and request is not None
+            and request.is_group
+            and outcome is not None
+            and not getattr(outcome, "used_fallback", False)
+        ):
+            # 直投失败（合成轮/无 buffer 的 history-backed 回复）：ai 行已
+            # 躺在共享历史里，不记名单的话下一次 digest/finalize 会把没
+            # 发出去的回复提取成持久记忆。失败即定局，直接进排除名单。
+            session_key = self.plugin._build_session_key(
+                sender_id=request.sender_id,
+                is_group=True,
+                group_id=request.group_id,
+            )
+            self.plugin.session_memory_service.record_tail_undelivered_ai_row(
+                session_key
+            )
+        if (
+            result is not None
             and getattr(result, "delivered", False)
             and context is not None
             and outcome is not None

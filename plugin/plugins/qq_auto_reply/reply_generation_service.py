@@ -78,6 +78,7 @@ class QQReplyGenerationService:
                 "group_scene_mode": context.group_scene_mode,
             },
         )
+        synthetic_hist_before = None
         try:
             user_data = await self.plugin.session_bootstrap_service.ensure_generation_session(context, session_key)
             if not user_data:
@@ -88,6 +89,18 @@ class QQReplyGenerationService:
                 user_data,
                 session_key=session_key,
                 context=context,
+            )
+
+            # 合成轮的 prompt 行在生成过程中进入历史：超时 salvage（下面
+            # except 里的 discard→finalize）可能在 pipeline 的 finally 记录
+            # 排除之前就把历史结算掉——生成前先记长度，超时时先排除再丢。
+            synthetic_hist_before = (
+                len(getattr(user_session, "_conversation_history", []) or [])
+                if getattr(context, "source_kind", "") in (
+                    "rapid_fire_flush", "proactive_speech", "buffer_delayed",
+                    "group_join_notice", "retroactive_review",
+                )
+                else None
             )
 
             ai_reply = await self._run_session_generation(
@@ -117,6 +130,13 @@ class QQReplyGenerationService:
         except asyncio.TimeoutError:
             # discard_session 内部会先结算群 scoped 缓冲再丢弃（集中抢救）。
             self.plugin.logger.warning(f"会话 {session_key} 处理超时，关闭并丢弃该会话")
+            if synthetic_hist_before is not None:
+                # 抢救会立即 finalize：合成控制 prompt 行必须先进排除名单，
+                # 否则 pipeline 层跑完后的记录来不及、控制指令被提取成
+                # 参与者历史。
+                self.plugin.session_memory_service.record_synthetic_prompt_rows(
+                    session_key, synthetic_hist_before,
+                )
             discarded = await self.plugin.session_runtime_service.discard_session(session_key, reason="generation_timeout")
             if discarded is False:
                 # 结算失败被有意保留：但本会话的 stream 刚被 wait_for 强制

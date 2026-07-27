@@ -25,7 +25,11 @@ class QQReplyDeliveryNode:
                 await asyncio.sleep(random.uniform(2.0, 5.0))
 
             if block.poke:
-                await self._send_poke(plan, block)
+                # poke-only 计划：私聊目标/冷却跳过时什么都没发出——不计
+                # 确认会让 delivered=True 清掉未投递标、记下 mention。
+                any_text_attempted = True
+                if not await self._send_poke(plan, block):
+                    all_text_sent = False
                 continue
 
             if block.record:
@@ -114,20 +118,22 @@ class QQReplyDeliveryNode:
             await self.plugin.qq_client.send_group_image(plan.target_id, sticker_path)
         )
 
-    async def _send_poke(self, plan: QQDeliveryPlan, block: QQMessageBlock) -> None:
+    async def _send_poke(self, plan: QQDeliveryPlan, block: QQMessageBlock) -> bool:
         if plan.target_type != "group" or not block.poke:
-            return
+            return False
         # 冷却：同一群每 30 秒最多戳一次，避免刷屏
         now = __import__("time").time()
         key = f"poke_out:{plan.target_id}"
         last = getattr(self, "_last_poke_out", {}).get(key, 0)
         if now - last < 30:
             self.plugin._emit_log("INFO", f"戳一戳冷却中，跳过 (群{plan.target_id})")
-            return
+            return False
         if not hasattr(self, "_last_poke_out"):
             self._last_poke_out = {}
         self._last_poke_out[key] = now
-        await self.plugin.qq_client.send_group_poke(plan.target_id, block.poke)
+        return self._confirm_platform_result(
+            await self.plugin.qq_client.send_group_poke(plan.target_id, block.poke)
+        )
 
     def _confirm_platform_result(self, result) -> bool:
         """开放平台失败吞异常返回 None——只有那个显式 None 判未投递；

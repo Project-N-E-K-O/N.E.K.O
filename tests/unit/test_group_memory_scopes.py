@@ -2419,13 +2419,35 @@ async def test_run_delivery_direct_branch_records_mentions_on_success():
         context, "回复",
     )
 
-    # Failed delivery records nothing.
+    # Failed delivery records no mentions AND marks the history-backed ai
+    # row as undelivered — the unsent reply must not reach digests.
     plugin.reply_generation_service.record_scoped_mentions_on_delivery.reset_mock()
     plugin.reply_delivery_node.deliver = AsyncMock(return_value=QQDeliveryResult(
         delivered=False, target_type="group", target_id="7788", reply_text=None,
     ))
-    await runner._run_delivery(plan, None, outcome, context=context)
+    plugin._build_session_key = (
+        lambda *, sender_id, is_group, group_id: f"group:{group_id}"
+    )
+    plugin.session_memory_service = SimpleNamespace(
+        record_tail_undelivered_ai_row=MagicMock(),
+    )
+    from plugin.plugins.qq_auto_reply.pipeline_models import QQReplyRequest
+
+    failed_request = QQReplyRequest(
+        message_text="hi", sender_id="1", is_group=True, group_id="7788",
+    )
+    await runner._run_delivery(plan, failed_request, outcome, context=context)
     plugin.reply_generation_service.record_scoped_mentions_on_delivery.assert_not_awaited()
+    plugin.session_memory_service.record_tail_undelivered_ai_row.assert_called_once_with(
+        "group:7788"
+    )
+    # Fallback replies have no history row: nothing to mark.
+    plugin.session_memory_service.record_tail_undelivered_ai_row.reset_mock()
+    fb_outcome = QQReplyOutcome(
+        action="reply", reply_text="回复", used_fallback=True,
+    )
+    await runner._run_delivery(plan, failed_request, fb_outcome, context=context)
+    plugin.session_memory_service.record_tail_undelivered_ai_row.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -2543,6 +2565,36 @@ async def test_delivery_result_reflects_open_platform_send_failure():
     plat = QQOpenPlatformConnection.__new__(QQOpenPlatformConnection)
     plat.send_private_message_segments = AsyncMock(return_value="mid")
     assert await plat.send_private_record("10086", "file://x") == "mid"
+    plat.send_private_message_segments = AsyncMock(return_value=None)
+    assert await plat.send_private_record("10086", "file://x") is None
+
+    # Poke-only plan: a skipped poke (private target / cooldown) sends
+    # nothing and must not report delivered; a confirmed group poke does.
+    poke_plugin = SimpleNamespace(
+        _get_reply_mode=lambda: "text",
+        _emit_log=lambda *a, **k: None,
+        qq_client=SimpleNamespace(
+            needs_attention=False,
+            send_group_poke=AsyncMock(return_value="ok"),
+        ),
+    )
+    poke_node = QQReplyDeliveryNode.__new__(QQReplyDeliveryNode)
+    poke_node.plugin = poke_plugin
+    poke_private = QQDeliveryPlan(
+        target_type="private", target_id="1",
+        blocks=[QQMessageBlock(poke="2")],
+    )
+    result = await poke_node.deliver(poke_private)
+    assert result.delivered is False
+    poke_group = QQDeliveryPlan(
+        target_type="group", target_id="7788",
+        blocks=[QQMessageBlock(poke="2")],
+    )
+    result = await poke_node.deliver(poke_group)
+    assert result.delivered is True
+    # Cooldown skip: nothing sent, not delivered.
+    result = await poke_node.deliver(poke_group)
+    assert result.delivered is False
 
     # Multi-block partial failure: ALL attempted text blocks must confirm —
     # the exclusion list is whole-row, so a half-sent reply must not clear
@@ -2557,6 +2609,45 @@ async def test_delivery_result_reflects_open_platform_send_failure():
             blocks=[QQMessageBlock(text="第一块"), QQMessageBlock(text="第二块")],
         ))
     assert result.delivered is False
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_voice_send_falls_back_to_text():
+    """An Open Platform voice send that returns None (swallowed failure,
+    no exception) must still run the requested text fallback — returning
+    False directly would drop the reply entirely."""
+    from plugin.plugins.qq_auto_reply.voice_reply_service import (
+        QQVoiceReplyService,
+    )
+
+    plugin = SimpleNamespace(
+        _validate_outbound_message=lambda t: t,
+        _get_reply_mode=lambda: "voice",
+        qq_client=SimpleNamespace(
+            needs_attention=False,
+            send_private_record=AsyncMock(return_value=None),
+            send_message=AsyncMock(return_value="mid"),
+        ),
+        logger=MagicMock(),
+    )
+    service = QQVoiceReplyService.__new__(QQVoiceReplyService)
+    service.plugin = plugin
+    service.synthesize_reply_voice_file = AsyncMock(
+        return_value=("file://x", 0),
+    )
+    ok = await service.deliver_private_reply(
+        "10086", "你好", fallback_to_text_on_voice_failure=True,
+    )
+    assert ok is True
+    plugin.qq_client.send_message.assert_awaited_once()
+
+    # Without the fallback flag the unconfirmed send stays False.
+    plugin.qq_client.send_message.reset_mock()
+    ok = await service.deliver_private_reply(
+        "10086", "你好", fallback_to_text_on_voice_failure=False,
+    )
+    assert ok is False
+    plugin.qq_client.send_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -2817,12 +2908,72 @@ async def test_timeout_discard_failure_marks_sticky_retry():
     plugin.session_runtime_service.discard_session.assert_awaited_once()
     assert kept["pending_identity_discard"] is True
 
-    # A successful discard leaves no marker behind (the key is gone).
-    plugin._user_sessions.pop("group:7788", None)
-    plugin.session_runtime_service.discard_session = AsyncMock(return_value=True)
+    # A successful discard removes the session itself (the fake performs
+    # the real success behavior) and leaves no sticky marker behind.
+    fresh = {"is_group": True, "memory_enabled": True}
+    plugin._user_sessions["group:7788"] = fresh
+    plugin.session_bootstrap_service.ensure_generation_session = AsyncMock(
+        return_value=fresh,
+    )
+
+    async def _discard_ok(session_key, reason):
+        plugin._user_sessions.pop(session_key, None)
+        return True
+
+    plugin.session_runtime_service.discard_session = _discard_ok
     result = await service.run_primary_session_call(context)
     assert result.timed_out is True
     assert "group:7788" not in plugin._user_sessions
+    assert "pending_identity_discard" not in fresh
+
+    # Synthetic turn timing out: the control prompt row must enter the
+    # exclusion list BEFORE the salvage discard runs — the discard
+    # finalizes immediately, and the pipeline-level recording only happens
+    # after run() returns.
+    prompt_row = SimpleNamespace(type="human", content="[synthetic]")
+    session_obj = SimpleNamespace(_conversation_history=[])
+    syn_ud = {"is_group": True, "memory_enabled": True, "session": session_obj}
+    plugin._user_sessions["group:7788"] = syn_ud
+    plugin.session_bootstrap_service.ensure_generation_session = AsyncMock(
+        return_value=syn_ud,
+    )
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    memory_service = QQSessionMemoryService.__new__(QQSessionMemoryService)
+    memory_service.plugin = plugin
+    plugin.session_memory_service = memory_service
+    order = []
+
+    def _prime(ud, *, session_key, context):
+        return session_obj, []
+
+    plugin.session_runtime_service.prime_generation_session_state = _prime
+
+    async def _timeout_after_append(**kwargs):
+        session_obj._conversation_history.append(prompt_row)
+        raise asyncio.TimeoutError()
+
+    service._run_session_generation = _timeout_after_append
+
+    async def _salvage(session_key, reason):
+        order.append(
+            any(
+                r is prompt_row
+                for r in syn_ud.get("undelivered_draft_rows", [])
+            )
+        )
+        return True
+
+    plugin.session_runtime_service.discard_session = _salvage
+    syn_context = SimpleNamespace(
+        is_group=True, group_id="7788", ephemeral_session=False,
+        group_scene_mode="shared_context", source_kind="rapid_fire_flush",
+    )
+    result = await service.run_primary_session_call(syn_context)
+    assert result.timed_out is True
+    assert order == [True]  # excluded before the salvage saw the session
 
 
 @pytest.mark.asyncio
@@ -2968,14 +3119,23 @@ async def test_unpersisted_memory_toggle_rolls_back():
     assert ud["pending_disable_settle"] is True
     assert len(spawned) == 1
 
-    # Member-only failure rolls back just the member flag.
+    # Member-only failure rolls back the flag AND discards live buckets
+    # collected during the failed opt-in window — re-enabling later must
+    # not mix them with newly authorized turns.
     service.plugin._qq_settings["group_member_memory_enabled"] = True
+    ud["group_member_memory_messages"] = {"1": [{"role": "user", "content": []}]}
+    ud["group_member_memory_labels"] = {"1": "1"}
+    ud["pending_settle_buckets"] = {"2": [{"role": "user", "content": []}]}
     service._rollback_unpersisted_memory_toggles(
         False,
         group_memory_before=False, group_memory_after=False,
         member_memory_before=False, member_memory_after=True,
     )
     assert service.plugin._qq_settings["group_member_memory_enabled"] is False
+    assert "group_member_memory_messages" not in ud
+    assert "group_member_memory_labels" not in ud
+    # The pending snapshot belongs to a previously saved era: untouched.
+    assert "pending_settle_buckets" in ud
     assert len(spawned) == 1
 
 

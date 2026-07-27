@@ -353,9 +353,19 @@ class QQVoiceReplyService:
                 )
         try:
             file_uri, _ = await self.synthesize_reply_voice_file(normalized_text)
-            return self._confirm_send(
+            voice_ok = self._confirm_send(
                 await self.plugin.qq_client.send_private_record(target_qq, file_uri)
             )
+            if voice_ok:
+                return True
+            if mode == "voice" and fallback_to_text_on_voice_failure:
+                # 开放平台失败吞异常返回 None（不 raise）：未确认同样要走
+                # 文本回退，不能把"没发出去"当结论直接返回。
+                self.plugin.logger.warning("QQ 纯语音私聊发送未确认，回退文本")
+                return self._confirm_send(
+                    await self.plugin.qq_client.send_message(target_qq, normalized_text)
+                )
+            return False
         except Exception:
             if mode == "voice" and fallback_to_text_on_voice_failure:
                 self.plugin.logger.warning("QQ 纯语音私聊发送失败，回退文本", exc_info=True)
@@ -403,9 +413,18 @@ class QQVoiceReplyService:
                 )
         try:
             file_uri, _ = await self.synthesize_reply_voice_file(normalized_text)
-            return self._confirm_send(
+            voice_ok = self._confirm_send(
                 await self.plugin.qq_client.send_group_record(group_id, file_uri, reply_message_id=reply_message_id, at_user_id=at_user_id)
             )
+            if voice_ok:
+                return True
+            if mode == "voice" and fallback_to_text_on_voice_failure:
+                # 对偶私聊路径：未确认（开放平台吞异常返回 None）也回退文本。
+                self.plugin.logger.warning("QQ 纯语音群聊发送未确认，回退文本")
+                return self._confirm_send(
+                    await self.plugin.qq_client.send_group_message_segments(group_id, text_segments)
+                )
+            return False
         except Exception:
             if mode == "voice" and fallback_to_text_on_voice_failure:
                 self.plugin.logger.warning("QQ 纯语音群聊发送失败，回退文本", exc_info=True)

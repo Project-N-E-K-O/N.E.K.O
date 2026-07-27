@@ -80,6 +80,17 @@ class QQSettingsService:
             )
         elif member_memory_before != member_memory_after:
             self.plugin._qq_settings["group_member_memory_enabled"] = member_memory_before
+            if not member_memory_before:
+                # 开启保存失败：失败窗口内收集的 bucket 属于"从未成功保存
+                # 的 opt-in"——留着的话，之后成功开启时会与新授权项混合
+                # 入库。对齐群开关回滚的 discard 语义，直接丢弃活 bucket
+                # （pending 快照属于之前已保存的时代，不动）。
+                for ud in list(
+                    getattr(self.plugin, "_user_sessions", {}).values()
+                ):
+                    if ud.get("is_group"):
+                        ud.pop("group_member_memory_messages", None)
+                        ud.pop("group_member_memory_labels", None)
             self.plugin._emit_log(
                 "WARNING",
                 "成员记忆开关变更未能写盘，已回滚运行时策略",
