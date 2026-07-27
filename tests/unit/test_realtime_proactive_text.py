@@ -12,6 +12,7 @@ import pytest
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from main_logic.omni_realtime_client import OmniRealtimeClient, TurnDetectionMode
+from main_logic.omni_realtime_client import _responses as responses_module
 
 
 DUMMY_IMAGE_B64 = "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP/Z"
@@ -163,6 +164,24 @@ async def test_failed_response_done_returns_false_and_preserves_image():
     assert await task is False
     assert client._proactive_image_consumed is False
     assert client._latest_image_b64 == DUMMY_IMAGE_B64
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_delivery_timeout_releases_inject_state_for_retry(monkeypatch):
+    client = _make_client()
+    monkeypatch.setattr(
+        responses_module,
+        "_PROACTIVE_INJECT_DELIVERY_TIMEOUT_SECONDS",
+        0.01,
+    )
+
+    delivered = await client.prompt_ephemeral("retry after timeout")
+
+    assert delivered is False
+    assert client._proactive_inject_awaiting_outcome is False
+    assert client._inject_rejection_handlers == {}
+    assert client._inject_completion_handlers == {}
     await client.close()
 
 
