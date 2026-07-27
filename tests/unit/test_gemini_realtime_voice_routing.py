@@ -577,6 +577,50 @@ def test_vllm_runtime_key_tracks_raw_runtime_config(monkeypatch):
     assert "Qwen3-TTS-v2" not in key_a
 
 
+def test_custom_openai_runtime_key_tracks_url_and_model(monkeypatch):
+    class _CM:
+        def __init__(self, url, model):
+            self.url = url
+            self.model = model
+
+        def get_core_config(self):
+            return {
+                "ENABLE_CUSTOM_API": True,
+                "ttsModelProvider": "custom",
+                "ttsModelUrl": self.url,
+                "ttsModelId": self.model,
+                "ttsVoiceId": "character-voice",
+                "DISABLE_TTS": False,
+            }
+
+        def get_model_api_config(self, model_type):
+            assert model_type == "tts_custom"
+            return {
+                "base_url": "https://assist.invalid/v1",
+                "model": "assist-fallback",
+                "api_key": "sk-custom",
+            }
+
+        def voice_id_exists_in_any_storage(self, _voice_id):
+            return False
+
+    monkeypatch.setattr(
+        core_module,
+        "get_tts_worker",
+        lambda **kwargs: (object(), "sk-custom", "custom"),
+    )
+
+    mgr = _make_mgr("character-voice")
+    mgr._config_manager = _CM("https://speech-a.example.com/v1", "tts-a")
+    key_a = LLMSessionManager._build_tts_runtime_key(mgr)
+    mgr._config_manager = _CM("https://speech-b.example.com/v1", "tts-b")
+    key_b = LLMSessionManager._build_tts_runtime_key(mgr)
+
+    assert key_a != key_b
+    assert ("custom", "https://speech-a.example.com/v1", "tts-a", "character-voice") in key_a
+    assert ("custom", "https://speech-b.example.com/v1", "tts-b", "character-voice") in key_b
+
+
 def test_vllm_runtime_key_uses_provider_defaults_without_raw_runtime_config():
     class _CM:
         def get_core_config(self):

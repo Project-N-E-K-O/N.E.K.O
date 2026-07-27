@@ -338,6 +338,8 @@ class TtsRuntimeMixin:
                 self._resolve_vllm_omni_runtime_config(core_config),
                 (
                     str(core_config.get('ttsModelProvider') or '').strip(),
+                    str(core_config.get('ttsModelUrl') or '').strip(),
+                    str(core_config.get('ttsModelId') or '').strip(),
                     str(core_config.get('ttsVoiceId') or '').strip(),
                 ),
                 api_key,
