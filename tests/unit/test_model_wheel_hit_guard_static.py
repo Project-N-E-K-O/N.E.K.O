@@ -35,7 +35,10 @@ def _run_wheel_scenarios(scenarios: list[dict]) -> list[dict]:
     """
     node_path = shutil.which("node")
     if not node_path:
-        pytest.skip("node is required for the wheel guard behaviour test")
+        # 硬失败而不是 skip：这条用例取代的是一条无条件运行的静态检查，
+        # 若 node 从 PATH 上消失就静默跳过，闸门会在没有检查过滚轮行为的
+        # 情况下报绿。CI 的 runner 自带 node（见 unit-tests.yml 的说明）。
+        raise AssertionError("node is required to run the wheel guard behaviour test")
 
     harness = textwrap.dedent("""
         const SCALE_LIMITS = { MIN: 0.1, MAX: 10 };
@@ -114,6 +117,9 @@ def test_live2d_wheel_zoom_requires_model_hit_before_consuming_event():
             {"name": "on_model", "x": 200, "y": 200},
             {"name": "off_model", "x": 20, "y": 20},
             {"name": "on_model_peek", "x": 200, "y": 200, "peek": True},
+            # 探身分支必须同样以命中为前提：只测 on-model 的话，把该分支改成
+            # 无条件 preventDefault 仍能满足全部断言（实测过）。
+            {"name": "off_model_peek", "x": 20, "y": 20, "peek": True},
             {"name": "locked", "x": 200, "y": 200, "locked": True},
         ])
     }
@@ -129,6 +135,10 @@ def test_live2d_wheel_zoom_requires_model_hit_before_consuming_event():
     # 挂边探身（#2253）：吞掉滚轮但不缩放，且这一步同样以命中检查为前提。
     assert results["on_model_peek"]["prevented"] is True
     assert results["on_model_peek"]["zoomed"] is False
+    assert results["off_model_peek"]["prevented"] is False, (
+        "探身态下指针不在模型上，滚轮同样不该被吞掉"
+    )
+    assert results["off_model_peek"]["zoomed"] is False
 
     assert results["locked"]["prevented"] is False
     assert results["locked"]["zoomed"] is False
