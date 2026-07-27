@@ -231,6 +231,28 @@ test('matching text reply ends only after the one-second settle delay', () => {
     assert.equal(harness.state().phase, 'idle');
 });
 
+test('request-owned lease binds the first requestless assistant turn exactly once', () => {
+    const harness = createHarness();
+
+    harness.dispatch('neko:avatar-interaction-sent', {
+        requestId: 'avatar-interaction-1',
+        interactionId: 'avatar-interaction-1',
+        source: 'avatar-tool'
+    });
+    harness.dispatch('neko-assistant-turn-start', { turnId: 'avatar-turn-1' });
+
+    assert.equal(harness.state().phase, 'reply');
+    assert.equal(harness.state().requestId, 'avatar-interaction-1');
+    assert.equal(harness.state().turnId, 'avatar-turn-1');
+
+    harness.dispatch('neko-assistant-turn-start', { turnId: 'unrelated-turn' });
+    assert.equal(harness.state().turnId, 'avatar-turn-1');
+
+    harness.dispatch('neko-assistant-turn-end', { turnId: 'avatar-turn-1' });
+    harness.advance(1000);
+    assert.equal(harness.window.NekoWidgetInteraction.isActive(), false);
+});
+
 test('speech playback keeps the matching interaction active until actual playback ends', () => {
     const harness = createHarness();
 

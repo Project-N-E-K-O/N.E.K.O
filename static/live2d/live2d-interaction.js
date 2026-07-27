@@ -1564,7 +1564,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             }
 
             if (edgePeekStartedDrag && hasMoved && !edgePeekDragCleared) {
-                this.clearLive2DPeek('drag-start', { restore: false });
+                clearLive2DPeek('drag-start', { restore: false });
                 dragStartPos.x = x - model.x;
                 dragStartPos.y = y - model.y;
                 edgePeekDragCleared = true;

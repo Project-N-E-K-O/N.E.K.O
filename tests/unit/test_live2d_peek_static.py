@@ -131,7 +131,8 @@ def test_live2d_widget_mode_edge_peek_click_keeps_anchor_and_explicit_drag_exits
 
     assert "const edgePeekOnPointerDown = this.isLive2DPeekActive();" in drag_source
     assert "await this.restoreLive2DPeek('click-restore');" not in drag_source
-    assert "this.clearLive2DPeek('drag-start', { restore: false });" in drag_source
+    assert "clearLive2DPeek('drag-start', { restore: false });" in drag_source
+    assert "this.clearLive2DPeek('drag-start', { restore: false });" not in drag_source
     assert "if (this.isLive2DPeekActive()) {" in wheel_source
     assert "return; // edge peek ignores wheel zoom" in wheel_source
     assert "this._debouncedSnapCheck();" not in wheel_source.split("if (this.isLive2DPeekActive()) {", 1)[1].split("return; // edge peek ignores wheel zoom", 1)[0]

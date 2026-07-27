@@ -141,8 +141,10 @@
         const turnId = normalizeId(detail && (detail.turnId || detail.turn_id));
         if (lease.requestId) {
             if (requestId && requestId !== lease.requestId) return false;
-            if (!requestId && (!lease.turnId || !turnId || lease.turnId !== turnId)) {
-                return false;
+            if (!requestId) {
+                if (!turnId) return false;
+                if (lease.turnId) return lease.turnId === turnId;
+                if (!allowUnboundRequestless) return false;
             }
         } else if (requestId) {
             return false;

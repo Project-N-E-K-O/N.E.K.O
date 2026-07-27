@@ -858,6 +858,51 @@ async def test_text_stream_discard_callback_keeps_original_request_owner(monkeyp
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_stale_truncated_recovery_does_not_mutate_newer_request_state():
+    """Request A's late recovery must not emit or consume request B's turn state."""
+    mgr = _make_manager()
+    mgr.websocket = _FakeConnectedWebSocket()
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = ["request-B-history"]
+    mgr._active_text_request_id = "req-B"
+    mgr.current_speech_id = "speech-B"
+    mgr._pending_turn_meta = {"kind": "text", "request_id": "req-B"}
+    mgr._clear_tts_pipeline = AsyncMock()
+    mgr._emit_turn_end = AsyncMock()
+    mgr._finalize_turn_after_emit = AsyncMock()
+
+    await core_module.LLMSessionManager.handle_response_discarded(
+        mgr,
+        "guard",
+        3,
+        3,
+        False,
+        '{"code":"RESPONSE_LENGTH_TRUNCATED","text":"stale response A"}',
+        request_id="req-A",
+    )
+
+    assert mgr.current_speech_id == "speech-B"
+    assert mgr._pending_turn_meta == {"kind": "text", "request_id": "req-B"}
+    assert mgr.session._conversation_history == ["request-B-history"]
+    assert mgr.sent_responses == []
+    mgr._clear_tts_pipeline.assert_not_awaited()
+    mgr._emit_turn_end.assert_not_awaited()
+    mgr._finalize_turn_after_emit.assert_not_awaited()
+    assert mgr.websocket.sent == [
+        {
+            "type": "response_discarded",
+            "reason": "guard",
+            "attempt": 3,
+            "max_attempts": 3,
+            "will_retry": False,
+            "message": '{"code":"RESPONSE_LENGTH_TRUNCATED","text":"stale response A"}',
+            "request_id": "req-A",
+        }
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_unowned_discard_callback_keeps_global_clear_behavior():
     """Legacy/proactive discard callbacks still clear shared output globally."""
     mgr = _make_manager()

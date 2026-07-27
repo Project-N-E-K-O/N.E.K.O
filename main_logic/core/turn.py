@@ -555,7 +555,11 @@ class TurnMixin:
         #   - 尊重 ephemeral 语义：avatar_interaction 由 prompt_ephemeral
         #     (persist_response=False) 触发，本来不该写 _conversation_history；
         #     truncate-recovery / too-long-final 走到这里时不能强行 append。
-        if _is_too_long_final or _truncated_text is not None:
+        recovery_owns_shared_state = (
+            (_is_too_long_final or _truncated_text is not None)
+            and may_clear_shared_output()
+        )
+        if recovery_owns_shared_state:
             try:
                 if _truncated_text is not None:
                     body_text = _truncated_text
@@ -644,7 +648,7 @@ class TurnMixin:
         # / RESPONSE_TOO_LONG 时 session 不归档/不预热，会卡进"上下文越来越
         # 大→一直截断恢复"的死循环。普通 will_retry / RESPONSE_INVALID 路径
         # 还会重试同轮，不算 turn 真正结束，跳过 finalize。
-        if _is_too_long_final or _truncated_text is not None:
+        if recovery_owns_shared_state:
             await self._finalize_turn_after_emit()
 
 
