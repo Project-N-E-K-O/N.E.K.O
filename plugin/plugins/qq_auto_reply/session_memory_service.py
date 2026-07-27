@@ -647,6 +647,18 @@ class QQSessionMemoryService:
                     # 空片"成功"后 pop+close，新时代行未结算即被销毁。旧
                     # 时代已按 fail-closed 处理完毕，这里消费掉。
                     current.pop("group_opt_out_cutoff", None)
+                    if current.pop("group_settle_rollback_pending", None):
+                        # 回滚路径（OFF 从未写盘成功）：fail-closed 清理把
+                        # 游标推到了 len(history)，恢复 opt-out 之前的位置，
+                        # 否则这段一直处于 ON 的已授权历史永远进不了库。
+                        restored = current.pop("pre_optout_digest_index", None)
+                        if restored is not None:
+                            current["last_group_digest_index"] = min(
+                                max(0, int(restored)), len(history),
+                            )
+                            current["memory_enabled"] = True
+                            return
+                    current.pop("pre_optout_digest_index", None)
                     # 游标只前进不覆写回退：retain 结算到 rebase 之间的
                     # 窗口里，焦点 digest 可能已把新时代行推送入库并推进
                     # 游标——回退会让那些行被下一次 finalize 重复结算。
@@ -717,6 +729,13 @@ class QQSessionMemoryService:
                 # rebase 任务会在推进游标越过它们之后再置回 True。
                 current["memory_enabled"] = False
                 if not finalized:
+                    # 记下 opt-out 之前的游标：若这次 OFF 其实没写盘成功、
+                    # 随后回滚回 ON，fail-closed 推到 len(history) 的游标会
+                    # 让那段已授权历史被永久跳过（rebase 单调不回退）。
+                    current.setdefault(
+                        "pre_optout_digest_index",
+                        int(current.get("last_group_digest_index", 0) or 0),
+                    )
                     current["last_group_digest_index"] = len(history)
                     current.pop("group_member_memory_messages", None)
                     current.pop("group_member_memory_labels", None)

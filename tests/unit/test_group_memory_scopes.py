@@ -1021,6 +1021,38 @@ async def test_scoped_synthesis_rotates_between_subjects():
 
 
 @pytest.mark.asyncio
+async def test_scoped_synthesis_runs_when_legacy_synthesis_raises():
+    """A persistent legacy-only failure (e.g. a hand-edited fact without an
+    id raising inside the legacy pass) must not starve the scoped pass —
+    otherwise that character's group/member reflections never run."""
+    from app.memory_server import refine_loops
+
+    scoped = AsyncMock(return_value=[{"id": "r1"}])
+    runtime = SimpleNamespace(
+        _config_manager=SimpleNamespace(
+            aload_characters=AsyncMock(return_value={"猫娘": {"Neko": {}}}),
+        ),
+        reflection_engine=SimpleNamespace(
+            synthesize_reflections=AsyncMock(
+                side_effect=KeyError("id"),
+            ),
+            synthesize_scoped_reflections=scoped,
+        ),
+    )
+    sleeps = {"n": 0}
+
+    async def _sleep(_seconds):
+        sleeps["n"] += 1
+        if sleeps["n"] >= 2:
+            raise asyncio.CancelledError()
+
+    with patch.object(refine_loops, "runtime", runtime, create=True),          patch.object(refine_loops.asyncio, "sleep", _sleep):
+        with pytest.raises(asyncio.CancelledError):
+            await refine_loops._periodic_reflection_synthesis_loop()
+    scoped.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_scoped_synthesis_skips_malformed_rows():
     """load_facts preserves legacy/hand-edited non-dict rows: one corrupted
     row must not raise and disable scoped synthesis for the whole character
@@ -3616,6 +3648,85 @@ async def test_discard_cancels_pending_buffered_reply():
     assert ud["undelivered_draft_rows"] == [draft]
 
 
+def test_generation_strips_scoped_sections_when_group_revoked():
+    """Between context construction and generation a turn can wait on the
+    shared session lock; if group memory is revoked in that window the
+    already-composed scoped bootstrap section must not reach the model."""
+    from plugin.plugins.qq_auto_reply.reply_generation_service import (
+        QQReplyGenerationService,
+    )
+
+    core = "## 核心记忆" + chr(10) + "群里说过的事"
+    sep = chr(10) * 2
+    prompt = "头部" + sep + core + sep + "尾部"
+    context = SimpleNamespace(core_memory_text=core)
+    stripped = QQReplyGenerationService._strip_scoped_sections(prompt, context)
+    assert "群里说过的事" not in stripped
+    assert "头部" in stripped and "尾部" in stripped
+    # No scoped section: untouched.
+    assert QQReplyGenerationService._strip_scoped_sections(
+        prompt, SimpleNamespace(core_memory_text=""),
+    ) == prompt
+
+
+@pytest.mark.asyncio
+async def test_generation_recheck_wiring_drops_scoped_prompt():
+    """Wiring guard for the generation-time recheck: the stripped prompt
+    and the emptied recall must actually reach _apply_turn_memory_context
+    (a correct helper nobody calls is dead code)."""
+    from plugin.plugins.qq_auto_reply.reply_generation_service import (
+        QQReplyGenerationService,
+    )
+
+    core = "## 核心记忆" + chr(10) + "群里说过的事"
+    sep = chr(10) * 2
+    applied = {}
+    plugin = SimpleNamespace(
+        _qq_settings={"group_memory_enabled": False},
+        _queue_attachment_images=AsyncMock(return_value=0),
+        _wait_session_response_complete=AsyncMock(return_value=True),
+        _ai_turn_timeout_seconds=5,
+        logger=MagicMock(),
+    )
+    service = QQReplyGenerationService.__new__(QQReplyGenerationService)
+    service.plugin = plugin
+
+    def _apply(session, system_prompt, recalled_text, *, always_refresh=False):
+        applied["prompt"] = system_prompt
+        applied["recalled"] = recalled_text
+        return lambda: None
+
+    service._apply_turn_memory_context = _apply
+    context = SimpleNamespace(
+        is_group=True, attachments=None, prompt_message="hi",
+        system_prompt="头部" + sep + core + sep + "尾部",
+        recalled_memory_text="召回内容",
+        core_memory_text=core,
+    )
+    chunks = ["回复"]
+    await service._run_session_generation(
+        context=context,
+        session_key="group:7788",
+        user_data={"lock": asyncio.Lock()},
+        user_session=SimpleNamespace(stream_text=AsyncMock()),
+        reply_chunks=chunks,
+    )
+    assert "群里说过的事" not in applied["prompt"]
+    assert applied["recalled"] == ""
+
+    # Group memory still on: the composed prompt and recall pass through.
+    plugin._qq_settings["group_memory_enabled"] = True
+    await service._run_session_generation(
+        context=context,
+        session_key="group:7788",
+        user_data={"lock": asyncio.Lock()},
+        user_session=SimpleNamespace(stream_text=AsyncMock()),
+        reply_chunks=[],
+    )
+    assert "群里说过的事" in applied["prompt"]
+    assert applied["recalled"] == "召回内容"
+
+
 @pytest.mark.asyncio
 async def test_member_turn_recorded_once_even_on_empty_generation():
     """Member-turn collection binds to 'the session accepted the human
@@ -3688,6 +3799,67 @@ async def test_member_turn_recorded_once_even_on_empty_generation():
     result = await service.run_primary_session_call(context)
     assert result.timed_out is True
     record.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_failed_disable_save_restores_pre_optout_cursor():
+    """ON->OFF whose save fails while the settlement also fails: the
+    fail-closed cleanup pushed the cursor to len(history) as opt-out
+    hygiene, but the setting stayed ON — the rollback rebase must restore
+    the pre-opt-out cursor so that authorized history still settles."""
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    history = [SimpleNamespace(type="human", content=f"m{i}") for i in range(6)]
+    ud = {
+        "memory_enabled": True, "is_group": True, "group_id": "7788",
+        "her_name": "Neko",
+        "session": SimpleNamespace(
+            _conversation_history=history, close=AsyncMock(),
+        ),
+        "last_group_digest_index": 2,
+        "pending_disable_settle": True,
+        "group_opt_out_cutoff": 6,
+    }
+
+    async def _lock(session_key, fn):
+        return await fn()
+
+    bridge = MagicMock()
+    bridge.group_subject.side_effect = (
+        lambda gid: {"subject_kind": "group_chat", "subject_id": f"qq:{gid}"}
+    )
+    bridge.post_scoped_memory_history = AsyncMock(
+        side_effect=RuntimeError("server down"),
+    )
+    plugin = SimpleNamespace(
+        _user_sessions={"group:7788": ud},
+        _qq_settings={},
+        _run_with_session_lock=_lock,
+        memory_bridge=bridge,
+        logger=MagicMock(),
+    )
+    service = QQSessionMemoryService(plugin)
+    await service.invalidate_group_sessions(enabled=False)
+    assert ud["last_group_digest_index"] == len(history)  # fail-closed
+    assert ud["pre_optout_digest_index"] == 2
+
+    # The settings save failed -> rollback stamps the sessions and reverses.
+    ud["group_settle_rollback_pending"] = True
+    ud["pending_enable_rebase"] = len(history)
+    await service.invalidate_group_sessions(enabled=True)
+    assert ud["last_group_digest_index"] == 2
+    assert ud["memory_enabled"] is True
+    assert "pre_optout_digest_index" not in ud
+
+    # A genuine re-enable (no rollback marker) keeps skipping the opt-out
+    # era instead of rewinding.
+    ud["last_group_digest_index"] = len(history)
+    ud["pre_optout_digest_index"] = 2
+    ud["pending_enable_rebase"] = len(history)
+    await service.invalidate_group_sessions(enabled=True)
+    assert ud["last_group_digest_index"] == len(history)
 
 
 @pytest.mark.asyncio
@@ -4757,9 +4929,11 @@ async def test_group_reply_success_records_scoped_mentions_best_effort():
         _cache_session_delta=AsyncMock(return_value=0),
     )
     service = QQReplyGenerationService(plugin)
+    plugin._qq_settings = {"group_member_memory_enabled": True}
     context = SimpleNamespace(
         is_group=True, group_id="7788", sender_id="2046", her_name="Neko",
         permission_level="user", ephemeral_session=False,
+        member_memory_enabled=True,
     )
 
     # Generation-time hook no longer bumps mentions: a buffered draft can
@@ -4786,11 +4960,21 @@ async def test_group_reply_success_records_scoped_mentions_best_effort():
     context_syn = SimpleNamespace(
         is_group=True, group_id="7788", sender_id="2046", her_name="Neko",
         permission_level="user", source_kind="rapid_fire_flush",
-        ephemeral_session=False,
+        ephemeral_session=False, member_memory_enabled=True,
     )
     await service.record_scoped_mentions_on_delivery(context_syn, "合并回复")
     kwargs = bridge.post_scoped_mentions.await_args.kwargs
     assert [s2["subject_id"] for s2 in kwargs["subjects"]] == ["qq:7788"]
+
+    # Member memory off: the participant subject is not touched either —
+    # scanning/suppressing entries that were never recalled would hide
+    # facts even after a later opt-in.
+    bridge.post_scoped_mentions.reset_mock()
+    plugin._qq_settings["group_member_memory_enabled"] = False
+    await service.record_scoped_mentions_on_delivery(context, "她记得群规")
+    kwargs = bridge.post_scoped_mentions.await_args.kwargs
+    assert [s2["subject_id"] for s2 in kwargs["subjects"]] == ["qq:7788"]
+    plugin._qq_settings["group_member_memory_enabled"] = True
 
     # Failure is swallowed (reply already delivered).
     bridge.post_scoped_mentions = AsyncMock(side_effect=RuntimeError("down"))

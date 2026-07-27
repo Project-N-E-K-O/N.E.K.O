@@ -197,8 +197,22 @@ class QQReplyGenerationService:
             # member persona / 身份行。群轮必须无条件换上本轮刚构建好的
             # prompt（含当前发言人的 scoped persona），否则召回为空的轮次
             # （早期常态）会一直用创建者快照回答所有人。
+            turn_system_prompt = context.system_prompt
+            turn_recalled_text = context.recalled_memory_text
+            if context.is_group and not bool(
+                (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                    "group_memory_enabled", False,
+                )
+            ):
+                # 生成前最后一道复检：共享会话锁/附件排队可能让本轮在
+                # 上下文构建之后等待很久，期间 opt-out 的话，prompt 里
+                # 已注入的 scoped 段不得被用来生成。
+                turn_recalled_text = ""
+                turn_system_prompt = self._strip_scoped_sections(
+                    turn_system_prompt, context,
+                )
             restore_session_prompt = self._apply_turn_memory_context(
-                user_session, context.system_prompt, context.recalled_memory_text,
+                user_session, turn_system_prompt, turn_recalled_text,
                 always_refresh=context.is_group,
             )
             try:
@@ -225,6 +239,24 @@ class QQReplyGenerationService:
                     )
 
             return "".join(reply_chunks)
+
+    @staticmethod
+    def _strip_scoped_sections(system_prompt: str, context: Any) -> str:
+        """Remove scoped-memory sections from an already-composed prompt.
+
+        Used when group memory is revoked between context construction and
+        generation: the bootstrap section is the only scoped block left in
+        the prompt (recall is passed separately and simply dropped)."""
+        core_text = getattr(context, "core_memory_text", "") or ""
+        if not core_text or core_text not in system_prompt:
+            return system_prompt
+        separator = "\n\n"
+        for candidate in (
+            separator + core_text, core_text + separator, core_text,
+        ):
+            if candidate in system_prompt:
+                return system_prompt.replace(candidate, "", 1)
+        return system_prompt
 
     def _apply_turn_memory_context(
         self, user_session: Any, system_prompt: str, recalled_memory_text: str,
@@ -316,9 +348,17 @@ class QQReplyGenerationService:
         synthetic = getattr(context, "source_kind", "") in (
             "proactive_speech", "rapid_fire_flush", "buffer_delayed",
         )
-        if sender_id and not synthetic:
+        member_authorized = bool(
+            getattr(context, "member_memory_enabled", False)
+            and (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                "group_member_memory_enabled", False,
+            )
+        )
+        if sender_id and not synthetic and member_authorized:
             # 合成轮的名义 sender 不是真实发言人——mention 计数只按群域记，
-            # 与召回/写入侧的合成轮过滤对齐。
+            # 与召回/写入侧的合成轮过滤对齐。member 未授权时也不记：该域
+            # 本轮没被召回，扫描/改写留存条目会把没展示过的事实压进
+            # suppression、之后 opt-in 也不再出现。
             subjects.append(bridge.group_participant_subject(group_id, sender_id))
         try:
             await bridge.post_scoped_mentions(

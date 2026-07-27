@@ -75,6 +75,15 @@ class QQSettingsService:
         if group_memory_before != group_memory_after:
             self.plugin._qq_settings["group_memory_enabled"] = group_memory_before
             self.plugin._qq_settings["group_member_memory_enabled"] = member_memory_before
+            if not group_memory_before:
+                # 回滚回 ON：并发的 disable 结算若失败，会把游标推到
+                # len(history) 当 opt-out 清理——标记让 rebase 恢复
+                # opt-out 之前的位置，别让这段已授权历史被永久跳过。
+                for ud in list(
+                    getattr(self.plugin, "_user_sessions", {}).values()
+                ):
+                    if ud.get("is_group"):
+                        ud["group_settle_rollback_pending"] = True
             if member_memory_before and not member_memory_after:
                 # 双开关同关（UI 联动）后写盘失败：member 侧的 bucket 已被
                 # 挪进 pending 快照，排队的 opt-out 结算会按 opt-out 语义
