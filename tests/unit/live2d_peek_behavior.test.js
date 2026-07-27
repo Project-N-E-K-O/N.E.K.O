@@ -903,17 +903,34 @@ test('new interaction transition cancels stale animation writeback', async () =>
 });
 
 test('display change rebuilds the active anchor against the refreshed display', async () => {
-    const harness = createHarness({ interactionActive: false });
+    const currentDisplay = {
+        screenX: 0,
+        screenY: 0,
+        width: 1000,
+        height: 800,
+        workArea: { x: 0, y: 0, width: 1000, height: 800 }
+    };
+    const harness = createHarness({
+        interactionActive: false,
+        currentDisplay
+    });
     const manager = new harness.Live2DManager();
     const model = createModel({ x: 0 });
     harness.window.live2dManager = manager;
     manager.currentModel = model;
 
     const enterPromise = manager._tryApplyLive2DPeek(model);
+    for (let attempt = 0; attempt < 10 && harness.rafQueue.length === 0; attempt += 1) {
+        await Promise.resolve();
+    }
     flushNextFrame(harness);
     await enterPromise;
     const hiddenRotation = model.rotation;
     const hiddenScaleX = model.scale.x;
+    currentDisplay.height = 1000;
+    currentDisplay.workArea.height = 1000;
+    harness.window.innerHeight = 1000;
+    harness.window.screen.height = 1000;
     harness.window.dispatchEvent({ type: 'electron-display-changed' });
     await new Promise((resolve) => setImmediate(resolve));
     flushNextFrame(harness);
@@ -921,8 +938,8 @@ test('display change rebuilds the active anchor against the refreshed display', 
 
     assert.equal(manager.isLive2DPeekActive(), true);
     assert.equal(manager._live2DPeekState.phase, 'hidden');
-    assert.ok(model.getBounds().right < 0);
-    assert.equal(model.y, 120);
+    assert.equal(model.x, -502);
+    assert.equal(model.y, 225);
     assert.equal(model.rotation, hiddenRotation);
     assert.equal(model.scale.x, hiddenScaleX);
     assert.equal(model.interactive, false);

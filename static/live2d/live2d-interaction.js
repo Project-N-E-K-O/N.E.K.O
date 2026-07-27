@@ -611,6 +611,11 @@ function getLive2DPeekPlacement(model, bounds, manager = null) {
     }
     const visibleBounds = getLive2DPeekViewportIntersection(targetBounds, viewport);
     if (!visibleBounds) return null;
+    const edgeAnchorRatio = clampLive2DPeekCoordinate(
+        visibleBounds.centerY / viewport.height,
+        0,
+        1
+    );
     const hiddenOffsetX = side === 'left'
         ? viewport.left - targetBounds.right - LIVE2D_PEEK_HIDDEN_MARGIN_PX
         : viewport.right - targetBounds.left + LIVE2D_PEEK_HIDDEN_MARGIN_PX;
@@ -627,6 +632,7 @@ function getLive2DPeekPlacement(model, bounds, manager = null) {
         headAnchorSource: transformedHeadAnchorSource,
         waistAnchored: useWaistAnchor,
         revealWidth,
+        edgeAnchorRatio,
         visibleBounds,
         hiddenX: baseX + offsetX + hiddenOffsetX,
         hiddenY: baseY + offsetY
@@ -893,6 +899,7 @@ Live2DManager.prototype._tryApplyLive2DPeek = async function (model) {
         headAnchored: target.headAnchored,
         headAnchorSource: target.headAnchorSource,
         waistAnchored: target.waistAnchored,
+        edgeAnchorRatio: target.edgeAnchorRatio,
         visibleBounds: target.visibleBounds
     };
     if (document.body) {
@@ -963,12 +970,15 @@ function captureLive2DPeekRestoreAnchor() {
     const viewport = getLive2DPeekViewport(bounds, manager);
     const visibleBounds = state.visibleBounds || getLive2DPeekViewportIntersection(bounds, viewport);
     if (!viewport || !visibleBounds || viewport.height <= 0) return null;
+    const storedEdgeAnchorRatio = Number(state.edgeAnchorRatio);
     return {
         kind: 'live2d-edge-peek',
         edge,
         side: state.side,
         edgeAnchorRatio: clampLive2DPeekCoordinate(
-            visibleBounds.centerY / viewport.height,
+            Number.isFinite(storedEdgeAnchorRatio)
+                ? storedEdgeAnchorRatio
+                : visibleBounds.centerY / viewport.height,
             0,
             1
         ),
