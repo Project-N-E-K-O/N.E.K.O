@@ -83,10 +83,11 @@ ANTI_REPEAT_UNANSWERED_MAX_AGE_SECONDS = 86400.0
   用户一旦互动，旧的「未回应」证据立即失效。
 - 24 小时用于抓跨小时、非连续复读，不把更早的表达固化成长期禁题。"""
 
-ANTI_REPEAT_UNANSWERED_SIMILARITY_THRESHOLD = 0.55
+ANTI_REPEAT_UNANSWERED_SIMILARITY_THRESHOLD = 0.85
 """长窗口内两条主动搭话的 ngram Dice 相似度阈值。
-- 低于字面 SequenceMatcher 的 0.90 硬阈值，允许识别「换了屏幕对象名，
-  但仍反复说快点一下」这类模板化改写。
+- 聚焦用户实际遇到的近乎逐字复读，避免把围绕同一主题的正常改写误判为重复。
+- 仍低于字面 SequenceMatcher 的 0.90 硬阈值，并通过长窗口捕获隔几轮或跨小时
+  再次出现的高度相似内容。
 - 必须再满足多次命中 + 用户持续无互动，不能单独作为拦截依据。"""
 
 ANTI_REPEAT_UNANSWERED_MIN_MATCHES = 2

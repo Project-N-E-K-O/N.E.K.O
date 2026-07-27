@@ -288,13 +288,11 @@ def test_score_draft_bg_idf_survives_after_fg_ttl(tmp_path):
 # ── 3c. 用户无互动 + 长窗口重复内容 ─────────────────────────────
 
 
-def test_unanswered_proactive_repeat_detects_non_consecutive_pattern(tmp_path):
-    """A third similar draft triggers even when unrelated outputs separate it."""
+def test_unanswered_proactive_repeat_detects_non_consecutive_exact_repeat(tmp_path):
+    """A third exact draft triggers even when unrelated outputs separate it."""
     s = _build_store(tmp_path)
     name = "Neko"
     base = 1_000_000.0
-    repeated_a = "屏幕上这个蓝色的小猫按钮好好看啊，快点点一下看看吧。"
-    repeated_b = "屏幕上这个绿色的小猫按钮好好看呀，快点点一下试试看吧。"
     draft = "屏幕上这个新的小猫按钮好好看啊，快点点一下看看吧。"
     fillers = [
         "窗外好像开始下雨了，玻璃上的水珠慢慢连成了几条细线。",
@@ -305,9 +303,9 @@ def test_unanswered_proactive_repeat_detects_non_consecutive_pattern(tmp_path):
         "这个页面的配色换成了深色，和前一个窗口的感觉完全不同。",
     ]
     timeline = [
-        repeated_a,
+        draft,
         *fillers[:3],
-        repeated_b,
+        draft,
         *fillers[3:],
     ]
     for index, text in enumerate(timeline):
@@ -329,7 +327,7 @@ def test_unanswered_proactive_repeat_detects_non_consecutive_pattern(tmp_path):
     assert signal.triggered is True
     assert signal.match_count == 2
     assert signal.considered_count == len(timeline)
-    assert signal.best_similarity >= 0.55
+    assert signal.best_similarity >= 0.85
     assert signal.repeated_terms
     # 最早两次模板内容已经远超短 BM25 的 10 分钟 TTL；本测试锁住的是长窗口。
     bm25_total, _ = s.score_draft(name, draft, now=now)
