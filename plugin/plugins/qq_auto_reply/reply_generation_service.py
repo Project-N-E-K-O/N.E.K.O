@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any, Optional
 
 from utils.llm_client import SystemMessage, create_chat_llm_async
@@ -206,6 +207,9 @@ class QQReplyGenerationService:
             turn_system_prompt, turn_recalled_text = self._sanitize_for_live_consent(
                 context, context.system_prompt, context.recalled_memory_text,
             )
+            # 生成前的依赖快照：模型已经读到 scoped/跨群内容后，撤销才落
+            # 下的话，回复本身仍带着那些内容——生成结束要再比一次。
+            consent_before = self._consent_dependency_snapshot(context)
             restore_session_prompt = self._apply_turn_memory_context(
                 user_session, turn_system_prompt, turn_recalled_text,
                 always_refresh=context.is_group,
@@ -217,6 +221,13 @@ class QQReplyGenerationService:
                 )
 
                 completed = await self.plugin._wait_session_response_complete(user_session)
+                if self._consent_dependency_revoked(context, consent_before):
+                    # 生成期间授权被撤销：这条回复的 prompt 里带着已撤销的
+                    # 内容，不能送出。历史行由上层的 discard/排除机制处理。
+                    self.plugin.logger.warning(
+                        f"生成期间记忆授权被撤销，丢弃本轮回复 ({session_key})"
+                    )
+                    reply_chunks.clear()
                 if not completed:
                     # 只 raise 不在这里 discard：外层 except TimeoutError 会
                     # 统一走"先抢救群缓冲再丢弃"，这里先 pop 会让 user_data
@@ -234,6 +245,38 @@ class QQReplyGenerationService:
                     )
 
             return "".join(reply_chunks)
+
+    def _consent_dependency_snapshot(self, context: Any) -> dict:
+        """Which consent switches this turn's prompt actually depends on."""
+        if not getattr(context, "is_group", False):
+            return {}
+        settings = getattr(self.plugin, "_qq_settings", {}) or {}
+        snapshot: dict = {}
+        if getattr(context, "core_memory_text", "") or getattr(
+            context, "recalled_memory_text", "",
+        ):
+            snapshot["group_memory_enabled"] = bool(
+                settings.get("group_memory_enabled", False)
+            )
+            if getattr(context, "used_member_subject", False):
+                snapshot["group_member_memory_enabled"] = bool(
+                    settings.get("group_member_memory_enabled", False)
+                )
+        if getattr(context, "cross_group_section", ""):
+            snapshot["allow_cross_group_context"] = bool(
+                settings.get("allow_cross_group_context", False)
+            )
+        return snapshot
+
+    def _consent_dependency_revoked(self, context: Any, before: dict) -> bool:
+        """True when a switch this prompt relied on went off since `before`."""
+        if not before:
+            return False
+        settings = getattr(self.plugin, "_qq_settings", {}) or {}
+        return any(
+            was_enabled and not settings.get(key, False)
+            for key, was_enabled in before.items()
+        )
 
     def _sanitize_for_live_consent(
         self, context: Any, system_prompt: str, recalled_text: str,
@@ -345,6 +388,48 @@ class QQReplyGenerationService:
             self.plugin.logger.info(f"[群聊] 跳过记忆同步 (群: {context.group_id}, 用户: {context.sender_id})")
             return
         self.plugin.logger.info(f"[非管理员] 跳过记忆同步 (用户: {context.sender_id}, 权限: {context.permission_level})")
+
+    def append_fallback_ai_row(
+        self, context: QQReplyContext, reply_text: str,
+    ) -> None:
+        """Put a delivered direct-fallback reply into the shared history.
+
+        The primary session accepted the human row but produced nothing, so
+        the fallback's text exists only in the outbound message: without
+        this the group digest persists a one-sided conversation and loses
+        whatever the bot disclosed. Idempotent — the row is tagged so a
+        second delivery hook cannot double-append."""
+        if not getattr(context, "is_group", False) or not reply_text:
+            return
+        if getattr(context, "ephemeral_session", False):
+            return
+        session_key = self.plugin.session_runtime_service.build_generation_session_key(context)
+        user_data = (getattr(self.plugin, "_user_sessions", {}) or {}).get(
+            session_key
+        )
+        if not user_data or not user_data.get("memory_enabled"):
+            return
+        session = user_data.get("session")
+        history = getattr(session, "_conversation_history", None)
+        if history is None:
+            return
+        marker = f"fallback:{id(context)}"
+        for msg in reversed(history[-4:]):
+            if getattr(msg, "type", "") == "ai" and (
+                getattr(msg, "additional_kwargs", None) or {}
+            ).get("neko_fallback_row") == marker:
+                return
+        try:
+            from langchain_core.messages import AIMessage
+
+            row = AIMessage(content=reply_text)
+            row.additional_kwargs["neko_fallback_row"] = marker
+        except Exception:
+            row = SimpleNamespace(
+                type="ai", content=reply_text,
+                additional_kwargs={"neko_fallback_row": marker},
+            )
+        history.append(row)
 
     async def record_scoped_mentions_on_delivery(
         self, context: QQReplyContext, reply_text: str,

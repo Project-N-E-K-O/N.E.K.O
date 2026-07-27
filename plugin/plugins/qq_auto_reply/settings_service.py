@@ -62,8 +62,24 @@ class QQSettingsService:
             member_memory_after=member_memory_after,
             cross_group_before=cross_group_before,
         )
+        # 写盘跑成独立 task：config_store.save 内部是 to_thread 的原子写，
+        # 取消这个 await 并不会取消那个线程——它可能照样把新配置落盘。
+        # 直接按"没写成"回滚会让磁盘与运行时永久相反（重启后才暴露）。
+        # 取消时先把 task 等出真实结果，再决定是否回滚，然后再抛。
+        save_task = asyncio.ensure_future(self.persist_business_config())
         try:
-            success = await self.persist_business_config()
+            success = await asyncio.shield(save_task)
+        except asyncio.CancelledError:
+            try:
+                success = await save_task
+            except asyncio.CancelledError:
+                # 写盘本身也被取消（不是仅我们这次 await）：没落盘。
+                success = False
+            except Exception as exc:
+                self.plugin.logger.error(f"取消期间的配置写盘失败: {exc}")
+                success = False
+            self._rollback_unpersisted_memory_toggles(success, **rollback_kwargs)
+            raise
         except BaseException:
             self._rollback_unpersisted_memory_toggles(False, **rollback_kwargs)
             raise

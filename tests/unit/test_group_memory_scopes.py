@@ -1131,6 +1131,31 @@ async def test_scoped_promotion_is_idempotent_after_partial_commit():
 
 
 @pytest.mark.asyncio
+async def test_scoped_read_refreshes_reflection_suppressions():
+    """aupdate_suppressions is the only thing that clears reflection
+    suppression after the cooldown, and it was reachable only through the
+    legacy endpoints — a group-only deployment would hide a scoped
+    reflection forever after its first suppression."""
+    from app.memory_server import routes
+
+    subject = MemorySubject.group_chat("qq", "7788")
+    engine = SimpleNamespace(
+        aupdate_suppressions=AsyncMock(),
+        aget_pending_reflections=AsyncMock(return_value=[]),
+        aget_confirmed_reflections=AsyncMock(return_value=[]),
+    )
+    persona = SimpleNamespace(
+        arender_persona_markdown=AsyncMock(return_value="持久化人设"),
+    )
+    req = SimpleNamespace(
+        subjects=[SimpleNamespace(to_domain=lambda: subject)],
+    )
+    with patch.object(routes.runtime, "reflection_engine", engine, create=True),          patch.object(routes.runtime, "persona_manager", persona, create=True):
+        await routes.get_scoped_context("Neko", req)
+    engine.aupdate_suppressions.assert_awaited_once_with("Neko")
+
+
+@pytest.mark.asyncio
 async def test_scoped_synthesis_runs_when_legacy_synthesis_raises():
     """A persistent legacy-only failure (e.g. a hand-edited fact without an
     id raising inside the legacy pass) must not starve the scoped pass —
@@ -1963,6 +1988,24 @@ async def test_extract_facts_fail_closed_raises_on_terminal_failure(tmp_path):
         await fs.extract_facts([msg], "Neko", fail_closed=True)
         assert target["source"] == "user_observation"
         fs.asave_facts.assert_awaited()
+
+        # Cancellation must roll back too: CancelledError does not pass
+        # through except Exception, and a retained cache entry makes the
+        # retry dedup into an empty success.
+        async def _cancel_text(prompt, lanlan_name, **kwargs):
+            return [{"text": "取消时的事实", "importance": 6}]
+
+        fs._allm_call_with_retries = _cancel_text
+        fs._time_indexed = None
+        fs.asave_facts = AsyncMock(side_effect=asyncio.CancelledError())
+        with pytest.raises(asyncio.CancelledError):
+            await fs.extract_facts([msg], "Neko", fail_closed=True)
+        cached = await fs.aload_facts("Neko")
+        assert not any(
+            isinstance(f, dict) and f.get("text") == "取消时的事实"
+            for f in cached
+        )
+        fs.asave_facts = AsyncMock(return_value=None)
 
         # An indexing failure (maintenance mode etc.) happens BEFORE the
         # save and must roll back the same way — the row is already in the
@@ -2872,6 +2915,7 @@ async def test_run_delivery_direct_branch_records_mentions_on_success():
         ),
         reply_generation_service=SimpleNamespace(
             record_scoped_mentions_on_delivery=AsyncMock(),
+            append_fallback_ai_row=MagicMock(),
         ),
     )
     runner = QQReplyPipelineRunner(plugin)
@@ -2885,6 +2929,23 @@ async def test_run_delivery_direct_branch_records_mentions_on_success():
     plugin.reply_generation_service.record_scoped_mentions_on_delivery.assert_awaited_once_with(
         context, "回复",
     )
+    # A history-backed reply already has its ai row; nothing to append.
+    plugin.reply_generation_service.append_fallback_ai_row.assert_not_called()
+
+    # A CONFIRMED fallback delivery must append the missing ai row here —
+    # the direct-delivery branch is the only place that can do it for
+    # unbuffered replies, and without it the digest keeps one-sided turns.
+    from plugin.plugins.qq_auto_reply.pipeline_models import QQReplyOutcome as _O
+
+    await runner._run_delivery(
+        plan, None,
+        _O(action="reply", reply_text="回复", used_fallback=True),
+        context=context,
+    )
+    plugin.reply_generation_service.append_fallback_ai_row.assert_called_once_with(
+        context, "回复",
+    )
+    plugin.reply_generation_service.append_fallback_ai_row.reset_mock()
 
     # Failed delivery records no mentions AND marks the history-backed ai
     # row as undelivered — the unsent reply must not reach digests.
@@ -2915,6 +2976,8 @@ async def test_run_delivery_direct_branch_records_mentions_on_success():
     )
     await runner._run_delivery(plan, failed_request, fb_outcome, context=context)
     plugin.session_memory_service.record_tail_undelivered_ai_row.assert_not_called()
+    # ... and an UNCONFIRMED fallback appends nothing either.
+    plugin.reply_generation_service.append_fallback_ai_row.assert_not_called()
 
     # A RAISING transport (NapCat) marks the tail row before propagating —
     # exiting at the await without marking would let the next digest
@@ -3078,20 +3141,29 @@ async def test_delivery_result_reflects_open_platform_send_failure():
     )
     poke_node = QQReplyDeliveryNode.__new__(QQReplyDeliveryNode)
     poke_node.plugin = poke_plugin
-    poke_private = QQDeliveryPlan(
-        target_type="private", target_id="1",
-        blocks=[QQMessageBlock(poke="2")],
-    )
-    result = await poke_node.deliver(poke_private)
-    assert result.delivered is False
     poke_group = QQDeliveryPlan(
         target_type="group", target_id="7788",
         blocks=[QQMessageBlock(poke="2")],
     )
     result = await poke_node.deliver(poke_group)
     assert result.delivered is True
-    # Cooldown skip: nothing sent, not delivered.
-    result = await poke_node.deliver(poke_group)
+    # A skipped poke (cooldown, private target) was never attempted, so it
+    # must not drag the verdict down — the template pairs a poke block with
+    # a text block, and marking the whole reply undelivered would exclude
+    # a reply the user actually received.
+    poke_plugin.qq_client.send_group_message = AsyncMock(return_value="mid")
+    result = await poke_node.deliver(QQDeliveryPlan(
+        target_type="group", target_id="7788",
+        blocks=[QQMessageBlock(poke="2"), QQMessageBlock(text="正文")],
+    ))
+    assert result.delivered is True
+    poke_plugin.qq_client.send_group_message.assert_awaited_once()
+    # A poke that WAS attempted and failed still counts as unconfirmed.
+    poke_plugin.qq_client.send_group_poke = AsyncMock(return_value=None)
+    result = await poke_node.deliver(QQDeliveryPlan(
+        target_type="group", target_id="9911",
+        blocks=[QQMessageBlock(poke="2")],
+    ))
     assert result.delivered is False
 
     # Keyboard-only block: the segments API carries buttons, so it must be
@@ -3206,6 +3278,17 @@ async def test_delivery_result_reflects_open_platform_send_failure():
     assert result.delivered is False
     priv_kb_plugin.qq_client.send_message.assert_not_awaited()
 
+    # Private text + keyboard: the block IS sendable, but buttons cannot be
+    # rendered, so the labels must ride along in the text — otherwise the
+    # user is asked "which one?" without ever seeing the options.
+    result = await priv_kb_node.deliver(QQDeliveryPlan(
+        target_type="private", target_id="10086",
+        blocks=[QQMessageBlock(text="要看看哪个？", keyboard="状态|配置")],
+    ))
+    assert result.delivered is True
+    sent_private = priv_kb_plugin.qq_client.send_message.await_args.args[1]
+    assert "状态 / 配置" in sent_private
+
     # Voice mode carries the choice labels into the TTS content, otherwise
     # the spoken reply asks about options it never names.
     voice_kb_plugin = SimpleNamespace(
@@ -3291,6 +3374,51 @@ async def test_unconfirmed_voice_send_falls_back_to_text():
     )
     assert ok is False
     plugin.qq_client.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_merged_buffer_keeps_older_consent_dependencies():
+    """Merging a later draft (generated after revocation, so all-false)
+    must not erase the earlier draft's true-valued dependencies — the
+    revocation check would then see no transition and the summary prompt
+    would still carry the memory-derived text."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import QQMessageBlock
+    from plugin.plugins.qq_auto_reply.reply_buffer_service import (
+        PendingReply,
+        QQReplyBufferService,
+    )
+
+    user_data = {
+        "is_group": True,
+        "session": SimpleNamespace(_conversation_history=[]),
+    }
+    plugin = SimpleNamespace(
+        _user_sessions={"group:7788": user_data},
+        _qq_settings={"allow_cross_group_context": False},
+        _emit_log=lambda *a, **k: None,
+    )
+    service = QQReplyBufferService.__new__(QQReplyBufferService)
+    service.plugin = plugin
+    service._pending = {}
+    first = PendingReply(
+        first_text="旧草稿", wait_seconds=999, sender_id="1",
+        is_group=True, group_id="7788",
+    )
+    first.consent_snapshot = {"allow_cross_group_context": True}
+    first.task = asyncio.create_task(asyncio.sleep(999))
+    service._pending["group:7788"] = first
+
+    await service.schedule_reply(
+        session_key="group:7788", reply_text="新草稿", raw_text="新草稿",
+        blocks=[QQMessageBlock(text="新草稿")], wait_seconds=999,
+        sender_id="1", is_group=True, group_id="7788",
+        consent_snapshot={"allow_cross_group_context": False},
+    )
+    pending = service._pending.pop("group:7788")
+    if pending.task:
+        pending.task.cancel()
+    assert pending.consent_snapshot["allow_cross_group_context"] is True
+    assert service._consent_revoked_since(pending) is True
 
 
 @pytest.mark.asyncio
@@ -4141,6 +4269,112 @@ async def test_generation_recheck_wiring_drops_scoped_prompt():
 
 
 @pytest.mark.asyncio
+async def test_delivered_fallback_reply_enters_shared_history():
+    """The direct fallback adds no ai row, so a delivered fallback would
+    leave the digest with a one-sided conversation. The row is appended
+    once delivery is confirmed — and only once."""
+    from plugin.plugins.qq_auto_reply.reply_generation_service import (
+        QQReplyGenerationService,
+    )
+
+    history: list = [SimpleNamespace(type="human", content="问题")]
+    plugin = SimpleNamespace(
+        _user_sessions={
+            "group:7788": {
+                "memory_enabled": True,
+                "session": SimpleNamespace(_conversation_history=history),
+            },
+        },
+        session_runtime_service=SimpleNamespace(
+            build_generation_session_key=lambda context: "group:7788",
+        ),
+    )
+    service = QQReplyGenerationService.__new__(QQReplyGenerationService)
+    service.plugin = plugin
+    context = SimpleNamespace(
+        is_group=True, ephemeral_session=False, group_id="7788",
+    )
+    service.append_fallback_ai_row(context, "fallback 回复")
+    assert [getattr(m, "type", "") for m in history] == ["human", "ai"]
+    assert history[-1].content == "fallback 回复"
+
+    # Idempotent: a second delivery hook for the same turn adds nothing.
+    service.append_fallback_ai_row(context, "fallback 回复")
+    assert len(history) == 2
+
+    # Memory disabled: nothing is appended.
+    plugin._user_sessions["group:7788"]["memory_enabled"] = False
+    service.append_fallback_ai_row(
+        SimpleNamespace(is_group=True, ephemeral_session=False, group_id="7788"),
+        "另一条",
+    )
+    assert len(history) == 2
+
+
+@pytest.mark.asyncio
+async def test_generation_discards_reply_when_consent_revoked_mid_stream():
+    """The model already saw the scoped prompt; if the switch goes off
+    while streaming, the reply still carries that content — it must be
+    discarded rather than delivered."""
+    from plugin.plugins.qq_auto_reply.reply_generation_service import (
+        QQReplyGenerationService,
+    )
+
+    plugin = SimpleNamespace(
+        _qq_settings={"group_memory_enabled": True},
+        _queue_attachment_images=AsyncMock(return_value=0),
+        _wait_session_response_complete=AsyncMock(return_value=True),
+        _ai_turn_timeout_seconds=5,
+        logger=MagicMock(),
+    )
+    service = QQReplyGenerationService.__new__(QQReplyGenerationService)
+    service.plugin = plugin
+    service._apply_turn_memory_context = (
+        lambda *a, **k: (lambda: None)
+    )
+    context = SimpleNamespace(
+        is_group=True, attachments=None, prompt_message="hi",
+        system_prompt="含群记忆的提示词", recalled_memory_text="召回内容",
+        core_memory_text="核心记忆", cross_group_section="",
+        used_member_subject=False,
+    )
+
+    chunks: list = []
+
+    async def _revoke_mid_stream(_msg):
+        # The model produced its reply from the scoped prompt...
+        chunks.append("带着群记忆的回复")
+        # ...and only then does the switch go off.
+        plugin._qq_settings["group_memory_enabled"] = False
+
+    result = await service._run_session_generation(
+        context=context,
+        session_key="group:7788",
+        user_data={"lock": asyncio.Lock()},
+        user_session=SimpleNamespace(stream_text=_revoke_mid_stream),
+        reply_chunks=chunks,
+    )
+    assert not result
+    assert chunks == []
+
+    # Consent unchanged: the reply survives.
+    plugin._qq_settings["group_memory_enabled"] = True
+    chunks2: list = []
+
+    async def _normal_stream(_msg):
+        chunks2.append("正常回复")
+
+    result = await service._run_session_generation(
+        context=context,
+        session_key="group:7788",
+        user_data={"lock": asyncio.Lock()},
+        user_session=SimpleNamespace(stream_text=_normal_stream),
+        reply_chunks=chunks2,
+    )
+    assert result == "正常回复"
+
+
+@pytest.mark.asyncio
 async def test_member_turn_recorded_once_even_on_empty_generation():
     """Member-turn collection binds to 'the session accepted the human
     row', not to a nonempty reply: an empty generation (fallback empty
@@ -4601,6 +4835,32 @@ async def test_unpersisted_memory_toggle_rolls_back():
             cross_group_before=False,
         )
     assert rolled == [False]
+
+    # Cancelling the AWAIT does not cancel the atomic write thread: the
+    # real outcome decides the rollback, otherwise disk and runtime end up
+    # permanently opposite.
+    rolled.clear()
+    started = asyncio.Event()
+
+    async def _slow_but_successful_write():
+        started.set()
+        await asyncio.sleep(0.05)
+        return True
+
+    cancel_service.persist_business_config = _slow_but_successful_write
+    task = asyncio.create_task(
+        cancel_service._persist_with_consent_rollback(
+            group_memory_before=True, group_memory_after=False,
+            member_memory_before=False, member_memory_after=False,
+            cross_group_before=False,
+        )
+    )
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    # The write landed, so no rollback of the persisted value.
+    assert rolled == [True]
     # A clean save reports success through to the rollback helper (no-op).
     rolled.clear()
     cancel_service.persist_business_config = AsyncMock(return_value=True)

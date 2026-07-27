@@ -25,11 +25,15 @@ class QQReplyDeliveryNode:
                 await asyncio.sleep(random.uniform(2.0, 5.0))
 
             if block.poke:
-                # poke-only 计划：私聊目标/冷却跳过时什么都没发出——不计
-                # 确认会让 delivered=True 清掉未投递标、记下 mention。
-                any_text_attempted = True
-                if not await self._send_poke(plan, block):
-                    all_text_sent = False
+                # poke 只是装饰：冷却窗口内/私聊目标下会被有意跳过，那不是
+                # 投递失败——模板本来就让 poke 单独成块后跟正文块，把跳过
+                # 算失败会让整条（正文已送达的）回复被判未投递、真回复被
+                # 排除出记忆。只有"尝试了但发送失败"才算未确认。
+                sent, attempted = await self._send_poke(plan, block)
+                if attempted:
+                    any_text_attempted = True
+                    if not sent:
+                        all_text_sent = False
                 continue
 
             if block.record:
@@ -161,6 +165,16 @@ class QQReplyDeliveryNode:
             if plan.target_type == "group":
                 return bool(await self.plugin._deliver_group_reply(plan.target_id, voice_text, fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure))
             return bool(await self.plugin._deliver_private_reply(plan.target_id, voice_text, fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure))
+        if plan.target_type != "group" and keyboard:
+            # 官方按钮只有群聊承载：私聊带 keyboard 的文本块若原样发出，
+            # "想看哪个？" 会到达用户手里却一个选项都没有。和 NapCat 群
+            # 路径同样处理——把选项文案降级成可读正文。
+            labels = " / ".join(
+                part.strip() for part in str(keyboard).split("|")
+                if part.strip()
+            )
+            if labels:
+                text = text + "\n" + labels
         if plan.target_type == "group":
             if keyboard and not self._supports_keyboard():
                 # NapCat 渲染不了官方按钮：把选项文案追加进正文，别让
@@ -200,22 +214,33 @@ class QQReplyDeliveryNode:
             has_result_channel=True,
         )
 
-    async def _send_poke(self, plan: QQDeliveryPlan, block: QQMessageBlock) -> bool:
+    async def _send_poke(
+        self, plan: QQDeliveryPlan, block: QQMessageBlock,
+    ) -> tuple[bool, bool]:
+        """Returns (confirmed, attempted).
+
+        A poke that is deliberately skipped (private target, cooldown) was
+        never attempted, so it must not drag the whole plan's delivery
+        verdict down — the accompanying text block usually did reach the
+        user."""
         if plan.target_type != "group" or not block.poke:
-            return False
+            return False, False
         # 冷却：同一群每 30 秒最多戳一次，避免刷屏
         now = __import__("time").time()
         key = f"poke_out:{plan.target_id}"
         last = getattr(self, "_last_poke_out", {}).get(key, 0)
         if now - last < 30:
             self.plugin._emit_log("INFO", f"戳一戳冷却中，跳过 (群{plan.target_id})")
-            return False
+            return False, False
         if not hasattr(self, "_last_poke_out"):
             self._last_poke_out = {}
         self._last_poke_out[key] = now
-        return self._confirm_platform_result(
-            await self.plugin.qq_client.send_group_poke(plan.target_id, block.poke),
-            has_result_channel=True,
+        return (
+            self._confirm_platform_result(
+                await self.plugin.qq_client.send_group_poke(plan.target_id, block.poke),
+                has_result_channel=True,
+            ),
+            True,
         )
 
     def _supports_keyboard(self) -> bool:

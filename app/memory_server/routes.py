@@ -877,6 +877,13 @@ async def get_scoped_context(lanlan_name: str, req: ScopedContextRequest):
     if not req.subjects or len(req.subjects) > 8:
         raise HTTPException(status_code=422, detail="subjects must contain 1..8 items")
     subjects = [subject.to_domain() for subject in req.subjects]
+    # suppress 的到期解除只发生在 aupdate_suppressions 里，而它此前只被
+    # legacy 的 /get_settings、/new_dialog 调用——纯群聊部署永远走不到
+    # 那两条路径，scoped reflection 第一次被 suppress 后就永久隐身。
+    try:
+        await runtime.reflection_engine.aupdate_suppressions(lanlan_name)
+    except Exception as exc:
+        logger.warning(f"[scoped] 刷新 reflection suppression 失败: {exc}")
     pending_reflections = await runtime.reflection_engine.aget_pending_reflections(
         lanlan_name,
         subjects=subjects,

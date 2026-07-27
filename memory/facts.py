@@ -898,8 +898,9 @@ class FactStore:
                     await self._time_indexed.aindex_fact(
                         lanlan_name, fact_entry['id'], text,
                     )
-                except Exception:
-                    # 索引失败也必须回滚：本行已进缓存/hash 集合，留着会让
+                except BaseException:
+                    # 索引失败也必须回滚（含取消：CancelledError 不经
+                    # except Exception，留下的缓存会让重试撞去重"空成功"）：本行已进缓存/hash 集合，留着会让
                     # fail-closed 重试撞去重拿"空成功"、调用方推游标，而
                     # facts.json 从未收到它（维护模式等场景）。
                     await self._rollback_uncommitted_facts(
@@ -915,8 +916,8 @@ class FactStore:
         if new_facts or upgraded_count:
             try:
                 await self.asave_facts(lanlan_name)
-            except Exception:
-                # 落盘失败：进程内缓存已 append、FTS 已索引——留着的话
+            except BaseException:
+                # 落盘失败或被取消：进程内缓存已 append、FTS 已索引——留着的话
                 # fail-closed 调用方重试会撞内容 hash 去重、拿到"空成功"
                 # 并推进游标，而磁盘上什么都没有，重启即永久丢失。回滚
                 # 本批新增（upgrade 的 in-place 字段改动保留：字段级幂等，

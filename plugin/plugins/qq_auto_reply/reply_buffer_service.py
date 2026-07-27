@@ -20,7 +20,7 @@ class PendingReply:
     __slots__ = ("buffered_texts", "wait_until", "task", "topic_hint", "message_count",
                  "sender_id", "is_group", "group_id", "_acked", "first_blocks",
                  "draft_rows", "mention_context", "has_nonconsent_input",
-                 "consent_snapshot")
+                 "consent_snapshot", "used_fallback_reply")
 
     def __init__(self, first_text: str, wait_seconds: float, sender_id: str, is_group: bool, group_id: str):
         self.buffered_texts: list[str] = [first_text]  # 缓冲的消息文本
@@ -48,6 +48,9 @@ class PendingReply:
         # 出去。开关本身没有会话级 teardown（尤其 cross-group），只能在
         # 投递前比对。
         self.consent_snapshot: dict = {}
+        # 本草稿来自直连 fallback（共享历史没有对应 ai 行）：真投递后要
+        # 补一行，否则 digest 只留半边对话。
+        self.used_fallback_reply = False
 
 
 class QQReplyBufferService:
@@ -256,6 +259,7 @@ class QQReplyBufferService:
         mention_context=None,
         consented: bool = True,
         consent_snapshot: dict | None = None,
+        used_fallback_reply: bool = False,
     ) -> None:
         """缓冲一条消息。如果已有等待中的缓冲，追加消息并重置等待计时。
 
@@ -403,8 +407,15 @@ class QQReplyBufferService:
         # 单条投递后可精确撤销。
         self._bind_draft_to_pending(draft_row, existing)
         existing.mention_context = mention_context
+        existing.used_fallback_reply = bool(used_fallback_reply)
         if consent_snapshot is not None:
-            existing.consent_snapshot = dict(consent_snapshot)
+            # 并集而非覆盖：合并进同一缓冲的旧草稿可能依赖了此刻已撤销的
+            # 授权，用新快照（全 False）覆盖会让撤销检查看不到 true→false
+            # 的落差，旧草稿的内容还会被并进 summary prompt。
+            merged = dict(getattr(existing, "consent_snapshot", None) or {})
+            for key, was_enabled in consent_snapshot.items():
+                merged[key] = bool(merged.get(key)) or bool(was_enabled)
+            existing.consent_snapshot = merged
         if not consented:
             existing.has_nonconsent_input = True
         existing.task = asyncio.create_task(self._deliver_after_wait(session_key, existing))
@@ -475,6 +486,16 @@ class QQReplyBufferService:
             # 合并场景留下的旧记录必须留存。
             self._clear_undelivered_marks(session_key, pending)
             if pending.mention_context is not None and texts:
+                if pending.used_fallback_reply:
+                    # 对偶直投路径：fallback 草稿此刻才真正送达，补历史行。
+                    try:
+                        self.plugin.reply_generation_service.append_fallback_ai_row(
+                            pending.mention_context, texts[0],
+                        )
+                    except Exception as e:
+                        self.plugin._emit_log(
+                            "WARN", f"[Buffer] fallback 历史行补写失败: {e}",
+                        )
                 # mention 计数绑定实际投递：单条路径此刻才真正送达。
                 try:
                     await self.plugin.reply_generation_service.record_scoped_mentions_on_delivery(

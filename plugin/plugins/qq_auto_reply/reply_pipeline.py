@@ -284,6 +284,9 @@ class QQReplyPipelineRunner:
                     ) if outcome else False
                 ),
                 mention_context=context,
+                used_fallback_reply=bool(
+                    getattr(outcome, "used_fallback", False) if outcome else False
+                ),
                 consent_snapshot=(
                     {
                         key: bool(
@@ -356,6 +359,12 @@ class QQReplyPipelineRunner:
             and outcome is not None
             and outcome.reply_text
         ):
+            if getattr(outcome, "used_fallback", False):
+                # fallback 回复没有历史 ai 行：确认投递后补一行，否则群
+                # digest 只会存下半边对话，丢掉本轮回复披露的内容。
+                self.plugin.reply_generation_service.append_fallback_ai_row(
+                    context, outcome.reply_text,
+                )
             # mention 计数绑定实际投递（非 buffer 直投与合成轮都走这里；
             # buffer 路径由 _deliver_after_wait 在真投递后补记）。
             await self.plugin.reply_generation_service.record_scoped_mentions_on_delivery(
