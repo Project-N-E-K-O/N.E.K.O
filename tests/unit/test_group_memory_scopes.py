@@ -1058,6 +1058,15 @@ async def test_scoped_promotion_is_idempotent_after_partial_commit():
     ) is False
     assert PersonaManager.FACT_QUEUED_CORRECTION is not None
 
+    # Wiring guard: the guard must be CALLED from the time-driven promote
+    # path — a correct helper nobody invokes changes nothing (this exact
+    # gap shipped once already).
+    import inspect
+
+    src = inspect.getsource(PromotionMixin.aauto_promote_time_driven)
+    assert "_ascoped_promotion_already_applied(" in src
+    assert "FACT_QUEUED_CORRECTION" in src
+
 
 @pytest.mark.asyncio
 async def test_scoped_synthesis_runs_when_legacy_synthesis_raises():

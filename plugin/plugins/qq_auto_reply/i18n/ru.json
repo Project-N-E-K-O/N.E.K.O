@@ -325,6 +325,7 @@
   "ui.shared.table.user_id": "ID пользователя",
   "ui.shared.toast.saved": "Настройки сохранены",
   "ui.shared.toast.save_failed_prefix": "Ошибка сохранения: ",
+  "ui.shared.toast.save_not_persisted": "Не удалось записать на диск; настройки откачены (переключатели памяти не применены)",
   "ui.shared.toast.started": "Запущено",
   "ui.shared.toast.start_failed_prefix": "Ошибка запуска: ",
   "ui.shared.toast.stopped": "Остановлено",

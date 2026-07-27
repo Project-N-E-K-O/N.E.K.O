@@ -325,6 +325,7 @@
   "ui.shared.table.user_id": "ID do usuário",
   "ui.shared.toast.saved": "Configurações salvas",
   "ui.shared.toast.save_failed_prefix": "Falha ao salvar: ",
+  "ui.shared.toast.save_not_persisted": "Falha ao gravar em disco; configurações revertidas (interruptores de memória não aplicados)",
   "ui.shared.toast.started": "Iniciado",
   "ui.shared.toast.start_failed_prefix": "Falha ao iniciar: ",
   "ui.shared.toast.stopped": "Parado",

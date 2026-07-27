@@ -109,6 +109,9 @@ class QQReplyContext:
     # 本轮 prompt 里的跨群段原文（未注入时为空）：生成前在会话锁内复检
     # 授权，撤销时按原文摘除。
     cross_group_section: str = ""
+    # core memory 段是否含 participant 域：member 授权在生成前被撤销时
+    # 该段（及混合域召回）要一并撤除。
+    used_member_subject: bool = False
     traces: list[QQPipelineStageTrace] = field(default_factory=list)
 
 

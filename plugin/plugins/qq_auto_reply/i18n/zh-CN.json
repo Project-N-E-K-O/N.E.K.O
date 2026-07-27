@@ -325,6 +325,7 @@
   "ui.shared.table.user_id": "用户ID",
   "ui.shared.toast.saved": "设置已保存",
   "ui.shared.toast.save_failed_prefix": "保存失败: ",
+  "ui.shared.toast.save_not_persisted": "写盘失败，设置已回滚（记忆开关未生效）",
   "ui.shared.toast.started": "已启动",
   "ui.shared.toast.start_failed_prefix": "启动失败: ",
   "ui.shared.toast.stopped": "已停止",

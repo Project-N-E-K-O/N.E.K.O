@@ -432,5 +432,9 @@ class QQReplyContextNode:
                 getattr(instruction_bundle, "cross_group_section", "")
                 if cross_group_alive else ""
             ),
+            used_member_subject=bool(
+                core_memory_alive
+                and getattr(instruction_bundle, "used_member_subject", False)
+            ),
             traces=traces,
         )

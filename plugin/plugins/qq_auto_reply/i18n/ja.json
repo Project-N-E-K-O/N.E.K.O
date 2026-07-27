@@ -325,6 +325,7 @@
   "ui.shared.table.user_id": "ユーザーID",
   "ui.shared.toast.saved": "設定を保存したわ",
   "ui.shared.toast.save_failed_prefix": "保存に失敗: ",
+  "ui.shared.toast.save_not_persisted": "ディスクへの保存に失敗し、設定はロールバックされました（記憶スイッチは未適用）",
   "ui.shared.toast.started": "起動したわ",
   "ui.shared.toast.start_failed_prefix": "起動に失敗: ",
   "ui.shared.toast.stopped": "停止したわ",

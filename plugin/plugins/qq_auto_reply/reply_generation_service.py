@@ -41,8 +41,11 @@ class QQReplyGenerationService:
             )
             try:
                 set_call_type("conversation")
+                fb_prompt, fb_recalled = self._sanitize_for_live_consent(
+                    context, context.system_prompt, context.recalled_memory_text,
+                )
                 response = await llm.ainvoke([
-                    {"role": "system", "content": self._compose_turn_instructions(context.system_prompt, context.recalled_memory_text)},
+                    {"role": "system", "content": self._compose_turn_instructions(fb_prompt, fb_recalled)},
                     {"role": "user", "content": context.prompt_message},
                 ])
                 fallback_reply = getattr(response, "content", "") or ""
@@ -197,32 +200,12 @@ class QQReplyGenerationService:
             # member persona / 身份行。群轮必须无条件换上本轮刚构建好的
             # prompt（含当前发言人的 scoped persona），否则召回为空的轮次
             # （早期常态）会一直用创建者快照回答所有人。
-            turn_system_prompt = context.system_prompt
-            turn_recalled_text = context.recalled_memory_text
-            if context.is_group and not bool(
-                (getattr(self.plugin, "_qq_settings", {}) or {}).get(
-                    "group_memory_enabled", False,
-                )
-            ):
-                # 生成前最后一道复检：共享会话锁/附件排队可能让本轮在
-                # 上下文构建之后等待很久，期间 opt-out 的话，prompt 里
-                # 已注入的 scoped 段不得被用来生成。
-                turn_recalled_text = ""
-                turn_system_prompt = self._strip_scoped_sections(
-                    turn_system_prompt, context,
-                )
-            if context.is_group and not bool(
-                (getattr(self.plugin, "_qq_settings", {}) or {}).get(
-                    "allow_cross_group_context", False,
-                )
-            ):
-                # 跨群段同样在锁内复检：本轮可能排在别的生成之后，build
-                # 时的撤除判断已过期——别的群的内容不得在授权撤销之后
-                # 进入本轮 prompt。
-                turn_system_prompt = self._strip_section_text(
-                    turn_system_prompt,
-                    getattr(context, "cross_group_section", "") or "",
-                )
+            # 生成前最后一道复检（集中在一处，读点/构建后/锁内三段窗口
+            # 共用同一判据）：共享会话锁与附件排队可能让本轮等很久，其间
+            # 任一授权被撤销，已注入 prompt 的对应段都不得用于生成。
+            turn_system_prompt, turn_recalled_text = self._sanitize_for_live_consent(
+                context, context.system_prompt, context.recalled_memory_text,
+            )
             restore_session_prompt = self._apply_turn_memory_context(
                 user_session, turn_system_prompt, turn_recalled_text,
                 always_refresh=context.is_group,
@@ -251,6 +234,36 @@ class QQReplyGenerationService:
                     )
 
             return "".join(reply_chunks)
+
+    def _sanitize_for_live_consent(
+        self, context: Any, system_prompt: str, recalled_text: str,
+    ) -> tuple[str, str]:
+        """Drop prompt sections whose consent is no longer live.
+
+        One place for all three switches so every generation path (primary
+        session call, direct fallback) enforces the same boundary — the
+        per-path rechecks kept diverging as new paths appeared."""
+        if not getattr(context, "is_group", False):
+            return system_prompt, recalled_text
+        settings = getattr(self.plugin, "_qq_settings", {}) or {}
+        core_text = getattr(context, "core_memory_text", "") or ""
+        if not settings.get("group_memory_enabled", False):
+            # 群记忆关闭：scoped 召回与 bootstrap 段全部撤除。
+            recalled_text = ""
+            system_prompt = self._strip_section_text(system_prompt, core_text)
+        elif getattr(context, "used_member_subject", False) and not settings.get(
+            "group_member_memory_enabled", False,
+        ):
+            # 仅 member 关闭：召回混合了群域与 participant 域、无法事后
+            # 拆分，连同 participant 派生的 bootstrap 段一起撤除。
+            recalled_text = ""
+            system_prompt = self._strip_section_text(system_prompt, core_text)
+        if not settings.get("allow_cross_group_context", False):
+            system_prompt = self._strip_section_text(
+                system_prompt,
+                getattr(context, "cross_group_section", "") or "",
+            )
+        return system_prompt, recalled_text
 
     @staticmethod
     def _strip_section_text(system_prompt: str, section_text: str) -> str:

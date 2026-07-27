@@ -325,6 +325,7 @@
   "ui.shared.table.user_id": "ID de usuario",
   "ui.shared.toast.saved": "Ajustes guardados",
   "ui.shared.toast.save_failed_prefix": "Error al guardar: ",
+  "ui.shared.toast.save_not_persisted": "Error al guardar en disco; ajustes revertidos (interruptores de memoria no aplicados)",
   "ui.shared.toast.started": "Iniciado",
   "ui.shared.toast.start_failed_prefix": "Error al iniciar: ",
   "ui.shared.toast.stopped": "Detenido",

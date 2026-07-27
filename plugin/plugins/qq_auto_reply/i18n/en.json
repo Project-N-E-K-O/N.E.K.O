@@ -326,6 +326,7 @@
   "ui.shared.table.user_id": "User ID",
   "ui.shared.toast.saved": "Settings saved~",
   "ui.shared.toast.save_failed_prefix": "Save failed: ",
+  "ui.shared.toast.save_not_persisted": "Save to disk failed; settings rolled back (memory switches not applied)",
   "ui.shared.toast.started": "Started!",
   "ui.shared.toast.start_failed_prefix": "Start failed: ",
   "ui.shared.toast.stopped": "Stopped!",

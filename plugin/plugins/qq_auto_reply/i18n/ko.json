@@ -325,6 +325,7 @@
   "ui.shared.table.user_id": "사용자 ID",
   "ui.shared.toast.saved": "설정이 저장되었어요",
   "ui.shared.toast.save_failed_prefix": "저장 실패: ",
+  "ui.shared.toast.save_not_persisted": "디스크 저장에 실패하여 설정이 롤백되었습니다(메모리 스위치 미적용)",
   "ui.shared.toast.started": "시작되었어요",
   "ui.shared.toast.start_failed_prefix": "시작 실패: ",
   "ui.shared.toast.stopped": "중지되었어요",

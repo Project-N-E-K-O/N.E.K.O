@@ -325,6 +325,7 @@
   "ui.shared.table.user_id": "使用者ID",
   "ui.shared.toast.saved": "設定已儲存",
   "ui.shared.toast.save_failed_prefix": "儲存失敗: ",
+  "ui.shared.toast.save_not_persisted": "寫入磁碟失敗，設定已回滾（記憶開關未生效）",
   "ui.shared.toast.started": "已啟動",
   "ui.shared.toast.start_failed_prefix": "啟動失敗: ",
   "ui.shared.toast.stopped": "已停止",

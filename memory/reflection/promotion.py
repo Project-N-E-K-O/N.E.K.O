@@ -342,6 +342,23 @@ class PromotionMixin:
                     )
                     continue
 
+                if (
+                    code == PersonaManager.FACT_QUEUED_CORRECTION
+                    and promote_subject is not None
+                    and rid
+                    and await self._ascoped_promotion_already_applied(
+                        lanlan_name, rid, promote_subject,
+                    )
+                ):
+                    # 幂等重试：persona 条目上轮已写入（source_id 命中），
+                    # 只是 reflections 落盘失败让状态停在 confirmed。若照常
+                    # 留在 confirmed，下一轮又会与自己的条目"矛盾"排一次
+                    # correction，无限自我修正。按已提升处理。
+                    code = PersonaManager.FACT_ADDED
+                    logger.info(
+                        f"[Reflection] {lanlan_name}/{rid}: scoped 提升已存在，"
+                        f"按幂等完成处理"
+                    )
                 if code == PersonaManager.FACT_ADDED:
                     r['status'] = 'promoted'
                     r['promoted_at'] = now.isoformat()
