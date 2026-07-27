@@ -337,13 +337,13 @@ class QQOpenPlatformConnection(QQConnectionBase):
         )
 
     async def send_private_record(self, user_id: str, file_uri: str) -> Optional[str]:
-        """发送私聊语音 — 开放平台不支持，降级为文本。
+        """发送私聊语音 — 开放平台不支持，返回 None 表示"这个平台送不出去"。
 
-        结果向上传播（None=失败被吞）：投递确认链需要它，否则私聊语音块
-        恒判未投递（假阴性——已送达的回复被排除出记忆）。"""
-        return await self.send_private_message_segments(
-            user_id, [{"type": "text", "data": {"text": "[语音消息]"}}],
-        )
+        以前它发一句字面量 "[语音消息]" 并把那条的回执当成语音已送达：
+        用户只收到占位符，而记忆侧按"语音已送达"记下了那句话的内容。返回
+        None 让投递层走它自己的文本回退（把 record 原文当文本发出去），
+        用户拿到的与记下来的才一致。"""
+        return None
 
     async def send_private_message_segments(
         self, user_id: str, segments: list[dict[str, Any]]
@@ -406,10 +406,9 @@ class QQOpenPlatformConnection(QQConnectionBase):
             segments.append({"type": "reply", "data": {"id": reply_message_id}})
         if at_user_id:
             segments.append({"type": "at", "data": {"qq": at_user_id}})
-        segments.append({"type": "text", "data": {"text": "[语音消息]"}})
-        # 结果向上传播：None=发送失败被吞——投递确认链（清未投递标/记
-        # mention 的前提）需要它。
-        return await self.send_group_message_segments(group_id, segments, record_sent=False)
+        # 同 send_private_record：开放平台没有语音通道，返回 None 让投递层
+        # 用 record 原文走文本回退，别拿占位符的回执冒充语音已送达。
+        return None
 
     async def get_login_status(self) -> dict[str, Any]:
         if self._ws and self._self_id:

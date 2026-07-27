@@ -217,6 +217,14 @@ class PromotionMixin:
                 )
         return transitions
 
+    @staticmethod
+    def _apply_time_driven_promotion(reflection, rid, now, promoted_ids) -> None:
+        """Mark a reflection promoted (shared by the write and retry paths)."""
+        reflection['status'] = 'promoted'
+        reflection['promoted_at'] = now.isoformat()
+        if rid:
+            promoted_ids.append(rid)
+
     async def aauto_promote_time_driven(
         self, lanlan_name: str, *, scoped_only: bool = False,
     ) -> int:
@@ -324,6 +332,28 @@ class PromotionMixin:
                 #     reflection 留在 confirmed，下轮再试。属于已知的轻度
                 #     "记忆失活" case；rare（启发式 ratio ≥0.4 才命中）。
                 rid = r.get('id')
+                already_applied = bool(
+                    promote_subject is not None
+                    and rid
+                    and await self._ascoped_promotion_already_applied(
+                        lanlan_name, rid, promote_subject,
+                    )
+                )
+                if already_applied:
+                    # 上一轮 persona 已写入、只是 reflections 落盘失败：重试
+                    # 时**不能**再调 aadd_fact——同样的文本会被当成与自己
+                    # 矛盾，durable 地排进一条自我修正，correction LLM 之后
+                    # 可能把条目改写掉或抹掉 source_id 溯源。查在写之前。
+                    code = PersonaManager.FACT_ADDED
+                    logger.info(
+                        f"[Reflection] {lanlan_name}/{rid}: scoped 提升已存在，"
+                        f"跳过重复写入"
+                    )
+                    self._apply_time_driven_promotion(
+                        r, rid, now, promoted_ids,
+                    )
+                    transitions += 1
+                    continue
                 try:
                     promote_kwargs = (
                         {'subject': promote_subject}
@@ -360,10 +390,7 @@ class PromotionMixin:
                         f"按幂等完成处理"
                     )
                 if code == PersonaManager.FACT_ADDED:
-                    r['status'] = 'promoted'
-                    r['promoted_at'] = now.isoformat()
-                    if rid:
-                        promoted_ids.append(rid)
+                    self._apply_time_driven_promotion(r, rid, now, promoted_ids)
                     transitions += 1
                     logger.info(
                         f"[Reflection] {lanlan_name}: confirmed→promoted "

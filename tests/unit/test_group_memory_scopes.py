@@ -1169,6 +1169,11 @@ async def test_scoped_promotion_is_idempotent_after_partial_commit():
     engine._abatch_mark_surfaced_handled = AsyncMock()
     await engine.aauto_promote_time_driven("Neko", scoped_only=True)
     assert reflections[0]["status"] == "promoted"
+    # ...and the retry must not WRITE again before checking: a duplicate
+    # aadd_fact call is read as a contradiction and durably queues a
+    # self-correction, which the correction LLM can later use to rewrite
+    # the entry or strip its provenance.
+    engine._persona_manager.aadd_fact.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -3180,16 +3185,22 @@ async def test_delivery_result_reflects_open_platform_send_failure():
     assert result.delivered is True
     record_plugin.qq_client.send_message.assert_awaited_once()
 
-    # Open Platform wrapper level: send_private_record must propagate the
-    # segments result (its group twin already does) — a permanent None here
-    # falsely marks every delivered private voice reply as unsent.
+    # Open Platform has no voice channel at all. It used to send a literal
+    # "[语音消息]" placeholder and hand back that message's receipt, so the
+    # delivery layer skipped its text fallback and memory recorded the
+    # spoken line the group never received. Reporting None lets the caller
+    # fall back to sending the record text itself.
     from plugin.plugins.qq_auto_reply.qq_open_plat import (
         QQOpenPlatformConnection,
     )
 
     plat = QQOpenPlatformConnection.__new__(QQOpenPlatformConnection)
     plat.send_private_message_segments = AsyncMock(return_value="mid")
-    assert await plat.send_private_record("10086", "file://x") == "mid"
+    assert await plat.send_private_record("10086", "file://x") is None
+    plat.send_private_message_segments.assert_not_awaited()
+    plat.send_group_message_segments = AsyncMock(return_value="mid")
+    assert await plat.send_group_record("7788", "file://x") is None
+    plat.send_group_message_segments.assert_not_awaited()
     plat.send_private_message_segments = AsyncMock(return_value=None)
     assert await plat.send_private_record("10086", "file://x") is None
     # Poke fallback text propagates too — a swallowed failure must not
@@ -9835,6 +9846,9 @@ async def test_member_snapshot_merge_does_not_join_an_in_flight_flush():
     )
     assert failed == []
     assert merged_during_flight == [True]
+    # The promotion is flagged so the settlement path can tell "a newer
+    # epoch is queued" from "the flush failed and left leftovers".
+    assert ud.get("member_settle_generation_promoted") is True
     # The second epoch survived the first one's success and is queued.
     assert ud["pending_settle_buckets"]["2046"] == [
         {"role": "user", "content": "第二代"}
@@ -10047,3 +10061,121 @@ def test_keyboard_labels_are_not_recorded_for_record_blocks():
         QQMessageBlock(text="要看看哪个？", keyboard="选项甲|选项乙"),
     ])
     assert "选项甲 / 选项乙" in text
+
+
+@pytest.mark.asyncio
+async def test_promoted_generation_survives_the_settlement_cleanup():
+    """The settle path cleared the whole snapshot mapping. When a second
+    OFF landed during the flush, its epoch had just been promoted into
+    that mapping and was wiped before it could settle."""
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    ud = {
+        "is_group": True,
+        "group_id": "7788",
+        "her_name": "Neko",
+        "pending_disable_settle": True,
+        "pending_settle_buckets": {"2046": [{"role": "user", "content": "第一代"}]},
+        "pending_settle_labels": {"2046": "2046"},
+        "pending_member_settle": True,
+    }
+
+    async def _run_with_session_lock(session_key, fn):
+        return await fn()
+
+    service = QQSessionMemoryService(SimpleNamespace(
+        _user_sessions={"group:7788": ud},
+        _qq_settings={"group_member_memory_enabled": False},
+        _run_with_session_lock=_run_with_session_lock,
+        logger=MagicMock(),
+    ))
+
+    async def _flush(user_data, **kwargs):
+        # The flush succeeds while a second OFF stamps a new epoch, which
+        # _finish_member_flush_generation then promotes.
+        user_data["pending_settle_buckets"].clear()
+        user_data["pending_settle_buckets"]["2046"] = [
+            {"role": "user", "content": "第二代"}
+        ]
+        user_data["member_settle_generation_promoted"] = True
+        return []
+
+    service._flush_member_buckets = _flush
+    await service.settle_member_buckets_on_disable()
+    assert ud["pending_settle_buckets"]["2046"] == [
+        {"role": "user", "content": "第二代"}
+    ]
+    assert ud.get("pending_member_settle") is True
+
+    # A failed flush still discards under the opt-out policy: leftovers
+    # there are unsettled data, not a newer epoch.
+    ud["pending_disable_settle"] = True
+    ud["pending_settle_buckets"] = {"2046": [{"role": "user", "content": "冲不出去"}]}
+
+    async def _fail(user_data, **kwargs):
+        return ["2046"]
+
+    service._flush_member_buckets = _fail
+    await service.settle_member_buckets_on_disable()
+    assert "pending_settle_buckets" not in ud
+
+
+@pytest.mark.asyncio
+async def test_open_platform_record_falls_back_to_the_spoken_text():
+    """No voice channel there. Sending a '[语音消息]' placeholder and
+    taking its receipt as success meant the group got a placeholder while
+    memory recorded the sentence."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        QQDeliveryPlan,
+        QQMessageBlock,
+    )
+    from plugin.plugins.qq_auto_reply.reply_delivery_node import (
+        QQReplyDeliveryNode,
+    )
+
+    send_text = AsyncMock(return_value="mid")
+    node = QQReplyDeliveryNode.__new__(QQReplyDeliveryNode)
+    node.plugin = SimpleNamespace(
+        _get_reply_mode=lambda: "text",
+        logger=MagicMock(),
+        qq_client=SimpleNamespace(
+            needs_attention=False,  # Open Platform
+            send_group_record=AsyncMock(return_value=None),
+            send_group_message=send_text,
+        ),
+        voice_reply_service=SimpleNamespace(
+            synthesize_reply_voice_file=AsyncMock(
+                return_value=("file:///a.wav", "audio/wav")
+            ),
+        ),
+    )
+    result = await node.deliver(QQDeliveryPlan(
+        target_type="group", target_id="7788",
+        blocks=[QQMessageBlock(record="这句话本来要用语音说")],
+        fallback_to_text_on_voice_failure=True,
+    ))
+    assert result.delivered is True
+    assert send_text.await_args.args[1] == "这句话本来要用语音说"
+
+
+def test_keyboard_is_capped_at_what_the_platform_renders():
+    """The Open Platform sender builds at most four buttons, so a fifth
+    option is never seen — parsing caps it once so delivery and memory
+    agree."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        delivered_blocks_text,
+    )
+    from plugin.plugins.qq_auto_reply.reply_postprocess_node import (
+        QQReplyPostprocessNode,
+    )
+
+    node = QQReplyPostprocessNode.__new__(QQReplyPostprocessNode)
+    node.plugin = SimpleNamespace(logger=MagicMock(), _emit_log=lambda *a, **k: None)
+    blocks = node._parse_blocks(
+        "<msg><text>选哪个？</text>"
+        "<keyboard>甲|乙|丙|丁|戊</keyboard></msg>"
+    )
+    assert blocks[0].keyboard == "甲|乙|丙|丁"
+    assert "戊" not in delivered_blocks_text(blocks)

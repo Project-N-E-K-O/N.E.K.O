@@ -85,8 +85,17 @@ class QQReplyPostprocessNode:
 
             # <keyboard>
             kb_el = msg_el.find("keyboard")
+            # 归一化在解析处做一次：开放平台只渲染前 4 个按钮，投递与记忆
+            # 记录都从这里取值，多出来的选项不会有人看到。
             if kb_el is not None and kb_el.text:
-                block.keyboard = kb_el.text.strip()
+                block.keyboard = "|".join(
+                    part.strip()
+                    for part in str(kb_el.text or "").split("|")
+                    if part.strip()
+                )[:1000] if kb_el.text else ""
+                block.keyboard = "|".join(
+                    [p for p in block.keyboard.split("|") if p][:4]
+                )
 
             # <ark> with attrs
             ark_el = msg_el.find("ark")

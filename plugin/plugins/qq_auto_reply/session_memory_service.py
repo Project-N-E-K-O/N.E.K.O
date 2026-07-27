@@ -603,6 +603,9 @@ class QQSessionMemoryService:
             for sender, msgs in next_buckets.items():
                 pending.setdefault(sender, []).extend(msgs)
             user_data["pending_member_settle"] = True
+            # 供结算侧区分"这些是冲刷失败的残留（按 opt-out 丢弃）"与
+            # "这是冲刷期间新攒的一代（必须留着排队）"。
+            user_data["member_settle_generation_promoted"] = True
         if next_labels:
             user_data.setdefault("pending_settle_labels", {}).update(next_labels)
 
@@ -647,8 +650,17 @@ class QQSessionMemoryService:
                         f"回滚待处理，保留快照待恢复"
                     )
                     return
-                # 只清快照与标记；re-enable 后新授权轮写入的活 bucket
-                # 不受迟到结算任务影响。
+                # 只清"这一代真的冲完了"的快照：冲刷期间第二次 OFF 会把
+                # 新一代放进 *_next，冲完由 _finish_member_flush_generation
+                # 顶上来——无条件整个 pop 会把那一代在它排队结算之前抹掉。
+                # 冲刷失败留下的残留不在此列，仍按 opt-out 丢弃。
+                if current.pop("member_settle_generation_promoted", None):
+                    self.plugin.logger.info(
+                        "[member_memory_disabled] 冲刷期间又攒了新一代成员"
+                        "快照，保留待下轮结算"
+                    )
+                    current["pending_member_settle"] = True
+                    return
                 current.pop("pending_settle_buckets", None)
                 current.pop("pending_settle_labels", None)
                 current.pop("pending_member_settle", None)
