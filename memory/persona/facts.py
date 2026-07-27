@@ -931,13 +931,34 @@ class FactsMixin:
     def _normalize_entry_for_section(
         self, persona: dict, section_key: str, value,
     ) -> dict:
-        """Normalize a persona fact and inherit its scoped section metadata."""
+        """Normalize a persona fact and inherit its scoped section metadata.
+
+        The section key carries kind:subject_id but not the scope, so one
+        section can hold entries from several isolation domains and its
+        metadata is whoever wrote last. Inherit only when the entry has no
+        stamp of its own AND every stamped entry already there agrees with
+        that metadata; otherwise leave it unstamped, which reads as
+        fail-closed at render time rather than filing the fact under
+        someone else's domain."""
         entry = self._normalize_entry(value)
-        from memory.scopes import persona_subject_from_section
+        from memory.scopes import persona_subject_from_section, subject_from_entry
         section = persona.get(section_key, {})
         subject = persona_subject_from_section(section_key, section)
-        if subject is not None:
-            entry.update(subject.as_entry_fields())
+        if subject is None or subject_from_entry(entry) is not None:
+            return entry
+        stamped = {
+            (e.get('subject_kind'), e.get('subject_id'), e.get('scope'))
+            for e in (section.get('facts') or [])
+            if isinstance(e, dict) and subject_from_entry(e) is not None
+        }
+        section_triple = (subject.kind, subject.subject_id, subject.scope)
+        if stamped - {section_triple}:
+            logger.info(
+                f"[Persona] section {section_key} 含多个隔离域，"
+                f"新条目不继承 section 元数据（按无戳处理）"
+            )
+            return entry
+        entry.update(subject.as_entry_fields())
         return entry
 
     def _get_entity_stop_names(self, lanlan_name: str | None = None) -> list[str]:

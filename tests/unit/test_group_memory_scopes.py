@@ -377,6 +377,32 @@ def test_persona_fact_persists_scope_on_section_and_entry():
     assert replacement["subject_id"] == "qq:100"
     assert replacement["scope"] == group.scope
 
+    # The section key omits the scope, so one section can hold two
+    # isolation domains and its metadata is whoever wrote last. A new entry
+    # must not inherit that: filing a fact under the wrong domain is a
+    # cross-domain leak, while leaving it unstamped reads as fail-closed.
+    section["facts"].append({
+        "text": "另一个域的事实", "subject_kind": "group_chat",
+        "subject_id": "qq:100", "scope": "other-scope",
+    })
+    ambiguous = harness._normalize_entry_for_section(
+        harness.persona, group.persona_section_key, "又一条群规",
+    )
+    assert "scope" not in ambiguous
+    assert "subject_kind" not in ambiguous
+    section["facts"].pop()
+
+    # An entry that already carries its own stamp keeps it.
+    kept = harness._normalize_entry_for_section(
+        harness.persona, group.persona_section_key,
+        {
+            "text": "自带戳的条目", "subject_kind": "group_participant",
+            "subject_id": "qq:100:2046", "scope": "member-scope",
+        },
+    )
+    assert kept["scope"] == "member-scope"
+    assert kept["subject_kind"] == "group_participant"
+
 
 @pytest.mark.asyncio
 async def test_scoped_reflection_scheduler_is_bounded_and_grouped():
@@ -7741,3 +7767,98 @@ def test_context_construction_seeds_inherited_consent():
     assert "inherited_consent_snapshot" in ast.get_source_segment(
         source, seeded[0].value
     )
+
+
+def test_synthetic_source_classification_is_shared_by_read_write_and_mentions():
+    """A join notice carries the joining member's id as the nominal sender
+    while the text is fabricated. The write path already excluded it; the
+    read path and the mention hook must use the SAME classification, or a
+    returning member's private facts shape a public welcome."""
+    import ast
+    from pathlib import Path
+
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        SYNTHETIC_SOURCE_KINDS,
+        is_synthetic_source,
+    )
+
+    for kind in (
+        "proactive_speech", "rapid_fire_flush", "buffer_delayed",
+        "retroactive_review", "group_join_notice",
+    ):
+        assert is_synthetic_source(kind), kind
+    assert not is_synthetic_source("incoming_group")
+    assert not is_synthetic_source("")
+    assert not is_synthetic_source(None)
+
+    # No site may keep its own private copy of the list — that is how the
+    # join notice ended up excluded from writes but not from reads.
+    root = Path(__file__).resolve().parents[2] / "plugin" / "plugins" / "qq_auto_reply"
+    for rel in (
+        "reply_context_node.py",
+        "reply_generation_service.py",
+        "session_memory_service.py",
+    ):
+        source = (root / rel).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        # Each site must actually CALL the shared predicate: dropping the
+        # call (or hard-coding the answer) is exactly the regression that
+        # let a join notice through the read path.
+        calls = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "is_synthetic_source"
+        ]
+        assert calls, f"{rel} must classify synthetic turns via the shared helper"
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Tuple, ast.Set, ast.List)):
+                continue
+            literals = {
+                el.value for el in node.elts
+                if isinstance(el, ast.Constant) and isinstance(el.value, str)
+            }
+            overlap = literals & set(SYNTHETIC_SOURCE_KINDS)
+            assert len(overlap) < 2, (
+                f"{rel} re-declares the synthetic-source list: {sorted(overlap)}"
+            )
+
+
+@pytest.mark.asyncio
+async def test_napcat_voice_send_failure_is_not_reported_as_delivered():
+    """NapCat's segment API returns None on timeout. send_*_record used to
+    drop that result, so a voice-only reply nobody heard was reported
+    delivered: no text fallback ran, and the draft was cleared into
+    scoped memory."""
+    from plugin.plugins.qq_auto_reply.voice_reply_service import (
+        QQVoiceReplyService,
+    )
+
+    service = QQVoiceReplyService.__new__(QQVoiceReplyService)
+    service.plugin = SimpleNamespace(
+        qq_client=SimpleNamespace(needs_attention=True),  # NapCat
+    )
+    # Fire-and-forget text sends keep the old semantics.
+    assert service._confirm_send(None) is True
+    # ...but the record senders DO report failure through their return.
+    assert service._confirm_send(None, has_result_channel=True) is False
+    assert service._confirm_send("msg-1", has_result_channel=True) is True
+
+
+@pytest.mark.asyncio
+async def test_record_senders_return_the_segment_result():
+    """The wrappers must not swallow the segment API's result."""
+    from plugin.plugins.qq_auto_reply.qq_client import QQClient
+
+    client = QQClient.__new__(QQClient)
+    # A returned id must reach the caller (an implicit `return None` would
+    # look identical to a failure if we only tested the None case).
+    client.send_group_message_segments = AsyncMock(return_value="gid")
+    client.send_private_message_segments = AsyncMock(return_value="pid")
+    assert await client.send_group_record("7788", "file:///a.wav") == "gid"
+    assert await client.send_private_record("2046", "file:///a.wav") == "pid"
+
+    client.send_group_message_segments = AsyncMock(return_value=None)
+    client.send_private_message_segments = AsyncMock(return_value=None)
+    assert await client.send_group_record("7788", "file:///a.wav") is None
+    assert await client.send_private_record("2046", "file:///a.wav") is None

@@ -13,6 +13,25 @@ class QQPipelineStageTrace:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+# 合成来源：这些轮次的 sender 只是名义上的发言人（主动搭话的控制指令、
+# 缓冲合并/确认、延迟投递、回溯补回、入群通知），其 prompt 文本不是这个人
+# 说的话。写侧（不入 participant bucket）、读侧（不召回该成员的 scoped
+# 记忆）、mention 计数三处必须用同一份判据，否则一处漏掉就等于用别人的
+# 私人事实去生成公开发言。
+SYNTHETIC_SOURCE_KINDS = frozenset({
+    "proactive_speech",
+    "rapid_fire_flush",
+    "buffer_delayed",
+    "retroactive_review",
+    "group_join_notice",
+})
+
+
+def is_synthetic_source(source_kind: str | None) -> bool:
+    """True when the turn's nominal sender did not actually say anything."""
+    return str(source_kind or "") in SYNTHETIC_SOURCE_KINDS
+
+
 @dataclass(slots=True)
 class QQReplyRequest:
     message_text: str

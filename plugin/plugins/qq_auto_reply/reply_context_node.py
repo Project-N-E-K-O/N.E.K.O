@@ -4,7 +4,7 @@ from typing import Any, Optional
 
 from utils.config_manager import get_config_manager
 
-from .pipeline_models import QQInstructionBundle, QQPipelineStageTrace, QQReplyContext
+from .pipeline_models import is_synthetic_source, QQInstructionBundle, QQPipelineStageTrace, QQReplyContext
 from .prompt_fragment_templates import LONG_TERM_MEMORY_SECTION
 
 
@@ -207,9 +207,7 @@ class QQReplyContextNode:
         memory_sender_id = (
             ""
             if (
-                source_kind in (
-                    "proactive_speech", "rapid_fire_flush", "buffer_delayed",
-                )
+                is_synthetic_source(source_kind)
                 or (is_group and not member_memory_snapshot)
             )
             else str(sender_id or "").strip()

@@ -7,7 +7,13 @@ from typing import Any, Optional
 from utils.llm_client import SystemMessage, create_chat_llm_async
 from utils.token_tracker import set_call_type
 
-from .pipeline_models import QQInstructionBundle, QQModelResult, QQPipelineStageTrace, QQReplyContext
+from .pipeline_models import (
+    QQInstructionBundle,
+    QQModelResult,
+    QQPipelineStageTrace,
+    QQReplyContext,
+    is_synthetic_source,
+)
 
 
 class QQReplyGenerationService:
@@ -111,10 +117,7 @@ class QQReplyGenerationService:
             # 排除之前就把历史结算掉——生成前先记长度，超时时先排除再丢。
             synthetic_hist_before = (
                 len(getattr(user_session, "_conversation_history", []) or [])
-                if getattr(context, "source_kind", "") in (
-                    "rapid_fire_flush", "proactive_speech", "buffer_delayed",
-                    "group_join_notice", "retroactive_review",
-                )
+                if is_synthetic_source(getattr(context, "source_kind", ""))
                 else None
             )
 
@@ -531,9 +534,7 @@ class QQReplyGenerationService:
         bridge = self.plugin.memory_bridge
         subjects = [bridge.group_subject(group_id)]
         sender_id = str(context.sender_id or "").strip()
-        synthetic = getattr(context, "source_kind", "") in (
-            "proactive_speech", "rapid_fire_flush", "buffer_delayed",
-        )
+        synthetic = is_synthetic_source(getattr(context, "source_kind", ""))
         member_authorized = bool(
             getattr(context, "member_memory_enabled", False)
             and (getattr(self.plugin, "_qq_settings", {}) or {}).get(
