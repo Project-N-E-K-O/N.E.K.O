@@ -2335,7 +2335,7 @@
             "never": "今後表示しない"
         },
         "screenSource": {
-            "notAvailable": "画面ソース選択はデスクトップ版のみで利用可能です",
+            "notAvailable": "現在の環境では画面ソースを選択できません",
             "loading": "読み込み中...",
             "noSources": "利用可能な画面ソースがありません",
             "loadFailed": "画面ソースの読み込みに失敗しました",
@@ -2343,7 +2343,8 @@
             "screenLabel": "画面 {{index}}",
             "windows": "ウィンドウ",
             "selected": "{{source}}を選択しました",
-            "sourceLost": "画面共有で以前選択したウィンドウが見つかりません。全画面共有に切り替えました"
+            "sourceLost": "画面共有で以前選択したウィンドウが見つかりません。全画面共有に切り替えました",
+            "captureFailed": "画面キャプチャを停止しました。システム権限を確認するか、ソースを選択し直してください"
         },
         "deviceSwitchFailed": "デバイスの切り替えに失敗しました",
         "deviceSwitching": "デバイスを切り替え中...",

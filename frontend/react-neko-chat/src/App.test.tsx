@@ -193,6 +193,18 @@ describe('App', () => {
   const renderInputApp = (
     props: React.ComponentProps<typeof App> = {},
   ) => render(<App compactChatState="input" {...props} />);
+  const pressEnter = (target: Element, options: { shiftKey?: boolean } = {}) => {
+    fireEvent.keyDown(target, {
+      key: 'Enter',
+      code: 'Enter',
+      shiftKey: options.shiftKey ?? false,
+    });
+    fireEvent.keyUp(target, {
+      key: 'Enter',
+      code: 'Enter',
+      shiftKey: options.shiftKey ?? false,
+    });
+  };
   const queryAvatarToolVisualOverlay = () => document.body.querySelector<HTMLElement>('.avatar-tool-visual-overlay');
   const queryAvatarToolImpactEffect = () => document.body.querySelector<HTMLElement>(
     '.avatar-tool-visual-overlay-hammer, .avatar-tool-impact-effect',
@@ -8965,8 +8977,88 @@ describe('App', () => {
     const input = screen.getByPlaceholderText('Type a message...');
     fireEvent.change(input, { target: { value: 'Test send' } });
     fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+    fireEvent.keyUp(input, { key: 'Enter', code: 'Enter' });
 
     expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Test send' });
+  });
+
+  it('submits plain Enter when WebKit inserts a line break before keyup', () => {
+    const onComposerSubmit = vi.fn();
+    renderInputApp({ onComposerSubmit });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: 'Send without newline' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    fireEvent.input(input, {
+      target: { value: 'Send without\nnewline' },
+      inputType: 'insertLineBreak',
+    });
+    fireEvent.keyUp(input, { key: 'Enter', code: 'Enter' });
+
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Send without newline' });
+    expect(input).toHaveValue('');
+  });
+
+  it('keeps a Shift+Enter line break without submitting', () => {
+    const onComposerSubmit = vi.fn();
+    renderInputApp({ onComposerSubmit });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: 'First line' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', shiftKey: true });
+    fireEvent.input(input, {
+      target: { value: 'First line\n' },
+      inputType: 'insertLineBreak',
+    });
+    fireEvent.keyUp(input, { key: 'Enter', code: 'Enter', shiftKey: true });
+
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+    expect(input).toHaveValue('First line\n');
+  });
+
+  it('uses the first Enter to confirm active IME text and the second Enter to submit', () => {
+    const onComposerSubmit = vi.fn();
+    renderInputApp({ onComposerSubmit });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.compositionStart(input);
+    fireEvent.change(input, { target: { value: '你好' } });
+    fireEvent.keyDown(input, {
+      key: 'Enter',
+      code: 'Enter',
+      isComposing: true,
+    });
+    fireEvent.compositionEnd(input);
+    fireEvent.submit(input.closest('form')!);
+    fireEvent.keyUp(input, { key: 'Enter', code: 'Enter' });
+
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+    expect(input).toHaveValue('你好');
+
+    pressEnter(input);
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好' });
+  });
+
+  it('does not submit an ASCII candidate committed without composition metadata', () => {
+    const onComposerSubmit = vi.fn();
+    renderInputApp({ onComposerSubmit });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: 'ok' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    fireEvent.input(input, {
+      target: { value: 'ok' },
+      inputType: 'insertText',
+    });
+    fireEvent.submit(input.closest('form')!);
+    fireEvent.keyUp(input, { key: 'Enter', code: 'Enter' });
+
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+    expect(input).toHaveValue('ok');
+
+    pressEnter(input);
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'ok' });
   });
 
   it('disables composer submission while the home tutorial owns interaction', () => {
@@ -9013,7 +9105,7 @@ describe('App', () => {
 
     const input = screen.getByPlaceholderText('Type a message...');
     fireEvent.change(input, { target: { value: 'No local optimistic bubble' } });
-    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    pressEnter(input);
 
     expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'No local optimistic bubble' });
     expect(screen.queryByText('No local optimistic bubble')).not.toBeInTheDocument();

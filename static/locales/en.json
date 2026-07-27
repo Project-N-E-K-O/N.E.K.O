@@ -2335,7 +2335,7 @@
             "never": "Do not remind me"
         },
         "screenSource": {
-            "notAvailable": "Screen source selection only available in desktop version",
+            "notAvailable": "Screen source selection is unavailable in the current environment",
             "loading": "Loading...",
             "noSources": "No screen sources available",
             "loadFailed": "Failed to load screen sources",
@@ -2343,7 +2343,8 @@
             "screenLabel": "Screen {{index}}",
             "windows": "Windows",
             "selected": "Selected {{source}}",
-            "sourceLost": "Screen sharing could not find previously selected window, switched to fullscreen sharing"
+            "sourceLost": "Screen sharing could not find previously selected window, switched to fullscreen sharing",
+            "captureFailed": "Screen capture stopped. Check system permissions or select the source again"
         },
         "deviceSwitchFailed": "Device switch failed",
         "deviceSwitching": "Switching device...",

@@ -25,6 +25,13 @@
     const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 60 * 1000;
     const MEME_LOAD_FAILED_STICKER_URL = '/static/icons/meme-image-load-failed-sticker.png';
 
+    function getDesktopProvider() {
+        if (typeof window.getDesktopCaptureProvider === 'function') {
+            return window.getDesktopCaptureProvider();
+        }
+        return window.tauriDesktopCapturer || window.electronDesktopCapturer || null;
+    }
+
     // ======================== proactive leader election ========================
     //
     // 背景：index.html（Pet 主窗口）和 chat.html（聊天浮窗）共用 app-proactive.js，
@@ -1882,6 +1889,23 @@
                 }
             }
 
+            // Native desktop shells return encoded frames instead of a
+            // Chromium MediaStream.
+            if (!dataUrl && S.selectedScreenSourceId) {
+                var desktopProvider = getDesktopProvider();
+                if (desktopProvider
+                    && desktopProvider.nativeFrameCapture
+                    && typeof desktopProvider.captureSourceAsDataUrl === 'function') {
+                    var direct = await desktopProvider.captureSourceAsDataUrl(S.selectedScreenSourceId);
+                    if (direct && direct.success && direct.dataUrl) {
+                        dataUrl = direct.dataUrl;
+                    } else if (direct && direct.error === 'Source not found'
+                        && typeof window.clearSelectedScreenSource === 'function') {
+                        window.clearSelectedScreenSource('主动视觉原生捕获源已失效');
+                    }
+                }
+            }
+
             // 后端 pyautogui 兜底
             if (!dataUrl) {
                 var backendResult = await fetchBackendScreenshot();
@@ -2049,11 +2073,12 @@
             } catch (e) { console.warn('[主动搭话截图] 缓存流截图失败，继续:', e); }
         }
 
-        // 策略 0b: 主进程直接捕获选中源（Electron 桌面环境）
-        if (S.selectedScreenSourceId && window.electronDesktopCapturer
-            && typeof window.electronDesktopCapturer.captureSourceAsDataUrl === 'function') {
+        // 策略 0b: 桌面壳直接捕获选中源（Electron / Tauri）
+        var desktopProvider = getDesktopProvider();
+        if (S.selectedScreenSourceId && desktopProvider
+            && typeof desktopProvider.captureSourceAsDataUrl === 'function') {
             try {
-                var direct = await window.electronDesktopCapturer.captureSourceAsDataUrl(S.selectedScreenSourceId);
+                var direct = await desktopProvider.captureSourceAsDataUrl(S.selectedScreenSourceId);
                 if (direct && direct.success && direct.dataUrl) {
                     console.log('[主动搭话截图] 主进程直接捕获成功:', S.selectedScreenSourceId);
                     return direct.dataUrl;
