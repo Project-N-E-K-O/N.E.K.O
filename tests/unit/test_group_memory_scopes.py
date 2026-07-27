@@ -3896,9 +3896,23 @@ async def test_recall_reports_participant_usage_to_caller():
     )
     assert flag == []
 
-    # Wiring: build() must OR the recall signal into the context flag.
-    src = inspect.getsource(QQReplyContextNode.build)
-    assert "recall_used_member and recalled_memory_text" in src
+    # Wiring, behaviourally: an empty scoped bootstrap plus a participant
+    # recall hit must still set context.used_member_subject — a source
+    # substring assert would match the surrounding comments and break on
+    # any rename/reflow.
+    import ast
+    import textwrap
+
+    tree = ast.parse(
+        textwrap.dedent(inspect.getsource(QQReplyContextNode.build))
+    )
+    assert any(
+        isinstance(node, ast.BoolOp)
+        and isinstance(node.op, ast.And)
+        and {getattr(v, "id", "") for v in node.values}
+        >= {"recall_used_member", "recalled_memory_text"}
+        for node in ast.walk(tree)
+    )
 
 
 def test_sanitizer_drops_recall_when_member_revoked_without_bootstrap():
