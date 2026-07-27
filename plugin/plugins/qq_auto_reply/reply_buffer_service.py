@@ -73,12 +73,29 @@ class QQReplyBufferService:
             rows = user_data.setdefault("undelivered_draft_rows", [])
             if not any(existing is msg for existing in rows):
                 rows.append(msg)
+            provisional = user_data.setdefault("provisional_draft_rows", [])
+            if not any(existing is msg for existing in provisional):
+                # 在途集合：投递决策未定型前，focus digest 的游标不得越过
+                # 本行——若之后单条投递并撤标，越过的游标会让这条真回复
+                # 永远进不了 scoped 记忆。单条投递或合并定局时移除。
+                provisional.append(msg)
             if pending is not None and not any(
                 existing is msg for existing in pending.draft_rows
             ):
                 pending.draft_rows.append(msg)
             return msg
         return None
+
+    @staticmethod
+    def _settle_provisional(user_data, pending) -> None:
+        """本 pending 的草稿命运已定（投递或被合并取代）：解除游标屏障。"""
+        if not isinstance(user_data, dict):
+            return
+        provisional = user_data.get("provisional_draft_rows")
+        if not provisional:
+            return
+        for row in pending.draft_rows:
+            provisional[:] = [r for r in provisional if r is not row]
 
     @staticmethod
     def _bind_draft_to_pending(draft_row: Any, pending: "PendingReply") -> None:
@@ -113,10 +130,10 @@ class QQReplyBufferService:
         if not isinstance(user_data, dict):
             return
         rows = user_data.get("undelivered_draft_rows")
-        if not rows:
-            return
-        for delivered in pending.draft_rows:
-            rows[:] = [row for row in rows if row is not delivered]
+        if rows:
+            for delivered in pending.draft_rows:
+                rows[:] = [row for row in rows if row is not delivered]
+        self._settle_provisional(user_data, pending)
     MAX_WAIT_SECONDS = 10.0         # 最多等 10 秒
 
     def __init__(self, plugin: Any):
@@ -301,6 +318,12 @@ class QQReplyBufferService:
                     self.plugin._emit_log("WARN", f"[Buffer] 强制总结失败: {e}")
                 finally:
                     self._record_synthetic_prompt_rows(session_key, hist_before)
+                    self._settle_provisional(
+                        (getattr(self.plugin, "_user_sessions", {}) or {}).get(
+                            session_key
+                        ),
+                        existing,
+                    )
                 return
         else:
             # 新缓冲：pre_buffer 可能已创建了占位 pending
@@ -371,7 +394,13 @@ class QQReplyBufferService:
             if delivery is None or not getattr(delivery, "delivered", False):
                 # 发送未确认（开放平台失败返回 None 不抛异常）：草稿仍属
                 # 未投递——排除记录保留、mention 不记，没送出去的回复不得
-                # 进 scoped 提取。
+                # 进 scoped 提取。命运已定（不重试），解除游标屏障。
+                self._settle_provisional(
+                    (getattr(self.plugin, "_user_sessions", {}) or {}).get(
+                        session_key
+                    ),
+                    pending,
+                )
                 self._pending.pop(session_key, None)
                 return
             # 单条草稿真的送出去了：只撤本次 pending 的未投递记录——此前
@@ -413,6 +442,14 @@ class QQReplyBufferService:
 
             await self.plugin._run_with_session_lock(session_key, _run_flush)
             self._pending.pop(session_key, None)
+            # 合并定局：草稿永久未投递（排除名单保留），解除游标屏障，
+            # 否则 digest 永远停在死草稿行前。
+            self._settle_provisional(
+                (getattr(self.plugin, "_user_sessions", {}) or {}).get(
+                    session_key
+                ),
+                pending,
+            )
         except Exception as e:
             self.plugin._emit_log("WARN", f"[Buffer] 总结pipeline失败: {e}")
 

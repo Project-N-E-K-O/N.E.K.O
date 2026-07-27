@@ -17,7 +17,7 @@ class QQReplyDeliveryNode:
 
         blocks = plan.blocks
         first_text = ""
-        any_text_sent = False
+        all_text_sent = True
         any_text_attempted = False
         for i, block in enumerate(blocks):
             if i > 0:
@@ -43,15 +43,15 @@ class QQReplyDeliveryNode:
             if i == 0:
                 first_text = text
             any_text_attempted = True
-            if await self._send_text(plan, block, text):
-                any_text_sent = True
+            if not await self._send_text(plan, block, text):
+                all_text_sent = False
 
-        # 开放平台单条发送失败返回 None（不抛异常）：文本块全部未确认时
-        # 不得报 delivered=True——buffer 会据此清未投递标并记 mention，
-        # 没送出去的回复就会进 scoped 提取。纯 poke/sticker 计划保持旧
-        # 语义（其发送无结果通道，失败靠异常）。
+        # 开放平台单条发送失败返回 None（不抛异常）：只要有文本块未确认
+        # 就不得报 delivered=True——buffer 会据此清未投递标并记 mention，
+        # 而排除名单是整行粒度的，部分未发出的内容也会进 scoped 提取。
+        # 纯 poke/sticker 计划保持旧语义（其发送无结果通道，失败靠异常）。
         return QQDeliveryResult(
-            delivered=any_text_sent or not any_text_attempted,
+            delivered=all_text_sent or not any_text_attempted,
             target_type=plan.target_type,
             target_id=plan.target_id,
             reply_text=first_text,

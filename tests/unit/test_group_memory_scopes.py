@@ -1881,7 +1881,10 @@ async def test_undelivered_buffer_drafts_stay_out_of_memory():
         return SimpleNamespace(type=msg_type, content=text)
 
     history = [_msg("human", "问题一"), _msg("ai", "草稿一")]
-    user_data = {"session": SimpleNamespace(_conversation_history=history)}
+    user_data = {
+        "is_group": True,
+        "session": SimpleNamespace(_conversation_history=history),
+    }
     plugin = SimpleNamespace(
         _user_sessions={"group:7788": user_data},
         _emit_log=lambda *a, **k: None,
@@ -1975,7 +1978,10 @@ async def test_flush_prompt_excluded_but_delivered_ack_kept():
 
     draft_new = _msg("ai", "第十条的草稿")
     history = [_msg("human", "u1"), draft_new]
-    user_data = {"session": SimpleNamespace(_conversation_history=history)}
+    user_data = {
+        "is_group": True,
+        "session": SimpleNamespace(_conversation_history=history),
+    }
 
     sys_prompt_row = _msg("human", "[系统] 对方连续发了多条消息……")
     ack_row = _msg("ai", "嗯嗯，听着呢")
@@ -2172,7 +2178,10 @@ async def test_proactive_prompt_row_excluded_from_digest():
         return SimpleNamespace(type=msg_type, content=text)
 
     history = [_msg("human", "真实发言")]
-    user_data = {"session": SimpleNamespace(_conversation_history=history)}
+    user_data = {
+        "is_group": True,
+        "session": SimpleNamespace(_conversation_history=history),
+    }
     prompt_row = _msg("human", "[synthetic proactive instruction]")
     reply_row = _msg("ai", "主动说的话")
 
@@ -2222,7 +2231,10 @@ async def test_retro_replay_honors_receipt_time_policy():
         return SimpleNamespace(type=msg_type, content=text)
 
     history = []
-    user_data = {"session": SimpleNamespace(_conversation_history=history)}
+    user_data = {
+        "is_group": True,
+        "session": SimpleNamespace(_conversation_history=history),
+    }
 
     async def _run(request):
         history.append(_msg("human", request.message_text))
@@ -2352,6 +2364,20 @@ async def test_delivery_result_reflects_open_platform_send_failure():
     result = await _node(True, None).deliver(plan)
     assert result.delivered is True
 
+    # Multi-block partial failure: ALL attempted text blocks must confirm —
+    # the exclusion list is whole-row, so a half-sent reply must not clear
+    # its mark and enter extraction.
+    node = _node(False, None)
+    node.plugin.qq_client.send_group_message = AsyncMock(
+        side_effect=["msgid", None],
+    )
+    with patch("asyncio.sleep", new=AsyncMock()):
+        result = await node.deliver(QQDeliveryPlan(
+            target_type="group", target_id="7788",
+            blocks=[QQMessageBlock(text="第一块"), QQMessageBlock(text="第二块")],
+        ))
+    assert result.delivered is False
+
 
 @pytest.mark.asyncio
 async def test_buffer_keeps_draft_excluded_when_delivery_unconfirmed():
@@ -2402,6 +2428,131 @@ async def test_buffer_keeps_draft_excluded_when_delivery_unconfirmed():
     assert user_data["undelivered_draft_rows"] == [draft]
     plugin.reply_generation_service.record_scoped_mentions_on_delivery.assert_not_awaited()
     assert "group:7788" not in service._pending
+
+
+@pytest.mark.asyncio
+async def test_private_flush_prompt_not_excluded_and_cache_lags_tail_draft():
+    """Two private-path edges of the exclusion machinery:
+    (a) pre_buffer means the 2nd+ real private messages exist ONLY inside
+    the flush prompt row — excluding it would erase them from /cache and
+    /process; the synthetic-prompt recorder must skip private sessions.
+    (b) /cache runs at generation time, before the buffer marks the new
+    draft: the tail ai run is deferred to the next cache/finalize, when
+    the exclusion list has settled."""
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    def _msg(msg_type, text):
+        return SimpleNamespace(type=msg_type, content=text)
+
+    history = [_msg("human", "第一条"), _msg("ai", "本轮草稿")]
+    user_data = {
+        "is_group": False,
+        "her_name": "Neko",
+        "session": SimpleNamespace(_conversation_history=history),
+        "last_synced_index": 0,
+    }
+    plugin = SimpleNamespace(
+        _user_sessions={"private:1": user_data},
+        memory_bridge=SimpleNamespace(
+            post_memory_history=AsyncMock(return_value={"status": "ok"}),
+        ),
+        logger=MagicMock(),
+    )
+    service = QQSessionMemoryService(plugin)
+
+    # (a) private synthetic-prompt recording is a no-op.
+    service.record_synthetic_prompt_rows("private:1", 0)
+    assert "undelivered_draft_rows" not in user_data
+
+    # (b) the tail draft is NOT cached this turn; the user row is.
+    count = await service.cache_session_delta("private:1", user_data)
+    assert count == 1
+    sent = plugin.memory_bridge.post_memory_history.await_args.args[2]
+    assert [m["content"][0]["text"] for m in sent] == ["第一条"]
+    assert user_data["last_synced_index"] == 1
+
+    # Next turn: the previous (now-settled) reply is cached with the new
+    # user row; the fresh tail draft lags again.
+    history.append(_msg("human", "第二条"))
+    history.append(_msg("ai", "新草稿"))
+    count = await service.cache_session_delta("private:1", user_data)
+    assert count == 2
+    sent = plugin.memory_bridge.post_memory_history.await_args.args[2]
+    assert [m["content"][0]["text"] for m in sent] == ["本轮草稿", "第二条"]
+    assert user_data["last_synced_index"] == 3
+
+
+@pytest.mark.asyncio
+async def test_provisional_draft_blocks_digest_cursor_until_settled():
+    """A history-backed draft is provisional during the buffer wait: the
+    focus digest must stop its cursor BEFORE the draft row — advancing
+    past it and then delivering (which clears the exclusion mark) would
+    leave the delivered reply permanently outside scoped memory. Once the
+    outcome settles (merged away), the barrier lifts and the exclusion
+    list alone governs."""
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    def _msg(msg_type, text):
+        return SimpleNamespace(type=msg_type, content=text)
+
+    draft = _msg("ai", "在途草稿")
+    tail = _msg("human", "后续消息")
+    history = [_msg("human", "u1"), draft, tail]
+    user_data = {
+        "is_group": True,
+        "undelivered_draft_rows": [draft],
+        "provisional_draft_rows": [draft],
+    }
+    service = QQSessionMemoryService.__new__(QQSessionMemoryService)
+    service.plugin = SimpleNamespace()
+
+    messages, next_index = service._slice_group_history_batch(
+        history, 0, 10, user_data=user_data, stop_at_provisional=True,
+    )
+    assert [m["content"][0]["text"] for m in messages] == ["u1"]
+    assert next_index == 1  # cursor parked before the provisional row
+
+    # Outcome settled (merged away): barrier lifts, exclusion list still
+    # filters the dead draft, and the cursor may advance past it.
+    user_data["provisional_draft_rows"] = []
+    messages, next_index = service._slice_group_history_batch(
+        history, next_index, 10, user_data=user_data, stop_at_provisional=True,
+    )
+    assert [m["content"][0]["text"] for m in messages] == ["后续消息"]
+    assert next_index == 3
+
+    # finalize/teardown path pierces the barrier (list-filtering only).
+    user_data["provisional_draft_rows"] = [draft]
+    messages, next_index = service._slice_group_history_batch(
+        history, 0, 10, user_data=user_data,
+    )
+    assert [m["content"][0]["text"] for m in messages] == ["u1", "后续消息"]
+    assert next_index == 3
+
+
+@pytest.mark.asyncio
+async def test_delete_group_prompt_survives_missing_runtime_service():
+    """The discarded-check must sit INSIDE the session_runtime_service
+    guard: with the service absent, `discarded` is never assigned and a
+    same-level check raises NameError (the set_group_prompt twin already
+    nests it correctly)."""
+    from plugin.plugins.qq_auto_reply import QQAutoReplyPlugin
+
+    fake = SimpleNamespace(
+        _qq_settings={"group_prompts": {"7788": "旧提示词"}},
+        _persist_business_config=AsyncMock(return_value=True),
+        session_runtime_service=None,
+        _emit_log=lambda *a, **k: None,
+    )
+    result = await QQAutoReplyPlugin.delete_group_prompt(
+        fake, group_id="7788",
+    )
+    assert fake._qq_settings["group_prompts"] == {}
+    assert result is not None
 
 
 def test_receipt_snapshot_stamped_at_task_creation():

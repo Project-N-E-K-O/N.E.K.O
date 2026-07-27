@@ -587,7 +587,7 @@ class QQAttentionGateService:
                     remaining_batches -= 1
                     messages, next_index = svc._slice_group_history_batch(
                         history, start_index, svc.GROUP_HISTORY_MAX_MESSAGES,
-                        user_data=s,
+                        user_data=s, stop_at_provisional=True,
                     )
                     if not messages:
                         if next_index > start_index:

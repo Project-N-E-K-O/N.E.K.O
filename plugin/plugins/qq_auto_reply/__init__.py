@@ -1161,11 +1161,11 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             success = await self._persist_business_config()
             if self.session_runtime_service:
                 discarded = await self._run_with_session_lock(
-                f"group:{gid}",
-                lambda: self.session_runtime_service.discard_session(f"group:{gid}", reason="group_prompt_deleted"),
-            )
-            if discarded is False:
-                self._emit_log("WARNING", f"群 {gid} 会话因记忆结算失败暂未重置，新提示词将在下次会话重建时生效")
+                    f"group:{gid}",
+                    lambda: self.session_runtime_service.discard_session(f"group:{gid}", reason="group_prompt_deleted"),
+                )
+                if discarded is False:
+                    self._emit_log("WARNING", f"群 {gid} 会话因记忆结算失败暂未重置，新提示词将在下次会话重建时生效")
             self._emit_log("INFO", f"已删除群 {gid} 的自定义提示词")
             return Ok({"persisted": success, "group_id": gid, "deleted": True})
         return Ok({"persisted": True, "group_id": gid, "deleted": False, "reason": "not_found"})

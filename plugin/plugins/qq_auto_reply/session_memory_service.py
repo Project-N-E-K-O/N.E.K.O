@@ -123,6 +123,7 @@ class QQSessionMemoryService:
     def _slice_group_history_batch(
         self, conversation_history: list, start_index: int, max_messages: int,
         *, user_data: dict[str, Any] | None = None,
+        stop_at_provisional: bool = False,
     ) -> tuple[list[dict[str, Any]], int]:
         """Oldest-first digest batch with an exact cursor.
 
@@ -133,7 +134,23 @@ class QQSessionMemoryService:
         the way a newest-N slice would."""
         messages: list[dict[str, Any]] = []
         next_index = max(0, start_index)
+        provisional_ids = (
+            {
+                id(row)
+                for row in (
+                    (user_data or {}).get("provisional_draft_rows") or []
+                )
+            }
+            if stop_at_provisional else frozenset()
+        )
         for raw_index in range(next_index, len(conversation_history)):
+            if id(conversation_history[raw_index]) in provisional_ids:
+                # 在途草稿（buffer 等待中，投递决策未定）：游标停在它之前
+                # ——越过后若草稿被真投递并撤标，这条回复就永远进不了
+                # scoped 记忆。定局（投递/合并）后屏障解除。仅 focus
+                # digest 用；finalize/teardown 穿透（按名单过滤），避免
+                # 残留屏障卡死最终结算。
+                break
             converted = self.conversation_slice_to_memory_messages(
                 conversation_history[raw_index:raw_index + 1],
                 user_data=user_data,
@@ -166,6 +183,13 @@ class QQSessionMemoryService:
             session_key
         )
         if not isinstance(user_data, dict):
+            return
+        if not user_data.get("is_group"):
+            # 私聊 pre_buffer 场景：第二条起的真实用户消息只活在 flush
+            # prompt 里（handle_private_message 在 pre_buffer 后直接返回，
+            # 不进正常历史）——排除整行会让私聊长期记忆丢真实输入。包装
+            # 噪声交提取端消化，完整性优先。群路径的成员消息每条都走过
+            # 正常轮次、已在历史里，照常排除合成行。
             return
         session = user_data.get("session")
         history = getattr(session, "_conversation_history", None) or []
@@ -242,15 +266,25 @@ class QQSessionMemoryService:
             return 0
         conversation_history = getattr(session, "_conversation_history", []) or []
         start_index = int(user_data.get("last_synced_index", 0))
+        # /cache 跑在生成钩子时刻，早于投递决策：尾部刚生成的 ai 行可能
+        # 随后被 buffer 合并成 summary 取代（打标发生在 schedule_reply，
+        # 晚于此处）。滞后一拍——本轮回复留给下一次 cache/finalize，那时
+        # 排除名单已定型；用户消息照常先落库。
+        history_upper = len(conversation_history)
+        while (
+            history_upper > start_index
+            and getattr(conversation_history[history_upper - 1], "type", "") == "ai"
+        ):
+            history_upper -= 1
         delta_messages = self.conversation_slice_to_memory_messages(
-            conversation_history, start_index, user_data=user_data,
+            conversation_history[:history_upper], start_index, user_data=user_data,
         )
         if not delta_messages:
             return 0
         result = await self.post_memory_history("cache", her_name, delta_messages, timeout=5.0)
         if result.get("status") == "error":
             raise RuntimeError(result.get("message", "cache failed"))
-        user_data["last_synced_index"] = len(conversation_history)
+        user_data["last_synced_index"] = history_upper
         user_data["has_cached_memory"] = True
         return len(delta_messages)
 
