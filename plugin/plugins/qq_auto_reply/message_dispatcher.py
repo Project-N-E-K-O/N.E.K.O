@@ -297,6 +297,15 @@ class QQMessageDispatcher:
         message_timestamp: int = 0,
         forward_sub_count: int = 0,
     ):
+        # 收到消息时刻的群记忆政策快照（第一个 await 之前）：注意力门控 /
+        # 插话判定等 await 期间切 ON，不得让 OFF 时代收到的发言获得入库
+        # 授权——对偶 backlog 行的 group_memory_enabled_at_receipt。反向
+        # （处理期间切 OFF）由 prime 门控与读点复检兜住。
+        group_memory_at_receipt = bool(
+            (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                "group_memory_enabled", False,
+            )
+        )
         strategy_mode = getattr(self.plugin, "_strategy_mode", "neko_dynamic")
         force_reply = False
         if strategy_mode == "neko_dynamic" and hasattr(self.plugin, "attention_gate_service") and self.plugin.attention_gate_service is not None:
@@ -331,11 +340,7 @@ class QQMessageDispatcher:
                 mentions_other_user=mentions_other_user,
                 message_timestamp=message_timestamp,
             )
-        group_memory_enabled = bool(
-            (getattr(self.plugin, "_qq_settings", {}) or {}).get(
-                "group_memory_enabled", False,
-            )
-        )
+        group_memory_enabled = group_memory_at_receipt
         request = QQReplyRequest(
             message_text=message_text,
             sender_id=sender_id,

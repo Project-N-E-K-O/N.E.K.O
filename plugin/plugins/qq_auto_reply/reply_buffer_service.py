@@ -19,7 +19,7 @@ class PendingReply:
     """待发送的回复（缓冲模式：收消息时不合成，等暂停后统一生成回复）"""
     __slots__ = ("buffered_texts", "wait_until", "task", "topic_hint", "message_count",
                  "sender_id", "is_group", "group_id", "_acked", "first_blocks",
-                 "draft_rows")
+                 "draft_rows", "mention_context")
 
     def __init__(self, first_text: str, wait_seconds: float, sender_id: str, is_group: bool, group_id: str):
         self.buffered_texts: list[str] = [first_text]  # 缓冲的消息文本
@@ -35,6 +35,9 @@ class PendingReply:
         # 本缓冲期截停的草稿历史行（消息对象引用）：单条路径投递后只撤
         # 这些行的未投递记录，绝不动此前合并场景留下的旧标。
         self.draft_rows: list = []
+        # 最近一次截停轮的 context：单条路径真投递后补记 scoped mention
+        # （合并场景丢弃——草稿没人看到，不推进 suppression 计数）。
+        self.mention_context = None
 
 
 class QQReplyBufferService:
@@ -212,6 +215,7 @@ class QQReplyBufferService:
         group_id: str = "",
         extra_count: int = 0,
         history_backed: bool = True,
+        mention_context=None,
     ) -> None:
         """缓冲一条消息。如果已有等待中的缓冲，追加消息并重置等待计时。
 
@@ -331,6 +335,7 @@ class QQReplyBufferService:
         # 补关联：把开头选中的草稿行绑到本 pending（复用引用，不重扫历史），
         # 单条投递后可精确撤销。
         self._bind_draft_to_pending(draft_row, existing)
+        existing.mention_context = mention_context
         existing.task = asyncio.create_task(self._deliver_after_wait(session_key, existing))
 
     async def _deliver_after_wait(self, session_key: str, pending: PendingReply) -> None:
@@ -366,6 +371,14 @@ class QQReplyBufferService:
             # 单条草稿真的送出去了：只撤本次 pending 的未投递记录——此前
             # 合并场景留下的旧记录必须留存。
             self._clear_undelivered_marks(session_key, pending)
+            if pending.mention_context is not None and texts:
+                # mention 计数绑定实际投递：单条路径此刻才真正送达。
+                try:
+                    await self.plugin.reply_generation_service.record_scoped_mentions_on_delivery(
+                        pending.mention_context, texts[0],
+                    )
+                except Exception as e:
+                    self.plugin._emit_log("WARN", f"[Buffer] mention 补记失败: {e}")
             self._pending.pop(session_key, None)
             return
 

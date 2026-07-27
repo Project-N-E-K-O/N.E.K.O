@@ -1906,12 +1906,22 @@ async def test_undelivered_buffer_drafts_stay_out_of_memory():
     )
     single.first_blocks = [QQMessageBlock(text="草稿三")]
     single.wait_until = 0.0
+    sentinel_ctx = object()
+    single.mention_context = sentinel_ctx
+    plugin.reply_generation_service = SimpleNamespace(
+        record_scoped_mentions_on_delivery=AsyncMock(),
+    )
     service._pending["group:7788"] = single
     service._mark_latest_draft_undelivered("group:7788", single)
     assert history[6] in user_data["undelivered_draft_rows"]
     await service._deliver_after_wait("group:7788", single)
     plugin.reply_delivery_node.deliver.assert_awaited_once()
     assert user_data["undelivered_draft_rows"] == [history[1], history[3]]
+    # Mention counters bind to actual delivery: the single-draft path
+    # records them now, with the turn's own context.
+    plugin.reply_generation_service.record_scoped_mentions_on_delivery.assert_awaited_once_with(
+        sentinel_ctx, "草稿三",
+    )
 
 
 @pytest.mark.asyncio
@@ -2222,6 +2232,49 @@ async def test_retro_replay_honors_receipt_time_policy():
                "group_memory_enabled_at_receipt": True},
     ) is True
     assert len(user_data["undelivered_draft_rows"]) == excluded_before
+
+
+def test_dispatcher_group_policy_snapshot_taken_before_first_await():
+    """handle_group_message must read the group-memory policy before its
+    first await (gate evaluate / interjection checks): a mid-processing
+    OFF->ON flip must not grant persistence to an utterance received
+    under OFF. Mirrors the backlog row's receipt-time field."""
+    import ast
+    import inspect
+
+    from plugin.plugins.qq_auto_reply import message_dispatcher
+
+    source = inspect.getsource(
+        message_dispatcher.QQMessageDispatcher.handle_group_message
+    )
+    tree = ast.parse("class _W:\n" + "\n".join(
+        "    " + line for line in source.splitlines()
+    ))
+    func = tree.body[0].body[0]
+    snapshot_line = None
+    first_await_line = None
+    policy_reads = 0
+    for node in ast.walk(func):
+        if (
+            snapshot_line is None
+            and isinstance(node, ast.Assign)
+            and any(
+                isinstance(t, ast.Name) and t.id == "group_memory_at_receipt"
+                for t in node.targets
+            )
+        ):
+            snapshot_line = node.lineno
+        if isinstance(node, ast.Await):
+            if first_await_line is None or node.lineno < first_await_line:
+                first_await_line = node.lineno
+        if isinstance(node, ast.Constant) and node.value == "group_memory_enabled":
+            policy_reads += 1
+    assert snapshot_line is not None
+    assert first_await_line is not None
+    assert snapshot_line < first_await_line
+    # Exactly one read of the live setting — a second (late) read after the
+    # awaits would reintroduce the race the snapshot exists to close.
+    assert policy_reads == 1
 
 
 def test_member_consent_snapshot_taken_before_first_await():
@@ -2920,8 +2973,9 @@ async def test_scoped_mentions_route_records_with_subject_boundary():
 
 @pytest.mark.asyncio
 async def test_group_reply_success_records_scoped_mentions_best_effort():
-    """After a successful group reply the plugin bumps scoped mention
-    counters with the same subjects the reply was authorized to see; a
+    """Scoped mention counters are bumped at DELIVERY time with the same
+    subjects the reply was authorized to see — the generation-time hook
+    must not bump them (buffered drafts can be merged away unseen); a
     recording failure never breaks the reply path."""
     from plugin.plugins.qq_auto_reply.reply_generation_service import (
         QQReplyGenerationService,
@@ -2943,19 +2997,30 @@ async def test_group_reply_success_records_scoped_mentions_best_effort():
         session_memory_service=SimpleNamespace(
             record_group_member_turn=MagicMock(),
         ),
+        session_runtime_service=SimpleNamespace(
+            build_generation_session_key=lambda context: "group:7788",
+        ),
+        _user_sessions={"group:7788": {"memory_enabled": True}},
         _cache_session_delta=AsyncMock(return_value=0),
     )
     service = QQReplyGenerationService(plugin)
     context = SimpleNamespace(
         is_group=True, group_id="7788", sender_id="2046", her_name="Neko",
-        permission_level="user",
+        permission_level="user", ephemeral_session=False,
     )
 
+    # Generation-time hook no longer bumps mentions: a buffered draft can
+    # be merged away without anyone seeing it.
     await service._sync_memory_after_success(
         session_key="group:7788",
         user_data={"memory_enabled": True},
         context=context,
         reply_text="她记得群规是不剧透",
+    )
+    bridge.post_scoped_mentions.assert_not_awaited()
+
+    await service.record_scoped_mentions_on_delivery(
+        context, "她记得群规是不剧透",
     )
     kwargs = bridge.post_scoped_mentions.await_args.kwargs
     assert [s["subject_id"] for s in kwargs["subjects"]] == [
@@ -2968,24 +3033,15 @@ async def test_group_reply_success_records_scoped_mentions_best_effort():
     context_syn = SimpleNamespace(
         is_group=True, group_id="7788", sender_id="2046", her_name="Neko",
         permission_level="user", source_kind="rapid_fire_flush",
+        ephemeral_session=False,
     )
-    await service._sync_memory_after_success(
-        session_key="group:7788",
-        user_data={"memory_enabled": True},
-        context=context_syn,
-        reply_text="合并回复",
-    )
+    await service.record_scoped_mentions_on_delivery(context_syn, "合并回复")
     kwargs = bridge.post_scoped_mentions.await_args.kwargs
     assert [s2["subject_id"] for s2 in kwargs["subjects"]] == ["qq:7788"]
 
     # Failure is swallowed (reply already delivered).
     bridge.post_scoped_mentions = AsyncMock(side_effect=RuntimeError("down"))
-    await service._sync_memory_after_success(
-        session_key="group:7788",
-        user_data={"memory_enabled": True},
-        context=context,
-        reply_text="再次回复",
-    )
+    await service.record_scoped_mentions_on_delivery(context, "再次回复")
 
 
 @pytest.mark.asyncio

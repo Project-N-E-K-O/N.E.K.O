@@ -87,7 +87,7 @@ class QQReplyPipelineRunner:
 
         # poke/sticker/record/ark 已统一为 <msg> 块，由 reply_delivery_node 处理
         outcome.delivery_plan = self._build_delivery_plan(request, outcome)
-        outcome.delivery_result = await self._run_delivery(outcome.delivery_plan, request, outcome)
+        outcome.delivery_result = await self._run_delivery(outcome.delivery_plan, request, outcome, context=context)
         outcome.traces.append(
             QQPipelineStageTrace(
                 stage="delivery",
@@ -232,7 +232,7 @@ class QQReplyPipelineRunner:
             self.plugin.logger.warning(f"[Ark] 发送失败: {e}")
             return False
 
-    async def _run_delivery(self, delivery_plan, request: QQReplyRequest = None, outcome: QQReplyOutcome = None) -> QQDeliveryResult | None:
+    async def _run_delivery(self, delivery_plan, request: QQReplyRequest = None, outcome: QQReplyOutcome = None, context=None) -> QQDeliveryResult | None:
         # 缓冲内部调用的请求（buffer_delayed/rapid_fire_flush/proactive_speech）不再次走缓冲
         skip_buffer = request and getattr(request, 'source_kind', '') in ('buffer_delayed', 'rapid_fire_flush', 'proactive_speech')
         if not skip_buffer and self.plugin.reply_buffer_service and request and delivery_plan and delivery_plan.blocks:
@@ -277,11 +277,25 @@ class QQReplyPipelineRunner:
                 history_backed=not bool(
                     getattr(outcome, "used_fallback", False) if outcome else False
                 ),
+                mention_context=context,
             )
             from .pipeline_models import QQDeliveryResult
             return QQDeliveryResult(delivered=True, target_type=delivery_plan.target_type, target_id=delivery_plan.target_id, reply_text=first_text)
 
-        return await self.plugin.reply_delivery_node.deliver(delivery_plan)
+        result = await self.plugin.reply_delivery_node.deliver(delivery_plan)
+        if (
+            result is not None
+            and getattr(result, "delivered", False)
+            and context is not None
+            and outcome is not None
+            and outcome.reply_text
+        ):
+            # mention 计数绑定实际投递（非 buffer 直投与合成轮都走这里；
+            # buffer 路径由 _deliver_after_wait 在真投递后补记）。
+            await self.plugin.reply_generation_service.record_scoped_mentions_on_delivery(
+                context, outcome.reply_text,
+            )
+        return result
 
     def _resolve_sticker_path(self, sticker_id: str) -> str:
         """解析表情包 ID 到文件路径。"""

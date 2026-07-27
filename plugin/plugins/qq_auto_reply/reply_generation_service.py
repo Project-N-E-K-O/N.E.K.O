@@ -223,11 +223,9 @@ class QQReplyGenerationService:
                     self.plugin.logger.info(f"[管理员] 成功同步 {count} 条消息到 Memory Server (会话: {session_key})")
             except Exception as e:
                 self.plugin.logger.error(f"记忆同步失败: {e}")
-            if context.is_group and reply_text:
-                # 群路径绕开 legacy post_turn，scoped 条目的 mention 计数
-                # （防重复注入的 suppression 输入）只能在这里补记。best-effort：
-                # 失败只影响该条目晚几轮进入"暂不主动提及"，回复已送达。
-                await self._record_scoped_mentions_best_effort(context, reply_text)
+            # mention 计数不在这里记：本钩子跑在生成成功时刻，buffer 可能
+            # 把这条回复截停并用 summary 取代——没投递的草稿不得推进
+            # suppression 计数。投递点统一调 record_scoped_mentions_on_delivery。
             return
 
         if user_data.get("memory_context_used"):
@@ -238,6 +236,24 @@ class QQReplyGenerationService:
             self.plugin.logger.info(f"[群聊] 跳过记忆同步 (群: {context.group_id}, 用户: {context.sender_id})")
             return
         self.plugin.logger.info(f"[非管理员] 跳过记忆同步 (用户: {context.sender_id}, 权限: {context.permission_level})")
+
+    async def record_scoped_mentions_on_delivery(
+        self, context: QQReplyContext, reply_text: str,
+    ) -> None:
+        """Bump scoped mention counters when a reply is ACTUALLY delivered.
+
+        群路径绕开 legacy post_turn，scoped 条目的 mention 计数（防重复注入
+        的 suppression 输入）只能在插件侧补记——且必须绑定投递而非生成：
+        buffer 合并场景的草稿没人看到，各记一次会把被引用条目推进 suppression
+        阈值、错误地从后续上下文消失。best-effort：失败只影响该条目晚几轮
+        进入"暂不主动提及"。"""
+        if not context.is_group or not reply_text or context.ephemeral_session:
+            return
+        session_key = self.plugin.session_runtime_service.build_generation_session_key(context)
+        user_data = self.plugin._user_sessions.get(session_key)
+        if not user_data or not user_data.get("memory_enabled"):
+            return
+        await self._record_scoped_mentions_best_effort(context, reply_text)
 
     async def _record_scoped_mentions_best_effort(
         self, context: QQReplyContext, reply_text: str,
