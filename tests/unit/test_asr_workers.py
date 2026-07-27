@@ -404,6 +404,149 @@ async def test_qwen_server_vad_maps_items_and_reconnects_on_clear(monkeypatch) -
     )
 
 
+async def test_qwen_server_vad_speech_stopped_without_completed_expires_empty_final(
+    monkeypatch,
+) -> None:
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        if isinstance(payload, str):
+            message = json.loads(payload)
+            if message["type"] == "session.update":
+                await ws.server_send({"type": "session.updated"})
+            elif message["type"] == "session.finish":
+                await ws.server_send({"type": "session.finished"})
+
+    websocket = _FakeWebSocket(on_send=on_send)
+    monkeypatch.setattr(qwen.websockets, "connect", _FakeConnector(websocket))
+    monkeypatch.setattr(qwen, "_QWEN_STALLED_ITEM_TIMEOUT_SECONDS", 0.2)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        qwen.qwen_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+        )
+    )
+    await _next_event(responses, "ready")
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_started", "item_id": "qwen-stalled"}
+    )
+    started = await _next_event(responses, "utterance_started")
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_stopped", "item_id": "qwen-stalled"}
+    )
+    await websocket.server_send(
+        {"type": "input_audio_buffer.committed", "item_id": "qwen-stalled"}
+    )
+
+    # Server VAD sealed the turn but the transcription completed event never
+    # arrives: the stalled-item deadline must close the turn with an empty
+    # final instead of leaving the upstream session waiting unboundedly.
+    expired = await _next_event(responses, "final")
+    assert expired.text == ""
+    assert expired.utterance_id == started.utterance_id
+
+    # A late completed event for the expired item must not resurrect it.
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "qwen-stalled",
+            "transcript": "late text",
+        }
+    )
+
+    # The session keeps transcribing: a following turn whose completed event
+    # arrives before the deadline is delivered unchanged.
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_started", "item_id": "qwen-next"}
+    )
+    next_started = await _next_event(responses, "utterance_started")
+    assert next_started.utterance_id != started.utterance_id
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_stopped", "item_id": "qwen-next"}
+    )
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "qwen-next",
+            "transcript": "next turn",
+        }
+    )
+    final = await _next_event(responses, "final")
+    assert final.text == "next turn"
+    assert final.utterance_id == next_started.utterance_id
+
+    # A disarmed deadline must not fire a duplicate empty final later.
+    await asyncio.sleep(0.5)
+    assert responses.empty()
+    await _stop_worker(task, requests, responses, utterance_id=3)
+
+
+async def test_qwen_server_vad_partial_text_refreshes_stalled_deadline(
+    monkeypatch,
+) -> None:
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        if isinstance(payload, str):
+            message = json.loads(payload)
+            if message["type"] == "session.update":
+                await ws.server_send({"type": "session.updated"})
+            elif message["type"] == "session.finish":
+                await ws.server_send({"type": "session.finished"})
+
+    websocket = _FakeWebSocket(on_send=on_send)
+    monkeypatch.setattr(qwen.websockets, "connect", _FakeConnector(websocket))
+    monkeypatch.setattr(qwen, "_QWEN_STALLED_ITEM_TIMEOUT_SECONDS", 0.5)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        qwen.qwen_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+        )
+    )
+    await _next_event(responses, "ready")
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_started", "item_id": "qwen-live"}
+    )
+    assert (await _next_event(responses, "utterance_started")).utterance_id == 1
+
+    # Continuous speech without an endpoint never arms the deadline: waiting
+    # far past the bound must not expire the still-live turn mid-speech.
+    await asyncio.sleep(0.75)
+    assert responses.empty()
+
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_stopped", "item_id": "qwen-live"}
+    )
+    # Each streaming text frame refreshes the armed deadline, so the total
+    # elapsed time since the endpoint exceeds the bound without expiring.
+    for text in ("你", "你好"):
+        await asyncio.sleep(0.25)
+        await websocket.server_send(
+            {
+                "type": "conversation.item.input_audio_transcription.text",
+                "item_id": "qwen-live",
+                "text": text,
+            }
+        )
+        assert (await _next_event(responses, "partial")).text == text
+    await asyncio.sleep(0.25)
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "qwen-live",
+            "transcript": "你好呀",
+        }
+    )
+    final = await _next_event(responses, "final")
+    assert (final.utterance_id, final.text) == (1, "你好呀")
+    assert responses.empty()
+    await _stop_worker(task, requests, responses, utterance_id=2)
+
+
 async def test_step_manual_payload_and_cumulative_partial(monkeypatch) -> None:
     async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
         assert isinstance(payload, str)
