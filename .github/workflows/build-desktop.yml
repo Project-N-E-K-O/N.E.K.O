@@ -882,21 +882,25 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p previous-portable
-          RELEASE_ENDPOINT="repos/${GITHUB_REPOSITORY}/releases/latest"
-          RELEASE_LABEL="latest stable release"
-          if [[ -n "$PREVIOUS_RELEASE_TAG" ]]; then
-            RELEASE_ENDPOINT="repos/${GITHUB_REPOSITORY}/releases/tags/${PREVIOUS_RELEASE_TAG}"
-            RELEASE_LABEL="release ${PREVIOUS_RELEASE_TAG}"
+          if [[ -z "$PREVIOUS_RELEASE_TAG" ]]; then
+            PREVIOUS_RELEASE_TAG="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              --jq '[.[] | select(.draft | not) | select(.prerelease | not) | select(.tag_name != env.GITHUB_REF_NAME)][0].tag_name // empty' \
+              2>/dev/null || true)"
           fi
+          if [[ -z "$PREVIOUS_RELEASE_TAG" ]]; then
+            echo "No preceding stable release found; this release will contain a full package only"
+            exit 0
+          fi
+          RELEASE_ENDPOINT="repos/${GITHUB_REPOSITORY}/releases/tags/${PREVIOUS_RELEASE_TAG}"
           PREVIOUS_URL="$(gh api "$RELEASE_ENDPOINT" \
             --jq "[.assets[] | select(.name | endswith(\"_${PORTABLE_KEY}_manifest.json\"))][0].browser_download_url // empty" \
             2>/dev/null || true)"
           if [[ -n "$PREVIOUS_URL" ]]; then
             curl --fail --location --retry 3 "$PREVIOUS_URL" \
               --output "previous-portable/previous-${PORTABLE_KEY}-manifest.json"
-            echo "Downloaded previous ${PORTABLE_KEY} Portable manifest from ${RELEASE_LABEL}"
+            echo "Downloaded previous ${PORTABLE_KEY} Portable manifest from release ${PREVIOUS_RELEASE_TAG}"
           else
-            echo "No previous ${PORTABLE_KEY} Portable manifest found in ${RELEASE_LABEL}; this release will contain a full package only"
+            echo "No previous ${PORTABLE_KEY} Portable manifest found in release ${PREVIOUS_RELEASE_TAG}; this release will contain a full package only"
           fi
           if [[ "$PORTABLE_KEY" == "linux_x64" ]]; then
             APPIMAGE_URL="$(gh api "$RELEASE_ENDPOINT" \
@@ -1105,7 +1109,7 @@ jobs:
   # Stable tags publish every self-managed Portable update channel. If a release was
   # created manually first, upload --clobber updates its assets in place.
   publish-stable-portable:
-    if: (github.repository == 'Project-N-E-K-O/N.E.K.O' || inputs.allow_fork_build) && startsWith(github.ref, 'refs/tags/v') && needs.build-electron.result == 'success'
+    if: (github.repository == 'Project-N-E-K-O/N.E.K.O' || inputs.allow_fork_build) && startsWith(github.ref, 'refs/tags/v') && !contains(needs.version.outputs.version, '-') && !inputs.windows_only && needs.build-electron.result == 'success'
     needs: [version, build-electron]
     runs-on: ubuntu-latest
     permissions:

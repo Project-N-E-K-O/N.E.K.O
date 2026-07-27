@@ -33,6 +33,9 @@ on:
         default: false
         type: boolean
 
+permissions:
+  contents: write
+
 jobs:
   build-windows:
     uses: ./.github/workflows/build-desktop.yml

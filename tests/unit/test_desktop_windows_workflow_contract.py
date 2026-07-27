@@ -31,17 +31,23 @@ def test_windows_workflow_calls_cross_platform_workflow_in_windows_only_mode() -
     assert "allow_fork_build: ${{ inputs.allow_fork_build }}" in workflow
     assert "windows_only: true" in workflow
     assert "secrets: inherit" in workflow
+    assert "permissions:" in workflow
+    assert "contents: write" in workflow
     assert "macos-" not in workflow
     assert "ubuntu-" not in workflow
 
 
 def test_cross_platform_workflow_limits_both_matrices_for_windows_only_calls() -> None:
-    workflow = CROSS_PLATFORM_WORKFLOW.read_text(encoding="utf-8")
+    workflow = _load_workflow(CROSS_PLATFORM_WORKFLOW)
+    jobs = workflow["jobs"]
+    matrices = [
+        jobs["build-python"]["strategy"]["matrix"]["include"],
+        jobs["build-electron"]["strategy"]["matrix"]["include"],
+    ]
 
-    assert "workflow_call:" in workflow
-    assert workflow.count("inputs.windows_only &&") == 2
-    assert '"artifact_name":"python-backend-win"' in workflow
-    assert '"artifact_name":"desktop-win-x64"' in workflow
+    assert all("inputs.windows_only &&" in matrix for matrix in matrices)
+    assert '"artifact_name":"python-backend-win"' in matrices[0]
+    assert '"artifact_name":"desktop-win-x64"' in matrices[1]
 
 
 def test_reusable_build_honors_signing_inputs_and_distribution_wrapper() -> None:
@@ -122,3 +128,20 @@ def test_windows_only_nightly_preserves_other_platform_assets() -> None:
     windows_nightly = nightly_steps["Create or update Windows nightly release"]
     assert windows_nightly["if"] == "${{ inputs.windows_only }}"
     assert "gh release upload nightly release/* --clobber" in windows_nightly["run"]
+
+
+def test_stable_publication_skips_windows_only_and_prerelease_tags() -> None:
+    workflow = _load_workflow(CROSS_PLATFORM_WORKFLOW)
+    condition = workflow["jobs"]["publish-stable-portable"]["if"]
+
+    assert "!inputs.windows_only" in condition
+    assert "!contains(needs.version.outputs.version, '-')" in condition
+
+
+def test_delta_baseline_selects_a_preceding_stable_release() -> None:
+    workflow = _load_workflow(CROSS_PLATFORM_WORKFLOW)
+    steps = _steps_by_name(workflow, "build-electron")
+    download = steps["Download previous Portable manifests"]
+
+    assert "releases?per_page=100" in download["run"]
+    assert "select(.tag_name != env.GITHUB_REF_NAME)" in download["run"]
