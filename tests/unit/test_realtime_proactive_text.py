@@ -186,6 +186,36 @@ async def test_sync_inject_failure_returns_false_and_preserves_image():
 
 
 @pytest.mark.unit
+async def test_prompt_skips_while_another_proactive_inject_awaits_outcome():
+    client = _make_client()
+    client._proactive_inject_awaiting_outcome = True
+
+    delivered = await client.prompt_ephemeral("do not overlap")
+
+    assert delivered is False
+    client.ws.send.assert_not_awaited()
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_gemini_image_send_failure_preserves_snapshot_and_skips_text():
+    client = _make_client(api_type="gemini", model="gemini-live")
+    client._gemini_session = AsyncMock()
+    client._gemini_session.send_realtime_input.side_effect = RuntimeError(
+        "transient image send failure"
+    )
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+
+    delivered = await client.prompt_ephemeral("describe what you notice")
+
+    assert delivered is False
+    assert client._proactive_image_consumed is False
+    client._gemini_session.send_client_content.assert_not_awaited()
+    await client.close()
+
+
+@pytest.mark.unit
 async def test_standard_stepfun_uses_annotation_text_before_trigger():
     client = _make_client(api_type="step", model="step-realtime")
     client._image_recognized_this_turn = True

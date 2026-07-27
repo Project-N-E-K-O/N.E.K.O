@@ -669,6 +669,7 @@ class _TransportMixin:
                         logger.error(f"Error sending image to Gemini: {e}")
                         if "closed" in str(e).lower():
                             self._fatal_error_occurred = True
+                        raise
                 return
 
             if self._is_free_provider:

@@ -742,12 +742,11 @@
                 if (voiceTriggered) {
                     S._voiceProactiveNoResponseCount = (S._voiceProactiveNoResponseCount || 0) + 1;
                 }
-                // 不在这里 scheduleProactiveChat()——等 AI turn end 后再调度下一次，
-                // 避免 AI 还在说话就被下一次 nudge 打断。
-                // turn end handler 中会对语音模式调用 scheduleProactiveChat()。
-                // 如果本次 nudge 被 guard 跳过（pass）/ 被 server 409 拒绝，
-                // AI 不会响应也不会有 turn end，所以这两种情况仍需自行调度。
-                if (S._voiceProactiveLastResult === 'pass') {
+                // 文本注入会一直 await 到 response.done；对应 turn end 可能在
+                // isProactiveChatRunning 仍为 true 时先到，导致调度调用被抑制。
+                // 请求完成、锁释放后兜底补排。若其它完成事件已排好 timer，
+                // 保留原 timer，避免把间隔起点向后推。
+                if (!S.proactiveChatTimer) {
                     scheduleProactiveChat();
                 }
             }, delay);

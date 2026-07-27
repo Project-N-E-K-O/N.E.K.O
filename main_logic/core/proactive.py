@@ -90,19 +90,29 @@ class ProactiveMixin:
 
         Returns True if the text turn was sent, False if skipped.
         """
-        if not self.is_active or not isinstance(self.session, OmniRealtimeClient):
-            return False
-        if self.is_goodbye_silent():
-            logger.info("[%s] voice proactive nudge skipped: goodbye silent", self.lanlan_name)
-            return False
-        if self._takeover_active:
-            logger.info("[%s] voice proactive nudge skipped: session takeover active", self.lanlan_name)
-            return False
-        if self.is_hot_swap_imminent:
-            logger.info("[%s] voice proactive nudge skipped: hot-swap imminent", self.lanlan_name)
-            return False
-        _lang = normalize_language_code(self.user_language, format='short') or 'en'
-        delivered = await self.session.prompt_ephemeral(language=_lang)
+        # Share the callback-inject lock so a scheduled nudge cannot register a
+        # second no-id fallback while an agent callback inject is unresolved.
+        async with self._voice_proactive_inject_lock:
+            session = self.session
+            if not self.is_active or not isinstance(session, OmniRealtimeClient):
+                return False
+            if self.is_goodbye_silent():
+                logger.info("[%s] voice proactive nudge skipped: goodbye silent", self.lanlan_name)
+                return False
+            if self._takeover_active:
+                logger.info("[%s] voice proactive nudge skipped: session takeover active", self.lanlan_name)
+                return False
+            if self.is_hot_swap_imminent:
+                logger.info("[%s] voice proactive nudge skipped: hot-swap imminent", self.lanlan_name)
+                return False
+            if getattr(session, "_proactive_inject_awaiting_outcome", False):
+                logger.info(
+                    "[%s] voice proactive nudge skipped: another proactive inject is awaiting outcome",
+                    self.lanlan_name,
+                )
+                return False
+            _lang = normalize_language_code(self.user_language, format='short') or 'en'
+            delivered = await session.prompt_ephemeral(language=_lang)
         if delivered:
             logger.info("[%s] voice proactive nudge delivered (%s)", self.lanlan_name, _lang)
         else:
@@ -646,6 +656,7 @@ class ProactiveMixin:
                 if (
                     self.state.phase is not ProactivePhase.IDLE
                     or voice_sess.is_active_response()
+                    or getattr(voice_sess, "_proactive_inject_awaiting_outcome", False)
                     or self._is_voice_playing()
                 ):
                     logger.debug(

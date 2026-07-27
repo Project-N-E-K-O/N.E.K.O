@@ -371,6 +371,7 @@ class _ResponseMixin:
             if create_event_id is not None:
                 self._inject_rejection_handlers.pop(create_event_id, None)
                 self._inject_completion_handlers.pop(create_event_id, None)
+            self._proactive_inject_awaiting_outcome = False
             raise
 
     async def _expire_inject_rejection_handler(self, event_id: str, ttl: float) -> None:
@@ -384,6 +385,11 @@ class _ResponseMixin:
             return
         self._inject_rejection_handlers.pop(event_id, None)
         getattr(self, "_inject_completion_handlers", {}).pop(event_id, None)
+        if (
+            not self._inject_rejection_handlers
+            and not getattr(self, "_inject_completion_handlers", {})
+        ):
+            self._proactive_inject_awaiting_outcome = False
 
     @staticmethod
     def _looks_like_response_conflict(error_msg: str) -> bool:
@@ -540,6 +546,9 @@ class _ResponseMixin:
         # ── Guard checks ──────────────────────────────────────────────
         if self._fatal_error_occurred:
             return False
+        if self._proactive_inject_awaiting_outcome:
+            logger.debug("prompt_ephemeral: skipped — another proactive inject is pending")
+            return False
         if self._is_gemini:
             if self._gemini_session is None:
                 return False
@@ -602,7 +611,14 @@ class _ResponseMixin:
             # ``bypass_rate_limit`` identifies this as one deliberate cue image.
             # stream_image also owns the provider-specific wire event, including
             # the dedicated free-service input_image_buffer.append route.
-            await self.stream_image(snapshot_image_b64, bypass_rate_limit=True)
+            try:
+                await self.stream_image(snapshot_image_b64, bypass_rate_limit=True)
+            except Exception as exc:
+                logger.warning(
+                    "prompt_ephemeral: native image inject failed; keeping visual context for retry: %s",
+                    exc,
+                )
+                return False
         elif (
             has_vision
             and self._image_recognized_this_turn

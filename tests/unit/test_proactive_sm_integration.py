@@ -194,6 +194,27 @@ def _make_voice_sess(*, is_responding=False, inject=None):
     return sess
 
 
+async def test_voice_nudge_waits_for_callback_inject_lock():
+    sess = _make_voice_sess()
+    sess._proactive_inject_awaiting_outcome = False
+    sess.prompt_ephemeral = AsyncMock(return_value=True)
+    mgr = _make_mgr(session=sess)
+    mgr.is_active = True
+    mgr.input_mode = "microphone"
+    mgr.is_hot_swap_imminent = False
+
+    await mgr._voice_proactive_inject_lock.acquire()
+    task = asyncio.create_task(
+        core_module.LLMSessionManager.trigger_voice_proactive_nudge(mgr)
+    )
+    await asyncio.sleep(0)
+    sess.prompt_ephemeral.assert_not_awaited()
+
+    mgr._voice_proactive_inject_lock.release()
+    assert await task is True
+    sess.prompt_ephemeral.assert_awaited_once_with(language="en")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # trigger_agent_callbacks
 # ─────────────────────────────────────────────────────────────────────────────

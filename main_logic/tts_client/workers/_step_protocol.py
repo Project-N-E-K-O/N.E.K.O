@@ -157,6 +157,7 @@ def run_step_protocol_tts_worker(
         # StepFun/免费上游首包后第一个 inter-chunk gap 偏大，会让开头几个字 jitter。
         # 用与 qwen 对偶的共享 jitter buffer 攒出首包领先量盖过去。
         audio_jitter = make_audio_jitter_buffer(response_queue)
+        _text_done_error_suppressed = False
 
         def _build_tts_create_data(sid_: str, lang_hint):
             """Assemble the tts.create data field from the URL and language hint.
@@ -165,13 +166,118 @@ def run_step_protocol_tts_worker(
             """
             return _build_step_tts_create_data(sid_, voice_id, lang_hint, is_lanlan_app)
 
-        async def _flush_deferred_create(force: bool = False) -> bool:
+        async def _reconnect_after_buffered_delta_failure() -> bool:
+            """Replace a dead socket while retaining the current text buffer."""
+            nonlocal ws, session_id, receive_task, session_created
+            nonlocal _text_done_error_suppressed
+            if receive_task and not receive_task.done():
+                receive_task.cancel()
+                try:
+                    await receive_task
+                except asyncio.CancelledError:
+                    pass
+                receive_task = None
+            if ws:
+                try:
+                    await ws.close()
+                except Exception as close_exc:
+                    logger.debug("关闭失效 TTS WebSocket 失败: %s", close_exc)
+
+            try:
+                ws = await websockets.connect(tts_url, additional_headers=headers)
+                session_id = None
+                session_ready.clear()
+
+                async def wait_conn():
+                    nonlocal session_id
+                    async for message in ws:
+                        event = json.loads(message)
+                        if event.get("type") == "tts.connection.done":
+                            session_id = event.get("data", {}).get("session_id")
+                            session_ready.set()
+                            break
+                        if event.get("type") == "tts.response.error":
+                            _enqueue_error(response_queue, event)
+                            break
+
+                await asyncio.wait_for(wait_conn(), timeout=1.0)
+                if not session_id:
+                    await ws.close()
+                    ws = None
+                    return False
+
+                _text_done_error_suppressed = False
+                session_created = False
+
+                async def receive_messages_after_reconnect():
+                    nonlocal _text_done_error_suppressed
+                    cancelled = False
+                    try:
+                        async for message in ws:
+                            event = json.loads(message)
+                            event_type = event.get("type")
+                            if event_type == "tts.response.error":
+                                err_msg = event.get("data", {}).get("message", "")
+                                if "tts.text.done" in err_msg and "already" in err_msg:
+                                    if not _text_done_error_suppressed:
+                                        _text_done_error_suppressed = True
+                                        logger.warning("TTS: 服务端报告 tts.text.done 重复，后续同类错误将被静默")
+                                    continue
+                                _enqueue_error(response_queue, event)
+                            elif event_type == "tts.response.audio.delta":
+                                try:
+                                    audio_b64 = event.get("data", {}).get("audio", "")
+                                    if audio_b64:
+                                        audio_bytes = base64.b64decode(audio_b64)
+                                        with io.BytesIO(audio_bytes) as wav_io:
+                                            with wave.open(wav_io, 'rb') as wav_file:
+                                                pcm_data = wav_file.readframes(wav_file.getnframes())
+                                        audio_array = np.frombuffer(pcm_data, dtype=np.int16)
+                                        audio_jitter.append(
+                                            _resample_audio(audio_array, 24000, 48000, resampler)
+                                        )
+                                except Exception as audio_exc:
+                                    logger.error(f"处理音频数据时出错: {audio_exc}")
+                            elif event_type in ["tts.response.done", "tts.response.audio.done"]:
+                                logger.debug(f"收到响应完成事件: {event_type}")
+                                audio_jitter.flush()
+                                response_done.set()
+                    except websockets.exceptions.ConnectionClosed:
+                        pass
+                    except asyncio.CancelledError:
+                        cancelled = True
+                        raise
+                    except Exception as recv_exc:
+                        logger.error(f"消息接收出错: {recv_exc}")
+                    finally:
+                        if not cancelled:
+                            audio_jitter.flush()
+
+                receive_task = asyncio.create_task(receive_messages_after_reconnect())
+                return True
+            except Exception as reconnect_exc:
+                logger.warning("缓冲文本发送失败后的 TTS 重连失败: %s", reconnect_exc)
+                if ws:
+                    try:
+                        await ws.close()
+                    except Exception as close_exc:
+                        logger.debug("关闭失败的 TTS 重连 socket 失败: %s", close_exc)
+                ws = None
+                session_id = None
+                session_created = False
+                return False
+
+        async def _flush_deferred_create(
+            force: bool = False,
+            *,
+            retry_after_reconnect: bool = True,
+        ) -> bool:
             """When tts.create hasn't been sent yet, detect the language and send it, then flush the pending text.
 
             force=True is for the sid=None early-wrap-up case: send even below MIN_CHARS.
             Returns True if the session is ready (created just now or previously).
             """
-            nonlocal session_created, pending_text_buffer
+            nonlocal ws, session_id, current_speech_id, session_created, pending_text_buffer
             if session_created:
                 return True
             if not ws or not session_id:
@@ -201,6 +307,32 @@ def run_step_protocol_tts_worker(
                     # 重试完整的 create + 首段文本，而不是静默丢掉句首。
                     logger.error(f"刷出缓冲文本失败: {e}")
                     session_created = False
+                    if (
+                        retry_after_reconnect
+                        and await _reconnect_after_buffered_delta_failure()
+                    ):
+                        return await _flush_deferred_create(
+                            force=True,
+                            retry_after_reconnect=False,
+                        )
+                    # A second failure means the replacement connection is also
+                    # unusable. Invalidate it so the next speech id reconnects;
+                    # keep pending_text_buffer intact for diagnostics/retry.
+                    if receive_task and not receive_task.done():
+                        receive_task.cancel()
+                        try:
+                            await receive_task
+                        except asyncio.CancelledError:
+                            pass
+                        receive_task = None
+                    if ws:
+                        try:
+                            await ws.close()
+                        except Exception as close_exc:
+                            logger.debug("关闭二次失败的 TTS socket 失败: %s", close_exc)
+                    ws = None
+                    session_id = None
+                    current_speech_id = None
                     return False
             pending_text_buffer = ""
             return True
@@ -278,8 +410,6 @@ def run_step_protocol_tts_worker(
             response_queue.put(("__ready__", True))
 
             # 初始接收任务
-            _text_done_error_suppressed = False  # 抑制 "tts.text.done already sent" 错误洪泛
-
             async def receive_messages_initial():
                 """Initial receive task"""
                 nonlocal _text_done_error_suppressed
