@@ -35,7 +35,7 @@ const messages = {
   },
   ja: {
     title: '解析設定',
-    body: 'Google Analytics をドキュメントの改善に使用します。',
+    body: 'ドキュメント改善のため、Google Analytics の利用を許可してください。',
     accept: '許可',
     reject: '拒否',
     settings: 'Cookie 設定',
@@ -191,6 +191,12 @@ onBeforeUnmount(() => {
         {{ copy.settings }}
       </button>
     </nav>
+
+    <div
+      v-if="panelOpen"
+      class="NekoAnalyticsConsent-spacer"
+      aria-hidden="true"
+    />
   </div>
 </template>
 
@@ -322,6 +328,10 @@ onBeforeUnmount(() => {
   text-decoration: underline;
 }
 
+.NekoAnalyticsConsent-spacer {
+  min-height: 76px;
+}
+
 @media (max-width: 720px) {
   .NekoAnalyticsConsent-banner {
     flex-direction: column;
@@ -333,6 +343,10 @@ onBeforeUnmount(() => {
 
   .NekoAnalyticsConsent-actions {
     width: 100%;
+  }
+
+  .NekoAnalyticsConsent-spacer {
+    min-height: 132px;
   }
 }
 

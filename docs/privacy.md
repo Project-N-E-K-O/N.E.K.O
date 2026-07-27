@@ -36,6 +36,6 @@ Rejecting analytics does not load the Google tag. If you withdraw previously gra
 
 ## Change or withdraw your choice
 
-Use the **Cookie settings** link in the footer of any documentation page. You can allow or decline analytics at any time. The documentation remains available if you decline analytics.
+Use the **Cookie settings** button in the footer of any documentation page. You can allow or decline analytics at any time. The documentation remains available if you decline analytics.
 
 For questions about this notice, contact the project through the [Project N.E.K.O. GitHub repository](https://github.com/Project-N-E-K-O/N.E.K.O/issues).
