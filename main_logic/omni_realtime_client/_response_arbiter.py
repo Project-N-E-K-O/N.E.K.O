@@ -128,6 +128,10 @@ class RealtimeResponseArbiter:
         # dead on a shorter clock than any owned response is allowed to run.
         self._server_response_max_age = _DEFAULT_RESPONSE_DONE_TIMEOUT
         self._stale_release_handle: asyncio.TimerHandle | None = None
+        # Best-effort ``response.cancel`` sends spawned from the synchronous
+        # notify_error path; referenced here so they are not garbage-collected
+        # mid-flight.
+        self._cancel_send_tasks: set[asyncio.Task[None]] = set()
         self._connection_available = True
         self._dispatch_allowed = asyncio.Event()
         self._dispatch_allowed.set()
@@ -443,10 +447,65 @@ class RealtimeResponseArbiter:
             target.item_ack.set_exception(exc)
             return
         if not target.ticket.started.done():
+            if self._is_late_pre_response_error(target, event_id):
+                self._fail_owner_with_live_response(target, exc)
+                return
             target.ticket.started.set_exception(exc)
             return
         if target.terminal is not None and not target.terminal.done():
             target.terminal.set_exception(exc)
+
+    @staticmethod
+    def _is_late_pre_response_error(
+        target: _QueuedResponse, event_id: str | None
+    ) -> bool:
+        """True when an error rejects a pre-response event after the create.
+
+        ``response.create`` is already on the wire, and the error echoes the
+        event_id of one of the events sent before it (e.g. the expected
+        conversation item), not the create's own event_id. Such an error is
+        not proof the response was refused: the server may still accept the
+        create, so the lane must not reopen on it.
+        """
+
+        if not target.ticket.sent.done() or not event_id:
+            return False
+        create_event_id = target.response_event.get("event_id")
+        return event_id != (str(create_event_id) if create_event_id else None)
+
+    def _fail_owner_with_live_response(
+        self, target: _QueuedResponse, exc: Exception
+    ) -> None:
+        """Fail the ticket without opening the lane under a live response.
+
+        Failing ``started`` here would unwind ``_process`` and release
+        ownership even though the just-sent ``response.create`` may still be
+        accepted, letting the next queued create race it. Mirror
+        ``cancel_current``'s post-send path instead: surface the error on the
+        ticket, best-effort cancel the possibly-live response, and keep the
+        lane owned until its terminal event arrives (or the owner's
+        started/terminal timeout backstop fail-closes the transport).
+        """
+
+        if not target.ticket.done.done():
+            target.ticket.done.set_exception(exc)
+        if target.interrupted:
+            return
+        target.interrupted = True
+        target.interrupt_event.set()
+        task = asyncio.create_task(self._send_cancel_best_effort())
+        self._cancel_send_tasks.add(task)
+        task.add_done_callback(self._cancel_send_tasks.discard)
+
+    async def _send_cancel_best_effort(self) -> None:
+        try:
+            await self._send_event({"type": "response.cancel"})
+        except Exception as exc:
+            # Delivery is best-effort: if the cancel cannot reach the server,
+            # the owner's started/terminal timeout still fail-closes the lane.
+            logger.debug(
+                "late-error response.cancel send failed: %s", type(exc).__name__
+            )
 
     def notify_connection_lost(self, reason: str = "realtime connection lost") -> None:
         self._mark_connection_lost(reason, fail_current_tickets=True)

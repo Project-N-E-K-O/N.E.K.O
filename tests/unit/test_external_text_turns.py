@@ -702,6 +702,143 @@ async def test_response_conflict_is_terminal_and_not_retried():
 
 
 @pytest.mark.asyncio
+async def test_late_item_error_after_create_sent_holds_lane_until_terminal():
+    sent = []
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+
+    arbiter = RealtimeResponseArbiter(send)
+    ticket = await arbiter.enqueue(
+        source="external_asr",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "event_id": "item-event",
+                "item": {"id": "item-target", "role": "user"},
+            },
+        ),
+        response_event={"type": "response.create", "event_id": "response-event"},
+        ack_expected=True,
+        expected_item_id="item-target",
+        expected_item_role="user",
+        item_ack_timeout=0.01,
+    )
+    queued = await arbiter.enqueue(source="queued")
+
+    await asyncio.wait_for(ticket.sent, 0.5)
+    # The ITEM error arrives only after the ack timeout already let
+    # response.create go out: not proof the response was refused.
+    arbiter.notify_error("item-event", "item rejected late")
+
+    with pytest.raises(RuntimeError, match="item rejected late"):
+        await asyncio.wait_for(ticket.done, 0.2)
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    # The lane stays owned: the possibly-live response is cancelled and the
+    # queued response.create must not be dispatched yet.
+    assert arbiter.is_busy is True
+    assert queued.sent.done() is False
+    assert [event["type"] for event in sent] == [
+        "conversation.item.create",
+        "response.create",
+        "response.cancel",
+    ]
+
+    arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-late"}}
+    )
+    arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-late"}}
+    )
+
+    await asyncio.wait_for(queued.sent, 0.5)
+    arbiter.notify_response_created({"type": "response.created"})
+    arbiter.notify_response_terminal({"type": "response.done"})
+    await asyncio.wait_for(queued.done, 0.5)
+    assert [event["type"] for event in sent] == [
+        "conversation.item.create",
+        "response.create",
+        "response.cancel",
+        "response.create",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_late_item_error_without_terminal_fails_closed():
+    sent = []
+    aborted = asyncio.Event()
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+
+    async def abort_transport(_reason):
+        aborted.set()
+
+    arbiter = RealtimeResponseArbiter(send, abort_transport=abort_transport)
+    ticket = await arbiter.enqueue(
+        source="external_asr",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "event_id": "item-event",
+                "item": {"id": "item-target", "role": "user"},
+            },
+        ),
+        response_event={"type": "response.create", "event_id": "response-event"},
+        ack_expected=True,
+        expected_item_id="item-target",
+        expected_item_role="user",
+        item_ack_timeout=0.01,
+        response_started_timeout=0.05,
+        cancel_timeout=0.01,
+    )
+    queued = await arbiter.enqueue(source="queued")
+
+    await asyncio.wait_for(ticket.sent, 0.5)
+    arbiter.notify_error("item-event", "item rejected late")
+    with pytest.raises(RuntimeError, match="item rejected late"):
+        await asyncio.wait_for(ticket.done, 0.2)
+
+    # No response.created and no terminal ever arrive: the started-timeout
+    # backstop must fail the transport closed instead of reopening the lane.
+    with pytest.raises(ConnectionError, match="terminal state"):
+        await asyncio.wait_for(ticket.started, 1.0)
+    assert aborted.is_set()
+    for future in (queued.sent, queued.started, queued.done):
+        with pytest.raises(ConnectionError, match="terminal state"):
+            await asyncio.wait_for(future, 0.5)
+
+
+@pytest.mark.asyncio
+async def test_post_send_create_rejection_still_releases_lane():
+    sent = []
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+
+    arbiter = RealtimeResponseArbiter(send)
+    ticket = await arbiter.enqueue(
+        source="conflict",
+        response_event={"type": "response.create", "event_id": "event-conflict"},
+    )
+    await asyncio.wait_for(ticket.sent, 0.5)
+
+    # An error echoing the create's own event_id is proof the response was
+    # refused, so the lane opens without any response.cancel.
+    arbiter.notify_error("event-conflict", "invalid_request_error: create rejected")
+    with pytest.raises(RuntimeError, match="create rejected"):
+        await asyncio.wait_for(ticket.done, 0.2)
+    await arbiter.wait_until_idle(0.2)
+    assert arbiter.is_busy is False
+    assert [event["type"] for event in sent] == ["response.create"]
+
+
+@pytest.mark.asyncio
 async def test_response_done_timeout_cancels_before_releasing_lane():
     sent = []
     arbiter = None
