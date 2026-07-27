@@ -23,7 +23,9 @@ from main_logic.asr_client.lifecycle import (
     VoiceLifecycleEvent,
     VoiceLifecycleState,
     VoiceRouteMode,
+    VoiceTurnToken,
 )
+from main_logic.voice_turn.contracts import VoiceTranscriptEvent
 from main_logic.asr_client.lifecycle import VoiceInputLifecycleController
 from main_logic.asr_client.provider_policy import resolve_provider_policy
 
@@ -1283,3 +1285,154 @@ async def test_slow_runtime_abort_does_not_block_enqueue_processing():
     release_abort.set()
     await asyncio.gather(*list(mgr._bg_tasks))
     mgr._asr_runtime.abort.assert_awaited_once_with("ingress_backpressure")
+
+
+# ---------------------------------------------------------------------------
+# Empty/rejected final -> explicit preview clear (Codex P2)
+#
+# A provider can stream partials and then complete the turn with an EMPTY
+# final (e.g. the OpenAI/Step stalled-item timeouts). Core deliberately
+# injects no user_transcript for empty text, but user_transcript was the only
+# per-turn frontend message that removed the streaming preview bubble, so it
+# lingered indefinitely. The dispatch path must send the reused
+# user_transcript_preview message with empty text as an explicit clear.
+# ---------------------------------------------------------------------------
+
+
+def _make_transcript_dispatch_manager() -> LLMSessionManager:
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr._init_asr_runtime_state()
+    _authorize_core_lease(mgr)
+    mgr.lanlan_name = "Test"
+    session = MagicMock()
+    session.create_response = AsyncMock()
+    session.prepare_external_voice_turn = AsyncMock()
+    session.submit_external_voice_turn = AsyncMock()
+    session.abandon_external_voice_turn = MagicMock()
+    mgr.session = session
+    mgr.handle_input_transcript = AsyncMock(return_value=True)
+    mgr.handle_new_message = AsyncMock()
+    mgr.websocket = MagicMock()
+    mgr.websocket.send_json = AsyncMock()
+    return mgr
+
+
+def _transcript_event(mgr: LLMSessionManager, text: str, turn_id: int = 7):
+    token = mgr._capture_ingress_token()
+    return VoiceTranscriptEvent(
+        turn_token=VoiceTurnToken(ingress=token, turn_id=turn_id),
+        provider="qwen",
+        text=text,
+    )
+
+
+def _preview_clear_payload(mgr: LLMSessionManager, turn_id: int = 7) -> dict:
+    epoch = mgr._capture_ingress_token().session_epoch
+    return {
+        "type": "user_transcript_preview",
+        "text": "",
+        "turn_id": f"asr-{epoch}-{turn_id}",
+    }
+
+
+async def test_empty_asr_final_sends_preview_clear_and_skips_injection():
+    mgr = _make_transcript_dispatch_manager()
+    event = _transcript_event(mgr, "   ")
+
+    await mgr._dispatch_core_asr_transcript(event)
+
+    mgr.websocket.send_json.assert_awaited_once_with(_preview_clear_payload(mgr))
+    mgr.handle_input_transcript.assert_not_awaited()
+    mgr.session.submit_external_voice_turn.assert_not_awaited()
+    mgr.session.create_response.assert_not_awaited()
+
+
+async def test_non_empty_asr_final_injects_without_preview_clear():
+    # Negative validation: a real transcript must go through injection and
+    # must NOT emit the empty-text clear (that would race the user_transcript
+    # bubble replacement the frontend performs on its own).
+    mgr = _make_transcript_dispatch_manager()
+    event = _transcript_event(mgr, "hello", turn_id=8)
+
+    await mgr._dispatch_core_asr_transcript(event)
+
+    mgr.websocket.send_json.assert_not_awaited()
+    mgr.handle_input_transcript.assert_awaited_once()
+    epoch = mgr._capture_ingress_token().session_epoch
+    mgr.session.submit_external_voice_turn.assert_awaited_once_with(
+        "hello",
+        turn_id=f"asr-{epoch}-8",
+    )
+
+
+async def test_rejected_asr_final_sends_preview_clear():
+    # Echo suppression / takeover routing reject the text
+    # (handle_input_transcript -> False) and also never emit user_transcript;
+    # the preview must be cleared there too.
+    mgr = _make_transcript_dispatch_manager()
+    mgr.handle_input_transcript = AsyncMock(return_value=False)
+    event = _transcript_event(mgr, "hello again")
+
+    await mgr._dispatch_core_asr_transcript(event)
+
+    mgr.websocket.send_json.assert_awaited_once_with(_preview_clear_payload(mgr))
+    mgr.session.submit_external_voice_turn.assert_not_awaited()
+    mgr.session.create_response.assert_not_awaited()
+
+
+async def test_rejected_final_after_runtime_moved_on_sends_no_clear():
+    # Negative validation (identity guard): when the runtime identity changed
+    # while the transcript was being handled, a newer turn may already own
+    # the preview bubble -- the stale rejection must NOT clear it.
+    mgr = _make_transcript_dispatch_manager()
+    expected_clear = _preview_clear_payload(mgr)
+
+    async def _reject_and_swap_session(*args, **kwargs):
+        mgr.session = MagicMock()
+        mgr.session.abandon_external_voice_turn = MagicMock()
+        return False
+
+    mgr.handle_input_transcript = AsyncMock(side_effect=_reject_and_swap_session)
+    event = _transcript_event(mgr, "stale text")
+
+    await mgr._dispatch_core_asr_transcript(event)
+
+    mgr.websocket.send_json.assert_not_awaited()
+    assert expected_clear  # payload helper stays usable for the positive twin
+
+
+async def test_bound_game_consumer_empty_final_sends_preview_clear():
+    # A preview created before a game takeover would otherwise survive an
+    # empty final silently consumed by the binding branch.
+    mgr = _make_transcript_dispatch_manager()
+    on_final = AsyncMock()
+    mgr._voice_lease_owner = "none"
+    mgr.bind_voice_input_consumer("game", on_final)
+    mgr._voice_lease_owner = "game"
+    event = _transcript_event(mgr, "  ")
+
+    await mgr._dispatch_core_asr_transcript(event)
+
+    mgr.websocket.send_json.assert_awaited_once_with(_preview_clear_payload(mgr))
+    on_final.assert_not_awaited()
+
+    # Negative validation: a non-empty game final reaches the consumer and
+    # sends nothing on the core websocket.
+    mgr.websocket.send_json.reset_mock()
+    non_empty = _transcript_event(mgr, "go left", turn_id=9)
+    await mgr._dispatch_core_asr_transcript(non_empty)
+    on_final.assert_awaited_once_with(non_empty)
+    mgr.websocket.send_json.assert_not_awaited()
+
+
+async def test_preview_clear_send_failure_is_swallowed():
+    # The clear rides the on_final dispatch; a websocket hiccup must not
+    # surface as an injection failure for a turn Core intentionally dropped.
+    mgr = _make_transcript_dispatch_manager()
+    mgr.websocket.send_json = AsyncMock(side_effect=RuntimeError("socket gone"))
+    event = _transcript_event(mgr, "")
+
+    await mgr._dispatch_core_asr_transcript(event)
+
+    mgr.handle_input_transcript.assert_not_awaited()
+    mgr.session.submit_external_voice_turn.assert_not_awaited()

@@ -1651,11 +1651,16 @@ class AsrRuntimeMixin:
         token = event.turn_token.ingress
         if not self._ingress_token_matches(token):
             return
+        external_turn_id = f"asr-{token.session_epoch}-{event.turn_token.turn_id}"
         binding = self._current_voice_input_consumer()
         if binding is not None:
             if self._voice_input_consumer_bindings.get(binding.owner) is not binding:
                 return
             if not event.text.strip():
+                # Same lingering-preview hazard as the core branch below: a
+                # preview created before a game takeover would otherwise
+                # survive this silently consumed empty final.
+                await self._send_core_asr_preview_clear(external_turn_id)
                 return
             await binding.on_final(event)
             return
@@ -1663,9 +1668,16 @@ class AsrRuntimeMixin:
             return
         session_ref = self.session
         transition_generation = self._voice_input_transition_generation
-        external_turn_id = f"asr-{token.session_epoch}-{event.turn_token.turn_id}"
         try:
             if not event.text.strip():
+                # An empty final still completed the turn provider-side (e.g.
+                # the OpenAI/Step stalled-item timeouts): Core deliberately
+                # injects no user_transcript for empty text, yet the frontend
+                # removes the streaming preview bubble only on
+                # user_transcript / fatal teardown / session stop. Tell it
+                # explicitly, or the bubble lingers and gets reused by the
+                # next turn.
+                await self._send_core_asr_preview_clear(external_turn_id)
                 return
             accepted = await self.handle_input_transcript(
                 event.text,
@@ -1673,13 +1685,21 @@ class AsrRuntimeMixin:
                 source="independent_asr",
                 metadata={"provider": event.provider},
             )
-            if (
-                not accepted
-                or self.session is not session_ref
-                or transition_generation != self._voice_input_transition_generation
-                or self._voice_lease_owner != "core"
-                or not self._ingress_token_matches(token)
-            ):
+            operation_still_current = (
+                self.session is session_ref
+                and transition_generation
+                == self._voice_input_transition_generation
+                and self._voice_lease_owner == "core"
+                and self._ingress_token_matches(token)
+            )
+            if not accepted or not operation_still_current:
+                if not accepted and operation_still_current:
+                    # Rejected text (echo suppression, takeover routing) also
+                    # never produces a user_transcript; drop the preview so it
+                    # cannot linger. Guarded on an unchanged runtime identity:
+                    # when the world moved on, a newer turn may already own
+                    # the preview bubble and the clear must not remove it.
+                    await self._send_core_asr_preview_clear(external_turn_id)
                 return
             await self._submit_core_voice_turn(
                 event.text,
@@ -1714,6 +1734,37 @@ class AsrRuntimeMixin:
                 "turn_id": turn_id,
             }
         )
+
+    async def _send_core_asr_preview_clear(self, turn_id: str) -> None:
+        """Ask the frontend to drop the streaming ASR preview bubble.
+
+        Reuses the existing ``user_transcript_preview`` message with empty
+        text as the clear signal: genuine partials are never empty (the ASR
+        runtime strips and drops blank partials before ``on_partial``), so
+        the frontend can treat an empty preview as removal without a new
+        protocol message type. Identity note: the clear is emitted from the
+        serialized final dispatch for its own turn, which runs before the
+        next pending turn is activated, so on the ordered websocket it cannot
+        trail the next turn's partials in practice; even if it ever did, the
+        next cumulative partial recreates the preview bubble in full.
+        """
+        websocket_ref = getattr(self, "websocket", None)
+        send_json = getattr(websocket_ref, "send_json", None)
+        if not callable(send_json):
+            return
+        try:
+            await send_json(
+                {
+                    "type": "user_transcript_preview",
+                    "text": "",
+                    "turn_id": turn_id,
+                }
+            )
+        except Exception:
+            logger.debug(
+                "[%s] independent ASR preview clear delivery failed",
+                self.lanlan_name,
+            )
 
     async def _handle_core_asr_failure(self, event: AsrFailureEvent) -> None:
         source_identity = self._capture_core_asr_operation_identity()
