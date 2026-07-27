@@ -54,13 +54,15 @@ class _StepConnectionState:
     provider_audio_item_keys: dict[str, _ItemKey] = field(default_factory=dict)
     provider_audio_ids_by_key: dict[_ItemKey, str] = field(default_factory=dict)
     transcription_item_keys: dict[str, _ItemKey] = field(default_factory=dict)
+    bound_item_deadlines: dict[str, float] = field(default_factory=dict)
     pending_provider_turns: deque[_PendingTurn] = field(default_factory=deque)
     pending_manual_commits: deque[_PendingTurn] = field(default_factory=deque)
     unbound_manual_item_ids: deque[str] = field(default_factory=deque)
     unbound_manual_item_id_set: set[str] = field(default_factory=set)
     finalized_item_ids: set[str] = field(default_factory=set)
     manual_commit_expired: bool = False
-    expired_provider_turns: int = 0
+    audio_id_reuse_proven: bool = False
+    reset_required: bool = False
     configured: asyncio.Event = field(default_factory=asyncio.Event)
     intentional_close: asyncio.Event = field(default_factory=asyncio.Event)
     error_sent: asyncio.Event = field(default_factory=asyncio.Event)
@@ -81,6 +83,10 @@ def _step_bind_pending_manual_items(state: _StepConnectionState) -> None:
             continue
         key, _ = state.pending_manual_commits.popleft()
         state.transcription_item_keys[item_id] = key
+        # Binding is progress, but only the terminal event releases the
+        # turn: restart the stalled clock so a stream that stops after
+        # binding still expires instead of pinning the turn open forever.
+        state.bound_item_deadlines[item_id] = state.clock()
 
 
 def _step_manual_item_key(
@@ -98,7 +104,7 @@ def _step_manual_item_key(
             # pending, so this unknown item may be the expired commit's late
             # transcription. Parking it would let the NEXT commit bind it and
             # inject the previous speech as the new turn; tombstone it instead
-            # (bounded loss, consistent with the provider-mode expiry path).
+            # (bounded loss, consistent with the stalled-turn expiry contract).
             _step_remember_finalized_item(state, item_id)
             return None
         state.unbound_manual_item_ids.append(item_id)
@@ -118,39 +124,34 @@ def _step_provider_item_key(
         return key
     audio_key = state.provider_audio_item_keys.get(item_id)
     if audio_key is not None:
-        for index, (pending_key, _) in enumerate(state.pending_provider_turns):
+        for index, (pending_key, armed_at) in enumerate(
+            state.pending_provider_turns
+        ):
             if pending_key == audio_key:
                 del state.pending_provider_turns[index]
                 state.transcription_item_keys[item_id] = audio_key
                 # An exact audio-id binding proves this deployment reuses
                 # audio item ids for transcription events, so an expired
                 # turn's late transcription would carry its already
-                # tombstoned audio id; the quarantine window can close.
-                state.expired_provider_turns = 0
+                # tombstoned audio id and stay fail-closed; ambiguous
+                # expiries no longer need a connection reset.
+                state.audio_id_reuse_proven = True
+                if armed_at is not None:
+                    state.bound_item_deadlines[item_id] = state.clock()
                 return audio_key
-    if state.expired_provider_turns:
-        # A provider turn expired on this connection without its
-        # transcription. Under a distinct-transcription-id deployment that
-        # late transcription is exactly an unknown id like this one, and
-        # FIFO-binding it would inject the expired turn's speech into the
-        # next live turn. Tombstone unknown ids, one per expired turn, until
-        # the quarantine drains, an exact binding succeeds, or the next
-        # speech_started opens a fresh binding window. Residual (the
-        # protocol exposes no correlation field): if the expired
-        # transcription never arrives, one live turn's transcription is
-        # tombstoned in its place and that turn expires empty (bounded
-        # loss); if it arrives after the window closed, FIFO may still
-        # misbind it.
-        state.expired_provider_turns -= 1
-        _step_remember_finalized_item(state, item_id)
-        return None
     if not state.pending_provider_turns:
         return None
     # Some Step deployments use a distinct transcription item ID. Preserve
     # FIFO fallback for those events after preferring an exact audio item ID.
     # Exact audio IDs remain fail-closed through finalized_item_ids above.
-    key, _ = state.pending_provider_turns.popleft()
+    # FIFO is trusted here because an ambiguous stalled-turn expiry resets
+    # the connection (see _step_expire_stalled_pending_turns): a late
+    # transcription for an expired turn dies with the old socket instead of
+    # binding to a live turn on this one.
+    key, armed_at = state.pending_provider_turns.popleft()
     state.transcription_item_keys[item_id] = key
+    if armed_at is not None:
+        state.bound_item_deadlines[item_id] = state.clock()
     return key
 
 
@@ -177,6 +178,16 @@ def _step_arm_pending_turn_deadline(
             if armed_at is None:
                 state.pending_provider_turns[index] = (key, state.clock())
             return
+    # The turn already bound to a transcription item before its endpoint
+    # event arrived. Arm the bound-item deadline instead so a stream that
+    # stops after binding still expires; setdefault keeps the anchor of any
+    # deadline a delta already armed or refreshed.
+    for transcription_item_id, bound_key in state.transcription_item_keys.items():
+        if bound_key == key:
+            state.bound_item_deadlines.setdefault(
+                transcription_item_id, state.clock()
+            )
+            return
 
 
 async def _step_expire_stalled_pending_turns(
@@ -192,7 +203,11 @@ async def _step_expire_stalled_pending_turns(
     completed with an empty final to let the upstream utterance lifecycle
     converge. Provider turns arm at speech_stopped/committed, manual commits
     at the commit itself; an unarmed head is still live speech and is never
-    expired (a transcription delta binds it and removes it from the queue).
+    expired. A transcription delta binds a turn and removes it from the
+    queue, but the deadline follows it: bound items keep a stalled deadline
+    refreshed by each delta and disarmed only by the terminal event, so a
+    stream that stops after one delta still expires with an empty final
+    instead of leaving the turn open forever.
     """
 
     now = state.clock()
@@ -211,12 +226,20 @@ async def _step_expire_stalled_pending_turns(
                 # so until the next commit opens a new binding window any
                 # unknown item id must be tombstoned instead of parked.
                 state.manual_commit_expired = True
-            else:
-                # Provider analog of the manual quarantine: on a distinct-id
-                # deployment the expired turn's late transcription arrives
-                # with an unknown item id, so one unknown id per expired
-                # turn is tombstoned instead of FIFO-bound to a live turn.
-                state.expired_provider_turns += 1
+            elif not state.audio_id_reuse_proven:
+                # An unbound provider turn expired and this connection has
+                # not proven that transcription events reuse audio item ids.
+                # On a distinct-id deployment the expired turn's late
+                # transcription would arrive under an unknown id that the
+                # FIFO fallback would misbind to a live turn, and the
+                # protocol exposes no correlation field to tell them apart
+                # no matter how long a quarantine is held. Request a
+                # connection reset: item ids are connection-scoped, so
+                # reconnecting retires the poisoned FIFO namespace and the
+                # late event dies with the old socket. With reuse proven the
+                # tombstoned audio id fail-closes the late event instead and
+                # the connection (and its live turns) can be kept.
+                state.reset_required = True
             audio_item_id = state.provider_audio_ids_by_key.pop(key, None)
             if audio_item_id is not None:
                 _step_remember_finalized_item(state, audio_item_id)
@@ -230,6 +253,68 @@ async def _step_expire_stalled_pending_turns(
                     text="",
                 )
             )
+    expired_bound_items = [
+        item_id
+        for item_id, armed_at in state.bound_item_deadlines.items()
+        if now - armed_at >= _STEP_PENDING_TURN_TIMEOUT_SECONDS
+    ]
+    for item_id in expired_bound_items:
+        state.bound_item_deadlines.pop(item_id, None)
+        key = state.transcription_item_keys.get(item_id)
+        if key is None:
+            continue
+        # A bound turn stalled mid-transcription: a delta bound it (removing
+        # it from the pending queue) but the terminal event never arrived
+        # within the refreshed deadline. Both of its item ids are known, so
+        # tombstoning them keeps any later event fail-closed with no binding
+        # ambiguity and no need to reset the connection.
+        _step_complete_item(state, item_id, key)
+        await response_queue.put(
+            _AsrWorkerEvent(
+                kind="final",
+                generation=key[0],
+                buffer_epoch=key[1],
+                utterance_id=key[2],
+                text="",
+            )
+        )
+
+
+async def _step_flush_turns_for_reset(
+    response_queue: asyncio.Queue[_AsrWorkerEvent],
+    state: _StepConnectionState,
+) -> None:
+    """Complete every outstanding turn before an ambiguous-expiry reset.
+
+    Reconnecting retires all connection-scoped item ids, so a turn still
+    awaiting its transcription can never complete on the new connection.
+    Emit the expiry-contract empty final for each one (bounded loss) so the
+    upstream utterance lifecycle converges instead of staying open forever.
+    """
+
+    while state.pending_provider_turns:
+        key, _ = state.pending_provider_turns.popleft()
+        await response_queue.put(
+            _AsrWorkerEvent(
+                kind="final",
+                generation=key[0],
+                buffer_epoch=key[1],
+                utterance_id=key[2],
+                text="",
+            )
+        )
+    for key in list(state.transcription_item_keys.values()):
+        await response_queue.put(
+            _AsrWorkerEvent(
+                kind="final",
+                generation=key[0],
+                buffer_epoch=key[1],
+                utterance_id=key[2],
+                text="",
+            )
+        )
+    state.transcription_item_keys.clear()
+    state.bound_item_deadlines.clear()
 
 
 def _step_receive_timeout(state: _StepConnectionState) -> float | None:
@@ -241,7 +326,8 @@ def _step_receive_timeout(state: _StepConnectionState) -> float | None:
     queue forever. Bounding the wait with this value guarantees the sweep
     runs at the deadline even with no further provider events. Only queue
     heads count, and an unarmed head (still-live speech) never bounds the
-    wait: the sweep cannot evict past it without breaking FIFO order.
+    wait: the sweep cannot evict past it without breaking FIFO order. Bound
+    items all count: their deadlines are independent of queue order.
     """
 
     earliest: float | None = None
@@ -250,6 +336,9 @@ def _step_receive_timeout(state: _StepConnectionState) -> float | None:
             continue
         armed_at = pending[0][1]
         if armed_at is not None and (earliest is None or armed_at < earliest):
+            earliest = armed_at
+    for armed_at in state.bound_item_deadlines.values():
+        if earliest is None or armed_at < earliest:
             earliest = armed_at
     if earliest is None:
         return None
@@ -276,6 +365,7 @@ def _step_complete_item(
 ) -> None:
     _step_remember_finalized_item(state, item_id)
     state.transcription_item_keys.pop(item_id, None)
+    state.bound_item_deadlines.pop(item_id, None)
     audio_item_id = state.provider_audio_ids_by_key.pop(key, None)
     if audio_item_id is not None:
         state.provider_audio_item_keys.pop(audio_item_id, None)
@@ -512,6 +602,9 @@ async def _step_receiver(
                 )
             except asyncio.TimeoutError:
                 await _step_expire_stalled_pending_turns(response_queue, state)
+                if state.reset_required:
+                    await _step_flush_turns_for_reset(response_queue, state)
+                    return "reset"
                 continue
             try:
                 event = json.loads(raw_message)
@@ -529,6 +622,12 @@ async def _step_receiver(
                 continue
 
             await _step_expire_stalled_pending_turns(response_queue, state)
+            if state.reset_required:
+                # The connection's FIFO namespace is poisoned; the event in
+                # hand describes state that dies with this socket, so it is
+                # intentionally dropped along with the connection.
+                await _step_flush_turns_for_reset(response_queue, state)
+                return "reset"
             event_type = event.get("type")
             if event_type == "session.updated":
                 if not state.configured.is_set():
@@ -574,11 +673,6 @@ async def _step_receiver(
                 state.last_utterance_id = key[2]
                 state.provider_audio_item_keys[item_id] = key
                 state.provider_audio_ids_by_key[key] = item_id
-                # A newly announced audio item opens a fresh binding window,
-                # mirroring the manual-commit quarantine reset at the next
-                # commit: unknown transcription ids from here on are expected
-                # to belong to live turns again.
-                state.expired_provider_turns = 0
                 # Unarmed while speech is live: the stalled-turn deadline is
                 # armed by the endpoint event, never by speech_started, so a
                 # long continuous utterance cannot expire mid-speech.
@@ -622,6 +716,11 @@ async def _step_receiver(
                     else _step_manual_item_key(state, item_id)
                 )
                 if key is not None:
+                    if item_id in state.bound_item_deadlines:
+                        # Streaming deltas prove the transcription is alive;
+                        # push the stalled deadline forward instead of
+                        # expiring the turn mid-stream.
+                        state.bound_item_deadlines[item_id] = state.clock()
                     await response_queue.put(
                         _AsrWorkerEvent(
                             kind="partial",
@@ -766,11 +865,29 @@ async def step_asr_worker(
                     receiver_outcome = await receiver_task
                     if receiver_outcome == "error":
                         outcome = "error"
+                    elif receiver_outcome == "reset" and sender_task not in done:
+                        # An ambiguous stalled-turn expiry poisoned the
+                        # connection-scoped FIFO namespace; recycle the
+                        # connection. A concurrently finished sender keeps
+                        # its own outcome (clear/shutdown/error) instead.
+                        outcome = "reset"
                 for task in pending:
                     if not task.done():
                         task.cancel()
                 if pending:
                     await asyncio.gather(*pending, return_exceptions=True)
+                if (
+                    outcome == "reset"
+                    and sender_task is not None
+                    and sender_task.done()
+                    and not sender_task.cancelled()
+                    and sender_task.exception() is None
+                ):
+                    # The sender finished a request (shutdown/clear/error)
+                    # in the window between the reset decision and its
+                    # cancellation; that outcome must win or the worker
+                    # would reconnect after the session already closed.
+                    outcome, outcome_request = sender_task.result()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -808,6 +925,14 @@ async def step_asr_worker(
                         pass
 
             closed_sent = state.closed_sent.is_set()
+            if outcome == "reset":
+                # Reconnect with a fresh item-id namespace. The route is
+                # unchanged (no request drove this), so generation and
+                # buffer_epoch carry over; the utterance counter continues
+                # so recycled connections never reuse an utterance id.
+                next_utterance_id = state.next_utterance_id
+                first_connection = False
+                continue
             if outcome == "clear" and outcome_request is not None:
                 generation = outcome_request.generation
                 buffer_epoch = outcome_request.buffer_epoch
