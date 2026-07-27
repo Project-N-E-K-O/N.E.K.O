@@ -419,7 +419,10 @@ async def test_qq_group_bootstrap_never_reads_legacy_private_memory():
     bridge.fetch_bootstrap_memory = AsyncMock(return_value="私人长期记忆")
     plugin = SimpleNamespace(
         memory_bridge=bridge, logger=MagicMock(),
-        _qq_settings={"group_memory_enabled": True},
+        _qq_settings={
+            "group_memory_enabled": True,
+            "group_member_memory_enabled": True,
+        },
     )
     service = QQSessionInstructionService(plugin)
 
@@ -442,6 +445,23 @@ async def test_qq_group_bootstrap_never_reads_legacy_private_memory():
             QQMemoryBridge.group_subject("7788"),
             QQMemoryBridge.group_participant_subject("7788", "2046"),
         ],
+    )
+
+    # Member memory OFF gates this read too (dual of the recall path):
+    # existing participant memory must not reach a group reply.
+    plugin._qq_settings["group_member_memory_enabled"] = False
+    bridge.fetch_scoped_bootstrap_memory.reset_mock()
+    await service._build_core_memory_section(
+        should_use_memory_context=True,
+        her_name="Neko",
+        master_name="Master",
+        context_ready_template="{name}/{master}",
+        is_group=True,
+        group_id="7788",
+        sender_id="2046",
+    )
+    bridge.fetch_scoped_bootstrap_memory.assert_awaited_once_with(
+        "Neko", subjects=[QQMemoryBridge.group_subject("7788")],
     )
 
 
@@ -488,7 +508,10 @@ async def test_qq_group_recall_passes_group_and_member_subjects():
     plugin = SimpleNamespace(
         memory_bridge=bridge,
         logger=MagicMock(),
-        _qq_settings={"group_memory_enabled": True},
+        _qq_settings={
+            "group_memory_enabled": True,
+            "group_member_memory_enabled": True,
+        },
         _should_skip_direct_llm_fallback_for_images=lambda **kwargs: False,
     )
 
@@ -503,6 +526,43 @@ async def test_qq_group_recall_passes_group_and_member_subjects():
     )
 
     assert "群规是不剧透" in rendered
+    kwargs = bridge.query_relevant_memory.await_args.kwargs
+    assert [s2["subject_kind"] for s2 in kwargs["subjects"]] == [
+        "group_chat", "group_participant",
+    ]
+
+    # Member memory OFF gates the READ too: existing participant memory
+    # must not be recalled into a group reply once the switch is off
+    # (otherwise "stop using member memory" only stopped writing).
+    plugin._qq_settings["group_member_memory_enabled"] = False
+    bridge.query_relevant_memory.reset_mock()
+    await QQReplyContextNode(plugin)._build_recalled_memory_text(
+        her_name="Neko",
+        message="群规是什么？",
+        should_use_memory_context=True,
+        attachments=None,
+        is_group=True,
+        group_id="7788",
+        sender_id="2046",
+    )
+    kwargs = bridge.query_relevant_memory.await_args.kwargs
+    assert [s2["subject_kind"] for s2 in kwargs["subjects"]] == ["group_chat"]
+
+    # sender_id is normalized the same way the write side normalizes it —
+    # a padded id must not land in a different participant bucket.
+    plugin._qq_settings["group_member_memory_enabled"] = True
+    bridge.query_relevant_memory.reset_mock()
+    await QQReplyContextNode(plugin)._build_recalled_memory_text(
+        her_name="Neko",
+        message="群规是什么？",
+        should_use_memory_context=True,
+        attachments=None,
+        is_group=True,
+        group_id="7788",
+        sender_id="  2046  ",
+    )
+    kwargs = bridge.query_relevant_memory.await_args.kwargs
+    assert kwargs["subjects"][1]["subject_id"] == "qq:7788:2046"
     bridge.query_relevant_memory.assert_awaited_once_with(
         "Neko",
         "群规是什么？",
@@ -530,7 +590,10 @@ async def test_qq_group_recall_omits_phantom_member_for_empty_sender():
     plugin = SimpleNamespace(
         memory_bridge=bridge,
         logger=MagicMock(),
-        _qq_settings={"group_memory_enabled": True},
+        _qq_settings={
+            "group_memory_enabled": True,
+            "group_member_memory_enabled": True,
+        },
         _should_skip_direct_llm_fallback_for_images=lambda **kwargs: False,
     )
 

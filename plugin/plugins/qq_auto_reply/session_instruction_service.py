@@ -502,10 +502,17 @@ class QQSessionInstructionService:
         try:
             if is_group:
                 subjects = [self.plugin.memory_bridge.group_subject(group_id)]
-                if str(sender_id or "").strip():
+                member_sender = str(sender_id or "").strip()
+                if member_sender and bool(
+                    (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                        "group_member_memory_enabled", False,
+                    )
+                ):
+                    # 对偶 _build_recalled_memory_text：成员开关同时门控读，
+                    # sender 规范化与写侧一致。
                     subjects.append(
                         self.plugin.memory_bridge.group_participant_subject(
-                            group_id, sender_id,
+                            group_id, member_sender,
                         )
                     )
                 memory_context = await self.plugin.memory_bridge.fetch_scoped_bootstrap_memory(

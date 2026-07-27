@@ -51,10 +51,18 @@ class QQReplyContextNode:
             subjects = None
             if is_group and group_id:
                 subjects = [self.plugin.memory_bridge.group_subject(group_id)]
-                if str(sender_id or "").strip():
+                member_sender = str(sender_id or "").strip()
+                if member_sender and bool(
+                    (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                        "group_member_memory_enabled", False,
+                    )
+                ):
+                    # 实时复检（对偶群开关的读点复检）：构建期间关掉成员
+                    # 记忆后不得再召回 participant 域。sender 规范化与写侧
+                    # 一致，避免读写落进不同桶。
                     subjects.append(
                         self.plugin.memory_bridge.group_participant_subject(
-                            group_id, sender_id,
+                            group_id, member_sender,
                         )
                     )
             recall_result = await self.plugin.memory_bridge.query_relevant_memory(
@@ -146,8 +154,19 @@ class QQReplyContextNode:
         # 合成轮（rapid-fire/proactive/buffer 合并）复用首个 pending sender，
         # 但缓冲内容可能混有其他成员的发言——记忆读路径只授权群 subject，
         # 不得注入"名义 sender"的成员记忆（写侧已同样过滤）。
+        # member 开关同时门控读：关闭时不得把既有成员记忆召回进群回复，
+        # 否则"停止使用成员记忆"只停了写。sender_id 统一 strip：写侧
+        # （record_group_member_turn）也 strip，不规范化会让读写落进不同
+        # 的 participant subject 桶。
         memory_sender_id = (
-            "" if source_kind in ("proactive_speech", "rapid_fire_flush", "buffer_delayed") else sender_id
+            ""
+            if (
+                source_kind in (
+                    "proactive_speech", "rapid_fire_flush", "buffer_delayed",
+                )
+                or (is_group and not member_memory_snapshot)
+            )
+            else str(sender_id or "").strip()
         )
         traces: list[QQPipelineStageTrace] = []
         config_manager = get_config_manager()
