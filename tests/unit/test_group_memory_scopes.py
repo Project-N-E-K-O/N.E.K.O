@@ -5002,7 +5002,7 @@ async def test_unpersisted_memory_toggle_rolls_back():
     rolled.clear()
     started = asyncio.Event()
 
-    async def _slow_but_successful_write():
+    async def _slow_but_successful_write(overlay=None):
         started.set()
         await asyncio.sleep(0.05)
         return True
@@ -7436,6 +7436,7 @@ async def test_concurrent_settings_saves_serialize_the_consent_transaction():
 
     observed_before: list = []
     order: list = []
+    persisted: list = []
 
     seen_during_write: list = []
 
@@ -7460,7 +7461,10 @@ async def test_concurrent_settings_saves_serialize_the_consent_transaction():
 
     writes = [_slow_failing_write, _ok_write]
 
-    async def _persist():
+    async def _persist(overlay=None):
+        # Production writes the requested opt-in to disk while keeping it
+        # invisible at runtime; the fake mirrors that contract.
+        persisted.append(dict(overlay or {}))
         return await writes.pop(0)()
 
     service.persist_business_config = _persist
@@ -7488,6 +7492,12 @@ async def test_concurrent_settings_saves_serialize_the_consent_transaction():
     assert observed_before == [(False, False, False), (False, False, True)]
     # B's write landed, so its opt-in is published afterwards.
     assert plugin._qq_settings["group_memory_enabled"] is True
+    # Both writes carried the requested ON value to disk — deferring the
+    # runtime visibility must not persist the OLD value, or the switch
+    # silently reverts on restart.
+    assert persisted == [
+        {"group_memory_enabled": True}, {"group_memory_enabled": True},
+    ]
     assert order == ["A:write-start", "A:write-fail", "B:write-ok"]
     # B applied its own fields only after taking the lock, so they landed
     # in the dict A swapped in — mutating before the wait silently drops
@@ -9027,6 +9037,7 @@ async def test_opt_outs_apply_immediately_but_opt_ins_wait_for_the_write():
         "allow_cross_group_context": False,
     }
     seen: list = []
+    written: list = []
     plugin = SimpleNamespace(
         _qq_settings=settings,
         _user_sessions={},
@@ -9046,29 +9057,32 @@ async def test_opt_outs_apply_immediately_but_opt_ins_wait_for_the_write():
     service._spawn_group_memory_sync_task = lambda coro: coro.close()
     service._rollback_unpersisted_memory_toggles = lambda persisted, **kw: None
 
-    async def _write(ok=True):
+    async def _write(ok=True, overlay=None):
         seen.append(dict(plugin._qq_settings))
+        written.append(dict(overlay or {}))
         return ok
 
     # OFF is visible to handlers during the write.
-    service.persist_business_config = lambda: _write(True)
+    service.persist_business_config = lambda overlay=None: _write(True, overlay)
     await service.save_settings(group_memory_enabled=False)
     assert seen[-1]["group_memory_enabled"] is False
 
     # ON is not — and stays off when the write fails.
-    service.persist_business_config = lambda: _write(False)
+    service.persist_business_config = lambda overlay=None: _write(False, overlay)
     await service.save_settings(group_memory_enabled=True)
     assert seen[-1]["group_memory_enabled"] is False
     assert plugin._qq_settings["group_memory_enabled"] is False
 
-    # ...and is published once a write succeeds.
-    service.persist_business_config = lambda: _write(True)
+    # ...and is published once a write succeeds — with the requested value
+    # actually written to disk (otherwise the switch reverts on restart).
+    service.persist_business_config = lambda overlay=None: _write(True, overlay)
     await service.save_settings(group_memory_enabled=True)
     assert seen[-1]["group_memory_enabled"] is False
+    assert written[-1] == {"group_memory_enabled": True}
     assert plugin._qq_settings["group_memory_enabled"] is True
 
     # Cross-group has no session cleanup at all, so the same rule applies.
-    service.persist_business_config = lambda: _write(False)
+    service.persist_business_config = lambda overlay=None: _write(False, overlay)
     await service.save_settings(allow_cross_group_context=True)
     assert plugin._qq_settings["allow_cross_group_context"] is False
 
@@ -9213,3 +9227,21 @@ async def test_buffered_consent_uses_the_resolved_value():
         ),
     )
     assert schedule.await_args.kwargs["consented"] is False
+
+
+def test_mixed_block_records_only_what_was_actually_sent():
+    """The sender handles record blocks before text and continues, so a
+    block carrying both sends the voice and drops the text. Recording both
+    would put content nobody received into memory and mention counts."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        QQMessageBlock,
+        delivered_blocks_text,
+    )
+
+    text = delivered_blocks_text([
+        QQMessageBlock(text="这段不会发出去", record="用户听到的是这句"),
+        QQMessageBlock(text="普通文本块"),
+    ])
+    assert "用户听到的是这句" in text
+    assert "这段不会发出去" not in text
+    assert "普通文本块" in text

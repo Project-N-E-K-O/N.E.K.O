@@ -36,10 +36,13 @@ def delivered_blocks_text(blocks) -> str:
     reach anti-repeat suppression."""
     parts: list[str] = []
     for block in blocks or []:
-        for value in (getattr(block, "text", ""), getattr(block, "record", "")):
-            value = str(value or "").strip()
-            if value:
-                parts.append(value)
+        # 与投递侧同一优先级：record 块在文本之前被处理并 continue，所以
+        # 一个既有 text 又有 record 的块，用户听到的是语音、看不到那段
+        # 文本——两段都记会把没送出去的内容写进记忆与 mention 计数。
+        record = str(getattr(block, "record", "") or "").strip()
+        value = record or str(getattr(block, "text", "") or "").strip()
+        if value:
+            parts.append(value)
     return "\n".join(parts)
 
 

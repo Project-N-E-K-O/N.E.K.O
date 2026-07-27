@@ -49,6 +49,7 @@ class QQSettingsService:
         self, *, group_memory_before: bool, group_memory_after: bool,
         member_memory_before: bool, member_memory_after: bool,
         cross_group_before: bool | None, cross_group_after: bool | None = None,
+        deferred_opt_ins: dict[str, bool] | None = None,
     ) -> bool:
         """Persist settings and roll consent back if the write did not land.
 
@@ -67,7 +68,9 @@ class QQSettingsService:
         # 取消这个 await 并不会取消那个线程——它可能照样把新配置落盘。
         # 直接按"没写成"回滚会让磁盘与运行时永久相反（重启后才暴露）。
         # 取消时先把 task 等出真实结果，再决定是否回滚，然后再抛。
-        save_task = asyncio.ensure_future(self.persist_business_config())
+        save_task = asyncio.ensure_future(
+            self.persist_business_config(overlay=deferred_opt_ins)
+        )
         try:
             success = await asyncio.shield(save_task)
         except asyncio.CancelledError:
@@ -309,11 +312,28 @@ class QQSettingsService:
         self.plugin._qq_settings = await self.plugin.config_store.create_empty()
         return dict(self.plugin._qq_settings)
 
-    async def persist_business_config(self) -> bool:
+    async def persist_business_config(
+        self, overlay: dict[str, Any] | None = None,
+    ) -> bool:
+        """overlay: 要写进磁盘、但暂时不对运行时可见的键。
+
+        延迟生效的 opt-in 走这里：磁盘必须记下用户请求的新值（否则重启后
+        开关自己弹回去），而运行时要等写盘成功、由调用方显式发布。save()
+        会返回规范化后的新 dict 并顶替 _qq_settings——发布之前得把这些键
+        按旧值压回去，不然"延迟"会被这次顶替悄悄抵消。"""
         try:
             self.plugin._qq_settings["trusted_users"] = self.plugin.permission_mgr.list_users() if self.plugin.permission_mgr else []
             self.plugin._qq_settings["trusted_groups"] = self.plugin.group_permission_mgr.list_groups() if self.plugin.group_permission_mgr else []
-            self.plugin._qq_settings = await self.plugin.config_store.save(self.plugin._qq_settings)
+            pre_publish = {
+                key: bool(self.plugin._qq_settings.get(key, False))
+                for key in (overlay or {})
+            }
+            payload = dict(self.plugin._qq_settings)
+            payload.update(overlay or {})
+            saved = await self.plugin.config_store.save(payload)
+            for key, value in pre_publish.items():
+                saved[key] = value
+            self.plugin._qq_settings = saved
             self.plugin.backlog_store = self.plugin._create_backlog_store_from_settings(self.plugin._qq_settings)
             return True
         except Exception as e:
@@ -516,6 +536,7 @@ class QQSettingsService:
         self.plugin._ensure_qq_client_initialized()
         # 落盘成功之前，opt-in 对处理链不可见（上面已把它们扣下）。
         success = await self._persist_with_consent_rollback(
+            deferred_opt_ins=deferred_opt_ins,
             group_memory_before=group_memory_before,
             group_memory_after=group_memory_after,
             member_memory_before=member_memory_before,
