@@ -204,7 +204,7 @@ class CorrectionsMixin:
                 from utils.token_tracker import set_call_type
                 from utils.llm_client import create_chat_llm_async
                 set_call_type("memory_correction")
-                api_config = self._config_manager.get_model_api_config('correction')
+                api_config = await self._config_manager.aget_model_api_config('correction')
                 # timeout: 见 MEMORY_LLM_HARD_TIMEOUT_SECONDS（上游转发
                 # 120s hard cap，必须 ≤110）。批量决策（每对 keep_old/
                 # keep_new/keep_both/merge + 重写 merged_text）值得吃满

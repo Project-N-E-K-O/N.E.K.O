@@ -931,6 +931,7 @@
         },
         rollbackLastDraft: I.rollbackLastDraft,
         clearPendingRollbackDraft: I.clearPendingRollbackDraft,
+        ensureChatSurfaceVisible: I.ensureChatSurfaceVisible,
         setChatSurfaceMode: I.setChatSurfaceMode,
         cycleChatSurfaceMode: I.cycleChatSurfaceMode,
         setCompactChatState: I.setCompactChatState,

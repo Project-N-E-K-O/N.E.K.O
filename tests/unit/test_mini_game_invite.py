@@ -21,9 +21,9 @@ import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
-import main_routers.system_router.mini_game_invite as sr  # noqa: E402
-import main_routers.system_router.proactive_history as sr_history  # noqa: E402
-import main_routers.system_router.proactive_parsing as sr_parsing  # noqa: E402
+import main_logic.proactive_chat.mini_game_invite as sr  # noqa: E402
+import main_logic.proactive_chat.state as sr_history  # noqa: E402
+import main_logic.proactive_chat.contracts as sr_parsing  # noqa: E402
 
 LANLAN = "test_lanlan"
 MASTER = "小明"
@@ -45,14 +45,23 @@ def _make_snapshot(
     )
 
 
-def _make_mgr(*, prepare_ok=True, finish_ok=True, sid="sid-test"):
+def _make_mgr(
+    *,
+    prepare_ok=True,
+    feed_ok=True,
+    finish_ok=True,
+    sid="sid-test",
+):
     mgr = MagicMock()
     mgr.prepare_proactive_delivery = AsyncMock(return_value=prepare_ok)
     mgr.finish_proactive_delivery = AsyncMock(return_value=finish_ok)
-    mgr.feed_tts_chunk = AsyncMock()
+    mgr.feed_tts_chunk = AsyncMock(return_value=feed_ok)
+    mgr.handle_new_message = AsyncMock()
     mgr.current_speech_id = sid
+    mgr.last_user_engagement_time = 100.0
     mgr.state = MagicMock()
     mgr.state.fire = AsyncMock()
+    mgr.state.is_proactive_preempted.return_value = False
     return mgr
 
 
@@ -614,8 +623,10 @@ async def test_maybe_deliver_chat_when_eligible(monkeypatch):
     # feed_tts 与 finish 都要带上当前 speech_id
     feed_call = mgr.feed_tts_chunk.await_args
     assert feed_call.kwargs.get('expected_speech_id') == 'sid-eligible'
+    assert feed_call.kwargs.get('expected_user_engagement_time') == 100.0
     finish_call = mgr.finish_proactive_delivery.await_args
     assert finish_call.kwargs.get('expected_speech_id') == 'sid-eligible'
+    assert finish_call.kwargs.get('expected_user_engagement_time') == 100.0
 
     # state 进 pending
     state = sr._mini_game_invite_state[LANLAN]
@@ -629,6 +640,35 @@ async def test_maybe_deliver_chat_when_eligible(monkeypatch):
     _, message, channel = history[0]
     assert MASTER in message
     assert channel == 'mini_game'
+
+
+@pytest.mark.asyncio
+async def test_maybe_deliver_aborts_when_user_engages_during_phase2_transition(
+    monkeypatch,
+):
+    """The Phase 2 state-lock wait cannot adopt a newer engagement baseline."""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+    mgr = _make_mgr(sid='sid-phase2-race')
+
+    async def _fire_after_engagement(_event):
+        mgr.last_user_engagement_time = 101.0
+
+    mgr.state.fire.side_effect = _fire_after_engagement
+
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN,
+        mgr=mgr,
+        activity_snapshot=_make_snapshot(),
+        invite_lang='zh',
+        master_name=MASTER,
+    )
+
+    assert out is not None
+    assert out["action"] == "pass"
+    assert out["reason_code"] == sr.PROACTIVE_REASON_DELIVERY_PREEMPTED
+    mgr.feed_tts_chunk.assert_not_awaited()
+    mgr.finish_proactive_delivery.assert_not_awaited()
+    mgr.handle_new_message.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio
@@ -666,6 +706,78 @@ async def test_maybe_deliver_pass_when_user_takes_over_before_finish(monkeypatch
     assert out["stage"] == sr_parsing.PROACTIVE_STAGE_DELIVERY
     assert LANLAN not in sr._mini_game_invite_state
     assert LANLAN not in sr_history._proactive_chat_history
+
+
+@pytest.mark.asyncio
+async def test_maybe_deliver_pass_when_engagement_rejects_tts(monkeypatch):
+    """Direct invites stop before commit when the guarded TTS feed rejects."""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+    mgr = _make_mgr(feed_ok=False, sid='sid-engagement')
+
+    async def reject_after_user_engagement(*_args, **_kwargs):
+        mgr.last_user_engagement_time = 101.0
+        return False
+
+    mgr.feed_tts_chunk.side_effect = reject_after_user_engagement
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN,
+        mgr=mgr,
+        activity_snapshot=_make_snapshot(),
+        invite_lang='zh',
+        master_name=MASTER,
+    )
+
+    assert out is not None
+    assert out["reason_code"] == sr.PROACTIVE_REASON_DELIVERY_PREEMPTED
+    mgr.finish_proactive_delivery.assert_not_awaited()
+    mgr.handle_new_message.assert_awaited_once_with()
+    assert LANLAN not in sr._mini_game_invite_state
+
+
+@pytest.mark.asyncio
+async def test_maybe_deliver_commits_text_when_local_tts_enqueue_fails(monkeypatch):
+    """A local TTS failure must not discard a direct invite's UI delivery."""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+    mgr = _make_mgr(feed_ok=False, sid='sid-tts-failure')
+
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN,
+        mgr=mgr,
+        activity_snapshot=_make_snapshot(),
+        invite_lang='zh',
+        master_name=MASTER,
+    )
+
+    assert out is not None
+    assert out["reason_code"] == sr.PROACTIVE_REASON_CHAT_DELIVERED
+    mgr.finish_proactive_delivery.assert_awaited_once()
+    mgr.handle_new_message.assert_not_awaited()
+    assert LANLAN in sr._mini_game_invite_state
+
+
+@pytest.mark.asyncio
+async def test_maybe_deliver_does_not_clear_new_avatar_turn(monkeypatch):
+    """A SID replacement owns its TTS; rejected invite cleanup must not touch it."""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+    mgr = _make_mgr(finish_ok=False, sid='sid-invite')
+
+    async def finish_after_avatar_response(*_args, **_kwargs):
+        mgr.current_speech_id = 'sid-avatar'
+        return False
+
+    mgr.finish_proactive_delivery.side_effect = finish_after_avatar_response
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN,
+        mgr=mgr,
+        activity_snapshot=_make_snapshot(),
+        invite_lang='zh',
+        master_name=MASTER,
+    )
+
+    assert out is not None
+    assert out["reason_code"] == sr.PROACTIVE_REASON_DELIVERY_PREEMPTED
+    mgr.handle_new_message.assert_not_awaited()
+    assert mgr.current_speech_id == 'sid-avatar'
 
 
 @pytest.mark.asyncio
@@ -1511,8 +1623,8 @@ def test_advance_response_returns_outcome_for_caller_ws_push():
 # ─────────────────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_invite_delivery_pushes_options_via_websocket(monkeypatch):
-    """Successful invite delivery pushes mini_game_invite_options to the client."""
+async def test_invite_short_circuit_returns_options_for_router(monkeypatch):
+    """Successful delivery returns options; the Router owns WebSocket sending."""
     monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
     mgr = _make_mgr()
     mgr.websocket = MagicMock()
@@ -1522,20 +1634,50 @@ async def test_invite_delivery_pushes_options_via_websocket(monkeypatch):
     fake_state.CONNECTED = fake_state
     mgr.websocket.client_state = fake_state
 
-    out = await sr._maybe_deliver_mini_game_invite(
+    short_circuit = await sr._run_mini_game_invite_short_circuit(
         lanlan_name=LANLAN, mgr=mgr,
         activity_snapshot=_make_snapshot(),
         invite_lang='zh', master_name=MASTER,
     )
+    assert short_circuit is not None
+    out = short_circuit.result.body
     assert out is not None and out['action'] == 'chat'
-    mgr.websocket.send_json.assert_awaited_once()
-    payload = mgr.websocket.send_json.await_args.args[0]
+    mgr.websocket.send_json.assert_not_awaited()
+    payload = short_circuit.options_payload
+    assert payload is not None
     assert payload['type'] == 'mini_game_invite_options'
     assert payload['session_id'] == out['invite_session_id']
     assert payload['game_type'] in ('soccer', 'badminton')
     assert isinstance(payload['options'], list) and len(payload['options']) == 3
     choices = [opt['choice'] for opt in payload['options']]
     assert choices == ['accept', 'decline', 'later']
+
+
+@pytest.mark.asyncio
+async def test_direct_invite_delivery_preserves_options_websocket_compat(monkeypatch):
+    """The pre-5.5 direct helper still pushes its options event exactly once."""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+    mgr = _make_mgr()
+    mgr.websocket = MagicMock()
+    mgr.websocket.send_json = AsyncMock()
+    fake_state = MagicMock()
+    fake_state.CONNECTED = fake_state
+    mgr.websocket.client_state = fake_state
+
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN,
+        mgr=mgr,
+        activity_snapshot=_make_snapshot(),
+        invite_lang='zh',
+        master_name=MASTER,
+    )
+
+    assert out is not None and out['action'] == 'chat'
+    mgr.websocket.send_json.assert_awaited_once()
+    payload = mgr.websocket.send_json.await_args.args[0]
+    assert payload['type'] == 'mini_game_invite_options'
+    assert payload['session_id'] == out['invite_session_id']
+    assert payload['game_type'] == out['game_type']
     # state 同步存了 pending_session_id
     state = sr._mini_game_invite_state[LANLAN]
     assert state['pending_session_id'] == out['invite_session_id']

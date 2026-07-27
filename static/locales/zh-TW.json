@@ -1173,20 +1173,20 @@
             "title": "阿里美國 API 提醒",
             "message": "目前使用的是阿里的美國 API，不支援 TTS 與即時語音，建議更換為阿里的新加坡 API"
         },
-        "conversationModelConfig": "文本對話模型配置",
-        "summaryModelConfig": "摘要模型配置",
-        "gameModelsConfig": "小遊戲模型配置",
+        "conversationModelConfig": "文本聊天模型",
+        "summaryModelConfig": "摘要模型",
+        "gameModelsConfig": "小遊戲模型",
         "gameMainModelConfig": "小遊戲主模型配置",
         "gameSummaryModelConfig": "小遊戲摘要模型配置",
-        "correctionModelConfig": "糾錯模型配置",
-        "emotionModelConfig": "情感模型配置",
-        "visionModelConfig": "視覺模型配置",
-        "realtimeModelConfig": "實時模型配置（Local模式）",
-        "ttsModelConfig": "TTS模型配置（雙工流式）",
+        "correctionModelConfig": "糾錯模型",
+        "emotionModelConfig": "情感模型",
+        "visionModelConfig": "視覺聊天模型",
+        "realtimeModelConfig": "實時全模態模型（Local模式）",
+        "ttsModelConfig": "TTS模型",
         "apiUrl": "API URL",
         "apiKey": "API Key",
         "modelId": "模型ID",
-        "agentApiConfigTitle": "Agent API 配置（需支援視覺功能）",
+        "agentApiConfigTitle": "Agent API（需支援視覺功能）",
         "providerPlaceholder": "如：openai、azure、local",
         "apiUrlPlaceholder": "如：https://api.openai.com/v1",
         "modelIdPlaceholder": "如：gpt-5.1-chat-latest、qwen-flash",
@@ -3398,7 +3398,7 @@
                 "desc": "勾選這個選項可以啟用自定義 API 配置。啟用後，妳可以為不同的功能模塊（摘要、糾錯、情感分析等）配置獨立的 API。"
             },
             "step9": {
-                "title": "📝 摘要模型配置",
+                "title": "📝 摘要模型",
                 "desc": "摘要模型用於生成對話摘要和記憶管理。妳可以配置獨立的 API 服務來處理摘要生成任務。"
             }
         },

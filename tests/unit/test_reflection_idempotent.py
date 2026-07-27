@@ -71,6 +71,7 @@ def _build_mock_cm(tmpdir: str):
     cm.get_model_api_config = MagicMock(return_value={
         "model": "fake-model", "base_url": "http://fake", "api_key": "sk-fake",
     })
+    cm.aget_model_api_config = AsyncMock(side_effect=lambda mt, **_: cm.get_model_api_config(mt))
     return cm
 
 

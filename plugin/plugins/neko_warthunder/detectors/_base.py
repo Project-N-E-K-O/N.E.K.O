@@ -145,16 +145,20 @@ class DetectorEngine:
     def __init__(self, detectors: list[Detector]) -> None:
         self.detectors = detectors
 
+    def reset(self) -> None:
+        """Clear per-battle detector state without rebuilding detector configuration."""
+        for detector in self.detectors:
+            reset = getattr(detector, "reset", None)
+            if callable(reset):
+                reset()
+
     def feed(self, prev: BattleState, cur: BattleState) -> list[BattleEvent]:
         if cur.replay:
-            for det in self.detectors:
-                reset = getattr(det, "reset", None)
-                if callable(reset):
-                    reset()
+            self.reset()
             return []
         out: list[BattleEvent] = []
         for det in self.detectors:
-            if cur.dead:
+            if cur.dead and getattr(det, "id", "") != "you_died":
                 reset = getattr(det, "reset", None)
                 if callable(reset):
                     reset()

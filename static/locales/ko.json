@@ -1173,20 +1173,20 @@
             "title": "Alibaba 미국 API 안내",
             "message": "현재 Alibaba의 미국 API를 사용 중입니다. 이 API는 TTS와 실시간 음성을 지원하지 않으므로 Alibaba 싱가포르 API로 변경하는 것을 권장합니다."
         },
-        "conversationModelConfig": "텍스트 대화 모델 구성",
-        "summaryModelConfig": "요약 모델 구성",
-        "gameModelsConfig": "미니게임 모델 구성",
+        "conversationModelConfig": "텍스트 채팅 모델",
+        "summaryModelConfig": "요약 모델",
+        "gameModelsConfig": "미니게임 모델",
         "gameMainModelConfig": "미니게임 메인 모델 구성",
         "gameSummaryModelConfig": "미니게임 요약 모델 구성",
-        "correctionModelConfig": "수정 모델 구성",
-        "emotionModelConfig": "감정 모델 구성",
-        "visionModelConfig": "비전 모델 구성",
-        "realtimeModelConfig": "실시간 API(로컬 모드)",
-        "ttsModelConfig": "TTS 모델 구성(이중 스트리밍)",
+        "correctionModelConfig": "교정 모델",
+        "emotionModelConfig": "감정 모델",
+        "visionModelConfig": "비전 채팅 모델",
+        "realtimeModelConfig": "실시간 멀티모달 모델(로컬 모드)",
+        "ttsModelConfig": "TTS 모델",
         "apiUrl": "API URL",
         "apiKey": "API 키",
         "modelId": "모델 ID",
-        "agentApiConfigTitle": "에이전트 API 설정(시각 기능 지원 필요)",
+        "agentApiConfigTitle": "에이전트 API(시각 기능 지원 필요)",
         "providerPlaceholder": "예: openai, azure, 로컬",
         "apiUrlPlaceholder": "예: https://api.openai.com/v1",
         "modelIdPlaceholder": "예: gpt-5.1-chat-latest, qwen-flash",
@@ -3398,7 +3398,7 @@
                 "desc": "사용자 정의 API 구성을 활성화하려면 선택합니다. 그런 다음 요약, 수정, 감정 분석 등과 같은 다양한 모듈에 대해 독립적인 API를 구성합니다."
             },
             "step9": {
-                "title": "📝 요약 모델 구성",
+                "title": "📝 요약 모델",
                 "desc": "요약 모델은 대화 요약을 생성하고 메모리를 관리합니다. 요약 작업을 위한 독립적인 API 서비스를 구성합니다."
             }
         },

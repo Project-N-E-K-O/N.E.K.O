@@ -33,6 +33,26 @@ ALL_SCENARIOS = (
     BATTLE_ENDED,
 )
 
+VICTORY_MISSION_STATUSES = frozenset({"win", "won", "victory", "success"})
+DEFEAT_MISSION_STATUSES = frozenset({"fail", "failed", "lost", "defeat"})
+NEUTRAL_END_MISSION_STATUSES = frozenset({"left", "ended", "finished"})
+BATTLE_END_MISSION_STATUSES = (
+    VICTORY_MISSION_STATUSES | DEFEAT_MISSION_STATUSES | NEUTRAL_END_MISSION_STATUSES
+)
+
+
+def classify_battle_result(status: object) -> str:
+    """Normalize a mission status or rendered result into an outcome kind."""
+    normalized = str(status or "").strip().lower().split(",", 1)[0].strip()
+    if normalized in VICTORY_MISSION_STATUSES:
+        return "victory"
+    if normalized in DEFEAT_MISSION_STATUSES:
+        return "defeat"
+    if normalized in NEUTRAL_END_MISSION_STATUSES:
+        return "neutral"
+    return "unknown"
+
+
 # ---------------------------------------------------------------------------
 # 事件类别（D-B1 第 4 节门控矩阵的列）
 # ---------------------------------------------------------------------------
@@ -303,6 +323,11 @@ class BattleState:
     in_battle: bool = False
     replay: bool = False                    # data-layer replay degrade mode; suppress real battle events
     dead: bool = False                      # data-layer dead/spectating hold; data layer suppresses flags while true
+    dead_source: str | None = None          # 可信阵亡来源：hud_event / ground_crew
+    battle_id: str | None = None            # 数据层生成的本地战局 ID；同局重生保持不变
+    battle_started_at: float | None = None
+    life_index: int | None = None            # 本局已确认的第几次出生（首次=1）
+    confirmed_respawns: int = 0
     vehicle_valid: bool = False             # vehicle.valid：在战且有载具遥测=存活（出生/死亡判定用）
     indicators_valid: bool = False          # /indicators valid; ground/naval may not have vehicle telemetry
     has_player: bool = False                # map situation found the player marker

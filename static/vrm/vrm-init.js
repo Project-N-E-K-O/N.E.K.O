@@ -7,7 +7,13 @@
     // 如果已经加载过模块，或者正由 model_manager/runtime-loaders.js 加载中，则不再重复加载
     if (window.vrmModuleLoaded || window._vrmModulesLoading) return;
 
-    const VRM_VERSION = '1.0.0';
+    // Propagate the page's cache-busting version to every dynamically loaded
+    // VRM module. A fixed submodule version leaves old VMC sampling code in
+    // browser cache even after vrm-init.js itself changes.
+    const initScriptSrc = document.currentScript && document.currentScript.src;
+    const VRM_VERSION = initScriptSrc
+        ? (new URL(initScriptSrc, window.location.href).searchParams.get('v') || '1.0.1')
+        : '1.0.1';
 
     const loadModules = async () => {
         console.log('[VRM] 开始加载依赖模块');
@@ -20,7 +26,11 @@
             '/static/vrm/vrm-animation.js',
             '/static/vrm/vrm-interaction.js',
             '/static/vrm/vrm-cursor-follow.js',
-            '/static/vrm/vrm-manager.js'
+            '/static/vrm/vrm-manager.js',
+            // Only install the lightweight API facade here. The full VMC
+            // sender is loaded after an explicit enable/control call so the
+            // disabled path has no polling, timers, or frame sampling.
+            '/static/vrm/vrm-vmc-loader.js'
         ];
 
         // 必须顺序加载的 UI 模块（公共定位 → 公共 mixin → 统一配置 → buttons）

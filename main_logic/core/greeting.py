@@ -49,10 +49,51 @@ class GreetingMixin:
         self._recent_avatar_interaction_ids.append(interaction_id)
         self._recent_avatar_interaction_id_set.add(interaction_id)
 
+    @staticmethod
+    def _avatar_interaction_ingress_time(payload: dict) -> float:
+        captured_at = payload.get("_user_input_ingress_time")
+        if isinstance(captured_at, (int, float)):
+            return float(captured_at)
+        return time.time()
+
+    @staticmethod
+    def _avatar_interaction_contract_payload(payload: dict) -> dict:
+        """Hide server transport metadata from the strict public contract."""
+        if not isinstance(payload, dict):
+            return {}
+        return {
+            key: value
+            for key, value in payload.items()
+            if key not in {
+                "_user_input_ingress_time",
+                "_avatar_interaction_ingress_reserved",
+            }
+        }
+
+    def note_avatar_interaction_ingress(self, payload: dict) -> bool:
+        """Expose validated avatar engagement before background dispatch."""
+        raw = normalize_avatar_interaction_payload(
+            self._avatar_interaction_contract_payload(payload),
+            sanitize_text_context=_sanitize_avatar_interaction_text_context,
+        )
+        if not raw:
+            return False
+        interaction_id = raw["interaction_id"]
+        if interaction_id in self._recent_avatar_interaction_id_set:
+            return False
+        # The WebSocket dispatch loop calls this synchronously. Reserve before
+        # scheduling the handler so a second frame with the same ID is already
+        # a duplicate even when the first task has not started yet.
+        self.note_user_engagement(
+            at=self._avatar_interaction_ingress_time(payload)
+        )
+        self._remember_avatar_interaction_id(interaction_id)
+        return True
+
     async def handle_avatar_interaction(self, payload: dict) -> dict:
         raw_interaction_id = str(payload.get("interaction_id") or payload.get("interactionId") or "").strip() if isinstance(payload, dict) else ""
         raw = normalize_avatar_interaction_payload(
-            payload,
+            self._avatar_interaction_contract_payload(payload),
             sanitize_text_context=_sanitize_avatar_interaction_text_context,
         )
         if not raw:
@@ -62,11 +103,22 @@ class GreetingMixin:
 
         interaction_id = raw["interaction_id"]
         now_ms = int(time.time() * 1000)
+        ingress_reserved = (
+            payload.get("_avatar_interaction_ingress_reserved") is True
+        )
 
-        if interaction_id in self._recent_avatar_interaction_id_set:
+        if (
+            interaction_id in self._recent_avatar_interaction_id_set
+            and not ingress_reserved
+        ):
             logger.debug("[%s] handle_avatar_interaction: duplicate interaction_id=%s", self.lanlan_name, interaction_id)
             await self.send_avatar_interaction_ack(interaction_id, False, "duplicate")
             return {"accepted": False, "reason": "duplicate", "interaction_id": interaction_id}
+
+        if not ingress_reserved:
+            self.note_user_engagement(
+                at=self._avatar_interaction_ingress_time(payload)
+            )
 
         if now_ms - self._last_avatar_interaction_at < self.avatar_interaction_cooldown_ms:
             logger.debug("[%s] handle_avatar_interaction: cooldown skip interaction_id=%s", self.lanlan_name, interaction_id)

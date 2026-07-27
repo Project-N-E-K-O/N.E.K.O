@@ -100,6 +100,12 @@ _lock = asyncio.Lock()
 
 # 防止 fire-and-forget 任务被 Python 3.11+ GC 回收
 _ws_bg_tasks: set = set()
+# A character can have more than one WebSocket at a time (for example the
+# main page and /chat_full).  Each one sends its own greeting_check, so the
+# router must coalesce the *scheduled* greeting before the core state machine
+# is reached.  The state machine only protects an in-progress delivery; by
+# then two tasks may already have independently completed their gap checks.
+_greeting_tasks: dict[str, asyncio.Task] = {}
 _SESSION_INPUT_TYPES = frozenset({"audio", "screen", "camera", "text", "avatar_drop_image", "user_image"})
 _TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})
 _ORDERED_STREAM_INPUT_TYPES = frozenset({"audio", "avatar_drop_image", "user_image"})
@@ -115,6 +121,93 @@ def _fire_task(coro):
     _ws_bg_tasks.add(task)
     task.add_done_callback(_ws_bg_tasks.discard)
     return task
+
+
+def _stamp_user_input_ingress(message: dict) -> dict:
+    """Stamp genuine user input before fire-and-forget task dispatch."""
+    if (
+        message.get("input_type") not in _TEXT_SESSION_INPUT_TYPES
+        and message.get("action") != "avatar_interaction"
+    ):
+        return message
+    # This is a client trust boundary: never preserve a JSON-supplied private
+    # timestamp. A future-dated value would suppress idle/proactive behavior.
+    # Downstream internal dispatch preserves this server-owned stamp.
+    return {
+        **message,
+        "_user_input_ingress_time": time.time(),
+    }
+
+
+def _reserve_avatar_interaction_ingress(
+    manager,
+    message: dict,
+    *,
+    lanlan_name: str,
+) -> bool:
+    """Keep defensive ingress failures inside the current WS message."""
+    try:
+        return bool(manager.note_avatar_interaction_ingress(message))
+    except Exception as exc:
+        logger.warning(
+            "[%s] note_avatar_interaction_ingress failed: %s",
+            lanlan_name,
+            exc,
+        )
+        return False
+
+
+def _record_stream_engagement_ingress(
+    manager,
+    message: dict,
+    *,
+    lanlan_name: str,
+) -> bool:
+    """Expose genuine one-shot text/image engagement before stream routing."""
+    if message.get("input_type") not in _TEXT_SESSION_INPUT_TYPES:
+        return False
+    try:
+        return bool(manager.note_stream_input_ingress(message))
+    except Exception as exc:
+        logger.warning(
+            "[%s] text/image ingress engagement failed: %s",
+            lanlan_name,
+            exc,
+        )
+        return False
+
+
+def _schedule_greeting_task(lanlan_name: str, kind: str, coro_factory) -> bool:
+    """Start at most one greeting-like task per character at a time.
+
+    All greeting sources share this gate: ordinary reconnect/switch greetings,
+    first-appearance greetings, and cat-return greetings.  Passing a factory
+    rather than a ready coroutine is important: a coalesced request must not
+    construct an unawaited coroutine merely to discard it.
+    """
+    existing = _greeting_tasks.get(lanlan_name)
+    if existing is not None and not existing.done():
+        logger.info(
+            "[%s] %s greeting request coalesced: another greeting task is in flight",
+            lanlan_name,
+            kind,
+        )
+        return False
+
+    task = _fire_task(coro_factory())
+    # Unit-test task shims can intentionally return None after closing the
+    # coroutine.  Production _fire_task always returns asyncio.Task.
+    if task is None:
+        return True
+
+    _greeting_tasks[lanlan_name] = task
+
+    def _clear_if_current(completed_task):
+        if _greeting_tasks.get(lanlan_name) is completed_task:
+            _greeting_tasks.pop(lanlan_name, None)
+
+    task.add_done_callback(_clear_if_current)
+    return True
 
 
 def _normalize_cat_greeting_check(message: dict) -> tuple[float, str, bool, dict | None]:
@@ -530,6 +623,17 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     # first audio frame on this socket claims the voice input
                     # connection identity.
                     _claim_voice_input_connection()
+                # Plain text is dispatched with create_task below. Stamp the
+                # server-arrival time before yielding so an earlier user input
+                # can never look newer than a proactive commit merely because
+                # its task started later.
+                message = _stamp_user_input_ingress(message)
+                stream_mgr = session_manager[lanlan_name]
+                _record_stream_engagement_ingress(
+                    stream_mgr,
+                    message,
+                    lanlan_name=lanlan_name,
+                )
                 if is_game_route_active(lanlan_name):
                     if input_type == "audio":
                         await route_external_stream_message(lanlan_name, {"input_type": "audio", "stt_provider": "realtime"})
@@ -555,12 +659,27 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 else:
                     session_manager[lanlan_name]._avatar_position = None
                 if input_type in _ORDERED_STREAM_INPUT_TYPES:
-                    await session_manager[lanlan_name].stream_data(message)
+                    await stream_mgr.stream_data(message)
                 else:
-                    _fire_task(session_manager[lanlan_name].stream_data(message))
+                    _fire_task(stream_mgr.stream_data(message))
 
             elif action == "avatar_interaction":
-                _fire_task(session_manager[lanlan_name].handle_avatar_interaction(message))
+                message = _stamp_user_input_ingress(message)
+                avatar_mgr = session_manager[lanlan_name]
+                # Validate and expose genuine engagement synchronously, before
+                # the background handler can lose a scheduling race to a ready
+                # proactive commit. Reserve the interaction ID in that same
+                # synchronous step so rapid retransmits cannot reset silence.
+                reserved = _reserve_avatar_interaction_ingress(
+                    avatar_mgr,
+                    message,
+                    lanlan_name=lanlan_name,
+                )
+                message = {
+                    **message,
+                    "_avatar_interaction_ingress_reserved": reserved,
+                }
+                _fire_task(avatar_mgr.handle_avatar_interaction(message))
 
             elif action == "end_session":
                 session_manager[lanlan_name].active_session_is_idle = False
@@ -662,10 +781,18 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 if new_session:
                     if await has_new_character_greeting_pending(_config_manager, lanlan_name):
                         logger.info(f"[{lanlan_name}] greeting_check: is_switch={is_switch} since_disconnect={since_disconnect:.1f}s reason={greeting_reason or '-'} → new character greeting")
-                        _fire_task(session_manager[lanlan_name].trigger_new_character_greeting())
+                        _schedule_greeting_task(
+                            lanlan_name,
+                            "new-character",
+                            session_manager[lanlan_name].trigger_new_character_greeting,
+                        )
                     else:
                         logger.info(f"[{lanlan_name}] greeting_check: is_switch={is_switch} since_disconnect={since_disconnect:.1f}s reason={greeting_reason or '-'} → triggering")
-                        _fire_task(session_manager[lanlan_name].trigger_greeting())
+                        _schedule_greeting_task(
+                            lanlan_name,
+                            "ordinary",
+                            session_manager[lanlan_name].trigger_greeting,
+                        )
                 else:
                     logger.info(f"[{lanlan_name}] greeting_check: since_disconnect={since_disconnect:.1f}s ≤15s reason={greeting_reason or '-'} → skip (refresh/reconnect)")
 
@@ -697,12 +824,16 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     isinstance(raw_episode, dict),
                     episode or "-",
                 )
-                _fire_task(session_manager[lanlan_name].trigger_cat_greeting(
-                    cat_duration,
-                    cat_tier,
-                    cat_was_auto,
-                    episode=episode,
-                ))
+                _schedule_greeting_task(
+                    lanlan_name,
+                    "cat-return",
+                    lambda: session_manager[lanlan_name].trigger_cat_greeting(
+                        cat_duration,
+                        cat_tier,
+                        cat_was_auto,
+                        episode=episode,
+                    ),
+                )
 
             elif action == "ping":
                 # 心跳保活消息，回复pong

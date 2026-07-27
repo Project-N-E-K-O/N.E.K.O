@@ -343,6 +343,20 @@ def _build_free_intl_voice_pins(native_catalog: dict, voice_id_exists=None) -> l
 async def get_voices():
     """Get all registered voices for the current API key."""
     _config_manager = get_config_manager()
+    # 与 /voice_preview 同理：本请求内区域判定会被读三次（get_voices_for_current_api、
+    # 下面的 aget_core_config、以及 get_active_realtime_native_provider_for_ui）。判定
+    # 尚未落定时那几次可能拿到不同结果，一份响应就会把海外 free_intl 原生目录和大陆
+    # free_voices 拼在一起（或反过来）——两者不相交，用户选中的音色到运行时必被拒。
+    # 先落定，让整个目录出自同一结论。已落定时零开销；自配 API 用户不会因此发起探测。
+    try:
+        if not await _config_manager.aensure_region_resolved():
+            logger.warning(
+                "[GeoIP] 音色列表开始时区域判定仍未落定；若结论恰在本请求中途到达，"
+                "目录可能混用两个区域的音色，刷新即可"
+            )
+    except Exception:
+        logger.debug("[GeoIP] 音色列表区域落定失败，按当前配置继续", exc_info=True)
+
     result = {"voices": _config_manager.get_voices_for_current_api(for_listing=True)}
 
     core_config = await _config_manager.aget_core_config()
@@ -439,6 +453,23 @@ async def get_voice_preview(
     """Get the voice preview audio."""
     try:
         _config_manager = get_config_manager()
+        # 本请求内区域判定会被读两次（先选 provider 目录，后拼 TTS URL）。判定尚未
+        # 落定时那两次可能拿到不同结果——按大陆 free 归一化的音色被发去 lanlan.app，
+        # 而 free_intl 目录与之不相交，预览直接失败。先落定，让整个请求用同一结论。
+        # 已落定时零开销；自配 API 用户不会因此发起探测。
+        # 等满仍未落定时残留一个窗口：结论恰在本请求中途到达，则 provider 目录与
+        # TTS URL 分属两个区域，预览失败。不做「把判定结果一路传参」的彻底修复——
+        # 那要穿透 native voice registry 的多个 cross-cutting 函数，而代价只是一次
+        # 预览失败、重试即好（届时判定已落定）。这里记 warning 让它可诊断。
+        try:
+            if not await _config_manager.aensure_region_resolved():
+                logger.warning(
+                    "[GeoIP] 音色预览开始时区域判定仍未落定；若结论恰在本请求中途到达，"
+                    "预览可能因线路与音色目录不匹配而失败，重试即可"
+                )
+        except Exception:
+            logger.debug("[GeoIP] 音色预览区域落定失败，按当前配置继续", exc_info=True)
+
         voices = _config_manager.get_voices_for_current_api()
         voice_data = voices.get(voice_id) if isinstance(voices, dict) else None
         provider = (voice_data or {}).get('provider', '')
@@ -446,7 +477,7 @@ async def get_voice_preview(
 
         # 优先尝试从 tts_custom 获取 API Key
         try:
-            tts_custom_config = _config_manager.get_model_api_config('tts_custom')
+            tts_custom_config = await _config_manager.aget_model_api_config('tts_custom')
             audio_api_key = tts_custom_config.get('api_key', '')
         except Exception:
             audio_api_key = ''
@@ -829,7 +860,7 @@ async def get_voice_preview(
                     # free_intl（海外免费 Gemini 代理）预览同 free，走 www.lanlan.app/tts
                     # 流式合成（StepFun-shape，proxy 把 voice_id 透传给 Gemini）。
                     try:
-                        native_tts_config = _config_manager.get_model_api_config('tts_default')
+                        native_tts_config = await _config_manager.aget_model_api_config('tts_default')
                         native_audio_api_key = native_tts_config.get('api_key', '') or ''
                     except Exception:
                         native_audio_api_key = ''
@@ -979,7 +1010,7 @@ async def get_voice_preview(
 
         # 生成音频
         try:
-            tts_api_config = _config_manager.get_model_api_config('tts_custom')
+            tts_api_config = await _config_manager.aget_model_api_config('tts_custom')
         except Exception as e:
             logger.warning("DashScope 预览地域 URL 读取失败，回退到默认地域: %s", e, exc_info=True)
             tts_api_config = {}

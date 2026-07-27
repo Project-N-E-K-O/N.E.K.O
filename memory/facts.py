@@ -431,7 +431,7 @@ class FactStore:
         while retries < max_retries:
             try:
                 set_call_type(call_type)
-                api_config = self._config_manager.get_model_api_config(tier)
+                api_config = await self._config_manager.aget_model_api_config(tier)
                 from config import LLM_OUTPUT_GUARD_MAX_TOKENS
                 _llm_kwargs = dict(
                     timeout=timeout,
@@ -1969,7 +1969,7 @@ class FactStore:
         try:
             from utils.llm_client import create_chat_llm_async
             set_call_type("memory_recheck_fact")
-            api_config = self._config_manager.get_model_api_config('summary')
+            api_config = await self._config_manager.aget_model_api_config('summary')
             from config import LLM_OUTPUT_GUARD_MAX_TOKENS
             llm = await create_chat_llm_async(
                 api_config['model'],

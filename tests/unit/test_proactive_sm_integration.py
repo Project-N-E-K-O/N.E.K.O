@@ -226,9 +226,9 @@ async def test_voice_mode_idle_injects_and_drops_paired_cbs_and_extras():
     assert events == []
 
 
-async def test_voice_mode_inject_preserves_passive_cb_and_its_extra():
-    """Voice 模式：inject 只删 proactive cb 配对的 extras 项，
-    passive cb 及其 extras 必须原封不动留下 —— 它们要走 user-turn drain。"""
+async def test_voice_mode_inject_preserves_passive_cb_without_extra():
+    """Voice inject consumes only proactive callbacks; passive stays queued
+    without a hot-swap extra mirror."""
     sess = _make_voice_sess()
     mgr = _make_mgr(session=sess)
     passive_cb = {
@@ -239,24 +239,41 @@ async def test_voice_mode_inject_preserves_passive_cb_and_its_extra():
         "_callback_delivery_id": "id-proactive",
         "status": "completed", "summary": "ping user now",
     }
-    passive_extra = {
-        "_callback_delivery_id": "id-passive",
-        "origin": "event", "summary": "passive note",
-    }
     proactive_extra = {
         "_callback_delivery_id": "id-proactive",
         "origin": "task_result", "summary": "ping user now",
     }
-    # enqueue_agent_callback stamps both queues with the same _callback_delivery_id
     mgr.pending_agent_callbacks = [passive_cb, proactive_cb]
-    mgr.pending_extra_replies = [passive_extra, proactive_extra]
+    mgr.pending_extra_replies = [proactive_extra]
 
     await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
     await asyncio.sleep(0)
 
     assert len(sess.injected) == 1
     assert mgr.pending_agent_callbacks == [passive_cb]
-    assert mgr.pending_extra_replies == [passive_extra]
+    assert mgr.pending_extra_replies == []
+
+
+async def test_voice_passive_enqueue_never_injects_or_creates_hot_swap_extra():
+    sess = _make_voice_sess()
+    mgr = _make_mgr(session=sess)
+    passive_cb = {
+        "origin": "event",
+        "status": "completed",
+        "summary": "context only",
+        "detail": "context only",
+        "delivery_mode": "passive",
+        "coalesce_key": "context",
+    }
+
+    core_module.LLMSessionManager.enqueue_agent_callback(mgr, passive_cb)
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.sleep(0)
+
+    assert delivered is False
+    assert sess.injected == []
+    assert mgr.pending_agent_callbacks == [passive_cb]
+    assert mgr.pending_extra_replies == []
 
 
 async def test_voice_mode_busy_defers_cbs_for_retry():

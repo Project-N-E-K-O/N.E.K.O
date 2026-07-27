@@ -300,7 +300,7 @@ def test_custom_api_test_button(mock_page: Page, running_server: str):
         const summaryLight = document.querySelector('.connectivity-summary-light[data-model-type="conversation"]');
         const coreInput = document.getElementById('apiKeyInput');
         const coreLight = coreInput?.closest('.connectivity-input-row')?.querySelector('.connectivity-light');
-        const label = window.t ? window.t('api.conversationModelConfig', '文本对话模型配置') : '文本对话模型配置';
+        const label = window.t ? window.t('api.conversationModelConfig', '文本聊天模型') : '文本聊天模型';
         const status = window.t ? window.t('connectivity.status.connected', '已连通') : '已连通';
         const modelIdLabel = window.t ? window.t('api.modelId', '模型ID') : '模型ID';
         return {

@@ -14,6 +14,78 @@ from main_logic.core.lifecycle import LifecycleMixin
 from main_routers.websocket_router import _normalize_cat_greeting_check
 
 
+def test_text_ingress_is_stamped_before_async_dispatch(monkeypatch):
+    monkeypatch.setattr(websocket_router.time, "time", lambda: 123.5)
+    original = {"input_type": "text", "data": "hello"}
+
+    stamped = websocket_router._stamp_user_input_ingress(original)
+
+    assert stamped["_user_input_ingress_time"] == 123.5
+    assert "_user_input_ingress_time" not in original
+    already_stamped = {
+        "input_type": "text",
+        "_user_input_ingress_time": 999_999_999_999.0,
+    }
+    restamped = websocket_router._stamp_user_input_ingress(already_stamped)
+    assert restamped["_user_input_ingress_time"] == 123.5
+    assert already_stamped["_user_input_ingress_time"] == 999_999_999_999.0
+    avatar = {"action": "avatar_interaction", "interactionId": "tap-1"}
+    stamped_avatar = websocket_router._stamp_user_input_ingress(avatar)
+    assert stamped_avatar["_user_input_ingress_time"] == 123.5
+    assert "_user_input_ingress_time" not in avatar
+    audio = {"input_type": "audio", "data": []}
+    assert websocket_router._stamp_user_input_ingress(audio) is audio
+
+
+def test_avatar_ingress_failure_isolated_from_websocket_loop():
+    class FailingManager:
+        @staticmethod
+        def note_avatar_interaction_ingress(_message):
+            raise RuntimeError("boom")
+
+    reserved = websocket_router._reserve_avatar_interaction_ingress(
+        FailingManager(),
+        {"action": "avatar_interaction"},
+        lanlan_name="Test",
+    )
+
+    assert reserved is False
+
+
+@pytest.mark.parametrize(
+    ("input_type", "data"),
+    (
+        ("text", "hello"),
+        ("avatar_drop_image", "data:image/png;base64,abc"),
+        ("user_image", "data:image/png;base64,xyz"),
+    ),
+)
+def test_one_shot_engagement_is_visible_before_stream_routing(input_type, data):
+    class Manager:
+        def __init__(self):
+            self.engagement_times = []
+
+        def note_stream_input_ingress(self, message):
+            self.engagement_times.append(message["_user_input_ingress_time"])
+            return True
+
+    manager = Manager()
+    message = {
+        "input_type": input_type,
+        "data": data,
+        "_user_input_ingress_time": 123.5,
+    }
+
+    recorded = websocket_router._record_stream_engagement_ingress(
+        manager,
+        message,
+        lanlan_name="Test",
+    )
+
+    assert recorded is True
+    assert manager.engagement_times == [123.5]
+
+
 class _GoodbyeCycleState(LifecycleMixin):
     lanlan_name = "Test"
     goodbye_silent = False
@@ -183,6 +255,41 @@ def test_cat_greeting_router_ignores_obsolete_started_marker():
         },
     })
     assert episode == {"kind": "activity", "highlight": "played_yarn"}
+
+
+def test_greeting_task_scheduler_coalesces_all_greeting_sources():
+    async def scenario():
+        websocket_router._greeting_tasks.clear()
+        started = []
+        release = asyncio.Event()
+
+        async def greeting(kind):
+            started.append(kind)
+            await release.wait()
+
+        try:
+            assert websocket_router._schedule_greeting_task(
+                "Test", "ordinary", lambda: greeting("ordinary"),
+            ) is True
+            # Different greeting sources must use the same per-character gate.
+            assert websocket_router._schedule_greeting_task(
+                "Test", "cat-return", lambda: greeting("cat-return"),
+            ) is False
+
+            await asyncio.sleep(0)
+            assert started == ["ordinary"]
+
+            release.set()
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            assert "Test" not in websocket_router._greeting_tasks
+        finally:
+            release.set()
+            for task in list(websocket_router._greeting_tasks.values()):
+                task.cancel()
+            websocket_router._greeting_tasks.clear()
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize(

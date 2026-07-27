@@ -679,6 +679,44 @@ class TtsRuntimeMixin:
         """Backward-compatible wrapper for older callers/tests."""
         return self._resolve_realtime_voice(realtime_config)
 
+    def _drop_free_voice_on_route_flip(self, old_core_url: str, new_core_url: str) -> bool:
+        """Clear a free-catalog voice when the regional route flipped between snapshots.
+
+        The domestic ``free`` and overseas ``free_intl`` catalogs are disjoint,
+        so a voice resolved against the pre-flip region is guaranteed invalid on
+        the post-flip route. Realtime already fails safe at delivery time
+        (``_resolve_realtime_voice`` keys on the snapshot's base_url), but the
+        text-mode TTS path synthesizes with ``self.voice_id`` directly — this
+        applies the same fail-safe there: deliver nothing and let the server
+        pick its default for the session. Custom voices are region-independent
+        and left untouched.
+        """
+        if str(old_core_url or '') == str(new_core_url or ''):
+            return False
+        # 免费目录归属分两半：大陆预设由 _is_free_preset_voice 标记；海外
+        # free_intl（yui + 完整 Gemini 原生目录）用 registry 按**旧路由**判——
+        # 翻转前音色就是在旧路由目录下解析出来的，字面量列举会漏掉非 yui 的
+        # Gemini 音色。自配/克隆音色两边都不命中，保持不动。
+        overseas_native = False
+        if not self._is_free_preset_voice and self.voice_id:
+            try:
+                _, overseas_native = resolve_native_voice_for_routing(
+                    self.core_api_type,
+                    self.voice_id,
+                    self._config_manager.voice_id_exists_in_any_storage,
+                    realtime_base_url=str(old_core_url or ''),
+                )
+            except Exception:
+                overseas_native = False
+        if not (self._is_free_preset_voice or overseas_native):
+            return False
+        logger.info(
+            "[GeoIP] 区域翻转后清空旧区域免费音色 '%s'，本场使用服务端默认", self.voice_id,
+        )
+        self.voice_id = ''
+        self._is_free_preset_voice = False
+        return True
+
     def _enqueue_voice_migration_notice(self, legacy_names: list) -> None:
         """Push the voice migration notice into the buffer pool, delegating to the module-level function for unified dedup."""
         enqueue_voice_migration_notice(legacy_names)
