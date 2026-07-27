@@ -3186,6 +3186,43 @@ async def test_delivery_result_reflects_open_platform_send_failure():
     ))
     assert result.delivered is True
 
+    # Private keyboard-only block: buttons are group-only, so nothing can
+    # be sent — it must report undelivered rather than silently vanish
+    # (same rule as the ark block).
+    priv_kb_plugin = SimpleNamespace(
+        _get_reply_mode=lambda: "text",
+        logger=MagicMock(),
+        qq_client=SimpleNamespace(
+            needs_attention=False,
+            send_message=AsyncMock(return_value="mid"),
+        ),
+    )
+    priv_kb_node = QQReplyDeliveryNode.__new__(QQReplyDeliveryNode)
+    priv_kb_node.plugin = priv_kb_plugin
+    result = await priv_kb_node.deliver(QQDeliveryPlan(
+        target_type="private", target_id="10086",
+        blocks=[QQMessageBlock(keyboard="要|不要")],
+    ))
+    assert result.delivered is False
+    priv_kb_plugin.qq_client.send_message.assert_not_awaited()
+
+    # Voice mode carries the choice labels into the TTS content, otherwise
+    # the spoken reply asks about options it never names.
+    voice_kb_plugin = SimpleNamespace(
+        _get_reply_mode=lambda: "voice",
+        logger=MagicMock(),
+        qq_client=SimpleNamespace(needs_attention=False),
+        _deliver_group_reply=AsyncMock(return_value=True),
+    )
+    voice_kb_node = QQReplyDeliveryNode.__new__(QQReplyDeliveryNode)
+    voice_kb_node.plugin = voice_kb_plugin
+    await voice_kb_node.deliver(QQDeliveryPlan(
+        target_type="group", target_id="7788",
+        blocks=[QQMessageBlock(text="要看看哪个？", keyboard="状态|配置")],
+    ))
+    spoken = voice_kb_plugin._deliver_group_reply.await_args.args[1]
+    assert "状态 / 配置" in spoken
+
     # Ark-only plan: nothing is actually sent (no delivery implementation),
     # so it must not report delivered and clear the draft exclusion.
     ark_plugin = SimpleNamespace(

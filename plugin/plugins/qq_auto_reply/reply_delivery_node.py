@@ -46,6 +46,16 @@ class QQReplyDeliveryNode:
 
             # 文本块（可含 emoji + at + reply + keyboard）
             text = self._compose_text(block)
+            if not text and block.keyboard and plan.target_type != "group":
+                # 官方按钮只有群聊承载：私聊的 keyboard-only 块无处安放，
+                # 必须按未投递处理——与 ark 同一类判据，不能"什么都没发"
+                # 却清掉未投递标、把 mention 记进 scoped 提取。
+                any_text_attempted = True
+                all_text_sent = False
+                self.plugin.logger.warning(
+                    "keyboard-only 块不支持私聊投递，未发送（记忆按未投递处理）"
+                )
+                continue
             if not text and block.keyboard and plan.target_type == "group":
                 # keyboard-only 块必须真发出点什么，否则既没送出去又被算成
                 # 已投递。官方按钮只有开放平台能渲染（NapCat/OneBot 协议
@@ -138,9 +148,19 @@ class QQReplyDeliveryNode:
         if mode == "voice":
             # voice-only 模式：走 TTS 发送语音——确认结果一路传播（开放
             # 平台失败吞异常返回 None，语音回复也不得凭空算已投递）。
+            # 按钮无法在语音里交互，但选项文案要念出来，否则用户听到的
+            # 回复缺了它在问的那几个选项。
+            voice_text = text
+            if keyboard:
+                labels = " / ".join(
+                    part.strip() for part in str(keyboard).split("|")
+                    if part.strip()
+                )
+                if labels:
+                    voice_text = voice_text + "\n" + labels
             if plan.target_type == "group":
-                return bool(await self.plugin._deliver_group_reply(plan.target_id, text, fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure))
-            return bool(await self.plugin._deliver_private_reply(plan.target_id, text, fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure))
+                return bool(await self.plugin._deliver_group_reply(plan.target_id, voice_text, fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure))
+            return bool(await self.plugin._deliver_private_reply(plan.target_id, voice_text, fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure))
         if plan.target_type == "group":
             if keyboard and not self._supports_keyboard():
                 # NapCat 渲染不了官方按钮：把选项文案追加进正文，别让
