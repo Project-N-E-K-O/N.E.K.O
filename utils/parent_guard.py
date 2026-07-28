@@ -123,6 +123,41 @@ def _configured_parent_pid() -> Optional[int]:
     return value if value > 1 else None
 
 
+def _posix_start_token(pid: int) -> str:
+    """Boot-scoped start time for ``pid``, or ``""`` when it cannot be read.
+
+    Closes the pid-reuse window on the handoff path, where the owner is a
+    grandparent and the only available liveness test is ``os.kill(pid, 0)`` —
+    which happily reports an unrelated process that inherited the number. The
+    Windows watcher already guards this with process creation times; this is the
+    POSIX counterpart.
+
+    Linux only. Elsewhere the empty token means "unavailable" and is never
+    treated as a match, so behaviour there is exactly what it is today.
+    """
+    if not sys.platform.startswith("linux"):
+        return ""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            raw = handle.read().decode("utf-8", errors="replace")
+        # The comm field can contain spaces and parentheses; everything after
+        # the last ") " is positional.
+        closing = raw.rfind(") ")
+        if closing < 0:
+            return ""
+        # starttime is field 22, i.e. index 19 once comm has been stripped.
+        start_ticks = raw[closing + 2:].split()[19]
+    except (OSError, IndexError, ValueError):
+        return ""
+    try:
+        with open("/proc/sys/kernel/random/boot_id", "rb") as handle:
+            boot_id = handle.read().decode("ascii", errors="replace").strip()
+    except OSError:
+        # Without a boot id the tick count alone is ambiguous across reboots.
+        return ""
+    return f"{boot_id}:{start_ticks}" if boot_id else ""
+
+
 def _safe_getppid() -> int:
     getppid = getattr(os, "getppid", None)
     if not callable(getppid):
@@ -144,6 +179,13 @@ class ParentDeathGuard:
         # about to exit on purpose. Mechanisms keyed on "our parent changed" are
         # only valid in the first case; the second must ask after the named pid.
         self._owner_is_direct_parent = (parent_pid == _safe_getppid())
+        # Captured while the owner is known to be alive, so a later mismatch
+        # means this pid now belongs to somebody else. Only consulted on the
+        # handoff path; the direct-parent test reads getppid(), which the kernel
+        # keeps honest.
+        self._parent_start_token = (
+            "" if self._owner_is_direct_parent else _posix_start_token(parent_pid)
+        )
         self._fired = threading.Event()
         self._stop = threading.Event()
         self._fire_lock = threading.Lock()
@@ -201,6 +243,15 @@ class ParentDeathGuard:
             return True
         except OSError:
             return False
+        # The pid answers, but a pid is not an identity: if the owner exited and
+        # the number was recycled before this poll ran, we would be watching a
+        # stranger forever. A start token that no longer matches the one taken
+        # while the owner was alive says exactly that happened. An empty token on
+        # either side means "cannot tell", which must not be read as death.
+        if self._parent_start_token:
+            current = _posix_start_token(self._parent_pid)
+            if current and current != self._parent_start_token:
+                return True
         return False
 
     def _on_pdeathsig(self, _signum, _frame) -> None:

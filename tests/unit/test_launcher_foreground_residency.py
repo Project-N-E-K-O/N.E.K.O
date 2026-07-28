@@ -40,12 +40,16 @@ def preserved_signal_handlers():
         try:
             saved[sig] = signal.getsignal(sig)
         except (ValueError, OSError):
+            # Signal unavailable on this platform, or we are off the main
+            # thread: nothing saved means nothing to restore below.
             pass
     yield
     for sig, handler in saved.items():
         try:
             signal.signal(sig, handler)
         except (ValueError, OSError, TypeError):
+            # Best-effort restore during teardown; a failure here must not mask
+            # the assertion result of the test that just ran.
             pass
 
 

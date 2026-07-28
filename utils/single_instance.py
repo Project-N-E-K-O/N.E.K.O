@@ -340,6 +340,8 @@ def _write_record_atomically(target: Path, payload: dict) -> None:
         try:
             os.unlink(tmp_name)
         except OSError:
+            # Best-effort removal of the temp file; the write error re-raised
+            # below is the one worth surfacing.
             pass
         raise
 
@@ -399,6 +401,9 @@ def acquire_single_instance(
                 try:
                     os.close(fd)
                 except OSError:
+                    # We never took the lock, so there is nothing to release; a
+                    # failed close must not turn "somebody else won" into an
+                    # exception.
                     pass
                 return None
             time.sleep(max(0.0, float(retry_interval)))
@@ -450,6 +455,9 @@ def acquire_single_instance(
         os.ftruncate(fd, 0)
         os.write(fd, f"{pid}\n".encode("ascii"))
     except OSError:
+        # Purely a triage convenience. The lock proves uniqueness and the JSON
+        # record is the authoritative payload, so failing to stamp the pid here
+        # costs nothing that matters.
         pass
 
     handle = SingleInstanceHandle(fd, lock_file, record_file, record)
@@ -555,4 +563,6 @@ def drop_inherited_reference() -> None:
         try:
             os.close(fd)
         except OSError:
+            # Dropping an inherited reference: the real holder still owns the
+            # lock, and a failed close in this child changes nothing for it.
             pass
