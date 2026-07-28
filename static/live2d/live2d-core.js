@@ -581,9 +581,15 @@ class Live2DManager {
 
         const container = document.getElementById('live2d-container');
         const canvas = this.pixi_app?.view || document.getElementById('live2d-canvas');
-        if (window._nekoModelReturnEnterContainer === container ||
-            window._nekoAvatarPerformanceFrameContainer === container) {
+        if (window._nekoModelReturnEnterContainer === container) {
             return false;
+        }
+        if (window._nekoAvatarPerformanceFrameContainer === container) {
+            const transform = getStyleValue(container, 'transform', 'transform');
+            if (transform !== '' && transform !== 'none') {
+                return false;
+            }
+            window._nekoAvatarPerformanceFrameContainer = null;
         }
         // The Electron pet root intentionally stays pointer-transparent in normal
         // operation, so only canvas pointer-events are an interaction signal.

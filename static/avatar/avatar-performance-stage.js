@@ -1539,6 +1539,13 @@
             return true;
         }
 
+        hasContainerTransform(container) {
+            const transform = container && container.style
+                ? String(container.style.transform || '').trim().toLowerCase()
+                : '';
+            return transform !== '' && transform !== 'none';
+        }
+
         isAvailable() {
             return !!(this.getManager() && this.getModel() && this.getContainer());
         }
@@ -1555,6 +1562,14 @@
         capture(session, options) {
             const normalized = options || {};
             const container = this.getContainer();
+            if (this.committedFrameTransformContainer === container &&
+                !this.hasContainerTransform(container)) {
+                if (window._nekoAvatarPerformanceFrameContainer === container) {
+                    window._nekoAvatarPerformanceFrameContainer = null;
+                }
+                this.committedFrameTransformActive = false;
+                this.committedFrameTransformContainer = null;
+            }
             const params = this.lookAtParams || {};
             const requestedParamIds = []
                 .concat(Array.isArray(normalized.paramIds) ? normalized.paramIds : [])
@@ -1626,7 +1641,8 @@
             this.committedFrameTransformActive =
                 snapshot.committedFrameTransformActive === true &&
                 snapshotCommittedContainer === container &&
-                snapshotContainer === container;
+                snapshotContainer === container &&
+                this.hasContainerTransform(container);
             this.committedFrameTransformContainer = this.committedFrameTransformActive
                 ? container
                 : null;
@@ -1711,7 +1727,8 @@
             const retainCommittedTransform =
                 this.committedFrameTransformActive &&
                 committedContainer &&
-                committedContainer === container;
+                committedContainer === container &&
+                this.hasContainerTransform(container);
             if (retainCommittedTransform) {
                 window._nekoAvatarPerformanceFrameContainer = committedContainer;
             } else {
@@ -1760,6 +1777,9 @@
                 'rotate(' + rotate.toFixed(3) + 'deg)'
             ].filter(Boolean).join(' ');
             container.style.transform = transform;
+            if (this.activeFrameTransformContainer === container) {
+                window._nekoAvatarPerformanceFrameContainer = container;
+            }
             if (frame.opacity !== '') {
                 container.style.opacity = String(frame.opacity);
             }

@@ -930,8 +930,12 @@ test('core model input regions stay empty when the model surface is hidden or no
     harness.window._nekoModelReturnEnterContainer = container;
     assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects())), []);
     harness.window._nekoModelReturnEnterContainer = null;
+    container.style.transform = 'translate3d(8px, 0, 0)';
     harness.window._nekoAvatarPerformanceFrameContainer = container;
     assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects())), []);
+    container.style.transform = '';
+    assert.equal(manager._isModelInputRegionInteractive(), true);
+    assert.equal(harness.window._nekoAvatarPerformanceFrameContainer, null);
 });
 
 test('performance frame session markers clear on restore and remain for committed transforms', () => {
@@ -990,6 +994,11 @@ test('performance frame session markers clear on restore and remain for committe
     assert.equal(stage.commitCurrentFrameAsBaseline(committedSession.id), true);
     assert.equal(stage.release(committedSession.id, 'commit-complete'), true);
     assert.equal(context.window._nekoAvatarPerformanceFrameContainer, container);
+
+    container.style.transform = '';
+    const clearedSession = stage.acquire('externally-cleared-transform-test', { capabilities: ['motion'] });
+    assert.equal(context.window._nekoAvatarPerformanceFrameContainer, null);
+    assert.equal(stage.release(clearedSession.id, 'external-transform-cleared'), true);
 
     const replacedSession = stage.acquire('replaced-container-test', { capabilities: ['frame'] });
     driver.applyFrame({ x: 8, y: 0, scale: 1, rotate: 0, opacity: '' }, replacedSession);
