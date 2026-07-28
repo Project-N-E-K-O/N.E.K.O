@@ -25,6 +25,7 @@ the duration.
 """
 
 import ast
+import re
 import threading
 import time
 import types
@@ -58,16 +59,21 @@ def _test_roots() -> list[Path]:
     in a Python process, so a process-wide fake clock leaks the same way there.
     A hardcoded pair would quietly stop covering the next tree someone adds.
     """
-    roots = []
-    for candidate in REPO_ROOT.rglob("tests"):
-        if not candidate.is_dir():
-            continue
-        if _is_skipped(candidate.relative_to(REPO_ROOT)):
-            continue
-        # 已被更外层的 root 覆盖就不重复扫
-        if any(candidate != other and other in candidate.parents for other in roots):
-            continue
-        roots.append(candidate)
+    roots: list[Path] = []
+    # 边走边剪，而不是 rglob 完再过滤：CI 上 `uv sync` 会先建出 .venv，
+    # rglob 会把整个 site-packages 走一遍（几万个文件）才轮到过滤。
+    stack = [REPO_ROOT]
+    while stack:
+        current = stack.pop()
+        for child in sorted(current.iterdir()):
+            if not child.is_dir() or child.is_symlink():
+                continue
+            if _is_skipped(Path(child.name)):
+                continue
+            if child.name == "tests":
+                roots.append(child)
+                continue  # 该树整体作为一个 root，内部不再找嵌套 tests
+            stack.append(child)
     return roots
 
 
@@ -95,6 +101,11 @@ def test_scoped_clock_is_invisible_to_other_threads(monkeypatch):
     # 没被覆盖的属性照旧走真实 time。
     assert module.time.perf_counter is time.perf_counter
     assert isinstance(module.time.time(), float)
+
+
+# `import time` / `import time as _time` / `as real_time` —— 生产代码里这三种
+# 拼法都出现过，指向的都是同一个 stdlib 模块。
+_TIME_ATTR_RE = re.compile(r"_?(real_)?time")
 
 
 def _stdlib_time_names(tree: ast.AST) -> set[str]:
@@ -191,7 +202,10 @@ def test_no_test_installs_a_mutating_fake_on_the_stdlib_time_module():
                     # `mod.time`、裸 `time`、以及 `import time as real_time` 的
                     # 别名，指向的都是同一个 stdlib 模块
                     hits_stdlib_time = (
-                        (isinstance(target, ast.Attribute) and target.attr == "time")
+                        # `mod.time`，以及生产代码用别名导入时的 `mod._time` /
+                        # `mod.real_time`（本仓库两种写法都有）
+                        (isinstance(target, ast.Attribute)
+                         and _TIME_ATTR_RE.fullmatch(target.attr))
                         or (isinstance(target, ast.Name) and target.id in time_names)
                     )
                     if not hits_stdlib_time:
