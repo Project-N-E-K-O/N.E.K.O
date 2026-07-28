@@ -1,5 +1,10 @@
 import json
+import shutil
 from pathlib import Path
+
+import pytest
+
+from tests.node_harness import run_node_stdin
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -41,6 +46,92 @@ def test_provider_prefers_tauri_and_preserves_electron_fallback() -> None:
     )
 
 
+def test_provider_timeout_executes_electron_bridge_without_changing_its_contract() -> None:
+    node_executable = shutil.which("node")
+    if node_executable is None:
+        pytest.skip("Node.js is required for the desktop capture provider contract")
+
+    provider_source = json.dumps(read_text("static/app/desktop-capture-provider.js"))
+    node_harness = f"""
+global.window = {{}};
+eval({provider_source});
+
+(async () => {{
+  const electronProvider = {{
+    shell: 'electron',
+    captureSourceAsDataUrl(sourceId, options) {{
+      return Promise.resolve({{
+        success: true,
+        dataUrl: 'data:image/jpeg;base64,electron',
+        sourceId,
+        shell: this.shell,
+        options
+      }});
+    }}
+  }};
+  window.electronDesktopCapturer = electronProvider;
+
+  if (window.getDesktopCaptureProvider() !== electronProvider) {{
+    throw new Error('Electron fallback provider was not selected');
+  }}
+
+  const result = await window.captureDesktopSourceWithTimeout(
+    window.getDesktopCaptureProvider(),
+    'captureSourceAsDataUrl',
+    'screen:electron',
+    {{ quality: 80 }}
+  );
+  if (!result.success
+      || result.sourceId !== 'screen:electron'
+      || result.shell !== 'electron'
+      || result.options.quality !== 80) {{
+    throw new Error('Electron capture call contract changed');
+  }}
+
+  const tauriProvider = {{ captureSourceAsDataUrl() {{ return Promise.resolve(null); }} }};
+  window.tauriDesktopCapturer = tauriProvider;
+  if (window.getDesktopCaptureProvider() !== tauriProvider) {{
+    throw new Error('Tauri provider was not preferred');
+  }}
+  delete window.tauriDesktopCapturer;
+  if (window.getDesktopCaptureProvider() !== electronProvider) {{
+    throw new Error('Electron fallback was not restored');
+  }}
+
+  let timeoutCode = null;
+  try {{
+    await window.captureDesktopSourceWithTimeout(
+      {{ captureSourceAsDataUrl() {{ return new Promise(() => {{}}); }} }},
+      'captureSourceAsDataUrl',
+      'screen:hung',
+      undefined,
+      5
+    );
+  }} catch (error) {{
+    timeoutCode = error && error.code;
+  }}
+  if (timeoutCode !== 'DESKTOP_CAPTURE_TIMEOUT') {{
+    throw new Error('Hung capture was not bounded by the shared timeout');
+  }}
+}})().catch((error) => {{
+  console.error(error);
+  process.exitCode = 1;
+}});
+"""
+    result = run_node_stdin(
+        node_executable,
+        node_harness,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        raise AssertionError(
+            "Desktop capture provider contract failed:\n"
+            f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+        )
+
+
 def test_native_frame_capture_is_used_by_stream_and_screenshot_paths() -> None:
     screen = read_text("static/app/app-screen.js")
     buttons = read_text("static/app/app-buttons.js")
@@ -59,6 +150,11 @@ def test_native_frame_capture_is_used_by_stream_and_screenshot_paths() -> None:
         assert "window.tauriDesktopCapturer" not in consumer
         assert "window.electronDesktopCapturer" not in consumer
 
+    for consumer in (screen, buttons, proactive, websocket):
+        assert "window.captureDesktopSourceWithTimeout(" in consumer
+        assert "await desktopProvider.captureSourceAsDataUrl(" not in consumer
+        assert "await dc.captureSourceAsDataUrl(" not in consumer
+
 
 def test_native_frame_stream_lifecycle_preserves_source_and_cancels_stale_frames() -> None:
     screen = read_text("static/app/app-screen.js")
@@ -74,10 +170,8 @@ def test_native_frame_stream_lifecycle_preserves_source_and_cancels_stale_frames
     assert "captureSocket.send(JSON.stringify(" in native_stream
     assert native_stream.count("await stopScreenSharing(true);") >= 4
     assert "buildStreamDataMessage(result.dataUrl, inputType, sourceId)" in native_stream
-    assert "var NATIVE_FRAME_CAPTURE_TIMEOUT_MS = 3000;" in screen
-    assert "result = await Promise.race([" in native_stream
-    assert "new Error('Native screen capture timeout')" in native_stream
-    assert "if (captureTimeoutId) clearTimeout(captureTimeoutId);" in native_stream
+    assert "window.captureDesktopSourceWithTimeout(" in native_stream
+    assert "'captureSourceAsDataUrl'" in native_stream
     assert "(S.screenCaptureStream || activeNativeCaptureSourceId)" in screen
 
 
@@ -91,6 +185,9 @@ def test_capture_consumers_handle_late_bridges_and_native_failures() -> None:
     assert "CAPTURE_BRIDGE_REANNOUNCE_MAX_ATTEMPTS" in websocket
     assert "catch (directError)" in proactive
     assert "原生捕获失败，尝试后端兜底" in proactive
+    assert "var proactiveVisionFrameInFlight = false;" in proactive
+    assert "if (proactiveVisionFrameInFlight) return;" in proactive
+    assert "proactiveVisionFrameInFlight = false;" in proactive
     assert "resetScreenSharingControls();" in screen
     assert "if (stop) stop.disabled = true;" in screen
 

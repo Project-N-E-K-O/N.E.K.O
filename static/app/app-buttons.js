@@ -3362,7 +3362,11 @@
                 && typeof desktopProvider.captureSourceWithoutNeko === 'function') {
                 var atomicFailed = false;
                 try {
-                    var atomic = await desktopProvider.captureSourceWithoutNeko(selectedSourceId || null);
+                    var atomic = await window.captureDesktopSourceWithTimeout(
+                        desktopProvider,
+                        'captureSourceWithoutNeko',
+                        selectedSourceId || null
+                    );
                     if (atomic && atomic.success && atomic.dataUrl) {
                         return atomic.dataUrl;
                     } else if (atomic && atomic.error) {
@@ -3417,7 +3421,11 @@
                 if (currentSourceId && desktopProvider
                     && typeof desktopProvider.captureSourceAsDataUrl === 'function') {
                     try {
-                        var direct = await desktopProvider.captureSourceAsDataUrl(currentSourceId);
+                        var direct = await window.captureDesktopSourceWithTimeout(
+                            desktopProvider,
+                            'captureSourceAsDataUrl',
+                            currentSourceId
+                        );
                         if (direct && direct.success && direct.dataUrl) {
                             return direct.dataUrl;
                         } else if (typeof window.maybeClearSourceOnNotFound === 'function') {
@@ -3580,7 +3588,11 @@
                     if (selectedSourceId && desktopProvider
                         && typeof desktopProvider.captureSourceAsDataUrl === 'function') {
                         try {
-                            var direct = await desktopProvider.captureSourceAsDataUrl(selectedSourceId);
+                            var direct = await window.captureDesktopSourceWithTimeout(
+                                desktopProvider,
+                                'captureSourceAsDataUrl',
+                                selectedSourceId
+                            );
                             if (direct && direct.success && direct.dataUrl) {
                                 dataUrl = direct.dataUrl;
                                 width = direct.width || 0;

@@ -2692,7 +2692,11 @@
                             var captureResult = null;
                             if (typeof dc.captureSourceWithoutNeko === 'function') {
                                 try {
-                                    captureResult = await dc.captureSourceWithoutNeko(matched.id);
+                                    captureResult = await window.captureDesktopSourceWithTimeout(
+                                        dc,
+                                        'captureSourceWithoutNeko',
+                                        matched.id
+                                    );
                                     dataUrl = normalizeCaptureBridgeImage(captureResult);
                                 } catch (_woNekoErr) {
                                     dataUrl = null;
@@ -2700,7 +2704,11 @@
                             }
                             if (!dataUrl && typeof dc.captureSourceAsDataUrl === 'function') {
                                 try {
-                                    captureResult = await dc.captureSourceAsDataUrl(matched.id);
+                                    captureResult = await window.captureDesktopSourceWithTimeout(
+                                        dc,
+                                        'captureSourceAsDataUrl',
+                                        matched.id
+                                    );
                                     dataUrl = normalizeCaptureBridgeImage(captureResult);
                                 } catch (_dataUrlErr) {
                                     dataUrl = null;

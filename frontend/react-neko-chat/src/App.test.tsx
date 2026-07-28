@@ -9083,6 +9083,34 @@ describe('App', () => {
     expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好' });
   });
 
+  it('treats macOS WebKit keyCode 229 as IME confirmation until keyup', () => {
+    const onComposerSubmit = vi.fn();
+    renderInputApp({ onComposerSubmit });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.compositionStart(input);
+    fireEvent.change(input, { target: { value: '你好' } });
+    fireEvent.keyDown(input, {
+      key: 'Enter',
+      code: 'Enter',
+      keyCode: 229,
+      isComposing: true,
+    });
+    fireEvent.compositionEnd(input);
+    fireEvent.input(input, {
+      target: { value: '你好' },
+      inputType: 'insertText',
+    });
+    fireEvent.submit(input.closest('form')!);
+    fireEvent.keyUp(input, { key: 'Enter', code: 'Enter' });
+
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+    expect(input).toHaveValue('你好');
+
+    pressEnter(input);
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好' });
+  });
+
   it('submits on the first Enter after an IME commit completed without Enter', () => {
     const onComposerSubmit = vi.fn();
     renderInputApp({ onComposerSubmit });

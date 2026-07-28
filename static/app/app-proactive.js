@@ -1860,10 +1860,14 @@
 
     // ======================== proactive vision during speech ========================
 
+    var proactiveVisionFrameInFlight = false;
+
     /**
      * 发送单帧屏幕数据（统一使用 acquireOrReuseCachedStream → captureFrameFromStream → 后端兜底）
      */
     async function sendOneProactiveVisionFrame() {
+        if (proactiveVisionFrameInFlight) return;
+        proactiveVisionFrameInFlight = true;
         try {
             if (!isProactiveVisionEnabledNow() || !S.isRecording) {
                 stopProactiveVisionDuringSpeech();
@@ -1896,7 +1900,11 @@
                     && desktopProvider.nativeFrameCapture
                     && typeof desktopProvider.captureSourceAsDataUrl === 'function') {
                     try {
-                        var direct = await desktopProvider.captureSourceAsDataUrl(S.selectedScreenSourceId);
+                        var direct = await window.captureDesktopSourceWithTimeout(
+                            desktopProvider,
+                            'captureSourceAsDataUrl',
+                            S.selectedScreenSourceId
+                        );
                         if (direct && direct.success && direct.dataUrl) {
                             dataUrl = direct.dataUrl;
                         } else if (typeof window.maybeClearSourceOnNotFound === 'function') {
@@ -1942,6 +1950,8 @@
             }
         } catch (e) {
             console.error('sendOneProactiveVisionFrame 失败:', e);
+        } finally {
+            proactiveVisionFrameInFlight = false;
         }
     }
     mod.sendOneProactiveVisionFrame = sendOneProactiveVisionFrame;
@@ -2086,7 +2096,11 @@
         if (S.selectedScreenSourceId && desktopProvider
             && typeof desktopProvider.captureSourceAsDataUrl === 'function') {
             try {
-                var direct = await desktopProvider.captureSourceAsDataUrl(S.selectedScreenSourceId);
+                var direct = await window.captureDesktopSourceWithTimeout(
+                    desktopProvider,
+                    'captureSourceAsDataUrl',
+                    S.selectedScreenSourceId
+                );
                 if (direct && direct.success && direct.dataUrl) {
                     console.log('[主动搭话截图] 主进程直接捕获成功:', S.selectedScreenSourceId);
                     return direct.dataUrl;
