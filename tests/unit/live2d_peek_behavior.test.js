@@ -1276,7 +1276,7 @@ test('core drawable collection keeps direct vertices when model mapping bounds a
     });
 
     assert.deepEqual(
-        JSON.parse(JSON.stringify(manager._getRenderableDrawableScreenRects())),
+        JSON.parse(JSON.stringify(manager._getRenderableDrawableScreenRects(null, null, false))),
         [
             {
                 left: 20,
