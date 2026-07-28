@@ -75,6 +75,28 @@ async def test_main_active_character_post_allows_native_and_local_origin(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_main_active_character_get_falls_back_to_configured_catgirl(monkeypatch):
+    from app.main_server import web_app
+
+    monkeypatch.setattr(web_app, "_card_forge_active_character", {})
+    monkeypatch.setattr(
+        web_app,
+        "_fallback_active_character_identity",
+        lambda: ("YUI", "Human"),
+    )
+
+    response = await web_app.get_card_forge_active_character(_main_server_request())
+
+    assert response.status_code == 200
+    assert response.body
+    import json
+
+    payload = json.loads(response.body.decode("utf-8"))
+    assert payload["name"] == "YUI"
+    assert payload["master_name"] == "Human"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("payload", "expected"),
     [

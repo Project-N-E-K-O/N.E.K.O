@@ -213,6 +213,15 @@ async def health():
 _card_forge_active_character: dict[str, str] = {}
 
 
+def _fallback_active_character_identity() -> tuple[str, str]:
+    """Use configured 当前猫娘 when Pet has not POSTed a live snapshot yet."""
+    try:
+        master_name, lanlan_name, *_rest = _config_manager.get_character_data()
+    except Exception:
+        return "", ""
+    return str(lanlan_name or "").strip(), str(master_name or "").strip()
+
+
 def _active_character_cors_headers(request: Request) -> dict[str, str] | None:
     """Preserve native local reads; restrict browser reads to the social origin."""
     if not (request.headers.get("origin") or "").strip():
@@ -260,9 +269,16 @@ async def get_card_forge_active_character(
     cors = _active_character_cors_headers(request)
     if cors is None:
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
-    payload: dict[str, str] = {
-        "name": _card_forge_active_character.get("name", ""),
-    }
+    name = str(_card_forge_active_character.get("name", "") or "").strip()
+    master_name = ""
+    # Community forge used to treat an empty live snapshot as "本体未连接" even
+    # when the local ledger/credits were healthy. Fall back to the configured
+    # current catgirl so ticket selection can proceed before Pet avatar sync.
+    if not name:
+        name, master_name = _fallback_active_character_identity()
+    payload: dict[str, str] = {"name": name}
+    if master_name:
+        payload["master_name"] = master_name
     if include_avatar:
         payload["dataUrl"] = _card_forge_active_character.get("dataUrl", "")
         payload["characterReferenceDataUrl"] = _card_forge_active_character.get(

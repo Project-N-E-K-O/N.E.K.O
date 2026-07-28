@@ -36,7 +36,9 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert "window.open(url, 'neko-social')" in listener
     assert listener.index("releaseSocialOpenRequest();") > listener.index("window.open(url, 'neko-social')")
     assert "fetch('/api/card-drop/sync-ticket', { cache: 'no-store' })" in listener
-    assert "native_sync: String(ticketJson.sync_ticket)" in listener
+    assert "hashParams.set('native_sync', String(ticketJson.sync_ticket))" in listener
+    assert "fetch('/api/card-drop/native-delegate', { cache: 'no-store' })" in listener
+    assert "hashParams.set('native_delegate', String(delegateJson.native_delegate))" in listener
     assert "targetUrl.searchParams.set('cid', cidJson.client_id)" in listener
     assert "social_base_url" in listener
     assert "/feed" in listener

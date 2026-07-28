@@ -285,19 +285,34 @@
             };
             const attachNativeSyncTicket = async (targetUrl) => {
                 targetUrl.hash = '';
+                const hashParams = new URLSearchParams();
                 try {
                     const ticketRes = await fetch('/api/card-drop/sync-ticket', { cache: 'no-store' });
                     if (ticketRes.ok) {
                         const ticketJson = await ticketRes.json();
                         if (ticketJson && ticketJson.sync_ticket) {
-                            targetUrl.hash = new URLSearchParams({
-                                native_sync: String(ticketJson.sync_ticket)
-                            }).toString();
+                            hashParams.set('native_sync', String(ticketJson.sync_ticket));
                         }
                     }
                 } catch (ticketErr) {
                     console.warn('[social] native session sync ticket fetch failed (non-fatal):', ticketErr);
                 }
+                // Scoped credits/facts proof — never the platform OAuth bearer.
+                try {
+                    const delegateRes = await fetch('/api/card-drop/native-delegate', { cache: 'no-store' });
+                    if (delegateRes.ok) {
+                        const delegateJson = await delegateRes.json();
+                        if (delegateJson && delegateJson.native_delegate) {
+                            hashParams.set('native_delegate', String(delegateJson.native_delegate));
+                        }
+                    } else if (delegateRes.status === 409) {
+                        console.warn('[social] native delegate skipped: desktop not logged in');
+                    }
+                } catch (delegateErr) {
+                    console.warn('[social] native delegate fetch failed (non-fatal):', delegateErr);
+                }
+                const hash = hashParams.toString();
+                if (hash) targetUrl.hash = hash;
                 return targetUrl;
             };
             try {
