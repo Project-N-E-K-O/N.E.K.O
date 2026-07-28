@@ -184,6 +184,40 @@ test('CAT1 drag keeps using the virtual desktop size while the Pet window is cro
     assert.deepEqual(JSON.parse(JSON.stringify(size)), { width: 1706, height: 1066 });
 });
 
+test('CAT1 automatic targets clamp against the virtual desktop instead of the Pet crop', () => {
+    const context = {
+        window: {
+            innerWidth: 360,
+            innerHeight: 408,
+            __nekoNiriPetPhysicalCrop: {
+                getState() {
+                    return {
+                        enabled: true,
+                        virtualBounds: { x: 1, y: 1, width: 1706, height: 1066 }
+                    };
+                }
+            }
+        }
+    };
+    vm.createContext(context);
+    vm.runInContext([
+        readFunction('static/avatar/avatar-ui-buttons/core.js', '_getNekoDesktopVirtualViewportSize'),
+        readFunction(
+            'static/avatar/avatar-ui-buttons/idle-journey-and-presentation.js',
+            '_clampNekoIdleCat1Position'
+        )
+    ].join('\n'), context);
+
+    const position = vm.runInContext(
+        '_clampNekoIdleCat1Position(1500, 900, 122, 122)',
+        context
+    );
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(position)),
+        { left: 1500, top: 900 }
+    );
+});
+
 test('model-to-cat anchor converts client managers once but keeps Live2D virtual bounds unchanged', () => {
     const context = {
         I: {

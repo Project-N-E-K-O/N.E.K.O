@@ -235,9 +235,10 @@ function _getNekoIdleChatMinimizedRect() {
 }
 
 function _clampNekoIdleCat1Position(left, top, width, height) {
+    const virtualViewport = _getNekoDesktopVirtualViewportSize();
     return {
-        left: Math.round(Math.max(0, Math.min(left, Math.max(0, window.innerWidth - width)))),
-        top: Math.round(Math.max(0, Math.min(top, Math.max(0, window.innerHeight - height))))
+        left: Math.round(Math.max(0, Math.min(left, Math.max(0, virtualViewport.width - width)))),
+        top: Math.round(Math.max(0, Math.min(top, Math.max(0, virtualViewport.height - height))))
     };
 }
 
