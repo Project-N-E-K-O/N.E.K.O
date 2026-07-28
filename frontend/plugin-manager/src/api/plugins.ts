@@ -268,11 +268,11 @@ export function callPluginHostedSurfaceAction(pluginId: string, actionId: string
   const safeActionId = encodeURIComponent(actionId)
   const requestedTimeoutMs = Number(surface?.timeoutMs)
   const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : undefined
-  // Initial hosted-panel calls are expected to fail while a manual-start
-  // plugin is stopped. Let the panel render that state silently. Calls made
-  // after a real iframe interaction keep the standard global error message.
+  // Initial hosted-panel calls may probe actions while a manual-start plugin
+  // is stopped. Suppress only that expected response; all other failures keep
+  // the standard global error handling.
   const requestConfig = {
-    suppressErrorMessage: !surface?.userInitiated,
+    suppressPluginNotRunningMessage: !surface?.userInitiated,
     ...(timeoutMs ? { timeout: timeoutMs } : {}),
   }
   return post(`/plugin/${safeId}/hosted-ui/action/${safeActionId}`, {

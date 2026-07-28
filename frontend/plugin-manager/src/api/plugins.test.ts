@@ -34,7 +34,7 @@ describe('plugin hosted UI API', () => {
         locale: 'zh-CN',
         timeout_ms: 80000,
       },
-      { suppressErrorMessage: true, timeout: 80000 },
+      { suppressPluginNotRunningMessage: true, timeout: 80000 },
     )
   })
 
@@ -51,7 +51,7 @@ describe('plugin hosted UI API', () => {
     expect(postMock).toHaveBeenCalledWith(
       '/plugin/demo/hosted-ui/action/save',
       expect.objectContaining({ timeout_ms: undefined }),
-      { suppressErrorMessage: false },
+      { suppressPluginNotRunningMessage: false },
     )
   })
 })

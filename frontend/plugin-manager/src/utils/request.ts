@@ -11,8 +11,8 @@ import { i18n } from '@/i18n'
 let lastNetworkErrorShownAt = 0
 
 type ErrorDisplayRequestConfig = AxiosRequestConfig & {
-  /** The caller will render a known error state in its own UI. */
-  suppressErrorMessage?: boolean
+  /** Suppress only the expected stopped-plugin response for panel probes. */
+  suppressPluginNotRunningMessage?: boolean
 }
 
 type HeaderBag = Record<string, unknown> & {
@@ -88,6 +88,27 @@ export function formatHttpError(error: unknown): string {
   return !anyError?.response && error instanceof Error ? error.message : ''
 }
 
+function readErrorCode(error: AxiosError): string {
+  const headers = error.response?.headers
+  if (headers && typeof headers.get === 'function') {
+    const value = headers.get('X-Error-Code')
+    if (value != null) return String(value)
+  }
+  const headerValue = headers?.['x-error-code'] ?? headers?.['X-Error-Code']
+  if (headerValue != null) return String(headerValue)
+  const data = error.response?.data as any
+  if (typeof data?.code === 'string') return data.code
+  if (typeof data?.detail?.code === 'string') return data.detail.code
+  return ''
+}
+
+export function shouldSuppressPluginNotRunningMessage(error: AxiosError): boolean {
+  const requested = Boolean(
+    (error.config as ErrorDisplayRequestConfig | undefined)?.suppressPluginNotRunningMessage,
+  )
+  return requested && readErrorCode(error) === 'PLUGIN_NOT_RUNNING'
+}
+
 // 创建 axios 实例
 const service: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
@@ -124,9 +145,7 @@ service.interceptors.response.use(
     // 对于 404 错误，不输出错误日志（这是正常的，某些资源可能不存在）
     // 对于 401/403 错误，也不输出错误日志
     const status = error.response?.status
-    const suppressErrorMessage = Boolean(
-      (error.config as ErrorDisplayRequestConfig | undefined)?.suppressErrorMessage,
-    )
+    const suppressErrorMessage = shouldSuppressPluginNotRunningMessage(error)
     if (!suppressErrorMessage && status !== 404 && status !== 401 && status !== 403) {
       console.error('Response error:', error)
     }
