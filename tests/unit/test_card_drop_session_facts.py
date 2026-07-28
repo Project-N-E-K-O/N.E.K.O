@@ -1043,7 +1043,11 @@ def test_credit_delegate_scopes_separate_read_from_mutation(
     monkeypatch.setattr(
         forge_credit_ledger,
         "list_credits",
-        lambda: {"count": 0, "credits": [], "reservations": []},
+        lambda *, reservation_owner_id: {
+            "count": 0,
+            "credits": [],
+            "reservations": [],
+        },
     )
 
     read = client.get(
@@ -1058,6 +1062,156 @@ def test_credit_delegate_scopes_separate_read_from_mutation(
 
     assert read.status_code == 200
     assert mutate.status_code == 401
+
+
+def test_credit_reservations_are_isolated_by_delegate_principal(
+    client,
+    tmp_path,
+    monkeypatch,
+):
+    from main_logic import forge_credit_ledger
+
+    monkeypatch.setenv("NEKO_USER_DATA_DIR", str(tmp_path))
+    forge_credit_ledger.grant_credit(
+        {
+            "trigger_type": "emotion_combo",
+            "idem_key": "delegate-owner-isolation",
+        },
+        rarity="SR",
+    )
+    credit_id = forge_credit_ledger.list_credits()["credits"][0]["id"]
+    operation_id = "33333333-3333-4333-8333-333333333333"
+    card_id = "44444444-4444-4444-8444-444444444444"
+
+    session_a = _delegate_session()
+    token_a = _issue_delegate_from_local_ui(client, monkeypatch, session_a)
+    headers_a = _delegate_request_headers(token_a)
+    reserved = client.post(
+        f"/api/card-drop/credits/{credit_id}/reservations",
+        json={"operation_id": operation_id},
+        headers=headers_a,
+    )
+    replay = client.post(
+        f"/api/card-drop/credits/{credit_id}/reservations",
+        json={"operation_id": operation_id},
+        headers=headers_a,
+    )
+    visible_to_a = client.get(
+        "/api/card-drop/credits",
+        headers=headers_a,
+    )
+
+    session_b = _delegate_session(
+        local_user_id=USER_B_ID,
+        access_token="desktop-token-b",
+    )
+    token_b = _issue_delegate_from_local_ui(client, monkeypatch, session_b)
+    headers_b = _delegate_request_headers(token_b, local_user_id=USER_B_ID)
+    visible_to_b = client.get(
+        "/api/card-drop/credits",
+        headers=headers_b,
+    )
+    commit_by_b = client.post(
+        (
+            f"/api/card-drop/credits/{credit_id}/reservations/"
+            f"{operation_id}/commit"
+        ),
+        json={"card_id": card_id},
+        headers=headers_b,
+    )
+    release_by_b = client.delete(
+        f"/api/card-drop/credits/{credit_id}/reservations/{operation_id}",
+        headers=headers_b,
+    )
+
+    assert reserved.status_code == replay.status_code == 200
+    assert len(visible_to_a.json()["reservations"]) == 1
+    assert visible_to_b.status_code == 200
+    assert visible_to_b.json() == {
+        "count": 0,
+        "credits": [],
+        "reservations": [],
+    }
+    assert commit_by_b.status_code == release_by_b.status_code == 409
+    assert commit_by_b.json() == release_by_b.json() == {
+        "detail": "reservation_owner_mismatch"
+    }
+
+
+def test_refreshed_desktop_bearer_keeps_same_owner_reservation(
+    client,
+    tmp_path,
+    monkeypatch,
+):
+    from main_logic import forge_credit_ledger
+
+    monkeypatch.setenv("NEKO_USER_DATA_DIR", str(tmp_path))
+    _write_v2_desktop_session(
+        tmp_path,
+        monkeypatch,
+        token="desktop-token-after-refresh",
+        local_user_id=USER_A_ID,
+    )
+    _identity_http_client(
+        monkeypatch,
+        {
+            "browser-token-before-refresh": (USER_A_ID, "oauth"),
+            "browser-token-after-refresh": (USER_A_ID, "oauth"),
+        },
+    )
+    forge_credit_ledger.grant_credit(
+        {
+            "trigger_type": "emotion_combo",
+            "idem_key": "desktop-refresh-owner",
+        },
+        rarity="R",
+    )
+    credit_id = forge_credit_ledger.list_credits()["credits"][0]["id"]
+    operation_id = "55555555-5555-4555-8555-555555555555"
+    card_id = "66666666-6666-4666-8666-666666666666"
+
+    def bearer_headers(token: str) -> dict[str, str]:
+        return {
+            "Origin": "https://community.example",
+            "Authorization": f"Bearer {token}",
+        }
+
+    reserved = client.post(
+        f"/api/card-drop/credits/{credit_id}/reservations",
+        json={"operation_id": operation_id},
+        headers=bearer_headers("browser-token-before-refresh"),
+    )
+    replay_after_refresh = client.post(
+        f"/api/card-drop/credits/{credit_id}/reservations",
+        json={"operation_id": operation_id},
+        headers=bearer_headers("browser-token-after-refresh"),
+    )
+    visible_after_refresh = client.get(
+        "/api/card-drop/credits",
+        headers=bearer_headers("browser-token-after-refresh"),
+    )
+    committed = client.post(
+        (
+            f"/api/card-drop/credits/{credit_id}/reservations/"
+            f"{operation_id}/commit"
+        ),
+        json={"card_id": card_id},
+        headers=bearer_headers("browser-token-after-refresh"),
+    )
+    commit_replay = client.post(
+        (
+            f"/api/card-drop/credits/{credit_id}/reservations/"
+            f"{operation_id}/commit"
+        ),
+        json={"card_id": card_id},
+        headers=bearer_headers("browser-token-after-refresh"),
+    )
+
+    assert reserved.status_code == replay_after_refresh.status_code == 200
+    assert len(visible_after_refresh.json()["reservations"]) == 1
+    assert committed.status_code == commit_replay.status_code == 200
+    assert committed.json()["committed"] is True
+    assert commit_replay.json()["committed"] is True
 
 
 def test_card_drop_capabilities_are_exact_origin_and_no_store(client):
@@ -1191,13 +1345,14 @@ def test_local_credit_summary_is_same_origin_only_and_omits_credit_details(
 
 def test_credit_auth_failures_keep_validated_cors_headers(client, monkeypatch):
     async def no_scoped_delegate(_request, _required_scope):
-        return None
+        return C._BrowserAuth(None)
 
     async def auth_state(_base, token):
-        return "unavailable" if token == "unavailable-token" else "mismatch"
+        state = "unavailable" if token == "unavailable-token" else "mismatch"
+        return C._BrowserAuth(state)
 
-    monkeypatch.setattr(C, "_scoped_native_auth_state", no_scoped_delegate)
-    monkeypatch.setattr(C, "_request_matches_desktop_session", auth_state)
+    monkeypatch.setattr(C, "_scoped_native_auth", no_scoped_delegate)
+    monkeypatch.setattr(C, "_request_desktop_session_auth", auth_state)
 
     mismatch = client.get(
         "/api/card-drop/credits",

@@ -87,6 +87,12 @@ class _CloudIdentityLookup:
     failure: str | None = None
 
 
+@dataclass(frozen=True)
+class _BrowserAuth:
+    state: str | None
+    local_user_id: str = ""
+
+
 def _sync_ticket_digest(ticket: str) -> str:
     return hashlib.sha256(ticket.encode("utf-8")).hexdigest()
 
@@ -925,20 +931,40 @@ async def _resolve_saved_desktop_identity(base: str) -> _CloudIdentityLookup:
     return _CloudIdentityLookup(None, 503, "unavailable")
 
 
-async def _request_matches_desktop_session(base: str, access: str) -> str:
-    """Return ``match``, ``mismatch``, or ``unavailable`` for a request bearer."""
+async def _request_desktop_session_auth(base: str, access: str) -> _BrowserAuth:
+    """Validate a Desktop bearer and return its verified local user principal."""
     request_lookup = await _lookup_cloud_identity(base, access)
     if request_lookup.identity is None:
-        return "unavailable" if request_lookup.failure in {"unavailable", "malformed"} else "mismatch"
+        state = (
+            "unavailable"
+            if request_lookup.failure in {"unavailable", "malformed"}
+            else "mismatch"
+        )
+        return _BrowserAuth(state)
     desktop_lookup = await _resolve_saved_desktop_identity(base)
     if desktop_lookup.identity is None:
-        return "unavailable" if desktop_lookup.failure in {"unavailable", "malformed"} else "mismatch"
+        state = (
+            "unavailable"
+            if desktop_lookup.failure in {"unavailable", "malformed"}
+            else "mismatch"
+        )
+        return _BrowserAuth(state)
     if secrets.compare_digest(
         request_lookup.identity.local_user_id,
         desktop_lookup.identity.local_user_id,
     ):
-        return "match"
-    return "mismatch"
+        return _BrowserAuth(
+            "match",
+            request_lookup.identity.local_user_id,
+        )
+    return _BrowserAuth("mismatch")
+
+
+async def _request_matches_desktop_session(base: str, access: str) -> str:
+    """Return ``match``, ``mismatch``, or ``unavailable`` for a request bearer."""
+    return (await _request_desktop_session_auth(base, access)).state or "mismatch"
+
+
 async def _store_session(
     base: str,
     access: str | None,
@@ -1564,11 +1590,14 @@ def _delegate_audience_matches(request: Request, audience: str) -> bool:
     return _same_originish(origin, audience) or _exact_origin_matches(origin, audience)
 
 
-async def _scoped_native_auth_state(request: Request, required_scope: str) -> str | None:
-    """Return auth state when the bearer is a scoped native delegate, else None."""
+async def _scoped_native_auth(
+    request: Request,
+    required_scope: str,
+) -> _BrowserAuth:
+    """Validate a scoped native delegate and return its bound principal."""
     supplied = _request_bearer_token(request)
     if not supplied:
-        return None
+        return _BrowserAuth(None)
     expected_user = _normalize_local_user_id(
         request.headers.get("x-neko-local-user-id")
     )
@@ -1578,15 +1607,15 @@ async def _scoped_native_auth_state(request: Request, required_scope: str) -> st
         # other bearer tokens.  The principal header marks this as a delegate
         # request, so an expired/evicted value must fail closed instead of being
         # retried as a cloud access token.
-        return "mismatch" if expected_user else None
+        return _BrowserAuth("mismatch" if expected_user else None)
     scopes = entry.get("scopes") or frozenset()
     if required_scope not in scopes:
-        return "mismatch"
+        return _BrowserAuth("mismatch")
     if not _delegate_audience_matches(request, str(entry.get("audience") or "")):
-        return "mismatch"
+        return _BrowserAuth("mismatch")
     bound_user = _normalize_local_user_id(entry.get("local_user_id"))
     if not bound_user or not expected_user or expected_user != bound_user:
-        return "mismatch"
+        return _BrowserAuth("mismatch")
     snapshot = await asyncio.to_thread(_desktop_session_snapshot)
     current_user = _normalize_local_user_id((snapshot or {}).get("local_user_id"))
     current_fingerprint = _desktop_session_fingerprint(snapshot)
@@ -1598,8 +1627,16 @@ async def _scoped_native_auth_state(request: Request, required_scope: str) -> st
         or not secrets.compare_digest(current_fingerprint, bound_fingerprint)
     ):
         _discard_native_delegate(supplied)
-        return "mismatch"
-    return "match"
+        return _BrowserAuth("mismatch")
+    return _BrowserAuth("match", bound_user)
+
+
+async def _scoped_native_auth_state(
+    request: Request,
+    required_scope: str,
+) -> str | None:
+    """Return auth state when the bearer is a scoped native delegate, else None."""
+    return (await _scoped_native_auth(request, required_scope)).state
 
 
 async def _facts_request_auth_state(request: Request) -> str:
@@ -1863,14 +1900,20 @@ def _credit_error(exc: Exception) -> HTTPException:
 async def _require_credit_browser(
     request: Request,
     required_scope: str,
-) -> dict[str, str]:
+) -> tuple[dict[str, str], str]:
     cors = _credit_cors_headers(request)
     if cors is None:
         raise HTTPException(status_code=403, detail="origin_not_allowed")
-    scoped = await _scoped_native_auth_state(request, required_scope)
-    if scoped == "match":
-        return cors
-    if scoped == "mismatch":
+    scoped = await _scoped_native_auth(request, required_scope)
+    if scoped.state == "match":
+        if scoped.local_user_id:
+            return cors, scoped.local_user_id
+        raise HTTPException(
+            status_code=401,
+            detail="local_session_mismatch",
+            headers=cors,
+        )
+    if scoped.state is not None:
         raise HTTPException(
             status_code=401,
             detail="local_session_mismatch",
@@ -1885,20 +1928,20 @@ async def _require_credit_browser(
             detail="local_session_mismatch",
             headers=cors,
         )
-    auth_state = await _request_matches_desktop_session(_social_base_url(), supplied)
-    if auth_state == "unavailable":
+    auth = await _request_desktop_session_auth(_social_base_url(), supplied)
+    if auth.state == "unavailable":
         raise HTTPException(
             status_code=503,
             detail="identity_verification_unavailable",
             headers=cors,
         )
-    if auth_state != "match":
+    if auth.state != "match" or not auth.local_user_id:
         raise HTTPException(
             status_code=401,
             detail="local_session_mismatch",
             headers=cors,
         )
-    return cors
+    return cors, auth.local_user_id
 
 
 @router.options("/credits")
@@ -1927,10 +1970,13 @@ async def grant_credit_endpoint(request: Request, payload: dict = Body(...)):
 
 @router.get("/credits", summary="读取 N.E.K.O 本机有效锻造券与待恢复预占")
 async def credits_endpoint(request: Request):
-    cors = await _require_credit_browser(request, "credits:read")
+    cors, local_user_id = await _require_credit_browser(request, "credits:read")
     from main_logic.forge_credit_ledger import list_credits
 
-    snapshot = await asyncio.to_thread(list_credits)
+    snapshot = await asyncio.to_thread(
+        list_credits,
+        reservation_owner_id=local_user_id,
+    )
     return JSONResponse(snapshot, headers=cors)
 
 
@@ -1962,7 +2008,10 @@ async def local_credit_summary_endpoint(request: Request):
 
 @router.post("/credits/{credit_id}/reservations", summary="为一次云端铸造幂等预占本机券")
 async def reserve_credit_endpoint(request: Request, credit_id: str, payload: dict = Body(...)):
-    cors = await _require_credit_browser(request, "credits:mutate")
+    cors, local_user_id = await _require_credit_browser(
+        request,
+        "credits:mutate",
+    )
     from main_logic.forge_credit_ledger import reserve_credit
 
     try:
@@ -1970,6 +2019,7 @@ async def reserve_credit_endpoint(request: Request, credit_id: str, payload: dic
             reserve_credit,
             credit_id,
             str(payload.get("operation_id") or ""),
+            local_user_id,
         )
     except (ValueError, LookupError, RuntimeError) as exc:
         error = _credit_error(exc)
@@ -1981,7 +2031,10 @@ async def reserve_credit_endpoint(request: Request, credit_id: str, payload: dic
 async def commit_credit_endpoint(
     request: Request, credit_id: str, operation_id: str, payload: dict = Body(...),
 ):
-    cors = await _require_credit_browser(request, "credits:mutate")
+    cors, local_user_id = await _require_credit_browser(
+        request,
+        "credits:mutate",
+    )
     from main_logic.forge_credit_ledger import commit_credit
 
     try:
@@ -1990,6 +2043,7 @@ async def commit_credit_endpoint(
             credit_id,
             operation_id,
             str(payload.get("card_id") or ""),
+            local_user_id,
         )
     except (ValueError, LookupError, RuntimeError) as exc:
         error = _credit_error(exc)
@@ -1999,11 +2053,19 @@ async def commit_credit_endpoint(
 
 @router.delete("/credits/{credit_id}/reservations/{operation_id}", summary="云端明确失败后释放本机券预占")
 async def release_credit_endpoint(request: Request, credit_id: str, operation_id: str):
-    cors = await _require_credit_browser(request, "credits:mutate")
+    cors, local_user_id = await _require_credit_browser(
+        request,
+        "credits:mutate",
+    )
     from main_logic.forge_credit_ledger import release_credit
 
     try:
-        result = await asyncio.to_thread(release_credit, credit_id, operation_id)
+        result = await asyncio.to_thread(
+            release_credit,
+            credit_id,
+            operation_id,
+            local_user_id,
+        )
     except (ValueError, LookupError, RuntimeError) as exc:
         error = _credit_error(exc)
         return JSONResponse({"detail": error.detail}, status_code=error.status_code, headers=cors)
