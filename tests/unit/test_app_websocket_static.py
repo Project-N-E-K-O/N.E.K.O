@@ -1281,7 +1281,15 @@ def test_shared_settings_writes_carry_explicit_change_metadata():
     # across windows (one wall clock per browser profile).
     id_fn = settings_source.split("function _nextSharedWriteId() {", 1)[1].split("\n    }", 1)[0]
     assert "Date.now()" in id_fn
-    assert "_lastSharedWriteId = now > _lastSharedWriteId ? now : _lastSharedWriteId + 1;" in id_fn
+    # Ids must be globally monotone, not just monotone within this window. The
+    # counter is per-window and seeded from the clock, so flooring only by the
+    # last id THIS window minted lets two windows saving in the same
+    # millisecond mint the same id -- and because the receiver's freshness test
+    # is a strict `>`, the second write reads as superseded and its ASR value
+    # is dropped, discarding genuine cross-window toggles. Floor by the highest
+    # id ever applied as well (Codex P2 follow-up).
+    assert "Math.max(_lastSharedWriteId, _lastAppliedSharedWriteId)" in id_fn
+    assert "_lastSharedWriteId = now > idFloor ? now : idFloor + 1;" in id_fn
 
     # Explicit keys = the monotone dirty set PLUS the divergence from the
     # dirty-diff baseline (the ASR toggle handler persists locally before its
@@ -2764,3 +2772,113 @@ def test_text_session_start_stops_an_active_microphone():
     assert "response.input_mode === 'text'" in started
     assert "S.isRecording === true" in started
     assert "window.stopRecording();" in started
+
+
+def test_blocked_lifecycle_stops_microphone_capture():
+    # Codex P2. _handle_core_asr_failure pins the microphone route to "blocked"
+    # and nothing re-arms it inside the session, but the frontend only cleared
+    # the preview and the route flag: canUploadOrdinaryMicFrame() consults the
+    # mic lease and mute/focus, never the lifecycle state, so the hardware
+    # microphone (and its OS indicator) stayed open and kept uploading PCM the
+    # backend decodes, denoises and VADs before dropping -- while the toast on
+    # the very next line says voice input has stopped.
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    blocked = websocket_source.split("if (lifecycleState === 'blocked') {", 1)[1].split(
+        "if (typeof window.showStatusToast === 'function') {", 1
+    )[0]
+
+    # Only the capturing window acts, and never while the game STT gate owns
+    # the hardware (there the ordinary uplink is already released).
+    assert "S.isRecording === true" in blocked
+    assert "S.gameVoiceSttGateActive !== true" in blocked
+    # stopMicCapture, not bare stopRecording: only it restores the whole
+    # non-recording UI rather than leaving it claiming a live voice session.
+    assert "window.stopMicCapture" in blocked
+    # Teardown precedes the toast so the 5s failure message stays on screen.
+    assert websocket_source.index("window.stopMicCapture") < websocket_source.index(
+        "microphone.independentAsrFallback"
+    )
+
+    # The uplink gate really is lease-only today, which is what makes the
+    # teardown necessary. (Gating it on the lifecycle state as well would be a
+    # strictly better complementary fix -- this asserts the current shape, it
+    # does not forbid that.)
+    capture_source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
+    can_upload = capture_source.split("function canUploadOrdinaryMicFrame() {", 1)[
+        1
+    ].split("}", 1)[0]
+    assert "refreshMicLease() !== MIC_LEASE.CORE" in can_upload
+
+
+def test_blocked_route_latch_blocks_game_exit_microphone_resume():
+    # The teardown above is skipped while the game STT gate holds the
+    # microphone, and BLOCKED is never re-sent, so the game-exit resume path
+    # would reopen the mic onto a still-fail-closed route. A sticky latch
+    # closes that, and is cleared wherever a fresh route can exist again.
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    state_source = APP_STATE_PATH.read_text(encoding="utf-8")
+
+    assert "voiceInputRouteBlocked: false," in state_source
+
+    blocked = websocket_source.split("if (lifecycleState === 'blocked') {", 1)[1].split(
+        "if (typeof window.showStatusToast === 'function') {", 1
+    )[0]
+    assert "S.voiceInputRouteBlocked = true;" in blocked
+
+    resume = websocket_source.split("if (shouldResumeAudio && wasRecording", 1)[1].split(
+        ")", 1
+    )[0]
+    assert "S.voiceInputRouteBlocked !== true" in resume
+
+    # Cleared on a fresh route: a new session, or a provider that came READY.
+    assert websocket_source.count("S.voiceInputRouteBlocked = false;") == 2
+
+
+def test_shared_write_metadata_carries_per_key_asr_authority():
+    # Codex P2. meta.hydrated is the GLOBAL hydration bit, which any unrelated
+    # user edit flips -- so a window whose boot GET never merged could stamp its
+    # pre-merge boot ASR default as trustworthy, and a window that HAD merged
+    # the server value would adopt it, mis-stamp its next handshake and POST the
+    # wrong value back. The receiver needs the per-key fact instead.
+    settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
+
+    write_fn = settings_source.split("function _writeSharedSettings(", 1)[1].split(
+        "\n    }", 1
+    )[0]
+    assert "asrAuthoritative: S.independentAsrAuthoritative === true" in write_fn
+
+    read_fn = settings_source.split("function _readSharedWriteMeta(", 1)[1].split(
+        "\n    }", 1
+    )[0]
+    # Fail closed for snapshots written by the previous build.
+    assert "asrAuthoritative: meta.asrAuthoritative === true" in read_fn
+
+    # The stale guard consults the writer's per-key authority, not its global
+    # hydration bit. The RECEIVER term stays S.settingsHydrated: tightening it
+    # to the per-key latch breaks the unhydrated-writer scenario already pinned
+    # by test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness.
+    assert (
+        "(!asrWriteIsNewer || (!meta.asrAuthoritative && S.settingsHydrated === true))"
+        in settings_source
+    )
+
+
+def test_cross_window_adopted_values_roll_the_dirty_baseline():
+    # Without rolling the baseline, a value this window merely RECEIVED looks
+    # like a local user edit on the next unrelated save: the key gets marked
+    # dirty, that grants S.independentAsrAuthoritative, it rides out in
+    # changedKeys as an explicit toggle other windows trust, and the pending
+    # settings GET skips it as user-owned. That launders an adopted value into
+    # user intent with no clock race at all.
+    settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
+
+    listener_block = settings_source.split(
+        "window.addEventListener('storage', function (event) {", 1
+    )[1].split("});", 1)[0]
+
+    apply_index = listener_block.index("const changed = applySharedRuntimeSettings(incoming);")
+    roll_index = listener_block.index("_settingsBaseline[key] = S[key];")
+    assert apply_index < roll_index, "the baseline roll must observe the applied values"
+    # Keys this window really did touch keep their authority.
+    assert "if (_dirtySettingsKeys.has(key)) continue;" in listener_block

@@ -94,6 +94,10 @@
         // 「用户显式改过 ASR 开关」「跨窗口 ASR 翻转」这三种事件才让它变权威；
         // 在此之前 start_session 握手必须省略该字段，由后端持久化值兜底。
         independentAsrAuthoritative: false,
+        // 独立 ASR 已 fail-closed 的粘性标记：blocked 生命周期事件只发一次，
+        // 而游戏 STT 网关持有麦克风时会跳过停麦，退出游戏的恢复路径必须据此
+        // 拒绝把麦克风重新开到一条仍然关闭的路由上。
+        voiceInputRouteBlocked: false,
         independentAsrActive: false,
         independentAsrProvider: '',
         externalAsrPreviewMessage: null, // 独立 ASR 实时转写预览的消息句柄（app-websocket.js 维护）

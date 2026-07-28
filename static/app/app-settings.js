@@ -201,7 +201,15 @@
     function _nextSharedWriteId() {
         let now = 0;
         try { now = Date.now(); } catch (_) { now = 0; }
-        _lastSharedWriteId = now > _lastSharedWriteId ? now : _lastSharedWriteId + 1;
+        // Floor the mint by the highest id this window has ever APPLIED, not
+        // just the highest it has minted. The counter is per-window and seeded
+        // from the clock, so two windows saving in the same millisecond would
+        // otherwise mint the same id — and because the receiver's freshness
+        // test is a strict `>`, the second write reads as already superseded
+        // and gets dropped. That silently discards genuine cross-window ASR
+        // toggles, not just incidental copies.
+        const idFloor = Math.max(_lastSharedWriteId, _lastAppliedSharedWriteId);
+        _lastSharedWriteId = now > idFloor ? now : idFloor + 1;
         return _lastSharedWriteId;
     }
 
@@ -228,17 +236,26 @@
     }
 
     /**
-     * Persist the shared settings snapshot with its write metadata. `hydrated`
-     * records whether this window already held server truth when it wrote:
-     * an unhydrated writer's untouched fields are still pre-merge boot
-     * defaults, which a hydrated receiver must not adopt.
+     * Persist the shared settings snapshot with its write metadata.
+     * `hydrated` records whether this window held ANY authoritative settings
+     * event when it wrote — informational only, because it also flips on a
+     * user edit that never touched the ASR key. `asrAuthoritative` is the
+     * per-key fact a receiver actually needs: whether THIS window's
+     * independentAsrEnabled came from a merged server GET, an explicit ASR
+     * toggle, or a cross-window ASR flip (S.independentAsrAuthoritative, the
+     * same latch the start_session handshake gates on). Without it a window
+     * whose boot GET never merged flips `hydrated` true on any unrelated edit
+     * and then stamps its pre-merge boot ASR default as trustworthy, and a
+     * window that HAD merged the server value adopts it, mis-stamps its next
+     * handshake, and POSTs the wrong value back on its next full sync.
      */
     function _writeSharedSettings(snapshot, explicitKeys) {
         const payload = Object.assign({}, snapshot);
         payload[_SHARED_WRITE_META_KEY] = {
             writeId: _nextSharedWriteId(),
             changedKeys: explicitKeys || [],
-            hydrated: S.settingsHydrated === true
+            hydrated: S.settingsHydrated === true,
+            asrAuthoritative: S.independentAsrAuthoritative === true
         };
         localStorage.setItem('project_neko_settings', JSON.stringify(payload));
     }
@@ -255,7 +272,13 @@
         return {
             writeId: meta.writeId,
             changedKeys: Array.isArray(meta.changedKeys) ? meta.changedKeys : [],
-            hydrated: meta.hydrated === true
+            hydrated: meta.hydrated === true,
+            // Absent on snapshots written by the previous build: default false
+            // (fail closed). Such a writer's non-explicit ASR value is simply
+            // not adopted by an already-hydrated receiver; a GENUINE toggle
+            // from that build still carries independentAsrEnabled in
+            // changedKeys and keeps flowing through asrChangedByOtherWindow.
+            asrAuthoritative: meta.asrAuthoritative === true
         };
     }
 
@@ -737,6 +760,15 @@
             const saved = localStorage.getItem('project_neko_settings');
             if (saved) {
                 const settings = JSON.parse(saved);
+                // A booting window has by definition already "applied" the
+                // snapshot it is loading, so seed the applied-id floor from it.
+                // Otherwise this window's first write can mint an id at or
+                // below one another window already published, and the strict
+                // freshness test drops it.
+                const bootMeta = _readSharedWriteMeta(settings);
+                if (bootMeta && bootMeta.writeId > _lastAppliedSharedWriteId) {
+                    _lastAppliedSharedWriteId = bootMeta.writeId;
+                }
 
                 // 迁移逻辑：检测旧版设置并迁移到新字段
                 // 如果旧版 proactiveChatEnabled=true 但新字段未定义，则迁移
@@ -1129,7 +1161,7 @@
             // and every other shared key keeps syncing untouched.
             const asrValueIsStale = !!meta
                 && !asrChangedByOtherWindow
-                && (!asrWriteIsNewer || (!meta.hydrated && S.settingsHydrated === true));
+                && (!asrWriteIsNewer || (!meta.asrAuthoritative && S.settingsHydrated === true));
             if (meta && meta.writeId > _lastAppliedSharedWriteId) {
                 _lastAppliedSharedWriteId = meta.writeId;
             }
@@ -1139,6 +1171,28 @@
                 delete incoming.independentAsrEnabled;
             }
             const changed = applySharedRuntimeSettings(incoming);
+            // Roll the dirty-diff baseline for every key just adopted from
+            // another window. _markUserDirtySettings diffs against this
+            // baseline, so without the roll a value this window merely
+            // RECEIVED looks like a local user edit on the next unrelated
+            // save: the key gets marked dirty, that dirty mark grants
+            // S.independentAsrAuthoritative, the key rides out in changedKeys
+            // as an explicit toggle other windows then trust, and the still
+            // pending settings GET skips it as user-owned. A received value
+            // laundered into user intent that way can pin a whole window to a
+            // stale ASR route and POST it back over the server's. Keys this
+            // window really did touch stay dirty and keep their authority.
+            // for...of rather than a forEach callback on purpose: the
+            // callback's closing punctuation would truncate the listener slice
+            // that test_cross_window_asr_flip_marks_hydration_and_asr_dirty
+            // extracts by string split.
+            if (_settingsBaseline) {
+                for (const key of _SHARED_SETTINGS_KEYS) {
+                    if (_dirtySettingsKeys.has(key)) continue;
+                    if (!Object.prototype.hasOwnProperty.call(incoming, key)) continue;
+                    _settingsBaseline[key] = S[key];
+                }
+            }
             if (asrChangedByOtherWindow) {
                 // The writer marked independentAsrEnabled as an explicit user
                 // change (or is a metadata-less legacy window, where a value
