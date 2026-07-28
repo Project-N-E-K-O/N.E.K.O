@@ -651,6 +651,23 @@ def _get_last_error() -> int:
 
 _child_graceful_stop_hooks: list = []
 
+#: Set inside a child server: the launcher pid recorded before the fork, and the
+#: event the launcher sets when it starts its own ordered shutdown. Together they
+#: let a child tell "the launcher is driving this" from "nobody is".
+_spawning_launcher_pid = 0
+_launcher_shutdown_event = None
+
+#: How long a child waits for the launcher's ordered shutdown to reach it before
+#: stopping on its own. Bounded: if the launcher never gets there, ignoring the
+#: signal outright would be the residency violation this branch exists to remove.
+CHILD_DEFER_TO_LAUNCHER_SECONDS = 10.0
+
+
+def register_launcher_shutdown_event(event) -> None:
+    """Remember the launcher's ordered-shutdown event inside a child server."""
+    global _launcher_shutdown_event
+    _launcher_shutdown_event = event
+
 
 def register_child_graceful_stop_hook(hook) -> None:
     """Register a callable that stops this child server gracefully on SIGTERM."""
@@ -673,6 +690,46 @@ def _handle_child_termination_signal(signum, _frame):
     # entirely, and on the pdeathsig path nothing else would come along to finish
     # the job.
     _teardown_print(f"[Launcher] Child server received signal {signum}; stopping gracefully")
+
+    # A group-wide TERM (kill -- -<pgid>, a process-manager stopping the group)
+    # reaches us and the launcher at the same instant. Stopping right now would
+    # close Memory's listener while Main is still calling it to release the
+    # character — the ordering the launcher's cleanup_servers exists to enforce.
+    # Before this branch os.setsid() hid children from such a broadcast; removing
+    # it is what exposed them, so this is where that ordering is put back.
+    #
+    # Only defer while the launcher is demonstrably still there and driving:
+    # bounded, and if its shutdown never arrives we stop anyway. Ignoring a
+    # termination signal outright is the one outcome not on the table.
+    event = _launcher_shutdown_event
+    if (
+        event is not None
+        and not event.is_set()
+        and _spawning_launcher_pid
+        and os.name == "posix"
+        and parent_guard._safe_getppid() == int(_spawning_launcher_pid)
+    ):
+        threading.Thread(
+            target=_stop_child_after_launcher,
+            args=(event,),
+            name="neko-child-defer-stop",
+            daemon=True,
+        ).start()
+        return
+
+    _run_child_graceful_stop()
+
+
+def _stop_child_after_launcher(event) -> None:
+    if not event.wait(CHILD_DEFER_TO_LAUNCHER_SECONDS):
+        _teardown_print(
+            "[Launcher] Launcher did not start its ordered shutdown within "
+            f"{CHILD_DEFER_TO_LAUNCHER_SECONDS}s; stopping on our own"
+        )
+    _run_child_graceful_stop()
+
+
+def _run_child_graceful_stop() -> None:
     for hook in list(_child_graceful_stop_hooks):
         try:
             hook()
@@ -737,7 +794,9 @@ def _apply_child_process_signal_policy() -> None:
 
     # multiprocessing records the launcher's pid before forking us, so this
     # survives the case where the launcher dies before we get here.
+    global _spawning_launcher_pid
     _spawning_parent = multiprocessing.parent_process()
+    _spawning_launcher_pid = _spawning_parent.pid if _spawning_parent is not None else 0
     parent_guard.install_child_guard(
         _spawning_parent.pid if _spawning_parent is not None else None
     )
@@ -1383,6 +1442,8 @@ def run_memory_server(
         register_child_graceful_stop_hook(lambda: setattr(server, "should_exit", True))
 
         if shutdown_event is not None:
+            register_launcher_shutdown_event(shutdown_event)
+
             def _watch_shutdown() -> None:
                 shutdown_event.wait()
                 # Set first, log second. The owner is gone by the time this fires,
@@ -1497,6 +1558,8 @@ def run_agent_server(
         register_child_graceful_stop_hook(lambda: setattr(server, "should_exit", True))
 
         if shutdown_event is not None:
+            register_launcher_shutdown_event(shutdown_event)
+
             def _watch_shutdown() -> None:
                 shutdown_event.wait()
                 # Set first, log second. The owner is gone by the time this fires,
@@ -1589,6 +1652,8 @@ def run_main_server(
         register_child_graceful_stop_hook(lambda: setattr(server, "should_exit", True))
 
         if shutdown_event is not None:
+            register_launcher_shutdown_event(shutdown_event)
+
             def _watch_shutdown() -> None:
                 shutdown_event.wait()
                 # Set first, log second. The owner is gone by the time this fires,

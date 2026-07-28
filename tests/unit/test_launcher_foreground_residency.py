@@ -338,6 +338,51 @@ def _wait_for(path: Path, timeout: float = 15.0) -> bool:
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(os.name != "posix", reason="group broadcast is a POSIX shape")
+def test_child_defers_to_the_launcher_on_a_group_broadcast(monkeypatch):
+    """A group-wide TERM must not let a child outrun the launcher's ordering.
+
+    kill -- -<pgid> reaches the launcher and all three servers at the same
+    instant. If Memory stops immediately, Main's release call has nobody to talk
+    to. os.setsid() used to hide children from such a broadcast; removing it is
+    what exposed them, so the ordering is restored here instead.
+    """
+    from launcher_core import runtime as launcher
+
+    stopped = []
+    event = threading.Event()
+    monkeypatch.setattr(launcher, "_child_graceful_stop_hooks", [lambda: stopped.append("stop")])
+    monkeypatch.setattr(launcher, "_launcher_shutdown_event", event)
+    monkeypatch.setattr(launcher, "_spawning_launcher_pid", os.getppid())
+
+    launcher._handle_child_termination_signal(signal.SIGTERM, None)
+    time.sleep(0.2)
+    assert stopped == [], "child stopped while the launcher was still driving"
+
+    # The launcher reaches us in its own order; only then do we stop.
+    event.set()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not stopped:
+        time.sleep(0.02)
+    assert stopped == ["stop"]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name != "posix", reason="group broadcast is a POSIX shape")
+def test_child_stops_on_its_own_when_no_launcher_is_driving(monkeypatch):
+    """The deferral is bounded: an absent launcher must not buy indefinite life."""
+    from launcher_core import runtime as launcher
+
+    stopped = []
+    monkeypatch.setattr(launcher, "_child_graceful_stop_hooks", [lambda: stopped.append("stop")])
+    monkeypatch.setattr(launcher, "_launcher_shutdown_event", None)
+    monkeypatch.setattr(launcher, "_spawning_launcher_pid", 0)
+
+    launcher._handle_child_termination_signal(signal.SIGTERM, None)
+    assert stopped == ["stop"], "a child with no launcher must stop immediately"
+
+
+@pytest.mark.unit
 @pytest.mark.skipif(sys.platform != "win32", reason="parent_handle is the win32 mechanism")
 def test_parent_handle_arms_against_a_live_owner():
     """Windows has exactly one mechanism, and nothing else asserted it existed.
