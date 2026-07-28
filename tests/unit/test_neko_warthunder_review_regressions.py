@@ -73,13 +73,11 @@ def _make_handler(wt_server_module, server):
 
 
 def test_data_layer_cors_is_closed_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    """未显式配置 cors_origins 时不放行任何 Origin。
-
-    数据层只被 Python 侧消费（adapters/telemetry_client.py 的 HTTP 客户端与
-    data_layer_process 的 health check），浏览器不直连，所以默认拒绝一切跨源读取
-    是正确的默认值。放行范围只能通过 create_http_server(cors_origins=...) 或
-    CLI 的 --cors-origin 显式给出。
-    """
+    """No Origin is echoed unless cors_origins was configured explicitly."""
+    # 数据层只被 Python 侧消费（adapters/telemetry_client.py 的 HTTP 客户端与
+    # data_layer_process 的 health check），浏览器不直连，所以默认拒绝一切跨源
+    # 读取是正确的默认值。放行范围只能通过 create_http_server(cors_origins=...)
+    # 或 CLI 的 --cors-origin 显式给出。
     wt_server_module = _load_wt_server_module(monkeypatch)
     handler, emitted = _make_handler(wt_server_module, SimpleNamespace())
 
@@ -98,7 +96,7 @@ def test_data_layer_cors_is_closed_by_default(monkeypatch: pytest.MonkeyPatch) -
 def test_data_layer_cors_echoes_only_explicitly_allowed_origins(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """显式配置后只回显白名单内的 Origin，且永不回显通配符。"""
+    """Once configured, only whitelisted Origins are echoed — never a wildcard."""
     wt_server_module = _load_wt_server_module(monkeypatch)
     handler, emitted = _make_handler(
         wt_server_module,
@@ -119,12 +117,10 @@ def test_data_layer_cors_echoes_only_explicitly_allowed_origins(
 
 
 def test_data_layer_cors_has_no_implicit_origin_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    """守住 fail-closed：模块不得再提供任何隐式的 Origin 白名单来源。
-
-    历史回归：曾有一个模块级 _ALLOWED_CORS_ORIGINS 在 cors_origins 为空时兜底，
-    而两条启动路径（adapters/data_layer_process.py 的 in-process 与子进程）都不传
-    cors_origins，等于该兜底恒生效，把上游 #2371 定的默认拒绝改成了默认放行。
-    """
+    """Guard fail-closed: the module must expose no implicit Origin whitelist."""
+    # 历史回归：曾有一个模块级 _ALLOWED_CORS_ORIGINS 在 cors_origins 为空时兜底，
+    # 而两条启动路径（adapters/data_layer_process.py 的 in-process 与子进程）都不
+    # 传 cors_origins，等于该兜底恒生效，把上游 #2371 定的默认拒绝改成了默认放行。
     wt_server_module = _load_wt_server_module(monkeypatch)
 
     assert not hasattr(wt_server_module, "_ALLOWED_CORS_ORIGINS")
