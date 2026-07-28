@@ -868,6 +868,33 @@ def test_owner_death_cleans_up_then_exits(monkeypatch):
 
 
 @pytest.mark.unit
+def test_sigterm_yields_once_the_guard_has_fired(monkeypatch):
+    """The gap between guard.fired and _owner_death_in_progress is not a hole.
+
+    fire() sets one flag and _handle_owner_death sets the other a few dozen
+    bytecodes later; on Linux the pdeathsig callback runs on this same thread, so
+    a concurrent SIGTERM can land in between. Taking the ordinary path there
+    raised SystemExit straight out of fire(), skipping the callback entirely.
+    """
+    from launcher_core import runtime as launcher
+
+    class _FiredGuard:
+        fired = True
+        parent_pid = 4242
+        owner_is_direct_parent = True
+
+    died = []
+    monkeypatch.setattr(launcher, "_parent_death_guard", _FiredGuard())
+    monkeypatch.setattr(launcher, "_owner_death_in_progress", False)
+    monkeypatch.setattr(launcher, "_handle_owner_death", lambda m: died.append(m))
+    monkeypatch.setattr(launcher, "cleanup_servers", lambda: died.append("cleanup"))
+
+    # Returns instead of raising SystemExit: the owner-death teardown owns this.
+    launcher._handle_termination_signal(signal.SIGTERM, None)
+    assert died == [], died
+
+
+@pytest.mark.unit
 @pytest.mark.skipif(os.name != "posix", reason="the orphan heuristic is POSIX-only")
 def test_plain_sigterm_in_a_handoff_generation_is_not_read_as_owner_death(monkeypatch):
     """A handoff generation's parent is *meant* to be gone.

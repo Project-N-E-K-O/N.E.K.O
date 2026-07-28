@@ -2302,7 +2302,16 @@ def _handle_termination_signal(signum, _frame):
     # 此刻退出会把「TERM → 宽限 → 组级 KILL」停在第一步，正好放走它要收割的那些
     # 孙子进程。_handle_owner_death 必定以 os._exit 收尾，所以在它跑完之前忽略
     # 停止请求是正确语义，而不是把信号吞了。
-    if _owner_death_in_progress:
+    # Also yield once the guard has merely *fired*. Between fire() setting that
+    # flag and _handle_owner_death setting _owner_death_in_progress there are a
+    # few dozen bytecodes, and on Linux the pdeathsig callback runs on this very
+    # thread — so a concurrent SIGTERM can land in that gap, take the ordinary
+    # path, and raise SystemExit straight out of fire() before the callback runs.
+    # The reverse interleaving is worse: SIGTERM arriving just *before*
+    # fire() sets its flag ran the whole owner-death teardown twice, with two
+    # finisher threads.
+    guard = _parent_death_guard
+    if _owner_death_in_progress or (guard is not None and guard.fired):
         return
 
     # 兜底：属主已经死了，但送达的是普通 SIGTERM 而不是 guard 的专用信号
@@ -2313,10 +2322,8 @@ def _handle_termination_signal(signum, _frame):
     # 是那个已经按计划退出的上一代 launcher，于是「getppid() 不等于属主」在正常
     # 运行下恒为真——那样任何一次普通 SIGTERM 都会被误读成属主之死，进而触发组级
     # 清扫。guard 自己知道这个区别，问它。
-    guard = _parent_death_guard
     if (
         guard is not None
-        and not guard.fired
         and guard.parent_pid > 1
         and os.name == "posix"
         and guard.owner_is_direct_parent
@@ -2606,7 +2613,16 @@ def _acquire_single_instance_ownership() -> bool:
                     extra=_single_instance_extra_fields(),
                 )
             except OSError:
+                # Deliberately unlike the first acquisition, which fails open on
+                # OSError. By here we already know somebody won the lock at least
+                # once, so refusing to start is the safe direction rather than an
+                # unclearable block.
                 handle = None
+            if handle is None:
+                # A third launcher took it between our probe and this attempt, so
+                # the empty record we are holding belongs to whoever just left.
+                # Read once more; still bounded, still no arbitration by probing.
+                owner = single_instance.read_owner_record() or {}
 
     if handle is None:
         msg = "Another N.E.K.O runtime already holds the single-instance lock"
