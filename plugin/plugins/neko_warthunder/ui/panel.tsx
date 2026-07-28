@@ -1714,7 +1714,7 @@ export default function NekoWarthunderPanel(props: PluginSurfaceProps<DashboardS
             >
               <Input
                 value={identityName}
-                placeholder="例如 CN-Zephyr 或 Player#123456"
+                placeholder="例如 Player#123456"
                 invalid={!!identityError}
                 onChange={setIdentityName}
               />
@@ -1870,7 +1870,7 @@ export default function NekoWarthunderPanel(props: PluginSurfaceProps<DashboardS
           >
             <Input
               value={identityName}
-              placeholder="例如 CN-Zephyr 或 Player#123456"
+              placeholder="例如 Player#123456"
               invalid={!!identityError}
               onChange={setIdentityName}
             />
