@@ -538,7 +538,8 @@ class StreamingMixin:
                             logger.warning(f"⚠️ Agent callback drain failed: {_cb_err}")
                             _agent_cb_ctx = ""
 
-                    self._active_text_request_id = message.get("request_id")
+                    text_request_id = message.get("request_id")
+                    self._active_text_request_id = text_request_id
                     # Path A (inline) Focus 凝神：score this user message and, if
                     # over the bar, run THIS reply thinking-on. Scored on
                     # ``record_data`` (= memory_text or data) — the user-VISIBLE
@@ -548,6 +549,25 @@ class StreamingMixin:
                     # contents) the user never typed, mismatching the cadence
                     # signal and entering Focus on evidence the user didn't author.
                     _focus_thinking = await self._focus_inline_decision(record_data)
+
+                    async def response_discarded_callback(
+                        reason: str,
+                        attempt: int,
+                        max_attempts: int,
+                        will_retry: bool,
+                        discard_message: str | None = None,
+                        *,
+                        _request_id=text_request_id,
+                    ) -> None:
+                        await self.handle_response_discarded(
+                            reason,
+                            attempt,
+                            max_attempts,
+                            will_retry,
+                            discard_message,
+                            request_id=_request_id,
+                        )
+
                     input_transcript_callback = None
                     if memory_text:
                         transcript_metadata = {"source": message_source} if message_source else None
@@ -569,6 +589,7 @@ class StreamingMixin:
                     stream_text_kwargs = {
                         "system_prefix": _agent_cb_ctx or None,
                         "thinking_on": _focus_thinking,
+                        "response_discarded_callback": response_discarded_callback,
                     }
                     if input_transcript_callback:
                         stream_text_kwargs["input_transcript_callback"] = input_transcript_callback

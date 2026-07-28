@@ -14,6 +14,7 @@ from main_logic.topic.pipeline import (
     _record_weight,
 )
 from main_logic.topic.signals import TopicSignalStore
+from tests.fake_clock import patch_module_clock
 
 
 @pytest.fixture(autouse=True)
@@ -981,10 +982,16 @@ async def test_topic_pool_restored_signals_respect_persisted_used_history(tmp_pa
     )
     pool.note_user_message("妮可", "先投递一次，建立今天已经用过 deep topic 的节流历史", lang="zh-CN")
     await pool.process_now("妮可", lang="zh-CN")
-    await asyncio.sleep(0.02)
+    used_path = path.with_name("topic_signals.used_topics.json")
+    # The trigger writes this file from a worker thread (to_thread), so a
+    # fixed sleep is a race: a loaded CI runner needs more than 20ms just to
+    # hand the write off. Wait for the artifact itself.
+    deadline = time.monotonic() + 5.0
+    while not used_path.exists() and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
+    assert used_path.exists(), "used-topics file was never persisted"
 
     assert delivered == ["买车"]
-    used_path = path.with_name("topic_signals.used_topics.json")
     used_payload = json.loads(used_path.read_text(encoding="utf-8"))
     assert used_payload["characters"]["妮可"][0]["used_at"] > 0
     used_text = used_path.read_text(encoding="utf-8")
@@ -2114,12 +2121,23 @@ async def test_topic_pool_suppresses_same_topic_after_it_was_used_recently():
 
 @pytest.mark.asyncio
 async def test_topic_pool_suppresses_same_topic_across_calendar_day_within_48h(monkeypatch):
+    from main_logic.topic import pipeline as topic_pipeline
+    from main_logic.topic import signals as topic_signals
+
     delivered = []
+    analyzer_calls = []
     day_one_late = datetime(2026, 6, 14, 23, 50).timestamp()
     day_two_start = datetime(2026, 6, 15, 0, 1).timestamp()
-    monkeypatch.setattr("main_logic.topic.pipeline.time.time", lambda: day_two_start)
+    # 两个模块各读各的时钟，必须落在同一条假时间线上：
+    # pipeline 的 _prune_used_topics / _recent_used_topics 不带 now 调用，
+    # 用它判断「昨天投过的话题是否还在 48 小时窗口内」；
+    # signals 给 note_turn 打时间戳，process_ready_topics 的 60s 成熟闸门比的就是它，
+    # 所以这里让证据落在投递窗口前 120 秒，否则候选永远不成熟、下面的断言会空过。
+    patch_module_clock(monkeypatch, topic_pipeline, time=lambda: day_two_start)
+    patch_module_clock(monkeypatch, topic_signals, time=lambda: day_two_start - 120)
 
     async def fake_analyzer(*, lang, **kwargs):
+        analyzer_calls.append(lang)
         return [
             {
                 "interest": "跨天但仍在48小时窗口内的话题",
@@ -2158,6 +2176,8 @@ async def test_topic_pool_suppresses_same_topic_across_calendar_day_within_48h(m
     await pool.process_ready_topics(now=day_two_start, lang="zh-CN")
     await asyncio.sleep(0.03)
 
+    # 前置条件：抽取必须真的跑过，否则「没投递」只是因为候选没成熟（假绿）
+    assert analyzer_calls == ["zh-CN"]
     assert delivered == []
     assert pool.get_ready_materials("妮可") == []
 

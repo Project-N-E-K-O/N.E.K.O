@@ -382,57 +382,6 @@ function finalizePopupClosedState(popup) {
     popup._hideTimeoutId = null;
 }
 
-function showWidgetModeMutationFailure(error) {
-    console.warn('[WidgetMode] settings mutation failed:', error);
-    const message = window.t
-        ? window.t('settings.widgetMode.toggleFailed')
-        : '挂边模式 Beta 切换失败，请稍后重试。';
-    if (typeof window.showStatusToast === 'function') {
-        window.showStatusToast(message, 3000);
-    }
-}
-
-let widgetModeMutationQueue = Promise.resolve();
-
-function queueWidgetModeMutation(operation) {
-    const run = function () { return operation(); };
-    widgetModeMutationQueue = widgetModeMutationQueue.then(run, run);
-    return widgetModeMutationQueue;
-}
-
-function createAdvancedSettingsSidePanel(manager, prefix, popup) {
-    const panel = manager._createSidePanelContainer();
-    panel.setAttribute('data-neko-sidepanel-type', 'advanced-settings');
-    Object.assign(panel.style, {
-        width: '224px', minWidth: '224px', padding: '4px', display: 'flex',
-        flexDirection: 'column', alignItems: 'stretch', gap: '0'
-    });
-    const widgetModeItem = manager._createSettingsToggleItem({
-        id: 'widget-mode',
-        label: window.t ? window.t('settings.toggles.widgetMode') : '挂边模式 Beta',
-        labelKey: 'settings.toggles.widgetMode',
-        tooltipKey: 'settings.toggles.widgetModeTooltip',
-        alwaysTinted: true
-    });
-    widgetModeItem.style.display = 'flex';
-    widgetModeItem.style.alignItems = 'center';
-    widgetModeItem.style.minWidth = '0';
-    const widgetModeLabel = widgetModeItem.querySelector('label');
-    if (widgetModeLabel) {
-        widgetModeLabel.style.flex = '1 1 auto';
-        widgetModeLabel.style.minWidth = '0';
-        widgetModeLabel.style.height = 'auto';
-        widgetModeLabel.style.lineHeight = '1.25';
-        widgetModeLabel.style.whiteSpace = 'normal';
-    }
-
-    panel.appendChild(widgetModeItem);
-
-    panel._widgetModeToggleItem = widgetModeItem;
-    document.body.appendChild(panel);
-    return panel;
-}
-
 /**
  * 创建设置弹窗内容（通用）
  */
@@ -460,22 +409,6 @@ function createSettingsPopupContent(manager, prefix, popup) {
     animSidePanel._anchorElement = animSettingsBtn;
     animSidePanel._popupElement = popup;
     manager._attachSidePanelHover(animSettingsBtn, animSidePanel);
-
-    const advancedSettingsBtn = manager._createSettingsMenuButton({
-        label: window.t ? window.t('settings.menu.advancedSettings') : '高级设置',
-        labelKey: 'settings.menu.advancedSettings'
-    });
-    advancedSettingsBtn.id = `${prefix}-advanced-settings-entry`;
-    popup.appendChild(advancedSettingsBtn);
-    const advancedSidePanel = createAdvancedSettingsSidePanel(manager, prefix, popup);
-    advancedSidePanel._anchorElement = advancedSettingsBtn;
-    advancedSidePanel._popupElement = popup;
-    manager._attachSidePanelHover(advancedSettingsBtn, advancedSidePanel);
-    advancedSettingsBtn.addEventListener('click', function (event) {
-        event.preventDefault();
-        event.stopPropagation();
-        if (typeof advancedSidePanel._expand === 'function') advancedSidePanel._expand();
-    });
 
     // 3. 角色设置按钮已移至分隔线下方（在 _createSettingsMenuItems 中创建）
 
@@ -957,7 +890,7 @@ function createSidePanelMenuItem(manager, prefix, item) {
 
     let isOpening = false;
 
-    // 打开模型管理子窗口，主页面模型保持原样显示。
+    // 打开模型管理子窗口；主页面模型由统一遮挡状态接口决定是否显示。
     function openModelManagerWindow(url, name, feat) {
         let childWin;
         if (typeof window.openOrFocusWindow === 'function') {
@@ -1765,7 +1698,6 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
             'agent-openclaw-actions',
             'chat-settings',
             'animation-settings',
-            'advanced-settings',
             'interval-proactive-chat',
             'interval-proactive-vision',
             'character-settings'
@@ -2316,8 +2248,6 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         checkbox.checked = window.nekoAutoGoodbye.isAutoCatEnabled();
     } else if (toggle.id === 'cat-audio' && window.nekoIdleCatAudio && typeof window.nekoIdleCatAudio.isEnabled === 'function') {
         checkbox.checked = window.nekoIdleCatAudio.isEnabled();
-    } else if (toggle.id === 'widget-mode' && window.nekoWidgetMode && typeof window.nekoWidgetMode.isEnabled === 'function') {
-        checkbox.checked = window.nekoWidgetMode.isEnabled();
     }
 
     const indicator = document.createElement('div');
@@ -2391,14 +2321,6 @@ function createSettingsToggleItem(manager, prefix, toggle) {
     };
 
     toggleItem._nekoUpdateSettingsToggleStyle = updateStyle;
-    if (toggle.id === 'widget-mode') {
-        toggleItem._nekoUpdateWidgetModeStatus = function () {
-            if (window.nekoWidgetMode && typeof window.nekoWidgetMode.isEnabled === 'function') {
-                checkbox.checked = window.nekoWidgetMode.isEnabled();
-            }
-            updateStyle();
-        };
-    }
     updateStyle();
 
     toggleItem.appendChild(checkbox);
@@ -2512,24 +2434,6 @@ function createSettingsToggleItem(manager, prefix, toggle) {
             if (window.nekoIdleCatAudio && typeof window.nekoIdleCatAudio.setEnabled === 'function') {
                 window.nekoIdleCatAudio.setEnabled(isChecked);
             }
-        } else if (toggle.id === 'widget-mode') {
-            if (window.nekoWidgetMode && typeof window.nekoWidgetMode.setEnabled === 'function') {
-                return queueWidgetModeMutation(function () {
-                    return Promise.resolve()
-                        .then(function () { return window.nekoWidgetMode.setEnabled(isChecked); })
-                        .then(function (ok) {
-                            if (!ok) checkbox.checked = !isChecked;
-                            updateStyle();
-                            return ok;
-                        })
-                        .catch(function (error) {
-                            checkbox.checked = !isChecked;
-                            updateStyle();
-                            showWidgetModeMutationFailure(error);
-                            return false;
-                        });
-                });
-            }
         }
     };
 
@@ -2551,7 +2455,7 @@ function createSettingsToggleItem(manager, prefix, toggle) {
 
         if (checkbox._processing) {
             const elapsed = Date.now() - (checkbox._processingTime || 0);
-            if (toggle.id === 'widget-mode' || elapsed < 500) {
+            if (elapsed < 500) {
                 return;
             }
         }
@@ -2561,7 +2465,7 @@ function createSettingsToggleItem(manager, prefix, toggle) {
 
         const newChecked = !checkbox.checked;
         checkbox.checked = newChecked;
-        const mutation = handleToggleChange(newChecked);
+        handleToggleChange(newChecked);
         refreshDependentToggles();
         checkbox.dispatchEvent(new Event('change', { bubbles: true }));
 
@@ -2569,11 +2473,7 @@ function createSettingsToggleItem(manager, prefix, toggle) {
             checkbox._processing = false;
             checkbox._processingTime = null;
         };
-        if (toggle.id === 'widget-mode' && mutation && typeof mutation.finally === 'function') {
-            void mutation.finally(clearProcessing);
-        } else {
-            setTimeout(clearProcessing, 500);
-        }
+        setTimeout(clearProcessing, 500);
     };
 
     toggleItem.addEventListener('keydown', (e) => {

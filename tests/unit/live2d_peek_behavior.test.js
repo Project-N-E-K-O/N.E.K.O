@@ -10,14 +10,19 @@ const corePath = path.join(projectRoot, 'static', 'live2d', 'live2d-core.js');
 
 function createHarness({
     widgetModeEnabled = true,
+    stealthModeEnabled = true,
     innerWidth = 1000,
     innerHeight = 800,
     platform = '',
-    currentDisplay = null
+    currentDisplay = null,
+    desktopRuntime = true,
+    interactionActive = true,
+    reducedMotion = false
 } = {}) {
     const rafQueue = [];
     const bodyClasses = new Set();
     const listeners = new Map();
+    let stealthEnabledState = stealthModeEnabled;
 
     function Live2DManager() {}
 
@@ -42,14 +47,19 @@ function createHarness({
             innerHeight,
             screen: { id: 'display-test', width: innerWidth, height: innerHeight },
             devicePixelRatio: 1.25,
-            __NEKO_DESKTOP_RUNTIME__: platform ? { platform } : {},
+            matchMedia: () => ({ matches: reducedMotion }),
+            __NEKO_DESKTOP_RUNTIME__: desktopRuntime ? { platform } : null,
             electronScreen: currentDisplay ? {
                 async getCurrentDisplay() {
                     return currentDisplay;
                 }
             } : null,
             nekoWidgetMode: {
-                isEnabled: () => widgetModeEnabled
+                isEnabled: () => widgetModeEnabled,
+                isStealthEnabled: () => stealthEnabledState
+            },
+            NekoWidgetInteraction: {
+                isActive: () => interactionActive
             },
             addEventListener(type, handler) {
                 const handlers = listeners.get(type) || [];
@@ -81,7 +91,15 @@ function createHarness({
     const source = fs.readFileSync(interactionPath, 'utf8');
     vm.runInNewContext(source, context, { filename: interactionPath });
 
-    return { Live2DManager, rafQueue, bodyClasses, window: context.window };
+    return {
+        Live2DManager,
+        rafQueue,
+        bodyClasses,
+        window: context.window,
+        setStealthModeEnabled(enabled) {
+            stealthEnabledState = enabled === true;
+        }
+    };
 }
 
 function createModel({ x = 0, y = 120, width = 500, height = 600 } = {}) {
@@ -90,6 +108,7 @@ function createModel({ x = 0, y = 120, width = 500, height = 600 } = {}) {
         y,
         rotation: 0,
         destroyed: false,
+        interactive: true,
         scale: { x: 1, y: 1 },
         getBounds() {
             return {
@@ -110,6 +129,7 @@ function createRotatingModel({ x, y, scaleX = 1, width = 300, height = 600 }) {
         y,
         rotation: 0,
         destroyed: false,
+        interactive: true,
         scale: { x: scaleX, y: 1 },
         transformPoint(localX, localY) {
             const scaledX = localX * this.scale.x;
@@ -150,7 +170,7 @@ function createRotatingModel({ x, y, scaleX = 1, width = 300, height = 600 }) {
     return model;
 }
 
-function flushNextFrame(harness, time = 250) {
+function flushNextFrame(harness, time = 400) {
     const callback = harness.rafQueue.shift();
     assert.equal(typeof callback, 'function');
     callback(time);
@@ -995,4 +1015,244 @@ test('core edge peek fallback maps drawables against unclipped model bounds befo
             centerY: 300
         }
     ]);
+});
+
+test('ordinary browser runtime cannot arm edge peek', async () => {
+    const harness = createHarness({ desktopRuntime: false });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+
+    assert.equal(await manager._tryApplyLive2DPeek(model), false);
+    assert.equal(manager.isLive2DPeekActive(), false);
+    assert.equal(model.x, 0);
+    assert.equal(model.interactive, true);
+});
+
+test('idle anchored model becomes fully hidden and non-interactive', async () => {
+    const harness = createHarness({ interactionActive: false });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+
+    const enterPromise = manager._tryApplyLive2DPeek(model);
+    assert.equal(manager._live2DPeekState.phase, 'hiding');
+    flushNextFrame(harness);
+    assert.equal(await enterPromise, true);
+
+    assert.equal(manager._live2DPeekState.phase, 'hidden');
+    assert.ok(model.getBounds().right < 0);
+    assert.equal(model.interactive, false);
+    assert.equal(manager._live2DPeekState.visibleBounds.left, 0);
+});
+
+test('peek reveal uses a soft overshoot and settles on the exact anchor', async () => {
+    const harness = createHarness({ interactionActive: true });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+
+    const enterPromise = manager._tryApplyLive2DPeek(model);
+    const targetX = manager._live2DPeekState.peekX;
+    flushNextFrame(harness, 225);
+    assert.ok(model.x < targetX, 'soft-back easing should briefly pass the left anchor');
+    flushNextFrame(harness, 400);
+    assert.equal(await enterPromise, true);
+    assert.equal(model.x, targetX);
+    assert.equal(manager._live2DPeekState.phase, 'peeking');
+});
+
+test('reduced-motion preference completes the peek transition without RAF', async () => {
+    const harness = createHarness({
+        interactionActive: false,
+        reducedMotion: true
+    });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+
+    assert.equal(await manager._tryApplyLive2DPeek(model), true);
+    assert.equal(harness.rafQueue.length, 0);
+    assert.equal(manager._live2DPeekState.phase, 'hidden');
+    assert.equal(model.interactive, false);
+});
+
+test('parent Edge Peek stays visible until the Stealth Mode child is enabled', async () => {
+    const harness = createHarness({
+        interactionActive: false,
+        stealthModeEnabled: false
+    });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+    harness.window.live2dManager = manager;
+
+    const enterPromise = manager._tryApplyLive2DPeek(model);
+    flushNextFrame(harness);
+    assert.equal(await enterPromise, true);
+    assert.equal(manager._live2DPeekState.phase, 'peeking');
+    assert.equal(model.interactive, true);
+    assert.ok(model.getBounds().right > 0);
+
+    harness.setStealthModeEnabled(true);
+    harness.window.dispatchEvent({
+        type: 'neko:widget-mode-state-changed',
+        detail: { enabled: true, stealthEnabled: true }
+    });
+    assert.equal(manager._live2DPeekState.phase, 'hiding');
+    flushNextFrame(harness);
+    await Promise.resolve();
+    assert.equal(manager._live2DPeekState.phase, 'hidden');
+    assert.equal(model.interactive, false);
+});
+
+test('interaction state reveals and then hides the existing anchor', async () => {
+    const harness = createHarness({ interactionActive: false });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+    harness.window.live2dManager = manager;
+
+    const enterPromise = manager._tryApplyLive2DPeek(model);
+    flushNextFrame(harness);
+    assert.equal(await enterPromise, true);
+
+    harness.window.dispatchEvent({
+        type: 'neko:widget-interaction-state-changed',
+        detail: { active: true, reason: 'user-message' }
+    });
+    assert.equal(manager._live2DPeekState.phase, 'revealing');
+    flushNextFrame(harness);
+    await Promise.resolve();
+    assert.equal(manager._live2DPeekState.phase, 'peeking');
+    assert.equal(model.interactive, true);
+    assert.ok(model.getBounds().right > 0);
+
+    harness.window.dispatchEvent({
+        type: 'neko:widget-interaction-state-changed',
+        detail: { active: false, reason: 'complete' }
+    });
+    assert.equal(manager._live2DPeekState.phase, 'hiding');
+    flushNextFrame(harness);
+    await Promise.resolve();
+    assert.equal(manager._live2DPeekState.phase, 'hidden');
+    assert.equal(model.interactive, false);
+    assert.ok(model.getBounds().right < 0);
+});
+
+test('new interaction transition cancels stale animation writeback', async () => {
+    const harness = createHarness({ interactionActive: false });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+    harness.window.live2dManager = manager;
+
+    const enterPromise = manager._tryApplyLive2DPeek(model);
+    flushNextFrame(harness);
+    await enterPromise;
+
+    harness.window.dispatchEvent({
+        type: 'neko:widget-interaction-state-changed',
+        detail: { active: true, reason: 'start' }
+    });
+    harness.window.dispatchEvent({
+        type: 'neko:widget-interaction-state-changed',
+        detail: { active: false, reason: 'cancel' }
+    });
+    assert.equal(manager._live2DPeekState.phase, 'hiding');
+
+    flushNextFrame(harness);
+    flushNextFrame(harness);
+    await Promise.resolve();
+    assert.equal(manager._live2DPeekState.phase, 'hidden');
+    assert.equal(model.interactive, false);
+    assert.ok(model.getBounds().right < 0);
+});
+
+test('display change rebuilds the active anchor against the refreshed display', async () => {
+    const currentDisplay = {
+        screenX: 0,
+        screenY: 0,
+        width: 1000,
+        height: 800,
+        workArea: { x: 0, y: 0, width: 1000, height: 800 }
+    };
+    const harness = createHarness({
+        interactionActive: false,
+        currentDisplay
+    });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+    harness.window.live2dManager = manager;
+    manager.currentModel = model;
+
+    const enterPromise = manager._tryApplyLive2DPeek(model);
+    for (let attempt = 0; attempt < 10 && harness.rafQueue.length === 0; attempt += 1) {
+        await Promise.resolve();
+    }
+    flushNextFrame(harness);
+    await enterPromise;
+    const hiddenRotation = model.rotation;
+    const hiddenScaleX = model.scale.x;
+    currentDisplay.height = 1000;
+    currentDisplay.workArea.height = 1000;
+    harness.window.innerHeight = 1000;
+    harness.window.screen.height = 1000;
+    harness.window.dispatchEvent({ type: 'electron-display-changed' });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(
+        manager.isLive2DPeekActive(),
+        false,
+        'anchor restore must wait until the renderer delayed resize has settled'
+    );
+    harness.window.dispatchEvent({ type: 'electron-display-changed' });
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    flushNextFrame(harness);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(manager.isLive2DPeekActive(), true);
+    assert.equal(manager._live2DPeekState.phase, 'hidden');
+    assert.equal(model.x, -502);
+    assert.equal(model.y, 225);
+    assert.equal(model.rotation, hiddenRotation);
+    assert.equal(model.scale.x, hiddenScaleX);
+    assert.equal(model.interactive, false);
+});
+
+test('non-display clear invalidates a pending display anchor restore', async () => {
+    const currentDisplay = {
+        screenX: 0,
+        screenY: 0,
+        width: 1000,
+        height: 800,
+        workArea: { x: 0, y: 0, width: 1000, height: 800 }
+    };
+    const harness = createHarness({ currentDisplay });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+    harness.window.live2dManager = manager;
+    manager.currentModel = model;
+
+    const enterPromise = manager._tryApplyLive2DPeek(model);
+    for (let attempt = 0; attempt < 10 && harness.rafQueue.length === 0; attempt += 1) {
+        await Promise.resolve();
+    }
+    flushNextFrame(harness);
+    await enterPromise;
+
+    harness.window.dispatchEvent({ type: 'electron-display-changed' });
+    await new Promise((resolve) => setImmediate(resolve));
+    harness.window.nekoLive2DPeek.clear('model-reload');
+    await new Promise((resolve) => setTimeout(resolve, 180));
+
+    assert.equal(manager.isLive2DPeekActive(), false);
+    assert.equal(harness.rafQueue.length, 0);
+    assert.equal(model.x, 0);
+    assert.equal(model.y, 120);
+});
+
+test('core model bounds are null while an anchor is hiding or hidden', () => {
+    const harness = createCoreHarness();
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: -502 });
+    manager.currentModel = model;
+    manager._live2DPeekState = { active: true, phase: 'hidden', model };
+
+    assert.equal(manager.getModelScreenBounds(), null);
+    manager._live2DPeekState.phase = 'hiding';
+    assert.equal(manager.getModelScreenBounds(), null);
 });

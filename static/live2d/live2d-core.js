@@ -4783,53 +4783,99 @@ class Live2DManager {
      */
     getModelScreenBounds() {
         const edgePeekState = this._live2DPeekState;
-        const rawBounds = this._getUnclippedModelScreenBounds(
-            edgePeekState && edgePeekState.active
-                ? (edgePeekState.model || this.currentModel)
-                : this.currentModel
-        );
-        if (!rawBounds) {
-            return null;
-        }
-
         if (edgePeekState && edgePeekState.active) {
-            const left = rawBounds.left;
-            const top = rawBounds.top;
-            const right = rawBounds.right;
-            const bottom = rawBounds.bottom;
-            const renderer = this.pixi_app && this.pixi_app.renderer;
-            const screen = renderer && renderer.screen;
-            const rendererW = Number(screen && screen.width);
-            const rendererH = Number(screen && screen.height);
-            const viewportLeft = 0;
-            const viewportTop = 0;
-            const viewportRight = Math.max(0, Number.isFinite(rendererW) && rendererW > 0
-                ? Math.min(rendererW, Number(window.innerWidth) || rendererW)
-                : Number(window.innerWidth) || 0);
-            const viewportBottom = Math.max(0, Number.isFinite(rendererH) && rendererH > 0
-                ? Math.min(rendererH, Number(window.innerHeight) || rendererH)
-                : Number(window.innerHeight) || 0);
-            const visibleLeft = Math.max(left, viewportLeft);
-            const visibleRight = Math.min(right, viewportRight);
-            const visibleTop = Math.max(top, viewportTop);
-            const visibleBottom = Math.min(bottom, viewportBottom);
-            const width = visibleRight - visibleLeft;
-            const height = visibleBottom - visibleTop;
-            if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
-                return {
-                    left: visibleLeft,
-                    right: visibleRight,
-                    top: visibleTop,
-                    bottom: visibleBottom,
-                    width: width,
-                    height: height,
-                    centerX: visibleLeft + width / 2,
-                    centerY: visibleTop + height / 2
-                };
+            if (edgePeekState.phase === 'hidden' || edgePeekState.phase === 'hiding') {
+                return null;
+            }
+            const model = edgePeekState.model || this.currentModel;
+            if (model && !model.destroyed && typeof model.getBounds === 'function') {
+                const bounds = model.getBounds();
+                const left = Number(bounds.left ?? bounds.x);
+                const top = Number(bounds.top ?? bounds.y);
+                const right = Number(bounds.right ?? (left + Number(bounds.width)));
+                const bottom = Number(bounds.bottom ?? (top + Number(bounds.height)));
+                const renderer = this.pixi_app && this.pixi_app.renderer;
+                const screen = renderer && renderer.screen;
+                const rendererW = Number(screen && screen.width);
+                const rendererH = Number(screen && screen.height);
+                const viewportLeft = 0;
+                const viewportTop = 0;
+                const viewportRight = Math.max(0, Number.isFinite(rendererW) && rendererW > 0
+                    ? Math.min(rendererW, Number(window.innerWidth) || rendererW)
+                    : Number(window.innerWidth) || 0);
+                const viewportBottom = Math.max(0, Number.isFinite(rendererH) && rendererH > 0
+                    ? Math.min(rendererH, Number(window.innerHeight) || rendererH)
+                    : Number(window.innerHeight) || 0);
+                const visibleLeft = Math.max(left, viewportLeft);
+                const visibleRight = Math.min(right, viewportRight);
+                const visibleTop = Math.max(top, viewportTop);
+                const visibleBottom = Math.min(bottom, viewportBottom);
+                const width = visibleRight - visibleLeft;
+                const height = visibleBottom - visibleTop;
+                if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+                    return {
+                        left: visibleLeft,
+                        right: visibleRight,
+                        top: visibleTop,
+                        bottom: visibleBottom,
+                        width: width,
+                        height: height,
+                        centerX: visibleLeft + width / 2,
+                        centerY: visibleTop + height / 2
+                    };
+                }
             }
         }
 
-        return rawBounds;
+        const model = this.currentModel;
+        if (!model) {
+            return null;
+        }
+
+        if (typeof model.getBounds !== 'function') {
+            return null;
+        }
+
+        let bounds = null;
+        try {
+            bounds = model.getBounds();
+        } catch (error) {
+            console.warn('[Live2D] 获取模型屏幕边界失败:', error);
+            return null;
+        }
+
+        if (!bounds) {
+            return null;
+        }
+
+        const left = Number(bounds.left);
+        const right = Number(bounds.right);
+        const top = Number(bounds.top);
+        const bottom = Number(bounds.bottom);
+
+        if (!Number.isFinite(left) || !Number.isFinite(right) ||
+            !Number.isFinite(top) || !Number.isFinite(bottom)) {
+            return null;
+        }
+
+        const width = right - left;
+        const height = bottom - top;
+        if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+            return null;
+        }
+
+        const stableBounds = {
+            left: left,
+            right: right,
+            top: top,
+            bottom: bottom,
+            width: width,
+            height: height,
+            centerX: left + width / 2,
+            centerY: top + height / 2
+        };
+
+        return stableBounds;
     }
 
     // 复位模型位置和缩放到初始状态

@@ -44,6 +44,7 @@ def test_prepare_and_install_plugins_apply_neko_build_rules(tmp_path: Path) -> N
     _write(plugin_dir / "data layer" / "worker.py")
     _write(plugin_dir / "tests" / "__init__.py")
     _write(plugin_dir / "tests" / "test_runtime.py")
+    _write(plugin_dir / ".github" / "workflows" / "verify.yml")
     _write(plugin_dir / "local_logs" / "private.txt")
     _write(plugin_dir / "README.md")
     _write(plugin_dir / "scratch.tmp")
@@ -62,6 +63,7 @@ def test_prepare_and_install_plugins_apply_neko_build_rules(tmp_path: Path) -> N
     assert (stage_plugin / "runtime.py").is_file()
     assert (stage_plugin / "data layer" / "worker.py").is_file()
     assert not (stage_plugin / "tests").exists()
+    assert not (stage_plugin / ".github").exists()
     assert not (stage_plugin / "local_logs").exists()
     assert not (stage_plugin / "README.md").exists()
     assert not (stage_plugin / "scratch.tmp").exists()
@@ -77,6 +79,7 @@ def test_prepare_and_install_plugins_apply_neko_build_rules(tmp_path: Path) -> N
         (result.stage_dir.parent / "nuitka-plugin-stage.json").read_text(encoding="utf-8")
     )
     assert "demo_plugin/tests/" in manifest["excluded_paths"]
+    assert "demo_plugin/.github/" in manifest["excluded_paths"]
     assert "plugin.plugins.demo_plugin.tests" in manifest["excluded_modules"]
 
     destination = project_root / "dist" / "Xiao8" / "plugin" / "plugins"

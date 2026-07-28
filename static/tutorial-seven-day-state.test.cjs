@@ -34,7 +34,12 @@ function createJsonResponse(payload, status = 200) {
     };
 }
 
-function loadBrowserStateApi({ storage, fetch, storageBarrier = Promise.resolve() }) {
+function loadBrowserStateApi({
+    storage,
+    fetch,
+    storageBarrier = Promise.resolve(),
+    mutationSecurity = null,
+}) {
     const window = {
         document: {},
         location: { origin: 'http://localhost:48911' },
@@ -42,6 +47,7 @@ function loadBrowserStateApi({ storage, fetch, storageBarrier = Promise.resolve(
         fetch,
         console,
         __nekoStorageLocationStartupBarrier: storageBarrier,
+        nekoLocalMutationSecurity: mutationSecurity,
     };
     vm.runInNewContext(stateSource, {
         window,
@@ -371,6 +377,139 @@ test('mutations are queued to the authoritative store after initial synchronizat
 
     assert.deepEqual(Array.from(writes.at(-1).completedRounds), [1]);
     assert.deepEqual(Array.from(writes.at(-1).skippedRounds), [2]);
+});
+
+test('first authoritative state creation does not wait on pageConfigReady mutation helper', async () => {
+    const requests = [];
+    let getMutationHeadersCalls = 0;
+    const fetch = async (url, options = {}) => {
+        requests.push({ url, options });
+        if (url === stateApi.SERVER_STATE_ENDPOINT && options.method === 'PUT') {
+            const body = JSON.parse(options.body);
+            return createJsonResponse({
+                ok: true,
+                initialized: true,
+                revision: 1,
+                state: body.state,
+            });
+        }
+        if (url === stateApi.SERVER_STATE_ENDPOINT) {
+            return createJsonResponse({ ok: true, initialized: false, revision: 0, state: null });
+        }
+        if (url === '/api/config/page_config') {
+            return createJsonResponse({ autostart_csrf_token: 'first-run-token' });
+        }
+        return createJsonResponse({}, 404);
+    };
+    const browserApi = loadBrowserStateApi({
+        storage: createMemoryStorage(),
+        fetch,
+        mutationSecurity: {
+            peekCachedToken() {
+                return '';
+            },
+            getMutationHeaders() {
+                getMutationHeadersCalls += 1;
+                return new Promise(() => {});
+            },
+        },
+    });
+
+    let timeoutId;
+    try {
+        await Promise.race([
+            browserApi.ready(),
+            new Promise((_, reject) => {
+                timeoutId = setTimeout(
+                    () => reject(new Error('first-run state creation must not wait for mutation helper')),
+                    1000,
+                );
+            }),
+        ]);
+    } finally {
+        clearTimeout(timeoutId);
+    }
+
+    const putRequest = requests.find(item => item.options.method === 'PUT');
+    assert.ok(putRequest);
+    assert.equal(putRequest.options.headers['X-CSRF-Token'], 'first-run-token');
+    assert.equal(getMutationHeadersCalls, 0);
+
+    browserApi.markRoundOutcome(1, 'complete');
+    await browserApi.flush();
+
+    const pageConfigRequests = requests.filter(item => item.url === '/api/config/page_config');
+    const putRequests = requests.filter(item => item.options.method === 'PUT');
+    assert.equal(pageConfigRequests.length, 1);
+    assert.equal(putRequests.length, 2);
+    assert.equal(putRequests[1].options.headers['X-CSRF-Token'], 'first-run-token');
+});
+
+test('a rejected cached token is refreshed once after a backend restart', async () => {
+    const requests = [];
+    let activeToken = 'initial-token';
+    let helperToken = activeToken;
+    let refreshTokenCalls = 0;
+    let revision = 0;
+    const fetch = async (url, options = {}) => {
+        requests.push({ url, options });
+        if (url === stateApi.SERVER_STATE_ENDPOINT && options.method === 'PUT') {
+            if (options.headers['X-CSRF-Token'] !== activeToken) {
+                return createJsonResponse({ error_code: 'csrf_validation_failed' }, 403);
+            }
+            revision += 1;
+            const body = JSON.parse(options.body);
+            return createJsonResponse({
+                ok: true,
+                initialized: true,
+                revision,
+                state: body.state,
+            });
+        }
+        if (url === stateApi.SERVER_STATE_ENDPOINT) {
+            return createJsonResponse({ ok: true, initialized: false, revision: 0, state: null });
+        }
+        if (url === '/api/config/page_config') {
+            return createJsonResponse({ autostart_csrf_token: activeToken });
+        }
+        return createJsonResponse({}, 404);
+    };
+    const browserApi = loadBrowserStateApi({
+        storage: createMemoryStorage(),
+        fetch,
+        mutationSecurity: {
+            peekCachedToken() {
+                return helperToken;
+            },
+            async refreshToken() {
+                refreshTokenCalls += 1;
+                const response = await fetch('/api/config/page_config', { cache: 'no-store' });
+                const payload = await response.json();
+                helperToken = payload.autostart_csrf_token;
+                return helperToken;
+            },
+        },
+    });
+
+    await browserApi.ready();
+    activeToken = 'restarted-backend-token';
+    browserApi.markRoundOutcome(1, 'complete');
+    await browserApi.flush();
+    browserApi.markRoundOutcome(2, 'complete');
+    await browserApi.flush();
+
+    const pageConfigRequests = requests.filter(item => item.url === '/api/config/page_config');
+    const putTokens = requests
+        .filter(item => item.options.method === 'PUT')
+        .map(item => item.options.headers['X-CSRF-Token']);
+    assert.equal(refreshTokenCalls, 1);
+    assert.equal(pageConfigRequests.length, 1);
+    assert.deepEqual(putTokens, [
+        'initial-token',
+        'initial-token',
+        'restarted-backend-token',
+        'restarted-backend-token',
+    ]);
 });
 
 test('a reset made during startup wins over the initial authoritative read', async () => {
