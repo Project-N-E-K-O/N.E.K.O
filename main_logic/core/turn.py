@@ -500,6 +500,18 @@ class TurnMixin:
                 )
                 print(f"[response_discarded parse_err] raw: {message!r}")
 
+        # 被丢弃的这段回复前端已经 clear 掉了，用户没看到——不该作为"AI 说过的
+        # 话"进 activity tracker 的 unfinished_thread 检测。_clear_tts_pipeline
+        # 只管 TTS 队列和音频缓存，从不碰 _current_ai_turn_text，而这个 buffer
+        # 唯一的出口是 turn end 的 _flush_ai_turn_text_to_tracker()，所以丢弃的
+        # 文本会一直躺到下一次 turn end 才被算进去：
+        #   - will_retry：重试后的文本继续往同一个 buffer 追加，turn end 时
+        #     flush 的是"丢弃版 + 重发版"拼在一起的内容
+        #   - recovery：截断恢复的正文追加在丢弃版后面，一并 flush
+        # 这里清空而不是 flush：这一轮要么还会重试、要么下面 recovery 会补发正文，
+        # 都还没到 turn end，flush 会凭空多喂 tracker 一个 AI turn。
+        self._current_ai_turn_text = ''
+
         await self._clear_tts_pipeline()
 
         if self.websocket and hasattr(self.websocket, 'client_state') and \
