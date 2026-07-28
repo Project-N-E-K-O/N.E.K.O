@@ -108,6 +108,15 @@ class QQSettingsService:
         group memory came back on."""
         if self.plugin._qq_settings.get("group_memory_enabled", False):
             return
+        if deferred_opt_ins is not None and deferred_opt_ins.get(
+            "group_memory_enabled"
+        ):
+            # 父开关也在同一次扣发队列里：两个键会在写盘成功后一起发布，
+            # 此刻"父还没生效"是延迟发布的中间态，不是没授权。首次开箱
+            # 正走这条路（两个面板每次保存都同时提交两个复选框），按未
+            # 授权砍掉 member 会连磁盘一起写成关闭——用户看着勾上了，
+            # 回来一刷新又是关的，得再存一次才算数。
+            return
         if deferred_opt_ins is not None:
             deferred_opt_ins.pop("group_member_memory_enabled", None)
         self.plugin._qq_settings["group_member_memory_enabled"] = False
