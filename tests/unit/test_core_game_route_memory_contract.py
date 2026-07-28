@@ -7,6 +7,18 @@ import pytest
 
 import main_logic.cross_server as cross_server_module
 import main_logic.core as core_module
+import main_logic.core.streaming as streaming_module
+import main_logic.core.tts_runtime as tts_runtime_module
+import main_logic.core.turn as turn_module
+from tests.fake_clock import patch_module_clock
+
+# 假时钟一律打到「真正读 time.time() 的那个模块」上，而不是 core_module
+# （main_logic.core 是门面包，自身不读时钟）。本文件里三类被测方法分别落在：
+#   - main_logic.core.turn      转写 / send_lanlan_response / 语音回声缓存
+#   - main_logic.core.streaming 输入 ingress 时间戳（_stream_data_now 等）
+#   - main_logic.core.tts_runtime  TTS 响应处理与管线清理
+# 旧写法 `setattr(core_module.time, "time", ...)` 其实换掉了整个 stdlib time
+# 模块，靠全局副作用才恰好覆盖到这些模块。
 
 
 FIXED_TS = 1_700_000_000.0
@@ -366,7 +378,7 @@ async def test_takeover_dispatcher_handles_voice_transcript_and_skips_ordinary_u
 async def test_takeover_dispatcher_receives_voice_echo_match_before_suppression(monkeypatch):
     mgr = _make_transcript_manager()
     monkeypatch.setattr(core_module, "HIDE_DIRTY_VOICE_TRANSCRIPTS", True)
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
     mgr._recent_ai_voice_echo_text = "开始比赛吧朋友"
     mgr._recent_ai_voice_echo_at = FIXED_TS
     routed = []
@@ -702,7 +714,9 @@ async def test_one_shot_user_image_records_engagement(
         return "img-b64"
 
     monkeypatch.setattr(core_module, "process_screen_data", _process_after_clock_advance)
-    monkeypatch.setattr(core_module.time, "time", lambda: clock["now"])
+    # ingress 时间戳取自 main_logic.core.streaming._user_input_ingress_time，
+    # 门面 core_module 自己不读时钟。
+    patch_module_clock(monkeypatch, streaming_module, time=lambda: clock["now"])
 
     await core_module.LLMSessionManager._process_stream_data_internal(
         mgr,
@@ -736,7 +750,8 @@ async def test_cached_user_image_preserves_server_ingress_time(
     mgr._session_start_circuit_open = False
     mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
     clock = {"now": FIXED_TS}
-    monkeypatch.setattr(core_module.time, "time", lambda: clock["now"])
+    # 同上：ingress 时间戳来自 main_logic.core.streaming。
+    patch_module_clock(monkeypatch, streaming_module, time=lambda: clock["now"])
     monkeypatch.setattr(
         core_module,
         "process_screen_data",
@@ -767,10 +782,11 @@ async def test_stream_data_preserves_router_stamped_text_ingress(monkeypatch):
     mgr._starting_session_count = 1
     mgr.input_cache_lock = asyncio.Lock()
     mgr.pending_input_data = []
-    monkeypatch.setattr(
-        core_module.time,
-        "time",
-        lambda: FIXED_TS + 50.0,
+    # _stream_data_now 的 fallback 采样点在 main_logic.core.streaming。
+    patch_module_clock(
+        monkeypatch,
+        streaming_module,
+        time=lambda: FIXED_TS + 50.0,
     )
 
     await core_module.LLMSessionManager._stream_data_now(
@@ -906,7 +922,8 @@ async def test_cached_text_preserves_server_ingress_time(monkeypatch):
     mgr.pending_agent_callbacks = []
     mgr._fire_task = Mock()
     clock = {"now": FIXED_TS}
-    monkeypatch.setattr(core_module.time, "time", lambda: clock["now"])
+    # 同上：文本 ingress / last_user_*_time 都在 main_logic.core.streaming 采样。
+    patch_module_clock(monkeypatch, streaming_module, time=lambda: clock["now"])
     monkeypatch.setattr(
         core_module,
         "dispatch_text_user_message",
@@ -1480,7 +1497,7 @@ async def test_genuine_voice_transcript_stamps_last_user_message_time(monkeypatc
     """真实非空语音消息既刷 last_user_activity_time 也刷 last_user_message_time。
     后者喂给 mini-game 邀请隐式 dismiss，必须只反映真用户输入。"""
     mgr = _make_transcript_manager()
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
 
     await core_module.LLMSessionManager.handle_input_transcript(
         mgr, "今天天气不错", is_voice_source=True,
@@ -1497,7 +1514,7 @@ async def test_ai_echo_transcript_does_not_stamp_last_user_message_time(monkeypa
     """An AI voice echo is activity, but never a genuine user response."""
     mgr = _make_transcript_manager()
     monkeypatch.setattr(core_module, "HIDE_DIRTY_VOICE_TRANSCRIPTS", True)
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
     mgr._recent_ai_voice_echo_text = "要不要现在跟我一起踢一会儿足球小游戏？"
     mgr._recent_ai_voice_echo_at = FIXED_TS
 
@@ -1517,7 +1534,7 @@ async def test_ai_echo_transcript_does_not_stamp_last_user_message_time(monkeypa
 async def test_empty_voice_transcript_does_not_stamp_last_user_message_time(monkeypatch):
     """An empty voice transcript is activity, but not a genuine user response."""
     mgr = _make_transcript_manager()
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
 
     await core_module.LLMSessionManager.handle_input_transcript(
         mgr, "   ", is_voice_source=True,
@@ -1544,11 +1561,15 @@ async def test_last_user_message_time_uses_transcript_arrival_not_post_await(mon
         calls["n"] += 1
         return 100.0 + calls["n"]
 
-    monkeypatch.setattr(core_module.time, "time", _ticking_time)
+    # 打到真正读时钟的模块上：转写到达时刻取自 main_logic.core.turn 的
+    # time.time()，core_module（main_logic.core 门面）自己不读。此前那版
+    # `setattr(core_module.time, "time", ...)` 之所以生效，靠的正是它其实
+    # replace 了整个 stdlib time 模块——即这条用例一直依赖的是全局副作用。
+    patch_module_clock(monkeypatch, turn_module, time=_ticking_time)
     monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda name, text: None)
 
     async def _dispatcher(name, text, request_id=None):
-        core_module.time.time()  # 模拟 await 期间时钟流逝
+        turn_module.time.time()  # 模拟 await 期间时钟流逝
         mgr.note_user_engagement(at=200.0)
         return False             # 未处理 → 继续普通流程走到真消息块
 
@@ -1569,7 +1590,7 @@ async def test_last_user_message_time_uses_transcript_arrival_not_post_await(mon
 async def test_likely_ai_echo_voice_transcript_is_suppressed(monkeypatch):
     mgr = _make_transcript_manager()
     monkeypatch.setattr(core_module, "HIDE_DIRTY_VOICE_TRANSCRIPTS", True)
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
     mgr._recent_ai_voice_echo_text = "刚才我主动说了一句：要不要休息一下喝点水。"
     mgr._recent_ai_voice_echo_at = FIXED_TS
 
@@ -1587,7 +1608,7 @@ async def test_likely_ai_echo_voice_transcript_is_suppressed(monkeypatch):
 async def test_ai_echo_voice_transcript_switch_can_disable_suppression(monkeypatch):
     mgr = _make_transcript_manager()
     monkeypatch.setattr(core_module, "HIDE_DIRTY_VOICE_TRANSCRIPTS", False)
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
     mgr._recent_ai_voice_echo_text = "刚才我主动说了一句：要不要休息一下喝点水。"
     mgr._recent_ai_voice_echo_at = FIXED_TS
 
@@ -1611,7 +1632,7 @@ async def test_ai_echo_voice_transcript_switch_can_disable_suppression(monkeypat
 async def test_stale_ai_echo_voice_transcript_is_not_suppressed(monkeypatch):
     mgr = _make_transcript_manager()
     monkeypatch.setattr(core_module, "HIDE_DIRTY_VOICE_TRANSCRIPTS", True)
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
     mgr._recent_ai_voice_echo_text = "刚才我主动说了一句：要不要休息一下喝点水。"
     mgr._recent_ai_voice_echo_at = FIXED_TS - 25
 
@@ -1635,7 +1656,7 @@ async def test_stale_ai_echo_voice_transcript_is_not_suppressed(monkeypatch):
 async def test_user_barge_in_different_from_recent_ai_text_is_not_suppressed(monkeypatch):
     mgr = _make_transcript_manager()
     monkeypatch.setattr(core_module, "HIDE_DIRTY_VOICE_TRANSCRIPTS", True)
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
     mgr._recent_ai_voice_echo_text = "刚才我主动说了一句：要不要休息一下喝点水。"
     mgr._recent_ai_voice_echo_at = FIXED_TS
 
@@ -1659,7 +1680,7 @@ async def test_user_barge_in_different_from_recent_ai_text_is_not_suppressed(mon
 async def test_short_keyword_barge_in_from_recent_ai_text_is_not_suppressed(monkeypatch):
     mgr = _make_transcript_manager()
     monkeypatch.setattr(core_module, "HIDE_DIRTY_VOICE_TRANSCRIPTS", True)
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
     mgr._recent_ai_voice_echo_text = "Do you want tea or coffee?"
     mgr._recent_ai_voice_echo_at = FIXED_TS
 
@@ -1701,7 +1722,7 @@ def test_voice_echo_suppression_cache_reset_clears_cross_session_state():
 async def test_send_lanlan_response_defaults_to_skip_display_echo_cache(monkeypatch):
     mgr = _make_manager()
     mgr.use_tts = True
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
 
     await core_module.LLMSessionManager.send_lanlan_response(mgr, "显示文本（括号也显示）")
 
@@ -1714,7 +1735,7 @@ async def test_send_lanlan_response_defaults_to_skip_display_echo_cache(monkeypa
 @pytest.mark.asyncio
 async def test_send_lanlan_response_can_explicitly_remember_voice_echo_with_tts(monkeypatch):
     mgr = _make_manager()
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
     mgr.use_tts = True
 
     await core_module.LLMSessionManager.send_lanlan_response(
@@ -1732,7 +1753,7 @@ async def test_send_lanlan_response_can_explicitly_remember_voice_echo_with_tts(
 async def test_send_lanlan_response_reports_sync_publication_time(monkeypatch):
     """The publication timestamp is sampled at the sync queue boundary."""
     mgr = _make_manager()
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
     publication_times = []
 
     await core_module.LLMSessionManager.send_lanlan_response(
@@ -1800,7 +1821,7 @@ async def test_send_lanlan_response_guard_rechecks_after_focus_cleanup():
 @pytest.mark.asyncio
 async def test_mirror_assistant_speech_confirms_audio_echo_after_tts_audio(monkeypatch):
     mgr = _make_manager()
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
     mgr.tts_thread = _FakeAliveThread()
     mgr.tts_ready = True
     mgr.tts_request_queue = _FakeQueue()
@@ -1840,7 +1861,7 @@ async def test_mirror_assistant_speech_confirms_audio_echo_after_tts_audio(monke
 @pytest.mark.unit
 def test_confirm_pending_ai_voice_echo_promotes_only_next_played_chunk(monkeypatch):
     mgr = _make_manager()
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
 
     core_module.LLMSessionManager._remember_pending_ai_voice_echo(mgr, "speech-1", "已经发出音频的第一句")
     core_module.LLMSessionManager._remember_pending_ai_voice_echo(mgr, "speech-1", "还在队列里的第二句")
@@ -1856,7 +1877,7 @@ def test_confirm_pending_ai_voice_echo_promotes_only_next_played_chunk(monkeypat
 @pytest.mark.unit
 def test_confirm_pending_ai_voice_echo_skips_sidless_confirmation(monkeypatch):
     mgr = _make_manager()
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
 
     core_module.LLMSessionManager._remember_pending_ai_voice_echo(mgr, "speech-1", "无法确认归属的文本")
 
@@ -1872,7 +1893,7 @@ def test_confirm_pending_ai_voice_echo_skips_sidless_confirmation(monkeypatch):
 @pytest.mark.unit
 def test_confirm_pending_ai_voice_echo_promotes_once_per_speech_id(monkeypatch):
     mgr = _make_manager()
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
 
     core_module.LLMSessionManager._remember_pending_ai_voice_echo(mgr, "speech-1", "第一段文本")
     core_module.LLMSessionManager._remember_pending_ai_voice_echo(mgr, "speech-1", "第二段未播文本")
@@ -1888,7 +1909,7 @@ def test_confirm_pending_ai_voice_echo_promotes_once_per_speech_id(monkeypatch):
 @pytest.mark.unit
 def test_confirm_pending_ai_voice_echo_ignores_late_old_speech_id_for_new_pending(monkeypatch):
     mgr = _make_manager()
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
 
     core_module.LLMSessionManager._remember_pending_ai_voice_echo(mgr, "new-speech", "new turn pending text")
 
@@ -1913,7 +1934,7 @@ def test_confirm_pending_ai_voice_echo_ignores_late_old_speech_id_for_new_pendin
 @pytest.mark.asyncio
 async def test_text_first_chunk_drops_stale_pending_echo_before_new_tts(monkeypatch):
     mgr = _make_manager()
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
     mgr.use_tts = True
     mgr.tts_ready = True
     mgr.tts_thread = _FakeAliveThread()
@@ -1943,7 +1964,8 @@ async def test_text_first_chunk_drops_stale_pending_echo_before_new_tts(monkeypa
 @pytest.mark.asyncio
 async def test_sidless_tts_audio_discards_pending_echo(monkeypatch):
     mgr = _make_manager()
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    # tts_response_handler 定义在 main_logic.core.tts_runtime，读时钟的也是它。
+    patch_module_clock(monkeypatch, tts_runtime_module, time=lambda: FIXED_TS)
     mgr.tts_response_queue = queue.Queue()
     mgr.tts_response_queue.put(b"sidless-audio")
     mgr.current_speech_id = "new-turn"
@@ -1975,7 +1997,8 @@ async def test_sidless_tts_audio_discards_pending_echo(monkeypatch):
 @pytest.mark.asyncio
 async def test_failed_tts_audio_send_drops_unplayed_pending_echo(monkeypatch):
     mgr = _make_manager()
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    # 同上：tts_response_handler 在 main_logic.core.tts_runtime。
+    patch_module_clock(monkeypatch, tts_runtime_module, time=lambda: FIXED_TS)
     mgr.tts_response_queue = queue.Queue()
     mgr.tts_response_queue.put(("__audio__", "speech-1", b"failed-audio"))
     send_called = asyncio.Event()
@@ -2006,7 +2029,8 @@ async def test_failed_tts_audio_send_drops_unplayed_pending_echo(monkeypatch):
 @pytest.mark.asyncio
 async def test_clear_tts_pipeline_drops_only_unplayed_echo_cache(monkeypatch):
     mgr = _make_manager()
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    # _clear_tts_pipeline 在 main_logic.core.tts_runtime。
+    patch_module_clock(monkeypatch, tts_runtime_module, time=lambda: FIXED_TS)
     mgr.tts_thread = _FakeAliveThread()
     mgr._recent_ai_voice_echo_text = "已经播出的尾音"
     mgr._recent_ai_voice_echo_at = FIXED_TS
