@@ -10987,6 +10987,7 @@ async def test_first_time_setup_publishes_both_memory_opt_ins():
     }
     during: list = []
     written: list = []
+    persisted: list = []
     plugin = SimpleNamespace(
         _qq_settings=settings,
         _user_sessions={},
@@ -11007,6 +11008,13 @@ async def test_first_time_setup_publishes_both_memory_opt_ins():
     async def _write(overlay=None):
         during.append(dict(plugin._qq_settings))
         written.append(dict(overlay or {}))
+        # persist_business_config writes dict(_qq_settings) updated with the
+        # overlay, so a switch can reach disk through EITHER of them. Asserting
+        # the overlay alone leaves the runtime half of the payload untested —
+        # and that half is exactly where a stale member flag would slip out.
+        payload = dict(plugin._qq_settings)
+        payload.update(overlay or {})
+        persisted.append(payload)
         return True
 
     service.persist_business_config = _write
@@ -11020,6 +11028,7 @@ async def test_first_time_setup_publishes_both_memory_opt_ins():
     assert written[-1] == {
         "group_memory_enabled": True, "group_member_memory_enabled": True,
     }
+    assert persisted[-1]["group_member_memory_enabled"] is True
     assert plugin._qq_settings["group_memory_enabled"] is True
     assert plugin._qq_settings["group_member_memory_enabled"] is True
 
@@ -11028,15 +11037,19 @@ async def test_first_time_setup_publishes_both_memory_opt_ins():
     settings["group_member_memory_enabled"] = False
     await service.save_settings(group_member_memory_enabled=True)
     assert written[-1] == {}
+    assert persisted[-1]["group_member_memory_enabled"] is False
     assert plugin._qq_settings["group_member_memory_enabled"] is False
 
     # A stale child left over from a hand-edited config (or an older build)
     # must not ride along on a parent-only save — that request never asked
-    # for member memory.
+    # for member memory. The clearing has to happen BEFORE the write, or the
+    # stale value is what lands on disk and comes back at the next restart,
+    # this time under a parent that is now on.
     settings["group_memory_enabled"] = False
     settings["group_member_memory_enabled"] = True
     await service.save_settings(group_memory_enabled=True)
     assert written[-1] == {"group_memory_enabled": True}
+    assert persisted[-1]["group_member_memory_enabled"] is False
     assert plugin._qq_settings["group_memory_enabled"] is True
     assert plugin._qq_settings["group_member_memory_enabled"] is False
 
@@ -11052,6 +11065,7 @@ async def test_first_time_setup_publishes_both_memory_opt_ins():
     assert written[-1] == {
         "group_memory_enabled": True, "group_member_memory_enabled": True,
     }
+    assert persisted[-1]["group_member_memory_enabled"] is True
     assert plugin._qq_settings["group_member_memory_enabled"] is True
 
 
