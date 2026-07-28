@@ -249,12 +249,16 @@ class MMDCursorFollow {
     // ═══════════════════ 帧更新 ═══════════════════
 
     update(delta) {
+        const gameModeResourceProtected = this.manager
+            && this.manager._gameModeResourcePhase
+            && this.manager._gameModeResourcePhase !== 'idle';
         if (window.nekoYuiGuideFaceForwardLock === true && this.enabled) {
             this._disabledByYuiGuideFaceForwardLock = true;
             this.setEnabled(false);
         }
         if (
             window.nekoYuiGuideFaceForwardLock !== true
+            && !gameModeResourceProtected
             && this._disabledByYuiGuideFaceForwardLock
             && !this.enabled
             && window.mouseTrackingEnabled !== false

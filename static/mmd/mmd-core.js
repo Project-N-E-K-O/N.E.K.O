@@ -1121,8 +1121,12 @@ class MMDCore {
         // 由 interval 直接调用 _renderFrame，不经过这里）
         const now = performance.now();
         const elapsed = now - this.lastFrameTime;
-        if (elapsed < this.frameTime) return;
-        this.lastFrameTime = now - (elapsed % this.frameTime);
+        const effectiveFrameTime = this.manager._gameModeResourcePhase
+            && this.manager._gameModeResourcePhase !== 'idle'
+            ? Math.max(this.frameTime, 1000 / 15)
+            : this.frameTime;
+        if (elapsed < effectiveFrameTime) return;
+        this.lastFrameTime = now - (elapsed % effectiveFrameTime);
 
         this._renderFrame(now);
     }

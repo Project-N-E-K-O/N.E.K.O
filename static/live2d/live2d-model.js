@@ -537,6 +537,7 @@ Live2DManager.prototype.reloadModelParameters = async function(options = {}) {
     return { applied: true, parameters: effectiveParameters };
 };
 
+// 加载模型
 Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     const isModelManagerPage = document.body?.classList.contains('model-manager-page')
         || window.location.pathname.includes('model_manager');
@@ -589,6 +590,7 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
         if ((window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber' && !isModelManagerPage) {
             try { model && model.destroy && model.destroy({ children: true }); } catch (_) {}
             this._activeLoadToken = (this._activeLoadToken || 0) + 1;
+            this._isLoadingModel = false;
             this.currentModel = null;
             this._modelLoadState = 'idle';
             this._isModelReadyForInteraction = false;
@@ -639,10 +641,12 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
         }
     } finally {
         // 无论成功还是失败，都要释放加载锁
-        this._isLoadingModel = false;
-        if (this._activeLoadToken === loadToken && this._modelLoadState !== 'ready') {
-            this._modelLoadState = 'idle';
-            this._isModelReadyForInteraction = false;
+        if (this._activeLoadToken === loadToken) {
+            this._isLoadingModel = false;
+            if (this._modelLoadState !== 'ready') {
+                this._modelLoadState = 'idle';
+                this._isModelReadyForInteraction = false;
+            }
         }
         // 安全网：如果加载失败导致画布仍处于 CSS 隐藏状态，强制恢复可见性
         try {

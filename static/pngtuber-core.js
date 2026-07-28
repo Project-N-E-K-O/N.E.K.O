@@ -436,6 +436,45 @@
             }
         }
 
+        setGameModeResourceProtection(phase) {
+            const next = phase === 'deep_sleep' ? 'deep_sleep'
+                : (phase === 'soft_protected' ? 'soft_protected' : 'idle');
+            this._gameModeResourcePhase = next;
+            if (next === 'deep_sleep' && !this._renderingPaused) {
+                this._gameModeResourcePausedRendering = true;
+                this.pauseRendering();
+            } else if (next !== 'deep_sleep' && this._gameModeResourcePausedRendering) {
+                this._gameModeResourcePausedRendering = false;
+                this.resumeRendering();
+            }
+            if (next === 'idle') this._gameModeResourceFrameTimes = {};
+        }
+
+        _shouldRunGameModeFrame(timestamp, key) {
+            if (!this._gameModeResourcePhase || this._gameModeResourcePhase === 'idle') return true;
+            const times = this._gameModeResourceFrameTimes || (this._gameModeResourceFrameTimes = {});
+            const previous = Number(times[key] || 0);
+            if (previous && timestamp - previous < (1000 / 15)) return false;
+            times[key] = timestamp;
+            return true;
+        }
+
+        translateModelByScreenPixels(deltaX, deltaY) {
+            const dx = Number(deltaX);
+            const dy = Number(deltaY);
+            if (!Number.isFinite(dx) || !Number.isFinite(dy)) return false;
+            this._gameModeResourceOffsetX = Number(this._gameModeResourceOffsetX || 0) + dx;
+            this._gameModeResourceOffsetY = Number(this._gameModeResourceOffsetY || 0) + dy;
+            this.applyTransform();
+            return true;
+        }
+
+        getModelScreenBounds() {
+            return this.image && typeof this.image.getBoundingClientRect === 'function'
+                ? this.image.getBoundingClientRect()
+                : null;
+        }
+
         stopLayeredAnimationLoop() {
             if (this.layeredAnimationFrame) {
                 if (this._layeredAnimationDriveMode === 'timer') {
@@ -1350,7 +1389,8 @@
                 }
                 // 隐藏标签页跳过 canvas 绘制但保持链条（timer 驱动路径专用；
                 // rAF 路径在隐藏标签页本身就会被浏览器暂停）
-                if (!(typeof document !== 'undefined' && document.hidden)) {
+                if (!(typeof document !== 'undefined' && document.hidden)
+                    && this._shouldRunGameModeFrame(timestamp, 'layered-animation')) {
                     this.drawLayeredState(this.state || 'idle', timestamp);
                 }
                 if (!this.hasMotionLayersForCurrentState()) {
@@ -1427,7 +1467,8 @@
                 }
                 // 纯浏览器隐藏标签页跳过绘制但保持链条（rAF 暂停语义的近似；
                 // Electron 宠物窗禁用了节流，不受影响）
-                if (!(typeof document !== 'undefined' && document.hidden)) {
+                if (!(typeof document !== 'undefined' && document.hidden)
+                    && this._shouldRunGameModeFrame(timestamp, 'layered-breathing')) {
                     this.applyAnimationTransform(timestamp);
                     this.updateOverlayPositionsForAnimation(timestamp);
                 }
@@ -2508,7 +2549,9 @@
             const anchorTranslate = centerAnchored
                 ? 'translate(-50%, -50%)'
                 : 'translate(-100%, -100%)';
-            this.image.style.transform = `${anchorTranslate} translate(${renderPlacement.offsetX}px, ${renderPlacement.offsetY + bounce.y + breathing.y + talkingHop.y}px) scale(${finalScaleX}, ${finalScaleY})`;
+            const runtimeOffsetX = Number(this._gameModeResourceOffsetX || 0);
+            const runtimeOffsetY = Number(this._gameModeResourceOffsetY || 0);
+            this.image.style.transform = `${anchorTranslate} translate(${renderPlacement.offsetX + runtimeOffsetX}px, ${renderPlacement.offsetY + runtimeOffsetY + bounce.y + breathing.y + talkingHop.y}px) scale(${finalScaleX}, ${finalScaleY})`;
         }
 
         getActiveLayoutFields() {
@@ -3325,6 +3368,10 @@
             const tick = (timestamp = performance.now()) => {
                 if (!this.isSpeaking || !analyser || typeof analyser.getByteTimeDomainData !== 'function') {
                     this.stopLipSync();
+                    return;
+                }
+                if (!this._shouldRunGameModeFrame(timestamp, 'lip-sync')) {
+                    this.lipSyncFrame = requestAnimationFrame(tick);
                     return;
                 }
                 analyser.getByteTimeDomainData(dataArray);

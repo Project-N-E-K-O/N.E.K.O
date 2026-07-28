@@ -19,7 +19,7 @@ Coverage focus:
 
 import time
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI
@@ -770,7 +770,6 @@ def test_throttle_dict_bounded(monkeypatch):
         json={"lanlan_name": "NewArrival", "idle_seconds": 0},
     )
     assert resp.status_code == 200
-
     # New entry is in; total size still <= cap.
     assert "NewArrival" in system_router_module._ACTIVITY_SIGNAL_THROTTLE
     assert (
@@ -778,3 +777,53 @@ def test_throttle_dict_bounded(monkeypatch):
     )
     # Oldest entry should have been evicted.
     assert "old_0" not in system_router_module._ACTIVITY_SIGNAL_THROTTLE
+
+
+@pytest.mark.unit
+def test_activity_tracker_passes_only_exact_game_boolean_to_game_mode(monkeypatch):
+    from main_logic import game_mode_resource_protection as game_mode_module
+
+    mgr, tracker = _build_mgr()
+    tracker.get_snapshot_sync.return_value = SimpleNamespace(
+        state="gaming",
+        os_signals_available=True,
+        active_window=SimpleNamespace(category="gaming", subcategory="game"),
+    )
+    ingest = AsyncMock()
+    monkeypatch.setattr(game_mode_module.protector, "ingest_game_snapshot", ingest)
+    client = _build_client(monkeypatch, {"Aria": mgr})
+
+    response = client.post(
+        ACTIVITY_SIGNAL_ENDPOINT,
+        json={"lanlan_name": "Aria", "process_name": "KnownGame.exe"},
+    )
+
+    assert response.status_code == 200
+    kwargs = ingest.await_args.kwargs
+    assert kwargs["exact_game"] is True
+    assert kwargs["valid"] is True
+    assert set(kwargs) == {"exact_game", "valid", "observed_at"}
+
+
+@pytest.mark.unit
+def test_gpu_fallback_gaming_state_is_not_an_exact_game_signal(monkeypatch):
+    from main_logic import game_mode_resource_protection as game_mode_module
+
+    mgr, tracker = _build_mgr()
+    tracker.get_snapshot_sync.return_value = SimpleNamespace(
+        state="gaming",
+        os_signals_available=True,
+        active_window=SimpleNamespace(category="unknown", subcategory=None),
+    )
+    ingest = AsyncMock()
+    monkeypatch.setattr(game_mode_module.protector, "ingest_game_snapshot", ingest)
+    client = _build_client(monkeypatch, {"Aria": mgr})
+
+    response = client.post(
+        ACTIVITY_SIGNAL_ENDPOINT,
+        json={"lanlan_name": "Aria", "gpu_utilization": 99.0},
+    )
+
+    assert response.status_code == 200
+    assert ingest.await_args.kwargs["exact_game"] is False
+    assert ingest.await_args.kwargs["valid"] is True

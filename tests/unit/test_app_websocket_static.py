@@ -42,6 +42,36 @@ def test_websocket_has_no_widget_mode_capability_or_lifecycle_protocol():
     assert "neko:widget-mode-message" not in frontend_source
 
 
+def test_websocket_relays_only_game_resource_protection_events():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    game_mode_block = source.split("response.type.indexOf('game_mode_resource_protection_')", 1)[1].split(
+        "// -------- gemini_response --------",
+        1,
+    )[0]
+
+    assert "new CustomEvent('neko:game-mode-beta-message'" in game_mode_block
+    assert "detail: response" in game_mode_block
+    assert "return;" in game_mode_block
+    assert "game_mode_" + "auto_switch" not in source
+    assert "neko:game-mode-beta-" + "auto-switch" not in source
+
+
+def test_websocket_marks_only_pages_with_game_mode_listener_as_capable():
+    frontend_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    router_source = WEBSOCKET_ROUTER_PATH.read_text(encoding="utf-8")
+
+    assert re.search(
+        r"window\.nekoGameModeBeta\s*\?\s*'\?game_mode_capable=1'\s*:\s*''",
+        frontend_source,
+    )
+    assert re.search(
+        r'websocket\.query_params\.get\(\s*"game_mode_capable"\s*\)\s*==\s*"1"',
+        router_source,
+    )
+    assert re.search(r"mgr\.game_mode_capable\s*=\s*game_mode_capable", router_source)
+
+
 def test_startup_greeting_release_event_replaces_home_tutorial_block_state():
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
 

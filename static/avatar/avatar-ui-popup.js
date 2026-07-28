@@ -392,12 +392,164 @@ function showWidgetModeMutationFailure(error) {
     }
 }
 
+function showGameModeBetaMutationFailure(error) {
+    console.warn('[GameModeBeta] settings mutation failed:', error);
+    const message = window.t
+        ? window.t('settings.gameModeBeta.toggleFailed')
+        : '游戏资源保护切换失败，请稍后重试。';
+    if (typeof window.showStatusToast === 'function') {
+        window.showStatusToast(message, 3000);
+    }
+}
+
 let widgetModeMutationQueue = Promise.resolve();
 
 function queueWidgetModeMutation(operation) {
     const run = function () { return operation(); };
     widgetModeMutationQueue = widgetModeMutationQueue.then(run, run);
     return widgetModeMutationQueue;
+}
+
+function createGameModeBetaDetailPanel(manager, prefix, mainToggleItem) {
+    const panel = manager._createSidePanelContainer();
+    panel.setAttribute('data-neko-sidepanel-type', 'game-mode-beta-details');
+    panel.dataset.nekoNestedSidePanel = 'true';
+    Object.assign(panel.style, {
+        width: '236px',
+        minWidth: '236px',
+        padding: '10px',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'stretch',
+        gap: '10px'
+    });
+
+    const createProtectionToggle = function (idSuffix, i18nKey, fallback) {
+        const row = document.createElement('label');
+        Object.assign(row.style, {
+            display: 'flex', alignItems: 'center', gap: '8px', minHeight: '28px',
+            fontSize: '12px', color: 'var(--neko-popup-text, #333)', cursor: 'pointer'
+        });
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.id = `${prefix}-${idSuffix}`;
+        checkbox.style.flexShrink = '0';
+        const label = document.createElement('span');
+        label.textContent = window.t ? window.t(i18nKey) : fallback;
+        label.setAttribute('data-i18n', i18nKey);
+        row.appendChild(checkbox);
+        row.appendChild(label);
+        panel.appendChild(row);
+        return { row: row, checkbox: checkbox };
+    };
+    const resourceProtectionToggle = createProtectionToggle(
+        'game-mode-resource-protection-on-game',
+        'settings.gameModeBeta.resourceProtectionOnGame',
+        '检测到游戏时降低模型运行资源'
+    );
+    const compactWindowToggle = createProtectionToggle(
+        'game-mode-compact-pet-window',
+        'settings.gameModeBeta.compactPetWindow',
+        'Windows 桌宠临时缩小透明窗口'
+    );
+
+    const privacy = document.createElement('p');
+    privacy.textContent = window.t
+        ? window.t('settings.gameModeBeta.privacyNote')
+        : '只使用 Activity Tracker 的精确游戏识别结果；不截图、不读取屏幕像素，也不会上传遥测。';
+    privacy.setAttribute('data-i18n', 'settings.gameModeBeta.privacyNote');
+    Object.assign(privacy.style, {
+        margin: '0', fontSize: '10px', lineHeight: '1.45', color: 'var(--neko-popup-muted, #777)'
+    });
+    panel.appendChild(privacy);
+
+    const exitProtectionButton = document.createElement('button');
+    exitProtectionButton.type = 'button';
+    exitProtectionButton.textContent = window.t
+        ? window.t('settings.gameModeBeta.exitResourceProtection')
+        : '退出本次资源保护';
+    exitProtectionButton.setAttribute('data-i18n', 'settings.gameModeBeta.exitResourceProtection');
+    Object.assign(exitProtectionButton.style, {
+        minHeight: '30px', padding: '5px 8px', borderRadius: '6px',
+        border: '1px solid var(--neko-popup-indicator-border, #ccc)',
+        background: 'transparent', color: 'var(--neko-popup-text, #333)',
+        fontSize: '11px', cursor: 'pointer', display: 'none'
+    });
+    panel.appendChild(exitProtectionButton);
+
+    let syncing = false;
+    const render = function () {
+        const api = window.nekoGameModeBeta;
+        const mainEnabled = !!(api && typeof api.isEnabled === 'function' && api.isEnabled());
+        const settings = api && typeof api.getSettings === 'function'
+            ? api.getSettings()
+            : {
+                resource_protection_on_game: true,
+                compact_pet_window_enabled: true
+            };
+        const gameModeState = api && typeof api.getState === 'function' ? api.getState() : null;
+        const resourceActive = !!(
+            gameModeState
+            && gameModeState.backendState
+            && gameModeState.backendState.resource_session_phase
+            && gameModeState.backendState.resource_session_phase !== 'idle'
+        );
+        syncing = true;
+        resourceProtectionToggle.checkbox.checked = settings.resource_protection_on_game !== false;
+        compactWindowToggle.checkbox.checked = settings.compact_pet_window_enabled !== false;
+        [resourceProtectionToggle, compactWindowToggle].forEach(function (toggle) {
+            toggle.checkbox.disabled = !mainEnabled;
+            toggle.row.style.opacity = mainEnabled ? '1' : '0.5';
+            toggle.row.style.cursor = mainEnabled ? 'pointer' : 'default';
+        });
+        exitProtectionButton.style.display = resourceActive ? 'block' : 'none';
+        exitProtectionButton.disabled = !resourceActive;
+        syncing = false;
+    };
+
+    const persistSettings = function (settings) {
+        const api = window.nekoGameModeBeta;
+        if (!api || typeof api.setSettings !== 'function') {
+            render();
+            return;
+        }
+        void Promise.resolve()
+            .then(function () { return api.setSettings(settings); })
+            .then(function (ok) {
+                render();
+                if (!ok) showGameModeBetaMutationFailure(new Error('settings update rejected'));
+            })
+            .catch(function (error) {
+                render();
+                showGameModeBetaMutationFailure(error);
+            });
+    };
+
+    resourceProtectionToggle.checkbox.addEventListener('change', function () {
+        if (syncing || resourceProtectionToggle.checkbox.disabled || !window.nekoGameModeBeta) return;
+        persistSettings({ resource_protection_on_game: resourceProtectionToggle.checkbox.checked });
+    });
+    compactWindowToggle.checkbox.addEventListener('change', function () {
+        if (syncing || compactWindowToggle.checkbox.disabled || !window.nekoGameModeBeta) return;
+        persistSettings({ compact_pet_window_enabled: compactWindowToggle.checkbox.checked });
+    });
+    exitProtectionButton.addEventListener('click', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        const runtime = window.nekoGameModeResourceRuntime;
+        if (!runtime || typeof runtime.exitCurrentSession !== 'function') return;
+        exitProtectionButton.disabled = true;
+        void Promise.resolve(runtime.exitCurrentSession()).finally(render);
+    });
+    window.addEventListener('neko:game-mode-beta-state', render);
+    if (window.nekoGameModeBeta && typeof window.nekoGameModeBeta.refreshSettings === 'function') {
+        void window.nekoGameModeBeta.refreshSettings().then(render);
+    } else {
+        render();
+    }
+
+    panel._anchorElement = mainToggleItem;
+    return panel;
 }
 
 function createAdvancedSettingsSidePanel(manager, prefix, popup) {
@@ -429,6 +581,51 @@ function createAdvancedSettingsSidePanel(manager, prefix, popup) {
     panel.appendChild(widgetModeItem);
 
     panel._widgetModeToggleItem = widgetModeItem;
+
+    const gameModeItem = manager._createSettingsToggleItem({
+        id: 'game-mode-beta',
+        label: window.t ? window.t('settings.toggles.gameModeBeta') : '游戏资源保护 Beta',
+        labelKey: 'settings.toggles.gameModeBeta',
+        tooltipKey: 'settings.toggles.gameModeBetaTooltip',
+        alwaysTinted: true
+    });
+    gameModeItem.style.display = 'flex';
+    gameModeItem.style.alignItems = 'center';
+    gameModeItem.style.minWidth = '0';
+    const gameModeLabel = gameModeItem.querySelector('label');
+    if (gameModeLabel) {
+        gameModeLabel.style.flex = '1 1 auto';
+        gameModeLabel.style.minWidth = '0';
+        gameModeLabel.style.height = 'auto';
+        gameModeLabel.style.lineHeight = '1.25';
+        gameModeLabel.style.whiteSpace = 'normal';
+    }
+
+    const detailButton = document.createElement('button');
+    detailButton.type = 'button';
+    detailButton.id = `${prefix}-game-mode-beta-details`;
+    detailButton.textContent = '›';
+    detailButton.setAttribute('aria-label', window.t ? window.t('settings.gameModeBeta.details') : '详情');
+    Object.assign(detailButton.style, {
+        marginLeft: 'auto', width: '28px', height: '28px', border: '0', background: 'transparent',
+        color: 'var(--neko-popup-text, #333)', fontSize: '20px', lineHeight: '1', cursor: 'pointer', flexShrink: '0'
+    });
+    detailButton.addEventListener('click', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (detailPanel && typeof detailPanel._expand === 'function') detailPanel._expand();
+    });
+    gameModeItem.appendChild(detailButton);
+    panel.appendChild(gameModeItem);
+
+    const detailPanel = createGameModeBetaDetailPanel(manager, prefix, gameModeItem);
+    detailPanel._anchorElement = detailButton;
+    detailPanel._popupElement = popup;
+    manager._attachSidePanelHover(detailButton, detailPanel);
+    document.body.appendChild(detailPanel);
+
+    panel._gameModeToggleItem = gameModeItem;
+    panel._gameModeDetailPanel = detailPanel;
     document.body.appendChild(panel);
     return panel;
 }
@@ -1766,6 +1963,7 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
             'chat-settings',
             'animation-settings',
             'advanced-settings',
+            'game-mode-beta-details',
             'interval-proactive-chat',
             'interval-proactive-vision',
             'character-settings'
@@ -2318,6 +2516,8 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         checkbox.checked = window.nekoIdleCatAudio.isEnabled();
     } else if (toggle.id === 'widget-mode' && window.nekoWidgetMode && typeof window.nekoWidgetMode.isEnabled === 'function') {
         checkbox.checked = window.nekoWidgetMode.isEnabled();
+    } else if (toggle.id === 'game-mode-beta' && window.nekoGameModeBeta && typeof window.nekoGameModeBeta.isEnabled === 'function') {
+        checkbox.checked = window.nekoGameModeBeta.isEnabled();
     }
 
     const indicator = document.createElement('div');
@@ -2395,6 +2595,14 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         toggleItem._nekoUpdateWidgetModeStatus = function () {
             if (window.nekoWidgetMode && typeof window.nekoWidgetMode.isEnabled === 'function') {
                 checkbox.checked = window.nekoWidgetMode.isEnabled();
+            }
+            updateStyle();
+        };
+    }
+    if (toggle.id === 'game-mode-beta') {
+        toggleItem._nekoUpdateGameModeBetaStatus = function () {
+            if (window.nekoGameModeBeta && typeof window.nekoGameModeBeta.isEnabled === 'function') {
+                checkbox.checked = window.nekoGameModeBeta.isEnabled();
             }
             updateStyle();
         };
@@ -2529,6 +2737,20 @@ function createSettingsToggleItem(manager, prefix, toggle) {
                             return false;
                         });
                 });
+            }
+        } else if (toggle.id === 'game-mode-beta') {
+            if (window.nekoGameModeBeta && typeof window.nekoGameModeBeta.setEnabled === 'function') {
+                void Promise.resolve()
+                    .then(function () { return window.nekoGameModeBeta.setEnabled(isChecked); })
+                    .then(function (ok) {
+                        if (!ok) checkbox.checked = !isChecked;
+                        updateStyle();
+                    })
+                    .catch(function (error) {
+                        checkbox.checked = !isChecked;
+                        updateStyle();
+                        showGameModeBetaMutationFailure(error);
+                    });
             }
         }
     };
