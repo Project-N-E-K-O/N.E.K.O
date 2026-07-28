@@ -684,6 +684,16 @@ def test_owner_death_cleans_up_then_exits(monkeypatch):
 
     launcher._handle_owner_death("stdin_eof")
 
+    # Bounded join before asserting. _handle_owner_death hands off to a thread and
+    # returns immediately, so without this the assertions race the teardown — and
+    # worse, a thread that outlives the test runs after monkeypatch has restored
+    # the real os._exit and os.killpg, which can take the whole pytest session
+    # down or, observed in practice, let a failing session exit 0.
+    finisher = launcher._owner_death_finisher
+    assert finisher is not None
+    finisher.join(10)
+    assert not finisher.is_alive(), "owner-death finisher outlived the test"
+
     # No "release": the lock is deliberately held until the process dies, so that
     # it is never free while this generation is still sweeping its process group.
     assert order == [
@@ -793,6 +803,16 @@ def test_owner_death_escalates_term_then_kill_across_the_group(monkeypatch):
     monkeypatch.setattr(launcher.os, "_exit", lambda _code: None)
 
     launcher._handle_owner_death("parent_handle")
+
+    # Bounded join before asserting. _handle_owner_death hands off to a thread and
+    # returns immediately, so without this the assertions race the teardown — and
+    # worse, a thread that outlives the test runs after monkeypatch has restored
+    # the real os._exit and os.killpg, which can take the whole pytest session
+    # down or, observed in practice, let a failing session exit 0.
+    finisher = launcher._owner_death_finisher
+    assert finisher is not None
+    finisher.join(10)
+    assert not finisher.is_alive(), "owner-death finisher outlived the test"
 
     assert killed == [
         (os.getpid(), signal.SIGTERM),

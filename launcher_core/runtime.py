@@ -465,6 +465,17 @@ def _spawn_restarted_launcher() -> None:
     # started. The replacement inherits the Job at spawn time, so clearing the
     # flag immediately afterwards is still in time to spare it.
     #
+    # Known residual, POSIX: if this generation happens to lead its own process
+    # group, the replacement inherits that pgid but is not its leader, so
+    # _own_process_group_id() returns None for it and a later owner death skips
+    # the group sweep. Only reachable where the *first* generation was a group
+    # leader — a terminal job, or an owner that spawned us detached — since the
+    # normal shape leaves us inside the owner's group, where no generation ever
+    # had that anchor. Not fixed by giving the replacement its own group: that
+    # means setpgid, which would leave the owner's group and defeat the owner's
+    # own sweep, i.e. exactly the escape this branch exists to remove. Setting
+    # NEKO_OWNER_RELAUNCH avoids the self-spawn path entirely.
+    #
     # Known residual, Windows self-spawn path only: clearing the flag also
     # un-manages anything that outlived cleanup_servers() in the outgoing Job
     # (plugins, MCP servers, Chromium). The replacement's own setup_job_object()
@@ -583,6 +594,13 @@ def _maybe_schedule_storage_restart() -> bool:
             "relaunch": "owner" if owner_relaunch else "self",
         },
     )
+    if _owner_death_in_progress:
+        # The owner died while we were resolving the storage layout. The entry
+        # check above was true when we started; this is the commit point, and
+        # past it we would release the lock and spawn a replacement for an owner
+        # that no longer exists.
+        return False
+
     release_single_instance_ownership()
     if owner_relaunch:
         # 前台进程不自己复活。属主声明了会重启我们，就干净退出，让下一代由
