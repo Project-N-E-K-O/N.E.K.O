@@ -31,6 +31,7 @@ const EXPECTED_METHOD_NAMES = [
     'resetAllButtons',
     'setButtonActive',
     'setupFloatingButtonsBase',
+    'syncResponsiveButtonVisibility',
     'updateSeparatePopupTriggerIcon',
 ];
 

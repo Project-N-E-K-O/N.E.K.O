@@ -21,6 +21,7 @@ config/memory path lookups of :class:`ConfigManager`.
 """
 import json
 import os
+import secrets
 import sys
 import threading
 import uuid
@@ -944,6 +945,7 @@ class StorageRootsMixin:
         return {
             "version": self.CLOUDSAVE_LOCAL_STATE_VERSION,
             "client_id": str(client_id or uuid.uuid4().hex),
+            "client_proof": secrets.token_urlsafe(32),
             "next_sequence_number": 1,
             "last_applied_manifest_fingerprint": "",
             "last_successful_export_at": "",
@@ -1012,6 +1014,55 @@ class StorageRootsMixin:
             data,
             "saving cloudsave_local_state",
         )
+
+    def ensure_cloudsave_client_credentials(self):
+        """Return a stable client id and secret, persisting either when missing."""
+        needs_persist = not self.cloudsave_local_state_path.exists()
+        state = self.load_cloudsave_local_state()
+        if isinstance(state, dict):
+            client_id = state.get("client_id")
+            client_proof = state.get("client_proof")
+            if (
+                not needs_persist
+                and isinstance(client_id, str)
+                and client_id
+                and isinstance(client_proof, str)
+                and 32 <= len(client_proof) <= 256
+            ):
+                return client_id, client_proof
+
+        # Credential creation/upgrades share the cloud-save cross-process fence.
+        # Re-read after acquiring it so a concurrent export/import cannot have
+        # its sequence number or manifest timestamps overwritten by a stale
+        # dictionary captured above.
+        from utils.cloudsave_runtime import cloud_apply_fence
+
+        with cloud_apply_fence(
+            self,
+            reason="ensure_cloudsave_client_credentials",
+        ):
+            needs_persist = not self.cloudsave_local_state_path.exists()
+            state = self.load_cloudsave_local_state()
+            if not isinstance(state, dict):
+                state = self.build_default_cloudsave_local_state()
+                needs_persist = True
+
+            client_id = state.get("client_id")
+            if not isinstance(client_id, str) or not client_id:
+                client_id = uuid.uuid4().hex
+                state["client_id"] = client_id
+                needs_persist = True
+
+            client_proof = state.get("client_proof")
+            if not isinstance(client_proof, str) or not 32 <= len(client_proof) <= 256:
+                client_proof = secrets.token_urlsafe(32)
+                state["client_proof"] = client_proof
+                state["version"] = self.CLOUDSAVE_LOCAL_STATE_VERSION
+                needs_persist = True
+
+            if needs_persist:
+                self.save_cloudsave_local_state(state)
+            return client_id, client_proof
 
     def load_character_tombstones_state(self, default_value=None):
         """Load per-character tombstone local state."""

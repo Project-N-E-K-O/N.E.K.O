@@ -993,8 +993,12 @@ def test_day1_chat_input_round_rect_highlight_excludes_mid_flow_cursor_scenes():
     assert "persistent: 'chat-input'" not in history_block
     assert "cursorAction: 'move'" in screen_entry_block
     assert "cursorAction: 'wobble'" not in screen_entry_block
+    assert "target: '#${p}-btn-mic'" in screen_entry_block
+    assert "target: '#${p}-btn-screen'" not in screen_entry_block
     assert "cursorAction: 'move'" in screen_invite_block
     assert "cursorAction: 'wobble'" not in screen_invite_block
+    assert "target: '#${p}-btn-mic'" in screen_invite_block
+    assert "target: '#${p}-btn-screen'" not in screen_invite_block
 
     return_control_scene = round_block.split("id: 'day1_takeover_return_control'", 1)[1]
     assert "cursorAction: 'move'" in return_control_scene
@@ -1275,6 +1279,18 @@ def test_avatar_floating_intro_motion_reveals_prepared_tutorial_model():
     assert "this.operationRegistry.run(scene, primaryTarget, narrationStartedAt, narrationPromise, operationContext)" in director_source
 
 
+def test_day1_externalized_intro_greeting_uses_scene_orchestrator_without_cursor_wobble():
+    source = SCENE_ORCHESTRATOR_PATH.read_text(encoding="utf-8")
+    externalized_block = source.split("if (introExternalizedChatSpotlightKind) {", 1)[1].split(
+        "} else if (introChatSpotlightTarget)",
+        1,
+    )[0]
+
+    assert "director.interactionTakeover.setExternalizedChatSpotlight(" in externalized_block
+    assert "introExternalizedChatSpotlightKind" in externalized_block
+    assert "effect: 'wobble'" not in externalized_block
+
+
 def test_day1_legacy_externalized_intro_greeting_does_not_send_cursor_wobble():
     source = read_director_source(ROOT)
     externalized_block = source.split("async playDay1IntroGreetingRoundScene(sceneRunId)", 1)[1].split(
@@ -1325,15 +1341,6 @@ def test_day1_intro_externalized_chat_suppresses_home_pc_cursor_before_hiding_it
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "#2434 一并删掉的 5 个 day1 pair 里，capture_cursor -> return_control 是 "
-        "PC->chat 反方向，没有被同 commit 新增的 releaseExternalizedChatCursorToHome() "
-        "接管，Ghost Cursor 的反向动画因此丢失。归属人在 issue #2490 决定按哪种形态修，"
-        "修好后这里会以 XPASS 转红，届时删掉本 marker。"
-    ),
-)
 def test_day1_return_control_preserves_externalized_cursor_from_capture_scene():
     source = read_director_source(ROOT)
     preserve_block = source.split("shouldPreserveExternalizedChatCursor(previousSceneId, scene)", 1)[1].split(

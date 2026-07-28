@@ -1166,6 +1166,21 @@ def _normalize_memory_prompt_lang(lang: str | None) -> str:
     return "en"
 
 
+def _localized_fact_extraction_prompt(templates: dict[str, str], lang: str | None) -> str:
+    """Resolve a fact prompt for the given language.
+
+    The generated ``text`` field is deliberately **not** pinned to the
+    app-configured language: a fact surfacing in another language is normally
+    just the user code-switching mid-conversation, and forcing a translation
+    risked mangling proper nouns / titles / quoted wording.
+    """
+    lang_key = _normalize_memory_prompt_lang(lang)
+    # Fact extraction predates a full Traditional-Chinese template. Reuse the
+    # Chinese instructions for zh-TW.
+    template_key = "zh" if lang_key == "zh-TW" else lang_key
+    return _loc(templates, template_key)
+
+
 def render_profile_rename_event_context(
     lang: str | None,
     old_name: str,
@@ -1442,7 +1457,7 @@ Retorne um array JSON (se não houver fatos a extrair, retorne []):
 
 
 def get_fact_extraction_prompt(lang: str = "zh") -> str:
-    return _loc(FACT_EXTRACTION_PROMPT, lang)
+    return _localized_fact_extraction_prompt(FACT_EXTRACTION_PROMPT, lang)
 
 
 # ---------- fact_extraction_ai_aware_prompt → i18n dict ----------
@@ -1681,7 +1696,7 @@ Retorne um array JSON (se não houver fatos adicionais a extrair, retorne []):
 
 
 def get_fact_extraction_ai_aware_prompt(lang: str = "zh") -> str:
-    return _loc(FACT_EXTRACTION_AI_AWARE_PROMPT, lang)
+    return _localized_fact_extraction_prompt(FACT_EXTRACTION_AI_AWARE_PROMPT, lang)
 
 
 # backward compat

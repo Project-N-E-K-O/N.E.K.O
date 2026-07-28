@@ -229,7 +229,7 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Build all frontend projects
+      - name: Build production frontend projects
         shell: bash
         run: |
           ./build_frontend.sh

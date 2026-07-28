@@ -12,7 +12,24 @@ on:
       - 'plugin/**'
       - 'static/avatar/avatar-ui-buttons/**'
       - 'tests/unit/test_avatar_return_button_idle_tiers_static.py'
+      - 'main_routers/card_drop_router.py'
+      - 'main_routers/community_oauth.py'
+      - 'main_routers/system_router/**'
+      - 'main_logic/card_forge_facts.py'
+      - 'main_logic/card_cache/**'
+      - 'main_logic/facts_sync/**'
+      - 'main_logic/forge_credit_ledger.py'
+      - 'local_server/card_forge_server/forge_story_generator.py'
+      - 'tests/unit/test_card_cache_puller.py'
+      - 'tests/unit/test_card_forge_story_generator.py'
+      - 'tests/unit/test_card_drop_session_facts.py'
+      - 'tests/unit/test_card_drop_steam_pkce.py'
+      - 'tests/unit/test_community_oauth.py'
+      - 'tests/unit/test_facts_sync_worker.py'
+      - 'tests/unit/test_forge_credit_ledger.py'
+      - 'tests/unit/test_neko_warthunder_review_regressions.py'
       - 'tests/unit/test_plugin_sdk_packaging.py'
+      - 'tests/unit/test_system_status_router.py'
       - 'specs/launcher.spec'
       - '.github/workflows/plugin-tests.yml'
       # Dependency changes alter the plugin test/runtime environment (e.g.
@@ -26,7 +43,24 @@ on:
       - 'plugin/**'
       - 'static/avatar/avatar-ui-buttons/**'
       - 'tests/unit/test_avatar_return_button_idle_tiers_static.py'
+      - 'main_routers/card_drop_router.py'
+      - 'main_routers/community_oauth.py'
+      - 'main_routers/system_router/**'
+      - 'main_logic/card_forge_facts.py'
+      - 'main_logic/card_cache/**'
+      - 'main_logic/facts_sync/**'
+      - 'main_logic/forge_credit_ledger.py'
+      - 'local_server/card_forge_server/forge_story_generator.py'
+      - 'tests/unit/test_card_cache_puller.py'
+      - 'tests/unit/test_card_forge_story_generator.py'
+      - 'tests/unit/test_card_drop_session_facts.py'
+      - 'tests/unit/test_card_drop_steam_pkce.py'
+      - 'tests/unit/test_community_oauth.py'
+      - 'tests/unit/test_facts_sync_worker.py'
+      - 'tests/unit/test_forge_credit_ledger.py'
+      - 'tests/unit/test_neko_warthunder_review_regressions.py'
       - 'tests/unit/test_plugin_sdk_packaging.py'
+      - 'tests/unit/test_system_status_router.py'
       - 'specs/launcher.spec'
       - '.github/workflows/plugin-tests.yml'
       - 'pyproject.toml'
@@ -86,4 +120,13 @@ jobs:
           uv run pytest
           tests/unit/test_avatar_return_button_idle_tiers_static.py
           tests/unit/test_plugin_sdk_packaging.py
+          tests/unit/test_card_cache_puller.py
+          tests/unit/test_card_forge_story_generator.py
+          tests/unit/test_card_drop_session_facts.py
+          tests/unit/test_card_drop_steam_pkce.py
+          tests/unit/test_community_oauth.py
+          tests/unit/test_facts_sync_worker.py
+          tests/unit/test_forge_credit_ledger.py
+          tests/unit/test_neko_warthunder_review_regressions.py
+          tests/unit/test_system_status_router.py
           -q

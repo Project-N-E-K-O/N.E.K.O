@@ -138,6 +138,344 @@
     function resetSessionButton() { return document.getElementById('resetSessionButton'); }
     function statusElement()      { return document.getElementById('status'); }
 
+    // ======================== 屏幕共享开关按钮（设置面板内嵌） ========================
+    // 开关按钮从屏幕源子窗口底部移到「屏幕共享」与「选择麦克风」两个设置项中间；
+    // 启用时播放像素扫过动画（参考视频按钮的像素填充效果）。
+    // 共享状态以隐藏的 #screenButton 的 .active class 为准（见 common_ui.js）。
+
+    var shareToggleButtonRegistry = [];
+    var shareToggleStateObserver = null;
+    var shareToggleObserverRetryTimer = null;
+
+    function isScreenShareActive() {
+        var btn = screenButton();
+        return !!(btn && btn.classList.contains('active'));
+    }
+
+    function injectShareToggleStyles() {
+        if (document.getElementById('neko-share-toggle-styles')) return;
+        var style = document.createElement('style');
+        style.id = 'neko-share-toggle-styles';
+        style.textContent = [
+            // 未启用：白色胶囊轨道（仿参考视频）
+            '.neko-share-toggle-btn{position:relative;overflow:hidden;width:100%;box-sizing:border-box;min-height:44px;padding:10px 48px;margin:4px 0 6px;border:1px solid rgba(0,0,0,.07);border-radius:999px;background:#f4f4f7;color:var(--neko-popup-text,#333);cursor:pointer;font-size:14px;font-weight:600;pointer-events:auto;transition:color .2s ease,box-shadow .2s ease,transform .1s ease;}',
+            '.neko-share-toggle-btn:hover{box-shadow:inset 0 0 0 1px rgba(0,0,0,.05);}',
+            '.neko-share-toggle-btn:active{transform:scale(.97);}',
+            '.neko-share-toggle-btn:disabled{opacity:.6;cursor:default;}',
+            // 未开语音会话时点击的抖动提示（明确反馈「点到了但不能用」）
+            '@keyframes nekoShareToggleNudge{0%,100%{transform:translateX(0);}25%{transform:translateX(-3px);}75%{transform:translateX(3px);}}',
+            '.neko-share-toggle-btn.is-nudged{animation:nekoShareToggleNudge .12s ease 2;}',
+            '.neko-share-toggle-btn.is-active{color:#fff;}',
+            // 右端的紫色目标点
+            '.neko-share-toggle-btn .neko-share-toggle-goal{position:absolute;z-index:0;top:50%;right:16px;width:6px;height:6px;margin-top:-3px;border-radius:50%;background:#8a5ce8;pointer-events:none;}',
+            '.neko-share-toggle-btn .neko-share-toggle-label{position:relative;z-index:1;display:block;text-align:center;pointer-events:none;transition:color .2s ease;}',
+            // 文字延迟变白：等像素填充波前扫到中部再切换，避免白字落在白轨道上
+            '.neko-share-toggle-btn.is-active .neko-share-toggle-label{transition:color .3s ease .35s;}',
+            // 白色滑块：默认在左端，启用后滑到右端（始终盖在像素层之上）
+            '.neko-share-toggle-btn .neko-share-toggle-knob{position:absolute;z-index:2;top:4px;bottom:4px;left:4px;width:32px;border-radius:10px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.18);pointer-events:none;transition:left .4s ease;}',
+            '.neko-share-toggle-btn.is-active .neko-share-toggle-knob{left:calc(100% - 36px);}',
+            // 像素填充画布：低分辨率画布经 CSS 放大 + pixelated，呈现马赛克块感
+            '.neko-share-toggle-btn canvas.neko-share-toggle-fill{position:absolute;inset:0;z-index:0;width:100%;height:100%;pointer-events:none;opacity:0;transition:opacity .12s linear;image-rendering:pixelated;}',
+            '.neko-share-toggle-btn.is-active canvas.neko-share-toggle-fill{opacity:1;}',
+            // 迷你版：嵌在「屏幕共享」设置行右侧的行内胶囊开关（未开启为灰色轨道 + 白色旋钮）
+            '.neko-share-toggle-btn.neko-share-toggle-mini{display:inline-block;width:64px;min-height:26px;height:26px;padding:0;margin:0;flex-shrink:0;align-self:center;cursor:pointer;background:#e2e2e8;border-color:rgba(0,0,0,.05);}',
+            '.neko-share-toggle-mini .neko-share-toggle-label{display:none;}',
+            '.neko-share-toggle-mini .neko-share-toggle-knob{width:18px;top:3px;bottom:3px;left:3px;border-radius:7px;}',
+            '.neko-share-toggle-mini.is-active .neko-share-toggle-knob{left:calc(100% - 21px);}',
+            '.neko-share-toggle-mini .neko-share-toggle-goal{right:8px;width:5px;height:5px;margin-top:-2.5px;}',
+            '.neko-share-toggle-btn.is-busy{opacity:.6;cursor:default;}'
+        ].join('\n');
+        document.head.appendChild(style);
+    }
+
+    // ---- 像素溶解引擎：仿参考视频的随机马赛克扫过效果 ----
+    // 色板以中深紫为主，浅紫仅作零星高光（与参考视频一致）
+    var SHARE_PIXEL_PALETTE = ['#8a5ce8', '#8f63ec', '#9772f0', '#9772f0', '#a181f5', '#a181f5', '#b79fff', '#cdbdff'];
+    var SHARE_PIXEL_CELL_PX = 3;      // 每个像素块的 CSS 尺寸
+    var SHARE_PIXEL_JITTER = 0.2;     // 填充前沿的随机抖动幅度（产生锯齿边缘与前置散点）
+    var SHARE_PIXEL_FADE = 0.15;      // 前沿软过渡宽度（像素透明度渐显，形成渐变边）
+    var SHARE_PIXEL_MIN_ALPHA = 0.3;  // 左端最终透明度上限（形成视频的浅紫渐变尾）
+    var SHARE_PIXEL_FILL_MS = 1300;   // 启用扫过时长
+    var SHARE_PIXEL_SHIMMER_MS = 100; // 填满后像素闪烁间隔
+
+    function createSharePixelFx(canvas) {
+        var ctx = canvas.getContext('2d');
+        var cols = 0;
+        var rows = 0;
+        var seeds = null;   // 前沿抖动随机数
+        var tints = null;   // 每格颜色索引
+        var spans = null;   // 少量格子画成 2x2，模拟视频里大小不一的块
+        var progress = 0;
+        var rafId = null;
+        var shimmerTimer = null;
+
+        function resize() {
+            var host = canvas.parentElement;
+            var w = host ? host.clientWidth : 0;
+            var h = host ? host.clientHeight : 0;
+            var nextCols = Math.max(1, Math.round(w / SHARE_PIXEL_CELL_PX));
+            var nextRows = Math.max(1, Math.round(h / SHARE_PIXEL_CELL_PX));
+            if (nextCols === cols && nextRows === rows && seeds) return;
+            cols = nextCols;
+            rows = nextRows;
+            canvas.width = cols;
+            canvas.height = rows;
+            var count = cols * rows;
+            seeds = new Float32Array(count);
+            tints = new Uint8Array(count);
+            spans = new Uint8Array(count);
+            for (var i = 0; i < count; i++) {
+                seeds[i] = Math.random();
+                tints[i] = (Math.random() * SHARE_PIXEL_PALETTE.length) | 0;
+                spans[i] = Math.random() < 0.12 ? 1 : 0;
+            }
+        }
+
+        function draw() {
+            resize();
+            ctx.clearRect(0, 0, cols, rows);
+            if (progress <= 0) return;
+            var spread = 1 - SHARE_PIXEL_JITTER;
+            for (var y = 0; y < rows; y++) {
+                for (var x = 0; x < cols; x++) {
+                    var i = y * cols + x;
+                    var xNorm = cols <= 1 ? 1 : x / (cols - 1);
+                    // 从右向左推进；阈值叠加随机抖动形成不规则前沿
+                    var threshold = (1 - xNorm) * spread + seeds[i] * SHARE_PIXEL_JITTER;
+                    // 前沿软过渡：刚越线的像素半透明，逐渐加深（视频的渐变边）
+                    var fade = (progress - threshold) / SHARE_PIXEL_FADE;
+                    if (fade > 0) {
+                        var alpha = fade >= 1 ? 1 : fade;
+                        // 越靠左透明度越低，填满后左端保留浅紫渐变尾
+                        alpha *= SHARE_PIXEL_MIN_ALPHA + (1 - SHARE_PIXEL_MIN_ALPHA) * xNorm;
+                        ctx.globalAlpha = alpha;
+                        ctx.fillStyle = SHARE_PIXEL_PALETTE[tints[i]];
+                        var big = spans[i];
+                        ctx.fillRect(x, y, big ? 2 : 1, big ? 2 : 1);
+                    }
+                }
+            }
+            ctx.globalAlpha = 1;
+        }
+
+        function stopShimmer() {
+            if (shimmerTimer) { clearInterval(shimmerTimer); shimmerTimer = null; }
+        }
+
+        function startShimmer() {
+            stopShimmer();
+            // 闪烁点随机出现，但整体沿一个从右向左移动的波前依次点亮（仿参考视频）
+            var sweepX = cols - 1;
+            var band = Math.max(2, Math.round(cols * 0.15));
+            shimmerTimer = setInterval(function () {
+                if (!canvas.isConnected) { stopShimmer(); return; }
+                // 随机改写少量格子的色阶，形成填满后的闪烁感（位置集中在波前附近）
+                var twinkles = Math.max(1, Math.round(cols * rows * 0.025));
+                for (var n = 0; n < twinkles; n++) {
+                    var x = sweepX + ((Math.random() * band) | 0);
+                    if (x >= cols) x = cols - 1;
+                    var y = (Math.random() * rows) | 0;
+                    var i = y * cols + x;
+                    tints[i] = (Math.random() * SHARE_PIXEL_PALETTE.length) | 0;
+                }
+                draw();
+                sweepX -= Math.max(1, Math.round(cols * 0.12));
+                if (sweepX < 0) sweepX = cols - 1;
+            }, SHARE_PIXEL_SHIMMER_MS);
+        }
+
+        function cancelAnimation() {
+            if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+        }
+
+        function animateTo(target, done) {
+            cancelAnimation();
+            var from = progress;
+            var distance = Math.abs(target - from);
+            if (distance <= 0) { if (done) done(); return; }
+            var duration = SHARE_PIXEL_FILL_MS * distance;
+            var startTime = null;
+            function frame(now) {
+                if (!canvas.isConnected) { rafId = null; return; }
+                if (startTime === null) startTime = now;
+                var t = Math.min(1, (now - startTime) / duration);
+                progress = from + (target - from) * t;
+                draw();
+                if (t < 1) {
+                    rafId = requestAnimationFrame(frame);
+                } else {
+                    rafId = null;
+                    if (done) done();
+                }
+            }
+            rafId = requestAnimationFrame(frame);
+        }
+
+        return {
+            activate: function (instant) {
+                resize();
+                stopShimmer();
+                if (instant) {
+                    cancelAnimation();
+                    progress = 1;
+                    draw();
+                    startShimmer();
+                } else {
+                    animateTo(1, startShimmer);
+                }
+            },
+            deactivate: function (instant, done) {
+                stopShimmer();
+                if (instant) {
+                    cancelAnimation();
+                    progress = 0;
+                    draw();
+                    if (done) done();
+                } else {
+                    animateTo(0, done);
+                }
+            },
+            // 已处于开启状态时再次点击：从头重播一次开启扫过动画
+            replay: function () {
+                resize();
+                stopShimmer();
+                progress = 0;
+                draw();
+                animateTo(1, startShimmer);
+            }
+        };
+    }
+
+    function syncShareToggleButtons(instant) {
+        shareToggleButtonRegistry = shareToggleButtonRegistry.filter(function (btn) { return btn.isConnected; });
+        var active = isScreenShareActive();
+        shareToggleButtonRegistry.forEach(function (btn) {
+            if (typeof btn._nekoSetShareActive === 'function') btn._nekoSetShareActive(active, !!instant);
+        });
+    }
+
+    function ensureShareToggleStateObserver() {
+        if (shareToggleStateObserver) return;
+        var target = screenButton();
+        if (!target) {
+            if (!shareToggleObserverRetryTimer) {
+                shareToggleObserverRetryTimer = setTimeout(function () {
+                    shareToggleObserverRetryTimer = null;
+                    ensureShareToggleStateObserver();
+                }, 500);
+            }
+            return;
+        }
+        shareToggleStateObserver = new MutationObserver(function () { syncShareToggleButtons(false); });
+        shareToggleStateObserver.observe(target, { attributes: true, attributeFilter: ['class'] });
+    }
+
+    function createScreenShareToggleButton(options) {
+        injectShareToggleStyles();
+        ensureShareToggleStateObserver();
+
+        var mini = !!(options && options.mini);
+        // 用 span + role=button：迷你版会嵌在设置行 <button> 内，原生 button 嵌套是非法 HTML
+        var button = document.createElement('span');
+        button.className = 'neko-share-toggle-btn' + (mini ? ' neko-share-toggle-mini' : '');
+        button.setAttribute('role', 'button');
+        button.setAttribute('tabindex', '0');
+        button.dataset.nekoScreenShareAction = 'toggle';
+
+        var fill = document.createElement('canvas');
+        fill.className = 'neko-share-toggle-fill';
+        fill.setAttribute('aria-hidden', 'true');
+
+        var goal = document.createElement('span');
+        goal.className = 'neko-share-toggle-goal';
+        goal.setAttribute('aria-hidden', 'true');
+
+        var label = document.createElement('span');
+        label.className = 'neko-share-toggle-label';
+
+        var knob = document.createElement('span');
+        knob.className = 'neko-share-toggle-knob';
+        knob.setAttribute('aria-hidden', 'true');
+
+        button.appendChild(fill);
+        button.appendChild(goal);
+        button.appendChild(label);
+        button.appendChild(knob);
+
+        function shareLabel() { return window.t ? window.t('buttons.screenShare') : 'Screen Share'; }
+        function stopLabel() { return window.t ? window.t('voiceControl.stopShare') : 'Stop Sharing'; }
+
+        var pixelFx = createSharePixelFx(fill);
+        button._nekoSetShareActive = function (active, instant) {
+            label.textContent = active ? stopLabel() : shareLabel();
+            button.setAttribute('aria-pressed', active ? 'true' : 'false');
+            if (button._nekoShareActive === active) return;
+            button._nekoShareActive = active;
+            if (active) {
+                button.classList.add('is-active');
+                pixelFx.activate(!!instant);
+            } else {
+                // 反向溶解期间保持画布可见，结束后再隐藏
+                pixelFx.deactivate(!!instant, function () {
+                    if (!button._nekoShareActive) button.classList.remove('is-active');
+                });
+                if (instant) button.classList.remove('is-active');
+            }
+        };
+
+        async function handleToggleClick(event) {
+            event.stopPropagation();
+            if (button._nekoShareBusy) return;
+            var active = isScreenShareActive();
+            console.log('[屏幕共享开关] 点击, 当前状态:', active ? '共享中' : '未共享', ', 语音会话:', !!window.isRecording);
+            if (active) {
+                // 开启状态下每次点击都重播一次开启时的像素扫过动画
+                pixelFx.replay();
+            }
+            button._nekoShareBusy = true;
+            button.classList.add('is-busy');
+            try {
+                if (active && typeof window.stopScreenSharing === 'function') {
+                    await window.stopScreenSharing();
+                } else if (!active && typeof window.startScreenSharing === 'function') {
+                    if (!window.isRecording) {
+                        // 抖动提示 + Toast，明确告知需要先开语音会话
+                        button.classList.remove('is-nudged');
+                        void button.offsetWidth;
+                        button.classList.add('is-nudged');
+                        setTimeout(function () { button.classList.remove('is-nudged'); }, 300);
+                        if (typeof window.showStatusToast === 'function') {
+                            window.showStatusToast(
+                                window.t ? window.t('app.screenShareRequiresVoice') : '屏幕分享仅用于音视频通话',
+                                3000
+                            );
+                        }
+                        return;
+                    }
+                    await window.startScreenSharing();
+                }
+            } finally {
+                button._nekoShareBusy = false;
+                button.classList.remove('is-busy');
+                syncShareToggleButtons(false);
+            }
+        }
+
+        button.addEventListener('click', handleToggleClick);
+        button.addEventListener('keydown', function (event) {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                handleToggleClick(event);
+            }
+        });
+
+        shareToggleButtonRegistry = shareToggleButtonRegistry.filter(function (btn) { return btn.isConnected; });
+        shareToggleButtonRegistry.push(button);
+        // 每次重新显示（弹窗重渲染）时，若共享处于开启状态则重播一次开启动画；未开启则直接落位
+        button._nekoSetShareActive(isScreenShareActive(), !isScreenShareActive());
+        return button;
+    }
+
     // ======================== 游戏语音 STT Gate ========================
 
     function getGameVoiceSpeechRecognition() {
@@ -1612,9 +1950,78 @@
     var micPermissionGranted = false;
     var cachedMicDevices = null;
 
+    function ensureMicPopupScrollbarStyle() {
+        if (document.getElementById('neko-mic-popup-scrollbar-style')) return;
+        var style = document.createElement('style');
+        style.id = 'neko-mic-popup-scrollbar-style';
+        style.textContent = [
+            '#live2d-popup-mic.neko-mic-popup-surface,',
+            '#vrm-popup-mic.neko-mic-popup-surface,',
+            '#mmd-popup-mic.neko-mic-popup-surface{overflow-y:hidden!important;scrollbar-width:none;}',
+            '#live2d-popup-mic.neko-mic-popup-surface::-webkit-scrollbar,',
+            '#vrm-popup-mic.neko-mic-popup-surface::-webkit-scrollbar,',
+            '#mmd-popup-mic.neko-mic-popup-surface::-webkit-scrollbar,',
+            '.neko-mic-popup-scroll::-webkit-scrollbar{width:0;height:0;}',
+            '.neko-mic-popup-scroll{scrollbar-width:none;-ms-overflow-style:none;}',
+            '.neko-mic-popup-scrollbar-thumb{position:absolute;right:3px;top:0;width:4px;min-height:18px;border-radius:999px;background:rgba(128,128,128,0.55);opacity:0;transition:opacity 120ms ease;pointer-events:none;z-index:2;}',
+            '.neko-mic-popup-scrollbar-thumb.is-visible{opacity:1;}'
+        ].join('');
+        document.head.appendChild(style);
+    }
+
+    function attachTransientMicPopupScrollbar(scrollNode, hostNode) {
+        var thumb = document.createElement('div');
+        thumb.className = 'neko-mic-popup-scrollbar-thumb';
+        hostNode.appendChild(thumb);
+        var hideTimer = null;
+        var frameId = null;
+        var updateThumb = function () {
+            frameId = null;
+            var maxScroll = Math.max(0, scrollNode.scrollHeight - scrollNode.clientHeight);
+            if (maxScroll <= 0) {
+                thumb.classList.remove('is-visible');
+                return;
+            }
+            var scrollRect = scrollNode.getBoundingClientRect();
+            var hostRect = hostNode.getBoundingClientRect();
+            var trackTop = scrollRect.top - hostRect.top;
+            var trackHeight = scrollNode.clientHeight;
+            var thumbHeight = Math.max(18, Math.round((scrollNode.clientHeight / scrollNode.scrollHeight) * trackHeight));
+            var thumbTop = trackTop + Math.round((scrollNode.scrollTop / maxScroll) * Math.max(0, trackHeight - thumbHeight));
+            thumb.style.height = thumbHeight + 'px';
+            thumb.style.transform = 'translateY(' + thumbTop + 'px)';
+        };
+        var showScrollbar = function () {
+            thumb.classList.add('is-visible');
+            if (!frameId) frameId = window.requestAnimationFrame(updateThumb);
+            if (hideTimer) window.clearTimeout(hideTimer);
+            hideTimer = window.setTimeout(function () {
+                thumb.classList.remove('is-visible');
+                hideTimer = null;
+            }, 850);
+        };
+        scrollNode.addEventListener('scroll', showScrollbar, { passive: true });
+        scrollNode.addEventListener('wheel', showScrollbar, { passive: true });
+        scrollNode.addEventListener('touchmove', showScrollbar, { passive: true });
+        return function cleanupTransientMicPopupScrollbar() {
+            if (hideTimer) {
+                window.clearTimeout(hideTimer);
+                hideTimer = null;
+            }
+            if (frameId) {
+                window.cancelAnimationFrame(frameId);
+                frameId = null;
+            }
+            scrollNode.removeEventListener('scroll', showScrollbar);
+            scrollNode.removeEventListener('wheel', showScrollbar);
+            scrollNode.removeEventListener('touchmove', showScrollbar);
+            if (thumb.parentNode) thumb.parentNode.removeChild(thumb);
+        };
+    }
+
     /** 请求麦克风权限并缓存设备列表 */
     async function ensureMicrophonePermission() {
-        if (micPermissionGranted && cachedMicDevices) {
+        if (micPermissionGranted && cachedMicDevices && cachedMicDevices.length > 0) {
             return cachedMicDevices;
         }
         try {
@@ -1668,18 +2075,37 @@
         if (!isPopupAvailable()) return false;
 
         try {
-            var audioInputs = await ensureMicrophonePermission();
+            ensureMicPopupScrollbarStyle();
+            micPopup.classList.add('neko-mic-popup-surface');
+            micPopup.style.minWidth = '220px';
+            micPopup.style.width = '220px';
+            micPopup.style.maxWidth = '220px';
+            micPopup.style.boxSizing = 'border-box';
+            micPopup.style.overflowY = 'hidden';
+            var audioInputs = cachedMicDevices;
+            if (!audioInputs || audioInputs.length === 0 || !micPermissionGranted) {
+                audioInputs = await ensureMicrophonePermission();
+            }
             if (!isPopupAvailable()) return false;
+if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
+                micPopup.__nekoMicScrollbarCleanup();
+                micPopup.__nekoMicScrollbarCleanup = null;
+            }
             micPopup.innerHTML = '';
 
             var hasMicrophoneDevices = audioInputs.length > 0;
 
             // ===== 双栏布局 =====
             var leftColumn = document.createElement('div');
-            Object.assign(leftColumn.style, { flex: '1', minWidth: '180px', display: 'flex', flexDirection: 'column', overflowY: 'auto' });
+            leftColumn.className = 'neko-mic-popup-scroll';
+            Object.assign(leftColumn.style, { flex: '0 0 100%', width: '100%', minWidth: '0', minHeight: '0', maxWidth: '100%', display: 'flex', flexDirection: 'column', overflowY: 'auto' });
+            micPopup.__nekoMicScrollbarCleanup = attachTransientMicPopupScrollbar(leftColumn, micPopup);
 
-            var rightColumn = document.createElement('div');
-            Object.assign(rightColumn.style, { flex: '1', minWidth: '160px', display: 'flex', flexDirection: 'column', overflowY: 'auto' });
+            if (micPopup.id) {
+                document.querySelectorAll('[data-neko-sidepanel-owner="' + micPopup.id + '"].neko-mic-subwindow').forEach(function (panel) {
+                    panel.remove();
+                });
+            }
 
             // ===== 左栏 1. 扬声器音量 =====
             var speakerContainer = document.createElement('div');
@@ -2101,61 +2527,425 @@
             volumeContainer.appendChild(volumeHint);
             leftColumn.appendChild(volumeContainer);
 
-            // ===== 右栏：设备列表 =====
-            var deviceTitle = document.createElement('div');
-            Object.assign(deviceTitle.style, { padding: '8px 12px 6px', fontSize: '13px', fontWeight: '600', color: '#4f8cff', display: 'flex', alignItems: 'center', gap: '6px', borderBottom: '1px solid var(--neko-popup-separator)', marginBottom: '4px' });
-            var deviceTitleIcon = document.createElement('span');
-            deviceTitleIcon.textContent = '🎙️';
-            deviceTitleIcon.style.fontSize = '14px';
-            var deviceTitleText = document.createElement('span');
-            deviceTitleText.textContent = window.t ? window.t('microphone.deviceTitle') : '选择麦克风设备';
-            deviceTitleText.setAttribute('data-i18n', 'microphone.deviceTitle');
-            deviceTitle.appendChild(deviceTitleIcon);
-            deviceTitle.appendChild(deviceTitleText);
-            rightColumn.appendChild(deviceTitle);
+            var MIC_ACTION_HOVER_COLLAPSE_MS = 260;
+            var activeMicActionKey = null;
+            var micActionHoverCollapseTimer = null;
+            var micActionHoverOpenGeneration = 0;
 
-            // 默认麦克风选项
-            if (hasMicrophoneDevices) {
-                var defaultOption = document.createElement('button');
-                defaultOption.className = 'mic-option';
-                defaultOption.textContent = window.t ? window.t('microphone.defaultDevice') : '系统默认麦克风';
-                if (S.selectedMicrophoneId === null) defaultOption.classList.add('selected');
-                Object.assign(defaultOption.style, { padding: '8px 12px', cursor: 'pointer', border: 'none', background: S.selectedMicrophoneId === null ? 'var(--neko-popup-selected-bg)' : 'transparent', borderRadius: '6px', transition: 'background 0.2s ease', fontSize: '13px', width: '100%', textAlign: 'left', color: S.selectedMicrophoneId === null ? '#4f8cff' : 'var(--neko-popup-text)', fontWeight: S.selectedMicrophoneId === null ? '500' : '400' });
-                defaultOption.addEventListener('mouseenter', function () { if (S.selectedMicrophoneId !== null) defaultOption.style.background = 'var(--neko-popup-hover)'; });
-                defaultOption.addEventListener('mouseleave', function () { if (S.selectedMicrophoneId !== null) defaultOption.style.background = 'transparent'; });
-                defaultOption.addEventListener('click', async function () { await selectMicrophone(null); updateMicListSelection(); });
-                rightColumn.appendChild(defaultOption);
-
-                var sep3 = document.createElement('div');
-                Object.assign(sep3.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '5px 0' });
-                rightColumn.appendChild(sep3);
-
-                // 各个设备选项
-                audioInputs.forEach(function (device, idx) {
-                    var option = document.createElement('button');
-                    option.className = 'mic-option';
-                    option.dataset.deviceId = device.deviceId;
-                    option.textContent = device.label || (window.t ? window.t('microphone.deviceLabel', { index: idx + 1 }) : '麦克风 ' + (idx + 1));
-                    if (S.selectedMicrophoneId === device.deviceId) option.classList.add('selected');
-                    Object.assign(option.style, { padding: '8px 12px', cursor: 'pointer', border: 'none', background: S.selectedMicrophoneId === device.deviceId ? 'var(--neko-popup-selected-bg)' : 'transparent', borderRadius: '6px', transition: 'background 0.2s ease', fontSize: '13px', width: '100%', textAlign: 'left', color: S.selectedMicrophoneId === device.deviceId ? '#4f8cff' : 'var(--neko-popup-text)', fontWeight: S.selectedMicrophoneId === device.deviceId ? '500' : '400' });
-                    option.addEventListener('mouseenter', function () { if (S.selectedMicrophoneId !== device.deviceId) option.style.background = 'var(--neko-popup-hover)'; });
-                    option.addEventListener('mouseleave', function () { if (S.selectedMicrophoneId !== device.deviceId) option.style.background = 'transparent'; });
-                    option.addEventListener('click', async function () { await selectMicrophone(device.deviceId); updateMicListSelection(); });
-                    rightColumn.appendChild(option);
-                });
-            } else {
-                var noMicItem = document.createElement('div');
-                noMicItem.textContent = window.t ? window.t('microphone.noDevices') : '没有检测到麦克风设备';
-                Object.assign(noMicItem.style, { padding: '8px 12px', color: 'var(--neko-popup-text-sub)', fontSize: '13px' });
-                rightColumn.appendChild(noMicItem);
+            function getOwnedMicSubwindow() {
+                var ownerSelector = micPopup.id
+                    ? '[data-neko-sidepanel-owner="' + micPopup.id + '"].neko-mic-subwindow'
+                    : '.neko-mic-subwindow';
+                return document.querySelector(ownerSelector);
             }
+
+            function clearMicActionHoverCollapseTimer() {
+                if (micActionHoverCollapseTimer) {
+                    clearTimeout(micActionHoverCollapseTimer);
+                    micActionHoverCollapseTimer = null;
+                }
+            }
+
+            function isMicActionHoverSurfaceActive() {
+                var hoveredAction = leftColumn.querySelector('[data-neko-mic-main-action]:hover');
+                if (hoveredAction) return true;
+                var panel = getOwnedMicSubwindow();
+                return !!(panel && panel.isConnected && panel.matches(':hover'));
+            }
+
+            function closeMicSubwindow() {
+                clearMicActionHoverCollapseTimer();
+                activeMicActionKey = null;
+                var ownerSelector = micPopup.id ? '[data-neko-sidepanel-owner="' + micPopup.id + '"]' : '.neko-mic-subwindow';
+                document.querySelectorAll(ownerSelector + '.neko-mic-subwindow').forEach(function (panel) {
+                    panel.remove();
+                });
+            }
+
+            function scheduleMicActionHoverCollapse() {
+                clearMicActionHoverCollapseTimer();
+                micActionHoverCollapseTimer = setTimeout(function () {
+                    micActionHoverCollapseTimer = null;
+                    if (isMicActionHoverSurfaceActive()) return;
+                    closeMicSubwindow();
+                    leftColumn.querySelectorAll('[data-neko-mic-main-action]').forEach(function (btn) {
+                        btn.style.background = 'transparent';
+                    });
+                }, MIC_ACTION_HOVER_COLLAPSE_MS);
+            }
+
+            function wireMicSubwindowHoverBridge(panel) {
+                if (!panel || panel._nekoMicHoverBridgeWired) return;
+                panel._nekoMicHoverBridgeWired = true;
+                panel.addEventListener('mouseenter', function () {
+                    clearMicActionHoverCollapseTimer();
+                });
+                panel.addEventListener('mouseleave', function () {
+                    scheduleMicActionHoverCollapse();
+                });
+            }
+
+            function openMicActionPanel(actionKey, openFn) {
+                clearMicActionHoverCollapseTimer();
+                var existing = getOwnedMicSubwindow();
+                if (activeMicActionKey === actionKey && existing && existing.isConnected) {
+                    wireMicSubwindowHoverBridge(existing);
+                    return Promise.resolve(existing);
+                }
+                activeMicActionKey = actionKey;
+                var generation = ++micActionHoverOpenGeneration;
+                return Promise.resolve(openFn()).then(function () {
+                    if (generation !== micActionHoverOpenGeneration || activeMicActionKey !== actionKey) return null;
+                    var panel = getOwnedMicSubwindow();
+                    if (panel) {
+                        panel.setAttribute('data-neko-mic-action-key', actionKey);
+                        wireMicSubwindowHoverBridge(panel);
+                    }
+                    return panel;
+                });
+            }
+
+            function positionMicSubwindow(panel) {
+                if (!panel || !micPopup || !micPopup.isConnected) return;
+                var rect = micPopup.getBoundingClientRect();
+                var panelWidth = panel.offsetWidth || 320;
+                var panelHeight = panel.offsetHeight || 360;
+                var gap = 8;
+                var left = rect.right + gap;
+                var opensLeft = micPopup.dataset && micPopup.dataset.opensLeft === 'true';
+                if (opensLeft || left + panelWidth > window.innerWidth - gap) {
+                    left = rect.left - panelWidth - gap;
+                }
+                left = Math.max(gap, Math.min(left, window.innerWidth - panelWidth - gap));
+                var top = Math.max(gap, Math.min(rect.top, window.innerHeight - panelHeight - gap));
+                panel.style.left = left + 'px';
+                panel.style.top = top + 'px';
+            }
+
+            function createMicSubwindow(title, iconText, width) {
+                // Keep activeMicActionKey; only tear down the previous DOM panel.
+                clearMicActionHoverCollapseTimer();
+                var ownerSelector = micPopup.id ? '[data-neko-sidepanel-owner="' + micPopup.id + '"]' : '.neko-mic-subwindow';
+                document.querySelectorAll(ownerSelector + '.neko-mic-subwindow').forEach(function (panel) {
+                    panel.remove();
+                });
+                var panel = document.createElement('div');
+                panel.className = 'neko-mic-subwindow';
+                if (micPopup.id) panel.setAttribute('data-neko-sidepanel-owner', micPopup.id);
+                panel.setAttribute('data-neko-sidepanel', '');
+                Object.assign(panel.style, {
+                    position: 'fixed',
+                    zIndex: '100003',
+                    width: width || '320px',
+                    maxHeight: 'min(420px, calc(100vh - 16px))',
+                    overflowY: 'hidden',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px',
+                    padding: '8px',
+                    boxSizing: 'border-box',
+                    background: 'var(--neko-popup-bg, rgba(255, 255, 255, 0.82))',
+                    backdropFilter: 'saturate(180%) blur(20px)',
+                    border: 'var(--neko-popup-border, 1px solid rgba(255, 255, 255, 0.18))',
+                    borderRadius: '8px',
+                    boxShadow: 'var(--neko-popup-shadow, 0 8px 24px rgba(0,0,0,0.16))',
+                    pointerEvents: 'auto',
+                    cursor: 'default',
+                    color: 'var(--neko-popup-text)'
+                });
+
+                var stopSubwindowEvent = function (e) {
+                    if (document.body.classList.contains('neko-model-dragging')) return;
+                    e.stopPropagation();
+                };
+                ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend'].forEach(function (evt) {
+                    panel.addEventListener(evt, stopSubwindowEvent, true);
+                });
+                panel.addEventListener('click', stopSubwindowEvent);
+
+                var header = document.createElement('div');
+                Object.assign(header.style, {
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: '8px',
+                    padding: '4px 6px 8px',
+                    borderBottom: '1px solid var(--neko-popup-separator)',
+                    marginBottom: '4px',
+                    flexShrink: '0'
+                });
+
+                var titleWrap = document.createElement('div');
+                Object.assign(titleWrap.style, { display: 'flex', alignItems: 'center', gap: '6px', minWidth: '0', color: '#4f8cff', fontSize: '13px', fontWeight: '600' });
+                var icon = document.createElement('span');
+                icon.textContent = iconText;
+                icon.style.fontSize = '14px';
+                var titleEl = document.createElement('span');
+                titleEl.textContent = title;
+                Object.assign(titleEl.style, { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
+                titleWrap.appendChild(icon);
+                titleWrap.appendChild(titleEl);
+
+                var closeBtn = document.createElement('button');
+                closeBtn.type = 'button';
+                closeBtn.textContent = 'x';
+                closeBtn.setAttribute('aria-label', 'Close');
+                Object.assign(closeBtn.style, {
+                    width: '24px',
+                    height: '24px',
+                    border: 'none',
+                    borderRadius: '6px',
+                    background: 'transparent',
+                    color: 'var(--neko-popup-text-sub)',
+                    cursor: 'pointer',
+                    flexShrink: '0'
+                });
+                closeBtn.addEventListener('mouseenter', function () { closeBtn.style.background = 'var(--neko-popup-hover)'; });
+                closeBtn.addEventListener('mouseleave', function () { closeBtn.style.background = 'transparent'; });
+                closeBtn.addEventListener('click', function (e) {
+                    e.stopPropagation();
+                    closeMicSubwindow();
+                });
+
+                header.appendChild(titleWrap);
+                header.appendChild(closeBtn);
+                panel.appendChild(header);
+
+                var body = document.createElement('div');
+                body.className = 'neko-mic-popup-scroll neko-mic-subwindow-body';
+                Object.assign(body.style, {
+                    display: 'flex',
+                    flex: '1 1 auto',
+                    flexDirection: 'column',
+                    gap: '4px',
+                    minHeight: '0',
+                    overflowY: 'auto'
+                });
+                panel.appendChild(body);
+                panel._nekoMicSubwindowBody = body;
+                attachTransientMicPopupScrollbar(body, panel);
+
+                document.body.appendChild(panel);
+                requestAnimationFrame(function () { positionMicSubwindow(panel); });
+                return panel;
+            }
+
+            function createMainActionButton(iconText, label, subLabel, actionKey, onClick, hoverGuard) {
+                var button = document.createElement('button');
+                button.type = 'button';
+                button.dataset.nekoMicMainAction = actionKey;
+                Object.assign(button.style, {
+                    width: '100%',
+                    minWidth: '0',
+                    maxWidth: '100%',
+                    boxSizing: 'border-box',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    padding: '9px 10px',
+                    border: 'none',
+                    borderRadius: '6px',
+                    background: 'transparent',
+                    color: 'var(--neko-popup-text)',
+                    cursor: 'pointer',
+                    textAlign: 'left',
+                    transition: 'background 0.2s ease'
+                });
+                var icon = document.createElement('span');
+                icon.textContent = iconText;
+                icon.style.fontSize = '15px';
+                var textWrap = document.createElement('span');
+                Object.assign(textWrap.style, { display: 'flex', flexDirection: 'column', minWidth: '0', width: '0', maxWidth: '100%', flex: '1 1 0%', overflow: 'hidden' });
+                var labelEl = document.createElement('span');
+                labelEl.textContent = label;
+                Object.assign(labelEl.style, { display: 'block', maxWidth: '100%', fontSize: '13px', fontWeight: '600', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
+                var subEl = document.createElement('span');
+                subEl.className = 'neko-mic-action-sub-label';
+                subEl.textContent = subLabel || '';
+                Object.assign(subEl.style, { display: 'block', maxWidth: '100%', fontSize: '11px', color: 'var(--neko-popup-text-sub)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
+                // Match settings menu chevron (Chat Settings / Animation / Advanced).
+                var arrow = document.createElement('span');
+                arrow.textContent = '\u203A';
+                Object.assign(arrow.style, {
+                    fontSize: '16px',
+                    color: 'var(--neko-popup-text-sub, #999)',
+                    lineHeight: '1',
+                    flexShrink: '0'
+                });
+                textWrap.appendChild(labelEl);
+                if (subLabel) textWrap.appendChild(subEl);
+                button.appendChild(icon);
+                button.appendChild(textWrap);
+                button.appendChild(arrow);
+
+                function openActionPanel() {
+                    // 悬停守卫：指针在内嵌开关（如屏幕共享开关）上时不展开子面板，避免干扰点击
+                    if (typeof hoverGuard === 'function' && hoverGuard()) {
+                        return Promise.resolve(null);
+                    }
+                    button.style.background = 'var(--neko-popup-hover)';
+                    return openMicActionPanel(actionKey, onClick).catch(function (error) {
+                        console.error('[麦克风弹窗] 子窗口打开失败:', error);
+                    });
+                }
+
+                // Hover-to-expand like settings side panels.
+                button.addEventListener('mouseenter', function () {
+                    openActionPanel();
+                });
+                button.addEventListener('mouseleave', function () {
+                    button.style.background = 'transparent';
+                    scheduleMicActionHoverCollapse();
+                });
+                button.addEventListener('click', function (e) {
+                    e.stopPropagation();
+                    openActionPanel();
+                });
+                return button;
+            }
+
+            function createMicDeviceOption(label, deviceId) {
+                var option = document.createElement('button');
+                option.type = 'button';
+                option.className = 'mic-option';
+                if (deviceId !== null) option.dataset.deviceId = deviceId;
+                option.textContent = label;
+                var isSelected = (deviceId === null && S.selectedMicrophoneId === null) || deviceId === S.selectedMicrophoneId;
+                if (isSelected) option.classList.add('selected');
+                Object.assign(option.style, { padding: '8px 12px', cursor: 'pointer', border: 'none', background: isSelected ? 'var(--neko-popup-selected-bg)' : 'transparent', borderRadius: '6px', transition: 'background 0.2s ease', fontSize: '13px', width: '100%', textAlign: 'left', color: isSelected ? '#4f8cff' : 'var(--neko-popup-text)', fontWeight: isSelected ? '500' : '400' });
+                option.addEventListener('mouseenter', function () { if (!option.classList.contains('selected')) option.style.background = 'var(--neko-popup-hover)'; });
+                option.addEventListener('mouseleave', function () { if (!option.classList.contains('selected')) option.style.background = 'transparent'; });
+                option.addEventListener('click', async function (e) {
+                    e.stopPropagation();
+                    await selectMicrophone(deviceId);
+                    updateMicListSelection();
+                    document.querySelectorAll('[data-neko-mic-action="device"] .neko-mic-action-sub-label').forEach(function (labelEl) {
+                        labelEl.textContent = label;
+                    });
+                });
+                return option;
+            }
+
+            async function openMicDeviceSubwindow() {
+                var panel = createMicSubwindow(
+                    window.t ? window.t('microphone.deviceTitle') : 'Select Microphone',
+                    '\uD83C\uDFA4',
+                    '280px'
+                );
+                panel.classList.add('neko-mic-device-subwindow');
+                var panelBody = panel._nekoMicSubwindowBody || panel;
+                var listBody = document.createElement('div');
+                Object.assign(listBody.style, { display: 'flex', flexDirection: 'column', gap: '4px' });
+                panelBody.appendChild(listBody);
+
+                var loadingItem = document.createElement('div');
+                loadingItem.textContent = window.t ? window.t('app.screenSource.loading') : 'Loading...';
+                Object.assign(loadingItem.style, { padding: '8px 12px', color: 'var(--neko-popup-text-sub)', fontSize: '13px' });
+                listBody.appendChild(loadingItem);
+                positionMicSubwindow(panel);
+
+                var devices = cachedMicDevices;
+                if (!devices || devices.length === 0 || !micPermissionGranted) {
+                    devices = await ensureMicrophonePermission();
+                }
+                listBody.innerHTML = '';
+
+                var defaultLabel = window.t ? window.t('microphone.defaultDevice') : 'System Default Microphone';
+                listBody.appendChild(createMicDeviceOption(defaultLabel, null));
+
+                if (!devices || devices.length === 0) {
+                    var noMicItem = document.createElement('div');
+                    noMicItem.textContent = window.t ? window.t('microphone.noDevices') : 'No microphone devices detected';
+                    Object.assign(noMicItem.style, { padding: '8px 12px', color: 'var(--neko-popup-text-sub)', fontSize: '13px' });
+                    listBody.appendChild(noMicItem);
+                    requestAnimationFrame(function () { positionMicSubwindow(panel); });
+                    return;
+                }
+
+                var sep = document.createElement('div');
+                Object.assign(sep.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '5px 0' });
+                listBody.appendChild(sep);
+
+                devices.forEach(function (device, idx) {
+                    var label = device.label || (window.t ? window.t('microphone.deviceLabel', { index: idx + 1 }) : 'Microphone ' + (idx + 1));
+                    listBody.appendChild(createMicDeviceOption(label, device.deviceId));
+                });
+                requestAnimationFrame(function () { positionMicSubwindow(panel); });
+            }
+
+            async function openScreenSourceSubwindow() {
+                var panel = createMicSubwindow(
+                    window.t ? window.t('buttons.screenShare') : 'Screen Share',
+                    '\uD83D\uDDA5\uFE0F',
+                    '360px'
+                );
+                var panelBody = panel._nekoMicSubwindowBody || panel;
+                var screenSourceList = document.createElement('div');
+                screenSourceList.id = micPopup.id ? micPopup.id + '-screen-sources' : 'neko-mic-popup-screen-sources';
+                screenSourceList.className = 'neko-mic-popup-screen-sources';
+                Object.assign(screenSourceList.style, {
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '2px',
+                    minHeight: '80px'
+                });
+                panelBody.appendChild(screenSourceList);
+                // 开始/停止共享开关已移至设置面板「屏幕共享」与「选择麦克风」之间
+                // （createScreenShareToggleButton），子窗口仅保留屏幕/窗口源列表。
+                positionMicSubwindow(panel);
+                if (typeof window.renderFloatingScreenSourceList === 'function') {
+                    await window.renderFloatingScreenSourceList(screenSourceList, { requireVisible: false });
+                    positionMicSubwindow(panel);
+                }
+            }
+
+            var deviceButtonLabel = window.t ? window.t('microphone.deviceTitle') : 'Select Microphone';
+            var currentMicLabel = S.selectedMicrophoneId === null
+                ? (window.t ? window.t('microphone.defaultDevice') : 'System Default Microphone')
+                : (audioInputs.find(function (device) { return device.deviceId === S.selectedMicrophoneId; }) || {}).label || deviceButtonLabel;
+            var screenButtonLabel = window.t ? window.t('buttons.screenShare') : 'Screen Share';
+
+            var firstContent = leftColumn.firstChild;
+            // 悬停守卫：指针落在行内开关上时不展开屏幕源面板，避免面板弹出干扰点击开关
+            var shareToggleButtonHolder = { current: null };
+            function screenRowHoverGuard() {
+                var toggle = shareToggleButtonHolder.current;
+                return !!(toggle && toggle.matches(':hover'));
+            }
+            var screenActionButton = createMainActionButton(
+                '\uD83D\uDDA5\uFE0F',
+                screenButtonLabel,
+                window.t ? window.t('app.screenSource.screens') : 'Screens',
+                'screen',
+                openScreenSourceSubwindow,
+                screenRowHoverGuard
+            );
+            leftColumn.insertBefore(screenActionButton, firstContent);
+            // 合并为一行：行右侧嵌入迷你胶囊开关（替换原来的 chevron 箭头），
+            // 点击行其余位置仍展开屏幕源选择，点击开关本身开始/停止共享
+            var shareToggleButton = createScreenShareToggleButton({ mini: true });
+            shareToggleButtonHolder.current = shareToggleButton;
+            screenActionButton.replaceChild(shareToggleButton, screenActionButton.lastChild);
+            // 屏幕共享行：标题允许换行显示（去掉省略号截断），
+            // 保证葡语 "Compartilhamento de tela"、俄语 "Демонстрация экрана" 等长文案也能完整显示
+            var screenTextWrap = screenActionButton.children[1];
+            if (screenTextWrap && screenTextWrap.firstChild) {
+                screenTextWrap.firstChild.style.whiteSpace = 'normal';
+                screenTextWrap.firstChild.style.lineHeight = '1.2';
+                screenTextWrap.firstChild.style.overflow = 'visible';
+            }
+            var micActionButton = createMainActionButton(
+                '\uD83C\uDFA4',
+                deviceButtonLabel,
+                currentMicLabel,
+                'device',
+                openMicDeviceSubwindow
+            );
+            micActionButton.dataset.nekoMicAction = 'device';
+            leftColumn.insertBefore(micActionButton, firstContent);
 
             // 组装
             micPopup.appendChild(leftColumn);
-            var verticalDivider = document.createElement('div');
-            Object.assign(verticalDivider.style, { width: '1px', backgroundColor: 'var(--neko-popup-separator)', alignSelf: 'stretch', margin: '8px 0' });
-            micPopup.appendChild(verticalDivider);
-            micPopup.appendChild(rightColumn);
 
             startMicVolumeVisualization();
             return true;
@@ -2173,9 +2963,7 @@
 
     /** 轻量级更新：仅更新选中状态 */
     function updateMicListSelection() {
-        var micPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
-        if (!micPopup) return;
-        var options = micPopup.querySelectorAll('.mic-option');
+        var options = document.querySelectorAll('#live2d-popup-mic .mic-option, #vrm-popup-mic .mic-option, #mmd-popup-mic .mic-option, .neko-mic-device-subwindow .mic-option');
         options.forEach(function (option) {
             var deviceId = option.dataset.deviceId;
             var isSelected = (deviceId === undefined && S.selectedMicrophoneId === null) ||
