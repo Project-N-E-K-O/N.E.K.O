@@ -1281,13 +1281,13 @@ def test_shared_settings_writes_carry_explicit_change_metadata():
     # across windows (one wall clock per browser profile).
     id_fn = settings_source.split("function _nextSharedWriteId() {", 1)[1].split("\n    }", 1)[0]
     assert "Date.now()" in id_fn
-    # Ids must be globally monotone, not just monotone within this window. The
-    # counter is per-window and seeded from the clock, so flooring only by the
-    # last id THIS window minted lets two windows saving in the same
-    # millisecond mint the same id -- and because the receiver's freshness test
-    # is a strict `>`, the second write reads as superseded and its ASR value
-    # is dropped, discarding genuine cross-window toggles. Floor by the highest
-    # id ever applied as well (Codex P2 follow-up).
+    # Floor the mint by the highest id ever APPLIED, not just the highest this
+    # window minted: otherwise a window that already applied another window's
+    # write can mint an id at or below it and have its own write read as
+    # superseded, discarding a genuine cross-window toggle. This covers only
+    # the already-OBSERVED case -- a genuinely concurrent same-millisecond tie
+    # cannot be broken at mint time and is resolved by the listener's
+    # explicit-intent rule instead (pinned below).
     assert "Math.max(_lastSharedWriteId, _lastAppliedSharedWriteId)" in id_fn
     assert "_lastSharedWriteId = now > idFloor ? now : idFloor + 1;" in id_fn
 
@@ -2771,7 +2771,15 @@ def test_text_session_start_stops_an_active_microphone():
 
     assert "response.input_mode === 'text'" in started
     assert "S.isRecording === true" in started
-    assert "window.stopRecording();" in started
+    # notifyServer:false is load-bearing, not cosmetic: the default path sends
+    # pause_session, which websocket_router.py maps to an ungated end_session()
+    # against the text session this very ack just installed, 500 ms before
+    # app-buttons.js sends the queued user text.
+    assert "window.stopRecording({ notifyServer: false });" in started
+    assert "window.stopRecording();" not in started
+    # stopMicCapture would reject the in-flight text-start promise outright.
+    # Match the CALL form: the comment above deliberately names the function.
+    assert "window.stopMicCapture(" not in started
 
 
 def test_blocked_lifecycle_stops_microphone_capture():
@@ -2882,3 +2890,43 @@ def test_cross_window_adopted_values_roll_the_dirty_baseline():
     assert apply_index < roll_index, "the baseline roll must observe the applied values"
     # Keys this window really did touch keep their authority.
     assert "if (_dirtySettingsKeys.has(key)) continue;" in listener_block
+
+
+def test_equal_write_ids_are_broken_by_explicit_asr_intent():
+    # Codex P2 follow-up. The applied-id floor in _nextSharedWriteId only rises
+    # once this window has APPLIED another window's write, so two windows saving
+    # in the same millisecond before either processes the other's storage event
+    # still mint the same id. With a strict `>` freshness test the second write
+    # reads as superseded and its ASR value is dropped -- and the value dropped
+    # is a genuine, explicitly-marked toggle, not an incidental copy. Concurrent
+    # writes have no clock order, so the tie is broken on intent instead, which
+    # makes both delivery orders converge on the user's choice.
+    settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
+
+    listener_block = settings_source.split(
+        "window.addEventListener('storage', function (event) {", 1
+    )[1].split("});", 1)[0]
+
+    assert (
+        "|| (meta.writeId === _lastAppliedSharedWriteId && asrMarkedExplicit)"
+        in listener_block
+    )
+    # A strictly OLDER write must still be refused.
+    assert "meta.writeId > _lastAppliedSharedWriteId" in listener_block
+    # The applied floor must advance only on a strict `>`, so a tie does not
+    # consume the id and both tied writes stay eligible.
+    assert "if (meta && meta.writeId > _lastAppliedSharedWriteId) {" in listener_block
+
+
+def test_write_id_doc_does_not_claim_global_uniqueness():
+    # The previous round's comments claimed the applied-id floor cured
+    # same-millisecond minting across windows. It does not -- that is this
+    # finding. A future reader must not be told otherwise by the comment they
+    # hit first.
+    settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
+    id_fn = settings_source.split("function _nextSharedWriteId() {", 1)[1].split(
+        "\n    }", 1
+    )[0]
+    assert "already OBSERVED" in id_fn
+    assert "cannot be broken at mint" in id_fn
+    assert "the listener resolves it on explicit intent" in id_fn

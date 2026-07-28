@@ -3190,7 +3190,27 @@
                         && S.isRecording === true
                         && typeof window.stopRecording === 'function') {
                         console.log('[App] text session installed; stopping the microphone');
-                        window.stopRecording();
+                        // notifyServer:false is load-bearing. The default path
+                        // sends pause_session, which websocket_router.py maps to
+                        // an UNGATED end_session() — and the session it would end
+                        // is the text session the backend acknowledged one line
+                        // above. app-buttons.js is still awaiting this very ack
+                        // (the resolve fires 500 ms later, below) and only then
+                        // sends the queued user text, so the teardown wins the
+                        // race: CHARACTER_LEFT is pushed and the message either
+                        // rebuilds a whole new session or lands mid-teardown.
+                        // Nothing is given up by suppressing it — active_session_
+                        // is_idle, the only other thing pause_session sets, has no
+                        // reader in production. Capture teardown does not need the
+                        // server either: stopRecording stops the tracks, closes the
+                        // AudioContext and revokes the mic lease (refreshMicLease
+                        // still emits lease_sync owner:"none"/engaged:false, which
+                        // is how the backend learns the audio route is released)
+                        // regardless of this flag; it only gates the pause_session
+                        // send. stopMicCapture is NOT usable here — it rejects the
+                        // in-flight text-start promise with 'Session aborted' and
+                        // still sends pause_session, losing the message outright.
+                        window.stopRecording({ notifyServer: false });
                     }
 
                     // Multi-window 文本框对偶 hide：每个 webview（index.html 主窗口、

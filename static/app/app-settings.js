@@ -195,19 +195,25 @@
      * Monotonic id for shared-settings writes. The wall clock keeps ids
      * comparable across windows (same browser profile, one clock) and the
      * max()-style bump keeps them strictly increasing inside a window when two
-     * saves land in the same millisecond, so a receiver can always tell which
-     * of two snapshots is newer than the last one it applied.
+     * saves land in the same millisecond. Ids are NOT globally unique: two
+     * windows saving in the same millisecond before observing each other mint
+     * the same id, which is unavoidable at mint time. A receiver can therefore
+     * tell strictly-older from strictly-newer, and resolves an exact tie on
+     * explicit intent instead (see the asrWriteIsNewer tie rule in the storage
+     * listener).
      */
     function _nextSharedWriteId() {
         let now = 0;
         try { now = Date.now(); } catch (_) { now = 0; }
         // Floor the mint by the highest id this window has ever APPLIED, not
-        // just the highest it has minted. The counter is per-window and seeded
-        // from the clock, so two windows saving in the same millisecond would
-        // otherwise mint the same id — and because the receiver's freshness
-        // test is a strict `>`, the second write reads as already superseded
-        // and gets dropped. That silently discards genuine cross-window ASR
-        // toggles, not just incidental copies.
+        // just the highest it has minted. Without it, a window that already
+        // applied another window's write could mint an id at or below it and
+        // have its own write read as superseded — discarding a genuine
+        // cross-window ASR toggle, not just an incidental copy.
+        // This covers only the case where the other write was already OBSERVED
+        // here. A genuinely CONCURRENT same-millisecond tie (neither window has
+        // processed the other's storage event yet) cannot be broken at mint
+        // time at all; the listener resolves it on explicit intent instead.
         const idFloor = Math.max(_lastSharedWriteId, _lastAppliedSharedWriteId);
         _lastSharedWriteId = now > idFloor ? now : idFloor + 1;
         return _lastSharedWriteId;
@@ -1140,12 +1146,26 @@
                 S.independentAsrEnabled !== settings.independentAsrEnabled;
             const asrMarkedExplicit = !!meta
                 && meta.changedKeys.indexOf('independentAsrEnabled') !== -1;
-            const asrWriteIsNewer = !meta || meta.writeId > _lastAppliedSharedWriteId;
+            const asrWriteIsNewer = !meta
+                || meta.writeId > _lastAppliedSharedWriteId
+                || (meta.writeId === _lastAppliedSharedWriteId && asrMarkedExplicit);
             // With metadata, a value difference alone proves nothing — every
             // saveSettings() copies independentAsrEnabled into the snapshot.
             // Require the writer to have marked the key as an explicit user
             // change AND the write to be newer than the last one applied here
             // (out-of-order or replayed snapshots must not re-flip a route).
+            // An EQUAL id is not supersession, though: two windows saving in
+            // the same millisecond before either observed the other's storage
+            // event both mint that millisecond (the applied-id floor in
+            // _nextSharedWriteId only rises once the other write has been
+            // APPLIED here), and a strict `>` would drop whichever arrived
+            // second — silently discarding a genuine ASR toggle and leaving
+            // this window to stamp the pre-toggle route on its next handshake.
+            // Concurrent writes are unordered, so break the tie on INTENT
+            // rather than the clock: an explicitly toggled key wins, which
+            // makes both delivery orders converge on the user's choice. A
+            // strictly OLDER write is still refused, and no new metadata field
+            // is involved, so windows on the previous build are unaffected.
             // Metadata-less payloads come from a window still running the
             // previous build: keep the legacy value-difference behaviour so a
             // genuine toggle from such a window is not silently dropped.
