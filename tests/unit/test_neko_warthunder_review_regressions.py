@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
-import os
-import platform
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -65,114 +64,69 @@ def _load_wt_server_module(monkeypatch: pytest.MonkeyPatch):
     return module
 
 
-def test_data_layer_cors_only_echoes_approved_neko_origins(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.delenv("NEKO_MAIN_SERVER_PORT", raising=False)
-    monkeypatch.delenv("MAIN_SERVER_PORT", raising=False)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("APPDATA", str(tmp_path / "AppData" / "Roaming"))
-    wt_server_module = _load_wt_server_module(monkeypatch)
+def _make_handler(wt_server_module, server):
     handler = wt_server_module._Handler.__new__(wt_server_module._Handler)
     emitted: list[tuple[str, str]] = []
     handler.send_header = lambda name, value: emitted.append((name, value))
+    handler.server = server
+    return handler, emitted
 
-    handler.headers = {"Origin": "https://attacker.example"}
-    handler._cors()
-    assert ("Access-Control-Allow-Origin", "https://attacker.example") not in emitted
-    assert all(value != "*" for name, value in emitted if name == "Access-Control-Allow-Origin")
 
-    emitted.clear()
+def test_data_layer_cors_is_closed_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """未显式配置 cors_origins 时不放行任何 Origin。
+
+    数据层只被 Python 侧消费（adapters/telemetry_client.py 的 HTTP 客户端与
+    data_layer_process 的 health check），浏览器不直连，所以默认拒绝一切跨源读取
+    是正确的默认值。放行范围只能通过 create_http_server(cors_origins=...) 或
+    CLI 的 --cors-origin 显式给出。
+    """
+    wt_server_module = _load_wt_server_module(monkeypatch)
+    handler, emitted = _make_handler(wt_server_module, SimpleNamespace())
+
+    for origin in (
+        "https://attacker.example",
+        "http://localhost:48911",
+        "http://127.0.0.1:48911",
+        "http://[::1]:48911",
+    ):
+        emitted.clear()
+        handler.headers = {"Origin": origin}
+        handler._cors()
+        assert all(name != "Access-Control-Allow-Origin" for name, _value in emitted), origin
+
+
+def test_data_layer_cors_echoes_only_explicitly_allowed_origins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """显式配置后只回显白名单内的 Origin，且永不回显通配符。"""
+    wt_server_module = _load_wt_server_module(monkeypatch)
+    handler, emitted = _make_handler(
+        wt_server_module,
+        SimpleNamespace(cors_origins=frozenset({"http://localhost:48911"})),
+    )
+
     handler.headers = {"Origin": "http://localhost:48911"}
     handler._cors()
     assert ("Access-Control-Allow-Origin", "http://localhost:48911") in emitted
     assert ("Vary", "Origin") in emitted
     assert ("Access-Control-Allow-Methods", "GET, OPTIONS") in emitted
 
-
-def test_data_layer_cors_uses_configured_main_server_port(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("NEKO_MAIN_SERVER_PORT", "43102")
-    monkeypatch.setenv("MAIN_SERVER_PORT", "43103")
-    wt_server_module = _load_wt_server_module(monkeypatch)
-
-    assert wt_server_module._ALLOWED_CORS_ORIGINS == frozenset(
-        {
-            "http://127.0.0.1:43102",
-            "http://localhost:43102",
-            "http://[::1]:43102",
-        }
-    )
-
-    handler = wt_server_module._Handler.__new__(wt_server_module._Handler)
-    emitted: list[tuple[str, str]] = []
-    handler.send_header = lambda name, value: emitted.append((name, value))
-
-    handler.headers = {"Origin": "http://localhost:43102"}
-    handler._cors()
-    assert ("Access-Control-Allow-Origin", "http://localhost:43102") in emitted
-
     emitted.clear()
-    handler.headers = {"Origin": "http://localhost:48911"}
+    handler.headers = {"Origin": "https://attacker.example"}
     handler._cors()
     assert all(name != "Access-Control-Allow-Origin" for name, _value in emitted)
+    assert all(value != "*" for name, value in emitted if name == "Access-Control-Allow-Origin")
 
 
-def test_data_layer_cors_accepts_normalized_http_origins_on_port_80(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("NEKO_MAIN_SERVER_PORT", "80")
+def test_data_layer_cors_has_no_implicit_origin_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """守住 fail-closed：模块不得再提供任何隐式的 Origin 白名单来源。
+
+    历史回归：曾有一个模块级 _ALLOWED_CORS_ORIGINS 在 cors_origins 为空时兜底，
+    而两条启动路径（adapters/data_layer_process.py 的 in-process 与子进程）都不传
+    cors_origins，等于该兜底恒生效，把上游 #2371 定的默认拒绝改成了默认放行。
+    """
     wt_server_module = _load_wt_server_module(monkeypatch)
 
-    assert wt_server_module._ALLOWED_CORS_ORIGINS == frozenset(
-        {
-            "http://127.0.0.1:80",
-            "http://localhost:80",
-            "http://[::1]:80",
-            "http://127.0.0.1",
-            "http://localhost",
-            "http://[::1]",
-        }
-    )
-
-    handler = wt_server_module._Handler.__new__(wt_server_module._Handler)
-    emitted: list[tuple[str, str]] = []
-    handler.send_header = lambda name, value: emitted.append((name, value))
-    handler.headers = {"Origin": "http://localhost"}
-
-    handler._cors()
-
-    assert ("Access-Control-Allow-Origin", "http://localhost") in emitted
-
-
-def test_data_layer_cors_supports_legacy_main_server_port_env(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("NEKO_MAIN_SERVER_PORT", raising=False)
-    monkeypatch.setenv("MAIN_SERVER_PORT", "43103")
-    wt_server_module = _load_wt_server_module(monkeypatch)
-
-    assert "http://localhost:43103" in wt_server_module._ALLOWED_CORS_ORIGINS
-    assert "http://localhost:48911" not in wt_server_module._ALLOWED_CORS_ORIGINS
-
-
-def test_data_layer_cors_uses_electron_port_config(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.delenv("NEKO_MAIN_SERVER_PORT", raising=False)
-    monkeypatch.delenv("MAIN_SERVER_PORT", raising=False)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setattr(platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(os.path, "expanduser", lambda _path: str(tmp_path / "ignored-home"))
-    config_dir = tmp_path / "Library" / "Application Support" / "N.E.K.O"
-    config_dir.mkdir(parents=True)
-    (config_dir / "port_config.json").write_text(
-        '{"MAIN_SERVER_PORT": 43104}',
-        encoding="utf-8",
-    )
-
-    wt_server_module = _load_wt_server_module(monkeypatch)
-
-    assert "http://localhost:43104" in wt_server_module._ALLOWED_CORS_ORIGINS
-    assert "http://localhost:48911" not in wt_server_module._ALLOWED_CORS_ORIGINS
+    assert not hasattr(wt_server_module, "_ALLOWED_CORS_ORIGINS")
+    assert not hasattr(wt_server_module, "_build_allowed_cors_origins")
+    assert not hasattr(wt_server_module, "_read_main_server_port")
