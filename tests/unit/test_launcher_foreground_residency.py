@@ -371,18 +371,29 @@ def test_guarded_process_dies_when_its_owner_exits_on_windows(tmp_path):
         encoding="utf-8",
     )
 
+    # Two Windows-specific shapes are needed here.
+    #
     # The owner must PRECEDE the guarded process: _windows_parent_precedes_us
     # compares creation times, so a victim spawned before its watcher is reported
-    # as a recycled pid instead. Hence the middle-process shape rather than
-    # dropping the platform marker on one of the POSIX tests.
+    # as a recycled pid instead. Hence the middle process.
+    #
+    # And the owner must be named explicitly. sys.executable reaches the real
+    # interpreter through a shim on Windows (the CI probe in this workflow
+    # measures it), so the child's getppid() is the shim, not the middle process
+    # — and the shim outlives the middle, so a guard left to infer its owner
+    # watches something that never exits. NEKO_OWNER_PID points it at the process
+    # whose death is actually under test.
     middle_source = textwrap.dedent(
         f"""
         import os, subprocess, sys, time
+        env = dict(os.environ)
+        env["NEKO_OWNER_PID"] = str(os.getpid())
         proc = subprocess.Popen(
             [sys.executable, {str(child_file)!r}],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=env,
         )
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline and not os.path.exists({str(armed)!r}):
