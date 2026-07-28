@@ -158,6 +158,33 @@ def _posix_start_token(pid: int) -> str:
     return f"{boot_id}:{start_ticks}" if boot_id else ""
 
 
+def _posix_pid_is_zombie(pid: int) -> bool:
+    """True only for a pid that has exited and is merely awaiting reaping.
+
+    On the handoff path the owner is a grandparent, so liveness rests entirely on
+    ``os.kill(pid, 0)`` — which keeps succeeding for a zombie, whose start token
+    is unchanged too. Without this the runtime stays up, holding the
+    single-instance lock, until somebody reaps a process that is already dead.
+    """
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            raw = handle.read().decode("utf-8", errors="replace")
+        closing = raw.rfind(") ")
+        if closing < 0:
+            return False
+        fields = raw[closing + 2:].split()
+        state = fields[0]               # field 3
+        num_threads = int(fields[17])   # field 20
+    except (OSError, IndexError, ValueError):
+        return False
+    # A thread-group leader whose main thread called pthread_exit also reports
+    # 'Z' while its siblings run on, and that process is perfectly alive. Only
+    # treat it as dead once no thread is left.
+    return state == "Z" and num_threads <= 1
+
+
 def _safe_getppid() -> int:
     getppid = getattr(os, "getppid", None)
     if not callable(getppid):
@@ -243,6 +270,8 @@ class ParentDeathGuard:
             return True
         except OSError:
             return False
+        if _posix_pid_is_zombie(self._parent_pid):
+            return True
         # The pid answers, but a pid is not an identity: if the owner exited and
         # the number was recycled before this poll ran, we would be watching a
         # stranger forever. A start token that no longer matches the one taken
@@ -573,6 +602,22 @@ def install_child_guard(expected_parent_pid: Optional[int] = None) -> bool:
     """
     if not _guard_enabled() or not sys.platform.startswith("linux"):
         return False
+
+    # A forked child inherits the launcher's handler for the owner-death signal,
+    # still closed over the launcher's owner pid. Nothing in this runtime sends
+    # that signal, so this is hygiene rather than a live defect — but a stray
+    # delivery would run an owner-death teardown inside a server process.
+    # SIG_IGN, not SIG_DFL: the default action for these signals is termination,
+    # which would trade "wrong teardown" for "killed with no cleanup at all".
+    inherited = _owner_death_signal()
+    if inherited is not None:
+        try:
+            signal.signal(inherited, signal.SIG_IGN)
+        except (ValueError, OSError, RuntimeError):
+            # Not the main thread, or the signal cannot be set here; the stale
+            # handler is inert anyway since nothing sends it.
+            pass
+
     try:
         libc = ctypes.CDLL(None, use_errno=True)
         prctl = libc.prctl

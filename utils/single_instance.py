@@ -614,6 +614,21 @@ def _safe_getppid() -> int:
         return 0
 
 
+#: The lock the pre-single-instance builds held, from utils/port_utils. That is
+#: the generation an in-place upgrade actually races against — the retired
+#: directories below only ever existed on this branch.
+LEGACY_TEMP_LOCK_NAME = "neko_launcher.lock"
+
+
+def _legacy_temp_lock_path() -> Optional[Path]:
+    if sys.platform == "win32":
+        # The old Windows path was a Global\ named mutex, not a file lock.
+        return None
+    if os.environ.get(RUNTIME_STATE_DIR_ENV, "").strip():
+        return None
+    return Path(tempfile.gettempdir()) / LEGACY_TEMP_LOCK_NAME
+
+
 def legacy_owner_status() -> tuple[str, Optional[dict]]:
     """Is an older-generation runtime still holding a lock at a retired path?
 
@@ -647,6 +662,33 @@ def legacy_owner_status() -> tuple[str, Optional[dict]]:
             except OSError:
                 # Probe only; the lock was released above and the fd dies with us.
                 pass
+
+    legacy_file = _legacy_temp_lock_path()
+    if legacy_file is not None and legacy_file.exists():
+        # Never O_CREAT here. This lives in the shared temp dir, so creating it
+        # would both invent a stale lock file and hand anyone else a predictable
+        # target; we only care whether an existing one is held.
+        flags = os.O_RDWR | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(str(legacy_file), flags)
+        except OSError:
+            saw_unknown = True
+        else:
+            try:
+                try:
+                    _try_lock_fd(fd)
+                except LockHeldByAnother:
+                    return OWNER_OWNED, None
+                except OSError:
+                    saw_unknown = True
+                else:
+                    _unlock_fd(fd)
+            finally:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
     return (OWNER_UNKNOWN if saw_unknown else OWNER_FREE), None
 
 

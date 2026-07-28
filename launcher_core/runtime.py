@@ -1327,8 +1327,11 @@ def run_memory_server(
 
         if shutdown_complete_event is not None:
             async def _notify_shutdown_complete() -> None:
-                print("[Memory Server] Shutdown lifecycle complete", flush=True)
+                # Same ordering rule as _watch_shutdown: this is the event
+                # cleanup_servers actually waits on, so it must not be gated
+                # behind a write to a pipe whose reader has gone.
                 shutdown_complete_event.set()
+                _teardown_print("[Memory Server] Shutdown lifecycle complete")
 
             memory_server.app.add_event_handler("shutdown", _notify_shutdown_complete)
 
@@ -1339,8 +1342,12 @@ def run_memory_server(
         if shutdown_event is not None:
             def _watch_shutdown() -> None:
                 shutdown_event.wait()
-                print("[Memory Server] Shutdown requested by launcher", flush=True)
+                # Set first, log second. The owner is gone by the time this fires,
+                # so the pipe is usually broken and a print here would kill this
+                # thread before should_exit was ever set — the launcher would then
+                # wait out the full graceful budget for a request it never made.
                 server.should_exit = True
+                _teardown_print("[Memory Server] Shutdown requested by launcher")
 
             threading.Thread(target=_watch_shutdown, name="memory-shutdown-watch", daemon=True).start()
 
@@ -1434,8 +1441,11 @@ def run_agent_server(
 
         if shutdown_complete_event is not None:
             async def _notify_shutdown_complete() -> None:
-                print("[Agent Server] Shutdown lifecycle complete", flush=True)
+                # Same ordering rule as _watch_shutdown: this is the event
+                # cleanup_servers actually waits on, so it must not be gated
+                # behind a write to a pipe whose reader has gone.
                 shutdown_complete_event.set()
+                _teardown_print("[Agent Server] Shutdown lifecycle complete")
 
             agent_server.app.add_event_handler("shutdown", _notify_shutdown_complete)
 
@@ -1446,8 +1456,12 @@ def run_agent_server(
         if shutdown_event is not None:
             def _watch_shutdown() -> None:
                 shutdown_event.wait()
-                print("[Agent Server] Shutdown requested by launcher", flush=True)
+                # Set first, log second. The owner is gone by the time this fires,
+                # so the pipe is usually broken and a print here would kill this
+                # thread before should_exit was ever set — the launcher would then
+                # wait out the full graceful budget for a request it never made.
                 server.should_exit = True
+                _teardown_print("[Agent Server] Shutdown requested by launcher")
 
             threading.Thread(target=_watch_shutdown, name="agent-shutdown-watch", daemon=True).start()
 
@@ -1519,8 +1533,11 @@ def run_main_server(
 
         if shutdown_complete_event is not None:
             async def _notify_shutdown_complete() -> None:
-                print("[Main Server] Shutdown lifecycle complete", flush=True)
+                # Same ordering rule as _watch_shutdown: this is the event
+                # cleanup_servers actually waits on, so it must not be gated
+                # behind a write to a pipe whose reader has gone.
                 shutdown_complete_event.set()
+                _teardown_print("[Main Server] Shutdown lifecycle complete")
 
             main_server.app.add_event_handler("shutdown", _notify_shutdown_complete)
 
@@ -1531,8 +1548,12 @@ def run_main_server(
         if shutdown_event is not None:
             def _watch_shutdown() -> None:
                 shutdown_event.wait()
-                print("[Main Server] Shutdown requested by launcher", flush=True)
+                # Set first, log second. The owner is gone by the time this fires,
+                # so the pipe is usually broken and a print here would kill this
+                # thread before should_exit was ever set — the launcher would then
+                # wait out the full graceful budget for a request it never made.
                 server.should_exit = True
+                _teardown_print("[Main Server] Shutdown requested by launcher")
 
             threading.Thread(target=_watch_shutdown, name="main-shutdown-watch", daemon=True).start()
 
@@ -2280,16 +2301,19 @@ def _handle_owner_death(mechanism: str) -> None:
         # and the very grandchildren it exists to reap. Non-daemon makes the
         # interpreter wait for it — and it ends in os._exit(0) regardless, so
         # the wait is bounded by the merged-shutdown budget above.
-        _owner_death_finisher = threading.Thread(
-            target=_finish_owner_death,
-            args=(mechanism, True),
-            name="neko-owner-death-finish",
-            daemon=False,
-        )
-        _owner_death_finisher.start()
-        return
-
-    _finish_owner_death(mechanism, False)
+    # Always on its own thread, in every mode. On Linux this function runs as a
+    # signal handler on the main thread, and the stack it interrupted may be the
+    # cleanup it is about to wait for — waiting in place deadlocks against
+    # ourselves, permanently if the signal landed inside _cleanup_lock. Handing
+    # off lets the interrupted cleanup resume and finish the ordered shutdown,
+    # which is what the teardown wanted from it in the first place.
+    _owner_death_finisher = threading.Thread(
+        target=_finish_owner_death,
+        args=(mechanism, requester is not None),
+        name="neko-owner-death-finish",
+        daemon=False,
+    )
+    _owner_death_finisher.start()
 
 
 def _finish_owner_death(mechanism: str, wait_for_merged: bool) -> None:
