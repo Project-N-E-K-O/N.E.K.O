@@ -615,70 +615,104 @@ class QQClient(QQConnectionBase):
         data = await self.call_action("get_group_list", timeout=10.0)
         return data if isinstance(data, list) else []
 
-    async def send_message(self, user_id: str, message: str):
-        """发送私聊消息"""
+    async def send_message(self, user_id: str, message: str) -> Optional[str]:
+        """发送私聊消息（CQ 码字符串），返回 message_id。
+
+        与 segments 版同一个 action，只是 message 字段是字符串——编码不能
+        改（把 CQ 码塞进 text 段会让 [CQ:at,qq=…] 原样显示给用户），但回执
+        可以要：没有它就分不清"发出去了"和"没发出去"，投递确认链只能无条件
+        判成功，未送达的回复会被当已投递清掉排除标、进 scoped 记忆。"""
+        return await self._send_text_action(
+            "send_private_msg", {"user_id": int(user_id), "message": message},
+            log_target=f"private {user_id}",
+        )
+
+    async def send_group_message(self, group_id: str, message: str) -> Optional[str]:
+        """发送群聊消息（CQ 码字符串），返回 message_id。见 send_message。"""
+        return await self._send_text_action(
+            "send_group_msg", {"group_id": int(group_id), "message": message},
+            log_target=f"group {group_id}", record_sent=True,
+        )
+
+    async def _send_text_action(
+        self, action: str, params: Dict[str, Any], *,
+        log_target: str, record_sent: bool = False,
+    ) -> Optional[str]:
+        """One echo round-trip for the CQ-string senders (same plumbing as
+        the segment senders; responses are dispatched by echo, not action)."""
         if not self._main_client:
             raise RuntimeError("No Napcat client connected")
 
-        payload = {
-            "action": "send_private_msg",
-            "params": {
-                "user_id": int(user_id),
-                "message": message,
-            },
-        }
+        echo = secrets.token_hex(8)
+        payload = {"action": action, "params": params, "echo": echo}
+        future: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._pending_actions[echo] = future
+        try:
+            await self._main_client.send(json.dumps(payload))
+            response = await asyncio.wait_for(future, timeout=10.0)
+            message_id = str((response.get("data") or {}).get("message_id") or "")
+            if message_id and record_sent:
+                self.record_sent_message_id(message_id)
+            if self.logger:
+                self.logger.debug(f"Sent message to {log_target}")
+            return message_id if message_id else None
+        except asyncio.TimeoutError:
+            return None
+        finally:
+            self._pending_actions.pop(echo, None)
 
-        await self._main_client.send(json.dumps(payload))
-        if self.logger:
-            self.logger.debug(f"Sent message to {user_id}")
+    async def send_private_message_segments(
+        self, user_id: str, segments: list[Dict[str, Any]],
+    ) -> Optional[str]:
+        """发送私聊消息片段，返回 message_id（与群版对偶）。
 
-    async def send_group_message(self, group_id: str, message: str):
-        """发送群聊消息"""
+        没有回执就没法区分"发出去了"和"没发出去"：语音回复因此会被无条件
+        当成已投递，失败时既不回退文本、还被记成用户已经听到。走与
+        send_group_message_segments 相同的 echo 往返（响应分发在 :388-391
+        按 echo 通用匹配，与 action 无关）。"""
         if not self._main_client:
             raise RuntimeError("No Napcat client connected")
 
-        payload = {
-            "action": "send_group_msg",
-            "params": {
-                "group_id": int(group_id),
-                "message": message,
-            },
-        }
-
-        await self._main_client.send(json.dumps(payload))
-        if self.logger:
-            self.logger.debug(f"Sent group message to {group_id}")
-
-    async def send_private_message_segments(self, user_id: str, segments: list[Dict[str, Any]]):
-        """发送私聊消息片段"""
-        if not self._main_client:
-            raise RuntimeError("No Napcat client connected")
-
+        echo = secrets.token_hex(8)
         payload = {
             "action": "send_private_msg",
             "params": {
                 "user_id": int(user_id),
                 "message": segments,
             },
+            "echo": echo,
         }
 
-        await self._main_client.send(json.dumps(payload))
-        if self.logger:
-            self.logger.debug(f"Sent segmented private message to {user_id}")
+        future: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._pending_actions[echo] = future
+        try:
+            await self._main_client.send(json.dumps(payload))
+            response = await asyncio.wait_for(future, timeout=10.0)
+            message_id = str((response.get("data") or {}).get("message_id") or "")
+            if self.logger:
+                self.logger.debug(f"Sent segmented private message to {user_id}")
+            return message_id if message_id else None
+        except asyncio.TimeoutError:
+            return None
+        finally:
+            self._pending_actions.pop(echo, None)
 
-    async def send_private_record(self, user_id: str, file_uri: str):
-        """发送私聊语音"""
-        await self.send_private_message_segments(user_id, [{"type": "record", "data": {"file": str(file_uri or "")}}])
+    async def send_private_record(self, user_id: str, file_uri: str) -> Optional[str]:
+        """发送私聊语音，透传底层结果（None = 未确认送达）。"""
+        return await self.send_private_message_segments(user_id, [{"type": "record", "data": {"file": str(file_uri or "")}}])
 
-    async def send_group_record(self, group_id: str, file_uri: str, *, reply_message_id: str = "", at_user_id: str = ""):
-        """发送群聊语音"""
+    async def send_group_record(
+        self, group_id: str, file_uri: str, *,
+        reply_message_id: str = "", at_user_id: str = "",
+    ) -> Optional[str]:
+        """发送群聊语音（返回值同 send_private_record，供投递确认链使用）。"""
         segments: list[Dict[str, Any]] = []
         if str(reply_message_id or "").strip():
             segments.append({"type": "reply", "data": {"id": str(reply_message_id)}})
         if str(at_user_id or "").strip():
             segments.append({"type": "at", "data": {"qq": str(at_user_id)}})
         segments.append({"type": "record", "data": {"file": str(file_uri or "")}})
-        await self.send_group_message_segments(group_id, segments)
+        return await self.send_group_message_segments(group_id, segments)
 
     async def send_group_message_segments(self, group_id: str, segments: list[Dict[str, Any]], *, record_sent: bool = True, keyboard: str = "") -> Optional[str]:
         """发送群聊消息片段，返回 message_id"""

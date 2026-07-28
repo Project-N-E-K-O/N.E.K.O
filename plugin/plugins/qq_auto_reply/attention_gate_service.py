@@ -144,7 +144,22 @@ class QQAttentionGateService:
             ephemeral_session=False,
         )
         try:
-            outcome = await self.plugin.reply_pipeline.run(request)
+            # 经 per-session 锁：teardown（prompt 变更/开关转变）不得在
+            # 本合成轮 stream 中途弹出共享会话。
+            async def _run_proactive():
+                svc = self.plugin.session_memory_service
+                # 合成 "[系统]…" 指令行不是参与者发言：pipeline 跑完后记入
+                # 排除名单（对偶 rapid-fire flush），digest 不提取它。
+                # before 在锁内取，防竞态窗口误记真实用户行。
+                before = svc.session_history_len(f"group:{group_id}")
+                try:
+                    return await self.plugin.reply_pipeline.run(request)
+                finally:
+                    svc.record_synthetic_prompt_rows(f"group:{group_id}", before)
+
+            outcome = await self.plugin._run_with_session_lock(
+                f"group:{group_id}", _run_proactive,
+            )
             if outcome.action == "reply" and outcome.reply_text:
                 self._logger.info(f"[Proactive] 主动发言成功: {outcome.reply_text[:50]}...")
                 self.plugin.runtime_service.record_pipeline_outcome(
@@ -477,8 +492,28 @@ class QQAttentionGateService:
             group_scene_mode="shared_context",
             fallback_to_text_on_voice_failure=True,
         )
+        # 发言时刻的群记忆政策随 backlog 行保存：OFF 时代被忽略的消息在
+        # ON 之后回放，其"[回溯补回]…"行不得以当前政策入 digest。存量行
+        # 缺字段按 False 处理（fail-closed）。ON 时代的消息回放照常入库。
+        consented_at_receipt = bool(msg.get("group_memory_enabled_at_receipt"))
         try:
-            outcome = await self.plugin.reply_pipeline.run(request)
+            async def _run_retro():
+                svc = self.plugin.session_memory_service
+                before = svc.session_history_len(f"group:{group_id}")
+                try:
+                    return await self.plugin.reply_pipeline.run(request)
+                finally:
+                    if not consented_at_receipt:
+                        # ai 行同样衍生自 pre-opt-in 消息：一并排除，防止
+                        # 该消息经回复间接进入持久记忆。
+                        svc.record_synthetic_prompt_rows(
+                            f"group:{group_id}", before,
+                            include_ai_rows=True,
+                        )
+
+            outcome = await self.plugin._run_with_session_lock(
+                f"group:{group_id}", _run_retro,
+            )
             self.plugin.runtime_service.record_pipeline_outcome(
                 source=request.source_kind, request=request, outcome=outcome,
             )
@@ -493,42 +528,88 @@ class QQAttentionGateService:
     async def _push_group_digest(self, group_id: str) -> None:
         """焦点切换时将旧焦点群的完整会话摘要推送到 Memory Server"""
         try:
+            if not bool((getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                "group_memory_enabled", False,
+            )):
+                return
             session_key = f"group:{group_id}"
             sessions = getattr(self.plugin, "_user_sessions", {}) or {}
             s = sessions.get(session_key)
             if not isinstance(s, dict):
                 return
-            session = s.get("session")
-            if not session or not hasattr(session, "_conversation_history"):
-                return
-            history = getattr(session, "_conversation_history", []) or []
-            if len(history) < 4:
-                return
-            her_name = str(s.get("her_name") or "neko")
-            login_id = str(s.get("login_self_id") or "")
-            sender_id = str(s.get("sender_id") or "")
-            user_title = str(s.get("user_title") or "")
-            user_label = f"{user_title}(QQ:{sender_id})" if user_title else f"QQ{sender_id}"
-            messages = [
-                {"role": getattr(m, "role", "") if hasattr(m, "role") else m.get("role", ""),
-                 "content": str(getattr(m, "content", "") if hasattr(m, "content") else m.get("content", ""))[:200]}
-                for m in history
-                if (getattr(m, "role", "") if hasattr(m, "role") else m.get("role", "")) in ("user", "assistant")
-            ]
-            if not messages:
-                return
-            await self.plugin.memory_bridge.post_memory_history(
-                "process",
-                her_name,
-                [{"role": "system", "content": (
-                    f"[QQ群聊记录] {her_name} 使用QQ插件在群 {group_id}"
-                    + (f"（账号 {login_id}）" if login_id else "")
-                    + f" 聊了以下内容：\n"
-                    + "\n".join(f"{user_label if m['role']=='user' else her_name}: {m['content']}" for m in messages)
-                )}],
-                timeout=5.0,
-            )
-            self._logger.info(f"[Digest] 群 {group_id} 完整会话已推送 Memory Server ({len(messages)}条)")
+            async def _push_delta() -> int:
+                # 锁内复检：外层 setting 检查通过后可能排队等锁，期间用户
+                # 关掉群记忆——opt-out 之后不得再推送 digest。
+                if not bool((getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                    "group_memory_enabled", False,
+                )):
+                    return 0
+                if (getattr(self.plugin, "_user_sessions", {}) or {}).get(
+                    session_key
+                ) is not s:
+                    # 等锁期间 finalizer/discard 可能已结算并弹出会话：
+                    # 陈旧引用继续推会重发已结算历史、推进无主游标。
+                    return 0
+                if s.get("pending_disable_settle"):
+                    # opt-out 结算未完成（快速 re-enable 会让上面的 setting
+                    # 检查重新通过）：digest 不碰，交转变任务按 cutoff 结算。
+                    return 0
+                if s.get("pending_enable_rebase") is not None:
+                    # retain 结算后、ON rebase 前的 limbo：游标还停在
+                    # opt-out 区间之前，此处推送只剩 nonconsent floor 一道
+                    # 防线兜着未授权行。交 rebase 任务先把游标规整过界。
+                    return 0
+                session = s.get("session")
+                if not session or not hasattr(session, "_conversation_history"):
+                    return 0
+                history = getattr(session, "_conversation_history", []) or []
+                if len(history) < 4:
+                    return 0
+                # 先旧后新分批 + 精确游标（对偶 finalize 的同名修复）：旧写法
+                # `[-200:]` 会把超窗中段永久跳过、游标却跳到 len(history)，
+                # 之后 finalize 也无从补救。失败即停，游标停在最后一个成功
+                # 批，剩余留给下一次 digest/finalize。
+                svc = self.plugin.session_memory_service
+                start_index = max(0, int(s.get("last_group_digest_index", 0)))
+                start_index = max(
+                    start_index,
+                    int(s.get("nonconsent_history_end", 0) or 0),
+                )
+                if start_index > len(history):
+                    # 历史被重复守卫重置/收缩：钳游标，防新增轮次被
+                    # 永久跳过（对偶 finalize 的同名钳制）。
+                    start_index = len(history)
+                    s["last_group_digest_index"] = start_index
+                total_sent = 0
+                # 限批：focus-shift 推送持有会话锁，慢 memory server 下
+                # 无界批次会让 3 个排水群占满全局 Semaphore(3) 冻结全部
+                # 消息处理。每次最多 3 批，游标精确，剩余留给下一次
+                # digest / finalize（结算 of record 在 finalize，不丢）。
+                remaining_batches = 3
+                while remaining_batches > 0:
+                    remaining_batches -= 1
+                    messages, next_index = svc._slice_group_history_batch(
+                        history, start_index, svc.GROUP_HISTORY_MAX_MESSAGES,
+                        user_data=s, stop_at_provisional=True,
+                    )
+                    if not messages:
+                        if next_index > start_index:
+                            s["last_group_digest_index"] = next_index
+                        break
+                    await self.plugin.memory_bridge.post_scoped_memory_history(
+                        str(s.get("her_name") or "neko"),
+                        messages,
+                        subject=self.plugin.memory_bridge.group_subject(group_id),
+                        timeout=30.0,
+                    )
+                    s["last_group_digest_index"] = next_index
+                    start_index = next_index
+                    total_sent += len(messages)
+                return total_sent
+
+            sent_messages = await self.plugin._run_with_session_lock(session_key, _push_delta)
+            if sent_messages:
+                self._logger.info(f"[Digest] 群 {group_id} 已推送摘要到 Memory Server ({sent_messages}条)")
         except Exception as e:
             self._logger.warning(f"[Digest] 推送失败: {e}")
 

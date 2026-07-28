@@ -6,7 +6,9 @@ from types import SimpleNamespace
 import pytest
 
 import main_logic.core as core_module
+import main_logic.core.context_append as context_append_module
 from utils.llm_client import AIMessage, HumanMessage
+from tests.fake_clock import patch_module_clock
 
 
 def _make_manager():
@@ -883,14 +885,17 @@ def test_promoted_pending_request_id_keeps_ttl_eviction_order(monkeypatch):
         "_dedup_session_id": id(mgr.session),
     }
 
-    monkeypatch.setattr(core_module.time, "time", lambda: 1000.0)
+    # 时钟打在 main_logic.core.context_append 而不是门面 main_logic.core：
+    # 记账/TTL 淘汰的 time.time() 都在 ContextAppendMixin 所在的这个模块里读，
+    # 门面只是把 mixin 组装进 LLMSessionManager。
+    patch_module_clock(monkeypatch, context_append_module, time=lambda: 1000.0)
     mgr._remember_context_append_request_id(pending_payload)
-    monkeypatch.setattr(core_module.time, "time", lambda: 1110.0)
+    patch_module_clock(monkeypatch, context_append_module, time=lambda: 1110.0)
     mgr._remember_context_append_request_id(current_payload)
 
     mgr._promote_context_append_request_id_to_current_session(pending_payload)
 
-    monkeypatch.setattr(core_module.time, "time", lambda: 1121.0)
+    patch_module_clock(monkeypatch, context_append_module, time=lambda: 1121.0)
     assert mgr._context_append_request_seen(pending_payload) is False
     assert mgr._context_append_request_seen(current_payload) is True
 

@@ -882,6 +882,53 @@
         charBallRestitution: 1.25,
       };
 
+      const OPENING_MOVEMENT = {
+        liveBallSpeedMin: 120,
+        routeBlend: 0.55,
+        maxVerticalShiftRatio: 0.32,
+        maxProjectionRatio: 1.5,
+      };
+
+      // 开局时根据玩家相对球的站位估计出脚方向；球已经被踢出后则改用实际速度。
+      // 只采样 AI 当前横向位置附近的上下墙反弹路线，用来给原进攻目标增加
+      // 有限的纵向偏移，而不是把 AI 直接变成精确追踪落点的守门员。
+      function estimateOpeningAttackRouteY(ball, player, ai, fieldHeight, cfg, openingConfig) {
+        const playerCx = player.x + cfg.charSize / 2;
+        const playerCy = player.y + cfg.charSize / 2;
+        const aiCx = ai.x + cfg.charSize / 2;
+        const ballSpeed = Math.hypot(ball.vx, ball.vy);
+        const hasLiveBallPath = ballSpeed >= openingConfig.liveBallSpeedMin;
+        if (hasLiveBallPath && ball.vx <= 0) return null;
+        const useLiveBallPath = hasLiveBallPath;
+        const dirX = useLiveBallPath ? ball.vx : ball.x - playerCx;
+        const dirY = useLiveBallPath ? ball.vy : ball.y - playerCy;
+        const travelX = aiCx - ball.x;
+        if (dirX <= cfg.ballRadius || travelX <= 0) return null;
+
+        const maxProjection = fieldHeight * openingConfig.maxProjectionRatio;
+        const projectedDeltaY = Math.max(
+          -maxProjection,
+          Math.min(maxProjection, travelX * dirY / dirX),
+        );
+        const top = cfg.ballRadius;
+        const bottom = fieldHeight - cfg.ballRadius;
+        let routeY = ball.y + projectedDeltaY;
+
+        for (
+          let bounce = 0;
+          bounce < 4 && (routeY < top || routeY > bottom);
+          bounce += 1
+        ) {
+          if (routeY < top) {
+            routeY = top + (top - routeY) * cfg.wallRestitution;
+          } else {
+            routeY = bottom - (routeY - bottom) * cfg.wallRestitution;
+          }
+        }
+
+        return Math.max(top, Math.min(bottom, routeY));
+      }
+
       // ── 边界系统 ──────────────────────────────────────────────────────
       // 边界 = 球场内缩一定距离的矩形区域，球超出边界视为出界
       const BOUNDARY = {
@@ -1336,6 +1383,7 @@
         flashTimer: 0,
         flashSide: null,
       };
+      let openingMovementActive = true;
 
       function resize() {
         canvas.width = window.innerWidth;
@@ -1360,6 +1408,7 @@
         state.ball.vy = 0;
         state.mouse.x = state.player.x + CFG.charSize/2;
         state.mouse.y = state.player.y + CFG.charSize/2;
+        openingMovementActive = true;
       }
       resetPositions();
 
@@ -1435,6 +1484,7 @@
         lastTouchSide = isPlayer ? 'player' : 'ai';
         lastPlayerKickAtMs = isPlayer ? performance.now() : 0;
         playerKickWallBounceForStartle = false;
+        if (!isPlayer) openingMovementActive = false;
         logGameEvent(isPlayer ? 'player-kick' : 'ai-kick');
         markBallTouched();
         void soccerGameAudio.playSfx('ball.kick');
@@ -1815,6 +1865,9 @@
         const b = state.ball;
         const W = canvas.width, H = canvas.height;
         const goalY = H / 2;
+        if (openingMovementActive && b.x > W * 0.72) {
+          openingMovementActive = false;
+        }
 
         // relaxed 预判更远（提前走位），其他默认 0.25s
         const predictT = mood.style === 'patient' ? 0.4 : 0.25;
@@ -1839,6 +1892,9 @@
                             y: Math.max(margin, Math.min(H - margin, pby)) };
         } else {
           aiMode = 'attack';
+          const openingRouteY = openingMovementActive
+            ? estimateOpeningAttackRouteY(b, state.player, state.ai, H, CFG, OPENING_MOVEMENT)
+            : null;
           const toGoalX = 0 - pbx;
           const toGoalY = goalY - pby;
           const gl = Math.hypot(toGoalX, toGoalY) || 1;
@@ -1848,6 +1904,17 @@
           let ty = pby - ngy * stalkDist;
           if (tx < margin || tx > W - margin || ty < margin || ty > H - margin) {
             tx = pbx; ty = pby;
+          }
+          if (openingRouteY !== null) {
+            const maxVerticalShift = H * OPENING_MOVEMENT.maxVerticalShiftRatio;
+            const routeShift = Math.max(
+              -maxVerticalShift,
+              Math.min(maxVerticalShift, openingRouteY - ty),
+            );
+            ty = Math.max(
+              margin,
+              Math.min(H - margin, ty + routeShift * OPENING_MOVEMENT.routeBlend),
+            );
           }
           aiTargetCache = { x: tx, y: ty };
         }

@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.fake_clock import patch_module_clock
+
 
 pytestmark = pytest.mark.unit
 
@@ -129,7 +131,8 @@ def test_main_passes_resolved_ports_to_every_child(monkeypatch):
     monkeypatch.setattr(launcher, "_ensure_windows", lambda: None)
     monkeypatch.setattr(launcher, "ensure_path", lambda *_args: None)
     monkeypatch.setattr(launcher, "ensure_frontend_dependencies", lambda: None)
-    monkeypatch.setattr(launcher.time, "sleep", lambda _seconds: None)
+    # start_card_forge.main() 自己调 time.sleep 等子窗口起来，假时钟就打在 launcher 上。
+    patch_module_clock(monkeypatch, launcher, sleep=lambda _seconds: None)
     monkeypatch.setattr("builtins.input", lambda: "")
     monkeypatch.setattr(
         launcher,

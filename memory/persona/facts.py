@@ -147,10 +147,33 @@ class FactsMixin:
         d['text'] = str(entry)
         return d
 
+    def _collect_card_facts(self, persona: dict) -> list[dict]:
+        """All protected character-card entries, whatever section holds them.
+
+        Scoped writes only scan their own @subject section, so without this
+        a group-derived claim that contradicts the fixed character
+        definition (stored under master/neko/relationship) would be added
+        instead of rejected."""
+        card_facts: list[dict] = []
+        if not isinstance(persona, dict):
+            return card_facts
+        for section in persona.values():
+            if not isinstance(section, dict):
+                continue
+            for fact in section.get('facts') or []:
+                if isinstance(fact, dict) and fact.get('source') == 'character_card':
+                    card_facts.append(fact)
+        return card_facts
+
     def _evaluate_fact_contradiction(
         self, name: str, text: str, section_facts: list, stop_names: list[str],
+        *, redact_text: bool = False,
     ) -> tuple[str | None, str | None]:
-        """Returns (rejection_code, conflicting_text) or (None, None) if OK."""
+        """Returns (rejection_code, conflicting_text) or (None, None) if OK.
+
+        redact_text=True for scoped (group/participant) input: that content
+        is deliberately kept out of the ordinary Memory log, so the
+        rejection line records lengths instead of excerpts."""
         for existing in section_facts:
             if isinstance(existing, dict):
                 old_text = existing.get('text', '')
@@ -160,26 +183,46 @@ class FactsMixin:
                 is_card = False
             if self._texts_may_contradict(old_text, text, stop_names=stop_names):
                 if is_card:
-                    logger.info(
-                        f"[Persona] {name}: 新条目与角色卡矛盾，无条件拒绝: "
-                        f"card=\"{old_text[:40]}\" vs new=\"{text[:40]}\""
-                    )
+                    if redact_text:
+                        # scoped 输入的正文不进普通 Memory 日志（与 scoped
+                        # 提取/落盘侧的脱敏口径一致），只记长度。
+                        logger.info(
+                            f"[Persona] {name}: scoped 新条目与角色卡矛盾，"
+                            f"无条件拒绝: card_len={len(old_text)} "
+                            f"new_len={len(text)}"
+                        )
+                    else:
+                        logger.info(
+                            f"[Persona] {name}: 新条目与角色卡矛盾，无条件拒绝: "
+                            f"card=\"{old_text[:40]}\" vs new=\"{text[:40]}\""
+                        )
                     return self.FACT_REJECTED_CARD, old_text
                 return self.FACT_QUEUED_CORRECTION, old_text
         return None, None
 
-    def _build_fact_entry(self, text: str, source: str, source_id: str | None) -> dict:
+    def _build_fact_entry(
+        self, text: str, source: str, source_id: str | None, *, subject=None,
+    ) -> dict:
         entry = self._normalize_entry(text)
+        # scoped 条目 ID 掺隔离域：同 section 双 scope 同秒同文本会撞 ID，
+        # ID 寻址的归档/删除会跨域误伤（Codex P2）。
+        domain_salt = (
+            f"{subject.key}|{subject.scope}|" if subject is not None else ""
+        )
         if source == 'reflection' and source_id:
             entry['id'] = f"prom_{source_id}"
         else:
-            entry['id'] = f"manual_{datetime.now().strftime('%Y%m%d%H%M%S')}_{hashlib.sha256(text.encode()).hexdigest()[:8]}"
+            digest = hashlib.sha256((domain_salt + text).encode()).hexdigest()[:8]
+            entry['id'] = f"manual_{datetime.now().strftime('%Y%m%d%H%M%S')}_{digest}"
         entry['source'] = source
         entry['source_id'] = source_id
+        if subject is not None:
+            entry.update(subject.as_entry_fields())
         return entry
 
     def add_fact(self, name: str, text: str, entity: str = 'master',
-                 source: str = 'manual', source_id: str | None = None) -> str:
+                 source: str = 'manual', source_id: str | None = None,
+                 subject=None) -> str:
         """Add a confirmed fact to persona. Checks for contradictions first.
 
         Args:
@@ -191,23 +234,64 @@ class FactsMixin:
             FACT_REJECTED_CARD    — contradicts character_card, permanently blocked
             FACT_QUEUED_CORRECTION — contradicts existing non-card fact, queued for LLM review
         """
+        from memory.scopes import coerce_subject
+        memory_subject = coerce_subject(subject)
+        if memory_subject is not None:
+            entity = memory_subject.kind
         persona = self.ensure_persona(name)
-        section_facts = self._get_section_facts(persona, entity)
+        section_facts = self._get_section_facts(
+            persona, entity, subject=memory_subject,
+        )
         stop_names = self._get_entity_stop_names(name)
 
-        code, old_text = self._evaluate_fact_contradiction(name, text, section_facts, stop_names)
+        # 同 section 可能混着不同自定义 scope 的条目（section key 不含
+        # scope）：矛盾扫描只看本 subject 的条目，跨 scope 文本不得互相
+        # 否决/触发 correction。
+        scan_facts = section_facts
+        if memory_subject is not None:
+            from memory.scopes import entry_matches_subject
+            scan_facts = [
+                e for e in section_facts
+                if isinstance(e, dict) and entry_matches_subject(e, memory_subject)
+            ]
+        if memory_subject is not None:
+            # 对偶 aadd_fact：scoped 扫描面看不到角色卡条目所在的 section，
+            # 与固定人设冲突的群衍生断言必须在这里被拒。
+            card_code, _card_text = self._evaluate_fact_contradiction(
+                name, text, self._collect_card_facts(persona), stop_names,
+                redact_text=True,
+            )
+            if card_code == self.FACT_REJECTED_CARD:
+                return self.FACT_REJECTED_CARD
+        code, old_text = self._evaluate_fact_contradiction(
+            name, text, scan_facts, stop_names,
+            redact_text=memory_subject is not None,
+        )
         if code == self.FACT_REJECTED_CARD:
             return self.FACT_REJECTED_CARD
         if code == self.FACT_QUEUED_CORRECTION:
-            self._queue_correction(name, old_text, text, entity)
+            correction_entity = (
+                memory_subject.persona_section_key
+                if memory_subject is not None else entity
+            )
+            self._queue_correction(
+                name, old_text, text, correction_entity,
+                subject_fields=(
+                    memory_subject.as_entry_fields()
+                    if memory_subject is not None else None
+                ),
+            )
             return self.FACT_QUEUED_CORRECTION
 
-        section_facts.append(self._build_fact_entry(text, source, source_id))
+        section_facts.append(self._build_fact_entry(
+            text, source, source_id, subject=memory_subject,
+        ))
         self.save_persona(name, persona)
         return self.FACT_ADDED
 
     async def aadd_fact(self, name: str, text: str, entity: str = 'master',
-                        source: str = 'manual', source_id: str | None = None) -> str:
+                        source: str = 'manual', source_id: str | None = None,
+                        subject=None) -> str:
         """P2.a.2: character-level asyncio.Lock serializes add_fact /
         resolve_corrections / record_mentions, preventing persona.json write races.
 
@@ -215,19 +299,58 @@ class FactsMixin:
         its standalone lock is an asyncio.Lock (reentrant? no — asyncio.Lock is
         not reentrant) → so inside the lock we call the **unlocked** version of
         _aqueue_correction."""
+        from memory.scopes import coerce_subject
+        memory_subject = coerce_subject(subject)
+        if memory_subject is not None:
+            entity = memory_subject.kind
         async with self._get_alock(name):
             persona = await self._aensure_persona_locked(name)
-            section_facts = self._get_section_facts(persona, entity)
+            section_facts = self._get_section_facts(
+                persona, entity, subject=memory_subject,
+            )
             stop_names = await self._aget_entity_stop_names(name)
 
-            code, old_text = self._evaluate_fact_contradiction(name, text, section_facts, stop_names)
+            # 对偶同步版 add_fact：矛盾扫描按 subject 逐条过滤。
+            scan_facts = section_facts
+            if memory_subject is not None:
+                from memory.scopes import entry_matches_subject
+                scan_facts = [
+                    e for e in section_facts
+                    if isinstance(e, dict) and entry_matches_subject(e, memory_subject)
+                ]
+            if memory_subject is not None:
+                # scoped 写入的扫描面被限制在自己的隔离域，看不到 master /
+                # neko / relationship 下的角色卡条目——与固定人设冲突的
+                # 群衍生断言会被当成普通新增。这里补一次角色卡校验。
+                card_code, card_text = self._evaluate_fact_contradiction(
+                    name, text, self._collect_card_facts(persona), stop_names,
+                    redact_text=True,
+                )
+                if card_code == self.FACT_REJECTED_CARD:
+                    return self.FACT_REJECTED_CARD
+            code, old_text = self._evaluate_fact_contradiction(
+                name, text, scan_facts, stop_names,
+                redact_text=memory_subject is not None,
+            )
             if code == self.FACT_REJECTED_CARD:
                 return self.FACT_REJECTED_CARD
             if code == self.FACT_QUEUED_CORRECTION:
-                await self._aqueue_correction_locked(name, old_text, text, entity)
+                correction_entity = (
+                    memory_subject.persona_section_key
+                    if memory_subject is not None else entity
+                )
+                await self._aqueue_correction_locked(
+                    name, old_text, text, correction_entity,
+                    subject_fields=(
+                        memory_subject.as_entry_fields()
+                        if memory_subject is not None else None
+                    ),
+                )
                 return self.FACT_QUEUED_CORRECTION
 
-            section_facts.append(self._build_fact_entry(text, source, source_id))
+            section_facts.append(self._build_fact_entry(
+                text, source, source_id, subject=memory_subject,
+            ))
             await self.asave_persona(name, persona)
             return self.FACT_ADDED
 
@@ -797,8 +920,46 @@ class FactsMixin:
             )
             return True
 
-    def _get_section_facts(self, persona: dict, entity: str) -> list:
+    def _get_section_facts(self, persona: dict, entity: str, *, subject=None) -> list:
+        if subject is not None:
+            section = persona.setdefault(subject.persona_section_key, {})
+            section.update(subject.as_entry_fields())
+            section.setdefault('entity', subject.kind)
+            return section.setdefault('facts', [])
         return persona.setdefault(entity, {}).setdefault('facts', [])
+
+    def _normalize_entry_for_section(
+        self, persona: dict, section_key: str, value,
+    ) -> dict:
+        """Normalize a persona fact and inherit its scoped section metadata.
+
+        The section key carries kind:subject_id but not the scope, so one
+        section can hold entries from several isolation domains and its
+        metadata is whoever wrote last. Inherit only when the entry has no
+        stamp of its own AND every stamped entry already there agrees with
+        that metadata; otherwise leave it unstamped, which reads as
+        fail-closed at render time rather than filing the fact under
+        someone else's domain."""
+        entry = self._normalize_entry(value)
+        from memory.scopes import persona_subject_from_section, subject_from_entry
+        section = persona.get(section_key, {})
+        subject = persona_subject_from_section(section_key, section)
+        if subject is None or subject_from_entry(entry) is not None:
+            return entry
+        stamped = {
+            (e.get('subject_kind'), e.get('subject_id'), e.get('scope'))
+            for e in (section.get('facts') or [])
+            if isinstance(e, dict) and subject_from_entry(e) is not None
+        }
+        section_triple = (subject.kind, subject.subject_id, subject.scope)
+        if stamped - {section_triple}:
+            logger.info(
+                f"[Persona] section {section_key} 含多个隔离域，"
+                f"新条目不继承 section 元数据（按无戳处理）"
+            )
+            return entry
+        entry.update(subject.as_entry_fields())
+        return entry
 
     def _get_entity_stop_names(self, lanlan_name: str | None = None) -> list[str]:
         """Return master + lanlan names + their nicknames (``昵称``) — used to strip

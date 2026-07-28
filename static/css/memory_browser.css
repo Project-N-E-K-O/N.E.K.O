@@ -393,12 +393,14 @@ body .container-header {
 .cat-btn {
     position: relative;
     isolation: isolate;
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 22px;
+    gap: 10px;
     align-items: center;
     width: 100%;
     min-height: 44px;
     padding: 10px 12px;
-    overflow: hidden;
+    overflow: visible;
     background: transparent;
     border: 1px solid transparent;
     border-radius: var(--memory-radius-row);
@@ -413,17 +415,30 @@ body .container-header {
     line-height: 1.2;
 }
 
+.cat-btn:not(:has(.memory-role-source)) {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.cat-btn:has(.memory-role-source:hover),
+.cat-btn:focus-visible {
+    z-index: 20;
+}
+
 .cat-btn:hover {
     border-color: var(--memory-divider);
     background: var(--memory-surface-hover);
 }
 
 .cat-btn[aria-current="true"] {
-    border-color: var(--memory-accent-border);
+    border-color: color-mix(
+        in srgb,
+        var(--memory-accent-border) 58%,
+        var(--memory-divider)
+    );
     background: var(--memory-accent-soft);
     color: var(--memory-text);
-    box-shadow: var(--memory-shadow-selected);
-    transform: translateY(-2px);
+    box-shadow: none;
+    transform: none;
 }
 
 .cat-btn.is-switch-target {
@@ -446,29 +461,133 @@ body .container-header {
 .memory-role-name {
     position: relative;
     z-index: 2;
+    display: block;
+    width: 100%;
     min-width: 0;
-    overflow-wrap: anywhere;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    transform: translateX(0);
+    transition: none;
 }
 
-/* 立绘只做右缘的氛围，不参与信息传达：拉宽 + 降透明度 + 让渐变更早开始淡出，
- * 文字侧才能完全干净。宽度加大反而更轻——同样的淡出距离铺得更开。 */
-.memory-role-card-face {
+.memory-role-name-viewport {
+    position: relative;
+    z-index: 2;
+    min-width: 0;
+    overflow: hidden;
+}
+
+@keyframes memory-role-name-marquee {
+    from {
+        transform: translateX(0);
+    }
+
+    to {
+        transform: translateX(var(--memory-role-name-shift, 0));
+    }
+}
+
+.cat-btn.is-name-overflowing:hover .memory-role-name,
+.cat-btn.is-name-overflowing:focus-visible .memory-role-name {
+    overflow: visible;
+    text-overflow: clip;
+    animation:
+        memory-role-name-marquee
+        var(--memory-role-name-duration, 2200ms)
+        linear
+        380ms
+        forwards;
+}
+
+.memory-role-source {
+    position: relative;
+    z-index: 4;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    color: var(--memory-accent-brand);
+    opacity: 0.76;
+    transition: opacity var(--memory-motion-fast) var(--memory-ease-standard);
+}
+
+.cat-btn:hover .memory-role-source,
+.cat-btn:focus-visible .memory-role-source,
+.cat-btn[aria-current="true"] .memory-role-source {
+    opacity: 1;
+}
+
+.memory-role-source-icon {
+    display: block;
+    width: 17px;
+    height: 17px;
+    opacity: 0.72;
+    transition: opacity var(--memory-motion-fast) var(--memory-ease-standard);
+}
+
+.memory-role-source-icon.is-steam {
+    width: 19px;
+    height: 19px;
+}
+
+svg.memory-role-source-icon {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.cat-btn:hover .memory-role-source-icon,
+.cat-btn:focus-visible .memory-role-source-icon,
+.cat-btn[aria-current="true"] .memory-role-source-icon {
+    opacity: 0.9;
+}
+
+.memory-role-source-tooltip {
     position: absolute;
-    z-index: 0;
-    inset-block: 0;
-    inset-inline-end: 0;
-    width: 88px;
-    height: 100%;
-    object-fit: cover;
-    object-position: 50% 8%;
-    opacity: 0.26;
+    z-index: 30;
+    top: calc(100% + 7px);
+    inset-inline-end: -5px;
+    visibility: hidden;
+    width: max-content;
+    max-width: 180px;
+    padding: 6px 8px;
+    border: 1px solid var(--memory-border);
+    border-radius: var(--memory-radius-control);
+    background: var(--memory-surface);
+    color: var(--memory-text-secondary);
+    box-shadow: var(--memory-shadow-float);
+    font-size: 11px;
+    font-weight: 550;
+    line-height: 16px;
+    white-space: normal;
+    opacity: 0;
+    transform: translateY(-3px);
     pointer-events: none;
-    -webkit-mask-image: linear-gradient(to left, #000 30%, transparent 100%);
-    mask-image: linear-gradient(to left, #000 30%, transparent 100%);
+    transition:
+        opacity 120ms ease,
+        transform 120ms ease,
+        visibility 0s linear 120ms;
 }
 
-.memory-role-card-face[hidden] {
-    display: none;
+.memory-role-source:hover .memory-role-source-tooltip,
+.cat-btn:focus-visible .memory-role-source-tooltip {
+    visibility: visible;
+    opacity: 1;
+    transform: translateY(0);
+    transition-delay: 280ms, 280ms, 0s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .cat-btn.is-name-overflowing:hover .memory-role-name,
+    .cat-btn.is-name-overflowing:focus-visible .memory-role-name {
+        transform: none;
+        animation: none;
+        transition: none;
+    }
 }
 
 /* 自动记忆整理开关 */
@@ -2463,7 +2582,7 @@ html.neko-window-maximized .chat-item + .chat-item::before {
 .memory-aux-panel {
     position: fixed;
     z-index: 290;
-    top: 148px;
+    top: var(--memory-floating-panel-top, 148px);
     right: 12px;
     bottom: 12px;
     display: grid;
@@ -2486,20 +2605,20 @@ html.neko-window-maximized .chat-item + .chat-item::before {
     box-sizing: border-box;
     bottom: auto;
     width: min(360px, calc(100vw - 24px));
-    max-height: calc(100vh - 160px);
+    max-height: calc(100vh - var(--memory-floating-panel-top, 148px) - 12px);
 }
 
 #memory-guide-panel {
     box-sizing: border-box;
     bottom: auto;
     width: min(360px, calc(100vw - 24px));
-    max-height: calc(100vh - 160px);
+    max-height: calc(100vh - var(--memory-floating-panel-top, 148px) - 12px);
 }
 
 #memory-import-panel {
     box-sizing: border-box;
     bottom: auto;
-    max-height: calc(100vh - 160px);
+    max-height: calc(100vh - var(--memory-floating-panel-top, 148px) - 12px);
 }
 
 #memory-guide-panel .memory-aux-panel-body {
@@ -3447,9 +3566,8 @@ body[data-memory-layout="compact"] .editor {
     grid-column: 1 / -1;
 }
 
-@media (max-width: 767px) {
+@media (max-width: 839px) {
     .memory-aux-panel {
-        top: 136px;
         right: 8px;
         bottom: 8px;
         width: min(320px, calc(100vw - 16px));
@@ -3458,7 +3576,7 @@ body[data-memory-layout="compact"] .editor {
     #memory-settings-panel {
         bottom: auto;
         width: min(320px, calc(100vw - 16px));
-        max-height: calc(100vh - 144px);
+        max-height: calc(100vh - var(--memory-floating-panel-top, 148px) - 8px);
     }
 
     #memory-role-panel .file-list-title {
@@ -3481,10 +3599,6 @@ body[data-memory-layout="compact"] .editor {
 
     .cat-btn[aria-current="true"] {
         transform: none;
-    }
-
-    .memory-role-card-face {
-        width: 44px;
     }
 
     .editor {

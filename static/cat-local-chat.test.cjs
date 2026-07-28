@@ -322,6 +322,7 @@ test('an older cross-window snapshot cannot revive an ended cat cycle', () => {
     items: [],
     updatedAt: 3000,
   }), true);
+  assert.equal(runtime.compactChatState, 'default');
   assert.equal(manager.applySnapshot({
     active: true,
     tier: 'cat1',
@@ -354,6 +355,7 @@ test('the real cat appearance event opens compact input and closes the same cycl
   runtime.window.dispatchEvent({ type: 'neko:cat-local-active-change' });
   assert.equal(manager.getSnapshot().active, false);
   assert.deepEqual(Array.from(manager.getSnapshot().items), []);
+  assert.equal(runtime.compactChatState, 'default');
 });
 
 test('the existing goodbye clear event also closes temporary cat chat', () => {

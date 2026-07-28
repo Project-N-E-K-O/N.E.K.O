@@ -49,6 +49,16 @@ from .state import (
 logger = get_module_logger(__name__, "Main")
 
 
+def _public_web_link(link: dict[str, Any]) -> dict[str, Any]:
+    """Strip every platform's internal metadata at the response boundary."""
+
+    return {
+        key: link[key]
+        for key in ("title", "url", "source", "mode")
+        if key in link
+    }
+
+
 def build_proactive_response(source_tag: str, ctx: dict) -> tuple[str, list]:
     """Resolve the effective delivery channel and its selected source links."""
     primary_channel = "unknown"
@@ -62,7 +72,7 @@ def build_proactive_response(source_tag: str, ctx: dict) -> tuple[str, list]:
             web_link = ctx.get("selected_web_link")
             primary_channel = web_link.get("mode", "web") if web_link else "web"
             if web_link:
-                source_links.append(web_link)
+                source_links.append(_public_web_link(web_link))
                 logger.debug(
                     "[%s] Phase 2 确定选择 WEB (子通道: %s)，已添加链接",
                     lanlan_name,
@@ -85,7 +95,7 @@ def build_proactive_response(source_tag: str, ctx: dict) -> tuple[str, list]:
                 )
                 if ctx.get("selected_web_link"):
                     primary_channel = ctx["selected_web_link"].get("mode", "web")
-                    source_links.append(ctx["selected_web_link"])
+                    source_links.append(_public_web_link(ctx["selected_web_link"]))
                     logger.debug(
                         "[%s] Phase 2 回退到 WEB 通道 (子通道: %s)",
                         lanlan_name,

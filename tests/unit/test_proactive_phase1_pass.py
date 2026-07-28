@@ -5,7 +5,9 @@ from collections import deque
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 from main_logic.proactive_chat import decisions as sr_sources
+from main_logic.proactive_chat import candidate_selection
 from main_logic.proactive_chat import generation as sr_parsing
+from main_logic.proactive_chat import service as proactive_service
 from main_logic.proactive_chat import state as sr
 from config.prompts.prompts_proactive import get_proactive_format_sections
 
@@ -22,6 +24,132 @@ def test_parse_unified_phase1_marks_explicit_music_and_meme_pass():
     assert parsed["meme_keyword"] is None
     assert parsed["music_pass"] is True
     assert parsed["meme_pass"] is True
+
+
+def test_phase1_web_candidates_are_balanced_across_modes(monkeypatch):
+    monkeypatch.setattr(candidate_selection, "_should_skip_source", lambda _key: False)
+    sources = {
+        "personal": {
+            "links": [
+                {"title": f"following-{index}", "url": f"https://b/{index}"}
+                for index in range(5)
+            ]
+        },
+        "video": {
+            "links": [
+                {"title": f"video-{index}", "url": f"https://v/{index}"}
+                for index in range(5)
+            ]
+        },
+    }
+
+    selected = proactive_service._round_robin_phase1_links(
+        ["personal", "video"], sources, total=6
+    )
+
+    assert len(selected["personal"]) == 3
+    assert len(selected["video"]) == 3
+    assert all(link["mode"] == "personal" for link in selected["personal"])
+
+
+def test_phase1_reserves_budget_for_linkless_window_context(monkeypatch):
+    monkeypatch.setattr(candidate_selection, "_should_skip_source", lambda _key: False)
+    sources = {
+        "window": {"formatted_content": "当前窗口：Project N.E.K.O"},
+        "news": {
+            "links": [
+                {"title": f"news-{index}", "url": f"https://news/{index}"}
+                for index in range(20)
+            ]
+        },
+    }
+
+    fallback_modes = proactive_service._phase1_linkless_modes(
+        ["window", "news"], sources
+    )
+    selected = proactive_service._round_robin_phase1_links(
+        ["window", "news"], sources, total=12 - len(fallback_modes)
+    )
+
+    assert fallback_modes == ["window"]
+    assert len(selected["news"]) == 11
+
+
+def test_bilibili_following_wins_duplicate_from_video_radar(monkeypatch):
+    monkeypatch.setattr(candidate_selection, "_should_skip_source", lambda _key: False)
+    duplicate_url = "https://www.bilibili.com/video/BVduplicate"
+    sources = {
+        "personal": {
+            "links": [
+                {
+                    "title": "关注UP刚更新",
+                    "url": duplicate_url,
+                    "lane": "following",
+                    "bvid": "BVduplicate",
+                }
+            ]
+        },
+        "video": {
+            "links": [
+                {
+                    "title": "首页里的同一视频",
+                    "url": duplicate_url,
+                    "lane": "home",
+                    "bvid": "BVduplicate",
+                },
+                {
+                    "title": "另一个视频",
+                    "url": "https://www.bilibili.com/video/BVother",
+                    "lane": "hot",
+                    "bvid": "BVother",
+                },
+            ]
+        },
+    }
+
+    selected = proactive_service._round_robin_phase1_links(
+        ["personal", "video"], sources, total=3
+    )
+
+    assert [item["bvid"] for item in selected["personal"]] == ["BVduplicate"]
+    assert [item["bvid"] for item in selected["video"]] == ["BVother"]
+
+
+def test_phase1_passes_when_all_source_candidates_are_empty():
+    decision = sr_parsing._decide_phase1_channels(
+        [], None, has_unfinished_thread=False
+    )
+
+    assert decision.result is not None
+    assert decision.result.body["reason_code"] == "PASS_MODEL_PASS"
+    assert decision.active_channels == []
+
+
+def test_bilibili_internal_metadata_is_not_exposed_in_source_links():
+    primary, links = sr_sources.build_proactive_response(
+        "WEB",
+        {
+            "selected_web_link": {
+                "title": "视频",
+                "url": "https://www.bilibili.com/video/BV1",
+                "source": "B站",
+                "mode": "video",
+                "bvid": "BV1",
+                "content_summary": "内部摘要",
+                "description_hint": "内部简介",
+            }
+        },
+    )
+
+    assert primary == "video"
+    assert links == [
+        {
+            "title": "视频",
+            "url": "https://www.bilibili.com/video/BV1",
+            "source": "B站",
+            "mode": "video",
+        }
+    ]
 
 
 def test_parse_unified_phase1_keyword_is_not_pass():
