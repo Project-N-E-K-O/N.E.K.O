@@ -2284,14 +2284,18 @@ def test_local_return_button_drag_recovers_lost_release_without_active_timeout()
         mouse_move_block,
         "local return-ball lost mouseup recovery",
         "if (!isDragging) return;",
-        "if (dragPointerType === 'mouse' && e.buttons === 0) {",
+        "if (dragPointerType === 'mouse' &&",
+        "e.buttons === 0 &&",
+        "!shouldIgnoreMissingMouseButtons()) {",
         "handleEnd();",
-        "const point = getDragPoint(e, e.clientX, e.clientY);",
+        "const rawPoint = getDragPoint(e, e.clientX, e.clientY);",
+        "const point = getContinuousDomMouseDragPoint(rawPoint, e);",
         "handleMove(point.x, point.y, e, point);",
     )
     _assert_source_contains(
         mouse_move_block,
-        "if (dragPointerType === 'mouse' && e.buttons === 0) {\n"
+        "e.buttons === 0 &&\n"
+        "                        !shouldIgnoreMissingMouseButtons()) {\n"
         "                        handleEnd();\n"
         "                        return;\n"
         "                    }",
@@ -2302,10 +2306,23 @@ def test_local_return_button_drag_recovers_lost_release_without_active_timeout()
         "local return-ball cancel recovery",
         "touchCancel: cancelDragState,",
         "windowBlur: () => {",
-        "if (isDragging && shouldUseGlobalCursorForMouseDrag()) return;",
-        "cancelDragState();",
         "visibilityChange: () => {",
         "if (document.hidden) cancelDragState();",
+    )
+    window_blur_block = _source_slice_between(
+        drag_setup,
+        "windowBlur: () => {",
+        "visibilityChange: () => {",
+        "local return-ball window blur handler",
+    )
+    _assert_source_order(
+        window_blur_block,
+        "local return-ball window blur recovery",
+        "if (isDragging &&",
+        "(shouldUseGlobalCursorForMouseDrag() ||",
+        "(dragActiveDispatched && shouldIgnoreMissingMouseButtons()))) {",
+        "return;",
+        "cancelDragState();",
     )
     assert "_NEKO_IDLE_RETURN_BALL_ACTIVE_DRAG_STALE_MS" not in source
     assert "scheduleActiveDragStaleRecovery" not in source
@@ -3499,6 +3516,11 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
     assert "_NEKO_IDLE_RETURN_LONG_PRESS_PENDING_ATTR" not in source
     assert "returnButtonContainer.getAttribute('data-neko-return-click-suppressed') === 'true'" in source
     assert "returnButtonContainer.getAttribute('data-dragging') === 'pending'" in source
+    assert (
+        "function _canNekoIdleReturnDragUseGlobalCursor("
+        "runtime, electronScreen, cropCoordinateActive)"
+    ) in source
+    assert "typeof electronScreen.getCursorPoint === 'function'" in source
 
     drag_setup = _source_slice_between(
         source,
@@ -3534,7 +3556,9 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
         "const getDragPointFromScreenPoint = (screenPoint) => {",
         "const globalPoint = _getNekoIdleReturnDragGlobalScreenPoint(screenPoint, cropState);",
         "const canPollNiriDragCursor = () => {",
-        "typeof window.electronScreen.getCursorPoint === 'function'",
+        "_canNekoIdleReturnDragUseGlobalCursor(",
+        "window.electronScreen,",
+        "isDragNiriCropCoordinateActive()",
         "const stopDragCursorPolling = () => {",
         "const isUsableDragPoint = (point) => {",
         "const clearDragSafetyTimer = () => {",
@@ -3671,13 +3695,17 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
     _assert_source_contains(
         source,
         "windowBlur: () => {\n"
-        "                    // Niri can blur the physically cropped Pet window as soon as\n"
-        "                    // the pointer leaves the kitten-sized carrier.",
+        "                    // Niri can briefly blur the compact Pet window while applying\n"
+        "                    // the full drag carrier.",
         "niri return button drag blur guard",
     )
     _assert_source_contains(
         source,
-        "if (isDragging && shouldUseGlobalCursorForMouseDrag()) return;\n"
+        "if (isDragging &&\n"
+        "                        (shouldUseGlobalCursorForMouseDrag() ||\n"
+        "                            (dragActiveDispatched && shouldIgnoreMissingMouseButtons()))) {\n"
+        "                        return;\n"
+        "                    }\n"
         "                    cancelDragState();",
         "niri return button drag blur guard",
     )
@@ -3719,14 +3747,19 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
         "niri return-ball ignores unreliable renderer button state before local release recovery",
         "if (!isDragging) return;",
         "if (shouldUseGlobalCursorForMouseDrag()) return;",
-        "if (dragPointerType === 'mouse' && e.buttons === 0) {",
+        "if (dragPointerType === 'mouse' &&",
+        "e.buttons === 0 &&",
+        "!shouldIgnoreMissingMouseButtons()) {",
         "handleEnd();",
-        "const point = getDragPoint(e, e.clientX, e.clientY);",
+        "const rawPoint = getDragPoint(e, e.clientX, e.clientY);",
+        "const point = getContinuousDomMouseDragPoint(rawPoint, e);",
         "handleMove(point.x, point.y, e, point);",
     )
     _assert_source_contains(
         mouse_move_block,
-        "if (dragPointerType === 'mouse' && e.buttons === 0) {\n"
+        "if (dragPointerType === 'mouse' &&\n"
+        "                        e.buttons === 0 &&\n"
+        "                        !shouldIgnoreMissingMouseButtons()) {\n"
         "                        handleEnd();\n"
         "                        return;\n"
         "                    }",
