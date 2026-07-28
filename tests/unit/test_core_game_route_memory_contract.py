@@ -7,6 +7,8 @@ import pytest
 
 import main_logic.cross_server as cross_server_module
 import main_logic.core as core_module
+import main_logic.core.turn as turn_module
+from tests.fake_clock import patch_module_clock
 
 
 FIXED_TS = 1_700_000_000.0
@@ -1544,11 +1546,15 @@ async def test_last_user_message_time_uses_transcript_arrival_not_post_await(mon
         calls["n"] += 1
         return 100.0 + calls["n"]
 
-    monkeypatch.setattr(core_module.time, "time", _ticking_time)
+    # 打到真正读时钟的模块上：转写到达时刻取自 main_logic.core.turn 的
+    # time.time()，core_module（main_logic.core 门面）自己不读。此前那版
+    # `setattr(core_module.time, "time", ...)` 之所以生效，靠的正是它其实
+    # replace 了整个 stdlib time 模块——即这条用例一直依赖的是全局副作用。
+    patch_module_clock(monkeypatch, turn_module, time=_ticking_time)
     monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda name, text: None)
 
     async def _dispatcher(name, text, request_id=None):
-        core_module.time.time()  # 模拟 await 期间时钟流逝
+        turn_module.time.time()  # 模拟 await 期间时钟流逝
         mgr.note_user_engagement(at=200.0)
         return False             # 未处理 → 继续普通流程走到真消息块
 

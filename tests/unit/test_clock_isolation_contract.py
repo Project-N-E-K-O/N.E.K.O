@@ -63,14 +63,35 @@ def test_scoped_clock_is_invisible_to_other_threads(monkeypatch):
     assert isinstance(module.time.time(), float)
 
 
+def _may_mutate_on_call(replacement: ast.expr) -> bool:
+    """Could invoking this fake change what the next call observes?
+
+    That is the property that makes a process-wide clock patch dangerous: if
+    another thread's call consumes or advances something, the test under way
+    sees different values than it set up.
+
+    Decidable without reading semantics:
+
+    * a lambda whose body contains no call can only read (constants, name
+      lookups, subscripts, arithmetic) — a concurrent caller cannot disturb it;
+    * a lambda that *does* call something (``next(it)``, ``queue.pop()``) can;
+    * a bare name or attribute is some function defined elsewhere, whose body
+      this scan cannot see — ``_ticking_time`` incrementing a counter is
+      exactly that shape, so treat it as unsafe rather than guess.
+    """
+    if isinstance(replacement, ast.Lambda):
+        return any(isinstance(inner, ast.Call) for inner in ast.walk(replacement.body))
+    return True
+
+
 @pytest.mark.unit
-def test_no_test_installs_a_stateful_fake_on_the_stdlib_time_module():
+def test_no_test_installs_a_mutating_fake_on_the_stdlib_time_module():
     """Discovered from the AST, not from a list of known offenders.
 
-    Only the stateful shape is rejected. Constant fakes
-    (``lambda: 123.456``) are still process-wide but cannot be desynced by a
-    concurrent reader, and there are ~60 of them; converting those is a
-    separate sweep.
+    Pure-read fakes (``lambda: 123.456``, ``lambda: clock["now"]``) are left
+    alone: they are still process-wide, which is untidy, but no concurrent
+    caller can desync them, and there are ~50 of them. Narrowing those is a
+    separate sweep with no bug behind it.
     """
     offenders = []
     scanned = 0
@@ -90,17 +111,12 @@ def test_no_test_installs_a_stateful_fake_on_the_stdlib_time_module():
             # 形如 `<something>.time` —— 那就是 stdlib 模块本身
             if not (isinstance(target, ast.Attribute) and target.attr == "time"):
                 continue
-            replacement = node.args[2]
-            stateful = any(
-                isinstance(inner, ast.Call) and getattr(inner.func, "id", None) == "next"
-                for inner in ast.walk(replacement)
-            )
-            if stateful:
+            if _may_mutate_on_call(node.args[2]):
                 offenders.append(f"{path.relative_to(TESTS_ROOT).as_posix()}:{node.lineno}")
 
     assert scanned > 50, f"扫描面太小，断言已失效（只扫到 {scanned} 个文件）"
     assert not offenders, (
-        "这些地方把有状态假时钟装到了 stdlib time 模块上，任何后台线程调一次"
-        f" time.monotonic() 就会偷走一个值：{offenders}。改用 "
+        "这些地方把「调用一次就会改变下次观测」的假时钟装到了 stdlib time 模块上，"
+        f"任何后台线程调一次就会打乱它：{offenders}。改用 "
         "tests.fake_clock.patch_module_clock(monkeypatch, <module>, monotonic=...)"
     )
