@@ -12,7 +12,7 @@ import json
 import struct
 import time
 from dataclasses import dataclass, field, replace
-from typing import ClassVar, Literal
+from typing import Callable, ClassVar, Literal
 
 from websockets import exceptions as web_exceptions
 
@@ -523,45 +523,34 @@ class AsrRuntimeMixin:
 
         if input_mode != "audio":
             self._set_microphone_route("blocked")
-            # Deliver the mic-stop ack to the lease holder BEFORE the revoke.
-            # _revoke_voice_input_connection clears both _voice_input_websocket
-            # and the lease connection id, and _voice_owner_socket() returns
-            # None on either -- so send_session_started's fan-out has no target
-            # afterwards, and a recorder superseded by this chat window would
-            # never hear that the route died. (That fan-out is in fact live
-            # only for the game owner, the one case the revoke exempts.)
-            if input_mode == "text" and self._voice_lease_owner != "game":
-                send_to_voice_owner = getattr(self, "_send_to_voice_owner", None)
-                if callable(send_to_voice_owner):
-                    await send_to_voice_owner(
-                        {"type": "session_started", "input_mode": "text"}
-                    )
-                # This push is the first await after the route-operation fence.
-                # A competing newer start can install its own blocked
-                # placeholder here, and _revoke_voice_input_connection would
-                # then _invalidate_asr_start() it -- the exact trap
-                # _revoke_lease_for_blocked_route's docstring warns about, and
-                # one its own route-mode guard cannot catch.
-                if not self._asr_route_operation_matches(operation_generation):
-                    return
-            # Same fail-safe as the failure path: a text session blocks the
-            # route for its whole life, so revoke the lease rather than let a
-            # client that missed session_started keep uploading into it.
-            await self._revoke_lease_for_blocked_route("text_session_active")
+            # A text session blocks the route for its whole life, so revoke the
+            # lease rather than let a client that missed session_started keep
+            # uploading into it -- but deliver the mic-stop ack to the lease
+            # holder first, and re-fence in between. The chokepoint owns that
+            # order; the notice is the only thing specific to this exit.
+            await self._fail_closed_voice_route(
+                "text_session_active",
+                operation_generation=operation_generation,
+                voice_owner_notice=(
+                    {"type": "session_started", "input_mode": "text"}
+                    if input_mode == "text"
+                    else None
+                ),
+            )
             return
         try:
             settings = await _core_facade.aload_global_conversation_settings()
         except Exception:
-            if not core_start_is_current():
-                return
-            await self._send_core_asr_status(
-                AsrStatusEvent(
+            await self._fail_closed_voice_route(
+                "asr_settings_unreadable",
+                operation_generation=operation_generation,
+                still_current=core_start_is_current,
+                status=AsrStatusEvent(
                     code="ASR_INDEPENDENT_FAILED",
                     provider=core_type or "unknown",
                     session_epoch=session_epoch,
-                )
+                ),
             )
-            await self._revoke_lease_for_blocked_route("asr_settings_unreadable")
             return
         if not core_start_is_current():
             return
@@ -657,7 +646,16 @@ class AsrRuntimeMixin:
             # pinned: _set_microphone_route re-arms the resync suppression for
             # every non-blocked mode.
             self._set_microphone_route("blocked")
-            await self._revoke_lease_for_blocked_route("asr_start_failed")
+            # Generation-only fence on purpose: core_start_is_current() cannot
+            # be reused here because _independent_asr_provider was just
+            # assigned from the result above, so route_operation_unclaimed()'s
+            # "provider is None" clause is deliberately false by now. Nothing
+            # awaits between the check above and this call, so the generation
+            # is exactly as strong as the original inline revoke.
+            await self._fail_closed_voice_route(
+                "asr_start_failed",
+                operation_generation=operation_generation,
+            )
 
     def _abandon_core_voice_turn(
         self,
@@ -1145,39 +1143,48 @@ class AsrRuntimeMixin:
         self.hot_swap_audio_cache.clear()
         if independent_route:
             await self._abort_independent_asr("audio_preprocessing_failed")
-        if (
-            not self._voice_input_pipeline_failed
-            or self._voice_lease_connection_id != source_connection_id
-            or self._voice_lease_generation != source_lease_generation
-            or (self._voice_input_transition_generation != voice_transition_generation)
-            or self._asr_route_operation_generation != route_operation_generation
-            or self._capture_ingress_token().session_epoch != source_session_epoch
-            or self.session is not source_session_ref
-            or self._audio_stream_epoch != source_audio_epoch
-            or self._voice_input_audio_pipeline is not source_pipeline_ref
-            or not self.is_active
-            or self._asr_route_mode != "blocked"
-            or (
-                self._independent_asr_provider
-                or self._independent_asr_route_key
-                or "unknown"
+        def preprocessing_failure_is_current() -> bool:
+            # The route-operation generation is deliberately NOT repeated here:
+            # _fail_closed_voice_route fences on it already, with the identical
+            # comparison, and re-checks it after the status send too.
+            return not (
+                not self._voice_input_pipeline_failed
+                or self._voice_lease_connection_id != source_connection_id
+                or self._voice_lease_generation != source_lease_generation
+                or (
+                    self._voice_input_transition_generation
+                    != voice_transition_generation
+                )
+                or self._capture_ingress_token().session_epoch
+                != source_session_epoch
+                or self.session is not source_session_ref
+                or self._audio_stream_epoch != source_audio_epoch
+                or self._voice_input_audio_pipeline is not source_pipeline_ref
+                or not self.is_active
+                or self._asr_route_mode != "blocked"
+                or (
+                    self._independent_asr_provider
+                    or self._independent_asr_route_key
+                    or "unknown"
+                )
+                != source_provider
             )
-            != source_provider
-        ):
-            return
-        await self._send_core_asr_status(
-            AsrStatusEvent(
-                code="ASR_AUDIO_PREPROCESSING_FAILED",
-                provider=source_provider,
-                session_epoch=source_session_epoch,
-            )
-        )
+
         # Ingress backstop. _voice_input_pipeline_failed already drops frames,
         # but only after _enqueue_audio_stream_data has parsed and queued them:
         # _voice_input_accepts_pcm is lease-only and never consults the route.
-        # Strictly AFTER the status send -- revoking first would clear the
-        # voice socket and leave the notice with no target (finding A).
-        await self._revoke_lease_for_blocked_route("audio_preprocessing_failed")
+        # The revoke lands strictly AFTER the status send -- revoking first
+        # would clear the voice socket and leave the notice with no target.
+        await self._fail_closed_voice_route(
+            "audio_preprocessing_failed",
+            operation_generation=route_operation_generation,
+            still_current=preprocessing_failure_is_current,
+            status=AsrStatusEvent(
+                code="ASR_AUDIO_PREPROCESSING_FAILED",
+                provider=source_provider,
+                session_epoch=source_session_epoch,
+            ),
+        )
 
     async def _process_microphone_stream_data(
         self,
@@ -1722,8 +1729,74 @@ class AsrRuntimeMixin:
         self._invalidate_voice_pcm_sync("websocket_reconnect")
         return True
 
+    async def _fail_closed_voice_route(
+        self,
+        reason: str,
+        *,
+        operation_generation: int,
+        still_current: Callable[[], bool] | None = None,
+        status: AsrStatusEvent | None = None,
+        voice_owner_notice: dict | None = None,
+    ) -> bool:
+        """The single exit by which an enabled ASR route ends fail-closed.
+
+        Five call sites reach this state (text session, unreadable settings,
+        ASR start failure, audio-preprocessing failure, runtime failure) and
+        each review round found another. What every one of them has to get
+        right is not a shared fence -- their staleness conditions genuinely
+        differ -- but a shared ORDER:
+
+        1. fence, so a competing NEWER route operation is not clobbered;
+        2. notify the LEASE holder while the lease still has a target: the
+           revoke clears ``_voice_input_websocket`` AND the lease id, and
+           ``_voice_owner_socket()`` returns None on either;
+        3. re-fence, because step 2 awaited and a newer start may have
+           installed its own blocked placeholder during it;
+        4. revoke.
+
+        Step 3 is why a naive "revoke whenever the route ends blocked" was
+        rejected: ``_revoke_voice_input_connection`` calls
+        ``_invalidate_asr_start()`` first, so revoking on a stale exit cancels
+        the competing newer start -- reddening
+        ``test_stale_start_abort_does_not_clobber_newer_start_placeholder``.
+        Holding the order here rather than at each call site is what makes a
+        NEW exit correct by construction instead of by review.
+
+        ``operation_generation`` is a required keyword so a new exit cannot
+        quietly omit the one fence every exit needs; ``still_current`` carries
+        the caller's own, usually stricter, predicate (route key, provider,
+        session ref, ingress epoch...) and is re-evaluated in step 3 too.
+        Returns True only when the lease was actually revoked.
+        """
+
+        self._ensure_asr_runtime_state()
+
+        def operation_is_current() -> bool:
+            if not self._asr_route_operation_matches(operation_generation):
+                return False
+            return still_current is None or bool(still_current())
+
+        if not operation_is_current():
+            return False
+        notified = False
+        if voice_owner_notice is not None and self._voice_lease_owner != "game":
+            send_to_voice_owner = getattr(self, "_send_to_voice_owner", None)
+            if callable(send_to_voice_owner):
+                await send_to_voice_owner(dict(voice_owner_notice))
+                notified = True
+        if status is not None:
+            await self._send_core_asr_status(status)
+            notified = True
+        if notified and not operation_is_current():
+            return False
+        return await self._revoke_lease_for_blocked_route(reason)
+
     async def _revoke_lease_for_blocked_route(self, reason: str) -> bool:
         """Fail-closed fail-safe for an enabled-but-blocked microphone route.
+
+        Reached ONLY through :meth:`_fail_closed_voice_route`, which owns the
+        notify-then-fence-then-revoke order this must not be called without;
+        ``scripts/check_core_contracts.py`` enforces that.
 
         Clients that never receive or never honour the teardown notice (older
         builds, third-party clients, throttled background tabs) keep uploading
@@ -2169,6 +2242,7 @@ class AsrRuntimeMixin:
 
     async def _handle_core_asr_failure(self, event: AsrFailureEvent) -> None:
         source_identity = self._capture_core_asr_operation_identity()
+        route_operation_generation = self._asr_route_operation_generation
         async with self._asr_notification_lock:
             if (
                 not self._core_asr_operation_identity_matches(source_identity)
@@ -2186,7 +2260,15 @@ class AsrRuntimeMixin:
             # of the session, so stop accepting the PCM at ingress too. The
             # game owner is exempt: the galgame route holds the lease through
             # its own consumer binding and must not be collaterally revoked.
-            await self._revoke_lease_for_blocked_route("independent_asr_failure")
+            # No notice of its own -- the BLOCKED lifecycle event that produced
+            # this failure already reached the client.
+            await self._fail_closed_voice_route(
+                "independent_asr_failure",
+                operation_generation=route_operation_generation,
+                still_current=lambda: self._core_asr_operation_identity_matches(
+                    source_identity
+                ),
+            )
 
     async def _send_core_asr_status(self, event: AsrStatusEvent) -> None:
         source_identity = self._capture_core_asr_operation_identity()

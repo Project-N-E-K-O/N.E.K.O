@@ -17,6 +17,44 @@ topic hints, and user-language switching.
 
 Method-only mixin: every instance attribute is assigned in
 ``LLMSessionManager.__init__`` (``main_logic.core.manager``).
+
+Delivery contract -- there are TWO planes and they are not interchangeable
+=========================================================================
+
+``self.websocket`` is the DISPLAY plane. ``websocket_router`` reassigns it
+to EVERY newly accepted socket, so it means "the newest window for this
+character", NOT "the user" and NOT "the window that is recording". A window
+holding the microphone is superseded the moment a chat window opens.
+
+``_send_to_voice_owner`` is the MICROPHONE CONTROL plane. It targets the
+socket holding the voice lease -- the window with the live hardware.
+
+**Any notification whose effect is "stop or change the microphone" must
+follow the LEASE, not the newest socket.** Send it to the display plane
+alone and the recording window never learns its route died: the hardware
+mic stays open and keeps uploading into a dead route, with no state and no
+recovery path short of the user toggling the mic by hand. Today that class
+is ``session_ended_by_server``, ``auto_close_mic``, and the text-mode
+``session_started`` ack; ``tests/unit/test_voice_control_plane_contract.py``
+fails if a new one is added without routing to the voice owner.
+
+Two corollaries, each of which was a separate bug before it was written
+down here:
+
+* There is NO broadcast to fall back on. ``sync_message_queue`` is not a
+  per-window fan-out: it runs ``character_runtime`` -> ``cross_server``
+  -> ``app/monitor.py`` ``/sync/{name}`` and feeds MONITOR VIEWER clients on
+  ``MONITOR_SERVER_PORT`` (desktop pet, subtitle windows). No app window
+  ever connects there -- the app always builds a same-origin ``/ws/<name>``.
+* The two planes are INDEPENDENT best-effort sends. Never let one failure
+  short-circuit the other: give each its own ``try``, and never leave the
+  lease-holder send inside a guard on the display socket's liveness.
+
+Ordering matters too, on the way out: a revoke clears both
+``_voice_input_websocket`` and the lease id, and ``_voice_owner_socket()``
+returns None on either, so the notice must be delivered BEFORE the lease is
+released. ``AsrRuntimeMixin._fail_closed_voice_route`` owns that order for
+the fail-closed route exits.
 """
 
 import json

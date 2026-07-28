@@ -718,6 +718,69 @@ def def_time_facade_reads(tree: ast.Module, alias_paths: dict[str, str], attr: s
 
 
 # ------------------------------------------------------------------- checks
+def check_fail_closed_chokepoint(core_dir: Path) -> list[Violation]:
+    """VOICE_FAIL_CLOSED_CHOKEPOINT — one way for a route to end fail-closed.
+
+    Five call sites can leave the microphone route blocked while independent
+    ASR is enabled, and every review round on #2345 found another. Each one
+    has to notify the LEASE holder, then re-check that no competing newer
+    route operation has taken over, and only then revoke — because
+    ``_revoke_voice_input_connection`` calls ``_invalidate_asr_start()`` and
+    would otherwise cancel that newer start.
+
+    That order now lives in ``_fail_closed_voice_route``. Keeping it correct
+    by construction means the revoke helpers must be unreachable from
+    anywhere else in the core package: a new exit then cannot open the mic
+    onto a dead route by simply forgetting a step, because there is no step
+    left to forget.
+
+    Outside ``main_logic/core`` the disconnect-cleanup caller in
+    ``main_routers/websocket_router.py`` is untouched and deliberately so —
+    it revokes because a socket departed, not because a route ended blocked,
+    and it is reached through a getattr by name, not this call graph.
+    """
+
+    REVOKE_HELPERS = {"_revoke_lease_for_blocked_route", "_revoke_voice_input_connection"}
+    CHOKEPOINT = "_fail_closed_voice_route"
+
+    violations: list[Violation] = []
+    chokepoint_seen = False
+    for path in sorted(core_dir.glob("*.py")):
+        if path.name == "__init__.py":
+            continue
+        tree = parse(path)
+        for func in ast.walk(tree):
+            if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if func.name == CHOKEPOINT:
+                chokepoint_seen = True
+            # A helper may call its own downstream revoke; what must not
+            # happen is an ARBITRARY function reaching one directly.
+            if func.name in REVOKE_HELPERS or func.name == CHOKEPOINT:
+                continue
+            for node in ast.walk(func):
+                if not isinstance(node, ast.Call):
+                    continue
+                target = node.func
+                name = target.attr if isinstance(target, ast.Attribute) else (
+                    target.id if isinstance(target, ast.Name) else None
+                )
+                if name in REVOKE_HELPERS:
+                    violations.append(Violation(
+                        path, node.lineno, node.col_offset, "VOICE_FAIL_CLOSED_CHOKEPOINT",
+                        f"{func.name}() calls {name}() directly — every fail-closed route exit "
+                        f"must go through {CHOKEPOINT}(reason, operation_generation=..., ...), "
+                        f"which notifies the lease holder BEFORE the revoke and re-fences the "
+                        f"route operation in between; revoking on a stale exit cancels a "
+                        f"competing newer start"))
+    if not chokepoint_seen:
+        violations.append(Violation(
+            core_dir / "asr_runtime.py", 1, 0, "VOICE_FAIL_CLOSED_CHOKEPOINT",
+            f"{CHOKEPOINT}() is gone from main_logic/core — it is the only sanctioned caller "
+            f"of {sorted(REVOKE_HELPERS)}, so its removal makes this gate vacuous"))
+    return violations
+
+
 def run(root: Path) -> list[Violation]:
     core_dir = root / "main_logic" / "core"
     tests_dir = root / "tests"
@@ -731,6 +794,7 @@ def run(root: Path) -> list[Violation]:
             sys.exit(2)
 
     violations: list[Violation] = []
+    violations.extend(check_fail_closed_chokepoint(core_dir))
     init_tree = parse(init_path)
     facade_names = facade_top_level_names(init_tree)
     facade_owners = facade_owner_modules(init_tree)

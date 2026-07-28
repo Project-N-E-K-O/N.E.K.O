@@ -2251,6 +2251,115 @@ async def test_pipeline_failure_revokes_after_notifying():
     assert mgr._voice_input_accepts_pcm() is False
 
 
+def _blocked_route_manager_with_recorder():
+    recorder, chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", recorder)
+    mgr.websocket = chat
+    mgr._set_microphone_route("blocked")
+    mgr._asr_runtime.abort = AsyncMock()
+    return mgr, recorder
+
+
+async def test_fail_closed_chokepoint_notifies_then_revokes():
+    # The ordering the chokepoint exists to own: the notice must reach the
+    # lease holder BEFORE the revoke, because the revoke clears both
+    # _voice_input_websocket and the lease id and _voice_owner_socket() then
+    # returns None.
+    mgr, recorder = _blocked_route_manager_with_recorder()
+    generation = mgr._begin_asr_route_operation()
+
+    revoked = await LLMSessionManager._fail_closed_voice_route(
+        mgr,
+        "text_session_active",
+        operation_generation=generation,
+        voice_owner_notice={"type": "session_started", "input_mode": "text"},
+    )
+
+    assert revoked is True
+    assert [json.loads(x) for x in recorder.sent] == [
+        {"type": "session_started", "input_mode": "text"}
+    ]
+    assert mgr._voice_lease_connection_id == ""
+
+
+async def test_fail_closed_chokepoint_refuses_to_revoke_a_competing_newer_start():
+    # Step 3 of the chokepoint. The notice is an await, so a competing NEWER
+    # route operation can install its own blocked placeholder during it;
+    # _revoke_voice_input_connection would then _invalidate_asr_start() and
+    # cancel it. This is the constraint that sank a naive "revoke whenever the
+    # route ends blocked" -- holding it inside the chokepoint is what makes a
+    # new exit safe without rediscovering it.
+    mgr, recorder = _blocked_route_manager_with_recorder()
+    invalidated = MagicMock()
+    mgr._asr_runtime._invalidate_asr_start = invalidated
+    generation = mgr._begin_asr_route_operation()
+
+    original_send = recorder.send_text
+
+    async def _send_then_supersede(data: str) -> None:
+        await original_send(data)
+        mgr._begin_asr_route_operation()
+
+    recorder.send_text = _send_then_supersede
+
+    revoked = await LLMSessionManager._fail_closed_voice_route(
+        mgr,
+        "text_session_active",
+        operation_generation=generation,
+        voice_owner_notice={"type": "session_started", "input_mode": "text"},
+    )
+
+    assert revoked is False
+    invalidated.assert_not_called()
+    assert mgr._voice_lease_connection_id == "socket-a"
+    # Fencing protects the newer start; it does not silence the recorder.
+    assert [json.loads(x) for x in recorder.sent] == [
+        {"type": "session_started", "input_mode": "text"}
+    ]
+
+
+async def test_fail_closed_chokepoint_honours_the_callers_own_predicate():
+    # still_current carries each exit's own, usually stricter, staleness check
+    # (route key, provider, session ref, ingress epoch...). A false predicate
+    # must stop the exit before anything is delivered or revoked.
+    mgr, recorder = _blocked_route_manager_with_recorder()
+    generation = mgr._begin_asr_route_operation()
+
+    revoked = await LLMSessionManager._fail_closed_voice_route(
+        mgr,
+        "asr_settings_unreadable",
+        operation_generation=generation,
+        still_current=lambda: False,
+        voice_owner_notice={"type": "session_started", "input_mode": "text"},
+    )
+
+    assert revoked is False
+    assert recorder.sent == []
+    assert mgr._voice_lease_connection_id == "socket-a"
+
+
+async def test_fail_closed_chokepoint_exempts_the_game_owner():
+    # The galgame gate owns the mic through its own consumer binding and tears
+    # down via GAME_ROUTE_ENDED, so it must be neither notified nor revoked.
+    mgr, recorder = _blocked_route_manager_with_recorder()
+    mgr._voice_lease_owner = "game"
+    generation = mgr._begin_asr_route_operation()
+
+    revoked = await LLMSessionManager._fail_closed_voice_route(
+        mgr,
+        "text_session_active",
+        operation_generation=generation,
+        voice_owner_notice={"type": "session_started", "input_mode": "text"},
+    )
+
+    assert revoked is False
+    assert recorder.sent == []
+    assert mgr._voice_lease_connection_id == "socket-a"
+
+
 async def test_dead_display_socket_does_not_swallow_the_recorder_teardown():
     # Codex P2 / CodeRabbit. The display send and the lease-holder fan-out
     # shared one try, so a display socket dying between the CONNECTED check and
