@@ -32,6 +32,21 @@ Electron stores port overrides in `port_config.json` under `%APPDATA%\N.E.K.O` o
 Most shared boolean helpers accept `1/true/yes/on` and `0/false/no/off`.
 `NEKO_MERGED` itself accepts `1/true/yes` and `0/false/no`.
 
+## Process model and single instance
+
+The launcher is a foreground process: it never daemonizes, and it tears its whole
+service topology down when the process that owns it disappears. It also proves it
+is the only running runtime with an OS file lock, and publishes an authoritative
+record (pid, instance id, negotiated ports) next to that lock.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `NEKO_OWNER_PID` | this process's parent | The pid the parent-death guard watches. Set it when the owner is *not* the direct parent — for example the replacement launcher of a storage-migration handoff, whose spawner exits on purpose. Owners that identify the runtime by reading `launcher.json` should set this: it becomes the record's `owner_pid`, which is the field to match against. Do not match `parent_pid` — on a Windows dev run `Popen(sys.executable)` starts a shim that re-launches the interpreter, so `parent_pid` names the shim rather than the owner (measured in CI; macOS and Linux match directly, and a frozen build has no shim). |
+| `NEKO_OWNER_RELAUNCH` | unset | `1` declares that the owner will restart the runtime itself. A storage-migration restart then exits cleanly and waits to be relaunched instead of spawning its own replacement. Strongly recommended on Windows: without it the launcher respawns itself, and the outgoing Job has to be un-managed to spare the replacement, which leaves any process that outlived cleanup (plugins, MCP, Chromium) unreaped. |
+| `NEKO_PARENT_DEATH_GUARD` | `1` | Set to `0` to disable the parent-death guard entirely. Only for debuggers and profilers that re-parent their target; a runtime with the guard off can outlive its owner. |
+| `NEKO_LAUNCHER_RESTART_HANDOFF` | unset | Set by the outgoing launcher on its replacement so the replacement waits out the single-instance lock instead of concluding another instance is running. Not meant to be set by hand. |
+| `NEKO_RUNTIME_STATE_DIR` | per-user runtime dir | Overrides where `launcher.lock` and `launcher.json` live. Defaults to `%LOCALAPPDATA%\N.E.K.O\runtime` on Windows, `~/Library/Application Support/N.E.K.O/runtime` on macOS, and `~/.local/state/N.E.K.O/runtime` on Linux. The Linux path deliberately ignores `XDG_RUNTIME_DIR`: that variable is present in a desktop session but absent under cron, plain SSH, `su`, system units and most containers, so deriving the lock path from it let one user hold two different locks and run two runtimes at once. The override is used verbatim — no per-user suffix is appended — so it must point somewhere private to one user. On POSIX the directory is still validated: one owned by another uid (or a symlink to it) is refused with EPERM, and one carrying group or world bits is chmod'd to 0700 in place. Windows does neither. A refusal is treated as unknown — the launcher starts with a warning and no uniqueness proof. A directory shared between users breaks the single-instance proof: on Windows two users contend for one lock, and on POSIX the second user cannot open the first user's lock file and starts with no uniqueness proof at all. |
+
 ## Runtime topology
 
 | Variable | Default | Description |
