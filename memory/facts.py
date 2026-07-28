@@ -126,6 +126,20 @@ class FactExtractionFailed(RuntimeError):
     """
 
 
+def _readable_fact_id(entry: dict):
+    """The fact's id when it can be used as a lookup key, else ``None``.
+
+    Ids are written as strings (``fact_<timestamp>_<hash>``), but facts.json is
+    a plain file users and older versions have edited: a row can arrive with no
+    id at all, or with a list/dict where the id should be. Indexing those
+    directly raises ``KeyError`` / ``TypeError: unhashable``, neither of which
+    the read-merge's ``except (json.JSONDecodeError, OSError)`` catches, so one
+    malformed row would abort every future save instead of being overwritten.
+    """
+    fact_id = entry.get('id')
+    return fact_id if isinstance(fact_id, str) and fact_id else None
+
+
 class FactStore:
     """Manages raw fact extraction, deduplication, and persistence."""
 
@@ -257,10 +271,10 @@ class FactStore:
                 # 发生，不能挂在下面 read-merge 的任何一层分支里——文件还不存在
                 # 或这一批没有 monotonic 标记时那些分支都不进，纸条就会跟着落盘。
                 just_unsealed_ids = {
-                    f.get('id') for f in facts
+                    _readable_fact_id(f) for f in facts
                     if isinstance(f, dict)
                     and f.pop(self._SIGNAL_RESET_PENDING, False)
-                    and f.get('id') is not None
+                    and _readable_fact_id(f) is not None
                 }
                 # Read-merge-write: 保护其他进程/路径写入的 monotonic 标记
                 # （只能从 False → True 单向翻的字段：absorbed、signal_processed）。
@@ -271,20 +285,21 @@ class FactStore:
                         with open(path, encoding='utf-8') as f:
                             disk_facts = json.load(f)
                         if isinstance(disk_facts, list):
-                            # 一律 .get('id') 且滤掉 None：手改/半损坏的 legacy 行可能
-                            # 没有 id，f['id'] 会抛 KeyError——而内层只接 JSON/OS 错误，
-                            # 它会一路冒到外层把缓存清掉并重抛，此后每次存盘都死在同一
-                            # 行，新 fact 再也落不了盘。None 也必须滤掉：内存里同样没有
-                            # id 的行会与它相等，凭空命中这些集合。
+                            # 索引键统一走 _readable_fact_id：手改/半损坏的 legacy 行
+                            # 可能没有 id（f['id'] 抛 KeyError），也可能 id 是 list/dict
+                            # （放进 set 抛 TypeError: unhashable）。内层只接 JSON/OS
+                            # 错误，这两种异常都会冒到外层把缓存清掉并重抛，此后每次存盘
+                            # 都死在同一行、新 fact 再也落不了盘——正好是 read-merge 想
+                            # 兜的「坏数据也要能覆盖写掉」的反面。
                             absorbed_ids = {
-                                f.get('id') for f in disk_facts
+                                _readable_fact_id(f) for f in disk_facts
                                 if isinstance(f, dict) and f.get('absorbed')
-                                and f.get('id') is not None
+                                and _readable_fact_id(f) is not None
                             }
                             signal_processed_ids = {
-                                f.get('id') for f in disk_facts
+                                _readable_fact_id(f) for f in disk_facts
                                 if isinstance(f, dict) and f.get('signal_processed')
-                                and f.get('id') is not None
+                                and _readable_fact_id(f) is not None
                             }
                             # ⚠残留窗口：这次读盘与下面的 atomic_write_json 之间没有
                             # 跨进程锁（self._get_lock 只挡同进程的线程），所以理论上
@@ -303,10 +318,10 @@ class FactStore:
                             # 旧缓存再升一次并放行回写，等于把一条已消费的 fact 重新
                             # 排回 Stage-2——正是这段 read-merge 要挡的跨进程回归。
                             disk_ai_disclosure_ids = {
-                                f.get('id') for f in disk_facts
+                                _readable_fact_id(f) for f in disk_facts
                                 if isinstance(f, dict)
                                 and f.get('source', self._SOURCE_DEFAULT) == 'ai_disclosure'
-                                and f.get('id') is not None
+                                and _readable_fact_id(f) is not None
                             }
                             if absorbed_ids or signal_processed_ids:
                                 for f in facts:

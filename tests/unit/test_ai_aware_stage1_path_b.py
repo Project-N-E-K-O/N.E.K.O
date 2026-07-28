@@ -1647,6 +1647,13 @@ async def test_unseal_marker_does_not_requeue_a_fact_another_process_already_con
     {'text': '缺 id 的 ai 披露', 'source': 'ai_disclosure', 'signal_processed': True},
     {'text': '缺 id 且已吸收', 'source': 'user_observation', 'absorbed': True},
     {'text': '缺 id 且已处理', 'source': 'user_observation', 'signal_processed': True},
+    # id 不是字符串：放进 set 会抛 TypeError: unhashable，同样逃不出内层
+    # 只接 JSON/OS 的 except，后果与缺 id 完全一样。
+    {'id': ['a', 'b'], 'text': 'id 是 list 的 ai 披露', 'source': 'ai_disclosure'},
+    {'id': {'k': 'v'}, 'text': 'id 是 dict 且已处理', 'source': 'user_observation',
+     'signal_processed': True},
+    {'id': 12345, 'text': 'id 是数字且已吸收', 'source': 'user_observation', 'absorbed': True},
+    {'id': '', 'text': 'id 是空串', 'source': 'ai_disclosure', 'signal_processed': True},
 ])
 async def test_save_survives_disk_rows_without_ids(tmp_path, malformed):
     """A legacy or hand-edited row without ``id`` must not break persistence.
