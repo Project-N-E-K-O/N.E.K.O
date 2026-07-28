@@ -1163,6 +1163,55 @@ class Live2DManager {
         return this._createScreenRect(minX, minY, maxX, maxY);
     }
 
+    _getTransformedLogicalScreenRect(logicalRect, skipTransformSync = false) {
+        const model = this.currentModel;
+        if (!model || !logicalRect) {
+            return null;
+        }
+
+        if (!skipTransformSync) {
+            this._ensureModelWorldTransform(model);
+        }
+
+        const localTransform = model.internalModel?.localTransform;
+        const worldTransform = model.worldTransform;
+        const left = Number(logicalRect.x);
+        const top = Number(logicalRect.y);
+        const right = left + Number(logicalRect.width);
+        const bottom = top + Number(logicalRect.height);
+        if (!this._isFiniteMatrix2D(localTransform) ||
+            !this._isFiniteMatrix2D(worldTransform) ||
+            !Number.isFinite(left) || !Number.isFinite(top) ||
+            !Number.isFinite(right) || !Number.isFinite(bottom)) {
+            return null;
+        }
+
+        let minX = Infinity;
+        let maxX = -Infinity;
+        let minY = Infinity;
+        let maxY = -Infinity;
+        for (const [x, y] of [
+            [left, top],
+            [right, top],
+            [left, bottom],
+            [right, bottom]
+        ]) {
+            const localPoint = this._applyMatrixToPoint(localTransform, x, y);
+            const screenPoint = localPoint
+                ? this._applyMatrixToPoint(worldTransform, localPoint.x, localPoint.y)
+                : null;
+            if (!screenPoint) {
+                continue;
+            }
+            minX = Math.min(minX, screenPoint.x);
+            maxX = Math.max(maxX, screenPoint.x);
+            minY = Math.min(minY, screenPoint.y);
+            maxY = Math.max(maxY, screenPoint.y);
+        }
+
+        return this._createScreenRect(minX, minY, maxX, maxY);
+    }
+
     _getModelLogicalRect() {
         const internalModel = this.currentModel?.internalModel;
         const coreModel = internalModel?.coreModel;
@@ -1412,6 +1461,11 @@ class Live2DManager {
         }
 
         const logicalRect = this._getDrawableLogicalRect(drawableIndex);
+        const transformedLogicalRect = this._getTransformedLogicalScreenRect(logicalRect, skipTransformSync);
+        if (transformedLogicalRect) {
+            return transformedLogicalRect;
+        }
+
         const resolvedModelLogicalRect = modelLogicalRect || this._getModelLogicalRect();
         const resolvedModelBounds = modelBounds || this.getModelScreenBounds();
         const mappedRect = this._mapLogicalRectToScreen(logicalRect, resolvedModelLogicalRect, resolvedModelBounds);
@@ -1499,6 +1553,12 @@ class Live2DManager {
      * @returns {Array<Object>} 屏幕坐标矩形
      */
     getModelInputRegionRects(options = {}) {
+        const edgePeekState = this._live2DPeekState;
+        if (edgePeekState && edgePeekState.active &&
+            (edgePeekState.phase === 'hidden' || edgePeekState.phase === 'hiding')) {
+            return [];
+        }
+
         const requestedPadding = Number(options?.padding);
         const padding = Number.isFinite(requestedPadding)
             ? Math.max(0, Math.min(32, requestedPadding))

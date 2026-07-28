@@ -830,6 +830,19 @@ test('core model input regions return empty when drawable geometry is unavailabl
     assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects())), []);
 });
 
+test('core model input regions stay empty while edge peek is hiding or hidden', () => {
+    const harness = createCoreHarness();
+    const manager = new harness.Live2DManager();
+    manager._getRenderableDrawableScreenRects = () => {
+        throw new Error('hidden edge peek must not calculate drawable geometry');
+    };
+
+    for (const phase of ['hiding', 'hidden']) {
+        manager._live2DPeekState = { active: true, phase };
+        assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects())), []);
+    }
+});
+
 test('core model input regions clamp padding to the supported 0-32 range', () => {
     const harness = createCoreHarness({ innerWidth: 1000, innerHeight: 1000 });
     const manager = new harness.Live2DManager();
@@ -961,6 +974,35 @@ test('core model input regions keep per-drawable mapped geometry when direct ver
             centerY: 390
         }
     ]);
+});
+
+test('core drawable fallback transforms logical corners through a rotated model', () => {
+    const harness = createCoreHarness();
+    const manager = new harness.Live2DManager();
+    manager.currentModel = {
+        internalModel: {
+            localTransform: { a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0 },
+            getDrawableBounds: () => ({ x: 10, y: 20, width: 30, height: 40 })
+        },
+        worldTransform: { a: 0, b: 1, c: -1, d: 0, tx: 300, ty: 100 }
+    };
+    manager._getDrawableVertexSequence = () => null;
+
+    assert.deepEqual(JSON.parse(JSON.stringify(manager._getDrawableScreenRect(
+        0,
+        { x: 0, y: 0, width: 100, height: 100 },
+        { left: 0, right: 500, top: 0, bottom: 500, width: 500, height: 500 },
+        true
+    ))), {
+        left: 240,
+        right: 280,
+        top: 110,
+        bottom: 140,
+        width: 40,
+        height: 30,
+        centerX: 260,
+        centerY: 125
+    });
 });
 
 test('core edge peek fallback maps drawables against unclipped model bounds before viewport clipping', () => {
