@@ -26,6 +26,7 @@ the duration.
 
 import ast
 import re
+from fnmatch import fnmatch
 import threading
 import time
 import types
@@ -47,8 +48,12 @@ _SKIP_DIRS = {
 
 
 def _is_skipped(path: Path) -> bool:
-    # pytest 的 norecursedirs 以 `.*` 开头一条把所有点开头目录排除掉，这里同样处理
-    return any(part in _SKIP_DIRS or part.startswith(".") for part in path.parts)
+    # pytest 的 norecursedirs 是 glob（`.*`、`*.egg`），所以按 fnmatch 比对，
+    # 等值比较会让 dependency.egg 这种目录漏过去。
+    return any(
+        part.startswith(".") or any(fnmatch(part, pattern) for pattern in _SKIP_DIRS)
+        for part in path.parts
+    )
 
 
 def _test_roots() -> list[Path]:
@@ -148,6 +153,8 @@ def _may_mutate_on_call(replacement: ast.expr) -> bool:
             # 吃掉，却一个 Call 节点都没有。
             ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp,
             ast.Await, ast.Yield, ast.YieldFrom, ast.NamedExpr,
+            # `lambda: [*it][0]` / `lambda: {**d}` —— 星号解包也是隐式迭代
+            ast.Starred,
         )
         return any(isinstance(inner, mutating_nodes) for inner in ast.walk(replacement.body))
     return True
