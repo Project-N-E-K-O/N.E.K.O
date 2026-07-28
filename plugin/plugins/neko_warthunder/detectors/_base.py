@@ -54,7 +54,7 @@ class ConditionDetector:
         payload_fn: Callable[[BattleState], dict[str, Any]] | None = None,
         predicate: Callable[[BattleState], bool] | None = None,
         wants_recovery: bool = False,
-        critical_heartbeat_seconds: float = 0.0,
+        critical_heartbeat_seconds: float | None = None,
         once_per_battle: bool = False,
     ) -> None:
         self.id = event_id
@@ -70,7 +70,8 @@ class ConditionDetector:
         # （例：over_g 刚播完 2s，失速进入并持续，玩家全程无提示）。
         # 心跳保证条件仍然为真时才重发，事实与 ts 都是新的；已播报过的同一条会被
         # Dispatcher 的 repeat-collapse 折叠掉，因此不会变成刷屏。
-        self.critical_heartbeat_seconds = max(0.0, float(critical_heartbeat_seconds))
+        self._critical_heartbeat_configurable = critical_heartbeat_seconds is not None
+        self.critical_heartbeat_seconds = max(0.0, float(critical_heartbeat_seconds or 0.0))
         # EVENT_CATALOG 里 cooldown<0 声明"每局一次"，但 Arbiter 只对 cd>0 查冷却，
         # 于是该语义无人执行：电平 flag 在阈值附近抖动就能让检测器反复 re-arm 重报
         # （实测样本里 low_fuel 13 秒内报了三次）。置位后条件退出即进入 _SPENT，
@@ -102,6 +103,11 @@ class ConditionDetector:
         self._count = 0
         self._level = "warning"
         self._last_emit_ts = 0.0
+
+    def configure_critical_heartbeat(self, seconds: float) -> None:
+        """Update heartbeat cadence without resetting the detector FSM."""
+        if self._critical_heartbeat_configurable:
+            self.critical_heartbeat_seconds = max(0.0, float(seconds))
 
     def feed(self, prev: BattleState, cur: BattleState) -> BattleEvent | None:
         if self.predicate is not None and not self.predicate(cur):
@@ -178,6 +184,7 @@ class DiscreteDetector:
     # 阵亡期间的处理策略（见 DetectorEngine.feed）：
     #   "reset"   —— 清空检测器状态（电平型/快照型适用）。
     #   "consume" —— 照常喂帧以推进 id 游标，但丢弃产出。
+    #   "allow"   —— 照常喂帧并保留候选，由 Arbiter 决定是否缓冲或丢弃。
     # 消费数据层整局持久 feed（combat/hud_notices/awards/proximity/chat）的检测器
     # 必须用 "consume"：这些 feed 只在换局或 HUD drain 时清空，同局重生不清空，
     # 阵亡期间 reset 游标会让整局旧条目在重生后被当成新事件重播。
@@ -205,6 +212,13 @@ class DetectorEngine:
             if callable(reset):
                 reset()
 
+    def configure_critical_heartbeat(self, seconds: float) -> None:
+        """Refresh heartbeat cadence in place so detector FSM/feed cursors survive config reloads."""
+        for detector in self.detectors:
+            configure = getattr(detector, "configure_critical_heartbeat", None)
+            if callable(configure):
+                configure(seconds)
+
     def feed(self, prev: BattleState, cur: BattleState) -> list[BattleEvent]:
         if cur.replay:
             self.reset()
@@ -212,16 +226,18 @@ class DetectorEngine:
         out: list[BattleEvent] = []
         for det in self.detectors:
             if cur.dead and getattr(det, "id", "") != "you_died":
-                if getattr(det, "dead_state_policy", "reset") == "consume":
+                dead_state_policy = getattr(det, "dead_state_policy", "reset")
+                if dead_state_policy == "consume":
                     # 推进 id 游标但不产出：阵亡期间不播报，重生后也不重播旧条目。
                     det.feed(prev, cur)
                     continue
-                reset = getattr(det, "reset_transient", None)
-                if not callable(reset):
-                    reset = getattr(det, "reset", None)
-                if callable(reset):
-                    reset()
-                    continue
+                if dead_state_policy != "allow":
+                    reset = getattr(det, "reset_transient", None)
+                    if not callable(reset):
+                        reset = getattr(det, "reset", None)
+                    if callable(reset):
+                        reset()
+                        continue
             ev = det.feed(prev, cur)
             if ev is not None:
                 out.append(ev)

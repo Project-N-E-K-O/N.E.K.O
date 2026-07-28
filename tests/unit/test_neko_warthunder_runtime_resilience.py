@@ -13,6 +13,7 @@ from plugin.plugins.neko_warthunder.adapters.neko_dispatcher import (
     _output_event_max_age_seconds,
     _quiet_window_suppression,
 )
+from plugin.plugins.neko_warthunder.adapters.runtime_timeline import RuntimeTimeline
 from plugin.plugins.neko_warthunder.adapters.telemetry_client import parse_telemetry
 from plugin.plugins.neko_warthunder.core.arbiter import Arbiter
 from plugin.plugins.neko_warthunder.core.contracts import (
@@ -22,9 +23,11 @@ from plugin.plugins.neko_warthunder.core.contracts import (
     WtConfig,
 )
 from plugin.plugins.neko_warthunder.core.safety_guard import SafetyGuard
+from plugin.plugins.neko_warthunder.detectors._base import DetectorEngine
 from plugin.plugins.neko_warthunder.detectors.discrete.lifecycle import (
     BattleEndDetector,
     DeathDetector,
+    KillDetector,
 )
 from plugin.plugins.neko_warthunder.detectors.discrete.proximity import ProximityDetector
 from plugin.plugins.neko_warthunder.detectors.discrete.situation import AirSituationDetector
@@ -70,6 +73,83 @@ def test_urgent_output_migration_marker_write_failure_does_not_abort_startup() -
     )
 
     assert warnings == ["urgent output TTS migration flag persist failed: OSError"]
+
+
+def test_late_kill_while_dead_reaches_trade_arbiter_once() -> None:
+    cfg = WtConfig(
+        global_rate_limit_seconds=0,
+        critical_preempt_cooldown_seconds=0,
+        kill_coalesce_window_seconds=2,
+    )
+    engine = DetectorEngine([KillDetector()])
+    arbiter = Arbiter(SafetyGuard(cfg))
+    base = {
+        "connected": True,
+        "conn_state": "in_battle",
+        "in_battle": True,
+        "vehicle_valid": True,
+        "battle_id": "B1",
+    }
+    alive = BattleState(**base, combat={"feed": []}, timestamp=100)
+    death, _ = arbiter.decide(
+        [BattleEvent("you_died", level="critical", ts=100)],
+        "DEAD",
+        100,
+    )
+
+    dead_feed = {
+        "feed": [
+            {
+                "id": 4,
+                "is_kill": True,
+                "is_my_kill": True,
+                "killer": "Me",
+                "victim": "V4",
+            }
+        ]
+    }
+    dead = BattleState(
+        **base,
+        combat=dead_feed,
+        dead=True,
+        dead_source="hud",
+        timestamp=101,
+    )
+    candidates = engine.feed(alive, dead)
+    trade, chain = arbiter.decide(candidates, "DEAD", 101)
+
+    assert death is not None and death.event_id == "you_died"
+    assert [event.event_id for event in candidates] == ["you_killed"]
+    assert trade is not None and trade.event_id == "you_killed"
+    assert trade.payload["trade_death"] is True
+    assert any(item["reason"] == "trade_kill_after_death" for item in chain)
+
+    respawned = BattleState(**base, combat=dead_feed, timestamp=102)
+    assert engine.feed(dead, respawned) == []
+
+
+def test_apply_config_refreshes_detector_heartbeat_without_rebuild() -> None:
+    plugin = object.__new__(NekoWarthunderPlugin)
+    plugin.cfg = WtConfig()
+    plugin.safety = SafetyGuard(plugin.cfg)
+    plugin.timeline = RuntimeTimeline()
+    plugin.data_layer_manager = SimpleNamespace(configure=lambda _cfg: None)
+    plugin._session_dry_run_override = None
+    plugin.engine = plugin._build_engine()
+    original_engine = plugin.engine
+    heartbeat_detectors = [
+        detector
+        for detector in plugin.engine.detectors
+        if getattr(detector, "id", "")
+        in {"stall_risk", "high_aoa", "over_g", "low_alt_danger", "overspeed"}
+    ]
+    assert heartbeat_detectors
+    assert all(detector.critical_heartbeat_seconds == 5 for detector in heartbeat_detectors)
+
+    plugin._apply_config(WtConfig(critical_preempt_cooldown_seconds=0))
+
+    assert plugin.engine is original_engine
+    assert all(detector.critical_heartbeat_seconds == 0 for detector in heartbeat_detectors)
 
 
 def test_exited_managed_process_preserves_failure_when_auto_start_is_disabled(tmp_path) -> None:

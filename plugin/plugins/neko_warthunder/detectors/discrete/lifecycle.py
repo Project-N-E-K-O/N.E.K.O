@@ -168,7 +168,9 @@ class KillDetector(DiscreteDetector):
     """Kill events come from data-layer combat.feed[].is_my_kill."""
 
     id = "you_killed"
-    dead_state_policy = "consume"  # combat.feed 整局持久，重置游标会重播旧击杀
+    # 延迟到账的同归于尽/航弹战果必须进入 Arbiter 的 DEAD 场景交易击杀路径；
+    # detector 自身仍推进并记录 feed id，因此重生后不会补播同一条。
+    dead_state_policy = "allow"
 
     def __init__(self) -> None:
         # 刻意不接收 player_name：归属完全由数据层的 is_my_kill 判定，插件侧不做
