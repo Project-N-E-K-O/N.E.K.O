@@ -890,7 +890,7 @@ function createSidePanelMenuItem(manager, prefix, item) {
 
     let isOpening = false;
 
-    // 打开模型管理子窗口，主页面模型保持原样显示。
+    // 打开模型管理子窗口；主页面模型由统一遮挡状态接口决定是否显示。
     function openModelManagerWindow(url, name, feat) {
         let childWin;
         if (typeof window.openOrFocusWindow === 'function') {
@@ -2945,7 +2945,10 @@ const AvatarPopupMixin = {
             if (!isPopupAvailable()) return false;
             popup.innerHTML = '';
 
-            if (!window.electronDesktopCapturer || typeof window.electronDesktopCapturer.getSources !== 'function') {
+            const desktopProvider = typeof window.getDesktopCaptureProvider === 'function'
+                ? window.getDesktopCaptureProvider()
+                : null;
+            if (!desktopProvider || typeof desktopProvider.getSources !== 'function') {
                 const noElectron = document.createElement('div');
                 noElectron.textContent = window.t ? window.t('app.screenSource.notAvailable') : '屏幕捕获不可用';
                 Object.assign(noElectron.style, { padding: '12px', fontSize: '13px', color: 'var(--neko-popup-text-sub, #666)', textAlign: 'center' });
@@ -2959,7 +2962,7 @@ const AvatarPopupMixin = {
             popup.appendChild(loading);
 
             try {
-                const sources = await window.electronDesktopCapturer.getSources({ types: ['window', 'screen'] });
+                const sources = await desktopProvider.getSources({ types: ['window', 'screen'] });
                 if (!isPopupAvailable()) return false;
                 popup.innerHTML = '';
 

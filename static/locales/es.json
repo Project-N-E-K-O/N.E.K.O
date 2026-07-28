@@ -2388,7 +2388,7 @@
             "never": "No recordar de nuevo"
         },
         "screenSource": {
-            "notAvailable": "Selección de fuente de pantalla solo disponible en la versión de escritorio",
+            "notAvailable": "La selección de fuente de pantalla no está disponible en el entorno actual",
             "loading": "Cargando...",
             "noSources": "No hay fuentes de pantalla disponibles",
             "loadFailed": "No se pudieron cargar las fuentes de la pantalla",
@@ -2396,7 +2396,8 @@
             "screenLabel": "Pantalla {{index}}",
             "windows": "ventanas",
             "selected": "Seleccionado {{source}}",
-            "sourceLost": "Compartir pantalla no pudo encontrar la ventana seleccionada previamente, se cambió a compartir pantalla completa"
+            "sourceLost": "Compartir pantalla no pudo encontrar la ventana seleccionada previamente, se cambió a compartir pantalla completa",
+            "captureFailed": "La captura de pantalla se detuvo. Compruebe los permisos del sistema o vuelva a seleccionar la fuente"
         },
         "deviceSwitchFailed": "Error en el cambio de dispositivo",
         "deviceSwitching": "Dispositivo de conmutación...",

@@ -2388,7 +2388,7 @@
             "never": "不再提醒"
         },
         "screenSource": {
-            "notAvailable": "屏幕源選擇僅在桌面版可用",
+            "notAvailable": "目前環境無法選擇螢幕來源",
             "loading": "加載中...",
             "noSources": "沒有可用的屏幕源",
             "loadFailed": "獲取屏幕源失敗",
@@ -2396,7 +2396,8 @@
             "screenLabel": "螢幕 {{index}}",
             "windows": "窗口",
             "selected": "已選擇 {{source}}",
-            "sourceLost": "螢幕分享無法找到之前選擇的窗口，已切換為全螢幕分享"
+            "sourceLost": "螢幕分享無法找到之前選擇的窗口，已切換為全螢幕分享",
+            "captureFailed": "螢幕擷取已停止，請檢查系統權限或重新選擇來源"
         },
         "deviceSwitchFailed": "裝置切換失敗",
         "deviceSwitching": "裝置切換中...",

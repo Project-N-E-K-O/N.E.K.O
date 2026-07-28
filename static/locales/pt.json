@@ -2388,7 +2388,7 @@
             "never": "Não me lembre novamente"
         },
         "screenSource": {
-            "notAvailable": "Seleção de fonte de tela disponível apenas na versão desktop",
+            "notAvailable": "A seleção de fonte de tela não está disponível no ambiente atual",
             "loading": "Carregando...",
             "noSources": "Nenhuma fonte de tela disponível",
             "loadFailed": "Falha ao carregar fontes da tela",
@@ -2396,7 +2396,8 @@
             "screenLabel": "Tela {{index}}",
             "windows": "Windows",
             "selected": "Selecionado {{source}}",
-            "sourceLost": "O compartilhamento de tela não conseguiu encontrar a janela selecionada anteriormente, mudou para compartilhamento em tela cheia"
+            "sourceLost": "O compartilhamento de tela não conseguiu encontrar a janela selecionada anteriormente, mudou para compartilhamento em tela cheia",
+            "captureFailed": "A captura de tela foi interrompida. Verifique as permissões do sistema ou selecione a fonte novamente"
         },
         "deviceSwitchFailed": "Falha na troca de dispositivo",
         "deviceSwitching": "Dispositivo de comutação...",

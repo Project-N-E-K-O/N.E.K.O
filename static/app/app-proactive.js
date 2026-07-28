@@ -25,6 +25,12 @@
     const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 60 * 1000;
     const MEME_LOAD_FAILED_STICKER_URL = '/static/icons/meme-image-load-failed-sticker.png';
 
+    function getDesktopProvider() {
+        return typeof window.getDesktopCaptureProvider === 'function'
+            ? window.getDesktopCaptureProvider()
+            : null;
+    }
+
     // ======================== proactive leader election ========================
     //
     // 背景：index.html（Pet 主窗口）和 chat.html（聊天浮窗）共用 app-proactive.js，
@@ -1854,10 +1860,14 @@
 
     // ======================== proactive vision during speech ========================
 
+    var proactiveVisionFrameInFlight = false;
+
     /**
      * 发送单帧屏幕数据（统一使用 acquireOrReuseCachedStream → captureFrameFromStream → 后端兜底）
      */
     async function sendOneProactiveVisionFrame() {
+        if (proactiveVisionFrameInFlight) return;
+        proactiveVisionFrameInFlight = true;
         try {
             if (!isProactiveVisionEnabledNow() || !S.isRecording) {
                 stopProactiveVisionDuringSpeech();
@@ -1879,6 +1889,36 @@
                     try { stream.getTracks().forEach(function (t) { try { t.stop(); } catch (e) { } }); } catch (e) { }
                     S.screenCaptureStream = null;
                     S.screenCaptureStreamLastUsed = null;
+                }
+            }
+
+            // Native desktop shells return encoded frames instead of a
+            // Chromium MediaStream.
+            if (!dataUrl && S.selectedScreenSourceId) {
+                var desktopProvider = getDesktopProvider();
+                if (desktopProvider
+                    && desktopProvider.nativeFrameCapture
+                    && typeof desktopProvider.captureSourceAsDataUrl === 'function') {
+                    try {
+                        var direct = await window.captureDesktopSourceWithTimeout(
+                            desktopProvider,
+                            'captureSourceAsDataUrl',
+                            S.selectedScreenSourceId
+                        );
+                        if (direct && direct.success && direct.dataUrl) {
+                            dataUrl = direct.dataUrl;
+                        } else if (typeof window.maybeClearSourceOnNotFound === 'function') {
+                            window.maybeClearSourceOnNotFound(direct, '主动视觉原生捕获源已失效');
+                        }
+                    } catch (directError) {
+                        if (typeof window.maybeClearSourceOnNotFound === 'function') {
+                            window.maybeClearSourceOnNotFound(
+                                { error: directError && directError.message },
+                                '主动视觉原生捕获源已失效'
+                            );
+                        }
+                        console.warn('[ProactiveVision] 原生捕获失败，尝试后端兜底:', directError);
+                    }
                 }
             }
 
@@ -1910,6 +1950,8 @@
             }
         } catch (e) {
             console.error('sendOneProactiveVisionFrame 失败:', e);
+        } finally {
+            proactiveVisionFrameInFlight = false;
         }
     }
     mod.sendOneProactiveVisionFrame = sendOneProactiveVisionFrame;
@@ -2049,11 +2091,16 @@
             } catch (e) { console.warn('[主动搭话截图] 缓存流截图失败，继续:', e); }
         }
 
-        // 策略 0b: 主进程直接捕获选中源（Electron 桌面环境）
-        if (S.selectedScreenSourceId && window.electronDesktopCapturer
-            && typeof window.electronDesktopCapturer.captureSourceAsDataUrl === 'function') {
+        // 策略 0b: 桌面壳直接捕获选中源（Electron / Tauri）
+        var desktopProvider = getDesktopProvider();
+        if (S.selectedScreenSourceId && desktopProvider
+            && typeof desktopProvider.captureSourceAsDataUrl === 'function') {
             try {
-                var direct = await window.electronDesktopCapturer.captureSourceAsDataUrl(S.selectedScreenSourceId);
+                var direct = await window.captureDesktopSourceWithTimeout(
+                    desktopProvider,
+                    'captureSourceAsDataUrl',
+                    S.selectedScreenSourceId
+                );
                 if (direct && direct.success && direct.dataUrl) {
                     console.log('[主动搭话截图] 主进程直接捕获成功:', S.selectedScreenSourceId);
                     return direct.dataUrl;

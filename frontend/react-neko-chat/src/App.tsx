@@ -110,6 +110,19 @@ type CompactInlineExportBridge = {
 
 const defaultMessages: ChatMessage[] = [];
 
+function hasSingleInsertedLineBreak(previousValue: string, currentValue: string): boolean {
+  if (currentValue.length !== previousValue.length + 1) return false;
+
+  for (let index = 0; index < currentValue.length; index += 1) {
+    if (currentValue[index] !== '\n') continue;
+    if (currentValue.slice(0, index) + currentValue.slice(index + 1) === previousValue) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function getEffectiveCompactChatState(
   requestedState: CompactChatState,
   hasVisibleChoices: boolean,
@@ -1077,6 +1090,14 @@ function CompactChatApp({
   const compactHistoryVisibilitySuppressClickRef = useRef(false);
   const compactExportHistoryUnmountTimerRef = useRef<number | null>(null);
   const submittingRef = useRef(false);
+  const composerIsComposingRef = useRef(false);
+  const composerImeCommitPendingRef = useRef(false);
+  const composerEnterCycleActiveRef = useRef(false);
+  const composerEnterCycleImeRef = useRef(false);
+  const composerEnterCycleShiftRef = useRef(false);
+  const composerEnterCycleLineBreakRef = useRef(false);
+  const composerEnterCycleDraftRef = useRef('');
+  const composerExplicitPointerSubmitRef = useRef(false);
   const lastRollbackKeyRef = useRef('');
   const lastAvatarToolMenuOpenRequestIdRef = useRef('');
   const lastCompactToolFanOpenRequestIdRef = useRef('');
@@ -4817,10 +4838,10 @@ function CompactChatApp({
     inputNode.setSelectionRange(selectionEnd, selectionEnd);
   }
 
-  function submitDraft() {
+  function submitDraft(draftOverride?: string) {
     if (compactTextEntryLocked) return;
     if (submittingRef.current) return;
-    const text = visibleDraft.trim();
+    const text = (draftOverride ?? visibleDraft).trim();
     if (!text && (catLocalTextOnly || composerAttachments.length === 0)) return;
     closeCompactInputToolFan();
     submittingRef.current = true;
@@ -5078,7 +5099,11 @@ function CompactChatApp({
         scheduleCompactInputToolFanTransientClose();
         scheduleCompactInputCollapse();
       }}
-      onClick={compactToolToggleActsAsSubmit ? undefined : () => {
+      onClick={compactToolToggleActsAsSubmit ? (event) => {
+        // A real pointer click is explicit user intent to send, even if an IME
+        // composition is still active. Implicit keyboard submits have detail=0.
+        composerExplicitPointerSubmitRef.current = event.detail > 0;
+      } : () => {
         // 拖动文本框后补发的 click 已在 origin-drag 里置位抑制，这里消费掉，避免误展开/收起轮盘。
         if (compactToolOriginSuppressClickRef.current) {
           compactToolOriginSuppressClickRef.current = false;
@@ -5929,6 +5954,17 @@ function CompactChatApp({
             {!isCompactSurface ? <div id="music-player-mount" className="composer-music-player-mount" /> : null}
             <form className="composer" onSubmit={(event) => {
               event.preventDefault();
+              const isExplicitPointerSubmit = composerExplicitPointerSubmitRef.current;
+              composerExplicitPointerSubmitRef.current = false;
+              // WebKit can dispatch an implicit form submit while Enter is
+              // still confirming an IME candidate. Keyboard submission is
+              // decided on keyup after the full composition cycle is known.
+              if (!isExplicitPointerSubmit
+                && (composerEnterCycleActiveRef.current
+                  || composerIsComposingRef.current
+                  || composerImeCommitPendingRef.current)) {
+                return;
+              }
               submitDraft();
             }}>
               {isCompactSurface ? (
@@ -6016,13 +6052,144 @@ function CompactChatApp({
                               closeCompactInputToolFan();
                             }
                           }}
-                          onBlur={scheduleCompactInputCollapse}
-                          onKeyDown={(event) => {
-                            if (event.nativeEvent.isComposing) return;
-                            if (event.key === 'Enter' && !event.shiftKey) {
-                              event.preventDefault();
-                              submitDraft();
+                          onInput={(event) => {
+                            // Some macOS Chinese IMEs commit an ASCII candidate
+                            // without composition events or keyCode 229. Use
+                            // the input mutation to distinguish that commit
+                            // from WebKit inserting a line break for Enter.
+                            if (!composerEnterCycleActiveRef.current) return;
+
+                            const inputEvent = event.nativeEvent as InputEvent;
+                            const inputType = inputEvent.inputType;
+                            const isLineBreak = inputType === 'insertLineBreak'
+                              || inputType === 'insertParagraph';
+
+                            if (isLineBreak) {
+                              if (!composerEnterCycleShiftRef.current) {
+                                composerEnterCycleLineBreakRef.current = true;
+                              }
+                              return;
                             }
+
+                            if (inputEvent.isComposing
+                              || inputType === 'insertCompositionText'
+                              || inputType === 'insertText'
+                              || inputType === 'insertReplacementText'
+                              || composerImeCommitPendingRef.current) {
+                              composerEnterCycleImeRef.current = true;
+                              return;
+                            }
+
+                            const previousValue = composerEnterCycleDraftRef.current;
+                            const currentValue = event.currentTarget.value;
+                            const insertedOnlyOneLineBreak = hasSingleInsertedLineBreak(
+                              previousValue,
+                              currentValue,
+                            );
+
+                            if (insertedOnlyOneLineBreak && !composerEnterCycleShiftRef.current) {
+                              composerEnterCycleLineBreakRef.current = true;
+                            } else if (currentValue !== previousValue) {
+                              composerEnterCycleImeRef.current = true;
+                            }
+                          }}
+                          onCompositionStart={() => {
+                            composerIsComposingRef.current = true;
+                            composerImeCommitPendingRef.current = false;
+                          }}
+                          onCompositionEnd={() => {
+                            composerIsComposingRef.current = false;
+                            const endedDuringEnterCycle = composerEnterCycleActiveRef.current;
+                            composerImeCommitPendingRef.current = endedDuringEnterCycle;
+                            if (endedDuringEnterCycle) {
+                              composerEnterCycleImeRef.current = true;
+                            }
+                          }}
+                          onBeforeInput={(event) => {
+                            const inputEvent = event.nativeEvent as InputEvent;
+                            if (!composerEnterCycleActiveRef.current) return;
+
+                            if (inputEvent.isComposing
+                              || inputEvent.inputType === 'insertCompositionText'
+                              || composerImeCommitPendingRef.current) {
+                              composerEnterCycleImeRef.current = true;
+                              return;
+                            }
+
+                            if ((inputEvent.inputType === 'insertLineBreak'
+                              || inputEvent.inputType === 'insertParagraph')
+                              && !composerEnterCycleShiftRef.current) {
+                              composerEnterCycleLineBreakRef.current = true;
+                              event.preventDefault();
+                            }
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' && !event.repeat) {
+                              const nativeEvent = event.nativeEvent;
+                              const isImeEnter = nativeEvent.isComposing
+                                || nativeEvent.keyCode === 229
+                                || composerIsComposingRef.current
+                                || composerImeCommitPendingRef.current;
+
+                              composerEnterCycleActiveRef.current = true;
+                              composerEnterCycleShiftRef.current = event.shiftKey;
+                              composerEnterCycleImeRef.current = isImeEnter;
+                              composerEnterCycleLineBreakRef.current = false;
+                              composerEnterCycleDraftRef.current = event.currentTarget.value;
+                            }
+                          }}
+                          onKeyUp={(event) => {
+                            if (event.key !== 'Enter') {
+                              if (!composerIsComposingRef.current) {
+                                composerImeCommitPendingRef.current = false;
+                              }
+                              return;
+                            }
+
+                            const shouldSubmit = composerEnterCycleActiveRef.current
+                              && !composerEnterCycleShiftRef.current
+                              && !composerEnterCycleImeRef.current
+                              && !composerIsComposingRef.current
+                              && !composerImeCommitPendingRef.current;
+                            const draftBeforeEnter = composerEnterCycleDraftRef.current;
+                            const shouldRestoreDraft = composerEnterCycleLineBreakRef.current
+                              && !composerEnterCycleShiftRef.current;
+
+                            composerEnterCycleActiveRef.current = false;
+                            composerEnterCycleShiftRef.current = false;
+                            composerEnterCycleImeRef.current = false;
+                            composerEnterCycleLineBreakRef.current = false;
+                            composerEnterCycleDraftRef.current = '';
+                            composerImeCommitPendingRef.current = false;
+
+                            if (shouldRestoreDraft) {
+                              if (catLocalTextOnly) {
+                                setCatDraft(draftBeforeEnter);
+                              } else {
+                                setDraft(draftBeforeEnter);
+                              }
+                            }
+
+                            if (shouldSubmit) {
+                              event.preventDefault();
+                              submitDraft(shouldRestoreDraft ? draftBeforeEnter : undefined);
+                            }
+                          }}
+                          onPointerUp={() => {
+                            if (!composerIsComposingRef.current
+                              && !composerEnterCycleActiveRef.current) {
+                              composerImeCommitPendingRef.current = false;
+                            }
+                          }}
+                          onBlur={() => {
+                            composerIsComposingRef.current = false;
+                            composerImeCommitPendingRef.current = false;
+                            composerEnterCycleActiveRef.current = false;
+                            composerEnterCycleImeRef.current = false;
+                            composerEnterCycleShiftRef.current = false;
+                            composerEnterCycleLineBreakRef.current = false;
+                            composerEnterCycleDraftRef.current = '';
+                            scheduleCompactInputCollapse();
                           }}
                         />
                         {compactInputToolToggleButton}

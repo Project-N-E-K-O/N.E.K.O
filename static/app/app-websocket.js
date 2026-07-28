@@ -32,6 +32,8 @@
     const MUSIC_PLAY_URL_CLAIM_CLEANUP_MS = 60000;
     const MUSIC_PLAY_URL_COORD_CHANNEL_NAME = 'neko_music_play_url_coord';
     const MUSIC_PLAY_URL_COORD_STORAGE_KEY = 'neko_music_play_url_coord';
+    const CAPTURE_BRIDGE_REANNOUNCE_INTERVAL_MS = 250;
+    const CAPTURE_BRIDGE_REANNOUNCE_MAX_ATTEMPTS = 40;
     let _pendingUserActivityCancelTimer = 0;
     let _pendingUserActivityCancelTurnId = null;
     let _lanlanNameWaitAttempts = 0;
@@ -56,6 +58,44 @@
     function textSendButton()     { return $id('textSendButton'); }
     function screenshotButton()   { return $id('screenshotButton'); }
     function chatContainer()      { return $id('chatContainer'); }
+
+    function resolveDesktopCaptureProvider() {
+        return typeof window.getDesktopCaptureProvider === 'function'
+            ? window.getDesktopCaptureProvider()
+            : null;
+    }
+
+    function announceCaptureBridgeStatus(socket) {
+        if (!socket || socket !== S.socket || socket.readyState !== WebSocket.OPEN) {
+            return true;
+        }
+        try {
+            var dc = resolveDesktopCaptureProvider();
+            var available = !!(dc && dc.getSources && dc.captureSourceAsDataUrl);
+            socket.send(JSON.stringify({
+                action: 'capture_bridge_status',
+                available: available,
+                capabilities: {
+                    getSources: !!(dc && dc.getSources),
+                    captureSourceAsDataUrl: !!(dc && dc.captureSourceAsDataUrl),
+                    captureSourceWithoutNeko: !!(dc && dc.captureSourceWithoutNeko)
+                }
+            }));
+            return available;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function reannounceCaptureBridgeWhenReady(socket, attempt) {
+        if (attempt >= CAPTURE_BRIDGE_REANNOUNCE_MAX_ATTEMPTS) return;
+        setTimeout(function () {
+            if (!socket || socket !== S.socket || socket.readyState !== WebSocket.OPEN) return;
+            if (!announceCaptureBridgeStatus(socket)) {
+                reannounceCaptureBridgeWhenReady(socket, attempt + 1);
+            }
+        }, CAPTURE_BRIDGE_REANNOUNCE_INTERVAL_MS);
+    }
 
     function isGoodbyeUiSuppressed() {
         try {
@@ -1671,30 +1711,18 @@
             }).catch(function () { });
 
             // Capture bridge: tell the backend whether this renderer can
-            // service window-level captures via Electron's desktopCapturer.
+            // service window-level captures through the active desktop host.
             // The backend uses this to fail /api/capture/health fast when
-            // no Electron renderer is available (e.g. running in a plain
+            // no desktop renderer is available (e.g. running in a plain
             // browser tab), which matters for the galgame OCR fallback path
             // on Linux pure-Wayland where MSS / PyAutoGUI can't see other
             // windows.
-            // Note: intentionally broadcast for all renderers; non-Electron
+            // Note: intentionally broadcast for all renderers; non-desktop
             // environments send available=false and the backend ignores them.
-            try {
-                var dc = window.electronDesktopCapturer;
-                var available = !!(dc && dc.getSources && dc.captureSourceAsDataUrl);
-                if (_thisSocket && _thisSocket.readyState === WebSocket.OPEN) {
-                    _thisSocket.send(JSON.stringify({
-                        action: 'capture_bridge_status',
-                        available: available,
-                        capabilities: {
-                            getSources: !!(dc && dc.getSources),
-                            captureSourceAsDataUrl: !!(dc && dc.captureSourceAsDataUrl),
-                            captureSourceWithoutNeko: !!(dc && dc.captureSourceWithoutNeko)
-                        }
-                    }));
-                }
-            } catch (_capErr) {
-                // capture bridge is best-effort; never block the rest of onopen
+            if (!announceCaptureBridgeStatus(_thisSocket)) {
+                // Tauri injects its bridge after navigation. Re-announce for a
+                // bounded window so a late bridge does not require reconnecting.
+                reannounceCaptureBridgeWhenReady(_thisSocket, 0);
             }
 
             // Start heartbeat
@@ -3007,7 +3035,7 @@
                             return (typeof result.dataUrl === 'string' && result.dataUrl) ? result.dataUrl : null;
                         };
                         try {
-                            var dc = window.electronDesktopCapturer;
+                            var dc = resolveDesktopCaptureProvider();
                             if (!dc || !dc.getSources) {
                                 sendResp({ success: false, error: 'unavailable' });
                                 return;
@@ -3071,7 +3099,11 @@
                             var captureResult = null;
                             if (typeof dc.captureSourceWithoutNeko === 'function') {
                                 try {
-                                    captureResult = await dc.captureSourceWithoutNeko(matched.id);
+                                    captureResult = await window.captureDesktopSourceWithTimeout(
+                                        dc,
+                                        'captureSourceWithoutNeko',
+                                        matched.id
+                                    );
                                     dataUrl = normalizeCaptureBridgeImage(captureResult);
                                 } catch (_woNekoErr) {
                                     dataUrl = null;
@@ -3079,7 +3111,11 @@
                             }
                             if (!dataUrl && typeof dc.captureSourceAsDataUrl === 'function') {
                                 try {
-                                    captureResult = await dc.captureSourceAsDataUrl(matched.id);
+                                    captureResult = await window.captureDesktopSourceWithTimeout(
+                                        dc,
+                                        'captureSourceAsDataUrl',
+                                        matched.id
+                                    );
                                     dataUrl = normalizeCaptureBridgeImage(captureResult);
                                 } catch (_dataUrlErr) {
                                     dataUrl = null;

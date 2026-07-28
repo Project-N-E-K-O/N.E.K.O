@@ -94,6 +94,9 @@
                         }
                         break;
                     }
+                    case 'model_manager_window_state':
+                        I.handleModelManagerWindowState(event.data);
+                        break;
                     case 'memory_edited':
                         await I.handleMemoryEdited(event.data.catgirl_name);
                         break;
