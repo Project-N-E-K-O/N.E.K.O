@@ -4904,17 +4904,56 @@ async def test_sync_task_spawn_reports_failures():
     assert not getattr(service.plugin, "_group_memory_sync_tasks")
 
 
-def test_stop_cancels_buffer_tasks_and_settles_provisional():
+def test_stop_cancels_buffer_tasks_through_the_shared_entry_point():
     """Stop must cancel delayed replies (the client is gone; a survivor
     would fail or replay a stale pre-stop reply into the next run) and
-    settle their provisional barriers."""
+    settle their barriers. It goes through cancel_pending, which is what
+    the behaviour below is asserted on — reaching into _pending here again
+    would let the two teardown paths drift apart."""
     import inspect
 
-    from plugin.plugins.qq_auto_reply import runtime_ops_service
+    from plugin.plugins.qq_auto_reply import runtime_ops_service, session_runtime_service
 
-    src = inspect.getsource(runtime_ops_service)
-    assert "task.cancel()" in src
-    assert "_settle_provisional" in src
+    for module in (runtime_ops_service, session_runtime_service):
+        src = inspect.getsource(module)
+        assert "cancel_pending(" in src, module.__name__
+        assert "_settle_provisional" not in src, module.__name__
+        assert "_pending.pop" not in src, module.__name__
+
+
+@pytest.mark.asyncio
+async def test_cancel_pending_cancels_settles_and_returns_the_task():
+    """The shared teardown: the slot goes, the delayed task is cancelled
+    (and handed back so callers can join it), and the barrier is released
+    so the digest can move past a draft nobody will ever deliver."""
+    from plugin.plugins.qq_auto_reply.reply_buffer_service import (
+        PendingReply,
+        QQReplyBufferService,
+    )
+
+    draft = SimpleNamespace(type="ai", content="草稿")
+    ud = {"provisional_draft_rows": [draft], "undelivered_draft_rows": [draft]}
+    service = QQReplyBufferService.__new__(QQReplyBufferService)
+    service.plugin = SimpleNamespace(logger=MagicMock())
+    pending = PendingReply(
+        first_text="草稿", wait_seconds=999, sender_id="1",
+        is_group=True, group_id="7788",
+    )
+    pending.draft_rows = [draft]
+    pending.task = asyncio.create_task(asyncio.sleep(999))
+    service._pending = {"group:7788": pending}
+
+    task = service.cancel_pending("group:7788", ud)
+
+    assert task is pending.task
+    assert service._pending == {}
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1.0)
+    # Barrier released, but the draft stays out of memory: it never went out.
+    assert ud["provisional_draft_rows"] == []
+    assert ud["undelivered_draft_rows"] == [draft]
+    # Nothing left to cancel the second time around.
+    assert service.cancel_pending("group:7788", ud) is None
 
 
 @pytest.mark.asyncio
@@ -10709,3 +10748,62 @@ async def test_unconfirmed_relay_reports_false_and_keeps_the_backlog_item():
     assert relayed is False
     # The panel is now the only place this message still exists.
     assert len(plugin._relay_backlog_items) == 1
+
+
+@pytest.mark.asyncio
+async def test_stop_waits_for_the_cancelled_buffer_tasks():
+    """Cancelling is not enough: the cancellation only lands on the next
+    loop pass. If stop returns without joining, the lock table is cleared
+    while a delayed reply is still unwinding inside its critical section,
+    and a restart hands the next handler a brand new lock for it."""
+    from plugin.plugins.qq_auto_reply.reply_buffer_service import (
+        PendingReply,
+        QQReplyBufferService,
+    )
+    from plugin.plugins.qq_auto_reply.runtime_ops_service import (
+        QQRuntimeOpsService,
+    )
+
+    unwound = asyncio.Event()
+
+    async def _delayed_reply() -> None:
+        try:
+            await asyncio.sleep(999)
+        except asyncio.CancelledError:
+            unwound.set()
+            raise
+
+    buffer_service = QQReplyBufferService.__new__(QQReplyBufferService)
+    pending = PendingReply(
+        first_text="草稿", wait_seconds=999, sender_id="1",
+        is_group=True, group_id="7788",
+    )
+    pending.task = asyncio.create_task(_delayed_reply())
+    await asyncio.sleep(0)  # let it reach its await, as a real one would be
+    buffer_service._pending = {"group:7788": pending}
+
+    plugin = SimpleNamespace(
+        _running=True,
+        attention_service=None,
+        attention_gate_service=None,
+        _session_housekeeping_task=None,
+        _message_task=None,
+        _handler_tasks=set(),
+        qq_client=None,
+        reply_buffer_service=buffer_service,
+        _user_sessions={"group:7788": {}},
+        _group_memory_sync_tasks=set(),
+        _prompt_change_discard_tasks=set(),
+        _session_locks={"group:7788": asyncio.Lock()},
+        logger=MagicMock(),
+    )
+    buffer_service.plugin = plugin
+    ops = QQRuntimeOpsService.__new__(QQRuntimeOpsService)
+    ops.plugin = plugin
+
+    await ops.stop_runtime(stop_napcat=False)
+
+    assert pending.task.done()
+    assert unwound.is_set()
+    # No straggler was left holding a lock, so the table could be cleared.
+    assert plugin._session_locks == {}

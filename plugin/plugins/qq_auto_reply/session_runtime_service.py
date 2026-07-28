@@ -133,16 +133,10 @@ class QQSessionRuntimeService:
         # 参与者真收到的回复会永久缺席 scoped 记忆。这里取消它（与
         # stop_runtime 同口径：草稿保持未投递、屏障解除），再结算。
         buffer_service = getattr(self.plugin, "reply_buffer_service", None)
-        pending_map = getattr(buffer_service, "_pending", None)
-        if isinstance(pending_map, dict):
-            pending = pending_map.pop(session_key, None)
-            if pending is not None:
-                task = getattr(pending, "task", None)
-                if task is not None and not task.done():
-                    task.cancel()
-                buffer_service._settle_provisional(
-                    self.plugin._user_sessions.get(session_key), pending,
-                )
+        if buffer_service is not None:
+            buffer_service.cancel_pending(
+                session_key, self.plugin._user_sessions.get(session_key),
+            )
         peek = self.plugin._user_sessions.get(session_key)
         finalized = False
         if peek and (

@@ -450,6 +450,27 @@ class QQReplyBufferService:
             existing.has_nonconsent_input = True
         existing.task = asyncio.create_task(self._deliver_after_wait(session_key, existing))
 
+    def cancel_pending(self, session_key: str, user_data: Any) -> Any:
+        """Kill a buffered reply outright and return its task, if any.
+
+        The one entry point for "this session is going away" (discard,
+        shutdown): unlike the in-flight cleanups this is deliberately
+        generation-blind — every generation shares one PendingReply and all
+        of them end here. The draft stays undelivered (the exclusion list
+        keeps it out of memory) while the provisional barrier is released,
+        so the digest cursor can move past a row nobody will ever deliver.
+        Callers that need to join the cancellation use the return value."""
+        pending = self._pending.pop(session_key, None)
+        if pending is None:
+            return None
+        task = getattr(pending, "task", None)
+        cancelled = None
+        if task is not None and not task.done():
+            task.cancel()
+            cancelled = task
+        self._settle_provisional(user_data, pending)
+        return cancelled
+
     @staticmethod
     def _is_current_generation(pending: PendingReply) -> bool:
         """True when the running coroutine is still this buffer's live task."""
