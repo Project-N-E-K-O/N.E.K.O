@@ -1017,6 +1017,15 @@
                     this.isDay2WrapSceneId(previousSceneId)
                     && this.isDay2WrapSceneId(nextSceneId)
                 )
+                || (
+                    // day1 接管环节：capture_cursor 把外置光标锚到 PC 侧按钮，
+                    // return_control 要把锚点同步回 chat 侧胶囊输入框，反向 Ghost
+                    // Cursor 动画依赖这个保留判定不被提前清掉。#2434 重构时另外 4 个
+                    // chat→PC 方向的 day1 pair 已由 releaseExternalizedChatCursorToHome()
+                    // 接管，唯独这条 PC→chat 方向没有替代，补回。
+                    previousSceneId === 'day1_takeover_capture_cursor'
+                    && nextSceneId === 'day1_takeover_return_control'
+                )
             );
         },
 
