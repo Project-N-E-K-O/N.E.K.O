@@ -532,8 +532,7 @@ class Live2DManager {
             return false;
         }
 
-        const getStyleValue = (element, propertyName, camelName) => {
-            const style = element?.style;
+        const getStyleValueFrom = (style, propertyName, camelName) => {
             if (!style) return '';
             const directValue = style[camelName];
             if (directValue !== undefined && directValue !== null && directValue !== '') {
@@ -543,6 +542,20 @@ class Live2DManager {
                 return String(style.getPropertyValue(propertyName) || '').trim().toLowerCase();
             }
             return '';
+        };
+        const getStyleValue = (element, propertyName, camelName) => {
+            if (!element) return '';
+            if (typeof window.getComputedStyle === 'function') {
+                const computedValue = getStyleValueFrom(
+                    window.getComputedStyle(element),
+                    propertyName,
+                    camelName
+                );
+                if (computedValue !== '') {
+                    return computedValue;
+                }
+            }
+            return getStyleValueFrom(element.style, propertyName, camelName);
         };
         const isVisuallyHidden = (element, checkPointerEvents = false) => {
             if (!element) return false;
@@ -1265,10 +1278,17 @@ class Live2DManager {
         return this._createScreenRect(minX, minY, maxX, maxY);
     }
 
+    _getDrawableCount(internalModel = this.currentModel?.internalModel) {
+        const coreDrawableCount = internalModel?.coreModel?.getDrawableCount?.();
+        return Number.isInteger(coreDrawableCount)
+            ? coreDrawableCount
+            : internalModel?.drawDataCount;
+    }
+
     _getModelLogicalRect() {
         const internalModel = this.currentModel?.internalModel;
         const coreModel = internalModel?.coreModel;
-        const drawableCount = coreModel?.getDrawableCount?.();
+        const drawableCount = this._getDrawableCount(internalModel);
         if (!internalModel || !coreModel || !Number.isInteger(drawableCount) || drawableCount <= 0) {
             return null;
         }
@@ -1563,10 +1583,7 @@ class Live2DManager {
     _getRenderableDrawableScreenRects(modelBounds = null, modelLogicalRect = null, includeIndex = false) {
         const internalModel = this.currentModel?.internalModel;
         const coreModel = internalModel?.coreModel;
-        const coreDrawableCount = coreModel?.getDrawableCount?.();
-        const drawableCount = Number.isInteger(coreDrawableCount)
-            ? coreDrawableCount
-            : internalModel?.drawDataCount;
+        const drawableCount = this._getDrawableCount(internalModel);
         const resolvedModelBounds = modelBounds || this.getModelScreenBounds();
         const resolvedModelLogicalRect = modelLogicalRect || this._getModelLogicalRect();
         if (!internalModel || !coreModel || !Number.isInteger(drawableCount) || drawableCount <= 0 ||

@@ -186,7 +186,8 @@ function createCoreHarness({
     innerWidth = 1000,
     innerHeight = 800,
     elementsById = {},
-    bodyClasses = new Set()
+    bodyClasses = new Set(),
+    getComputedStyle = null
 } = {}) {
     const context = {
         console,
@@ -203,7 +204,8 @@ function createCoreHarness({
             screen: { width: innerWidth, height: innerHeight },
             devicePixelRatio: 1,
             addEventListener() {},
-            __LANLAN_IS_ELECTRON_PET__: false
+            __LANLAN_IS_ELECTRON_PET__: false,
+            getComputedStyle: getComputedStyle || undefined
         },
         document: {
             body: {
@@ -884,7 +886,16 @@ test('core model input regions stay empty when the model surface is hidden or no
             'live2d-container': container,
             'live2d-canvas': canvas
         },
-        bodyClasses
+        bodyClasses,
+        getComputedStyle: (element) => {
+            if (bodyClasses.has('neko-game-active')) {
+                return { ...element.style, display: 'none' };
+            }
+            if (bodyClasses.has('yui-guide-live2d-preparing')) {
+                return { ...element.style, opacity: '0', pointerEvents: 'none' };
+            }
+            return element.style;
+        }
     });
     const manager = new harness.Live2DManager();
     manager._isModelReadyForInteraction = true;
@@ -900,6 +911,14 @@ test('core model input regions stay empty when the model surface is hidden or no
     for (const bodyClass of [
         'neko-main-ui-hidden-by-model-manager',
         'neko-model-hidden-by-manager-overlap'
+    ]) {
+        bodyClasses.clear();
+        bodyClasses.add(bodyClass);
+        assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects())), []);
+    }
+    for (const bodyClass of [
+        'neko-game-active',
+        'yui-guide-live2d-preparing'
     ]) {
         bodyClasses.clear();
         bodyClasses.add(bodyClass);
@@ -1048,11 +1067,13 @@ test('core model input regions enumerate legacy Cubism 2 draw data', () => {
     manager.currentModel = {
         internalModel: {
             coreModel: {},
-            drawDataCount: 2
+            drawDataCount: 2,
+            getDrawableBounds: (index) => index === 0
+                ? { x: -1, y: -2, width: 1, height: 2 }
+                : { x: 0, y: 0, width: 2, height: 3 }
         }
     };
     manager.getModelScreenBounds = () => ({ left: 0, right: 100, top: 0, bottom: 100 });
-    manager._getModelLogicalRect = () => ({ x: -1, y: -1, width: 2, height: 2 });
     manager._ensureModelWorldTransform = () => {};
     manager._getDrawableScreenRect = (index) => ({
         left: index * 10,
@@ -1063,6 +1084,10 @@ test('core model input regions enumerate legacy Cubism 2 draw data', () => {
         height: 5
     });
 
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(manager._getModelLogicalRect())),
+        { x: -1, y: -2, width: 3, height: 5 }
+    );
     assert.deepEqual(
         JSON.parse(JSON.stringify(manager._getRenderableDrawableScreenRects(null, null, true))),
         [
