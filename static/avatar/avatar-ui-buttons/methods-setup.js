@@ -21,6 +21,10 @@ Object.assign(AvatarButtonMixin.methods, {
                 document.removeEventListener('touchcancel', this._returnButtonDragHandlers.touchCancel);
                 document.removeEventListener('visibilitychange', this._returnButtonDragHandlers.visibilityChange);
                 window.removeEventListener('blur', this._returnButtonDragHandlers.windowBlur);
+                window.removeEventListener(
+                    'neko:niri-pet-physical-crop-state-applied',
+                    this._returnButtonDragHandlers.cropStateApplied
+                );
                 this._returnButtonDragHandlers = null;
             }
 

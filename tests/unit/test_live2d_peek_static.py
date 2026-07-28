@@ -53,6 +53,9 @@ def test_live2d_widget_mode_edge_peek_hides_controls_without_locking_live2d():
     full_edge_peek_source = full_edge_peek_source.split("Live2DManager.prototype.setupDragAndDrop", 1)[0]
     assert ".classList.add('neko-live2d-peek')" in full_edge_peek_source
     assert ".classList.remove('neko-live2d-peek')" in full_edge_peek_source
+    assert "this._setLive2DPeekControlsSuppressed(true)" in full_edge_peek_source
+    assert "this._setLive2DPeekControlsSuppressed(false)" in full_edge_peek_source
+    assert "element.style.setProperty('display', 'none', 'important')" in full_edge_peek_source
     assert "setLocked(true" not in full_edge_peek_source
     assert "this.isLocked = true" not in full_edge_peek_source
 
@@ -161,15 +164,27 @@ def test_live2d_widget_mode_edge_peek_reports_viewport_intersection_bounds():
     assert "const renderer = this.pixi_app && this.pixi_app.renderer;" in bounds_source
     assert "const screen = renderer && renderer.screen;" in bounds_source
     assert "Number.isFinite(rendererW) && rendererW > 0" in bounds_source
+    assert "const niriVirtualViewport = getLive2DNiriPetVirtualViewportSize();" in bounds_source
+    assert "? niriVirtualViewport.width" in bounds_source
+    assert "? niriVirtualViewport.height" in bounds_source
     assert "maskPoints" not in bounds_source
     assert "drawPolygon" not in bounds_source
     assert "const renderer = manager && manager.pixi_app && manager.pixi_app.renderer;" in edge_peek_source
     assert "const screen = renderer && renderer.screen;" in edge_peek_source
     assert "const canvasW = Number(screen && screen.width);" in edge_peek_source
     assert "const vw = Number(window.innerWidth);" in edge_peek_source
-    assert "const viewportW = Number.isFinite(canvasW) && canvasW > 0" in edge_peek_source
+    assert "const niriVirtualViewport = getLive2DNiriPetVirtualViewport();" in edge_peek_source
+    assert "const viewportW = niriVirtualViewport" in edge_peek_source
+    assert "? niriVirtualViewport.width" in edge_peek_source
+    assert "? niriVirtualViewport.height" in edge_peek_source
+    assert "Number.isFinite(canvasW) && canvasW > 0" in edge_peek_source
     assert "? Math.min(canvasW, vw)" in edge_peek_source
-    assert ": (validVw ? vw : fallbackW);" in edge_peek_source
+    assert "(validVw ? vw : fallbackW)" in edge_peek_source
+    assert "(validVh ? vh : fallbackH)" in edge_peek_source
+    assert "__nekoNiriPetPhysicalCrop" in core_source
+    assert "__nekoNiriPetPhysicalCrop" in interaction_source
+    assert "state && state.enabled === true ? state.virtualBounds : null" in core_source
+    assert "state && state.enabled === true ? state.virtualBounds : null" in interaction_source
     assert "getLive2DPeekPlacement(model, bounds, this)" in edge_peek_source
     assert "Math.max(fallbackW" not in viewport_source
     assert "Math.max(fallbackH" not in viewport_source

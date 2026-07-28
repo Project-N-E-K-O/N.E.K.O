@@ -837,6 +837,12 @@ def test_model_cat_transition_contract_is_present():
     assert "NEKO_MODEL_GOODBYE_VISUAL_FADE_TRANSITION = 'opacity 240ms ease-in'" in source
     assert "function getActiveModelTransitionRect()" in source
     assert "getModelScreenBounds" in source
+    assert "toNekoVirtualTransitionRect" in source
+    assert "cropApi.toVirtualRect" in source
+    assert "getNekoTransitionVirtualViewportSize" in source
+    assert "virtualViewport.width - containerWidth" in source
+    assert "virtualViewport.height - containerHeight" in source
+    assert "savedGoodbyeRect = toNekoVirtualTransitionRect(r)" in source
     assert "savedGoodbyeRect = savedModelRect || savedGoodbyeRect" in source
     assert "NEKO_MODEL_CAT_REVEAL_BEFORE_SMOKE_HIDE_MS = 48" in source
     assert "NEKO_MODEL_CAT_TRANSITION_DURATION_MS = 850" in source
@@ -881,7 +887,7 @@ def test_model_cat_transition_contract_is_present():
     assert "top: Math.round(centerY - size / 2)" in transition_rect_block
     assert "maxLeft" not in transition_rect_block
     assert "maxTop" not in transition_rect_block
-    assert "const transitionAnchorRect = savedGoodbyeRect || activeReturnButtonContainer.getBoundingClientRect()" in source
+    assert "toNekoVirtualTransitionRect(activeReturnButtonContainer.getBoundingClientRect())" in source
     assert "function mergeNekoTransitionAnchorRect(anchorRect, coverRect)" in source
     assert "const coverRect = options.coverRect || null" in source
     assert "coverRect: window._savedGoodbyeRect || getActiveModelTransitionRect()" in source
@@ -1337,7 +1343,7 @@ def test_cat1_edge_peek_only_applies_after_drag_release():
 
     finish_drag_block = _source_slice_between(
         source,
-        "const finishDragState = (moved, safetyToken) => {",
+        "const finishDragState = (moved, safetyToken, suppressClick = moved) => {",
         "const resetDragStateAfterMissingEnd = (safetyToken) => {",
         "return button drag finish",
     )
@@ -1490,7 +1496,8 @@ def test_cat1_edge_peek_only_applies_after_drag_release():
         drag_start_block,
         "cat1 edge peek clears before drag",
         "_restoreNekoIdleCat1EdgePeekBeforeDrag(container);",
-        "_dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-start');",
+        "_dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-start', {",
+        "dragSessionId: safetyToken",
     )
 
     presentation_block = _source_slice_between(
@@ -1919,6 +1926,20 @@ def test_return_button_drag_has_single_owner_per_runtime_path():
     assert "document.removeEventListener('touchcancel', this._returnButtonDragHandlers.touchCancel);" in vrm_source
 
 
+def test_return_button_crop_ack_listener_is_removed_on_rebuild_and_cleanup():
+    return_source = (AVATAR_UI_BUTTONS_DIR / "methods-return.js").read_text(encoding="utf-8")
+    setup_source = (AVATAR_UI_BUTTONS_DIR / "methods-setup.js").read_text(encoding="utf-8")
+    cleanup_source = (AVATAR_UI_BUTTONS_DIR / "methods-state-and-cleanup.js").read_text(encoding="utf-8")
+    event_name = "'neko:niri-pet-physical-crop-state-applied'"
+
+    assert event_name in return_source
+    assert "this._returnButtonDragHandlers.cropStateApplied" in return_source
+    for source in (setup_source, cleanup_source):
+        assert event_name in source
+        assert "this._returnButtonDragHandlers.cropStateApplied" in source
+        assert "window.removeEventListener(" in source
+
+
 def test_return_button_drag_reports_one_terminal_physical_activity_summary():
     avatar_source = _read_avatar_ui_buttons_source()
     app_ui_source = read_js_parts(APP_UI_PATH)
@@ -1949,7 +1970,7 @@ def test_return_button_drag_reports_one_terminal_physical_activity_summary():
 
     manual_finish = _source_slice_between(
         avatar_source,
-        "const finishDragState = (moved, safetyToken) => {",
+        "const finishDragState = (moved, safetyToken, suppressClick = moved) => {",
         "const resetDragStateAfterMissingEnd = (safetyToken) => {",
         "manual drag terminal summary",
     )
@@ -2229,8 +2250,8 @@ def test_local_return_button_drag_safety_timer_does_not_end_active_drag():
         safety_block,
         "local return-ball drag safety timer",
         "const moved = container.getAttribute('data-dragging') === 'true';",
-        "if (moved) return;",
-        "finishDragState(moved, safetyToken);",
+        "if (moved && !dragCropHoldPending) return;",
+        "finishDragState(false, safetyToken, moved);",
     )
 
 
@@ -2280,7 +2301,9 @@ def test_local_return_button_drag_recovers_lost_release_without_active_timeout()
         drag_setup,
         "local return-ball cancel recovery",
         "touchCancel: cancelDragState,",
-        "windowBlur: cancelDragState,",
+        "windowBlur: () => {",
+        "if (isDragging && shouldUseGlobalCursorForMouseDrag()) return;",
+        "cancelDragState();",
         "visibilityChange: () => {",
         "if (document.hidden) cancelDragState();",
     )
@@ -2500,7 +2523,8 @@ def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
     _assert_source_order(
         local_drag_setup,
         "return button drag setup",
-        "_dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-active');",
+        "_dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-active', {",
+        "dragSessionId: dragSafetyToken",
         "_dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-motion'",
     )
     _assert_source_contains(
@@ -2534,6 +2558,42 @@ def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
     )
     _assert_source_contains(
         local_drag_setup,
+        "const isNiriReturnBallFullCropReady = (",
+        "return button drag setup",
+    )
+    _assert_source_contains(
+        local_drag_setup,
+        "state.geometryVerified !== true",
+        "return button drag setup",
+    )
+    _assert_source_contains(
+        local_drag_setup,
+        "dragPendingPoint = buildDragPointSnapshot(",
+        "return button drag setup",
+    )
+    _assert_source_contains(
+        local_drag_setup,
+        "'neko:niri-pet-physical-crop-state-applied'",
+        "return button drag setup",
+    )
+    crop_state_applied_block = _source_slice_between(
+        local_drag_setup,
+        "cropStateApplied: (event) => {",
+        "}\n            };",
+        "return button verified crop state handler",
+    )
+    _assert_source_order(
+        crop_state_applied_block,
+        "verified niri crop state refreshes the authoritative cursor before flushing",
+        "cropStateApplied: (event) => {",
+        "if (!isNiriReturnBallFullCropReady(detail, true, dragSafetyToken)) return;",
+        "const fallbackPoint = dragPendingPoint;",
+        "window.electronScreen.getCursorPoint()",
+        "const point = getDragPointFromScreenPoint(screenPoint);",
+        "flushPoint(isUsableDragPoint(point) ? point : fallbackPoint);",
+    )
+    _assert_source_contains(
+        local_drag_setup,
         "cropApi.getEventCoordinates(sourceEvent)",
         "return button drag setup",
     )
@@ -2560,7 +2620,7 @@ def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
     )
     _assert_source_contains(
         local_drag_setup,
-        "left: (Number.isFinite(left) ? left : 0) + offset.x",
+        "left: Number.isFinite(left) ? left : 0",
         "return button drag setup",
     )
     _assert_source_contains(
@@ -2584,9 +2644,9 @@ def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
         "local return-ball drag motion emits client and screen coordinates",
         "const point = movePoint || getDragPoint(sourceEvent, clientX, clientY);",
         "const deltaX = point.virtualX - dragStartVirtualX;",
-        "const offset = isDragNiriCropCoordinateActive() ? getDragCropOffset() : { x: 0, y: 0 };",
-        "const nextVirtualLeft = Math.max(offset.x, Math.min(point.virtualX - dragGrabOffsetX, offset.x + window.innerWidth - w));",
-        "const nextLeft = nextVirtualLeft - offset.x;",
+        "const virtualViewport = _getNekoDesktopVirtualViewportSize();",
+        "Math.min(point.virtualX - dragGrabOffsetX, virtualViewport.width - w)",
+        "Math.min(point.virtualY - dragGrabOffsetY, virtualViewport.height - h)",
         "const screenPoint = getDragScreenPointFromVirtualPoint(nextVirtualLeft + w / 2, nextVirtualTop + h / 2, sourceEvent, clientX, clientY);",
         "clientX: point.localX,",
         "clientY: point.localY,",
@@ -2595,6 +2655,29 @@ def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
         "deltaX: deltaX,",
         "deltaY: deltaY,",
         "timestamp: Date.now()",
+    )
+    _assert_source_order(
+        handle_move_block,
+            "niri return-ball waits for verified full carrier before moving",
+            "const movedPastThreshold = Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5;",
+            "if (!movedPastThreshold) return;",
+            "_dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-active', {",
+            "dragSessionId: dragSafetyToken",
+            "!isNiriReturnBallFullCropReady(",
+        "dragCropHoldPending = true;",
+        "container.style.left = `${nextVirtualLeft}px`;",
+        "container.style.top = `${nextVirtualTop}px`;",
+    )
+    _assert_source_contains(
+        handle_move_block,
+        "dragPendingPoint = buildDragPointSnapshot(\n"
+        "                        point.localX,\n"
+        "                        point.localY,\n"
+        "                        point.virtualX,\n"
+        "                        point.virtualY\n"
+        "                    );\n"
+        "                    return;",
+        "niri return-ball caches the latest point while crop hold is pending",
     )
     _assert_source_contains(
         local_drag_setup,
@@ -3440,14 +3523,16 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
         "let dragSafetyTimer = 0;",
         "let dragSafetyToken = 0;",
         "let dragStartVirtualX = 0, dragStartVirtualY = 0;",
+        "let dragVisualWidth = 64, dragVisualHeight = 64;",
         "let dragCursorPollFrame = 0;",
         "const getDragPoint = (sourceEvent, fallbackX, fallbackY) => {",
         "cropApi.getEventCoordinates(sourceEvent)",
         "const getDragContainerVirtualRect = () => {",
-        "left: (Number.isFinite(left) ? left : 0) + offset.x",
+        "left: Number.isFinite(left) ? left : 0",
         "left: Number(rect.left) + offset.x",
         "const getDragScreenPointFromVirtualPoint = (virtualX, virtualY, sourceEvent = null, fallbackX = virtualX, fallbackY = virtualY) => {",
         "const getDragPointFromScreenPoint = (screenPoint) => {",
+        "const globalPoint = _getNekoIdleReturnDragGlobalScreenPoint(screenPoint, cropState);",
         "const canPollNiriDragCursor = () => {",
         "typeof window.electronScreen.getCursorPoint === 'function'",
         "const stopDragCursorPolling = () => {",
@@ -3455,12 +3540,42 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
         "const clearDragSafetyTimer = () => {",
         "const resetDragStateAfterMissingEnd = (safetyToken) => {",
         "if (dragSafetyToken !== safetyToken || !isDragging) return;",
-        "const finishDragState = (moved, safetyToken) => {",
+        "const finishDragState = (moved, safetyToken, suppressClick = moved) => {",
         "if (safetyToken !== dragSafetyToken) return;",
         "container.setAttribute('data-dragging', 'false');",
         "_dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-end'",
     ):
         _assert_source_contains(drag_setup, expected, "return button drag setup")
+    _assert_source_order(
+        drag_setup,
+        "return button cursor polling converts the IPC global point before virtual coordinates",
+        "const getDragPointFromScreenPoint = (screenPoint) => {",
+        "const cropState = getDragCropState();",
+        "const globalPoint = _getNekoIdleReturnDragGlobalScreenPoint(screenPoint, cropState);",
+        "const screenX = globalPoint.x;",
+        "const virtualX = screenX - origin.x;",
+        "virtualX - offset.x,",
+    )
+    _assert_source_contains(
+        handle_start,
+        "const useLocalGrabAnchor = dragUsesGlobalCursor && localRect;",
+        "return button drag start handler",
+    )
+    _assert_source_order(
+        handle_start,
+        "niri return-button drag keeps the exact raw local pointer grab point",
+        "const point = startPoint || getDragPoint(sourceEvent, clientX, clientY);",
+        "const rect = getDragContainerVirtualRect();",
+        "const localRect = container.getBoundingClientRect && container.getBoundingClientRect();",
+        "dragUsesGlobalCursor = pointerType === 'mouse' && canPollNiriDragCursor();",
+        "const useLocalGrabAnchor = dragUsesGlobalCursor && localRect;",
+        "const grabOffset = _getNekoIdleReturnDragGrabOffset(",
+        "useLocalGrabAnchor ? localRect : rect,",
+        "useLocalGrabAnchor ? 'local' : 'virtual'",
+        "containerStartX = rect.left;",
+        "dragGrabOffsetX = grabOffset.x;",
+        "container.style.left = `${containerStartX}px`;",
+    )
     _assert_source_order(
         drag_setup,
         "plain return-button drag bypasses niri crop point conversion",
@@ -3490,9 +3605,9 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
     _assert_source_order(
         drag_setup,
         "return button drag setup helpers",
-        "const finishDragState = (moved, safetyToken) => {",
+        "const finishDragState = (moved, safetyToken, suppressClick = moved) => {",
         "const resetDragStateAfterMissingEnd = (safetyToken) => {",
-        "finishDragState(moved, safetyToken);",
+        "finishDragState(false, safetyToken, moved);",
     )
     assert "const scheduleLongPressDrag" not in drag_setup
     assert "const updatePendingLongPressDrag" not in drag_setup
@@ -3552,24 +3667,46 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
     )
     _assert_source_contains(handle_end, "clearDragSafetyTimer();", "return button drag end handler")
     _assert_source_contains(handle_end, "stopDragCursorPolling();", "return button drag end handler")
-    _assert_source_contains(handle_end, "const safetyToken = dragSafetyToken;", "return button drag end handler")
+    _assert_source_contains(handle_end, "if (!isDragging || dragReleasePending) return;", "return button drag end handler")
     _assert_source_contains(
-        handle_end,
-        "finishDragState(moved, safetyToken);",
-        "return button drag end handler",
+        source,
+        "windowBlur: () => {\n"
+        "                    // Niri can blur the physically cropped Pet window as soon as\n"
+        "                    // the pointer leaves the kitten-sized carrier.",
+        "niri return button drag blur guard",
     )
     _assert_source_contains(
+        source,
+        "if (isDragging && shouldUseGlobalCursorForMouseDrag()) return;\n"
+        "                    cancelDragState();",
+        "niri return button drag blur guard",
+    )
+    _assert_source_contains(handle_end, "const safetyToken = dragSafetyToken;", "return button drag end handler")
+    _assert_source_contains(handle_end, "if (movedPastThreshold && dragCropHoldPending) {", "return button drag end handler")
+    _assert_source_contains(handle_end, "dragReleasePending = true;", "return button drag end handler")
+    _assert_source_contains(handle_end, "finishDragState(false, safetyToken, true);", "return button drag end handler")
+    _assert_source_contains(
         handle_end,
-        "if (moved) {\n                        setTimeout(() => {\n                            finishDragState(moved, safetyToken);\n                        }, 10);\n                    } else {\n                        finishDragState(moved, safetyToken);\n                    }",
+        "finishDragState(true, safetyToken);",
+        "return button drag end handler",
+    )
+    _assert_source_order(
+        handle_end,
         "no-move return click clears pending state before browser click",
+        "requestAnimationFrame(() => {",
+        "requestAnimationFrame(() => {",
+        "finishDragState(true, safetyToken);",
     )
     _assert_source_order(
         handle_end,
         "return button drag end handler",
         "clearDragSafetyTimer();",
-        "if (isDragging) {",
+        "if (!isDragging || dragReleasePending) return;",
         "const safetyToken = dragSafetyToken;",
-        "finishDragState(moved, safetyToken);",
+        "if (movedPastThreshold && dragCropHoldPending) {",
+        "dragReleasePending = true;",
+        "}, 600);\n                    return;\n                }\n                isDragging = false;",
+        "finishDragState(true, safetyToken);",
     )
     mouse_move_block = _source_slice_between(
         source,
@@ -3579,8 +3716,9 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
     )
     _assert_source_order(
         mouse_move_block,
-        "local return-ball mousemove recovers released mouse before moving",
+        "niri return-ball ignores unreliable renderer button state before local release recovery",
         "if (!isDragging) return;",
+        "if (shouldUseGlobalCursorForMouseDrag()) return;",
         "if (dragPointerType === 'mouse' && e.buttons === 0) {",
         "handleEnd();",
         "const point = getDragPoint(e, e.clientX, e.clientY);",
@@ -3594,16 +3732,29 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
         "                    }",
         "local return-ball mousemove ends released drag without moving",
     )
+
+    floating_controls_source = (
+        APP_UI_PATH / "surface-floating-controls.js"
+    ).read_text(encoding="utf-8")
+    _assert_source_order(
+        floating_controls_source,
+        "desktop welcome-back toast routes through the host bridge instead of the cropped Pet DOM",
+        "const showWelcomeBackToast = typeof window.showStatusToast === 'function'",
+        "? window.showStatusToast",
+        ": I.showStatusToast;",
+        "showWelcomeBackToast(",
+    )
+    assert "I.showStatusToast(window.t ? window.t('app.welcomeBack'" not in floating_controls_source
     finish_drag_state_block = _source_slice_between(
         drag_setup,
-        "const finishDragState = (moved, safetyToken) => {",
+        "const finishDragState = (moved, safetyToken, suppressClick = moved) => {",
         "const resetDragStateAfterMissingEnd = (safetyToken) => {",
         "return button drag finish state",
     )
     _assert_source_contains(
         finish_drag_state_block,
-        "if (moved) {\n                    setTimeout(() => setReturnClickSuppressed(false), 120);\n                } else {\n                    setReturnClickSuppressed(false);\n                }",
-        "drag suppresses click briefly while no-move click is restored immediately",
+        "if (suppressClick) {\n                    setTimeout(() => setReturnClickSuppressed(false), 120);\n                } else {\n                    setReturnClickSuppressed(false);\n                }",
+        "completed or safely cancelled drag suppresses click while a no-move release restores it immediately",
     )
 
     sync_block = _source_slice_between(
@@ -3676,7 +3827,7 @@ def test_return_button_local_no_move_release_clears_pending_drag_state():
     )
     finish_drag_state = _source_slice_between(
         drag_setup,
-        "const finishDragState = (moved, safetyToken) => {",
+        "const finishDragState = (moved, safetyToken, suppressClick = moved) => {",
         "const resetDragStateAfterMissingEnd = (safetyToken) => {",
         "return button drag finish helper",
     )
@@ -3708,12 +3859,14 @@ def test_live2d_renderer_ignores_and_recovers_return_ball_viewport_size():
         "live2d renderer resize",
     )
     resize_guard_block = resize_block[
-        resize_block.index("const newW = Math.max(window.innerWidth || window.screen.width || 1, 1);"):
+        resize_block.index("const niriVirtualViewport = getLive2DNiriPetVirtualViewportSize();"):
     ]
     _assert_source_order(
         resize_guard_block,
         "live2d renderer skips temporary return-ball viewport before resize",
-        "const newW = Math.max(window.innerWidth || window.screen.width || 1, 1);",
+        "const niriVirtualViewport = getLive2DNiriPetVirtualViewportSize();",
+        "niriVirtualViewport?.width || window.innerWidth",
+        "niriVirtualViewport?.height || window.innerHeight",
         "if (isLive2DReturnBallViewportSize(newW, newH)) {",
         "return;",
         "renderer.resize(newW, newH);",
@@ -3726,15 +3879,17 @@ def test_live2d_renderer_ignores_and_recovers_return_ball_viewport_size():
         "live2d renderer recovers polluted viewport before pending-display branch",
         "const restoringFromReturnBallViewport =",
         "renderer.resize(newW, newH);",
-        "if (this._pendingDisplaySwitch || restoringFromReturnBallViewport) {",
+        "if (this._pendingDisplaySwitch || restoringFromReturnBallViewport || niriPhysicalCropActive) {",
     )
     pending_branch_block = resize_block[
-        resize_block.index("if (this._pendingDisplaySwitch || restoringFromReturnBallViewport) {"):
+        resize_block.index(
+            "if (this._pendingDisplaySwitch || restoringFromReturnBallViewport || niriPhysicalCropActive) {"
+        ):
     ]
     _assert_source_order(
         pending_branch_block,
         "live2d renderer skips model scaling after return-ball recovery",
-        "if (this._pendingDisplaySwitch || restoringFromReturnBallViewport) {",
+        "if (this._pendingDisplaySwitch || restoringFromReturnBallViewport || niriPhysicalCropActive) {",
         "restoringFromReturnBallViewport",
         "return;",
         "this.currentModel.x *= wRatio;",

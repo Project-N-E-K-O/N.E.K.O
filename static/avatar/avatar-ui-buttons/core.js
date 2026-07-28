@@ -61,6 +61,100 @@ if (typeof window !== 'undefined') {
     window.getNekoYuiGuideLockIconMaxTop = getNekoYuiGuideLockIconMaxTop;
 }
 
+function _getNekoDesktopVirtualViewportOrigin() {
+    const fallbackX = Number.isFinite(Number(window.screenX)) ? Number(window.screenX) : 0;
+    const fallbackY = Number.isFinite(Number(window.screenY)) ? Number(window.screenY) : 0;
+    try {
+        const cropApi = window.__nekoNiriPetPhysicalCrop;
+        const cropState = cropApi && typeof cropApi.getState === 'function'
+            ? cropApi.getState()
+            : null;
+        const virtualBounds = cropState && cropState.virtualBounds;
+        const virtualX = Number(virtualBounds && virtualBounds.x);
+        const virtualY = Number(virtualBounds && virtualBounds.y);
+        if (Number.isFinite(virtualX) && Number.isFinite(virtualY)) {
+            return { x: virtualX, y: virtualY };
+        }
+        const offsetX = Number(cropState && cropState.offsetX);
+        const offsetY = Number(cropState && cropState.offsetY);
+        if (
+            cropState
+            && (cropState.active === true || cropState.enabled === true)
+            && Number.isFinite(offsetX)
+            && Number.isFinite(offsetY)
+        ) {
+            return { x: fallbackX - offsetX, y: fallbackY - offsetY };
+        }
+    } catch (_) {}
+    return { x: fallbackX, y: fallbackY };
+}
+
+function _getNekoDesktopVirtualViewportSize() {
+    const fallbackWidth = Math.max(1, Number(window.innerWidth) || 1);
+    const fallbackHeight = Math.max(1, Number(window.innerHeight) || 1);
+    try {
+        const cropApi = window.__nekoNiriPetPhysicalCrop;
+        const cropState = cropApi && typeof cropApi.getState === 'function'
+            ? cropApi.getState()
+            : null;
+        const virtualBounds = cropState && cropState.virtualBounds;
+        const width = Number(virtualBounds && virtualBounds.width);
+        const height = Number(virtualBounds && virtualBounds.height);
+        if (Number.isFinite(width) && width > 0 &&
+            Number.isFinite(height) && height > 0) {
+            return { width, height };
+        }
+    } catch (_) {}
+    return { width: fallbackWidth, height: fallbackHeight };
+}
+
+function _getNekoDesktopVirtualRect(rect) {
+    if (!rect || typeof rect !== 'object') return null;
+    const left = Number.isFinite(Number(rect.left)) ? Number(rect.left) : Number(rect.x);
+    const top = Number.isFinite(Number(rect.top)) ? Number(rect.top) : Number(rect.y);
+    const width = Number(rect.width);
+    const height = Number(rect.height);
+    if (!Number.isFinite(left) || !Number.isFinite(top) ||
+        !Number.isFinite(width) || !Number.isFinite(height) ||
+        width <= 0 || height <= 0) {
+        return null;
+    }
+
+    let virtualRect = null;
+    try {
+        const cropApi = window.__nekoNiriPetPhysicalCrop;
+        virtualRect = cropApi && typeof cropApi.toVirtualRect === 'function'
+            ? cropApi.toVirtualRect({ x: left, y: top, width, height })
+            : null;
+    } catch (_) {
+        virtualRect = null;
+    }
+
+    const virtualLeft = Number(virtualRect && virtualRect.x);
+    const virtualTop = Number(virtualRect && virtualRect.y);
+    const normalizedLeft = Number.isFinite(virtualLeft) ? virtualLeft : left;
+    const normalizedTop = Number.isFinite(virtualTop) ? virtualTop : top;
+    return {
+        x: normalizedLeft,
+        y: normalizedTop,
+        left: normalizedLeft,
+        top: normalizedTop,
+        width,
+        height,
+        right: normalizedLeft + width,
+        bottom: normalizedTop + height
+    };
+}
+
+function _getNekoDesktopVirtualElementRect(element) {
+    if (!element || typeof element.getBoundingClientRect !== 'function') return null;
+    try {
+        return _getNekoDesktopVirtualRect(element.getBoundingClientRect());
+    } catch (_) {
+        return null;
+    }
+}
+
 function _ensureFloatingButtonsAnimationStyles() {
     if (document.getElementById('neko-floating-buttons-animation-styles')) return;
     const style = document.createElement('style');

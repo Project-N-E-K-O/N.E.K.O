@@ -378,8 +378,8 @@
 
     function normalizeNekoScreenRect(rect) {
         if (!rect) return null;
-        const left = Number(rect.left);
-        const top = Number(rect.top);
+        const left = Number(Number.isFinite(Number(rect.left)) ? rect.left : rect.x);
+        const top = Number(Number.isFinite(Number(rect.top)) ? rect.top : rect.y);
         const width = Number(rect.width);
         const height = Number(rect.height);
         const right = Number.isFinite(Number(rect.right)) ? Number(rect.right) : left + width;
@@ -398,18 +398,70 @@
         };
     }
 
-    function getModelRectFromManager(manager) {
+    I.toNekoVirtualTransitionRect = function toNekoVirtualTransitionRect(rect) {
+        const normalizedRect = normalizeNekoScreenRect(rect);
+        if (!normalizedRect) return null;
+        try {
+            const cropApi = window.__nekoNiriPetPhysicalCrop;
+            if (!cropApi || typeof cropApi.toVirtualRect !== 'function') {
+                return normalizedRect;
+            }
+            const virtualRect = cropApi.toVirtualRect({
+                x: normalizedRect.left,
+                y: normalizedRect.top,
+                width: normalizedRect.width,
+                height: normalizedRect.height
+            });
+            return normalizeNekoScreenRect(virtualRect) || normalizedRect;
+        } catch (_) {
+            return normalizedRect;
+        }
+    };
+
+    function getNekoTransitionRect(rect, coordinateSpace = 'client') {
+        return coordinateSpace === 'virtual'
+            ? normalizeNekoScreenRect(rect)
+            : I.toNekoVirtualTransitionRect(rect);
+    }
+
+    function getNekoTransitionVirtualViewportSize() {
+        try {
+            const cropApi = window.__nekoNiriPetPhysicalCrop;
+            const cropState = cropApi && typeof cropApi.getState === 'function'
+                ? cropApi.getState()
+                : null;
+            const virtualBounds = cropState && cropState.virtualBounds;
+            const width = Number(virtualBounds && virtualBounds.width);
+            const height = Number(virtualBounds && virtualBounds.height);
+            if (Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0) {
+                return { width, height };
+            }
+        } catch (_) {}
+        return {
+            width: Math.max(1, Number(window.innerWidth) || 1),
+            height: Math.max(1, Number(window.innerHeight) || 1)
+        };
+    }
+
+    function getModelRectFromManager(manager, options = {}) {
         if (!manager) return null;
+        const screenBoundsSpace = options.screenBoundsSpace || 'client';
+        const modelBoundsSpace = options.modelBoundsSpace || screenBoundsSpace;
         if (typeof manager.getModelScreenBounds === 'function') {
             try {
-                const rect = normalizeNekoScreenRect(manager.getModelScreenBounds());
+                const rect = getNekoTransitionRect(
+                    manager.getModelScreenBounds(),
+                    screenBoundsSpace
+                );
                 if (rect) return rect;
             } catch (_) {}
         }
 
         if (manager.image && typeof manager.image.getBoundingClientRect === 'function') {
             try {
-                const rect = normalizeNekoScreenRect(manager.image.getBoundingClientRect());
+                // DOMRect is always relative to the physically cropped renderer
+                // viewport, regardless of the manager's own coordinate contract.
+                const rect = I.toNekoVirtualTransitionRect(manager.image.getBoundingClientRect());
                 if (rect) return rect;
             } catch (_) {}
         }
@@ -419,7 +471,7 @@
             : manager.currentModel;
         if (model && typeof model.getBounds === 'function') {
             try {
-                const rect = normalizeNekoScreenRect(model.getBounds());
+                const rect = getNekoTransitionRect(model.getBounds(), modelBoundsSpace);
                 if (rect) return rect;
             } catch (_) {}
         }
@@ -436,15 +488,38 @@
         const isPngtuberModelActive = (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber'
             && isModelContainerActive('pngtuber-container');
         const candidates = [
-            { active: isPngtuberModelActive, manager: window.pngtuberManager },
-            { active: isModelContainerActive('mmd-container'), manager: window.mmdManager },
-            { active: isModelContainerActive('vrm-container'), manager: window.vrmManager },
-            { active: true, manager: window.live2dManager }
+            {
+                active: isPngtuberModelActive,
+                manager: window.pngtuberManager,
+                screenBoundsSpace: 'client',
+                modelBoundsSpace: 'client'
+            },
+            {
+                active: isModelContainerActive('mmd-container'),
+                manager: window.mmdManager,
+                screenBoundsSpace: 'client',
+                modelBoundsSpace: 'client'
+            },
+            {
+                active: isModelContainerActive('vrm-container'),
+                manager: window.vrmManager,
+                screenBoundsSpace: 'client',
+                modelBoundsSpace: 'client'
+            },
+            {
+                active: true,
+                manager: window.live2dManager,
+                // PIXI getBounds/getModelScreenBounds are measured in the
+                // virtual renderer canvas. Converting them as DOM client rects
+                // applies the Niri crop offset twice.
+                screenBoundsSpace: 'virtual',
+                modelBoundsSpace: 'virtual'
+            }
         ];
 
         for (const candidate of candidates) {
             if (!candidate.active) continue;
-            const rect = getModelRectFromManager(candidate.manager);
+            const rect = getModelRectFromManager(candidate.manager, candidate);
             if (rect) return rect;
         }
         return null;
@@ -1126,8 +1201,9 @@
 
         const width = Math.round(container.offsetWidth) || 64;
         const height = Math.round(container.offsetHeight) || 64;
-        const viewportWidth = Math.max(width, Number(window.innerWidth) || 0);
-        const viewportHeight = Math.max(height, Number(window.innerHeight) || 0);
+        const virtualViewport = getNekoTransitionVirtualViewportSize();
+        const viewportWidth = Math.max(width, virtualViewport.width);
+        const viewportHeight = Math.max(height, virtualViewport.height);
         const hiddenX = width * 0.4;
         const hiddenY = height * 0.4;
         const ratio = Math.max(0, Math.min(1, Number(edgeAnchor.edgeAnchorRatio) || 0.5));
@@ -1164,8 +1240,9 @@
         if (anchorRect) {
             const containerWidth = Math.round(container.offsetWidth) || 64;
             const containerHeight = Math.round(container.offsetHeight) || 64;
-            const maxLeft = Math.max(0, window.innerWidth - containerWidth);
-            const maxTop = Math.max(0, window.innerHeight - containerHeight);
+            const virtualViewport = getNekoTransitionVirtualViewportSize();
+            const maxLeft = Math.max(0, virtualViewport.width - containerWidth);
+            const maxTop = Math.max(0, virtualViewport.height - containerHeight);
             const left = Math.round(anchorRect.left + (anchorRect.width - containerWidth) / 2);
             const top = Math.round(anchorRect.top + (anchorRect.height - containerHeight) / 2);
             container.style.left = `${Math.max(0, Math.min(left, maxLeft))}px`;

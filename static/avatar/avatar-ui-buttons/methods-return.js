@@ -1,3 +1,117 @@
+function _getNekoIdleReturnDragGrabOffset(point, rect, coordinateSpace = 'virtual') {
+    const useLocalSpace = coordinateSpace === 'local';
+    const pointX = Number(point && (useLocalSpace ? point.localX : point.virtualX));
+    const pointY = Number(point && (useLocalSpace ? point.localY : point.virtualY));
+    return {
+        x: pointX - Number(rect && rect.left),
+        y: pointY - Number(rect && rect.top)
+    };
+}
+
+function _getNekoIdleReturnDragGlobalScreenPoint(screenPoint, cropState = null) {
+    if (!screenPoint || typeof screenPoint !== 'object') return null;
+    const readFinite = (value) => (
+        value !== null && value !== undefined && Number.isFinite(Number(value))
+            ? Number(value)
+            : NaN
+    );
+    const cropBounds = cropState && cropState.cropBounds ? cropState.cropBounds : null;
+    const cropX = readFinite(cropBounds && cropBounds.x);
+    const cropY = readFinite(cropBounds && cropBounds.y);
+    const localX = readFinite(screenPoint.x);
+    const localY = readFinite(screenPoint.y);
+    let screenX = readFinite(screenPoint.screenX);
+    let screenY = readFinite(screenPoint.screenY);
+    if (!Number.isFinite(screenX) && Number.isFinite(localX)) {
+        screenX = Number.isFinite(cropX) ? localX + cropX : localX;
+    }
+    if (!Number.isFinite(screenY) && Number.isFinite(localY)) {
+        screenY = Number.isFinite(cropY) ? localY + cropY : localY;
+    }
+    if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) return null;
+    return { x: screenX, y: screenY };
+}
+
+function _canNekoIdleReturnDragUseGlobalCursor(runtime, electronScreen, cropCoordinateActive) {
+    return !!(
+        cropCoordinateActive &&
+        runtime &&
+        runtime.canReadGlobalCursorScreenPoint === true &&
+        electronScreen &&
+        typeof electronScreen.getCursorPoint === 'function'
+    );
+}
+
+function _shouldNekoIdleReturnDragIgnoreMissingMouseButtons(runtime, pointerType, usesGlobalCursor) {
+    return !!(
+        pointerType === 'mouse' &&
+        runtime &&
+        runtime.isWayland === true &&
+        !usesGlobalCursor
+    );
+}
+
+function _getNekoIdleReturnDragContinuousVirtualPoint(
+    previousPoint,
+    absolutePoint,
+    movementX,
+    movementY,
+    maxMovementPerEvent = 160,
+    reconcileTolerance = 12
+) {
+    if (!absolutePoint || typeof absolutePoint !== 'object') return absolutePoint;
+    const readFinite = (value) => (
+        value !== null && value !== undefined && Number.isFinite(Number(value))
+            ? Number(value)
+            : NaN
+    );
+    const previousX = readFinite(previousPoint && previousPoint.virtualX);
+    const previousY = readFinite(previousPoint && previousPoint.virtualY);
+    const absoluteX = readFinite(absolutePoint.virtualX);
+    const absoluteY = readFinite(absolutePoint.virtualY);
+    if (!Number.isFinite(previousX) || !Number.isFinite(previousY)) {
+        return absolutePoint;
+    }
+
+    const dx = readFinite(movementX);
+    const dy = readFinite(movementY);
+    const limit = Math.max(1, Number(maxMovementPerEvent) || 160);
+    const tolerance = Math.max(0, Number(reconcileTolerance) || 0);
+    let virtualX = previousX;
+    let virtualY = previousY;
+    let continuityBasis = 'hold';
+
+    if (Number.isFinite(dx) && Number.isFinite(dy) &&
+        Math.max(Math.abs(dx), Math.abs(dy)) <= limit) {
+        const relativeX = previousX + dx;
+        const relativeY = previousY + dy;
+        const absoluteMatchesMovement = Number.isFinite(absoluteX) &&
+            Number.isFinite(absoluteY) &&
+            Math.max(
+                Math.abs(absoluteX - relativeX),
+                Math.abs(absoluteY - relativeY)
+            ) <= tolerance;
+        virtualX = absoluteMatchesMovement ? absoluteX : relativeX;
+        virtualY = absoluteMatchesMovement ? absoluteY : relativeY;
+        continuityBasis = absoluteMatchesMovement ? 'absolute-reconciled' : 'movement';
+    } else if (Number.isFinite(absoluteX) && Number.isFinite(absoluteY) &&
+        Math.max(
+            Math.abs(absoluteX - previousX),
+            Math.abs(absoluteY - previousY)
+        ) <= limit) {
+        virtualX = absoluteX;
+        virtualY = absoluteY;
+        continuityBasis = 'absolute-fallback';
+    }
+
+    return {
+        ...absolutePoint,
+        virtualX: virtualX,
+        virtualY: virtualY,
+        continuityBasis: continuityBasis
+    };
+}
+
 Object.assign(AvatarButtonMixin.methods, {
     returnButton(ManagerPrototype, prefix, options) {
         ManagerPrototype.createReturnButton = function() {
@@ -170,11 +284,18 @@ Object.assign(AvatarButtonMixin.methods, {
             let dragStartX = 0, dragStartY = 0, containerStartX = 0, containerStartY = 0;
             let dragStartVirtualX = 0, dragStartVirtualY = 0;
             let dragGrabOffsetX = 0, dragGrabOffsetY = 0;
+            let dragVisualWidth = 64, dragVisualHeight = 64;
             let dragCursorPollFrame = 0;
             let dragCursorPollInFlight = false;
             let dragCursorPollStopped = true;
             let dragCursorPollToken = 0;
             let dragActivity = null;
+            let dragCropHoldPending = false;
+            let dragPendingPoint = null;
+            let dragReleasePending = false;
+            let dragReleaseTimer = 0;
+            let dragUsesGlobalCursor = false;
+            let dragContinuousVirtualPoint = null;
 
             const getDragCropState = () => {
                 try {
@@ -223,6 +344,44 @@ Object.assign(AvatarButtonMixin.methods, {
                         document.documentElement.classList.contains('neko-niri-pet-physical-crop'));
                 } catch (_) {
                     return false;
+                }
+            };
+
+            const isNiriReturnBallFullCropReady = (
+                state,
+                requireVerified = false,
+                expectedDragSessionId = 0
+            ) => {
+                if (!state || state.enabled !== true) return false;
+                if (requireVerified && state.geometryVerified !== true) return false;
+                if (state.geometryVerified === false) return false;
+                const expectedSession = Math.max(0, Math.round(Number(expectedDragSessionId) || 0));
+                const stateSession = Math.max(0, Math.round(Number(state.dragSessionId) || 0));
+                if (expectedSession && stateSession !== expectedSession) return false;
+                const cropBounds = state.cropBounds;
+                const virtualBounds = state.virtualBounds;
+                if (!cropBounds || !virtualBounds) return false;
+                const close = (a, b) => (
+                    Number.isFinite(Number(a)) &&
+                    Number.isFinite(Number(b)) &&
+                    Math.abs(Number(a) - Number(b)) <= 2
+                );
+                return close(cropBounds.x, virtualBounds.x) &&
+                    close(cropBounds.y, virtualBounds.y) &&
+                    close(cropBounds.width, virtualBounds.width) &&
+                    close(cropBounds.height, virtualBounds.height);
+            };
+
+            const clearDragCropHoldPending = () => {
+                dragCropHoldPending = false;
+                dragPendingPoint = null;
+            };
+
+            const clearDragReleasePending = () => {
+                dragReleasePending = false;
+                if (dragReleaseTimer) {
+                    clearTimeout(dragReleaseTimer);
+                    dragReleaseTimer = 0;
                 }
             };
 
@@ -311,8 +470,10 @@ Object.assign(AvatarButtonMixin.methods, {
                     const left = Number.parseFloat(container.style.left);
                     const top = Number.parseFloat(container.style.top);
                     return {
-                        left: (Number.isFinite(left) ? left : 0) + offset.x,
-                        top: (Number.isFinite(top) ? top : 0) + offset.y,
+                        // style.left/top live in the virtual body coordinate system.
+                        // Only DOMRect is local to the physically cropped viewport.
+                        left: Number.isFinite(left) ? left : 0,
+                        top: Number.isFinite(top) ? top : 0,
                         width: container.offsetWidth || 64,
                         height: container.offsetHeight || 64
                     };
@@ -341,9 +502,11 @@ Object.assign(AvatarButtonMixin.methods, {
 
             const getDragPointFromScreenPoint = (screenPoint) => {
                 if (!screenPoint || !isDragNiriCropCoordinateActive()) return null;
-                const screenX = Number(screenPoint.x);
-                const screenY = Number(screenPoint.y);
-                if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) return null;
+                const cropState = getDragCropState();
+                const globalPoint = _getNekoIdleReturnDragGlobalScreenPoint(screenPoint, cropState);
+                if (!globalPoint) return null;
+                const screenX = globalPoint.x;
+                const screenY = globalPoint.y;
                 const origin = getDragVirtualOrigin();
                 const offset = getDragCropOffset();
                 const virtualX = screenX - origin.x;
@@ -357,9 +520,47 @@ Object.assign(AvatarButtonMixin.methods, {
             };
 
             const canPollNiriDragCursor = () => {
-                return !!(isDragNiriCropCoordinateActive() &&
-                    window.electronScreen &&
-                    typeof window.electronScreen.getCursorPoint === 'function');
+                return _canNekoIdleReturnDragUseGlobalCursor(
+                    window.__NEKO_DESKTOP_RUNTIME__,
+                    window.electronScreen,
+                    isDragNiriCropCoordinateActive()
+                );
+            };
+
+            const shouldUseGlobalCursorForMouseDrag = () => {
+                return dragUsesGlobalCursor;
+            };
+
+            const shouldIgnoreMissingMouseButtons = () => {
+                return _shouldNekoIdleReturnDragIgnoreMissingMouseButtons(
+                    window.__NEKO_DESKTOP_RUNTIME__,
+                    dragPointerType,
+                    shouldUseGlobalCursorForMouseDrag()
+                );
+            };
+
+            const getContinuousDomMouseDragPoint = (point, sourceEvent) => {
+                if (!isUsableDragPoint(point)) return point;
+                if (!shouldIgnoreMissingMouseButtons()) {
+                    dragContinuousVirtualPoint = {
+                        virtualX: point.virtualX,
+                        virtualY: point.virtualY
+                    };
+                    return point;
+                }
+                const continuousPoint = _getNekoIdleReturnDragContinuousVirtualPoint(
+                    dragContinuousVirtualPoint,
+                    point,
+                    sourceEvent && sourceEvent.movementX,
+                    sourceEvent && sourceEvent.movementY
+                );
+                if (isUsableDragPoint(continuousPoint)) {
+                    dragContinuousVirtualPoint = {
+                        virtualX: continuousPoint.virtualX,
+                        virtualY: continuousPoint.virtualY
+                    };
+                }
+                return continuousPoint;
             };
 
             const stopDragCursorPolling = () => {
@@ -432,19 +633,23 @@ Object.assign(AvatarButtonMixin.methods, {
                 };
             };
 
-            const finishDragState = (moved, safetyToken) => {
+            const finishDragState = (moved, safetyToken, suppressClick = moved) => {
                 if (safetyToken !== dragSafetyToken) return;
+                dragUsesGlobalCursor = false;
+                clearDragReleasePending();
+                clearDragCropHoldPending();
                 const dragActivityFacts = finishDragActivity(safetyToken);
                 if (!dragActivityFacts) return;
                 if (moved) {
                     const finalLeft = parseFloat(container.style.left);
                     const finalTop = parseFloat(container.style.top);
+                    const virtualViewport = _getNekoDesktopVirtualViewportSize();
                     _applyNekoIdleCat1EdgePeekAfterDrag(
                         container,
                         Number.isFinite(finalLeft) ? finalLeft : containerStartX,
                         Number.isFinite(finalTop) ? finalTop : containerStartY,
-                        window.innerWidth,
-                        window.innerHeight
+                        virtualViewport.width,
+                        virtualViewport.height
                     );
                 }
                 container.setAttribute('data-dragging', 'false');
@@ -452,6 +657,7 @@ Object.assign(AvatarButtonMixin.methods, {
                     const dispatchLeft = parseFloat(container.style.left);
                     const dispatchTop = parseFloat(container.style.top);
                     _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-end', {
+                        dragSessionId: safetyToken,
                         movedDistancePx: Math.hypot(
                             (Number.isFinite(dispatchLeft) ? dispatchLeft : containerStartX) - containerStartX,
                             (Number.isFinite(dispatchTop) ? dispatchTop : containerStartY) - containerStartY
@@ -460,12 +666,13 @@ Object.assign(AvatarButtonMixin.methods, {
                     });
                 } else {
                     _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-cancel', {
+                        dragSessionId: safetyToken,
                         movedDistancePx: 0,
                         dragCancelled: true,
                         ...dragActivityFacts
                     });
                 }
-                if (moved) {
+                if (suppressClick) {
                     setTimeout(() => setReturnClickSuppressed(false), 120);
                 } else {
                     setReturnClickSuppressed(false);
@@ -475,12 +682,12 @@ Object.assign(AvatarButtonMixin.methods, {
             const resetDragStateAfterMissingEnd = (safetyToken) => {
                 if (dragSafetyToken !== safetyToken || !isDragging) return;
                 const moved = container.getAttribute('data-dragging') === 'true';
-                if (moved) return;
+                if (moved && !dragCropHoldPending) return;
                 isDragging = false;
                 dragActiveDispatched = false;
                 dragPointerType = '';
                 container.style.cursor = 'grab';
-                finishDragState(moved, safetyToken);
+                finishDragState(false, safetyToken, moved);
             };
 
             const cancelDragState = () => {
@@ -488,11 +695,15 @@ Object.assign(AvatarButtonMixin.methods, {
                 stopDragCursorPolling();
                 if (!isDragging) return;
                 const safetyToken = dragSafetyToken;
+                const movedPastThreshold = container.getAttribute('data-dragging') === 'true';
                 isDragging = false;
                 dragActiveDispatched = false;
                 dragPointerType = '';
+                dragUsesGlobalCursor = false;
+                clearDragReleasePending();
+                clearDragCropHoldPending();
                 container.style.cursor = 'grab';
-                finishDragState(false, safetyToken);
+                finishDragState(false, safetyToken, movedPastThreshold);
             };
 
             const buildDragPointSnapshot = (localX, localY, virtualX, virtualY) => ({
@@ -518,33 +729,63 @@ Object.assign(AvatarButtonMixin.methods, {
                 if (!isUsableDragPoint(point)) return;
                 const deltaX = point.virtualX - dragStartVirtualX;
                 const deltaY = point.virtualY - dragStartVirtualY;
-                const w = container.offsetWidth || 64;
-                const h = container.offsetHeight || 64;
-                const offset = isDragNiriCropCoordinateActive() ? getDragCropOffset() : { x: 0, y: 0 };
-                const nextVirtualLeft = Math.max(offset.x, Math.min(point.virtualX - dragGrabOffsetX, offset.x + window.innerWidth - w));
-                const nextVirtualTop = Math.max(offset.y, Math.min(point.virtualY - dragGrabOffsetY, offset.y + window.innerHeight - h));
-                const nextLeft = nextVirtualLeft - offset.x;
-                const nextTop = nextVirtualTop - offset.y;
-                recordDragActivityPoint(nextVirtualLeft, nextVirtualTop);
+                const w = dragVisualWidth;
+                const h = dragVisualHeight;
+                const virtualViewport = _getNekoDesktopVirtualViewportSize();
+                const nextVirtualLeft = Math.max(
+                    0,
+                    Math.min(point.virtualX - dragGrabOffsetX, virtualViewport.width - w)
+                );
+                const nextVirtualTop = Math.max(
+                    0,
+                    Math.min(point.virtualY - dragGrabOffsetY, virtualViewport.height - h)
+                );
+                const movedPastThreshold = Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5;
+                if (!movedPastThreshold) return;
                 const screenPoint = getDragScreenPointFromVirtualPoint(nextVirtualLeft + w / 2, nextVirtualTop + h / 2, sourceEvent, clientX, clientY);
-                if (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5) {
-                    container.setAttribute('data-dragging', 'true');
-                    if (!dragActiveDispatched) {
-                        dragActiveDispatched = true;
-                        _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-active');
-                    }
-                    _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-motion', {
-                        clientX: point.localX,
-                        clientY: point.localY,
-                        screenX: Number.isFinite(screenPoint.x) ? screenPoint.x : (sourceEvent && Number.isFinite(sourceEvent.screenX) ? sourceEvent.screenX : clientX),
-                        screenY: Number.isFinite(screenPoint.y) ? screenPoint.y : (sourceEvent && Number.isFinite(sourceEvent.screenY) ? sourceEvent.screenY : clientY),
-                        deltaX: deltaX,
-                        deltaY: deltaY,
-                        timestamp: Date.now()
+                container.setAttribute('data-dragging', 'true');
+                if (!dragActiveDispatched) {
+                    dragActiveDispatched = true;
+                    _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-active', {
+                        dragSessionId: dragSafetyToken
                     });
                 }
-                container.style.left = `${nextLeft}px`;
-                container.style.top = `${nextTop}px`;
+                _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-motion', {
+                    dragSessionId: dragSafetyToken,
+                    clientX: point.localX,
+                    clientY: point.localY,
+                    screenX: Number.isFinite(screenPoint.x) ? screenPoint.x : (sourceEvent && Number.isFinite(sourceEvent.screenX) ? sourceEvent.screenX : clientX),
+                    screenY: Number.isFinite(screenPoint.y) ? screenPoint.y : (sourceEvent && Number.isFinite(sourceEvent.screenY) ? sourceEvent.screenY : clientY),
+                    deltaX: deltaX,
+                    deltaY: deltaY,
+                    timestamp: Date.now()
+                });
+                if (isDragNiriCropCoordinateActive() &&
+                    !isNiriReturnBallFullCropReady(
+                        getDragCropState(),
+                        true,
+                        dragSafetyToken
+                    )) {
+                    // Niri moves and resizes the transparent carrier asynchronously.
+                    // Keep only the latest virtual cursor point until the compositor
+                    // confirms both operations, otherwise the old body crop offset
+                    // is applied to an already-virtual kitten position.
+                    dragCropHoldPending = true;
+                    dragPendingPoint = buildDragPointSnapshot(
+                        point.localX,
+                        point.localY,
+                        point.virtualX,
+                        point.virtualY
+                    );
+                    return;
+                }
+                clearDragCropHoldPending();
+                recordDragActivityPoint(nextVirtualLeft, nextVirtualTop);
+                // The cropped body already translates virtual coordinates by
+                // -cropOffset. Subtracting the offset here would apply it twice
+                // and make the kitten jump away from the pointer.
+                container.style.left = `${nextVirtualLeft}px`;
+                container.style.top = `${nextVirtualTop}px`;
             };
 
             const scheduleDragCursorPollFrame = () => {
@@ -593,14 +834,28 @@ Object.assign(AvatarButtonMixin.methods, {
                 if (_isNekoIdleCat1PlaygroundEntryOrDropActive(button)) return;
                 clearDragSafetyTimer();
                 stopDragCursorPolling();
+                clearDragReleasePending();
+                clearDragCropHoldPending();
                 setReturnClickSuppressed(true);
                 const point = startPoint || getDragPoint(sourceEvent, clientX, clientY);
                 if (!isUsableDragPoint(point)) return;
                 const rect = getDragContainerVirtualRect();
+                const localRect = container.getBoundingClientRect && container.getBoundingClientRect();
+                dragVisualWidth = Math.max(1, Number(container.offsetWidth) || Number(rect.width) || 64);
+                dragVisualHeight = Math.max(1, Number(container.offsetHeight) || Number(rect.height) || 64);
+                dragUsesGlobalCursor = pointerType === 'mouse' && canPollNiriDragCursor();
+                const useLocalGrabAnchor = dragUsesGlobalCursor && localRect;
+                const grabOffset = _getNekoIdleReturnDragGrabOffset(
+                    point,
+                    useLocalGrabAnchor ? localRect : rect,
+                    useLocalGrabAnchor ? 'local' : 'virtual'
+                );
                 const safetyToken = dragSafetyToken + 1;
                 startDragActivity(safetyToken, rect.left, rect.top);
                 _restoreNekoIdleCat1EdgePeekBeforeDrag(container);
-                _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-start');
+                _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-start', {
+                    dragSessionId: safetyToken
+                });
                 isDragging = true;
                 dragActiveDispatched = false;
                 dragPointerType = pointerType;
@@ -608,10 +863,18 @@ Object.assign(AvatarButtonMixin.methods, {
                 dragStartY = point.localY;
                 dragStartVirtualX = point.virtualX;
                 dragStartVirtualY = point.virtualY;
+                dragContinuousVirtualPoint = {
+                    virtualX: point.virtualX,
+                    virtualY: point.virtualY
+                };
                 containerStartX = rect.left;
                 containerStartY = rect.top;
-                dragGrabOffsetX = point.virtualX - rect.left;
-                dragGrabOffsetY = point.virtualY - rect.top;
+                // Keep the exact visible grab point under the cursor. The return
+                // container can be larger than the kitten artwork because it also
+                // carries transparent interaction/crop padding, so centring the
+                // whole container creates a stable but visibly wrong offset.
+                dragGrabOffsetX = grabOffset.x;
+                dragGrabOffsetY = grabOffset.y;
                 container.style.transform = 'none';
                 container.style.right = '';
                 container.style.bottom = '';
@@ -630,20 +893,46 @@ Object.assign(AvatarButtonMixin.methods, {
             const handleEnd = () => {
                 clearDragSafetyTimer();
                 stopDragCursorPolling();
-                if (isDragging) {
-                    const safetyToken = dragSafetyToken;
-                    const moved = container.getAttribute('data-dragging') === 'true';
-                    isDragging = false;
-                    dragActiveDispatched = false;
+                if (!isDragging || dragReleasePending) return;
+                const safetyToken = dragSafetyToken;
+                const movedPastThreshold = container.getAttribute('data-dragging') === 'true';
+                if (movedPastThreshold && dragCropHoldPending) {
+                    // The pointer can be released before Niri confirms the full
+                    // carrier. Keep this drag session alive until the verified
+                    // crop event flushes the last queued virtual point. Otherwise
+                    // a real fast drag becomes a click and immediately restores
+                    // the model.
+                    dragReleasePending = true;
                     dragPointerType = '';
                     container.style.cursor = 'grab';
-                    if (moved) {
-                        setTimeout(() => {
-                            finishDragState(moved, safetyToken);
-                        }, 10);
-                    } else {
-                        finishDragState(moved, safetyToken);
-                    }
+                    dragReleaseTimer = setTimeout(() => {
+                        dragReleaseTimer = 0;
+                        if (!dragReleasePending || safetyToken !== dragSafetyToken) return;
+                        dragReleasePending = false;
+                        isDragging = false;
+                        dragActiveDispatched = false;
+                        clearDragCropHoldPending();
+                        finishDragState(false, safetyToken, true);
+                    }, 600);
+                    return;
+                }
+                isDragging = false;
+                dragActiveDispatched = false;
+                dragPointerType = '';
+                dragUsesGlobalCursor = false;
+                clearDragCropHoldPending();
+                container.style.cursor = 'grab';
+                if (movedPastThreshold) {
+                    // Let the final virtual position paint while the full carrier
+                    // is still active. Releasing the crop hold in the same frame
+                    // can make shape collection observe the previous kitten rect.
+                    requestAnimationFrame(() => {
+                        requestAnimationFrame(() => {
+                            finishDragState(true, safetyToken);
+                        });
+                    });
+                } else {
+                    finishDragState(false, safetyToken);
                 }
             };
 
@@ -672,11 +961,20 @@ Object.assign(AvatarButtonMixin.methods, {
                 mouseMove: (e) => {
                     // document 级 handler：非拖拽期直接返回，避免全页面鼠标移动白算坐标
                     if (!isDragging) return;
-                    if (dragPointerType === 'mouse' && e.buttons === 0) {
+                    // Only one coordinate source may move the kitten. Native
+                    // Wayland cannot read a global cursor point, so DOM movement
+                    // remains authoritative there. Chromium can temporarily
+                    // report buttons === 0 while Niri expands the transparent
+                    // carrier; the real mouseup listener owns termination.
+                    if (shouldUseGlobalCursorForMouseDrag()) return;
+                    if (dragPointerType === 'mouse' &&
+                        e.buttons === 0 &&
+                        !shouldIgnoreMissingMouseButtons()) {
                         handleEnd();
                         return;
                     }
-                    const point = getDragPoint(e, e.clientX, e.clientY);
+                    const rawPoint = getDragPoint(e, e.clientX, e.clientY);
+                    const point = getContinuousDomMouseDragPoint(rawPoint, e);
                     handleMove(point.x, point.y, e, point);
                 },
                 mouseUp: handleEnd,
@@ -689,9 +987,60 @@ Object.assign(AvatarButtonMixin.methods, {
                 },
                 touchEnd: handleEnd,
                 touchCancel: cancelDragState,
-                windowBlur: cancelDragState,
+                windowBlur: () => {
+                    // Niri can briefly blur the compact Pet window while applying
+                    // the full drag carrier. Once movement crossed the threshold,
+                    // keep the verified drag session alive; mouseup, visibility
+                    // and the existing safety paths still provide termination.
+                    if (isDragging &&
+                        (shouldUseGlobalCursorForMouseDrag() ||
+                            (dragActiveDispatched && shouldIgnoreMissingMouseButtons()))) {
+                        return;
+                    }
+                    cancelDragState();
+                },
                 visibilityChange: () => {
                     if (document.hidden) cancelDragState();
+                },
+                cropStateApplied: (event) => {
+                    if (!isDragging || !dragActiveDispatched || !dragCropHoldPending) return;
+                    const detail = event && event.detail;
+                    if (!isNiriReturnBallFullCropReady(detail, true, dragSafetyToken)) return;
+                    const expectedSafetyToken = dragSafetyToken;
+                    const flushPoint = (point) => {
+                        if (!isDragging || expectedSafetyToken !== dragSafetyToken) return;
+                        if (!isNiriReturnBallFullCropReady(getDragCropState(), true, expectedSafetyToken)) return;
+                        clearDragCropHoldPending();
+                        if (!isUsableDragPoint(point)) return;
+                        handleMove(point.localX, point.localY, null, point);
+                        if (dragReleasePending && !dragCropHoldPending) {
+                            const safetyToken = dragSafetyToken;
+                            clearDragReleasePending();
+                            isDragging = false;
+                            dragActiveDispatched = false;
+                            dragPointerType = '';
+                            dragUsesGlobalCursor = false;
+                            container.style.cursor = 'grab';
+                            requestAnimationFrame(() => {
+                                requestAnimationFrame(() => {
+                                    finishDragState(true, safetyToken);
+                                });
+                            });
+                        }
+                    };
+                    const fallbackPoint = dragPendingPoint;
+                    if (shouldUseGlobalCursorForMouseDrag() &&
+                        window.electronScreen &&
+                        typeof window.electronScreen.getCursorPoint === 'function') {
+                        Promise.resolve(window.electronScreen.getCursorPoint())
+                            .then((screenPoint) => {
+                                const point = getDragPointFromScreenPoint(screenPoint);
+                                flushPoint(isUsableDragPoint(point) ? point : fallbackPoint);
+                            })
+                            .catch(() => flushPoint(fallbackPoint));
+                        return;
+                    }
+                    flushPoint(fallbackPoint);
                 }
             };
 
@@ -714,6 +1063,10 @@ Object.assign(AvatarButtonMixin.methods, {
             document.addEventListener('touchend', this._returnButtonDragHandlers.touchEnd);
             document.addEventListener('touchcancel', this._returnButtonDragHandlers.touchCancel);
             window.addEventListener('blur', this._returnButtonDragHandlers.windowBlur);
+            window.addEventListener(
+                'neko:niri-pet-physical-crop-state-applied',
+                this._returnButtonDragHandlers.cropStateApplied
+            );
             document.addEventListener('visibilitychange', this._returnButtonDragHandlers.visibilityChange);
             container.style.cursor = 'grab';
         };

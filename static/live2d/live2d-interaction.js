@@ -152,6 +152,23 @@ const LIVE2D_PEEK_ANIMATION_MS = 200;
 let live2DPeekDisplayContext = null;
 let live2DPeekDisplayRefresh = null;
 
+function getLive2DNiriPetVirtualViewport() {
+    try {
+        const api = window.__nekoNiriPetPhysicalCrop;
+        if (!api || typeof api.getState !== 'function') return null;
+        const state = api.getState();
+        const virtualBounds = state && state.enabled === true ? state.virtualBounds : null;
+        const width = Number(virtualBounds && virtualBounds.width);
+        const height = Number(virtualBounds && virtualBounds.height);
+        if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+            return null;
+        }
+        return { width, height };
+    } catch (_) {
+        return null;
+    }
+}
+
 function isLive2DPeekMacRuntime() {
     try {
         return !!(window.__NEKO_DESKTOP_RUNTIME__ &&
@@ -305,6 +322,7 @@ function clampLive2DPeekCoordinate(value, min, max) {
 function getLive2DPeekViewport(bounds = null, manager = null) {
     const fallbackW = bounds && Number.isFinite(bounds.width) ? bounds.width : 1;
     const fallbackH = bounds && Number.isFinite(bounds.height) ? bounds.height : 1;
+    const niriVirtualViewport = getLive2DNiriPetVirtualViewport();
     const renderer = manager && manager.pixi_app && manager.pixi_app.renderer;
     const screen = renderer && renderer.screen;
     const canvasW = Number(screen && screen.width);
@@ -313,12 +331,16 @@ function getLive2DPeekViewport(bounds = null, manager = null) {
     const vh = Number(window.innerHeight);
     const validVw = Number.isFinite(vw) && vw > 0;
     const validVh = Number.isFinite(vh) && vh > 0;
-    const viewportW = Number.isFinite(canvasW) && canvasW > 0
-        ? (validVw ? Math.min(canvasW, vw) : canvasW)
-        : (validVw ? vw : fallbackW);
-    const viewportH = Number.isFinite(canvasH) && canvasH > 0
-        ? (validVh ? Math.min(canvasH, vh) : canvasH)
-        : (validVh ? vh : fallbackH);
+    const viewportW = niriVirtualViewport
+        ? niriVirtualViewport.width
+        : (Number.isFinite(canvasW) && canvasW > 0
+            ? (validVw ? Math.min(canvasW, vw) : canvasW)
+            : (validVw ? vw : fallbackW));
+    const viewportH = niriVirtualViewport
+        ? niriVirtualViewport.height
+        : (Number.isFinite(canvasH) && canvasH > 0
+            ? (validVh ? Math.min(canvasH, vh) : canvasH)
+            : (validVh ? vh : fallbackH));
     return { left: 0, top: 0, right: viewportW, bottom: viewportH, width: viewportW, height: viewportH };
 }
 
@@ -686,6 +708,55 @@ Live2DManager.prototype.isLive2DPeekActive = function () {
     return !!(state && state.active && state.model && !state.model.destroyed);
 };
 
+Live2DManager.prototype._setLive2DPeekControlsSuppressed = function (active) {
+    const ids = ['live2d-floating-buttons', 'live2d-lock-icon'];
+    ids.forEach((id) => {
+        const element = document.getElementById(id);
+        if (!element || !element.style) return;
+        const snapshotKey = '__nekoLive2DPeekControlStyleSnapshot';
+        if (active) {
+            if (!element[snapshotKey]) {
+                element[snapshotKey] = {
+                    display: element.style.getPropertyValue('display'),
+                    displayPriority: element.style.getPropertyPriority('display'),
+                    pointerEvents: element.style.getPropertyValue('pointer-events'),
+                    pointerEventsPriority: element.style.getPropertyPriority('pointer-events')
+                };
+            }
+            element.style.setProperty('display', 'none', 'important');
+            element.style.setProperty('pointer-events', 'none', 'important');
+            return;
+        }
+        const snapshot = element[snapshotKey];
+        if (!snapshot) return;
+        if (
+            element.style.getPropertyValue('display') === 'none' &&
+            element.style.getPropertyPriority('display') === 'important'
+        ) {
+            if (snapshot.display) {
+                element.style.setProperty('display', snapshot.display, snapshot.displayPriority || '');
+            } else {
+                element.style.removeProperty('display');
+            }
+        }
+        if (
+            element.style.getPropertyValue('pointer-events') === 'none' &&
+            element.style.getPropertyPriority('pointer-events') === 'important'
+        ) {
+            if (snapshot.pointerEvents) {
+                element.style.setProperty(
+                    'pointer-events',
+                    snapshot.pointerEvents,
+                    snapshot.pointerEventsPriority || ''
+                );
+            } else {
+                element.style.removeProperty('pointer-events');
+            }
+        }
+        try { delete element[snapshotKey]; } catch (_) { element[snapshotKey] = null; }
+    });
+};
+
 Live2DManager.prototype.clearLive2DPeek = function (reason = 'manual', options = {}) {
     const state = this._live2DPeekState;
     const model = state && state.model && !state.model.destroyed ? state.model : null;
@@ -705,6 +776,7 @@ Live2DManager.prototype.clearLive2DPeek = function (reason = 'manual', options =
     if (document.body) {
         document.body.classList.remove('neko-live2d-peek');
     }
+    this._setLive2DPeekControlsSuppressed(false);
     try {
         window.dispatchEvent(new CustomEvent('neko:live2d-peek-changed', {
             detail: { active: false, reason }
@@ -778,6 +850,7 @@ Live2DManager.prototype._tryApplyLive2DPeek = async function (model) {
     if (document.body) {
         document.body.classList.add('neko-live2d-peek');
     }
+    this._setLive2DPeekControlsSuppressed(true);
     const stillCurrent = () => {
         const activeState = this._live2DPeekState;
         return !!(activeState &&
@@ -1647,6 +1720,11 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
     const showButtons = () => {
         const lockIcon = document.getElementById('live2d-lock-icon');
         const floatingButtons = document.getElementById('live2d-floating-buttons');
+
+        if (this.isLive2DPeekActive()) {
+            this._setLive2DPeekControlsSuppressed(true);
+            return;
+        }
 
         // 如果已经点击了"请她离开"，不显示锁按钮，但保持显示"请她回来"按钮
         if (this._goodbyeClicked) {

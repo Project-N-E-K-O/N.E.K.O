@@ -249,6 +249,11 @@ def test_cat1_minimized_ball_target_wins_over_stale_compact_surface():
 def test_desktop_cat1_minimized_and_compact_surface_state_are_timestamp_ordered():
     source = _read(AVATAR_UI_BUTTONS_PATH)
 
+    assert "function _getNekoDesktopVirtualViewportOrigin()" in source
+    assert "window.__nekoNiriPetPhysicalCrop" in source
+    assert "cropApi.getState()" in source
+    assert "return { x: fallbackX - offsetX, y: fallbackY - offsetY };" in source
+
     state_init_block = _between(
         source,
         "let _nekoIdleDesktopChatMinimizedState = {",
@@ -278,6 +283,8 @@ def test_desktop_cat1_minimized_and_compact_surface_state_are_timestamp_ordered(
     )
     assert "_nekoIdleDesktopChatMinimizedState.minimized" in desktop_compact_rect
     assert "_isNekoIdleDesktopStateNewerThan(_nekoIdleDesktopChatMinimizedState.sourceUpdatedAt, state)" in desktop_compact_rect
+    assert "const virtualOrigin = _getNekoDesktopVirtualViewportOrigin();" in desktop_compact_rect
+    assert "const screenLeft = virtualOrigin.x;" in desktop_compact_rect
 
     desktop_minimized_rect = _between(
         source,
@@ -286,6 +293,8 @@ def test_desktop_cat1_minimized_and_compact_surface_state_are_timestamp_ordered(
     )
     assert "_nekoIdleDesktopCompactSurfaceState.visible" in desktop_minimized_rect
     assert "_isNekoIdleDesktopStateNewerThan(_nekoIdleDesktopCompactSurfaceState.sourceUpdatedAt, state)" in desktop_minimized_rect
+    assert "const virtualOrigin = _getNekoDesktopVirtualViewportOrigin();" in desktop_minimized_rect
+    assert "const screenLeft = virtualOrigin.x;" in desktop_minimized_rect
 
     minimized_listener = _between(
         source,
