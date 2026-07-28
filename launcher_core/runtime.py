@@ -449,6 +449,17 @@ def _spawn_restarted_launcher() -> None:
     # exit — losing containment in exchange for a replacement that never
     # started. The replacement inherits the Job at spawn time, so clearing the
     # flag immediately afterwards is still in time to spare it.
+    #
+    # Known residual, Windows self-spawn path only: clearing the flag also
+    # un-manages anything that outlived cleanup_servers() in the outgoing Job
+    # (plugins, MCP servers, Chromium). The replacement's own setup_job_object()
+    # creates a *different* Job and cannot recapture them. There is no cheap fix
+    # — keeping the flag would kill the replacement along with us, since it is a
+    # member. The owner-driven path does not have this gap at all: with
+    # NEKO_OWNER_RELAUNCH set we exit cleanly, the Job closes with the flag
+    # intact and reaps everything, and the owner spawns the next generation
+    # fresh. That is why owner relaunch is the preferred branch and this is the
+    # fallback.
     proc = subprocess.Popen(
         command,
         cwd=os.getcwd(),
@@ -2237,11 +2248,17 @@ def _handle_owner_death(mechanism: str) -> None:
             requester(reason=f"owner_death:{mechanism}")
         except Exception as exc:
             _owner_death_print(f"[Launcher] Warning: merged shutdown request failed: {exc}")
+        # Deliberately NOT a daemon thread. run_merged_servers() returns as soon
+        # as the ordered shutdown completes and main() then walks to its own
+        # exit; a daemon would be cut off mid-teardown, losing the group sweep
+        # and the very grandchildren it exists to reap. Non-daemon makes the
+        # interpreter wait for it — and it ends in os._exit(0) regardless, so
+        # the wait is bounded by the merged-shutdown budget above.
         threading.Thread(
             target=_finish_owner_death,
             args=(mechanism, True),
             name="neko-owner-death-finish",
-            daemon=True,
+            daemon=False,
         ).start()
         return
 

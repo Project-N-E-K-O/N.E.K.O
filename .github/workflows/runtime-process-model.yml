@@ -94,6 +94,26 @@ jobs:
           tests/unit/test_single_instance_lock.py
           -q
 
+      - name: Report whether a spawned interpreter is the process the spawner sees
+        # utils/single_instance tells lock-less consumers (the Electron shell) to
+        # recognise their own runtime by matching record["parent_pid"] against
+        # their own pid. That only holds if Popen(sys.executable) really starts
+        # the interpreter rather than a shim that re-launches it — and on Windows
+        # the single-instance test caught exactly that mismatch. This records the
+        # answer per platform instead of leaving it to inference.
+        run: >
+          uv run python -c
+          "import subprocess, sys;
+          p = subprocess.run([sys.executable, '-c', 'import os,sys; print(os.getpid(), os.getppid(), sys.executable)'],
+          capture_output=True, text=True);
+          child, grandparent, exe = p.stdout.split(None, 2);
+          print('spawner pid      :', __import__('os').getpid());
+          print('Popen.pid        : (see below)');
+          print('child self pid   :', child);
+          print('child getppid    :', grandparent);
+          print('child executable :', exe.strip());
+          print('MATCH' if int(grandparent) == __import__('os').getpid() else 'MISMATCH: an intermediate process sits between spawner and interpreter')"
+
       - name: Report which parent-death mechanisms this platform armed
         # Not an assertion — a record. If a platform silently stops arming any
         # mechanism (a kernel change, a hardened runner sandbox), the guarantee

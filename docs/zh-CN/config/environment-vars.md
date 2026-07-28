@@ -37,7 +37,7 @@ launcher 是前台进程：绝不守护化脱管，属主进程一消失就把�
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `NEKO_OWNER_PID` | 本进程的父进程 | 父死守卫要盯的 pid。属主**不是**直接父进程时才需要设置——例如存储迁移交接产生的下一代 launcher，它的 spawn 者是故意退出的。 |
-| `NEKO_OWNER_RELAUNCH` | 未设置 | `1` 表示属主会自己负责重启运行时。此时存储迁移重启只干净退出、等待属主拉起，不再自旋出下一代。 |
+| `NEKO_OWNER_RELAUNCH` | 未设置 | `1` 表示属主会自己负责重启运行时。此时存储迁移重启只干净退出、等待属主拉起，不再自旋出下一代。 Windows 上强烈建议设置：不设时 launcher 会自旋下一代，为了不连带杀死替身必须解除旧 Job 的管理，于是任何活过 cleanup 的进程（插件、MCP、Chromium）都不会被回收。 |
 | `NEKO_PARENT_DEATH_GUARD` | `1` | 设为 `0` 完全关闭父死守卫。仅用于会重挂父进程的调试器/性能分析工具；关掉之后运行时可能活得比属主久。 |
 | `NEKO_LAUNCHER_RESTART_HANDOFF` | 未设置 | 由上一代 launcher 设在下一代身上，让它等待单实例锁释放，而不是判定"已有实例在跑"。不需要手工设置。 |
 | `NEKO_RUNTIME_STATE_DIR` | 按用户的运行时目录 | 覆盖 `launcher.lock` 与 `launcher.json` 的位置。默认 Windows `%LOCALAPPDATA%\N.E.K.O\runtime`、macOS `~/Library/Application Support/N.E.K.O/runtime`、Linux `$XDG_RUNTIME_DIR/neko`。覆盖值会被原样使用——不追加用户后缀、也不校验权限——所以必须指向当前用户私有的目录。指到多用户共享目录会破坏单实例证明：Windows 上两个用户会争同一把锁，POSIX 上第二个用户打不开第一个用户的锁文件，会在没有唯一性证明的情况下启动。 |

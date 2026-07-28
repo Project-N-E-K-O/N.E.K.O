@@ -703,6 +703,11 @@ def test_owner_death_drives_the_merged_ordered_shutdown_first(monkeypatch):
 
     order = []
     requested = []
+    # _handle_owner_death sets this module global and never clears it, so without
+    # monkeypatch owning the restore it would stay True for the rest of the
+    # session and silently short-circuit _handle_termination_signal in every
+    # later test.
+    monkeypatch.setattr(launcher, "_owner_death_in_progress", False)
     monkeypatch.setattr(launcher, "_mark_expected_launcher_shutdown", lambda: None)
     monkeypatch.setattr(launcher, "emit_frontend_event", lambda *_a, **_k: None)
     monkeypatch.setattr(launcher, "cleanup_servers", lambda: order.append("cleanup"))

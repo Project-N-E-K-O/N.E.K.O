@@ -188,10 +188,47 @@ def _unlock_fd(fd: int) -> None:
 
 
 def _open_lock_file(path: Path) -> int:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # Owner-only, and it matters more than it looks. The POSIX fallback location
+    # is a predictable path under the shared temp dir, and mkdir's 0o777 minus
+    # whatever umask happens to be set can leave it writable by other local
+    # users. The lock file's own 0o600 does not help there: anyone who can write
+    # the *directory* can unlink launcher.lock while it is held and drop a fresh
+    # inode in its place, after which two launchers hold two different locks and
+    # the uniqueness proof is silently gone.
+    _ensure_private_dir(path.parent)
     flags = os.O_RDWR | os.O_CREAT
     flags |= getattr(os, "O_BINARY", 0)
     return os.open(str(path), flags, 0o600)
+
+
+def _ensure_private_dir(directory: Path) -> None:
+    """Create ``directory`` owner-only, and refuse a pre-existing loose one."""
+    try:
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    except FileExistsError:
+        pass
+    if os.name != "posix":
+        # Windows inherits ACLs from %LOCALAPPDATA%, which is already per-user.
+        return
+    try:
+        info = os.stat(str(directory))
+    except OSError:
+        return
+    getuid = getattr(os, "getuid", None)
+    if callable(getuid) and info.st_uid != getuid():
+        raise OSError(
+            errno.EPERM,
+            f"runtime state directory {directory} is owned by uid {info.st_uid}, not us",
+        )
+    # mkdir's mode is masked by umask, and an existing directory keeps whatever
+    # mode it already had, so tighten explicitly rather than trusting either.
+    if info.st_mode & 0o077:
+        try:
+            os.chmod(str(directory), 0o700)
+        except OSError:
+            # Cannot tighten it; callers treat an OSError here as "unknown",
+            # which is the honest answer — not "nobody else is running".
+            raise
 
 
 # ---------------------------------------------------------------------------

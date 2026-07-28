@@ -255,6 +255,15 @@ class ParentDeathGuard:
         return False
 
     def _on_pdeathsig(self, _signum, _frame) -> None:
+        # PR_SET_PDEATHSIG follows the *thread* that created us, not the owner's
+        # whole process. An owner that spawns the runtime from a short-lived
+        # worker thread gets this signal when that thread exits, while the owner
+        # itself is perfectly healthy — and firing then would tear down a live
+        # runtime. Confirm before acting; if the owner really is gone this costs
+        # one getppid(), and if it is not, the poll stays armed for the real
+        # death.
+        if not self._owner_gone():
+            return
         self.fire("pdeathsig")
 
     def _install_pdeathsig(self) -> bool:
@@ -275,12 +284,22 @@ class ParentDeathGuard:
         # a window in which the owner's death kills us silently — which is
         # exactly the bug this ordering exists to prevent.
         try:
-            signal.signal(sig, self._on_pdeathsig)
+            previous = signal.signal(sig, self._on_pdeathsig)
         except (ValueError, OSError, RuntimeError):
             # Not the main thread, or the signal cannot be caught here. Refuse
             # to arm rather than arm a signal that would kill us uncaught; the
             # owner poll still covers this process.
             return False
+
+        def _restore() -> None:
+            # Arming failed, so nothing will ever send us this signal on the
+            # owner's behalf — but our handler is still installed. Leaving it
+            # there means an unrelated delivery of an otherwise unused signal
+            # would run the owner-death teardown on a healthy runtime.
+            try:
+                signal.signal(sig, previous)
+            except (ValueError, OSError, RuntimeError, TypeError):
+                pass
 
         try:
             libc = ctypes.CDLL(None, use_errno=True)
@@ -294,8 +313,10 @@ class ParentDeathGuard:
             ]
             prctl.restype = ctypes.c_int
             if prctl(_PR_SET_PDEATHSIG, int(sig), 0, 0, 0) != 0:
+                _restore()
                 return False
         except Exception:
+            _restore()
             return False
 
         self._note("pdeathsig")
