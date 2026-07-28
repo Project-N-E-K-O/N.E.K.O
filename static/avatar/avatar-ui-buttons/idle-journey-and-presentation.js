@@ -786,14 +786,15 @@ function _getNekoIdleCat1PairMoveChatTarget() {
 }
 
 function _clampNekoIdleCat1MoveVector(catRect, chatRect, desiredDx, desiredDy) {
+    const virtualViewport = _getNekoDesktopVirtualViewportSize();
     const minDx = chatRect ? Math.max(-catRect.left, -chatRect.left) : -catRect.left;
     const maxDx = chatRect
-        ? Math.min(window.innerWidth - catRect.right, window.innerWidth - chatRect.right)
-        : window.innerWidth - catRect.right;
+        ? Math.min(virtualViewport.width - catRect.right, virtualViewport.width - chatRect.right)
+        : virtualViewport.width - catRect.right;
     const minDy = chatRect ? Math.max(-catRect.top, -chatRect.top) : -catRect.top;
     const maxDy = chatRect
-        ? Math.min(window.innerHeight - catRect.bottom, window.innerHeight - chatRect.bottom)
-        : window.innerHeight - catRect.bottom;
+        ? Math.min(virtualViewport.height - catRect.bottom, virtualViewport.height - chatRect.bottom)
+        : virtualViewport.height - catRect.bottom;
     const dx = Math.max(minDx, Math.min(desiredDx, maxDx));
     const dy = Math.max(minDy, Math.min(desiredDy, maxDy));
     return {

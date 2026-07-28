@@ -218,6 +218,45 @@ test('CAT1 automatic targets clamp against the virtual desktop instead of the Pe
     );
 });
 
+test('CAT1 pair movement clamps vectors against the virtual desktop instead of the Pet crop', () => {
+    const context = {
+        window: {
+            innerWidth: 360,
+            innerHeight: 408,
+            __nekoNiriPetPhysicalCrop: {
+                getState() {
+                    return {
+                        enabled: true,
+                        virtualBounds: { x: 1, y: 1, width: 1706, height: 1066 }
+                    };
+                }
+            }
+        }
+    };
+    vm.createContext(context);
+    vm.runInContext([
+        readFunction('static/avatar/avatar-ui-buttons/core.js', '_getNekoDesktopVirtualViewportSize'),
+        readFunction(
+            'static/avatar/avatar-ui-buttons/idle-journey-and-presentation.js',
+            '_clampNekoIdleCat1MoveVector'
+        )
+    ].join('\n'), context);
+
+    const vector = vm.runInContext(
+        `_clampNekoIdleCat1MoveVector(
+            { left: 1200, top: 700, right: 1322, bottom: 822 },
+            null,
+            200,
+            50
+        )`,
+        context
+    );
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(vector)),
+        { dx: 200, dy: 50, distance: Math.hypot(200, 50) }
+    );
+});
+
 test('model-to-cat anchor converts client managers once but keeps Live2D virtual bounds unchanged', () => {
     const context = {
         I: {
