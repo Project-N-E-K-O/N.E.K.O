@@ -481,10 +481,18 @@ class NotifyMixin:
 
     async def send_session_ended_by_server(self): # 通知前端session已被服务器终止
         """Notify the frontend that the session was terminated server-side (e.g. API disconnect), so it resets the session state"""
+        payload = {"type": "session_ended_by_server", "input_mode": self.input_mode}
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                data = json.dumps({"type": "session_ended_by_server", "input_mode": self.input_mode})
-                await self.websocket.send_text(data)
+                await self.websocket.send_text(json.dumps(payload))
+            # The terminal event is also the recorder's microphone teardown, and
+            # the window holding the hardware is not necessarily the current
+            # socket. Outside the guard on purpose: a dead current socket must
+            # not swallow the lease holder's copy. Game owner exempt -- the
+            # galgame gate owns the mic through its own consumer binding and
+            # tears down via GAME_ROUTE_ENDED.
+            if getattr(self, "_voice_lease_owner", "none") != "game":
+                await self._send_to_voice_owner(payload)
         except WebSocketDisconnect:
             # Client disconnected mid-send; this push is best-effort.
             pass

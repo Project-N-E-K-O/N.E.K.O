@@ -147,12 +147,22 @@ class LifecycleMixin:
                 )
                 if is_free_timeout:
                     await self.send_status(json.dumps({"code": "FREE_API_AUTO_CLOSE_VOICE"}))
-                await self.websocket.send_json({
+                auto_close_payload = {
                     "type": "auto_close_mic",
                     "reason_code": timeout_reason_code,
                     "api_type": timeout_api_type,
                     "message": f"{self.lanlan_name}检测到长时间无语音输入，已自动关闭麦克风"
-                })
+                }
+                await self.websocket.send_json(auto_close_payload)
+                # The lease holder is the window with the live hardware; the
+                # current socket may be a newer chat window with no microphone.
+                # Game owner exempt, mirroring _revoke_lease_for_blocked_route.
+                # (The FREE_API_AUTO_CLOSE_VOICE send_status above stays
+                # current-socket-only on purpose: it is a pure toast.)
+                if getattr(self, "_voice_lease_owner", "none") != "game":
+                    send_to_voice_owner = getattr(self, "_send_to_voice_owner", None)
+                    if callable(send_to_voice_owner):
+                        await send_to_voice_owner(auto_close_payload)
             
             await self.end_session(by_server=True, expected_session=expected_session)
             

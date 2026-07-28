@@ -523,6 +523,27 @@ class AsrRuntimeMixin:
 
         if input_mode != "audio":
             self._set_microphone_route("blocked")
+            # Deliver the mic-stop ack to the lease holder BEFORE the revoke.
+            # _revoke_voice_input_connection clears both _voice_input_websocket
+            # and the lease connection id, and _voice_owner_socket() returns
+            # None on either -- so send_session_started's fan-out has no target
+            # afterwards, and a recorder superseded by this chat window would
+            # never hear that the route died. (That fan-out is in fact live
+            # only for the game owner, the one case the revoke exempts.)
+            if input_mode == "text" and self._voice_lease_owner != "game":
+                send_to_voice_owner = getattr(self, "_send_to_voice_owner", None)
+                if callable(send_to_voice_owner):
+                    await send_to_voice_owner(
+                        {"type": "session_started", "input_mode": "text"}
+                    )
+                # This push is the first await after the route-operation fence.
+                # A competing newer start can install its own blocked
+                # placeholder here, and _revoke_voice_input_connection would
+                # then _invalidate_asr_start() it -- the exact trap
+                # _revoke_lease_for_blocked_route's docstring warns about, and
+                # one its own route-mode guard cannot catch.
+                if not self._asr_route_operation_matches(operation_generation):
+                    return
             # Same fail-safe as the failure path: a text session blocks the
             # route for its whole life, so revoke the lease rather than let a
             # client that missed session_started keep uploading into it.
@@ -1151,6 +1172,12 @@ class AsrRuntimeMixin:
                 session_epoch=source_session_epoch,
             )
         )
+        # Ingress backstop. _voice_input_pipeline_failed already drops frames,
+        # but only after _enqueue_audio_stream_data has parsed and queued them:
+        # _voice_input_accepts_pcm is lease-only and never consults the route.
+        # Strictly AFTER the status send -- revoking first would clear the
+        # voice socket and leave the notice with no target (finding A).
+        await self._revoke_lease_for_blocked_route("audio_preprocessing_failed")
 
     async def _process_microphone_stream_data(
         self,

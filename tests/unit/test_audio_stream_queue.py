@@ -2145,3 +2145,100 @@ async def test_enabled_but_failed_startup_stops_accepting_microphone_pcm():
     assert mgr._asr_route_mode == "blocked"
     assert mgr._voice_lease_connection_id == ""
     assert mgr._voice_input_accepts_pcm() is False
+
+
+def _fake_socket_pair():
+    class _LiveState:
+        CONNECTED = "connected"
+
+        def __eq__(self, other) -> bool:
+            return other == "connected"
+
+    class _Socket:
+        def __init__(self) -> None:
+            self.client_state = _LiveState()
+            self.sent: list[str] = []
+
+        async def send_text(self, data: str) -> None:
+            self.sent.append(data)
+
+    return _Socket(), _Socket()
+
+
+async def test_text_takeover_reaches_the_recorder_before_the_revoke():
+    # Codex P2. The revoke clears BOTH _voice_input_websocket and the lease id,
+    # and _voice_owner_socket() returns None on either -- so the fan-out added
+    # for exactly this case had no target by the time send_session_started ran.
+    # The recorder never heard that the route died and kept the hardware mic.
+    recorder, chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    assert mgr._set_voice_input_websocket("socket-a", recorder) is True
+    mgr.websocket = chat
+    mgr._asr_runtime.abort = AsyncMock()
+
+    await LLMSessionManager._start_independent_asr_if_enabled(mgr, "text")
+
+    delivered = [json.loads(x) for x in recorder.sent]
+    assert delivered == [{"type": "session_started", "input_mode": "text"}]
+    # The revoke still happens -- delivery is advisory, the lease is the backstop.
+    assert mgr._voice_lease_connection_id == ""
+    assert mgr._voice_input_websocket is None
+
+
+async def test_text_takeover_does_not_revoke_a_competing_newer_start():
+    # The push above is the first await after the route-operation fence. A
+    # competing newer start can install its own blocked placeholder during it,
+    # and _revoke_voice_input_connection would then _invalidate_asr_start() it.
+    recorder, chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", recorder)
+    mgr.websocket = chat
+    mgr._asr_runtime.abort = AsyncMock()
+    invalidated = MagicMock()
+    mgr._asr_runtime._invalidate_asr_start = invalidated
+
+    original_send = recorder.send_text
+
+    async def _send_then_supersede(data: str) -> None:
+        await original_send(data)
+        # A newer route operation starts while the push is in flight.
+        mgr._begin_asr_route_operation()
+
+    recorder.send_text = _send_then_supersede
+
+    await LLMSessionManager._start_independent_asr_if_enabled(mgr, "text")
+
+    invalidated.assert_not_called()
+    assert mgr._voice_lease_connection_id == "socket-a"
+
+
+async def test_pipeline_failure_revokes_after_notifying():
+    # ASR_AUDIO_PREPROCESSING_FAILED rides neither the BLOCKED channel nor the
+    # ASR_INDEPENDENT_ prefix, so it was the one "route dead" status with no
+    # ingress stop behind it.
+    recorder, chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", recorder)
+    mgr.websocket = chat
+    mgr._set_microphone_route("independent")
+    mgr._asr_runtime.abort = AsyncMock()
+    mgr.is_active = True
+
+    await LLMSessionManager._fail_voice_input_pipeline(
+        mgr,
+        ingress_token=mgr._capture_ingress_token(),
+        session_ref=mgr.session,
+        audio_epoch=mgr._audio_stream_epoch,
+        pipeline_ref=mgr._voice_input_audio_pipeline,
+    )
+
+    codes = [json.loads(json.loads(x)["message"])["code"] for x in recorder.sent]
+    assert "ASR_AUDIO_PREPROCESSING_FAILED" in codes
+    assert mgr._asr_route_mode == "blocked"
+    assert mgr._voice_input_accepts_pcm() is False

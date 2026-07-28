@@ -17,6 +17,49 @@ APP_AUDIO_CAPTURE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" 
 APP_BUTTONS_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-buttons.js"
 
 
+def _block_after(js: str, opener: str) -> str:
+    """Return the brace-balanced body that follows ``opener``.
+
+    CodeRabbit: ``split("}", 1)[0]`` truncates at the FIRST closing brace in the
+    body -- a nested ``if {...}``, an object literal, even a ``}`` inside a
+    string -- so the slice can shrink to a line or two and the assertions then
+    pass by accident, or miss a real regression. Count braces instead, skipping
+    those inside string literals and line comments.
+    """
+
+    rest = js.split(opener, 1)[1]
+    depth = 1
+    out = []
+    quote = None
+    i = 0
+    while i < len(rest):
+        ch = rest[i]
+        if quote:
+            if ch == "\\":
+                out.append(rest[i : i + 2])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch in "\"'`":
+            quote = ch
+        elif ch == "/" and rest[i : i + 2] == "//":
+            end = rest.find("\n", i)
+            end = len(rest) if end == -1 else end
+            out.append(rest[i:end])
+            i = end
+            continue
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return "".join(out)
+        out.append(ch)
+        i += 1
+    raise AssertionError(f"unbalanced block after {opener!r}")
+
+
 def _code_only(js: str) -> str:
     """Strip // line comments so 'does not do X' assertions test code, not prose.
 
@@ -581,7 +624,7 @@ def test_settings_hydration_marked_on_server_merge_and_user_change():
         1,
     )[0]
     assert sync_fn.count("S.settingsHydrated = true;") == 1
-    user_initiated_gate = sync_fn.split("if (userInitiated) {", 1)[1].split("}", 1)[0]
+    user_initiated_gate = _block_after(sync_fn, "if (userInitiated) {")
     assert "S.settingsHydrated = true;" in user_initiated_gate, (
         "the hydration mark must sit inside the userInitiated gate"
     )
@@ -633,9 +676,9 @@ def test_periodic_sync_skips_post_and_never_marks_hydration_while_unhydrated():
         "});", 1
     )[0]
     assert "startPeriodicSync();" in finally_block
-    load_catch_block = settings_source.split(
-        "console.error('服务器设置同步启动失败:', error);", 1
-    )[1].split("}", 1)[0]
+    load_catch_block = _block_after(
+        settings_source, "console.error('服务器设置同步启动失败:', error);"
+    )
     assert "startPeriodicSync();" in load_catch_block
 
     # (1) The tick refuses to POST while settings were never hydrated (no
@@ -719,7 +762,7 @@ def test_user_dirty_keys_survive_boot_get_merge_field_level():
         "async function syncSettingsToServer(options)", 1
     )[1].split("function startPeriodicSync()", 1)[0]
     assert sync_fn.count("_markUserDirtySettings();") == 1
-    user_initiated_gate = sync_fn.split("if (userInitiated) {", 1)[1].split("}", 1)[0]
+    user_initiated_gate = _block_after(sync_fn, "if (userInitiated) {")
     assert "_markUserDirtySettings();" in user_initiated_gate
     assert sync_fn.index("_markUserDirtySettings();") < sync_fn.index("await fetch(")
 
@@ -2758,7 +2801,7 @@ def test_asr_authority_is_per_key_not_granted_by_unrelated_setting_change():
     # tracked separately and granted by exactly three events.
     settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
 
-    user_gate = settings_source.split("if (userInitiated) {", 1)[1].split("}", 1)[0]
+    user_gate = _block_after(settings_source, "if (userInitiated) {")
     assert "S.settingsHydrated = true;" in user_gate
     # The per-key mark inside the userInitiated gate must be conditional on the
     # ASR key actually being dirty — an unconditional mark here is the bug.
@@ -2777,10 +2820,9 @@ def test_asr_authority_is_per_key_not_granted_by_unrelated_setting_change():
     )[0]
 
     # (2) A cross-window ASR flip grants authority, next to the dirty-key add.
-    cross_window = settings_source.split(
-        "_dirtySettingsKeys.add('independentAsrEnabled');",
-        1,
-    )[1].split("}", 1)[0]
+    cross_window = _block_after(
+        settings_source, "_dirtySettingsKeys.add('independentAsrEnabled');"
+    )
     assert "S.independentAsrAuthoritative = true;" in cross_window
 
     # (3) Nothing else in the file grants it: exactly three assignment sites.
@@ -2843,9 +2885,9 @@ def test_blocked_lifecycle_stops_microphone_capture():
     teardown = websocket_source.split(
         "function tearDownBlockedVoiceRoute() {", 1
     )[1].split("\n    }", 1)[0]
-    assert "tearDownBlockedVoiceRoute();" in websocket_source.split(
-        "if (lifecycleState === 'blocked') {", 1
-    )[1].split("}", 1)[0]
+    assert "tearDownBlockedVoiceRoute();" in _block_after(
+        websocket_source, "if (lifecycleState === 'blocked') {"
+    )
 
     # Only the capturing window acts, and never while the game STT gate owns
     # the hardware (there the ordinary uplink is already released).
@@ -2864,9 +2906,7 @@ def test_blocked_lifecycle_stops_microphone_capture():
     # strictly better complementary fix -- this asserts the current shape, it
     # does not forbid that.)
     capture_source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
-    can_upload = capture_source.split("function canUploadOrdinaryMicFrame() {", 1)[
-        1
-    ].split("}", 1)[0]
+    can_upload = _block_after(capture_source, "function canUploadOrdinaryMicFrame() {")
     assert "refreshMicLease() !== MIC_LEASE.CORE" in can_upload
 
 
@@ -3054,8 +3094,19 @@ def test_concurrent_asr_toggles_are_totally_ordered_not_swapped():
     outranks = settings_source.split("function _asrWriteOutranksLocalChoice(", 1)[
         1
     ].split("\n    }", 1)[0]
-    assert "meta.writeId > _lastAsrDecision.writeId" in outranks
-    assert "(meta.writerId || '') > _lastAsrDecision.writerId" in outranks
+    # Ordering is on the DECISION that produced the value, not on the id of the
+    # write carrying it: a monotone dirty key makes every later unrelated save
+    # re-declare the ASR key explicit with a fresh id, which would outrank a
+    # genuinely newer toggle elsewhere (no race required).
+    assert "decision.writeId > _lastAsrDecision.writeId" in outranks
+    assert "(decision.writerId || '') > _lastAsrDecision.writerId" in outranks
+    # A write with neither a decision tuple nor an explicit declaration is an
+    # incidental copy and must never outrank a local choice.
+    assert "if (!decision) return false;" in outranks
+    # The decision must be DERIVED (tuple, else an explicit declaration), never
+    # taken as the incoming write itself -- that is the bug being fixed.
+    assert "const decision = meta.asrDecision" in outranks
+    assert "const decision = meta;" not in outranks
 
     # A window's OWN explicit write must be recorded, or it has nothing to
     # compare a concurrent foreign toggle against.
@@ -3129,3 +3180,87 @@ def test_blocked_route_refuses_to_open_the_microphone():
 
     buttons_source = APP_BUTTONS_PATH.read_text(encoding="utf-8")
     assert "window.abortVoiceStartForBlockedRoute();" in buttons_source
+
+
+def test_asr_decision_tuple_survives_unrelated_saves():
+    # Codex P2. _dirtySettingsKeys is monotone, so once a window has toggled ASR
+    # every LATER unrelated save still lists independentAsrEnabled in
+    # changedKeys -- and used to stamp it with that save's fresh writeId. A then
+    # outranks a genuinely newer toggle from B, and the two windows swap. Unlike
+    # the same-millisecond tie this follows up, it needs no race at all.
+    settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
+
+    # The write carries the id of the decision that produced the value...
+    write_fn = _block_after(settings_source, "function _writeSharedSettings(")
+    assert "ownMeta.asrDecision = {" in write_fn
+    assert "_lastAsrDecision.value === snapshot.independentAsrEnabled" in write_fn
+
+    # ...the reader parses it defensively, falling back to today's behaviour...
+    read_fn = _block_after(settings_source, "function _readSharedWriteMeta(")
+    assert "asrDecision:" in read_fn
+    assert "typeof meta.asrDecision.writeId === 'number'" in read_fn
+
+    # ...and both the boot seed and the adopted cross-window flip record the
+    # ORIGINAL id, or this window re-inflates the value on its own next save.
+    assert "const bootDecision = bootMeta.asrDecision || bootMeta;" in settings_source
+    assert "const adopted = meta.asrDecision || meta;" in settings_source
+
+
+def test_audio_preprocessing_failure_tears_down_the_voice_route():
+    # Codex P2. ASR_AUDIO_PREPROCESSING_FAILED rides neither the BLOCKED
+    # lifecycle channel nor the ASR_INDEPENDENT_ prefix, so it was the one
+    # status that announced a dead route while the microphone kept running.
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    branch = _block_after(
+        websocket_source, "if (statusCode === 'ASR_AUDIO_PREPROCESSING_FAILED') {"
+    )
+    assert "tearDownBlockedVoiceRoute();" in branch
+    assert "microphone.audioPreprocessingFailed" in branch
+    # It must be reached before the ASR_INDEPENDENT_ prefix test, which would
+    # not match this code anyway but makes the ordering explicit.
+    assert websocket_source.index(
+        "if (statusCode === 'ASR_AUDIO_PREPROCESSING_FAILED') {"
+    ) < websocket_source.index("if (statusCode && statusCode.indexOf('ASR_INDEPENDENT_') === 0) {")
+
+
+def test_server_side_teardowns_do_not_send_pause_session():
+    # A pause_session from a SUPERSEDED recorder socket is not a voice-path
+    # message, so the router reads it as a character switch, closes that socket,
+    # and its 3s auto-reconnect re-steals the session identity from the window
+    # that legitimately owns it. Both server-initiated teardowns must stop the
+    # capture without notifying.
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    ended_handler = websocket_source.split(
+        "} else if (response.type === 'session_ended_by_server') {", 1
+    )[1].split("} else if (response.type ===", 1)[0]
+    assert "window.stopRecording({ notifyServer: false })" in ended_handler
+
+    auto_close = _block_after(
+        websocket_source, "async function resetVoiceUiAfterAutoClose(options) {"
+    )
+    # Drop recording first so stopMicCapture's own bare stopRecording() hits its
+    # !S.isRecording early return and never reaches the pause_session send.
+    assert "window.stopRecording({ notifyServer: false });" in auto_close
+    assert auto_close.index("window.stopRecording({ notifyServer: false });") < auto_close.index(
+        "await window.stopMicCapture();"
+    )
+
+
+def test_auto_restart_does_not_claim_success_on_a_blocked_route():
+    # The rebuilt session can come back fail-closed; startMicCapture then
+    # refuses silently, and the handler would still light the floating mic,
+    # toast "restart complete", and leave the button row it disabled dead.
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    restart = websocket_source.split("await sessionStartPromise;", 1)[1].split(
+        "app.restartComplete", 1
+    )[0]
+    assert "S.voiceInputRouteBlocked === true" in restart
+    assert "window.abortVoiceStartForBlockedRoute();" in restart
+    # It must bail before the toast, and restore controls the restart disabled.
+    assert restart.index("S.voiceInputRouteBlocked === true") < restart.index(
+        "startMicCapture"
+    )
+    assert "resetSessionButton(); if (_rsB) _rsB.disabled = false;" in restart

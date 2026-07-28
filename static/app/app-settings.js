@@ -73,12 +73,26 @@
     }
     function _asrWriteOutranksLocalChoice(meta) {
         if (!_lastAsrDecision) return true;
-        if (meta.writeId > _lastAsrDecision.writeId) return true;
-        if (meta.writeId < _lastAsrDecision.writeId) return false;
+        // Order on the DECISION that produced this value, not on the id of the
+        // write that happens to carry it. _dirtySettingsKeys is monotone and
+        // every save copies independentAsrEnabled, so once a window has toggled
+        // once, each later UNRELATED save re-declares the key explicit with a
+        // fresh id -- and would outrank a genuinely newer toggle in another
+        // window. That needs no race at all, which makes it strictly more
+        // reachable than the same-millisecond tie this ordering was added for.
+        const decision = meta.asrDecision
+            || (meta.changedKeys.indexOf('independentAsrEnabled') !== -1 ? meta : null);
+        // No tuple AND not declared explicit: an incidental copy of whatever
+        // this writer happened to hold. It must never outrank an explicit local
+        // choice. Previous-build snapshots that DO declare the key keep today's
+        // writeId ordering through the fallback above.
+        if (!decision) return false;
+        if (decision.writeId > _lastAsrDecision.writeId) return true;
+        if (decision.writeId < _lastAsrDecision.writeId) return false;
         // Equal ids are unordered in time; break on the window-unique key so
         // both windows pick the SAME winner. An absent writerId (previous
         // build) reads as '' and loses, keeping this window's own choice.
-        return (meta.writerId || '') > _lastAsrDecision.writerId;
+        return (decision.writerId || '') > _lastAsrDecision.writerId;
     }
     // Bounded gate for the boot settings GET: settings POST bodies are built
     // at send time AFTER awaiting this gate, so once the GET settled the merge
@@ -304,6 +318,21 @@
         if (ownMeta.changedKeys.indexOf('independentAsrEnabled') !== -1) {
             _noteAsrDecision(ownMeta.writeId, ownMeta.writerId, snapshot.independentAsrEnabled);
         }
+        // Stamp the ASR key with the id of the decision that PRODUCED this
+        // value. _noteAsrDecision already refuses to advance the LOCAL decision
+        // for a mere re-assertion; the TRANSMITTED id must agree, or an
+        // unrelated save re-stamps a stale choice with a fresh id and reverts a
+        // newer toggle in another window. Omitted when the local decision does
+        // not describe the value being written, so receivers fall back to the
+        // write id exactly as they do for previous-build snapshots.
+        if (_lastAsrDecision
+            && _lastAsrDecision.value === snapshot.independentAsrEnabled) {
+            ownMeta.asrDecision = {
+                writeId: _lastAsrDecision.writeId,
+                writerId: _lastAsrDecision.writerId,
+                value: _lastAsrDecision.value
+            };
+        }
         localStorage.setItem('project_neko_settings', JSON.stringify(payload));
     }
 
@@ -329,7 +358,21 @@
             // not adopted by an already-hydrated receiver; a GENUINE toggle
             // from that build still carries independentAsrEnabled in
             // changedKeys and keeps flowing through asrChangedByOtherWindow.
-            asrAuthoritative: meta.asrAuthoritative === true
+            asrAuthoritative: meta.asrAuthoritative === true,
+            // Absent on previous-build snapshots and on writers with no
+            // matching decision: null routes the comparison back to
+            // (writeId, writerId), i.e. today's behaviour.
+            asrDecision: (meta.asrDecision
+                && typeof meta.asrDecision.writeId === 'number'
+                && isFinite(meta.asrDecision.writeId))
+                ? {
+                    writeId: meta.asrDecision.writeId,
+                    writerId: typeof meta.asrDecision.writerId === 'string'
+                        ? meta.asrDecision.writerId
+                        : '',
+                    value: meta.asrDecision.value
+                }
+                : null
         };
     }
 
@@ -821,7 +864,8 @@
                     _lastAppliedSharedWriteId = bootMeta.writeId;
                 }
                 if (bootMeta && bootMeta.changedKeys.indexOf('independentAsrEnabled') !== -1) {
-                    _noteAsrDecision(bootMeta.writeId, bootMeta.writerId, settings.independentAsrEnabled);
+                    const bootDecision = bootMeta.asrDecision || bootMeta;
+                    _noteAsrDecision(bootDecision.writeId, bootDecision.writerId, settings.independentAsrEnabled);
                 }
 
                 // 迁移逻辑：检测旧版设置并迁移到新字段
@@ -1288,7 +1332,8 @@
                 _dirtySettingsKeys.add('independentAsrEnabled');
                 S.independentAsrAuthoritative = true;
                 if (meta) {
-                    _noteAsrDecision(meta.writeId, meta.writerId, settings.independentAsrEnabled);
+                    const adopted = meta.asrDecision || meta;
+                    _noteAsrDecision(adopted.writeId, adopted.writerId, settings.independentAsrEnabled);
                 }
             }
             stopVisionAfterPrivacyEnabled();

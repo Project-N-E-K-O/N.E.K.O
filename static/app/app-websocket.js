@@ -121,6 +121,16 @@
 
         if (typeof window.stopMicCapture === 'function') {
             try {
+                // Stop recording WITHOUT notifying first: the backend is already
+                // tearing this session down, and a pause_session from a
+                // superseded recorder socket would be read as a character
+                // switch and get that socket closed (see the
+                // session_ended_by_server teardown below). stopMicCapture's own
+                // bare stopRecording() then hits its !S.isRecording early
+                // return, so no server message goes out.
+                if (typeof window.stopRecording === 'function') {
+                    window.stopRecording({ notifyServer: false });
+                }
                 await window.stopMicCapture();
             } catch (error) {
                 console.warn('[App] auto_close_mic cleanup failed:', error);
@@ -2380,6 +2390,26 @@
                         return;
                     }
 
+                    if (statusCode === 'ASR_AUDIO_PREPROCESSING_FAILED') {
+                        // Same class of failure as BLOCKED and the terminal
+                        // ASR_INDEPENDENT_* codes: the backend pins the route
+                        // to blocked for the rest of the session. But this code
+                        // rides neither channel — _fail_voice_input_pipeline
+                        // never reaches _handle_independent_asr_error (the only
+                        // BLOCKED emitter) and the code carries no
+                        // ASR_INDEPENDENT_ prefix — so without this branch it
+                        // is the one status that says "route dead" while the
+                        // microphone keeps running.
+                        tearDownBlockedVoiceRoute();
+                        if (typeof window.showStatusToast === 'function') {
+                            window.showStatusToast(
+                                window.t ? window.t('microphone.audioPreprocessingFailed') : 'Microphone audio processing failed. Voice input has stopped for this session. Please start a new voice session.',
+                                5000
+                            );
+                        }
+                        return;
+                    }
+
                     if (statusCode && statusCode.indexOf('ASR_INDEPENDENT_') === 0) {
                         var asrProvider = (statusDetails && statusDetails.provider) || '';
                         S.independentAsrProvider = asrProvider;
@@ -2623,6 +2653,35 @@
                                     await sessionStartPromise;
 
                                     if (typeof window.showCurrentModel === 'function') await window.showCurrentModel();
+                                    if (S.voiceInputRouteBlocked === true) {
+                                        // The rebuilt session came back fail-closed (independent
+                                        // ASR was enabled and failed to start). Its status ALWAYS
+                                        // precedes this ack — lifecycle.py runs
+                                        // _start_independent_asr_if_enabled before
+                                        // send_session_started — so this latch is THIS session's
+                                        // own verdict, and startMicCapture would refuse silently.
+                                        // Reporting "restart complete", lighting the floating mic
+                                        // and leaving the button row disabled would claim a live
+                                        // voice call with no microphone and no way back: the
+                                        // restart disabled mute/screen/stop/reset/return above and
+                                        // nothing here re-enables them. Fixed at the caller rather
+                                        // than inside startMicCapture, because the toast and the
+                                        // button row are outside it — moving the unwind there
+                                        // would not fix this.
+                                        if (typeof window.abortVoiceStartForBlockedRoute === 'function') {
+                                            window.abortVoiceStartForBlockedRoute();
+                                        }
+                                        var _muB = muteButton(); if (_muB) _muB.disabled = true;
+                                        var _sbB = screenButton(); if (_sbB) _sbB.disabled = true;
+                                        var _stB = stopButton(); if (_stB) _stB.disabled = true;
+                                        var _rsB = resetSessionButton(); if (_rsB) _rsB.disabled = false;
+                                        var _rtB = returnSessionButton(); if (_rtB) _rtB.disabled = false;
+                                        if (typeof window.syncFloatingMicButtonState === 'function') {
+                                            window.syncFloatingMicButtonState(false);
+                                        }
+                                        // Let the ASR failure toast stand as the explanation.
+                                        return;
+                                    }
                                     if (typeof window.startMicCapture === 'function') await window.startMicCapture();
                                     if (S.screenCaptureStream != null) {
                                         if (typeof window.startScreenSharing === 'function') await window.startScreenSharing();
@@ -3400,7 +3459,14 @@
                     }
 
                     if (S.isRecording) {
-                        if (typeof window.stopRecording === 'function') window.stopRecording();
+                        // notifyServer:false — the server ALREADY ended this
+                        // session, so pause_session is pure noise; worse, sent
+                        // from a superseded recorder socket it is not a
+                        // voice-path message, so the router treats it as a
+                        // character switch, closes the socket, and the 3 s
+                        // auto-reconnect re-steals the session identity from
+                        // the window that legitimately owns it.
+                        if (typeof window.stopRecording === 'function') window.stopRecording({ notifyServer: false });
                     }
 
                     (async function () {
