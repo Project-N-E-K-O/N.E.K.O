@@ -131,7 +131,14 @@ def _may_mutate_on_call(replacement: ast.expr) -> bool:
       exactly that shape, so treat it as unsafe rather than guess.
     """
     if isinstance(replacement, ast.Lambda):
-        return any(isinstance(inner, ast.Call) for inner in ast.walk(replacement.body))
+        mutating_nodes = (
+            ast.Call,
+            # 推导式/生成器会隐式迭代：`lambda: [x for x in it][0]` 一样把迭代器
+            # 吃掉，却一个 Call 节点都没有。
+            ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp,
+            ast.Await, ast.Yield, ast.YieldFrom, ast.NamedExpr,
+        )
+        return any(isinstance(inner, mutating_nodes) for inner in ast.walk(replacement.body))
     return True
 
 
@@ -192,7 +199,10 @@ def test_no_test_installs_a_mutating_fake_on_the_stdlib_time_module():
                     replacement = arg_value
                 elif isinstance(arg_target, ast.Constant) and arg_name is not None:
                     dotted = arg_target.value
-                    if not isinstance(dotted, str) or ".time." not in f"{dotted}.":
+                    if not isinstance(dotted, str):
+                        continue
+                    # 既认 "pkg.mod.time.monotonic"，也认顶层的 "time.monotonic"
+                    if ".time." not in f"{dotted}." and not dotted.startswith("time."):
                         continue
                     replacement = arg_name
                 else:
