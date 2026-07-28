@@ -940,3 +940,59 @@ test('core model input regions keep per-drawable mapped geometry when direct ver
         }
     ]);
 });
+
+test('core edge peek fallback maps drawables against unclipped model bounds before viewport clipping', () => {
+    const harness = createCoreHarness({ innerWidth: 800, innerHeight: 600 });
+    const manager = new harness.Live2DManager();
+    const model = {
+        destroyed: false,
+        getBounds: () => ({
+            left: -390,
+            right: 110,
+            top: 0,
+            bottom: 600,
+            width: 500,
+            height: 600
+        }),
+        internalModel: {
+            coreModel: {
+                getDrawableCount: () => 1
+            }
+        }
+    };
+    manager.currentModel = model;
+    manager._live2DPeekState = { active: true, model };
+    manager.pixi_app = {
+        renderer: {
+            screen: { width: 800, height: 600 }
+        }
+    };
+    manager._getModelLogicalRect = () => ({
+        x: -1,
+        y: -1,
+        width: 2,
+        height: 2
+    });
+    manager._getDrawableLogicalRect = () => ({
+        x: 0.6,
+        y: -0.5,
+        width: 0.4,
+        height: 1
+    });
+    manager._getDrawableDirectScreenRect = () => null;
+    manager._ensureModelWorldTransform = () => {};
+    manager._isDrawableRenderable = () => true;
+
+    assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects({ padding: 0 }))), [
+        {
+            left: 10,
+            right: 110,
+            top: 150,
+            bottom: 450,
+            width: 100,
+            height: 300,
+            centerX: 60,
+            centerY: 300
+        }
+    ]);
+});

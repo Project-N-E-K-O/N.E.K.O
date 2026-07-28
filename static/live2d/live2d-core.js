@@ -1503,7 +1503,13 @@ class Live2DManager {
         const padding = Number.isFinite(requestedPadding)
             ? Math.max(0, Math.min(32, requestedPadding))
             : 8;
-        const modelBounds = this.getModelScreenBounds();
+        // Drawable vertices already carry their real screen coordinates. When
+        // vertices are temporarily unavailable, logical fallback mapping must
+        // use the model's full (unclipped) bounds as its scale basis. Edge peek
+        // deliberately makes getModelScreenBounds() return only the visible
+        // viewport intersection, which would otherwise compress every fallback
+        // drawable into the narrow revealed strip.
+        const modelBounds = this._getUnclippedModelScreenBounds();
         const drawableRects = this._getRenderableDrawableScreenRects(
             modelBounds,
             null,
@@ -4728,59 +4734,8 @@ class Live2DManager {
         };
     }
 
-    /**
-     * 获取 Live2D 模型在屏幕上的边界
-     * @returns {Object|null} 边界对象 { left, right, top, bottom, width, height, centerX, centerY } 或 null
-     */
-    getModelScreenBounds() {
-        const edgePeekState = this._live2DPeekState;
-        if (edgePeekState && edgePeekState.active) {
-            const model = edgePeekState.model || this.currentModel;
-            if (model && !model.destroyed && typeof model.getBounds === 'function') {
-                const bounds = model.getBounds();
-                const left = Number(bounds.left ?? bounds.x);
-                const top = Number(bounds.top ?? bounds.y);
-                const right = Number(bounds.right ?? (left + Number(bounds.width)));
-                const bottom = Number(bounds.bottom ?? (top + Number(bounds.height)));
-                const renderer = this.pixi_app && this.pixi_app.renderer;
-                const screen = renderer && renderer.screen;
-                const rendererW = Number(screen && screen.width);
-                const rendererH = Number(screen && screen.height);
-                const viewportLeft = 0;
-                const viewportTop = 0;
-                const viewportRight = Math.max(0, Number.isFinite(rendererW) && rendererW > 0
-                    ? Math.min(rendererW, Number(window.innerWidth) || rendererW)
-                    : Number(window.innerWidth) || 0);
-                const viewportBottom = Math.max(0, Number.isFinite(rendererH) && rendererH > 0
-                    ? Math.min(rendererH, Number(window.innerHeight) || rendererH)
-                    : Number(window.innerHeight) || 0);
-                const visibleLeft = Math.max(left, viewportLeft);
-                const visibleRight = Math.min(right, viewportRight);
-                const visibleTop = Math.max(top, viewportTop);
-                const visibleBottom = Math.min(bottom, viewportBottom);
-                const width = visibleRight - visibleLeft;
-                const height = visibleBottom - visibleTop;
-                if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
-                    return {
-                        left: visibleLeft,
-                        right: visibleRight,
-                        top: visibleTop,
-                        bottom: visibleBottom,
-                        width: width,
-                        height: height,
-                        centerX: visibleLeft + width / 2,
-                        centerY: visibleTop + height / 2
-                    };
-                }
-            }
-        }
-
-        const model = this.currentModel;
-        if (!model) {
-            return null;
-        }
-
-        if (typeof model.getBounds !== 'function') {
+    _getUnclippedModelScreenBounds(model = this.currentModel) {
+        if (!model || model.destroyed || typeof model.getBounds !== 'function') {
             return null;
         }
 
@@ -4791,16 +4746,14 @@ class Live2DManager {
             console.warn('[Live2D] 获取模型屏幕边界失败:', error);
             return null;
         }
-
         if (!bounds) {
             return null;
         }
 
-        const left = Number(bounds.left);
-        const right = Number(bounds.right);
-        const top = Number(bounds.top);
-        const bottom = Number(bounds.bottom);
-
+        const left = Number(bounds.left ?? bounds.x);
+        const top = Number(bounds.top ?? bounds.y);
+        const right = Number(bounds.right ?? (left + Number(bounds.width)));
+        const bottom = Number(bounds.bottom ?? (top + Number(bounds.height)));
         if (!Number.isFinite(left) || !Number.isFinite(right) ||
             !Number.isFinite(top) || !Number.isFinite(bottom)) {
             return null;
@@ -4812,7 +4765,7 @@ class Live2DManager {
             return null;
         }
 
-        const stableBounds = {
+        return {
             left: left,
             right: right,
             top: top,
@@ -4822,8 +4775,61 @@ class Live2DManager {
             centerX: left + width / 2,
             centerY: top + height / 2
         };
+    }
 
-        return stableBounds;
+    /**
+     * 获取 Live2D 模型在屏幕上的边界
+     * @returns {Object|null} 边界对象 { left, right, top, bottom, width, height, centerX, centerY } 或 null
+     */
+    getModelScreenBounds() {
+        const edgePeekState = this._live2DPeekState;
+        const rawBounds = this._getUnclippedModelScreenBounds(
+            edgePeekState && edgePeekState.active
+                ? (edgePeekState.model || this.currentModel)
+                : this.currentModel
+        );
+        if (!rawBounds) {
+            return null;
+        }
+
+        if (edgePeekState && edgePeekState.active) {
+            const left = rawBounds.left;
+            const top = rawBounds.top;
+            const right = rawBounds.right;
+            const bottom = rawBounds.bottom;
+            const renderer = this.pixi_app && this.pixi_app.renderer;
+            const screen = renderer && renderer.screen;
+            const rendererW = Number(screen && screen.width);
+            const rendererH = Number(screen && screen.height);
+            const viewportLeft = 0;
+            const viewportTop = 0;
+            const viewportRight = Math.max(0, Number.isFinite(rendererW) && rendererW > 0
+                ? Math.min(rendererW, Number(window.innerWidth) || rendererW)
+                : Number(window.innerWidth) || 0);
+            const viewportBottom = Math.max(0, Number.isFinite(rendererH) && rendererH > 0
+                ? Math.min(rendererH, Number(window.innerHeight) || rendererH)
+                : Number(window.innerHeight) || 0);
+            const visibleLeft = Math.max(left, viewportLeft);
+            const visibleRight = Math.min(right, viewportRight);
+            const visibleTop = Math.max(top, viewportTop);
+            const visibleBottom = Math.min(bottom, viewportBottom);
+            const width = visibleRight - visibleLeft;
+            const height = visibleBottom - visibleTop;
+            if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+                return {
+                    left: visibleLeft,
+                    right: visibleRight,
+                    top: visibleTop,
+                    bottom: visibleBottom,
+                    width: width,
+                    height: height,
+                    centerX: visibleLeft + width / 2,
+                    centerY: visibleTop + height / 2
+                };
+            }
+        }
+
+        return rawBounds;
     }
 
     // 复位模型位置和缩放到初始状态
