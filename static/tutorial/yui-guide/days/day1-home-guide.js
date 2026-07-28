@@ -191,6 +191,7 @@
                     cursorAction: 'move',
                     cursorMoveDurationMs: 900,
                     operation: 'cleanup',
+                    preserveExternalizedChatGuideTarget: true,
                     petalTransition: true
                 }
             ]
