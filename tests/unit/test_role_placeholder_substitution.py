@@ -333,8 +333,13 @@ async def test_main_server_event_failure_logs_only_exception_type(monkeypatch):
         raise RuntimeError(private_error)
 
     test_logger = MagicMock()
+    test_logger.isEnabledFor.return_value = True
+    printed: list[int] = []
     monkeypatch.setattr(character_runtime, "_get_session_manager", fail_session_lookup)
     monkeypatch.setattr(character_runtime, "logger", test_logger)
+    monkeypatch.setattr(
+        character_runtime.traceback, "print_exc", lambda *a, **k: printed.append(1)
+    )
 
     await main_server._handle_agent_event(
         {
@@ -353,12 +358,26 @@ async def test_main_server_event_failure_logs_only_exception_type(monkeypatch):
     )
     assert private_error not in rendered
 
-    # 分级规则：私密文本不得进 info 及以上，可以进 debug。完整 traceback（其末行
-    # 就是异常消息，可能含用户对话文本）因此只走 DEBUG——否则线上排查时只剩一个
-    # 异常类型名，连哪个 key 出错都不知道。
-    test_logger.debug.assert_called_once()
-    assert test_logger.debug.call_args.kwargs.get("exc_info") is True
-    for forbidden in ("info", "error", "critical", "exception"):
+    # 异常消息可能带用户对话文本，所以一个 logger 级别都不能碰——DEBUG 也不行：
+    # 源码运行且 log_level<=DEBUG 时 setup_logging 会挂一个只收 DEBUG 的
+    # RotatingFileHandler 落到 logs/，logger.debug 同样会被持久化。仓库规则见
+    # .agent/rules/neko-guide.md 与 docs/contributing/code-style.md。
+    for forbidden in ("debug", "info", "error", "critical", "exception"):
         assert not getattr(test_logger, forbidden).called, (
-            f"异常详情不得进 {forbidden} 级别（会落进生产日志）"
+            f"异常详情不得进 logger.{forbidden}（logger 输出会落盘）"
         )
+    # traceback 走 print，且只在 DEBUG 级下输出
+    assert printed == [1], "DEBUG 级下应通过 print 输出 traceback"
+
+    # DEBUG 关闭时连 print 也不该有
+    printed.clear()
+    test_logger.reset_mock()
+    test_logger.isEnabledFor.return_value = False
+    await main_server._handle_agent_event(
+        {
+            "event_type": "task_update",
+            "lanlan_name": "兰兰",
+            "task": {},
+        }
+    )
+    assert printed == [], "非 DEBUG 级下不应打印 traceback"
