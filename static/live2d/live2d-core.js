@@ -520,6 +520,52 @@ class Live2DManager {
         return await this.initPIXI(canvasId, containerId, options);
     }
 
+    _isModelInputRegionInteractive() {
+        if (!this._isModelReadyForInteraction) {
+            return false;
+        }
+
+        const getStyleValue = (element, propertyName, camelName) => {
+            const style = element?.style;
+            if (!style) return '';
+            const directValue = style[camelName];
+            if (directValue !== undefined && directValue !== null && directValue !== '') {
+                return String(directValue).trim().toLowerCase();
+            }
+            if (typeof style.getPropertyValue === 'function') {
+                return String(style.getPropertyValue(propertyName) || '').trim().toLowerCase();
+            }
+            return '';
+        };
+        const isVisuallyHidden = (element, checkPointerEvents = false) => {
+            if (!element) return false;
+            const classList = element.classList;
+            if (classList && (classList.contains('hidden') || classList.contains('minimized'))) {
+                return true;
+            }
+            if (typeof element.getAttribute === 'function' &&
+                element.getAttribute('data-neko-model-goodbye-exiting') === 'true') {
+                return true;
+            }
+
+            const display = getStyleValue(element, 'display', 'display');
+            const visibility = getStyleValue(element, 'visibility', 'visibility');
+            const opacity = getStyleValue(element, 'opacity', 'opacity');
+            if (display === 'none' || visibility === 'hidden' ||
+                (opacity !== '' && Number.isFinite(Number(opacity)) && Number(opacity) <= 0)) {
+                return true;
+            }
+            return checkPointerEvents &&
+                getStyleValue(element, 'pointer-events', 'pointerEvents') === 'none';
+        };
+
+        const container = document.getElementById('live2d-container');
+        const canvas = this.pixi_app?.view || document.getElementById('live2d-canvas');
+        // The Electron pet root intentionally stays pointer-transparent in normal
+        // operation, so only canvas pointer-events are an interaction signal.
+        return !isVisuallyHidden(container) && !isVisuallyHidden(canvas, true);
+    }
+
     /**
      * 暂停渲染循环（用于节省资源，例如进入模型管理界面时）
      */
@@ -1553,6 +1599,10 @@ class Live2DManager {
      * @returns {Array<Object>} 屏幕坐标矩形
      */
     getModelInputRegionRects(options = {}) {
+        if (!this._isModelInputRegionInteractive()) {
+            return [];
+        }
+
         const edgePeekState = this._live2DPeekState;
         if (edgePeekState && edgePeekState.active &&
             (edgePeekState.phase === 'hidden' || edgePeekState.phase === 'hiding')) {

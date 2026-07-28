@@ -182,7 +182,11 @@ async function waitForQueuedFrame(harness, attempts = 10) {
     }
 }
 
-function createCoreHarness({ innerWidth = 1000, innerHeight = 800 } = {}) {
+function createCoreHarness({
+    innerWidth = 1000,
+    innerHeight = 800,
+    elementsById = {}
+} = {}) {
     const context = {
         console,
         setTimeout,
@@ -201,7 +205,7 @@ function createCoreHarness({ innerWidth = 1000, innerHeight = 800 } = {}) {
             __LANLAN_IS_ELECTRON_PET__: false
         },
         document: {
-            getElementById: () => null
+            getElementById: (id) => elementsById[id] || null
         }
     };
     context.globalThis = context;
@@ -762,6 +766,7 @@ test('core edge peek screen bounds use renderer screen instead of wider window',
 test('core model input regions preserve asymmetric drawable geometry before viewport clipping', () => {
     const harness = createCoreHarness({ innerWidth: 1920, innerHeight: 1200 });
     const manager = new harness.Live2DManager();
+    manager._isModelReadyForInteraction = true;
     manager.pixi_app = {
         renderer: {
             screen: { width: 1920, height: 1200 }
@@ -817,6 +822,7 @@ test('core model input regions preserve asymmetric drawable geometry before view
 test('core model input regions return empty when drawable geometry is unavailable', () => {
     const harness = createCoreHarness();
     const manager = new harness.Live2DManager();
+    manager._isModelReadyForInteraction = true;
     manager.getModelScreenBounds = () => ({
         left: 100,
         right: 500,
@@ -833,6 +839,7 @@ test('core model input regions return empty when drawable geometry is unavailabl
 test('core model input regions stay empty while edge peek is hiding or hidden', () => {
     const harness = createCoreHarness();
     const manager = new harness.Live2DManager();
+    manager._isModelReadyForInteraction = true;
     manager._getRenderableDrawableScreenRects = () => {
         throw new Error('hidden edge peek must not calculate drawable geometry');
     };
@@ -843,9 +850,50 @@ test('core model input regions stay empty while edge peek is hiding or hidden', 
     }
 });
 
+test('core model input regions stay empty until interaction is ready', () => {
+    const harness = createCoreHarness();
+    const manager = new harness.Live2DManager();
+    manager._getRenderableDrawableScreenRects = () => {
+        throw new Error('loading model must not calculate drawable geometry');
+    };
+
+    assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects())), []);
+});
+
+test('core model input regions stay empty when the model surface is hidden or non-interactive', () => {
+    const containerClasses = new Set(['minimized']);
+    const container = {
+        classList: { contains: (name) => containerClasses.has(name) },
+        style: {},
+        getAttribute: () => null
+    };
+    const canvas = {
+        classList: { contains: () => false },
+        style: {},
+        getAttribute: () => null
+    };
+    const harness = createCoreHarness({
+        elementsById: {
+            'live2d-container': container,
+            'live2d-canvas': canvas
+        }
+    });
+    const manager = new harness.Live2DManager();
+    manager._isModelReadyForInteraction = true;
+    manager._getRenderableDrawableScreenRects = () => {
+        throw new Error('hidden model must not calculate drawable geometry');
+    };
+
+    assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects())), []);
+    containerClasses.clear();
+    canvas.style.pointerEvents = 'none';
+    assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects())), []);
+});
+
 test('core model input regions clamp padding to the supported 0-32 range', () => {
     const harness = createCoreHarness({ innerWidth: 1000, innerHeight: 1000 });
     const manager = new harness.Live2DManager();
+    manager._isModelReadyForInteraction = true;
     manager.pixi_app = {
         renderer: {
             screen: { width: 1000, height: 1000 }
@@ -903,6 +951,7 @@ test('core model input regions clamp padding to the supported 0-32 range', () =>
 test('core model input regions keep per-drawable mapped geometry when direct vertices are unavailable', () => {
     const harness = createCoreHarness({ innerWidth: 800, innerHeight: 600 });
     const manager = new harness.Live2DManager();
+    manager._isModelReadyForInteraction = true;
     manager.currentModel = {
         internalModel: {
             coreModel: {
@@ -979,6 +1028,7 @@ test('core model input regions keep per-drawable mapped geometry when direct ver
 test('core drawable fallback transforms logical corners through a rotated model', () => {
     const harness = createCoreHarness();
     const manager = new harness.Live2DManager();
+    manager._isModelReadyForInteraction = true;
     manager.currentModel = {
         internalModel: {
             localTransform: { a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0 },
@@ -1008,6 +1058,7 @@ test('core drawable fallback transforms logical corners through a rotated model'
 test('core edge peek fallback maps drawables against unclipped model bounds before viewport clipping', () => {
     const harness = createCoreHarness({ innerWidth: 800, innerHeight: 600 });
     const manager = new harness.Live2DManager();
+    manager._isModelReadyForInteraction = true;
     const model = {
         destroyed: false,
         getBounds: () => ({
