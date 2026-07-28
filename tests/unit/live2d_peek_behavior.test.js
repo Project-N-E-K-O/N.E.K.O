@@ -1009,6 +1009,14 @@ test('performance frame session markers clear on restore and remain for committe
     assert.equal(stage.release(fullTurnSession.id, 'full-turn-committed'), true);
     assert.equal(context.window._nekoAvatarPerformanceFrameContainer, null);
 
+    container.style.transform = '';
+    const roundedIdentitySession = stage.acquire('rounded-identity-frame-test', { capabilities: ['frame'] });
+    driver.applyFrame({ x: 0.002, y: 0, scale: 1, rotate: 0, opacity: '' }, roundedIdentitySession);
+    assert.match(container.style.transform, /translate3d\(0\.00px, 0\.00px, 0\)/);
+    assert.equal(stage.commitCurrentFrameAsBaseline(roundedIdentitySession.id), true);
+    assert.equal(stage.release(roundedIdentitySession.id, 'rounded-identity-committed'), true);
+    assert.equal(context.window._nekoAvatarPerformanceFrameContainer, null);
+
     const replacedSession = stage.acquire('replaced-container-test', { capabilities: ['frame'] });
     driver.applyFrame({ x: 8, y: 0, scale: 1, rotate: 0, opacity: '' }, replacedSession);
     currentContainer = replacementContainer;

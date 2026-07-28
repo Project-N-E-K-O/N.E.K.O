@@ -1765,21 +1765,25 @@
             const y = Number(frame.y || 0);
             const scale = Number(frame.scale || 1);
             const rotate = Number(frame.rotate || 0);
-            const normalizedRotate = ((rotate % 360) + 360) % 360;
-            const rotationDistanceFromIdentity = Math.min(
-                normalizedRotate,
-                360 - normalizedRotate
-            );
+            const serializedX = x.toFixed(2);
+            const serializedY = y.toFixed(2);
+            const serializedScale = scale.toFixed(4);
+            const serializedRotate = rotate.toFixed(3);
+            const effectiveX = Number(serializedX);
+            const effectiveY = Number(serializedY);
+            const effectiveScale = Number(serializedScale);
+            const effectiveRotate = Number(serializedRotate);
+            const normalizedEffectiveRotate = ((effectiveRotate % 360) + 360) % 360;
             this.activeFrameTransformNonIdentity =
-                Math.abs(x) > 0.001 ||
-                Math.abs(y) > 0.001 ||
-                Math.abs(scale - 1) > 0.0001 ||
-                rotationDistanceFromIdentity > 0.001;
+                effectiveX !== 0 ||
+                effectiveY !== 0 ||
+                effectiveScale !== 1 ||
+                normalizedEffectiveRotate !== 0;
             const transform = [
                 baseTransform,
-                'translate3d(' + x.toFixed(2) + 'px, ' + y.toFixed(2) + 'px, 0)',
-                'scale(' + scale.toFixed(4) + ')',
-                'rotate(' + rotate.toFixed(3) + 'deg)'
+                'translate3d(' + serializedX + 'px, ' + serializedY + 'px, 0)',
+                'scale(' + serializedScale + ')',
+                'rotate(' + serializedRotate + 'deg)'
             ].filter(Boolean).join(' ');
             container.style.transform = transform;
             if (this.activeFrameTransformContainer === container) {
