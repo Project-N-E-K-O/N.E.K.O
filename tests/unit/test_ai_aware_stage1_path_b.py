@@ -1726,3 +1726,75 @@ async def test_id_less_disk_rows_do_not_contaminate_other_id_less_rows(tmp_path)
         "两条都没有 id 不代表它们是同一条，不该被 read-merge 串到一起"
     )
     assert not persisted[0].get('absorbed'), "absorbed 同理，不该凭空被回写"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_id", [12345, 3.5, True])
+async def test_hashable_legacy_ids_still_keep_their_monotonic_flags(tmp_path, legacy_id):
+    """Only unusable ids may be dropped; hashable scalars must still match.
+
+    A legacy row keyed by a bare number matched between cache and disk before,
+    so excluding it from the read-merge index would let a stale save push
+    ``absorbed`` / ``signal_processed`` back to False — trading the crash on
+    malformed ids for quiet re-consumption of already-processed facts.
+    """
+    fs = _make_fact_store(facts={})
+    fs._config_manager.memory_dir = str(tmp_path)
+
+    fs._facts['悠怡'] = [{
+        'id': legacy_id,
+        'text': '老库里的一条',
+        'source': 'user_observation',
+        'signal_processed': True,
+        'absorbed': True,
+    }]
+    fs.save_facts('悠怡')
+
+    # 旧缓存把两个单调字段都退回去，存盘时必须被磁盘顶回来。
+    fs._facts['悠怡'][0]['signal_processed'] = False
+    fs._facts['悠怡'][0]['absorbed'] = False
+    fs.save_facts('悠怡')
+
+    with open(fs._facts_path('悠怡'), encoding='utf-8') as handle:
+        persisted = json.load(handle)
+    assert persisted[0]['signal_processed'] is True
+    assert persisted[0]['absorbed'] is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_duplicate_disk_rows_block_the_unseal_exemption(tmp_path):
+    """An id is only 'still ai_disclosure' when every disk row with it says so.
+
+    Hand-edited or reconciled files can carry the same id twice — one row still
+    ai_disclosure, one already upgraded and consumed. Reading the two sets
+    independently makes the id look unsealed and lets a stale cache push the
+    consumed row back to unprocessed.
+    """
+    fs = _make_fact_store(facts={})
+    fs._config_manager.memory_dir = str(tmp_path)
+
+    path = fs._facts_path('悠怡')
+    with open(path, 'w', encoding='utf-8') as handle:
+        json.dump([
+            {'id': 'fact_dup', 'text': '同 id 的旧行', 'source': 'ai_disclosure',
+             'signal_processed': True},
+            {'id': 'fact_dup', 'text': '同 id 已升级并消费', 'source': 'user_observation',
+             'signal_processed': True},
+        ], handle, ensure_ascii=False)
+
+    fs._facts['悠怡'] = [{
+        'id': 'fact_dup',
+        'text': '本进程刚升级并挂了纸条',
+        'source': 'user_observation',
+        'signal_processed': False,
+        fs._SIGNAL_RESET_PENDING: True,
+    }]
+    fs.save_facts('悠怡')
+
+    with open(path, encoding='utf-8') as handle:
+        persisted = json.load(handle)
+    assert persisted[0]['signal_processed'] is True, (
+        "磁盘上同 id 还有一行已升级并消费，纸条不该放行回写"
+    )

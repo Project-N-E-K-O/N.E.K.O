@@ -135,9 +135,20 @@ def _readable_fact_id(entry: dict):
     directly raises ``KeyError`` / ``TypeError: unhashable``, neither of which
     the read-merge's ``except (json.JSONDecodeError, OSError)`` catches, so one
     malformed row would abort every future save instead of being overwritten.
+
+    Only genuinely unusable ids are dropped. A legacy scalar id such as
+    ``12345`` still matches between cache and disk exactly as it did before, so
+    excluding it would silently stop preserving that row's ``absorbed`` /
+    ``signal_processed`` flags — trading the crash for quiet data loss.
     """
     fact_id = entry.get('id')
-    return fact_id if isinstance(fact_id, str) and fact_id else None
+    if not fact_id:  # 缺失、None、空串：空串会让所有「没有真 id」的行互相撞上
+        return None
+    try:
+        hash(fact_id)
+    except TypeError:  # list / dict 之类，进不了集合
+        return None
+    return fact_id
 
 
 class FactStore:
@@ -317,12 +328,25 @@ class FactStore:
                             # （磁盘上是 user_observation + True）。此时本进程拿着
                             # 旧缓存再升一次并放行回写，等于把一条已消费的 fact 重新
                             # 排回 Stage-2——正是这段 read-merge 要挡的跨进程回归。
-                            disk_ai_disclosure_ids = {
-                                _readable_fact_id(f) for f in disk_facts
-                                if isinstance(f, dict)
-                                and f.get('source', self._SOURCE_DEFAULT) == 'ai_disclosure'
-                                and _readable_fact_id(f) is not None
-                            }
+                            # 重复 id 按保守口径：只有当磁盘上带这个 id 的行**全部**
+                            # 还是 ai_disclosure 时才算「没人升过」。手改或对账后的
+                            # 文件里可能同一个 id 有两行——一行还是 ai_disclosure、
+                            # 另一行已升级且 signal_processed=True。两个集合各自都会
+                            # 包含它，只判「在 disclosure 集合里」就会放行回写，把已
+                            # 消费状态盖回 False。
+                            disk_disclosure_ids: set = set()
+                            disk_other_source_ids: set = set()
+                            for f in disk_facts:
+                                if not isinstance(f, dict):
+                                    continue
+                                disk_id = _readable_fact_id(f)
+                                if disk_id is None:
+                                    continue
+                                if f.get('source', self._SOURCE_DEFAULT) == 'ai_disclosure':
+                                    disk_disclosure_ids.add(disk_id)
+                                else:
+                                    disk_other_source_ids.add(disk_id)
+                            disk_ai_disclosure_ids = disk_disclosure_ids - disk_other_source_ids
                             if absorbed_ids or signal_processed_ids:
                                 for f in facts:
                                     if f.get('id') in absorbed_ids:
