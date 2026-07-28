@@ -298,8 +298,13 @@
                 }
             };
             const fetchNativeDelegate = async () => {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 4000);
                 try {
-                    const response = await fetch('/api/card-drop/native-delegate', { cache: 'no-store' });
+                    const response = await fetch('/api/card-drop/native-delegate', {
+                        cache: 'no-store',
+                        signal: controller.signal,
+                    });
                     if (!response.ok) {
                         const reason = response.status === 409
                             ? 'desktop not logged in'
@@ -314,6 +319,8 @@
                 } catch (error) {
                     console.warn('[social] native delegate fetch failed (non-fatal):', error);
                     return '';
+                } finally {
+                    clearTimeout(timeoutId);
                 }
             };
             const attachNativeSyncTicket = async (targetUrl) => {

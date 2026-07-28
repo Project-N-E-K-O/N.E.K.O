@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
 import json
 import logging
@@ -678,7 +679,23 @@ async def test_shared_facts_selector_rejects_mismatched_runtime_character(
 
 @pytest.fixture
 def client(monkeypatch):
+    from main_routers import community_oauth
+
     monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "https://community.example")
+
+    async def current_desktop_status():
+        snapshot = await asyncio.to_thread(C._desktop_session_snapshot)
+        return {
+            "logged_in": bool(snapshot),
+            "snapshot": snapshot,
+            "auth": {},
+        }
+
+    monkeypatch.setattr(
+        community_oauth,
+        "resolve_saved_oauth_status",
+        current_desktop_status,
+    )
     C._native_sync_tickets.clear()
     C._native_delegates.clear()
     app = FastAPI()
@@ -804,6 +821,97 @@ def test_native_delegate_handoff_is_local_ui_only_and_validates_return_url(
     assert allowed.headers["location"].startswith(
         "https://community.example/cards?tab=forge#native_delegate="
     )
+
+
+def test_native_delegate_backfills_a_verified_legacy_desktop_session(
+    client,
+    tmp_path,
+    monkeypatch,
+):
+    auth = tmp_path / "community_auth.json"
+    social = tmp_path / "social_session.json"
+    auth.write_text(
+        json.dumps(
+            {
+                "access_token": "legacy-desktop-token",
+                "refresh_token": "legacy-desktop-refresh",
+            }
+        ),
+        encoding="utf-8",
+    )
+    social.write_text(
+        json.dumps(
+            {
+                "baseUrl": "https://community.example",
+                "token": "legacy-desktop-token",
+                "refresh_token": "legacy-desktop-refresh",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    monkeypatch.setattr(C, "_social_session_path", lambda: social)
+    monkeypatch.setattr(C, "_legacy_social_session_path", lambda: social)
+    seen = _identity_http_client(
+        monkeypatch,
+        {"legacy-desktop-token": (USER_A_ID, "oauth")},
+    )
+
+    response = client.get(
+        "/api/card-drop/native-delegate",
+        headers={"Sec-Fetch-Site": "same-origin"},
+    )
+
+    assert response.status_code == 200
+    assert seen == [("get", "legacy-desktop-token")]
+    saved = json.loads(social.read_text(encoding="utf-8"))
+    assert saved["local_user_id"] == USER_A_ID
+    assert saved["auth_source"] == "oauth"
+    assert C._native_delegate_entry(response.json()["native_delegate"]) is not None
+
+
+def test_native_delegate_is_bound_to_the_refreshed_oauth_session(
+    client,
+    monkeypatch,
+):
+    from main_routers import community_oauth
+
+    current = {
+        "snapshot": _delegate_session(access_token="expired-desktop-token"),
+    }
+    refreshed = _delegate_session(access_token="refreshed-desktop-token")
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: current["snapshot"])
+
+    async def refresh_before_issuance():
+        current["snapshot"] = refreshed
+        return {"logged_in": True, "snapshot": refreshed, "auth": {}}
+
+    async def fake_build(**kwargs):
+        return {"character": kwargs["runtime_character_hint"], "facts": []}
+
+    monkeypatch.setattr(
+        community_oauth,
+        "resolve_saved_oauth_status",
+        refresh_before_issuance,
+    )
+    monkeypatch.setattr(C, "_build_local_forge_facts", fake_build)
+
+    issued = client.get(
+        "/api/card-drop/native-delegate",
+        headers={"Sec-Fetch-Site": "same-origin"},
+    )
+    assert issued.status_code == 200
+    token = issued.json()["native_delegate"]
+    assert C._native_delegate_entry(token)["session_fingerprint"] == (
+        C._desktop_session_fingerprint(refreshed)
+    )
+
+    facts = client.post(
+        "/api/card-drop/facts/query",
+        json={"runtime_character_hint": "Lanlan"},
+        headers=_delegate_request_headers(token),
+    )
+    assert facts.status_code == 200
 
 
 def test_native_delegate_is_invalidated_by_logout_or_account_switch(

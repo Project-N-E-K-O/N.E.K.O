@@ -1209,6 +1209,36 @@ def _handoff_return_url(return_to: str | None, audience: str) -> str | None:
     return f"{base_parsed.scheme}://{base_parsed.netloc}{path}{query}"
 
 
+async def _native_delegate_session_snapshot() -> tuple[dict | None, str]:
+    """Refresh, validate, and load a fingerprintable desktop session."""
+    # Pet requests this endpoint before its separate auth-status probe. Resolve
+    # OAuth first so a just-refreshed access token cannot invalidate the newly
+    # issued delegate immediately after the community tab opens.
+    from main_routers import community_oauth
+
+    status = await community_oauth.resolve_saved_oauth_status()
+    if not status.get("logged_in"):
+        return None, "unavailable" if status.get("snapshot") else "missing"
+
+    snapshot = await asyncio.to_thread(_desktop_session_snapshot)
+    if snapshot is None:
+        return None, "missing"
+    if _desktop_session_fingerprint(snapshot):
+        return snapshot, ""
+
+    base = str(snapshot.get("base_url") or _social_base_url()).strip().rstrip("/")
+    lookup = await _resolve_saved_desktop_identity(base)
+    if lookup.identity is None:
+        return None, lookup.failure or "rejected"
+
+    # Delegate validation re-reads the persisted desktop session on every use.
+    # Issue only after the verified legacy identity was durably backfilled.
+    snapshot = await asyncio.to_thread(_desktop_session_snapshot)
+    if snapshot is None or not _desktop_session_fingerprint(snapshot):
+        return None, "unavailable"
+    return snapshot, ""
+
+
 @router.get("/native-delegate", summary="签发短时 scoped native delegate（credits/facts）")
 async def native_delegate_endpoint(request: Request):
     """Mint a reusable short-lived proof for the community Web tab.
@@ -1224,13 +1254,20 @@ async def native_delegate_endpoint(request: Request):
             status_code=403,
             headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
         )
-    snapshot = await asyncio.to_thread(_desktop_session_snapshot)
+    snapshot, failure = await _native_delegate_session_snapshot()
     local_user_id = (snapshot or {}).get("local_user_id") or ""
     session_fingerprint = _desktop_session_fingerprint(snapshot)
     if not snapshot or not local_user_id or not session_fingerprint:
+        unavailable = failure in {"unavailable", "malformed"}
         return JSONResponse(
-            {"detail": "desktop_login_required"},
-            status_code=409,
+            {
+                "detail": (
+                    "identity_verification_unavailable"
+                    if unavailable
+                    else "desktop_login_required"
+                )
+            },
+            status_code=503 if unavailable else 409,
             headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
         )
     audience = _social_base_url()
@@ -1273,17 +1310,23 @@ async def native_delegate_handoff_endpoint(
             status_code=400,
             headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
         )
-    snapshot = await asyncio.to_thread(_desktop_session_snapshot)
+    snapshot, failure = await _native_delegate_session_snapshot()
     local_user_id = (snapshot or {}).get("local_user_id") or ""
     session_fingerprint = _desktop_session_fingerprint(snapshot)
     if not snapshot or not local_user_id or not session_fingerprint:
+        unavailable = failure in {"unavailable", "malformed"}
         return HTMLResponse(
             "<!doctype html><meta charset=utf-8><title>需要 Desktop 登录</title>"
             "<body style='font-family:sans-serif;padding:40px'>"
-            "<h1>请先在 N.E.K.O. 桌宠完成社区登录</h1>"
-            "<p>登录后再打开猫娘社区，铸造券即可连接本机账本。</p>"
-            "</body>",
-            status_code=409,
+            + (
+                "<h1>暂时无法验证 Desktop 登录状态</h1>"
+                "<p>请稍后重试打开猫娘社区。</p>"
+                if unavailable
+                else "<h1>请先在 N.E.K.O. 桌宠完成社区登录</h1>"
+                "<p>登录后再打开猫娘社区，铸造券即可连接本机账本。</p>"
+            )
+            + "</body>",
+            status_code=503 if unavailable else 409,
             headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
         )
     delegate = _issue_native_delegate(
