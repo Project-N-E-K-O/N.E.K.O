@@ -64,7 +64,13 @@ class HistoryRequest(BaseModel):
 
 
 def _activate_request_language(language: str | None) -> str:
-    """Select a replay-safe request locale without changing the process default."""
+    """Resolve the locale for this request without changing the process default.
+
+    Falls back to the process-wide language when the request does not carry a
+    usable one. That fallback is fine for the in-flight request, but it must not
+    be persisted — see the ``language=request.language`` argument at each
+    ``_spawn_outbox_post_turn_signals`` call site.
+    """
     if is_supported_language_code(language):
         return normalize_language_code(language, format='full')
     return get_global_language_full()
@@ -534,7 +540,7 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
             # outbox 登记走锁外——它会 spawn background task 跑 LLM，长持锁会
             # 阻塞下一轮 /cache 写盘。
             await post_turn._spawn_outbox_post_turn_signals(
-                lanlan_name, input_history, language=memory_language,
+                lanlan_name, input_history, language=request.language,
             )
             return {"status": "cached", "count": len(input_history)}
         except Exception as e:
@@ -581,7 +587,7 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
 
             # 异步事实提取（不阻塞返回，失败静默跳过）
             await post_turn._spawn_outbox_post_turn_signals(
-                lanlan_name, input_history, language=memory_language,
+                lanlan_name, input_history, language=request.language,
             )
 
             # Phase C: 不再 cancel-and-restart review；让 maybe_spawn_review 在新消息
@@ -632,7 +638,7 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
             # 以下操作在锁外执行，不阻塞 /new_dialog
             # 异步事实提取
             await post_turn._spawn_outbox_post_turn_signals(
-                lanlan_name, input_history, language=memory_language,
+                lanlan_name, input_history, language=request.language,
             )
 
             # Phase C: 见 /process 的注释——不再 cancel-and-restart。
@@ -675,7 +681,7 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
 
             if input_history:
                 await post_turn._spawn_outbox_post_turn_signals(
-                    lanlan_name, input_history, language=memory_language,
+                    lanlan_name, input_history, language=request.language,
                 )
 
             # Phase C: 见 /process 的注释——不再 cancel-and-restart。
