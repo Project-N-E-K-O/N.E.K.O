@@ -86,6 +86,23 @@ def test_scoped_clock_is_invisible_to_other_threads(monkeypatch):
     assert isinstance(module.time.time(), float)
 
 
+def _stdlib_time_names(tree: ast.AST) -> set[str]:
+    """Names bound to the stdlib time module in this file.
+
+    ``import time`` is not the only spelling — ``import time as real_time``
+    appears in this repo already, and patching through the alias hits the very
+    same shared module. Resolve the bindings instead of matching the literal
+    word "time".
+    """
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "time":
+                    names.add(alias.asname or alias.name)
+    return names
+
+
 def _may_mutate_on_call(replacement: ast.expr) -> bool:
     """Could invoking this fake change what the next call observes?
 
@@ -126,6 +143,7 @@ def test_no_test_installs_a_mutating_fake_on_the_stdlib_time_module():
             except SyntaxError:  # pragma: no cover - a broken test file fails elsewhere
                 continue
             scanned += 1
+            time_names = _stdlib_time_names(tree)
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
                     continue
@@ -137,10 +155,11 @@ def test_no_test_installs_a_mutating_fake_on_the_stdlib_time_module():
                 #   setattr("pkg.mod.time.monotonic", fake)     —— 点号字符串形态
                 if len(node.args) >= 3:
                     target = node.args[0]
-                    # `mod.time` 与裸 `time`（文件顶上 import time）都是 stdlib 模块
+                    # `mod.time`、裸 `time`、以及 `import time as real_time` 的
+                    # 别名，指向的都是同一个 stdlib 模块
                     hits_stdlib_time = (
                         (isinstance(target, ast.Attribute) and target.attr == "time")
-                        or (isinstance(target, ast.Name) and target.id == "time")
+                        or (isinstance(target, ast.Name) and target.id in time_names)
                     )
                     if not hits_stdlib_time:
                         continue
