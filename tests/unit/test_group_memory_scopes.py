@@ -11011,7 +11011,8 @@ def test_synthetic_marking_survives_a_session_swapped_mid_turn():
     """The boundary is captured before the pipeline runs, and the pipeline
     may rebuild the session (identity/character change). Slicing the NEW
     history at the OLD length marks nothing when the old one was longer, so
-    the fabricated `[系统]` row lands in scoped memory as a real utterance."""
+    the fabricated control-notice row lands in scoped memory as a real
+    utterance."""
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,
     )
