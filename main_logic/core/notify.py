@@ -484,7 +484,17 @@ class NotifyMixin:
         payload = {"type": "session_ended_by_server", "input_mode": self.input_mode}
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                await self.websocket.send_text(json.dumps(payload))
+                try:
+                    await self.websocket.send_text(json.dumps(payload))
+                except WebSocketDisconnect:
+                    # Isolated on purpose: the CONNECTED check above and the
+                    # send are separated by an await, so the display socket
+                    # can die in between. Letting that reach the outer handler
+                    # would skip the lease holder's copy below -- the one send
+                    # that stops a live hardware microphone.
+                    pass
+                except Exception as e:
+                    logger.error(f"💥 WS Send Session Ended By Server Error: {e}")
             # The terminal event is also the recorder's microphone teardown, and
             # the window holding the hardware is not necessarily the current
             # socket. Outside the guard on purpose: a dead current socket must

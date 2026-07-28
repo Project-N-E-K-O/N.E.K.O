@@ -6,6 +6,7 @@ import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import WebSocketDisconnect
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
@@ -2212,6 +2213,12 @@ async def test_text_takeover_does_not_revoke_a_competing_newer_start():
 
     await LLMSessionManager._start_independent_asr_if_enabled(mgr, "text")
 
+    # Delivery is already implied by the retained lease below -- the fence can
+    # only see a newer operation because _send_then_supersede ran -- but pin it
+    # directly so the two facts fail separately.
+    assert [json.loads(x) for x in recorder.sent] == [
+        {"type": "session_started", "input_mode": "text"}
+    ]
     invalidated.assert_not_called()
     assert mgr._voice_lease_connection_id == "socket-a"
 
@@ -2242,3 +2249,57 @@ async def test_pipeline_failure_revokes_after_notifying():
     assert "ASR_AUDIO_PREPROCESSING_FAILED" in codes
     assert mgr._asr_route_mode == "blocked"
     assert mgr._voice_input_accepts_pcm() is False
+
+
+async def test_dead_display_socket_does_not_swallow_the_recorder_teardown():
+    # Codex P2 / CodeRabbit. The display send and the lease-holder fan-out
+    # shared one try, so a display socket dying between the CONNECTED check and
+    # the send skipped the fan-out -- dropping the one message that stops a live
+    # hardware microphone, which then kept uploading into a dead route.
+    recorder, chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", recorder)
+    mgr.websocket = chat
+    mgr.input_mode = "audio"
+
+    async def _die(_data: str) -> None:
+        raise WebSocketDisconnect(1006)
+
+    chat.send_text = _die
+
+    await LLMSessionManager.send_session_ended_by_server(mgr)
+
+    assert [json.loads(x) for x in recorder.sent] == [
+        {"type": "session_ended_by_server", "input_mode": "audio"}
+    ]
+
+
+async def test_silence_timeout_reaches_the_recorder_without_a_live_display():
+    # Same shape one layer up: auto_close_mic sat INSIDE the display-socket
+    # guard, so closing the chat window (mgr.websocket points at the dead socket
+    # until that disconnect's voice handover repoints it) silently dropped the
+    # recorder's teardown -- and a raising display send also skipped end_session.
+    recorder, chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", recorder)
+    mgr.websocket = chat
+    mgr.pending_session = None
+    mgr.hot_swap_audio_cache = None
+    mgr.core_api_type = "paid"
+    mgr.end_session = AsyncMock()
+
+    async def _die(_payload: dict) -> None:
+        raise WebSocketDisconnect(1006)
+
+    chat.send_json = _die
+
+    await LLMSessionManager.handle_silence_timeout(mgr)
+
+    delivered = [json.loads(x) for x in recorder.sent]
+    assert [x["type"] for x in delivered] == ["auto_close_mic"]
+    assert delivered[0]["reason_code"] == "silence_timeout"
+    mgr.end_session.assert_awaited_once()

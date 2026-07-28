@@ -133,13 +133,23 @@ def _fire_task(coro):
 def _is_voice_path_message(message: dict) -> bool:
     """True for messages gated by the voice connection identity.
 
-    Exactly the message classes MicLease owns: lease control events and PCM
-    (JSON stream_data with audio input_type, or a decoded binary frame).
-    Everything else — including an audio-mode start_session — stays on the
-    newest-socket-wins global session identity.
+    Exactly the message classes MicLease owns: lease control events, PCM
+    (JSON stream_data with audio input_type, or a decoded binary frame), and
+    the recorder's own ``pause_session`` stop. Everything else — including an
+    audio-mode start_session — stays on the newest-socket-wins global session
+    identity.
+
+    ``pause_session`` is here because it is the tail of ``stopRecording()``:
+    the frontend emits the lease release and then the pause from the SAME
+    socket. Classifying only the first half as voice-path left the second half
+    to the global-identity check, which reads a superseded recorder as a
+    character switch — closing the socket whose microphone the user just
+    stopped, and losing the ``end_session`` the pause was carrying. The
+    server-initiated teardowns dodge this with ``notifyServer: false``
+    (app-websocket.js), but an ordinary user-initiated stop cannot.
     """
     action = message.get("action")
-    if action == "voice_input_control":
+    if action in {"voice_input_control", "pause_session"}:
         return True
     return action == "stream_data" and message.get("input_type") == "audio"
 
@@ -554,9 +564,20 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         Deliberately narrower than the main dispatch loop: no engagement
         claim, no ingress stamping, no avatar-position writes and no manager
         state that belongs to the newer session_id owner — only MicLease
-        control and PCM keep flowing.
+        control, PCM, and the recorder's own stop keep flowing.
+
+        The stop is the one global write here, and deliberately so: the live
+        session is the audio session THIS socket's microphone feeds, so ending
+        it on the owner's stop is exactly the non-superseded behaviour. A
+        newer socket that started its own text session would have revoked this
+        lease, which routes the same message to the vacated-identity drop
+        instead of here.
         """
         voice_mgr = session_manager[lanlan_name]
+        if message.get("action") == "pause_session":
+            voice_mgr.active_session_is_idle = True
+            _fire_task(voice_mgr.end_session())
+            return
         if message.get("action") == "voice_input_control":
             handle_voice_input_control = getattr(
                 voice_mgr,

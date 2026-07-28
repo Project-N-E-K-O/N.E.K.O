@@ -83,6 +83,9 @@ class _ProtocolManager:
     async def stream_data(self, message: dict) -> None:
         self.calls.append(("stream_data", message))
 
+    async def end_session(self, *_args, **_kwargs) -> None:
+        self.calls.append(("end_session", None))
+
     async def send_status(self, payload: str) -> None:
         self.statuses.append(json.loads(payload))
 
@@ -1213,6 +1216,59 @@ async def test_superseded_voice_socket_non_voice_message_is_still_closed(
         "code": "CHARACTER_SWITCHING_TERMINAL",
         "details": {"name": "Lan"},
     } in manager.statuses
+
+    chat_socket.release.set()
+    await chat_task
+
+
+@pytest.mark.asyncio
+async def test_superseded_recorder_pause_ends_the_session_without_a_stale_close(
+    monkeypatch,
+) -> None:
+    # Codex P2. stopRecording() emits the lease release and THEN pause_session
+    # from the same socket. Only the first half was voice-path, so the pause
+    # fell through to the global-identity check and stale-closed the recorder:
+    # the user stopped the microphone and got a character-switch teardown plus
+    # a 3s reconnect that re-steals the identity, while the provider session
+    # stayed alive because end_session never ran.
+    manager = _ProtocolManager()
+    recording_socket = _TwoPhaseWebSocket(
+        [_LEASE_SYNC_MESSAGE, _PCM_MESSAGE],
+        [{"action": "pause_session"}],
+    )
+    _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=recording_socket,
+    )
+
+    recording_task = asyncio.create_task(
+        websocket_router.websocket_endpoint(recording_socket, "Lan")
+    )
+    await _drain_until(
+        lambda: "stream_data" in [name for name, _payload in manager.calls]
+    )
+
+    chat_socket = _TwoPhaseWebSocket([{"action": "ping"}], [])
+    chat_task = asyncio.create_task(
+        websocket_router.websocket_endpoint(chat_socket, "Lan")
+    )
+    await _drain_until(lambda: bool(chat_socket.sent_text))
+
+    recording_socket.release.set()
+    await recording_task
+    await _drain_until(
+        lambda: "end_session" in [name for name, _payload in manager.calls]
+    )
+
+    # The stop reaches the session it owns, and the socket is never told it
+    # lost a character switch it was not part of.
+    assert manager.active_session_is_idle is True
+    assert recording_socket.closed is False
+    assert {
+        "code": "CHARACTER_SWITCHING_TERMINAL",
+        "details": {"name": "Lan"},
+    } not in manager.statuses
 
     chat_socket.release.set()
     await chat_task

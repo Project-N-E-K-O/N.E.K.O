@@ -24,7 +24,7 @@ import json
 import time
 from datetime import datetime
 from websockets import exceptions as web_exceptions
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient, _is_safety_violation_signal
 from main_logic.proactive_delivery import (
@@ -131,38 +131,57 @@ class LifecycleMixin:
                 logger.info("⏭️ handle_silence_timeout: expected_session stale before WS send, skipping")
                 return
             
+            # Deriving the payload needs no socket, so it is hoisted out of the
+            # display-socket guard: the lease holder must hear the microphone
+            # teardown even when the display socket is already gone. Closing a
+            # chat window leaves mgr.websocket pointing at the dead socket until
+            # that disconnect's voice handover repoints it, and the silence
+            # timeout can fire inside exactly that window.
+            session_for_reason = expected_session or self.session or self.pending_session
+            timeout_api_type = str(
+                getattr(session_for_reason, "_api_type", "") or getattr(self, "core_api_type", "") or ""
+            ).lower()
+            timeout_model = str(
+                getattr(session_for_reason, "_model_lower", "")
+                or getattr(session_for_reason, "model", "")
+                or ""
+            ).lower()
+            is_free_timeout = timeout_api_type == "free" or "free" in timeout_model
+            timeout_reason_code = (
+                "free_api_silence_timeout" if is_free_timeout else "silence_timeout"
+            )
+            if is_free_timeout:
+                # Pure display toast; send_status guards its own socket.
+                await self.send_status(json.dumps({"code": "FREE_API_AUTO_CLOSE_VOICE"}))
+            auto_close_payload = {
+                "type": "auto_close_mic",
+                "reason_code": timeout_reason_code,
+                "api_type": timeout_api_type,
+                "message": f"{self.lanlan_name}检测到长时间无语音输入，已自动关闭麦克风"
+            }
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                session_for_reason = expected_session or self.session or self.pending_session
-                timeout_api_type = str(
-                    getattr(session_for_reason, "_api_type", "") or getattr(self, "core_api_type", "") or ""
-                ).lower()
-                timeout_model = str(
-                    getattr(session_for_reason, "_model_lower", "")
-                    or getattr(session_for_reason, "model", "")
-                    or ""
-                ).lower()
-                is_free_timeout = timeout_api_type == "free" or "free" in timeout_model
-                timeout_reason_code = (
-                    "free_api_silence_timeout" if is_free_timeout else "silence_timeout"
-                )
-                if is_free_timeout:
-                    await self.send_status(json.dumps({"code": "FREE_API_AUTO_CLOSE_VOICE"}))
-                auto_close_payload = {
-                    "type": "auto_close_mic",
-                    "reason_code": timeout_reason_code,
-                    "api_type": timeout_api_type,
-                    "message": f"{self.lanlan_name}检测到长时间无语音输入，已自动关闭麦克风"
-                }
-                await self.websocket.send_json(auto_close_payload)
-                # The lease holder is the window with the live hardware; the
-                # current socket may be a newer chat window with no microphone.
-                # Game owner exempt, mirroring _revoke_lease_for_blocked_route.
-                # (The FREE_API_AUTO_CLOSE_VOICE send_status above stays
-                # current-socket-only on purpose: it is a pure toast.)
-                if getattr(self, "_voice_lease_owner", "none") != "game":
-                    send_to_voice_owner = getattr(self, "_send_to_voice_owner", None)
-                    if callable(send_to_voice_owner):
-                        await send_to_voice_owner(auto_close_payload)
+                try:
+                    await self.websocket.send_json(auto_close_payload)
+                except WebSocketDisconnect:
+                    # Isolated: a display socket that dies between the CONNECTED
+                    # check and the send must not skip the fan-out below, nor
+                    # the end_session that follows it.
+                    pass
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "[%s] auto_close_mic display push failed: %s",
+                        self.lanlan_name,
+                        e,
+                    )
+            # The lease holder is the window with the live hardware; the
+            # current socket may be a newer chat window with no microphone.
+            # Game owner exempt, mirroring _revoke_lease_for_blocked_route.
+            # (The FREE_API_AUTO_CLOSE_VOICE send_status above stays
+            # current-socket-only on purpose: it is a pure toast.)
+            if getattr(self, "_voice_lease_owner", "none") != "game":
+                send_to_voice_owner = getattr(self, "_send_to_voice_owner", None)
+                if callable(send_to_voice_owner):
+                    await send_to_voice_owner(auto_close_payload)
             
             await self.end_session(by_server=True, expected_session=expected_session)
             

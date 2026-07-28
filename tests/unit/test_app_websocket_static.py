@@ -25,8 +25,23 @@ def _block_after(js: str, opener: str) -> str:
     string -- so the slice can shrink to a line or two and the assertions then
     pass by accident, or miss a real regression. Count braces instead, skipping
     those inside string literals and line comments.
+
+    Two opener shapes are supported: one ending in ``{`` (scope = that block),
+    and a plain statement (scope = the rest of its enclosing block). Both leave
+    ``depth`` at 1. A TRUNCATED opener is neither -- ``"function foo("`` stops
+    before the body brace, so the body's own ``{`` pushes depth to 2 and the
+    scan runs past the function into everything that follows it (CodeRabbit
+    caught two of these scoped to 1131 lines instead of 29, where the
+    assertions could match an unrelated function). An opener with unbalanced
+    parentheses is exactly that mistake, so reject it here rather than let a
+    later reader rediscover it.
     """
 
+    if opener.count("(") != opener.count(")"):
+        raise AssertionError(
+            f"opener has unbalanced parentheses, so it stops mid-signature "
+            f"and the scan would overrun the block: {opener!r}"
+        )
     rest = js.split(opener, 1)[1]
     depth = 1
     out = []
@@ -3191,12 +3206,14 @@ def test_asr_decision_tuple_survives_unrelated_saves():
     settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
 
     # The write carries the id of the decision that produced the value...
-    write_fn = _block_after(settings_source, "function _writeSharedSettings(")
+    write_fn = _block_after(
+        settings_source, "function _writeSharedSettings(snapshot, explicitKeys) {"
+    )
     assert "ownMeta.asrDecision = {" in write_fn
     assert "_lastAsrDecision.value === snapshot.independentAsrEnabled" in write_fn
 
     # ...the reader parses it defensively, falling back to today's behaviour...
-    read_fn = _block_after(settings_source, "function _readSharedWriteMeta(")
+    read_fn = _block_after(settings_source, "function _readSharedWriteMeta(settings) {")
     assert "asrDecision:" in read_fn
     assert "typeof meta.asrDecision.writeId === 'number'" in read_fn
 
