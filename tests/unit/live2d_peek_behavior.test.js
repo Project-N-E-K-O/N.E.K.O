@@ -7,6 +7,7 @@ const vm = require('node:vm');
 const projectRoot = path.resolve(__dirname, '..', '..');
 const interactionPath = path.join(projectRoot, 'static', 'live2d', 'live2d-interaction.js');
 const corePath = path.join(projectRoot, 'static', 'live2d', 'live2d-core.js');
+const performanceStagePath = path.join(projectRoot, 'static', 'avatar', 'avatar-performance-stage.js');
 
 function createHarness({
     widgetModeEnabled = true,
@@ -928,6 +929,51 @@ test('core model input regions stay empty when the model surface is hidden or no
     bodyClasses.clear();
     harness.window._nekoModelReturnEnterContainer = container;
     assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects())), []);
+    harness.window._nekoModelReturnEnterContainer = null;
+    harness.window._nekoAvatarPerformanceFrameContainer = container;
+    assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects())), []);
+});
+
+test('performance frame sessions suppress model input regions until their container transform is restored', () => {
+    const container = {
+        style: {
+            transform: '',
+            transition: '',
+            transformOrigin: '',
+            opacity: '',
+            willChange: ''
+        }
+    };
+    const context = {
+        console,
+        document: {
+            getElementById: (id) => id === 'live2d-container' ? container : null
+        },
+        window: {
+            performance: { now: () => 0 },
+            matchMedia: () => ({ matches: false }),
+            requestAnimationFrame: () => 1,
+            cancelAnimationFrame: () => {},
+            setTimeout
+        }
+    };
+    context.globalThis = context;
+    vm.runInNewContext(
+        fs.readFileSync(performanceStagePath, 'utf8'),
+        context,
+        { filename: performanceStagePath }
+    );
+
+    const driver = context.window.AvatarPerformance.createLive2DDriver({
+        managerResolver: () => null,
+        containerResolver: () => container
+    });
+    const stage = context.window.AvatarPerformance.createStage({ driver });
+    const session = stage.acquire('input-region-test', { capabilities: ['frame'] });
+
+    assert.equal(context.window._nekoAvatarPerformanceFrameContainer, container);
+    assert.equal(stage.release(session.id, 'test-complete'), true);
+    assert.equal(context.window._nekoAvatarPerformanceFrameContainer, null);
 });
 
 test('core model input regions clamp padding to the supported 0-32 range', () => {

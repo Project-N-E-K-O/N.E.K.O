@@ -581,7 +581,8 @@ class Live2DManager {
 
         const container = document.getElementById('live2d-container');
         const canvas = this.pixi_app?.view || document.getElementById('live2d-canvas');
-        if (window._nekoModelReturnEnterContainer === container) {
+        if (window._nekoModelReturnEnterContainer === container ||
+            window._nekoAvatarPerformanceFrameContainer === container) {
             return false;
         }
         // The Electron pet root intentionally stays pointer-transparent in normal
