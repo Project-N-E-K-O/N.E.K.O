@@ -389,6 +389,8 @@ def test_guarded_process_dies_when_its_real_parent_dies(tmp_path):
         try:
             os.kill(child_pid, signal.SIGKILL)
         except (ProcessLookupError, OSError):
+            # Already gone, which is the outcome the test wanted anyway; this
+            # reap only matters when an assertion above fired first.
             pass
 
 
@@ -461,6 +463,8 @@ def test_guarded_process_dies_when_the_owner_pipe_closes(tmp_path):
         try:
             os.kill(child_pid, signal.SIGKILL)
         except (ProcessLookupError, OSError):
+            # Already gone, which is the outcome the test wanted anyway; this
+            # reap only matters when an assertion above fired first.
             pass
 
 
@@ -655,6 +659,36 @@ def test_owner_death_cleans_up_then_exits(monkeypatch):
         "release",
         ("exit", 0),
     ]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name != "posix", reason="the orphan heuristic is POSIX-only")
+def test_plain_sigterm_in_a_handoff_generation_is_not_read_as_owner_death(monkeypatch):
+    """A handoff generation's parent is *meant* to be gone.
+
+    Its owner is the grandparent, so "getppid() is not the owner" holds in normal
+    operation. Using that as evidence of owner death would turn every ordinary
+    stop request into a full teardown plus a process-group kill.
+    """
+    from launcher_core import runtime as launcher
+
+    class _HandoffGuard:
+        fired = False
+        parent_pid = 424242          # the original owner, our grandparent
+        owner_is_direct_parent = False
+
+    died = []
+    monkeypatch.setattr(launcher, "_parent_death_guard", _HandoffGuard())
+    monkeypatch.setattr(launcher, "_owner_death_in_progress", False)
+    monkeypatch.setattr(launcher, "_handle_owner_death",
+                        lambda mechanism: died.append(mechanism))
+    monkeypatch.setattr(launcher, "_mark_expected_launcher_shutdown", lambda: None)
+    monkeypatch.setattr(launcher, "cleanup_servers", lambda: None)
+
+    with pytest.raises(SystemExit):
+        launcher._handle_termination_signal(signal.SIGTERM, None)
+
+    assert died == [], "an ordinary SIGTERM was mistaken for the owner dying"
 
 
 @pytest.mark.unit

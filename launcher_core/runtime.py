@@ -443,14 +443,20 @@ def _spawn_restarted_launcher() -> None:
         relaunch_env.pop(parent_guard.PARENT_PID_ENV, None)
     relaunch_env[RESTART_HANDOFF_ENV] = "1"
 
-    _relax_job_kill_on_close()
-
-    subprocess.Popen(
+    # Relax the Job only once the replacement actually exists. Clearing
+    # KILL_ON_JOB_CLOSE first means a failed spawn leaves us with a Job that no
+    # longer reaps anything, so any server we did not record would survive our
+    # exit — losing containment in exchange for a replacement that never
+    # started. The replacement inherits the Job at spawn time, so clearing the
+    # flag immediately afterwards is still in time to spare it.
+    proc = subprocess.Popen(
         command,
         cwd=os.getcwd(),
         env=relaunch_env,
         close_fds=True,
     )
+    _relax_job_kill_on_close()
+    return proc
 
 
 def _mark_expected_launcher_shutdown() -> None:
@@ -2148,12 +2154,18 @@ def _handle_termination_signal(signum, _frame):
     # 兜底：属主已经死了，但送达的是普通 SIGTERM 而不是 guard 的专用信号
     # （比如属主用组级 TERM 清扫）。属主之死需要组级清扫，而这条普通关闭路径
     # 没有——所以改走 _handle_owner_death，它不会返回。
+    #
+    # 只在属主就是直连父进程时才用这条判据。交接世代里属主是祖父，我们的父进程
+    # 是那个已经按计划退出的上一代 launcher，于是「getppid() 不等于属主」在正常
+    # 运行下恒为真——那样任何一次普通 SIGTERM 都会被误读成属主之死，进而触发组级
+    # 清扫。guard 自己知道这个区别，问它。
     guard = _parent_death_guard
     if (
         guard is not None
         and not guard.fired
         and guard.parent_pid > 1
         and os.name == "posix"
+        and guard.owner_is_direct_parent
         and _safe_getppid_for_owner_check() != guard.parent_pid
     ):
         _handle_owner_death("termination_signal_orphaned")
@@ -2179,6 +2191,21 @@ _owner_death_in_progress = False
 OWNER_DEATH_GROUP_GRACE_SECONDS = 0.5
 
 
+def _owner_death_print(message: str) -> None:
+    """print() that cannot abort the teardown it is narrating.
+
+    The owner is gone, and an owner that read our stdout took the read end of
+    that pipe with it — so every print on this path is a live BrokenPipeError
+    risk. Raising here would skip the group sweep and strand the grandchildren,
+    i.e. lose the guarantee in order to log about it.
+    """
+    try:
+        print(message, flush=True)
+    except Exception:
+        # Nowhere left to report this: stdout is the thing that just failed.
+        pass
+
+
 def _handle_owner_death(mechanism: str) -> None:
     """Tear the whole topology down when the process that owns us disappears.
 
@@ -2191,7 +2218,7 @@ def _handle_owner_death(mechanism: str) -> None:
 
     _owner_death_in_progress = True
     _mark_expected_launcher_shutdown()
-    print(f"[Launcher] Owner process is gone ({mechanism}); shutting down runtime", flush=True)
+    _owner_death_print(f"[Launcher] Owner process is gone ({mechanism}); shutting down runtime")
     try:
         emit_frontend_event("owner_exit", {"mechanism": mechanism})
     except Exception:
@@ -2209,7 +2236,7 @@ def _handle_owner_death(mechanism: str) -> None:
         try:
             requester(reason=f"owner_death:{mechanism}")
         except Exception as exc:
-            print(f"[Launcher] Warning: merged shutdown request failed: {exc}", flush=True)
+            _owner_death_print(f"[Launcher] Warning: merged shutdown request failed: {exc}")
         threading.Thread(
             target=_finish_owner_death,
             args=(mechanism, True),
@@ -2227,16 +2254,15 @@ def _finish_owner_death(mechanism: str, wait_for_merged: bool) -> None:
         # 有界等待：超时后照常收尾。_begin_merged_shutdown 自带的看门狗也会在
         # 同样的预算后 os._exit(1)，两道保险都不会让这里无限期挂住。
         if not _merged_shutdown_complete.wait(OWNER_DEATH_MERGED_SHUTDOWN_BUDGET):
-            print(
+            _owner_death_print(
                 "[Launcher] Warning: merged shutdown did not finish within "
-                f"{OWNER_DEATH_MERGED_SHUTDOWN_BUDGET}s; continuing owner-death teardown",
-                flush=True,
+                f"{OWNER_DEATH_MERGED_SHUTDOWN_BUDGET}s; continuing owner-death teardown"
             )
 
     try:
         cleanup_servers()
     except Exception as exc:
-        print(f"[Launcher] Warning: cleanup after owner death failed: {exc}", flush=True)
+        _owner_death_print(f"[Launcher] Warning: cleanup after owner death failed: {exc}")
 
     try:
         single_instance.release_single_instance()
