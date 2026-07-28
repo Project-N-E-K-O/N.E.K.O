@@ -35,6 +35,10 @@ import pytest
 from tests.fake_clock import patch_module_clock
 
 TESTS_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = TESTS_ROOT.parent
+# plugin/tests 是另一棵独立的 pytest 树（自带 pytest.ini），同样跑在同一个进程里，
+# 全进程的假时钟一样会溢出去。只扫 tests/ 等于把半个仓库放在门外。
+SCAN_ROOTS = (TESTS_ROOT, REPO_ROOT / "plugin" / "tests")
 
 
 @pytest.mark.unit
@@ -96,23 +100,39 @@ def test_no_test_installs_a_mutating_fake_on_the_stdlib_time_module():
     offenders = []
     scanned = 0
 
-    for path in sorted(TESTS_ROOT.rglob("*.py")):
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except SyntaxError:  # pragma: no cover - a broken test file fails elsewhere
-            continue
-        scanned += 1
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
+    for root in SCAN_ROOTS:
+        for path in sorted(root.rglob("*.py")):
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except SyntaxError:  # pragma: no cover - a broken test file fails elsewhere
                 continue
-            if getattr(node.func, "attr", None) != "setattr" or len(node.args) < 3:
-                continue
-            target = node.args[0]
-            # 形如 `<something>.time` —— 那就是 stdlib 模块本身
-            if not (isinstance(target, ast.Attribute) and target.attr == "time"):
-                continue
-            if _may_mutate_on_call(node.args[2]):
-                offenders.append(f"{path.relative_to(TESTS_ROOT).as_posix()}:{node.lineno}")
+            scanned += 1
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                if getattr(node.func, "attr", None) != "setattr":
+                    continue
+
+                # pytest 的两种写法都要认：
+                #   setattr(mod.time, "monotonic", fake)        —— 属性形态
+                #   setattr("pkg.mod.time.monotonic", fake)     —— 点号字符串形态
+                if len(node.args) >= 3:
+                    target = node.args[0]
+                    if not (isinstance(target, ast.Attribute) and target.attr == "time"):
+                        continue
+                    replacement = node.args[2]
+                elif len(node.args) == 2 and isinstance(node.args[0], ast.Constant):
+                    dotted = node.args[0].value
+                    if not isinstance(dotted, str) or ".time." not in f"{dotted}.":
+                        continue
+                    replacement = node.args[1]
+                else:
+                    continue
+
+                if _may_mutate_on_call(replacement):
+                    offenders.append(
+                        f"{path.relative_to(REPO_ROOT).as_posix()}:{node.lineno}"
+                    )
 
     assert scanned > 50, f"扫描面太小，断言已失效（只扫到 {scanned} 个文件）"
     assert not offenders, (
