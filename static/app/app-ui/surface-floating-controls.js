@@ -283,33 +283,52 @@
                 }
                 return false;
             };
+            const fetchNativeSyncTicket = async () => {
+                try {
+                    const response = await fetch('/api/card-drop/sync-ticket', { cache: 'no-store' });
+                    if (!response.ok) {
+                        console.warn(`[social] native session sync ticket fetch failed: HTTP ${response.status}`);
+                        return '';
+                    }
+                    const payload = await response.json();
+                    return payload && payload.sync_ticket ? String(payload.sync_ticket) : '';
+                } catch (error) {
+                    console.warn('[social] native session sync ticket fetch failed (non-fatal):', error);
+                    return '';
+                }
+            };
+            const fetchNativeDelegate = async () => {
+                try {
+                    const response = await fetch('/api/card-drop/native-delegate', { cache: 'no-store' });
+                    if (!response.ok) {
+                        const reason = response.status === 409
+                            ? 'desktop not logged in'
+                            : `HTTP ${response.status}`;
+                        console.warn(`[social] native delegate fetch failed (non-fatal): ${reason}`);
+                        return '';
+                    }
+                    const payload = await response.json();
+                    return payload && payload.native_delegate
+                        ? String(payload.native_delegate)
+                        : '';
+                } catch (error) {
+                    console.warn('[social] native delegate fetch failed (non-fatal):', error);
+                    return '';
+                }
+            };
             const attachNativeSyncTicket = async (targetUrl) => {
                 targetUrl.hash = '';
                 const hashParams = new URLSearchParams();
-                try {
-                    const ticketRes = await fetch('/api/card-drop/sync-ticket', { cache: 'no-store' });
-                    if (ticketRes.ok) {
-                        const ticketJson = await ticketRes.json();
-                        if (ticketJson && ticketJson.sync_ticket) {
-                            hashParams.set('native_sync', String(ticketJson.sync_ticket));
-                        }
-                    }
-                } catch (ticketErr) {
-                    console.warn('[social] native session sync ticket fetch failed (non-fatal):', ticketErr);
+                const [syncTicket, nativeDelegate] = await Promise.all([
+                    fetchNativeSyncTicket(),
+                    fetchNativeDelegate(),
+                ]);
+                if (syncTicket) {
+                    hashParams.set('native_sync', syncTicket);
                 }
                 // Scoped credits/facts proof — never the platform OAuth bearer.
-                try {
-                    const delegateRes = await fetch('/api/card-drop/native-delegate', { cache: 'no-store' });
-                    if (delegateRes.ok) {
-                        const delegateJson = await delegateRes.json();
-                        if (delegateJson && delegateJson.native_delegate) {
-                            hashParams.set('native_delegate', String(delegateJson.native_delegate));
-                        }
-                    } else if (delegateRes.status === 409) {
-                        console.warn('[social] native delegate skipped: desktop not logged in');
-                    }
-                } catch (delegateErr) {
-                    console.warn('[social] native delegate fetch failed (non-fatal):', delegateErr);
+                if (nativeDelegate) {
+                    hashParams.set('native_delegate', nativeDelegate);
                 }
                 const hash = hashParams.toString();
                 if (hash) targetUrl.hash = hash;

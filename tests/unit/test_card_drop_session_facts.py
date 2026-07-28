@@ -79,21 +79,41 @@ async def test_main_active_character_get_falls_back_to_configured_catgirl(monkey
     from app.main_server import web_app
 
     monkeypatch.setattr(web_app, "_card_forge_active_character", {})
+
+    async def fallback_identity():
+        return "YUI", "Human"
+
     monkeypatch.setattr(
         web_app,
         "_fallback_active_character_identity",
-        lambda: ("YUI", "Human"),
+        fallback_identity,
     )
 
-    response = await web_app.get_card_forge_active_character(_main_server_request())
+    response = await web_app.get_card_forge_active_character(
+        _main_server_request(),
+        include_avatar=True,
+    )
 
     assert response.status_code == 200
     assert response.body
-    import json
-
     payload = json.loads(response.body.decode("utf-8"))
     assert payload["name"] == "YUI"
     assert payload["master_name"] == "Human"
+    assert "dataUrl" not in payload
+    assert "characterReferenceDataUrl" not in payload
+
+
+def test_main_active_character_exposes_canonical_and_compatibility_routes():
+    from app.main_server import web_app
+
+    routes = {
+        (route.path, method)
+        for route in web_app.app.routes
+        for method in getattr(route, "methods", set())
+    }
+    for method in ("GET", "POST", "OPTIONS"):
+        assert ("/api/card-drop/active-character", method) in routes
+        assert ("/card-forge/active-character", method) in routes
 
 
 @pytest.mark.asyncio
@@ -178,7 +198,7 @@ def test_main_active_character_read_cors_remains_social_origin_only(monkeypatch)
 
     assert headers is not None
     assert headers["Access-Control-Allow-Origin"] == "https://community.example"
-    assert headers["Access-Control-Allow-Methods"] == "GET, OPTIONS"
+    assert headers["Access-Control-Allow-Methods"] == "GET, POST, OPTIONS"
 
 
 def test_forge_frontend_clears_runtime_hint_when_active_character_sync_fails():
@@ -660,11 +680,13 @@ async def test_shared_facts_selector_rejects_mismatched_runtime_character(
 def client(monkeypatch):
     monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "https://community.example")
     C._native_sync_tickets.clear()
+    C._native_delegates.clear()
     app = FastAPI()
     app.include_router(C.router)
     with TestClient(app, base_url="http://localhost:48911") as test_client:
         yield test_client
     C._native_sync_tickets.clear()
+    C._native_delegates.clear()
 
 
 def _issue_sync_ticket(client: TestClient) -> str:
@@ -674,6 +696,352 @@ def _issue_sync_ticket(client: TestClient) -> str:
     ticket = response.json()["sync_ticket"]
     assert len(ticket) >= 32
     return ticket
+
+
+def _delegate_session(
+    *,
+    local_user_id: str = USER_A_ID,
+    access_token: str = "desktop-token-a",
+) -> dict[str, str]:
+    return {
+        "base_url": "https://community.example",
+        "access_token": access_token,
+        "local_user_id": local_user_id,
+        "auth_source": "oauth",
+    }
+
+
+def _issue_delegate_from_local_ui(
+    client: TestClient,
+    monkeypatch,
+    snapshot: dict[str, str],
+) -> str:
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: snapshot)
+    response = client.get(
+        "/api/card-drop/native-delegate",
+        headers={"Sec-Fetch-Site": "same-origin"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["scopes"] == [
+        "credits:mutate",
+        "credits:read",
+        "facts:read",
+    ]
+    assert "local_user_id" not in payload
+    return payload["native_delegate"]
+
+
+def _delegate_request_headers(token: str, *, local_user_id: str = USER_A_ID) -> dict:
+    return {
+        "Origin": "https://community.example",
+        "Authorization": f"Bearer {token}",
+        "X-Neko-Local-User-Id": local_user_id,
+    }
+
+
+def test_native_delegate_requires_same_origin_fetch_metadata_and_hides_principal(
+    client,
+    monkeypatch,
+):
+    snapshot = _delegate_session()
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: snapshot)
+
+    headerless = client.get("/api/card-drop/native-delegate")
+    cross_site = client.get(
+        "/api/card-drop/native-delegate",
+        headers={
+            "Origin": "https://community.example",
+            "Sec-Fetch-Site": "cross-site",
+        },
+    )
+    same_origin = client.get(
+        "/api/card-drop/native-delegate",
+        headers={
+            "Origin": "http://localhost:48911",
+            "Sec-Fetch-Site": "same-origin",
+        },
+    )
+
+    assert headerless.status_code == 403
+    assert cross_site.status_code == 403
+    assert same_origin.status_code == 200
+    assert "local_user_id" not in same_origin.json()
+    assert same_origin.headers["cache-control"] == "no-store"
+
+
+def test_native_delegate_handoff_is_local_ui_only_and_validates_return_url(
+    client,
+    monkeypatch,
+):
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: _delegate_session())
+
+    assert C._handoff_return_url(
+        "https://community.example/cards?tab=forge#discarded",
+        "https://community.example",
+    ) == "https://community.example/cards?tab=forge"
+    assert (
+        C._handoff_return_url(
+            "https://evil.example/cards",
+            "https://community.example",
+        )
+        is None
+    )
+
+    headerless = client.get(
+        "/api/card-drop/native-delegate/handoff",
+        follow_redirects=False,
+    )
+    allowed = client.get(
+        "/api/card-drop/native-delegate/handoff",
+        params={"return_to": "https://community.example/cards?tab=forge"},
+        headers={"Sec-Fetch-Site": "same-origin"},
+        follow_redirects=False,
+    )
+
+    assert headerless.status_code == 403
+    assert allowed.status_code == 302
+    assert allowed.headers["location"].startswith(
+        "https://community.example/cards?tab=forge#native_delegate="
+    )
+
+
+def test_native_delegate_is_invalidated_by_logout_or_account_switch(
+    client,
+    monkeypatch,
+):
+    current = {"snapshot": _delegate_session()}
+    monkeypatch.setattr(
+        C,
+        "_desktop_session_snapshot",
+        lambda: current["snapshot"],
+    )
+    token = _issue_delegate_from_local_ui(
+        client,
+        monkeypatch,
+        current["snapshot"],
+    )
+    # Restore the mutable lookup after the issuance helper installs a fixed snapshot.
+    monkeypatch.setattr(
+        C,
+        "_desktop_session_snapshot",
+        lambda: current["snapshot"],
+    )
+    monkeypatch.setattr(
+        C,
+        "_build_local_forge_facts",
+        lambda **_kwargs: pytest.fail("invalid delegate must not read facts"),
+    )
+
+    current["snapshot"] = _delegate_session(
+        local_user_id=USER_B_ID,
+        access_token="desktop-token-b",
+    )
+    switched = client.post(
+        "/api/card-drop/facts/query",
+        json={"runtime_character_hint": "Lanlan"},
+        headers=_delegate_request_headers(token),
+    )
+    assert switched.status_code == 401
+    assert C._native_delegate_entry(token) is None
+
+    current["snapshot"] = _delegate_session()
+    logout_token = _issue_delegate_from_local_ui(
+        client,
+        monkeypatch,
+        current["snapshot"],
+    )
+    monkeypatch.setattr(
+        C,
+        "_desktop_session_snapshot",
+        lambda: current["snapshot"],
+    )
+    current["snapshot"] = None
+    logged_out = client.post(
+        "/api/card-drop/facts/query",
+        json={"runtime_character_hint": "Lanlan"},
+        headers=_delegate_request_headers(logout_token),
+    )
+    assert logged_out.status_code == 401
+    assert C._native_delegate_entry(logout_token) is None
+
+
+def test_expired_native_delegate_does_not_fall_back_to_cloud_auth(
+    client,
+    monkeypatch,
+):
+    snapshot = _delegate_session()
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: snapshot)
+    token = _issue_delegate_from_local_ui(client, monkeypatch, snapshot)
+    entry = C._native_delegate_entry(token)
+    assert entry is not None
+    entry["expires_at"] = 0
+
+    async def unexpected_cloud_auth(_base, _token):
+        pytest.fail("expired native delegates must not be retried as cloud tokens")
+
+    monkeypatch.setattr(C, "_request_matches_desktop_session", unexpected_cloud_auth)
+    monkeypatch.setattr(
+        C,
+        "_build_local_forge_facts",
+        lambda **_kwargs: pytest.fail("expired delegate must not read facts"),
+    )
+
+    response = client.post(
+        "/api/card-drop/facts/query",
+        json={"runtime_character_hint": "Lanlan"},
+        headers=_delegate_request_headers(token),
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "local_session_mismatch"}
+    assert C._native_delegate_entry(token) is None
+
+
+def test_explicit_empty_delegate_scopes_do_not_escalate(client, monkeypatch):
+    snapshot = _delegate_session()
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: snapshot)
+    token = C._issue_native_delegate(
+        local_user_id=USER_A_ID,
+        audience="https://community.example",
+        session_fingerprint=C._desktop_session_fingerprint(snapshot),
+        scopes=frozenset(),
+    )
+
+    response = client.post(
+        "/api/card-drop/facts/query",
+        json={"runtime_character_hint": "Lanlan"},
+        headers=_delegate_request_headers(token),
+    )
+
+    assert response.status_code == 401
+    assert C._native_delegate_entry(token)["scopes"] == frozenset()
+
+
+def test_credit_delegate_scopes_separate_read_from_mutation(
+    client,
+    monkeypatch,
+):
+    from main_logic import forge_credit_ledger
+
+    snapshot = _delegate_session()
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: snapshot)
+    token = C._issue_native_delegate(
+        local_user_id=USER_A_ID,
+        audience="https://community.example",
+        session_fingerprint=C._desktop_session_fingerprint(snapshot),
+        scopes=frozenset({"credits:read"}),
+    )
+    monkeypatch.setattr(
+        forge_credit_ledger,
+        "list_credits",
+        lambda: {"count": 0, "credits": [], "reservations": []},
+    )
+
+    read = client.get(
+        "/api/card-drop/credits",
+        headers=_delegate_request_headers(token),
+    )
+    mutate = client.post(
+        "/api/card-drop/credits/credit-a/reservations",
+        json={"operation_id": "operation-a"},
+        headers=_delegate_request_headers(token),
+    )
+
+    assert read.status_code == 200
+    assert mutate.status_code == 401
+
+
+def test_card_drop_capabilities_are_exact_origin_and_no_store(client):
+    allowed = client.get(
+        "/api/card-drop/capabilities",
+        headers={"Origin": "https://community.example"},
+    )
+    denied = client.get(
+        "/api/card-drop/capabilities",
+        headers={"Origin": "https://evil.example"},
+    )
+
+    assert allowed.status_code == 200
+    assert allowed.headers["cache-control"] == "no-store"
+    assert allowed.headers["access-control-allow-origin"] == (
+        "https://community.example"
+    )
+    assert allowed.json() == {
+        "protocol": "neko-card-drop",
+        "version": 1,
+        "active_character": {"path": "/api/card-drop/active-character"},
+        "facts": {
+            "query_path": "/api/card-drop/facts/query",
+            "method": "POST",
+            "max_exclude_hashes": 200,
+        },
+        "credits": {
+            "path": "/api/card-drop/credits",
+            "read_scope": "credits:read",
+            "mutate_scope": "credits:mutate",
+        },
+        "delegate": {
+            "scopes": ["credits:mutate", "credits:read", "facts:read"],
+            "principal_header": "x-neko-local-user-id",
+        },
+    }
+    assert denied.status_code == 403
+
+
+def test_facts_post_query_is_bounded_and_passes_validated_lists(
+    client,
+    monkeypatch,
+):
+    snapshot = _delegate_session()
+    token = _issue_delegate_from_local_ui(client, monkeypatch, snapshot)
+    seen: list[dict] = []
+
+    async def fake_build(**kwargs):
+        seen.append(kwargs)
+        return {"character": kwargs["runtime_character_hint"], "facts": []}
+
+    monkeypatch.setattr(C, "_build_local_forge_facts", fake_build)
+    headers = _delegate_request_headers(token)
+
+    valid = client.post(
+        "/api/card-drop/facts/query",
+        json={
+            "runtime_character_hint": "Lanlan",
+            "exclude_hashes": ["hash-a", "hash-b"],
+            "exclude_fact_ids": ["fact-a"],
+        },
+        headers=headers,
+    )
+    too_many = client.post(
+        "/api/card-drop/facts/query",
+        json={"exclude_hashes": [f"hash-{index}" for index in range(201)]},
+        headers=headers,
+    )
+    too_long = client.post(
+        "/api/card-drop/facts/query",
+        json={"exclude_hashes": ["h" * 129]},
+        headers=headers,
+    )
+
+    assert valid.status_code == 200
+    assert seen == [
+        {
+            "runtime_character_hint": "Lanlan",
+            "min_importance": 0,
+            "include_absorbed": True,
+            "limit": 5,
+            "exclude_fact_ids": "fact-a",
+            "exclude_hashes": "hash-a,hash-b",
+        }
+    ]
+    assert too_many.status_code == 422
+    assert too_many.json() == {"detail": "exclude_hashes_too_many_items"}
+    assert too_long.status_code == 422
+    assert too_long.json() == {"detail": "exclude_hashes_item_invalid"}
+    assert too_many.headers["access-control-allow-origin"] == (
+        "https://community.example"
+    )
 
 
 def test_local_credit_summary_is_same_origin_only_and_omits_credit_details(
@@ -714,11 +1082,14 @@ def test_local_credit_summary_is_same_origin_only_and_omits_credit_details(
 
 
 def test_credit_auth_failures_keep_validated_cors_headers(client, monkeypatch):
-    async def auth_state(request):
-        token = C._request_bearer_token(request)
+    async def no_scoped_delegate(_request, _required_scope):
+        return None
+
+    async def auth_state(_base, token):
         return "unavailable" if token == "unavailable-token" else "mismatch"
 
-    monkeypatch.setattr(C, "_facts_request_auth_state", auth_state)
+    monkeypatch.setattr(C, "_scoped_native_auth_state", no_scoped_delegate)
+    monkeypatch.setattr(C, "_request_matches_desktop_session", auth_state)
 
     mismatch = client.get(
         "/api/card-drop/credits",
@@ -1893,8 +2264,10 @@ def test_facts_preflight_allows_only_configured_community_origin(client):
         },
     )
     assert ok.status_code == 200
-    assert ok.headers["access-control-allow-methods"] == "GET, OPTIONS"
-    assert ok.headers["access-control-allow-headers"] == "authorization, content-type"
+    assert ok.headers["access-control-allow-methods"] == "GET, POST, OPTIONS"
+    assert ok.headers["access-control-allow-headers"] == (
+        "authorization, content-type, x-neko-local-user-id"
+    )
     assert ok.headers["access-control-allow-private-network"] == "true"
 
     denied = client.options(
