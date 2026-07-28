@@ -51,23 +51,6 @@ describe('hosted ui runtime', () => {
     document.body.appendChild(root)
   })
 
-  it('deduplicates identical error toasts while the first one is visible', () => {
-    const removeFirst = ui.showToast('插件未运行。请先启动该插件，再执行这个操作。', {
-      tone: 'danger',
-      timeout: 0,
-    })
-    const removeDuplicate = ui.showToast('插件未运行。请先启动该插件，再执行这个操作。', {
-      tone: 'danger',
-      timeout: 0,
-    })
-
-    expect(document.querySelectorAll('.neko-toast')).toHaveLength(1)
-    removeDuplicate()
-    expect(document.querySelectorAll('.neko-toast')).toHaveLength(1)
-    removeFirst()
-    expect(document.querySelectorAll('.neko-toast')).toHaveLength(0)
-  })
-
   it('runs hooks inside function components', async () => {
     function Counter() {
       const [count, setCount] = ui.useState(0)

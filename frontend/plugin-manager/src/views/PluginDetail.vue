@@ -20,7 +20,7 @@
       </template>
 
       <el-tabs v-model="activeTab" data-yui-guide-id="plugin-detail-tabs">
-        <el-tab-pane v-if="panelSurfaces.length > 0" :label="$t('plugins.ui.panel')" name="panel" lazy>
+        <el-tab-pane v-if="panelSurfaces.length > 0" :label="$t('plugins.ui.panel')" name="panel">
           <div class="surface-section" data-yui-guide-id="plugin-detail-panel">
             <el-alert
               v-if="surfaceWarnings.length > 0"
@@ -43,7 +43,6 @@
                 :key="surface.id"
                 :label="surface.title || surface.id"
                 :name="surface.id"
-                lazy
               >
                 <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" :height="hostedSurfaceFrameHeight" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
               </el-tab-pane>
@@ -52,7 +51,7 @@
           </div>
         </el-tab-pane>
 
-        <el-tab-pane v-if="guideSurfaces.length > 0" :label="$t('plugins.ui.guide')" name="guide" lazy>
+        <el-tab-pane v-if="guideSurfaces.length > 0" :label="$t('plugins.ui.guide')" name="guide">
           <div class="surface-section" data-yui-guide-id="plugin-detail-guide">
             <el-alert
               v-if="surfaceWarnings.length > 0"
@@ -75,7 +74,6 @@
                 :key="surface.id"
                 :label="surface.title || surface.id"
                 :name="surface.id"
-                lazy
               >
                 <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" :height="hostedSurfaceFrameHeight" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
               </el-tab-pane>
@@ -84,7 +82,7 @@
           </div>
         </el-tab-pane>
 
-        <el-tab-pane v-if="hasStaticUI" :label="$t('plugins.ui.title')" name="ui" lazy>
+        <el-tab-pane v-if="hasStaticUI" :label="$t('plugins.ui.title')" name="ui">
           <PluginUIFrame ref="staticUiFrameRef" :plugin-id="pluginId" height="560px" @open-surface="openHostedSurfaceFromStaticUi" />
         </el-tab-pane>
 

@@ -2,18 +2,13 @@
  * HTTP 请求封装
  */
 import axios from 'axios'
-import type { AxiosInstance, InternalAxiosRequestConfig, AxiosResponse, AxiosError, AxiosRequestConfig } from 'axios'
+import type { AxiosInstance, InternalAxiosRequestConfig, AxiosResponse, AxiosError } from 'axios'
 import { ElMessage } from 'element-plus'
 import { API_BASE_URL, API_TIMEOUT } from './constants'
 import { useConnectionStore } from '@/stores/connection'
 import { i18n } from '@/i18n'
 
 let lastNetworkErrorShownAt = 0
-
-type ErrorDisplayRequestConfig = AxiosRequestConfig & {
-  /** The caller renders the response error itself (for example, a hosted UI iframe). */
-  suppressErrorMessage?: boolean
-}
 
 type HeaderBag = Record<string, unknown> & {
   delete?: (name: string) => void
@@ -124,9 +119,6 @@ service.interceptors.response.use(
     // 对于 404 错误，不输出错误日志（这是正常的，某些资源可能不存在）
     // 对于 401/403 错误，也不输出错误日志
     const status = error.response?.status
-    const suppressErrorMessage = Boolean(
-      (error.config as ErrorDisplayRequestConfig | undefined)?.suppressErrorMessage,
-    )
     if (status !== 404 && status !== 401 && status !== 403) {
       console.error('Response error:', error)
     }
@@ -196,9 +188,7 @@ service.interceptors.response.use(
       return Promise.reject(error)
     }
 
-    if (!suppressErrorMessage) {
-      ElMessage.error(message)
-    }
+    ElMessage.error(message)
     return Promise.reject(error)
   }
 )

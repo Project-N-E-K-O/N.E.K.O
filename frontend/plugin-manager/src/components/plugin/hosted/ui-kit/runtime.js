@@ -955,28 +955,18 @@ function ensureToastRoot() {
   }
   return root;
 }
-const activeDangerToastKeys = new Set();
 function showToast(message, options) {
   const opts = typeof options === 'string' ? { tone: options } : (options || {});
-  const renderedMessage = formatErrorMessage(message);
-  // A hosted panel can issue several initial requests concurrently.  When a
-  // stopped plugin rejects all of them, each caller may report the same error
-  // through toast.error().  Keep one visible error for the duration of the
-  // toast, but do not swallow other messages or a later retry.
-  const dangerKey = opts.tone === 'danger' ? renderedMessage : '';
-  if (dangerKey && activeDangerToastKeys.has(dangerKey)) return () => {};
-  if (dangerKey) activeDangerToastKeys.add(dangerKey);
   const item = document.createElement('div');
   item.className = 'neko-toast';
   item.setAttribute('data-tone', opts.tone || 'info');
-  item.textContent = renderedMessage;
+  item.textContent = formatErrorMessage(message);
   ensureToastRoot().appendChild(item);
   const timeout = opts.timeout === undefined ? 3000 : Number(opts.timeout);
   let removed = false;
   const remove = () => {
     if (removed) return;
     removed = true;
-    if (dangerKey) activeDangerToastKeys.delete(dangerKey);
     item.remove();
   };
   if (timeout > 0) window.setTimeout(remove, timeout);
