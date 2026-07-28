@@ -27,7 +27,7 @@ launcher は foreground プロセスです。daemon 化して親から離脱す�
 
 | 変数 | デフォルト | 説明 |
 |------|------------|------|
-| `NEKO_OWNER_PID` | 本プロセスの親 | 親プロセス死亡ガードが監視する pid。所有者が直接の親で**ない**場合に設定します（例：storage 移行の世代交代で生成された次の launcher。その spawn 元は意図的に終了します）。 |
+| `NEKO_OWNER_PID` | 本プロセスの親 | 親プロセス死亡ガードが監視する pid。所有者が直接の親で**ない**場合に設定します（例：storage 移行の世代交代で生成された次の launcher。その spawn 元は意図的に終了します）。 `launcher.json` を読んでランタイムを識別する所有者はこれを設定してください: レコードの `owner_pid` になり、照合すべきはこちらです。`parent_pid` と照合しないでください — Windows の開発実行では `Popen(sys.executable)` が実インタプリタを起動し直すシムを起動するため、`parent_pid` は所有者ではなくシムを指します (CI で実測。macOS と Linux は直接一致し、凍結ビルドにシムはありません)。 |
 | `NEKO_OWNER_RELAUNCH` | 未設定 | `1` は「所有者が自分で runtime を再起動する」という宣言です。storage 移行の再起動は自分で後継を spawn せず、クリーンに終了して再起動を待ちます。 Windows では設定を強く推奨します: 未設定だと launcher が自分で次世代を起動し、後継を巻き添えにしないため旧 Job の管理を解除する必要があり、cleanup を生き延びたプロセス (プラグイン、MCP、Chromium) が回収されません。 |
 | `NEKO_PARENT_DEATH_GUARD` | `1` | `0` でガードを完全に無効化します。対象を再 parent 化する debugger / profiler 用のみ。無効化した runtime は所有者より長生きし得ます。 |
 | `NEKO_LAUNCHER_RESTART_HANDOFF` | 未設定 | 前世代の launcher が後継に設定します。後継は「別インスタンスが動作中」と結論せず、単一インスタンスロックの解放を待ちます。手動設定は想定していません。 |

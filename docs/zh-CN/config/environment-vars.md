@@ -36,7 +36,7 @@ launcher 是前台进程：绝不守护化脱管，属主进程一消失就把�
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `NEKO_OWNER_PID` | 本进程的父进程 | 父死守卫要盯的 pid。属主**不是**直接父进程时才需要设置——例如存储迁移交接产生的下一代 launcher，它的 spawn 者是故意退出的。 |
+| `NEKO_OWNER_PID` | 本进程的父进程 | 父死守卫要盯的 pid。属主**不是**直接父进程时才需要设置——例如存储迁移交接产生的下一代 launcher，它的 spawn 者是故意退出的。 若属主打算靠读取 `launcher.json` 来认领运行时，应当设置本变量：它会成为记录里的 `owner_pid`，那才是该比对的字段。不要比对 `parent_pid`——Windows 开发态下 `Popen(sys.executable)` 启动的是一个再拉起真解释器的壳，`parent_pid` 指的是那个壳而不是属主（CI 实测；macOS 与 Linux 直接匹配，打包态没有这个壳）。 |
 | `NEKO_OWNER_RELAUNCH` | 未设置 | `1` 表示属主会自己负责重启运行时。此时存储迁移重启只干净退出、等待属主拉起，不再自旋出下一代。 Windows 上强烈建议设置：不设时 launcher 会自旋下一代，为了不连带杀死替身必须解除旧 Job 的管理，于是任何活过 cleanup 的进程（插件、MCP、Chromium）都不会被回收。 |
 | `NEKO_PARENT_DEATH_GUARD` | `1` | 设为 `0` 完全关闭父死守卫。仅用于会重挂父进程的调试器/性能分析工具；关掉之后运行时可能活得比属主久。 |
 | `NEKO_LAUNCHER_RESTART_HANDOFF` | 未设置 | 由上一代 launcher 设在下一代身上，让它等待单实例锁释放，而不是判定"已有实例在跑"。不需要手工设置。 |

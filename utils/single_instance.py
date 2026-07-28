@@ -37,10 +37,19 @@ This module replaces the inference with a *proof*:
   of the other two.
 
 Consumers that cannot take a POSIX/Windows file lock (notably the Electron
-shell, which speaks Node) get the same proof in two cheaper forms: the record
-carries ``parent_pid``, so an owner recognises its own runtime by comparing it
-against its own pid, and the launcher mirrors the record onto stdout as a
-``NEKO_EVENT`` so the normal spawn path needs no file read at all.
+shell, which speaks Node) get the same proof in two cheaper forms: the launcher
+mirrors the record onto stdout as a ``NEKO_EVENT``, so the normal spawn path
+needs no file read at all, and the record carries ``owner_pid`` for the
+file-based path.
+
+Match ``owner_pid``, not ``parent_pid``.  ``parent_pid`` is only our immediate
+parent, and that is not always the owner: measured on CI, ``Popen(sys.executable)``
+on Windows starts a launcher shim that re-launches the real interpreter, so the
+child's parent is the shim (macOS and Linux match directly).  A frozen build has
+no shim, but a Windows dev run does — and an owner that matched ``parent_pid``
+would fail to recognise a runtime that is genuinely its own.  ``owner_pid``
+resolves from ``NEKO_OWNER_PID`` when the owner sets it, which is the reliable
+answer on every platform; owners that want file-based recognition should set it.
 """
 
 from __future__ import annotations
