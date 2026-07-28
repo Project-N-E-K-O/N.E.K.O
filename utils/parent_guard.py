@@ -69,6 +69,13 @@ PARENT_GUARD_ENV = "NEKO_PARENT_DEATH_GUARD"
 #: than the outgoing launcher that spawned it.
 PARENT_PID_ENV = "NEKO_OWNER_PID"
 
+#: The owner's start token as observed by the generation that still had a
+#: kernel-verified relationship to it. A handoff generation cannot establish this
+#: for itself: by the time it constructs its guard, the owner may already have
+#: exited and its pid been recycled, and reading /proc then records a stranger's
+#: token that matches forever after. Passed down alongside PARENT_PID_ENV.
+OWNER_TOKEN_ENV = "NEKO_OWNER_START_TOKEN"
+
 DEFAULT_POLL_INTERVAL = 1.0
 
 _PR_SET_PDEATHSIG = 1
@@ -198,7 +205,12 @@ def _safe_getppid() -> int:
 class ParentDeathGuard:
     """Handle for an installed guard. Fires ``on_parent_death`` at most once."""
 
-    def __init__(self, on_parent_death: Callable[[str], None], parent_pid: int):
+    def __init__(
+        self,
+        on_parent_death: Callable[[str], None],
+        parent_pid: int,
+        owner_start_token: str = "",
+    ):
         self._callback = on_parent_death
         self._parent_pid = parent_pid
         # The owner is usually our direct parent, but a generation handoff points
@@ -210,9 +222,20 @@ class ParentDeathGuard:
         # means this pid now belongs to somebody else. Only consulted on the
         # handoff path; the direct-parent test reads getppid(), which the kernel
         # keeps honest.
-        self._parent_start_token = (
-            "" if self._owner_is_direct_parent else _posix_start_token(parent_pid)
-        )
+        if self._owner_is_direct_parent:
+            # Capture it even though this generation never consults it — the
+            # direct-parent test reads getppid(), which the kernel keeps honest.
+            # Re-checking getppid() after the read is what makes the token
+            # trustworthy: it proves the pid was still our parent while we looked.
+            # This is the value handed to the next generation, which has no
+            # kernel-level relationship of its own to verify against.
+            token = _posix_start_token(parent_pid)
+            self._parent_start_token = token if _safe_getppid() == parent_pid else ""
+        else:
+            # Prefer what a generation that could verify it told us; fall back to
+            # reading it here, which is better than nothing but cannot rule out a
+            # pid recycled before we started.
+            self._parent_start_token = owner_start_token or _posix_start_token(parent_pid)
         self._fired = threading.Event()
         self._stop = threading.Event()
         self._fire_lock = threading.Lock()
@@ -222,6 +245,11 @@ class ParentDeathGuard:
     @property
     def parent_pid(self) -> int:
         return self._parent_pid
+
+    @property
+    def owner_start_token(self) -> str:
+        """The owner's start token, for handing to the next generation."""
+        return self._parent_start_token
 
     @property
     def mechanisms(self) -> tuple[str, ...]:
@@ -236,10 +264,25 @@ class ParentDeathGuard:
 
     def fire(self, mechanism: str) -> None:
         """Report parent death. Safe to call from any thread, any number of times."""
-        with self._fire_lock:
+        # Never wait here. On Linux the pdeathsig callback runs as a signal
+        # handler on the main thread and can interrupt this very critical
+        # section — _install_pdeathsig's late-install fire happens at exactly the
+        # moment a pdeathsig may still be in flight — and threading.Lock is not
+        # reentrant, so waiting pins the main thread forever. Losing the race
+        # means somebody else is already firing; the winner still runs the
+        # callback.
+        #
+        # Deliberately not an RLock: the reentrant caller would acquire it, set
+        # _fired, and run the callback a second time — trading a deadlock for a
+        # double teardown.
+        if not self._fire_lock.acquire(blocking=False):
+            return
+        try:
             if self._fired.is_set():
                 return
             self._fired.set()
+        finally:
+            self._fire_lock.release()
         self._stop.set()
         try:
             self._callback(mechanism)
@@ -561,11 +604,19 @@ def install(
     signal-adjacent context; it must be quick to start and must not assume it
     owns the main thread.
     """
-    resolved_parent = parent_pid if parent_pid is not None else _configured_parent_pid()
+    configured = _configured_parent_pid()
+    resolved_parent = parent_pid if parent_pid is not None else configured
     if resolved_parent is None:
         resolved_parent = _safe_getppid()
 
-    guard = ParentDeathGuard(on_parent_death, int(resolved_parent))
+    # Only trust a supplied token when the pid came from the handoff environment
+    # too. Otherwise a stale token inherited by an ordinary restart could be
+    # matched against a pid it never belonged to, and mismatches kill the runtime.
+    supplied_token = ""
+    if parent_pid is None and configured is not None:
+        supplied_token = os.environ.get(OWNER_TOKEN_ENV, "").strip()
+
+    guard = ParentDeathGuard(on_parent_death, int(resolved_parent), supplied_token)
 
     if not _guard_enabled():
         return guard

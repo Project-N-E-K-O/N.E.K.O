@@ -37,6 +37,25 @@ def _preset_event() -> threading.Event:
     event.set()
     return event
 
+@pytest.fixture(autouse=True)
+def restore_launcher_module_state():
+    """Undo module globals that the launcher sets on itself.
+
+    _handle_owner_death sets _owner_death_in_progress and
+    install_parent_death_guard sets _parent_death_guard — production code
+    assigning to its own globals, which monkeypatch cannot know about. Left
+    behind, the first leaks into every later test that reaches a path guarded by
+    it, and the second leaves a stub guard object standing in for the real one.
+    """
+    from launcher_core import runtime as launcher
+
+    saved = (launcher._owner_death_in_progress, launcher._parent_death_guard,
+             launcher._owner_death_finisher)
+    yield
+    (launcher._owner_death_in_progress, launcher._parent_death_guard,
+     launcher._owner_death_finisher) = saved
+
+
 @pytest.fixture
 def preserved_signal_handlers():
     """Restore dispositions the child-policy helper deliberately overwrites."""
@@ -610,6 +629,7 @@ def test_install_parent_death_guard_reports_what_it_armed(monkeypatch):
     class _Guard:
         parent_pid = 4242
         mechanisms = ("pdeathsig", "ppid_poll")
+        owner_start_token = ""
 
     monkeypatch.setattr(launcher.parent_guard, "install", lambda *_a, **_k: _Guard())
     guard = launcher.install_parent_death_guard()
@@ -633,6 +653,7 @@ def test_install_parent_death_guard_admits_when_nothing_is_armed(monkeypatch):
     class _Guard:
         parent_pid = 1
         mechanisms = ()
+        owner_start_token = ""
 
     monkeypatch.setattr(launcher.parent_guard, "install", lambda *_a, **_k: _Guard())
     launcher.install_parent_death_guard()

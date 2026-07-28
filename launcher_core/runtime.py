@@ -444,8 +444,18 @@ def _spawn_restarted_launcher() -> None:
         owner_pid = os.getppid() if hasattr(os, "getppid") else 0
     if owner_pid and owner_pid > 1:
         relaunch_env[parent_guard.PARENT_PID_ENV] = str(owner_pid)
+        # Hand down the owner's start token as well. We could verify it against
+        # the kernel while the owner was still our own parent; the replacement
+        # cannot, and would otherwise record whatever process holds that pid by
+        # the time it starts — matching a stranger forever after.
+        token = guard.owner_start_token if guard is not None else ""
+        if token:
+            relaunch_env[parent_guard.OWNER_TOKEN_ENV] = token
+        else:
+            relaunch_env.pop(parent_guard.OWNER_TOKEN_ENV, None)
     else:
         relaunch_env.pop(parent_guard.PARENT_PID_ENV, None)
+        relaunch_env.pop(parent_guard.OWNER_TOKEN_ENV, None)
     relaunch_env[RESTART_HANDOFF_ENV] = "1"
 
     # Relax the Job only once the replacement actually exists. Clearing
@@ -510,6 +520,15 @@ def _is_pending_storage_restart_request() -> bool:
 
 
 def _maybe_schedule_storage_restart() -> bool:
+    if _owner_death_in_progress:
+        # The owner is gone, so this generation must die rather than deliver the
+        # next one. On Windows the self-spawn path clears KILL_ON_JOB_CLOSE to
+        # spare the replacement, which would strip the only containment anchor we
+        # have left just as the teardown is about to exit — and the replacement
+        # would immediately exit too, having no owner. The pending restart stays
+        # in root_state and is applied by the next launcher the owner starts.
+        return False
+
     pre_restart_root_state: dict[str, object] = {}
     try:
         config_manager = get_config_manager(APP_NAME, migrate=False)
