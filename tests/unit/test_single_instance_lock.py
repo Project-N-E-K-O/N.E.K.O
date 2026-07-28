@@ -316,24 +316,26 @@ def test_forked_child_dropping_its_reference_does_not_free_the_parent_lock(runti
 
 
 @pytest.mark.unit
-@pytest.mark.skipif(os.name != "posix" or sys.platform == "darwin",
-                    reason="the ambient-directory drift was Linux-specific")
+@pytest.mark.skipif(os.name != "posix", reason="POSIX path derivation")
 def test_lock_path_does_not_drift_with_the_ambient_environment(monkeypatch, tmp_path):
     """Two launches by one user must resolve one lock, however they were started.
 
     XDG_RUNTIME_DIR is present in a desktop session and absent under cron, plain
-    SSH, `su`, a system unit or a container. Deriving the lock path from it meant
-    the same uid took two unrelated locks and both launchers called themselves
-    the owner — the uniqueness proof degrading back into port probing.
+    SSH, `su`, a system unit or a container; HOME is whatever a sandbox, launchd
+    job or wrapper script says it is. Deriving the lock path from either meant the
+    same uid took two unrelated locks and both launchers called themselves the
+    owner — the uniqueness proof degrading back into port probing.
     """
     monkeypatch.delenv(single_instance.RUNTIME_STATE_DIR_ENV, raising=False)
 
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run-user"))
-    desktop = single_instance.lock_path()
+    monkeypatch.setenv("HOME", str(tmp_path / "sandbox-home"))
+    sandboxed = single_instance.lock_path()
 
     monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
-    headless = single_instance.lock_path()
+    monkeypatch.delenv("HOME", raising=False)
+    bare = single_instance.lock_path()
 
-    assert desktop == headless, (
-        f"lock path drifted with the environment: {desktop} vs {headless}"
+    assert sandboxed == bare, (
+        f"lock path drifted with the environment: {sandboxed} vs {bare}"
     )

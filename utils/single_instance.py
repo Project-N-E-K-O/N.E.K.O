@@ -109,10 +109,14 @@ def runtime_state_dir() -> Path:
         return Path(tempfile.gettempdir()) / "N.E.K.O" / f"runtime-{_windows_user_tag()}"
 
     if sys.platform == "darwin":
-        try:
-            return Path.home() / "Library" / "Application Support" / "N.E.K.O" / "runtime"
-        except Exception:
-            pass
+        # Same rule as the Linux branch below: resolve the home directory from the
+        # passwd database rather than $HOME. Path.home() reads $HOME, which a
+        # sandbox, a launchd service or a wrapper script can point elsewhere for
+        # the same uid — and two homes mean two locks and two runtimes calling
+        # themselves the owner.
+        home = _stable_home_dir()
+        if home:
+            return Path(home) / "Library" / "Application Support" / "N.E.K.O" / "runtime"
     else:
         # Deliberately *not* XDG_RUNTIME_DIR. It is ambient: a desktop session has
         # it, a cron job, a plain SSH login, `su`, a system unit or a container
@@ -704,6 +708,8 @@ def legacy_owner_status() -> tuple[str, Optional[dict]]:
                 try:
                     os.close(fd)
                 except OSError:
+                    # Probe only; the verdict is already decided and the fd dies
+                    # with this process anyway.
                     pass
 
     if sys.platform == "win32" and not os.environ.get(RUNTIME_STATE_DIR_ENV, "").strip():
