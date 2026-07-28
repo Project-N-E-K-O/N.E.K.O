@@ -11,6 +11,7 @@ import pytest
 
 from main_logic import tts_client
 from main_logic.tts_client.workers import openai as openai_worker_module
+from main_routers.characters_router import voice_preview as voice_preview_module
 from main_routers.config_router.connectivity import _test_connectivity_candidates
 from utils.openai_tts import (
     OPENAI_TTS_PCM_SAMPLE_RATE,
@@ -111,8 +112,17 @@ class _CustomTtsConfigManager:
         self.load_count += 1
         return dict(self.raw)
 
-    def get_voices_for_current_api(self):
+    def get_voices_for_current_api(self, **_kwargs):
         return {}
+
+    async def aensure_region_resolved(self):
+        return True
+
+    async def aget_core_config(self):
+        return dict(self.snapshot)
+
+    async def aload_characters(self):
+        return {"猫娘": {}}
 
 
 def test_custom_openai_tts_dispatch_binds_config(monkeypatch):
@@ -185,6 +195,49 @@ def test_custom_openai_tts_requires_an_effective_voice():
     )
 
     assert openai_worker_module._custom_openai_tts_is_selected(ctx) is False
+
+
+def test_configured_custom_voice_is_exposed_to_character_picker():
+    cm = _CustomTtsConfigManager()
+
+    assert provider_registry.preset_catalog_for_ui("custom", cm.snapshot) == {
+        "vendor-voice": {
+            "prefix": "vendor-voice",
+            "provider": "custom",
+            "provider_label": "custom",
+            "gender": "",
+            "display_name": "vendor-voice",
+            "builtin": True,
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_voices_endpoint_maps_configured_custom_voice_to_character_catalog(
+    monkeypatch,
+):
+    cm = _CustomTtsConfigManager()
+    monkeypatch.setattr(voice_preview_module, "get_config_manager", lambda: cm)
+
+    result = await voice_preview_module.get_voices()
+
+    assert result["native_voices"]["vendor-voice"]["provider"] == "custom"
+    assert result["voice_owners"] == {}
+
+
+def test_configured_custom_voice_is_saveable_for_character():
+    cm = _CustomTtsConfigManager()
+
+    assert provider_registry.is_selected_preset_voice(
+        cm.snapshot,
+        cm,
+        "vendor-voice",
+    )
+    assert not provider_registry.is_selected_preset_voice(
+        cm.snapshot,
+        cm,
+        "another-voice",
+    )
 
 
 def _wait_for_item(q, predicate, timeout=5.0):
