@@ -96,9 +96,15 @@ function readErrorCode(error: AxiosError): string {
   }
   const headerValue = headers?.['x-error-code'] ?? headers?.['X-Error-Code']
   if (headerValue != null) return String(headerValue)
-  const data = error.response?.data as any
-  if (typeof data?.code === 'string') return data.code
-  if (typeof data?.detail?.code === 'string') return data.detail.code
+  const data = error.response?.data
+  if (data && typeof data === 'object') {
+    const record = data as Record<string, unknown>
+    if (typeof record.code === 'string') return record.code
+    if (record.detail && typeof record.detail === 'object') {
+      const detail = record.detail as Record<string, unknown>
+      if (typeof detail.code === 'string') return detail.code
+    }
+  }
   return ''
 }
 
