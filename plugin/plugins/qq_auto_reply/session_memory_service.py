@@ -7,6 +7,23 @@ import time
 from typing import Any
 
 
+
+class _HistoryBoundary(int):
+    """A history length that remembers which session object produced it.
+
+    Synthetic turns capture the boundary before running the pipeline and
+    mark everything appended after it. The pipeline may replace the session
+    itself (identity/character change), and an index from the old history
+    means nothing in the new one — carrying the session along is what lets
+    the marker notice. A strong reference on purpose: id() would let a
+    freed session's address come back as a false match."""
+
+    def __new__(cls, value: int, session: object = None) -> "_HistoryBoundary":
+        obj = super().__new__(cls, value)
+        obj.session = session
+        return obj
+
+
 class QQSessionMemoryService:
     GROUP_HISTORY_MAX_MESSAGES = 200
     GROUP_MEMBER_MAX_PARTICIPANTS = 8
@@ -227,7 +244,9 @@ class QQSessionMemoryService:
         if not isinstance(user_data, dict):
             return 0
         session = user_data.get("session")
-        return len(getattr(session, "_conversation_history", None) or [])
+        return _HistoryBoundary(
+            len(getattr(session, "_conversation_history", None) or []), session,
+        )
 
     def record_synthetic_prompt_rows(
         self, session_key: str, history_len_before: int,
@@ -254,7 +273,15 @@ class QQSessionMemoryService:
         session = user_data.get("session")
         history = getattr(session, "_conversation_history", None) or []
         rows = user_data.setdefault("undelivered_draft_rows", [])
-        for msg in history[max(0, history_len_before):]:
+        baseline = int(history_len_before)
+        measured_on = getattr(history_len_before, "session", None)
+        if measured_on is not None and measured_on is not session:
+            # 本轮把会话换掉了（登录身份/角色变化触发重建）：旧长度在新
+            # 历史上没有意义，旧的更长时切片直接切空、那条捏造的 [系统]
+            # 行就当成真人发言进了 scoped 记忆。新会话里现有的行全是本轮
+            # 写的，从头算即可。
+            baseline = 0
+        for msg in history[max(0, baseline):]:
             msg_type = getattr(msg, "type", "")
             if msg_type != "human" and not (
                 include_ai_rows and msg_type == "ai"
@@ -302,6 +329,9 @@ class QQSessionMemoryService:
         """Keep bounded, actor-attributed user turns for optional member memory."""
         settings = getattr(self.plugin, "_qq_settings", {}) or {}
         if not settings.get("group_member_memory_enabled"):
+            return
+        if not settings.get("group_memory_enabled"):
+            # 子开关不能越过父开关：群记忆关着时不收集任何成员发言。
             return
         if not getattr(context, "member_memory_enabled", False):
             # 完成时刻（上一行）与发言时刻（context 快照）都要有授权：

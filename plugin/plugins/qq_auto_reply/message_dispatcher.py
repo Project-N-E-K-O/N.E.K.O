@@ -113,9 +113,11 @@ class QQMessageDispatcher:
                         message["_group_memory_at_receipt"] = bool(
                             settings_now.get("group_memory_enabled", False)
                         )
+                        # 成员记忆是群记忆的子开关：两个都开才算收到时有
+                        # 授权（后端已钳制，这里是收口处的对偶判据）。
                         message["_member_memory_at_receipt"] = bool(
                             settings_now.get("group_member_memory_enabled", False)
-                        )
+                        ) and bool(settings_now.get("group_memory_enabled", False))
                     task = __import__("asyncio").create_task(self.plugin._run_message_handler(message))
                     self.plugin.handler_runtime_service.track_handler_task(task)
             except __import__("asyncio").CancelledError:

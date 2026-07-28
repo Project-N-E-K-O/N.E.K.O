@@ -96,6 +96,22 @@ class QQSettingsService:
         self._rollback_unpersisted_memory_toggles(success, **rollback_kwargs)
         return success
 
+    def _clamp_member_to_group(
+        self, deferred_opt_ins: dict[str, bool] | None = None,
+    ) -> None:
+        """Member memory is a child of group memory — enforce it here.
+
+        The dashboard unchecks both together, but the action takes each key
+        on its own: `group_memory_enabled=False` alone left the member flag
+        true, and collection gates only on that flag, so participant buckets
+        kept filling after the opt-out and would be flushed the next time
+        group memory came back on."""
+        if self.plugin._qq_settings.get("group_memory_enabled", False):
+            return
+        if deferred_opt_ins is not None:
+            deferred_opt_ins.pop("group_member_memory_enabled", None)
+        self.plugin._qq_settings["group_member_memory_enabled"] = False
+
     def _publish_consent_opt_ins(self, opt_ins: dict[str, bool]) -> None:
         """Apply opt-ins that were held back until the write landed.
 
@@ -107,6 +123,8 @@ class QQSettingsService:
         )
         for key in opt_ins:
             self.plugin._qq_settings[key] = True
+        # 迟发的 opt-in 同样受父子约束：群记忆关着时把 member 打开无效。
+        self._clamp_member_to_group()
         group_after = bool(
             self.plugin._qq_settings.get("group_memory_enabled", False)
         )
@@ -491,6 +509,7 @@ class QQSettingsService:
                 deferred_opt_ins[key] = True
                 continue
             self.plugin._qq_settings[key] = bool(value)
+        self._clamp_member_to_group(deferred_opt_ins)
         group_memory_after = bool(
             self.plugin._qq_settings.get("group_memory_enabled", False)
         )

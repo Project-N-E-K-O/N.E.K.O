@@ -137,6 +137,17 @@ class QQSessionRuntimeService:
             buffer_service.cancel_pending(
                 session_key, self.plugin._user_sessions.get(session_key),
             )
+        if self.plugin._has_pending_session_settlement(session_key):
+            # 空的 pending 槽不等于「已定局」：投递一确认，buffer 就把
+            # pending 摘掉并把结算排到同一把会话锁上。此刻 finalize 会在
+            # 那条已投递的 ai 行还挂着未投递标记时定稿——用户真收到的回复
+            # 缺席 digest，随后的结算又改在一份已被弹走的 user_data 上。
+            # 不 await（本函数常在会话锁内被调用，等于自锁），按既有约定
+            # 返 False：会话留着，调用方下一轮重试。
+            self.plugin.logger.warning(
+                f"投递结算未完成，暂不销毁会话（{session_key}, reason={reason}）"
+            )
+            return False
         peek = self.plugin._user_sessions.get(session_key)
         finalized = False
         if peek and (

@@ -655,7 +655,8 @@ class QQReplyBufferService:
             # 被清掉，而它还在改历史；紧接着重启建的新锁拦不住它，正好撞上
             # 这把锁本来要防的那个顺序竞态。
             settle_task = self.plugin._spawn_memory_sync_task(
-                self.plugin._run_with_session_lock(session_key, _settle_delivered)
+                self.plugin._run_with_session_lock(session_key, _settle_delivered),
+                session_key=session_key,
             )
             await asyncio.shield(settle_task)
             return

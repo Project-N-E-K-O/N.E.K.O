@@ -38,13 +38,34 @@ class QQAutoReplySessionMixin:
         except Exception as exc:
             self.logger.error(f"Message handler task failed: {exc}")
 
-    def _spawn_memory_sync_task(self, coro) -> asyncio.Task:
+    def _spawn_memory_sync_task(
+        self, coro, *, session_key: str | None = None,
+    ) -> asyncio.Task:
         """Run a privacy-critical memory coroutine in the background.
 
         One registry for every producer (settings transitions, member
         bucket drains): the event loop holds tasks weakly, and stop() joins
-        exactly this set."""
+        exactly this set. Pass session_key for work that still has to touch
+        that session's user_data — discard_session refuses to finalize while
+        one is outstanding, because finalizing first would persist the
+        digest without the row that settlement is about to unmark."""
         task = asyncio.create_task(coro)
+        if session_key:
+            per_session = getattr(self, "_session_settle_tasks", None)
+            if per_session is None:
+                per_session = {}
+                self._session_settle_tasks = per_session
+            per_session.setdefault(session_key, set()).add(task)
+
+            def _drop_settle(done_task: asyncio.Task) -> None:
+                bucket = per_session.get(session_key)
+                if bucket is None:
+                    return
+                bucket.discard(done_task)
+                if not bucket:
+                    per_session.pop(session_key, None)
+
+            task.add_done_callback(_drop_settle)
         sync_tasks = getattr(self, "_group_memory_sync_tasks", None)
         if sync_tasks is None:
             sync_tasks = set()
@@ -63,6 +84,13 @@ class QQAutoReplySessionMixin:
 
         task.add_done_callback(_on_sync_done)
         return task
+
+    def _has_pending_session_settlement(self, session_key: str) -> bool:
+        """True while a settlement for this session is still outstanding."""
+        bucket = (getattr(self, "_session_settle_tasks", None) or {}).get(
+            session_key
+        )
+        return any(not task.done() for task in (bucket or ()))
 
     async def _run_with_session_lock(self, session_key: str, coro_factory) -> Any:
         return await self.session_runtime_service.run_with_session_lock(session_key, coro_factory)

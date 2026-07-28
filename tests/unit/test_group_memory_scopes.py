@@ -127,8 +127,11 @@ def _default_i18n():
     return SimpleNamespace(t=lambda key, default="", **kw: default)
 
 
-def _passthrough_memory_task(coro):
-    """Stand-in for the plugin task registry: run it, keep the handle."""
+def _passthrough_memory_task(coro, *, session_key: str | None = None):
+    """Stand-in for the plugin task registry: run it, keep the handle.
+
+    Mirrors the real signature — settlement work passes session_key so
+    discard_session can see it is still outstanding."""
     return asyncio.ensure_future(coro)
 
 
@@ -841,7 +844,9 @@ def test_qq_group_member_turns_are_opt_in_and_actor_attributed():
         QQSessionMemoryService,
     )
 
-    plugin = SimpleNamespace(_qq_settings={"group_member_memory_enabled": True})
+    plugin = SimpleNamespace(_qq_settings={
+        "group_memory_enabled": True, "group_member_memory_enabled": True,
+    })
     service = QQSessionMemoryService(plugin)
     user_data: dict = {}
     # Consent is bound to the turn's build time: a turn built while member
@@ -4170,6 +4175,7 @@ async def test_discard_cancels_pending_buffered_reply():
     buffer_service._pending = {"group:7788": pending}
     plugin.reply_buffer_service = buffer_service
 
+    plugin._has_pending_session_settlement = lambda key: False
     runtime = QQSessionRuntimeService.__new__(QQSessionRuntimeService)
     runtime.plugin = plugin
     assert await runtime.discard_session("group:7788", reason="prompt") is True
@@ -6185,6 +6191,7 @@ async def test_discard_session_salvages_group_buffers_first():
         ),
         logger=MagicMock(),
     )
+    plugin._has_pending_session_settlement = lambda key: False
     runtime = QQSessionRuntimeService.__new__(QQSessionRuntimeService)
     runtime.plugin = plugin
 
@@ -9869,8 +9876,9 @@ async def test_post_delivery_settlement_survives_cancellation():
     service._pending["group:7788"] = pending
 
     task = asyncio.create_task(
-        service._deliver_after_wait("group:7788", pending)
+        service._deliver_after_wait("group:7788", pending, pending.generation)
     )
+    pending.task = task
     await asyncio.wait_for(lock_reached.wait(), timeout=5.0)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -10353,9 +10361,12 @@ async def test_shielded_settlement_is_registered_for_shutdown_join():
     registered: list = []
     order: list = []
 
-    def _spawn(coro):
+    def _spawn(coro, *, session_key: str | None = None):
         task = asyncio.ensure_future(coro)
-        registered.append(task)
+        # The key is what lets discard_session see this settlement is still
+        # outstanding; spawning it unkeyed would make the session
+        # destroyable mid-settlement again.
+        registered.append((session_key, task))
         return task
 
     async def _locked(session_key, coro_factory):
@@ -10404,12 +10415,14 @@ async def test_shielded_settlement_is_registered_for_shutdown_join():
     )
     service._pending["group:7788"] = pending
 
-    await service._deliver_after_wait("group:7788", pending)
-    # Exactly one task, registered where stop() joins it...
+    await service._deliver_after_wait("group:7788", pending, pending.generation)
+    # Exactly one task, registered where stop() joins it and under the key
+    # discard_session checks before destroying the session...
     assert len(registered) == 1
+    assert registered[0][0] == "group:7788"
     # ...it is the one that was awaited (it is finished on return, despite
     # the slow lock)...
-    assert registered[0].done()
+    assert registered[0][1].done()
     # ...and the settlement side effects actually ran.
     assert order == ["cleared", "settled"]
     service.plugin.reply_generation_service.record_scoped_mentions_on_delivery.assert_awaited_once()
@@ -10504,7 +10517,7 @@ async def test_pending_is_detached_before_the_settlement_await():
         _user_sessions={"group:7788": {}},
         _qq_settings={"group_memory_enabled": True},
         _run_with_session_lock=_slow_lock,
-        _spawn_memory_sync_task=lambda coro: asyncio.ensure_future(coro),
+        _spawn_memory_sync_task=_passthrough_memory_task,
         reply_delivery_node=SimpleNamespace(
             deliver=AsyncMock(return_value=QQDeliveryResult(
                 delivered=True, target_type="group", target_id="7788",
@@ -10903,3 +10916,176 @@ async def test_region_wait_covers_every_session_rebuild_trigger(monkeypatch):
     ):
         plugin._user_sessions = {} if entry is None else {"group:7788": entry}
         assert await _turn() == 1, label
+
+
+def test_member_memory_never_outlives_its_parent_switch():
+    """Member memory is a child of group memory. The dashboard unchecks both
+    together, but the action takes each key on its own — turning group memory
+    off alone used to leave collection running, and those OFF-era buckets got
+    flushed the next time group memory came back on."""
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
+
+    service = QQSettingsService.__new__(QQSettingsService)
+    settings = {
+        "group_memory_enabled": False, "group_member_memory_enabled": True,
+    }
+    service.plugin = SimpleNamespace(_qq_settings=settings)
+    service._clamp_member_to_group()
+    assert settings["group_member_memory_enabled"] is False
+
+    # A deferred opt-in cannot sneak the child in past a closed parent.
+    settings["group_member_memory_enabled"] = False
+    deferred = {"group_member_memory_enabled": True}
+    service._clamp_member_to_group(deferred)
+    assert deferred == {}
+
+    # The write gate refuses collection even if the flag is forced on.
+    memory = QQSessionMemoryService(SimpleNamespace(_qq_settings={
+        "group_memory_enabled": False, "group_member_memory_enabled": True,
+    }))
+    user_data: dict = {}
+    memory.record_group_member_turn(user_data, SimpleNamespace(
+        is_group=True, sender_id="2046", message="随便说点什么",
+        member_memory_enabled=True,
+    ))
+    assert "group_member_memory_messages" not in user_data
+
+
+@pytest.mark.asyncio
+async def test_receipt_snapshot_requires_both_memory_switches():
+    """The receive boundary stamps the member policy onto the message. With
+    the parent switch off, that stamp must be false — it is what the bucket
+    write trusts for turns that queue behind a slow lock."""
+    from plugin.plugins.qq_auto_reply.message_dispatcher import (
+        QQMessageDispatcher,
+    )
+
+    stamped: list[dict] = []
+    inbox: list[dict] = [
+        {"message_type": "group", "group_id": "7788", "user_id": "2046"},
+    ]
+
+    async def _handle(message):
+        stamped.append(message)
+
+    async def _receive():
+        # Yield every call: process_messages loops on this, and a receiver
+        # that never suspends starves the handler tasks it just spawned.
+        await asyncio.sleep(0)
+        if not inbox:
+            plugin._running = False
+            return None
+        return inbox.pop(0)
+
+    plugin = SimpleNamespace(
+        _running=True,
+        _qq_settings={
+            "group_memory_enabled": False, "group_member_memory_enabled": True,
+        },
+        qq_client=SimpleNamespace(receive_message=_receive),
+        logger=MagicMock(),
+        _run_message_handler=_handle,
+        handler_runtime_service=SimpleNamespace(
+            track_handler_task=lambda task: None,
+        ),
+    )
+    dispatcher = QQMessageDispatcher.__new__(QQMessageDispatcher)
+    dispatcher.plugin = plugin
+    await asyncio.wait_for(dispatcher.process_messages(), timeout=5.0)
+
+    assert stamped, "the handler was never scheduled"
+    assert stamped[0]["_member_memory_at_receipt"] is False
+    assert stamped[0]["_group_memory_at_receipt"] is False
+    # ...and with the parent open, the child stamp follows the child switch.
+    plugin._qq_settings["group_memory_enabled"] = True
+    plugin._running = True
+    inbox.append({"message_type": "group", "group_id": "7788", "user_id": "2046"})
+    await asyncio.wait_for(dispatcher.process_messages(), timeout=5.0)
+    assert stamped[1]["_member_memory_at_receipt"] is True
+
+
+def test_synthetic_marking_survives_a_session_swapped_mid_turn():
+    """The boundary is captured before the pipeline runs, and the pipeline
+    may rebuild the session (identity/character change). Slicing the NEW
+    history at the OLD length marks nothing when the old one was longer, so
+    the fabricated `[系统]` row lands in scoped memory as a real utterance."""
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    old_rows = [SimpleNamespace(type="human", content=f"旧{i}") for i in range(5)]
+    user_data = {
+        "is_group": True,
+        "session": SimpleNamespace(_conversation_history=old_rows),
+    }
+    plugin = SimpleNamespace(_user_sessions={"group:7788": user_data})
+    service = QQSessionMemoryService(plugin)
+
+    boundary = service.session_history_len("group:7788")
+    assert int(boundary) == 5
+
+    # The turn rebuilt the session: the fresh history holds only this turn.
+    synthetic = SimpleNamespace(type="human", content="[系统] 新成员 2046 加入了群聊")
+    reply = SimpleNamespace(type="ai", content="欢迎呀~")
+    user_data["session"] = SimpleNamespace(
+        _conversation_history=[synthetic, reply]
+    )
+
+    service.record_synthetic_prompt_rows("group:7788", boundary)
+
+    marked = user_data["undelivered_draft_rows"]
+    assert any(row is synthetic for row in marked), "control prompt left exposed"
+    # The delivered reply still counts as delivered.
+    assert not any(row is reply for row in marked)
+
+
+@pytest.mark.asyncio
+async def test_discard_waits_for_a_confirmed_send_to_finish_settling():
+    """Delivery confirmation detaches `_pending` and queues the settlement on
+    the session lock. An empty pending slot is therefore not 'nothing left to
+    do': finalizing here would persist the digest while the delivered ai row
+    is still marked undelivered, and the settlement would then edit a session
+    nobody holds any more."""
+    from plugin.plugins.qq_auto_reply.session import QQAutoReplySessionMixin
+    from plugin.plugins.qq_auto_reply.session_runtime_service import (
+        QQSessionRuntimeService,
+    )
+
+    finalize = AsyncMock(return_value=True)
+    session = SimpleNamespace(_conversation_history=[], close=AsyncMock())
+    ud = {"is_group": True, "memory_enabled": True, "session": session}
+    plugin = SimpleNamespace(
+        _user_sessions={"group:7788": ud},
+        logger=MagicMock(),
+        reply_buffer_service=SimpleNamespace(cancel_pending=lambda k, u: None),
+        session_memory_service=SimpleNamespace(
+            finalize_user_memory_session=finalize,
+        ),
+    )
+    plugin._has_pending_session_settlement = (
+        lambda key: QQAutoReplySessionMixin._has_pending_session_settlement(
+            plugin, key,
+        )
+    )
+    runtime = QQSessionRuntimeService.__new__(QQSessionRuntimeService)
+    runtime.plugin = plugin
+
+    settling = asyncio.get_running_loop().create_future()
+    plugin._session_settle_tasks = {
+        "group:7788": {asyncio.ensure_future(settling)},
+    }
+
+    assert await runtime.discard_session("group:7788", reason="prompt") is False
+    finalize.assert_not_awaited()
+    assert "group:7788" in plugin._user_sessions, "session destroyed mid-settlement"
+    session.close.assert_not_awaited()
+
+    # Once it lands, the retry goes through.
+    settling.set_result(None)
+    await asyncio.sleep(0)
+    assert await runtime.discard_session("group:7788", reason="prompt") is True
+    finalize.assert_awaited_once()
+    assert "group:7788" not in plugin._user_sessions
