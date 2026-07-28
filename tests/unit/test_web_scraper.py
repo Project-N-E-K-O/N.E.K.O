@@ -4,6 +4,7 @@ import os
 import sys
 
 import pytest
+from tests.fake_clock import patch_module_clock
 from utils.llm_client import AIMessage, HumanMessage, SystemMessage
 
 
@@ -302,7 +303,11 @@ async def test_bilibili_hot_uses_recent_stale_cache_after_failure(monkeypatch):
             ]
         }
 
-    monkeypatch.setattr(bilibili_content.time, "monotonic", lambda: clock["now"])
+    patch_module_clock(
+        monkeypatch,
+        bilibili_content,
+        monotonic=lambda: clock["now"],
+    )
     monkeypatch.setattr(hot, "get_hot_videos", fake_get_hot_videos)
 
     first = await bilibili_content.fetch_bilibili_hot(limit=10)
@@ -331,7 +336,11 @@ async def test_bilibili_hot_rejects_stale_cache_older_than_limit(monkeypatch):
             raise RuntimeError("still unavailable")
         return {"list": [{"bvid": "BVexpired", "title": "即将过期"}]}
 
-    monkeypatch.setattr(bilibili_content.time, "monotonic", lambda: clock["now"])
+    patch_module_clock(
+        monkeypatch,
+        bilibili_content,
+        monotonic=lambda: clock["now"],
+    )
     monkeypatch.setattr(hot, "get_hot_videos", fake_get_hot_videos)
 
     await bilibili_content.fetch_bilibili_hot(limit=10)
@@ -835,8 +844,10 @@ async def test_bilibili_following_uses_two_minute_cache(monkeypatch):
         "_fetch_bilibili_personal_dynamic_uncached",
         fake_fetch,
     )
-    monkeypatch.setattr(
-        personal_dynamics.time, "monotonic", lambda: clock["now"]
+    patch_module_clock(
+        monkeypatch,
+        personal_dynamics,
+        monotonic=lambda: clock["now"],
     )
 
     first = await personal_dynamics.fetch_bilibili_personal_dynamic(10)

@@ -1,5 +1,4 @@
 import json
-import re
 import shutil
 from pathlib import Path
 
@@ -9,7 +8,7 @@ from tests.node_harness import run_node_stdin
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-SOCCER_TEMPLATE = PROJECT_ROOT / "templates" / "soccer_demo.html"
+SOCCER_SCRIPT = PROJECT_ROOT / "static" / "game" / "games" / "soccer" / "soccer-demo.js"
 
 
 def _extract_js_function(source: str, name: str) -> str:
@@ -42,7 +41,7 @@ def _run_node(script: str):
 
 @pytest.mark.unit
 def test_soccer_opening_movement_bias_is_scoped_to_the_opening_play():
-    source = SOCCER_TEMPLATE.read_text(encoding="utf-8")
+    source = SOCCER_SCRIPT.read_text(encoding="utf-8")
 
     assert "function estimateOpeningAttackRouteY(" in source
     assert "openingMovementActive = true;" in source
@@ -54,19 +53,16 @@ def test_soccer_opening_movement_bias_is_scoped_to_the_opening_play():
 
 
 @pytest.mark.unit
-def test_soccer_gameplay_script_has_valid_javascript_syntax():
-    source = SOCCER_TEMPLATE.read_text(encoding="utf-8")
-    inline_scripts = re.findall(r"<script>([\s\S]*?)</script>", source)
-    assert inline_scripts
-
-    result = _run_node(f"new Function({json.dumps(inline_scripts[-1])});")
+def test_soccer_gameplay_asset_has_valid_javascript_syntax():
+    source = SOCCER_SCRIPT.read_text(encoding="utf-8")
+    result = _run_node(f"new Function({json.dumps(source)});")
 
     assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.unit
 def test_soccer_opening_route_follows_player_stance_with_symmetric_wall_bounces():
-    source = SOCCER_TEMPLATE.read_text(encoding="utf-8")
+    source = SOCCER_SCRIPT.read_text(encoding="utf-8")
     route_function = _extract_js_function(source, "estimateOpeningAttackRouteY")
     script = f"""
 const assert = require('node:assert/strict');

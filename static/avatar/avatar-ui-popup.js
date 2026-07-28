@@ -890,7 +890,7 @@ function createSidePanelMenuItem(manager, prefix, item) {
 
     let isOpening = false;
 
-    // 打开模型管理子窗口，主页面模型保持原样显示。
+    // 打开模型管理子窗口；主页面模型由统一遮挡状态接口决定是否显示。
     function openModelManagerWindow(url, name, feat) {
         let childWin;
         if (typeof window.openOrFocusWindow === 'function') {

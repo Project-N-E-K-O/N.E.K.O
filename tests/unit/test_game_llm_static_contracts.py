@@ -1,7 +1,9 @@
+import json
 import re
 from pathlib import Path
 
 import pytest
+from jinja2 import Environment, FileSystemLoader
 
 from config.prompts.prompts_soccer import (
     get_soccer_pregame_context_prompt,
@@ -14,6 +16,49 @@ from scripts import check_no_temperature
 
 
 ROOT = Path(__file__).resolve().parents[2]
+SOCCER_TEMPLATE_PATH = ROOT / "templates" / "soccer_demo.html"
+SOCCER_SCRIPT_PATH = ROOT / "static" / "game" / "games" / "soccer" / "soccer-demo.js"
+SOCCER_STYLE_PATH = ROOT / "static" / "game" / "games" / "soccer" / "soccer-demo.css"
+
+
+@pytest.mark.unit
+def test_soccer_template_loads_split_css_and_javascript_assets():
+    template = SOCCER_TEMPLATE_PATH.read_text(encoding="utf-8")
+    script = SOCCER_SCRIPT_PATH.read_text(encoding="utf-8")
+    style = SOCCER_STYLE_PATH.read_text(encoding="utf-8")
+
+    assert '/static/game/games/soccer/soccer-demo.css?v={{ static_asset_version }}' in template
+    assert '/static/game/games/soccer/soccer-demo.js?v={{ static_asset_version }}' in template
+    assert 'id="soccer-runtime-config" type="application/json"' in template
+    assert "<style" not in template
+    assert "window.SoccerDemo =" not in template
+    assert "window.SoccerDemo =" in script
+    assert "#soccer-start-button" in style
+    template_head = template.split("</head>", 1)[0]
+    runtime_script = '<script src="/static/game/games/soccer/soccer-demo.js'
+    assert runtime_script not in template_head
+    assert template.index('<script type="importmap">') < template.index(runtime_script)
+    assert template.index(runtime_script) < template.index('<script src="/static/vrm/vrm-init.js">')
+
+
+@pytest.mark.unit
+def test_soccer_template_renders_runtime_config_and_asset_version():
+    rendered = Environment(loader=FileSystemLoader(ROOT), autoescape=True).get_template(
+        "templates/soccer_demo.html"
+    ).render(
+        vrm_defaults={"ambientIntensity": 1.25},
+        static_asset_version="test-version",
+    )
+    config_match = re.search(
+        r'<script id="soccer-runtime-config" type="application/json">(.*?)</script>',
+        rendered,
+        re.DOTALL,
+    )
+
+    assert config_match
+    assert json.loads(config_match.group(1))["vrm_defaults"]["ambientIntensity"] == 1.25
+    assert "soccer-demo.css?v=test-version" in rendered
+    assert "soccer-demo.js?v=test-version" in rendered
 
 
 @pytest.mark.unit
@@ -61,12 +106,12 @@ def test_soccer_quick_lines_and_pregame_prompts_are_localized():
 
 @pytest.mark.unit
 def test_soccer_realtime_context_posts_local_mutation_headers():
-    html = ROOT.joinpath("templates/soccer_demo.html").read_text(encoding="utf-8")
-    headers_block = html.split("function _getLocalMutationHeaders()", 1)[1].split(
+    script = ROOT.joinpath("static/game/games/soccer/soccer-demo.js").read_text(encoding="utf-8")
+    headers_block = script.split("function _getLocalMutationHeaders()", 1)[1].split(
         "function _refreshLocalMutationHeaders()",
         1,
     )[0]
-    context_block = html.split("async function _sendRealtimeGameContext(source, items = [])", 1)[1].split(
+    context_block = script.split("async function _sendRealtimeGameContext(source, items = [])", 1)[1].split(
         "async function _mirrorGameAssistantText",
         1,
     )[0]
@@ -76,78 +121,78 @@ def test_soccer_realtime_context_posts_local_mutation_headers():
     assert "headers['X-CSRF-Token'] = config.autostart_csrf_token;" in headers_block
     assert "cache: 'no-store'" in headers_block
     assert "credentials: 'same-origin'" in context_block
-    assert "headers,\n        body: bodyJson" in context_block
+    assert re.search(r"headers,\s+body: bodyJson", context_block)
     assert "await postWithHeaders(await _getLocalMutationHeaders())" in context_block
     assert "errorPayload.error_code === 'csrf_validation_failed'" in context_block
     assert "await postWithHeaders(await _refreshLocalMutationHeaders())" in context_block
 
 
 @pytest.mark.unit
-def test_soccer_template_posts_session_debug_errors():
-    html = ROOT.joinpath("templates/soccer_demo.html").read_text(encoding="utf-8")
+def test_soccer_script_posts_session_debug_errors():
+    script = ROOT.joinpath("static/game/games/soccer/soccer-demo.js").read_text(encoding="utf-8")
     debug_start_anchor = "function _sendSoccerDebugLog(payload)"
     debug_end_anchor = "function soccerSessionDebugLog"
-    assert debug_start_anchor in html
-    assert debug_end_anchor in html
-    debug_block = html.split(debug_start_anchor, 1)[1].split(debug_end_anchor, 1)[0]
+    assert debug_start_anchor in script
+    assert debug_end_anchor in script
+    debug_block = script.split(debug_start_anchor, 1)[1].split(debug_end_anchor, 1)[0]
 
-    assert "/api/game/logs" in html
-    assert "/api/game/logs/enable" in html
-    assert "window.SoccerDemoDebugLog = soccerSessionDebugLog" in html
-    assert "window.EnableSoccerSessionDebugLog = enableSoccerSessionDebugLog" in html
-    assert "window.addEventListener('error'" in html
-    assert "window.addEventListener('unhandledrejection'" in html
-    assert "console.warn = function soccerDebugConsoleWarn" in html
-    assert "console.error = function soccerDebugConsoleError" in html
-    assert "sessionDebugLogEnabled: false" in html
-    assert "sessionDebugLogEnablePromise: null" in html
-    assert "sessionDebugLogEnableGeneration: 0" in html
-    assert "sessionDebugLogMutationHeaders: null" in html
+    assert "/api/game/logs" in script
+    assert "/api/game/logs/enable" in script
+    assert "window.SoccerDemoDebugLog = soccerSessionDebugLog" in script
+    assert "window.EnableSoccerSessionDebugLog = enableSoccerSessionDebugLog" in script
+    assert "window.addEventListener('error'" in script
+    assert "window.addEventListener('unhandledrejection'" in script
+    assert "console.warn = function soccerDebugConsoleWarn" in script
+    assert "console.error = function soccerDebugConsoleError" in script
+    assert "sessionDebugLogEnabled: false" in script
+    assert "sessionDebugLogEnablePromise: null" in script
+    assert "sessionDebugLogEnableGeneration: 0" in script
+    assert "sessionDebugLogMutationHeaders: null" in script
     assert "if (!_llm.sessionDebugLogEnabled) return;" in debug_block
-    assert "function resetSoccerSessionDebugLogEnableState()" in html
-    assert "resetSoccerSessionDebugLogEnableState();" in html
-    assert "SOCCER_SESSION_DEBUG_ENABLE_TIMEOUT_MS" in html
-    assert "function _hasSoccerSessionDebugLogSendCredentials()" in html
-    assert "function _enableSoccerSessionDebugLogAfterRouteStart()" in html
-    assert "function _startSoccerSessionDebugLogEnablePromise(workPromise, generation)" in html
-    assert "_llm.sessionDebugLogEnableGeneration += 1;" in html
-    assert "const isCurrentGeneration = () => _llm.sessionDebugLogEnableGeneration === generation;" in html
-    assert "if (!isCurrentGeneration()) return { ok: false, reason: 'stale_enable_result' };" in html
-    assert "then((headers) => _enableSoccerDebugLogWithHeaders(reason, headers || {}))" in html
-    assert "return _startSoccerSessionDebugLogEnablePromise(_getLocalMutationHeaders()" in html
-    assert "enableReason: 'route_start_send_gate'" in html
-    assert "reason: 'missing_csrf_token'" in html
-    assert "_llm.sessionDebugLogMutationHeaders = debugLogMutationHeaders;" in html
-    assert "_llm.sessionDebugLogMutationHeaders = null;" in html
+    assert "function resetSoccerSessionDebugLogEnableState()" in script
+    assert "resetSoccerSessionDebugLogEnableState();" in script
+    assert "SOCCER_SESSION_DEBUG_ENABLE_TIMEOUT_MS" in script
+    assert "function _hasSoccerSessionDebugLogSendCredentials()" in script
+    assert "function _enableSoccerSessionDebugLogAfterRouteStart()" in script
+    assert "function _startSoccerSessionDebugLogEnablePromise(workPromise, generation)" in script
+    assert "_llm.sessionDebugLogEnableGeneration += 1;" in script
+    assert "const isCurrentGeneration = () => _llm.sessionDebugLogEnableGeneration === generation;" in script
+    assert "if (!isCurrentGeneration()) return { ok: false, reason: 'stale_enable_result' };" in script
+    assert "then((headers) => _enableSoccerDebugLogWithHeaders(reason, headers || {}))" in script
+    assert "return _startSoccerSessionDebugLogEnablePromise(_getLocalMutationHeaders()" in script
+    assert "enableReason: 'route_start_send_gate'" in script
+    assert "reason: 'missing_csrf_token'" in script
+    assert "_llm.sessionDebugLogMutationHeaders = debugLogMutationHeaders;" in script
+    assert "_llm.sessionDebugLogMutationHeaders = null;" in script
     assert "_postSoccerDebugLogPayload(logPayload, _llm.sessionDebugLogMutationHeaders)" in debug_block
-    assert "await enableSoccerSessionDebugLog('auto_route_start')" not in html
-    assert "enableSoccerSessionDebugLog('auto_route_start')" not in html
-    assert not re.search(r"if\s*\(\s*data\.ok\s*\)\s*{\s*_llm\.sessionDebugLogEnabled\s*=\s*true;", html)
-    route_success_block = html.split("if (data.ok)", 1)[1].split("_llm.routeLanlanName", 1)[0]
+    assert "await enableSoccerSessionDebugLog('auto_route_start')" not in script
+    assert "enableSoccerSessionDebugLog('auto_route_start')" not in script
+    assert not re.search(r"if\s*\(\s*data\.ok\s*\)\s*{\s*_llm\.sessionDebugLogEnabled\s*=\s*true;", script)
+    route_success_block = script.split("if (data.ok)", 1)[1].split("_llm.routeLanlanName", 1)[0]
     assert "_enableSoccerSessionDebugLogAfterRouteStart();" in route_success_block
-    assert "enableSoccerSessionDebugLog('keyboard_l')" in html
-    assert "session_id: _llm.sessionId" in html
-    assert "game_type: 'soccer'" in html
-    assert "lanlan_name: _llm.routeLanlanName || ''" in html
+    assert "enableSoccerSessionDebugLog('keyboard_l')" in script
+    assert "session_id: _llm.sessionId" in script
+    assert "game_type: 'soccer'" in script
+    assert "lanlan_name: _llm.routeLanlanName || ''" in script
     assert "window.nekoLocalMutationSecurity" in debug_block
     assert "peekCachedToken" in debug_block
     assert "getMutationHeaders" in debug_block
-    assert "_csrf_token: token" in html
+    assert "_csrf_token: token" in script
 
 
 @pytest.mark.unit
 def test_soccer_mood_rotation_only_runs_for_pure_game_fallback():
-    html = ROOT.joinpath("templates/soccer_demo.html").read_text(encoding="utf-8")
+    script = ROOT.joinpath("static/game/games/soccer/soccer-demo.js").read_text(encoding="utf-8")
 
-    assert "function _shouldUsePureGameMoodRotationFallback()" in html
-    assert "source === 'fallback' || !!error" in html
-    assert "moodRotationFallbackEnabled" in html
-    assert "'mood_rotation_policy'" in html
-    assert "默认开启 20s 心情轮换" not in html
-    assert "if (!moodDebugMode) enableMoodRotation(20);" not in html
-    assert "setTimeout(() => SoccerDemo.enableMoodRotation(20), 15000)" in html
+    assert "function _shouldUsePureGameMoodRotationFallback()" in script
+    assert "source === 'fallback' || !!error" in script
+    assert "moodRotationFallbackEnabled" in script
+    assert "'mood_rotation_policy'" in script
+    assert "默认开启 20s 心情轮换" not in script
+    assert "if (!moodDebugMode) enableMoodRotation(20);" not in script
+    assert "setTimeout(() => SoccerDemo.enableMoodRotation(20), 15000)" in script
 
-    llm_control_block = html.split("if (result.control.mood && SoccerDemo.MOODS.includes(result.control.mood))", 1)[1].split(
+    llm_control_block = script.split("if (result.control.mood && SoccerDemo.MOODS.includes(result.control.mood))", 1)[1].split(
         "} else if (result.control.mood)",
         1,
     )[0]
@@ -156,54 +201,54 @@ def test_soccer_mood_rotation_only_runs_for_pure_game_fallback():
 
 @pytest.mark.unit
 def test_soccer_passive_guard_writes_structured_debug_events():
-    html = ROOT.joinpath("templates/soccer_demo.html").read_text(encoding="utf-8")
+    script = ROOT.joinpath("static/game/games/soccer/soccer-demo.js").read_text(encoding="utf-8")
     router_source = ROOT.joinpath("main_routers/game_router/runtime.py").read_text(encoding="utf-8")
 
-    assert "function _passiveGuardDebugLog(" in html
-    assert "'passive_guard'" in html
-    assert "'passive_guard_counter'" in html
-    assert "'passive_guard_hint'" in html
-    assert "'passive_guard_sidecar'" in html
-    assert "'passive_guard_modal'" in html
-    assert "'passive_guard_teaching'" in html
-    assert "'passive_guard_state_change'" in html
-    assert "PASSIVE_GUARD_DEBUG_LOG_LIMIT_PER_WINDOW = 80" in html
-    assert "passiveGuardSentInWindow" in html
-    assert "FALLBACK_DIAGNOSTIC_REPEAT_EVERY = 20" in html
-    assert "fallbackStatusState.hitCounts.set(key, hits)" in html
-    assert "const isPassiveGuardLog = payload?.category === 'passive_guard'" in html
-    assert "startsWith('passive_guard_')" in html
-    assert "PASSIVE_GUARD_SIDE_CAR_TIMEOUT_MS = 7000" in html
+    assert "function _passiveGuardDebugLog(" in script
+    assert "'passive_guard'" in script
+    assert "'passive_guard_counter'" in script
+    assert "'passive_guard_hint'" in script
+    assert "'passive_guard_sidecar'" in script
+    assert "'passive_guard_modal'" in script
+    assert "'passive_guard_teaching'" in script
+    assert "'passive_guard_state_change'" in script
+    assert "PASSIVE_GUARD_DEBUG_LOG_LIMIT_PER_WINDOW = 80" in script
+    assert "passiveGuardSentInWindow" in script
+    assert "FALLBACK_DIAGNOSTIC_REPEAT_EVERY = 20" in script
+    assert "fallbackStatusState.hitCounts.set(key, hits)" in script
+    assert "const isPassiveGuardLog = payload?.category === 'passive_guard'" in script
+    assert "startsWith('passive_guard_')" in script
+    assert "PASSIVE_GUARD_SIDE_CAR_TIMEOUT_MS = 7000" in script
 
-    set_difficulty_block = html.split("function setDifficultyInternal(name, opts = {})", 1)[1].split(
+    set_difficulty_block = script.split("function setDifficultyInternal(name, opts = {})", 1)[1].split(
         "function targetDifficultyForScoreDiff",
         1,
     )[0]
-    set_mood_block = html.split("setMood = function(name, opts = {})", 1)[1].split(
+    set_mood_block = script.split("setMood = function(name, opts = {})", 1)[1].split(
         "const __cycleDiffBase",
         1,
     )[0]
-    sidecar_block = html.split("async function _requestPassiveGuardSidecar", 1)[1].split(
+    sidecar_block = script.split("async function _requestPassiveGuardSidecar", 1)[1].split(
         "function _handleSidecarAction",
         1,
     )[0]
-    exit_prompt_line_block = html.split("async function _requestExitPromptLine", 1)[1].split(
+    exit_prompt_line_block = script.split("async function _requestExitPromptLine", 1)[1].split(
         "async function _prepareExitPrompt",
         1,
     )[0]
-    prepare_exit_prompt_block = html.split("async function _prepareExitPrompt", 1)[1].split(
+    prepare_exit_prompt_block = script.split("async function _prepareExitPrompt", 1)[1].split(
         "async function _requestPassiveGuardSidecar",
         1,
     )[0]
-    external_route_input_block = html.split("if (output && output.type === 'game_external_input')", 1)[1].split(
+    external_route_input_block = script.split("if (output && output.type === 'game_external_input')", 1)[1].split(
         "if (!output || output.type !== 'game_llm_result')",
         1,
     )[0]
-    rest_candidate_block = html.split("if (promptType === 'rest') {", 1)[1].split(
+    rest_candidate_block = script.split("if (promptType === 'rest') {", 1)[1].split(
         "const streak = Number(passiveGuard.lv4PlayerGoalStreak",
         1,
     )[0]
-    withdrawn_goal_block = html.split("function _handleWithdrawnGoal", 1)[1].split(
+    withdrawn_goal_block = script.split("function _handleWithdrawnGoal", 1)[1].split(
         "function _handleOrdinaryGoal",
         1,
     )[0]
@@ -217,22 +262,22 @@ def test_soccer_passive_guard_writes_structured_debug_events():
     )[0]
 
     assert "'passive_guard_state_change'" in set_difficulty_block
-    assert "_clearOrdinaryCandidate('difficulty_left_lv4')" in html
-    assert "_clearRestCandidate('difficulty_left_lv4')" in html
+    assert "_clearOrdinaryCandidate('difficulty_left_lv4')" in script
+    assert "_clearRestCandidate('difficulty_left_lv4')" in script
     assert "'passive_guard_state_change'" in set_mood_block
     assert "'passive_guard_sidecar'" in sidecar_block
     assert "requestSessionId = _llm.sessionId" in sidecar_block
     assert "requestGeneration = passiveGuard.sidecarGeneration" in sidecar_block
     assert "discard_stale_result" in sidecar_block
     assert "stale_sidecar_error" in sidecar_block
-    assert "function _passiveGuardExitPromptCandidateState(promptType, stage, options = {})" in html
-    assert "skip_inactive_candidate" in html
-    assert "_passiveGuardExitPromptCandidateState(promptType, stage)" in html
-    assert "allowPreparedModal = options.allowPreparedModal === true" in html
+    assert "function _passiveGuardExitPromptCandidateState(promptType, stage, options = {})" in script
+    assert "skip_inactive_candidate" in script
+    assert "_passiveGuardExitPromptCandidateState(promptType, stage)" in script
+    assert "allowPreparedModal = options.allowPreparedModal === true" in script
     assert "_passiveGuardExitPromptCandidateState(promptType, stage, { allowPreparedModal: true })" in (
         prepare_exit_prompt_block
     )
-    assert "function _releasePreparedExitPrompt(type)" in html
+    assert "function _releasePreparedExitPrompt(type)" in script
     assert prepare_exit_prompt_block.index("_llm.cleanedUp || !isGameRuntimeReady()") < prepare_exit_prompt_block.index(
         "_showExitPrompt(type, firstLine"
     )
@@ -244,17 +289,17 @@ def test_soccer_passive_guard_writes_structured_debug_events():
     )
     assert "_llm.cleanedUp ||" in prepare_exit_prompt_block
     assert "!isGameRuntimeReady() ||" in prepare_exit_prompt_block
-    assert "_prepareExitPrompt('rest', 'sidecar_prepare_exit_prompt', { stage })" in html
-    assert "_prepareExitPrompt('surrender', 'sidecar_prepare_exit_prompt', { stage })" in html
-    assert "function _externalGameRouteInputText(output)" in html
+    assert "_prepareExitPrompt('rest', 'sidecar_prepare_exit_prompt', { stage })" in script
+    assert "_prepareExitPrompt('surrender', 'sidecar_prepare_exit_prompt', { stage })" in script
+    assert "function _externalGameRouteInputText(output)" in script
     assert "_handlePassiveGuardUserSpeech(" in external_route_input_block
     assert "_externalGameRouteInputText(output)" in external_route_input_block
     assert "_get_game_route_summary_llm_info(lanlan_name)" in passive_guard_ai_block
     assert "_get_game_route_summary_llm_info," in router_source
-    assert "rest_streak_below_stage" in html
-    assert "ordinary_candidate_below_stage" in html
-    assert "passiveGuard.sidecarGeneration = Number(passiveGuard.sidecarGeneration || 0) + 1" in html
-    assert "reason: 'surrender_reminder_disabled'" in html
+    assert "rest_streak_below_stage" in script
+    assert "ordinary_candidate_below_stage" in script
+    assert "passiveGuard.sidecarGeneration = Number(passiveGuard.sidecarGeneration || 0) + 1" in script
+    assert "reason: 'surrender_reminder_disabled'" in script
     assert "reason: 'surrender_reminder_disabled'" in rest_candidate_block
     assert withdrawn_goal_block.index("if (!passiveGuard.surrenderReminderEnabled)") < withdrawn_goal_block.index(
         "passiveGuard.withdrawnRestGoalStreak++"
