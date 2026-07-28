@@ -50,13 +50,14 @@ class VoiceInputConsumerBinding:
 
 @dataclass(frozen=True, slots=True)
 class _QueuedMicFrame:
-    # Longest microphone PCM frame accepted at ingress, in samples. Sized from
-    # the 48 kHz worklet buffer (480 samples / 10 ms) with the same 120 ms
-    # allowance the binary wire decoder uses (_VOICE_BINARY_MAX_DURATION_MS in
-    # main_routers/websocket_router.py), so both ingress paths reject at the
-    # same point. ClassVar, not a module constant: the layering gate keeps this
-    # mixin module to imports and classes only.
-    MAX_SAMPLES: ClassVar[int] = 48_000 * 120 // 1_000
+    # Longest microphone PCM frame accepted at ingress. Bounded by DURATION,
+    # not by a fixed sample count: the binary wire decoder derives its limit
+    # per sample rate (_VOICE_BINARY_MAX_DURATION_MS in
+    # main_routers/websocket_router.py), so a fixed count would reject at
+    # 120 ms for 48 kHz but only at 360 ms for 16 kHz and the two ingress paths
+    # would disagree (CodeRabbit). ClassVar, not a module constant: the
+    # layering gate keeps this mixin module to imports and classes only.
+    MAX_DURATION_MS: ClassVar[int] = 120
 
     message: dict
     duration_us: int
@@ -92,7 +93,7 @@ class _QueuedMicFrame:
         # frame could carry an arbitrarily long sample list -- the frontend
         # never sends JSON audio, so any oversized one is malformed by
         # construction.
-        if len(samples) > cls.MAX_SAMPLES:
+        if len(samples) * 1_000 > source_rate_hz * cls.MAX_DURATION_MS:
             raise ValueError("MIC_PCM_FRAME_TOO_LONG")
         duration_us = (len(samples) * 1_000_000 + source_rate_hz - 1) // source_rate_hz
         return cls(
@@ -676,21 +677,38 @@ class AsrRuntimeMixin:
                 reason,
             )
 
-    async def _invalidate_interrupted_voice_turn(self, reason: str) -> None:
+    async def _invalidate_interrupted_voice_turn(
+        self,
+        reason: str,
+        *,
+        abort: "asyncio.Future[None] | None" = None,
+    ) -> None:
         """Invalidate whichever route owns a turn broken by dropped PCM.
 
-        The independent abort is started first on purpose: its synchronous
-        prefix bumps the audio generation, so a pre-hole frame still in
-        flight in the worker fails its ingress-token check instead of being
-        appended after the buffer clear. One loop tick is enough for that
-        prefix to land; the abort's first real suspension is a frontend
-        status send under exactly the congestion that caused the overflow,
-        and the buffer clear must not queue behind it.
+        The independent abort runs first on purpose: its synchronous prefix
+        bumps the audio generation, so a pre-hole frame still in flight in
+        the worker fails its ingress-token check instead of being appended
+        after the buffer clear. The clear must not simply await the abort to
+        completion, though: the abort's first real suspension is a frontend
+        status send, under exactly the congestion that caused the overflow.
+        So the abort is scheduled, given one loop tick to run its prefix, and
+        only re-joined at the end.
+
+        ``abort`` lets a caller that dispatches this method with
+        ``_fire_task`` create the abort task itself. That is load-bearing, not
+        cosmetic: creating it inside this coroutine puts it one task-
+        scheduling layer deeper than the caller, so the caller resumes before
+        the abort's first step ever runs and the ordering above is silently
+        lost (CodeRabbit). Callers that ``await`` this method directly can
+        leave it None.
         """
 
-        abort = asyncio.ensure_future(self._abort_independent_asr(reason))
+        owns_abort = abort is None
+        if abort is None:
+            abort = asyncio.ensure_future(self._abort_independent_asr(reason))
         try:
-            await asyncio.sleep(0)
+            if owns_abort:
+                await asyncio.sleep(0)
             await self._reset_native_audio_turn(reason)
         finally:
             await abort
@@ -912,9 +930,17 @@ class AsrRuntimeMixin:
                     # lifecycle invalidation ``IndependentAsrRuntime.abort``
                     # performs before its first await) still executes before
                     # this coroutine resumes and any later frame is accepted.
+                    # The abort task is created HERE, not inside the
+                    # wrapper: one extra scheduling layer would let this
+                    # coroutine resume before the abort's synchronous prefix
+                    # runs, breaking the ordering the comment above promises.
+                    abort = self._fire_task(
+                        self._abort_independent_asr("ingress_backpressure")
+                    )
                     self._fire_task(
                         self._invalidate_interrupted_voice_turn(
-                            "ingress_backpressure"
+                            "ingress_backpressure",
+                            abort=abort,
                         )
                     )
                     await asyncio.sleep(0)

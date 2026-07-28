@@ -1767,7 +1767,7 @@ async def test_independent_route_overflow_does_not_clear_provider_input_buffer()
     mgr.session.clear_audio_buffer.assert_not_awaited()
 
 
-async def test_hot_swap_flush_damaged_tail_clears_native_input_buffer(monkeypatch):
+async def test_hot_swap_flush_damaged_tail_clears_native_input_buffer():
     # The flush replays the cache into the POST-swap session and explicitly
     # supports the native route. A send failure drops the whole remaining tail
     # into damaged_frames, so the same PCM hole opens against the new session.
@@ -1829,8 +1829,18 @@ async def test_revoke_voice_input_connection_ignores_a_superseded_socket():
     mgr._asr_runtime.abort.assert_not_awaited()
 
 
-@pytest.mark.parametrize("sample_rate_hz", [16_000, 48_000])
-async def test_json_mic_frame_rejects_an_oversized_sample_list(sample_rate_hz: int):
+# Literal bounds, matching the binary decoder's parametrization in
+# tests/unit/test_websocket_binary_audio.py: both ingress paths must reject at
+# the same DURATION, so the 16 kHz limit is 1920 samples and 48 kHz is 5760.
+# Deriving them from the constant would make the test pass against any value.
+@pytest.mark.parametrize(
+    "sample_rate_hz, samples",
+    [(16_000, 1_921), (48_000, 5_761)],
+)
+async def test_json_mic_frame_rejects_an_oversized_sample_list(
+    sample_rate_hz: int,
+    samples: int,
+):
     # The JSON stream_data branch materializes the same int list as the binary
     # decoder but had no per-frame bound: the queue's 2 s / 256-frame limits are
     # post-decode. The frontend never sends JSON audio, so any oversized frame
@@ -1840,18 +1850,29 @@ async def test_json_mic_frame_rejects_an_oversized_sample_list(sample_rate_hz: i
             {
                 "input_type": "audio",
                 "sample_rate_hz": sample_rate_hz,
-                "data": [0] * 5_761,
+                "data": [0] * samples,
             },
             token=_queue_token(),
         )
 
 
-async def test_json_mic_frame_accepts_a_real_worklet_frame():
+@pytest.mark.parametrize(
+    "sample_rate_hz, samples",
+    [(16_000, 512), (48_000, 480), (16_000, 1_920), (48_000, 5_760)],
+)
+async def test_json_mic_frame_accepts_real_and_boundary_frame_sizes(
+    sample_rate_hz: int,
+    samples: int,
+):
     frame = QueuedMicFrame.from_message(
-        {"input_type": "audio", "sample_rate_hz": 16_000, "data": [0] * 512},
+        {
+            "input_type": "audio",
+            "sample_rate_hz": sample_rate_hz,
+            "data": [0] * samples,
+        },
         token=_queue_token(),
     )
-    assert frame.source_rate_hz == 16_000
+    assert frame.source_rate_hz == sample_rate_hz
 
 
 async def test_text_session_microphone_is_signalled_once_not_silently_dropped():
@@ -1902,3 +1923,55 @@ async def test_audio_session_microphone_block_stays_silent():
     )
 
     mgr.send_status.assert_not_awaited()
+
+
+async def test_overflow_abort_prefix_lands_before_ingress_accepts_another_frame():
+    # CodeRabbit: the overflow branch dispatches the invalidation with
+    # _fire_task and yields ONE tick so the abort's synchronous prefix (the
+    # audio-generation bump inside IndependentAsrRuntime._abort_transport)
+    # runs before _enqueue_audio_stream_data returns. Creating the abort task
+    # inside _invalidate_interrupted_voice_turn instead puts it one scheduling
+    # layer deeper, so this coroutine resumes first and the ordering is lost.
+    mgr = _make_routable_audio_manager(True)
+    _authorize_core_lease(mgr)
+    mgr._set_microphone_route("independent")
+    mgr._audio_stream_queue = AudioDurationQueue(
+        capacity_us=1_000_000,
+        max_frames=2,
+    )
+    mgr._audio_stream_dropped_total = 0
+    mgr._last_audio_stream_backlog_log_time = 0.0
+    mgr._ensure_audio_stream_worker = lambda: None
+    mgr._bg_tasks = set()
+
+    aborted = asyncio.Event()
+
+    async def _abort(_reason: str) -> None:
+        # Stands in for the real abort's synchronous prefix: everything up to
+        # IndependentAsrRuntime.abort's first await runs on the task's first
+        # step. The sleep models its first real suspension (a frontend status
+        # send under the same congestion that caused the overflow).
+        aborted.set()
+        await asyncio.sleep(0.05)
+
+    mgr._abort_independent_asr = _abort
+
+    for seq in (1, 2, 3):
+        await LLMSessionManager._enqueue_audio_stream_data(
+            mgr,
+            {
+                "seq": seq,
+                "input_type": "audio",
+                "sample_rate_hz": 16_000,
+                "data": [seq] * 160,
+            },
+        )
+        if seq == 3:
+            # The overflow frame has been rejected and this coroutine has
+            # returned: the prefix must already have run, without waiting on
+            # the abort's slow tail.
+            assert aborted.is_set(), (
+                "abort prefix must land before ingress accepts another frame"
+            )
+
+    await asyncio.gather(*list(mgr._bg_tasks))
