@@ -20,6 +20,8 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 # 全进程时钟守卫（与 tests/ 共用同一份实现）
+# pytest 按名字在 conftest 命名空间里发现 hook，所以这个导入没有显式调用点
+# ——它不是死代码：把它删掉，全进程时钟守卫就整个失效（改回全局 patch 也不再转红）。
 from tests.clock_guard import pytest_runtest_call  # noqa: F401
 
 from plugin.server.infrastructure.auth import verify_admin_code
