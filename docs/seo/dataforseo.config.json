@@ -26,6 +26,61 @@
       "intent": "MOFU setup"
     },
     {
+      "keyword": "ai desktop pet",
+      "landingPage": "/",
+      "intent": "BOFU category"
+    },
+    {
+      "keyword": "open source ai desktop pet",
+      "landingPage": "/",
+      "intent": "BOFU category"
+    },
+    {
+      "keyword": "virtual ai desktop pet",
+      "landingPage": "/",
+      "intent": "MOFU category"
+    },
+    {
+      "keyword": "desktop ai companion",
+      "landingPage": "/",
+      "intent": "BOFU category"
+    },
+    {
+      "keyword": "ai desktop companion",
+      "landingPage": "/",
+      "intent": "BOFU category"
+    },
+    {
+      "keyword": "proactive desktop companion",
+      "landingPage": "/",
+      "intent": "MOFU category"
+    },
+    {
+      "keyword": "open source desktop companion",
+      "landingPage": "/",
+      "intent": "BOFU category"
+    },
+    {
+      "keyword": "desktop companion app",
+      "landingPage": "/",
+      "intent": "MOFU category"
+    },
+    {
+      "keyword": "interactive ai desktop pet",
+      "landingPage": "/",
+      "intent": "MOFU category"
+    },
+    {
+      "keyword": "customizable ai desktop pet",
+      "landingPage": "/",
+      "intent": "MOFU category"
+    },
+    {
+      "keyword": "live2d ai desktop pet",
+      "landingPage": "/frontend/live2d",
+      "intent": "MOFU feature"
+    },
+    {
       "keyword": "live2d ai assistant",
       "landingPage": "/frontend/live2d",
       "intent": "MOFU feature"

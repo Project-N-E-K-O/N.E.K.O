@@ -109,8 +109,8 @@ function createRuntime(allowedActionId, options = {}) {
     flush();
   };
   const enter = () => {
-    win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {
-      detail: { source: 'manual-goodbye', timestamp: now },
+    win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {
+      detail: { active: true, source: 'manual-goodbye', timestamp: now },
     }));
     flush();
   };
@@ -320,4 +320,80 @@ test('request lease deadlines release pending state and reconsider retained inpu
     'accepted_not_started_timeout'
   );
   assert.equal(accepted.requests.length, 1, 'accepted timeout must not invent a terminal or retry');
+});
+
+test('Cat Mind follows the actual cat appearance instead of raw goodbye and return clicks', () => {
+  const runtime = createRuntime('cat1_social_ping');
+
+  runtime.win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {
+    detail: { source: 'manual-goodbye', timestamp: runtime.now() },
+  }));
+  assert.equal(runtime.win.nekoCatMind.getState().active, false);
+
+  runtime.enter();
+  runtime.advanceNeed();
+  assert.equal(runtime.win.nekoCatMind.getState().active, true);
+  assert.ok(runtime.win.nekoCatMind.getState().pendingActionRequest);
+
+  runtime.win.dispatchEvent(new CustomEventLike('live2d-return-click'));
+  assert.equal(runtime.win.nekoCatMind.getState().active, true);
+  assert.equal(runtime.win.nekoCatMind.getReturnSummaryDraft(), null);
+
+  runtime.win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {
+    detail: { active: false, reason: 'appearance-change', appearance: 'ball' },
+  }));
+  const stopped = runtime.win.nekoCatMind.getState();
+  assert.equal(stopped.active, false);
+  assert.equal(stopped.pendingActionRequest, null);
+  assert.equal(stopped.activeAction, null);
+  assert.equal(stopped.returnSummaryDraft, null);
+  assert.equal(stopped.lastResetReason, 'appearance-change');
+
+  runtime.win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {
+    detail: { active: true, source: 'goodbye-idle-appearance', tier: 'cat2' },
+  }));
+  assert.equal(runtime.win.nekoCatMind.getState().active, true);
+  assert.equal(runtime.win.nekoCatMind.getState().tier, 'cat2');
+});
+
+test('committed real returns preserve one summary for every supported avatar', () => {
+  const runtime = createRuntime('cat1_social_ping');
+  runtime.enter();
+
+  runtime.win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {
+    detail: {
+      active: false,
+      reason: 'return-commit',
+      returnCommitted: true,
+      returnSource: 'live2d-return-click',
+    },
+  }));
+  const committed = runtime.win.nekoCatMind.getState();
+  assert.equal(committed.active, false);
+  assert.ok(committed.returnSummaryDraft);
+
+  runtime.win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {
+    detail: { active: false, reason: 'duplicate-inactive-observation' },
+  }));
+  assert.ok(
+    runtime.win.nekoCatMind.getReturnSummaryDraft(),
+    'a duplicate inactive observation must not clear a committed return summary before its consumer runs',
+  );
+  runtime.win.dispatchEvent(new CustomEventLike('neko:goodbye-state-cleared', {
+    detail: { reason: 'character-switch' },
+  }));
+  assert.equal(runtime.win.nekoCatMind.getReturnSummaryDraft(), null);
+
+  const png = createRuntime('cat1_social_ping');
+  png.enter();
+  png.win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {
+    detail: {
+      active: false,
+      reason: 'return-commit',
+      returnCommitted: true,
+      returnSource: 'pngtuber-return-click',
+    },
+  }));
+  assert.equal(png.win.nekoCatMind.getState().active, false);
+  assert.ok(png.win.nekoCatMind.getReturnSummaryDraft());
 });

@@ -120,6 +120,21 @@ class QQVoiceReplyService:
 
             config_manager = get_config_manager()
 
+            # 这条合成路径会分两次读区域敏感配置：先按目录挑音色/provider，之后
+            # _adjust_free_tts_url 再按区域拼 TTS 端点。判定若在两者之间落定，就会
+            # 把大陆 free_voices 的音色 ID 发去 lanlan.app（或反过来），而两套目录不
+            # 相交，这条语音回复直接失败。先落定，让整次合成用同一结论。已落定时零
+            # 开销；自配 API 用户不会因此发起探测。fail-open：落定不了也继续按当前
+            # 配置合成，最坏是这一条回复失败、下一条就好了。
+            try:
+                if not await config_manager.aensure_region_resolved():
+                    self.plugin.logger.warning(
+                        "[GeoIP] 语音回复合成开始时区域判定仍未落定；若结论恰在本次合成中途到达，"
+                        "音色与线路可能不匹配导致这条语音失败"
+                    )
+            except Exception as e:
+                self.plugin.logger.warning(f"[GeoIP] 语音回复区域落定失败，按当前配置继续: {e}")
+
             # 优先尝试本地 SoVITS/CosyVoice
             local_result = await self._synthesize_local_tts(normalized_text)
             if local_result:

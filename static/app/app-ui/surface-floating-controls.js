@@ -508,6 +508,15 @@
                             I.applyGoodbyeIdleAppearanceToReturnButton(activeReturnButtonContainer, I.NEKO_GOODBYE_IDLE_APPEARANCE_BALL);
                         }
                         I.revealReturnBallContainer(activeReturnButtonContainer, reason);
+                        const actualAppearance = I.getReturnButtonAppearance(activeReturnButtonContainer);
+                        I.publishCatLocalActive(
+                            actualAppearance === I.NEKO_GOODBYE_IDLE_APPEARANCE_CAT,
+                            Object.assign({}, goodbyeDetail, {
+                                source: goodbyeDetail.source || 'goodbye-appearance',
+                                reason: reason,
+                                appearance: actualAppearance
+                            })
+                        );
                     }
                 };
                 requestAnimationFrame(() => {
@@ -543,6 +552,10 @@
                 });
             } else {
                 I.releaseNekoModelCatTransition(goodbyeTransitionToken);
+                I.publishCatLocalActive(false, {
+                    source: goodbyeDetail.source || 'goodbye-appearance',
+                    reason: 'return-container-unavailable'
+                });
             }
 
             // 隐藏 side-btn 按钮和侧边栏
@@ -685,6 +698,29 @@
                 }
                 return;
             }
+            let hadCatCycle = false;
+            try {
+                const returnContainer = I.getVisibleIdleReturnBallContainer();
+                hadCatCycle = !!(returnContainer &&
+                    I.getReturnButtonAppearance(returnContainer) === I.NEKO_GOODBYE_IDLE_APPEARANCE_CAT);
+                const catMindState = window.nekoCatMind && typeof window.nekoCatMind.getState === 'function'
+                    ? window.nekoCatMind.getState()
+                    : null;
+                hadCatCycle = hadCatCycle || !!(catMindState && (catMindState.active || catMindState.returnSummaryDraft));
+            } catch (_) {}
+            I.publishCatLocalActive(false, {
+                source: event && event.type ? event.type : 'return-click',
+                reason: 'return-commit',
+                returnCommitted: true,
+                returnSource: event && event.type ? event.type : 'return-click'
+            });
+            window.dispatchEvent(new CustomEvent('neko:cat-return-commit', {
+                detail: {
+                    source: event && event.type ? event.type : 'return-click',
+                    hadCatCycle: hadCatCycle,
+                    timestamp: Date.now()
+                }
+            }));
             const isReturningToPngtuber = (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber';
             if (I.multiWindowReturnBallDragState) {
                 I.multiWindowReturnBallDragState.dragSessionToken += 1;
@@ -715,12 +751,6 @@
             if (window.mmdManager) {
                 window.mmdManager._goodbyeClicked = false;
             }
-            if (window.appInterpage && typeof window.appInterpage.postGoodbyeChatComposerHiddenState === 'function') {
-                window.appInterpage.postGoodbyeChatComposerHiddenState(false, 'return-click');
-            } else if (typeof window.postGoodbyeChatComposerHiddenState === 'function') {
-                window.postGoodbyeChatComposerHiddenState(false, 'return-click');
-            }
-
             console.log('[App] 标志清除后 - live2dManager._goodbyeClicked:', window.live2dManager?._goodbyeClicked);
             console.log('[App] 标志清除后 - vrmManager._goodbyeClicked:', window.vrmManager?._goodbyeClicked);
             I.restoreGoodbyeResourceSuspend('return-click');
@@ -1139,10 +1169,22 @@
                 I.S.isSwitchingMode = false;
             }, 500);
 
+            if (window.appInterpage && typeof window.appInterpage.postGoodbyeChatComposerHiddenState === 'function') {
+                window.appInterpage.postGoodbyeChatComposerHiddenState(false, 'return-complete');
+            } else if (typeof window.postGoodbyeChatComposerHiddenState === 'function') {
+                window.postGoodbyeChatComposerHiddenState(false, 'return-complete');
+            }
+            window.dispatchEvent(new CustomEvent('neko:cat-return-complete', {
+                detail: {
+                    source: event && event.type ? event.type : 'return-click',
+                    timestamp: Date.now()
+                }
+            }));
+
             console.log('[App] 请她回来完成，未自动开始会话，等待用户主动发起对话');
         };
 
-        // 同时监听 Live2D、VRM 和 MMD 的回来事件
+        // 统一监听各模型类型的回来事件
         window.addEventListener('live2d-return-click', handleReturnClick);
         window.addEventListener('vrm-return-click', handleReturnClick);
         window.addEventListener('mmd-return-click', handleReturnClick);

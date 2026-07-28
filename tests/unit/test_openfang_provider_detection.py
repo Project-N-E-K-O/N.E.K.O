@@ -199,6 +199,7 @@ class TestSyncConfigKeyFreeProvider:
             "base_url": "http://localhost:11434/v1",
             "api_key": "",
         }
+        cm.aget_model_api_config = AsyncMock(side_effect=lambda mt, **_: cm.get_model_api_config(mt))
         mock_get_cm.return_value = cm
 
         adapter = OpenFangAdapter(base_url="http://127.0.0.1:12345")
@@ -241,6 +242,7 @@ class TestSyncConfigKeyFreeProvider:
             "base_url": "https://api.openai.com/v1",
             "api_key": "",
         }
+        cm.aget_model_api_config = AsyncMock(side_effect=lambda mt, **_: cm.get_model_api_config(mt))
         mock_get_cm.return_value = cm
 
         adapter = OpenFangAdapter()
@@ -257,6 +259,7 @@ class TestSyncConfigKeyFreeProvider:
             "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
             "api_key": "AIza-test-key-12345",
         }
+        cm.aget_model_api_config = AsyncMock(side_effect=lambda mt, **_: cm.get_model_api_config(mt))
         mock_get_cm.return_value = cm
 
         adapter = OpenFangAdapter(base_url="http://127.0.0.1:12345")
@@ -287,6 +290,7 @@ class TestSyncConfigKeyFreeProvider:
             "base_url": "http://localhost:11434/v1",
             "api_key": "",
         }
+        cm.aget_model_api_config = AsyncMock(side_effect=lambda mt, **_: cm.get_model_api_config(mt))
         mock_get_cm.return_value = cm
 
         adapter = OpenFangAdapter()
@@ -302,6 +306,7 @@ class TestSyncConfigKeyFreeProvider:
             "base_url": "",
             "api_key": "",
         }
+        cm.aget_model_api_config = AsyncMock(side_effect=lambda mt, **_: cm.get_model_api_config(mt))
         mock_get_cm.return_value = cm
 
         adapter = OpenFangAdapter()

@@ -14,7 +14,7 @@
   frames.NNN.jsonl[.gz]  定频快照（默认 1Hz），已剔除 hud_events/chat/hud_notices/combat.feed/
                           proximity.events（这些累积数组改走下方增量流）
   hudmsg.jsonl           增量新 HUD 事件（击杀/通知的原始来源，可离线再解析）
-  chat.jsonl             增量新聊天
+  原始聊天不会落盘；录制只保留不含对话正文的轮询计数/生命周期标记
   proximity.jsonl        敌军接近边沿事件
   events.jsonl           录制生命周期标记（session_start/stop、battle_reset）
   meta.json              会话元信息（起止/间隔/各流计数/服务版本）
@@ -135,7 +135,7 @@ class _RollingStream:
 class SessionRecorder:
     """会话级录制器：定频写快照 + 增量写事件流。默认不录，需显式 start()。"""
 
-    _EVENT_STREAMS = ("hudmsg", "chat", "proximity", "events")
+    _EVENT_STREAMS = ("hudmsg", "proximity", "events")
 
     def __init__(
         self,
@@ -282,7 +282,7 @@ class SessionRecorder:
             "counts": {
                 "frames": self._frames.count if self._frames else 0,
                 "hudmsg": self._streams["hudmsg"].count if self._streams else 0,
-                "chat": self._streams["chat"].count if self._streams else 0,
+                "chat": 0,
                 "proximity": self._streams["proximity"].count if self._streams else 0,
             },
         }
@@ -300,7 +300,7 @@ class SessionRecorder:
             "counts": {
                 "frames": self._frames.count if self._frames else 0,
                 "hudmsg": self._streams["hudmsg"].count if self._streams else 0,
-                "chat": self._streams["chat"].count if self._streams else 0,
+                "chat": 0,
                 "proximity": self._streams["proximity"].count if self._streams else 0,
             },
             "updated_at": time.time(),

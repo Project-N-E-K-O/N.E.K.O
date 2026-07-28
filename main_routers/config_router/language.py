@@ -110,13 +110,21 @@ async def get_steam_language():
             if not getattr(get_steam_language, '_logged', False) or not get_steam_language._logged:
                 get_steam_language._logged = True
                 logger.info(f"[GeoIP] 用户 IP 地区: {ip_country}, 是否大陆: {is_mainland_china}")
-            # Write Steam result to ConfigManager's steam-specific cache
-            try:
-                from utils.config_manager import ConfigManager
-                ConfigManager._steam_check_cache = not is_mainland_china
-                ConfigManager._region_cache = None  # reset combined cache for recomputation
-            except Exception:
-                pass
+            # Write Steam result to ConfigManager's steam-specific cache.
+            # 仅在真的拿到国家码时回写：GetIPCountry() 返回空是"暂时不知道"（Steam
+            # 刚起来还没连上网络时就会这样），而 is_mainland_china 此时保持 False，
+            # 直接回写等于用 not False 断言"海外"——凭无数据把线路推向海外节点。
+            if ip_country:
+                try:
+                    from utils.config_manager import ConfigManager
+                    ConfigManager._steam_check_cache = not is_mainland_china
+                    # 清合并缓存触发重算。注意 Steam 只是兜底票：重算时如果 IP 探测
+                    # 已有结论，仍按 IP 走，这次回写只在 IP 始终无结论时才决定线路。
+                    ConfigManager._region_cache = None
+                except Exception:
+                    # 回写只是给区域判定提供一票兜底信号，失败不该影响本接口的主职
+                    # 责（返回 Steam 语言）。IP 探测仍会按自己的节奏得出结论。
+                    logger.debug("[GeoIP] Steam 区域回写失败，忽略", exc_info=True)
         except Exception as geo_error:
             get_steam_language._logged = False
             logger.warning(f"[GeoIP] 获取用户 IP 地区失败: {geo_error}，默认为非大陆用户")

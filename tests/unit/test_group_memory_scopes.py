@@ -1428,9 +1428,14 @@ def _build_scope_mock_cm(tmpdir: str):
         "主人", "Neko", {}, {}, {"human": "主人", "system": "SYS"},
         {}, {}, {}, {},
     ))
-    cm.get_model_api_config = MagicMock(return_value={
+    api_config = {
         "model": "fake-model", "base_url": "http://fake", "api_key": "sk-fake",
-    })
+    }
+    cm.get_model_api_config = MagicMock(return_value=api_config)
+    # Async dual (#2466 moved the memory pipeline's config reads off the
+    # event loop): production awaits this one, so a stub that only answers
+    # the sync name silently fails every LLM call under test.
+    cm.aget_model_api_config = AsyncMock(return_value=api_config)
     return cm
 
 
@@ -5102,7 +5107,7 @@ async def test_unpersisted_memory_toggle_rolls_back():
             cross_group_before=False,
         )
     )
-    await started.wait()
+    await asyncio.wait_for(started.wait(), timeout=5.0)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -5769,9 +5774,13 @@ async def test_fact_dedup_resolve_locks_batch_to_one_domain(tmp_path):
     group = MemorySubject.group_chat("qq", "100")
     fact_store = MagicMock()
     fact_store._config_manager = MagicMock()
-    fact_store._config_manager.get_model_api_config = MagicMock(return_value={
-        "model": "fake", "base_url": "http://fake", "api_key": "sk",
-    })
+    _api_config = {"model": "fake", "base_url": "http://fake", "api_key": "sk"}
+    fact_store._config_manager.get_model_api_config = MagicMock(
+        return_value=_api_config
+    )
+    fact_store._config_manager.aget_model_api_config = AsyncMock(
+        return_value=_api_config
+    )
     # Live rows used to classify OLD queue items lacking domain fields.
     fact_store.aload_facts = AsyncMock(return_value=[
         {"id": "old_cand", "text": "legacy old cand"},
@@ -9664,7 +9673,7 @@ async def test_cancelled_save_publishes_an_opt_in_that_did_land():
             cross_group_before=False,
         )
     )
-    await started.wait()
+    await asyncio.wait_for(started.wait(), timeout=5.0)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -9862,7 +9871,7 @@ async def test_post_delivery_settlement_survives_cancellation():
     task = asyncio.create_task(
         service._deliver_after_wait("group:7788", pending)
     )
-    await lock_reached.wait()
+    await asyncio.wait_for(lock_reached.wait(), timeout=5.0)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -10527,7 +10536,7 @@ async def test_pending_is_detached_before_the_settlement_await():
     task = asyncio.create_task(
         service._deliver_after_wait("group:7788", pending)
     )
-    await lock_reached.wait()
+    await asyncio.wait_for(lock_reached.wait(), timeout=5.0)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -10621,26 +10630,33 @@ async def test_new_message_during_summary_is_not_stranded_by_the_old_task():
     pending.wait_until = 0.0
     service._pending["group:7788"] = pending
 
-    first = asyncio.create_task(service._deliver_after_wait("group:7788", pending))
+    first = asyncio.create_task(
+        service._deliver_after_wait("group:7788", pending, pending.generation)
+    )
     pending.task = first
-    await in_flight.wait()
+    await asyncio.wait_for(in_flight.wait(), timeout=5.0)
 
-    # pre_buffer: append, cancel the running task, start a replacement on the
-    # very same PendingReply.
+    # An incoming message appends and retires the running generation. The
+    # replacement task is NOT installed yet — schedule_reply's 10-16 branch
+    # awaits its acknowledgement round first, and the retired task resumes
+    # inside exactly that window.
     pending.buffered_texts.append("怎么不理我")
     pending.message_count += 1
-    first.cancel()
-    second = asyncio.create_task(service._deliver_after_wait("group:7788", pending))
-    pending.task = second
+    service._supersede(pending)
     release.set()
     with pytest.raises(asyncio.CancelledError):
         await first
-    # The stale generation kept its hands off the slot and the barrier.
+    # The retired generation kept its hands off the slot and the barrier.
     assert service._pending.get("group:7788") is pending
     assert settled == []
     # ...but still marked the rows its own prompt wrote into history.
     service._record_synthetic_prompt_rows.assert_called_once_with("group:7788", 0)
 
+    # Only now does the replacement start, as it would after the ack.
+    second = asyncio.create_task(
+        service._deliver_after_wait("group:7788", pending, pending.generation)
+    )
+    pending.task = second
     await second
     # The replacement answered, and the new message is in what it summarised.
     assert len(prompts) == 2
@@ -10807,3 +10823,83 @@ async def test_stop_waits_for_the_cancelled_buffer_tasks():
     assert unwound.is_set()
     # No straggler was left holding a lock, so the table could be cleared.
     assert plugin._session_locks == {}
+
+
+@pytest.mark.asyncio
+async def test_region_wait_covers_every_session_rebuild_trigger(monkeypatch):
+    """#2454 awaits region resolution before the persona is assembled on any
+    turn that will rebuild the session. It predicted 'will rebuild' from the
+    login identity alone, while the rebuild also fires on a character switch
+    and on the sticky retry flag — those two skipped the wait, so a character
+    switched during it still got frozen into the new session."""
+    from plugin.plugins.qq_auto_reply import reply_context_node as rcn
+
+    waits: list[int] = []
+
+    async def _resolve() -> None:
+        waits.append(1)
+
+    monkeypatch.setattr(
+        rcn, "get_config_manager",
+        lambda: SimpleNamespace(
+            get_character_data=lambda: (
+                "Master", "Neko", None, {}, None, {}, None, None, None,
+            ),
+            aensure_region_resolved=_resolve,
+        ),
+    )
+    plugin = SimpleNamespace(
+        logger=MagicMock(),
+        _emit_log=lambda *a, **k: None,
+        _qq_settings={"group_memory_enabled": True},
+        i18n=_default_i18n(),
+        permission_mgr=SimpleNamespace(
+            get_user_title=lambda *a, **k: "",
+            get_nickname=lambda *a, **k: None,
+        ),
+        qq_client=SimpleNamespace(needs_attention=False),
+        memory_bridge=MagicMock(),
+        _build_session_key=(
+            lambda *, sender_id, is_group, group_id=None: f"group:{group_id}"
+        ),
+        _user_sessions={},
+        _build_user_title=lambda *a, **k: "",
+        _build_character_card_fields=lambda *a, **k: {},
+        _should_use_memory_context=lambda *a, **k: False,
+        _should_persist_memory=lambda *a, **k: False,
+        _fetch_login_status_payload=AsyncMock(return_value={}),
+        _normalize_login_identity=lambda payload: ("online", "10000", "Neko"),
+        _build_qq_session_instructions=AsyncMock(
+            return_value=SimpleNamespace(
+                system_prompt="系统提示词", core_memory_text="",
+                cross_group_section="", used_member_subject=False,
+                context_ready_template="", traces=[],
+                memory_context_used=False, scene_mode="group_directed",
+                user_title="", character_prompt="",
+            )
+        ),
+        _build_prompt_message=lambda *a, **k: "用户消息",
+    )
+    node = rcn.QQReplyContextNode.__new__(rcn.QQReplyContextNode)
+    node.plugin = plugin
+
+    async def _turn() -> int:
+        waits.clear()
+        await node.build(
+            message="hi", permission_level="user", sender_id="2046",
+            is_group=True, group_id="7788",
+        )
+        return len(waits)
+
+    reusable = {"login_self_id": "10000", "her_name": "Neko"}
+    plugin._user_sessions = {"group:7788": dict(reusable)}
+    assert await _turn() == 0, "reusable session: nothing gets rebuilt"
+
+    for label, entry in (
+        ("login identity changed", {**reusable, "login_self_id": "20000"}),
+        ("character switched", {**reusable, "her_name": "旧角色"}),
+        ("settle retry pending", {**reusable, "pending_identity_discard": True}),
+        ("no session yet", None),
+    ):
+        plugin._user_sessions = {} if entry is None else {"group:7788": entry}
+        assert await _turn() == 1, label

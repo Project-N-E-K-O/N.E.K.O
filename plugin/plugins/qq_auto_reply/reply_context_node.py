@@ -218,6 +218,52 @@ class QQReplyContextNode:
         )
         traces: list[QQPipelineStageTrace] = []
         config_manager = get_config_manager()
+
+        # 登录身份提前取：下面的缓存预检要用它比对（本来就要为 instruction bundle
+        # fetch 一次，提前不多花网络调用）。
+        login_status, login_self_id, login_nickname = self.plugin._normalize_login_identity(
+            await self.plugin._fetch_login_status_payload()
+        )
+
+        # context 里的人格（角色名 / character card / system prompt）会随会话一起
+        # 冻进 OmniOfflineClient 缓存整场，而下游 ensure_generation_session 只在
+        # 新建会话时才等区域落定——等待发生在 context 组装**之后**，等待期间用户
+        # 切换角色的话，冻结的就是切换前的人格。所以组装 context 前先落定一次。
+        # 只在「将要新建会话」时等：探测循环终身退避重试，长寿会话存在期间
+        # in-flight 窗口会反复出现，无条件等会让缓存会话的每条消息都白付最多
+        # 1.5s。session key 只由 sender/group/ephemeral 决定（见
+        # build_generation_session_key），用入参即可预判；ephemeral 每次都是新
+        # 会话，必等。命中的条目还要**登录身份一致**才算数：身份不匹配的条目会被
+        # ensure_generation_session 丢弃重建，那条路径实际是「新会话」，跳过等待
+        # 会让替换会话用上等待前组装的旧人格。fail-open：与其它插件路径对偶，
+        # 探测出错不阻塞回复。
+        session_cached = False
+        if not ephemeral_session:
+            try:
+                key = self.plugin._build_session_key(
+                    sender_id=sender_id, is_group=is_group, group_id=group_id,
+                )
+                entry = getattr(self.plugin, "_user_sessions", {}).get(key)
+                # 与 ensure_generation_session 共用同一个判据：重建触发不止
+                # 登录身份（还有角色切换与抢救失败的粘性标记），只认身份的
+                # 预判会对那两类轮次误报「命中缓存」，等待被跳过、人格在等
+                # 待窗口里被切换后仍冻进新会话。
+                from .session_bootstrap_service import (
+                    generation_session_is_reusable,
+                )
+                session_cached = generation_session_is_reusable(
+                    entry,
+                    login_self_id=login_self_id,
+                    her_name=config_manager.get_character_data()[1],
+                )
+            except Exception:
+                session_cached = False
+        if not session_cached:
+            try:
+                await config_manager.aensure_region_resolved()
+            except Exception as _geo_err:
+                self.plugin.logger.warning(f"[GeoIP] 区域落定失败，按当前配置组装上下文: {_geo_err}")
+
         master_name, her_name, _, catgirl_data, _, lanlan_prompt_map, _, _, _ = config_manager.get_character_data()
         traces.append(
             QQPipelineStageTrace(
@@ -292,7 +338,7 @@ class QQReplyContextNode:
             )
         )
 
-        login_status, login_self_id, login_nickname = self.plugin._normalize_login_identity(await self.plugin._fetch_login_status_payload())
+        # login 身份已在函数开头 fetch（缓存预检要用），此处只记 trace
         traces.append(
             QQPipelineStageTrace(
                 stage="context_login_identity",

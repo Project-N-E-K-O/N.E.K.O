@@ -206,3 +206,5 @@ JSON ビュー全体の置換にはアトミック書き込みを使い、キャ
 `http://localhost:48911/memory_browser` では、**直近の会話メモリ**を閲覧・編集し、直近メモリレビューと強力メモリを設定できます。現在のブラウザ API が読み書きするのは `recent.json` であり、`facts.json`、`reflections.json`、`persona.json` の汎用エディターではありません。
 
 ユーザー向けのメインサーバールートは[メモリ REST API](/ja/api/rest/memory)を参照してください。プロセス間インターフェースは[メモリサーバー API](/ja/api/memory-server)を参照してください。`/cache`、`/process`、`/settle`、`/new_dialog`、`/query_memory` などの内部メモリサーバーパスは N.E.K.O. プロセス間の実装インターフェースであり、外部互換性を保証する公開エンドポイントではありません。
+
+ローカル保存と Provider 処理のユーザー向け境界は、[会話・メモリのデータフロー](/ja/guide/data-and-privacy)と[ローカル・オフラインの境界](/ja/guide/local-and-offline)を参照してください。

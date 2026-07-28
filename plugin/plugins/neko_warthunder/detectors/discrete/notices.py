@@ -33,6 +33,9 @@ class HudNoticeDetector(DiscreteDetector):
     def __init__(self) -> None:
         self._last_id: int = -1
 
+    def reset(self) -> None:
+        self._last_id = -1
+
     def detect(self, prev: BattleState, cur: BattleState) -> BattleEvent | None:
         if not cur.is_alive():
             return None

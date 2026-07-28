@@ -180,7 +180,33 @@ async def test_rps_payload_reaches_the_runtime_delivered_result_without_action_f
             self.acks.append((interaction_id, accepted, reason, kwargs))
 
     monkeypatch.setattr(greeting, "OmniOfflineClient", FakeOfflineClient)
+    monkeypatch.setattr(greeting.time, "time", lambda: 123.456)
     runtime = RuntimeHarness()
+    runtime.engagement_times = []
+    runtime.note_user_engagement = lambda *, at=None: runtime.engagement_times.append(at)
+
+    assert runtime.note_avatar_interaction_ingress(
+        {"interactionId": "invalid"}
+    ) is False
+    assert runtime.engagement_times == []
+
+    ingress_payload = {
+        "interactionId": "rps-runtime-delivery",
+        "toolId": "rps",
+        "target": "avatar",
+        "timestamp": 1,
+        "userGesture": "rock",
+        "avatarGesture": "scissors",
+        "roundResult": "user_win",
+        "_user_input_ingress_time": 120.0,
+    }
+    assert runtime.note_avatar_interaction_ingress(ingress_payload) is True
+    assert runtime.engagement_times == [120.0]
+    assert runtime.note_avatar_interaction_ingress({
+        **ingress_payload,
+        "_user_input_ingress_time": 121.0,
+    }) is False
+    assert runtime.engagement_times == [120.0]
 
     result = await runtime.handle_avatar_interaction({
         "interactionId": "rps-runtime-delivery",
@@ -190,6 +216,8 @@ async def test_rps_payload_reaches_the_runtime_delivered_result_without_action_f
         "userGesture": "rock",
         "avatarGesture": "scissors",
         "roundResult": "user_win",
+        "_user_input_ingress_time": 120.0,
+        "_avatar_interaction_ingress_reserved": True,
     })
 
     assert result == {
@@ -202,6 +230,25 @@ async def test_rps_payload_reaches_the_runtime_delivered_result_without_action_f
         "delivered",
         {"turn_id": runtime.current_speech_id},
     )]
+    assert runtime.engagement_times == [120.0]
+
+    runtime.avatar_interaction_cooldown_ms = 1
+    cooldown_result = await runtime.handle_avatar_interaction({
+        "interactionId": "rps-runtime-cooldown",
+        "toolId": "rps",
+        "target": "avatar",
+        "timestamp": 2,
+        "userGesture": "paper",
+        "avatarGesture": "rock",
+        "roundResult": "user_win",
+    })
+
+    assert cooldown_result == {
+        "accepted": False,
+        "reason": "cooldown",
+        "interaction_id": "rps-runtime-cooldown",
+    }
+    assert runtime.engagement_times == [120.0, 123.456]
 
 
 @pytest.mark.unit

@@ -389,7 +389,7 @@ class SurfacingMixin:
 
         try:
             set_call_type("memory_feedback_check")
-            api_config = self._config_manager.get_model_api_config('summary')
+            api_config = await self._config_manager.aget_model_api_config('summary')
             # timeout=60: 后台 task 内调用，二分类任务 prompt + 输出都不大。
             # max_retries=0: 禁 SDK 自动重试。
             from config import LLM_OUTPUT_GUARD_MAX_TOKENS
@@ -456,7 +456,7 @@ class SurfacingMixin:
 
         try:
             set_call_type("memory_rebuttal_check")
-            api_config = self._config_manager.get_model_api_config('summary')
+            api_config = await self._config_manager.aget_model_api_config('summary')
             # timeout=90: 开 thinking 后判断"用户最近的话否定了哪条 confirmed
             # reflection"——drain 模式下每批最多 20 条 user msg × 多条
             # confirmed reflection，思考能改善误判（防止把 user 的反讽 / 情景

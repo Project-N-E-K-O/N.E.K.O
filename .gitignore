@@ -24,6 +24,10 @@ debug_audio/*
 *.lo
 *.loT
 *.stackdump
+pkgbuild/src/
+pkgbuild/pkg/
+pkgbuild/*.tar.gz
+pkgbuild/*.zst
 
 # 忽略 memory/store 下所有内容（含子目录和文件）
 memory/store/*
@@ -53,6 +57,7 @@ __pycache__/
 .idea/
 .cursor/
 .pytest_cache/
+/.pytest_tmp*/
 .DS_Store
 .codex
 .venv

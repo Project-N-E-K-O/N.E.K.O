@@ -35,6 +35,24 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
+def _make_fact_store(*, facts=None, time_indexed=None):
+    """Build a FactStore whose every ``__init__``-owned attribute exists.
+
+    The tests below drive ``_apersist_new_facts`` directly, so they need a
+    store that is fully formed but talks to no config manager.  They used to
+    do that with ``FactStore.__new__`` plus a hand-written list of attributes,
+    which silently stranded six of them for ten weeks when #2282 added one
+    field (``_persist_alocks``) to ``__init__``.  Running the real ``__init__``
+    with only the singleton patched out keeps that from happening again.
+    """
+    from memory.facts import FactStore
+
+    with patch('memory.facts.get_config_manager', return_value=MagicMock()):
+        fs = FactStore(time_indexed_memory=time_indexed)
+    fs._facts = {'悠怡': []} if facts is None else facts
+    return fs
+
+
 @pytest.mark.unit
 def test_extract_role_tagged_messages_keeps_user_and_ai():
     """跟 _extract_user_messages_from_rows 形成对偶：path B 必须收 ai msg。"""
@@ -278,16 +296,7 @@ async def test_path_b_no_user_msg_in_window_skips_extraction():
 async def test_apersist_writes_source_field_default_user_observation():
     """path A 调用方不传 default_source → 落盘 source='user_observation'，
     signal_processed=False（正常进 Stage-2）。"""
-    from memory.facts import FactStore
-
-    fs = FactStore.__new__(FactStore)
-    fs._config_manager = MagicMock()
-    fs._time_indexed = None
-    fs._facts = {'悠怡': []}
-    fs._locks = {}
-    import threading
-    fs._locks_guard = threading.Lock()
-    fs._persist_alocks = {}
+    fs = _make_fact_store()
     fs.aload_facts = AsyncMock(return_value=[])
     fs.asave_facts = AsyncMock(return_value=None)
 
@@ -309,16 +318,7 @@ async def test_apersist_writes_source_field_default_user_observation():
 async def test_apersist_writes_source_ai_disclosure_with_signal_processed_true():
     """path B 调用方传 default_source='ai_disclosure' → 落盘 source 字段
     一致，signal_processed=True（不进 Stage-2 evidence loop）。"""
-    from memory.facts import FactStore
-
-    fs = FactStore.__new__(FactStore)
-    fs._config_manager = MagicMock()
-    fs._time_indexed = None
-    fs._facts = {'悠怡': []}
-    fs._locks = {}
-    import threading
-    fs._locks_guard = threading.Lock()
-    fs._persist_alocks = {}
+    fs = _make_fact_store()
     fs.asave_facts = AsyncMock(return_value=None)
 
     extracted = [
@@ -341,16 +341,7 @@ async def test_apersist_writes_source_ai_disclosure_with_signal_processed_true()
 async def test_apersist_llm_source_field_overrides_default():
     """LLM 显式输出的 source 字段优先于 default_source（trust LLM 的
     per-fact 判断）。"""
-    from memory.facts import FactStore
-
-    fs = FactStore.__new__(FactStore)
-    fs._config_manager = MagicMock()
-    fs._time_indexed = None
-    fs._facts = {'悠怡': []}
-    fs._locks = {}
-    import threading
-    fs._locks_guard = threading.Lock()
-    fs._persist_alocks = {}
+    fs = _make_fact_store()
     fs.asave_facts = AsyncMock(return_value=None)
 
     # LLM 输出 source='user_observation'，但 caller 传 default='ai_disclosure'
@@ -372,19 +363,22 @@ async def test_apersist_llm_source_field_overrides_default():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_apersist_monotonic_source_upgrade_ai_to_user():
-    """SHA-256 撞已有 ai_disclosure fact + 新 fact source=user_observation
-    → in-place 升级 existing.source + 重置 signal_processed=False。"""
-    from memory.facts import FactStore
+    """An incoming user_observation whose SHA-256 hits a stored ai_disclosure
+    fact upgrades that fact's source in place and resets signal_processed.
+
+    Covers the in-memory reset only.  ``asave_facts`` is an AsyncMock here,
+    while the real one re-applies ``signal_processed=True`` from disk for any
+    id already marked there (the monotonic read-merge in facts.py) — which
+    lands on this very fact and erases the reset, so "re-enters Stage-2 after
+    the upgrade" does not actually hold once persisted.  That gap went
+    unnoticed for ten weeks precisely because the only test guarding it mocks
+    away the code that breaks it.  The fix is still open (exempt the upgrade
+    in read-merge / mark it at the upgrade site / retire the behaviour); once
+    it is settled this test should drive a real save round-trip instead.
+    """
     import hashlib
 
-    fs = FactStore.__new__(FactStore)
-    fs._config_manager = MagicMock()
-    fs._time_indexed = None
-    fs._facts = {'悠怡': []}
-    fs._locks = {}
-    import threading
-    fs._locks_guard = threading.Lock()
-    fs._persist_alocks = {}
+    fs = _make_fact_store()
 
     text = '博士喜欢三文鱼'
     content_hash = hashlib.sha256(text.encode()).hexdigest()[:16]
@@ -424,17 +418,7 @@ async def test_apersist_monotonic_source_upgrade_within_same_batch():
     `content_hash in existing_hashes` 时 `hash_to_existing.get()` 返 None，
     monotonic upgrade 路径被跳过，user_observation 升级被静默丢弃。
     """
-    from memory.facts import FactStore
-
-    fs = FactStore.__new__(FactStore)
-    fs._config_manager = MagicMock()
-    fs._time_indexed = None
-    fs._facts = {'悠怡': []}
-    fs._locks = {}
-    import threading
-    fs._locks['悠怡'] = threading.RLock()
-    fs._locks_guard = threading.Lock()
-    fs._persist_alocks = {}
+    fs = _make_fact_store()
     fs.asave_facts = AsyncMock()
 
     # 模拟单次 Stage-1 payload 包含同 text 两条：先 ai_disclosure 后 user_observation
@@ -472,17 +456,9 @@ async def test_apersist_monotonic_source_upgrade_within_same_batch():
 async def test_apersist_no_downgrade_user_to_ai():
     """反向：撞已有 user_observation fact + 新 fact source=ai_disclosure
     → existing 不动（user 印证不可逆退回 ai_disclosure）。"""
-    from memory.facts import FactStore
     import hashlib
 
-    fs = FactStore.__new__(FactStore)
-    fs._config_manager = MagicMock()
-    fs._time_indexed = None
-    fs._facts = {'悠怡': []}
-    fs._locks = {}
-    import threading
-    fs._locks_guard = threading.Lock()
-    fs._persist_alocks = {}
+    fs = _make_fact_store()
 
     text = '博士喜欢三文鱼'
     content_hash = hashlib.sha256(text.encode()).hexdigest()[:16]
@@ -516,16 +492,7 @@ async def test_apersist_no_downgrade_user_to_ai():
 async def test_stage2_filters_out_ai_disclosure_facts():
     """Stage-2 unprocessed pool 必须 filter ``source='ai_disclosure'``。
     双重防御（写盘 signal_processed=True 是第一层；这是第二层）。"""
-    from memory.facts import FactStore
-
-    fs = FactStore.__new__(FactStore)
-    fs._config_manager = MagicMock()
-    fs._time_indexed = None
-    fs._facts = {}
-    fs._locks = {}
-    import threading
-    fs._locks_guard = threading.Lock()
-    fs._persist_alocks = {}
+    fs = _make_fact_store(facts={})
 
     # 模拟 facts.json 三条 fact：一条 user_observation 未处理（应入 Stage-2 池），
     # 一条 ai_disclosure 未处理（**不该**入池，即使 signal_processed=False bug），

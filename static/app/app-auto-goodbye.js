@@ -65,9 +65,10 @@
         cat3DragReleaseCount: 0,
         dragDemotionTier: TIER_NONE,
         dragDemotionStartedAt: 0,
-        // 变猫时刻 + 入口（自动 idle / 手动请离开），供"变回时"猫咪专属问候独立计时
+        // goodbye 进入时刻 + 入口；只有本次确有猫形态周期时才用于猫咪专属问候
         goodbyeEnteredAt: 0,
         goodbyeWasAuto: false,
+        pendingReturnSnapshot: null,
         // 用户「自动变猫」开关：true=启用自动变猫（默认）。禁用时 getIdleBlockReasons 持续上报
         // 'user-disabled'，从而挡掉自动 idle 变猫；不影响已处猫态或手动请离开。init 时从 localStorage 读取。
         autoCatEnabled: true,
@@ -883,9 +884,7 @@
                 cancelStartupDefaultCatRequest(true);
             }
             clearConversationGrace();
-            // 记录"变成猫咪"的时刻与入口，供变回时按猫咪停留时长触发专属问候。
-            // goodbye-click 只在真正进入猫咪态时派发（手动按钮 / 自动 idle-timeout），
-            // 直接覆盖即可：旧值会在 handleReturn 清零，跨角色切换等异常残留会被下次进入覆盖。
+            state.pendingReturnSnapshot = null;
             state.goodbyeEnteredAt = nowMs();
             state.goodbyeWasAuto = detail.autoGoodbye === true;
             if (detail.autoGoodbye === true) {
@@ -905,14 +904,37 @@
             syncGoodbyeSilentState(true, state.lastReason);
         });
 
-        const handleReturn = () => {
+        const isGreetingReturnSource = (source) => source === 'live2d-return-click'
+            || source === 'vrm-return-click'
+            || source === 'mmd-return-click'
+            || source === 'pngtuber-return-click';
+
+        const handleReturnCommit = (event) => {
+            const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+            if (!isGreetingReturnSource(detail.source)) return;
             // Returning is an explicit user override of any startup request still waiting for avatar readiness.
             cancelStartupDefaultCatRequest(true);
-            // 变回猫娘前，按"作为猫咪待了多久 + 此刻所处 tier（清醒/打盹/熟睡）"
-            // 请求一次专属问候。tier 必须在 setVisualTier(NONE) 清空之前读取。
             syncGoodbyeSilentState(false, 'return-click');
-            if (state.goodbyeEnteredAt > 0) {
-                const durationSeconds = Math.max(0, Math.floor((nowMs() - state.goodbyeEnteredAt) / 1000));
+            if (!state.pendingReturnSnapshot) {
+                state.pendingReturnSnapshot = {
+                    hadCatCycle: detail.hadCatCycle === true,
+                    durationSeconds: state.goodbyeEnteredAt > 0
+                        ? Math.max(0, Math.floor((nowMs() - state.goodbyeEnteredAt) / 1000))
+                        : 0,
+                    tier: state.visualTier,
+                    wasAuto: !!state.goodbyeWasAuto,
+                };
+            }
+        };
+
+        const handleReturnComplete = (event) => {
+            const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+            if (!isGreetingReturnSource(detail.source)) return;
+            const returnSnapshot = state.pendingReturnSnapshot;
+            if (!returnSnapshot) return;
+            state.pendingReturnSnapshot = null;
+            // 只为确实结束过猫形态的 return 请求专属问候；呼吸球 return 仍完成普通状态恢复。
+            if (returnSnapshot.hadCatCycle) {
                 let catMemorySummary = null;
                 try {
                     const catMind = window.nekoCatMind;
@@ -922,9 +944,9 @@
                 } catch (_) {}
                 try {
                     const greetingDetail = {
-                        durationSeconds: durationSeconds,
-                        tier: state.visualTier,
-                        wasAuto: !!state.goodbyeWasAuto,
+                        durationSeconds: returnSnapshot.durationSeconds,
+                        tier: returnSnapshot.tier,
+                        wasAuto: returnSnapshot.wasAuto,
                     };
                     if (catMemorySummary && typeof catMemorySummary === 'object' && !Array.isArray(catMemorySummary)) {
                         greetingDetail.catMemorySummary = catMemorySummary;
@@ -944,9 +966,11 @@
             });
             noteUserInteraction('return-click');
         };
-        window.addEventListener('live2d-return-click', handleReturn);
-        window.addEventListener('vrm-return-click', handleReturn);
-        window.addEventListener('mmd-return-click', handleReturn);
+        window.addEventListener('neko:cat-return-commit', handleReturnCommit);
+        window.addEventListener('neko:cat-return-complete', handleReturnComplete);
+        window.addEventListener('neko:goodbye-state-cleared', () => {
+            state.pendingReturnSnapshot = null;
+        });
         window.addEventListener('neko:return-ball-manual-move', (event) => {
             const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
             if (detail.reason === 'return-ball-drag-end' && detail.dragCancelled !== true) {

@@ -110,7 +110,10 @@ class NekoWarthunderPlugin(NekoPluginBase):
         self._blocked_free_text_sources_seen: set[str] = set()
         self._takeoff_radio_altitude_grace_active = False
         self._last_user_chat_at = 0.0
+        self._last_user_chat_mode = "unknown"
+        self._last_user_context_seen_at = 0.0
         self._last_battle_respond_at = 0.0
+        self._pending_dispatch_event: BattleEvent | None = None
         self._startup_completed = False
 
     # ------------------------------------------------------------------ 配置
@@ -166,9 +169,9 @@ class NekoWarthunderPlugin(NekoPluginBase):
 
         try:
             self._save_runtime_state({_URGENT_OUTPUT_TTS_MIGRATION_KEY: True})
-        except Exception as exc:  # noqa: BLE001
+        except OSError as exc:
             self.logger.warning(
-                f"urgent output TTS migration marker save failed: {type(exc).__name__}"
+                f"urgent output TTS migration flag persist failed: {type(exc).__name__}"
             )
 
     def _apply_config(self, cfg: WtConfig) -> None:
@@ -251,6 +254,7 @@ class NekoWarthunderPlugin(NekoPluginBase):
     @message(id="chat_quiet_window", source="chat")
     def on_chat_message(self, **_):
         self._last_user_chat_at = time.time()
+        self._last_user_chat_mode = "text"
         if self.timeline:
             self.timeline.record_stage(
                 stage="chat_observed",
@@ -261,6 +265,66 @@ class NekoWarthunderPlugin(NekoPluginBase):
                 safe_summary="chat/observed",
             )
         return Ok({"status": "observed"})
+
+    def _refresh_user_chat_activity(self, *, target_lanlan: str) -> str:
+        """Refresh safe chat timing/mode metadata without retaining user text.
+
+        The host's user-context bus already publishes ``lanlan``, ``is_voice``
+        and ``_ts`` for each user utterance.  We read only the newest record for
+        the exact target character and keep only those three routing fields.
+        """
+        target = str(target_lanlan or "").strip()
+        if not target:
+            return str(getattr(self, "_last_user_chat_mode", "unknown") or "unknown")
+
+        ctx = getattr(self, "ctx", None)
+        bus = getattr(ctx, "bus", None)
+        memory = getattr(bus, "memory", None)
+        get_sync = getattr(memory, "get_sync", None)
+        if not callable(get_sync):
+            return str(getattr(self, "_last_user_chat_mode", "unknown") or "unknown")
+
+        try:
+            records = get_sync(target, limit=1, timeout=0.25)
+            record = list(records)[-1] if records else None
+        except Exception:  # noqa: BLE001 - optional activity hint must never block battle output
+            return str(getattr(self, "_last_user_chat_mode", "unknown") or "unknown")
+
+        raw = getattr(record, "raw", record)
+        if not isinstance(raw, dict) or str(raw.get("type") or "") != "user_message":
+            return str(getattr(self, "_last_user_chat_mode", "unknown") or "unknown")
+        if str(raw.get("lanlan") or "").strip() != target:
+            return str(getattr(self, "_last_user_chat_mode", "unknown") or "unknown")
+
+        try:
+            observed_at = float(getattr(record, "timestamp", None) or raw.get("_ts") or 0.0)
+        except (TypeError, ValueError):
+            observed_at = 0.0
+        if observed_at <= 0:
+            return str(getattr(self, "_last_user_chat_mode", "unknown") or "unknown")
+
+        voice_flag = raw.get("is_voice")
+        mode = "voice" if voice_flag is True else "text" if voice_flag is False else "unknown"
+        previous_seen_at = max(
+            float(getattr(self, "_last_user_context_seen_at", 0.0) or 0.0),
+            float(getattr(self, "_last_user_chat_at", 0.0) or 0.0),
+        )
+        if observed_at > previous_seen_at:
+            self._last_user_context_seen_at = observed_at
+            self._last_user_chat_at = observed_at
+            self._last_user_chat_mode = mode
+            if self.timeline:
+                self.timeline.record_stage(
+                    stage="chat_observed",
+                    outcome="observed",
+                    reason="user_context_activity_refreshed",
+                    kind="chat",
+                    source="user_context",
+                    input_mode=mode,
+                    target_lanlan=target,
+                    safe_summary=f"chat/{mode}/observed",
+                )
+        return str(getattr(self, "_last_user_chat_mode", mode) or mode)
 
     async def _persist_identity_name(self, name: str) -> dict[str, Any]:
         persisted_name = str(name or "").strip()
@@ -392,9 +456,26 @@ class NekoWarthunderPlugin(NekoPluginBase):
     def _evaluate(self, prev: BattleState, cur: BattleState) -> None:
         """Scenario(D-B1) + Detector(D-B3) → 候选 → Arbiter(D-B4) → dispatcher。"""
         now = time.time()
+        if cur.battle_id and cur.battle_id != prev.battle_id:
+            # battle_id is stable across deaths and respawns. A new non-empty id
+            # therefore marks a true battle boundary and is the right place to
+            # discard detector, scenario, and arbitration state from the prior match.
+            self.engine.reset()
+            self.resolver.reset()
+            self.arbiter.reset()
+            self._pending_dispatch_event = None
+            self.timeline.record_stage(
+                stage="battle_boundary",
+                outcome="reset",
+                reason="new_battle_id",
+                in_battle=cur.in_battle,
+                life_index=cur.life_index,
+                safe_summary="battle/new/reset",
+            )
         cur.scenario = self.resolver.resolve(cur, now, self.cfg.spawn_grace_seconds)
         candidates = self.engine.feed(prev, cur)
         if cur.replay:
+            self._pending_dispatch_event = None
             self.timeline.record_stage(
                 stage="detector_suppressed",
                 outcome="suppressed",
@@ -415,6 +496,15 @@ class NekoWarthunderPlugin(NekoPluginBase):
                 dry_run=self.cfg.dry_run,
             )
             return
+        pending_dispatch = getattr(self, "_pending_dispatch_event", None)
+        self._pending_dispatch_event = None
+        if pending_dispatch is not None and not any(
+            candidate.event_id == pending_dispatch.event_id
+            and candidate.edge == pending_dispatch.edge
+            and candidate.ts == pending_dispatch.ts
+            for candidate in candidates
+        ):
+            candidates.insert(0, pending_dispatch)
         self._record_blocked_free_text_sources(cur)
         self._record_deferred_hud_notices(cur)
         candidates = self._suppress_takeoff_grace(candidates, cur, now)
@@ -433,6 +523,8 @@ class NekoWarthunderPlugin(NekoPluginBase):
                 replay=cur.replay,
                 safe_summary=f"{candidate.event_id}/{candidate.edge}/{candidate.level}",
             )
+        output_clock_checkpoint = self.safety.output_clock_checkpoint()
+        arbiter_checkpoint = self.arbiter.checkpoint()
         chosen, chain = self.arbiter.decide(candidates, cur.scenario, now)
         for record in arbiter_chain_to_observe_records(chain, scenario=cur.scenario):
             self.timeline.record_stage(**record)
@@ -450,8 +542,14 @@ class NekoWarthunderPlugin(NekoPluginBase):
         if chosen is not None:
             try:
                 result = self.dispatcher.push_event(chosen, dry_run=self.cfg.dry_run)
+                if not result.startswith(("pushed(", "dry_run(")):
+                    self.arbiter.restore(arbiter_checkpoint)
+                    self.safety.restore_output_clock(output_clock_checkpoint)
                 self.logger.info(f"[output] {result}")
             except Exception as exc:  # noqa: BLE001 — 投递失败计入安全门，不杀循环
+                self.arbiter.restore(arbiter_checkpoint)
+                self.safety.restore_output_clock(output_clock_checkpoint)
+                self._pending_dispatch_event = chosen
                 self.logger.warning(f"dispatch failed: {type(exc).__name__}: {exc}")
                 self.safety.record_failure(now)
 

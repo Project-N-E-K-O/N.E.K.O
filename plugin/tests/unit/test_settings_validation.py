@@ -16,12 +16,12 @@ def test_validate_config_rejects_nan_plugin_startup_timeout(monkeypatch: pytest.
         settings.validate_config()
 
 
-def test_market_defaults_use_current_public_http_endpoints() -> None:
-    assert settings.MARKET_API_URL == "http://market.project-neko.cn"
-    assert settings.MARKET_WEB_URL == "http://market.project-neko.cn"
+def test_market_defaults_use_https_public_endpoints() -> None:
+    assert settings.MARKET_API_URL == "https://market.project-neko.cn"
+    assert settings.MARKET_WEB_URL == "https://market.project-neko.cn"
     assert settings.MARKET_ORIGINS == [
-        "http://market.project-neko.cn",
-        "http://marketplace.project-neko.cn",
+        "https://market.project-neko.cn",
+        "https://marketplace.project-neko.cn",
     ]
 
 

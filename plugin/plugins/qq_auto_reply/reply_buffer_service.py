@@ -20,12 +20,19 @@ class PendingReply:
     __slots__ = ("buffered_texts", "wait_until", "task", "topic_hint", "message_count",
                  "sender_id", "is_group", "group_id", "_acked", "first_blocks",
                  "draft_rows", "mention_context", "has_nonconsent_input",
-                 "consent_snapshot", "used_fallback_reply")
+                 "consent_snapshot", "used_fallback_reply", "generation")
 
     def __init__(self, first_text: str, wait_seconds: float, sender_id: str, is_group: bool, group_id: str):
         self.buffered_texts: list[str] = [first_text]  # 缓冲的消息文本
         self.wait_until = time.time() + wait_seconds
         self.task: Optional[asyncio.Task] = None
+        # 代际：每次新消息作废当前等待任务时 +1。归属**不能**只看
+        # pending.task——追加消息的路径先 cancel、再 await（10-16 条的
+        # 简短确认轮），替补任务要等那个 await 结束才建，窗口里被取消的
+        # 那一代看自己仍是 pending.task，照样会把 pending 摘出表；等替补
+        # 建好时表已空，它在归属检查处直接返回，那条消息永远没人回。
+        # 计数器在 cancel 那一刻同步作废旧代，与替补何时创建无关。
+        self.generation: int = 0
         self.topic_hint: str = ""
         self.message_count: int = 1
         self.sender_id = sender_id
@@ -201,8 +208,7 @@ class QQReplyBufferService:
 
         if existing and (existing.task is None or not existing.task.done()):
             # 已有缓冲 → 追加
-            if existing.task:
-                existing.task.cancel()
+            self._supersede(existing)
             existing.buffered_texts.append(message_text)
             existing.message_count += 1
             n = existing.message_count
@@ -212,7 +218,9 @@ class QQReplyBufferService:
             elif n <= 16:    extra = random.uniform(6.0, 11.0)
             else:            extra = 0.0
             existing.wait_until = now + extra
-            existing.task = asyncio.create_task(self._deliver_after_wait(session_key, existing))
+            existing.task = asyncio.create_task(
+                self._deliver_after_wait(session_key, existing, existing.generation)
+            )
             self.plugin._emit_log("DEBUG", f"[Buffer] 预缓冲追加（共{n}条），等待 {extra:.1f}s，跳过 LLM 生成")
             return True
 
@@ -291,8 +299,9 @@ class QQReplyBufferService:
                 self._merge_consent_snapshot(existing, consent_snapshot)
 
         if existing and existing.task and not existing.task.done():
-            # 已有缓冲 → 追加消息，转发子条数计入
-            existing.task.cancel()
+            # 已有缓冲 → 追加消息，转发子条数计入。作废必须早于下面
+            # 10-16 条确认轮的 await：替补任务要等那个 await 结束才建。
+            self._supersede(existing)
             existing.buffered_texts.append(clean_text)
             existing.first_blocks = blocks  # 保留原始 blocks（sticker/poke/record 等）
             existing.message_count += 1 + max(0, extra_count)
@@ -359,7 +368,7 @@ class QQReplyBufferService:
                     "WARN", "[Buffer] 记忆授权已撤销，丢弃缓冲中的旧回复（强制总结轮）",
                 )
                 self._bind_draft_to_pending(draft_row, existing)
-                existing.task.cancel()
+                self._supersede(existing)
                 self._pending.pop(session_key, None)
                 self._settle_provisional(
                     (getattr(self.plugin, "_user_sessions", {}) or {}).get(
@@ -373,7 +382,7 @@ class QQReplyBufferService:
                 # 草稿行绑上，否则 settle 按 draft_rows 清 provisional 时
                 # 漏掉它，游标屏障永久卡死、此后所有消息进不了 scoped 记忆。
                 self._bind_draft_to_pending(draft_row, existing)
-                existing.task.cancel()
+                self._supersede(existing)
                 self._pending.pop(session_key, None)
                 hist_before = self._session_history_len(session_key)
                 try:
@@ -448,7 +457,9 @@ class QQReplyBufferService:
             self._merge_consent_snapshot(existing, consent_snapshot)
         if not consented:
             existing.has_nonconsent_input = True
-        existing.task = asyncio.create_task(self._deliver_after_wait(session_key, existing))
+        existing.task = asyncio.create_task(
+            self._deliver_after_wait(session_key, existing, existing.generation)
+        )
 
     def cancel_pending(self, session_key: str, user_data: Any) -> Any:
         """Kill a buffered reply outright and return its task, if any.
@@ -472,18 +483,25 @@ class QQReplyBufferService:
         return cancelled
 
     @staticmethod
-    def _is_current_generation(pending: PendingReply) -> bool:
-        """True when the running coroutine is still this buffer's live task."""
-        task = getattr(pending, "task", None)
-        if task is None:
-            return True
-        try:
-            current = asyncio.current_task()
-        except RuntimeError:
-            return True
-        return current is None or current is task
+    def _is_current_generation(pending: PendingReply, generation: int) -> bool:
+        """True when the caller's generation is still the buffer's live one."""
+        return int(getattr(pending, "generation", 0)) == int(generation)
 
-    def _detach_pending(self, session_key: str, pending: PendingReply) -> bool:
+    @staticmethod
+    def _supersede(pending: PendingReply) -> None:
+        """Cancel the waiting task and retire its generation, in one step.
+
+        Must run before any await that follows the cancellation: the retired
+        task resumes inside that window and would otherwise still pass as the
+        owner."""
+        task = getattr(pending, "task", None)
+        if task is not None and not task.done():
+            task.cancel()
+        pending.generation = int(getattr(pending, "generation", 0)) + 1
+
+    def _detach_pending(
+        self, session_key: str, pending: PendingReply, generation: int,
+    ) -> bool:
         """Give up the registry slot, but only for the generation that owns it.
 
         A new message cancels the running task and starts a replacement **on
@@ -493,7 +511,7 @@ class QQReplyBufferService:
         replacement finds the slot empty at its own ownership check, returns,
         and nobody ever answers. Returns whether we are still the owner, so
         callers can gate the settlement the same way."""
-        if not self._is_current_generation(pending):
+        if not self._is_current_generation(pending, generation):
             return False
         if self._pending.get(session_key) is pending:
             self._pending.pop(session_key, None)
@@ -509,7 +527,9 @@ class QQReplyBufferService:
             merged[key] = bool(merged.get(key)) or bool(was_enabled)
         pending.consent_snapshot = merged
 
-    async def _deliver_after_wait(self, session_key: str, pending: PendingReply) -> None:
+    async def _deliver_after_wait(
+        self, session_key: str, pending: PendingReply, generation: int = 0,
+    ) -> None:
         """等待暂停后，汇总缓冲消息让 LLM 生成最终回复并发送。"""
         now = time.time()
         delay = max(0.0, pending.wait_until - now)
@@ -520,7 +540,7 @@ class QQReplyBufferService:
 
         if (
             self._pending.get(session_key) is not pending
-            or not self._is_current_generation(pending)
+            or not self._is_current_generation(pending, generation)
         ):
             # 两道都要：换了 pending 对象（缓冲已作废）与同对象换了代际
             # （新消息就地重建了任务）是两回事，后者对象身份分辨不出。
@@ -533,7 +553,7 @@ class QQReplyBufferService:
             self.plugin._emit_log(
                 "WARN", "[Buffer] 记忆授权已撤销，丢弃缓冲中的旧回复",
             )
-            if self._detach_pending(session_key, pending):
+            if self._detach_pending(session_key, pending, generation):
                 self._settle_provisional(
                     (getattr(self.plugin, "_user_sessions", {}) or {}).get(
                         session_key
@@ -573,7 +593,7 @@ class QQReplyBufferService:
                 # 发送未确认（开放平台失败返回 None 不抛异常）：草稿仍属
                 # 未投递——排除记录保留、mention 不记，没送出去的回复不得
                 # 进 scoped 提取。命运已定（不重试），解除游标屏障。
-                if self._detach_pending(session_key, pending):
+                if self._detach_pending(session_key, pending, generation):
                     # 屏障与 pending 同进退：替补代际还在缓冲时草稿命运未
                     # 定，解除屏障会让游标越过一条随后可能被投递的行。
                     self._settle_provisional(
@@ -591,7 +611,7 @@ class QQReplyBufferService:
             # 投递期间就来了新消息（已有替补）时摘不掉：那条已投递的回复会
             # 混进替补的总结素材里，比起把新消息整条丢掉不回，这是更轻的
             # 代价——正常无替补路径不受影响。
-            self._detach_pending(session_key, pending)
+            self._detach_pending(session_key, pending, generation)
             # 单条草稿真的送出去了：只撤本次 pending 的未投递记录——此前
             # 合并场景留下的旧记录必须留存。
             async def _settle_delivered() -> None:
@@ -684,7 +704,7 @@ class QQReplyBufferService:
             # 收摊会把替补摘出表，它随即在归属检查处直接返回，那条新消息既
             # 没回复也没人再管。synthetic 标记不受归属影响：那些行是本轮
             # 真写进历史的，不标就会被当成用户发言进 digest。
-            if self._detach_pending(session_key, pending):
+            if self._detach_pending(session_key, pending, generation):
                 self._settle_provisional(
                     (getattr(self.plugin, "_user_sessions", {}) or {}).get(
                         session_key
@@ -747,6 +767,12 @@ class QQReplyBufferService:
             from utils.config_manager import get_config_manager as _gcm
             import asyncio as _asyncio
             _cm = _gcm()
+            # 线路会连 base_url 一起冻进下面的 OmniOfflineClient，先给仍在飞的区域
+            # 探测一个收尾窗口。已落定时零开销；fail-open，不因探测出错而不回消息。
+            try:
+                await _cm.aensure_region_resolved()
+            except Exception as _geo_err:
+                self.plugin._emit_log("WARN", f"[GeoIP] 区域落定失败，退化到当前配置继续: {_geo_err}")
             _mc = _cm.get_model_api_config("conversation")
             resp_text = ""
             async def _on_text(t: str, _first: bool = False) -> None:

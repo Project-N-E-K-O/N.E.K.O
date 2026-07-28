@@ -1,0 +1,18 @@
+pkgbase = n.e.k.o-bin
+	pkgdesc = N.E.K.O., a digital life that yearns to understand, connect, and grow with us.
+	pkgver = 0.8.3
+	pkgrel = 1
+	url = https://github.com/Project-N-E-K-O/N.E.K.O
+	arch = x86_64
+	license = Apache-2.0
+	depends = gtk3
+	depends = nss
+	depends = libxtst
+	depends = libsecret
+	depends = xdg-utils
+	provides = n.e.k.o
+	conflicts = n.e.k.o
+	source = n.e.k.o-bin-0.8.3.tar.gz::https://github.com/Project-N-E-K-O/N.E.K.O/releases/download/v0.8.3/N.E.K.O_0.8.3_linux.tar.gz
+	sha256sums = 769b99970c13248129fd625c22e65b442fa6829ced2599347a8c7242a0fb6257
+
+pkgname = n.e.k.o-bin

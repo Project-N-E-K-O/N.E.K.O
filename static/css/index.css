@@ -712,9 +712,9 @@ body.neko-game-active [id$="-lock-icon"] {
 /*
  * 只校准 GNOME 原生 58px 毛球路径。左侧接近的终点已经在 JS 中前移 34px；
  * 右侧的跨窗口视觉位置少 33px，因此待机和侧身素材都要补上这段距离。
- * 待机规则使用独立站位侧，而不是会在 settle 后重置的 facingRight，避免误伤左侧待机。
+ * 待机规则使用独立站位侧，而不是会在动作完成后重置的 facingRight，避免误伤左侧待机。
  */
-.neko-idle-return-btn[data-neko-cat1-native-yarn-visual-anchor="true"][data-neko-cat1-native-yarn-side="right"][data-neko-cat1-substate="idle"]:not(.is-cat1-playing):not(.is-cat1-eating):not(.is-drag-action) > .neko-idle-return-art {
+.neko-idle-return-btn[data-neko-cat1-native-yarn-visual-anchor="true"][data-neko-cat1-native-yarn-side="right"][data-neko-cat1-substate="idle"]:not(.is-cat1-playing):not(.is-cat1-eating):not(.is-cat1-stretching):not(.is-drag-action) > .neko-idle-return-art {
     left: 33px;
 }
 
@@ -1483,6 +1483,13 @@ body.subtitle-web-host #react-chat-window-shell.is-dragging {
     mask-image: linear-gradient(to right, #000 33%, transparent 50%);
     -webkit-mask-size: 300% 100%; mask-size: 300% 100%;
     -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+}
+.compact-chat-surface-shell.neko-compact-collapsing > .compact-chat-surface-frame,
+.compact-chat-surface-shell.neko-compact-expanding > .compact-chat-surface-frame {
+    /* Electron/Chromium 在 mask 动画首帧可能把 backdrop-filter 合成为矩形纹理；
+       仅在擦除期间强制胶囊裁剪，稳态移除 class 后外阴影仍可正常越界绘制。 */
+    -webkit-clip-path: inset(0 round 999px);
+    clip-path: inset(0 round 999px);
 }
 .compact-chat-surface-shell.neko-compact-collapsing {
     animation: neko-compact-collapse-wipe 280ms ease forwards;

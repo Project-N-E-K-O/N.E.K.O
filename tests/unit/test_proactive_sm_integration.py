@@ -226,9 +226,9 @@ async def test_voice_mode_idle_injects_and_drops_paired_cbs_and_extras():
     assert events == []
 
 
-async def test_voice_mode_inject_preserves_passive_cb_and_its_extra():
-    """Voice 模式：inject 只删 proactive cb 配对的 extras 项，
-    passive cb 及其 extras 必须原封不动留下 —— 它们要走 user-turn drain。"""
+async def test_voice_mode_inject_preserves_passive_cb_without_extra():
+    """Voice inject consumes only proactive callbacks; passive stays queued
+    without a hot-swap extra mirror."""
     sess = _make_voice_sess()
     mgr = _make_mgr(session=sess)
     passive_cb = {
@@ -239,24 +239,41 @@ async def test_voice_mode_inject_preserves_passive_cb_and_its_extra():
         "_callback_delivery_id": "id-proactive",
         "status": "completed", "summary": "ping user now",
     }
-    passive_extra = {
-        "_callback_delivery_id": "id-passive",
-        "origin": "event", "summary": "passive note",
-    }
     proactive_extra = {
         "_callback_delivery_id": "id-proactive",
         "origin": "task_result", "summary": "ping user now",
     }
-    # enqueue_agent_callback stamps both queues with the same _callback_delivery_id
     mgr.pending_agent_callbacks = [passive_cb, proactive_cb]
-    mgr.pending_extra_replies = [passive_extra, proactive_extra]
+    mgr.pending_extra_replies = [proactive_extra]
 
     await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
     await asyncio.sleep(0)
 
     assert len(sess.injected) == 1
     assert mgr.pending_agent_callbacks == [passive_cb]
-    assert mgr.pending_extra_replies == [passive_extra]
+    assert mgr.pending_extra_replies == []
+
+
+async def test_voice_passive_enqueue_never_injects_or_creates_hot_swap_extra():
+    sess = _make_voice_sess()
+    mgr = _make_mgr(session=sess)
+    passive_cb = {
+        "origin": "event",
+        "status": "completed",
+        "summary": "context only",
+        "detail": "context only",
+        "delivery_mode": "passive",
+        "coalesce_key": "context",
+    }
+
+    core_module.LLMSessionManager.enqueue_agent_callback(mgr, passive_cb)
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.sleep(0)
+
+    assert delivered is False
+    assert sess.injected == []
+    assert mgr.pending_agent_callbacks == [passive_cb]
+    assert mgr.pending_extra_replies == []
 
 
 async def test_voice_mode_busy_defers_cbs_for_retry():
@@ -1727,8 +1744,8 @@ async def test_cat_greeting_episode_scene_is_request_local_and_keeps_existing_gu
         assert raw_value not in instruction
     assert mgr.state.phase is ProactivePhase.IDLE
 
-    # The established silence remains unless the adapter verified a runner
-    # really entered started. A valid done episode alone cannot bypass it.
+    # The established silence is uniform: neither a completed episode nor a
+    # verified runner start can bypass it.
     short_without_start_session = _FakeOmniOffline(delivered=True)
     short_without_start_mgr = _make_mgr(session=short_without_start_session)
     await core_module.LLMSessionManager.trigger_cat_greeting(
@@ -1744,17 +1761,10 @@ async def test_cat_greeting_episode_scene_is_request_local_and_keeps_existing_gu
         "cat2",
         False,
         episode=episode,
-        has_started_autonomous_action=True,
     )
-    assert len(short_scene_session.called_with) == 1
-    short_scene_instruction = short_scene_session.called_with[0]
-    assert get_cat_greeting_episode_scene(episode, "en") in short_scene_instruction
-    assert "The true cat-form episode was:" in short_scene_instruction
-    assert "for 1 minute" not in short_scene_instruction
-    assert "dozed for" not in short_scene_instruction
+    assert short_scene_session.called_with == []
 
-    # started without strict done permits a neutral return only: it cannot use
-    # the old waiting/sleep template or invent a completed action.
+    # A start without strict done is subject to the same minimum dwell time.
     short_neutral_session = _FakeOmniOffline(delivered=True)
     short_neutral_mgr = _make_mgr(session=short_neutral_session)
     await core_module.LLMSessionManager.trigger_cat_greeting(
@@ -1762,25 +1772,8 @@ async def test_cat_greeting_episode_scene_is_request_local_and_keeps_existing_gu
         10,
         "cat3",
         False,
-        has_started_autonomous_action=True,
     )
-    assert len(short_neutral_session.called_with) == 1
-    short_neutral_instruction = short_neutral_session.called_with[0]
-    assert "There is no completed cat-form episode to narrate." in short_neutral_instruction
-    assert "for 1 minute" not in short_neutral_instruction
-    assert "had a short sleep of" not in short_neutral_instruction
-    assert get_cat_greeting_episode_scene(episode, "en") not in short_neutral_instruction
-
-    truthy_not_started_session = _FakeOmniOffline(delivered=True)
-    truthy_not_started_mgr = _make_mgr(session=truthy_not_started_session)
-    await core_module.LLMSessionManager.trigger_cat_greeting(
-        truthy_not_started_mgr,
-        10,
-        "cat1",
-        False,
-        has_started_autonomous_action="true",
-    )
-    assert truthy_not_started_session.called_with == []
+    assert short_neutral_session.called_with == []
 
     # No trustworthy chapter means the exact existing greeting path remains.
     no_episode_session = _FakeOmniOffline(delivered=True)

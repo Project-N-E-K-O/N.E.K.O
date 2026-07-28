@@ -7,6 +7,8 @@ from tests.static_app_parts import read_js_parts
 
 from main_routers import pages_router
 
+from tests.node_harness import run_node_script
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_AUTO_GOODBYE_PATH = PROJECT_ROOT / "static" / "app" / "app-auto-goodbye.js"
@@ -20,8 +22,9 @@ def _run_node_harness(script: str) -> subprocess.CompletedProcess[str]:
     if not node_path:
         raise AssertionError("node is required to run app-auto-goodbye harness tests")
 
-    return subprocess.run(
-        [node_path, "-e", script],
+    return run_node_script(
+        node_path,
+        script,
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
@@ -441,8 +444,21 @@ def test_app_auto_goodbye_phase1_harness():
           home.tickAll();
           assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat3', 'demoted CAT2 should still progress to CAT3 after the normal CAT2 interval');
 
-          // Return should clear auto state and tier.
+          // The legacy click alone and the commit boundary should preserve the visual state;
+          // only completion clears the auto-goodbye cycle.
           home.win.dispatchEvent(new CustomEventLike('live2d-return-click'));
+          const afterLegacyReturnClick = home.win.nekoAutoGoodbye.getState();
+          assert(afterLegacyReturnClick.visualTier === 'cat3', 'legacy return click should not clear visual tier');
+          assert(afterLegacyReturnClick.autoGoodbyeTriggered === true, 'legacy return click should not clear auto flag');
+          home.win.dispatchEvent(new CustomEventLike('neko:cat-return-commit', {{
+            detail: {{ source: 'live2d-return-click', hadCatCycle: true }}
+          }}));
+          const afterReturnCommit = home.win.nekoAutoGoodbye.getState();
+          assert(afterReturnCommit.visualTier === 'cat3', 'return commit should preserve visual tier until completion');
+          assert(afterReturnCommit.autoGoodbyeTriggered === true, 'return commit should preserve auto flag until completion');
+          home.win.dispatchEvent(new CustomEventLike('neko:cat-return-complete', {{
+            detail: {{ source: 'live2d-return-click' }}
+          }}));
           const returned = home.win.nekoAutoGoodbye.getState();
           assert(returned.visualTier === 'none', 'return should clear visual tier');
           assert(returned.autoGoodbyeTriggered === false, 'return should clear auto flag');
@@ -701,7 +717,7 @@ def test_goodbye_composer_hidden_syncs_to_chat_window():
         1,
     )[1].split("postAvatarRequest();", 1)[0]
 
-    assert "function applyGoodbyeChatComposerHidden(hidden, reason)" in interpage_source
+    assert "function applyGoodbyeChatComposerHidden(hidden, reason, payload)" in interpage_source
     assert "function getGoodbyeChatComposerHiddenElectronBridge()" in interpage_source
     assert "function postGoodbyeChatComposerHiddenElectron(payload)" in interpage_source
     assert "function handleGoodbyeChatComposerHiddenMessage(data, via)" in interpage_source
@@ -776,7 +792,7 @@ def test_goodbye_composer_hidden_syncs_to_chat_window():
     assert "window.postGoodbyeChatComposerHiddenState = postGoodbyeChatComposerHiddenState;" in interpage_source
     assert "window.requestGoodbyeChatComposerHiddenState = requestGoodbyeChatComposerHiddenState;" in interpage_source
     assert "postGoodbyeChatComposerHiddenState(true, 'live2d-goodbye-click')" in app_ui_source
-    assert "postGoodbyeChatComposerHiddenState(false, 'return-click')" in app_ui_source
+    assert "postGoodbyeChatComposerHiddenState(false, 'return-complete')" in app_ui_source
 
 
 def test_app_interpage_initializes_goodbye_bridge_exports_with_tutorial_bridge_fallback():

@@ -521,7 +521,7 @@ class FactDedupResolver:
 
         try:
             set_call_type("memory_fact_dedup")
-            api_config = self._config_manager.get_model_api_config('summary')
+            api_config = await self._config_manager.aget_model_api_config('summary')
             # timeout=60: 持 FactDedup 锁但只阻 embedding worker enqueue
             # （background→background），用户路径无感。
             # max_retries=0: 禁 SDK 自动重试（这里没业务 retry，单次即终态）。
