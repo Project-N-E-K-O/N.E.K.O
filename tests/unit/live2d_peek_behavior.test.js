@@ -808,6 +808,63 @@ test('core model input regions return empty when drawable geometry is unavailabl
     assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects())), []);
 });
 
+test('core model input regions clamp padding to the supported 0-32 range', () => {
+    const harness = createCoreHarness({ innerWidth: 1000, innerHeight: 1000 });
+    const manager = new harness.Live2DManager();
+    manager.pixi_app = {
+        renderer: {
+            screen: { width: 1000, height: 1000 }
+        }
+    };
+    manager.getModelScreenBounds = () => ({
+        left: 400,
+        right: 500,
+        top: 400,
+        bottom: 500,
+        width: 100,
+        height: 100,
+        centerX: 450,
+        centerY: 450
+    });
+    manager._getRenderableDrawableScreenRects = () => [
+        {
+            left: 400,
+            right: 500,
+            top: 400,
+            bottom: 500,
+            width: 100,
+            height: 100,
+            centerX: 450,
+            centerY: 450
+        }
+    ];
+
+    assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects({ padding: 100 }))), [
+        {
+            left: 368,
+            right: 532,
+            top: 368,
+            bottom: 532,
+            width: 164,
+            height: 164,
+            centerX: 450,
+            centerY: 450
+        }
+    ]);
+    assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects({ padding: -5 }))), [
+        {
+            left: 400,
+            right: 500,
+            top: 400,
+            bottom: 500,
+            width: 100,
+            height: 100,
+            centerX: 450,
+            centerY: 450
+        }
+    ]);
+});
+
 test('core model input regions keep per-drawable mapped geometry when direct vertices are unavailable', () => {
     const harness = createCoreHarness({ innerWidth: 800, innerHeight: 600 });
     const manager = new harness.Live2DManager();
