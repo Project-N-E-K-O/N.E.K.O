@@ -736,3 +736,150 @@ test('core edge peek screen bounds use renderer screen instead of wider window',
         centerY: 400
     });
 });
+
+test('core model input regions preserve asymmetric drawable geometry before viewport clipping', () => {
+    const harness = createCoreHarness({ innerWidth: 1920, innerHeight: 1200 });
+    const manager = new harness.Live2DManager();
+    manager.pixi_app = {
+        renderer: {
+            screen: { width: 1920, height: 1200 }
+        }
+    };
+    manager.getModelScreenBounds = () => ({
+        left: 1600,
+        right: 1940,
+        top: 200,
+        bottom: 900,
+        width: 340,
+        height: 700,
+        centerX: 1770,
+        centerY: 550
+    });
+    manager._getRenderableDrawableScreenRects = () => [
+        {
+            left: 1810,
+            right: 1940,
+            top: 310,
+            bottom: 820,
+            width: 130,
+            height: 510,
+            centerX: 1875,
+            centerY: 565
+        },
+        {
+            left: 1935,
+            right: 1970,
+            top: 420,
+            bottom: 500,
+            width: 35,
+            height: 80,
+            centerX: 1952.5,
+            centerY: 460
+        }
+    ];
+
+    assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects({ padding: 8 }))), [
+        {
+            left: 1802,
+            right: 1920,
+            top: 302,
+            bottom: 828,
+            width: 118,
+            height: 526,
+            centerX: 1861,
+            centerY: 565
+        }
+    ]);
+});
+
+test('core model input regions return empty when drawable geometry is unavailable', () => {
+    const harness = createCoreHarness();
+    const manager = new harness.Live2DManager();
+    manager.getModelScreenBounds = () => ({
+        left: 100,
+        right: 500,
+        top: 100,
+        bottom: 700,
+        width: 400,
+        height: 600
+    });
+    manager._getRenderableDrawableScreenRects = () => [];
+
+    assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects())), []);
+});
+
+test('core model input regions keep per-drawable mapped geometry when direct vertices are unavailable', () => {
+    const harness = createCoreHarness({ innerWidth: 800, innerHeight: 600 });
+    const manager = new harness.Live2DManager();
+    manager.currentModel = {
+        internalModel: {
+            coreModel: {
+                getDrawableCount: () => 2
+            }
+        }
+    };
+    manager.pixi_app = {
+        renderer: {
+            screen: { width: 800, height: 600 }
+        }
+    };
+    manager.getModelScreenBounds = () => ({
+        left: 100,
+        right: 500,
+        top: 60,
+        bottom: 560,
+        width: 400,
+        height: 500
+    });
+    manager._getModelLogicalRect = () => ({
+        left: -1,
+        right: 1,
+        top: -1,
+        bottom: 1,
+        width: 2,
+        height: 2
+    });
+    manager._ensureModelWorldTransform = () => {};
+    manager._isDrawableRenderable = () => true;
+    manager._getDrawableDirectScreenRect = () => null;
+    manager._getDrawableScreenRect = (index) => index === 0
+        ? {
+            left: 140,
+            right: 240,
+            top: 120,
+            bottom: 260,
+            width: 100,
+            height: 140
+        }
+        : {
+            left: 300,
+            right: 420,
+            top: 280,
+            bottom: 500,
+            width: 120,
+            height: 220
+        };
+
+    assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects({ padding: 0 }))), [
+        {
+            left: 140,
+            right: 240,
+            top: 120,
+            bottom: 260,
+            width: 100,
+            height: 140,
+            centerX: 190,
+            centerY: 190
+        },
+        {
+            left: 300,
+            right: 420,
+            top: 280,
+            bottom: 500,
+            width: 120,
+            height: 220,
+            centerX: 360,
+            centerY: 390
+        }
+    ]);
+});

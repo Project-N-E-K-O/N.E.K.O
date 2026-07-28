@@ -1486,6 +1486,71 @@ class Live2DManager {
         return rects;
     }
 
+    /**
+     * 获取当前实际可渲染 drawable 的屏幕输入区域。
+     *
+     * 桌面宿主使用这些区域构造 Native Wayland compositor input region。
+     * 这里必须先从 drawable 顶点得到屏幕几何，再裁剪到 renderer viewport；
+     * 不能从已裁剪的模型外接矩形重新猜一个居中椭圆，否则靠边模型会出现
+     * “透明处可点击、人物本体穿透”。
+     *
+     * @param {Object} options
+     * @param {number} options.padding 每个 drawable 周围的拖拽容差（CSS 像素）
+     * @returns {Array<Object>} 屏幕坐标矩形
+     */
+    getModelInputRegionRects(options = {}) {
+        const requestedPadding = Number(options?.padding);
+        const padding = Number.isFinite(requestedPadding)
+            ? Math.max(0, Math.min(32, requestedPadding))
+            : 8;
+        const modelBounds = this.getModelScreenBounds();
+        const drawableRects = this._getRenderableDrawableScreenRects(
+            modelBounds,
+            null,
+            false
+        );
+        if (!Array.isArray(drawableRects) || drawableRects.length === 0) {
+            return [];
+        }
+
+        const rendererScreen = this.pixi_app?.renderer?.screen;
+        const rendererWidth = Number(rendererScreen?.width);
+        const rendererHeight = Number(rendererScreen?.height);
+        const windowWidth = Number(window.innerWidth);
+        const windowHeight = Number(window.innerHeight);
+        const viewportWidth = Number.isFinite(rendererWidth) && rendererWidth > 0
+            ? Math.min(rendererWidth, Number.isFinite(windowWidth) && windowWidth > 0 ? windowWidth : rendererWidth)
+            : windowWidth;
+        const viewportHeight = Number.isFinite(rendererHeight) && rendererHeight > 0
+            ? Math.min(rendererHeight, Number.isFinite(windowHeight) && windowHeight > 0 ? windowHeight : rendererHeight)
+            : windowHeight;
+        if (!Number.isFinite(viewportWidth) || viewportWidth <= 0 ||
+            !Number.isFinite(viewportHeight) || viewportHeight <= 0) {
+            return [];
+        }
+
+        const inputRects = [];
+        for (const drawableRect of drawableRects) {
+            if (!drawableRect) continue;
+            const rawLeft = Number(drawableRect.left);
+            const rawTop = Number(drawableRect.top);
+            const rawRight = Number(drawableRect.right);
+            const rawBottom = Number(drawableRect.bottom);
+            if (!Number.isFinite(rawLeft) || !Number.isFinite(rawTop) ||
+                !Number.isFinite(rawRight) || !Number.isFinite(rawBottom)) {
+                continue;
+            }
+
+            const left = Math.max(0, rawLeft - padding);
+            const top = Math.max(0, rawTop - padding);
+            const right = Math.min(viewportWidth, rawRight + padding);
+            const bottom = Math.min(viewportHeight, rawBottom + padding);
+            const rect = this._createScreenRect(left, top, right, bottom);
+            if (rect) inputRects.push(rect);
+        }
+        return inputRects;
+    }
+
     _expandScreenRect(rect, paddingX = 0, paddingY = 0) {
         if (!rect) {
             return null;
