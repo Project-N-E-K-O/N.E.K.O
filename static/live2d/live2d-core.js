@@ -585,8 +585,15 @@ class Live2DManager {
             return false;
         }
         if (window._nekoAvatarPerformanceFrameContainer === container) {
-            const transform = getStyleValue(container, 'transform', 'transform');
-            if (transform !== '' && transform !== 'none') {
+            // Avatar performance frames are written to the inline transform.
+            // The stylesheet baseline uses translateZ(0), whose computed matrix
+            // is identity and must not keep stale suppression alive.
+            const inlineTransform = getStyleValueFrom(
+                container?.style,
+                'transform',
+                'transform'
+            );
+            if (inlineTransform !== '' && inlineTransform !== 'none') {
                 return false;
             }
             window._nekoAvatarPerformanceFrameContainer = null;

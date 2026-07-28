@@ -896,7 +896,10 @@ test('core model input regions stay empty when the model surface is hidden or no
             if (bodyClasses.has('yui-guide-live2d-preparing')) {
                 return { ...element.style, opacity: '0', pointerEvents: 'none' };
             }
-            return element.style;
+            return {
+                ...element.style,
+                transform: element.style.transform || 'matrix(1, 0, 0, 1, 0, 0)'
+            };
         }
     });
     const manager = new harness.Live2DManager();
