@@ -176,6 +176,12 @@ function flushNextFrame(harness, time = 400) {
     callback(time);
 }
 
+async function waitForQueuedFrame(harness, attempts = 10) {
+    for (let attempt = 0; attempt < attempts && harness.rafQueue.length === 0; attempt += 1) {
+        await Promise.resolve();
+    }
+}
+
 function createCoreHarness({ innerWidth = 1000, innerHeight = 800 } = {}) {
     const context = {
         console,
@@ -437,9 +443,7 @@ test('macOS top corners trigger at the current display work-area top', async () 
         };
 
         const enterPromise = manager._tryApplyLive2DPeek(model);
-        for (let attempt = 0; attempt < 10 && harness.rafQueue.length === 0; attempt += 1) {
-            await Promise.resolve();
-        }
+        await waitForQueuedFrame(harness);
         flushNextFrame(harness);
         assert.equal(await enterPromise, true);
         assert.equal(manager._live2DPeekState.edge, item.edge);
@@ -474,9 +478,7 @@ test('Windows bottom corners trigger at the current display work-area bottom', a
         };
 
         const enterPromise = manager._tryApplyLive2DPeek(model);
-        for (let attempt = 0; attempt < 10 && harness.rafQueue.length === 0; attempt += 1) {
-            await Promise.resolve();
-        }
+        await waitForQueuedFrame(harness);
         flushNextFrame(harness);
         assert.equal(await enterPromise, true);
         assert.equal(manager._live2DPeekState.edge, item.edge);
@@ -1180,9 +1182,7 @@ test('display change rebuilds the active anchor against the refreshed display', 
     manager.currentModel = model;
 
     const enterPromise = manager._tryApplyLive2DPeek(model);
-    for (let attempt = 0; attempt < 10 && harness.rafQueue.length === 0; attempt += 1) {
-        await Promise.resolve();
-    }
+    await waitForQueuedFrame(harness);
     flushNextFrame(harness);
     await enterPromise;
     const hiddenRotation = model.rotation;
@@ -1228,9 +1228,7 @@ test('non-display clear invalidates a pending display anchor restore', async () 
     manager.currentModel = model;
 
     const enterPromise = manager._tryApplyLive2DPeek(model);
-    for (let attempt = 0; attempt < 10 && harness.rafQueue.length === 0; attempt += 1) {
-        await Promise.resolve();
-    }
+    await waitForQueuedFrame(harness);
     flushNextFrame(harness);
     await enterPromise;
 
