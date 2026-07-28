@@ -185,7 +185,8 @@ async function waitForQueuedFrame(harness, attempts = 10) {
 function createCoreHarness({
     innerWidth = 1000,
     innerHeight = 800,
-    elementsById = {}
+    elementsById = {},
+    bodyClasses = new Set()
 } = {}) {
     const context = {
         console,
@@ -205,6 +206,11 @@ function createCoreHarness({
             __LANLAN_IS_ELECTRON_PET__: false
         },
         document: {
+            body: {
+                classList: {
+                    contains: (name) => bodyClasses.has(name)
+                }
+            },
             getElementById: (id) => elementsById[id] || null
         }
     };
@@ -862,6 +868,7 @@ test('core model input regions stay empty until interaction is ready', () => {
 
 test('core model input regions stay empty when the model surface is hidden or non-interactive', () => {
     const containerClasses = new Set(['minimized']);
+    const bodyClasses = new Set();
     const container = {
         classList: { contains: (name) => containerClasses.has(name) },
         style: {},
@@ -876,7 +883,8 @@ test('core model input regions stay empty when the model surface is hidden or no
         elementsById: {
             'live2d-container': container,
             'live2d-canvas': canvas
-        }
+        },
+        bodyClasses
     });
     const manager = new harness.Live2DManager();
     manager._isModelReadyForInteraction = true;
@@ -888,6 +896,15 @@ test('core model input regions stay empty when the model surface is hidden or no
     containerClasses.clear();
     canvas.style.pointerEvents = 'none';
     assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects())), []);
+    canvas.style.pointerEvents = '';
+    for (const bodyClass of [
+        'neko-main-ui-hidden-by-model-manager',
+        'neko-model-hidden-by-manager-overlap'
+    ]) {
+        bodyClasses.clear();
+        bodyClasses.add(bodyClass);
+        assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects())), []);
+    }
 });
 
 test('core model input regions clamp padding to the supported 0-32 range', () => {

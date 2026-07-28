@@ -525,6 +525,13 @@ class Live2DManager {
             return false;
         }
 
+        const bodyClassList = document.body?.classList;
+        if (bodyClassList &&
+            (bodyClassList.contains('neko-main-ui-hidden-by-model-manager') ||
+                bodyClassList.contains('neko-model-hidden-by-manager-overlap'))) {
+            return false;
+        }
+
         const getStyleValue = (element, propertyName, camelName) => {
             const style = element?.style;
             if (!style) return '';
