@@ -2346,12 +2346,14 @@ def _finish_owner_death(mechanism: str, wait_for_merged: bool) -> None:
     except Exception as exc:
         _teardown_print(f"[Launcher] Warning: cleanup after owner death failed: {exc}")
 
-    try:
-        single_instance.release_single_instance()
-    except Exception:
-        # 同样是尽力而为：进程退出时内核会关闭 fd 并释放文件锁，失败也不能
-        # 中断拆除路径。
-        pass
+    # Deliberately no explicit release here. The lock is documented as held for
+    # the owning process's whole lifetime, and everything below — the group TERM,
+    # the grace period, the final KILL — happens while this process is still
+    # alive. Releasing first opened a window where the lock was free but this
+    # generation was not yet gone. The kernel drops it when we die, which is
+    # exactly the semantics this module relies on everywhere else. The record
+    # left behind is harmless: owner_status() proves liveness from the lock and
+    # ignores any record whose lock it can take.
 
     try:
         sys.stdout.flush()
@@ -3062,7 +3064,10 @@ def main():
 
         # 交接路径已在 _maybe_schedule_storage_restart 里先释放过锁并把句柄置空；
         # 这里再判一次，是为了覆盖调度本身抛异常、锁仍在手上的分支。
-        if not restart_scheduled:
+        # Not while an owner-death teardown is running: its thread is still
+        # sweeping the process group, and releasing here would reopen the same
+        # window the teardown path just closed.
+        if not restart_scheduled and not _owner_death_in_progress:
             release_single_instance_ownership()
         # 如果还有残留进程，使用非零退出码
         if has_alive:

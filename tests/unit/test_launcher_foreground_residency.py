@@ -663,11 +663,12 @@ def test_owner_death_cleans_up_then_exits(monkeypatch):
 
     launcher._handle_owner_death("stdin_eof")
 
+    # No "release": the lock is deliberately held until the process dies, so that
+    # it is never free while this generation is still sweeping its process group.
     assert order == [
         "mark",
         ("event", "owner_exit"),
         "cleanup",
-        "release",
         ("exit", 0),
     ]
 
@@ -749,7 +750,7 @@ def test_owner_death_drives_the_merged_ordered_shutdown_first(monkeypatch):
         time.sleep(0.02)
 
     assert requested == ["owner_death:stdin_eof"], requested
-    assert order == ["cleanup", "release", ("exit", 0)], order
+    assert order == ["cleanup", ("exit", 0)], order
 
 
 @pytest.mark.unit

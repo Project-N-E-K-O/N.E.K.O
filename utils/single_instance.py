@@ -103,7 +103,10 @@ def runtime_state_dir() -> Path:
         base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
         if base:
             return Path(base) / "N.E.K.O" / "runtime"
-        return Path(tempfile.gettempdir()) / "N.E.K.O" / "runtime"
+        # No profile environment at all. Unlike %LOCALAPPDATA% this is shared, so
+        # keep it per-user explicitly — otherwise two accounts contend for one
+        # lock and the second is told an instance is already running.
+        return Path(tempfile.gettempdir()) / "N.E.K.O" / f"runtime-{_windows_user_tag()}"
 
     if sys.platform == "darwin":
         try:
@@ -180,6 +183,11 @@ def legacy_state_dirs() -> list[Path]:
     dirs.append(Path(tempfile.gettempdir()) / f"neko-runtime{suffix}")
     current = runtime_state_dir()
     return [d for d in dirs if d != current]
+
+
+def _windows_user_tag() -> str:
+    name = os.environ.get("USERNAME", "").strip()
+    return "".join(c for c in name if c.isalnum() or c in "-_") or "default"
 
 
 def lock_path() -> Path:
@@ -282,7 +290,11 @@ def _ensure_private_dir(directory: Path) -> None:
         # with ENOTDIR/ENOENT, which is the error worth surfacing.
         pass
     if os.name != "posix":
-        # Windows inherits ACLs from %LOCALAPPDATA%, which is already per-user.
+        # Under %LOCALAPPDATA% the directory inherits per-user ACLs. The shared
+        # temp fallback above does not, but it is only reached with no profile
+        # environment at all, and Windows has no cheap portable equivalent of the
+        # POSIX ownership check below — the per-user name in the path is what
+        # keeps two accounts apart there.
         return
     # lstat, not stat. mkdir(exist_ok=True) happily accepts a symlink that points
     # at a directory, and stat would then validate the *target* — so a symlink
@@ -619,6 +631,11 @@ def _safe_getppid() -> int:
 #: directories below only ever existed on this branch.
 LEGACY_TEMP_LOCK_NAME = "neko_launcher.lock"
 
+#: Win32 constants for probing the pre-PR named mutex.
+_SYNCHRONIZE = 0x00100000
+_ERROR_FILE_NOT_FOUND = 2
+_ERROR_INVALID_NAME = 123
+
 
 def _legacy_temp_lock_path() -> Optional[Path]:
     if sys.platform == "win32":
@@ -688,6 +705,29 @@ def legacy_owner_status() -> tuple[str, Optional[dict]]:
                     os.close(fd)
                 except OSError:
                     pass
+
+    if sys.platform == "win32" and not os.environ.get(RUNTIME_STATE_DIR_ENV, "").strip():
+        # The pre-PR Windows build's only uniqueness primitive was a named mutex,
+        # so skipping Windows here left upgrades with no shared primitive at all.
+        # OpenMutexW, never CreateMutexW: creating it would materialise a
+        # previous-generation object and keep it alive for our whole lifetime,
+        # making any later pre-PR build conclude an instance is already running.
+        try:
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenMutexW(
+                _SYNCHRONIZE, False, r"Global\NEKO_LAUNCHER_STARTUP_LOCK"
+            )
+            if handle:
+                kernel32.CloseHandle(handle)
+                return OWNER_OWNED, None
+            err = kernel32.GetLastError()
+            if err not in (_ERROR_FILE_NOT_FOUND, _ERROR_INVALID_NAME):
+                # Access denied and friends mean "could not look", not "free".
+                saw_unknown = True
+        except Exception:
+            saw_unknown = True
 
     return (OWNER_UNKNOWN if saw_unknown else OWNER_FREE), None
 
