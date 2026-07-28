@@ -338,6 +338,75 @@ def _wait_for(path: Path, timeout: float = 15.0) -> bool:
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(sys.platform != "win32", reason="parent_handle is the win32 mechanism")
+def test_parent_handle_arms_against_a_live_owner():
+    """Windows has exactly one mechanism, and nothing else asserted it existed.
+
+    Every real-process guard test here is POSIX-gated, and the survivors only
+    ever assert that mechanisms is *empty* — so the whole Windows leg passed
+    identically with every installer stubbed to return False. Since pdeathsig is
+    Linux and both stdin_eof and ppid_poll are POSIX, that left the one mechanism
+    Windows residency depends on with no assertion anywhere.
+    """
+    guard = parent_guard.install(lambda _m: None, poll_interval=60)
+    try:
+        assert "parent_handle" in guard.mechanisms, guard.mechanisms
+        assert not guard.fired
+    finally:
+        guard.stop()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(sys.platform != "win32", reason="win32 parent-handle wait")
+def test_guarded_process_dies_when_its_owner_exits_on_windows(tmp_path):
+    """The other half: not just armed, but actually observing the owner exit."""
+    marker = tmp_path / "fired"
+    armed = tmp_path / "armed"
+    child_file = tmp_path / "guarded_child_win.py"
+    child_file.write_text(
+        _GUARDED_CHILD.format(
+            root=str(PROJECT_ROOT), marker=str(marker), armed=str(armed),
+            watch_stdin="False", poll_interval="600",
+        ),
+        encoding="utf-8",
+    )
+
+    # The owner must PRECEDE the guarded process: _windows_parent_precedes_us
+    # compares creation times, so a victim spawned before its watcher is reported
+    # as a recycled pid instead. Hence the middle-process shape rather than
+    # dropping the platform marker on one of the POSIX tests.
+    middle_source = textwrap.dedent(
+        f"""
+        import os, subprocess, sys, time
+        proc = subprocess.Popen(
+            [sys.executable, {str(child_file)!r}],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and not os.path.exists({str(armed)!r}):
+            time.sleep(0.05)
+        print(proc.pid, flush=True)
+        """
+    )
+    middle = subprocess.run(
+        [sys.executable, "-c", middle_source],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert middle.returncode == 0, middle.stderr
+    child_pid = int(middle.stdout.strip())
+
+    try:
+        assert _wait_for(armed)
+        assert "parent_handle" in armed.read_text(encoding="utf-8")
+        assert _wait_for(marker, timeout=15), "the guard never observed its owner exit"
+        assert marker.read_text(encoding="utf-8") == "parent_handle"
+    finally:
+        subprocess.run(["taskkill", "/F", "/PID", str(child_pid)], capture_output=True)
+
+
+@pytest.mark.unit
 @pytest.mark.skipif(os.name != "posix", reason="needs POSIX re-parenting semantics")
 def test_guarded_process_dies_when_its_real_parent_dies(tmp_path):
     """Kill the parent; the guarded grandchild must clean itself up."""
