@@ -1361,10 +1361,12 @@ def test_externalized_chat_input_spotlight_uses_global_overlay_only():
 
     assert "var pcOverlayAvailable = isYuiGuidePcOverlayAvailable();" in update_block
     assert "if (pcOverlayAvailable) {" in update_block
-    assert "var sourceRectInfo = rect ? getYuiGuideChatSpotlightSourceRect(kind, yuiGuideChatSpotlightVariant, rect) : null;" in update_block
+    assert "var pcWindowMetrics = pcOverlayAvailable && typeof getYuiGuideWindowMetrics === 'function'" in update_block
+    assert "getYuiGuideChatSpotlightSourceRect(kind, yuiGuideChatSpotlightVariant, rect, pcWindowMetrics)" in update_block
+    assert "metrics.waylandWorkAreaCarrier === true" in script
     assert "var sourceRect = sourceRectInfo ? sourceRectInfo.rect : rect;" in update_block
     assert "toYuiGuideScreenRect({" in update_block
-    assert "}, kind, yuiGuideChatSpotlightVariant)" in update_block
+    assert "}, kind, yuiGuideChatSpotlightVariant, pcWindowMetrics)" in update_block
     assert "kind !== 'input' && isYuiGuidePcOverlayAvailable()" not in update_block
     assert "hideYuiGuideChatSpotlightElement" not in script
     assert "hideYuiGuideChatSpotlightElements" not in script

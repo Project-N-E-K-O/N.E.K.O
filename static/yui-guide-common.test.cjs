@@ -1245,6 +1245,7 @@ test('interpage consumes common tutorial geometry before chat bridge scripts run
     assert.match(appInterpageSource, /function shouldAlignYuiGuideChatSpotlightToCapsuleText\(kind, variant\) \{\s*return kind === 'input' && variant === 'plain-capsule';\s*\}/);
     assert.match(appInterpageSource, /function getYuiGuideChatSpotlightSourceRect\(kind, variant, rect\)/);
     assert.match(appInterpageSource, /anchorOffsetX \* YUI_GUIDE_CHAT_CAPSULE_TEXT_ALIGNMENT_RATIO/);
+    assert.match(appInterpageSource, /sourceRect\.width = Math\.max\(1, rect\.left \+ rect\.width - sourceRect\.left\)/);
     assert.match(appInterpageSource, /return \{ rect: sourceRect \};/);
 });
 
@@ -2834,6 +2835,7 @@ test('PC global overlay cleanup notifies external chat windows to stop overlay r
     assert.match(lifecycleMessageBlock, /tutorialRunId:\s*tutorialRunId/);
     assert.match(appInterpageSource, /if \(message\.tutorialRunId && message\.action !== 'yui_guide_tutorial_lifecycle_ended'\) \{/);
     assert.match(appInterpageSource, /function getYuiGuideScreenCoordinateBounds\(metrics\) \{/);
+    assert.match(appInterpageSource, /metrics\.coordinateSpace === 'screen-dip'[\s\S]*metrics\.renderBounds/);
     assert.match(appInterpageSource, /return metrics && \(metrics\.bounds \|\| metrics\.contentBounds\) \|\| \{ x: 0, y: 0 \};/);
     assert.match(externalCleanupBlock, /yuiGuidePcOverlayActive = false;/);
     assert.match(externalCleanupBlock, /yuiGuidePcOverlayReady = false;/);

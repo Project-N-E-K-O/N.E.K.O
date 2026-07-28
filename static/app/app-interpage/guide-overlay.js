@@ -35,6 +35,7 @@
     var yuiGuidePcOverlayDeferredReconciliationTimer = 0;
     I.yuiGuidePcOverlaySpotlights = [];
     I.yuiGuidePcOverlayCursor = null;
+    I.yuiGuidePcOverlaySkipControl = null;
     I.yuiGuideChatSpotlightLastPcKind = '';
     I.yuiGuideChatSpotlightLastPcVariant = '';
     I.yuiGuideChatSpotlightLastPcRects = [];
@@ -244,6 +245,7 @@
             case 'yui_guide_set_compact_tool_fan_open':
             case 'yui_guide_rotate_compact_tool_wheel':
             case 'yui_guide_set_compact_tool_wheel_index':
+            case 'yui_guide_overlay_skip_request':
                 return true;
             default:
                 return false;
@@ -513,7 +515,16 @@
         };
     }
 
+    I.getYuiGuideWindowMetrics = getYuiGuideWindowMetrics;
+
     function getYuiGuideScreenCoordinateBounds(metrics) {
+        if (
+            metrics
+            && metrics.coordinateSpace === 'screen-dip'
+            && metrics.renderBounds
+        ) {
+            return metrics.renderBounds;
+        }
         return metrics && (metrics.bounds || metrics.contentBounds) || { x: 0, y: 0 };
     }
 
@@ -729,8 +740,8 @@
         };
     }
 
-    I.toYuiGuideScreenPoint = function toYuiGuideScreenPoint(x, y) {
-        var metrics = getYuiGuideWindowMetrics();
+    I.toYuiGuideScreenPoint = function toYuiGuideScreenPoint(x, y, metricsOverride) {
+        var metrics = metricsOverride || getYuiGuideWindowMetrics();
         var cropState = getYuiGuideNiriPetPhysicalCropState(metrics);
         if (cropState && cropState.cropBounds) {
             var virtualPoint = toYuiGuideNiriPetPhysicalCropVirtualPointWithState(x, y, cropState);
@@ -750,18 +761,18 @@
         };
     }
 
-    I.toYuiGuideScreenRect = function toYuiGuideScreenRect(rect, kind, variant) {
+    I.toYuiGuideScreenRect = function toYuiGuideScreenRect(rect, kind, variant, metricsOverride) {
         if (!rect || rect.width <= 0 || rect.height <= 0) {
             return null;
         }
-        var metrics = getYuiGuideWindowMetrics();
+        var metrics = metricsOverride || getYuiGuideWindowMetrics();
         var cropState = getYuiGuideNiriPetPhysicalCropState(metrics);
         var cropRect = cropState && cropState.cropBounds
             ? toYuiGuideNiriPetPhysicalCropVirtualRectWithState(rect, cropState)
             : rect;
         var point = cropState && cropState.cropBounds
             ? toYuiGuideScreenVirtualPoint(cropRect.left, cropRect.top, cropState)
-            : I.toYuiGuideScreenPoint(rect.left, rect.top);
+            : I.toYuiGuideScreenPoint(rect.left, rect.top, metrics);
         var isCircle = I.getYuiGuideChatTargetShape(kind) === 'circle';
         var radius = kind === 'window' ? 26 : Math.min(34, Math.max(18, Math.round((cropRect.height + 16) / 2)));
         if (isCircle) {
@@ -810,6 +821,15 @@
         if (patch && Object.prototype.hasOwnProperty.call(patch, 'cursor')) {
             I.yuiGuidePcOverlayCursor = withoutTransientYuiGuideCursorEffect(patch.cursor);
         }
+        if (patch && Object.prototype.hasOwnProperty.call(patch, 'skipControl')) {
+            I.yuiGuidePcOverlaySkipControl = patch.skipControl && patch.skipControl.visible !== false
+                ? {
+                    visible: true,
+                    label: String(patch.skipControl.label || ''),
+                    dark: patch.skipControl.dark === true
+                }
+                : null;
+        }
         var payload = {
             spotlights: I.yuiGuidePcOverlaySpotlights
         };
@@ -817,6 +837,11 @@
             payload.cursor = patch.cursor || null;
         } else if (I.yuiGuidePcOverlayCursor) {
             payload.cursor = I.yuiGuidePcOverlayCursor;
+        }
+        if (patch && Object.prototype.hasOwnProperty.call(patch, 'skipControl')) {
+            payload.skipControl = I.yuiGuidePcOverlaySkipControl;
+        } else if (I.yuiGuidePcOverlaySkipControl) {
+            payload.skipControl = I.yuiGuidePcOverlaySkipControl;
         }
         var runId = resolveYuiGuidePcOverlayRunIdForSend(
             sendOptions.tutorialRunId,
@@ -896,6 +921,28 @@
             return false;
         }
     }
+
+    I.setYuiGuidePcOverlaySkipControl = function setYuiGuidePcOverlaySkipControl(visible, label) {
+        var skipControl = visible === true
+            ? {
+                visible: true,
+                label: typeof label === 'string' && label ? label : 'Skip',
+                dark: !!(
+                    document.documentElement
+                    && (
+                        document.documentElement.getAttribute('data-theme') === 'dark'
+                        || document.documentElement.classList.contains('dark')
+                    )
+                )
+            }
+            : null;
+        I.yuiGuidePcOverlaySkipControl = skipControl;
+        return I.sendYuiGuidePcOverlayPatch({
+            skipControl: skipControl
+        });
+    };
+
+    I.mod.setYuiGuidePcOverlaySkipControl = I.setYuiGuidePcOverlaySkipControl;
 
     Object.assign(window.appInterpage, I.mod || {});
 })();

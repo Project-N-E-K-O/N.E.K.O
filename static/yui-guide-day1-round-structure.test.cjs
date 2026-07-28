@@ -262,6 +262,7 @@ test('Day1 return control cursor moves to the capsule primary target before the 
   // 修改原因：胶囊目标已有 registry 几何；这里保留普通 input 的旧 plain-capsule 逻辑，避免新增胶囊特例。
   assert.match(appInterpageSource, /function shouldAlignYuiGuideChatSpotlightToCapsuleText\(kind, variant\) \{\s*return kind === 'input' && variant === 'plain-capsule';\s*\}/);
   assert.match(appInterpageSource, /function getYuiGuideChatSpotlightSourceRect\(kind, variant, rect\)[\s\S]*anchorOffsetX \* YUI_GUIDE_CHAT_CAPSULE_TEXT_ALIGNMENT_RATIO[\s\S]*return \{ rect: sourceRect \};/);
+  assert.match(appInterpageSource, /sourceRect\.width = Math\.max\(1, rect\.left \+ rect\.width - sourceRect\.left\)/);
   assert.match(appInterpageSource, /function updateYuiGuideChatSpotlight\(kind,\s*pcOverlayRunId\) \{[\s\S]*var pcOverlayAvailable = isYuiGuidePcOverlayAvailable\(\);/);
   assert.match(appInterpageSource, /function updateYuiGuideChatSpotlight\(kind,\s*pcOverlayRunId\) \{[\s\S]*var sourceRectInfo = rect \? getYuiGuideChatSpotlightSourceRect\(kind, yuiGuideChatSpotlightVariant, rect\) : null;[\s\S]*sendYuiGuidePcOverlayPatch\(\{ spotlights: pcRects \}, false, patchOptions\);/);
   assert.doesNotMatch(appInterpageSource, /function renderYuiGuideChatSpotlight/);

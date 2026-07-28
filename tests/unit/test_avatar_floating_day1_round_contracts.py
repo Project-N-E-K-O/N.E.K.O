@@ -543,7 +543,7 @@ def test_externalized_chat_spotlight_keeps_variant_pipeline_but_day1_uses_capsul
     assert "yuiGuideChatSpotlightVariant = '';" in interpage_source
     assert "yuiGuideChatSpotlightLastPcVariant = '';" in interpage_source
     assert "toYuiGuideScreenRect({" in interpage_source
-    assert "}, kind, yuiGuideChatSpotlightVariant)" in interpage_source
+    assert "}, kind, yuiGuideChatSpotlightVariant, pcWindowMetrics)" in interpage_source
     assert "rememberYuiGuideChatPcSpotlightRects(kind, pcRects, yuiGuideChatSpotlightVariant);" in interpage_source
     assert "yuiGuideChatSpotlightLastPcVariant === yuiGuideChatSpotlightVariant" in interpage_source
     assert "const sceneSpotlightVariant = scene && typeof scene.spotlightVariant === 'string'" in scene_source
