@@ -302,6 +302,8 @@ class SingleInstanceHandle:
         try:
             os.close(fd)
         except OSError:
+            # The lock is already gone via _unlock_fd above, so a failed close
+            # leaks nothing, and release() has to stay idempotent.
             pass
 
         with _state_lock:
@@ -408,6 +410,19 @@ def acquire_single_instance(
             except OSError:
                 pass
             raise
+
+    # The lock is ours now, so any record still on disk can only have been left
+    # by a dead predecessor: release() deletes the record *before* dropping the
+    # lock, so a live holder's record can never be visible to us here. Drop it
+    # immediately rather than between here and the publish below, where an
+    # observer that sees contention would read the predecessor's identity and
+    # believe it belongs to the process it just lost to.
+    try:
+        os.unlink(str(record_file))
+    except OSError:
+        # Nothing to clear (the usual case), or the directory is not writable —
+        # the publish below will report that failure on its own terms.
+        pass
 
     pid = os.getpid()
     record = {

@@ -57,6 +57,7 @@ import signal
 import stat
 import sys
 import threading
+import time
 from typing import Callable, Optional
 
 #: Set to ``0``/``false`` to disable the guard entirely (debugging, profilers
@@ -104,6 +105,9 @@ _SYNCHRONIZE = 0x00100000
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _WAIT_OBJECT_0 = 0x00000000
 _WAIT_TIMEOUT = 0x00000102
+#: OpenProcess sets this when the pid matches no live process. Any *other*
+#: failure means "could not look", which is not evidence of death.
+_ERROR_INVALID_PARAMETER = 87
 
 
 def _guard_enabled() -> bool:
@@ -183,6 +187,22 @@ class ParentDeathGuard:
     def owner_is_direct_parent(self) -> bool:
         return self._owner_is_direct_parent
 
+    def _owner_gone(self) -> bool:
+        """Is the process we are watching actually gone? Conservative on doubt."""
+        if self._owner_is_direct_parent:
+            # Re-parenting is the signal: our parent died and init adopted us.
+            return _safe_getppid() != self._parent_pid
+        # Handoff generation: we can only ask whether the named pid is still
+        # there. EPERM means it exists but is not ours, which is still alive;
+        # anything unexpected is unknown, so we keep waiting.
+        try:
+            os.kill(self._parent_pid, 0)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            return False
+        return False
+
     def _on_pdeathsig(self, _signum, _frame) -> None:
         self.fire("pdeathsig")
 
@@ -235,7 +255,7 @@ class ParentDeathGuard:
             self.fire("pdeathsig_late_install")
         return True
 
-    def _install_stdin_eof(self) -> bool:
+    def _install_stdin_eof(self, confirm_budget: float = DEFAULT_POLL_INTERVAL) -> bool:
         if os.name != "posix":
             return False
         try:
@@ -255,8 +275,28 @@ class ParentDeathGuard:
                 except OSError:
                     return
                 if not chunk:
-                    self.fire("stdin_eof")
-                    return
+                    # EOF is a hint, not proof. "fd 0 is a pipe, so the parent
+                    # holds the write end" is only true if nobody else inherited
+                    # it — a sibling that outlives the owner, or an owner that
+                    # simply closes our stdin, produces the same EOF while the
+                    # owner is alive. Firing on that would release the
+                    # single-instance lock and SIGKILL our own process group out
+                    # from under a healthy owner.
+                    #
+                    # Confirm with the same test the poll uses, bounded: the
+                    # kernel closes the fd before it re-parents us, so on a real
+                    # death getppid() lags EOF by a moment. If the budget expires
+                    # with the owner still alive, this EOF was not its death —
+                    # retire this mechanism and leave the owner poll on watch.
+                    deadline = time.monotonic() + max(0.0, float(confirm_budget))
+                    while True:
+                        if self._owner_gone():
+                            self.fire("stdin_eof")
+                            return
+                        if time.monotonic() >= deadline:
+                            return
+                        if self._stop.wait(0.05):
+                            return
 
         thread = threading.Thread(target=_watch, name="neko-parent-stdin-eof", daemon=True)
         thread.start()
@@ -280,14 +320,28 @@ class ParentDeathGuard:
                 False,
                 self._parent_pid,
             )
+            open_error = 0 if handle else ctypes.get_last_error()
         except Exception:
             return False
 
         if not handle:
-            # The pid is already gone: there is nothing to wait on and the owner
-            # is definitively absent.
-            self.fire("parent_handle_absent")
-            return True
+            if open_error == _ERROR_INVALID_PARAMETER:
+                # Windows reports a pid that matches no live process this way, so
+                # the owner really is gone: nothing to wait on.
+                self.fire("parent_handle_absent")
+                return True
+            # Any other error means we could not *look*, not that the owner is
+            # absent — ERROR_ACCESS_DENIED is routine when the owner runs as a
+            # different user, as SYSTEM, or inside an AppContainer. Treating that
+            # as proof of death would kill a healthy runtime on startup. Same
+            # discipline as the inconclusive verdict below: leave the mechanism
+            # unarmed and report it honestly.
+            print(
+                f"[ParentGuard] Cannot open owner process {self._parent_pid} "
+                f"(win32 error {open_error}); parent-handle mechanism not armed",
+                flush=True,
+            )
+            return False
 
         verdict = _windows_parent_precedes_us(kernel32, handle)
         if verdict is False:
@@ -321,6 +375,9 @@ class ParentDeathGuard:
                 try:
                     kernel32.CloseHandle(handle)
                 except Exception:
+                    # Best-effort close on the way out of the watcher thread: the
+                    # handle dies with the process anyway, and raising here would
+                    # only surface a traceback after fire() has already run.
                     pass
 
         thread = threading.Thread(target=_watch, name="neko-parent-handle", daemon=True)
@@ -333,30 +390,11 @@ class ParentDeathGuard:
         if os.name != "posix":
             return False
 
-        if self._owner_is_direct_parent:
-            mechanism = "ppid_poll"
-
-            def _owner_gone() -> bool:
-                # Re-parenting is the signal: our parent died and init adopted us.
-                return _safe_getppid() != self._parent_pid
-        else:
-            mechanism = "owner_poll"
-
-            def _owner_gone() -> bool:
-                # Handoff generation: we can only ask whether the named pid is
-                # still there. EPERM means it exists but is not ours, which is
-                # still alive; anything unexpected is unknown, so we keep waiting.
-                try:
-                    os.kill(self._parent_pid, 0)
-                except ProcessLookupError:
-                    return True
-                except OSError:
-                    return False
-                return False
+        mechanism = "ppid_poll" if self._owner_is_direct_parent else "owner_poll"
 
         def _watch() -> None:
             while not self._stop.wait(interval):
-                if _owner_gone():
+                if self._owner_gone():
                     self.fire(mechanism)
                     return
 
@@ -439,19 +477,27 @@ def install(
 
     guard._install_pdeathsig()
     if watch_stdin:
-        guard._install_stdin_eof()
+        guard._install_stdin_eof(poll_interval)
     guard._install_parent_handle()
     guard._install_owner_poll(poll_interval)
     return guard
 
 
-def install_child_guard() -> bool:
+def install_child_guard(expected_parent_pid: Optional[int] = None) -> bool:
     """Arm the zero-cost parent-death trap inside a launcher-managed child.
 
     Children are already covered by the launcher's ordered shutdown, by the
     Windows Job Object and by the process-group sweep. This adds the one
     mechanism that costs nothing and needs no thread, so a launcher that dies
     without running any cleanup still cannot leave servers behind on Linux.
+
+    ``expected_parent_pid`` is the launcher's pid as recorded *before* the fork.
+    ``PR_SET_PDEATHSIG`` only reports deaths that happen after it is armed, so a
+    launcher that dies in the window between forking us and this call would arm
+    the trap against our adopter — which never dies — and the server would run
+    on holding its port. Comparing against a pid captured before the fork closes
+    the whole window; re-reading it here would not, because both reads would
+    already return the adopter.
     """
     if not _guard_enabled() or not sys.platform.startswith("linux"):
         return False
@@ -466,6 +512,17 @@ def install_child_guard() -> bool:
             ctypes.c_ulong,
         ]
         prctl.restype = ctypes.c_int
-        return prctl(_PR_SET_PDEATHSIG, int(signal.SIGTERM), 0, 0, 0) == 0
+        if prctl(_PR_SET_PDEATHSIG, int(signal.SIGTERM), 0, 0, 0) != 0:
+            return False
     except Exception:
         return False
+
+    # Assumes our parent *is* the launcher, which holds for the "fork" and
+    # "spawn" start methods. Under "forkserver" the parent is the fork server,
+    # so this would fire for every child; main_server forces "fork" on POSIX and
+    # the project pins Python 3.11, where "fork" is also the Linux default.
+    if expected_parent_pid and _safe_getppid() != int(expected_parent_pid):
+        # The launcher died before we armed. Deliver the signal the trap would
+        # have delivered, so this takes the same path a real late death takes.
+        signal.raise_signal(signal.SIGTERM)
+    return True

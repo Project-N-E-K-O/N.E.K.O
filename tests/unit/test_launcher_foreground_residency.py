@@ -18,6 +18,7 @@ import signal
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 from pathlib import Path
 
@@ -285,7 +286,9 @@ _GUARDED_CHILD = textwrap.dedent(
             handle.write(mechanism)
         os._exit(0)
 
-    guard = parent_guard.install(_on_death, poll_interval=0.1, watch_stdin={watch_stdin})
+    guard = parent_guard.install(
+        _on_death, poll_interval={poll_interval}, watch_stdin={watch_stdin}
+    )
     with open({armed!r}, "w", encoding="utf-8") as handle:
         handle.write(",".join(guard.mechanisms))
     while True:
@@ -310,7 +313,8 @@ def test_guarded_process_dies_when_its_real_parent_dies(tmp_path):
     marker = tmp_path / "fired"
     armed = tmp_path / "armed"
     child_source = _GUARDED_CHILD.format(
-        root=str(PROJECT_ROOT), marker=str(marker), armed=str(armed), watch_stdin="False"
+        root=str(PROJECT_ROOT), marker=str(marker), armed=str(armed),
+        watch_stdin="False", poll_interval="0.1",
     )
     child_file = tmp_path / "guarded_child.py"
     child_file.write_text(child_source, encoding="utf-8")
@@ -342,64 +346,145 @@ def test_guarded_process_dies_when_its_real_parent_dies(tmp_path):
     assert middle.returncode == 0, middle.stderr
     child_pid = int(middle.stdout.strip())
 
-    assert _wait_for(armed), "guard never reported which mechanisms it armed"
-    armed_mechanisms = armed.read_text(encoding="utf-8").split(",")
-    assert armed_mechanisms != [""], "no parent-death mechanism could be armed"
-    if sys.platform.startswith("linux"):
-        # The kernel trap is the point on Linux. If it silently stops being armed
-        # the guarantee quietly degrades to a poll, and every assertion below
-        # still passes because the poll covers for it.
-        assert "pdeathsig" in armed_mechanisms, armed_mechanisms
+    # Everything below runs under try/finally: the child is an orphan in an
+    # infinite sleep, so any assertion that fires before the liveness check at
+    # the end would otherwise leave it running on the machine until the box (or
+    # the CI runner) goes away.
+    try:
+        assert _wait_for(armed), "guard never reported which mechanisms it armed"
+        armed_mechanisms = armed.read_text(encoding="utf-8").split(",")
+        assert armed_mechanisms != [""], "no parent-death mechanism could be armed"
+        if sys.platform.startswith("linux"):
+            # The kernel trap is the point on Linux. If it silently stops being
+            # armed the guarantee quietly degrades to a poll, and every assertion
+            # below still passes because the poll covers for it.
+            assert "pdeathsig" in armed_mechanisms, armed_mechanisms
 
-    # Not merely "did it exit" — it must have run its *callback*. A mechanism
-    # that kills the process without running cleanup (a parent-death signal
-    # armed with no handler installed for it) satisfies "exited" and still
-    # leaves every grandchild behind.
-    assert _wait_for(marker), (
-        f"guard armed {armed_mechanisms} but its callback never ran "
-        "(the process may have died without cleaning up)"
-    )
-    assert marker.read_text(encoding="utf-8") in ("ppid_poll", "pdeathsig", "pdeathsig_late_install")
+        # Not merely "did it exit" — it must have run its *callback*. A mechanism
+        # that kills the process without running cleanup (a parent-death signal
+        # armed with no handler installed for it) satisfies "exited" and still
+        # leaves every grandchild behind.
+        assert _wait_for(marker), (
+            f"guard armed {armed_mechanisms} but its callback never ran "
+            "(the process may have died without cleaning up)"
+        )
+        assert marker.read_text(encoding="utf-8") in (
+            "ppid_poll", "pdeathsig", "pdeathsig_late_install",
+        )
 
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:  # pragma: no cover - only on failure
+            pytest.fail("guarded process did not exit after its parent died")
+    finally:
         try:
-            os.kill(child_pid, 0)
-        except ProcessLookupError:
-            break
-        time.sleep(0.05)
-    else:  # pragma: no cover - only on failure
-        os.kill(child_pid, signal.SIGKILL)
-        pytest.fail("guarded process did not exit after its parent died")
+            os.kill(child_pid, signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            pass
 
 
 @pytest.mark.unit
 @pytest.mark.skipif(os.name != "posix", reason="stdin-pipe EOF guard is POSIX-only")
 def test_guarded_process_dies_when_the_owner_pipe_closes(tmp_path):
-    """The instant path: the owner's write end of our stdin goes away."""
+    """The instant path: the owner dies and its write end of our stdin goes away.
+
+    The owner must really exit here rather than just close the pipe. EOF alone
+    does not mean the owner died — a sibling can hold the write end, and an owner
+    is free to close our stdin and keep running — so the guard confirms the death
+    before firing. Closing the pipe under a live owner is covered by
+    ``test_stdin_eof_without_owner_death_does_not_fire``.
+    """
     marker = tmp_path / "fired"
     armed = tmp_path / "armed"
     child_file = tmp_path / "guarded_child_stdin.py"
     child_file.write_text(
         _GUARDED_CHILD.format(
-            root=str(PROJECT_ROOT), marker=str(marker), armed=str(armed), watch_stdin="True"
+            root=str(PROJECT_ROOT), marker=str(marker), armed=str(armed),
+            # Long enough that the owner poll cannot be what fires: this test is
+            # about the stdin path specifically.
+            watch_stdin="True", poll_interval="600",
         ),
         encoding="utf-8",
     )
 
+    # The middle process owns the child and holds the write end of its stdin.
+    # Its exit closes that end and re-parents the child in one step, which is
+    # what a real owner's death looks like.
+    middle_source = textwrap.dedent(
+        f"""
+        import os, subprocess, sys, time
+        proc = subprocess.Popen(
+            [sys.executable, {str(child_file)!r}],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and not os.path.exists({str(armed)!r}):
+            time.sleep(0.05)
+        print(proc.pid, flush=True)
+        """
+    )
+    middle = subprocess.run(
+        [sys.executable, "-c", middle_source],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert middle.returncode == 0, middle.stderr
+    child_pid = int(middle.stdout.strip())
+
+    try:
+        assert _wait_for(armed)
+        assert "stdin_eof" in armed.read_text(encoding="utf-8")
+
+        assert _wait_for(marker, timeout=10), "EOF on the owner pipe did not trigger the guard"
+        assert marker.read_text(encoding="utf-8") == "stdin_eof"
+    finally:
+        try:
+            os.kill(child_pid, signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            pass
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name != "posix", reason="stdin pipe guard is POSIX-only")
+def test_stdin_eof_without_owner_death_does_not_fire(tmp_path):
+    """A closed stdin while the owner is alive must not be read as its death.
+
+    Whoever holds the write end is not necessarily the owner, and an owner may
+    close our stdin for its own reasons. Acting on that would release the
+    single-instance lock and sweep our process group out from under a healthy
+    owner, so the guard confirms the death first and stays quiet when it cannot.
+    """
+    marker = tmp_path / "fired"
+    armed = tmp_path / "armed"
+    child_file = tmp_path / "guarded_child_live_owner.py"
+    child_file.write_text(
+        _GUARDED_CHILD.format(
+            root=str(PROJECT_ROOT), marker=str(marker), armed=str(armed),
+            watch_stdin="True", poll_interval="600",
+        ),
+        encoding="utf-8",
+    )
+
+    # pytest stays alive as the owner and simply closes the pipe.
     proc = subprocess.Popen([sys.executable, str(child_file)], stdin=subprocess.PIPE)
     try:
         assert _wait_for(armed)
         assert "stdin_eof" in armed.read_text(encoding="utf-8")
 
         proc.stdin.close()
-        assert _wait_for(marker, timeout=10), "EOF on the owner pipe did not trigger the guard"
-        assert marker.read_text(encoding="utf-8") == "stdin_eof"
-        proc.wait(timeout=10)
+        assert not _wait_for(marker, timeout=3), (
+            "guard fired on stdin EOF while its owner was still alive"
+        )
+        assert proc.poll() is None, "guarded process exited while its owner was alive"
     finally:
-        if proc.poll() is None:  # pragma: no cover - only on failure
-            proc.kill()
-            proc.wait(timeout=10)
+        proc.kill()
+        proc.wait(timeout=10)
 
 
 @pytest.mark.unit
@@ -556,6 +641,46 @@ def test_owner_death_cleans_up_then_exits(monkeypatch):
         "release",
         ("exit", 0),
     ]
+
+
+@pytest.mark.unit
+def test_owner_death_drives_the_merged_ordered_shutdown_first(monkeypatch):
+    """Merged mode holds the servers in-process, so cleanup_servers sees nothing.
+
+    Without the hand-off, owner death would run straight to os._exit(0) and cut
+    off Main's release/cloudsave sequence — the very work the ordered shutdown
+    exists to complete.
+    """
+    from launcher_core import runtime as launcher
+
+    order = []
+    requested = []
+    monkeypatch.setattr(launcher, "_mark_expected_launcher_shutdown", lambda: None)
+    monkeypatch.setattr(launcher, "emit_frontend_event", lambda *_a, **_k: None)
+    monkeypatch.setattr(launcher, "cleanup_servers", lambda: order.append("cleanup"))
+    monkeypatch.setattr(launcher.single_instance, "release_single_instance",
+                        lambda: order.append("release"))
+    monkeypatch.setattr(launcher, "_own_process_group_id", lambda: None)
+    monkeypatch.setattr(launcher.os, "_exit", lambda code: order.append(("exit", code)))
+
+    def _requester(*, reason):
+        requested.append(reason)
+        # Stand in for the async coordinator finishing the ordered shutdown.
+        launcher._merged_shutdown_complete.set()
+
+    monkeypatch.setattr(launcher, "_merged_shutdown_request", _requester)
+    monkeypatch.setattr(launcher, "_merged_shutdown_complete", threading.Event())
+
+    launcher._handle_owner_death("stdin_eof")
+
+    # The teardown runs on its own thread so the merged loop (which lives on the
+    # main thread) can actually make the progress we are waiting for.
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and ("exit", 0) not in order:
+        time.sleep(0.02)
+
+    assert requested == ["owner_death:stdin_eof"], requested
+    assert order == ["cleanup", "release", ("exit", 0)], order
 
 
 @pytest.mark.unit

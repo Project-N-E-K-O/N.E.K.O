@@ -132,6 +132,17 @@ SHUTDOWN_MODULE_ORDER = (
 MERGED_SERVER_READY_TIMEOUT = 30.0
 MERGED_SERVER_READY_POLL_INTERVAL = 0.25
 MERGED_SERVER_SHUTDOWN_ORDER = ("Main", "Memory", "Agent")
+
+#: Set by ``run_merged_servers`` while the in-process servers are running, so an
+#: owner-death teardown can drive the ordered shutdown instead of hard-exiting
+#: past it. ``None`` in multi-process mode, where ``cleanup_servers`` covers it.
+_merged_shutdown_request = None
+_merged_shutdown_complete = threading.Event()
+
+#: Upper bound on how long owner death waits for the merged ordered shutdown.
+#: Matches the watchdog inside ``_begin_merged_shutdown``: once that fires the
+#: process is going down regardless, so waiting longer buys nothing.
+OWNER_DEATH_MERGED_SHUTDOWN_BUDGET = 45.0
 MERGED_SERVER_SHUTDOWN_TIMEOUTS = {
     "Main": 20.0,
     "Memory": 12.0,
@@ -417,7 +428,15 @@ def _spawn_restarted_launcher() -> None:
     relaunch_env.pop("_NEKO_MAIN_SERVER_INITIALIZED", None)
     # We are about to exit; the replacement's parent-death guard must track the
     # process that owns *both* of us rather than this soon-to-be-dead launcher.
-    owner_pid = os.getppid() if hasattr(os, "getppid") else 0
+    # The owner is *propagated* across generations rather than recomputed from
+    # our direct parent: from the second handoff onwards our own parent is the
+    # previous launcher, which has already exited, so os.getppid() would name
+    # init (or a stale pid) and the next generation would watch nothing. The
+    # guard already resolved the real owner once, at install time.
+    guard = _parent_death_guard
+    owner_pid = guard.parent_pid if guard is not None else 0
+    if owner_pid <= 1:
+        owner_pid = os.getppid() if hasattr(os, "getppid") else 0
     if owner_pid and owner_pid > 1:
         relaunch_env[parent_guard.PARENT_PID_ENV] = str(owner_pid)
     else:
@@ -630,11 +649,16 @@ def _apply_child_process_signal_policy() -> None:
     except Exception:
         pass
 
-    if os.name == "posix":
-        try:
-            signal.signal(signal.SIGINT, signal.SIG_IGN)
-        except Exception as e:
-            print(f"[Launcher] Warning: failed to shield child from SIGINT: {e}", flush=True)
+    # Every platform, not just POSIX. On Windows a source (non-frozen) run is
+    # multi-process and the children share the launcher's console, so Ctrl+C is
+    # delivered to all four processes; combined with the uvicorn signal handlers
+    # this function disables, each child would raise KeyboardInterrupt on its own
+    # instead of letting the launcher drive the one ordered shutdown. The
+    # try/except already covers a platform that refuses the disposition.
+    try:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+    except Exception as e:
+        print(f"[Launcher] Warning: failed to shield child from SIGINT: {e}", flush=True)
 
     for name in ("SIGTERM", "SIGBREAK"):
         handler_signal = getattr(signal, name, None)
@@ -645,7 +669,12 @@ def _apply_child_process_signal_policy() -> None:
         except Exception as e:
             print(f"[Launcher] Warning: failed to install child {name} handler: {e}", flush=True)
 
-    parent_guard.install_child_guard()
+    # multiprocessing records the launcher's pid before forking us, so this
+    # survives the case where the launcher dies before we get here.
+    _spawning_parent = multiprocessing.parent_process()
+    parent_guard.install_child_guard(
+        _spawning_parent.pid if _spawning_parent is not None else None
+    )
 
 
 def _own_process_group_id() -> int | None:
@@ -676,10 +705,21 @@ def _sweep_own_process_group(sig: int) -> bool:
         return False
     previous = None
     try:
-        # The group signal comes back to us as well; ignore it for the duration
-        # so the sweep cannot terminate the process that is running it.
+        # The group signal comes back to us as well, and it must not terminate
+        # the process that is running the sweep — that would stop the escalation
+        # at its first step and strand exactly the grandchildren it exists to
+        # reap.
+        #
+        # signal.signal() only works on the main thread, and this runs on a
+        # daemon thread for every mechanism except Linux pdeathsig. Off the main
+        # thread the disposition therefore cannot be changed here at all; what
+        # protects us instead is _owner_death_in_progress, which makes
+        # _handle_termination_signal return instead of exiting. Setting the
+        # disposition is still worth doing when we *are* on the main thread,
+        # because it also covers the startup window before that handler exists.
         try:
-            previous = signal.signal(sig, signal.SIG_IGN)
+            if threading.current_thread() is threading.main_thread():
+                previous = signal.signal(sig, signal.SIG_IGN)
         except (ValueError, OSError):
             previous = None
         os.killpg(pgid, sig)
@@ -1116,6 +1156,15 @@ def run_merged_servers() -> int:
     if hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, _on_exit_signal)
 
+    # Owner death has to reach the same ordered shutdown. In merged mode the
+    # three servers live in *this* process, so SERVERS carries no child handles
+    # and cleanup_servers() has nothing to act on — without this hand-off,
+    # _handle_owner_death would run straight to os._exit(0) and take Main's
+    # release/cloudsave sequence with it.
+    global _merged_shutdown_request
+    _merged_shutdown_complete.clear()
+    _merged_shutdown_request = _begin_merged_shutdown
+
     async def _serve_all() -> None:
         # 并发启动所有 uvicorn.Server
         tasks = {
@@ -1188,6 +1237,10 @@ def run_merged_servers() -> int:
         signal.signal(signal.SIGTERM, _prev_sigterm)
         if hasattr(signal, "SIGBREAK") and _prev_sigbreak is not None:
             signal.signal(signal.SIGBREAK, _prev_sigbreak)
+        # The servers are down; anyone waiting on the ordered shutdown (an
+        # owner-death teardown) may proceed.
+        _merged_shutdown_request = None
+        _merged_shutdown_complete.set()
 
     return 0
 
@@ -2085,6 +2138,13 @@ def _safe_getppid_for_owner_check() -> int:
 
 def _handle_termination_signal(signum, _frame):
     """Handle termination signals, doing our best to ensure cleanup logic runs."""
+    # 属主之死的清扫正在进行：这一发 TERM 就是我们自己那次组级清扫打回本进程的。
+    # 此刻退出会把「TERM → 宽限 → 组级 KILL」停在第一步，正好放走它要收割的那些
+    # 孙子进程。_handle_owner_death 必定以 os._exit 收尾，所以在它跑完之前忽略
+    # 停止请求是正确语义，而不是把信号吞了。
+    if _owner_death_in_progress:
+        return
+
     # 兜底：属主已经死了，但送达的是普通 SIGTERM 而不是 guard 的专用信号
     # （比如属主用组级 TERM 清扫）。属主之死需要组级清扫，而这条普通关闭路径
     # 没有——所以改走 _handle_owner_death，它不会返回。
@@ -2108,6 +2168,13 @@ def _handle_termination_signal(signum, _frame):
 _parent_death_guard = None
 _single_instance_handle = None
 
+#: Set for the duration of _handle_owner_death. The group sweep it performs
+#: signals this process too, and on every mechanism except Linux pdeathsig that
+#: sweep runs on a daemon thread, where signal.signal() cannot change the
+#: disposition. This flag is what keeps the returning signal from cutting the
+#: escalation short.
+_owner_death_in_progress = False
+
 #: Bounded grace between the group TERM and the group KILL on owner death.
 OWNER_DEATH_GROUP_GRACE_SECONDS = 0.5
 
@@ -2120,12 +2187,51 @@ def _handle_owner_death(mechanism: str) -> None:
     process group, no externally owned Job holder, and no persistent lease to
     replay after a crash, because there is never anything left to recover.
     """
+    global _owner_death_in_progress
+
+    _owner_death_in_progress = True
     _mark_expected_launcher_shutdown()
     print(f"[Launcher] Owner process is gone ({mechanism}); shutting down runtime", flush=True)
     try:
         emit_frontend_event("owner_exit", {"mechanism": mechanism})
     except Exception:
+        # 通知前端只是尽力而为：属主已死，stdout 管道很可能已断。任何 IPC
+        # 失败都不能挡住下面的拆除流程与最终的 os._exit(0)。
         pass
+
+    # 合并模式（打包默认）下三个 server 就在本进程里，SERVERS 里没有任何子进程
+    # 句柄，cleanup_servers() 无事可做。必须先驱动有序关停，让 Main 在 Memory
+    # 还活着的时候跑完 release/cloudsave，否则下面几行会直接 os._exit 把它连根
+    # 切掉。收尾放到独立线程：Linux 的 pdeathsig 回调跑在主线程信号处理器里，
+    # 而 asyncio 事件循环也在主线程——就地等待会让我们等的那个关停永远推进不了。
+    requester = _merged_shutdown_request
+    if requester is not None:
+        try:
+            requester(reason=f"owner_death:{mechanism}")
+        except Exception as exc:
+            print(f"[Launcher] Warning: merged shutdown request failed: {exc}", flush=True)
+        threading.Thread(
+            target=_finish_owner_death,
+            args=(mechanism, True),
+            name="neko-owner-death-finish",
+            daemon=True,
+        ).start()
+        return
+
+    _finish_owner_death(mechanism, False)
+
+
+def _finish_owner_death(mechanism: str, wait_for_merged: bool) -> None:
+    """Second half of owner-death teardown: cleanup, release, group sweep, exit."""
+    if wait_for_merged:
+        # 有界等待：超时后照常收尾。_begin_merged_shutdown 自带的看门狗也会在
+        # 同样的预算后 os._exit(1)，两道保险都不会让这里无限期挂住。
+        if not _merged_shutdown_complete.wait(OWNER_DEATH_MERGED_SHUTDOWN_BUDGET):
+            print(
+                "[Launcher] Warning: merged shutdown did not finish within "
+                f"{OWNER_DEATH_MERGED_SHUTDOWN_BUDGET}s; continuing owner-death teardown",
+                flush=True,
+            )
 
     try:
         cleanup_servers()
@@ -2135,12 +2241,15 @@ def _handle_owner_death(mechanism: str) -> None:
     try:
         single_instance.release_single_instance()
     except Exception:
+        # 同样是尽力而为：进程退出时内核会关闭 fd 并释放文件锁，失败也不能
+        # 中断拆除路径。
         pass
 
     try:
         sys.stdout.flush()
         sys.stderr.flush()
     except Exception:
+        # 属主关掉管道后 flush 抛 BrokenPipeError 是常态；退出路径不能因此中断。
         pass
 
     # 最后一步：收掉 cleanup 未记录的孙子进程（插件、MCP、Chromium…）。这是
@@ -2153,6 +2262,7 @@ def _handle_owner_death(mechanism: str) -> None:
         try:
             os.killpg(os.getpid(), signal.SIGKILL)
         except OSError:
+            # ESRCH/EPERM 意味着没有可收的组成员，直接落到 os._exit(0)。
             pass
     os._exit(0)
 

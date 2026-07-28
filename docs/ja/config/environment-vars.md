@@ -31,7 +31,7 @@ launcher は foreground プロセスです。daemon 化して親から離脱す�
 | `NEKO_OWNER_RELAUNCH` | 未設定 | `1` は「所有者が自分で runtime を再起動する」という宣言です。storage 移行の再起動は自分で後継を spawn せず、クリーンに終了して再起動を待ちます。 |
 | `NEKO_PARENT_DEATH_GUARD` | `1` | `0` でガードを完全に無効化します。対象を再 parent 化する debugger / profiler 用のみ。無効化した runtime は所有者より長生きし得ます。 |
 | `NEKO_LAUNCHER_RESTART_HANDOFF` | 未設定 | 前世代の launcher が後継に設定します。後継は「別インスタンスが動作中」と結論せず、単一インスタンスロックの解放を待ちます。手動設定は想定していません。 |
-| `NEKO_RUNTIME_STATE_DIR` | ユーザーごとの runtime ディレクトリ | `launcher.lock` と `launcher.json` の場所を上書きします。既定は Windows `%LOCALAPPDATA%\N.E.K.O\runtime`、macOS `~/Library/Application Support/N.E.K.O/runtime`、Linux `$XDG_RUNTIME_DIR/neko`。 |
+| `NEKO_RUNTIME_STATE_DIR` | ユーザーごとの runtime ディレクトリ | `launcher.lock` と `launcher.json` の場所を上書きします。既定は Windows `%LOCALAPPDATA%\N.E.K.O\runtime`、macOS `~/Library/Application Support/N.E.K.O/runtime`、Linux `$XDG_RUNTIME_DIR/neko`。上書き値はそのまま使われ、ユーザーごとの接尾辞は付かず権限も検証されないため、必ず単一ユーザー専用のディレクトリを指す必要があります。共有ディレクトリを指すと単一インスタンスの証明が壊れます: Windows では 2 ユーザーが同一ロックを奪い合い、POSIX では 2 人目が 1 人目のロックファイルを開けず、一意性の証明なしで起動します。 |
 
 ## ランタイム構成
 
