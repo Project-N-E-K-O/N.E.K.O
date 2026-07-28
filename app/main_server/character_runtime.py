@@ -23,7 +23,7 @@ from typing import Any, Optional
 
 from config import MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS
 from main_logic import core, cross_server
-from main_logic.agent_event_bus import notify_analyze_ack, register_ws_broadcaster
+from main_logic.agent_event_bus import notify_analyze_ack
 from utils.config_manager import get_reserved
 
 from ._shared import runtime
@@ -282,12 +282,6 @@ async def _broadcast_to_all_connected(event_payload: dict) -> int:
         *(_send_one(n, ws) for n, ws in targets), return_exceptions=False
     )
     return sum(1 for r in results if r is True)
-
-
-# Wire the app-owned WebSocket fan-out into the lower-layer event-bus seam.
-# Consumers such as quota dropper and card-drop routes can then broadcast
-# without importing ``app.main_server`` and inverting the module layering.
-register_ws_broadcaster(_broadcast_to_all_connected)
 
 
 async def _handle_agent_event(event: dict):
