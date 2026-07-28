@@ -1315,11 +1315,16 @@ def test_shared_settings_writes_carry_explicit_change_metadata():
     listener_block = settings_source.split(
         "window.addEventListener('storage', function (event) {", 1
     )[1].split("});", 1)[0]
-    # Authority requires explicit intent + freshness; absent metadata falls back
-    # to today's value-difference behaviour.
+    # Authority requires explicit intent + freshness + outranking this window's
+    # own explicit choice; absent metadata falls back to today's
+    # value-difference behaviour. The fourth term is load-bearing:
+    # _lastAppliedSharedWriteId only records writes RECEIVED here, so freshness
+    # alone cannot order this window's own pending toggle against a concurrent
+    # one from another window, and the two swap values permanently.
     assert (
         "const asrChangedByOtherWindow = meta\n"
-        "                ? (asrValueDiffers && asrMarkedExplicit && asrWriteIsNewer)\n"
+        "                ? (asrValueDiffers && asrMarkedExplicit && asrWriteIsNewer\n"
+        "                    && asrOutranksLocalChoice)\n"
         "                : asrValueDiffers;" in listener_block
     )
     assert "meta.changedKeys.indexOf('independentAsrEnabled') !== -1" in listener_block
@@ -2880,7 +2885,8 @@ def test_shared_write_metadata_carries_per_key_asr_authority():
     # to the per-key latch breaks the unhydrated-writer scenario already pinned
     # by test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness.
     assert (
-        "(!asrWriteIsNewer || (!meta.asrAuthoritative && S.settingsHydrated === true))"
+        "(!asrWriteIsNewer || !asrOutranksLocalChoice\n"
+        "                    || (!meta.asrAuthoritative && S.settingsHydrated === true))"
         in settings_source
     )
 
@@ -2974,3 +2980,53 @@ def test_status_fanout_comment_states_the_real_delivery_contract():
     websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
     assert "fans out to every window" not in websocket_source
     assert "_send_to_voice_owner" in websocket_source
+
+
+def test_concurrent_asr_toggles_are_totally_ordered_not_swapped():
+    # Codex P2. The intent tie-break added last round did not fix the real
+    # failure: _lastAppliedSharedWriteId only records writes RECEIVED here, so a
+    # window never orders its OWN pending toggle against a concurrent one from
+    # another window. Two windows holding divergent values that both write
+    # before observing each other therefore each adopt the other and stay
+    # swapped -- and that needs no millisecond tie at all, a strictly older
+    # foreign write still wins. Ordering must be against this window's own last
+    # explicit decision, with a window-unique second key so both sides pick the
+    # SAME winner.
+    settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
+
+    # A window-unique writer id, minted per document load and stamped on writes.
+    assert "const _SHARED_WRITER_ID" in settings_source
+    assert "writerId: _SHARED_WRITER_ID," in settings_source
+    # NOT sessionStorage: the browser copies it into a duplicated tab, which
+    # would destroy the uniqueness the whole scheme rests on. Match the ACCESS
+    # form -- the comment above deliberately names it.
+    assert "sessionStorage." not in settings_source
+
+    # Previous-build snapshots carry no writerId; it must fail low so an
+    # untagged concurrent write cannot outrank this window's own choice.
+    read_fn = settings_source.split("function _readSharedWriteMeta(", 1)[1].split(
+        "\n    }", 1
+    )[0]
+    assert "typeof meta.writerId === 'string' ? meta.writerId : ''" in read_fn
+
+    # The comparison is (writeId, writerId) against the local decision.
+    outranks = settings_source.split("function _asrWriteOutranksLocalChoice(", 1)[
+        1
+    ].split("\n    }", 1)[0]
+    assert "meta.writeId > _lastAsrDecision.writeId" in outranks
+    assert "(meta.writerId || '') > _lastAsrDecision.writerId" in outranks
+
+    # A window's OWN explicit write must be recorded, or it has nothing to
+    # compare a concurrent foreign toggle against.
+    write_fn = settings_source.split("function _writeSharedSettings(", 1)[1].split(
+        "\n    }", 1
+    )[0]
+    assert "_noteAsrDecision(ownMeta.writeId, ownMeta.writerId," in write_fn
+
+    # Refusing authority alone is not enough: applySharedRuntimeSettings copies
+    # independentAsrEnabled unconditionally, so the losing write must also be
+    # dropped from the apply set.
+    listener_block = settings_source.split(
+        "window.addEventListener('storage', function (event) {", 1
+    )[1].split("});", 1)[0]
+    assert "!asrOutranksLocalChoice" in listener_block.split("asrValueIsStale", 1)[1]

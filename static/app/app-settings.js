@@ -44,6 +44,42 @@
     const _SHARED_WRITE_META_KEY = '_sharedWriteMeta';
     let _lastSharedWriteId = 0;
     let _lastAppliedSharedWriteId = 0;
+    // Window-unique second sort key for concurrent shared-settings writes. Per
+    // document load; stability across reloads is not needed because every
+    // comparison reads the id off the write itself, and sessionStorage would be
+    // WORSE -- the browser copies it into a duplicated tab, destroying the
+    // uniqueness this depends on.
+    const _SHARED_WRITER_ID = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
+    // (writeId, writerId, value) of the newest EXPLICIT independentAsrEnabled
+    // write this window knows about, INCLUDING ITS OWN. _lastAppliedSharedWriteId
+    // records only writes RECEIVED here, so it cannot order this window's own
+    // pending toggle against a concurrent one from another window: without this,
+    // two windows holding divergent values that both write before observing each
+    // other each adopt the other and stay swapped forever. That needs no
+    // millisecond tie at all -- a strictly older foreign write still wins.
+    let _lastAsrDecision = null;
+    function _noteAsrDecision(writeId, writerId, value) {
+        // A write that merely re-asserts the value already decided is not a new
+        // choice: _dirtySettingsKeys is monotone, so every later save from a
+        // window that once toggled declares the key explicit, and treating those
+        // as fresh intent would shield this window from a genuinely newer toggle.
+        if (_lastAsrDecision && _lastAsrDecision.value === value) return;
+        if (_lastAsrDecision
+            && !(writeId > _lastAsrDecision.writeId
+                || (writeId === _lastAsrDecision.writeId && writerId > _lastAsrDecision.writerId))) {
+            return;
+        }
+        _lastAsrDecision = { writeId: writeId, writerId: writerId || '', value: value };
+    }
+    function _asrWriteOutranksLocalChoice(meta) {
+        if (!_lastAsrDecision) return true;
+        if (meta.writeId > _lastAsrDecision.writeId) return true;
+        if (meta.writeId < _lastAsrDecision.writeId) return false;
+        // Equal ids are unordered in time; break on the window-unique key so
+        // both windows pick the SAME winner. An absent writerId (previous
+        // build) reads as '' and loses, keeping this window's own choice.
+        return (meta.writerId || '') > _lastAsrDecision.writerId;
+    }
     // Bounded gate for the boot settings GET: settings POST bodies are built
     // at send time AFTER awaiting this gate, so once the GET settled the merge
     // has already run and fields the user never touched carry server truth
@@ -259,10 +295,15 @@
         const payload = Object.assign({}, snapshot);
         payload[_SHARED_WRITE_META_KEY] = {
             writeId: _nextSharedWriteId(),
+            writerId: _SHARED_WRITER_ID,
             changedKeys: explicitKeys || [],
             hydrated: S.settingsHydrated === true,
             asrAuthoritative: S.independentAsrAuthoritative === true
         };
+        const ownMeta = payload[_SHARED_WRITE_META_KEY];
+        if (ownMeta.changedKeys.indexOf('independentAsrEnabled') !== -1) {
+            _noteAsrDecision(ownMeta.writeId, ownMeta.writerId, snapshot.independentAsrEnabled);
+        }
         localStorage.setItem('project_neko_settings', JSON.stringify(payload));
     }
 
@@ -277,6 +318,10 @@
         if (typeof meta.writeId !== 'number' || !isFinite(meta.writeId)) return null;
         return {
             writeId: meta.writeId,
+            // Absent on snapshots written by the previous build: '' sorts below
+            // every live writer id, so an untagged concurrent write never
+            // outranks this window's own explicit choice.
+            writerId: typeof meta.writerId === 'string' ? meta.writerId : '',
             changedKeys: Array.isArray(meta.changedKeys) ? meta.changedKeys : [],
             hydrated: meta.hydrated === true,
             // Absent on snapshots written by the previous build: default false
@@ -775,6 +820,9 @@
                 if (bootMeta && bootMeta.writeId > _lastAppliedSharedWriteId) {
                     _lastAppliedSharedWriteId = bootMeta.writeId;
                 }
+                if (bootMeta && bootMeta.changedKeys.indexOf('independentAsrEnabled') !== -1) {
+                    _noteAsrDecision(bootMeta.writeId, bootMeta.writerId, settings.independentAsrEnabled);
+                }
 
                 // 迁移逻辑：检测旧版设置并迁移到新字段
                 // 如果旧版 proactiveChatEnabled=true 但新字段未定义，则迁移
@@ -1169,8 +1217,10 @@
             // Metadata-less payloads come from a window still running the
             // previous build: keep the legacy value-difference behaviour so a
             // genuine toggle from such a window is not silently dropped.
+            const asrOutranksLocalChoice = !meta || _asrWriteOutranksLocalChoice(meta);
             const asrChangedByOtherWindow = meta
-                ? (asrValueDiffers && asrMarkedExplicit && asrWriteIsNewer)
+                ? (asrValueDiffers && asrMarkedExplicit && asrWriteIsNewer
+                    && asrOutranksLocalChoice)
                 : asrValueDiffers;
             // Drop the key from the apply set when the snapshot's ASR value
             // carries neither user intent nor trustworthy server truth: an
@@ -1181,7 +1231,8 @@
             // and every other shared key keeps syncing untouched.
             const asrValueIsStale = !!meta
                 && !asrChangedByOtherWindow
-                && (!asrWriteIsNewer || (!meta.asrAuthoritative && S.settingsHydrated === true));
+                && (!asrWriteIsNewer || !asrOutranksLocalChoice
+                    || (!meta.asrAuthoritative && S.settingsHydrated === true));
             if (meta && meta.writeId > _lastAppliedSharedWriteId) {
                 _lastAppliedSharedWriteId = meta.writeId;
             }
@@ -1236,6 +1287,9 @@
                 S.settingsHydrated = true;
                 _dirtySettingsKeys.add('independentAsrEnabled');
                 S.independentAsrAuthoritative = true;
+                if (meta) {
+                    _noteAsrDecision(meta.writeId, meta.writerId, settings.independentAsrEnabled);
+                }
             }
             stopVisionAfterPrivacyEnabled();
             if (changed && typeof window.scheduleProactiveChat === 'function') {
