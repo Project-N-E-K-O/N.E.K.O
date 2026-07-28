@@ -2691,13 +2691,11 @@ def main():
     try:
         port_result = apply_port_strategy()
         if port_result == "attach":
-            # 已有 N.E.K.O 后端在运行，无需再次拉起。该后端早于单实例锁存在
-            # （我们持有锁），把它记进记录里，属主就不必再靠端口探测去认它。
-            publish_single_instance_state(
-                state=single_instance.STATE_READY,
-                attached=True,
-                ports=dict(DEFAULT_PORTS),
-            )
+            # 已有 N.E.K.O 后端在运行，无需再次拉起。这里**不**写运行时记录：
+            # 记录的寿命刻意绑定在锁的寿命上，而我们马上就要在 finally 里释放锁
+            # 并删掉记录——写了也是死写入。属主要认的那个既有后端，
+            # apply_port_strategy() 已经通过 port_plan / attach_existing 两条
+            # NEKO_EVENT 把 instance_id 与端口推过去了，那才是它消费的通道。
             return 0
         if not port_result:
             return 1

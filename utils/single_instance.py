@@ -57,6 +57,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import stat
 import sys
 import tempfile
 import threading
@@ -215,6 +216,10 @@ def _ensure_private_dir(directory: Path) -> None:
     try:
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     except FileExistsError:
+        # exist_ok already absorbs "the directory is there", so this only fires
+        # when the path exists as something else — a regular file or a dangling
+        # symlink. Nothing to do here: _open_lock_file is about to fail on it
+        # with ENOTDIR/ENOENT, which is the error worth surfacing.
         pass
     if os.name != "posix":
         # Windows inherits ACLs from %LOCALAPPDATA%, which is already per-user.
@@ -231,7 +236,7 @@ def _ensure_private_dir(directory: Path) -> None:
         )
     # mkdir's mode is masked by umask, and an existing directory keeps whatever
     # mode it already had, so tighten explicitly rather than trusting either.
-    if info.st_mode & 0o077:
+    if stat.S_ISDIR(info.st_mode) and info.st_mode & 0o077:
         try:
             os.chmod(str(directory), 0o700)
         except OSError:

@@ -95,12 +95,12 @@ jobs:
           -q
 
       - name: Report whether a spawned interpreter is the process the spawner sees
-        # utils/single_instance tells lock-less consumers (the Electron shell) to
-        # recognise their own runtime by matching record["parent_pid"] against
-        # their own pid. That only holds if Popen(sys.executable) really starts
-        # the interpreter rather than a shim that re-launches it — and on Windows
-        # the single-instance test caught exactly that mismatch. This records the
-        # answer per platform instead of leaving it to inference.
+        # Measures whether Popen(sys.executable) really starts the interpreter
+        # or a shim that re-launches it. It does not on Windows, which is why
+        # utils/single_instance now tells lock-less consumers (the Electron
+        # shell) to match record["owner_pid"], never record["parent_pid"] — the
+        # latter names the shim there. Keep measuring it: the day a platform
+        # changes, this line says so instead of the contract silently rotting.
         run: >
           uv run python -c
           "import subprocess, sys;
