@@ -810,6 +810,15 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
     }
 
     this.tutorialProtectionTimer = setInterval(() => {
+        if (
+            typeof this.isLive2DPeekActive === 'function'
+            && this.isLive2DPeekActive()
+        ) {
+            if (typeof this._setLive2DPeekControlsSuppressed === 'function') {
+                this._setLive2DPeekControlsSuppressed(true);
+            }
+            return;
+        }
         if (window.isInTutorial === true) {
             if (isYuiGuideLive2DPreparing() || isYuiGuideFloatingToolbarSuppressed()) {
                 hideYuiGuideLive2DPreparingButtonStyles(buttonsContainer);

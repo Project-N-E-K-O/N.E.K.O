@@ -195,12 +195,23 @@ def test_live2d_delayed_toolbar_initialization_preserves_active_peek_suppression
     source = _source(LIVE2D_UI_BUTTONS_PATH)
     delayed_setup = source.split("this.pixi_app.ticker.add(tick);", 1)[1]
     delayed_setup = delayed_setup.split("if (this.tutorialProtectionTimer)", 1)[0]
+    tutorial_protection = source.split(
+        "this.tutorialProtectionTimer = setInterval(() => {", 1
+    )[1]
+    tutorial_protection = tutorial_protection.split("}, 300);", 1)[0]
 
     assert delayed_setup.count("this.isLive2DPeekActive()") >= 2
     assert delayed_setup.count("this._setLive2DPeekControlsSuppressed(true);") >= 2
     assert delayed_setup.index("this.isLive2DPeekActive()") < delayed_setup.index(
         "buttonsContainer.style.display = 'flex';"
     )
+    assert "this.isLive2DPeekActive()" in tutorial_protection
+    assert (
+        "this._setLive2DPeekControlsSuppressed(true);" in tutorial_protection
+    )
+    assert tutorial_protection.index(
+        "this.isLive2DPeekActive()"
+    ) < tutorial_protection.index("if (window.isInTutorial === true)")
 
 
 def test_live2d_widget_mode_edge_peek_normal_snap_caps_renderer_at_web_viewport():

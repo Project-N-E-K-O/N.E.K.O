@@ -20,7 +20,7 @@ function readFunction(relativePath, name) {
         if (depth === 0) {
             const extracted = source.slice(start, index + 1);
             assert.doesNotThrow(
-                () => new Function(`${extracted}\nreturn ${name};`),
+                () => new vm.Script(`${extracted}\nvoid ${name};`),
                 `invalid extracted function ${name}`
             );
             return extracted;
