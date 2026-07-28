@@ -442,7 +442,17 @@ def test_guarded_process_dies_when_the_owner_pipe_closes(tmp_path):
         assert "stdin_eof" in armed.read_text(encoding="utf-8")
 
         assert _wait_for(marker, timeout=10), "EOF on the owner pipe did not trigger the guard"
-        assert marker.read_text(encoding="utf-8") == "stdin_eof"
+        fired = marker.read_text(encoding="utf-8")
+        if sys.platform.startswith("linux"):
+            # pdeathsig is armed here too and the kernel delivers it the instant
+            # the owner exits, so it legitimately beats the stdin watcher's
+            # confirmation step. Either mechanism firing proves residency; which
+            # one wins is a race we must not pin. The stdin path's own contract —
+            # that it does *not* fire without a death — is pinned deterministically
+            # by test_stdin_eof_without_owner_death_does_not_fire.
+            assert fired in ("stdin_eof", "pdeathsig"), fired
+        else:
+            assert fired == "stdin_eof", fired
     finally:
         try:
             os.kill(child_pid, signal.SIGKILL)
