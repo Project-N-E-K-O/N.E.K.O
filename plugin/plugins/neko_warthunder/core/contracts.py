@@ -41,9 +41,22 @@ BATTLE_END_MISSION_STATUSES = (
 )
 
 
+def normalize_mission_status(status: object) -> str:
+    """把 mission_status / 已渲染的战果串归一到可比较的状态词。
+
+    数据层可能给出带空白的值，或 "win, K3/D1" 这类复合串。判"是否终局"和判
+    "胜负"必须用同一套归一化，否则场景机认为没结束、classify 却认得出来。
+    """
+    return str(status or "").strip().lower().split(",", 1)[0].strip()
+
+
+def is_battle_end_status(status: object) -> bool:
+    return normalize_mission_status(status) in BATTLE_END_MISSION_STATUSES
+
+
 def classify_battle_result(status: object) -> str:
     """Normalize a mission status or rendered result into an outcome kind."""
-    normalized = str(status or "").strip().lower().split(",", 1)[0].strip()
+    normalized = normalize_mission_status(status)
     if normalized in VICTORY_MISSION_STATUSES:
         return "victory"
     if normalized in DEFEAT_MISSION_STATUSES:
@@ -136,6 +149,51 @@ EVENT_CATALOG: dict[str, EventSpec] = {
     "spawn":          EventSpec("spawn", CAT_LIFECYCLE, 5, False, -1, SEV_LIFECYCLE, SEV_LIFECYCLE),
     "battle_end":     EventSpec("battle_end", CAT_LIFECYCLE, 6, False, -1, SEV_LIFECYCLE, SEV_LIFECYCLE),
 }
+
+# 每个事件"还算新鲜"的时长上限（秒）。这是事件自身的战术属性，不是投递实现细节：
+# Dispatcher 用它在真实推送前丢弃过期事件，Arbiter 用它避免把注定过期的事件
+# 塞进单槽缓冲、白白挤掉更新鲜的候选。两边必须看同一份表。
+EVENT_MAX_AGE_OVERRIDES_SECONDS: dict[str, float] = {
+    # These cues are useful only while the condition is still tactically fresh.
+    "spawn": 3.0,
+    "enemy_nearby": 3.0,
+    "air_threat_nearby": 3.0,
+    "enemy_on_six": 3.0,
+    "tailing_risk": 3.0,
+    "ground_target_nearby": 4.0,
+    "low_alt_danger": 4.0,
+    "overspeed": 4.0,
+    "high_aoa": 4.0,
+    "over_g": 4.0,
+    "stall_risk": 5.0,
+    "overheat": 6.0,
+    "ground_laser_warning": 4.0,
+    "ground_crew_loss": 6.0,
+    "ground_gunner_disabled": 6.0,
+    "ground_driver_disabled": 6.0,
+    "ground_ammo_empty": 8.0,
+    "ground_ammo_low": 8.0,
+    "player_radio_command": 10.0,
+    # Kill/death/battle-end can tolerate a little more host latency, but still
+    # should not be replayed as old news.
+    "you_killed": 30.0,
+    "you_died": 8.0,
+    "battle_end": 8.0,
+}
+
+
+def event_max_age_seconds(event_id: str, configured: float) -> float:
+    """按事件解析新鲜度上限。configured 为全局配置值（<=0 表示不限制）。"""
+    if configured <= 0:
+        return configured
+    override = EVENT_MAX_AGE_OVERRIDES_SECONDS.get(event_id)
+    if override is None:
+        return configured
+    # 击杀允许比全局窗更久：脱战后合并补播仍然有意义。
+    if event_id == "you_killed":
+        return max(configured, override)
+    return min(configured, override)
+
 
 PREEMPT_ELIGIBLE_IDS = frozenset(
     event_id for event_id, spec in EVENT_CATALOG.items() if spec.preempt

@@ -108,6 +108,7 @@ class RadioCommandDetector(DiscreteDetector):
     """Promote own fixed radio messages into safe player-command events."""
 
     id = "player_radio_command"
+    dead_state_policy = "consume"  # chat feed 整局持久，重置游标会重播旧口令
 
     def __init__(self) -> None:
         self._last_id: int = -1

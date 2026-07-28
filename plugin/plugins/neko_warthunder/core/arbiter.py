@@ -17,6 +17,7 @@ from .contracts import (
     broadcast_category_enabled,
     broadcast_frequency_multiplier,
     category_allowed,
+    event_max_age_seconds,
 )
 from .safety_guard import SafetyGuard
 
@@ -144,15 +145,26 @@ class Arbiter:
                 self._buffer_kill(c, now)
                 chain.append(_rec(c, "buffered", "kill_coalescing"))
 
-        if normal:
-            best = _top(normal)
-            if self._window_best is None or _rank(best) > _rank(self._window_best):
-                self._window_best = best
-            for c in normal:
-                if c is not best:
-                    chain.append(_rec(c, "dropped", "lost_in_window"))
-
         rate_remaining = self.safety.rate_limit_remaining(now)
+
+        if normal:
+            # 单槽窗口只该留还能活到 flush 的候选。全局限流(默认 12s)常常大于事件的
+            # 新鲜度窗(接近类 3s、低空 4s)，注定过期的事件一旦占住这个槽，既发不出去
+            # 又把更新鲜的低优先级候选挤成 lost_in_window——两条都没播。
+            deliverable = []
+            for c in normal:
+                if self._expires_before_flush(c, now, rate_remaining):
+                    chain.append(_rec(c, "dropped", "expired_before_flush"))
+                    continue
+                deliverable.append(c)
+            if deliverable:
+                best = _top(deliverable)
+                if self._window_best is None or _rank(best) > _rank(self._window_best):
+                    self._window_best = best
+                for c in deliverable:
+                    if c is not best:
+                        chain.append(_rec(c, "dropped", "lost_in_window"))
+
         effective_kill_window = _kill_coalesce_window_for(self._kill_window, kill_coalesce_window)
         kill_max_hold_reached = (
             self._kill_window is not None
@@ -216,6 +228,17 @@ class Arbiter:
         if self._window_best is not None:
             chain.append(_rec(self._window_best, "buffered", f"rate_limited({rate_remaining:.1f}s)"))
         return None, chain
+
+    def _expires_before_flush(self, event: BattleEvent, now: float, rate_remaining: float) -> bool:
+        """该候选能否活到最早的 flush 时刻。
+
+        只用于非抢占通道：危急事件走抢占，不进这个单槽窗口，因此不受影响。
+        max_age<=0（关闭新鲜度门控）或 ts<=0（无时间戳）时一律认为可投递。
+        """
+        max_age = event_max_age_seconds(event.event_id, self.safety.config.output_event_max_age_seconds)
+        if max_age <= 0 or event.ts <= 0:
+            return False
+        return (now + max(0.0, rate_remaining)) - event.ts > max_age
 
     def _fire(self, event: BattleEvent, now: float, *, critical: bool) -> None:
         self._last_fired[event.event_id] = (now, event.level)

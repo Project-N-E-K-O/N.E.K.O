@@ -43,6 +43,7 @@ class FreeTextActivityDetector(DiscreteDetector):
     """Surface free-text source activity as dry-run-only safe metadata."""
 
     id = "free_text_activity"
+    dead_state_policy = "consume"  # awards/combat/hud 各源 feed 整局持久，重置游标会重播
 
     def __init__(self) -> None:
         self._last_ids: dict[str, int] = {}

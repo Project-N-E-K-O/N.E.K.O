@@ -17,6 +17,7 @@ _ARMED = "armed"
 _CONFIRMING_ENTER = "confirming_enter"
 _ACTIVE = "active"
 _CONFIRMING_EXIT = "confirming_exit"
+_SPENT = "spent"  # once_per_battle：已报过且已退出，本局不再 re-arm（engine.reset() 复位）
 
 
 class Detector(Protocol):
@@ -53,6 +54,8 @@ class ConditionDetector:
         payload_fn: Callable[[BattleState], dict[str, Any]] | None = None,
         predicate: Callable[[BattleState], bool] | None = None,
         wants_recovery: bool = False,
+        critical_heartbeat_seconds: float = 0.0,
+        once_per_battle: bool = False,
     ) -> None:
         self.id = event_id
         self.groups = groups
@@ -61,9 +64,22 @@ class ConditionDetector:
         self.payload_fn = payload_fn
         self.predicate = predicate
         self.wants_recovery = wants_recovery
+        # 危急持续期心跳：>0 时，critical 在 ACTIVE 期间每隔这么久重发一条 enter。
+        # 存在的原因：Arbiter 的 critical_preempt_cooldown 会把冷却期内的抢占候选整条丢弃，
+        # 而本 FSM 进入 ACTIVE 后不再重发 —— 于是"冷却期内进入的危急"永远不会被播报
+        # （例：over_g 刚播完 2s，失速进入并持续，玩家全程无提示）。
+        # 心跳保证条件仍然为真时才重发，事实与 ts 都是新的；已播报过的同一条会被
+        # Dispatcher 的 repeat-collapse 折叠掉，因此不会变成刷屏。
+        self.critical_heartbeat_seconds = max(0.0, float(critical_heartbeat_seconds))
+        # EVENT_CATALOG 里 cooldown<0 声明"每局一次"，但 Arbiter 只对 cd>0 查冷却，
+        # 于是该语义无人执行：电平 flag 在阈值附近抖动就能让检测器反复 re-arm 重报
+        # （实测样本里 low_fuel 13 秒内报了三次）。置位后条件退出即进入 _SPENT，
+        # 本局不再重新武装；warning→critical 升级仍在 ACTIVE 内正常发生。
+        self.once_per_battle = bool(once_per_battle)
         self._phase = _ARMED
         self._count = 0
         self._level = "warning"
+        self._last_emit_ts: float = 0.0
 
     @property
     def active(self) -> bool:
@@ -73,13 +89,32 @@ class ConditionDetector:
         self._phase = _ARMED
         self._count = 0
         self._level = "warning"
+        self._last_emit_ts = 0.0
+
+    def reset_transient(self) -> None:
+        """Clear life/mode-local state without forgetting a per-battle emission."""
+        consumed = self.once_per_battle and self._phase in (
+            _ACTIVE,
+            _CONFIRMING_EXIT,
+            _SPENT,
+        )
+        self._phase = _SPENT if consumed else _ARMED
+        self._count = 0
+        self._level = "warning"
+        self._last_emit_ts = 0.0
 
     def feed(self, prev: BattleState, cur: BattleState) -> BattleEvent | None:
         if self.predicate is not None and not self.predicate(cur):
-            self.reset()
+            # A domain/life boundary is not a new battle. In particular,
+            # low_fuel must remain spent across a same-match respawn.
+            self.reset_transient()
             return None
 
         active_now, level = _eval_flags(cur, self.groups)
+
+        if self._phase == _SPENT:
+            # 本局已报过；只等 engine.reset()（新 battle_id）重新武装。
+            return None
 
         # 进入侧：ARMED / CONFIRMING_ENTER
         if self._phase in (_ARMED, _CONFIRMING_ENTER):
@@ -103,10 +138,12 @@ class ConditionDetector:
             if level == "critical" and self._level != "critical":
                 self._level = "critical"  # warning→critical 升级：重报一条 critical（可被 Arbiter 抢占）
                 return self._make_event(cur, edge="enter")
+            if self._should_heartbeat(cur, level):
+                return self._make_event(cur, edge="enter")
             return None
         self._count = self._count + 1 if self._phase == _CONFIRMING_EXIT else 1
         if self._count >= self.confirm_exit:
-            self._phase = _ARMED
+            self._phase = _SPENT if self.once_per_battle else _ARMED
             self._count = 0
             if self.wants_recovery:
                 return self._make_event(cur, edge="recovery")
@@ -114,8 +151,17 @@ class ConditionDetector:
         self._phase = _CONFIRMING_EXIT
         return None
 
+    def _should_heartbeat(self, state: BattleState, level: str) -> bool:
+        if self.critical_heartbeat_seconds <= 0 or level != "critical":
+            return False
+        ts = float(state.timestamp or 0.0)
+        if ts <= 0 or self._last_emit_ts <= 0:
+            return False
+        return ts - self._last_emit_ts >= self.critical_heartbeat_seconds
+
     def _make_event(self, state: BattleState, *, edge: str) -> BattleEvent:
         payload = self.payload_fn(state) if self.payload_fn else {}
+        self._last_emit_ts = float(state.timestamp or 0.0)
         return BattleEvent(
             event_id=self.id,
             edge=edge,
@@ -129,6 +175,13 @@ class DiscreteDetector:
     """已边沿/跳变来源 → 候选。子类实现 detect(prev, cur)；自行按 id/跳变去重。"""
 
     id = "discrete"
+    # 阵亡期间的处理策略（见 DetectorEngine.feed）：
+    #   "reset"   —— 清空检测器状态（电平型/快照型适用）。
+    #   "consume" —— 照常喂帧以推进 id 游标，但丢弃产出。
+    # 消费数据层整局持久 feed（combat/hud_notices/awards/proximity/chat）的检测器
+    # 必须用 "consume"：这些 feed 只在换局或 HUD drain 时清空，同局重生不清空，
+    # 阵亡期间 reset 游标会让整局旧条目在重生后被当成新事件重播。
+    dead_state_policy = "reset"
 
     @property
     def active(self) -> bool:
@@ -159,7 +212,13 @@ class DetectorEngine:
         out: list[BattleEvent] = []
         for det in self.detectors:
             if cur.dead and getattr(det, "id", "") != "you_died":
-                reset = getattr(det, "reset", None)
+                if getattr(det, "dead_state_policy", "reset") == "consume":
+                    # 推进 id 游标但不产出：阵亡期间不播报，重生后也不重播旧条目。
+                    det.feed(prev, cur)
+                    continue
+                reset = getattr(det, "reset_transient", None)
+                if not callable(reset):
+                    reset = getattr(det, "reset", None)
                 if callable(reset):
                     reset()
                     continue

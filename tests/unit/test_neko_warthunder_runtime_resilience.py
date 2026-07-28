@@ -439,7 +439,10 @@ def test_battle_end_uses_normal_output_suppression_without_preempting() -> None:
     event = BattleEvent("battle_end", ts=100.0)
     chosen, chain = Arbiter(safety).decide([event], BATTLE_ENDED, 100.0)
     assert chosen is None
-    assert chain[-1]["reason"] == "rate_limited(11.0s)"
+    # battle_end is not a preempting cue. Its 8s freshness window cannot
+    # survive the remaining 11s global rate limit, so it must not occupy the
+    # arbiter's single pending slot.
+    assert chain[-1]["reason"] == "expired_before_flush"
 
     plugin = SimpleNamespace(
         cfg=config,

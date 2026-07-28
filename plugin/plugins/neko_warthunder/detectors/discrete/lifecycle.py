@@ -12,10 +12,10 @@ from __future__ import annotations
 from typing import Any
 
 from ...core.contracts import (
-    BATTLE_END_MISSION_STATUSES,
     BattleEvent,
     BattleState,
     classify_battle_result,
+    is_battle_end_status,
 )
 from .._base import DiscreteDetector
 from .free_text import FreeTextActivityDetector
@@ -148,7 +148,7 @@ class BattleEndDetector(DiscreteDetector):
     id = "battle_end"
 
     def _ended(self, s: BattleState) -> bool:
-        return (s.mission_status or "").lower() in BATTLE_END_MISSION_STATUSES
+        return is_battle_end_status(s.mission_status)
 
     def detect(self, prev: BattleState, cur: BattleState) -> BattleEvent | None:
         if self._ended(cur) and not self._ended(prev):
@@ -168,9 +168,11 @@ class KillDetector(DiscreteDetector):
     """Kill events come from data-layer combat.feed[].is_my_kill."""
 
     id = "you_killed"
+    dead_state_policy = "consume"  # combat.feed 整局持久，重置游标会重播旧击杀
 
-    def __init__(self, player_name: str) -> None:
-        self.player_name = (player_name or "").strip()
+    def __init__(self) -> None:
+        # 刻意不接收 player_name：归属完全由数据层的 is_my_kill 判定，插件侧不做
+        # 本地名字比对。曾经保存过该字段但从未读取，容易让人误以为还有第二条归属路径。
         self._last_seen_id: int = -1
         self._emitted_ids: set[int] = set()
 
@@ -217,12 +219,18 @@ class KillDetector(DiscreteDetector):
         )
 
 
-def build_discrete_detectors(player_name: str) -> list[DiscreteDetector]:
+def build_discrete_detectors(player_name: str = "") -> list[DiscreteDetector]:
+    """构造离散检测器。
+
+    ``player_name`` 不再传给任何检测器——击杀/阵亡归属由数据层的 is_my_kill /
+    is_my_death 给出。保留该形参是因为调用方用"昵称变化"作为重建引擎的信号
+    （见 NekoWarthunderPlugin._apply_config：身份变了就要清空 id 游标）。
+    """
     return [
         SpawnDetector(),
         DeathDetector(),
         BattleEndDetector(),
-        KillDetector(player_name),
+        KillDetector(),
         HudNoticeDetector(),
         RadioCommandDetector(),
         FreeTextActivityDetector(),

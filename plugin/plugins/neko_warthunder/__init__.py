@@ -9,6 +9,7 @@ M2 接入 Scenario(D-B1) / Detector(D-B3) / Arbiter(D-B4) 后才真正产出事�
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 import threading
@@ -29,7 +30,7 @@ from plugin.sdk.plugin import (
 
 from .adapters.data_layer_process import DataLayerProcessManager
 from .adapters.identity_client import identity_summary_from_combat, set_identity as request_set_identity
-from .adapters.neko_dispatcher import NekoDispatcher
+from .adapters.neko_dispatcher import COMMITTED_RESULT_PREFIXES, NekoDispatcher
 from .adapters.runtime_timeline import RuntimeTimeline, arbiter_chain_to_observe_records
 from .adapters.telemetry_client import TelemetryClient
 from .core.arbiter import Arbiter
@@ -64,6 +65,9 @@ _DIALOGUE_INTRUSION_ALIASES = {
     "immediate": "allow_interrupt",
 }
 _DEFERRED_HUD_NOTICE_CODES = frozenset({"powertrain_failure"})
+# 运行态文件读-改-写的互斥锁。放模块级：测试常用 object.__new__ 构造部分实例，
+# 实例属性不保证存在；且同路径多实例写入也应互斥。
+_RUNTIME_STATE_LOCK = threading.Lock()
 _BLOCKED_FREE_TEXT_SOURCES = {
     "awards": ("free_text_awards", ("awards", "feed")),
     "combat_feed": ("free_text_combat_feed", ("combat", "feed")),
@@ -115,6 +119,9 @@ class NekoWarthunderPlugin(NekoPluginBase):
         self._last_battle_respond_at = 0.0
         self._pending_dispatch_event: BattleEvent | None = None
         self._startup_completed = False
+        # 会话内 dry_run 覆盖：set_dry_run 动作写入，_apply_config 重建 cfg 后重放，
+        # 防止无关 config_change 把它静默回滚。刻意不落盘——重启回到安全默认。
+        self._session_dry_run_override: bool | None = None
 
     # ------------------------------------------------------------------ 配置
     async def _reload_config(self) -> None:
@@ -176,6 +183,10 @@ class NekoWarthunderPlugin(NekoPluginBase):
 
     def _apply_config(self, cfg: WtConfig) -> None:
         prev_player = self.cfg.player_name
+        # getattr 防御：测试用 object.__new__ 构造部分实例，不走 __init__。
+        session_dry_run = getattr(self, "_session_dry_run_override", None)
+        if session_dry_run is not None:
+            cfg.dry_run = session_dry_run
         self.cfg = cfg
         self.data_layer_manager.configure(cfg)
         self.client = TelemetryClient(cfg.data_layer_url, cfg.http_timeout_seconds)
@@ -191,17 +202,33 @@ class NekoWarthunderPlugin(NekoPluginBase):
             self.engine = self._build_engine()
 
     def _build_engine(self) -> DetectorEngine:
-        detectors = list(build_condition_detectors()) + list(build_discrete_detectors(self.cfg.player_name))
+        # 危急心跳对齐抢占冷却：低于冷却的重发会落在冷却窗内被 Arbiter 丢弃，
+        # 等于浪费掉这次补救机会（见 flight_safety._CRITICAL_HEARTBEAT_SECONDS）。
+        # 冷却为 0 时没有需要补救的窗口，心跳一并关闭。
+        heartbeat = max(0.0, float(getattr(self.cfg, "critical_preempt_cooldown_seconds", 0.0) or 0.0))
+        detectors = list(build_condition_detectors(heartbeat)) + list(
+            build_discrete_detectors(self.cfg.player_name)
+        )
         return DetectorEngine(detectors)
 
     # --------------------------------------------------------------- 生命周期
     @lifecycle(id="startup")
     async def startup(self, **_):
         await self._reload_config()
-        data_layer_status = self.data_layer_manager.start_if_needed()
-        identity_result = self._restore_identity_to_data_layer()
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._loop, daemon=True, name="wt-poll")
+        if self._thread is not None and self._thread.is_alive():
+            # The old thread may still be inside a blocking HTTP tick. Starting
+            # another poller now would allow stale state/output to commit after
+            # the new poller has advanced the match.
+            self.logger.warning("startup refused: previous poll thread is still running")
+            return Err(SdkError("previous poll thread is still running"))
+        # 健康等待循环 + 同步 urllib 最长可达数十秒，必须下放线程池，
+        # 不能阻塞宿主事件循环。
+        data_layer_status = await asyncio.to_thread(self.data_layer_manager.start_if_needed)
+        identity_result = await asyncio.to_thread(self._restore_identity_to_data_layer)
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._loop, args=(self._stop,), daemon=True, name="wt-poll"
+        )
         self._thread.start()
         self.logger.info(
             f"neko_warthunder started (dry_run={self.cfg.dry_run}, url={self.cfg.data_layer_url}, "
@@ -223,6 +250,8 @@ class NekoWarthunderPlugin(NekoPluginBase):
         self._stop.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=3.0)
+            if self._thread.is_alive():
+                self.logger.warning("poll thread did not stop within 3s; it will exit after its current tick")
         data_layer_status = self.data_layer_manager.stop()
         if self._instructions_injected:
             if self.dispatcher.push_context(WT_RESTORE_INSTRUCTIONS):
@@ -238,10 +267,10 @@ class NekoWarthunderPlugin(NekoPluginBase):
         data_layer_status = self.data_layer_manager.snapshot()
         identity_result: dict[str, Any] | None = None
         if old_connection != new_connection and getattr(self, "_startup_completed", False):
-            self.data_layer_manager.stop()
-            data_layer_status = self.data_layer_manager.start_if_needed()
+            await asyncio.to_thread(self.data_layer_manager.stop)
+            data_layer_status = await asyncio.to_thread(self.data_layer_manager.start_if_needed)
             if data_layer_status.get("health"):
-                identity_result = self._restore_identity_to_data_layer()
+                identity_result = await asyncio.to_thread(self._restore_identity_to_data_layer)
         return Ok(
             {
                 "status": "reloaded",
@@ -349,11 +378,13 @@ class NekoWarthunderPlugin(NekoPluginBase):
 
     def _save_runtime_state(self, patch: dict[str, Any]) -> None:
         path = getattr(self, "_runtime_state_path", Path(__file__).resolve().parent / _RUNTIME_STATE_FILENAME)
-        current = self._load_runtime_state()
-        current.update(patch)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(current, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-        tmp.replace(path)
+        # 读-改-写整体加锁：并发 UI 动作各自 patch 不同键时，后写者不能丢掉前写者。
+        with _RUNTIME_STATE_LOCK:
+            current = self._load_runtime_state()
+            current.update(patch)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(json.dumps(current, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+            tmp.replace(path)
 
     @staticmethod
     def _normalize_dialogue_intrusion_mode(value: Any) -> str:
@@ -394,14 +425,18 @@ class NekoWarthunderPlugin(NekoPluginBase):
         return {"ok": restored, "restored": restored, "player_name": name if restored else ""}
 
     # ------------------------------------------------------------------ 轮询
-    def _loop(self) -> None:
-        while not self._stop.is_set():
+    def _loop(self, stop: threading.Event | None = None) -> None:
+        # stop 以参数捕获本线程自己的 Event：startup 换新 Event 后，join 超时遗留的
+        # 旧线程仍看自己那个已 set 的旧 Event，不会被新一轮 startup 复活。
+        if stop is None:
+            stop = self._stop
+        while not stop.is_set():
             try:
                 self._tick()
             except Exception as exc:  # noqa: BLE001 — 轮询异常隔离，不杀循环
                 self.logger.warning(f"tick error: {type(exc).__name__}: {exc}")
                 self.safety.record_failure()
-            self._stop.wait(self.cfg.poll_interval_seconds)
+            stop.wait(self.cfg.poll_interval_seconds)
 
     def _tick(self) -> None:
         if not self.cfg.enabled:
@@ -439,14 +474,16 @@ class NekoWarthunderPlugin(NekoPluginBase):
                 safe_summary="war_thunder_context/entered",
             )
             return
-        if (not is_active) and self._instructions_injected and was_active:
+        # 退出只看 _instructions_injected（push 成功才清零的幂等边沿标志），不要求
+        # was_active：否则首个离线 tick 推送失败后 was_active 恒为 False，恢复永不重试。
+        if (not is_active) and self._instructions_injected:
             if not self.dispatcher.push_context(WT_RESTORE_INSTRUCTIONS):
                 return
             self._instructions_injected = False
             self.timeline.record_stage(
                 stage="game_context_exited",
                 outcome="exited",
-                reason="telemetry_offline",
+                reason="telemetry_offline" if was_active else "retry_after_push_failure",
                 connected=cur.connected,
                 conn_state=cur.conn_state,
                 in_battle=cur.in_battle,
@@ -542,7 +579,7 @@ class NekoWarthunderPlugin(NekoPluginBase):
         if chosen is not None:
             try:
                 result = self.dispatcher.push_event(chosen, dry_run=self.cfg.dry_run)
-                if not result.startswith(("pushed(", "dry_run(")):
+                if not result.startswith(COMMITTED_RESULT_PREFIXES):
                     self.arbiter.restore(arbiter_checkpoint)
                     self.safety.restore_output_clock(output_clock_checkpoint)
                 self.logger.info(f"[output] {result}")
@@ -725,24 +762,64 @@ class NekoWarthunderPlugin(NekoPluginBase):
                 continue
         return False
 
+    def _takeoff_grace_flags(
+        self,
+        cur: BattleState,
+        now: float,
+        *,
+        advance_state: bool,
+    ) -> dict[str, Any]:
+        """起飞/滑跑保护的唯一判定来源。
+
+        advance_state=True 供抑制路径调用（会推进 AGL 迟滞状态机）；
+        仪表盘快照用 False 只读当前状态，避免两处各算一套导致显示与行为漂移。
+        """
+        is_air = (cur.domain or "").lower() == "air"
+        if not is_air:
+            if advance_state:
+                self._takeoff_radio_altitude_grace_active = False
+            return {
+                "time_active": False,
+                "radio_active": False,
+                "runway_active": False,
+                "suppresses": [],
+            }
+        if advance_state:
+            radio_active = self._takeoff_radio_altitude_grace_active_for(cur, now)
+        else:
+            radio_active = bool(getattr(self, "_takeoff_radio_altitude_grace_active", False))
+
+        grace = float(getattr(self.cfg, "takeoff_low_alt_grace_seconds", 0.0) or 0.0)
+        elapsed = self.resolver.seconds_since_spawn(now) if getattr(self, "resolver", None) else None
+        vehicle_ready = bool(cur.in_battle and cur.vehicle_valid and not cur.dead)
+        time_active = bool(vehicle_ready and grace > 0 and elapsed is not None and elapsed < grace)
+        runway_active = bool(time_active and self._takeoff_gear_down_or_moving(cur))
+
+        suppresses: list[str] = []
+        if time_active or radio_active:
+            suppresses.append("low_alt_danger")
+        if radio_active or runway_active:
+            suppresses.append("overspeed")
+        # radio_active 不再叠加 vehicle_ready：advance_state=True 时状态机
+        # (_takeoff_radio_altitude_grace_active_for) 已在载具无效/阵亡时清零该标志；
+        # advance_state=False 只反映当前标志，与原快照口径一致。
+        return {
+            "time_active": time_active,
+            "radio_active": bool(radio_active),
+            "runway_active": runway_active,
+            "suppresses": suppresses,
+        }
+
     def _suppress_takeoff_grace(
         self,
         candidates: list[BattleEvent],
         cur: BattleState,
         now: float,
     ) -> list[BattleEvent]:
-        if (cur.domain or "").lower() != "air":
-            self._takeoff_radio_altitude_grace_active = False
-            return candidates
-        grace = float(getattr(self.cfg, "takeoff_low_alt_grace_seconds", 0.0) or 0.0)
-        radio_grace_active = self._takeoff_radio_altitude_grace_active_for(cur, now)
-        if grace <= 0 and not radio_grace_active:
-            return candidates
-        if not cur.in_battle or not cur.vehicle_valid or cur.dead:
-            return candidates
-        elapsed = self.resolver.seconds_since_spawn(now)
-        time_grace_active = elapsed is not None and elapsed < grace
-        runway_grace_active = time_grace_active and self._takeoff_gear_down_or_moving(cur)
+        flags = self._takeoff_grace_flags(cur, now, advance_state=True)
+        time_grace_active = flags["time_active"]
+        radio_grace_active = flags["radio_active"]
+        runway_grace_active = flags["runway_active"]
         if not time_grace_active and not radio_grace_active:
             return candidates
 
@@ -827,34 +904,19 @@ class NekoWarthunderPlugin(NekoPluginBase):
         }
 
     def _takeoff_protection_snapshot(self, s: BattleState) -> dict[str, Any]:
+        # 只读同一套判定，不推进 AGL 迟滞状态机（那是抑制路径的职责）。
+        flags = self._takeoff_grace_flags(s, time.time(), advance_state=False)
         radio_altitude_m = s.radio_altitude_m
-        is_air = (s.domain or "").lower() == "air"
-        radio_active = is_air and bool(getattr(self, "_takeoff_radio_altitude_grace_active", False))
-        resolver = getattr(self, "resolver", None)
-        elapsed = resolver.seconds_since_spawn(time.time()) if resolver is not None else None
-        time_active = (
-            is_air
-            and elapsed is not None
-            and elapsed < float(getattr(self.cfg, "takeoff_low_alt_grace_seconds", 0.0) or 0.0)
-            and s.in_battle
-            and s.vehicle_valid
-            and not s.dead
-        )
-        runway_active = time_active and self._takeoff_gear_down_or_moving(s)
-        active = radio_active or time_active
-        suppresses = ["low_alt_danger"] if time_active or radio_active else []
-        if radio_active or runway_active:
-            suppresses.append("overspeed")
         return {
-            "active": active,
+            "active": flags["radio_active"] or flags["time_active"],
             "radio_altitude_m": radio_altitude_m,
             "radio_altitude_available": radio_altitude_m is not None,
-            "runway_grace_active": runway_active,
+            "runway_grace_active": flags["runway_active"],
             "gear_down_or_moving": self._takeoff_gear_down_or_moving(s),
             "enter_m": self.cfg.takeoff_radio_altitude_enter_m,
             "exit_m": self.cfg.takeoff_radio_altitude_exit_m,
             "low_alt_grace_seconds": self.cfg.takeoff_low_alt_grace_seconds,
-            "suppresses": suppresses,
+            "suppresses": flags["suppresses"],
         }
 
     def _awareness_snapshot(self, s: BattleState) -> dict[str, Any]:
@@ -960,7 +1022,14 @@ class NekoWarthunderPlugin(NekoPluginBase):
     )
     async def set_dry_run(self, value: bool = True, **_):
         self.cfg.dry_run = bool(value)
-        return Ok({"dry_run": self.cfg.dry_run})
+        self._session_dry_run_override = self.cfg.dry_run
+        # session_only 是产品决定，不是遗漏，不要"修"成持久化：
+        # 开启战斗播报被当作每次启动插件时的一次显式启用动作（面板底栏"开启战斗播报"），
+        # 所以它只在本次会话内稳定（不被无关 config_change 回滚），重启后回到 dry_run=true。
+        # 同组的插话策略 / 播报频率 / 播报类别 / 昵称都会落 runtime_state，唯独这一项不落，
+        # 是有意为之。若将来要改成"记住用户选择"，需同时调整 release_defaults_gate
+        # 对默认值的断言语义（从"永远默认关"变为"首次运行默认关"）。
+        return Ok({"dry_run": self.cfg.dry_run, "session_only": True})
 
     @ui.action(id="set_dialogue_intrusion_mode", label="设置插话策略", tone="primary", group="runtime", order=15, refresh_context=True)
     @plugin_entry(

@@ -53,6 +53,72 @@ _ACTIVITY_KEYS = (
     "dry_run",
     "pushed",
 )
+# record_stage 提取的通用阶段元数据键。
+_STAGE_CORE_KEYS = (
+    "trace_id",
+    "event_id",
+    "edge",
+    "scenario",
+    "priority",
+    "level",
+    "dry_run",
+    "in_battle",
+    "replay",
+    "cooldown_key",
+    "window",
+    "safety_status",
+    "dispatcher_status",
+    "kind",
+    "source",
+    "input_mode",
+    "ai_behavior",
+    "visibility",
+    "pushed",
+)
+# 投递相关元数据键：record_stage 提取与 last_output_status 回填共用同一份来源，
+# dispatcher 新增投递元数据字段时只需扩这一份名单。
+_OUTPUT_METADATA_KEYS = (
+    "target_lanlan",
+    "coalesce_key",
+    "event_ts",
+    "event_age_seconds",
+    "event_max_age_seconds",
+    "event_expires_at",
+    "battle_reply_contract",
+    "live_reply_contract",
+    "max_reply_chars",
+    "response_module_hint",
+    "plugin_recommended_reply",
+    "plugin_owned_output",
+    "replace_pending",
+    "interrupt_battle_event",
+    "interrupt_pending",
+    "reply_style_contract",
+    "reply_contract",
+    "reply_max_chars",
+    "dialogue_policy_owner",
+    "plugin_dialogue_policy",
+    "plugin_quiet_window_policy",
+    "quiet_window_remaining_seconds",
+    "delivery_strategy",
+    "passive_from_user_chat_quiet_window",
+    "host_callback_contract_version",
+    # 宿主通用投递字段：真机排障要能看出宿主拿到的 TTL / 被动上下文意图。
+    "delivery_ttl_seconds",
+    "delivery_intent",
+    "interrupt_policy",
+)
+_OUTPUT_STATUS_BASE_KEYS = (
+    "kind",
+    "ai_behavior",
+    "visibility",
+    "pushed",
+    "event_id",
+    "edge",
+    "level",
+    "priority",
+    "dry_run",
+)
 
 
 def _now_iso() -> str:
@@ -156,52 +222,8 @@ class RuntimeTimeline:
                     "stage": stage,
                     "outcome": outcome,
                     "reason": reason,
-                    "trace_id": metadata.get("trace_id"),
-                    "event_id": metadata.get("event_id"),
-                    "edge": metadata.get("edge"),
-                    "scenario": metadata.get("scenario"),
-                    "priority": metadata.get("priority"),
-                    "level": metadata.get("level"),
-                    "dry_run": metadata.get("dry_run"),
-                    "in_battle": metadata.get("in_battle"),
-                    "replay": metadata.get("replay"),
-                    "cooldown_key": metadata.get("cooldown_key"),
-                    "window": metadata.get("window"),
-                    "safety_status": metadata.get("safety_status"),
-                    "dispatcher_status": metadata.get("dispatcher_status"),
-                    "kind": metadata.get("kind"),
-                    "source": metadata.get("source"),
-                    "input_mode": metadata.get("input_mode"),
-                    "ai_behavior": metadata.get("ai_behavior"),
-                    "visibility": metadata.get("visibility"),
-                    "pushed": metadata.get("pushed"),
-                    "target_lanlan": metadata.get("target_lanlan"),
-                    "coalesce_key": metadata.get("coalesce_key"),
-                    "event_ts": metadata.get("event_ts"),
-                    "event_age_seconds": metadata.get("event_age_seconds"),
-                    "event_max_age_seconds": metadata.get("event_max_age_seconds"),
-                    "event_expires_at": metadata.get("event_expires_at"),
-                    "battle_reply_contract": metadata.get("battle_reply_contract"),
-                    "live_reply_contract": metadata.get("live_reply_contract"),
-                    "max_reply_chars": metadata.get("max_reply_chars"),
-                    "response_module_hint": metadata.get("response_module_hint"),
-                    "plugin_recommended_reply": metadata.get("plugin_recommended_reply"),
-                    "plugin_owned_output": metadata.get("plugin_owned_output"),
-                    "replace_pending": metadata.get("replace_pending"),
-                    "interrupt_battle_event": metadata.get("interrupt_battle_event"),
-                    "interrupt_pending": metadata.get("interrupt_pending"),
-                    "reply_style_contract": metadata.get("reply_style_contract"),
-                    "reply_contract": metadata.get("reply_contract"),
-                    "reply_max_chars": metadata.get("reply_max_chars"),
-                    "dialogue_policy_owner": metadata.get("dialogue_policy_owner"),
-                    "plugin_dialogue_policy": metadata.get("plugin_dialogue_policy"),
-                    "plugin_quiet_window_policy": metadata.get("plugin_quiet_window_policy"),
-                    "quiet_window_remaining_seconds": metadata.get("quiet_window_remaining_seconds"),
-                    "delivery_strategy": metadata.get("delivery_strategy"),
-                    "deferred_from_user_chat_quiet_window": metadata.get(
-                        "deferred_from_user_chat_quiet_window"
-                    ),
-                    "host_callback_contract_version": metadata.get("host_callback_contract_version"),
+                    **{key: metadata.get(key) for key in _STAGE_CORE_KEYS},
+                    **{key: metadata.get(key) for key in _OUTPUT_METADATA_KEYS},
                     "message": safe_summary,
                 }
             )
@@ -220,42 +242,7 @@ class RuntimeTimeline:
                         "outcome": outcome,
                         "reason": reason,
                     }
-                    for key in (
-                        "kind",
-                        "ai_behavior",
-                        "visibility",
-                        "pushed",
-                        "event_id",
-                        "edge",
-                        "level",
-                        "priority",
-                        "dry_run",
-                        "target_lanlan",
-                        "coalesce_key",
-                        "event_ts",
-                        "event_age_seconds",
-                        "event_max_age_seconds",
-                        "event_expires_at",
-                        "battle_reply_contract",
-                        "live_reply_contract",
-                        "max_reply_chars",
-                        "response_module_hint",
-                        "plugin_recommended_reply",
-                        "plugin_owned_output",
-                        "replace_pending",
-                        "interrupt_battle_event",
-                        "interrupt_pending",
-                        "reply_style_contract",
-                        "reply_contract",
-                        "reply_max_chars",
-                        "dialogue_policy_owner",
-                        "plugin_dialogue_policy",
-                        "plugin_quiet_window_policy",
-                        "quiet_window_remaining_seconds",
-                        "delivery_strategy",
-                        "deferred_from_user_chat_quiet_window",
-                        "host_callback_contract_version",
-                    ):
+                    for key in _OUTPUT_STATUS_BASE_KEYS + _OUTPUT_METADATA_KEYS:
                         if record.get(key) is not None:
                             self._last_output_status[key] = record.get(key)
                 if self.enabled:
@@ -263,6 +250,7 @@ class RuntimeTimeline:
                 if stage in _ACTIVITY_STAGES:
                     self._activity_records.append(_activity_record(record))
         except Exception:
+            # 观测层永不反噬主链路；record_stage 编码错误只能靠测试兜底。
             return
 
     def snapshot(self) -> dict[str, Any]:

@@ -11,20 +11,27 @@ from typing import Any
 
 from ...core.contracts import BattleEvent, BattleState
 from .._base import DiscreteDetector
-
-
-_BEHIND_CLOCKS = {5, 6, 7}
+from ._common import as_float as _as_float
+from ._common import as_int as _as_int
+from ._common import is_rear as _is_behind
+from ._common import safe_short_text as _safe_short_text
+from ._common import (
+    PROXIMITY_TAIL_CONFIRM_EVENTS,
+    PROXIMITY_TAIL_DISTANCE_M,
+    PROXIMITY_TAIL_WINDOW_SECONDS,
+)
 
 
 class ProximityDetector(DiscreteDetector):
     id = "proximity"
+    dead_state_policy = "consume"  # proximity.events 整局持久，重置游标会重播旧接近事件
 
     def __init__(
         self,
         *,
-        tail_window_seconds: float = 8.0,
-        tail_confirm_events: int = 2,
-        tail_distance_m: float = 900.0,
+        tail_window_seconds: float = PROXIMITY_TAIL_WINDOW_SECONDS,
+        tail_confirm_events: int = PROXIMITY_TAIL_CONFIRM_EVENTS,
+        tail_distance_m: float = PROXIMITY_TAIL_DISTANCE_M,
     ) -> None:
         self._last_id: int = -1
         self._tail_window_seconds = max(1.0, float(tail_window_seconds))
@@ -114,14 +121,6 @@ def _awareness_event_id(item: dict[str, Any], domain: str) -> str:
     return "enemy_nearby"
 
 
-def _is_behind(item: dict[str, Any]) -> bool:
-    clock = _as_int(item.get("clock"))
-    if clock in _BEHIND_CLOCKS:
-        return True
-    rel = _as_float(item.get("relative_deg"))
-    return rel is not None and abs(rel) >= 135.0
-
-
 def _event_priority(event_id: str) -> int:
     if event_id == "tailing_risk":
         return 4
@@ -175,30 +174,3 @@ def _payload(item: dict[str, Any]) -> dict[str, Any]:
         "nose_to_player_deg": _as_float(item.get("nose_to_player_deg")),
     }
     return {key: value for key, value in payload.items() if value is not None and value != ""}
-
-
-def _as_float(value: Any) -> float | None:
-    if isinstance(value, bool) or value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _as_int(value: Any) -> int | None:
-    if isinstance(value, bool) or value is None:
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _safe_short_text(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text or len(text) > 32:
-        return None
-    return text

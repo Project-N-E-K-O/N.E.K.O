@@ -16,10 +16,10 @@ relative_deg,icon,type），避免重复计算。
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from typing import Any
 
 from wt_geo import clock_position, compass_8
-from wt_processor import _merge_profile
 
 
 def _pos_num(v: Any) -> float | None:
@@ -30,7 +30,7 @@ def resolve_proximity_thresholds(
     profiles: dict[str, Any] | None,
     domain: str | None,
     vtype: str | None,
-    family_rules: list[dict[str, Any]] | None = None,
+    resolve_profile: Callable[[str | None, str | None], tuple[dict[str, Any], bool, str, str | None]] | None = None,
 ) -> tuple[float | None, float | None]:
     """解析接近告警距离，返回 (对空中敌人, 对地面/海面敌人) 两个阈值(米)。
 
@@ -48,9 +48,15 @@ def resolve_proximity_thresholds(
     prox = prox if isinstance(prox, dict) else {}
 
     if domain in ("air", "heli"):
-        cfg, matched, _source, _family = _merge_profile(
-            profiles, vtype, "air" if domain == "air" else None, family_rules or []
-        )
+        if resolve_profile is None:
+            # 没有注入解析器时只看精确 profile；家族规则归 TelemetryProcessor 所有，
+            # 这里不再自行重建（也不再掏它的私有属性）。
+            exact = profiles.get(vtype) if vtype else None
+            cfg, matched = (exact, True) if isinstance(exact, dict) else ({}, False)
+        else:
+            cfg, matched, _source, _family = resolve_profile(
+                vtype, "air" if domain == "air" else None
+            )
         t = _pos_num(cfg.get("proximity_warn_m")) if matched else None
         if t is None:
             key = "heli_default" if domain == "heli" else "air_default"
