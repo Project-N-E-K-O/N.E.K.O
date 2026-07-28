@@ -200,6 +200,11 @@ def _make_manager():
             "metadata": metadata,
             "request_id": _kwargs.get("request_id"),
         })
+        # 真实实现在 track_ai_turn 为真时同步累加 AI turn buffer（turn end 时
+        # 交给 activity tracker）。stub 不照做的话，凡是断言 buffer 内容的用例
+        # 都会对"send 到底 track 了没有"失明。
+        if _kwargs.get("track_ai_turn", True):
+            mgr._current_ai_turn_text += text
 
     async def ensure_tts_pipeline_alive():
         return None
@@ -2370,14 +2375,10 @@ async def test_truncated_recovery_flushes_only_recovery_body_to_tracker():
     mgr.session._conversation_history = []
     mgr._finalize_turn_after_emit = AsyncMock()
 
-    # 真实 send_lanlan_response 会同步累加 _current_ai_turn_text（turn.py 内
-    # track_ai_turn 分支）；fixture 的 stub 不累加，这里补上，否则测不到
-    # "turn end 那一刻 buffer 里到底有什么"。
-    async def send_and_track(text, is_first_chunk=False, turn_id=None, metadata=None, **kwargs):
-        mgr._current_ai_turn_text += text
-
-    mgr.send_lanlan_response = send_and_track
-
+    # fixture 的 send_lanlan_response stub 已经照真实实现按 track_ai_turn 累加；
+    # recovery 路径显式传 track_ai_turn=False，改由 _track_recovery_ai_turn_text
+    # 在 turn end 前一步补记。
+    #
     # _flush_ai_turn_text_to_tracker 由 _emit_turn_end 调用，捕获调用当刻的 buffer。
     buffer_at_turn_end = []
 
@@ -2396,3 +2397,41 @@ async def test_truncated_recovery_flushes_only_recovery_body_to_tracker():
     )
 
     assert buffer_at_turn_end == ["recovered body"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_recovery_losing_ownership_mid_tts_leaves_no_tracker_text_for_b():
+    """A's recovery body must not survive into B's tracker turn.
+
+    Ownership can be lost inside any recovery step's await. The AI-turn text is
+    therefore recorded in a synchronous step right before turn end, so an earlier
+    break leaves the shared buffer untouched.
+    """
+    mgr = _make_manager()
+    mgr.use_tts = True
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = []
+    mgr._active_text_request_id = "req-A"
+    mgr._clear_tts_pipeline = AsyncMock()
+    mgr._emit_turn_end = AsyncMock()
+    mgr._finalize_turn_after_emit = AsyncMock()
+    mgr._request_tts_done_for_turn = AsyncMock()
+
+    async def feed_then_start_request_b(text, expected_speech_id=None):
+        mgr._active_text_request_id = "req-B"
+
+    mgr.feed_tts_chunk = feed_then_start_request_b
+
+    await core_module.LLMSessionManager.handle_response_discarded(
+        mgr,
+        "guard",
+        3,
+        3,
+        False,
+        '{"code":"RESPONSE_LENGTH_TRUNCATED","text":"recovered body"}',
+        request_id="req-A",
+    )
+
+    assert mgr._current_ai_turn_text == ""
+    mgr._emit_turn_end.assert_not_awaited()

@@ -606,6 +606,16 @@ class TurnMixin:
                 else:
                     recovery_turn_id = self.current_speech_id
 
+                async def _track_recovery_ai_turn_text() -> None:
+                    # send_lanlan_response 的 track_ai_turn 累加是同步的、发生在
+                    # 它内部任何 await 之前：A 若在那次 await 里让位给 B，这段
+                    # 文本已经进了共享 buffer，而 A 随后 break、不再走
+                    # _emit_turn_end flush，残留就会被算进 B 的 turn。所以
+                    # recovery 这一路让 send 不 track，改由本步补记——它是同步
+                    # 的、紧挨 _emit_turn_end，中间没有能丢产权的 await 窗口。
+                    # 文本处理跟 send_lanlan_response 内部保持一致（剥表情标签）。
+                    self._current_ai_turn_text += self.emotion_pattern.sub('', body_text)
+
                 async def _append_recovery_history() -> None:
                     # 仅当本轮**不是** ephemeral（即非 avatar_interaction 等
                     # persist_response=False 的路径）时才写历史。avatar_interaction
@@ -629,6 +639,7 @@ class TurnMixin:
                         is_first_chunk=True,
                         turn_id=recovery_turn_id,
                         request_id=active_request_id,
+                        track_ai_turn=False,
                     ),
                     _append_recovery_history,
                 ]
@@ -647,6 +658,10 @@ class TurnMixin:
                             expected_speech_id=recovery_turn_id,
                         )
                     )
+                # 补记 activity tracker 的 AI turn 文本，紧挨 turn end——见
+                # _track_recovery_ai_turn_text 里的说明：放在这里才没有能丢产权
+                # 的 await 窗口，前面任何一步 break 掉都不会给 B 留下残留。
+                recovery_steps.append(_track_recovery_ai_turn_text)
                 # turn end —— 复用 _emit_turn_end helper（同 handle_response_complete
                 # 走同一套语义；sync queue 和 WS 都带相同 meta）。
                 # 注：_append_recovery_history 读 pending_meta 已经触发 is_ephemeral
