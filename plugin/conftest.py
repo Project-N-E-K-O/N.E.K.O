@@ -29,10 +29,31 @@ straight off its file path instead.
 import importlib.util as _importlib_util
 from pathlib import Path as _Path
 
-_GUARD_PATH = _Path(__file__).resolve().parents[1] / "tests" / "clock_guard.py"
-_GUARD_SPEC = _importlib_util.spec_from_file_location("_neko_clock_guard", _GUARD_PATH)
-_GUARD = _importlib_util.module_from_spec(_GUARD_SPEC)
-_GUARD_SPEC.loader.exec_module(_GUARD)
+import pytest as _pytest
+
+_REPO_ROOT = _Path(__file__).resolve().parents[1]
+
+
+def _load(name: str, relative: str):
+    spec = _importlib_util.spec_from_file_location(name, _REPO_ROOT / relative)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_GUARD = _load("_neko_clock_guard", "tests/clock_guard.py")
+_FAKE_CLOCK = _load("_neko_fake_clock", "tests/fake_clock.py")
 
 # pytest 按名字在 conftest 命名空间里发现 hook；这不是死代码，删掉守卫就失效。
 pytest_runtest_call = _GUARD.pytest_runtest_call
+
+
+@_pytest.fixture
+def patch_module_clock():
+    """``tests.fake_clock.patch_module_clock``，以 fixture 形式提供。
+
+    这几棵 sibling 树跑起来时仓库根不一定在 sys.path 上（本文件刻意不去钉它，
+    见上面的说明），直接 ``from tests.fake_clock import ...`` 在别的 checkout 里
+    会解析到另一份副本。用 fixture 交出去就没有这层依赖。
+    """
+    return _FAKE_CLOCK.patch_module_clock
