@@ -203,7 +203,11 @@ def test_plugin_panel_uses_ordinary_button_semantics_for_view_switching() -> Non
 
     assert 'role="tablist"' not in panel
     assert 'role="tab"' not in panel
-    assert "aria-pressed={activeTab ===" in panel
+    for view in ("overview", "activity", "diagnostics"):
+        assert (
+            f'<button type="button" aria-pressed={{activeTab === "{view}"}}'
+            in panel
+        )
 
 
 def test_apply_config_refreshes_detector_heartbeat_without_rebuild() -> None:
