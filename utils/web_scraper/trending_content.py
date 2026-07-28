@@ -34,13 +34,13 @@ if TYPE_CHECKING:
 
 from ._shared import get_random_user_agent, is_china_region, logger
 from .platform_helpers import (
-    _get_bilibili_credential,
     _get_platform_cookies,
     build_xhh_cookie_header,
     build_xhh_request_params,
 )
 from .youtube_feed import fetch_youtube_home_feed
 from .twitch_feed import fetch_twitch_live_streams
+from .bilibili_content import fetch_bilibili_radar
 
 
 XHH_API_BASE = "https://api.xiaoheihe.cn"
@@ -54,87 +54,8 @@ XHH_USER_AGENT = (
 
 
 async def fetch_bilibili_trending(limit: int = 30) -> Dict[str, Any]:
-    """
-    Fetch Bilibili homepage recommended videos
-    Uses the bilibili-api library to fetch homepage video recommendations
-    Supports personalized recommendations (when credentials are provided)
-    """
-    try:
-        from bilibili_api import homepage
-
-        # 获取认证信息（如果有）
-        credential = _get_bilibili_credential()
-        
-        # 添加随机延迟，避免请求过快
-        await asyncio.sleep(random.uniform(0.1, 0.5))
-        
-        # 使用bilibili-api获取首页推荐
-        # 如果有credential，会获取个性化推荐；否则获取通用推荐
-        result = await homepage.get_videos(credential=credential)
-        
-        videos = []
-        # 安全地访问嵌套字典，避免 KeyError
-        if result:
-            # bilibili-api 返回的数据结构可能是 {'data': {'item': [...]}} 或直接 {'item': [...]}
-            # 先尝试从 data 中获取，如果没有则直接获取
-            data = result.get('data', result)
-            items = data.get('item', [])
-            
-            for item in items:
-                # 提取视频信息
-                bvid = item.get('bvid', '')
-                # 有些项目可能是广告或其他类型，跳过没有bvid的
-                if not bvid:
-                    continue
-                
-                # 提取推荐理由（如果有）
-                rcmd_reason = item.get('rcmd_reason', {})
-                if isinstance(rcmd_reason, dict):
-                    rcmd_reason_text = rcmd_reason.get('content', '')
-                else:
-                    rcmd_reason_text = ''
-                    
-                videos.append({
-                    'title': item.get('title', ''),
-                    'desc': item.get('desc', ''),
-                    'author': item.get('owner', {}).get('name', ''),
-                    'view': item.get('stat', {}).get('view', 0),
-                    'like': item.get('stat', {}).get('like', 0),
-                    'bvid': bvid,
-                    'url': f'https://www.bilibili.com/video/{bvid}',
-                    'id': item.get('id', 0),  # 视频ID
-                    'goto': item.get('goto', ''),  # 跳转类型
-                    'rcmd_reason': rcmd_reason_text,  # 推荐理由
-                })
-                
-                # 如果已经获取到足够的视频，停止
-                if len(videos) >= limit:
-                    break
-        
-        if credential:
-            logger.info(f"✅ 使用个性化推荐获取到 {len(videos)} 个B站视频")
-        else:
-            logger.info(f"✅ 使用默认推荐获取到 {len(videos)} 个B站视频")
-        
-        return {
-            'success': True,
-            'videos': videos
-        }
-        
-    except ImportError:
-        logger.error("bilibili_api 库未安装，请运行: pip install bilibili-api-python")
-        return {
-            'success': False,
-            'error': 'bilibili_api 库未安装'
-        }
-    except Exception as e:
-        logger.error(f"获取B站推荐失败: {e}")
-        import traceback
-        logger.debug(f"详细错误: {traceback.format_exc()}")
-        return {
-            'success': False,
-            'error': str(e)
-        }
+    """Fetch Bilibili homepage and public hot feeds as one content radar."""
+    return await fetch_bilibili_radar(limit=max(1, min(limit, 10)))
 
 async def fetch_reddit_popular(limit: int = 10) -> Dict[str, Any]:
     """
@@ -1466,17 +1387,20 @@ async def fetch_tieba_content(
     return result
 
 def _format_bilibili_videos(videos: List[Dict], limit: int = 5) -> List[str]:
-    """Format the Bilibili video list"""
-    output_lines = ["【B站首页推荐】"]
+    """Format mixed Bilibili homepage and hot-feed candidates."""
+    output_lines = ["【B站内容雷达：首页推荐 + 全站热门】"]
     for i, video in enumerate(videos[:limit], 1):
         title = video.get('title', '')
         author = video.get('author', '')
-        rcmd_reason = video.get('rcmd_reason', '')
+        reason = video.get('reason', '') or video.get('rcmd_reason', '')
+        description = video.get('description_hint', '')
         
         output_lines.append(f"{i}. {title}")
-        output_lines.append(f"   UP主: {author}")
-        if rcmd_reason:
-            output_lines.append(f"   推荐理由: {rcmd_reason}")
+        details = [detail for detail in (author, reason) if detail]
+        if details:
+            output_lines.append(f"   {' | '.join(details)}")
+        if description:
+            output_lines.append(f"   简介: {description[:180]}")
     output_lines.append("")
     return output_lines
 

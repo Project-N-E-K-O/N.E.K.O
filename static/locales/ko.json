@@ -1765,7 +1765,6 @@
         "close": "닫기",
         "catgirlMemory": "캐릭터",
         "compactLibraryLabel": "캐릭터 목록",
-        "currentRole": "현재 캐릭터:",
         "autoReview": "자동 메모리 검토",
         "globalActionsAria": "메모리 작업",
         "openTutorialManager": "가이드",
@@ -1791,6 +1790,7 @@
         "autoReviewTooltipLabel": "자동 메모리 검토 정보",
         "strongMemoryTooltipLabel": "강력한 메모리 정보",
         "externalImportTooltipLabel": "외부 메모리 가져오기 안내",
+        "roleSourceTooltip": "출처: {{source}}",
         "loading": "로드 중...",
         "externalImportTitle": "외부 메모리 가져오기",
         "externalImportNote": "OpenClaw 또는 Hermes의 USER.md, SOUL.md, MEMORY.md, 일일 메모나 워크스페이스 ZIP을 선택한 캐릭터로 가져옵니다.",
@@ -1827,7 +1827,6 @@
         "olderSection": "이전",
         "me": "나:",
         "memoNone": "없음.",
-        "delete": "삭제",
         "deleteEntryAria": "{{speaker}}의 {{position}}번째 기억 삭제",
         "pleaseSelectFile": "먼저 파일을 선택하세요.",
         "saveFailed": "저장 실패: {{error}}",
@@ -2687,9 +2686,11 @@
             "visionInterval": "인지 간격"
         },
         "widgetMode": {
-            "enabledNotice": "가장자리 도킹 모드 Beta가 켜졌습니다.",
-            "disabledNotice": "가장자리 도킹 모드 Beta가 꺼졌습니다. Live2D는 일반 가장자리 스냅을 사용합니다.",
-            "toggleFailed": "가장자리 도킹 모드 Beta를 전환하지 못했습니다. 잠시 후 다시 시도하세요."
+            "enabledNotice": "가장자리 엿보기가 켜졌습니다.",
+            "disabledNotice": "가장자리 엿보기가 꺼졌습니다. Live2D가 다시 표시되고 드래그할 수 있습니다.",
+            "stealthEnabledNotice": "은신 모드가 켜졌습니다.",
+            "stealthDisabledNotice": "은신 모드가 꺼졌습니다. Yui가 가장자리에서 계속 모습을 내밉니다.",
+            "toggleFailed": "가장자리 엿보기를 전환하지 못했습니다. 잠시 후 다시 시도하세요."
         },
         "toggles": {
             "allowInterrupt": "인터럽트 허용",
@@ -2697,8 +2698,6 @@
             "avatarReactionBubble": "표정 말풍선",
             "focusCognition": "집중 모드",
             "focusCognitionTooltip": "켜면 당신이 마음을 털어놓거나 복잡한 주제일 때 더 집중해 깊이 생각합니다. 끄면 집중 모드에 들어가지 않습니다.",
-            "widgetMode": "가장자리 도킹 모드 Beta",
-            "widgetModeTooltip": "가장자리 도킹 모드를 수동으로 켜면 Live2D가 화면 가장자리의 6개 앵커에서 내다볼 수 있습니다.",
             "slopFilter": "자연스러운 표현",
             "slopFilterTooltip": "이전 답변에서 반복되거나 틀에 박힌 표현을 줄여 더 자연스럽게 말하도록 합니다.",
             "autoCat": "자동 고양이 전환",

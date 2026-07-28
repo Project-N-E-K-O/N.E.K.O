@@ -10942,6 +10942,24 @@ def test_member_memory_never_outlives_its_parent_switch():
     service._clamp_member_to_group(deferred)
     assert deferred == {}
 
+    # ...but a parent held back in the SAME batch still counts as open: both
+    # keys get published together once the write lands.
+    deferred = {
+        "group_memory_enabled": True, "group_member_memory_enabled": True,
+    }
+    service._clamp_member_to_group(deferred)
+    assert deferred == {
+        "group_memory_enabled": True, "group_member_memory_enabled": True,
+    }
+
+    # A deferred parent on its own does not carry a stale child along: that
+    # request never asked for member memory.
+    settings["group_member_memory_enabled"] = True
+    deferred = {"group_memory_enabled": True}
+    service._clamp_member_to_group(deferred)
+    assert deferred == {"group_memory_enabled": True}
+    assert settings["group_member_memory_enabled"] is False
+
     # The write gate refuses collection even if the flag is forced on.
     memory = QQSessionMemoryService(SimpleNamespace(_qq_settings={
         "group_memory_enabled": False, "group_member_memory_enabled": True,
@@ -10952,6 +10970,103 @@ def test_member_memory_never_outlives_its_parent_switch():
         member_memory_enabled=True,
     ))
     assert "group_member_memory_messages" not in user_data
+
+
+@pytest.mark.asyncio
+async def test_first_time_setup_publishes_both_memory_opt_ins():
+    """Both dashboards submit every checkbox on every save, so the first
+    enable arrives as group+member in one call. Clamping the child against a
+    parent that is only deferred dropped it from the overlay: disk got member
+    memory as OFF and the user had to notice and save a second time."""
+    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
+
+    settings = {
+        "group_memory_enabled": False,
+        "group_member_memory_enabled": False,
+        "allow_cross_group_context": False,
+    }
+    during: list = []
+    written: list = []
+    persisted: list = []
+    plugin = SimpleNamespace(
+        _qq_settings=settings,
+        _user_sessions={},
+        _emit_log=lambda *a, **k: None,
+        logger=MagicMock(),
+        attention_service=None,
+        qq_client=None,
+        _running=False,
+        _startup_error=None,
+        _ensure_qq_client_initialized=lambda: None,
+    )
+    service = QQSettingsService.__new__(QQSettingsService)
+    service.plugin = plugin
+    service._enforce_attention_for_dynamic_mode = lambda: None
+    service._stamp_group_memory_transition = lambda *, enabled_after: None
+    service._spawn_group_memory_sync_task = lambda coro: coro.close()
+
+    async def _write(overlay=None):
+        during.append(dict(plugin._qq_settings))
+        written.append(dict(overlay or {}))
+        # persist_business_config writes dict(_qq_settings) updated with the
+        # overlay, so a switch can reach disk through EITHER of them. Asserting
+        # the overlay alone leaves the runtime half of the payload untested —
+        # and that half is exactly where a stale member flag would slip out.
+        payload = dict(plugin._qq_settings)
+        payload.update(overlay or {})
+        persisted.append(payload)
+        return True
+
+    service.persist_business_config = _write
+
+    await service.save_settings(
+        group_memory_enabled=True, group_member_memory_enabled=True,
+    )
+    # Still fail-closed while the write is in flight...
+    assert during[-1]["group_member_memory_enabled"] is False
+    # ...and both requested values reach disk and the runtime together.
+    assert written[-1] == {
+        "group_memory_enabled": True, "group_member_memory_enabled": True,
+    }
+    assert persisted[-1]["group_member_memory_enabled"] is True
+    assert plugin._qq_settings["group_memory_enabled"] is True
+    assert plugin._qq_settings["group_member_memory_enabled"] is True
+
+    # The parent constraint still binds when only the child is requested.
+    settings["group_memory_enabled"] = False
+    settings["group_member_memory_enabled"] = False
+    await service.save_settings(group_member_memory_enabled=True)
+    assert written[-1] == {}
+    assert persisted[-1]["group_member_memory_enabled"] is False
+    assert plugin._qq_settings["group_member_memory_enabled"] is False
+
+    # A stale child left over from a hand-edited config (or an older build)
+    # must not ride along on a parent-only save — that request never asked
+    # for member memory. The clearing has to happen BEFORE the write, or the
+    # stale value is what lands on disk and comes back at the next restart,
+    # this time under a parent that is now on.
+    settings["group_memory_enabled"] = False
+    settings["group_member_memory_enabled"] = True
+    await service.save_settings(group_memory_enabled=True)
+    assert written[-1] == {"group_memory_enabled": True}
+    assert persisted[-1]["group_member_memory_enabled"] is False
+    assert plugin._qq_settings["group_memory_enabled"] is True
+    assert plugin._qq_settings["group_member_memory_enabled"] is False
+
+    # ...but when the same stale state is saved from a dashboard, which
+    # always submits both checkboxes, the requested child still lands. The
+    # stale flag grants nothing while its parent is off, so "already true"
+    # must not be read as "no change to publish".
+    settings["group_memory_enabled"] = False
+    settings["group_member_memory_enabled"] = True
+    await service.save_settings(
+        group_memory_enabled=True, group_member_memory_enabled=True,
+    )
+    assert written[-1] == {
+        "group_memory_enabled": True, "group_member_memory_enabled": True,
+    }
+    assert persisted[-1]["group_member_memory_enabled"] is True
+    assert plugin._qq_settings["group_member_memory_enabled"] is True
 
 
 @pytest.mark.asyncio

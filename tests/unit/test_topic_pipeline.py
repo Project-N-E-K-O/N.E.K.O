@@ -982,10 +982,16 @@ async def test_topic_pool_restored_signals_respect_persisted_used_history(tmp_pa
     )
     pool.note_user_message("妮可", "先投递一次，建立今天已经用过 deep topic 的节流历史", lang="zh-CN")
     await pool.process_now("妮可", lang="zh-CN")
-    await asyncio.sleep(0.02)
+    used_path = path.with_name("topic_signals.used_topics.json")
+    # The trigger writes this file from a worker thread (to_thread), so a
+    # fixed sleep is a race: a loaded CI runner needs more than 20ms just to
+    # hand the write off. Wait for the artifact itself.
+    deadline = time.monotonic() + 5.0
+    while not used_path.exists() and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
+    assert used_path.exists(), "used-topics file was never persisted"
 
     assert delivered == ["买车"]
-    used_path = path.with_name("topic_signals.used_topics.json")
     used_payload = json.loads(used_path.read_text(encoding="utf-8"))
     assert used_payload["characters"]["妮可"][0]["used_at"] > 0
     used_text = used_path.read_text(encoding="utf-8")

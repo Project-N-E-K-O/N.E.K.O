@@ -18,6 +18,21 @@ Runtime では `NEKO_INSTANCE_ID`、`NEKO_AUTOSTART_CSRF_TOKEN`、`NEKO_AUTOSTAR
 
 Local vectors は `NEKO_VECTORS_ENABLED` と `NEKO_VECTORS_QUANTIZATION`（`auto/int8/fp32`）を受け付けます。Boolean は `1/true/yes/on` と `0/false/no/off` です。利用可能 RAM の下限は現在、固定の実行時定数 `VECTORS_MIN_RAM_GB = 4.0` であり、環境変数による上書きはありません。
 
+## プロセスモデルと単一インスタンス
+
+launcher は foreground プロセスです。daemon 化して親から離脱することはなく、所有者
+プロセスが消えた時点でサービス構成全体を片付けます。また OS のファイルロックで唯一性
+を自己証明し、その隣に権威ある runtime record（pid、instance id、確定したポート）を
+書き出します。
+
+| 変数 | デフォルト | 説明 |
+|------|------------|------|
+| `NEKO_OWNER_PID` | 本プロセスの親 | 親プロセス死亡ガードが監視する pid。所有者が直接の親で**ない**場合に設定します（例：storage 移行の世代交代で生成された次の launcher。その spawn 元は意図的に終了します）。 `launcher.json` を読んでランタイムを識別する所有者はこれを設定してください: レコードの `owner_pid` になり、照合すべきはこちらです。`parent_pid` と照合しないでください — Windows の開発実行では `Popen(sys.executable)` が実インタプリタを起動し直すシムを起動するため、`parent_pid` は所有者ではなくシムを指します (CI で実測。macOS と Linux は直接一致し、凍結ビルドにシムはありません)。 |
+| `NEKO_OWNER_RELAUNCH` | 未設定 | `1` は「所有者が自分で runtime を再起動する」という宣言です。storage 移行の再起動は自分で後継を spawn せず、クリーンに終了して再起動を待ちます。 Windows では設定を強く推奨します: 未設定だと launcher が自分で次世代を起動し、後継を巻き添えにしないため旧 Job の管理を解除する必要があり、cleanup を生き延びたプロセス (プラグイン、MCP、Chromium) が回収されません。 |
+| `NEKO_PARENT_DEATH_GUARD` | `1` | `0` でガードを完全に無効化します。対象を再 parent 化する debugger / profiler 用のみ。無効化した runtime は所有者より長生きし得ます。 |
+| `NEKO_LAUNCHER_RESTART_HANDOFF` | 未設定 | 前世代の launcher が後継に設定します。後継は「別インスタンスが動作中」と結論せず、単一インスタンスロックの解放を待ちます。手動設定は想定していません。 |
+| `NEKO_RUNTIME_STATE_DIR` | ユーザーごとの runtime ディレクトリ | `launcher.lock` と `launcher.json` の場所を上書きします。既定は Windows `%LOCALAPPDATA%\N.E.K.O\runtime`、macOS `~/Library/Application Support/N.E.K.O/runtime`、Linux `~/.local/state/N.E.K.O/runtime`。Linux のパスは意図的に `XDG_RUNTIME_DIR` を無視します: この変数はデスクトップセッションには存在しますが cron・素の SSH・`su`・system unit・多くのコンテナには無く、これを基にロックパスを決めると同一ユーザーが別々のロックを 2 つ保持し、ランタイムが 2 つ同時に起動し得ます。上書き値はそのまま使われ、ユーザーごとの接尾辞は付かないため、必ず単一ユーザー専用のディレクトリを指す必要があります。POSIX ではディレクトリ自体は検証されます: 他の uid が所有するディレクトリ (またはそこへの symlink) は EPERM で拒否され、group/world ビットの付いたディレクトリはその場で 0700 に chmod されます。Windows ではどちらも行いません。拒否は unknown として扱われ、launcher は警告付きで起動しますが一意性の証明はありません。共有ディレクトリを指すと単一インスタンスの証明が壊れます: Windows では 2 ユーザーが同一ロックを奪い合い、POSIX では 2 人目が 1 人目のロックファイルを開けず、一意性の証明なしで起動します。 |
+
 ## ランタイム構成
 
 | 変数 | デフォルト | 説明 |
