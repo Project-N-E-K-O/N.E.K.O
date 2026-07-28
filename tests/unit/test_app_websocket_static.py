@@ -501,9 +501,16 @@ def test_start_session_handshake_omitted_until_settings_hydrated():
     assert (
         "msg.action === 'start_session' && S.settingsHydrated === true" in wrapper
     ), "independent_asr_enabled stamp must be gated on S.settingsHydrated"
+    # Codex P2: settingsHydrated alone is not enough — it also flips on an
+    # unrelated user preference change while independentAsrEnabled is still the
+    # boot default. The stamp needs the per-key authority flag as well.
+    assert "S.independentAsrAuthoritative === true" in wrapper, (
+        "independent_asr_enabled stamp must also require per-key ASR authority"
+    )
 
-    # The flag starts false so a pre-hydration start_session omits the field.
+    # Both flags start false so a pre-hydration start_session omits the field.
     assert "settingsHydrated: false," in state_source
+    assert "independentAsrAuthoritative: false," in state_source
 
 
 def test_settings_hydration_marked_on_server_merge_and_user_change():
@@ -2697,3 +2704,43 @@ def test_ws_open_resyncs_goodbye_state_and_defers_regular_greeting_until_release
     assert "_sendGreetingCheckIfReady();" in onopen_greeting_block
     assert "S._startupGreetingReleaseGateUsed = true;" in onopen_greeting_block
     assert "sendStartupGreetingReleaseRequest('ws-open')" in onopen_greeting_block
+
+
+def test_asr_authority_is_per_key_not_granted_by_unrelated_setting_change():
+    # Codex P2. syncSettingsToServer({userInitiated:true}) marks the GLOBAL
+    # S.settingsHydrated for every user action, including ones that never touch
+    # the ASR key (settings popup toggles, subtitle toggles, the chat-window
+    # translate toggle). With a pending or permanently failing boot GET,
+    # S.independentAsrEnabled is still the boot default false at that moment, so
+    # a global-only gate would let the next start_session stamp false over the
+    # backend's persisted true. Authority for that one key must therefore be
+    # tracked separately and granted by exactly three events.
+    settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
+
+    user_gate = settings_source.split("if (userInitiated) {", 1)[1].split("}", 1)[0]
+    assert "S.settingsHydrated = true;" in user_gate
+    # The per-key mark inside the userInitiated gate must be conditional on the
+    # ASR key actually being dirty — an unconditional mark here is the bug.
+    assert (
+        "if (_dirtySettingsKeys.has('independentAsrEnabled')) "
+        "S.independentAsrAuthoritative = true;" in user_gate
+    ), "ASR authority must be granted only when the user change touched that key"
+
+    # (1) A merged server GET grants authority.
+    merge_block = settings_source.split(
+        "const mergeSettled = loadSettingsFromServer().then(serverResult => {",
+        1,
+    )[1]
+    assert "S.independentAsrAuthoritative = true;" in merge_block.split(
+        "startPeriodicSync();", 1
+    )[0]
+
+    # (2) A cross-window ASR flip grants authority, next to the dirty-key add.
+    cross_window = settings_source.split(
+        "_dirtySettingsKeys.add('independentAsrEnabled');",
+        1,
+    )[1].split("}", 1)[0]
+    assert "S.independentAsrAuthoritative = true;" in cross_window
+
+    # (3) Nothing else in the file grants it: exactly three assignment sites.
+    assert settings_source.count("S.independentAsrAuthoritative = true;") == 3

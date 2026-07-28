@@ -249,6 +249,12 @@ class TranscriptDispatcher:
         self._idle.set()
 
     async def wait_idle(self) -> None:
+        """Await dispatch quiescence: no queued and no active envelope.
+
+        This is not "no turn in flight". Outstanding reservations are
+        excluded on purpose; see ``_set_idle_if_empty``.
+        """
+
         await self._idle.wait()
 
     def _ensure_worker(self) -> None:
@@ -285,5 +291,10 @@ class TranscriptDispatcher:
             return
 
     def _set_idle_if_empty(self) -> None:
+        # Reservations are deliberately NOT part of the idle predicate. A slot
+        # is reserved at turn preparation and stays held for the whole live
+        # turn, and the next turn reserves its slot while the previous final
+        # is still draining. Folding reservations in here would make
+        # wait_idle() unsettleable for any back-to-back session.
         if self._queue.empty() and self._active is None:
             self._idle.set()

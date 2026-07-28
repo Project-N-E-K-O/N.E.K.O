@@ -412,6 +412,16 @@
             // these dirty keys while still hydrating every untouched field
             // from the server, instead of dropping the whole merge.
             _markUserDirtySettings();
+            // Per-key authority for the one key the start_session handshake
+            // carries. An unrelated user change (settings popup, subtitle
+            // toggle, chat-window translate toggle) also sets settingsHydrated,
+            // but that says nothing about independentAsrEnabled: while the boot
+            // GET is pending or permanently failing it is still the boot
+            // default, and stamping it would override the backend's persisted
+            // choice. Mark ASR authority only when THIS user change actually
+            // touched the ASR key, synchronously before any await so the very
+            // next start_session already carries it.
+            if (_dirtySettingsKeys.has('independentAsrEnabled')) S.independentAsrAuthoritative = true;
         }
         // Serialize the POST behind any in-flight sync (Codex P2): the
         // settings snapshot is built inside runSync, at SEND time — after the
@@ -942,6 +952,10 @@
                 // independent_asr_enabled。GET 永久失败时 serverResult 为 null，这里
                 // 不会执行——字段保持省略、由后端持久化值兜底，正是期望行为。
                 S.settingsHydrated = true;
+                // The GET merged server values into S, so independentAsrEnabled
+                // now holds either server truth or a user change the field-level
+                // merge preserved — authoritative for the handshake either way.
+                S.independentAsrAuthoritative = true;
                 // Distinct from the hydration mark above (which a user action
                 // also sets, because a user choice is authoritative for the
                 // handshake even before any GET): THIS flag means server values
@@ -1147,6 +1161,7 @@
                 // periodic sync with non-authoritative boot values.
                 S.settingsHydrated = true;
                 _dirtySettingsKeys.add('independentAsrEnabled');
+                S.independentAsrAuthoritative = true;
             }
             stopVisionAfterPrivacyEnabled();
             if (changed && typeof window.scheduleProactiveChat === 'function') {

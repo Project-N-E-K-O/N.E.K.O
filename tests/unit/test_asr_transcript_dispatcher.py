@@ -120,3 +120,22 @@ async def test_old_worker_unwind_cannot_clear_new_active_dispatch() -> None:
     release_new.set()
     await asyncio.wait_for(wait_idle, 1)
     assert dispatcher._active is None
+
+
+async def test_wait_idle_returns_while_next_turn_slot_is_reserved() -> None:
+    # Pins the idle predicate against a plausible-looking "fix": folding
+    # self._reservations into _set_idle_if_empty. A live session always holds
+    # the next turn's reservation while the previous final drains
+    # (runtime.py _handle_independent_asr_final -> _activate_pending_
+    # independent_turn -> _prepare_independent_asr_turn), so a reservation-
+    # aware predicate never settles and wait_idle() hangs forever.
+    dispatcher = TranscriptDispatcher(AsyncMock(), capacity=2)
+    first = _envelope(1)
+    second = _envelope(2)
+
+    assert dispatcher.try_reserve(first.final_key) is True
+    assert dispatcher.try_reserve(second.final_key) is True
+    dispatcher.submit(first)
+
+    await asyncio.wait_for(dispatcher.wait_idle(), 1)
+    assert second.final_key in dispatcher._reservations

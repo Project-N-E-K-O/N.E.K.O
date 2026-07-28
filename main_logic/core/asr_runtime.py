@@ -617,6 +617,62 @@ class AsrRuntimeMixin:
         self._abandon_core_voice_turn()
         await self._asr_runtime.abort(reason)
 
+    async def _reset_native_audio_turn(
+        self,
+        reason: str,
+        *,
+        route_mode: str | None = None,
+    ) -> None:
+        """Discard the native provider's pending input audio after a PCM hole.
+
+        A native turn is segmented by the provider's server VAD over one
+        continuously appended input buffer, so microphone PCM dropped
+        mid-utterance is invisible to it: speech from both sides of the hole
+        gets concatenated into a single incorrect transcript. Clearing the
+        server-side input buffer drops the pre-hole partial utterance
+        instead -- the native-route equivalent of invalidating the whole
+        candidate turn on the independent route. No-op for sessions without
+        an input-buffer clear (text sessions, Gemini).
+        """
+
+        if (route_mode or self._asr_route_mode) != "native":
+            return
+        session_ref = getattr(self, "session", None)
+        if getattr(session_ref, "_fatal_error_occurred", False):
+            return
+        clear_buffer = getattr(session_ref, "clear_audio_buffer", None)
+        if not callable(clear_buffer):
+            return
+        try:
+            await clear_buffer()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning(
+                "[%s] native audio turn reset failed reason=%s",
+                self.lanlan_name,
+                reason,
+            )
+
+    async def _invalidate_interrupted_voice_turn(self, reason: str) -> None:
+        """Invalidate whichever route owns a turn broken by dropped PCM.
+
+        The independent abort is started first on purpose: its synchronous
+        prefix bumps the audio generation, so a pre-hole frame still in
+        flight in the worker fails its ingress-token check instead of being
+        appended after the buffer clear. One loop tick is enough for that
+        prefix to land; the abort's first real suspension is a frontend
+        status send under exactly the congestion that caused the overflow,
+        and the buffer clear must not queue behind it.
+        """
+
+        abort = asyncio.ensure_future(self._abort_independent_asr(reason))
+        try:
+            await asyncio.sleep(0)
+            await self._reset_native_audio_turn(reason)
+        finally:
+            await abort
+
     async def _suspend_independent_asr(self, reason: str) -> None:
         self._abandon_core_voice_turn()
         await self._asr_runtime.suspend(reason)
@@ -807,7 +863,9 @@ class AsrRuntimeMixin:
                     # performs before its first await) still executes before
                     # this coroutine resumes and any later frame is accepted.
                     self._fire_task(
-                        self._abort_independent_asr("ingress_backpressure")
+                        self._invalidate_interrupted_voice_turn(
+                            "ingress_backpressure"
+                        )
                     )
                     await asyncio.sleep(0)
                     return
@@ -1074,7 +1132,15 @@ class AsrRuntimeMixin:
                     )
             if cache_for_hot_swap:
                 if not accepted:
-                    await self._abort_independent_asr("ingress_backpressure")
+                    # Weakest of the three sites: the hot-swap barrier is up, so
+                    # self.session may still be the pre-swap session being torn
+                    # down (clearing that buffer is a no-op) and the hole's real
+                    # damage lands in the post-swap session, which the flush
+                    # path below covers. Load-bearing only when the hot swap is
+                    # aborted and the same session resumes.
+                    await self._invalidate_interrupted_voice_turn(
+                        "ingress_backpressure"
+                    )
                 return
             if not self._ingress_token_matches(ingress_token):
                 return
@@ -1373,7 +1439,9 @@ class AsrRuntimeMixin:
                 self._ingress_token_matches(frame.token)
                 for frame in damaged_frames
             ):
-                await self._abort_independent_asr("ingress_backpressure")
+                await self._invalidate_interrupted_voice_turn(
+                    "ingress_backpressure"
+                )
 
     def _invalidate_voice_pcm_sync(self, reason: str) -> None:
         self._clear_audio_stream_queue(reason)
@@ -1920,4 +1988,11 @@ class AsrRuntimeMixin:
             )
 
     async def _wait_asr_transcript_dispatch_idle(self) -> None:
+        """Test seam: await Core-side transcript dispatch quiescence.
+
+        Production code never needs this; tests use it to order assertions
+        after the serial dispatch worker drains. Delegates to the ASR
+        component's allow-listed public API.
+        """
+
         await self._asr_runtime.wait_transcript_idle()

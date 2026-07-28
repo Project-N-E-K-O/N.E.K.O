@@ -397,6 +397,10 @@ def _make_routable_audio_manager(route_result: bool):
             self._fatal_error_occurred = False
             self._audio_processor = object()
             self.stream_audio = AsyncMock()
+            # The class bypasses OmniRealtimeClient.__init__ (no _is_gemini),
+            # so the real coroutine would raise AttributeError and be swallowed
+            # by the reset helper, making native-clear assertions vacuous.
+            self.clear_audio_buffer = AsyncMock()
 
         async def process_audio_chunk_async(self, audio_bytes):
             return audio_bytes
@@ -1066,7 +1070,11 @@ async def test_hot_swap_flush_hands_off_sustained_arrival_without_abort(
     async def paced_arrival_sleep(delay: float) -> None:
         # Sustained live ingress: ~2 frames arrive during each 25 ms pacing
         # gap, so a paced drain settles at a small steady state instead of
-        # converging to empty on its own.
+        # converging to empty on its own. A bare yield is not a pacing gap
+        # (see degraded_sleep) and must not manufacture frames.
+        if delay <= 0:
+            await real_sleep(0)
+            return
         sleeps.append(delay)
         for _ in range(2):
             assert mgr.hot_swap_audio_cache.append(
@@ -1109,6 +1117,14 @@ async def test_hot_swap_flush_deadline_invalidates_non_converging_replay(
         # Ingress matches the replay rate exactly (5 frames per 25 ms
         # pacing gap), so the backlog never shrinks below the handoff
         # threshold: genuine backpressure, not a healthy steady state.
+        # Only a real pacing gap admits live ingress -- a bare
+        # ``asyncio.sleep(0)`` yield (the ordering tick inside
+        # _invalidate_interrupted_voice_turn) is not wall-clock time and must
+        # not manufacture frames, or the post-invalidation cache assertions
+        # below would measure the harness instead of the product.
+        if delay <= 0:
+            await real_sleep(0)
+            return
         clock.now += delay
         for _ in range(5):
             assert mgr.hot_swap_audio_cache.append(_hot_swap_frame(token))
@@ -1124,6 +1140,8 @@ async def test_hot_swap_flush_deadline_invalidates_non_converging_replay(
     assert not mgr.hot_swap_audio_cache
     assert mgr.is_flushing_hot_swap_cache is False
     assert mgr.is_hot_swap_imminent is False
+    # Codex P2: the native route's own invalidation is the input-buffer clear.
+    mgr.session.clear_audio_buffer.assert_awaited_once()
 
 
 async def test_native_route_skips_send_after_fatal_error_with_rate_limited_log(
@@ -1675,3 +1693,95 @@ async def test_restore_skipped_when_the_newer_preview_cleared_during_injection()
 
     assert [payload["text"] for payload in _sent_preview_payloads(mgr)] == [""]
     assert mgr._core_asr_preview_text == ""
+
+
+async def test_native_route_overflow_clears_provider_input_buffer():
+    # Codex P2. A native turn is segmented by the provider's server VAD over
+    # one continuously appended input buffer, so a multi-second ingress hole is
+    # invisible to it: speech from both sides of the discarded interval gets
+    # concatenated into one wrong transcript. The independent abort fired here
+    # owns nothing on the native route (no lifecycle, no provider session), so
+    # the buffer clear is the only thing that invalidates the broken turn.
+    mgr = _make_routable_audio_manager(True)
+    _authorize_core_lease(mgr)
+    mgr._set_microphone_route("native")
+    mgr._audio_stream_queue = AudioDurationQueue(
+        capacity_us=1_000_000,
+        max_frames=2,
+    )
+    mgr._audio_stream_dropped_total = 0
+    mgr._last_audio_stream_backlog_log_time = 0.0
+    mgr._ensure_audio_stream_worker = lambda: None
+    mgr._bg_tasks = set()
+    mgr._asr_runtime.abort = AsyncMock()
+
+    def message(seq: int) -> dict:
+        return {
+            "seq": seq,
+            "input_type": "audio",
+            "sample_rate_hz": 16_000,
+            "data": [seq] * 160,
+        }
+
+    for seq in (1, 2, 3):
+        await LLMSessionManager._enqueue_audio_stream_data(mgr, message(seq))
+    await asyncio.gather(*list(mgr._bg_tasks))
+
+    assert mgr._audio_stream_queue.empty()
+    assert mgr._audio_stream_dropped_total == 3
+    assert mgr._asr_route_mode == "native"
+    mgr.session.clear_audio_buffer.assert_awaited_once()
+
+
+async def test_independent_route_overflow_does_not_clear_provider_input_buffer():
+    # Route-dispatch guard (not a fail-before test): the independent route owns
+    # its own invalidation via IndependentAsrRuntime.abort, so the helper must
+    # not degrade into an unconditional clear of the Omni input buffer.
+    mgr = _make_routable_audio_manager(True)
+    _authorize_core_lease(mgr)
+    mgr._set_microphone_route("independent")
+    mgr._audio_stream_queue = AudioDurationQueue(
+        capacity_us=1_000_000,
+        max_frames=2,
+    )
+    mgr._audio_stream_dropped_total = 0
+    mgr._last_audio_stream_backlog_log_time = 0.0
+    mgr._ensure_audio_stream_worker = lambda: None
+    mgr._bg_tasks = set()
+    mgr._asr_runtime.abort = AsyncMock()
+
+    for seq in (1, 2, 3):
+        await LLMSessionManager._enqueue_audio_stream_data(
+            mgr,
+            {
+                "seq": seq,
+                "input_type": "audio",
+                "sample_rate_hz": 16_000,
+                "data": [seq] * 160,
+            },
+        )
+    await asyncio.gather(*list(mgr._bg_tasks))
+
+    mgr._asr_runtime.abort.assert_awaited_once_with("ingress_backpressure")
+    mgr.session.clear_audio_buffer.assert_not_awaited()
+
+
+async def test_hot_swap_flush_damaged_tail_clears_native_input_buffer(monkeypatch):
+    # The flush replays the cache into the POST-swap session and explicitly
+    # supports the native route. A send failure drops the whole remaining tail
+    # into damaged_frames, so the same PCM hole opens against the new session.
+    mgr = _make_routable_audio_manager(True)
+    _authorize_core_lease(mgr)
+    mgr._set_microphone_route("native")
+    token = _queue_token()
+    mgr._ingress_token_matches = MagicMock(return_value=True)
+    mgr._asr_runtime.abort = AsyncMock()
+    mgr.hot_swap_audio_cache = HotSwapAudioBuffer(capacity_ms=8_000)
+    for _ in range(3):
+        assert mgr.hot_swap_audio_cache.append(_hot_swap_frame(token))
+    mgr._route_microphone_audio = AsyncMock(side_effect=RuntimeError("send failed"))
+
+    await LLMSessionManager._flush_hot_swap_audio_cache(mgr)
+
+    mgr._asr_runtime.abort.assert_awaited_once_with("ingress_backpressure")
+    mgr.session.clear_audio_buffer.assert_awaited_once()

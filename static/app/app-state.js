@@ -89,6 +89,11 @@
         // start_session 握手（app-websocket.js attachStartSessionHandshake）不得携带它，
         // 否则新浏览器 profile 首个会话会用默认 false 覆盖后端持久化的 true。
         settingsHydrated: false,
+        // independentAsrEnabled 的按键权威位：settingsHydrated 在任何一次用户改
+        // 设置时都会翻真，而那与 ASR 的值毫无关系。只有「server GET 合并成功」
+        // 「用户显式改过 ASR 开关」「跨窗口 ASR 翻转」这三种事件才让它变权威；
+        // 在此之前 start_session 握手必须省略该字段，由后端持久化值兜底。
+        independentAsrAuthoritative: false,
         independentAsrActive: false,
         independentAsrProvider: '',
         externalAsrPreviewMessage: null, // 独立 ASR 实时转写预览的消息句柄（app-websocket.js 维护）

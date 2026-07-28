@@ -2583,9 +2583,6 @@ class IndependentAsrRuntime:
                 expected_identity=identity,
             )
 
-    async def _wait_asr_transcript_dispatch_idle(self) -> None:
-        await self._asr_transcript_dispatcher.wait_idle()
-
     async def _handle_independent_asr_error(
         self,
         epoch: int,

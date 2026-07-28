@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.node_harness import run_node_script
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 APP_WEBSOCKET_PATH = REPO_ROOT / "static" / "app" / "app-websocket.js"
@@ -70,8 +72,12 @@ def _run_preview_node_harness(script: str) -> subprocess.CompletedProcess[str]:
     node_path = shutil.which("node")
     if not node_path:
         pytest.skip("node is not installed; skipping preview keying harness test")
-    return subprocess.run(
-        [node_path, "-e", script],
+    # run_node_script writes the script to a temp file: node -e would put the
+    # whole harness on the command line, which Windows refuses past 32767
+    # characters and which encodes under the locale codec rather than UTF-8.
+    return run_node_script(
+        node_path,
+        script,
         cwd=str(REPO_ROOT),
         capture_output=True,
         text=True,
