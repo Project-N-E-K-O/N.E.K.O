@@ -12,7 +12,7 @@ import json
 import struct
 import time
 from dataclasses import dataclass, field, replace
-from typing import Literal
+from typing import ClassVar, Literal
 
 from websockets import exceptions as web_exceptions
 
@@ -50,6 +50,14 @@ class VoiceInputConsumerBinding:
 
 @dataclass(frozen=True, slots=True)
 class _QueuedMicFrame:
+    # Longest microphone PCM frame accepted at ingress, in samples. Sized from
+    # the 48 kHz worklet buffer (480 samples / 10 ms) with the same 120 ms
+    # allowance the binary wire decoder uses (_VOICE_BINARY_MAX_DURATION_MS in
+    # main_routers/websocket_router.py), so both ingress paths reject at the
+    # same point. ClassVar, not a module constant: the layering gate keeps this
+    # mixin module to imports and classes only.
+    MAX_SAMPLES: ClassVar[int] = 48_000 * 120 // 1_000
+
     message: dict
     duration_us: int
     source_rate_hz: int
@@ -78,6 +86,14 @@ class _QueuedMicFrame:
             source_rate_hz = int(declared_rate_hz)
         else:
             raise ValueError("MIC_SAMPLE_RATE_UNSUPPORTED")
+        # Per-frame bound, matching the binary wire cap in websocket_router
+        # (_VOICE_BINARY_MAX_DURATION_MS). The queue's own 2 s / 256-frame
+        # limits are post-decode, so without this a single JSON stream_data
+        # frame could carry an arbitrarily long sample list -- the frontend
+        # never sends JSON audio, so any oversized one is malformed by
+        # construction.
+        if len(samples) > cls.MAX_SAMPLES:
+            raise ValueError("MIC_PCM_FRAME_TOO_LONG")
         duration_us = (len(samples) * 1_000_000 + source_rate_hz - 1) // source_rate_hz
         return cls(
             message=message,
@@ -233,6 +249,7 @@ class AsrRuntimeMixin:
             nr_enabled=self._voice_input_noise_reduction_enabled,
         )
         self._voice_input_pipeline_failed = False
+        self._blocked_text_mode_microphone_signalled = False
         # Identity of the independent-ASR turn that owns the frontend's
         # singleton preview bubble, plus its last rendered text. Both are
         # stamped/refreshed from the ordered partial stream so a late final
@@ -272,6 +289,8 @@ class AsrRuntimeMixin:
             self._core_asr_preview_turn_id = ""
         if not hasattr(self, "_core_asr_preview_text"):
             self._core_asr_preview_text = ""
+        if not hasattr(self, "_blocked_text_mode_microphone_signalled"):
+            self._blocked_text_mode_microphone_signalled = False
 
     def _begin_asr_route_operation(self) -> int:
         self._asr_route_operation_generation += 1
@@ -288,6 +307,9 @@ class AsrRuntimeMixin:
             raise ValueError("MICROPHONE_ROUTE_INVALID")
         if mode != self._asr_route_mode:
             self._microphone_route_generation += 1
+        if mode != "blocked":
+            # Re-arm the one-shot text-mode notice for the next episode.
+            self._blocked_text_mode_microphone_signalled = False
         self._asr_route_mode = mode
 
     def _capture_ingress_token(self, _lifecycle=None) -> VoiceIngressToken:
@@ -816,6 +838,34 @@ class AsrRuntimeMixin:
             )
         )
 
+    async def _maybe_signal_blocked_text_mode_microphone(self) -> None:
+        """Tell a client that is still recording into a text-mode session.
+
+        The microphone lease belongs to the frontend and no session-lifecycle
+        path resets it, while a text-mode session pins the route to
+        ``blocked`` (``_start_independent_asr_if_enabled`` returns early for a
+        non-audio ``input_mode``). A client that keeps uploading therefore has
+        every frame accepted at ingress and dropped here. The current frontend
+        stops the microphone itself on ``session_started(input_mode='text')``;
+        this covers older and third-party clients, which would otherwise get
+        no signal at all. One status per text-mode episode: the flag is
+        cleared whenever the route leaves ``blocked``.
+        """
+
+        if str(getattr(self, "input_mode", "audio") or "audio") != "text":
+            return
+        if self._blocked_text_mode_microphone_signalled:
+            return
+        self._blocked_text_mode_microphone_signalled = True
+        await self.send_status(
+            json.dumps(
+                {
+                    "code": "VOICE_INPUT_BLOCKED_TEXT_SESSION",
+                    "details": {"reason": "text_session_active"},
+                }
+            )
+        )
+
     async def _enqueue_audio_stream_data(self, message: dict) -> None:
         self._ensure_asr_runtime_state()
         if not self._voice_input_accepts_pcm():
@@ -1252,6 +1302,7 @@ class AsrRuntimeMixin:
             return True
         if route_mode != "independent":
             self._set_microphone_route("blocked")
+            await self._maybe_signal_blocked_text_mode_microphone()
             return True
         token = ingress_token or self._capture_ingress_token()
         if not self._ingress_token_matches(token):
@@ -1542,6 +1593,37 @@ class AsrRuntimeMixin:
         self._voice_input_suppressed = True
         self._voice_lease_requires_abort = True
         self._invalidate_voice_pcm_sync("websocket_reconnect")
+        return True
+
+    async def _revoke_voice_input_connection(self, connection_id: str) -> bool:
+        """Release the voice lease held by a websocket that just disconnected.
+
+        Only the current holder may revoke: a socket that already lost the
+        identity to a newer claim must never clear the winner's lease. The
+        shared session is deliberately left alone -- this aborts the voice
+        turn (releasing the realtime dispatch pause and the provider
+        transport) and parks the lease at owner ``none`` until the next
+        socket engages voice input, exactly like a fresh claim does.
+        """
+
+        self._ensure_asr_runtime_state()
+        normalized = str(connection_id or "").strip()
+        if not normalized or normalized != self._voice_lease_connection_id:
+            return False
+        invalidate_start = getattr(self._asr_runtime, "_invalidate_asr_start", None)
+        if callable(invalidate_start):
+            invalidate_start()
+        self._voice_lease_connection_id = ""
+        self._voice_lease_generation = -1
+        self._voice_lease_synchronized = False
+        self._voice_lease_control_seen = False
+        await self._apply_voice_lease_state(
+            owner="none",
+            hard_muted=False,
+            focus_suppressed=False,
+            reason="voice_connection_closed",
+            force_abort=True,
+        )
         return True
 
     async def _ensure_voice_input_session_authorized(

@@ -59,6 +59,7 @@ _asset_manifest = _load_asset_manifest_module()
 AssetManifestError = _asset_manifest.AssetManifestError
 load_manifest = _asset_manifest.load_manifest
 verify_asset = _asset_manifest.verify_asset
+require_downloadable_source = _asset_manifest.require_downloadable_source
 
 
 def _download_verified(source: str, destination: Path, expected_sha256: str) -> None:
@@ -125,7 +126,11 @@ def prepare_assets(
         if cached is not None and cached.is_file():
             _copy_verified(cached, directory / spec.filename, spec.sha256)
         else:
-            _download_verified(spec.source, directory / spec.filename, spec.sha256)
+            _download_verified(
+                require_downloadable_source(spec),
+                directory / spec.filename,
+                spec.sha256,
+            )
         prepared.append(verify_asset(directory, spec))
     return prepared
 

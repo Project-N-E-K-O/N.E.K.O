@@ -34,6 +34,15 @@ class _ProtocolManager:
         self.calls.append(("begin", connection_id))
         self._voice_lease_connection_id = connection_id
 
+    async def _revoke_voice_input_connection(self, connection_id: str) -> bool:
+        # Mirrors the real mixin: only the current holder may revoke.
+        if connection_id != self._voice_lease_connection_id:
+            self.calls.append(("revoke_rejected", connection_id))
+            return False
+        self.calls.append(("revoke", connection_id))
+        self._voice_lease_connection_id = ""
+        return True
+
     async def _ensure_voice_input_session_authorized(
         self,
         connection_id: str,
@@ -183,11 +192,37 @@ def test_binary_audio_frame_rejects_invalid_contract(payload: bytes) -> None:
         _decode_binary_audio_frame(payload)
 
 
-def test_binary_audio_frame_rejects_more_than_one_second_before_pcm_unpack() -> None:
-    payload = struct.pack("<4sI", b"NEKO", 48_000) + (b"\x00\x00" * 48_001)
+@pytest.mark.parametrize(
+    "sample_rate_hz, samples",
+    [(16_000, 1_921), (48_000, 5_761)],
+)
+def test_binary_audio_frame_rejects_an_oversized_frame_before_pcm_unpack(
+    sample_rate_hz: int,
+    samples: int,
+) -> None:
+    # Literal bounds on purpose: deriving them from the constant would make the
+    # test pass against any value of it. The real worklet frame is 512 samples
+    # at 16 kHz / 480 at 48 kHz, so these are already 4-12x oversized.
+    payload = struct.pack("<4sI", b"NEKO", sample_rate_hz) + (b"\x00\x00" * samples)
 
     with pytest.raises(ValueError, match="VOICE_BINARY_FRAME_INVALID: frame is too large"):
         _decode_binary_audio_frame(payload)
+
+
+@pytest.mark.parametrize(
+    "sample_rate_hz, samples",
+    [(16_000, 512), (48_000, 480), (16_000, 1_920), (48_000, 5_760)],
+)
+def test_binary_audio_frame_accepts_real_and_boundary_frame_sizes(
+    sample_rate_hz: int,
+    samples: int,
+) -> None:
+    payload = struct.pack("<4sI", b"NEKO", sample_rate_hz) + (b"\x01\x00" * samples)
+
+    message = _decode_binary_audio_frame(payload)
+
+    assert len(message["data"]) == samples
+    assert message["sample_rate_hz"] == sample_rate_hz
 
 
 @pytest.mark.asyncio
@@ -1069,6 +1104,14 @@ async def test_chat_close_after_recorder_left_still_tears_down(
     recording_socket.release.set()
     await recording_task
     assert manager.cleanup_calls == 0
+    # Codex P2: teardown is correctly skipped, but the dead socket's voice
+    # lease must still be revoked. Left armed it holds the realtime dispatch
+    # pause its turn took (no final can arrive to release it), which parks the
+    # arbiter worker before dequeuing and silently hangs every later response
+    # on the session the chat window is still using.
+    revoked = [name for name, _payload in manager.calls if name == "revoke"]
+    assert revoked == ["revoke"]
+    assert manager._voice_lease_connection_id == ""
 
     # The chat window's later disconnect must not defer to the departed
     # recorder: the stale voice registration is gone, so the full manager

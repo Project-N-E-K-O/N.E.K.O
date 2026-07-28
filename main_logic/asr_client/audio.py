@@ -129,6 +129,13 @@ class AsrAudioDispatcher:
         self._session_ref: Any = None
         self._state: Literal["idle", "active", "sealed", "aborted"] = "idle"
         self._last_sequence = 0
+        # Keyed by id(command). Sound because no path leaves an entry alive
+        # past its command: _put writes the key AFTER put_nowait with no await
+        # between (Queue.put_nowait only schedules a wakeup, never runs the
+        # getter), _run pops it as the first statement after get() binds the
+        # command locally, abort() pops per drained command in an await-free
+        # loop, and the QueueFull branch returns before writing a key at all.
+        # Bounded by max_commands.
         self._enqueued_at: dict[int, float] = {}
         self.asr_audio_command_queue_ms = 0
         self.asr_abort_discarded_command_count = 0

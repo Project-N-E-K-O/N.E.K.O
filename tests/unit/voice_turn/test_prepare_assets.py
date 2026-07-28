@@ -66,12 +66,17 @@ def _manifest(directory, source, digest):
     (directory / "manifest.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
-def test_prepare_assets_downloads_and_atomically_verifies(tmp_path):
+def test_prepare_assets_downloads_and_atomically_verifies(tmp_path, monkeypatch):
     source = tmp_path / "source.bin"
     source.write_bytes(b"reviewed model")
     output = tmp_path / "output"
     output.mkdir()
     _manifest(output, source.as_uri(), hashlib.sha256(source.read_bytes()).hexdigest())
+    # This test drives the real download path with a file:// URL; production
+    # only allows https (see test_download_rejects_a_non_https_source).
+    monkeypatch.setattr(
+        asset_manifest, "DOWNLOADABLE_SOURCE_SCHEMES", frozenset({"https", "file"})
+    )
     paths = prepare_assets(output)
     assert paths[0].read_bytes() == b"reviewed model"
     assert not (output / "model.onnx.part").exists()
@@ -94,12 +99,15 @@ def test_source_cache_is_verified_before_install(tmp_path):
         prepare_assets(output, source_cache=cache)
 
 
-def test_download_sha_mismatch_removes_partial_file(tmp_path):
+def test_download_sha_mismatch_removes_partial_file(tmp_path, monkeypatch):
     source = tmp_path / "source.bin"
     source.write_bytes(b"corrupt model")
     output = tmp_path / "output"
     output.mkdir()
     _manifest(output, source.as_uri(), "0" * 64)
+    monkeypatch.setattr(
+        asset_manifest, "DOWNLOADABLE_SOURCE_SCHEMES", frozenset({"https", "file"})
+    )
 
     with pytest.raises(AssetManifestError, match="download SHA-256 mismatch"):
         prepare_assets(output)
@@ -179,3 +187,33 @@ def test_preparer_reports_manifest_error_without_numpy(tmp_path):
     assert "SHA-256 mismatch" in result.stderr
     assert "ModuleNotFoundError" not in result.stderr
     assert "Traceback" not in result.stderr
+
+
+def test_download_rejects_a_non_https_source(tmp_path):
+    # The manifest is in-repo and every downloaded byte is SHA-256 checked
+    # before install, so a hostile source cannot substitute content -- but it
+    # can still turn the build host into a blind-SSRF probe (the failure text
+    # distinguishes "Connection refused" from "timed out"). Gate the transport
+    # at the download call site, never at manifest load: verifying an
+    # already-present asset never reads `source`, and rejecting there would
+    # turn a metadata typo into a runtime voice-turn outage.
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"reviewed model")
+    output = tmp_path / "output"
+    output.mkdir()
+    _manifest(output, source.as_uri(), hashlib.sha256(source.read_bytes()).hexdigest())
+
+    with pytest.raises(AssetManifestError, match="asset source must use one of"):
+        prepare_assets(output)
+    assert not (output / "model.onnx").exists()
+
+
+def test_offline_verification_ignores_the_source_scheme(tmp_path):
+    # A non-https source must not make an on-disk, digest-matching asset
+    # unloadable: the runtime path never consults `source`.
+    payload = b"reviewed model"
+    (tmp_path / "model.onnx").write_bytes(payload)
+    _manifest(tmp_path, "ftp://example.invalid/model", hashlib.sha256(payload).hexdigest())
+
+    paths = prepare_assets(tmp_path, offline=True)
+    assert paths[0].read_bytes() == payload

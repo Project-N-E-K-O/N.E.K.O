@@ -2744,3 +2744,23 @@ def test_asr_authority_is_per_key_not_granted_by_unrelated_setting_change():
 
     # (3) Nothing else in the file grants it: exactly three assignment sites.
     assert settings_source.count("S.independentAsrAuthoritative = true;") == 3
+
+
+def test_text_session_start_stops_an_active_microphone():
+    # PR #2345 removed streaming.py's audio-branch session rebuild, so a
+    # microphone left running into a text session has every frame accepted at
+    # ingress and dropped at routing — no status, no recovery, mic toggle
+    # required. The user's most recent explicit action wins: installing a text
+    # session stops recording. One-directional on purpose; rebuilding the audio
+    # session from the ingress path would re-arm the start_session teardown
+    # ping-pong instead.
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    started = websocket_source.split(
+        "S.isTextSessionActive = response.input_mode === 'text';",
+        1,
+    )[1].split("var _tiaStarted", 1)[0]
+
+    assert "response.input_mode === 'text'" in started
+    assert "S.isRecording === true" in started
+    assert "window.stopRecording();" in started

@@ -3128,6 +3128,22 @@
                     S.voiceChatActive = response.input_mode !== 'text';
                     S.voiceStartPending = false;
 
+                    // 文本 session 装好后麦克风必须停：mic lease 只由前端持有，
+                    // 后端任何 session 生命周期路径都不会重置它，而文本 session
+                    // 把麦克风路由钉死在 blocked（asr_runtime.py
+                    // _start_independent_asr_if_enabled 对非 audio 的 input_mode
+                    // 直接 return）。留着录音的话每一帧 PCM 都会被 ingress 接收、
+                    // 跑完整条降噪/VAD 流水线，然后在路由处静默丢弃——没有状态、
+                    // 没有恢复路径，用户必须手动关开麦克风。用户刚刚显式选择了打字，
+                    // 以最近一次显式动作为准停掉录音，比在 ingress 里反向重建
+                    // audio session 更安全（不会和 start_session 撕重建打架）。
+                    if (response.input_mode === 'text'
+                        && S.isRecording === true
+                        && typeof window.stopRecording === 'function') {
+                        console.log('[App] text session installed; stopping the microphone');
+                        window.stopRecording();
+                    }
+
                     // Multi-window 文本框对偶 hide：每个 webview（index.html 主窗口、
                     // chat.html 子窗口）都通过自己的 ws 收到 session_started，借此
                     // 各自 hide 自己的 #text-input-area，不依赖

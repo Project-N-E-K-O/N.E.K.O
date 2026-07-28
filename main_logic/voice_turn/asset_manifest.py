@@ -8,10 +8,16 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import urlsplit
 
 
 MANIFEST_FILENAME = "manifest.json"
 DEFAULT_ASSET_DIR_NAME = "vad_models"
+# Transports the asset preparer is allowed to fetch over. Enforced at the
+# download call site, NOT at manifest load: verification of an already-present
+# file never reads ``source``, so a bad scheme must not make a valid on-disk
+# asset unloadable at runtime.
+DOWNLOADABLE_SOURCE_SCHEMES = frozenset({"https"})
 
 
 class AssetManifestError(RuntimeError):
@@ -95,6 +101,19 @@ def verify_asset(directory: Path, spec: AssetSpec) -> Path:
             f"asset SHA-256 mismatch for {spec.filename}: expected {spec.sha256}, got {actual}"
         )
     return path
+
+
+def require_downloadable_source(spec: AssetSpec) -> str:
+    """Return the asset source only when it uses an allowed transport."""
+
+    scheme = urlsplit(spec.source).scheme.lower()
+    if scheme not in DOWNLOADABLE_SOURCE_SCHEMES:
+        raise AssetManifestError(
+            "asset source must use one of "
+            f"{sorted(DOWNLOADABLE_SOURCE_SCHEMES)}: {spec.filename} "
+            f"declares {scheme or 'no'} scheme"
+        )
+    return spec.source
 
 
 def candidate_asset_dirs(override: Path | None = None) -> tuple[Path, ...]:

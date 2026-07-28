@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import struct
 import sys
@@ -1785,3 +1786,119 @@ async def test_hot_swap_flush_damaged_tail_clears_native_input_buffer(monkeypatc
 
     mgr._asr_runtime.abort.assert_awaited_once_with("ingress_backpressure")
     mgr.session.clear_audio_buffer.assert_awaited_once()
+
+
+async def test_revoke_voice_input_connection_releases_lease_and_aborts_turn():
+    # Codex P2 primitive. A recording socket that dies while a newer chat
+    # socket is current gets no manager-side teardown at all, so this is the
+    # only thing that releases its voice turn.
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.lanlan_name = "Test"
+    mgr._init_asr_runtime_state()
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._asr_runtime.abort = AsyncMock()
+    mgr.session = None
+
+    assert await mgr._revoke_voice_input_connection("socket-a") is True
+
+    assert mgr._voice_lease_connection_id == ""
+    assert mgr._voice_lease_owner == "none"
+    assert mgr._voice_lease_synchronized is False
+    assert mgr._voice_lease_control_seen is False
+    assert mgr._voice_input_accepts_pcm() is False
+    mgr._asr_runtime.abort.assert_awaited_once()
+
+
+async def test_revoke_voice_input_connection_ignores_a_superseded_socket():
+    # A socket that already lost the identity to a newer claim must never
+    # clear the winner's lease.
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.lanlan_name = "Test"
+    mgr._init_asr_runtime_state()
+    mgr._begin_voice_input_connection("socket-a")
+    mgr._begin_voice_input_connection("socket-b")
+    _authorize_core_lease(mgr)
+    mgr._asr_runtime.abort = AsyncMock()
+
+    assert await mgr._revoke_voice_input_connection("socket-a") is False
+    assert await mgr._revoke_voice_input_connection("") is False
+
+    assert mgr._voice_lease_connection_id == "socket-b"
+    assert mgr._voice_lease_owner == "core"
+    mgr._asr_runtime.abort.assert_not_awaited()
+
+
+@pytest.mark.parametrize("sample_rate_hz", [16_000, 48_000])
+async def test_json_mic_frame_rejects_an_oversized_sample_list(sample_rate_hz: int):
+    # The JSON stream_data branch materializes the same int list as the binary
+    # decoder but had no per-frame bound: the queue's 2 s / 256-frame limits are
+    # post-decode. The frontend never sends JSON audio, so any oversized frame
+    # is malformed by construction.
+    with pytest.raises(ValueError, match="MIC_PCM_FRAME_TOO_LONG"):
+        QueuedMicFrame.from_message(
+            {
+                "input_type": "audio",
+                "sample_rate_hz": sample_rate_hz,
+                "data": [0] * 5_761,
+            },
+            token=_queue_token(),
+        )
+
+
+async def test_json_mic_frame_accepts_a_real_worklet_frame():
+    frame = QueuedMicFrame.from_message(
+        {"input_type": "audio", "sample_rate_hz": 16_000, "data": [0] * 512},
+        token=_queue_token(),
+    )
+    assert frame.source_rate_hz == 16_000
+
+
+async def test_text_session_microphone_is_signalled_once_not_silently_dropped():
+    # PR #2345 removed streaming.py's audio-branch rebuild. The mic lease is
+    # frontend-owned and no session-lifecycle path resets it, while a text
+    # session pins the route to "blocked" — so a client that keeps recording
+    # had every frame accepted at ingress and dropped at routing with no
+    # signal and no recovery. The current frontend stops the mic itself on
+    # session_started(input_mode='text'); this is the fallback for older and
+    # third-party clients.
+    mgr = _make_routable_audio_manager(True)
+    _authorize_core_lease(mgr)
+    mgr.input_mode = "text"
+    mgr._set_microphone_route("blocked")
+    mgr.send_status = AsyncMock()
+    del mgr._route_microphone_audio
+
+    for _ in range(3):
+        await LLMSessionManager._route_microphone_audio(
+            mgr, b"\x01\x00" * 160, sample_rate_hz=16_000
+        )
+
+    mgr.send_status.assert_awaited_once()
+    payload = json.loads(mgr.send_status.await_args.args[0])
+    assert payload["code"] == "VOICE_INPUT_BLOCKED_TEXT_SESSION"
+
+    # Re-arms for the next text-mode episode once the route recovers.
+    mgr._set_microphone_route("native")
+    mgr._set_microphone_route("blocked")
+    await LLMSessionManager._route_microphone_audio(
+        mgr, b"\x01\x00" * 160, sample_rate_hz=16_000
+    )
+    assert mgr.send_status.await_count == 2
+
+
+async def test_audio_session_microphone_block_stays_silent():
+    # Only a text-mode session gets the notice: a blocked audio session is a
+    # provider failure that already has its own ASR_* status.
+    mgr = _make_routable_audio_manager(True)
+    _authorize_core_lease(mgr)
+    mgr.input_mode = "audio"
+    mgr._set_microphone_route("blocked")
+    mgr.send_status = AsyncMock()
+    del mgr._route_microphone_audio
+
+    await LLMSessionManager._route_microphone_audio(
+        mgr, b"\x01\x00" * 160, sample_rate_hz=16_000
+    )
+
+    mgr.send_status.assert_not_awaited()

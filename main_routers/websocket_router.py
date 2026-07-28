@@ -55,7 +55,14 @@ from utils.icebreaker_route_state import (
 
 _VOICE_BINARY_MAGIC = b"NEKO"
 _VOICE_BINARY_HEADER_BYTES = 8
-_VOICE_BINARY_MAX_DURATION_MS = 1_000
+# The browser worklet emits one fixed buffer per frame: 480 samples at 48 kHz
+# (10 ms) or 512 at 16 kHz (32 ms) -- see ``bufferSize`` in
+# static/audio-processor.js and the 1:1 wrap in static/app/app-audio-capture.js.
+# The resampling branch is bounded by the same buffer size, so 120 ms leaves
+# ~4x headroom over the binding 16 kHz frame. It is a drift gate, not a DoS
+# control: the sibling JSON branch below carries the same materialization and
+# is bounded separately (MIC_PCM_FRAME_TOO_LONG in the Core bridge).
+_VOICE_BINARY_MAX_DURATION_MS = 120
 
 
 def _decode_binary_audio_frame(payload: bytes) -> dict[str, object]:
@@ -1047,9 +1054,11 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             # Drop this socket's own voice registration first: teardown must
             # never be deferred to the very socket that is disconnecting.
             registered_voice = _voice_connection_sockets.get(lanlan_name)
+            departed_voice_owner = False
             if registered_voice is not None and registered_voice[0] == this_session_id:
                 _voice_connection_sockets.pop(lanlan_name, None)
                 registered_voice = None
+                departed_voice_owner = True
             # Current-socket disconnect while a DIFFERENT still-open socket
             # owns the manager voice connection (closing the chat window while
             # the pet window records): the manager-wide cleanup below would
@@ -1089,6 +1098,37 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[icebreaker] finalize on ws disconnect failed: %s", exc)
+
+        # A superseded socket that still held the manager voice identity (the
+        # recording window is killed while a newer chat window is current):
+        # nobody else will ever revoke that lease. Every branch below is gated
+        # on is_current, and the current socket's own cleanup would end the
+        # shared session. Left alone, the dead socket's turn keeps an armed
+        # realtime dispatch pause (prepare_external_voice_turn -> arbiter
+        # pause_dispatch, released only by that turn's final, which can no
+        # longer arrive) and the arbiter worker parks before dequeuing with no
+        # timeout, so every later response on the surviving session hangs; the
+        # independent-ASR provider transport also stays connected mid-turn.
+        # Release just the voice lease here -- abort the ASR turn and park the
+        # lease at owner "none" -- and leave the shared session to the socket
+        # that owns it. The manager re-validates the connection id, so a socket
+        # that already lost the identity to a newer claim never clears the
+        # winner's lease, and managers without the MicLease mixin no-op.
+        if not is_current and departed_voice_owner and lanlan_name in session_manager:
+            revoke_voice_connection = getattr(
+                session_manager[lanlan_name],
+                "_revoke_voice_input_connection",
+                None,
+            )
+            if callable(revoke_voice_connection):
+                try:
+                    await revoke_voice_connection(str(this_session_id))
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[%s] voice lease revoke on disconnect failed: %s",
+                        lanlan_name,
+                        exc,
+                    )
 
         if is_current and lanlan_name in session_manager:
             if voice_handover is not None:
