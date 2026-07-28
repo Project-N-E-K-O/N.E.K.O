@@ -1730,7 +1730,7 @@ async def test_id_less_disk_rows_do_not_contaminate_other_id_less_rows(tmp_path)
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-@pytest.mark.parametrize("legacy_id", [12345, 3.5, True])
+@pytest.mark.parametrize("legacy_id", [12345, 3.5, True, 0, 0.0, False])
 async def test_hashable_legacy_ids_still_keep_their_monotonic_flags(tmp_path, legacy_id):
     """Only unusable ids may be dropped; hashable scalars must still match.
 

@@ -142,7 +142,10 @@ def _readable_fact_id(entry: dict):
     ``signal_processed`` flags — trading the crash for quiet data loss.
     """
     fact_id = entry.get('id')
-    if not fact_id:  # 缺失、None、空串：空串会让所有「没有真 id」的行互相撞上
+    # 只排除「没有 id」这一类：None / 缺失 / 空串（空串会让所有没有真 id 的行
+    # 互相撞上）。不能写成 `not fact_id`——那会把老库里 id 为 0 的行也一并丢掉，
+    # 它是个完全可用的键，丢了就是又一次「崩溃换静默丢标记」。
+    if fact_id is None or fact_id == '':
         return None
     try:
         hash(fact_id)
