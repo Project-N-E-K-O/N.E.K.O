@@ -1240,12 +1240,14 @@ test('interpage consumes common tutorial geometry before chat bridge scripts run
     assert.match(appInterpageSource, /entry\.localSelectors\.some\(function \(selector\)/);
     assert.match(appInterpageSource, /getYuiGuideChatTargetShape\(kind\)/);
     assert.match(appInterpageSource, /getYuiGuideChatTargetShape\(kind\) === 'circle'/);
-    assert.match(appInterpageSource, /function shouldAlignYuiGuideChatSpotlightToCapsuleText\(kind, variant\)/);
-    // 修改原因：胶囊输入框定位走 registry 的 capsuleBody，不新增 capsule-input 的 plain-capsule 特例。
-    assert.match(appInterpageSource, /function shouldAlignYuiGuideChatSpotlightToCapsuleText\(kind, variant\) \{\s*return kind === 'input' && variant === 'plain-capsule';\s*\}/);
-    assert.match(appInterpageSource, /function getYuiGuideChatSpotlightSourceRect\(kind, variant, rect\)/);
+    assert.match(appInterpageSource, /function shouldAlignYuiGuideChatSpotlightToCapsuleText\(kind, variant, metrics\)/);
+    // 修改原因：普通 input 保留旧 plain-capsule 逻辑；capsule-input 仅在桌面宿主明确声明
+    // Wayland work-area carrier 时对齐文字，避免改变 X11/macOS 的 registry 几何。
+    assert.match(appInterpageSource, /kind === 'capsule-input'[\s\S]*metrics\.waylandWorkAreaCarrier === true/);
+    assert.match(appInterpageSource, /function getYuiGuideChatSpotlightSourceRect\(kind, variant, rect, metrics\)/);
     assert.match(appInterpageSource, /anchorOffsetX \* YUI_GUIDE_CHAT_CAPSULE_TEXT_ALIGNMENT_RATIO/);
-    assert.match(appInterpageSource, /sourceRect\.width = Math\.max\(1, rect\.left \+ rect\.width - sourceRect\.left\)/);
+    assert.match(appInterpageSource, /width:\s*rect\.width/);
+    assert.doesNotMatch(appInterpageSource, /sourceRect\.width = Math\.max\(1, rect\.left \+ rect\.width - sourceRect\.left\)/);
     assert.match(appInterpageSource, /return \{ rect: sourceRect \};/);
 });
 

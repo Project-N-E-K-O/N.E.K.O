@@ -103,6 +103,10 @@ x11Result = getYuiGuideChatSpotlightSourceRect(
 test('PC overlay skip mirrors localized state and relays only through the active lifecycle', () => {
   assert.match(managerSource, /setYuiGuidePcOverlaySkipControl\(true, label\)/);
   assert.match(managerSource, /setYuiGuidePcOverlaySkipControl\(false, ''\)/);
+  assert.match(
+    interpageSource,
+    /setYuiGuidePcOverlaySkipControl = function[\s\S]*allowCreateRun: visible !== false/,
+  );
   assert.match(managerSource, /capabilities\.waylandOverlaySkipInput === true/);
   assert.match(managerSource, /skipButton\.style\.visibility = overlayOwnsSkipInput \? 'hidden' : ''/);
   assert.match(interpageSource, /case 'yui_guide_overlay_skip_request':/);

@@ -939,6 +939,11 @@
         I.yuiGuidePcOverlaySkipControl = skipControl;
         return I.sendYuiGuidePcOverlayPatch({
             skipControl: skipControl
+        }, false, {
+            // Teardown can hide the control after the lifecycle has cleared its
+            // run id. Update an existing run when present, but never create a
+            // replacement overlay run just to send an empty skip state.
+            allowCreateRun: visible !== false
         });
     };
 
