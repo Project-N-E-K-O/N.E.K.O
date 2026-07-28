@@ -831,7 +831,7 @@
         async function captureAndSend() {
             if (!isCurrentNativeCapture()) return false;
             if (!isCaptureSocketOpen()) {
-                stopScreening();
+                await stopScreenSharing(true);
                 return false;
             }
             if (await stopLiveVisionStreamIfBlocked(inputType)) {
@@ -839,7 +839,7 @@
             }
             if (!isCurrentNativeCapture()) return false;
             if (!isCaptureSocketOpen()) {
-                stopScreening();
+                await stopScreenSharing(true);
                 return false;
             }
             var captureTimeoutId = null;
@@ -863,7 +863,7 @@
             // Never let that obsolete frame reach the replacement session.
             if (!isCurrentNativeCapture()) return false;
             if (!isCaptureSocketOpen()) {
-                stopScreening();
+                await stopScreenSharing(true);
                 return false;
             }
             if (!result || !result.success || !result.dataUrl) {

@@ -72,6 +72,7 @@ def test_native_frame_stream_lifecycle_preserves_source_and_cancels_stale_frames
     assert "var captureSocket = S.socket" in native_stream
     assert "captureSocket === S.socket" in native_stream
     assert "captureSocket.send(JSON.stringify(" in native_stream
+    assert native_stream.count("await stopScreenSharing(true);") >= 4
     assert "buildStreamDataMessage(result.dataUrl, inputType, sourceId)" in native_stream
     assert "var NATIVE_FRAME_CAPTURE_TIMEOUT_MS = 3000;" in screen
     assert "result = await Promise.race([" in native_stream
