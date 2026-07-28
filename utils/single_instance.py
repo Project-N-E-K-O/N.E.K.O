@@ -657,6 +657,14 @@ def legacy_owner_status() -> tuple[str, Optional[dict]]:
     stays ``unknown`` — a directory we cannot consult is not evidence that
     somebody is running there, and collapsing it would refuse to start for a
     reason the user cannot see or clear.
+
+    A one-shot probe, deliberately: it covers the direction that matters during
+    an upgrade — an older build is *already* running when we start — and does not
+    hold anything afterwards. The reverse order, someone launching a pre-PR build
+    after this runtime is up, is outside the arbitration of our lock and is not
+    what this exists for. Holding a previous generation's primitive for our
+    lifetime instead would make every storage-restart handoff fail, since the
+    replacement would see its own predecessor as an old build still running.
     """
     saw_unknown = False
     for directory in legacy_state_dirs():
