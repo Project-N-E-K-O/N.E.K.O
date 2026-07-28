@@ -185,6 +185,32 @@ test('route tracking skips exactly one bootstrap page view', async () => {
   assert.deepEqual(trackedTargets, ['/architecture/', '/plugins/'])
 })
 
+test('analytics URLs keep approved campaign tags and remove sensitive query data', async () => {
+  const analytics = await freshAnalyticsModule()
+  const sanitized = analytics.sanitizeAnalyticsPageUrl(
+    'https://project-neko.online/guide/?token=secret&utm_source=newsletter&utm_campaign=desktop_pet&utm_content=hero#account',
+  )
+
+  assert.equal(
+    sanitized.href,
+    'https://project-neko.online/guide/?utm_source=newsletter&utm_campaign=desktop_pet&utm_content=hero',
+  )
+  assert.equal(sanitized.searchParams.has('token'), false)
+  assert.equal(sanitized.hash, '')
+})
+
+test('outbound analytics destinations do not include query strings or fragments', async () => {
+  const analytics = await freshAnalyticsModule()
+  const sanitized = analytics.normalizeAnalyticsDestinationUrl(
+    'https://store.steampowered.com/app/4099310/__NEKO/?utm_source=docs&token=secret#reviews',
+  )
+
+  assert.equal(
+    sanitized.href,
+    'https://store.steampowered.com/app/4099310/__NEKO/',
+  )
+})
+
 test('recognizes only the N.E.K.O. Steam store app URL', async () => {
   const analytics = await freshAnalyticsModule()
 
@@ -234,9 +260,8 @@ test('delegated Steam CTA tracking emits one consented GA4 event', async () => {
   assert.equal(eventCommand[0], 'event')
   assert.equal(eventCommand[1], analytics.STEAM_CTA_EVENT_NAME)
   assert.deepEqual(eventCommand[2], {
-    link_url: anchor.href,
+    link_url: 'https://store.steampowered.com/app/4099310/__NEKO/',
     link_domain: 'store.steampowered.com',
-    link_text: 'Get on Steam',
     cta_location: 'hero_en',
     page_location: 'https://project-neko.online/guide/',
     page_title: 'N.E.K.O. Docs',

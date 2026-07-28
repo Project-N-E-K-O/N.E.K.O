@@ -2,6 +2,13 @@ export const GA4_MEASUREMENT_ID = 'G-N4QZK4PHE3'
 export const ANALYTICS_CONSENT_STORAGE_KEY = 'neko.docs.analytics-consent.v1'
 export const ANALYTICS_CONSENT_EVENT = 'neko:analytics-consent-changed'
 export const STEAM_CTA_EVENT_NAME = 'steam_cta_click'
+export const ANALYTICS_CAMPAIGN_PARAMETERS = Object.freeze([
+  'utm_source',
+  'utm_medium',
+  'utm_campaign',
+  'utm_content',
+  'utm_term',
+])
 
 const GOOGLE_TAG_SCRIPT_ID = 'neko-google-analytics'
 const STEAM_STORE_HOSTNAME = 'store.steampowered.com'
@@ -115,6 +122,25 @@ function installGtag(windowObject) {
   return windowObject.gtag
 }
 
+export function sanitizeAnalyticsPageUrl(
+  target,
+  baseUrl = globalThis.window?.location?.href || 'https://project-neko.online/',
+) {
+  const sourceUrl = new URL(target || baseUrl, baseUrl)
+  const sanitizedUrl = new URL(sourceUrl.pathname, sourceUrl.origin)
+
+  for (const parameter of ANALYTICS_CAMPAIGN_PARAMETERS) {
+    const value = sourceUrl.searchParams.get(parameter)
+    if (value) sanitizedUrl.searchParams.set(parameter, value.slice(0, 100))
+  }
+  return sanitizedUrl
+}
+
+export function normalizeAnalyticsDestinationUrl(target, baseUrl) {
+  const destinationUrl = new URL(target, baseUrl)
+  return new URL(destinationUrl.pathname, destinationUrl.origin)
+}
+
 export function trackAnalyticsPageView(
   target,
   {
@@ -130,9 +156,9 @@ export function trackAnalyticsPageView(
     return false
   }
 
-  const pageUrl = new URL(
+  const pageUrl = sanitizeAnalyticsPageUrl(
     target || windowObject.location.href,
-    windowObject.location.origin,
+    windowObject.location.href,
   )
   windowObject.gtag('event', 'page_view', {
     page_location: pageUrl.href,
@@ -185,16 +211,19 @@ export function trackSteamCtaClick(
   if (!rawUrl || !isSteamCtaUrl(rawUrl, baseUrl)) return false
 
   const linkUrl = new URL(rawUrl, baseUrl)
-  const linkText = anchor?.textContent?.replace(/\s+/g, ' ').trim()
+  const normalizedLinkUrl = normalizeAnalyticsDestinationUrl(rawUrl, baseUrl)
+  const pageUrl = sanitizeAnalyticsPageUrl(
+    windowObject.location.href,
+    windowObject.location.href,
+  )
   const eventParameters = {
-    link_url: linkUrl.href,
+    link_url: normalizedLinkUrl.href,
     link_domain: linkUrl.hostname,
     cta_location: linkUrl.searchParams.get('utm_content') || 'unspecified',
-    page_location: windowObject.location.href,
+    page_location: pageUrl.href,
     page_title: documentObject?.title || '',
     transport_type: 'beacon',
   }
-  if (linkText) eventParameters.link_text = linkText.slice(0, 100)
 
   windowObject.gtag('event', STEAM_CTA_EVENT_NAME, eventParameters)
   return true

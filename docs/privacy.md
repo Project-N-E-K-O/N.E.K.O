@@ -1,41 +1,35 @@
 ---
-title: Analytics and Cookie Notice
-description: How the Project N.E.K.O. documentation site uses optional Google Analytics, stores your consent choice, and lets you withdraw consent.
+title: Privacy Policy
+description: How the Project N.E.K.O. documentation site handles optional analytics and visitor privacy choices.
 seoSchemaType: WebPage
+editLink: false
+lastUpdated: false
 ---
 
-# Analytics and Cookie Notice
+# Privacy Policy
 
-Last updated: July 23, 2026.
+This policy applies to the Project N.E.K.O. documentation site.
 
-This notice applies to the Project N.E.K.O. documentation site at `project-neko.online`.
+## Your choice
 
-## Before you make a choice
+Analytics is optional. Google Analytics is not loaded until you allow it, and declining analytics does not limit access to the documentation.
 
-Google Analytics is not loaded and the site does not send requests to Google Analytics. The consent panel stores no choice until you select **Accept analytics** or **Reject**.
+## Information used when analytics is enabled
 
-## If you accept analytics
+When analytics is allowed, the site uses general visit information to understand which documentation pages are useful, how visitors reach the site, and when they choose the Steam link. This may include the page visited, the referring source, general browser and device information, and an approximate region.
 
-The site loads Google Analytics 4 using measurement ID `G-N4QZK4PHE3`. It sends page-view events so we can understand which documentation pages are useful and how visitors find the documentation. When a visitor selects a link to the N.E.K.O. Steam page, it also sends a `steam_cta_click` event containing the destination URL, link text, CTA placement, page URL, and page title.
+The information is used for aggregate reporting and documentation improvement. Advertising tracking and advertising personalization remain disabled.
 
-Google Analytics may process information such as the page URL and title, referrer, browser and device information, and approximate location. We disable advertising storage, ad user data, ad personalization, Google Signals, and advertising-personalization signals in the site configuration.
+## How information is handled
 
-User-level and event-level data covered by GA4's Data Retention setting is kept for no longer than 14 months. Property administrators can reduce that period to 2 months. This setting does not affect aggregated standard reports. See [Google Analytics data retention](https://support.google.com/analytics/answer/7667196?hl=en).
+Google Analytics processes analytics information on behalf of the site. The documentation site does not intentionally send account credentials, private messages, form contents, or other sensitive information through analytics.
 
-Google Analytics may set first-party cookies such as `_ga` and `_ga_<measurement-id>` after you consent. Google describes its cookie use and data collection in:
+The site may rely on external services for hosting and may open external destinations such as Steam. Those services handle information under their own policies.
 
-- [Google Analytics cookie usage](https://support.google.com/analytics/answer/11397207)
-- [Google Analytics data collection](https://support.google.com/analytics/answer/11593727)
-- [Google Privacy Policy](https://policies.google.com/privacy)
+## Changing or withdrawing your choice
 
-## How your choice is stored
+Use **Cookie settings** in the footer to allow or decline analytics at any time. After analytics is declined, the site stops future analytics collection. You can also clear the site's stored data through your browser, which resets the saved choice.
 
-Your browser stores the choice in local storage under `neko.docs.analytics-consent.v1`. It contains only the choice, a format version, and the time it was saved. The choice expires after 180 days, after which the site asks again.
+## Questions
 
-Rejecting analytics does not load the Google tag. If you withdraw previously granted consent, the site changes analytics consent to denied, attempts to remove accessible `_ga` cookies, and reloads without loading the Google tag.
-
-## Change or withdraw your choice
-
-Use the **Analytics settings** button at the bottom of any documentation page. You can accept or reject analytics at any time. The documentation remains available if you reject analytics.
-
-For questions about this notice, contact the project through the [Project N.E.K.O. GitHub repository](https://github.com/Project-N-E-K-O/N.E.K.O/issues).
+For privacy questions, contact the project maintainers without posting sensitive information publicly.
