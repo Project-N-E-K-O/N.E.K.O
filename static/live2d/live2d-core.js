@@ -1215,10 +1215,11 @@ class Live2DManager {
             opacity = coreModel.getDrawableOpacity?.(drawableIndex);
         } catch (_) {}
         if (!Number.isFinite(opacity)) {
-            opacity = this._getCubism2DrawableOpacity(
-                this.currentModel?.internalModel,
-                drawableIndex
-            );
+            const internalModel = this.currentModel?.internalModel;
+            opacity = this._getCubism2DrawableOpacity(internalModel, drawableIndex);
+            if (Number.isInteger(internalModel?.drawDataCount) && !Number.isFinite(opacity)) {
+                return false;
+            }
         }
         if (Number.isFinite(opacity) && opacity <= 0.01) {
             return false;
@@ -1645,8 +1646,7 @@ class Live2DManager {
         const drawableCount = this._getDrawableCount(internalModel);
         const resolvedModelBounds = modelBounds || this.getModelScreenBounds();
         const resolvedModelLogicalRect = modelLogicalRect || this._getModelLogicalRect();
-        if (!internalModel || !coreModel || !Number.isInteger(drawableCount) || drawableCount <= 0 ||
-            !resolvedModelBounds || !resolvedModelLogicalRect) {
+        if (!internalModel || !coreModel || !Number.isInteger(drawableCount) || drawableCount <= 0) {
             return [];
         }
 
@@ -1695,7 +1695,12 @@ class Live2DManager {
             return [];
         }
 
-        const requestedPadding = Number(options?.padding);
+        const rawPadding = options?.padding;
+        const requestedPadding =
+            (typeof rawPadding === 'number' ||
+                (typeof rawPadding === 'string' && rawPadding.trim() !== ''))
+                ? Number(rawPadding)
+                : NaN;
         const padding = Number.isFinite(requestedPadding)
             ? Math.max(0, Math.min(32, requestedPadding))
             : 8;
@@ -2817,7 +2822,7 @@ class Live2DManager {
     _collectDisplayInfoPartScreenRectInfo(targetPartIds, mode) {
         const internalModel = this.currentModel?.internalModel;
         const coreModel = internalModel?.coreModel;
-        const drawableCount = coreModel?.getDrawableCount?.();
+        const drawableCount = this._getDrawableCount(internalModel);
         const modelBounds = this.getModelScreenBounds();
         const modelLogicalRect = this._getModelLogicalRect();
         if (!internalModel || !coreModel || !Number.isInteger(drawableCount) || drawableCount <= 0 ||

@@ -1079,6 +1079,35 @@ test('core model input regions clamp padding to the supported 0-32 range', () =>
             centerY: 450
         }
     ]);
+    for (const invalidPadding of [null, '', false, true]) {
+        assert.deepEqual(
+            JSON.parse(JSON.stringify(manager.getModelInputRegionRects({ padding: invalidPadding }))),
+            [
+                {
+                    left: 392,
+                    right: 508,
+                    top: 392,
+                    bottom: 508,
+                    width: 116,
+                    height: 116,
+                    centerX: 450,
+                    centerY: 450
+                }
+            ]
+        );
+    }
+    assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects({ padding: '12' }))), [
+        {
+            left: 388,
+            right: 512,
+            top: 388,
+            bottom: 512,
+            width: 124,
+            height: 124,
+            centerX: 450,
+            centerY: 450
+        }
+    ]);
 });
 
 test('core model input regions keep per-drawable mapped geometry when direct vertices are unavailable', () => {
@@ -1165,7 +1194,8 @@ test('core model input regions enumerate visible legacy Cubism 2 draw data', () 
         { _$IP: 0, _$VS: 1, baseOpacity: 1, _$yo: () => true },
         { _$IP: 1, _$VS: 1, baseOpacity: 1, _$yo: () => true },
         { _$IP: 2, _$VS: 1, baseOpacity: 1, _$yo: () => true },
-        { _$IP: 3, _$VS: 1, baseOpacity: 1, _$yo: () => false }
+        { _$IP: 3, _$VS: 1, baseOpacity: 1, _$yo: () => false },
+        { _$IP: 4, _$VS: 1, baseOpacity: 1, _$yo: () => true }
     ];
     const drawData = [
         { getOpacity: () => 1 },
@@ -1188,7 +1218,7 @@ test('core model input regions enumerate visible legacy Cubism 2 draw data', () 
             coreModel: {
                 getModelContext: () => modelContext
             },
-            drawDataCount: 4,
+            drawDataCount: 5,
             getDrawableBounds: (index) => index === 0
                 ? { x: -1, y: -2, width: 1, height: 2 }
                 : { x: 0, y: 0, width: 2, height: 3 }
@@ -1217,6 +1247,101 @@ test('core model input regions enumerate visible legacy Cubism 2 draw data', () 
                 rect: { left: 0, right: 5, top: 0, bottom: 5, width: 5, height: 5 }
             }
         ]
+    );
+});
+
+test('core drawable collection keeps direct vertices when model mapping bounds are unavailable', () => {
+    const harness = createCoreHarness();
+    const manager = new harness.Live2DManager();
+    manager.currentModel = {
+        internalModel: {
+            coreModel: {
+                getDrawableCount: () => 1
+            }
+        }
+    };
+    manager.getModelScreenBounds = () => null;
+    manager._getModelLogicalRect = () => null;
+    manager._ensureModelWorldTransform = () => {};
+    manager._isDrawableRenderable = () => true;
+    manager._getDrawableDirectScreenRect = () => ({
+        left: 20,
+        right: 80,
+        top: 30,
+        bottom: 90,
+        width: 60,
+        height: 60,
+        centerX: 50,
+        centerY: 60
+    });
+
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(manager._getRenderableDrawableScreenRects())),
+        [
+            {
+                left: 20,
+                right: 80,
+                top: 30,
+                bottom: 90,
+                width: 60,
+                height: 60,
+                centerX: 50,
+                centerY: 60
+            }
+        ]
+    );
+});
+
+test('core DisplayInfo collection uses legacy Cubism 2 drawable count fallback', () => {
+    const harness = createCoreHarness();
+    const manager = new harness.Live2DManager();
+    manager.currentModel = {
+        internalModel: {
+            coreModel: {},
+            drawDataCount: 1
+        }
+    };
+    manager.getModelScreenBounds = () => ({
+        left: 0,
+        right: 100,
+        top: 0,
+        bottom: 100,
+        width: 100,
+        height: 100
+    });
+    manager._getModelLogicalRect = () => ({ x: -1, y: -1, width: 2, height: 2 });
+    manager._getCoreModelPartIds = () => ['PartFace'];
+    manager._getCoreModelDrawableParentPartIndices = () => [0];
+    manager._getCoreModelPartParentPartIndices = () => [-1];
+    manager._partIndexMatchesTargetIds = () => true;
+    manager._isDrawableRenderable = () => true;
+    manager._getDrawableScreenRect = () => ({
+        left: 20,
+        right: 80,
+        top: 10,
+        bottom: 70,
+        width: 60,
+        height: 60,
+        centerX: 50,
+        centerY: 40
+    });
+
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(manager._collectDisplayInfoPartScreenRectInfo(['PartFace'], 'face'))),
+        {
+            rect: {
+                left: 20,
+                right: 80,
+                top: 10,
+                bottom: 70,
+                width: 60,
+                height: 60,
+                centerX: 50,
+                centerY: 40
+            },
+            mode: 'face',
+            source: 'displayInfo'
+        }
     );
 });
 
