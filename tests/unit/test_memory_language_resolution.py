@@ -12,6 +12,9 @@ from utils import language_utils
 
 
 def test_macos_locale_reads_apple_locale(monkeypatch):
+    # _get_macos_locale 带进程级缓存；不清掉的话本用例会读到别的用例留下的值
+    # （在非 macOS 的 CI 上那个值是 None），断言就永远看不到 fake_run 的结果。
+    monkeypatch.setattr(language_utils, "_macos_locale_cache", None)
     monkeypatch.setattr(language_utils.platform, "system", lambda: "Darwin")
 
     def fake_run(command, **_kwargs):
@@ -21,6 +24,28 @@ def test_macos_locale_reads_apple_locale(monkeypatch):
     monkeypatch.setattr(language_utils.subprocess, "run", fake_run)
 
     assert language_utils._get_macos_locale() == "zh_CN"
+
+
+def test_macos_locale_is_read_once_per_process(monkeypatch):
+    """Repeated lookups must not respawn `defaults`."""
+    # initialize_global_language() 会经 _is_china_region 和 _get_system_language
+    # 各调一次；每次未命中都是一个 1s 超时的 subprocess，而且整个初始化持
+    # _global_language_lock。两个全局 getter 又都能从 async 请求路径到达，
+    # 冷启动多花几秒就会卡住事件循环。
+    monkeypatch.setattr(language_utils, "_macos_locale_cache", None)
+    monkeypatch.setattr(language_utils.platform, "system", lambda: "Darwin")
+    calls: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stdout='"ja_JP"\n')
+
+    monkeypatch.setattr(language_utils.subprocess, "run", fake_run)
+
+    assert language_utils._get_macos_locale() == "ja_JP"
+    assert language_utils._get_macos_locale() == "ja_JP"
+    assert language_utils._get_macos_locale() == "ja_JP"
+    assert len(calls) == 1, f"defaults 被重复调用了 {len(calls)} 次"
 
 
 def test_system_language_uses_macos_locale_before_neutral_process_locale(monkeypatch):

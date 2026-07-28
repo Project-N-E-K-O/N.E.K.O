@@ -91,7 +91,7 @@ async def test_process_requests_keep_language_task_local_across_awaits(monkeypat
 
 @pytest.mark.asyncio
 async def test_cache_hands_outbox_the_undeclared_language_as_none(monkeypatch):
-    """请求未声明 locale 时，交给 outbox 的必须是 None 而不是本进程的探测值。"""
+    """An undeclared request locale must reach the outbox as None, not as a guess."""
     spawn = AsyncMock()
     monkeypatch.setattr(
         routes.runtime,
@@ -125,16 +125,14 @@ async def test_cache_hands_outbox_the_undeclared_language_as_none(monkeypatch):
 
 
 def test_outbox_enqueue_persists_only_client_declared_language():
-    """四个写路由必须把 request.language 原值交给 outbox，而不是回落后的 memory_language。
-
-    memory_language 在请求未声明 locale 时等于 get_global_language_full() 的探测
-    结果。把它写进 outbox.ndjson 会让这个「猜测」被永久冻结：重启 replay 一直复用
-    它，即使探测本身后来修好也不会自愈。省掉该键才能让 replay 按当时的进程语言
-    重新解析（即 outbox 引入之前的行为）。
-
-    用 AST 盯调用点而非只测 _spawn_outbox_post_turn_signals 自身：后者只能证明
-    「传 None 就不写 payload」，证明不了路由真的传了 None。
-    """
+    """Every write route must hand the outbox request.language, not memory_language."""
+    # memory_language 在请求未声明 locale 时等于 get_global_language_full() 的探测
+    # 结果。把它写进 outbox.ndjson 会让这个「猜测」被永久冻结：重启 replay 一直复用
+    # 它，即使探测本身后来修好也不会自愈。省掉该键才能让 replay 按当时的进程语言
+    # 重新解析（即 outbox 引入之前的行为）。
+    #
+    # 用 AST 盯调用点而非只测 _spawn_outbox_post_turn_signals 自身：后者只能证明
+    # 「传 None 就不写 payload」，证明不了路由真的传了 None。
     source = routes.__file__
     assert source is not None
     tree = ast.parse(Path(source).read_text(encoding="utf-8"))

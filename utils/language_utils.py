@@ -187,13 +187,50 @@ def _is_china_region() -> bool:
         return False
 
 
+_macos_locale_cache: Optional[Tuple[bool, Optional[str]]] = None
+_macos_locale_lock = threading.Lock()
+
+
 def _get_macos_locale() -> Optional[str]:
     """Read the user's real macOS locale even when the process inherits ``C.UTF-8``.
 
     Electron/launcher child processes commonly receive a neutral POSIX locale,
     so ``locale.getlocale()`` and ``LANG`` do not reflect System Settings.  The
     ``defaults`` database is the authoritative per-user fallback on macOS.
+
+    The result is cached for the lifetime of the process: each miss costs a
+    ``subprocess.run`` with a 1s timeout, and ``initialize_global_language()``
+    calls this twice (once via ``_is_china_region``, once via
+    ``_get_system_language``) while holding ``_global_language_lock``. Without
+    the cache a cold start could spend ~4s spawning ``defaults`` — and both
+    global getters are reached from async request paths, so that would block the
+    event loop. The OS locale does not change under a running process.
     """
+    global _macos_locale_cache
+
+    cached = _macos_locale_cache
+    if cached is not None:
+        return cached[1]
+
+    with _macos_locale_lock:
+        # 双检：等锁期间可能已被另一线程填好。
+        cached = _macos_locale_cache
+        if cached is not None:
+            return cached[1]
+        resolved = _read_macos_locale_uncached()
+        _macos_locale_cache = (True, resolved)
+        return resolved
+
+
+def _reset_macos_locale_cache() -> None:
+    """Drop the cached macOS locale (tests only)."""
+    global _macos_locale_cache
+    with _macos_locale_lock:
+        _macos_locale_cache = None
+
+
+def _read_macos_locale_uncached() -> Optional[str]:
+    """Query the macOS ``defaults`` database; see ``_get_macos_locale``."""
     if platform.system() != 'Darwin':
         return None
 
