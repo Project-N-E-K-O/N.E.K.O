@@ -151,6 +151,8 @@ def _stable_home_dir() -> str:
 
         return pwd.getpwuid(os.getuid()).pw_dir or ""
     except Exception:
+        # No passwd entry for this uid (a container running under a numeric UID
+        # is the usual case), or pwd is unavailable. Fall through to $HOME.
         pass
     try:
         return str(Path.home())
@@ -447,6 +449,8 @@ class SingleInstanceHandle:
         try:
             os.unlink(str(self._record_file))
         except OSError:
+            # Already gone, or the directory turned unwritable. The lock is what
+            # proves liveness, so a leftover record is inert either way.
             pass
 
         _unlock_fd(fd)
@@ -564,6 +568,8 @@ def acquire_single_instance(
             try:
                 os.close(fd)
             except OSError:
+                # Cleanup on the way out; the original error is re-raised below
+                # and is the one worth reporting.
                 pass
             raise
 
@@ -731,6 +737,8 @@ def legacy_owner_status() -> tuple[str, Optional[dict]]:
                 else:
                     _unlock_fd(fd)
             except _SkipLegacyProbe:
+                # Not our file, so it is evidence of nothing — neither "owned"
+                # nor "unknown". Move on to the next candidate.
                 pass
             finally:
                 try:
@@ -801,6 +809,8 @@ def owner_status() -> tuple[str, Optional[dict]]:
         try:
             os.close(fd)
         except OSError:
+            # Probe only; the verdict is already decided and the fd dies with
+            # this process anyway.
             pass
 
 
