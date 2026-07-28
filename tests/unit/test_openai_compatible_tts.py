@@ -369,6 +369,33 @@ def test_unconfigured_custom_tts_keeps_existing_native_route(monkeypatch):
     assert provider_key == "qwen"
 
 
+def test_resolve_selected_skips_broken_predicate_like_catalog_selection(monkeypatch):
+    ctx = provider_registry.DispatchContext(
+        core_config={},
+        cm=SimpleNamespace(),
+    )
+    warnings = []
+    fallback_result = (object(), None, "fallback")
+    broken = SimpleNamespace(
+        key="broken",
+        is_selected=lambda _ctx: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    healthy = SimpleNamespace(
+        key="healthy",
+        is_selected=lambda _ctx: True,
+        resolve=lambda _ctx: fallback_result,
+    )
+    monkeypatch.setattr(provider_registry, "all_providers", lambda: [broken, healthy])
+    monkeypatch.setattr(
+        provider_registry.logger,
+        "warning",
+        lambda message, *args, **_kwargs: warnings.append(message % args),
+    )
+
+    assert provider_registry.resolve_selected(ctx) == fallback_result
+    assert any("'broken' is_selected 判定异常" in message for message in warnings)
+
+
 def test_configured_tts_failure_switches_to_existing_dispatch_order(monkeypatch):
     mgr = LLMSessionManager.__new__(LLMSessionManager)
     mgr._tts_active_provider_key = "custom"

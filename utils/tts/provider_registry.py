@@ -382,7 +382,19 @@ def resolve_selected(
     for provider in all_providers():
         if provider.key in excluded_provider_keys:
             continue
-        if not provider.is_selected(ctx):
+        try:
+            selected = provider.is_selected(ctx)
+        except Exception:
+            # Match selected_provider's established fault isolation so runtime
+            # dispatch and the /voices catalog cannot disagree after one bad predicate.
+            # 与 selected_provider 复用旧容错语义，单个判定异常不能打断后续 provider。
+            logger.warning(
+                "TTS provider %r is_selected 判定异常，跳过该 provider",
+                provider.key,
+                exc_info=True,
+            )
+            selected = False
+        if not selected:
             continue
         try:
             return provider.resolve(ctx)
