@@ -859,7 +859,12 @@ async def test_text_stream_discard_callback_keeps_original_request_owner(monkeyp
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_stale_truncated_recovery_does_not_mutate_newer_request_state():
-    """Request A's late recovery must not emit or consume request B's turn state."""
+    """Request A's late recovery must not emit or consume request B's turn state.
+
+    Session-level wrap-up is deliberately NOT behind that ownership gate: A's turn
+    really did end, and skipping its archive/prewarm accounting is exactly what
+    re-opens the "context grows -> keeps truncating and recovering" loop.
+    """
     mgr = _make_manager()
     mgr.websocket = _FakeConnectedWebSocket()
     mgr.session = MagicMock()
@@ -888,14 +893,19 @@ async def test_stale_truncated_recovery_does_not_mutate_newer_request_state():
     assert mgr.sent_responses == []
     mgr._clear_tts_pipeline.assert_not_awaited()
     mgr._emit_turn_end.assert_not_awaited()
-    mgr._finalize_turn_after_emit.assert_not_awaited()
     assert mgr.websocket.sent == []
+    # Shared-output writes are suppressed, session accounting still runs.
+    mgr._finalize_turn_after_emit.assert_awaited_once()
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_truncated_recovery_stops_when_new_request_starts_during_ui_send():
-    """Request A must re-check ownership after yielding to its recovery UI send."""
+    """Request A must re-check ownership after yielding to its recovery UI send.
+
+    Losing ownership mid-sequence stops the remaining shared-output steps, but the
+    session-level wrap-up still runs — see the sibling stale-recovery test.
+    """
     mgr = _make_manager()
     mgr.websocket = _FakeConnectedWebSocket()
     mgr.session = MagicMock()
@@ -953,7 +963,8 @@ async def test_truncated_recovery_stops_when_new_request_starts_during_ui_send()
         "request_id": "req-A",
     }]
     mgr._emit_turn_end.assert_not_awaited()
-    mgr._finalize_turn_after_emit.assert_not_awaited()
+    # Shared-output writes stop at the ownership loss, session accounting still runs.
+    mgr._finalize_turn_after_emit.assert_awaited_once()
 
 
 @pytest.mark.unit

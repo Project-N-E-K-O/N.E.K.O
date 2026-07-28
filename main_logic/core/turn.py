@@ -590,58 +590,58 @@ class TurnMixin:
                 else:
                     recovery_turn_id = self.current_speech_id
 
-                # 发送文本到前端显示。显式传 active_request_id snapshot，
-                # 避免 send_lanlan_response 内部回读共享字段时拿到新轮 id
-                # 串掉前端 rollback 绑定。
-                await self.send_lanlan_response(
-                    body_text,
-                    is_first_chunk=True,
-                    turn_id=recovery_turn_id,
-                    request_id=active_request_id,
-                )
-                if not may_clear_shared_output():
-                    return
+                async def _append_recovery_history() -> None:
+                    # 仅当本轮**不是** ephemeral（即非 avatar_interaction 等
+                    # persist_response=False 的路径）时才写历史。avatar_interaction
+                    # 触发 RESPONSE_TOO_LONG/TRUNCATED 时本就该和 ephemeral 一致地
+                    # 不留下 AIMessage 痕迹。
+                    pending_meta = self._pending_turn_meta
+                    is_ephemeral = bool(pending_meta) and pending_meta.get("kind") == "avatar_interaction"
+                    if not is_ephemeral and self.session and hasattr(self.session, '_conversation_history'):
+                        self.session._conversation_history.append(AIMessage(content=body_text))
 
-                # 仅当本轮**不是** ephemeral（即非 avatar_interaction 等
-                # persist_response=False 的路径）时才写历史。avatar_interaction
-                # 触发 RESPONSE_TOO_LONG/TRUNCATED 时本就该和 ephemeral 一致地
-                # 不留下 AIMessage 痕迹。
-                pending_meta = self._pending_turn_meta
-                is_ephemeral = bool(pending_meta) and pending_meta.get("kind") == "avatar_interaction"
-                if not is_ephemeral and self.session and hasattr(self.session, '_conversation_history'):
-                    self.session._conversation_history.append(AIMessage(content=body_text))
-
-                # 喂给 TTS 管线用角色音色念。recovery 路径下两次 await
-                # 之间用户可能开新轮（ self.current_speech_id 被改），所以
-                # done 信号也要带 expected_speech_id 校验，否则旧 recovery
-                # 的 done 会结束新轮的 TTS（首句被截 / 整轮静音）。
+                # recovery 的每一步都 await，其间用户可能提交新请求把产权抢走。
+                # 写成顺序步骤表、由下面的循环统一在每步之后复验产权，而不是
+                # 每步手写一个 if-return——后者在将来插入新步骤时容易漏掉一处，
+                # 漏一处就等于让旧轮的正文 / 音频 / turn end 打到新轮上。
+                recovery_steps = [
+                    # 发送文本到前端显示。显式传 active_request_id snapshot，
+                    # 避免 send_lanlan_response 内部回读共享字段时拿到新轮 id
+                    # 串掉前端 rollback 绑定。
+                    lambda: self.send_lanlan_response(
+                        body_text,
+                        is_first_chunk=True,
+                        turn_id=recovery_turn_id,
+                        request_id=active_request_id,
+                    ),
+                    _append_recovery_history,
+                ]
                 if self.use_tts:
-                    await self.feed_tts_chunk(body_text, expected_speech_id=recovery_turn_id)
-                    if not may_clear_shared_output():
-                        return
-                    await self._request_tts_done_for_turn(
-                        "handle_response_discarded:length_truncated"
-                        if _truncated_text is not None
-                        else "handle_response_discarded:too_long_final",
-                        expected_speech_id=recovery_turn_id,
+                    # 喂给 TTS 管线用角色音色念。done 信号也要带
+                    # expected_speech_id 校验，否则旧 recovery 的 done 会结束
+                    # 新轮的 TTS（首句被截 / 整轮静音）。
+                    recovery_steps.append(
+                        lambda: self.feed_tts_chunk(body_text, expected_speech_id=recovery_turn_id)
                     )
-                    if not may_clear_shared_output():
-                        return
-
+                    recovery_steps.append(
+                        lambda: self._request_tts_done_for_turn(
+                            "handle_response_discarded:length_truncated"
+                            if _truncated_text is not None
+                            else "handle_response_discarded:too_long_final",
+                            expected_speech_id=recovery_turn_id,
+                        )
+                    )
                 # turn end —— 复用 _emit_turn_end helper（同 handle_response_complete
                 # 走同一套语义；sync queue 和 WS 都带相同 meta）。
-                # 注：上面读 pending_meta 已经触发 is_ephemeral 判定，但这里
-                # _emit_turn_end 自己会再读一次 _pending_turn_meta 做透传 + 清空，
-                # 二者读的是同一个值，幂等。
-                if not may_clear_shared_output():
-                    return
-                await self._emit_turn_end(active_request_id)
-                if not may_clear_shared_output():
-                    return
-                # Recovery / too-long-final is a completed turn and still needs
-                # the regular renew/prewarm + agent-callback wrap-up. Run it
-                # only while this request still owns the shared session state.
-                await self._finalize_turn_after_emit()
+                # 注：_append_recovery_history 读 pending_meta 已经触发 is_ephemeral
+                # 判定，但这里 _emit_turn_end 自己会再读一次 _pending_turn_meta 做
+                # 透传 + 清空，二者读的是同一个值，幂等。
+                recovery_steps.append(lambda: self._emit_turn_end(active_request_id))
+
+                for recovery_step in recovery_steps:
+                    await recovery_step()
+                    if not may_clear_shared_output():
+                        break
             except Exception as e:
                 logger.warning(f"⚠️ {'RESPONSE_LENGTH_TRUNCATED' if _truncated_text is not None else 'RESPONSE_TOO_LONG'} 回复发送失败: {e}")
             finally:
@@ -659,6 +659,21 @@ class TurnMixin:
             # Compare-and-clear：仅当共享字段仍是本轮快照时才清空。
             if self._active_text_request_id == active_request_id:
                 self._active_text_request_id = None
+
+        # Recovery / too-long-final 路径相当于"这一轮 LLM 已完成"——必须
+        # 跑跟 handle_response_complete 同款的 turn 后置流程（renew/prewarm
+        # 判断 + agent callback 投递），否则连续多轮走 RESPONSE_LENGTH_TRUNCATED
+        # / RESPONSE_TOO_LONG 时 session 不归档/不预热，会卡进"上下文越来越
+        # 大→一直截断恢复"的死循环。普通 will_retry / RESPONSE_INVALID 路径
+        # 还会重试同轮，不算 turn 真正结束，跳过 finalize。
+        #
+        # 这里刻意不套 may_clear_shared_output()：产权门控管的是"往前端 / TTS
+        # 写共享输出"，而 finalize 做的是 session 级结算（归档 / 预热）。A 被 B
+        # 抢占不代表 A 这一轮不用结算——按产权跳过的话，连续截断又被连续打断
+        # 时会链式跳过归档，正好落回上面那个死循环。同理放在 try 外：不能让它
+        # 的异常被上面 "回复发送失败" 的 except 吞成一条 warning。
+        if _is_too_long_final or _truncated_text is not None:
+            await self._finalize_turn_after_emit()
 
     async def handle_audio_data(self, audio_data: bytes):
         """Qwen audio callback: push audio to the WebSocket frontend"""
