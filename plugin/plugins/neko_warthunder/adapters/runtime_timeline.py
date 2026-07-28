@@ -171,6 +171,7 @@ class RuntimeTimeline:
                     "dispatcher_status": metadata.get("dispatcher_status"),
                     "kind": metadata.get("kind"),
                     "source": metadata.get("source"),
+                    "input_mode": metadata.get("input_mode"),
                     "ai_behavior": metadata.get("ai_behavior"),
                     "visibility": metadata.get("visibility"),
                     "pushed": metadata.get("pushed"),
@@ -196,6 +197,10 @@ class RuntimeTimeline:
                     "plugin_dialogue_policy": metadata.get("plugin_dialogue_policy"),
                     "plugin_quiet_window_policy": metadata.get("plugin_quiet_window_policy"),
                     "quiet_window_remaining_seconds": metadata.get("quiet_window_remaining_seconds"),
+                    "delivery_strategy": metadata.get("delivery_strategy"),
+                    "deferred_from_user_chat_quiet_window": metadata.get(
+                        "deferred_from_user_chat_quiet_window"
+                    ),
                     "host_callback_contract_version": metadata.get("host_callback_contract_version"),
                     "message": safe_summary,
                 }
@@ -247,6 +252,8 @@ class RuntimeTimeline:
                         "plugin_dialogue_policy",
                         "plugin_quiet_window_policy",
                         "quiet_window_remaining_seconds",
+                        "delivery_strategy",
+                        "deferred_from_user_chat_quiet_window",
                         "host_callback_contract_version",
                     ):
                         if record.get(key) is not None:

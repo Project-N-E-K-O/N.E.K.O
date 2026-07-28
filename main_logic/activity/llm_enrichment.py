@@ -394,7 +394,7 @@ async def _invoke_emotion_tier(prompt: str, *, timeout: float, label: str) -> st
 
     try:
         cfg_mgr = get_config_manager()
-        cfg = cfg_mgr.get_model_api_config('emotion')
+        cfg = await cfg_mgr.aget_model_api_config('emotion')
     except Exception as e:
         logger.debug('emotion config fetch failed: %s', e)
         return None
@@ -447,7 +447,7 @@ async def _invoke_capable_tier(prompt: str, *, timeout: float, label: str) -> st
 
     try:
         cfg_mgr = get_config_manager()
-        cfg = cfg_mgr.get_model_api_config('summary')
+        cfg = await cfg_mgr.aget_model_api_config('summary')
     except Exception as e:
         logger.debug('summary config fetch failed: %s', e)
         return None

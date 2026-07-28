@@ -48,6 +48,7 @@ MMDManager.prototype.setupFloatingButtons = function() {
 
     // MMD 特定的响应式布局处理
     const applyResponsiveFloatingLayout = () => {
+        this.syncResponsiveButtonVisibility(buttonsContainer);
         if (isYuiGuideFloatingToolbarSuppressed()) {
             buttonsContainer.style.display = 'none';
             buttonsContainer.style.visibility = 'hidden';
@@ -162,6 +163,10 @@ MMDManager.prototype.setupFloatingButtons = function() {
                 this.setButtonActive(config.id, targetActive);
             } else if (config.id === 'goodbye') {
                 window.dispatchEvent(new CustomEvent('live2d-goodbye-click'));
+                return;
+            } else if (config.id === 'social') {
+                // 与 Live2D 共用 opener（app-ui.js 监听 live2d-social-click）
+                window.dispatchEvent(new CustomEvent('live2d-social-click'));
                 return;
             }
 
@@ -309,6 +314,7 @@ MMDManager.prototype.setupFloatingButtons = function() {
             triggerImg: (config.hasPopup && config.separatePopupTrigger && !(window.isMobileWidth && window.isMobileWidth())) ? triggerImg : null
         };
     });
+    applyResponsiveFloatingLayout();
 
     // 处理"请她离开"事件
     // 注意：返回按钮的位置、显示、以及浮动按钮的隐藏均由 app-ui 统一处理，
@@ -490,7 +496,8 @@ MMDManager.prototype._startUIUpdateLoop = function() {
 
     const getVisibleButtonCount = () => {
         const mobile = window.isMobileWidth && window.isMobileWidth();
-        return [{ id: 'mic' }, { id: 'screen' }, { id: 'agent' }, { id: 'settings' }, { id: 'goodbye' }]
+        return [{ id: 'mic' }, { id: 'screen', mobileOnly: true }, { id: 'agent' }, { id: 'social' }, { id: 'settings' }, { id: 'goodbye' }]
+            .filter(c => !(c.mobileOnly && !mobile))
             .filter(c => !(mobile && (c.id === 'agent' || c.id === 'goodbye'))).length;
     };
     const baseButtonSize = 48;

@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 # not replace them, so common cache/build artifacts never leak into packages.
 _DEFAULT_EXCLUDE_DIR_NAMES = {
     "__pycache__",
+    ".github",
     ".pytest_cache",
     ".mypy_cache",
     ".venv",

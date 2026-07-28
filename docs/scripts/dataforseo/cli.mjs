@@ -91,6 +91,7 @@ function createClient(options) {
 
 function printSummary(report, outputPath) {
   console.log(`DataForSEO report written to ${outputPath}`)
+  console.log(`Report status: ${report.status}`)
   console.log(`Planned API requests: ${report.plan.requests.total}`)
   console.log(`Maximum SERP pages: ${report.plan.maximumSerpPages}`)
   if (report.dryRun) {
@@ -99,10 +100,25 @@ function printSummary(report, outputPath) {
   }
   console.log(`Reported API cost: $${report.costs.totalUsd.toFixed(4)}`)
   if (report.serp) {
-    const topTen = report.serp.filter(item => item.organicRank != null && item.organicRank <= 10).length
-    const aioCitations = report.serp.filter(item => item.aiOverviewCitedTarget).length
-    console.log(`Tracked keywords in Google Top 10: ${topTen}/${report.serp.length}`)
-    console.log(`AI Overview citations of target domain: ${aioCitations}/${report.serp.length}`)
+    const successfulSerp = report.serp.filter(item => item.error == null)
+    const topTen = successfulSerp.filter(
+      item => item.organicRank != null && item.organicRank <= 10,
+    ).length
+    const aioCitations = successfulSerp.filter(item => item.aiOverviewCitedTarget).length
+    console.log(`SERP keyword requests completed: ${successfulSerp.length}/${report.serp.length}`)
+    console.log(
+      `Tracked keywords in Google Top 10: ${topTen}/${report.serp.length} tracked `
+      + `(${successfulSerp.length} observed)`,
+    )
+    console.log(
+      `AI Overview citations of target domain: ${aioCitations}/${report.serp.length} tracked `
+      + `(${successfulSerp.length} observed)`,
+    )
+  }
+  if (report.errors.length > 0) {
+    console.warn(
+      `DataForSEO report retained ${report.errors.length} keyword error(s); see the report artifact for details.`,
+    )
   }
 }
 
@@ -131,6 +147,7 @@ async function main() {
   await mkdir(dirname(outputPath), { recursive: true })
   await writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8')
   printSummary(report, outputPath)
+  if (report.status === 'failed') process.exitCode = 1
 }
 
 main().catch(error => {

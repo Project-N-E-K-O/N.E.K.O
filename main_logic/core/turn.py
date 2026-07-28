@@ -24,7 +24,7 @@ import json
 import re
 import time
 from collections import deque
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from datetime import datetime
 from fastapi import WebSocketDisconnect
 from main_logic.omni_realtime_client import OmniRealtimeClient
@@ -526,7 +526,23 @@ class TurnMixin:
                 )
                 print(f"[response_discarded parse_err] raw: {message!r}")
 
+        # 被丢弃的这段回复前端已经 clear 掉了，用户没看到——不该作为"AI 说过的
+        # 话"进 activity tracker 的 unfinished_thread 检测。_clear_tts_pipeline
+        # 只管 TTS 队列和音频缓存，从不碰 _current_ai_turn_text，而这个 buffer
+        # 唯一的出口是 turn end 的 _flush_ai_turn_text_to_tracker()，所以丢弃的
+        # 文本会一直躺到下一次 turn end 才被算进去：
+        #   - will_retry：重试后的文本继续往同一个 buffer 追加，turn end 时
+        #     flush 的是"丢弃版 + 重发版"拼在一起的内容
+        #   - recovery：截断恢复的正文追加在丢弃版后面，一并 flush
+        # 清空而不是 flush：这一轮要么还会重试、要么下面 recovery 会补发正文，
+        # 都还没到 turn end，flush 会凭空多喂 tracker 一个 AI turn。
+        #
+        # buffer 清空和 TTS 清理是"清掉本轮丢弃留下的共享输出"的两半，同受产权
+        # 门控（#2534 合并时留的路标就是指这里）：文本请求由 websocket_router
+        # 作为各自独立的后台任务分发，旧请求 A 的迟到 discard 可以落在新请求 B
+        # 已经开始 publish 之后，无门控地清会连 B 的前缀一起抹掉。
         if may_clear_shared_output():
+            self._current_ai_turn_text = ''
             await self._clear_tts_pipeline()
 
         # A request-bound discard is only relevant while that request still owns
@@ -1057,6 +1073,7 @@ class TurnMixin:
                     self.lanlan_name, handled, len(transcript_text),
                 )
                 if handled:
+                    self.note_user_engagement(at=_transcript_arrival_ts)
                     if isinstance(self.session, OmniRealtimeClient):
                         try:
                             await self.session.cancel_response()
@@ -1098,6 +1115,7 @@ class TurnMixin:
                 # 用顶部捕获的到达时刻而非此处 time.time()：takeover dispatcher 的
                 # await 不会把它推迟到 await 之后（codex P2）。
                 self.last_user_message_time = _transcript_arrival_ts
+                self.note_user_engagement(at=_transcript_arrival_ts)
                 self._session_turn_count += 1
                 # Telemetry：D1 漏斗——本进程首条用户消息（语音路径）。
                 try:
@@ -1229,6 +1247,9 @@ class TurnMixin:
         track_ai_turn: bool = True,
         cache_for_new_session: bool = True,
         remember_voice_echo: bool = False,
+        expected_speech_id: str | None = None,
+        expected_user_engagement_time: Any = Ellipsis,
+        on_published: Callable[[float], None] | None = None,
     ):
         """Qwen output transcription callback: usable for frontend display/cache/sync.
 
@@ -1248,14 +1269,25 @@ class TurnMixin:
         to distinguish "not passed" from "explicit None", unlike a plain
         ``request_id is None`` check.
         """
+        def guarded_delivery_is_current() -> bool:
+            if (
+                expected_speech_id is not None
+                and self.current_speech_id != expected_speech_id
+            ):
+                return False
+            return not (
+                expected_user_engagement_time is not Ellipsis
+                and self.last_user_engagement_time
+                != expected_user_engagement_time
+            )
+
+        # A stale proactive callback must not clear a replacement user turn's
+        # Focus bubble. Recheck again after the cleanup await below to retain
+        # the actual publish-boundary guarantee.
+        if not guarded_delivery_is_current():
+            return None
+
         text_clean = self.emotion_pattern.sub('', text)
-        # 累加到当前轮 AI 文本 buffer，turn end 时一并交给 activity tracker 做
-        # unfinished_thread 检测。emotion_pattern 已剥掉表情标签，但保留 <expr>
-        # 等可能的 markup——tracker 自己会做二次 strip。
-        if track_ai_turn:
-            self._current_ai_turn_text += text_clean
-            if remember_voice_echo:
-                self._remember_recent_ai_voice_echo(text_clean)
         effective_turn_id = turn_id or self.current_speech_id
         effective_request_id = (
             self._active_text_request_id
@@ -1280,7 +1312,28 @@ class TurnMixin:
             # (hidden) 凝神 thinking, so drop the thinking-dots bubble. Idempotent,
             # so this is a no-op on regular / proactive turns that never lit it.
             await self._push_focus_thinking(False)
+        # Guarded proactive delivery must revalidate at the actual internal
+        # publish boundary. There are no awaits between these checks and the
+        # sync queue write below, so a user click/text that arrived during
+        # state.fire(PROACTIVE_COMMITTING) or Focus cleanup wins cleanly.
+        # ``None`` is reserved for this guarded rejection; ``False`` still
+        # means the sync publish succeeded but the best-effort WebSocket send
+        # did not.
+        if not guarded_delivery_is_current():
+            return None
+
+        # 累加到当前轮 AI 文本 buffer，turn end 时一并交给 activity tracker 做
+        # unfinished_thread 检测。Guarded publish 被拒绝时不能污染 buffer，因此
+        # 必须放在最终校验之后。emotion_pattern 已剥掉表情标签，但保留 <expr>
+        # 等可能的 markup——tracker 自己会做二次 strip。
+        if track_ai_turn:
+            self._current_ai_turn_text += text_clean
+            if remember_voice_echo:
+                self._remember_recent_ai_voice_echo(text_clean)
+        published_at = time.time()
         self.sync_message_queue.put({"type": "json", "data": message})
+        if on_published is not None:
+            on_published(published_at)
         if cache_for_new_session and hasattr(self, 'is_preparing_new_session') and self.is_preparing_new_session:
             if not hasattr(self, 'message_cache_for_new_session'):
                 self.message_cache_for_new_session = []
@@ -1351,7 +1404,9 @@ class TurnMixin:
             return
         resolved_input_type = input_type or MIRROR_USER_TEXT_INPUT_TYPE
         source = str(metadata.get("source") or "mirror") if isinstance(metadata, dict) else "mirror"
-        self.last_user_activity_time = time.time()
+        _user_input_time = time.time()
+        self.last_user_activity_time = _user_input_time
+        self.note_user_engagement(at=_user_input_time)
         self.sync_message_queue.put({
             "type": "user",
             "data": {

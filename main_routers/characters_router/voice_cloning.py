@@ -354,11 +354,20 @@ async def voice_clone(
 
     # 检测是否使用本地 TTS（ws/wss 协议）
     _config_manager = get_config_manager()
-    tts_config = _config_manager.get_model_api_config('tts_custom')
+    # 先取 core_config 快照，再让 tts_custom 从同一份解析：两次独立的读之间若发生
+    # /core_api 保存，_local_voice_clone_tts_base_url 会用旧 tts_config 的 URL，而
+    # _is_local_voice_clone_tts_config 读的是新的 ttsModelProvider，本地 TTS 注册
+    # 路径可能被跳过或打到旧端点。
     try:
         core_config = await _config_manager.aget_core_config() or {}
     except Exception:
         core_config = {}
+    # 快照拿不到时退回独立读，保持原有容错（不能把 {} 当快照传下去）
+    tts_config = await (
+        _config_manager.aget_model_api_config('tts_custom', core_config=core_config)
+        if core_config
+        else _config_manager.aget_model_api_config('tts_custom')
+    )
     base_url = _local_voice_clone_tts_base_url(tts_config, core_config)
     is_local_tts = _is_local_voice_clone_tts_config(tts_config, core_config)
 

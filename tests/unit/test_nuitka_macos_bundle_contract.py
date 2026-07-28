@@ -27,6 +27,13 @@ def test_macos_pyobjc_build_uses_background_app_with_electron_wrapper():
         "codesign --verify --deep --strict "
         "dist/Xiao8/projectneko_server.app"
     ) in workflow
+    playwright_links_cleanup = (
+        'rm -rf -- "$NEKO_NUITKA_RUNTIME_DIR/playwright_browsers/.links"'
+    )
+    assert playwright_links_cleanup in workflow
+    assert workflow.index(playwright_links_cleanup) < workflow.index(
+        "codesign --force --deep --sign - dist/Xiao8/projectneko_server.app"
+    )
     assert 'NEKO_NUITKA_RUNTIME_DIR=$RUNTIME_DIR' in workflow
 
 

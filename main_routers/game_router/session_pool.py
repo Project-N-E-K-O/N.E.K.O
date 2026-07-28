@@ -164,6 +164,39 @@ async def _get_or_create_session(
         entry['last_activity'] = time.time()
         return entry
 
+    # 只有确定要新建会话时才等区域落定。游戏事件的常规调用不传 lanlan_name，上面第
+    # 一个 key 必然 miss、要到 canonical_key 才命中，所以等待放在两次检查之间会让
+    # 每个事件都白付一次超时——而那种会话的线路早冻好了，根本用不上新结论。
+    #
+    # 刻意 fail-open 并 warning（区别于主会话/热切换路径的异常传播）：小游戏是轻量
+    # 入口，不该因区域探测本身出错而开不了；落定失败时退化到当前配置（最坏用国内
+    # 兜底线路）仍可用。warning 而非静默，便于诊断「海外用户偶尔一整场走国内线路」。
+    from ..shared_state import get_config_manager as _get_cm
+    try:
+        await _get_cm().aensure_region_resolved()
+    except Exception:
+        logger.warning("[GeoIP] 游戏会话区域落定失败，退化到当前配置继续", exc_info=True)
+
+    # 无条件重读，不看落定成功与否。两个理由只有第一个跟落定结果相关：
+    # 1) 落定可能改变线路（lanlan.tech → lanlan.app），而上面那份 char_info 是落定
+    #    之前读的——只有落定成功时才需要为此重读；
+    # 2) 只要**等过**，等待期间当前角色就可能被切换，重读会带回不同的 lanlan_name
+    #    ——那 key 就变了。这一条与落定成功与否无关，超时 fail-open 和抛异常两条路
+    #    径同样成立。曾经把重读写在 `if settled:` 里，等于只修了第一个理由：超时后
+    #    会拿等待前的角色建 client，既用错人格，又在旧 key 下留一份后续事件永远不
+    #    会再命中的缓存会话。
+    # 走到这里说明确定要新建会话（常规游戏事件在上面 canonical_key 命中处就返回
+    # 了），多读一次角色配置的代价可以忽略。
+    char_info = _get_character_info(lanlan_name)
+    canonical_lanlan = str(char_info.get("lanlan_name") or lanlan_name or "").strip()
+    refreshed_key = _game_session_key(canonical_lanlan, game_type, session_id)
+    if refreshed_key != canonical_key:
+        canonical_key = refreshed_key
+        if canonical_key in _game_sessions:
+            entry = _game_sessions[canonical_key]
+            entry['last_activity'] = time.time()
+            return entry
+
     create_lock = _get_session_create_lock(canonical_key)
     async with create_lock:
         if canonical_key in _game_sessions:

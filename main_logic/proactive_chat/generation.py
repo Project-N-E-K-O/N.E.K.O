@@ -20,6 +20,7 @@ import logging
 import re
 from dataclasses import dataclass
 from functools import partial
+from itertools import zip_longest
 from typing import Any
 
 from config import (
@@ -73,12 +74,35 @@ from .state import (
     _is_recent_proactive_material,
     _is_similar_to_recent_proactive_chat,
     _proactive_material_key,
+    _proactive_turn_still_owned,
 )
 
 logger = get_module_logger(__name__, "Main")
 
 
 _PROACTIVE_LLM_RETRY_ERROR_TYPES: tuple[type[BaseException], ...] | None = None
+
+
+def _proactive_silence_since(mgr: Any) -> float | None:
+    """Return the trustworthy start of the current no-response streak."""
+    timestamps = (
+        getattr(mgr, "proactive_engagement_observation_started_at", None),
+        getattr(mgr, "last_user_message_time", None),
+        getattr(mgr, "last_user_engagement_time", None),
+    )
+    valid = [float(value) for value in timestamps if value is not None]
+    return max(valid) if valid else None
+
+
+def _merge_regen_avoid_terms(*term_groups: Any) -> list[str]:
+    """Interleave repeat signals while keeping the prompt injection bounded."""
+    interleaved = (
+        term
+        for row in zip_longest(*term_groups)
+        for term in row
+        if term is not None
+    )
+    return list(dict.fromkeys(interleaved))[:ANTI_REPEAT_INJECT_TOP_K]
 
 
 @dataclass(frozen=True, slots=True)
@@ -533,6 +557,7 @@ async def _run_phase2_generation(
     )
 
     make_llm = partial(_make_proactive_llm, model_config)
+    silence_since_before_generation = _proactive_silence_since(mgr)
     generated = await _generate_phase2_stream(
         mgr=mgr,
         proactive_sid=proactive_sid,
@@ -551,6 +576,30 @@ async def _run_phase2_generation(
     )
     if generated.result is not None:
         return Phase2GuardedOutput(result=generated.result)
+
+    silence_since_after_generation = _proactive_silence_since(mgr)
+    if (
+        silence_since_after_generation is not None
+        and (
+            silence_since_before_generation is None
+            or silence_since_after_generation > silence_since_before_generation
+        )
+    ):
+        active_logger.info(
+            "[%s] proactive Phase 2 abandoned after user interaction "
+            "during generation",
+            lanlan_name,
+        )
+        if _proactive_turn_still_owned(mgr, proactive_sid):
+            await mgr.handle_new_message()
+        return Phase2GuardedOutput(
+            result=ProactiveChatResult(
+                body=_proactive_pass_body(
+                    PROACTIVE_REASON_DELIVERY_PREEMPTED,
+                    message="用户已在主动搭话生成期间恢复互动",
+                )
+            )
+        )
 
     return await _guard_phase2_output(
         mgr=mgr,
@@ -944,7 +993,7 @@ async def _generate_phase2_stream(
     )
     if aborted or not full_text.strip():
         final_reason = abort_reason_code or PROACTIVE_REASON_PASS_GENERATION_EMPTY
-        if not mgr.state.is_proactive_preempted(proactive_sid):
+        if _proactive_turn_still_owned(mgr, proactive_sid):
             await mgr.handle_new_message()
             active_logger.debug(
                 "[%s] Phase 2 abort，已中断 TTS + 前端音频", lanlan_name
@@ -969,7 +1018,7 @@ async def _generate_phase2_stream(
         source_tag = leak_tag
     response_text = _strip_proactive_intent_label_leak(full_text.strip())
     if not response_text:
-        if not mgr.state.is_proactive_preempted(proactive_sid):
+        if _proactive_turn_still_owned(mgr, proactive_sid):
             await mgr.handle_new_message()
         else:
             active_logger.info(
@@ -1056,7 +1105,10 @@ async def _guard_phase2_output(
     )
     if music_only_pending and source_tag != "MUSIC":
         dedup_tag = "MUSIC"
-    elif source_tag == "MEME" and selected_meme_link is None:
+    elif (
+        (source_tag == "MEME" and selected_meme_link is None)
+        or (source_tag == "MUSIC" and selected_music_link is None)
+    ):
         dedup_tag = "CHAT"
     else:
         dedup_tag = source_tag
@@ -1102,7 +1154,7 @@ async def _guard_phase2_output(
             f"(similarity={similarity_score:.3f}, "
             f"threshold={_PROACTIVE_SIMILARITY_THRESHOLD:.2f})"
         )
-        if not mgr.state.is_proactive_preempted(proactive_sid):
+        if _proactive_turn_still_owned(mgr, proactive_sid):
             await mgr.handle_new_message()
         else:
             active_logger.info(
@@ -1121,14 +1173,55 @@ async def _guard_phase2_output(
             )
         )
 
+    anti_repeat_corpus = None
+    unanswered_repeat_signal = None
+    silence_since = _proactive_silence_since(mgr)
+    try:
+        from memory.anti_repeat import get_anti_repeat_corpus
+
+        anti_repeat_corpus = get_anti_repeat_corpus()
+    except Exception as exc:  # pragma: no cover - defensive
+        active_logger.debug("[AntiRepeat] corpus unavailable: %s", exc)
+        anti_repeat_corpus = None
+
+    if anti_repeat_corpus is not None and not exempt_text_dedup:
+        try:
+            unanswered_repeat_signal = (
+                anti_repeat_corpus.score_unanswered_proactive_draft(
+                    lanlan_name,
+                    response_text,
+                    silence_since=silence_since,
+                )
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            active_logger.debug(
+                "[AntiRepeat] unanswered proactive score skipped: %s",
+                exc,
+            )
+
+    unanswered_repeat_triggered = bool(
+        unanswered_repeat_signal is not None
+        and unanswered_repeat_signal.triggered
+    )
+    if unanswered_repeat_triggered:
+        active_logger.info(
+            "[%s] proactive unanswered-repeat regen "
+            "(matches=%d considered=%d best_similarity=%.3f)",
+            lanlan_name,
+            unanswered_repeat_signal.match_count,
+            unanswered_repeat_signal.considered_count,
+            unanswered_repeat_signal.best_similarity,
+        )
+        print(
+            f"[{lanlan_name}] 用户持续未互动且主动搭话内容反复，触发改写 "
+            f"(matches={unanswered_repeat_signal.match_count}, "
+            f"similarity={unanswered_repeat_signal.best_similarity:.3f})"
+        )
+
     if exempt_text_dedup:
         bm25_total, bm25_terms = 0.0, {}
-        anti_repeat_corpus = None
-    else:
+    elif anti_repeat_corpus is not None:
         try:
-            from memory.anti_repeat import get_anti_repeat_corpus
-
-            anti_repeat_corpus = get_anti_repeat_corpus()
             bm25_total, bm25_terms = anti_repeat_corpus.score_draft(
                 lanlan_name,
                 response_text,
@@ -1136,21 +1229,37 @@ async def _guard_phase2_output(
         except Exception as exc:  # pragma: no cover - defensive
             active_logger.debug("[AntiRepeat] BM25 score skipped: %s", exc)
             bm25_total, bm25_terms = 0.0, {}
-            anti_repeat_corpus = None
+    else:
+        bm25_total, bm25_terms = 0.0, {}
 
-    if bm25_total >= ANTI_REPEAT_REGEN_THRESHOLD:
+    if (
+        unanswered_repeat_triggered
+        or bm25_total >= ANTI_REPEAT_REGEN_THRESHOLD
+    ):
         initial_source_tag = source_tag
-        avoid_terms = list(bm25_terms.keys())[:ANTI_REPEAT_INJECT_TOP_K]
+        if unanswered_repeat_triggered:
+            avoid_terms = _merge_regen_avoid_terms(
+                (
+                    bm25_terms.keys()
+                    if bm25_total >= ANTI_REPEAT_REGEN_THRESHOLD
+                    else ()
+                ),
+                unanswered_repeat_signal.repeated_terms,
+            )
+        else:
+            avoid_terms = list(bm25_terms.keys())[:ANTI_REPEAT_INJECT_TOP_K]
         active_logger.info(
-            "[%s] proactive BM25 regen (score=%.2f threshold=%.2f avoid=%s)",
+            "[%s] proactive regen (bm25_score=%.2f threshold=%.2f "
+            "unanswered_repeat=%s)",
             lanlan_name,
             bm25_total,
             ANTI_REPEAT_REGEN_THRESHOLD,
-            avoid_terms,
+            unanswered_repeat_triggered,
         )
         print(
-            f"[{lanlan_name}] 主动搭话 BM25 触发 regen "
-            f"(score={bm25_total:.2f} >= {ANTI_REPEAT_REGEN_THRESHOLD}, "
+            f"[{lanlan_name}] 主动搭话触发 regen "
+            f"(bm25={bm25_total:.2f}, unanswered_repeat="
+            f"{unanswered_repeat_triggered}, "
             f"避开={avoid_terms})"
         )
         avoid_message = render_regen_avoid_instruction(
@@ -1189,6 +1298,7 @@ async def _guard_phase2_output(
                     )
                 )
             )
+        silence_since_before_regen = _proactive_silence_since(mgr)
         try:
             async with asyncio.timeout(20.0):
                 async with (
@@ -1212,6 +1322,29 @@ async def _guard_phase2_output(
                 exc,
             )
             regen_text = ""
+
+        silence_since_after_regen = _proactive_silence_since(mgr)
+        if (
+            silence_since_after_regen is not None
+            and (
+                silence_since_before_regen is None
+                or silence_since_after_regen > silence_since_before_regen
+            )
+        ):
+            active_logger.info(
+                "[%s] proactive regen abandoned after user interaction",
+                lanlan_name,
+            )
+            if _proactive_turn_still_owned(mgr, proactive_sid):
+                await mgr.handle_new_message()
+            return _output(
+                result=ProactiveChatResult(
+                    body=_proactive_pass_body(
+                        PROACTIVE_REASON_DELIVERY_PREEMPTED,
+                        message="主动搭话改写期间用户已互动，取消投递",
+                    )
+                )
+            )
 
         cleaned = (regen_text or "").strip()
         regen_source_tag = ""
@@ -1241,7 +1374,7 @@ async def _guard_phase2_output(
                 "[%s] proactive BM25 regen returned empty/PASS/untagged, drop",
                 lanlan_name,
             )
-            if not mgr.state.is_proactive_preempted(proactive_sid):
+            if _proactive_turn_still_owned(mgr, proactive_sid):
                 await mgr.handle_new_message()
             return _output(
                 result=ProactiveChatResult(
@@ -1252,20 +1385,48 @@ async def _guard_phase2_output(
                 )
             )
 
-        try:
-            regen_total, _ = anti_repeat_corpus.score_draft(
-                lanlan_name,
-                cleaned,
+        regen_dedup_tag = (
+            "CHAT"
+            if (
+                (regen_source_tag == "MEME" and selected_meme_link is None)
+                or (
+                    regen_source_tag == "MUSIC"
+                    and selected_music_link is None
+                )
             )
-        except Exception:
+            else regen_source_tag
+        )
+        regen_material_key = _proactive_material_key(
+            regen_dedup_tag,
+            selected_music_link,
+            meme_content,
+        )
+        regen_exempt_text_dedup = (
+            regen_dedup_tag in ANTI_REPEAT_EXEMPT_SOURCE_TAGS
+            and not _is_recent_proactive_material(
+                lanlan_name,
+                regen_dedup_tag,
+                regen_material_key,
+            )
+        )
+
+        if regen_exempt_text_dedup or anti_repeat_corpus is None:
             regen_total = 0.0
+        else:
+            try:
+                regen_total, _ = anti_repeat_corpus.score_draft(
+                    lanlan_name,
+                    cleaned,
+                )
+            except Exception:
+                regen_total = 0.0
         if regen_total >= ANTI_REPEAT_DROP_THRESHOLD:
             active_logger.info(
                 "[%s] proactive BM25 regen still over drop (score=%.2f)",
                 lanlan_name,
                 regen_total,
             )
-            if not mgr.state.is_proactive_preempted(proactive_sid):
+            if _proactive_turn_still_owned(mgr, proactive_sid):
                 await mgr.handle_new_message()
             return _output(
                 result=ProactiveChatResult(
@@ -1276,9 +1437,54 @@ async def _guard_phase2_output(
                     )
                 )
             )
-        regen_duplicate, regen_similarity = (
-            _is_similar_to_recent_proactive_chat(lanlan_name, cleaned)
-        )
+        regen_unanswered_repeat_signal = None
+        if not regen_exempt_text_dedup and anti_repeat_corpus is not None:
+            try:
+                regen_unanswered_repeat_signal = (
+                    anti_repeat_corpus.score_unanswered_proactive_draft(
+                        lanlan_name,
+                        cleaned,
+                        silence_since=_proactive_silence_since(mgr),
+                    )
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                active_logger.debug(
+                    "[AntiRepeat] unanswered proactive regen score skipped: %s",
+                    exc,
+                )
+        if (
+            regen_unanswered_repeat_signal is not None
+            and regen_unanswered_repeat_signal.triggered
+        ):
+            active_logger.info(
+                "[%s] proactive regen still repeats unanswered content "
+                "(matches=%d considered=%d best_similarity=%.3f), drop",
+                lanlan_name,
+                regen_unanswered_repeat_signal.match_count,
+                regen_unanswered_repeat_signal.considered_count,
+                regen_unanswered_repeat_signal.best_similarity,
+            )
+            if _proactive_turn_still_owned(mgr, proactive_sid):
+                await mgr.handle_new_message()
+            return _output(
+                result=ProactiveChatResult(
+                    body=_proactive_pass_body(
+                        PROACTIVE_REASON_PASS_DUPLICATE,
+                        message="改写后仍与用户持续未回应的主动搭话内容雷同，已 drop",
+                        unanswered_repeat_matches=(
+                            regen_unanswered_repeat_signal.match_count
+                        ),
+                        unanswered_repeat_similarity=(
+                            regen_unanswered_repeat_signal.best_similarity
+                        ),
+                    )
+                )
+            )
+        regen_duplicate, regen_similarity = False, 0.0
+        if not regen_exempt_text_dedup:
+            regen_duplicate, regen_similarity = (
+                _is_similar_to_recent_proactive_chat(lanlan_name, cleaned)
+            )
         if regen_duplicate:
             active_logger.info(
                 "[%s] proactive BM25 regen still literal-dup "
@@ -1286,7 +1492,7 @@ async def _guard_phase2_output(
                 lanlan_name,
                 regen_similarity,
             )
-            if not mgr.state.is_proactive_preempted(proactive_sid):
+            if _proactive_turn_still_owned(mgr, proactive_sid):
                 await mgr.handle_new_message()
             return _output(
                 result=ProactiveChatResult(
@@ -1325,7 +1531,7 @@ async def _guard_phase2_output(
         is_music_used = False
         music_content = None
         source_tag = "PASS"
-        if not mgr.state.is_proactive_preempted(proactive_sid):
+        if _proactive_turn_still_owned(mgr, proactive_sid):
             await mgr.handle_new_message()
         else:
             active_logger.info(

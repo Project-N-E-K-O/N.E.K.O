@@ -19,7 +19,11 @@ class _FakeState:
 class _FakeManager:
     def __init__(self, *, preempted: bool = False) -> None:
         self.state = _FakeState(preempted=preempted)
+        self.current_speech_id = "proactive-sid"
         self.handle_new_message = AsyncMock()
+        self.last_user_activity_time = None
+        self.last_user_engagement_time = None
+        self.proactive_engagement_observation_started_at = 100.0
 
 
 class _FakeStreamingLLM:
@@ -191,3 +195,69 @@ async def test_user_preemption_does_not_clear_user_reply_tts(monkeypatch) -> Non
         == contracts.PROACTIVE_REASON_DELIVERY_PREEMPTED
     )
     mgr.handle_new_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("replacement_sid", "expects_cleanup"),
+    ((None, True), ("avatar-sid", False)),
+)
+async def test_initial_phase2_generation_aborts_after_ui_engagement(
+    monkeypatch,
+    replacement_sid,
+    expects_cleanup,
+) -> None:
+    mgr = _FakeManager()
+
+    async def generate_after_engagement(**_kwargs):
+        mgr.last_user_engagement_time = 200.0
+        if replacement_sid is not None:
+            mgr.current_speech_id = replacement_sid
+        return generation.Phase2Generation(
+            result=None,
+            full_text="这句不应继续投递。",
+            response_text="这句不应继续投递。",
+            source_tag="CHAT",
+        )
+
+    guard_output = AsyncMock()
+    monkeypatch.setattr(generation, "_generate_phase2_stream", generate_after_engagement)
+    monkeypatch.setattr(generation, "_guard_phase2_output", guard_output)
+    monkeypatch.setattr(generation, "_loc", lambda *_args: "begin")
+
+    output = await generation._run_phase2_generation(
+        mgr=mgr,
+        proactive_sid="proactive-sid",
+        model_config=generation.ProactiveModelConfig(
+            conversation_model="fake-model",
+            conversation_base_url=None,
+            conversation_api_key="fake-key",
+            conversation_provider_type=None,
+        ),
+        lanlan_name="兰兰",
+        proactive_lang="zh",
+        master_name="博士",
+        system_prompt="system",
+        dynamic_context="",
+        screenshot_b64=None,
+        focus_thinking=False,
+        expects_source_tag=True,
+        active_channels=[],
+        selected_music_link=None,
+        selected_meme_link=None,
+        music_content=None,
+        meme_content=None,
+        is_playing_music=False,
+        music_cooldown=False,
+    )
+
+    guard_output.assert_not_awaited()
+    if expects_cleanup:
+        mgr.handle_new_message.assert_awaited_once_with()
+    else:
+        mgr.handle_new_message.assert_not_awaited()
+    assert output.result is not None
+    assert (
+        output.result.body["reason_code"]
+        == contracts.PROACTIVE_REASON_DELIVERY_PREEMPTED
+    )

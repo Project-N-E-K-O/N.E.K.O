@@ -289,7 +289,7 @@ async def generate_galgame_options(request: Request):
             "reason": "session_takeover",
         })
 
-    summary_config = config_manager.get_model_api_config('summary') or {}
+    summary_config = await config_manager.aget_model_api_config('summary') or {}
     api_key = (summary_config.get('api_key') or '').strip()
     model = (summary_config.get('model') or '').strip()
     base_url = (summary_config.get('base_url') or '').strip()

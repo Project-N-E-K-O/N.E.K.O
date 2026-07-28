@@ -27,10 +27,13 @@ from websockets import exceptions as web_exceptions
 from fastapi import WebSocket
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient, _is_safety_violation_signal
-from main_logic.proactive_delivery import DELIVERY_RETRACTED_KEY
+from main_logic.proactive_delivery import (
+    DELIVERY_RETRACTED_KEY,
+    resolve_callback_delivery_ack,
+)
 from utils.gptsovits_config import is_gsv_disabled_voice_id
 from config.prompts.prompts_sys import _loc, CONTEXT_SUMMARY_READY
-from utils.config_manager import _as_bool
+from utils.config_manager import _as_bool, ensure_default_yui_voice_for_free_api
 from utils.language_utils import normalize_language_code, get_global_language_full
 from queue import Empty
 from uuid import uuid4
@@ -44,6 +47,7 @@ from ._shared import (
     _ORPHAN_SESSION_REAPER_TASKS,
 )
 from .callback_render import (
+    _build_callback_instruction,
     _render_pending_extra_replies_by_origin,
     _select_callbacks_within_token_budget,
 )
@@ -711,7 +715,8 @@ class LifecycleMixin:
             tts_result, llm_result = await asyncio.gather(
                 self._start_session_start_tts_if_needed(),
                 self._start_session_start_llm(
-                    input_mode, core_config_snapshot, _new_dialog_task, _mem_start
+                    input_mode, core_config_snapshot, realtime_config,
+                    _new_dialog_task, _mem_start
                 ),
                 return_exceptions=True
             )
@@ -925,11 +930,18 @@ class LifecycleMixin:
         # 立即通知前端系统正在准备（静默期开始）
         await self.send_session_preparing(input_mode)
 
+        # 会话的线路在下面这几行定死、整场不再复议，所以先给仍在飞的区域探测一个
+        # 收尾窗口（启动预热的 join 可能在 DNS 解析上过期）。已落定时立即返回，
+        # 正常路径零开销；等待也是 offload 的，不占事件循环。
+        await self._config_manager.aensure_region_resolved()
+
         # 重新读取配置以支持热重载
         # core_api_type 从 realtime 配置获取，支持自定义 realtime API 时自动设为 'local'
-        realtime_config = self._config_manager.get_model_api_config('realtime')
-        # 合并两次同步 IO：core_config 一次 read 即可，avoid 双倍 json.load
+        # 合并两次同步 IO：core_config.json 只 read 一次，realtime 解析复用同一份快照
         core_config_snapshot = await self._config_manager.aget_core_config()
+        realtime_config = await self._config_manager.aget_model_api_config(
+            'realtime', core_config=core_config_snapshot
+        )
         self.core_api_type = realtime_config.get('api_type', '') or core_config_snapshot.get('CORE_API_TYPE', '')
         self.audio_api_key = core_config_snapshot['AUDIO_API_KEY']
 
@@ -941,6 +953,17 @@ class LifecycleMixin:
             self._enqueue_voice_migration_notice(legacy_names)
         except Exception as e:
             logger.warning(f"⚠️ start_session 清理无效 voice_id 失败，继续启动会话: {e}")
+
+        # 默认 YUI 卡的免费音色绑定在区域未落定时会主动推迟（绑错了纠正不回来），
+        # 而它原本只有两个调用点——保存核心配置与 clear_voice_ids。用户在设置里切到
+        # 免费 API 时，保存路径紧接着就调它，此时探测刚起、必然还是未落定，于是推迟；
+        # 之后再没有任何路径调它，"等下一轮"永远等不到。这里就是那一轮：紧跟上面的
+        # aensure_region_resolved，区域已尽力落定；每场会话都跑一次，幂等（只在默认
+        # YUI 卡且 voice_id 为空时写入）；放在下面读 voice_id 之前，绑上本场即生效。
+        try:
+            await ensure_default_yui_voice_for_free_api(self._config_manager, core_config_snapshot)
+        except Exception as e:
+            logger.warning(f"⚠️ start_session 绑定默认 YUI 音色失败，继续启动会话: {e}")
 
         # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
         _, _, _, self.lanlan_basic_config, _, _, _, _, _ = await self._config_manager.aget_character_data()
@@ -971,8 +994,12 @@ class LifecycleMixin:
 
         # 日志输出模型配置（直接从配置读取，避免创建不必要的实例变量）
         _realtime_model = realtime_config.get('model', '')
-        _conversation_model = self._config_manager.get_model_api_config('conversation').get('model', '')
-        _vision_model = self._config_manager.get_model_api_config('vision').get('model', '')
+        _conversation_model = (await self._config_manager.aget_model_api_config(
+            'conversation', core_config=core_config_snapshot
+        )).get('model', '')
+        _vision_model = (await self._config_manager.aget_model_api_config(
+            'vision', core_config=core_config_snapshot
+        )).get('model', '')
         logger.info(f"📌 已重新加载配置: core_api={self.core_api_type}, realtime_model={_realtime_model}, text_model={_conversation_model}, vision_model={_vision_model}, voice_id={self.voice_id}")
         logger.info(f"[语音会话诊断] 配置加载完成 (耗时: {time.time() - diag_start:.2f}秒)")
         return realtime_config, core_config_snapshot
@@ -1153,6 +1180,7 @@ class LifecycleMixin:
         return resp.text
 
     async def _start_session_start_llm(self, input_mode, core_config_snapshot,
+                                       prepared_realtime_config,
                                        new_dialog_task, mem_start):
         """Asynchronously create and connect the LLM Session.
 
@@ -1213,9 +1241,42 @@ class LifecycleMixin:
         # held at connect time. ``set_tools`` keeps it live for
         # later mutations.
         _initial_tool_defs = self.tool_registry.all()
+
+        # 下面两个分支都会在此刻重读配置并把 base_url 冻进 client（text 分支的
+        # OmniOfflineClient / realtime 分支的连接配置）。prepare_runtime 虽已落定
+        # 过一次，但上面 await 记忆拉取可达数秒——若那次落定是 Steam 兜底或超时
+        # fail-open，权威 IP 结论可能恰在这几秒内落地，这里再给一个收尾窗口，
+        # 让冻结用的快照与最终结论一致。已落定时零开销。
+        await self._config_manager.aensure_region_resolved()
+
         if input_mode == 'text':
-            conversation_config = self._config_manager.get_model_api_config('conversation')
-            vision_config = self._config_manager.get_model_api_config('vision')
+            # 不复用 prepare_runtime 的快照：上面 await 过 /new_dialog 的记忆拉取
+            # （可达数秒），期间用户可能刚在 /core_api 存了新凭证。构造 client 前重新
+            # 读一份**新鲜快照**，conversation 与 vision 都从它解析——两次独立的读会
+            # 让保存恰好落在中间时拿到撕裂的一对（旧 conversation + 新 vision）。
+            _fresh_core_config = await self._config_manager.aget_core_config()
+            # 区域可能恰在记忆拉取那几秒里翻转（prepare 的落定是 Steam 兜底/超时、
+            # 权威 IP 结论随后到达）：此时 prepare 阶段解析的 voice_id 属于旧区域
+            # 目录，而本快照的线路是新区域。realtime 侧有按快照的配对闸门兜底
+            # （错配不下发、落服务端默认）；text 的 TTS 直接拿 self.voice_id 合成，
+            # 由 _drop_free_voice_on_route_flip 施加同一条 fail-safe（清空免费音色
+            # 落服务端默认，本场生效、下场按新区域正常解析）。
+            if (str(core_config_snapshot.get('CORE_URL') or '')
+                    != str(_fresh_core_config.get('CORE_URL') or '')):
+                logger.warning(
+                    "[GeoIP] 区域结论在会话准备与连接创建之间发生变化"
+                    "（%s → %s），本场音色可能落到服务端默认",
+                    core_config_snapshot.get('CORE_URL'), _fresh_core_config.get('CORE_URL'),
+                )
+                self._drop_free_voice_on_route_flip(
+                    core_config_snapshot.get('CORE_URL'), _fresh_core_config.get('CORE_URL'),
+                )
+            conversation_config = await self._config_manager.aget_model_api_config(
+                'conversation', core_config=_fresh_core_config
+            )
+            vision_config = await self._config_manager.aget_model_api_config(
+                'vision', core_config=_fresh_core_config
+            )
             new_session = OmniOfflineClient(
                 base_url=conversation_config['base_url'],
                 api_key=conversation_config['api_key'],
@@ -1258,7 +1319,17 @@ class LifecycleMixin:
             new_session.on_proactive_done = self.handle_proactive_complete
             new_session.on_thinking_active = self._make_thinking_active_callback(new_session)
         else:
-            realtime_config = self._config_manager.get_model_api_config('realtime')
+            # 同上：await 记忆拉取之后必须重读，不复用 prepare_runtime 的快照
+            _prev_realtime_base = str((prepared_realtime_config or {}).get('base_url') or '')
+            realtime_config = await self._config_manager.aget_model_api_config('realtime')
+            # 区域翻转诊断，与 text 分支对偶；realtime 的音色下发按本快照的
+            # base_url 走配对闸门，错配不下发、落服务端默认（fail-safe）。
+            if _prev_realtime_base != str(realtime_config.get('base_url') or ''):
+                logger.warning(
+                    "[GeoIP] 区域结论在会话准备与连接创建之间发生变化"
+                    "（%s → %s），本场音色可能落到服务端默认",
+                    _prev_realtime_base, realtime_config.get('base_url'),
+                )
             nr_enabled = (await _core_facade.aload_global_conversation_settings()).get('noiseReductionEnabled', True)
             new_session = OmniRealtimeClient(
                 base_url=realtime_config.get('base_url', ''),
@@ -1411,11 +1482,17 @@ class LifecycleMixin:
 
         # 2. Create PENDING session components (as before, store in self.pending_connector, self.pending_session)
         try:
+            # 与 _start_session_prepare_runtime 对偶：热切换准备出来的会话同样会把
+            # 线路定死一整场，所以这里也要给仍在飞的区域探测一个收尾窗口。
+            await self._config_manager.aensure_region_resolved()
+
             # 重新读取配置以支持热重载
             # core_api_type 从 realtime 配置获取，支持自定义 realtime API 时自动设为 'local'
-            realtime_config = self._config_manager.get_model_api_config('realtime')
-            # 合并两次同步 IO：core_config 一次 read 即可
+            # 合并两次同步 IO：core_config.json 只 read 一次，realtime 解析复用同一份快照
             core_config_snapshot = await self._config_manager.aget_core_config()
+            realtime_config = await self._config_manager.aget_model_api_config(
+                'realtime', core_config=core_config_snapshot
+            )
             self.core_api_type = realtime_config.get('api_type', '') or core_config_snapshot.get('CORE_API_TYPE', '')
             self.audio_api_key = core_config_snapshot['AUDIO_API_KEY']
 
@@ -1427,6 +1504,13 @@ class LifecycleMixin:
                 self._enqueue_voice_migration_notice(legacy_names)
             except Exception as e:
                 logger.warning(f"⚠️ 热切换准备: 清理无效 voice_id 失败，继续准备会话: {e}")
+
+            # 与 _start_session_prepare_runtime 对偶：补上被区域未落定推迟的默认 YUI
+            # 音色绑定（那次推迟没有其它路径会回来补）。
+            try:
+                await ensure_default_yui_voice_for_free_api(self._config_manager, core_config_snapshot)
+            except Exception as e:
+                logger.warning(f"⚠️ 热切换准备: 绑定默认 YUI 音色失败，继续准备会话: {e}")
 
             # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
             _, _, _, self.lanlan_basic_config, _, _, _, _, _ = await self._config_manager.aget_character_data()
@@ -1469,8 +1553,29 @@ class LifecycleMixin:
             _pending_tool_defs = self.tool_registry.all()
             if self.input_mode == 'text':
                 # 文本模式：使用 OmniOfflineClient
-                conversation_config = self._config_manager.get_model_api_config('conversation')
-                vision_config = self._config_manager.get_model_api_config('vision')
+                # 与主会话构造点对偶：顶部快照与此处之间隔着角色数据读取等 await，
+                # 故重新读一份新鲜快照，并让 conversation / vision 共用它，避免撕裂
+                _fresh_core_config = await self._config_manager.aget_core_config()
+                # 与主会话构造点对偶：区域可能恰在上面的 cleanup / 角色读取等
+                # await 期间翻转（顶部落定是 Steam 兜底时不落 _region_cache），
+                # self.voice_id 解析自旧区域目录——同一条 fail-safe：清空免费
+                # 音色落服务端默认，promotion 后的 TTS 不拿旧区域 ID 去新端点。
+                if (str(core_config_snapshot.get('CORE_URL') or '')
+                        != str(_fresh_core_config.get('CORE_URL') or '')):
+                    logger.warning(
+                        "[GeoIP] 热切换准备: 区域结论在准备与连接创建之间发生变化"
+                        "（%s → %s），本场音色可能落到服务端默认",
+                        core_config_snapshot.get('CORE_URL'), _fresh_core_config.get('CORE_URL'),
+                    )
+                    self._drop_free_voice_on_route_flip(
+                        core_config_snapshot.get('CORE_URL'), _fresh_core_config.get('CORE_URL'),
+                    )
+                conversation_config = await self._config_manager.aget_model_api_config(
+                    'conversation', core_config=_fresh_core_config
+                )
+                vision_config = await self._config_manager.aget_model_api_config(
+                    'vision', core_config=_fresh_core_config
+                )
                 guard_max_length = self._get_text_guard_max_length()
                 self.pending_session = OmniOfflineClient(
                     base_url=conversation_config['base_url'],
@@ -1511,7 +1616,8 @@ class LifecycleMixin:
                 logger.info("🔄 热切换准备: 创建文本模式 OmniOfflineClient")
             else:
                 # 语音模式：使用 OmniRealtimeClient
-                realtime_config = self._config_manager.get_model_api_config('realtime')
+                # 同上：不复用顶部快照
+                realtime_config = await self._config_manager.aget_model_api_config('realtime')
                 nr_enabled = (await _core_facade.aload_global_conversation_settings()).get('noiseReductionEnabled', True)
                 self.pending_session = OmniRealtimeClient(
                     base_url=realtime_config.get('base_url', ''),
@@ -1709,6 +1815,160 @@ class LifecycleMixin:
             # 塞回是尽力而为：绝不能让队列簿记反过来打断中止清理流程。
             logger.warning(f"Final Swap Sequence: failed to restore undelivered extras: {e}")
 
+    def _select_passive_callbacks_for_swap_prime(self, extras_selected: list = None) -> tuple:
+        """[Hot-swap related] Pick queued passive callbacks to ride the swap prime.
+
+        Passive (``delivery_mode="passive"`` / ai_behavior="read") callbacks
+        never mirror into ``pending_extra_replies`` (PR #2469), so a pure
+        voice session has no user-turn drain to carry them. Their delivery
+        point is HERE: the next NATURALLY-occurring hot swap hands them to
+        the new session as background context. Non-Gemini providers get a
+        DEDICATED ``prime_context(skipped=True)`` call (instructions channel,
+        no turn) AFTER the announce prime — physically separate, so read
+        content can never become part of the user turn that triggers a
+        spoken response. Gemini has no instructions channel and a global,
+        response-unscoped skip guard, so one swap may carry at most ONE
+        prime turn: on a no-extras swap the passive block merges into the
+        single ``skipped=True`` prime; a swap that also announces extras
+        skips the ride-along and leaves passive queued for the next swap.
+
+        Deliberate trade-off (owner decision): an ACTIVE voice session gets
+        no mid-session context push for passive cues — they wait for the
+        next natural swap, even if that is several user turns away. Pushing
+        into a live session would reopen the interruption/session-churn
+        surface this design exists to close.
+
+        Returns ``(selected, rendered_text)``. Selection shares the
+        ``AGENT_CALLBACK_TOTAL_MAX_TOKENS`` budget with the already-selected
+        proactive extras: ``extras_selected`` is prepended to the candidate
+        list before the budget walk, so passive only takes what the extras
+        left over. Over-budget passive callbacks stay queued for the next
+        swap (same semantics as the extras ``_deferred``).
+
+        The queue is NOT drained here — removal is deferred to promote
+        success via :meth:`_remove_swap_delivered_passive_cbs`, mirroring the
+        ``_prime_selected_extras`` bookkeeping, so every pre-promote abort
+        keeps the queue intact with zero restore code. Topic-hook snapshots
+        are excluded: they have their own ack/retry lifecycle and delivery
+        gates that this path must not bypass.
+        """
+        try:
+            candidates = [
+                cb for cb in (self.pending_agent_callbacks or [])
+                if isinstance(cb, dict)
+                and cb.get("delivery_mode") == "passive"
+                and not cb.get(DELIVERY_RETRACTED_KEY)
+                and cb.get("channel") != "topic_hook"
+            ]
+            if not candidates:
+                return [], ""
+            # Same staleness hygiene as the text-mode drain: a same-key
+            # superseded cue must not deliver, and gets purged from the live
+            # queue (ack False) rather than lingering until the next drain.
+            self._retract_stale_coalesced(candidates)
+            self._purge_retracted_agent_callbacks()
+            candidates = [
+                cb for cb in candidates if not cb.get(DELIVERY_RETRACTED_KEY)
+            ]
+            if not candidates:
+                return [], ""
+            from config import AGENT_CALLBACK_TOTAL_MAX_TOKENS
+            _extras = list(extras_selected or [])
+            selected_all, _ = _select_callbacks_within_token_budget(
+                _extras + candidates, AGENT_CALLBACK_TOTAL_MAX_TOKENS
+            )
+            selected = selected_all[len(_extras):]
+            if not selected:
+                return [], ""
+            _lang = normalize_language_code(self.user_language, format='short')
+            rendered = _build_callback_instruction(
+                selected,
+                lang=_lang,
+                lanlan_name=getattr(self, "lanlan_name", "") or "",
+                master_name=getattr(self, "master_name", "") or "",
+                passive=True,
+            )
+            return selected, rendered
+        except Exception as e:
+            # 选取/渲染失败绝不能打断 swap：这批 passive 留在队列等下一轮。
+            logger.warning(f"Final Swap Sequence: passive callback selection failed: {e}")
+            return [], ""
+
+    def _remove_swap_delivered_passive_cbs(self, selected: list) -> list:
+        """[Hot-swap related] Dequeue prime-injected passive callbacks at
+        promote success; returns the actually-removed subset (ack'd True).
+
+        Identity-based removal, same as the extras counterpart: entries a
+        concurrent path consumed inside the prime→promote window (text-turn
+        drain, retraction purge, flood cap) no-op here instead of deleting a
+        re-queued same-id newcomer.
+        """
+        if not selected:
+            return []
+        try:
+            selected_obj_ids = {id(cb) for cb in selected}
+            removed = [
+                cb for cb in self.pending_agent_callbacks
+                if id(cb) in selected_obj_ids
+            ]
+            if not removed:
+                return []
+            self.pending_agent_callbacks = [
+                cb for cb in self.pending_agent_callbacks
+                if id(cb) not in selected_obj_ids
+            ]
+            for cb in removed:
+                resolve_callback_delivery_ack(cb, True)
+            return removed
+        except Exception as e:
+            logger.warning(f"Final Swap Sequence: passive callback dequeue failed: {e}")
+            return []
+
+    def _restore_undelivered_swap_passive_cbs(self, removed_cbs: list) -> None:
+        """[Hot-swap related] Mirror of :meth:`_restore_undelivered_swap_extras`
+        for prime-injected passive callbacks.
+
+        Only the post-promote death exits call this (promoted session dies
+        before its next reply, so the primed context is lost): put the
+        removed entries back at the queue head for the next swap. Staleness
+        is deliberately NOT re-checked here — every delivery point
+        (text-turn drain / next swap's selection) re-runs
+        ``_retract_stale_coalesced`` anyway. Topic-hook snapshots and entries
+        whose delivery id is already back in the queue (a newer re-enqueue
+        won) are skipped, matching the extras restore guards.
+        """
+        if not removed_cbs:
+            return
+        try:
+            from config import AGENT_CALLBACK_QUEUE_MAX_ITEMS
+            queued_ids = {
+                cb.get("_callback_delivery_id")
+                for cb in (self.pending_agent_callbacks or [])
+                if isinstance(cb, dict) and cb.get("_callback_delivery_id")
+            }
+            restored = [
+                cb for cb in removed_cbs
+                if isinstance(cb, dict)
+                and not cb.get(DELIVERY_RETRACTED_KEY)
+                and cb.get("channel") != "topic_hook"
+                and cb.get("_callback_delivery_id") not in queued_ids
+            ]
+            if not restored:
+                return
+            self.pending_agent_callbacks = restored + self.pending_agent_callbacks
+            # flood guard 与 enqueue_agent_callback 对齐：drop-oldest。
+            if len(self.pending_agent_callbacks) > AGENT_CALLBACK_QUEUE_MAX_ITEMS:
+                self.pending_agent_callbacks = (
+                    self.pending_agent_callbacks[-AGENT_CALLBACK_QUEUE_MAX_ITEMS:]
+                )
+            logger.info(
+                "Final Swap Sequence: %d undelivered passive callback(s) restored to queue head after aborted swap",
+                len(restored),
+            )
+        except Exception as e:
+            # 塞回是尽力而为：绝不能让队列簿记反过来打断中止清理流程。
+            logger.warning(f"Final Swap Sequence: failed to restore undelivered passive callbacks: {e}")
+
     async def _perform_final_swap_sequence(self):
         """[Hot-swap related] Perform the final swap sequence"""
         logger.info("Final Swap Sequence: Starting...")
@@ -1747,6 +2007,16 @@ class LifecycleMixin:
             _prime_selected_extras: list = []
             _removed_extras: list = []
             _removed_cb_backed_ids: set = set()
+            # Passive callbacks riding this swap (voice pending session only).
+            # Same deferred-removal bookkeeping as _prime_selected_extras:
+            # queue untouched until promote succeeds. Injection goes through
+            # its OWN prime_context(skipped=True) call below — never merged
+            # into the announce prime text.
+            _prime_selected_passive_cbs: list = []
+            _removed_passive_cbs: list = []
+            _passive_sel: list = []
+            _passive_swap_text = ""
+            _extras_for_budget: list = []
             next_session_context_messages = getattr(self, "next_session_context_messages", []) or []
             incremental_next_session_context = next_session_context_messages[
                 self.initial_next_session_context_snapshot_len:
@@ -1791,6 +2061,16 @@ class LifecycleMixin:
                     lanlan_name=self.lanlan_name,
                     master_name=self.master_name,
                 )
+                # Passive（read）回调搭车：本分支只记预算参照（extras 先占
+                # 份额），选取推迟到主 prime 之后的统一注入点——收窄"同 key
+                # 更新 cue 在主 prime await 期间入队"的陈旧窗口（Codex P2）。
+                # 注入绝不混进本分支 skipped=False 的播报 prime，read 内容
+                # 不能成为触发主动发言那一轮 user turn 的一部分。Gemini 在
+                # 有 extras 的 swap 上不搭车（统一注入点会跳过）：全局
+                # _skip_until_next_response 标志不分响应，第二个 turn 会
+                # 丢播报、放出 read 响应（Codex P1），留队等下一次无 extras
+                # 的 swap。
+                _extras_for_budget = _selected
                 try:
                     await self.pending_session.prime_context(final_prime_text, skipped=False)
                 except (web_exceptions.ConnectionClosed, AttributeError) as e:
@@ -1812,6 +2092,20 @@ class LifecycleMixin:
             else:
                 _lang = normalize_language_code(self.user_language, format='short')
                 final_prime_text += _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
+                # Passive（read）回调搭车：本分支没有 proactive extras，
+                # passive 吃满整个预算。非 Gemini 走 if/else 之后的统一
+                # skipped=True 注入；Gemini 特例在这里合并进本分支唯一的
+                # skipped=True prime——Gemini 没有 instructions 通道，任何
+                # prime 都是一个 turn，同一次 swap 发两个 turn 会被全局
+                # skip 标志错序丢弃（Codex P1），所以必须单 turn：响应被
+                # skip-guard 丢弃、内容留在上下文，read 语义不变。
+                if (isinstance(self.pending_session, OmniRealtimeClient)
+                        and getattr(self.pending_session, "_is_gemini", False)):
+                    _passive_sel, _passive_swap_text = (
+                        self._select_passive_callbacks_for_swap_prime()
+                    )
+                    if _passive_swap_text:
+                        final_prime_text += "\n" + _passive_swap_text
                 try:
                     await self.pending_session.prime_context(final_prime_text, skipped=True)
                 except (web_exceptions.ConnectionClosed, AttributeError) as e:
@@ -1821,6 +2115,38 @@ class LifecycleMixin:
                     await self._reset_preparation_state(clear_main_cache=True)
                     self.is_hot_swap_imminent = False
                     return
+                # Gemini 合并搭车成功：prime 已带上 passive 块，此刻记账，
+                # 统一注入点会因 _is_gemini 跳过，不会双投。
+                if _passive_swap_text:
+                    _prime_selected_passive_cbs = _passive_sel
+
+            # Passive（read）搭车条目的统一注入点（非 Gemini；Gemini 已在
+            # 无 extras 分支合并单 turn，有 extras 的 Gemini swap 不搭车）。
+            # 选取放在主 prime await 之后：同 key 更新 cue 在主 prime 期间
+            # 入队会 retract 掉队列里的旧条目，此刻再选就不会把已过期的
+            # 快照注进新会话（Codex P2）；剩余窗口只有本次注入自身的
+            # await，与 extras 的 accepted residual window 对齐。skipped=True
+            # 在非 Gemini 上走 session instructions（Qwen 同路），不产生
+            # turn，与播报 prime 物理隔离。失败 best-effort 兜住全部
+            # Exception（provider RuntimeError/超时不该中止已成功的主
+            # prime，Codex P2）：_prime_selected_passive_cbs 不赋值 →
+            # promote 不出队，条目留队等下一次热切换；pending session 若
+            # 真死了，promote 后的 ws 校验会兜住。
+            if (isinstance(self.pending_session, OmniRealtimeClient)
+                    and not getattr(self.pending_session, "_is_gemini", False)):
+                _passive_sel, _passive_swap_text = (
+                    self._select_passive_callbacks_for_swap_prime(
+                        extras_selected=_extras_for_budget,
+                    )
+                )
+                if _passive_swap_text:
+                    try:
+                        await self.pending_session.prime_context(_passive_swap_text, skipped=True)
+                        _prime_selected_passive_cbs = _passive_sel
+                    except Exception as e:
+                        logger.warning(
+                            f"Final Swap Sequence: passive ride-along prime failed (kept queued): {e}"
+                        )
 
             print(final_prime_text) #只在控制台显示，不输出到日志文件
 
@@ -1944,6 +2270,11 @@ class LifecycleMixin:
                         if isinstance(cb, dict)
                         and cb.get("_callback_delivery_id") in _removed_ids
                     }
+            # Passive 搭车条目的对偶出队：同样按对象身份、同样只在 promote
+            # 成功后。窗口期被 drain/清扫抢先消费的条目在此 no-op。
+            _removed_passive_cbs = self._remove_swap_delivered_passive_cbs(
+                _prime_selected_passive_cbs
+            )
             self._require_context_append_current_delivery = True
             next_context_count_at_promote = len(self._snapshot_next_session_context_messages())
             await self._apply_pending_tts_route_after_swap()
@@ -2020,11 +2351,13 @@ class LifecycleMixin:
             # prelude，它们随后都会关闭 promoted 会话，注入内容不会再投递——把
             # promote 时移除的条目塞回队首等下一次 hot-swap。
             self._restore_undelivered_swap_extras(_removed_extras, _removed_cb_backed_ids)
-            # post-promote 取消（_removed_extras 非空）不重启 listener：promoted
-            # 会话即将被 canceller 关闭，重启会让它在关闭前把已 prime 的内容
-            # 播出来，与刚塞回的队列形成双投；没有 listener，服务器响应不会被
-            # 消费播出。重启只服务 promote 前取消后"老会话失去 listener"的恢复。
-            if self.is_active and self.session and hasattr(self.session, 'handle_messages') and not _removed_extras and (not self.message_handler_task or self.message_handler_task.done()):
+            self._restore_undelivered_swap_passive_cbs(_removed_passive_cbs)
+            # post-promote 取消（_removed_extras / _removed_passive_cbs 非空）不
+            # 重启 listener：promoted 会话即将被 canceller 关闭，重启会让它在
+            # 关闭前把已 prime 的内容播出来，与刚塞回的队列形成双投；没有
+            # listener，服务器响应不会被消费播出。重启只服务 promote 前取消后
+            # "老会话失去 listener"的恢复。
+            if self.is_active and self.session and hasattr(self.session, 'handle_messages') and not _removed_extras and not _removed_passive_cbs and (not self.message_handler_task or self.message_handler_task.done()):
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
 
         except Exception as e:
@@ -2081,6 +2414,7 @@ class LifecycleMixin:
                 self.session = None
                 self.is_active = False
                 self._restore_undelivered_swap_extras(_removed_extras, _removed_cb_backed_ids)
+                self._restore_undelivered_swap_passive_cbs(_removed_passive_cbs)
             if self.is_active and self.session and hasattr(self.session, 'handle_messages') and (not self.message_handler_task or self.message_handler_task.done()):
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
         finally:

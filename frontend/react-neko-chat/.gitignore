@@ -1,3 +1,5 @@
 node_modules
 dist
 *.local
+vite.config.js
+vite.config.d.ts

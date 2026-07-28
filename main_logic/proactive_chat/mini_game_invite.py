@@ -51,8 +51,11 @@ from .contracts import (
     _proactive_pass_body,
 )
 from .state import (
+    _enter_proactive_phase2,
     _ensure_proactive_chat_totals_loaded,
     _get_proactive_chat_total,
+    _proactive_feed_rejected_for_takeover,
+    _proactive_turn_still_owned,
     _record_invite_delivery_persistent,
     _record_proactive_chat,
     _was_invite_ever_delivered,
@@ -511,21 +514,57 @@ async def _attempt_mini_game_invite_delivery(
             message="mini-game invite skipped: prepare_proactive_delivery refused",
         )
     proactive_sid = mgr.current_speech_id
-    from main_logic.session_state import SessionEvent as _SE
-    await mgr.state.fire(_SE.PROACTIVE_PHASE2)
+    if not await _enter_proactive_phase2(
+        mgr,
+        proactive_sid,
+        log=logger,
+    ):
+        return _proactive_pass_body(
+            PROACTIVE_REASON_DELIVERY_PREEMPTED,
+            message="mini-game invite skipped: user engaged before Phase 2",
+        )
+    expected_user_engagement_time = getattr(
+        mgr,
+        "last_user_engagement_time",
+        None,
+    )
+    tts_accepted = True
     try:
         feed = getattr(mgr, 'feed_tts_chunk', None)
         if callable(feed):
-            await feed(invite_text, expected_speech_id=proactive_sid)
+            tts_accepted = await feed(
+                invite_text,
+                expected_speech_id=proactive_sid,
+                expected_user_engagement_time=expected_user_engagement_time,
+            )
     except Exception as exc:
         logger.warning(
             "[%s] mini-game invite feed_tts_chunk failed: %s", lanlan_name, exc,
         )
+    if tts_accepted is False and _proactive_feed_rejected_for_takeover(
+        mgr,
+        proactive_sid,
+        expected_user_engagement_time,
+    ):
+        if _proactive_turn_still_owned(mgr, proactive_sid):
+            await mgr.handle_new_message()
+        return _proactive_pass_body(
+            PROACTIVE_REASON_DELIVERY_PREEMPTED,
+            message="mini-game invite skipped: user became active before TTS",
+        )
+    if tts_accepted is False:
+        logger.warning(
+            "[%s] mini-game invite TTS enqueue failed; committing text without audio",
+            lanlan_name,
+        )
     committed = await mgr.finish_proactive_delivery(
         invite_text,
         expected_speech_id=proactive_sid,
+        expected_user_engagement_time=expected_user_engagement_time,
     )
     if not committed:
+        if _proactive_turn_still_owned(mgr, proactive_sid):
+            await mgr.handle_new_message()
         return _proactive_pass_body(
             PROACTIVE_REASON_DELIVERY_PREEMPTED,
             message="mini-game invite skipped: user took over before delivery",

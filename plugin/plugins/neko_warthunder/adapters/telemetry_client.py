@@ -58,6 +58,13 @@ def parse_telemetry(payload: dict[str, Any] | None) -> BattleState:
         in_battle=bool(payload.get("in_battle", False)),
         replay=bool(payload.get("replay", False)),
         dead=bool(payload.get("dead", False)),
+        dead_source=(str(payload["dead_source"]) if payload.get("dead_source") is not None else None),
+        battle_id=(str(payload["battle_id"]) if payload.get("battle_id") is not None else None),
+        battle_started_at=_num(payload.get("battle_started_at")),
+        life_index=(int(value) if (value := _num(payload.get("life_index"))) is not None else None),
+        confirmed_respawns=(
+            int(value) if (value := _num(payload.get("confirmed_respawns"))) is not None else 0
+        ),
         vehicle_valid=bool(vehicle.get("valid", False)),
         indicators_valid=bool(indicators.get("valid", False)),
         has_player=bool(situation.get("has_player") or payload.get("player")),

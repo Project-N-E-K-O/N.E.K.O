@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from typing import Any, Dict
 
 from fastapi import APIRouter, Request
@@ -186,6 +187,28 @@ def _validate_icebreaker_local_mutation(request: Request, data: dict) -> Any:
     )
 
 
+def _note_icebreaker_user_engagement(
+    mgr: Any,
+    lanlan_name: str,
+    *,
+    at: float | None = None,
+) -> None:
+    note_engagement = getattr(mgr, "note_user_engagement", None)
+    if not callable(note_engagement):
+        return
+    try:
+        if at is None:
+            note_engagement()
+        else:
+            note_engagement(at=at)
+    except Exception:
+        logger.debug(
+            "icebreaker engagement record failed lanlan=%s",
+            lanlan_name,
+            exc_info=True,
+        )
+
+
 async def _speak_icebreaker_line_via_project_tts(
     mgr: Any,
     line: str,
@@ -282,6 +305,7 @@ async def icebreaker_route_state(lanlan_name: str = ""):
 
 @router.post("/context")
 async def icebreaker_context(request: Request):
+    request_arrival_time = time.time()
     try:
         data = await request.json()
     except Exception:
@@ -331,6 +355,15 @@ async def icebreaker_context(request: Request):
     mgr = get_session_manager().get(lanlan_name)
     if not mgr:
         return {"ok": False, "reason": "no_session_manager", "lanlan_name": lanlan_name}
+
+    if role == "user":
+        # The input is valid for the active tutorial route even if a downstream
+        # context or memory write later fails.
+        _note_icebreaker_user_engagement(
+            mgr,
+            lanlan_name,
+            at=request_arrival_time,
+        )
 
     append_context = getattr(mgr, "append_context", None)
     try:
@@ -454,7 +487,7 @@ async def icebreaker_free_text_interpret(request: Request):
         return {"ok": False, "reason": "missing_options", "lanlan_name": lanlan_name}
 
     try:
-        api_config = get_config_manager().get_model_api_config("emotion")
+        api_config = await get_config_manager().aget_model_api_config("emotion")
     except Exception as exc:
         logger.warning("icebreaker free-text: failed to read emotion API config: %s", exc)
         return {"ok": False, "reason": "llm_api_not_configured", "error": str(exc)}
@@ -517,6 +550,7 @@ async def icebreaker_choice(request: Request):
     Kept separate from ``/context`` (which feeds transient session history) so the
     pool stays an independent signal we can consume incrementally later.
     """
+    choice_arrival_time = time.time()
     try:
         data = await request.json()
     except Exception:
@@ -558,6 +592,22 @@ async def icebreaker_choice(request: Request):
     if stale_response:
         return stale_response
 
+    if not str(data.get("day") or "").strip():
+        return {
+            "ok": False,
+            "reason": "missing_day",
+            "source": ICEBREAKER_SOURCE,
+        }
+    if not (
+        str(data.get("node_id") or "").strip()
+        and str(data.get("choice") or "").strip()
+    ):
+        return {
+            "ok": False,
+            "reason": "invalid_choice",
+            "source": ICEBREAKER_SOURCE,
+        }
+
     payload = {
         "lanlan_name": lanlan_name,
         "session_id": data.get("session_id"),
@@ -570,6 +620,24 @@ async def icebreaker_choice(request: Request):
         "seq": data.get("seq"),
         "source": ICEBREAKER_SOURCE,
     }
+    try:
+        mgr = get_session_manager().get(lanlan_name)
+    except Exception:
+        logger.debug(
+            "icebreaker choice manager lookup failed lanlan=%s",
+            lanlan_name,
+            exc_info=True,
+        )
+    else:
+        if mgr is not None:
+            # The choice is valid for the active route even if the downstream
+            # durable-state read or write later fails.
+            _note_icebreaker_user_engagement(
+                mgr,
+                lanlan_name,
+                at=choice_arrival_time,
+            )
+
     try:
         result = await asyncio.to_thread(record_tutorial_choice, payload)
     except Exception as exc:

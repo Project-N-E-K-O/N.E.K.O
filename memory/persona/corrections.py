@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 
 
 import json
@@ -53,24 +54,36 @@ class CorrectionsMixin:
     @staticmethod
     def _build_correction_list(
         corrections: list[dict], old_text: str, new_text: str, entity: str,
+        subject_fields: dict | None = None,
     ) -> list[dict] | None:
         """Returns the modified list or None if duplicate (no change needed)."""
         for existing in corrections:
             if (existing.get('old_text') == old_text
                     and existing.get('new_text') == new_text
-                    and existing.get('entity') == entity):
+                    and existing.get('entity') == entity
+                    and existing.get('scope') == (subject_fields or {}).get('scope')):
                 return None
-        corrections.append({
+        item = {
             'old_text': old_text,
             'new_text': new_text,
             'entity': entity,
             'created_at': datetime.now().isoformat(),
-        })
+        }
+        if subject_fields:
+            # scoped correction 携带完整 subject 戳：section key 不含 scope，
+            # resolve 分域与 apply 界定都需要它。
+            item.update(subject_fields)
+        corrections.append(item)
         return corrections
 
-    def _queue_correction(self, name: str, old_text: str, new_text: str, entity: str) -> None:
+    def _queue_correction(
+        self, name: str, old_text: str, new_text: str, entity: str,
+        subject_fields: dict | None = None,
+    ) -> None:
         corrections = self.load_pending_corrections(name)
-        updated = self._build_correction_list(corrections, old_text, new_text, entity)
+        updated = self._build_correction_list(
+            corrections, old_text, new_text, entity, subject_fields,
+        )
         if updated is None:
             return
         assert_cloudsave_writable(
@@ -81,17 +94,27 @@ class CorrectionsMixin:
         atomic_write_json(self._corrections_path(name), updated, indent=2, ensure_ascii=False)
         logger.info(f"[Persona] {name}: 发现潜在矛盾，加入审视队列")
 
-    async def _aqueue_correction(self, name: str, old_text: str, new_text: str, entity: str) -> None:
+    async def _aqueue_correction(
+        self, name: str, old_text: str, new_text: str, entity: str,
+        subject_fields: dict | None = None,
+    ) -> None:
         """Public async entry — acquires the per-character lock.
         Callers already holding the lock must use _aqueue_correction_locked."""
         async with self._get_alock(name):
-            await self._aqueue_correction_locked(name, old_text, new_text, entity)
+            await self._aqueue_correction_locked(
+                name, old_text, new_text, entity, subject_fields,
+            )
 
-    async def _aqueue_correction_locked(self, name: str, old_text: str, new_text: str, entity: str) -> None:
+    async def _aqueue_correction_locked(
+        self, name: str, old_text: str, new_text: str, entity: str,
+        subject_fields: dict | None = None,
+    ) -> None:
         """Inner body. Caller must hold self._get_alock(name).
         Used by aadd_fact which already has the lock."""
         corrections = await self.aload_pending_corrections(name)
-        updated = self._build_correction_list(corrections, old_text, new_text, entity)
+        updated = self._build_correction_list(
+            corrections, old_text, new_text, entity, subject_fields,
+        )
         if updated is None:
             return
         assert_cloudsave_writable(
@@ -175,13 +198,47 @@ class CorrectionsMixin:
                 MEMORY_LIVENESS_MAX_ATTEMPTS,
                 PERSONA_CORRECTION_BATCH_LIMIT,
             )
+            from memory.scopes import SCOPED_PERSONA_PREFIX
+
+            # 单批只装同一个隔离域：legacy 私聊全体算一个域（与升级前
+            # 行为逐字节一致），每个 @subject/ scoped section 各算一个域。
+            # 不分域的话，不同群/私聊的记忆文本会拼进同一个 correction
+            # prompt 里互相可见，且 keep/merge 的不可逆决策会被相邻域的
+            # 上下文影响（merge 重写文本甚至可能串词）。非本域条目留在
+            # 队列里，下一轮 resolve 触发时按 FIFO 头部轮到的域继续消化。
             pairs = []
+            batch_domain = None
             for i, item in enumerate(corrections):
                 if safe_int_field(item, 'resolve_attempts') >= MEMORY_LIVENESS_MAX_ATTEMPTS:
                     continue
                 old_text = item.get('old_text', '')
                 new_text = item.get('new_text', '')
                 if old_text and new_text:
+                    entity_raw = item.get('entity')
+                    entity = (
+                        entity_raw.strip()
+                        if isinstance(entity_raw, str) else ''
+                    )
+                    if not entity:
+                        # 实体缺失/空/非字符串的畸形 correction 既不算 legacy
+                        # 也不算 scoped：跳过本批、留在队列（fail-closed，
+                        # 与 scopes.py 读路径对损坏描述符的处理一致）。
+                        continue
+                    if entity.startswith(SCOPED_PERSONA_PREFIX):
+                        # 域 = (section key, scope)：同 kind/id 的自定义
+                        # scope 互为独立隔离域，不得同批。旧队列条目无
+                        # scope 字段时按默认 scope（=key）归域。
+                        domain = (
+                            entity,
+                            item.get('scope')
+                            or entity[len(SCOPED_PERSONA_PREFIX):],
+                        )
+                    else:
+                        domain = '__legacy__'
+                    if batch_domain is None:
+                        batch_domain = domain
+                    elif domain != batch_domain:
+                        continue
                     pairs.append((i, item))
                 if len(pairs) >= PERSONA_CORRECTION_BATCH_LIMIT:
                     break
@@ -204,7 +261,7 @@ class CorrectionsMixin:
                 from utils.token_tracker import set_call_type
                 from utils.llm_client import create_chat_llm_async
                 set_call_type("memory_correction")
-                api_config = self._config_manager.get_model_api_config('correction')
+                api_config = await self._config_manager.aget_model_api_config('correction')
                 # timeout: 见 MEMORY_LLM_HARD_TIMEOUT_SECONDS（上游转发
                 # 120s hard cap，必须 ≤110）。批量决策（每对 keep_old/
                 # keep_new/keep_both/merge + 重写 merged_text）值得吃满
@@ -301,10 +358,68 @@ class CorrectionsMixin:
 
             action = result.get('action', 'keep_both')
             merged_text = result.get('text', item.get('new_text', ''))
-            entity = item.get('entity', 'master')
+            entity_raw = item.get('entity')
+            entity = entity_raw.strip() if isinstance(entity_raw, str) else ''
+            if not entity:
+                # 对偶批次构建的畸形实体守卫：绝不能默认写进 master 段——
+                # 一条丢了 entity 的 scoped correction 会因此跨进 legacy
+                # 私聊 persona。跳过即留队，不计 resolved。
+                continue
             old_text = item.get('old_text', '')
             new_text = item.get('new_text', '')
             section_facts = self._get_section_facts(persona, entity)
+
+            # scoped correction 的一切匹配/删除/新建都限定在 item 自己的
+            # subject 域内：section key 不含 scope，同 kind/id 异 scope 的
+            # 条目共存于同一 section，按裸文本跨域改写即泄漏。item 无戳
+            # （升级前入队）按默认 scope（=key）重建；重建失败 fail-closed。
+            from memory.scopes import (
+                SCOPED_PERSONA_PREFIX,
+                MemoryScopeError,
+                MemorySubject,
+                entry_matches_subject,
+                subject_from_entry,
+            )
+
+            item_subject = None
+            if entity.startswith(SCOPED_PERSONA_PREFIX):
+                item_subject = subject_from_entry(item)
+                if item_subject is None:
+                    section_key_body = entity[len(SCOPED_PERSONA_PREFIX):]
+                    kind, _, subject_id = section_key_body.partition(':')
+                    try:
+                        item_subject = MemorySubject.create(
+                            kind, subject_id,
+                            scope=item.get('scope') or section_key_body,
+                        )
+                    except MemoryScopeError:
+                        continue
+
+            def _entry_in_scope(entry, _subj=item_subject) -> bool:
+                if _subj is None:
+                    return True
+                return isinstance(entry, dict) and entry_matches_subject(entry, _subj)
+
+            def _stamped_new_entry(text_value, _subj=item_subject) -> dict:
+                new_entry = self._normalize_entry_for_section(
+                    persona, entity, text_value,
+                )
+                if _subj is not None:
+                    new_entry.update(_subj.as_entry_fields())
+                if not new_entry.get('id'):
+                    # correction 新建条目必须有 ID（掺域盐，对齐
+                    # _build_fact_entry）：空 ID 会被 ID 索引的 refine/
+                    # signal/archive 全部跳过，且多条互相撞空串。
+                    salt = (
+                        f"{_subj.key}|{_subj.scope}|" if _subj is not None else ""
+                    )
+                    digest = hashlib.sha256(
+                        (salt + str(text_value)).encode()
+                    ).hexdigest()[:8]
+                    new_entry['id'] = (
+                        f"corr_{datetime.now().strftime('%Y%m%d%H%M%S')}_{digest}"
+                    )
+                return new_entry
 
             if action == 'merge':
                 # `replace` means "new observation is an update/correction to
@@ -328,7 +443,7 @@ class CorrectionsMixin:
                 }
                 for j, existing in enumerate(section_facts):
                     et = existing.get('text', '') if isinstance(existing, dict) else str(existing)
-                    if et == old_text:
+                    if et == old_text and _entry_in_scope(existing):
                         if isinstance(existing, dict):
                             from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
                             prior_history = existing.get('version_history', []) or []
@@ -346,7 +461,7 @@ class CorrectionsMixin:
                         else:
                             # Legacy str entry — no metadata to preserve;
                             # migrate to dict form and seed the chain.
-                            new_entry = self._normalize_entry(merged_text)
+                            new_entry = _stamped_new_entry(merged_text)
                             new_entry['version_history'] = [history_entry]
                             section_facts[j] = new_entry
                         break
@@ -354,17 +469,19 @@ class CorrectionsMixin:
                 section_facts[:] = [
                     e for e in section_facts
                     if (e.get('text', '') if isinstance(e, dict) else str(e)) != old_text
+                    or not _entry_in_scope(e)
                 ]
-                section_facts.append(self._normalize_entry(new_text))
+                section_facts.append(_stamped_new_entry(new_text))
             elif action == 'keep_old':
                 pass
             else:  # keep_both
                 existing_texts = {
                     (e.get('text', '') if isinstance(e, dict) else str(e))
                     for e in section_facts
+                    if _entry_in_scope(e)
                 }
                 if new_text not in existing_texts:
-                    section_facts.append(self._normalize_entry(new_text))
+                    section_facts.append(_stamped_new_entry(new_text))
 
             resolved += 1
 
@@ -431,10 +548,27 @@ class CorrectionsMixin:
                     new_attempts = safe_int_field(c, 'resolve_attempts') + 1
                     if new_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
                         dropped += 1
+                        if (
+                            c.get('subject_kind')
+                            or c.get('subject_id')
+                            or c.get('scope')
+                        ):
+                            # scoped（成员/群衍生）内容不进日志：只打域标识
+                            # 与长度，对齐 scoped 反思原文不进 stdout 的口径。
+                            detail = (
+                                f"(scoped {c.get('subject_kind', '')!s}"
+                                f"/{c.get('subject_id', '')!s}"
+                                f" old_len={len(c.get('old_text', '') or '')}"
+                                f" new_len={len(c.get('new_text', '') or '')})"
+                            )
+                        else:
+                            detail = (
+                                f"(old={(c.get('old_text', '') or '')[:30]!r} "
+                                f"new={(c.get('new_text', '') or '')[:30]!r})"
+                            )
                         logger.warning(
                             f"[Persona] {name}: correction dead-letter "
-                            f"(old={(c.get('old_text', '') or '')[:30]!r} "
-                            f"new={(c.get('new_text', '') or '')[:30]!r}) "
+                            f"{detail} "
                             f"resolve {new_attempts} 次失败 ≥ "
                             f"{MEMORY_LIVENESS_MAX_ATTEMPTS}，丢弃"
                         )

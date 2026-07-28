@@ -28,11 +28,16 @@ import threading
 import asyncio
 import os
 import hashlib
+import platform
+import subprocess
 from collections import OrderedDict
-from typing import Optional, Tuple, List, Any, Dict
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Optional, Tuple, List, Any, Dict, Iterator
 from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm_async
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
+from utils.source_locale import source_region_from_locale
 from utils.token_tracker import set_call_type
 from utils.steam_state import get_steamworks
 
@@ -50,6 +55,18 @@ _global_language_initialized = False
 
 # 全局区域标识（中文区/非中文区）
 _global_region: Optional[str] = None  # 'china' 或 'non-china'
+
+# Background work may carry a conversation-specific locale while other
+# conversations run concurrently. ContextVars keep that override task-local;
+# process-wide language remains the fallback for ordinary callers.
+_language_context_short: ContextVar[Optional[str]] = ContextVar(
+    "neko_language_context_short",
+    default=None,
+)
+_language_context_full: ContextVar[Optional[str]] = ContextVar(
+    "neko_language_context_full",
+    default=None,
+)
 
 
 def _get_language_env_override() -> Optional[str]:
@@ -116,6 +133,14 @@ def is_supported_language_code(raw: Any) -> bool:
     return any(_matches_lang_code(s, code) for code in _SUPPORTED_LANGUAGE_CODES)
 
 
+def _locale_is_mainland_china(raw: Any) -> bool:
+    """Match a system locale against the shared mainland source-region contract."""
+    if not raw:
+        return False
+    normalized = str(raw).strip().split('@', 1)[0].split('.', 1)[0]
+    return source_region_from_locale(normalized) == 'china'
+
+
 def _is_china_region() -> bool:
     """
     Decide whether the current system is in the Chinese region
@@ -140,22 +165,110 @@ def _is_china_region() -> bool:
         )
 
     try:
+        macos_locale = _get_macos_locale()
+        if macos_locale:
+            return _locale_is_mainland_china(macos_locale)
+
         system_locale = locale.getlocale()[0]
         if system_locale:
             system_locale_lower = system_locale.lower()
-            if system_locale_lower.startswith('zh'):
+            if _locale_is_mainland_china(system_locale_lower):
                 return True
             if 'chinese' in system_locale_lower and 'china' in system_locale_lower:
                 return True
         
         lang_env = os.environ.get('LANG', '').lower()
-        if lang_env.startswith('zh'):
+        if _locale_is_mainland_china(lang_env):
             return True
         
         return False
     except Exception as e:
         logger.warning(f"判断系统区域失败: {e}，默认使用非中文区")
         return False
+
+
+_MACOS_LOCALE_UNSET = object()
+_macos_locale_cache: Any = _MACOS_LOCALE_UNSET
+_macos_locale_lock = threading.Lock()
+
+
+def _get_macos_locale() -> Optional[str]:
+    """Read the user's real macOS locale even when the process inherits ``C.UTF-8``.
+
+    Electron/launcher child processes commonly receive a neutral POSIX locale,
+    so ``locale.getlocale()`` and ``LANG`` do not reflect System Settings.  The
+    ``defaults`` database is the authoritative per-user fallback on macOS.
+
+    Only *conclusive* answers are cached — a resolved locale, or "not macOS".
+    Each miss costs a ``subprocess.run`` with a 1s timeout, and
+    ``initialize_global_language()`` calls this twice (once via
+    ``_is_china_region``, once via ``_get_system_language``) while holding
+    ``_global_language_lock``; without caching, a cold start could spend ~4s
+    spawning ``defaults`` while both global getters are reachable from async
+    request paths. A failed probe is deliberately NOT cached: a single timeout
+    must not pin the whole process to the wrong locale, which is exactly the
+    situation this helper exists to rescue.
+    """
+    global _macos_locale_cache
+
+    cached = _macos_locale_cache
+    if cached is not _MACOS_LOCALE_UNSET:
+        return cached
+
+    with _macos_locale_lock:
+        # 双检：等锁期间可能已被另一线程填好。
+        cached = _macos_locale_cache
+        if cached is not _MACOS_LOCALE_UNSET:
+            return cached
+
+        if platform.system() != 'Darwin':
+            # 非 macOS 是确定性结论，缓存住，省掉后续每次的 platform 判断。
+            _macos_locale_cache = None
+            return None
+
+        resolved = _read_macos_locale_uncached()
+        if resolved:
+            _macos_locale_cache = resolved
+        # 探测失败（defaults 超时 / 非零退出 / 输出为空）不写缓存：那是瞬时故障，
+        # 下次调用重试。缓存住等于让一次超时把整个进程钉死在错误的 locale 上，
+        # 而「其它信号都不可靠」正是本函数要兜的场景。
+        return resolved
+
+
+def _reset_macos_locale_cache() -> None:
+    """Drop the cached macOS locale (tests only)."""
+    global _macos_locale_cache
+    with _macos_locale_lock:
+        _macos_locale_cache = _MACOS_LOCALE_UNSET
+
+
+def _read_macos_locale_uncached() -> Optional[str]:
+    """Query the macOS ``defaults`` database; see ``_get_macos_locale``."""
+    if platform.system() != 'Darwin':
+        return None
+
+    for key in ('AppleLocale', 'AppleLanguages'):
+        try:
+            result = subprocess.run(
+                ['/usr/bin/defaults', 'read', '-g', key],
+                capture_output=True,
+                text=True,
+                timeout=1.0,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if result.returncode != 0:
+            continue
+        raw = result.stdout.strip()
+        if not raw:
+            continue
+        if key == 'AppleLocale':
+            return raw.strip('"').split('@', 1)[0]
+        match = re.search(r'"([^"\n]+)"', raw)
+        if match:
+            return match.group(1)
+    return None
 
 
 def _get_windows_locale() -> Optional[str]:
@@ -187,8 +300,10 @@ def _get_system_language() -> str:
         Language code ('zh', 'en', 'ja', 'ko', 'ru'), defaults to 'zh'
     """
     def _parse_locale(s: str) -> Optional[str]:
-        s = s.lower()
+        s = s.lower().replace('_', '-')
         if s.startswith('zh') or 'chinese' in s:
+            if any(marker in s for marker in ('-tw', '-hk', 'hant', 'traditional')):
+                return 'zh-TW'
             return 'zh'
         if s.startswith('ja') or 'japanese' in s:
             return 'ja'
@@ -209,6 +324,15 @@ def _get_system_language() -> str:
         windows_locale = _get_windows_locale()
         if windows_locale:
             lang = _parse_locale(windows_locale)
+            if lang:
+                return lang
+
+        # macOS GUI apps often inherit LANG=C.UTF-8 even when System Settings
+        # is Chinese/Japanese/etc. Read Apple's locale database before the
+        # process locale so standalone memory_server chooses the real language.
+        macos_locale = _get_macos_locale()
+        if macos_locale:
+            lang = _parse_locale(macos_locale)
             if lang:
                 return lang
 
@@ -339,6 +463,10 @@ def get_global_language() -> str:
     Returns:
         Language code ('zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt'), defaults to 'zh'
     """
+    contextual = _language_context_short.get()
+    if contextual:
+        return contextual
+
     global _global_language
     
     with _global_language_lock:
@@ -358,11 +486,36 @@ def get_global_language_full() -> str:
     Returns:
         Language code ('zh', 'zh-TW', 'en', 'ja', 'ko', 'ru'), defaults to 'zh'
     """
+    contextual = _language_context_full.get()
+    if contextual:
+        return contextual
+
     with _global_language_lock:
         if not _global_language_initialized:
             initialize_global_language()
         
         return _global_language_full or _global_language or 'en'
+
+
+@contextmanager
+def language_context(language: Any) -> Iterator[None]:
+    """Temporarily override language getters within the current async task."""
+    selected = _get_language_env_override() or language
+    if not is_supported_language_code(selected):
+        yield
+        return
+
+    short_token = _language_context_short.set(
+        normalize_language_code(str(selected), format='short')
+    )
+    full_token = _language_context_full.set(
+        normalize_language_code(str(selected), format='full')
+    )
+    try:
+        yield
+    finally:
+        _language_context_full.reset(full_token)
+        _language_context_short.reset(short_token)
 
 
 def set_global_language(language: str) -> None:
@@ -1227,7 +1380,7 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
     try:
         config_manager = get_config_manager()
         # 复用emotion模型配置
-        emotion_config = config_manager.get_model_api_config('emotion')
+        emotion_config = await config_manager.aget_model_api_config('emotion')
         
         from config.prompts.prompts_sys import (
             _loc, TRANSLATION_WATERMARK_START, TRANSLATION_WATERMARK_END,
@@ -1328,36 +1481,52 @@ class TranslationService:
             config_manager: config manager instance, used to obtain API config
         """
         self.config_manager = config_manager
+        # (route, client) 元组或 None——收在一个属性里原子发布，见 _get_llm_client。
         self._llm_client = None
         self._cache = OrderedDict()
         self._cache_lock = None  # 懒加载：在首次使用时创建异步锁
         self._cache_lock_init_lock = threading.Lock()  # 用于保护异步锁的创建过程
 
     async def _get_llm_client(self):
-        """Get the LLM client (for translation, reusing the emotion model config)"""
+        """Get the LLM client (for translation, reusing the emotion model config).
+
+        Rebuilt whenever the resolved emotion route changes, exactly like
+        ``TaskDeduper._get_llm`` / ``computer_use``'s ``_llm_client_sig``: the
+        emotion route is region-dependent, and a client built while Steam's
+        provisional fallback was in effect would otherwise pin every persona
+        translation to the wrong regional endpoint for the process lifetime
+        once the authoritative IP verdict lands the other way. The
+        (route, client) pair lives in ONE attribute so a concurrent rebuild can
+        never pair an old client with the new route fingerprint; the cache lock
+        additionally keeps construction single-flight.
+        """
         try:
-            config = self.config_manager.get_model_api_config('emotion')
-            
+            config = await self.config_manager.aget_model_api_config('emotion')
+
             if not config.get('api_key') or not config.get('model') or not config.get('base_url'):
                 logger.warning("翻译服务：API配置不完整（缺少 api_key、model 或 base_url），无法进行翻译")
                 return None
-            
-            if self._llm_client is not None:
-                return self._llm_client
+
+            route = (config.get('base_url'), config.get('model'),
+                     config.get('api_key'), config.get('provider_type'))
+            cached = self._llm_client
+            if cached is not None and cached[0] == route:
+                return cached[1]
 
             async with self._get_cache_lock():
-                if self._llm_client is not None:
-                    return self._llm_client
+                cached = self._llm_client
+                if cached is not None and cached[0] == route:
+                    return cached[1]
 
                 from config import TRANSLATION_OUTPUT_MAX_TOKENS
-                self._llm_client = await create_chat_llm_async(
+                client = await create_chat_llm_async(
                     config['model'], config['base_url'], config['api_key'],
                     max_completion_tokens=TRANSLATION_OUTPUT_MAX_TOKENS,
                     timeout=30.0,
                     provider_type=config.get('provider_type'),
                 )
-
-                return self._llm_client
+                self._llm_client = (route, client)
+                return client
         except Exception as e:
             logger.error(f"翻译服务：初始化LLM客户端失败: {e}")
             return None
