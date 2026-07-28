@@ -266,13 +266,20 @@ export function callPluginHostedSurfaceAction(pluginId: string, actionId: string
   const safeActionId = encodeURIComponent(actionId)
   const requestedTimeoutMs = Number(surface?.timeoutMs)
   const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : undefined
+  // Hosted surfaces receive this rejection through the postMessage bridge and
+  // render it in their own UI. Avoid one global Element Plus message per
+  // concurrent panel request (notably when a manual-start plugin is stopped).
+  const requestConfig = {
+    suppressErrorMessage: true,
+    ...(timeoutMs ? { timeout: timeoutMs } : {}),
+  }
   return post(`/plugin/${safeId}/hosted-ui/action/${safeActionId}`, {
     args: args || {},
     kind: surface?.kind,
     surface_id: surface?.id,
     locale: surface?.locale,
     timeout_ms: timeoutMs,
-  }, timeoutMs ? { timeout: timeoutMs } : undefined)
+  }, requestConfig)
 }
 
 /**
