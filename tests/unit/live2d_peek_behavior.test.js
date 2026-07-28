@@ -944,6 +944,16 @@ test('performance frame session markers clear on restore and remain for committe
             willChange: ''
         }
     };
+    const replacementContainer = {
+        style: {
+            transform: '',
+            transition: '',
+            transformOrigin: '',
+            opacity: '',
+            willChange: ''
+        }
+    };
+    let currentContainer = container;
     const context = {
         console,
         document: {
@@ -966,7 +976,7 @@ test('performance frame session markers clear on restore and remain for committe
 
     const driver = context.window.AvatarPerformance.createLive2DDriver({
         managerResolver: () => null,
-        containerResolver: () => container
+        containerResolver: () => currentContainer
     });
     const stage = context.window.AvatarPerformance.createStage({ driver });
     const session = stage.acquire('input-region-test', { capabilities: ['frame'] });
@@ -980,6 +990,19 @@ test('performance frame session markers clear on restore and remain for committe
     assert.equal(stage.commitCurrentFrameAsBaseline(committedSession.id), true);
     assert.equal(stage.release(committedSession.id, 'commit-complete'), true);
     assert.equal(context.window._nekoAvatarPerformanceFrameContainer, container);
+
+    const replacedSession = stage.acquire('replaced-container-test', { capabilities: ['frame'] });
+    driver.applyFrame({ x: 8, y: 0, scale: 1, rotate: 0, opacity: '' }, replacedSession);
+    currentContainer = replacementContainer;
+    assert.equal(stage.release(replacedSession.id, 'container-replaced'), true);
+    assert.equal(context.window._nekoAvatarPerformanceFrameContainer, null);
+    assert.equal(replacementContainer.style.transform, '');
+
+    const removedSession = stage.acquire('removed-container-test', { capabilities: ['frame'] });
+    driver.applyFrame({ x: 6, y: 0, scale: 1, rotate: 0, opacity: '' }, removedSession);
+    currentContainer = null;
+    assert.equal(stage.release(removedSession.id, 'container-removed'), true);
+    assert.equal(context.window._nekoAvatarPerformanceFrameContainer, null);
 });
 
 test('core model input regions clamp padding to the supported 0-32 range', () => {

@@ -1302,7 +1302,9 @@
             this.styleSnapshot = null;
             this.ownerSessionId = '';
             this.activeFrameTransformNonIdentity = false;
+            this.activeFrameTransformContainer = null;
             this.committedFrameTransformActive = false;
+            this.committedFrameTransformContainer = null;
             this.lookAtSnapshot = null;
             this.lookAtSource = '';
             this.lookAtSessionId = '';
@@ -1552,6 +1554,7 @@
 
         capture(session, options) {
             const normalized = options || {};
+            const container = this.getContainer();
             const params = this.lookAtParams || {};
             const requestedParamIds = []
                 .concat(Array.isArray(normalized.paramIds) ? normalized.paramIds : [])
@@ -1562,8 +1565,10 @@
             return {
                 kind: 'live2d',
                 sessionId: session && session.id ? session.id : '',
-                containerStyle: this.captureContainerStyle(this.getContainer()),
+                container: container,
+                containerStyle: this.captureContainerStyle(container),
                 committedFrameTransformActive: this.committedFrameTransformActive,
+                committedFrameTransformContainer: this.committedFrameTransformContainer,
                 params: this.captureParams(paramIds),
                 expression: this.captureExpression(),
                 lookAt: {
@@ -1599,16 +1604,34 @@
                 this.restoreParams(this.expressionParamSnapshot);
                 this.expressionParamSnapshot = null;
             }
-            this.restoreExpression(snapshot.expression);
-            this.restoreContainerStyle(snapshot.containerStyle);
-
             const container = this.getContainer();
-            this.activeFrameTransformNonIdentity = false;
-            this.committedFrameTransformActive = snapshot.committedFrameTransformActive === true;
-            if (this.committedFrameTransformActive && container) {
-                window._nekoAvatarPerformanceFrameContainer = container;
-            } else if (window._nekoAvatarPerformanceFrameContainer === container) {
+            const snapshotContainer = snapshot.container || null;
+            const snapshotCommittedContainer = snapshot.committedFrameTransformContainer || null;
+            const ownedMarkerContainers = [
+                this.activeFrameTransformContainer,
+                this.committedFrameTransformContainer,
+                snapshotCommittedContainer
+            ].filter(Boolean);
+            if (ownedMarkerContainers.includes(window._nekoAvatarPerformanceFrameContainer)) {
                 window._nekoAvatarPerformanceFrameContainer = null;
+            }
+
+            this.restoreExpression(snapshot.expression);
+            if (container && snapshotContainer === container) {
+                this.restoreContainerStyle(snapshot.containerStyle);
+            }
+
+            this.activeFrameTransformNonIdentity = false;
+            this.activeFrameTransformContainer = null;
+            this.committedFrameTransformActive =
+                snapshot.committedFrameTransformActive === true &&
+                snapshotCommittedContainer === container &&
+                snapshotContainer === container;
+            this.committedFrameTransformContainer = this.committedFrameTransformActive
+                ? container
+                : null;
+            if (this.committedFrameTransformActive) {
+                window._nekoAvatarPerformanceFrameContainer = container;
             }
             this.styleSnapshot = null;
             this.ownerSessionId = '';
@@ -1622,16 +1645,23 @@
             if (session && this.ownerSessionId && session.id !== this.ownerSessionId) {
                 return false;
             }
-            const committedStyle = this.captureContainerStyle(this.getContainer());
-            if (!committedStyle) {
+            const container = this.getContainer();
+            const committedStyle = this.captureContainerStyle(container);
+            if (!committedStyle ||
+                (this.activeFrameTransformContainer &&
+                    this.activeFrameTransformContainer !== container)) {
                 return false;
             }
-            this.committedFrameTransformActive =
-                this.committedFrameTransformActive || this.activeFrameTransformNonIdentity;
+            if (this.activeFrameTransformNonIdentity) {
+                this.committedFrameTransformActive = true;
+                this.committedFrameTransformContainer = container;
+            }
             this.styleSnapshot = cloneJsonCompatible(committedStyle);
             if (session && session.snapshot && typeof session.snapshot === 'object') {
+                session.snapshot.container = container;
                 session.snapshot.containerStyle = cloneJsonCompatible(committedStyle);
                 session.snapshot.committedFrameTransformActive = this.committedFrameTransformActive;
+                session.snapshot.committedFrameTransformContainer = this.committedFrameTransformContainer;
             }
             return true;
         }
@@ -1640,6 +1670,7 @@
             const container = this.getContainer();
             this.ownerSessionId = session && session.id ? session.id : '';
             this.activeFrameTransformNonIdentity = false;
+            this.activeFrameTransformContainer = null;
             const manager = this.getManager();
             if (this.sessionHasCapability(session, 'motion') && manager && typeof manager.suspendTemporaryMotions === 'function') {
                 this.motionSuspendSource = 'avatar-performance-motion-' + (this.ownerSessionId || 'session');
@@ -1649,6 +1680,7 @@
             }
             const hasFrameCapability = this.sessionHasCapability(session, 'frame');
             if (hasFrameCapability && container) {
+                this.activeFrameTransformContainer = container;
                 window._nekoAvatarPerformanceFrameContainer = container;
             }
             if (!hasFrameCapability || !container || this.styleSnapshot) {
@@ -1665,14 +1697,26 @@
                 return;
             }
             const container = this.getContainer();
+            const activeContainer = this.activeFrameTransformContainer;
+            const committedContainer = this.committedFrameTransformContainer;
             this.activeFrameTransformNonIdentity = false;
-            if (this.committedFrameTransformActive && container) {
-                window._nekoAvatarPerformanceFrameContainer = container;
-            } else if (window._nekoAvatarPerformanceFrameContainer === container) {
+            this.activeFrameTransformContainer = null;
+            if (window._nekoAvatarPerformanceFrameContainer === activeContainer ||
+                window._nekoAvatarPerformanceFrameContainer === committedContainer) {
                 window._nekoAvatarPerformanceFrameContainer = null;
             }
-            if (this.styleSnapshot) {
+            if (this.styleSnapshot && activeContainer && activeContainer === container) {
                 this.restoreContainerStyle(this.styleSnapshot);
+            }
+            const retainCommittedTransform =
+                this.committedFrameTransformActive &&
+                committedContainer &&
+                committedContainer === container;
+            if (retainCommittedTransform) {
+                window._nekoAvatarPerformanceFrameContainer = committedContainer;
+            } else {
+                this.committedFrameTransformActive = false;
+                this.committedFrameTransformContainer = null;
             }
             this.styleSnapshot = null;
             this.ownerSessionId = '';
