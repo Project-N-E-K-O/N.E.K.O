@@ -510,8 +510,13 @@ class TurnMixin:
         #   - recovery：截断恢复的正文追加在丢弃版后面，一并 flush
         # 这里清空而不是 flush：这一轮要么还会重试、要么下面 recovery 会补发正文，
         # 都还没到 turn end，flush 会凭空多喂 tracker 一个 AI turn。
+        #
+        # ⚠️ 这行和紧跟的 _clear_tts_pipeline() 是"清掉本轮丢弃留下的共享输出"
+        # 的两半，将来给这段加请求产权门控时必须一起门控。文本请求由
+        # websocket_router 作为各自独立的后台任务分发，旧请求 A 的迟到 discard
+        # 可以落在新请求 B 已经开始 publish 之后——那时无条件清空会连 B 的前缀
+        # 一起抹掉。只门 TTS 不门这行，就会漏出一处跨请求误伤。
         self._current_ai_turn_text = ''
-
         await self._clear_tts_pipeline()
 
         if self.websocket and hasattr(self.websocket, 'client_state') and \
