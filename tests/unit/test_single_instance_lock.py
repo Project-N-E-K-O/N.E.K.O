@@ -186,6 +186,12 @@ def test_handoff_retries_wait_out_the_outgoing_holder(runtime_dir, monkeypatch):
                 released["done"] = True
                 holder.kill()
                 holder.wait(timeout=10)
+            # Still yield real time. Popen.wait() returns when the process we
+            # spawned exits, which on Windows is a shim rather than the
+            # interpreter holding the lock, so the kernel may not have dropped
+            # the lock yet. Collapsing the interval to zero would burn all the
+            # retries inside that gap and conclude the handoff failed.
+            real_sleep(0.02)
             return
         real_sleep(seconds)
 
