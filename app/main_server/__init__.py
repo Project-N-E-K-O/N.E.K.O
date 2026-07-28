@@ -509,6 +509,7 @@ _main_runtime_limited_mode_reason = ""
 _MAIN_LIMITED_MODE_ALLOWED_EXACT_PATHS = {
     "/",
     "/card-forge/active-character",
+    "/api/card-drop/active-character",
     "/health",
     "/favicon.ico",
     "/api/beacon/shutdown",
