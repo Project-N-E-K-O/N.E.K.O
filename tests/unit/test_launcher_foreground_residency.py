@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.fake_clock import patch_module_clock
 from utils import parent_guard
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -823,7 +824,7 @@ def test_owner_death_escalates_term_then_kill_across_the_group(monkeypatch):
     monkeypatch.setattr(launcher, "_own_process_group_id", lambda: os.getpid())
     monkeypatch.setattr(launcher.os, "getpgid", lambda _pid: os.getpid())
     monkeypatch.setattr(launcher.os, "killpg", lambda pgid, sig: killed.append((pgid, sig)))
-    monkeypatch.setattr(launcher.time, "sleep", lambda _s: killed.append(("grace",)))
+    patch_module_clock(monkeypatch, launcher, sleep=lambda _s: killed.append(("grace",)))
     monkeypatch.setattr(launcher.os, "_exit", lambda _code: None)
 
     launcher._handle_owner_death("parent_handle")

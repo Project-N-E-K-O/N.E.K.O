@@ -15,6 +15,7 @@ import time
 
 import pytest
 
+from tests.fake_clock import patch_module_clock
 from utils import single_instance
 
 _HOLDER_SCRIPT = textwrap.dedent(
@@ -175,7 +176,7 @@ def test_handoff_retries_wait_out_the_outgoing_holder(runtime_dir, monkeypatch):
     sleeps: list[float] = []
     released = {"done": False}
 
-    real_sleep = single_instance.time.sleep
+    real_sleep = time.sleep
 
     def _fake_sleep(seconds):
         # Only the retry loop uses this interval; subprocess bookkeeping sleeps
@@ -195,7 +196,7 @@ def test_handoff_retries_wait_out_the_outgoing_holder(runtime_dir, monkeypatch):
             return
         real_sleep(seconds)
 
-    monkeypatch.setattr(single_instance.time, "sleep", _fake_sleep)
+    patch_module_clock(monkeypatch, single_instance, sleep=_fake_sleep)
 
     handle = single_instance.acquire_single_instance(
         instance_id="successor",
@@ -212,7 +213,7 @@ def test_handoff_retries_wait_out_the_outgoing_holder(runtime_dir, monkeypatch):
 def test_without_handoff_the_loser_gives_up_immediately(runtime_dir, monkeypatch):
     holder = _start_holder(runtime_dir)
     slept: list[float] = []
-    monkeypatch.setattr(single_instance.time, "sleep", lambda s: slept.append(s))
+    patch_module_clock(monkeypatch, single_instance, sleep=lambda s: slept.append(s))
     try:
         assert single_instance.acquire_single_instance(instance_id="loser") is None
         assert slept == []
