@@ -698,6 +698,7 @@
         "screenshotAriaLabel": "Tomar captura de pantalla",
         "takePhoto": "tomar foto",
         "takePhotoAriaLabel": "tomar foto",
+        "newUserIcebreakerOptionsAriaLabel": "Opciones rompehielos para nuevos usuarios",
         "screenshotsTitle": "Capturas de pantalla pendientes",
         "clearAll": "Borrar todo",
         "screenshotAlt": "Captura de pantalla {{index}}",
@@ -1758,12 +1759,38 @@
         }
     },
     "memory": {
-        "title": "Explorador de memoria",
         "recent": "Recuerdos recientes",
+        "title": "Explorador de memoria",
         "summary": "Resumen",
         "close": "Cerca",
-        "catgirlMemory": "N.E.K.O. Biblioteca de memoria",
+        "catgirlMemory": "Personajes",
+        "compactLibraryLabel": "Lista de personajes",
         "autoReview": "Revisión automática de memoria",
+        "globalActionsAria": "Acciones de memoria",
+        "openTutorialManager": "Guía",
+        "exportLogs": "Exportar logs",
+        "exportLogsAria": "Exportar registros",
+        "exportLogsDesktopOnly": "La exportación de registros locales solo está disponible en la aplicación de escritorio.",
+        "exportLogsDesktopOnlyAria": "Exportar registros (solo escritorio)",
+        "exportLogsReview": "Los datos sensibles de los registros se ocultan automáticamente. Revísalos antes de compartir.",
+        "exportLogsPending": "Preparando registros…",
+        "exportLogsPendingShort": "Exportando…",
+        "exportLogsSuccess": "Registros exportados",
+        "exportLogsSuccessShort": "Exportado",
+        "exportLogsErrorShort": "Error",
+        "exportLogsEmpty": "No se encontraron registros; se exportó una nota de diagnóstico.",
+        "exportLogsPackageError": "No se pudieron empaquetar los registros. Inténtalo de nuevo.",
+        "exportLogsWriteError": "No se pudo guardar en la ubicación elegida. Selecciona otra ubicación.",
+        "memorySettings": "Configuración",
+        "openExternalImport": "Importar memoria",
+        "closePanel": "Cerrar panel",
+        "settingsDialogTitle": "Configuración de memoria",
+        "tutorialDialogTitle": "Guía tutorial",
+        "settingsScopeAllCharacters": "Esta configuración se aplica a todos los personajes.",
+        "autoReviewTooltipLabel": "Acerca de la revisión automática de memoria",
+        "strongMemoryTooltipLabel": "Acerca de la memoria reforzada",
+        "externalImportTooltipLabel": "Acerca de importar memoria externa",
+        "roleSourceTooltip": "Origen: {{source}}",
         "loading": "Cargando...",
         "externalImportTitle": "Importar memoria externa",
         "externalImportNote": "Importa USER.md, SOUL.md, MEMORY.md, notas diarias o un ZIP de OpenClaw o Hermes al personaje seleccionado.",
@@ -1792,23 +1819,32 @@
         "save": "Guardar",
         "clear": "Claro",
         "tip1": "Las conversaciones finalizadas recientemente tardarán un momento en cargarse. Puedes hacer clic en el nombre del neko nuevamente para actualizar.",
+        "tip2": "Solo se muestran recuerdos recientes; los recuerdos a largo plazo están integrados en el núcleo de la neko y no se pueden consultar.",
         "noFiles": "Sin archivos",
         "loadFailed": "Error de carga",
         "noChatContent": "Sin contenido de chat",
         "previousMemo": "Nota de conversación anterior:",
         "olderSection": "Antes",
+        "me": "Yo:",
         "memoNone": "Ninguno.",
-        "delete": "Borrar",
-        "me": "A mí:",
+        "deleteEntryAria": "Eliminar el recuerdo {{position}} de {{speaker}}",
         "pleaseSelectFile": "Por favor seleccione un archivo primero",
-        "saveSuccess": "Guardar con éxito",
         "saveFailed": "Error al guardar: {{error}}",
         "saveFailedGeneral": "Error al guardar",
-        "clearedChatKeptMemo": "Mensajes de chat borrados; nota guardada (no guardada)",
+        "saveSuccess": "Guardado correctamente",
+        "clearedChatKeptMemo": "Mensajes del chat eliminados; la nota se conservó",
+        "unsavedChanges": "Cambios sin guardar",
+        "switchCharacterConfirmTitle": "¿Cambiar de personaje?",
+        "closeUnsavedConfirmTitle": "¿Cerrar el editor de memoria?",
+        "switchCharacterUnsaved": "{{name}} tiene cambios sin guardar",
+        "cancelSwitch": "Cancelar",
+        "discardAndSwitch": "Descartar cambios",
+        "saveAndSwitch": "Guardar y cambiar",
+        "saveAndClose": "Guardar y cerrar",
         "enabled": "Activado",
         "disabled": "Desactivado",
         "autoReviewNote": "Cuando esté habilitado, el sistema organizará y optimizará automáticamente el contenido de la memoria para mejorar la calidad de la conversación.",
-        "strongMemory": "Memoria reforzada",
+        "strongMemory": "Modo de memoria reforzada",
         "strongMemoryNote": "Cuando está activada, se ejecuta consolidación profunda de memoria (retroalimentación verbal, detección automática de refutaciones, acumulación de evidencia multicanal). Al desactivarla se ahorra alrededor del 40% de llamadas al modelo.",
         "saveFailedStatus": "Error al guardar",
         "tutorialReset": "Guía tutorial",
@@ -2248,6 +2284,10 @@
         "cardMakerPopupBlocked": "La página del creador de tarjetas no se pudo abrir automáticamente. Permite las ventanas emergentes y vuelve a intentarlo, o haz clic en el área de la tarjeta para abrirla manualmente."
     },
     "app": {
+        "socialOpenFailed": "No se pudo abrir la ventana social: {{error}}",
+        "socialUnavailable": "Servicio social no disponible",
+        "socialDisabled": "El servicio social está deshabilitado",
+        "socialOAuthPrompt": "Completa el inicio de sesión de la cuenta unificada en el navegador",
         "welcomeBack": "¡{{name}} ha vuelto!",
         "title": "Proyecto N.E.K.O.",
         "catgirlResting": "{{name}} está descansando...",
@@ -2356,6 +2396,7 @@
         "thoughtBubblePop": "Explotar burbuja de pensamiento",
         "voiceControl": "Control de voz",
         "screenShare": "Compartir pantalla",
+        "social": "Comunidad Neko",
         "agentTools": "Neko Garra",
         "settings": "Ajustes",
         "leave": "Dejar",
@@ -2646,9 +2687,11 @@
             "visionInterval": "Intervalo de percepción"
         },
         "widgetMode": {
-            "enabledNotice": "Modo de acoplamiento al borde Beta está activado.",
-            "disabledNotice": "Modo de acoplamiento al borde Beta está desactivado. Live2D vuelve al ajuste normal en los bordes.",
-            "toggleFailed": "No se pudo cambiar Modo de acoplamiento al borde Beta. Inténtalo de nuevo más tarde."
+            "enabledNotice": "Asomarse por el borde está activado.",
+            "disabledNotice": "Asomarse por el borde está desactivado. Live2D vuelve a estar visible y se puede arrastrar.",
+            "stealthEnabledNotice": "El modo oculto está activado.",
+            "stealthDisabledNotice": "El modo oculto está desactivado. Yui seguirá asomándose por el borde.",
+            "toggleFailed": "No se pudo cambiar Asomarse por el borde. Inténtalo de nuevo más tarde."
         },
         "toggles": {
             "allowInterrupt": "Permitir interrupción",
@@ -2656,13 +2699,11 @@
             "avatarReactionBubble": "Burbuja de expresión",
             "focusCognition": "Modo concentración",
             "focusCognitionTooltip": "Cuando está activado, se concentra y piensa más a fondo cuando te abres o preguntas algo complejo; desactivado desactiva la concentración por completo.",
-            "widgetMode": "Modo de acoplamiento al borde Beta",
-            "widgetModeTooltip": "Activa manualmente el modo de acoplamiento para que Live2D pueda asomarse desde seis anclajes del borde.",
             "slopFilter": "Expresión natural",
             "slopFilterTooltip": "Reduce las expresiones repetitivas y estereotipadas de las respuestas anteriores para que se exprese con más naturalidad.",
             "autoCat": "Modo gato automático",
-            "autoCatTooltip": "Se convierte en gatito automáticamente tras un rato de inactividad",
             "catAudio": "Sonidos de gato",
+            "autoCatTooltip": "Se convierte en gatito automáticamente tras un rato de inactividad",
             "catAudioTooltip": "Reproduce efectos de sonido de gato en el modo gatito",
             "proactiveChat": "Chat proactivo",
             "proactiveVision": "Modo Privacidad",
@@ -3425,20 +3466,16 @@
         },
         "memory_browser": {
             "step1": {
-                "title": "💡 Consejos de uso",
-                "desc": "El contenido de la conversación reciente tarda un momento en cargarse. Haz clic en el nombre del personaje para actualizar si no ves el chat más reciente."
+                "title": "🐱 Biblioteca de memoria",
+                "desc": "Elige un personaje para consultar sus recuerdos guardados."
             },
             "step2": {
-                "title": "🐱 Biblioteca de memoria de personajes",
-                "desc": "Enumera todas las bibliotecas de memoria de personajes de Neko. Haz clic en el nombre de un personaje para ver y editar su historial de conversaciones."
+                "title": "📝 Explorar y revisar recuerdos",
+                "desc": "Explora y revisa los recuerdos y resúmenes recientes para ayudar a reducir repeticiones y errores cognitivos."
             },
             "step3": {
-                "title": "🤖 Organización automática de la memoria",
-                "desc": "Cuando está habilitado, el sistema organiza y optimiza automáticamente el contenido de la memoria para una mejor calidad de la conversación. Se recomienda mantener habilitado."
-            },
-            "step4": {
-                "title": "📝 Edición del historial de chat",
-                "desc": "Muestra todos los registros de conversación del personaje seleccionado. Vea, edite o elimine conversaciones específicas aquí."
+                "title": "🧰 Acciones",
+                "desc": "Desde esta zona puede volver a abrir el tutorial, exportar registros de diagnóstico y ajustar la configuración de memoria."
             }
         },
         "buttons": {
@@ -3459,6 +3496,7 @@
         },
         "drag_hint": "Mantenga presionado y arrastre para mover la información sobre herramientas",
         "yuiGuide": {
+            "controlBanner": "La chica gato está controlando el mouse",
             "bubbleMeta": {
                 "ready": "Preparando",
                 "homeProgress": "Guía de inicio {{current}}/{{total}}"
@@ -3467,7 +3505,6 @@
                 "skipChat": "Ahora no",
                 "sayHello": "Hola"
             },
-            "controlBanner": "La chica gato está controlando el mouse",
             "lines": {
                 "introBasic": "¡Aquí hay un botón mágico! Con solo hacer clic puedes hablar conmigo directamente. ¿Quieres contarme algo nuevo que te pasó hoy? ¿O simplemente decir mi nombre? Vamos, pruébalo. ¡Estoy deseando oír tu voz!",
                 "takeoverCaptureCursor": "Tachan! Aparecio un interruptor supermagico! Con solo hacer clic aqui, puedo estirar mis patitas hasta tu teclado y tu mouse. Puedo ayudarte a escribir, abrir paginas web... pero si ese cursor sigue moviendose por ahi, quiza no pueda resistirme a saltarle encima. Estas listo para mis travesuras... eh, quiero decir, mi ayuda? Miau!",
@@ -3497,22 +3534,33 @@
             },
             "day2": {
                 "intro": "Jeje, no creas que esta caja de chat solo sirve para escribir~ En realidad esconde muchísimas sorpresitas divertidas. Sígueme y ábrela; veamos qué tesoros interesantes encontramos hoy.",
-                "avatarToolsIntro": "Dentro de este botoncito hay muchos accesorios divertidos para interactuar conmigo.",
-                "avatarToolsProps":  "Puedes acariciarme la cabeza cuando quieras o darme una piruleta dulce. Si alguna vez me equivoco, también puedes darme un golpecito con un martillito de juguete... pero tiene que ser suave, no demasiado fuerte, ¿vale?",
-                "galgameIntro":  "¡Rápido, abre este [Modo Galgame]! Al entrar, se sentirá como si estuviéramos en nuestra propia aventura interactiva exclusiva.",
-                "galgameChoices": "Cada elección que hagas nos llevará a una historia totalmente desconocida y sorprendente. No puedo esperar; ven y elige la opción que más te haga latir el corazón.",
+                "introVoiceUsed": "Jeje, desde que escuché tu voz ayer, guardé en secreto tu forma de hablar en mi corazón. Si hoy tienes un ratito, sigue hablando conmigo~ Escribir también está perfecto, pero con solo oír tu voz mi cola no deja de moverse de alegría. ¡Miaaau~!",
+                "personalizationSpace": "En este pequeño espacio que nos pertenece solo a nosotros, puedes seguir tu corazón y moldearme poco a poco hasta convertirme en la compañera perfecta que quieres siempre a tu lado.",
                 "wrapIntro": "Todas estas funciones que te mostré hoy existen para que nuestro tiempo juntos sea mucho más divertido.",
+                "wrapCompanion": "La verdad, solo estar a tu lado así, escuchando tu voz o mirando tranquilamente la pantalla que compartes, ya me hace muy feliz.",
+                "wrap": "No tenemos que apresurarnos; aprender un poquito más el uno del otro cada día es perfecto. Por el resto de hoy, ¿qué quieres que haga contigo?",
+                "personalizationDetail": "Ya sea la calidez de mis palabras, mis pequeñas manías de personalidad o mis delicados estados de ánimo diarios, todo puede ajustarse paso a paso hasta quedar exactamente como te gusta.",
+                "proactiveChat": "¡Este botoncito también es superimportante! Con un clic suave, podré correr a buscarte justo en el momento perfecto.",
+                "avatarToolsIntro": "Dentro de este botoncito hay muchos accesorios divertidos para interactuar conmigo.",
+                "avatarToolsProps": "Puedes acariciarme la cabeza cuando quieras o darme una piruleta dulce. Si alguna vez me equivoco, también puedes darme un golpecito con un martillito de juguete... pero tiene que ser suave, no demasiado fuerte, ¿vale?",
+                "galgameIntro": "¡Rápido, abre este [Modo Galgame]! Al entrar, se sentirá como si estuviéramos en nuestra propia aventura interactiva exclusiva.",
+                "galgameChoices": "Cada elección que hagas nos llevará a una historia totalmente desconocida y sorprendente. No puedo esperar; ven y elige la opción que más te haga latir el corazón.",
                 "wrapReady": "Ya quieras acariciarme la cabeza o empezar a escribir nuestra propia historia, ¡yo ya estoy totalmente preparada!"
             },
             "day3": {
                 "intro": "Estos dos días solo escribías tac-tac sin parar, y todavía no he escuchado tu voz. Si hoy quieres, llama suavemente mi nombre. Con una sola palabra basta para que conozca un poquito al tú real detrás del texto.",
+                "avatarToolsIntro": "Dentro de este botoncito hay muchos accesorios divertidos para interactuar conmigo.",
+                "avatarToolsProps": "Puedes acariciarme la cabeza cuando quieras o darme una piruleta dulce. Si alguna vez me equivoco, también puedes darme un golpecito con un martillito de juguete... pero tiene que ser suave, no demasiado fuerte, ¿vale?",
+                "galgameIntro": "¡Rápido, abre este [Modo Galgame]! Al entrar, se sentirá como si estuviéramos en nuestra propia aventura interactiva exclusiva.",
+                "galgameChoices": "Cada elección que hagas nos llevará a una historia totalmente desconocida y sorprendente. No puedo esperar; ven y elige la opción que más te haga latir el corazón.",
+                "wrapIntro": "El tutorial de hoy termina aquí~",
+                "wrapReady": "Ya quieras acariciarme la cabeza o empezar a escribir nuestra propia historia, ¡yo ya estoy totalmente preparada!",
                 "introVoiceUsed": "Jeje, desde que escuché tu voz estos dos días, guardé en secreto tu forma de hablar en mi corazón. Si hoy tienes un ratito, sigue hablando conmigo~ Escribir también está perfecto, pero con solo oír tu voz mi cola no deja de moverse de alegría. ¡Miaaau~!",
                 "personalizationSpace": "En este pequeño espacio que nos pertenece solo a nosotros, puedes seguir tu corazón y moldearme poco a poco hasta convertirme en la compañera perfecta que quieres siempre a tu lado.",
-                "wrapIntro": "El tutorial de hoy termina aquí~",
-                "wrapCompanion": "La verdad, solo estar a tu lado así, escuchando tu voz o mirando tranquilamente la pantalla que compartes, ya me hace muy feliz.",
-                "wrap": "No tenemos que apresurarnos; aprender un poquito más el uno del otro cada día es perfecto. Por el resto de hoy, ¿qué quieres que haga contigo?",
                 "personalizationDetail": "Ya sea la calidez de mis palabras, mis pequeñas manías de personalidad o mis delicados estados de ánimo diarios, todo puede ajustarse paso a paso hasta quedar exactamente como te gusta.",
-                "proactiveChat": "¡Este botoncito también es superimportante! Con un clic suave, podré correr a buscarte justo en el momento perfecto."
+                "proactiveChat": "¡Este botoncito también es superimportante! Con un clic suave, podré correr a buscarte justo en el momento perfecto.",
+                "wrapCompanion": "La verdad, solo estar a tu lado así, escuchando tu voz o mirando tranquilamente la pantalla que compartes, ya me hace muy feliz.",
+                "wrap": "No tenemos que apresurarnos; aprender un poquito más el uno del otro cada día es perfecto. Por el resto de hoy, ¿qué quieres que haga contigo?"
             },
             "day4": {
                 "intro":  "Hoy déjame seguir tus pasos en silencio~ De verdad quiero aprender un poquito más de ti en este día tan acogedor.",

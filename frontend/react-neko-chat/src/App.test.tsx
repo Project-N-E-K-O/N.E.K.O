@@ -6903,15 +6903,24 @@ describe('App', () => {
     );
   });
 
-  it('frosts the backdrop without increasing the compact surface opacity', () => {
+  it('frosts the backdrop while strengthening compact surface opacity', () => {
     expect(compactChatStyles).toMatch(
       /\.compact-chat-surface-frame\s*\{[\s\S]*?background-clip: padding-box;[\s\S]*?background-color: rgba\(255, 255, 255, 0\.035\);[\s\S]*?backdrop-filter: blur\(36px\) saturate\(0\.9\) contrast\(0\.78\) brightness\(1\.08\);/,
     );
     expect(compactChatStyles).toContain(
-      'linear-gradient(180deg, rgba(255, 255, 255, 0.34), rgba(242, 249, 255, 0.19) 46%, rgba(219, 238, 253, 0.24))',
+      'linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(242, 249, 255, 0.42) 46%, rgba(219, 238, 253, 0.48))',
     );
     expect(compactChatStyles).toContain(
-      'linear-gradient(180deg, rgba(31, 48, 66, 0.72), rgba(15, 29, 46, 0.68) 58%, rgba(8, 17, 30, 0.62))',
+      'linear-gradient(180deg, rgba(31, 48, 66, 0.80), rgba(15, 29, 46, 0.76) 58%, rgba(8, 17, 30, 0.72))',
+    );
+    expect(compactChatStyles).toContain(
+      '--compact-chat-capsule-surface-bg:\n    linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(242, 249, 255, 0.68) 46%, rgba(219, 238, 253, 0.72));',
+    );
+    expect(compactChatStyles).toContain(
+      '--compact-chat-capsule-surface-bg:\n    linear-gradient(180deg, rgba(31, 48, 66, 0.86), rgba(15, 29, 46, 0.82) 58%, rgba(8, 17, 30, 0.78));',
+    );
+    expect(compactChatStyles).toMatch(
+      /\.compact-chat-surface-frame\[data-compact-chat-state="default"\]::before,[\s\S]*?\.compact-chat-surface-frame\[data-compact-chat-state="options"\]::before,[\s\S]*?\.compact-chat-surface-frame\[data-compact-chat-state="input"\]::before\s*\{[\s\S]*?background: var\(--compact-chat-capsule-surface-bg\);/,
     );
   });
 

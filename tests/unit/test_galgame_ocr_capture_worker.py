@@ -31,6 +31,80 @@ class _ExplodingLogger(_NullLogger):
         raise RuntimeError("logger failed")
 
 
+@pytest.mark.parametrize("exploding_step", [
+    "_stop_foreground_advance_monitor",
+    "_shutdown_capture_worker",
+    "_release_rapidocr_backend",
+])
+def test_ocr_reader_manager_close_releases_every_resource_despite_one_failure(
+    exploding_step: str,
+) -> None:
+    """No teardown step may take another one down with it.
+
+    close() swallows failures so callers can tear down unconditionally — which
+    means a shared guard is worse than none: one failing step would skip the
+    rest while the caller still sees a clean close and keeps live threads,
+    executors, or a classifier around.
+    """
+    manager = object.__new__(OcrReaderManager)
+    manager._logger = _NullLogger()
+    done: list[str] = []
+    closed_classifier: list[bool] = []
+
+    class _Classifier:
+        def close(self) -> None:
+            closed_classifier.append(True)
+
+    manager.vision_classifier = _Classifier()
+
+    def _step(name: str):
+        def _run(self, *_args, **_kwargs) -> None:
+            del self
+            done.append(name)
+            if name == exploding_step:
+                raise RuntimeError(f"{name} exploded")
+        return _run
+
+    for name in (
+        "_stop_foreground_advance_monitor",
+        "_shutdown_capture_worker",
+        "_release_rapidocr_backend",
+    ):
+        setattr(manager, name, types.MethodType(_step(name), manager))
+
+    manager.close()
+
+    assert done == [
+        "_stop_foreground_advance_monitor",
+        "_shutdown_capture_worker",
+        "_release_rapidocr_backend",
+    ], f"{exploding_step} 抛错后其余步骤仍必须跑到"
+    assert closed_classifier == [True], "classifier 必须被关掉"
+    assert manager.vision_classifier is None, "classifier 引用必须摘掉"
+
+
+def test_ocr_reader_manager_close_drops_classifier_reference_when_its_close_raises() -> None:
+    """A classifier whose own close() raises must still be let go of."""
+    manager = object.__new__(OcrReaderManager)
+    manager._logger = _NullLogger()
+
+    class _Classifier:
+        def close(self) -> None:
+            raise RuntimeError("classifier close exploded")
+
+    manager.vision_classifier = _Classifier()
+    for name in (
+        "_stop_foreground_advance_monitor",
+        "_shutdown_capture_worker",
+        "_release_rapidocr_backend",
+    ):
+        setattr(manager, name, types.MethodType(lambda self, *a, **k: None, manager))
+
+    manager.close()
+
+    assert manager.vision_classifier is None
+
+
 def test_ocr_reader_manager_context_manager_closes_capture_resources() -> None:
     manager = object.__new__(OcrReaderManager)
     manager._logger = _NullLogger()

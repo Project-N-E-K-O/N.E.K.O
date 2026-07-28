@@ -30,15 +30,15 @@ def test_safety_config_update_preserves_in_flight_count():
     assert guard.queue_size == 4
 
 
-def test_safety_snapshot_prunes_expired_failure_records(monkeypatch):
+def test_safety_snapshot_prunes_expired_failure_records(monkeypatch, patch_module_clock):
     audit = SimpleNamespace(record=lambda *_args, **_kwargs: None)
     guard = SafetyGuard(LiveConfig(safety_window_seconds=10), audit)
     guard._pipeline_failures = [80.0, 95.0]
     guard._output_failures = [70.0]
-    monkeypatch.setattr(
-        "plugin.plugins.neko_live.core.safety_guard_failures.time.monotonic",
-        lambda: 100.0,
-    )
+    # 打到真正读时钟的模块上：snapshot() 的过期裁剪在 safety_guard_failures 里
+    from plugin.plugins.neko_live.core import safety_guard_failures
+
+    patch_module_clock(monkeypatch, safety_guard_failures, monotonic=lambda: 100.0)
 
     snapshot = guard.snapshot()
 

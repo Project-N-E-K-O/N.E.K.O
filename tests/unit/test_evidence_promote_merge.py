@@ -437,6 +437,47 @@ async def test_merge_into_path_updates_target_and_marks_merged(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_merge_into_refuses_cross_scope_target(tmp_path):
+    """Two custom scopes share persona_section_key: a scope-A reflection
+    must not see scope-B entries as merge candidates, and a hallucinated
+    cross-domain target id is refused at revalidation instead of
+    overwriting B's entry with A's content."""
+    from memory.scopes import MemorySubject
+
+    _ev, _fs, pm, re, _cm = _install(str(tmp_path))
+    subject_a = MemorySubject.create("group_chat", "qq:1", scope="t-a")
+    subject_b = MemorySubject.create("group_chat", "qq:1", scope="t-b")
+    section_key = subject_a.persona_section_key
+    entry_b = _persona_entry('p_b', 'B 域条目', rein=1.0)
+    entry_b.update(subject_b.as_entry_fields())
+    await pm.asave_persona('小天', {section_key: {
+        **subject_b.as_entry_fields(), 'facts': [entry_b],
+    }})
+    R = _reflection('ref_a', 'A 域反思', rein=2.5)
+    R.update(subject_a.as_entry_fields())
+    R['entity'] = 'group_chat'
+    await re.asave_reflections('小天', [R])
+
+    captured = {}
+
+    async def _fake_llm(Rx, persona_cands, refl_cands, name, master):
+        captured['cands'] = list(persona_cands)
+        return {
+            'action': 'merge_into',
+            'target_id': f'persona.{section_key}.p_b',
+            'merged_text': 'A 覆写 B',
+        }
+
+    with patch.object(re, '_allm_call_promotion_merge', _fake_llm):
+        outcome = await re._apromote_with_merge('小天', R)
+
+    assert captured['cands'] == []
+    assert outcome == 'invalid_target'
+    entry = (await pm.aget_persona('小天'))[section_key]['facts'][0]
+    assert entry['text'] == 'B 域条目'
+
+
+@pytest.mark.asyncio
 async def test_reject_path_marks_denied(tmp_path):
     _ev, _fs, pm, re, _cm = _install(str(tmp_path))
     R = _reflection('ref_reject', '一条会被否决的观察', rein=2.5)

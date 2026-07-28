@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -10,6 +11,56 @@ class QQPipelineStageTrace:
     status: str
     detail: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+# 合成来源：这些轮次的 sender 只是名义上的发言人（主动搭话的控制指令、
+# 缓冲合并/确认、延迟投递、回溯补回、入群通知），其 prompt 文本不是这个人
+# 说的话。写侧（不入 participant bucket）、读侧（不召回该成员的 scoped
+# 记忆）、mention 计数三处必须用同一份判据，否则一处漏掉就等于用别人的
+# 私人事实去生成公开发言。
+SYNTHETIC_SOURCE_KINDS = frozenset({
+    "proactive_speech",
+    "rapid_fire_flush",
+    "buffer_delayed",
+    "retroactive_review",
+    "group_join_notice",
+})
+
+
+def delivered_blocks_text(blocks) -> str:
+    """All user-visible text of a plan, not just the first block.
+
+    A `<msg>` reply can span several blocks; postprocess keeps only the
+    first one in `reply_text`. Anything disclosed in a later text/voice
+    block would otherwise never bump its scoped mention counter and never
+    reach anti-repeat suppression."""
+    parts: list[str] = []
+    for block in blocks or []:
+        # 与投递侧同一优先级：record 块在文本之前被处理并 continue，所以
+        # 一个既有 text 又有 record 的块，用户听到的是语音、看不到那段
+        # 文本——两段都记会把没送出去的内容写进记忆与 mention 计数。
+        record = str(getattr(block, "record", "") or "").strip()
+        value = record or str(getattr(block, "text", "") or "").strip()
+        if value:
+            parts.append(value)
+        # 选项文案在**文本块**上才会送到用户面前（开放平台渲染成按钮，
+        # NapCat/私聊把它并进正文，语音把它念出来）。record 块走的是另一
+        # 条分支并直接 continue，keyboard 根本不会渲染——把它记下来等于
+        # 让没人看过的选项进记忆与 mention 计数。
+        if not record:
+            labels = " / ".join(
+                part.strip()
+                for part in str(getattr(block, "keyboard", "") or "").split("|")
+                if part.strip()
+            )
+            if labels:
+                parts.append(labels)
+    return "\n".join(parts)
+
+
+def is_synthetic_source(source_kind: str | None) -> bool:
+    """True when the turn's nominal sender did not actually say anything."""
+    return str(source_kind or "") in SYNTHETIC_SOURCE_KINDS
 
 
 @dataclass(slots=True)
@@ -35,10 +86,17 @@ class QQReplyRequest:
     reply_message_id: str = ""
     at_user_id: str = ""
     fallback_to_text_on_voice_failure: bool = True
+    # 内嵌合成轮（ack / 强制总结 / 缓冲汇总）继承缓冲里那些草稿的授权
+    # 依赖：合成轮自己的 prompt 是干净的（快照为空），但它原样引用了
+    # 记忆派生的旧草稿，撤销必须能作用到它。
+    inherited_consent_snapshot: dict[str, bool] = field(default_factory=dict)
     permission_level_override: str | None = None
     force_reply: bool = False
     suppression_reason: str = ""
     forward_sub_count: int = 0
+    # 接收边界的 member 记忆政策快照（None=旁路调用者，build 内回退实时
+    # 读）：handler 排队期间 OFF->ON 不得让收到时无授权的发言被收集。
+    member_memory_at_receipt: bool | None = None
 
 
 @dataclass(slots=True)
@@ -60,6 +118,16 @@ class QQInstructionBundle:
     memory_context_used: bool
     core_memory_text: str
     scene_mode: str
+    # 跨群上下文段原文（未注入时为空）：consent 是运行时开关，构建后到
+    # 生成前的 await 窗口里可能被关掉/回滚，届时按原文从 prompt 中摘除。
+    cross_group_section: str = ""
+    # 活跃会话清单里披露了其他会话时的原文：与话题段同为跨群内容，撤销时
+    # 一并撤除、同样计入授权依赖（私聊轮的话题段恒为空，此前那条路径根本
+    # 没有可撤的依赖）。
+    cross_session_section: str = ""
+    # core memory 段是否含 participant 域内容：member 开关在后续 await
+    # 窗口里被关掉时，该段要按同样方式撤除。
+    used_member_subject: bool = False
 
 
 @dataclass(slots=True)
@@ -93,6 +161,28 @@ class QQReplyContext:
     login_nickname: str | None
     current_message_id: str = ""
     force_reply: bool = False
+    source_kind: str = ""
+    # 轮次构建时刻的 group_member_memory_enabled 快照：成员发言入 bucket
+    # 与否绑定发言时刻的授权状态——生成期间才切 ON 的轮不得回溯收集。
+    member_memory_enabled: bool = False
+    # 本轮 prompt 里的跨群段原文（未注入时为空）：生成前在会话锁内复检
+    # 授权，撤销时按原文摘除。
+    cross_group_section: str = ""
+    # 同上，活跃会话清单段。
+    cross_session_section: str = ""
+    # core memory 段是否含 participant 域：member 授权在生成前被撤销时
+    # 该段（及混合域召回）要一并撤除。
+    used_member_subject: bool = False
+    # 本轮上下文的唯一标识：投递钩子的幂等键。绝不能用 id(context)——
+    # CPython 会把刚释放的同尺寸对象原样发回，下一轮的 context 常常拿到
+    # 同一地址，幂等扫描会把新一轮的行误判成"已经补过了"。
+    turn_uid: str = field(default_factory=lambda: uuid.uuid4().hex)
+    # 生成时刻的授权依赖快照：直投路径在真正发出去之前再比一次（buffer
+    # 路径由 PendingReply.consent_snapshot 负责），"生成完成→发送"之间
+    # 的窗口也不得漏掉撤销。None=还没生成过（读当前设置兜底）；空 dict
+    # 是有意义的值——本轮没用任何记忆，撤销与它无关，不能当成"没快照"
+    # 而去采样当前开关，否则一条与记忆无关的草稿会被无谓丢弃。
+    consent_snapshot: dict[str, bool] | None = None
     traces: list[QQPipelineStageTrace] = field(default_factory=list)
 
 
@@ -162,6 +252,10 @@ class QQReplyOutcome:
     action: str
     reply_text: str | None = None
     used_default_message: bool = False
+    # True when the reply came from the direct-LLM fallback: the shared
+    # session history has NO ai row for this turn, so the buffer must not
+    # mark the previous (delivered) reply as an undelivered draft.
+    used_fallback: bool = False
     raw_reply_text: str | None = None
     postprocess_reason: str = ""
     blocks: list[QQMessageBlock] = field(default_factory=list)

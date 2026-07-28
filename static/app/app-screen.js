@@ -1457,8 +1457,16 @@
     // ======================== updateScreenSourceListSelection ========================
     function updateScreenSourceListSelection() {
         var popupIds = ['live2d-popup-screen', 'vrm-popup-screen', 'mmd-popup-screen'];
+        var screenPopups = [];
         popupIds.forEach(function (popupId) {
             var screenPopup = document.getElementById(popupId);
+            if (screenPopup) screenPopups.push(screenPopup);
+        });
+        document.querySelectorAll('.neko-mic-popup-screen-sources').forEach(function (screenPopup) {
+            screenPopups.push(screenPopup);
+        });
+
+        screenPopups.forEach(function (screenPopup) {
             if (!screenPopup) return;
 
             var options = screenPopup.querySelectorAll('.screen-source-option');
@@ -1481,12 +1489,23 @@
     mod.updateScreenSourceListSelection = updateScreenSourceListSelection;
 
     // ======================== renderFloatingScreenSourceList ========================
-    window.renderFloatingScreenSourceList = async function () {
-        var screenPopup = document.getElementById('live2d-popup-screen');
+    window.renderFloatingScreenSourceList = async function (popupArg, renderOptions) {
+        var screenPopup = popupArg || document.getElementById('live2d-popup-screen');
+        renderOptions = renderOptions || {};
         if (!screenPopup) {
             console.warn('[屏幕源] 弹出框不存在');
             return false;
         }
+
+        var popupId = screenPopup.id;
+        var requireVisible = renderOptions.requireVisible !== false;
+        var isPopupAvailable = function () {
+            if (!screenPopup || !screenPopup.isConnected) return false;
+            if (popupId && document.getElementById(popupId) !== screenPopup) return false;
+            if (!requireVisible) return true;
+            return screenPopup.style.display === 'flex' && screenPopup.style.opacity !== '0';
+        };
+        if (!isPopupAvailable()) return false;
 
         var desktopProvider = resolveDesktopCaptureProvider();
         if (!desktopProvider || typeof desktopProvider.getSources !== 'function') {
@@ -1517,6 +1536,8 @@
                 types: ['window', 'screen'],
                 thumbnailSize: { width: 160, height: 100 }
             });
+
+            if (!isPopupAvailable()) return false;
 
             screenPopup.innerHTML = '';
 
@@ -1713,6 +1734,7 @@
 
             return true;
         } catch (error) {
+            if (!isPopupAvailable()) return false;
             console.error('[屏幕源] 获取屏幕源失败:', error);
             screenPopup.innerHTML = '';
             var errorItem = document.createElement('div');

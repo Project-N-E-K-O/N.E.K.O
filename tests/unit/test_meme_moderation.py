@@ -10,6 +10,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 
 from utils import meme_moderation as mm
 from utils import api_config_loader as acl
+from tests.fake_clock import patch_module_clock
 
 
 ENV_KEYS = [
@@ -750,7 +751,8 @@ def test_rate_limit_backoff_is_scoped_to_active_config(monkeypatch):
 
 def test_backoff_expiry_resets_when_fingerprint_changes(monkeypatch):
     use_direct_url_payload(monkeypatch)
-    monkeypatch.setattr(mm.time, "monotonic", lambda: 1000.0)
+    # 退避到期时间由 utils.meme_moderation 自己算（_provider_backoff_until = time.monotonic() + ...）。
+    patch_module_clock(monkeypatch, mm, monotonic=lambda: 1000.0)
     monkeypatch.setenv("NEKO_MEME_MODERATION_PAYMENT_BACKOFF_SECONDS", "600")
     first_client = FakeClient(post_response=FakeResponse(status_code=402))
 

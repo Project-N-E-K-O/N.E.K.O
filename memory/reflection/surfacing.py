@@ -119,7 +119,10 @@ class SurfacingMixin:
             is_in_window=cls._in_window,
         )
 
-    async def arecord_mentions(self, lanlan_name: str, response_text: str) -> None:
+    async def arecord_mentions(
+        self, lanlan_name: str, response_text: str, *, subjects=None,
+        include_legacy_private: bool | None = None,
+    ) -> None:
         """After the AI finishes a reply, scan confirmed reflections and accumulate
         mentions within the 5h window. Mentioned more than
         SUPPRESS_MENTION_LIMIT (=2) times in a row → stamp suppress=True.
@@ -129,8 +132,14 @@ class SurfacingMixin:
         stop_names = await acollect_stop_names(self._config_manager, lanlan_name)
         async with self._get_alock(lanlan_name):
             reflections = await self._aload_reflections_full(lanlan_name)
+            from memory.scopes import filter_entries_for_subjects
+            mention_candidates = filter_entries_for_subjects(
+                reflections,
+                subjects,
+                include_legacy_private=include_legacy_private,
+            )
             if self._apply_record_reflection_mentions(
-                reflections, response_text, stop_names=stop_names,
+                mention_candidates, response_text, stop_names=stop_names,
             ):
                 active = [
                     r for r in reflections
@@ -149,14 +158,30 @@ class SurfacingMixin:
                 ]
                 await self.asave_reflections(lanlan_name, active)
 
-    def get_pending_reflections(self, lanlan_name: str) -> list[dict]:
+    def get_pending_reflections(
+        self, lanlan_name: str, *, subjects=None,
+        include_legacy_private: bool | None = None,
+    ) -> list[dict]:
         """Get all pending (unconfirmed) reflections."""
         reflections = self.load_reflections(lanlan_name)
-        return [r for r in reflections if r.get('status') == 'pending']
+        from memory.scopes import filter_entries_for_subjects
+        return filter_entries_for_subjects(
+            [r for r in reflections if r.get('status') == 'pending'],
+            subjects,
+            include_legacy_private=include_legacy_private,
+        )
 
-    async def aget_pending_reflections(self, lanlan_name: str) -> list[dict]:
+    async def aget_pending_reflections(
+        self, lanlan_name: str, *, subjects=None,
+        include_legacy_private: bool | None = None,
+    ) -> list[dict]:
         reflections = await self.aload_reflections(lanlan_name)
-        return [r for r in reflections if r.get('status') == 'pending']
+        from memory.scopes import filter_entries_for_subjects
+        return filter_entries_for_subjects(
+            [r for r in reflections if r.get('status') == 'pending'],
+            subjects,
+            include_legacy_private=include_legacy_private,
+        )
 
     @staticmethod
     def _filter_active_confirmed(
@@ -177,14 +202,30 @@ class SurfacingMixin:
             score=evidence_score,
         )
 
-    def get_confirmed_reflections(self, lanlan_name: str) -> list[dict]:
+    def get_confirmed_reflections(
+        self, lanlan_name: str, *, subjects=None,
+        include_legacy_private: bool | None = None,
+    ) -> list[dict]:
         """Get all confirmed (soft persona) reflections that are still
         active — status='confirmed' AND score > 0 AND not mention-suppressed."""
-        return self._filter_active_confirmed(self.load_reflections(lanlan_name))
+        from memory.scopes import filter_entries_for_subjects
+        return filter_entries_for_subjects(
+            self._filter_active_confirmed(self.load_reflections(lanlan_name)),
+            subjects,
+            include_legacy_private=include_legacy_private,
+        )
 
-    async def aget_confirmed_reflections(self, lanlan_name: str) -> list[dict]:
-        return self._filter_active_confirmed(
-            await self.aload_reflections(lanlan_name),
+    async def aget_confirmed_reflections(
+        self, lanlan_name: str, *, subjects=None,
+        include_legacy_private: bool | None = None,
+    ) -> list[dict]:
+        from memory.scopes import filter_entries_for_subjects
+        return filter_entries_for_subjects(
+            self._filter_active_confirmed(
+                await self.aload_reflections(lanlan_name),
+            ),
+            subjects,
+            include_legacy_private=include_legacy_private,
         )
 
     @staticmethod

@@ -35,6 +35,24 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
+def _make_fact_store(*, facts=None, time_indexed=None):
+    """Build a FactStore whose every ``__init__``-owned attribute exists.
+
+    The tests below drive ``_apersist_new_facts`` directly, so they need a
+    store that is fully formed but talks to no config manager.  They used to
+    do that with ``FactStore.__new__`` plus a hand-written list of attributes,
+    which silently stranded six of them for ten weeks when #2282 added one
+    field (``_persist_alocks``) to ``__init__``.  Running the real ``__init__``
+    with only the singleton patched out keeps that from happening again.
+    """
+    from memory.facts import FactStore
+
+    with patch('memory.facts.get_config_manager', return_value=MagicMock()):
+        fs = FactStore(time_indexed_memory=time_indexed)
+    fs._facts = {'悠怡': []} if facts is None else facts
+    return fs
+
+
 @pytest.mark.unit
 def test_extract_role_tagged_messages_keeps_user_and_ai():
     """跟 _extract_user_messages_from_rows 形成对偶：path B 必须收 ai msg。"""
@@ -278,15 +296,7 @@ async def test_path_b_no_user_msg_in_window_skips_extraction():
 async def test_apersist_writes_source_field_default_user_observation():
     """path A 调用方不传 default_source → 落盘 source='user_observation'，
     signal_processed=False（正常进 Stage-2）。"""
-    from memory.facts import FactStore
-
-    fs = FactStore.__new__(FactStore)
-    fs._config_manager = MagicMock()
-    fs._time_indexed = None
-    fs._facts = {'悠怡': []}
-    fs._locks = {}
-    import threading
-    fs._locks_guard = threading.Lock()
+    fs = _make_fact_store()
     fs.aload_facts = AsyncMock(return_value=[])
     fs.asave_facts = AsyncMock(return_value=None)
 
@@ -308,15 +318,7 @@ async def test_apersist_writes_source_field_default_user_observation():
 async def test_apersist_writes_source_ai_disclosure_with_signal_processed_true():
     """path B 调用方传 default_source='ai_disclosure' → 落盘 source 字段
     一致，signal_processed=True（不进 Stage-2 evidence loop）。"""
-    from memory.facts import FactStore
-
-    fs = FactStore.__new__(FactStore)
-    fs._config_manager = MagicMock()
-    fs._time_indexed = None
-    fs._facts = {'悠怡': []}
-    fs._locks = {}
-    import threading
-    fs._locks_guard = threading.Lock()
+    fs = _make_fact_store()
     fs.asave_facts = AsyncMock(return_value=None)
 
     extracted = [
@@ -339,15 +341,7 @@ async def test_apersist_writes_source_ai_disclosure_with_signal_processed_true()
 async def test_apersist_llm_source_field_overrides_default():
     """LLM 显式输出的 source 字段优先于 default_source（trust LLM 的
     per-fact 判断）。"""
-    from memory.facts import FactStore
-
-    fs = FactStore.__new__(FactStore)
-    fs._config_manager = MagicMock()
-    fs._time_indexed = None
-    fs._facts = {'悠怡': []}
-    fs._locks = {}
-    import threading
-    fs._locks_guard = threading.Lock()
+    fs = _make_fact_store()
     fs.asave_facts = AsyncMock(return_value=None)
 
     # LLM 输出 source='user_observation'，但 caller 传 default='ai_disclosure'
@@ -369,18 +363,19 @@ async def test_apersist_llm_source_field_overrides_default():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_apersist_monotonic_source_upgrade_ai_to_user():
-    """SHA-256 撞已有 ai_disclosure fact + 新 fact source=user_observation
-    → in-place 升级 existing.source + 重置 signal_processed=False。"""
-    from memory.facts import FactStore
+    """An incoming user_observation whose SHA-256 hits a stored ai_disclosure
+    fact upgrades that fact's source in place and resets signal_processed.
+
+    In-memory semantics only — ``asave_facts`` is mocked here.  Whether the
+    reset survives persistence is a separate question, and one this shape of
+    test cannot answer: mocking the save is exactly what hid the monotonic
+    read-merge undoing it for ten weeks.  That half lives in
+    ``test_apersist_source_upgrade_survives_the_real_save``, which drives a
+    real file round-trip; keep both.
+    """
     import hashlib
 
-    fs = FactStore.__new__(FactStore)
-    fs._config_manager = MagicMock()
-    fs._time_indexed = None
-    fs._facts = {'悠怡': []}
-    fs._locks = {}
-    import threading
-    fs._locks_guard = threading.Lock()
+    fs = _make_fact_store()
 
     text = '博士喜欢三文鱼'
     content_hash = hashlib.sha256(text.encode()).hexdigest()[:16]
@@ -420,15 +415,7 @@ async def test_apersist_monotonic_source_upgrade_within_same_batch():
     `content_hash in existing_hashes` 时 `hash_to_existing.get()` 返 None，
     monotonic upgrade 路径被跳过，user_observation 升级被静默丢弃。
     """
-    from memory.facts import FactStore
-
-    fs = FactStore.__new__(FactStore)
-    fs._config_manager = MagicMock()
-    fs._time_indexed = None
-    fs._facts = {'悠怡': []}
-    fs._locks = {}
-    import threading
-    fs._locks['悠怡'] = threading.RLock()
+    fs = _make_fact_store()
     fs.asave_facts = AsyncMock()
 
     # 模拟单次 Stage-1 payload 包含同 text 两条：先 ai_disclosure 后 user_observation
@@ -463,19 +450,93 @@ async def test_apersist_monotonic_source_upgrade_within_same_batch():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_apersist_source_upgrade_survives_the_real_save(tmp_path):
+    """The unsealed signal_processed must still be False on disk afterwards.
+
+    Drives a real save round-trip instead of an AsyncMock. save_facts treats
+    signal_processed as a False-to-True-only field and re-applies True from
+    disk (guarding against a stale cache re-queueing facts Stage-2 already
+    consumed), which used to land on the very fact the upgrade had just
+    unsealed and silently undo it — the source label moved but the fact never
+    re-entered Stage-2.
+    """
+    import hashlib
+
+    fs = _make_fact_store(facts={})
+    fs._config_manager.memory_dir = str(tmp_path)
+
+    text = '博士喜欢三文鱼'
+    stored = {
+        'id': 'fact_old',
+        'text': text,
+        'hash': hashlib.sha256(text.encode()).hexdigest()[:16],
+        'source': 'ai_disclosure',
+        'signal_processed': True,
+        'importance': 8,
+        'entity': 'master',
+    }
+    fs._facts['悠怡'] = [stored]
+    fs.save_facts('悠怡')
+
+    await fs._apersist_new_facts('悠怡', [
+        {'text': text, 'importance': 8, 'entity': 'master'},
+    ])
+
+    with open(fs._facts_path('悠怡'), encoding='utf-8') as handle:
+        persisted = json.load(handle)
+
+    assert len(persisted) == 1
+    entry = persisted[0]
+    assert entry['source'] == 'user_observation'
+    assert entry['signal_processed'] is False, (
+        "解封必须活过 save_facts 的单调 read-merge，否则升级只换标签、永远回不到 Stage-2"
+    )
+    assert '_signal_reset_pending' not in entry, "内存内纸条不许落盘"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stale_cache_still_cannot_unset_signal_processed(tmp_path):
+    """The unseal exemption stays narrow: only the upgrade itself may reset.
+
+    Dual of the test above.  The monotonic read-merge exists so a stale
+    in-memory copy cannot re-queue facts Stage-2 already consumed, and an
+    exemption wide enough to also cover that case would trade one silent bug
+    for another.
+    """
+    fs = _make_fact_store(facts={})
+    fs._config_manager.memory_dir = str(tmp_path)
+
+    fs._facts['悠怡'] = [{
+        'id': 'fact_consumed',
+        'text': '博士在读研',
+        'source': 'user_observation',
+        'signal_processed': True,
+        'importance': 6,
+        'entity': 'master',
+    }]
+    fs.save_facts('悠怡')
+
+    # 模拟旧缓存：内存里这条还是「没处理过」，写盘时必须被磁盘的 True 顶回去。
+    fs._facts['悠怡'][0]['signal_processed'] = False
+    fs.save_facts('悠怡')
+
+    with open(fs._facts_path('悠怡'), encoding='utf-8') as handle:
+        persisted = json.load(handle)
+
+    assert persisted[0]['signal_processed'] is True, (
+        "没有解封纸条的 False 仍必须被单调回写顶回 True"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_apersist_no_downgrade_user_to_ai():
     """反向：撞已有 user_observation fact + 新 fact source=ai_disclosure
     → existing 不动（user 印证不可逆退回 ai_disclosure）。"""
-    from memory.facts import FactStore
     import hashlib
 
-    fs = FactStore.__new__(FactStore)
-    fs._config_manager = MagicMock()
-    fs._time_indexed = None
-    fs._facts = {'悠怡': []}
-    fs._locks = {}
-    import threading
-    fs._locks_guard = threading.Lock()
+    fs = _make_fact_store()
 
     text = '博士喜欢三文鱼'
     content_hash = hashlib.sha256(text.encode()).hexdigest()[:16]
@@ -509,15 +570,7 @@ async def test_apersist_no_downgrade_user_to_ai():
 async def test_stage2_filters_out_ai_disclosure_facts():
     """Stage-2 unprocessed pool 必须 filter ``source='ai_disclosure'``。
     双重防御（写盘 signal_processed=True 是第一层；这是第二层）。"""
-    from memory.facts import FactStore
-
-    fs = FactStore.__new__(FactStore)
-    fs._config_manager = MagicMock()
-    fs._time_indexed = None
-    fs._facts = {}
-    fs._locks = {}
-    import threading
-    fs._locks_guard = threading.Lock()
+    fs = _make_fact_store(facts={})
 
     # 模拟 facts.json 三条 fact：一条 user_observation 未处理（应入 Stage-2 池），
     # 一条 ai_disclosure 未处理（**不该**入池，即使 signal_processed=False bug），
@@ -1538,4 +1591,210 @@ def test_signal_check_one_triggers_path_b_after_n_ticks():
     assert 'last_a_msg_ts' in src, (
         "signal loop 必须记录 last_a_msg_ts 给 B 当窗口下游边界，"
         "不能用 wall-clock now（race 风险）"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_unseal_marker_does_not_requeue_a_fact_another_process_already_consumed(tmp_path):
+    """The unseal exemption stops at a fact somebody else already upgraded.
+
+    Two processes can hold the same ai_disclosure fact. If the other one
+    upgrades it first and Stage-2 consumes it, disk carries
+    ``user_observation`` + ``signal_processed=True``. This process then
+    upgrading from its stale cache and honouring its own marker would push that
+    True back to False and re-queue an already-consumed fact — the very
+    cross-process regression the monotonic read-merge exists to prevent.
+    """
+    fs = _make_fact_store(facts={})
+    fs._config_manager.memory_dir = str(tmp_path)
+
+    # 磁盘：另一个进程已经升级并被 Stage-2 消费过。
+    fs._facts['悠怡'] = [{
+        'id': 'fact_shared',
+        'text': '博士喜欢三文鱼',
+        'source': 'user_observation',
+        'signal_processed': True,
+        'importance': 8,
+        'entity': 'master',
+    }]
+    fs.save_facts('悠怡')
+
+    # 本进程：旧缓存仍是 ai_disclosure，刚做完自己的升级并挂上纸条。
+    fs._facts['悠怡'] = [{
+        'id': 'fact_shared',
+        'text': '博士喜欢三文鱼',
+        'source': 'user_observation',
+        'signal_processed': False,
+        fs._SIGNAL_RESET_PENDING: True,
+        'importance': 8,
+        'entity': 'master',
+    }]
+    fs.save_facts('悠怡')
+
+    with open(fs._facts_path('悠怡'), encoding='utf-8') as handle:
+        persisted = json.load(handle)
+
+    assert persisted[0]['signal_processed'] is True, (
+        "磁盘上已经是 user_observation 说明别人升过了，纸条不许把它重新排回 Stage-2"
+    )
+    assert '_signal_reset_pending' not in persisted[0]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("malformed", [
+    {'text': '缺 id 的 ai 披露', 'source': 'ai_disclosure', 'signal_processed': True},
+    {'text': '缺 id 且已吸收', 'source': 'user_observation', 'absorbed': True},
+    {'text': '缺 id 且已处理', 'source': 'user_observation', 'signal_processed': True},
+    # id 不是字符串：放进 set 会抛 TypeError: unhashable，同样逃不出内层
+    # 只接 JSON/OS 的 except，后果与缺 id 完全一样。
+    {'id': ['a', 'b'], 'text': 'id 是 list 的 ai 披露', 'source': 'ai_disclosure'},
+    {'id': {'k': 'v'}, 'text': 'id 是 dict 且已处理', 'source': 'user_observation',
+     'signal_processed': True},
+    {'id': 12345, 'text': 'id 是数字且已吸收', 'source': 'user_observation', 'absorbed': True},
+    {'id': '', 'text': 'id 是空串', 'source': 'ai_disclosure', 'signal_processed': True},
+])
+async def test_save_survives_disk_rows_without_ids(tmp_path, malformed):
+    """A legacy or hand-edited row without ``id`` must not break persistence.
+
+    The read-merge indexes disk rows by id. Reading that field unconditionally
+    turns one malformed row into a permanent outage: the KeyError escapes the
+    inner handler (which only covers JSON/OS errors), the outer one evicts the
+    cache and re-raises, and every later save reloads the same row and dies
+    again — no new fact ever reaches disk.
+    """
+    fs = _make_fact_store(facts={})
+    fs._config_manager.memory_dir = str(tmp_path)
+
+    path = fs._facts_path('悠怡')
+    with open(path, 'w', encoding='utf-8') as handle:
+        json.dump([malformed], handle, ensure_ascii=False)
+
+    fs._facts['悠怡'] = [{
+        'id': 'fact_new',
+        'text': '博士喜欢三文鱼',
+        'source': 'user_observation',
+        'signal_processed': False,
+        'importance': 8,
+        'entity': 'master',
+    }]
+    fs.save_facts('悠怡')
+
+    with open(path, encoding='utf-8') as handle:
+        persisted = json.load(handle)
+    assert [f['id'] for f in persisted] == ['fact_new']
+    assert persisted[0]['signal_processed'] is False, (
+        "磁盘上那条没有 id，不该凭空命中 read-merge 的任何集合"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_id_less_disk_rows_do_not_contaminate_other_id_less_rows(tmp_path):
+    """A missing id must not act as a key that every other id-less row matches.
+
+    Indexing the read-merge by ``.get('id')`` without dropping ``None`` puts a
+    single key in the set that every id-less in-memory row compares equal to,
+    so one stale malformed row on disk would flip unrelated ones to processed.
+    """
+    fs = _make_fact_store(facts={})
+    fs._config_manager.memory_dir = str(tmp_path)
+
+    path = fs._facts_path('悠怡')
+    with open(path, 'w', encoding='utf-8') as handle:
+        json.dump([{
+            'text': '盘上那条没有 id 且已处理',
+            'source': 'user_observation',
+            'signal_processed': True,
+            'absorbed': True,
+        }], handle, ensure_ascii=False)
+
+    fs._facts['悠怡'] = [{
+        'text': '内存里另一条也没有 id，但没被处理过',
+        'source': 'user_observation',
+        'signal_processed': False,
+        'importance': 6,
+        'entity': 'master',
+    }]
+    fs.save_facts('悠怡')
+
+    with open(path, encoding='utf-8') as handle:
+        persisted = json.load(handle)
+
+    assert persisted[0]['signal_processed'] is False, (
+        "两条都没有 id 不代表它们是同一条，不该被 read-merge 串到一起"
+    )
+    assert not persisted[0].get('absorbed'), "absorbed 同理，不该凭空被回写"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_id", [12345, 3.5, True, 0, 0.0, False])
+async def test_hashable_legacy_ids_still_keep_their_monotonic_flags(tmp_path, legacy_id):
+    """Only unusable ids may be dropped; hashable scalars must still match.
+
+    A legacy row keyed by a bare number matched between cache and disk before,
+    so excluding it from the read-merge index would let a stale save push
+    ``absorbed`` / ``signal_processed`` back to False — trading the crash on
+    malformed ids for quiet re-consumption of already-processed facts.
+    """
+    fs = _make_fact_store(facts={})
+    fs._config_manager.memory_dir = str(tmp_path)
+
+    fs._facts['悠怡'] = [{
+        'id': legacy_id,
+        'text': '老库里的一条',
+        'source': 'user_observation',
+        'signal_processed': True,
+        'absorbed': True,
+    }]
+    fs.save_facts('悠怡')
+
+    # 旧缓存把两个单调字段都退回去，存盘时必须被磁盘顶回来。
+    fs._facts['悠怡'][0]['signal_processed'] = False
+    fs._facts['悠怡'][0]['absorbed'] = False
+    fs.save_facts('悠怡')
+
+    with open(fs._facts_path('悠怡'), encoding='utf-8') as handle:
+        persisted = json.load(handle)
+    assert persisted[0]['signal_processed'] is True
+    assert persisted[0]['absorbed'] is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_duplicate_disk_rows_block_the_unseal_exemption(tmp_path):
+    """An id is only 'still ai_disclosure' when every disk row with it says so.
+
+    Hand-edited or reconciled files can carry the same id twice — one row still
+    ai_disclosure, one already upgraded and consumed. Reading the two sets
+    independently makes the id look unsealed and lets a stale cache push the
+    consumed row back to unprocessed.
+    """
+    fs = _make_fact_store(facts={})
+    fs._config_manager.memory_dir = str(tmp_path)
+
+    path = fs._facts_path('悠怡')
+    with open(path, 'w', encoding='utf-8') as handle:
+        json.dump([
+            {'id': 'fact_dup', 'text': '同 id 的旧行', 'source': 'ai_disclosure',
+             'signal_processed': True},
+            {'id': 'fact_dup', 'text': '同 id 已升级并消费', 'source': 'user_observation',
+             'signal_processed': True},
+        ], handle, ensure_ascii=False)
+
+    fs._facts['悠怡'] = [{
+        'id': 'fact_dup',
+        'text': '本进程刚升级并挂了纸条',
+        'source': 'user_observation',
+        'signal_processed': False,
+        fs._SIGNAL_RESET_PENDING: True,
+    }]
+    fs.save_facts('悠怡')
+
+    with open(path, encoding='utf-8') as handle:
+        persisted = json.load(handle)
+    assert persisted[0]['signal_processed'] is True, (
+        "磁盘上同 id 还有一行已升级并消费，纸条不该放行回写"
     )

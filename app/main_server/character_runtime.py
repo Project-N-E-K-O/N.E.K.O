@@ -17,7 +17,9 @@
 
 import asyncio
 import atexit
+import logging
 import sys
+import traceback
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -627,9 +629,6 @@ async def _handle_agent_event(event: dict):
                             "[EventBus] direct task_result reply delivered (detail_len=%d)",
                             len(detail_text),
                         )
-                        print(
-                            f"[EventBus] direct task_result reply: {detail_text[:60]}"
-                        )
                         return
 
                 # Build structured callback and enqueue for LLM injection
@@ -882,7 +881,6 @@ async def _handle_agent_event(event: dict):
                             "[EventBus] agent_notification sent to frontend (text_len=%d)",
                             len(text),
                         )
-                        print(f"[EventBus] agent_notification text: {text[:60]}")
                     except Exception as e:
                         logger.warning(
                             "[EventBus] agent_notification WS send failed: %s", e
@@ -932,8 +930,22 @@ async def _handle_agent_event(event: dict):
                     "[EventBus] task_update dropped: WebSocket not connected for lanlan=%s",
                     lanlan,
                 )
-    except Exception as e:
-        logger.debug(f"handle_agent_event error: {e}")
+    except Exception as exc:
+        # 这个兜底 except 包住整个 agent event 分发，而 event payload 里带用户对话
+        # 文本——异常消息很可能把它捎进来。所以 logger 只写异常类型；完整 traceback
+        # 走 print（同 proactive 原文的处理方式），且只在 DEBUG 级下输出。
+        #
+        # 不能用 logger.debug(exc_info=True)：源码运行且 log_level<=DEBUG 时
+        # setup_logging 会挂一个只收 DEBUG 的 RotatingFileHandler 落到 logs/
+        # （utils/logger_config.py），那等于把隐私文本持久化了。仓库规则见
+        # .agent/rules/neko-guide.md 与 docs/contributing/code-style.md：
+        # 涉及用户隐私（原始对话）的 log 只能用 print，不得使用 logger。
+        logger.warning(
+            "[EventBus] handle_agent_event failed (error_type=%s)",
+            type(exc).__name__,
+        )
+        if logger.isEnabledFor(logging.DEBUG):
+            traceback.print_exc()
 
 
 async def _refresh_character_globals():

@@ -653,6 +653,17 @@
         return String(turnId);
     }
 
+    function resolveAssistantRequestId(requestId, responseMeta) {
+        var meta = responseMeta && typeof responseMeta === 'object' ? responseMeta : {};
+        return normalizeAssistantTurnId(
+            requestId
+            || meta.request_id
+            || meta.requestId
+            || meta.interaction_id
+            || meta.interactionId
+        );
+    }
+
     function allocateAssistantTurnId(serverTurnId) {
         var normalized = normalizeAssistantTurnId(serverTurnId);
         if (normalized) {
@@ -997,7 +1008,7 @@
         })();
     }
 
-    function ensureAssistantTurnStarted(source, serverTurnId, responseMeta) {
+    function ensureAssistantTurnStarted(source, serverTurnId, responseMeta, requestId) {
         if (S.assistantTurnId) {
             window._nekoAssistantTurnId = S.assistantTurnId;
             clearPendingAssistantTurnStart();
@@ -1022,6 +1033,7 @@
         clearPendingAssistantTurnStart();
         emitAssistantLifecycleEvent('neko-assistant-turn-start', {
             turnId: S.assistantTurnId,
+            requestId: resolveAssistantRequestId(requestId, responseMeta),
             source: source || 'visible_gemini_bubble',
             meta: responseMeta
         });
@@ -1132,6 +1144,11 @@
     function clearAssistantLifecycleOnDisconnect(source) {
         clearPendingUserActivityCancel();
         emitAssistantSpeechCancel(source || 'socket_close');
+        try {
+            window.dispatchEvent(new CustomEvent('neko:websocket-disconnected', {
+                detail: { source: source || 'socket_close' }
+            }));
+        } catch (_) {}
         S.assistantSpeechActiveTurnId = null;
         S.assistantTurnId = null;
         window._nekoAssistantTurnId = null;
@@ -1653,7 +1670,8 @@
                         ensureAssistantTurnStarted(
                             'gemini_response_first_chunk',
                             response.turn_id,
-                            response.meta
+                            response.meta,
+                            response.request_id
                         );
                     }
                     var createdVisibleBubble = false;
@@ -1673,7 +1691,8 @@
                         ensureAssistantTurnStarted(
                             'gemini_response_visible_bubble',
                             response.turn_id,
-                            response.meta
+                            response.meta,
+                            response.request_id
                         );
                     }
                     if (response.turn_id) {
@@ -1694,6 +1713,16 @@
                             willRetry: !!response.will_retry
                         });
                         return;
+                    }
+                    if (!response.will_retry) {
+                        try {
+                            window.dispatchEvent(new CustomEvent('neko:assistant-response-cancelled', {
+                                detail: {
+                                    reason: response.reason || 'response-discarded',
+                                    requestId: resolveAssistantRequestId(response.request_id, response.meta)
+                                }
+                            }));
+                        } catch (_) {}
                     }
                     emitAssistantSpeechCancel('response_discarded');
                     S.assistantTurnId = null;
@@ -1866,6 +1895,15 @@
 
                 // -------- user_transcript --------
                 } else if (response.type === 'user_transcript') {
+                    var normalizedVoiceTranscript = String(response.text || '').trim();
+                    if (normalizedVoiceTranscript) {
+                        window.dispatchEvent(new CustomEvent('neko:user-voice-content-received', {
+                            detail: {
+                                requestId: resolveAssistantRequestId(response.request_id, response.meta),
+                                source: 'voice'
+                            }
+                        }));
+                    }
                     // 语音转写也属于用户首次输入；这里只标记，成就仍等 AI 首次可见回复时触发
                     if (window.appChat && typeof window.appChat.isFirstUserInput === 'function' && window.appChat.isFirstUserInput()) {
                         window.appChat.markFirstUserInput();
@@ -1936,7 +1974,8 @@
                         ensureAssistantTurnStarted(
                             'audio_chunk_header_fallback',
                             response.turn_id,
-                            response.meta
+                            response.meta,
+                            response.request_id
                         );
                     }
                     var speechId = response.speech_id;
@@ -2712,7 +2751,8 @@
                         ensureAssistantTurnStarted(
                             'turn_end_agent_callback_fallback',
                             undefined,
-                            response.meta
+                            response.meta,
+                            response.request_id
                         );
                     }
                     var agentCallbackTurnId = resolveAssistantLifecycleTurnId();
@@ -2722,6 +2762,7 @@
                         });
                         emitAssistantLifecycleEvent('neko-assistant-turn-end', {
                             turnId: agentCallbackTurnId,
+                            requestId: resolveAssistantRequestId(response.request_id, response.meta),
                             source: 'turn_end_agent_callback',
                             meta: response.meta
                         });
@@ -2757,7 +2798,8 @@
                         ensureAssistantTurnStarted(
                             'turn_end_fallback',
                             undefined,
-                            response.meta
+                            response.meta,
+                            response.request_id
                         );
                     }
                     var assistantTurnId = resolveAssistantLifecycleTurnId();
@@ -2767,6 +2809,7 @@
                         });
                         emitAssistantLifecycleEvent('neko-assistant-turn-end', {
                             turnId: assistantTurnId,
+                            requestId: resolveAssistantRequestId(response.request_id, response.meta),
                             source: 'turn_end',
                             meta: response.meta
                         });

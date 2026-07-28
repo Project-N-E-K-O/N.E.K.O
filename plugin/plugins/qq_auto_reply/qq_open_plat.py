@@ -282,10 +282,28 @@ class QQOpenPlatformConnection(QQConnectionBase):
         if reply_msg_id:
             body["msg_id"] = reply_msg_id
 
+        if keyboard and body.get("msg_type") == 7:
+            # 富媒体（图片）载荷挂不了按钮：按钮只在 type-2 富文本上有效，
+            # 硬带上去平台可能整条拒收。把选项降级成可读正文，至少不让用户
+            # 收到一条"问了却没有选项"的消息。
+            labels = " / ".join(
+                b.strip() for b in keyboard.split("|") if b.strip()
+            )
+            if labels:
+                existing = str(body.get("content") or "")
+                body["content"] = (existing + "\n" + labels).strip()
+            keyboard = ""
         if keyboard:
             buttons = [b.strip() for b in keyboard.split("|") if b.strip()][:4]
             if buttons:
-                body.setdefault("msg_type", 2)
+                if "msg_type" not in body:
+                    # 按钮只能挂在 type-2 上，而 type-2 的正文放在
+                    # markdown.content（见上面的 Markdown 分支）——强行改
+                    # msg_type 却把正文留在 content 里，发出去的是一个没有
+                    # 正文体的 type-2 载荷：平台不返回 message id，投递侧
+                    # 据此判未投递，回复既没送出也进不了记忆。
+                    body["msg_type"] = 2
+                    body["markdown"] = {"content": body.pop("content", "")}
                 body["keyboard"] = {
                     "content": {
                         "rows": [{
@@ -329,11 +347,14 @@ class QQOpenPlatformConnection(QQConnectionBase):
             group_id, [{"type": "text", "data": {"text": message}}],
         )
 
-    async def send_private_record(self, user_id: str, file_uri: str) -> None:
-        """发送私聊语音 — 开放平台不支持，降级为文本"""
-        await self.send_private_message_segments(
-            user_id, [{"type": "text", "data": {"text": "[语音消息]"}}],
-        )
+    async def send_private_record(self, user_id: str, file_uri: str) -> Optional[str]:
+        """发送私聊语音 — 开放平台不支持，返回 None 表示"这个平台送不出去"。
+
+        以前它发一句字面量 "[语音消息]" 并把那条的回执当成语音已送达：
+        用户只收到占位符，而记忆侧按"语音已送达"记下了那句话的内容。返回
+        None 让投递层走它自己的文本回退（把 record 原文当文本发出去），
+        用户拿到的与记下来的才一致。"""
+        return None
 
     async def send_private_message_segments(
         self, user_id: str, segments: list[dict[str, Any]]
@@ -368,14 +389,14 @@ class QQOpenPlatformConnection(QQConnectionBase):
                 self.logger.warning(f"[QQOpenPlatform] 发送私聊失败: {e}")
             return None
 
-    async def send_group_poke(self, group_id: str, user_id: str) -> bool:
-        # QQ 开放平台不支持戳一戳
-        await self.send_group_message_segments(
+    async def send_group_poke(self, group_id: str, user_id: str) -> Optional[str]:
+        # QQ 开放平台不支持戳一戳——降级为文本。结果向上传播（None=失败
+        # 被吞），投递确认链据此决定是否清未投递标/记 mention。
+        return await self.send_group_message_segments(
             group_id,
             [{"type": "text", "data": {"text": f" (戳了戳 {user_id})"}}],
             record_sent=False,
         )
-        return True
 
     async def send_group_image(
         self, group_id: str, image_data: str, *, reply_message_id: str = "", at_user_id: str = ""
@@ -390,14 +411,15 @@ class QQOpenPlatformConnection(QQConnectionBase):
 
     async def send_group_record(
         self, group_id: str, file_uri: str, *, reply_message_id: str = "", at_user_id: str = ""
-    ) -> None:
+    ) -> Optional[str]:
         segments: list[dict[str, Any]] = []
         if reply_message_id:
             segments.append({"type": "reply", "data": {"id": reply_message_id}})
         if at_user_id:
             segments.append({"type": "at", "data": {"qq": at_user_id}})
-        segments.append({"type": "text", "data": {"text": "[语音消息]"}})
-        await self.send_group_message_segments(group_id, segments, record_sent=False)
+        # 同 send_private_record：开放平台没有语音通道，返回 None 让投递层
+        # 用 record 原文走文本回退，别拿占位符的回执冒充语音已送达。
+        return None
 
     async def get_login_status(self) -> dict[str, Any]:
         if self._ws and self._self_id:

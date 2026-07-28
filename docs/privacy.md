@@ -12,7 +12,7 @@ This notice applies to the Project N.E.K.O. documentation site at `project-neko.
 
 ## Before you make a choice
 
-Google Analytics is not loaded and the site does not send requests to Google Analytics. The consent panel stores no choice until you select **Accept analytics** or **Reject**.
+Google Analytics is not loaded and the site does not send requests to Google Analytics. The consent banner stores no choice until you select **Allow** or **Decline**.
 
 ## If you accept analytics
 
@@ -36,6 +36,6 @@ Rejecting analytics does not load the Google tag. If you withdraw previously gra
 
 ## Change or withdraw your choice
 
-Use the **Analytics settings** button at the bottom of any documentation page. You can accept or reject analytics at any time. The documentation remains available if you reject analytics.
+Use the **Cookie settings** button in the footer of any documentation page. You can allow or decline analytics at any time. The documentation remains available if you decline analytics.
 
 For questions about this notice, contact the project through the [Project N.E.K.O. GitHub repository](https://github.com/Project-N-E-K-O/N.E.K.O/issues).

@@ -1088,6 +1088,7 @@ def test_goodbye_idle_breathing_ball_shape_contract_is_present():
     _assert_source_order(
         app_auto_goodbye_listener_block,
         "breathing ball state change sends one desktop bridge payload",
+        "const container = getVisibleIdleReturnBallContainer();",
         "if (getNekoGoodbyeIdleAppearance() === NEKO_GOODBYE_IDLE_APPEARANCE_BALL) {",
         "syncGoodbyeIdleAppearanceForReturnButtons('goodbye-idle-appearance-visual-tier');",
         "return;\n        }\n        if (container && container.__nekoLive2DPeekEdgeAnchor) {",

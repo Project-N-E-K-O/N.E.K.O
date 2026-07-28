@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Any
 
@@ -87,7 +88,7 @@ class QQReplyPipelineRunner:
 
         # poke/sticker/record/ark 已统一为 <msg> 块，由 reply_delivery_node 处理
         outcome.delivery_plan = self._build_delivery_plan(request, outcome)
-        outcome.delivery_result = await self._run_delivery(outcome.delivery_plan, request, outcome)
+        outcome.delivery_result = await self._run_delivery(outcome.delivery_plan, request, outcome, context=context)
         outcome.traces.append(
             QQPipelineStageTrace(
                 stage="delivery",
@@ -154,6 +155,13 @@ class QQReplyPipelineRunner:
             group_scene_mode=request.group_scene_mode,
             current_message_id=request.current_message_id,
             force_reply=request.force_reply,
+            source_kind=getattr(request, "source_kind", ""),
+            member_memory_at_receipt=getattr(
+                request, "member_memory_at_receipt", None,
+            ),
+            inherited_consent_snapshot=getattr(
+                request, "inherited_consent_snapshot", None,
+            ),
         )
 
     async def _run_model(self, context: QQReplyContext) -> QQModelResult:
@@ -231,7 +239,25 @@ class QQReplyPipelineRunner:
             self.plugin.logger.warning(f"[Ark] 发送失败: {e}")
             return False
 
-    async def _run_delivery(self, delivery_plan, request: QQReplyRequest = None, outcome: QQReplyOutcome = None) -> QQDeliveryResult | None:
+    async def _run_delivery(self, delivery_plan, request: QQReplyRequest = None, outcome: QQReplyOutcome = None, context=None) -> QQDeliveryResult | None:
+        if (
+            request is not None
+            and request.is_group
+            and outcome is not None
+            and self._primary_row_superseded(outcome, delivery_plan)
+        ):
+            # 主会话产出了非空文本、清洗后为空（例如整条都是思考标签），
+            # 于是改发默认回复：那条 raw ai 行已经躺在共享历史里且永远不会
+            # 被发出去。used_default_message 让它绕过了所有未投递打标——
+            # 下一次 digest 会把用户从没看到的内容（含隐藏推理）入库。
+            self.plugin.session_memory_service.record_tail_undelivered_ai_row(
+                self.plugin._build_session_key(
+                    sender_id=request.sender_id,
+                    is_group=True,
+                    group_id=request.group_id,
+                )
+            )
+
         # 缓冲内部调用的请求（buffer_delayed/rapid_fire_flush/proactive_speech）不再次走缓冲
         skip_buffer = request and getattr(request, 'source_kind', '') in ('buffer_delayed', 'rapid_fire_flush', 'proactive_speech')
         if not skip_buffer and self.plugin.reply_buffer_service and request and delivery_plan and delivery_plan.blocks:
@@ -273,11 +299,208 @@ class QQReplyPipelineRunner:
                 is_group=request.is_group,
                 group_id=request.group_id or "",
                 extra_count=fwd_count,
+                history_backed=not bool(
+                    (
+                        getattr(outcome, "used_fallback", False)
+                        or getattr(outcome, "used_default_message", False)
+                    ) if outcome else False
+                ),
+                mention_context=context,
+                used_fallback_reply=bool(
+                    (
+                        getattr(outcome, "used_fallback", False)
+                        or self._primary_row_superseded(outcome, delivery_plan)
+                    ) if outcome else False
+                ),
+                consent_snapshot=(
+                    # 私聊也可能有依赖（跨群开关打开时的会话清单段），
+                    # 按 is_group 分流会让那条路径没有可撤的授权。空 dict
+                    # 是"本轮无依赖"这个结论，不能折成 None（那是"还没有
+                    # 结论"，会去采样当前开关）。
+                    self._generation_consent_snapshot(context)
+                    if context is not None else None
+                ),
+                consented=bool(
+                    not request.is_group
+                    or (
+                        # 解析后的判据：retroactive_review 等路径的 request
+                        # 不带 persist_memory（None），照原样读会把已授权的
+                        # 回放轮标成"非授权输入"，合并出来的总结 ai 行反而
+                        # 被排除出 scoped 历史。
+                        getattr(context, "persist_memory", None)
+                        if context is not None
+                        and getattr(context, "persist_memory", None) is not None
+                        else getattr(request, "persist_memory", None)
+                    )
+                ),
             )
             from .pipeline_models import QQDeliveryResult
             return QQDeliveryResult(delivered=True, target_type=delivery_plan.target_type, target_id=delivery_plan.target_id, reply_text=first_text)
 
-        return await self.plugin.reply_delivery_node.deliver(delivery_plan)
+        if context is not None and self._consent_revoked_before_send(context):
+            # 直投没有 buffer 的撤销闸：生成后复检到真正发出去之间还有
+            # 后处理（XML 修复等再等一次 LLM）与计划构建，这段窗口里关掉
+            # 开关的话，带着已撤销记忆的回复照样会发出去。
+            self.plugin.logger.warning("发送前记忆授权已撤销，取消本轮投递")
+            if (
+                request is not None
+                and request.is_group
+                and outcome is not None
+                and not getattr(outcome, "used_fallback", False)
+                and not getattr(outcome, "used_default_message", False)
+            ):
+                self.plugin.session_memory_service.record_tail_undelivered_ai_row(
+                    self.plugin._build_session_key(
+                        sender_id=request.sender_id,
+                        is_group=True,
+                        group_id=request.group_id,
+                    )
+                )
+            from .pipeline_models import QQDeliveryResult
+            return QQDeliveryResult(
+                delivered=False, target_type=delivery_plan.target_type,
+                target_id=delivery_plan.target_id, reply_text=None,
+            )
+
+        def _mark_tail_undelivered() -> None:
+            if (
+                request is not None
+                and request.is_group
+                and outcome is not None
+                and not getattr(outcome, "used_fallback", False)
+                and not getattr(outcome, "used_default_message", False)
+            ):
+                self.plugin.session_memory_service.record_tail_undelivered_ai_row(
+                    self.plugin._build_session_key(
+                        sender_id=request.sender_id,
+                        is_group=True,
+                        group_id=request.group_id,
+                    )
+                )
+
+        try:
+            result = await self.plugin.reply_delivery_node.deliver(
+                delivery_plan,
+                consent_gate=(
+                    (lambda: self._consent_revoked_before_send(context))
+                    if context is not None else None
+                ),
+            )
+        except asyncio.CancelledError:
+            # 取消（stop_runtime 会显式取消所有 handler task）走的是
+            # BaseException，不会被下面的 except Exception 接住：用户可能
+            # 一个字没收到、也可能只收到前半条，而 ai 行已经躺在共享历史
+            # 里——不打标的话关机结算会把它当已投递入库。
+            _mark_tail_undelivered()
+            raise
+        except Exception:
+            # NapCat 传输失败以异常上浮：history-backed 回复的 ai 行已在
+            # 共享历史里，先按投递失败记入排除名单再传播异常，否则下一次
+            # digest 会把没发出去的回复入库。
+            _mark_tail_undelivered()
+            raise
+        if (
+            result is not None
+            and not getattr(result, "delivered", False)
+            and request is not None
+            and request.is_group
+            and outcome is not None
+            and not getattr(outcome, "used_fallback", False)
+            and not getattr(outcome, "used_default_message", False)
+        ):
+            # 直投失败（合成轮/无 buffer 的 history-backed 回复）：ai 行已
+            # 躺在共享历史里，不记名单的话下一次 digest/finalize 会把没
+            # 发出去的回复提取成持久记忆。失败即定局，直接进排除名单。
+            session_key = self.plugin._build_session_key(
+                sender_id=request.sender_id,
+                is_group=True,
+                group_id=request.group_id,
+            )
+            self.plugin.session_memory_service.record_tail_undelivered_ai_row(
+                session_key
+            )
+        if (
+            result is not None
+            and getattr(result, "delivered", False)
+            and context is not None
+            and outcome is not None
+            and outcome.reply_text
+        ):
+            # 整条计划的正文：outcome.reply_text 只有首块，后续块里披露
+            # 的事实既进不了历史（digest 少半条），也记不到 mention（永远
+            # 到不了 suppression）。
+            from .pipeline_models import delivered_blocks_text
+
+            delivered_text = (
+                delivered_blocks_text(delivery_plan.blocks) or outcome.reply_text
+            )
+            if getattr(outcome, "used_fallback", False) or (
+                self._primary_row_superseded(outcome, delivery_plan)
+            ):
+                # fallback / 默认回复都没有对应的历史 ai 行（默认回复那条
+                # raw 行刚被标成未投递）：确认投递后补上真正说出去的话，
+                # 否则群 digest 只会存下半边对话。
+                self.plugin.reply_generation_service.append_fallback_ai_row(
+                    context, delivered_text,
+                )
+            # mention 计数绑定实际投递（非 buffer 直投与合成轮都走这里；
+            # buffer 路径由 _deliver_after_wait 在真投递后补记）。
+            await self.plugin.reply_generation_service.record_scoped_mentions_on_delivery(
+                context, delivered_text,
+            )
+        return result
+
+    @staticmethod
+    def _primary_row_superseded(outcome, delivery_plan) -> bool:
+        """True when the ai row this turn wrote is not what went out.
+
+        Two shapes: a default reply that replaced a nonempty primary answer,
+        and a block carrying both <text> and <record> — delivery sends the
+        record and continues, so that text reaches nobody while it sits in
+        the history row."""
+        if getattr(outcome, "used_fallback", False):
+            return False  # fallback turns have no history row of their own
+        if getattr(outcome, "used_default_message", False):
+            return bool(str(getattr(outcome, "raw_reply_text", "") or "").strip())
+        return any(
+            str(getattr(block, "record", "") or "").strip()
+            and str(getattr(block, "text", "") or "").strip()
+            for block in (getattr(delivery_plan, "blocks", None) or [])
+        )
+
+    def _consent_revoked_before_send(self, context) -> bool:
+        """True when a switch this reply's prompt relied on went off since
+        generation — same judgement the buffer applies before a delayed
+        send, so the unbuffered direct path is not the weak link."""
+        snapshot = getattr(context, "consent_snapshot", None)
+        if not snapshot:
+            return False
+        settings = getattr(self.plugin, "_qq_settings", {}) or {}
+        return any(
+            was_enabled and not settings.get(key, False)
+            for key, was_enabled in snapshot.items()
+        )
+
+    def _generation_consent_snapshot(self, context) -> dict:
+        """本轮回复实际消费掉的授权，取自生成时刻而非此刻。
+
+        后处理（XML 修复等）会再等一次 LLM，这中间关掉的开关如果在这里
+        重新采样，缓冲的撤销检查就是 false 比 false——被撤销的记忆内容
+        照样随延迟投递发出去。生成路径拿不到快照时（合成/轻量 context）
+        才退回读当前设置。"""
+        snapshot = getattr(context, "consent_snapshot", None)
+        if snapshot is not None:
+            # 空 dict 也是结论（本轮没有任何记忆依赖），不是"没结论"。
+            return dict(snapshot)
+        settings = getattr(self.plugin, "_qq_settings", {}) or {}
+        return {
+            key: bool(settings.get(key, False))
+            for key in (
+                "group_memory_enabled",
+                "group_member_memory_enabled",
+                "allow_cross_group_context",
+            )
+        }
 
     def _resolve_sticker_path(self, sticker_id: str) -> str:
         """解析表情包 ID 到文件路径。"""

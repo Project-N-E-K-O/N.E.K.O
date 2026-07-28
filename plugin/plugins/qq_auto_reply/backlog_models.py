@@ -25,6 +25,12 @@ class QQBacklogMessage:
     is_at_bot: bool = False
     category: BacklogCategory = "unknown"
     review_status: ReviewStatus = "unreviewed"
+    # Group-memory policy at receipt time: retroactive review replays this
+    # message later, and consent belongs to when it was SAID — a message
+    # ignored during an opted-out era must not enter scoped history just
+    # because the toggle is ON at replay time. Default False fails closed
+    # for legacy rows that predate the field.
+    group_memory_enabled_at_receipt: bool = False
     raw: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
