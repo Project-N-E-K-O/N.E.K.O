@@ -1,5 +1,16 @@
 from __future__ import annotations
 
+# 仓库根必须在**任何项目 import 之前**钉进 sys.path：plugin/tests 有自己的
+# rootdir，而 venv 的 editable .pth 指向主仓库根。若在 conftest 中途才插入，
+# 前半段 import 会从主仓库解析、后半段从本副本解析，混出 ImportError
+# （实测炸在 main_logic.agent_event_bus）。放在最前面则整份统一。
+import sys as _sys
+from pathlib import Path as _Path
+
+_REPO_ROOT = str(_Path(__file__).resolve().parents[2])
+if _sys.path[:1] != [_REPO_ROOT]:
+    _sys.path.insert(0, _REPO_ROOT)
+
 import asyncio.events as _events
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -8,11 +19,15 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+# 全进程时钟守卫（与 tests/ 共用同一份实现）
+from tests.clock_guard import pytest_runtest_call  # noqa: F401
+
 from plugin.server.infrastructure.auth import verify_admin_code
 from plugin.server.infrastructure.exceptions import register_exception_handlers
 from plugin.server.routes.health import router as health_router
 from plugin.server.routes.metrics import router as metrics_router
 from plugin.server.routes.runs import router as runs_router
+
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

@@ -20,6 +20,7 @@ from main_logic.proactive_chat.generation import (
     _merge_regen_avoid_terms,
     _proactive_silence_since,
 )
+from tests.fake_clock import patch_module_clock
 from utils.llm_client import HumanMessage, SystemMessage
 
 
@@ -1089,7 +1090,9 @@ async def test_mini_game_button_response_records_user_engagement(monkeypatch):
         "_validate_local_mutation_request",
         lambda *_args, **_kwargs: None,
     )
-    monkeypatch.setattr(router_module.time, "time", lambda: clock["now"])
+    # mini_game_invite_respond 在 router_module 内取 request_arrival_time，
+    # 假时钟打在这个模块上即可。
+    patch_module_clock(monkeypatch, router_module, time=lambda: clock["now"])
     config_manager = SimpleNamespace(
         aget_character_data=AsyncMock(
             return_value=(None, "fallback", None, None, None, None, None, None, None)
@@ -1171,7 +1174,8 @@ async def test_rejected_mini_game_button_response_records_user_engagement(
         "_validate_local_mutation_request",
         lambda *_args, **_kwargs: None,
     )
-    monkeypatch.setattr(router_module.time, "time", lambda: 456.0)
+    # 同上：读时钟的是 mini_game_invite_respond 所在的 router_module 自己。
+    patch_module_clock(monkeypatch, router_module, time=lambda: 456.0)
     monkeypatch.setattr(
         router_module,
         "get_config_manager",

@@ -140,6 +140,10 @@ KEY_MAPPING = {
     "assistApiKeyMimoTokenPlan": "ASSIST_API_KEY_MIMO_TOKEN_PLAN",
 }
 
+# 全进程时钟守卫：运行期比对，与 patch 的写法无关（见 tests/clock_guard.py）
+from tests.clock_guard import pytest_runtest_call  # noqa: F401,E402
+
+
 def pytest_addoption(parser):
     parser.addoption(
         "--run-manual",

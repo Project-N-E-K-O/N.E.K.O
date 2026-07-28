@@ -21,12 +21,11 @@ value, and the test fails on shifted numbers or ``StopIteration`` far from
 anything it was checking. It also hands every other thread a fake clock for
 the duration.
 
-``tests/fake_clock.patch_module_clock`` rebinds the module-local name instead.
+``tests/fake_clock.patch_module_clock`` rebinds the module-local name instead,
+and ``tests/clock_guard.py`` fails any test that still reaches the shared
+module — enforced at runtime, so no spelling of the patch can slip past.
 """
 
-import ast
-import re
-from fnmatch import fnmatch
 import threading
 import time
 import types
@@ -38,50 +37,6 @@ from tests.fake_clock import patch_module_clock
 
 TESTS_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = TESTS_ROOT.parent
-# 与 pytest.ini 的 norecursedirs 对齐（含无点的 venv）：漏掉它的话，用
-# `venv/` 而不是 `.venv/` 的 checkout 会让 rglob 一路走进 site-packages，
-# 扫到第三方包自带的 tests 树。
-_SKIP_DIRS = {
-    "venv", "node_modules", "dist", "build", "__pycache__",
-    "site-packages", "local_server", "N.E.K.O", "*.egg",
-}
-
-
-def _is_skipped(path: Path) -> bool:
-    # pytest 的 norecursedirs 是 glob（`.*`、`*.egg`），所以按 fnmatch 比对，
-    # 等值比较会让 dependency.egg 这种目录漏过去。
-    return any(
-        part.startswith(".") or any(fnmatch(part, pattern) for pattern in _SKIP_DIRS)
-        for part in path.parts
-    )
-
-
-def _test_roots() -> list[Path]:
-    """Every test tree in the repo, discovered rather than listed.
-
-    `tests/` is not the only one: `plugin/tests/` has its own pytest.ini and
-    each bundled plugin can carry `plugin/plugins/<name>/tests/`. They all run
-    in a Python process, so a process-wide fake clock leaks the same way there.
-    A hardcoded pair would quietly stop covering the next tree someone adds.
-    """
-    roots: list[Path] = []
-    # 边走边剪，而不是 rglob 完再过滤：CI 上 `uv sync` 会先建出 .venv，
-    # rglob 会把整个 site-packages 走一遍（几万个文件）才轮到过滤。
-    stack = [REPO_ROOT]
-    while stack:
-        current = stack.pop()
-        for child in sorted(current.iterdir()):
-            if not child.is_dir() or child.is_symlink():
-                continue
-            if _is_skipped(Path(child.name)):
-                continue
-            if child.name == "tests":
-                roots.append(child)
-                continue  # 该树整体作为一个 root，内部不再找嵌套 tests
-            stack.append(child)
-    return roots
-
-
 @pytest.mark.unit
 def test_scoped_clock_is_invisible_to_other_threads(monkeypatch):
     """Another thread reading the clock must not consume the fake's values."""
@@ -106,141 +61,3 @@ def test_scoped_clock_is_invisible_to_other_threads(monkeypatch):
     # 没被覆盖的属性照旧走真实 time。
     assert module.time.perf_counter is time.perf_counter
     assert isinstance(module.time.time(), float)
-
-
-# `import time` / `import time as _time` / `as real_time` —— 生产代码里这三种
-# 拼法都出现过，指向的都是同一个 stdlib 模块。
-_TIME_ATTR_RE = re.compile(r"_?(real_)?time")
-
-
-def _stdlib_time_names(tree: ast.AST) -> set[str]:
-    """Names bound to the stdlib time module in this file.
-
-    ``import time`` is not the only spelling — ``import time as real_time``
-    appears in this repo already, and patching through the alias hits the very
-    same shared module. Resolve the bindings instead of matching the literal
-    word "time".
-    """
-    names = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name == "time":
-                    names.add(alias.asname or alias.name)
-    return names
-
-
-def _may_mutate_on_call(replacement: ast.expr) -> bool:
-    """Could invoking this fake change what the next call observes?
-
-    That is the property that makes a process-wide clock patch dangerous: if
-    another thread's call consumes or advances something, the test under way
-    sees different values than it set up.
-
-    Decidable without reading semantics:
-
-    * a lambda whose body contains no call can only read (constants, name
-      lookups, subscripts, arithmetic) — a concurrent caller cannot disturb it;
-    * a lambda that *does* call something (``next(it)``, ``queue.pop()``) can;
-    * a bare name or attribute is some function defined elsewhere, whose body
-      this scan cannot see — ``_ticking_time`` incrementing a counter is
-      exactly that shape, so treat it as unsafe rather than guess.
-    """
-    if isinstance(replacement, ast.Lambda):
-        mutating_nodes = (
-            ast.Call,
-            # 推导式/生成器会隐式迭代：`lambda: [x for x in it][0]` 一样把迭代器
-            # 吃掉，却一个 Call 节点都没有。
-            ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp,
-            ast.Await, ast.Yield, ast.YieldFrom, ast.NamedExpr,
-            # `lambda: [*it][0]` / `lambda: {**d}` —— 星号解包也是隐式迭代
-            ast.Starred,
-        )
-        return any(isinstance(inner, mutating_nodes) for inner in ast.walk(replacement.body))
-    return True
-
-
-@pytest.mark.unit
-def test_no_test_installs_a_mutating_fake_on_the_stdlib_time_module():
-    """Discovered from the AST, not from a list of known offenders.
-
-    Pure-read fakes (``lambda: 123.456``, ``lambda: clock["now"]``) are left
-    alone: they are still process-wide, which is untidy, but no concurrent
-    caller can desync them, and there are ~50 of them. Narrowing those is a
-    separate sweep with no bug behind it.
-    """
-    offenders = []
-    scanned = 0
-
-    for root in _test_roots():
-        for path in sorted(root.rglob("*.py")):
-            # 进了 root 之后同样要剪：tests/ 里可能嵌着 build/、.venv/ 之类
-            # （pytest 自己的 norecursedirs 也会跳过它们）。
-            if _is_skipped(path.relative_to(root).parent):
-                continue
-            try:
-                tree = ast.parse(path.read_text(encoding="utf-8"))
-            except SyntaxError:  # pragma: no cover - a broken test file fails elsewhere
-                continue
-            scanned += 1
-            time_names = _stdlib_time_names(tree)
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                if getattr(node.func, "attr", None) != "setattr":
-                    continue
-
-                # pytest 的写法都要认：
-                #   setattr(mod.time, "monotonic", fake)        —— 属性形态
-                #   setattr("pkg.mod.time.monotonic", fake)     —— 点号字符串形态
-                #   setattr(target=mod.time, name=..., value=…) —— 关键字形态
-                kwargs = {kw.arg: kw.value for kw in node.keywords if kw.arg}
-                positional = list(node.args)
-
-                def _arg(index: int, keyword: str):
-                    if len(positional) > index:
-                        return positional[index]
-                    return kwargs.get(keyword)
-
-                arg_target = _arg(0, "target")
-                arg_name = _arg(1, "name")
-                arg_value = _arg(2, "value")
-                if arg_target is None:
-                    continue
-
-                if arg_value is not None:
-                    target = arg_target
-                    # `mod.time`、裸 `time`、以及 `import time as real_time` 的
-                    # 别名，指向的都是同一个 stdlib 模块
-                    hits_stdlib_time = (
-                        # `mod.time`，以及生产代码用别名导入时的 `mod._time` /
-                        # `mod.real_time`（本仓库两种写法都有）
-                        (isinstance(target, ast.Attribute)
-                         and _TIME_ATTR_RE.fullmatch(target.attr))
-                        or (isinstance(target, ast.Name) and target.id in time_names)
-                    )
-                    if not hits_stdlib_time:
-                        continue
-                    replacement = arg_value
-                elif isinstance(arg_target, ast.Constant) and arg_name is not None:
-                    dotted = arg_target.value
-                    if not isinstance(dotted, str):
-                        continue
-                    # 既认 "pkg.mod.time.monotonic"，也认顶层的 "time.monotonic"
-                    if ".time." not in f"{dotted}." and not dotted.startswith("time."):
-                        continue
-                    replacement = arg_name
-                else:
-                    continue
-
-                if _may_mutate_on_call(replacement):
-                    offenders.append(
-                        f"{path.relative_to(REPO_ROOT).as_posix()}:{node.lineno}"
-                    )
-
-    assert scanned > 50, f"扫描面太小，断言已失效（只扫到 {scanned} 个文件）"
-    assert not offenders, (
-        "这些地方把「调用一次就会改变下次观测」的假时钟装到了 stdlib time 模块上，"
-        f"任何后台线程调一次就会打乱它：{offenders}。改用 "
-        "tests.fake_clock.patch_module_clock(monkeypatch, <module>, monotonic=...)"
-    )

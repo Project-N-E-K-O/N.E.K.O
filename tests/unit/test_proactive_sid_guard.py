@@ -20,6 +20,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 from main_logic.core import LLMSessionManager, _proactive_expected_sid
 from main_logic.core import proactive as proactive_core
 from main_logic.session_state import ProactivePhase, SessionEvent, SessionStateMachine
+from tests.fake_clock import patch_module_clock
 
 
 def _make_mgr() -> LLMSessionManager:
@@ -189,7 +190,9 @@ async def test_prepare_proactive_delivery_counts_recent_ui_engagement(
     mgr.is_goodbye_silent = MagicMock(return_value=False)
     mgr.last_user_activity_time = 10.0
     mgr.last_user_engagement_time = 95.0
-    monkeypatch.setattr(proactive_core.time, "time", lambda: 100.0)
+    # prepare_proactive_delivery 的 _user_active_recently 在 main_logic.core.proactive
+    # 内读 time.time()，假时钟打在这个模块上即可。
+    patch_module_clock(monkeypatch, proactive_core, time=lambda: 100.0)
 
     prepared = await LLMSessionManager.prepare_proactive_delivery(
         mgr,
@@ -208,7 +211,9 @@ async def test_prepare_proactive_delivery_rechecks_ui_engagement_before_claim(
     mgr.websocket = object()
     mgr.last_user_activity_time = 10.0
     mgr.last_user_engagement_time = None
-    monkeypatch.setattr(proactive_core.time, "time", lambda: 100.0)
+    # prepare_proactive_delivery 的 _user_active_recently 在 main_logic.core.proactive
+    # 内读 time.time()，假时钟打在这个模块上即可。
+    patch_module_clock(monkeypatch, proactive_core, time=lambda: 100.0)
 
     async def start_session_after_engagement(*_args, **_kwargs):
         mgr.session = SimpleNamespace(_conversation_history=[])
@@ -236,7 +241,9 @@ async def test_prepare_proactive_delivery_rechecks_engagement_after_claim_wait(
     mgr.session = SimpleNamespace(_conversation_history=[])
     mgr.last_user_activity_time = 10.0
     mgr.last_user_engagement_time = None
-    monkeypatch.setattr(proactive_core.time, "time", lambda: 100.0)
+    # prepare_proactive_delivery 的 _user_active_recently 在 main_logic.core.proactive
+    # 内读 time.time()，假时钟打在这个模块上即可。
+    patch_module_clock(monkeypatch, proactive_core, time=lambda: 100.0)
     assert await mgr.state.try_start_proactive() is True
 
     claim_started = asyncio.Event()
