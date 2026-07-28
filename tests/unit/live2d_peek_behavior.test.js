@@ -1003,6 +1003,12 @@ test('performance frame session markers clear on restore and remain for committe
     assert.equal(context.window._nekoAvatarPerformanceFrameContainer, null);
     assert.equal(stage.release(clearedSession.id, 'external-transform-cleared'), true);
 
+    const fullTurnSession = stage.acquire('full-turn-frame-test', { capabilities: ['frame'] });
+    driver.applyFrame({ x: 0, y: 0, scale: 1, rotate: 360, opacity: '' }, fullTurnSession);
+    assert.equal(stage.commitCurrentFrameAsBaseline(fullTurnSession.id), true);
+    assert.equal(stage.release(fullTurnSession.id, 'full-turn-committed'), true);
+    assert.equal(context.window._nekoAvatarPerformanceFrameContainer, null);
+
     const replacedSession = stage.acquire('replaced-container-test', { capabilities: ['frame'] });
     driver.applyFrame({ x: 8, y: 0, scale: 1, rotate: 0, opacity: '' }, replacedSession);
     currentContainer = replacementContainer;

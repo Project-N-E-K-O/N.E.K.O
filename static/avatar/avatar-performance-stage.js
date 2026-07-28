@@ -1765,11 +1765,16 @@
             const y = Number(frame.y || 0);
             const scale = Number(frame.scale || 1);
             const rotate = Number(frame.rotate || 0);
+            const normalizedRotate = ((rotate % 360) + 360) % 360;
+            const rotationDistanceFromIdentity = Math.min(
+                normalizedRotate,
+                360 - normalizedRotate
+            );
             this.activeFrameTransformNonIdentity =
                 Math.abs(x) > 0.001 ||
                 Math.abs(y) > 0.001 ||
                 Math.abs(scale - 1) > 0.0001 ||
-                Math.abs(rotate) > 0.001;
+                rotationDistanceFromIdentity > 0.001;
             const transform = [
                 baseTransform,
                 'translate3d(' + x.toFixed(2) + 'px, ' + y.toFixed(2) + 'px, 0)',
