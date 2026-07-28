@@ -528,6 +528,19 @@ _PCM_MESSAGE = {
     "sample_rate_hz": 16_000,
     "data": [1, -1],
 }
+# The production wire order of a user-initiated stop: refreshMicLease() emits
+# the owner:"none"/engaged:false snapshot first, then the notify gate sends the
+# pause. Both halves leave the SAME socket back to back.
+_LEASE_RELEASE_MESSAGE = {
+    "action": "voice_input_control",
+    "event": "lease_sync",
+    "lease_generation": 2,
+    "owner": "none",
+    "hard_muted": False,
+    "focus_suppressed": False,
+    "engaged": False,
+}
+_PAUSE_SESSION_MESSAGE = {"action": "pause_session"}
 
 
 class _TwoPhaseWebSocket(_EventWebSocket):
@@ -1234,7 +1247,11 @@ async def test_superseded_recorder_pause_ends_the_session_without_a_stale_close(
     manager = _ProtocolManager()
     recording_socket = _TwoPhaseWebSocket(
         [_LEASE_SYNC_MESSAGE, _PCM_MESSAGE],
-        [{"action": "pause_session"}],
+        # Both halves of the real stopRecording(), in wire order: the lease
+        # release does NOT clear _voice_lease_connection_id (only a disconnect
+        # or a blocked-route revoke does), so the socket still owns voice when
+        # the pause lands right behind it.
+        [_LEASE_RELEASE_MESSAGE, _PAUSE_SESSION_MESSAGE],
     )
     _install_protocol_endpoint(
         monkeypatch,
@@ -1270,8 +1287,68 @@ async def test_superseded_recorder_pause_ends_the_session_without_a_stale_close(
         "details": {"name": "Lan"},
     } not in manager.statuses
 
+    call_names = [name for name, _payload in manager.calls]
+    # The lease release still applies -- that is how the backend learns the
+    # audio route is free -- and the pause must reach its own branch, never the
+    # stream_data tail of _dispatch_voice_message_while_superseded. Reordering
+    # that branch below the game-route check would feed a pause_session to
+    # stream_data() silently; only the PCM frame may reach it.
+    assert call_names.count("control") == 2
+    assert ("stream_data", _PAUSE_SESSION_MESSAGE) not in manager.calls
+    assert call_names.count("stream_data") == 1
+
     chat_socket.release.set()
     await chat_task
+
+
+@pytest.mark.asyncio
+async def test_pause_from_a_socket_that_lost_voice_is_still_a_character_switch(
+    monkeypatch,
+) -> None:
+    # The pause exemption is scoped to "this socket still holds voice". Once a
+    # NEWER socket has claimed the identity, newest-wins applies again and the
+    # old socket's pause is an ordinary stale action -- otherwise classifying
+    # pause_session as voice-path would quietly keep every superseded socket
+    # alive, and let it end a session that is no longer its own.
+    manager = _ProtocolManager()
+    recording_socket = _TwoPhaseWebSocket(
+        [_LEASE_SYNC_MESSAGE, _PCM_MESSAGE],
+        [_PAUSE_SESSION_MESSAGE],
+    )
+    _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=recording_socket,
+    )
+
+    recording_task = asyncio.create_task(
+        websocket_router.websocket_endpoint(recording_socket, "Lan")
+    )
+    await _drain_until(
+        lambda: "stream_data" in [name for name, _payload in manager.calls]
+    )
+
+    # A newer socket ENGAGES voice, moving _voice_lease_connection_id.
+    takeover_socket = _TwoPhaseWebSocket([_LEASE_SYNC_MESSAGE], [])
+    takeover_task = asyncio.create_task(
+        websocket_router.websocket_endpoint(takeover_socket, "Lan")
+    )
+    await _drain_until(
+        lambda: [name for name, _payload in manager.calls].count("begin") == 2
+    )
+
+    recording_socket.release.set()
+    await recording_task
+
+    assert recording_socket.closed is True
+    assert "end_session" not in [name for name, _payload in manager.calls]
+    assert {
+        "code": "CHARACTER_SWITCHING_TERMINAL",
+        "details": {"name": "Lan"},
+    } in manager.statuses
+
+    takeover_socket.release.set()
+    await takeover_task
 
 
 @pytest.mark.asyncio

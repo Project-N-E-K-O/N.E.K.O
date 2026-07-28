@@ -136,6 +136,19 @@
     // OLDER request could finish LAST and persist a stale toggle value. Every
     // sync now queues behind this tail; runSync never rejects, so the tail
     // can never become a permanently rejected promise that stalls the chain.
+    //
+    // Scope, so this is not read as more than it is (Codex P2, acknowledged and
+    // deliberately NOT fixed in this PR): the tail is per-JS-realm, so it
+    // orders one window's POSTs only. Two windows toggling during each other's
+    // in-flight request still overlap, and save_global_conversation_settings is
+    // an unversioned read-modify-write, so the older choice can land last. The
+    // windows themselves still converge on the newer choice through the
+    // localStorage decision tuple (asrDecision) -- which is localStorage
+    // metadata only: the POST body carries plain values, and the storage
+    // listener deliberately issues no corrective POST -- so the divergence
+    // surfaces only after a reload. Closing it needs a versioned write protocol
+    // on an endpoint shared by every preference and every client build, which
+    // is a wider change than this PR should carry.
     let _syncChainTail = Promise.resolve();
     // 同步间隔（毫秒）：60秒
     const SYNC_INTERVAL_MS = 60000;

@@ -470,7 +470,20 @@ class NotifyMixin:
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 data = json.dumps({"type": "session_started", "input_mode": input_mode})
-                await self.websocket.send_text(data)
+                try:
+                    await self.websocket.send_text(data)
+                except WebSocketDisconnect:
+                    # Isolated for the same reason as
+                    # send_session_ended_by_server: the CONNECTED check and the
+                    # send are separated by an await, so the display socket can
+                    # die in between. Letting that reach the outer handler would
+                    # skip the text fan-out below -- the notice that tells a
+                    # recorder superseded by THIS chat window that its route has
+                    # gone blocked, without which it keeps a live hardware
+                    # microphone feeding a route that discards every frame.
+                    pass
+                except Exception as e:
+                    logger.error(f"💥 WS Send Session Started Error: {e}")
             if input_mode == "text":
                 # A text session pins the microphone route to "blocked", so the
                 # window still holding the mic has to hear about it or it keeps
