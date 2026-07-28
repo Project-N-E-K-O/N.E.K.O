@@ -2321,6 +2321,240 @@ async def test_fail_closed_chokepoint_refuses_to_revoke_a_competing_newer_start(
     ]
 
 
+@pytest.mark.parametrize(
+    ("snapshot", "clobbered_shared_value"),
+    [
+        # This request said "independent"; a later one cleared the shared field
+        # (an older frontend omits the key entirely, which CLEARS the override).
+        (True, None),
+        # ...and the opposite direction: a later text request said "disabled".
+        (True, False),
+        # A request that said "disabled" must not inherit a later "enabled".
+        (False, True),
+    ],
+)
+async def test_start_uses_its_own_handshake_not_a_later_requests(
+    snapshot,
+    clobbered_shared_value,
+):
+    # Codex P2. websocket_router writes each start_session's authoritative
+    # independent-ASR toggle into ONE manager-level field and then fires
+    # start_session as a background task; the route decision reads that field
+    # much later, after many awaits. A second start_session arriving in between
+    # replaced or cleared the first request's value, so that audio session
+    # selected the persisted or the opposite route. start_session now snapshots
+    # the handshake before its first await and carries it down.
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr.core_api_type = "qwen"
+    mgr.user_language = None
+    mgr.send_status = AsyncMock()
+    mgr._asr_runtime.abort = AsyncMock()
+    mgr._asr_runtime.start = AsyncMock(
+        return_value=AsrStartResult(
+            AsrStartStatus.READY,
+            provider="qwen",
+            session_epoch=mgr._capture_ingress_token().session_epoch,
+        )
+    )
+
+    async def _settings(**_kwargs):
+        # Persisted value deliberately opposes the snapshot, so a fallback to
+        # the persisted read is distinguishable from honouring the snapshot.
+        return {"independentAsrEnabled": not snapshot}
+
+    async def _clobber_mid_start(**_kwargs):
+        # A competing start_session lands while this one is still resolving.
+        mgr.set_independent_asr_handshake(clobbered_shared_value)
+        return await _settings()
+
+    with patch.object(
+        core_asr_runtime_module._core_facade,
+        "aload_global_conversation_settings",
+        _clobber_mid_start,
+    ):
+        await LLMSessionManager._start_independent_asr_if_enabled(
+            mgr,
+            "audio",
+            handshake_override=snapshot,
+        )
+
+    # The discriminator is which BRANCH the handshake selected, not how far the
+    # independent start then got: "native" means the route decision read
+    # `enabled = False`, anything else means it took the independent path.
+    if snapshot:
+        assert mgr._asr_route_mode != "native"
+    else:
+        assert mgr._asr_route_mode == "native"
+
+
+async def test_start_without_a_snapshot_still_reads_the_shared_handshake():
+    # Non-vacuity, and the contract for the internal re-entry paths (hot swap,
+    # device change): with no snapshot supplied the shared field still decides.
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr.core_api_type = "qwen"
+    mgr.user_language = None
+    mgr.send_status = AsyncMock()
+    mgr._asr_runtime.abort = AsyncMock()
+    mgr.set_independent_asr_handshake(False)
+
+    async def _settings(**_kwargs):
+        return {"independentAsrEnabled": True}
+
+    with patch.object(
+        core_asr_runtime_module._core_facade,
+        "aload_global_conversation_settings",
+        _settings,
+    ):
+        await LLMSessionManager._start_independent_asr_if_enabled(mgr, "audio")
+
+    assert mgr._asr_route_mode == "native"
+
+
+class _InertHotSwapCache:
+    """Empty cache that still supports the clear() a lease handover performs."""
+
+    duration_ms = 0
+
+    def clear(self) -> None:
+        return None
+
+    def __bool__(self) -> bool:
+        return False
+
+
+async def test_silence_timeout_does_not_stop_a_replacement_recorder():
+    # Codex P2. handle_silence_timeout holds no self.lock, so a replacement
+    # session can be installed while the display send awaits -- and
+    # _send_to_voice_owner resolves the owner socket at CALL time, so this old
+    # timeout's auto_close_mic landed on the NEW recorder and stopped a
+    # microphone the user had just opened. end_session is guarded by
+    # expected_session and refuses on its own, which is exactly why the damage
+    # was frontend-only and invisible from the backend.
+    old_recorder, chat = _fake_socket_pair()
+    new_recorder, _unused = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", old_recorder)
+    mgr.websocket = chat
+    mgr.pending_session = None
+    mgr.hot_swap_audio_cache = _InertHotSwapCache()
+    mgr.core_api_type = "paid"
+    mgr.end_session = AsyncMock()
+    timed_out_session = mgr.session
+
+    async def _replace_session_mid_send(_payload: dict) -> None:
+        mgr.session = object()
+        mgr._begin_voice_input_connection("socket-b")
+        mgr._set_voice_input_websocket("socket-b", new_recorder)
+
+    chat.send_json = _replace_session_mid_send
+
+    await LLMSessionManager.handle_silence_timeout(
+        mgr,
+        expected_session=timed_out_session,
+    )
+
+    assert new_recorder.sent == []
+    assert old_recorder.sent == []
+    # Still attempted: a stale timeout has nothing to close, and end_session's
+    # own expected_session guard is what decides that -- not this function.
+    mgr.end_session.assert_awaited_once()
+
+
+async def test_silence_timeout_still_reaches_the_recorder_when_nothing_moved():
+    # Non-vacuity for the guard above: with the lease and session unchanged the
+    # teardown must still be delivered.
+    recorder, chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", recorder)
+    mgr.websocket = chat
+    mgr.pending_session = None
+    mgr.hot_swap_audio_cache = _InertHotSwapCache()
+    mgr.core_api_type = "paid"
+    mgr.end_session = AsyncMock()
+
+    await LLMSessionManager.handle_silence_timeout(
+        mgr,
+        expected_session=mgr.session,
+    )
+
+    assert [json.loads(x)["type"] for x in recorder.sent] == ["auto_close_mic"]
+    mgr.end_session.assert_awaited_once()
+
+
+async def test_unreadable_settings_fail_closed_instead_of_selecting_native():
+    # Codex P2. load_global_conversation_settings() swallowed every IO/JSON
+    # error and returned the SAME empty dict as a file with no settings yet, so
+    # the asr_settings_unreadable branch was unreachable for the failure it
+    # exists to catch: an unreadable user_preferences.json fell through to
+    # `enabled = False` and quietly selected the native Omni route, overriding a
+    # persisted choice that required independent ASR. The read is strict here
+    # now, so a real read failure stays fail-closed.
+    recorder, chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", recorder)
+    mgr.websocket = chat
+    mgr.core_api_type = "qwen"
+    mgr.user_language = None
+    mgr.send_status = AsyncMock()
+    mgr._asr_runtime.abort = AsyncMock()
+
+    async def _unreadable(*, strict: bool = False, **_kwargs):
+        # Models the real loader exactly: it only SURFACES the failure when the
+        # caller asks for it, and otherwise reports the same empty dict as a
+        # file that simply has no settings. A double that raised either way
+        # could not tell whether the call site still passes strict=True.
+        if not strict:
+            return {}
+        raise json.JSONDecodeError("Expecting value", "", 0)
+
+    with patch.object(
+        core_asr_runtime_module._core_facade,
+        "aload_global_conversation_settings",
+        _unreadable,
+    ):
+        await LLMSessionManager._start_independent_asr_if_enabled(mgr, "audio")
+
+    assert mgr._asr_route_mode == "blocked"
+    assert mgr._asr_route_mode != "native"
+    assert mgr._voice_lease_connection_id == ""
+    assert mgr._voice_input_accepts_pcm() is False
+
+
+async def test_absent_settings_still_default_without_failing_closed():
+    # The other half of the strict read: an ABSENT file is not a failure. A
+    # first run has no settings yet and must keep defaulting normally rather
+    # than blocking the route.
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr.core_api_type = "qwen"
+    mgr.user_language = None
+    mgr.send_status = AsyncMock()
+    mgr._asr_runtime.abort = AsyncMock()
+
+    async def _empty(**_kwargs):
+        return {}
+
+    with patch.object(
+        core_asr_runtime_module._core_facade,
+        "aload_global_conversation_settings",
+        _empty,
+    ):
+        await LLMSessionManager._start_independent_asr_if_enabled(mgr, "audio")
+
+    assert mgr._asr_route_mode == "native"
+
+
 async def test_fail_closed_chokepoint_honours_the_callers_own_predicate():
     # still_current carries each exit's own, usually stricter, staleness check
     # (route key, provider, session ref, ingress epoch...). A false predicate
@@ -2370,6 +2604,24 @@ _DEAD_DISPLAY_SENDS = [
 ]
 
 
+def _raising_display_send(display_error):
+    """A failing display send, plus proof it was actually reached.
+
+    CodeRabbit: without the flag these cases sit one guard change away from
+    vacuity. If the CONNECTED check ever stopped admitting the fake socket, the
+    raiser would not run, nothing would raise, the fan-out would deliver anyway
+    -- and the PRE-FIX shared-try code would pass too, silently.
+    """
+
+    attempted: list[bool] = []
+
+    async def _die(_payload) -> None:
+        attempted.append(True)
+        raise display_error
+
+    return _die, attempted
+
+
 @pytest.mark.parametrize("display_error", _DEAD_DISPLAY_SENDS)
 async def test_dead_display_socket_does_not_swallow_the_recorder_teardown(
     display_error,
@@ -2386,13 +2638,11 @@ async def test_dead_display_socket_does_not_swallow_the_recorder_teardown(
     mgr.websocket = chat
     mgr.input_mode = "audio"
 
-    async def _die(_data: str) -> None:
-        raise display_error
-
-    chat.send_text = _die
+    chat.send_text, attempted = _raising_display_send(display_error)
 
     await LLMSessionManager.send_session_ended_by_server(mgr)
 
+    assert attempted, "display send never reached -- the case proves nothing"
     assert [json.loads(x) for x in recorder.sent] == [
         {"type": "session_ended_by_server", "input_mode": "audio"}
     ]
@@ -2414,14 +2664,40 @@ async def test_dead_display_socket_does_not_swallow_the_text_takeover(
     mgr._set_voice_input_websocket("socket-a", recorder)
     mgr.websocket = chat
 
-    async def _die(_data: str) -> None:
-        raise display_error
-
-    chat.send_text = _die
+    chat.send_text, attempted = _raising_display_send(display_error)
 
     await LLMSessionManager.send_session_started(mgr, "text")
 
+    assert attempted, "display send never reached -- the case proves nothing"
     assert [json.loads(x) for x in recorder.sent] == [
+        {"type": "session_started", "input_mode": "text"}
+    ]
+
+
+async def test_text_takeover_does_not_stop_the_game_microphone():
+    # Codex P2. websocket_router acknowledges a text entry made DURING an active
+    # game route with a bare send_session_started("text") -- no ordinary text
+    # session, no blocked route. Fanning that ack out to the lease holder
+    # reaches the game window, whose session_started(text) handler calls
+    # stopRecording({notifyServer:false}) on any window with isRecording true --
+    # which a game STT gate requires -- releasing the game lease and closing
+    # hardware the text entry never meant to touch. The other two teardown
+    # senders and _fail_closed_voice_route all exempt owner "game"; this one was
+    # the odd site out, and only became reliably reachable once the fan-out
+    # stopped being swallowed by the display send.
+    recorder, chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", recorder)
+    mgr.websocket = chat
+    mgr._voice_lease_owner = "game"
+
+    await LLMSessionManager.send_session_started(mgr, "text")
+
+    assert recorder.sent == []
+    # The display socket still gets its ordinary ack.
+    assert [json.loads(x) for x in chat.sent] == [
         {"type": "session_started", "input_mode": "text"}
     ]
 
@@ -2445,13 +2721,11 @@ async def test_silence_timeout_reaches_the_recorder_without_a_live_display(
     mgr.core_api_type = "paid"
     mgr.end_session = AsyncMock()
 
-    async def _die(_payload: dict) -> None:
-        raise display_error
-
-    chat.send_json = _die
+    chat.send_json, attempted = _raising_display_send(display_error)
 
     await LLMSessionManager.handle_silence_timeout(mgr)
 
+    assert attempted, "display send never reached -- the case proves nothing"
     delivered = [json.loads(x) for x in recorder.sent]
     assert [x["type"] for x in delivered] == ["auto_close_mic"]
     assert delivered[0]["reason_code"] == "silence_timeout"

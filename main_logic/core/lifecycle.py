@@ -150,6 +150,12 @@ class LifecycleMixin:
             timeout_reason_code = (
                 "free_api_silence_timeout" if is_free_timeout else "silence_timeout"
             )
+            # Snapshot the lease this timeout is speaking to, BEFORE the sends
+            # below await. Compared again just before the fan-out.
+            voice_lease_identity = (
+                getattr(self, "_voice_lease_connection_id", ""),
+                getattr(self, "_voice_lease_generation", -1),
+            )
             if is_free_timeout:
                 # Pure display toast; send_status guards its own socket.
                 await self.send_status(json.dumps({"code": "FREE_API_AUTO_CLOSE_VOICE"}))
@@ -173,12 +179,40 @@ class LifecycleMixin:
                         self.lanlan_name,
                         e,
                     )
+            # Re-validate before targeting the LEASE holder. Codex P2: the sends
+            # above await and nothing here holds ``self.lock``, so a replacement
+            # session can be installed during them -- and _send_to_voice_owner
+            # resolves the owner socket at CALL time, so this old timeout's
+            # auto_close_mic would land on the NEW recorder and stop a
+            # microphone the user just opened. Reproduced: with the lease moved
+            # mid-send, the fresh recorder received the stale teardown.
+            #
+            # end_session below is guarded by expected_session and refuses on
+            # its own, which is precisely why the damage was frontend-only and
+            # invisible from the backend. It still runs: a stale timeout has
+            # nothing to close, and the guard is what decides that.
+            #
             # The lease holder is the window with the live hardware; the
             # current socket may be a newer chat window with no microphone.
             # Game owner exempt, mirroring _revoke_lease_for_blocked_route.
             # (The FREE_API_AUTO_CLOSE_VOICE send_status above stays
             # current-socket-only on purpose: it is a pure toast.)
-            if getattr(self, "_voice_lease_owner", "none") != "game":
+            session_still_current = expected_session is None or (
+                expected_session is self.session
+                or expected_session is self.pending_session
+            )
+            lease_still_current = voice_lease_identity == (
+                getattr(self, "_voice_lease_connection_id", ""),
+                getattr(self, "_voice_lease_generation", -1),
+            )
+            if not session_still_current or not lease_still_current:
+                logger.info(
+                    "⏭️ handle_silence_timeout: session/lease moved during the display send, "
+                    "skipping the recorder teardown (session_current=%s lease_current=%s)",
+                    session_still_current,
+                    lease_still_current,
+                )
+            elif getattr(self, "_voice_lease_owner", "none") != "game":
                 send_to_voice_owner = getattr(self, "_send_to_voice_owner", None)
                 if callable(send_to_voice_owner):
                     await send_to_voice_owner(auto_close_payload)
@@ -650,6 +684,19 @@ class LifecycleMixin:
         # 仍走静默 return（保持原行为，避免后台 text 启动反过来顶掉用户的语音会话）。
         # _allow_cross_mode_restart：跨模式重启重入时置 False，把递归深度封到 1，
         # 二次并发撞车回落静默 return 而非无界递归。
+        # Codex P2. Snapshot the start_session handshake for THIS dispatched
+        # operation, before the first await. websocket_router writes the
+        # frontend's authoritative independent-ASR toggle into one manager-level
+        # field and then fires start_session as a background task; the route
+        # decision only reads that field much later, inside
+        # _start_independent_asr_if_enabled, after many awaits. A second
+        # start_session arriving in between -- including a text one, or an older
+        # frontend whose field is absent and therefore CLEARS the override --
+        # replaced the first request's value, so that audio session selected the
+        # persisted or opposite route. Read once here, then carry it down.
+        session_handshake_override = getattr(
+            self, "_independent_asr_handshake_override", None
+        )
         self._start_session_seed_turn_language()
         # 重置防刷屏标志
         self.session_closed_by_server = False
@@ -751,7 +798,12 @@ class LifecycleMixin:
             
             # 标记 session 激活
             if self.session:
-                await self._start_session_activate(input_mode, llm_result, _diag_start)
+                await self._start_session_activate(
+                    input_mode,
+                    llm_result,
+                    _diag_start,
+                    handshake_override=session_handshake_override,
+                )
             else:
                 raise Exception("Session not initialized")
         
@@ -1437,7 +1489,14 @@ class LifecycleMixin:
             self.pending_input_data.clear()
             self._clear_pending_context_appends(release_durable_cached=True)
 
-    async def _start_session_activate(self, input_mode, next_context_count, diag_start):
+    async def _start_session_activate(
+        self,
+        input_mode,
+        next_context_count,
+        diag_start,
+        *,
+        handshake_override=...,
+    ):
         """Post-connect activation: flip the active flags, start the message
         handler, reset the failure circuit, ack the frontend, and open the
         input gate after queued context is drained."""
@@ -1458,7 +1517,10 @@ class LifecycleMixin:
         # Resolve the microphone route before session_started opens the frontend
         # input path. When independent ASR is required, failure is non-fatal to
         # the Core session but keeps microphone input blocked instead of using Omni.
-        await self._start_independent_asr_if_enabled(input_mode)
+        await self._start_independent_asr_if_enabled(
+            input_mode,
+            handshake_override=handshake_override,
+        )
 
         # 启动成功，重置失败计数器和熔断
         self.session_start_failure_count = 0

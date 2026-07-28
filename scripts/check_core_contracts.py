@@ -742,6 +742,33 @@ def check_fail_closed_chokepoint(core_dir: Path) -> list[Violation]:
 
     REVOKE_HELPERS = {"_revoke_lease_for_blocked_route", "_revoke_voice_input_connection"}
     CHOKEPOINT = "_fail_closed_voice_route"
+    CHOKEPOINT_PATH = core_dir / "asr_runtime.py"
+
+    def called_name(target: ast.expr) -> str | None:
+        """Resolve the callee name, including a literal ``getattr`` lookup.
+
+        CodeRabbit: matching only ``Name``/``Attribute`` let
+        ``getattr(self, "_revoke_lease_for_blocked_route")(...)`` straight
+        through — the callee is a ``Call`` node there, so the gate resolved no
+        name at all and reported nothing. Measured: the direct form produces
+        one violation, the getattr form produced zero. A gate a one-line
+        rewrite defeats is not a gate.
+        """
+
+        if isinstance(target, ast.Attribute):
+            return target.attr
+        if isinstance(target, ast.Name):
+            return target.id
+        if (
+            isinstance(target, ast.Call)
+            and isinstance(target.func, ast.Name)
+            and target.func.id == "getattr"
+            and len(target.args) >= 2
+            and isinstance(target.args[1], ast.Constant)
+            and isinstance(target.args[1].value, str)
+        ):
+            return target.args[1].value
+        return None
 
     violations: list[Violation] = []
     chokepoint_seen = False
@@ -752,19 +779,20 @@ def check_fail_closed_chokepoint(core_dir: Path) -> list[Violation]:
         for func in ast.walk(tree):
             if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            if func.name == CHOKEPOINT:
+            # Pinned to the canonical module: a same-named function anywhere
+            # else in the package would otherwise exempt ITSELF from the gate
+            # and satisfy the not-vacuous check below at the same time.
+            is_chokepoint = path == CHOKEPOINT_PATH and func.name == CHOKEPOINT
+            if is_chokepoint:
                 chokepoint_seen = True
             # A helper may call its own downstream revoke; what must not
             # happen is an ARBITRARY function reaching one directly.
-            if func.name in REVOKE_HELPERS or func.name == CHOKEPOINT:
+            if func.name in REVOKE_HELPERS or is_chokepoint:
                 continue
             for node in ast.walk(func):
                 if not isinstance(node, ast.Call):
                     continue
-                target = node.func
-                name = target.attr if isinstance(target, ast.Attribute) else (
-                    target.id if isinstance(target, ast.Name) else None
-                )
+                name = called_name(node.func)
                 if name in REVOKE_HELPERS:
                     violations.append(Violation(
                         path, node.lineno, node.col_offset, "VOICE_FAIL_CLOSED_CHOKEPOINT",

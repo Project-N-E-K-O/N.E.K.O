@@ -484,12 +484,25 @@ class NotifyMixin:
                     pass
                 except Exception as e:
                     logger.error(f"💥 WS Send Session Started Error: {e}")
-            if input_mode == "text":
+            if input_mode == "text" and getattr(self, "_voice_lease_owner", "none") != "game":
                 # A text session pins the microphone route to "blocked", so the
                 # window still holding the mic has to hear about it or it keeps
                 # uploading into a route that discards everything. Only for
                 # text: fanning out an audio session_started would flip
                 # voiceChatActive and hide the composer in an unrelated window.
+                #
+                # Game owner exempt, matching send_session_ended_by_server and
+                # _fail_closed_voice_route. The galgame gate owns the mic
+                # through its own consumer binding and tears down via
+                # GAME_ROUTE_ENDED, and websocket_router acknowledges a text
+                # entry during an active game route with a bare
+                # send_session_started("text") -- no ordinary text session, no
+                # blocked route. Fanning that ack out anyway reaches the game
+                # window, whose session_started(text) handler calls
+                # stopRecording({notifyServer:false}) on any window with
+                # isRecording true (which a game STT gate requires), releasing
+                # the game lease and closing hardware the text entry never
+                # meant to touch.
                 await self._send_to_voice_owner(
                     {"type": "session_started", "input_mode": input_mode}
                 )

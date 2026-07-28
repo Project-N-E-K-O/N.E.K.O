@@ -20,6 +20,10 @@ class _ProtocolManager:
         self.pending_agent_callbacks = []
         self.websocket = None
         self.active_session_is_idle = True
+        # Mirrors the real manager: set in start_session's first prepare phase,
+        # ahead of both the session install and the ASR route resolution.
+        self.input_mode = "audio"
+        self.session = object()
         self._starting_session_count = 0
         self.authorization_result = authorization_result
         self.control_result = control_result
@@ -1296,6 +1300,61 @@ async def test_superseded_recorder_pause_ends_the_session_without_a_stale_close(
     assert call_names.count("control") == 2
     assert ("stream_data", _PAUSE_SESSION_MESSAGE) not in manager.calls
     assert call_names.count("stream_data") == 1
+
+    chat_socket.release.set()
+    await chat_task
+
+
+@pytest.mark.asyncio
+async def test_superseded_recorder_pause_does_not_end_a_newer_text_session(
+    monkeypatch,
+) -> None:
+    # Codex P2. Holding the lease does not prove the live session is still ours.
+    # A newer socket's text start installs self.session well BEFORE
+    # _start_independent_asr_if_enabled revokes this lease, so a pause arriving
+    # inside that window still satisfies _owns_voice_connection() and used to
+    # fire an UNGATED end_session() against the text session just installed --
+    # the exact CHARACTER_LEFT teardown 7b56afa9 removed from the frontend.
+    manager = _ProtocolManager()
+    recording_socket = _TwoPhaseWebSocket(
+        [_LEASE_SYNC_MESSAGE, _PCM_MESSAGE],
+        [_LEASE_RELEASE_MESSAGE, _PAUSE_SESSION_MESSAGE],
+    )
+    _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=recording_socket,
+    )
+
+    recording_task = asyncio.create_task(
+        websocket_router.websocket_endpoint(recording_socket, "Lan")
+    )
+    await _drain_until(
+        lambda: "stream_data" in [name for name, _payload in manager.calls]
+    )
+
+    chat_socket = _TwoPhaseWebSocket([{"action": "ping"}], [])
+    chat_task = asyncio.create_task(
+        websocket_router.websocket_endpoint(chat_socket, "Lan")
+    )
+    await _drain_until(lambda: bool(chat_socket.sent_text))
+
+    # The newer window's text start is in flight: input_mode has flipped and its
+    # session is installed, but the lease revoke has not landed yet.
+    manager.input_mode = "text"
+    manager.session = object()
+
+    recording_socket.release.set()
+    await recording_task
+
+    call_names = [name for name, _payload in manager.calls]
+    assert "end_session" not in call_names
+    # Still not a character switch -- the recorder keeps its socket either way.
+    assert recording_socket.closed is False
+    assert {
+        "code": "CHARACTER_SWITCHING_TERMINAL",
+        "details": {"name": "Lan"},
+    } not in manager.statuses
 
     chat_socket.release.set()
     await chat_task

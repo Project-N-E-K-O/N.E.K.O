@@ -480,7 +480,17 @@ class AsrRuntimeMixin:
         input_mode: str,
         *,
         preserve_hot_swap_audio: bool = False,
+        handshake_override=...,
     ) -> None:
+        """Resolve the microphone route for one session start.
+
+        ``handshake_override`` carries the start_session handshake belonging to
+        THIS start operation, snapshotted by ``start_session`` before its first
+        await. Ellipsis means "not supplied" — the internal re-entry paths
+        (hot-swap, device change) have no request of their own and fall back to
+        the shared field, which is correct for them: they inherit whatever the
+        live session was started with.
+        """
         self._ensure_asr_runtime_state()
         operation_generation = self._begin_asr_route_operation()
         await self._close_independent_asr(
@@ -539,7 +549,16 @@ class AsrRuntimeMixin:
             )
             return
         try:
-            settings = await _core_facade.aload_global_conversation_settings()
+            # strict=True or this except branch is unreachable for the failure
+            # it exists to catch: the plain read swallows every IO/JSON error
+            # and returns the SAME empty dict as a file that simply has no
+            # settings yet, so an unreadable or malformed user_preferences.json
+            # fell through to `enabled = False` below and quietly selected the
+            # native Omni route -- overriding a persisted choice that required
+            # independent ASR, which is the opposite of fail-closed. An absent
+            # file still returns {} under strict, so a genuine first run keeps
+            # defaulting normally.
+            settings = await _core_facade.aload_global_conversation_settings(strict=True)
         except Exception:
             await self._fail_closed_voice_route(
                 "asr_settings_unreadable",
@@ -571,7 +590,13 @@ class AsrRuntimeMixin:
                 )
             if not core_start_is_current():
                 return
-        handshake_enabled = self._independent_asr_handshake_override
+        # Prefer this operation's own snapshot; a concurrent start_session can
+        # have replaced or cleared the shared field during the awaits above.
+        handshake_enabled = (
+            self._independent_asr_handshake_override
+            if handshake_override is ...
+            else handshake_override
+        )
         if handshake_enabled is not None:
             # The start_session handshake carries the frontend's authoritative
             # toggle; it overrides the persisted read, which is stale when the
@@ -2262,11 +2287,30 @@ class AsrRuntimeMixin:
             # its own consumer binding and must not be collaterally revoked.
             # No notice of its own -- the BLOCKED lifecycle event that produced
             # this failure already reached the client.
+            #
+            # Re-captured AFTER this handler's own mutations, and that is the
+            # whole point: ``source_identity`` was taken while the route was
+            # still "independent", and the identity tuple carries
+            # ``_asr_route_mode`` (plus ``_microphone_route_generation``, inside
+            # the ingress token). Handing that pre-transition tuple to
+            # ``still_current`` made the predicate false on ENTRY -- against a
+            # transition this handler had itself performed two lines up -- so
+            # _fail_closed_voice_route returned before the revoke and left a
+            # live hardware microphone uploading into a dead route. The fence
+            # exists to reject a COMPETING newer operation, never our own step.
+            # Nothing awaits between the identity check at the top of this lock
+            # and here, so no competing operation can hide in the gap.
+            #
+            # The sibling predicates dodge this by testing the route mode
+            # ABSOLUTELY (``_asr_route_mode == "blocked"``) rather than against
+            # a captured value; a full-tuple comparison cannot, so it has to be
+            # re-based here instead.
+            post_transition_identity = self._capture_core_asr_operation_identity()
             await self._fail_closed_voice_route(
                 "independent_asr_failure",
                 operation_generation=route_operation_generation,
                 still_current=lambda: self._core_asr_operation_identity_matches(
-                    source_identity
+                    post_transition_identity
                 ),
             )
 

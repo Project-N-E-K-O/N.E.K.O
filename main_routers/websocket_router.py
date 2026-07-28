@@ -571,12 +571,47 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         it on the owner's stop is exactly the non-superseded behaviour. A
         newer socket that started its own text session would have revoked this
         lease, which routes the same message to the vacated-identity drop
-        instead of here.
+        instead of here — but NOT promptly enough to rely on alone; see the
+        input_mode fence below.
         """
         voice_mgr = session_manager[lanlan_name]
         if message.get("action") == "pause_session":
+            # Codex P2. Lease ownership alone does not prove the live session is
+            # still ours. A newer socket's text start installs ``self.session``
+            # (lifecycle.py start_session) well BEFORE
+            # _start_independent_asr_if_enabled revokes this lease, so a pause
+            # arriving inside that window still satisfies
+            # _owns_voice_connection() and would fire an UNGATED end_session()
+            # against the text session that was just installed — the exact
+            # CHARACTER_LEFT teardown 7b56afa9 removed from the frontend.
+            #
+            # ``input_mode`` is the signal that moves early enough to close it:
+            # start_session sets it in its first prepare phase, ahead of both
+            # the session install and the revoke. Refusing to CALL end_session
+            # matters more than any argument to it -- the call bumps
+            # _user_session_abandon_epoch before its own stale-session guard
+            # runs, and that bump alone can make an in-flight cross-mode restart
+            # consider itself abandoned.
+            #
+            # Cost of the fence when it misfires (a text start that set the mode
+            # and then failed): this recorder's audio session lingers to its
+            # silence timeout instead of ending now. Strictly better than
+            # tearing down a session that is not ours.
+            if str(getattr(voice_mgr, "input_mode", "audio") or "audio").lower() != "audio":
+                logger.info(
+                    "[%s] superseded recorder pause dropped: the live session is no longer audio",
+                    lanlan_name,
+                )
+                return
             voice_mgr.active_session_is_idle = True
-            _fire_task(voice_mgr.end_session())
+            # expected_session pins the identity for the gap between this check
+            # and the fired task actually running. getattr-guarded like the rest
+            # of this helper: narrow manager doubles do not carry every field.
+            _fire_task(
+                voice_mgr.end_session(
+                    expected_session=getattr(voice_mgr, "session", None)
+                )
+            )
             return
         if message.get("action") == "voice_input_control":
             handle_voice_input_control = getattr(

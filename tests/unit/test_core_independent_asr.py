@@ -5045,7 +5045,7 @@ async def test_session_activation_resolves_asr_before_frontend_ack() -> None:
     manager._flush_pending_input_data = AsyncMock()
     manager._consume_next_session_context_messages = MagicMock()
     manager._start_independent_asr_if_enabled = AsyncMock(
-        side_effect=lambda _mode: order.append("asr")
+        side_effect=lambda _mode, **_kwargs: order.append("asr")
     )
     manager.send_session_started = AsyncMock(
         side_effect=lambda _mode: order.append("started")
@@ -5561,6 +5561,80 @@ async def test_failure_event_only_blocks_current_generation() -> None:
     assert runtime._asr_route_mode == "blocked"
 
 
+async def test_runtime_failure_from_a_live_route_still_revokes_the_lease() -> None:
+    # Codex P2. The chokepoint refactor passed the PRE-transition identity tuple
+    # as still_current, but that tuple carries _asr_route_mode (and
+    # _microphone_route_generation, inside the ingress token) while the handler
+    # sets the route to "blocked" two lines earlier. The predicate was therefore
+    # false on ENTRY -- against the handler's own step -- so
+    # _fail_closed_voice_route returned before revoking, leaving the recording
+    # socket holding a live hardware microphone on a dead route. Only reachable
+    # from a LIVE route, which is exactly the real runtime-failure case; an
+    # already-blocked route happened to compare equal and masked it.
+    runtime = _Runtime()
+    runtime._set_microphone_route("independent")
+    runtime._voice_lease_connection_id = "socket-a"
+    runtime._voice_input_websocket = object()
+
+    await runtime._handle_core_asr_failure(
+        AsrFailureEvent(
+            code="ASR_INDEPENDENT_FAILED",
+            provider="current-provider",
+            session_epoch=runtime._asr_session_epoch,
+        )
+    )
+
+    assert runtime._asr_route_mode == "blocked"
+    assert runtime._voice_lease_connection_id == ""
+
+
+async def test_runtime_failure_still_fences_a_competing_newer_operation() -> None:
+    # Re-basing the identity must not weaken the fence it exists for: a NEWER
+    # route operation landing during this handler's own transition still has to
+    # stop the revoke, because _revoke_voice_input_connection calls
+    # _invalidate_asr_start() and would cancel that newer start.
+    runtime = _Runtime()
+    runtime._set_microphone_route("independent")
+    runtime._voice_lease_connection_id = "socket-a"
+    original_set_route = runtime._set_microphone_route
+
+    def _set_route_then_supersede(mode: str) -> None:
+        original_set_route(mode)
+        runtime._begin_asr_route_operation()
+
+    runtime._set_microphone_route = _set_route_then_supersede
+
+    await runtime._handle_core_asr_failure(
+        AsrFailureEvent(
+            code="ASR_INDEPENDENT_FAILED",
+            provider="current-provider",
+            session_epoch=runtime._asr_session_epoch,
+        )
+    )
+
+    assert runtime._voice_lease_connection_id == "socket-a"
+
+
+async def test_runtime_failure_leaves_the_game_lease_alone() -> None:
+    # The galgame route holds the mic through its own consumer binding and tears
+    # down via GAME_ROUTE_ENDED; re-basing the identity must not start
+    # collaterally revoking it.
+    runtime = _Runtime()
+    runtime._set_microphone_route("independent")
+    runtime._voice_lease_connection_id = "socket-a"
+    runtime._voice_lease_owner = "game"
+
+    await runtime._handle_core_asr_failure(
+        AsrFailureEvent(
+            code="ASR_INDEPENDENT_FAILED",
+            provider="current-provider",
+            session_epoch=runtime._asr_session_epoch,
+        )
+    )
+
+    assert runtime._voice_lease_connection_id == "socket-a"
+
+
 @pytest.mark.parametrize(
     "transition",
     [
@@ -5643,7 +5717,7 @@ async def test_settings_result_is_stale_after_connection_replacement(
     settings_started = asyncio.Event()
     release_settings = asyncio.Event()
 
-    async def load_settings():
+    async def load_settings(**_kwargs):
         settings_started.set()
         await release_settings.wait()
         return {"independentAsrEnabled": True}
@@ -5759,7 +5833,7 @@ async def test_stale_start_abort_does_not_clobber_newer_start_placeholder(
 
     settings_calls = 0
 
-    async def load_settings():
+    async def load_settings(**_kwargs):
         nonlocal settings_calls
         settings_calls += 1
         if settings_calls == 2:
@@ -5803,7 +5877,7 @@ async def test_core_start_survives_benign_lease_transition(monkeypatch) -> None:
     settings_started = asyncio.Event()
     release_settings = asyncio.Event()
 
-    async def load_settings():
+    async def load_settings(**_kwargs):
         settings_started.set()
         await release_settings.wait()
         return {"independentAsrEnabled": True}

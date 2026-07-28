@@ -3304,6 +3304,11 @@
                         // 时序里，A 明明收到了 text session_started 却因为自己有
                         // audio 启动在途而直接 return，麦克风一直开着往一条已死的
                         // 路由上传。停麦是幂等的，且只在本窗口确实在录音时才做。
+                        // Cancel an in-flight start first: S.isRecording is still
+                        // false while getUserMedia()/addModule() are awaiting, so
+                        // the stopRecording() below cannot reach that case and the
+                        // pending start would complete and re-claim the revoked lease.
+                        if (response.input_mode === 'text' && typeof window.invalidatePendingMicStart === 'function') window.invalidatePendingMicStart();
                         if (response.input_mode === 'text'
                             && S.isRecording === true
                             && typeof window.stopRecording === 'function') {
@@ -3334,6 +3339,13 @@
                     // 没有恢复路径，用户必须手动关开麦克风。用户刚刚显式选择了打字，
                     // 以最近一次显式动作为准停掉录音，比在 ingress 里反向重建
                     // audio session 更安全（不会和 start_session 撕重建打架）。
+                    // Same window as the cross-mode branch above: a start still
+                    // inside getUserMedia()/addModule() has not set S.isRecording
+                    // yet, so only this reaches it. One line on purpose -- the
+                    // multi-line `if (response.input_mode === 'text'` opener is
+                    // the anchor test_text_session_start_stops_an_active_microphone
+                    // slices on, and must stay unique to the teardown guard below.
+                    if (response.input_mode === 'text' && typeof window.invalidatePendingMicStart === 'function') window.invalidatePendingMicStart();
                     if (response.input_mode === 'text'
                         && S.isRecording === true
                         && typeof window.stopRecording === 'function') {

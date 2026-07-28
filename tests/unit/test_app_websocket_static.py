@@ -3281,3 +3281,67 @@ def test_auto_restart_does_not_claim_success_on_a_blocked_route():
         "startMicCapture"
     )
     assert "resetSessionButton(); if (_rsB) _rsB.disabled = false;" in restart
+
+
+def test_in_flight_microphone_start_is_cancellable():
+    # Codex P2. S.isRecording only flips at the END of startAudioWorklet, after
+    # getUserMedia() and audioWorklet.addModule() have both awaited, so every
+    # teardown guard keyed on `S.isRecording === true` is a no-op for the whole
+    # startup window. The pending start then completed, set recording true and
+    # re-claimed via refreshMicLease() the lease the backend had just revoked,
+    # uploading PCM into a blocked route.
+    capture_source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
+
+    # The attempt is claimed before the first await, so the token covers the
+    # getUserMedia half of the window too, not just addModule.
+    start_fn = _block_after(capture_source, "async function startMicCapture() {")
+    assert "micStartGeneration += 1;" in start_fn
+    assert "pendingMicStartToken = micStartGeneration;" in start_fn
+    # _code_only: the function's own comments mention "await", and an ordering
+    # assertion that a comment can satisfy is not an ordering assertion.
+    start_code = _code_only(start_fn)
+    assert start_code.index("pendingMicStartToken = micStartGeneration;") < start_code.index(
+        "await"
+    )
+
+    # ...and the commit is gated on it.
+    worklet = _block_after(capture_source, "async function startAudioWorklet(mediaStream) {")
+    assert "pendingMicStartToken !== micStartGeneration" in worklet
+    assert "S.voiceInputRouteBlocked === true" in worklet
+    assert worklet.index("pendingMicStartToken !== micStartGeneration") < worklet.index(
+        "S.isRecording = true;"
+    )
+    # The unwind must NOT re-emit a lease snapshot -- that re-claim is the bug.
+    unwind = worklet.split("pendingMicStartToken !== micStartGeneration", 1)[1].split(
+        "S.isRecording = true;", 1
+    )[0]
+    assert "refreshMicLease()" not in _code_only(unwind)
+
+    # The fail-closed unwind cancels a pending start as well as a live one.
+    abort_fn = _block_after(capture_source, "function abortVoiceStartForBlockedRoute() {")
+    assert "invalidatePendingMicStart();" in abort_fn
+
+
+def test_text_takeover_cancels_a_pending_microphone_start():
+    # Both text-session branches stop an ALREADY-recording mic; neither could
+    # reach a start still inside its await window.
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    # Count the GUARDED form, not the bare call: `if (false) window.invalid...`
+    # keeps the bare substring and would satisfy a looser count.
+    guarded = (
+        "if (response.input_mode === 'text' "
+        "&& typeof window.invalidatePendingMicStart === 'function') "
+        "window.invalidatePendingMicStart();"
+    )
+    assert websocket_source.count(guarded) == 2
+    # Each sits with, and before, its paired stopRecording teardown.
+    for branch_opener in (
+        "console.log('[App] text session installed; stopping the microphone (cross-mode)');",
+        "console.log('[App] text session installed; stopping the microphone');",
+    ):
+        before = websocket_source.split(branch_opener, 1)[0]
+        assert "window.invalidatePendingMicStart();" in before
+
+    capture_source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
+    assert "window.invalidatePendingMicStart = invalidatePendingMicStart;" in capture_source

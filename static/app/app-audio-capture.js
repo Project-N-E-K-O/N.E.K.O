@@ -18,6 +18,20 @@
     });
     let voiceLeaseGeneration = 0;
     let lastVoiceLeaseFingerprint = '';
+    // Cancellation token for an IN-FLIGHT microphone start (Codex P2).
+    // S.isRecording only flips at the very END of startAudioWorklet, after
+    // getUserMedia() and audioWorklet.addModule() have both awaited — so every
+    // "stop the mic" guard keyed on S.isRecording === true is a no-op for the
+    // whole startup window. The pending start then completed anyway, set
+    // recording true and re-claimed through refreshMicLease() the very lease the
+    // backend had just revoked, uploading PCM into a blocked route. Bumping this
+    // invalidates any start still inside that window.
+    let micStartGeneration = 0;
+    let pendingMicStartToken = 0;
+
+    function invalidatePendingMicStart() {
+        micStartGeneration += 1;
+    }
 
     function currentVoiceInputControlState() {
         return {
@@ -1332,6 +1346,48 @@
             // 不管 flag 是粘住还是真在播 AI 音频，都应该让位给用户输入。
             S.isPlaying = false;
 
+            // Last gate before the commit. Everything above only awaited; this
+            // is where the microphone actually becomes live and where
+            // refreshMicLease() would re-claim the lease. A text takeover (or
+            // any fail-closed verdict) that landed while getUserMedia() and
+            // addModule() were in flight found S.isRecording still false, so its
+            // stopRecording() early-returned and could not prevent this. Unwind
+            // instead of committing: without this the pending start re-claims a
+            // lease the backend just revoked and feeds a blocked route.
+            if (pendingMicStartToken !== micStartGeneration || S.voiceInputRouteBlocked === true) {
+                console.log('[App] microphone start was superseded while opening; unwinding');
+                try {
+                    if (mediaStream && typeof mediaStream.getTracks === 'function') {
+                        mediaStream.getTracks().forEach(track => track.stop());
+                    }
+                } catch (_) {
+                    // best-effort teardown
+                }
+                if (S.stream) {
+                    try {
+                        S.stream.getTracks().forEach(track => track.stop());
+                    } catch (_) {
+                        // best-effort teardown
+                    }
+                    S.stream = null;
+                }
+                if (S.audioContext) {
+                    if (S.audioContext.state !== 'closed') {
+                        S.audioContext.close();
+                    }
+                    S.audioContext = null;
+                }
+                S.workletNode = null;
+                S.micGainNode = null;
+                S.inputAnalyser = null;
+                stopSilenceDetection();
+                // Deliberately NOT refreshMicLease(): the lease is the
+                // backend's now, and re-emitting a snapshot from a window that
+                // never started recording is exactly the re-claim being
+                // prevented. S.isRecording was never set, so nothing to reset.
+                return;
+            }
+
             // 所有初始化成功后，才标记为录音状态
             S.isRecording = true;
             window.isRecording = true;
@@ -1363,6 +1419,9 @@
         }
         if (_mute) _mute.disabled = true;
         if (_screen) _screen.disabled = true;
+        // Also cancel a start still inside its getUserMedia/addModule window:
+        // clearing S.isRecording cannot reach one that has not set it yet.
+        invalidatePendingMicStart();
         S.isRecording = false;
         window.isRecording = false;
         S.voiceChatActive = false;
@@ -1399,6 +1458,12 @@
             console.log('[App] voice route is fail-closed; refusing to open the microphone');
             return;
         }
+        // Claim this attempt BEFORE the first await. Anything that invalidates
+        // pending starts from here on makes the commit at the end of
+        // startAudioWorklet a no-op, which is the only way to cover the
+        // getUserMedia() half of the window as well.
+        micStartGeneration += 1;
+        pendingMicStartToken = micStartGeneration;
         const _mic = micButton();
         const _mute = muteButton();
         const _screen = screenButton();
@@ -1878,6 +1943,7 @@
     window.startMicCapture = startMicCapture;
     window.stopMicCapture = stopMicCapture;
     window.abortVoiceStartForBlockedRoute = abortVoiceStartForBlockedRoute;
+    window.invalidatePendingMicStart = invalidatePendingMicStart;
     window.stopRecording = stopRecording;
     window.startSilenceDetection = startSilenceDetection;
     window.stopSilenceDetection = stopSilenceDetection;
@@ -1985,6 +2051,7 @@
     mod.startAudioWorklet = startAudioWorklet;
     mod.startMicCapture = startMicCapture;
     mod.stopMicCapture = stopMicCapture;
+    mod.invalidatePendingMicStart = invalidatePendingMicStart;
     mod.stopRecording = stopRecording;
     mod.startMicVolumeVisualization = startMicVolumeVisualization;
     mod.stopMicVolumeVisualization = stopMicVolumeVisualization;

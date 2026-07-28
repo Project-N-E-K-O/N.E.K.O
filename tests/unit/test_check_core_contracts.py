@@ -363,3 +363,115 @@ def test_run_flags_forbidden_runtime_reads_through_local_alias(
         "Core must not read IndependentAsrRuntime.lifecycle "
         "(via a local alias of self._asr_runtime)"
     ) in messages
+
+
+def _chokepoint_core_dir(tmp_path: Path, probe_source: str) -> Path:
+    """A minimal core package: the canonical chokepoint plus one probe module."""
+
+    core = tmp_path / "core"
+    core.mkdir()
+    (core / "__init__.py").write_text("", encoding="utf-8")
+    (core / "asr_runtime.py").write_text(
+        '"""m."""\n\n'
+        "class AsrRuntimeMixin:\n"
+        '    """m."""\n\n'
+        "    async def _fail_closed_voice_route(self, reason):\n"
+        "        return await self._revoke_lease_for_blocked_route(reason)\n",
+        encoding="utf-8",
+    )
+    (core / "probe.py").write_text(probe_source, encoding="utf-8")
+    return core
+
+
+def _chokepoint_codes(contract_checker, core: Path) -> list[str]:
+    return [
+        violation.code
+        for violation in contract_checker.check_fail_closed_chokepoint(core)
+    ]
+
+
+@pytest.mark.unit
+def test_fail_closed_gate_accepts_a_package_that_only_uses_the_chokepoint(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    core = _chokepoint_core_dir(
+        tmp_path,
+        '"""m."""\n\n'
+        "class Probe:\n"
+        '    """m."""\n\n'
+        "    async def exit_blocked(self):\n"
+        "        return await self._fail_closed_voice_route('reason')\n",
+    )
+
+    assert _chokepoint_codes(contract_checker, core) == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "call",
+    [
+        # The form the gate always caught...
+        "await self._revoke_lease_for_blocked_route('r')",
+        # ...and the one-line rewrite that used to walk straight past it:
+        # the callee is a Call node, so no Name/Attribute name was resolved.
+        "await getattr(self, '_revoke_lease_for_blocked_route')('r')",
+        "await getattr(self, '_revoke_voice_input_connection')('r')",
+    ],
+)
+def test_fail_closed_gate_catches_direct_and_dynamic_revokes(
+    contract_checker,
+    tmp_path: Path,
+    call: str,
+) -> None:
+    core = _chokepoint_core_dir(
+        tmp_path,
+        '"""m."""\n\n'
+        "class Probe:\n"
+        '    """m."""\n\n'
+        "    async def exit_blocked(self):\n"
+        f"        {call}\n",
+    )
+
+    assert _chokepoint_codes(contract_checker, core) == [
+        "VOICE_FAIL_CLOSED_CHOKEPOINT"
+    ]
+
+
+@pytest.mark.unit
+def test_fail_closed_gate_does_not_let_a_same_named_function_exempt_itself(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    # The exemption is what makes the chokepoint able to call the revoke at all,
+    # so it has to be pinned to the canonical module. Otherwise any module can
+    # opt out by naming its function _fail_closed_voice_route -- and that name
+    # also satisfied the "chokepoint still exists" check, so removing the real
+    # one would not have been noticed either.
+    core = _chokepoint_core_dir(
+        tmp_path,
+        '"""m."""\n\n'
+        "class Probe:\n"
+        '    """m."""\n\n'
+        "    async def _fail_closed_voice_route(self, reason):\n"
+        "        return await self._revoke_lease_for_blocked_route(reason)\n",
+    )
+
+    assert _chokepoint_codes(contract_checker, core) == [
+        "VOICE_FAIL_CLOSED_CHOKEPOINT"
+    ]
+
+
+@pytest.mark.unit
+def test_fail_closed_gate_reports_a_missing_chokepoint(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    core = tmp_path / "core"
+    core.mkdir()
+    (core / "__init__.py").write_text("", encoding="utf-8")
+    (core / "asr_runtime.py").write_text('"""m."""\n', encoding="utf-8")
+
+    assert _chokepoint_codes(contract_checker, core) == [
+        "VOICE_FAIL_CLOSED_CHOKEPOINT"
+    ]
