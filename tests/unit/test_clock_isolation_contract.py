@@ -174,6 +174,10 @@ def test_no_test_installs_a_mutating_fake_on_the_stdlib_time_module():
 
     for root in _test_roots():
         for path in sorted(root.rglob("*.py")):
+            # 进了 root 之后同样要剪：tests/ 里可能嵌着 build/、.venv/ 之类
+            # （pytest 自己的 norecursedirs 也会跳过它们）。
+            if _is_skipped(path.relative_to(root).parent):
+                continue
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8"))
             except SyntaxError:  # pragma: no cover - a broken test file fails elsewhere
