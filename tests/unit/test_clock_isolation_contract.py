@@ -36,9 +36,28 @@ from tests.fake_clock import patch_module_clock
 
 TESTS_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = TESTS_ROOT.parent
-# plugin/tests 是另一棵独立的 pytest 树（自带 pytest.ini），同样跑在同一个进程里，
-# 全进程的假时钟一样会溢出去。只扫 tests/ 等于把半个仓库放在门外。
-SCAN_ROOTS = (TESTS_ROOT, REPO_ROOT / "plugin" / "tests")
+_SKIP_DIRS = {".venv", "node_modules", ".git", "dist", "build", "__pycache__"}
+
+
+def _test_roots() -> list[Path]:
+    """Every test tree in the repo, discovered rather than listed.
+
+    `tests/` is not the only one: `plugin/tests/` has its own pytest.ini and
+    each bundled plugin can carry `plugin/plugins/<name>/tests/`. They all run
+    in a Python process, so a process-wide fake clock leaks the same way there.
+    A hardcoded pair would quietly stop covering the next tree someone adds.
+    """
+    roots = []
+    for candidate in REPO_ROOT.rglob("tests"):
+        if not candidate.is_dir():
+            continue
+        if any(part in _SKIP_DIRS for part in candidate.parts):
+            continue
+        # 已被更外层的 root 覆盖就不重复扫
+        if any(candidate != other and other in candidate.parents for other in roots):
+            continue
+        roots.append(candidate)
+    return roots
 
 
 @pytest.mark.unit
@@ -100,7 +119,7 @@ def test_no_test_installs_a_mutating_fake_on_the_stdlib_time_module():
     offenders = []
     scanned = 0
 
-    for root in SCAN_ROOTS:
+    for root in _test_roots():
         for path in sorted(root.rglob("*.py")):
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -118,7 +137,12 @@ def test_no_test_installs_a_mutating_fake_on_the_stdlib_time_module():
                 #   setattr("pkg.mod.time.monotonic", fake)     —— 点号字符串形态
                 if len(node.args) >= 3:
                     target = node.args[0]
-                    if not (isinstance(target, ast.Attribute) and target.attr == "time"):
+                    # `mod.time` 与裸 `time`（文件顶上 import time）都是 stdlib 模块
+                    hits_stdlib_time = (
+                        (isinstance(target, ast.Attribute) and target.attr == "time")
+                        or (isinstance(target, ast.Name) and target.id == "time")
+                    )
+                    if not hits_stdlib_time:
                         continue
                     replacement = node.args[2]
                 elif len(node.args) == 2 and isinstance(node.args[0], ast.Constant):
