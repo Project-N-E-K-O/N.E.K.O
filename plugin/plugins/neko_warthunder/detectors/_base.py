@@ -200,6 +200,10 @@ class DiscreteDetector:
     def feed(self, prev: BattleState, cur: BattleState) -> BattleEvent | None:
         return self.detect(prev, cur)
 
+    def consume(self, prev: BattleState, cur: BattleState) -> None:
+        """Advance a persistent feed while intentionally discarding its output."""
+        self.detect(prev, cur)
+
 
 class DetectorEngine:
     def __init__(self, detectors: list[Detector]) -> None:
@@ -228,8 +232,10 @@ class DetectorEngine:
             if cur.dead and getattr(det, "id", "") != "you_died":
                 dead_state_policy = getattr(det, "dead_state_policy", "reset")
                 if dead_state_policy == "consume":
-                    # 推进 id 游标但不产出：阵亡期间不播报，重生后也不重播旧条目。
-                    det.feed(prev, cur)
+                    # 只推进持久 feed 游标，不运行可能因 dead 状态重置游标的正常检测。
+                    consume = getattr(det, "consume", None)
+                    if callable(consume):
+                        consume(prev, cur)
                     continue
                 if dead_state_policy != "allow":
                     reset = getattr(det, "reset_transient", None)

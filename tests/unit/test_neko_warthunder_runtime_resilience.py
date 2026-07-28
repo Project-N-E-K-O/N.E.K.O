@@ -29,7 +29,14 @@ from plugin.plugins.neko_warthunder.detectors.discrete.lifecycle import (
     DeathDetector,
     KillDetector,
 )
+from plugin.plugins.neko_warthunder.detectors.discrete.free_text import (
+    FreeTextActivityDetector,
+)
+from plugin.plugins.neko_warthunder.detectors.discrete.notices import (
+    HudNoticeDetector,
+)
 from plugin.plugins.neko_warthunder.detectors.discrete.proximity import ProximityDetector
+from plugin.plugins.neko_warthunder.detectors.discrete.radio import RadioCommandDetector
 from plugin.plugins.neko_warthunder.detectors.discrete.situation import AirSituationDetector
 
 
@@ -44,6 +51,7 @@ _DATA_PROCESS = (
 sys.path.insert(0, str(_DATA_PROCESS))
 
 from wt_server import TelemetryService  # noqa: E402
+from wt_recorder import SessionRecorder  # noqa: E402
 import wt_capture  # noqa: E402
 from wt_telemetry import (  # noqa: E402
     ConnectionState,
@@ -126,6 +134,76 @@ def test_late_kill_while_dead_reaches_trade_arbiter_once() -> None:
 
     respawned = BattleState(**base, combat=dead_feed, timestamp=102)
     assert engine.feed(dead, respawned) == []
+
+
+def test_dead_state_consumes_persistent_feeds_without_respawn_replay() -> None:
+    engine = DetectorEngine(
+        [
+            FreeTextActivityDetector(),
+            HudNoticeDetector(),
+            ProximityDetector(),
+            RadioCommandDetector(),
+        ]
+    )
+    persistent_data = {
+        "connected": True,
+        "conn_state": "in_battle",
+        "in_battle": True,
+        "vehicle_valid": True,
+        "domain": "ground",
+        "battle_id": "B1",
+        "combat": {
+            "player_name": "Pilot",
+            "self": {"name": "Pilot", "source": "manual", "confidence": 1.0},
+        },
+        "raw": {"awards": {"feed": [{"id": 20, "code": "final_blow"}]}},
+        "hud_notices": [
+            {"id": 21, "code": "engine_overheat", "level": "critical"}
+        ],
+        "proximity_events": [{"id": 22, "kind": "enter", "distance_m": 500}],
+        "chat": [{"id": 23, "sender": "Pilot", "msg": "进攻 D 点！"}],
+    }
+    alive = BattleState(
+        connected=True,
+        conn_state="in_battle",
+        in_battle=True,
+        vehicle_valid=True,
+        battle_id="B1",
+    )
+    dead = BattleState(**persistent_data, dead=True)
+    assert engine.feed(alive, dead) == []
+
+    respawned = BattleState(**persistent_data)
+    assert engine.feed(dead, respawned) == []
+
+
+def test_stopped_recorder_preserves_final_session_size(tmp_path) -> None:
+    recorder = SessionRecorder(root_dir=str(tmp_path), max_session_bytes=2048)
+    recorder.start()
+    for _ in range(200):
+        recorder.write_events("hudmsg", [{"blob": "x" * 512}])
+        if not recorder.recording:
+            break
+
+    status = recorder.status()
+    assert status["recording"] is False
+    assert status["stopped_reason"] == "max_session_bytes_reached"
+    assert status["session_bytes"] >= 2048
+
+
+def test_plugin_panel_uses_ordinary_button_semantics_for_view_switching() -> None:
+    panel = (
+        Path(__file__).resolve().parents[2]
+        / "plugin"
+        / "plugins"
+        / "neko_warthunder"
+        / "ui"
+        / "panel.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert 'role="tablist"' not in panel
+    assert 'role="tab"' not in panel
+    assert "aria-pressed={activeTab ===" in panel
 
 
 def test_apply_config_refreshes_detector_heartbeat_without_rebuild() -> None:

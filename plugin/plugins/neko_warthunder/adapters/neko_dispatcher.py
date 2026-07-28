@@ -75,7 +75,8 @@ _OBSERVED_DELIVERY_METADATA_KEYS = (
 )
 # 派发器需要读写宿主插件上的这几个活动状态字段。它们是跨对象的隐式契约：
 # 任一侧改名或拼错都不会报错，getattr 静默回落到默认值，效果是静默窗门控被
-# 无声关闭。tests/test_dispatcher_safety.py 有一条契约测试守着这组名字。
+# 无声关闭。独立插件仓 tests/test_dispatcher_safety.py 有契约测试守着这组名字；
+# 宿主仓 tests/unit/test_neko_warthunder_runtime_resilience.py 覆盖实际运行路径。
 PLUGIN_LAST_USER_CHAT_AT = "_last_user_chat_at"
 PLUGIN_LAST_USER_CHAT_MODE = "_last_user_chat_mode"
 PLUGIN_LAST_BATTLE_RESPOND_AT = "_last_battle_respond_at"

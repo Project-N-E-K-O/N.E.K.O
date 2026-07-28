@@ -116,6 +116,16 @@ class RadioCommandDetector(DiscreteDetector):
     def reset(self) -> None:
         self._last_id = -1
 
+    def consume(self, prev: BattleState, cur: BattleState) -> None:
+        items = _chat_items(cur)
+        if not items:
+            return
+        ids = [_chat_id(item, index + 1) for index, item in enumerate(items)]
+        max_id = max(ids, default=-1)
+        if max_id < self._last_id:
+            self._last_id = -1
+        self._last_id = max(self._last_id, max_id)
+
     def detect(self, prev: BattleState, cur: BattleState) -> BattleEvent | None:
         if not cur.is_alive():
             return None

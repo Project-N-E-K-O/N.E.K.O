@@ -170,6 +170,7 @@ class SessionRecorder:
         self._started_at = 0.0
         self._last_frame_ts = 0.0
         self._stopped_reason: str | None = None
+        self._final_session_bytes = 0
 
     @property
     def recording(self) -> bool:
@@ -201,6 +202,7 @@ class SessionRecorder:
             self._started_at = time.time()
             self._last_frame_ts = 0.0
             self._stopped_reason = None  # 新会话清掉上次的配额停录标记
+            self._final_session_bytes = 0
             self._recording = True
             self._streams["events"].write({
                 "ts": round(self._started_at, 3),
@@ -221,6 +223,7 @@ class SessionRecorder:
         """收尾并落盘（调用方需已持锁且处于录制态）。手动 stop 与配额停录共用。"""
         self._streams["events"].write({"ts": round(time.time(), 3), "_event": "session_stop"})
         self._write_meta_locked(active=False)
+        self._final_session_bytes = self._session_bytes_locked()
         status = self._status_locked()  # 关闭前取计数（含 session_dir）
         status["recording"] = False     # 本次调用结束后即为停止态
         for s in self._streams.values():
@@ -289,8 +292,10 @@ class SessionRecorder:
     # -- 会话配额 ----------------------------------------------------------
 
     def _session_bytes_locked(self) -> int:
-        total = self._frames.bytes_written if self._frames is not None else 0
-        return total + sum(s.bytes_written for s in self._streams.values())
+        if self._frames is not None or self._streams:
+            total = self._frames.bytes_written if self._frames is not None else 0
+            return total + sum(s.bytes_written for s in self._streams.values())
+        return self._final_session_bytes
 
     def _enforce_quota_locked(self) -> None:
         """超出会话总量上限则自动停录，并把原因写进 meta/status。

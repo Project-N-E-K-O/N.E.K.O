@@ -53,6 +53,10 @@ class FreeTextActivityDetector(DiscreteDetector):
         self._last_ids.clear()
         self._hudmsg_seen = False
 
+    def consume(self, prev: BattleState, cur: BattleState) -> None:
+        for source in _SOURCE_ORDER:
+            self._candidate_payload(cur, source)
+
     def detect(self, prev: BattleState, cur: BattleState) -> BattleEvent | None:
         if not _alive(cur):
             self.reset()

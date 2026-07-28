@@ -43,6 +43,20 @@ class ProximityDetector(DiscreteDetector):
         self._last_id = -1
         self._tail_hits.clear()
 
+    def consume(self, prev: BattleState, cur: BattleState) -> None:
+        self._tail_hits.clear()
+        ids = [
+            eid
+            for item in cur.proximity_events
+            if isinstance(item, dict) and (eid := _event_id(item)) is not None
+        ]
+        if not ids:
+            return
+        max_id = max(ids)
+        if max_id < self._last_id:
+            self._last_id = -1
+        self._last_id = max(self._last_id, max_id)
+
     def detect(self, prev: BattleState, cur: BattleState) -> BattleEvent | None:
         if not cur.is_alive():
             self._tail_hits.clear()

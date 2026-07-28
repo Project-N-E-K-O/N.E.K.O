@@ -1741,12 +1741,12 @@ export default function NekoWarthunderPanel(props: PluginSurfaceProps<DashboardS
   return (
     <div className="wt-panel">
       <style>{PANEL_STYLES}</style>
-      <nav className="wt-tabs" aria-label="副驾驶面板" role="tablist">
-        <button type="button" role="tab" aria-selected={activeTab === "overview"} className={`wt-tab ${activeTab === "overview" ? "is-active" : ""}`} onClick={() => { setActiveTab("overview") }}>概览</button>
-        <button type="button" role="tab" aria-selected={activeTab === "activity"} className={`wt-tab ${activeTab === "activity" ? "is-active" : ""}`} onClick={() => { setActiveTab("activity") }}>活动</button>
-        <button type="button" role="tab" aria-selected={activeTab === "diagnostics"} className={`wt-tab ${activeTab === "diagnostics" ? "is-active" : ""}`} onClick={() => { setActiveTab("diagnostics") }}>诊断</button>
+      <div className="wt-tabs" aria-label="副驾驶面板">
+        <button type="button" aria-pressed={activeTab === "overview"} className={`wt-tab ${activeTab === "overview" ? "is-active" : ""}`} onClick={() => { setActiveTab("overview") }}>概览</button>
+        <button type="button" aria-pressed={activeTab === "activity"} className={`wt-tab ${activeTab === "activity" ? "is-active" : ""}`} onClick={() => { setActiveTab("activity") }}>活动</button>
+        <button type="button" aria-pressed={activeTab === "diagnostics"} className={`wt-tab ${activeTab === "diagnostics" ? "is-active" : ""}`} onClick={() => { setActiveTab("diagnostics") }}>诊断</button>
         <button type="button" className="wt-settings-trigger" aria-label="设置" title="设置" onClick={() => { setSettingsOpen(true) }}>⚙︎</button>
-      </nav>
+      </div>
       <main className="wt-content">
         {activeTab === "overview" ? overview : activeTab === "activity" ? activity : diagnostics}
       </main>
