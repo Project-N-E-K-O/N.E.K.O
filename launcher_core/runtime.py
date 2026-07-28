@@ -1178,10 +1178,16 @@ def run_merged_servers() -> int:
                 server.should_exit = True
                 break
         if not _shutdown_watchdog_started:
+            def _watchdog(timeout=watchdog_timeout):
+                time.sleep(timeout)
+                # The owner-death teardown waits on this same budget, so on a hung
+                # merged shutdown this fires first and used to exit without ever
+                # reaching the group escalation. Run it here before leaving.
+                _escalate_own_process_group()
+                os._exit(1)
+
             threading.Thread(
-                target=lambda timeout=watchdog_timeout: (time.sleep(timeout), os._exit(1)),
-                daemon=True,
-                name="merged-shutdown-watchdog",
+                target=_watchdog, daemon=True, name="merged-shutdown-watchdog",
             ).start()
             _shutdown_watchdog_started = True
         return True
@@ -2399,19 +2405,39 @@ def _finish_owner_death(mechanism: str, wait_for_merged: bool) -> None:
         # 属主关掉管道后 flush 抛 BrokenPipeError 是常态；退出路径不能因此中断。
         pass
 
-    # 最后一步：收掉 cleanup 未记录的孙子进程（插件、MCP、Chromium…）。这是
-    # POSIX 上对应 Windows Job 的收容锚点，且锚点在运行时内部而非属主手里。
-    # 按 TERM → 有界宽限 → 组级 KILL 升级；KILL 会连本进程一起终止——属主已死，
-    # 这本就是终点。
-    if _own_process_group_id() is not None:
-        if _sweep_own_process_group(signal.SIGTERM):
-            time.sleep(OWNER_DEATH_GROUP_GRACE_SECONDS)
-        try:
-            os.killpg(os.getpid(), signal.SIGKILL)
-        except OSError:
-            # ESRCH/EPERM 意味着没有可收的组成员，直接落到 os._exit(0)。
-            pass
+    # 最后一步：收掉 cleanup 未记录的孙子进程（插件、MCP、Chromium…）。
+    #
+    # 要如实说明它的适用范围：这一步只在 launcher **自己是进程组组长**时才发生。
+    # 而最常见的拓扑恰恰不是——属主直接 spawn 我们、我们继承属主的组，此时
+    # `_own_process_group_id()` 恒为 None，下面整段是死代码。所以它不是"POSIX 上
+    # 对应 Windows Job 的收容锚点"（早先的注释这么写，是过度声称）：Windows 的 Job
+    # 无条件生效，这一段有条件。终端直接跑、或属主以 detached 方式拉起时才有它。
+    #
+    # 非组长拓扑下真正在收容的是：cleanup_servers() 对仍存活的已记录 server 做
+    # psutil 整树强杀，以及各 server 自己的优雅停机路径。裸露的只剩一类——被一个
+    # **已经死掉**的 server 遗弃的后代：它们当场被内核改挂到 init，既不再是该
+    # server 的后代，也不在我们能清扫的组里。那是 main 上的既有缺口（本 PR 只改了
+    # 那段的缩进），要补需要按 create_time 记名跟踪后代，属于独立改动。
+    _escalate_own_process_group()
     os._exit(0)
+
+
+def _escalate_own_process_group() -> None:
+    """TERM, a bounded grace, then a group KILL — where we lead the group.
+
+    Only reached when this process is its own process-group leader. In the
+    ordinary shape the owner spawns us into *its* group, so this does nothing:
+    see the residual recorded on cleanup_servers().
+    """
+    if _own_process_group_id() is None:
+        return
+    if _sweep_own_process_group(signal.SIGTERM):
+        time.sleep(OWNER_DEATH_GROUP_GRACE_SECONDS)
+    try:
+        os.killpg(os.getpid(), signal.SIGKILL)
+    except OSError:
+        # ESRCH/EPERM 意味着没有可收的组成员，交给调用方继续退出。
+        pass
 
 
 def install_parent_death_guard():

@@ -532,12 +532,36 @@ def test_stdin_eof_without_owner_death_does_not_fire(tmp_path):
 
 
 @pytest.mark.unit
-def test_guard_does_not_arm_when_already_orphaned(monkeypatch):
+def test_guard_does_not_arm_when_there_was_never_an_owner(monkeypatch):
+    """Started by launchd/systemd: no owner to watch, and none was ever lost."""
     monkeypatch.setattr(parent_guard.os, "getppid", lambda: 1)
+    monkeypatch.setattr(parent_guard, "_PPID_AT_IMPORT", 1)
     guard = parent_guard.install(lambda _m: None)
     try:
         assert guard.mechanisms == ()
         assert not guard.fired
+    finally:
+        guard.stop()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name != "posix", reason="re-parenting to init is POSIX")
+def test_guard_reports_an_owner_that_died_during_startup(monkeypatch):
+    """ppid 1 is ambiguous, and the ambiguity used to resolve the wrong way.
+
+    An owner that exits while we are still importing leaves us adopted by init,
+    so install() sees ppid 1 and armed nothing — leaving a runtime holding the
+    lock and the ports with no owner and no way to ever notice. Having had a
+    parent at import time and not having one now can only mean it exited.
+    """
+    fired = []
+    monkeypatch.setattr(parent_guard.os, "getppid", lambda: 1)
+    monkeypatch.setattr(parent_guard, "_PPID_AT_IMPORT", 4242)
+    guard = parent_guard.install(fired.append)
+    try:
+        assert guard.mechanisms == ()
+        assert guard.fired
+        assert fired == ["orphaned_during_startup"]
     finally:
         guard.stop()
 

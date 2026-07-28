@@ -206,6 +206,10 @@ def record_path() -> Path:
 #  Platform lock primitives
 # ---------------------------------------------------------------------------
 
+class _SkipLegacyProbe(Exception):
+    """Internal: this legacy candidate tells us nothing and must be ignored."""
+
+
 class LockHeldByAnother(Exception):
     """Somebody else holds the lock — a conclusive answer, not an error."""
 
@@ -704,6 +708,20 @@ def legacy_owner_status() -> tuple[str, Optional[dict]]:
             saw_unknown = True
         else:
             try:
+                info = os.fstat(fd)
+                getuid = getattr(os, "getuid", None)
+                foreign = (
+                    callable(getuid) and info.st_uid != getuid()
+                ) or not stat.S_ISREG(info.st_mode)
+                if foreign:
+                    # This path is predictable and lives in a shared temp dir, so
+                    # anyone on the host can pre-create it world-writable and hold
+                    # a lock on it forever. A file we do not own says nothing about
+                    # whether *our* previous generation is running — and treating
+                    # it as "owned" would be an unclearable refusal to start, since
+                    # the sticky bit stops the victim deleting it. Not evidence
+                    # either way, so not even "unknown".
+                    raise _SkipLegacyProbe
                 try:
                     _try_lock_fd(fd)
                 except LockHeldByAnother:
@@ -712,6 +730,8 @@ def legacy_owner_status() -> tuple[str, Optional[dict]]:
                     saw_unknown = True
                 else:
                     _unlock_fd(fd)
+            except _SkipLegacyProbe:
+                pass
             finally:
                 try:
                     os.close(fd)

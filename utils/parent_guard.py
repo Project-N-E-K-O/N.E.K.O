@@ -122,6 +122,14 @@ def _guard_enabled() -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
+#: Our parent at import time. POSIX loses the owner's identity the moment init
+#: adopts us, so ``getppid() == 1`` inside install() is ambiguous: it means either
+#: "launched by launchd/systemd and never had an owner" or "the owner died while
+#: we were still booting". Sampling early disambiguates it — a value that was
+#: above 1 and is now 1 can only mean that parent exited.
+_PPID_AT_IMPORT = 0
+
+
 def _configured_parent_pid() -> Optional[int]:
     raw = os.environ.get(PARENT_PID_ENV, "").strip()
     if not raw.isdigit():
@@ -200,6 +208,9 @@ def _safe_getppid() -> int:
         return int(getppid())
     except Exception:
         return 0
+
+_PPID_AT_IMPORT = _safe_getppid()
+
 
 
 class ParentDeathGuard:
@@ -625,6 +636,13 @@ def install(
     # daemonized ancestor). There is nothing to watch, and polling would fire
     # spuriously the moment the value never changes.
     if guard.parent_pid <= 1:
+        if os.name == "posix" and _PPID_AT_IMPORT > 1:
+            # We had a parent when this module loaded and we do not now: it exited
+            # during our startup. Arming nothing here would leave a runtime that
+            # holds the lock and the ports with no owner and no way to notice —
+            # precisely the orphan this guard exists to prevent. Nothing to watch
+            # any more, so report it immediately.
+            guard.fire("orphaned_during_startup")
         return guard
 
     guard._install_pdeathsig()
