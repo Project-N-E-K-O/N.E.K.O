@@ -1301,6 +1301,8 @@
             this.profile = normalized.profile || {};
             this.styleSnapshot = null;
             this.ownerSessionId = '';
+            this.activeFrameTransformNonIdentity = false;
+            this.committedFrameTransformActive = false;
             this.lookAtSnapshot = null;
             this.lookAtSource = '';
             this.lookAtSessionId = '';
@@ -1561,6 +1563,7 @@
                 kind: 'live2d',
                 sessionId: session && session.id ? session.id : '',
                 containerStyle: this.captureContainerStyle(this.getContainer()),
+                committedFrameTransformActive: this.committedFrameTransformActive,
                 params: this.captureParams(paramIds),
                 expression: this.captureExpression(),
                 lookAt: {
@@ -1574,11 +1577,6 @@
         restore(snapshot) {
             if (!snapshot || snapshot.kind !== 'live2d') {
                 return false;
-            }
-
-            const container = this.getContainer();
-            if (window._nekoAvatarPerformanceFrameContainer === container) {
-                window._nekoAvatarPerformanceFrameContainer = null;
             }
 
             const manager = this.getManager();
@@ -1604,6 +1602,14 @@
             this.restoreExpression(snapshot.expression);
             this.restoreContainerStyle(snapshot.containerStyle);
 
+            const container = this.getContainer();
+            this.activeFrameTransformNonIdentity = false;
+            this.committedFrameTransformActive = snapshot.committedFrameTransformActive === true;
+            if (this.committedFrameTransformActive && container) {
+                window._nekoAvatarPerformanceFrameContainer = container;
+            } else if (window._nekoAvatarPerformanceFrameContainer === container) {
+                window._nekoAvatarPerformanceFrameContainer = null;
+            }
             this.styleSnapshot = null;
             this.ownerSessionId = '';
             this.lookAtSnapshot = null;
@@ -1620,9 +1626,12 @@
             if (!committedStyle) {
                 return false;
             }
+            this.committedFrameTransformActive =
+                this.committedFrameTransformActive || this.activeFrameTransformNonIdentity;
             this.styleSnapshot = cloneJsonCompatible(committedStyle);
             if (session && session.snapshot && typeof session.snapshot === 'object') {
                 session.snapshot.containerStyle = cloneJsonCompatible(committedStyle);
+                session.snapshot.committedFrameTransformActive = this.committedFrameTransformActive;
             }
             return true;
         }
@@ -1630,6 +1639,7 @@
         acquireSession(session) {
             const container = this.getContainer();
             this.ownerSessionId = session && session.id ? session.id : '';
+            this.activeFrameTransformNonIdentity = false;
             const manager = this.getManager();
             if (this.sessionHasCapability(session, 'motion') && manager && typeof manager.suspendTemporaryMotions === 'function') {
                 this.motionSuspendSource = 'avatar-performance-motion-' + (this.ownerSessionId || 'session');
@@ -1655,7 +1665,10 @@
                 return;
             }
             const container = this.getContainer();
-            if (window._nekoAvatarPerformanceFrameContainer === container) {
+            this.activeFrameTransformNonIdentity = false;
+            if (this.committedFrameTransformActive && container) {
+                window._nekoAvatarPerformanceFrameContainer = container;
+            } else if (window._nekoAvatarPerformanceFrameContainer === container) {
                 window._nekoAvatarPerformanceFrameContainer = null;
             }
             if (this.styleSnapshot) {
@@ -1687,11 +1700,20 @@
             const baseTransform = this.styleSnapshot && this.styleSnapshot.transform
                 ? this.styleSnapshot.transform
                 : '';
+            const x = Number(frame.x || 0);
+            const y = Number(frame.y || 0);
+            const scale = Number(frame.scale || 1);
+            const rotate = Number(frame.rotate || 0);
+            this.activeFrameTransformNonIdentity =
+                Math.abs(x) > 0.001 ||
+                Math.abs(y) > 0.001 ||
+                Math.abs(scale - 1) > 0.0001 ||
+                Math.abs(rotate) > 0.001;
             const transform = [
                 baseTransform,
-                'translate3d(' + Number(frame.x || 0).toFixed(2) + 'px, ' + Number(frame.y || 0).toFixed(2) + 'px, 0)',
-                'scale(' + Number(frame.scale || 1).toFixed(4) + ')',
-                'rotate(' + Number(frame.rotate || 0).toFixed(3) + 'deg)'
+                'translate3d(' + x.toFixed(2) + 'px, ' + y.toFixed(2) + 'px, 0)',
+                'scale(' + scale.toFixed(4) + ')',
+                'rotate(' + rotate.toFixed(3) + 'deg)'
             ].filter(Boolean).join(' ');
             container.style.transform = transform;
             if (frame.opacity !== '') {

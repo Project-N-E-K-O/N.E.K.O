@@ -934,7 +934,7 @@ test('core model input regions stay empty when the model surface is hidden or no
     assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects())), []);
 });
 
-test('performance frame sessions suppress model input regions until their container transform is restored', () => {
+test('performance frame session markers clear on restore and remain for committed transforms', () => {
     const container = {
         style: {
             transform: '',
@@ -974,6 +974,12 @@ test('performance frame sessions suppress model input regions until their contai
     assert.equal(context.window._nekoAvatarPerformanceFrameContainer, container);
     assert.equal(stage.release(session.id, 'test-complete'), true);
     assert.equal(context.window._nekoAvatarPerformanceFrameContainer, null);
+
+    const committedSession = stage.acquire('committed-frame-test', { capabilities: ['frame'] });
+    driver.applyFrame({ x: 12, y: 0, scale: 1, rotate: 0, opacity: '' }, committedSession);
+    assert.equal(stage.commitCurrentFrameAsBaseline(committedSession.id), true);
+    assert.equal(stage.release(committedSession.id, 'commit-complete'), true);
+    assert.equal(context.window._nekoAvatarPerformanceFrameContainer, container);
 });
 
 test('core model input regions clamp padding to the supported 0-32 range', () => {
@@ -1115,13 +1121,15 @@ test('core model input regions enumerate visible legacy Cubism 2 draw data', () 
     const harness = createCoreHarness();
     const manager = new harness.Live2DManager();
     const drawContexts = [
-        { _$IP: 0, _$VS: 1, baseOpacity: 1 },
-        { _$IP: 1, _$VS: 1, baseOpacity: 1 },
-        { _$IP: 2, _$VS: 1, baseOpacity: 1 }
+        { _$IP: 0, _$VS: 1, baseOpacity: 1, _$yo: () => true },
+        { _$IP: 1, _$VS: 1, baseOpacity: 1, _$yo: () => true },
+        { _$IP: 2, _$VS: 1, baseOpacity: 1, _$yo: () => true },
+        { _$IP: 3, _$VS: 1, baseOpacity: 1, _$yo: () => false }
     ];
     const drawData = [
         { getOpacity: () => 1 },
         { getOpacity: () => 0 },
+        { getOpacity: () => 1 },
         { getOpacity: () => 1 }
     ];
     const modelContext = {
@@ -1129,7 +1137,8 @@ test('core model input regions enumerate visible legacy Cubism 2 draw data', () 
         _$Hr: [
             { getPartsOpacity: () => 1 },
             { getPartsOpacity: () => 1 },
-            { getPartsOpacity: () => 0 }
+            { getPartsOpacity: () => 0 },
+            { getPartsOpacity: () => 1 }
         ],
         getDrawData: (index) => drawData[index]
     };
@@ -1138,7 +1147,7 @@ test('core model input regions enumerate visible legacy Cubism 2 draw data', () 
             coreModel: {
                 getModelContext: () => modelContext
             },
-            drawDataCount: 3,
+            drawDataCount: 4,
             getDrawableBounds: (index) => index === 0
                 ? { x: -1, y: -2, width: 1, height: 2 }
                 : { x: 0, y: 0, width: 2, height: 3 }

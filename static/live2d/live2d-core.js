@@ -1164,6 +1164,9 @@ class Live2DManager {
             if (!drawData || !drawContext || typeof drawData.getOpacity !== 'function') {
                 return null;
             }
+            if (typeof drawContext._$yo === 'function' && drawContext._$yo() !== true) {
+                return 0;
+            }
 
             const drawableOpacity = drawData.getOpacity(modelContext, drawContext);
             const partContext = modelContext?._$Hr?.[drawContext._$IP];
