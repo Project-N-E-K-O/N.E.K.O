@@ -653,6 +653,33 @@ def install(
     return guard
 
 
+def _install_child_owner_poll(expected_parent_pid: Optional[int]) -> bool:
+    """POSIX fallback for platforms without ``PR_SET_PDEATHSIG``.
+
+    Delivers the same ``SIGTERM`` the kernel trap would, so it lands on the
+    graceful-stop handler the child already installed and takes an identical
+    path.
+    """
+    if os.name != "posix":
+        return False
+    expected = int(expected_parent_pid or _safe_getppid())
+    if expected <= 1:
+        return False
+
+    def _watch() -> None:
+        while _safe_getppid() == expected:
+            time.sleep(DEFAULT_POLL_INTERVAL)
+        try:
+            # To the process, not the thread: the handler runs on the main one.
+            os.kill(os.getpid(), signal.SIGTERM)
+        except OSError:
+            # Already gone, or signals unavailable — nothing left to do.
+            pass
+
+    threading.Thread(target=_watch, name="neko-child-owner-poll", daemon=True).start()
+    return True
+
+
 def install_child_guard(expected_parent_pid: Optional[int] = None) -> bool:
     """Arm the zero-cost parent-death trap inside a launcher-managed child.
 
@@ -669,8 +696,17 @@ def install_child_guard(expected_parent_pid: Optional[int] = None) -> bool:
     the whole window; re-reading it here would not, because both reads would
     already return the adopter.
     """
-    if not _guard_enabled() or not sys.platform.startswith("linux"):
+    if not _guard_enabled():
         return False
+    if not sys.platform.startswith("linux"):
+        # No PR_SET_PDEATHSIG outside Linux. Without this, a macOS multi-process
+        # run leaves the servers with *nothing* watching the launcher: if it is
+        # SIGKILLed its atexit cleanup never runs, launchd adopts them, and they
+        # keep serving their ports — while the owner-death sweep that would have
+        # collected them died with the launcher. Group membership alone
+        # terminates nothing. Poll instead; same shape the launcher's own guard
+        # uses as its backstop.
+        return _install_child_owner_poll(expected_parent_pid)
 
     # A forked child inherits the launcher's handler for the owner-death signal,
     # still closed over the launcher's owner pid. Nothing in this runtime sends

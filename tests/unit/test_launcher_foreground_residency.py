@@ -338,6 +338,19 @@ def _wait_for(path: Path, timeout: float = 15.0) -> bool:
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(os.name != "posix" or sys.platform.startswith("linux"),
+                    reason="the poll fallback is for POSIX platforms without pdeathsig")
+def test_child_guard_falls_back_to_polling_without_pdeathsig():
+    """macOS children must watch the launcher too.
+
+    install_child_guard is the only place a child server arms anything — they
+    never call parent_guard.install() — so a Linux-only implementation left the
+    macOS servers with nothing watching the launcher at all.
+    """
+    assert parent_guard.install_child_guard(os.getppid()) is True
+
+
+@pytest.mark.unit
 @pytest.mark.skipif(os.name != "posix", reason="group broadcast is a POSIX shape")
 def test_child_defers_to_the_launcher_on_a_group_broadcast(monkeypatch):
     """A group-wide TERM must not let a child outrun the launcher's ordering.
