@@ -1549,13 +1549,14 @@
             // independent top-right Toast window. Calling the private in-page
             // helper here would pin this bubble to the physically cropped Pet
             // carrier, so it would move and clip together with the avatar.
-            const showWelcomeBackToast = typeof window.showStatusToast === 'function'
-                ? window.showStatusToast
-                : I.showStatusToast;
-            showWelcomeBackToast(
-                window.t ? window.t('app.welcomeBack', { name: lanlan_config.lanlan_name }) : `\u{1FAF4} ${lanlan_config.lanlan_name}回来了！`,
-                3000
-            );
+            const welcomeBackText = window.t
+                ? window.t('app.welcomeBack', { name: lanlan_config.lanlan_name })
+                : `\u{1FAF4} ${lanlan_config.lanlan_name}回来了！`;
+            if (typeof window.showStatusToast === 'function') {
+                window.showStatusToast(welcomeBackText, 3000);
+            } else if (typeof I.showStatusToast === 'function') {
+                I.showStatusToast(welcomeBackText, 3000);
+            }
 
             // 恢复主动搭话与主动视觉调度
             try {

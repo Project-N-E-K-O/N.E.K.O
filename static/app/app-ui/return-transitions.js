@@ -418,6 +418,8 @@
         }
     };
 
+    // `coordinateSpace` describes the source space of `rect`: virtual input is
+    // already aligned, while client input must be projected into virtual space.
     function getNekoTransitionRect(rect, coordinateSpace = 'client') {
         return coordinateSpace === 'virtual'
             ? normalizeNekoScreenRect(rect)

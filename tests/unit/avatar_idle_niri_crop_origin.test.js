@@ -17,9 +17,24 @@ function readFunction(relativePath, name) {
     for (let index = bodyStart; index < source.length; index += 1) {
         if (source[index] === '{') depth += 1;
         if (source[index] === '}') depth -= 1;
-        if (depth === 0) return source.slice(start, index + 1);
+        if (depth === 0) {
+            const extracted = source.slice(start, index + 1);
+            assert.doesNotThrow(
+                () => new Function(`${extracted}\nreturn ${name};`),
+                `invalid extracted function ${name}`
+            );
+            return extracted;
+        }
     }
     throw new Error(`unterminated function ${name}`);
+}
+
+function readSection(source, startMarker, endMarker) {
+    const start = source.indexOf(startMarker);
+    assert.notEqual(start, -1, `missing section start: ${startMarker}`);
+    const end = source.indexOf(endMarker, start + startMarker.length);
+    assert.notEqual(end, -1, `missing section end: ${endMarker}`);
+    return source.slice(start, end);
 }
 
 test('CAT1 desktop chat rect uses the Niri virtual viewport origin after physical crop', () => {
@@ -109,6 +124,39 @@ test('CAT1 converts a cropped DOM rect back to virtual desktop coordinates befor
     );
 });
 
+test('CAT1 virtual rect fallback keeps the crop offset when conversion is unavailable', () => {
+    const context = {
+        window: {
+            __nekoNiriPetPhysicalCrop: {
+                getState() {
+                    return {
+                        enabled: true,
+                        offsetX: 1499,
+                        offsetY: 251
+                    };
+                }
+            }
+        }
+    };
+    vm.createContext(context);
+    vm.runInContext(
+        readFunction('static/avatar/avatar-ui-buttons/core.js', '_getNekoDesktopVirtualRect'),
+        context
+    );
+
+    context.localRect = { left: 1, top: 1, width: 122, height: 122 };
+    const withoutConverter = vm.runInContext('_getNekoDesktopVirtualRect(localRect)', context);
+    assert.equal(withoutConverter.left, 1500);
+    assert.equal(withoutConverter.top, 252);
+
+    context.window.__nekoNiriPetPhysicalCrop.toVirtualRect = () => {
+        throw new Error('converter unavailable');
+    };
+    const throwingConverter = vm.runInContext('_getNekoDesktopVirtualRect(localRect)', context);
+    assert.equal(throwingConverter.left, 1500);
+    assert.equal(throwingConverter.top, 252);
+});
+
 test('CAT1 drag keeps using the virtual desktop size while the Pet window is cropped', () => {
     const context = {
         window: {
@@ -189,33 +237,64 @@ test('CAT1 drag writes virtual coordinates without subtracting the crop offset t
         path.join(projectRoot, 'static/avatar/avatar-ui-buttons/methods-return.js'),
         'utf8'
     );
-
-    assert.match(source, /const virtualViewport = _getNekoDesktopVirtualViewportSize\(\);/);
-    assert.match(source, /container\.style\.left = `\$\{nextVirtualLeft\}px`;/);
-    assert.match(source, /container\.style\.top = `\$\{nextVirtualTop\}px`;/);
-    assert.doesNotMatch(source, /nextVirtualLeft - offset\.x|nextVirtualTop - offset\.y/);
-    assert.match(source, /return-ball-drag-active', \{[\s\S]*?dragSessionId: dragSafetyToken/);
-    assert.match(source, /return-ball-drag-motion', \{[\s\S]*?dragSessionId: dragSafetyToken/);
-    assert.match(source, /return-ball-drag-end', \{[\s\S]*?dragSessionId: safetyToken/);
-    assert.match(source, /const w = dragVisualWidth;[\s\S]*?const h = dragVisualHeight;/);
-    assert.match(
+    const handleMoveSource = readSection(
         source,
+        "const handleMove = (clientX, clientY, sourceEvent = null, movePoint = null) => {",
+        "const handleStart = (clientX, clientY, pointerType = 'mouse', sourceEvent = null, startPoint = null) => {"
+    );
+    const handleStartSource = readSection(
+        source,
+        "const handleStart = (clientX, clientY, pointerType = 'mouse', sourceEvent = null, startPoint = null) => {",
+        "const handleEnd = () => {"
+    );
+    const handleEndSource = readSection(
+        source,
+        "const handleEnd = () => {",
+        "container.addEventListener('mousedown'"
+    );
+    const mouseMoveSource = readSection(source, "mouseMove: (e) => {", "mouseUp: handleEnd,");
+    const cropStateAppliedSource = readSection(
+        source,
+        "cropStateApplied: (event) => {",
+        "document.addEventListener('mousemove'"
+    );
+    const cropReadySource = readSection(
+        source,
+        "const isNiriReturnBallFullCropReady = (",
+        "const clearDragCropHoldPending = () => {"
+    );
+    const finishStateSource = readSection(
+        source,
+        "const finishDragState = (moved, safetyToken, suppressClick = moved) => {",
+        "const resetDragStateAfterMissingEnd = (safetyToken) => {"
+    );
+
+    assert.match(handleMoveSource, /const virtualViewport = _getNekoDesktopVirtualViewportSize\(\);/);
+    assert.match(handleMoveSource, /container\.style\.left = `\$\{nextVirtualLeft\}px`;/);
+    assert.match(handleMoveSource, /container\.style\.top = `\$\{nextVirtualTop\}px`;/);
+    assert.doesNotMatch(handleMoveSource, /nextVirtualLeft - offset\.x|nextVirtualTop - offset\.y/);
+    assert.match(handleMoveSource, /return-ball-drag-active', \{[\s\S]*?dragSessionId: dragSafetyToken/);
+    assert.match(handleMoveSource, /return-ball-drag-motion', \{[\s\S]*?dragSessionId: dragSafetyToken/);
+    assert.match(finishStateSource, /return-ball-drag-end', \{[\s\S]*?dragSessionId: safetyToken/);
+    assert.match(handleMoveSource, /const w = dragVisualWidth;[\s\S]*?const h = dragVisualHeight;/);
+    assert.match(
+        handleStartSource,
         /_getNekoIdleReturnDragGrabOffset\([\s\S]*?useLocalGrabAnchor \? localRect : rect,[\s\S]*?useLocalGrabAnchor \? 'local' : 'virtual'[\s\S]*?dragGrabOffsetX = grabOffset\.x;[\s\S]*?dragGrabOffsetY = grabOffset\.y;/
     );
     assert.match(
-        source,
+        mouseMoveSource,
         /mouseMove: \(e\) => \{[\s\S]*?if \(shouldUseGlobalCursorForMouseDrag\(\)\) return;[\s\S]*?!shouldIgnoreMissingMouseButtons\(\)[\s\S]*?handleMove\(point\.x, point\.y, e, point\);/
     );
     assert.match(
-        source,
+        handleEndSource,
         /if \(movedPastThreshold && dragCropHoldPending\)[\s\S]*?dragReleasePending = true[\s\S]*?finishDragState\(false, safetyToken, true\)/
     );
     assert.match(
-        source,
+        cropStateAppliedSource,
         /cropStateApplied:[\s\S]*?isNiriReturnBallFullCropReady\(detail, true, dragSafetyToken\)[\s\S]*?handleMove\([\s\S]*?if \(dragReleasePending && !dragCropHoldPending\)[\s\S]*?finishDragState\(true, safetyToken\)/
     );
     assert.match(
-        source,
+        cropReadySource,
         /const stateSession = Math\.max\(0, Math\.round\(Number\(state\.dragSessionId\) \|\| 0\)\);[\s\S]*?if \(expectedSession && stateSession !== expectedSession\) return false;/
     );
 });

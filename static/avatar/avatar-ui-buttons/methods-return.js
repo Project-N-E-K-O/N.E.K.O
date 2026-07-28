@@ -639,7 +639,11 @@ Object.assign(AvatarButtonMixin.methods, {
                 clearDragReleasePending();
                 clearDragCropHoldPending();
                 const dragActivityFacts = finishDragActivity(safetyToken);
-                if (!dragActivityFacts) return;
+                if (!dragActivityFacts) {
+                    container.setAttribute('data-dragging', 'false');
+                    setReturnClickSuppressed(false);
+                    return;
+                }
                 if (moved) {
                     const finalLeft = parseFloat(container.style.left);
                     const finalTop = parseFloat(container.style.top);
@@ -851,6 +855,9 @@ Object.assign(AvatarButtonMixin.methods, {
                     useLocalGrabAnchor ? 'local' : 'virtual'
                 );
                 const safetyToken = dragSafetyToken + 1;
+                // Publish the new token before any helper/event can
+                // synchronously cancel this drag session.
+                dragSafetyToken = safetyToken;
                 startDragActivity(safetyToken, rect.left, rect.top);
                 _restoreNekoIdleCat1EdgePeekBeforeDrag(container);
                 _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-start', {
@@ -882,7 +889,6 @@ Object.assign(AvatarButtonMixin.methods, {
                 container.style.top = `${containerStartY}px`;
                 container.setAttribute('data-dragging', 'pending');
                 container.style.cursor = 'grabbing';
-                dragSafetyToken = safetyToken;
                 dragSafetyTimer = setTimeout(() => {
                     dragSafetyTimer = 0;
                     resetDragStateAfterMissingEnd(safetyToken);
@@ -1011,8 +1017,9 @@ Object.assign(AvatarButtonMixin.methods, {
                         if (!isDragging || expectedSafetyToken !== dragSafetyToken) return;
                         if (!isNiriReturnBallFullCropReady(getDragCropState(), true, expectedSafetyToken)) return;
                         clearDragCropHoldPending();
-                        if (!isUsableDragPoint(point)) return;
-                        handleMove(point.localX, point.localY, null, point);
+                        if (isUsableDragPoint(point)) {
+                            handleMove(point.localX, point.localY, null, point);
+                        }
                         if (dragReleasePending && !dragCropHoldPending) {
                             const safetyToken = dragSafetyToken;
                             clearDragReleasePending();

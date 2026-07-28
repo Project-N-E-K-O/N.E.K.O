@@ -121,8 +121,24 @@ function _getNekoDesktopVirtualRect(rect) {
     }
 
     let virtualRect = null;
+    let fallbackOffsetX = 0;
+    let fallbackOffsetY = 0;
     try {
         const cropApi = window.__nekoNiriPetPhysicalCrop;
+        const cropState = cropApi && typeof cropApi.getState === 'function'
+            ? cropApi.getState()
+            : null;
+        const offsetX = Number(cropState && cropState.offsetX);
+        const offsetY = Number(cropState && cropState.offsetY);
+        if (
+            cropState
+            && (cropState.active === true || cropState.enabled === true)
+            && Number.isFinite(offsetX)
+            && Number.isFinite(offsetY)
+        ) {
+            fallbackOffsetX = offsetX;
+            fallbackOffsetY = offsetY;
+        }
         virtualRect = cropApi && typeof cropApi.toVirtualRect === 'function'
             ? cropApi.toVirtualRect({ x: left, y: top, width, height })
             : null;
@@ -130,10 +146,10 @@ function _getNekoDesktopVirtualRect(rect) {
         virtualRect = null;
     }
 
-    const virtualLeft = Number(virtualRect && virtualRect.x);
-    const virtualTop = Number(virtualRect && virtualRect.y);
-    const normalizedLeft = Number.isFinite(virtualLeft) ? virtualLeft : left;
-    const normalizedTop = Number.isFinite(virtualTop) ? virtualTop : top;
+    const virtualLeft = virtualRect ? Number(virtualRect.x) : NaN;
+    const virtualTop = virtualRect ? Number(virtualRect.y) : NaN;
+    const normalizedLeft = Number.isFinite(virtualLeft) ? virtualLeft : left + fallbackOffsetX;
+    const normalizedTop = Number.isFinite(virtualTop) ? virtualTop : top + fallbackOffsetY;
     return {
         x: normalizedLeft,
         y: normalizedTop,

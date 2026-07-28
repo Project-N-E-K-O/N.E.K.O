@@ -605,8 +605,9 @@ function _reclampNekoIdleCat1EdgePeekToViewport(containerOrButton) {
 
     const w = container.offsetWidth || 64;
     const h = container.offsetHeight || 64;
-    const viewportW = Math.max(w, window.innerWidth || 0);
-    const viewportH = Math.max(h, window.innerHeight || 0);
+    const virtualViewport = _getNekoDesktopVirtualViewportSize();
+    const viewportW = Math.max(w, virtualViewport.width || 0);
+    const viewportH = Math.max(h, virtualViewport.height || 0);
     const hiddenX = w * _NEKO_IDLE_CAT1_EDGE_PEEK_HIDDEN_RATIO;
     const hiddenY = h * _NEKO_IDLE_CAT1_EDGE_PEEK_HIDDEN_RATIO;
     const rawLeft = parseFloat(container.style.left);
@@ -640,8 +641,9 @@ function _restoreNekoIdleCat1EdgePeekBeforeDrag(container) {
     if (!_isNekoIdleCat1EdgePeekEligible(container)) return;
     const w = container.offsetWidth || 64;
     const h = container.offsetHeight || 64;
-    const viewportW = Math.max(w, window.innerWidth || 0);
-    const viewportH = Math.max(h, window.innerHeight || 0);
+    const virtualViewport = _getNekoDesktopVirtualViewportSize();
+    const viewportW = Math.max(w, virtualViewport.width || 0);
+    const viewportH = Math.max(h, virtualViewport.height || 0);
     const rawLeft = parseFloat(container.style.left);
     const rawTop = parseFloat(container.style.top);
     const rect = _getNekoDesktopVirtualElementRect(container);
@@ -662,8 +664,9 @@ function _clearNekoIdleCat1EdgePeekForTierExit(container) {
 
     const w = container.offsetWidth || 64;
     const h = container.offsetHeight || 64;
-    const viewportW = Math.max(w, window.innerWidth || 0);
-    const viewportH = Math.max(h, window.innerHeight || 0);
+    const virtualViewport = _getNekoDesktopVirtualViewportSize();
+    const viewportW = Math.max(w, virtualViewport.width || 0);
+    const viewportH = Math.max(h, virtualViewport.height || 0);
     const rawLeft = parseFloat(container.style.left);
     const rawTop = parseFloat(container.style.top);
     const rect = _getNekoDesktopVirtualElementRect(container);

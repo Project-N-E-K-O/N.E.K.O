@@ -106,7 +106,7 @@ function createInlineStyle(initial = {}) {
         values.set(name, normalized.value || '');
         priorities.set(name, normalized.priority || '');
     });
-    return {
+    const style = {
         getPropertyValue(name) {
             return values.get(name) || '';
         },
@@ -124,6 +124,25 @@ function createInlineStyle(initial = {}) {
             return previous;
         }
     };
+    Object.defineProperties(style, {
+        display: {
+            get: () => values.get('display') || '',
+            set: (value) => {
+                values.set('display', String(value));
+                priorities.set('display', '');
+            },
+            enumerable: true
+        },
+        pointerEvents: {
+            get: () => values.get('pointer-events') || '',
+            set: (value) => {
+                values.set('pointer-events', String(value));
+                priorities.set('pointer-events', '');
+            },
+            enumerable: true
+        }
+    });
+    return style;
 }
 
 function createModel({ x = 0, y = 120, width = 500, height = 600 } = {}) {

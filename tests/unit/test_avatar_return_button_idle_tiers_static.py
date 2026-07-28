@@ -1320,8 +1320,9 @@ def test_cat1_edge_peek_only_applies_after_drag_release():
         edge_reclamp_block,
         "cat1 edge peek viewport reclamp preserves the active edge",
         "const edge = _getNekoIdleCat1EdgePeekActiveEdge(button);",
-        "const viewportW = Math.max(w, window.innerWidth || 0);",
-        "const viewportH = Math.max(h, window.innerHeight || 0);",
+        "const virtualViewport = _getNekoDesktopVirtualViewportSize();",
+        "const viewportW = Math.max(w, virtualViewport.width || 0);",
+        "const viewportH = Math.max(h, virtualViewport.height || 0);",
         "const nextLeft = edge.includes('left')",
         "? -hiddenX",
         "? viewportW - w + hiddenX",
@@ -1347,8 +1348,11 @@ def test_cat1_edge_peek_only_applies_after_drag_release():
         "const resetDragStateAfterMissingEnd = (safetyToken) => {",
         "return button drag finish",
     )
+    regular_finish_block = finish_drag_block.split(
+        "if (!dragActivityFacts) {", 1
+    )[1].split("return;", 1)[1]
     _assert_source_order(
-        finish_drag_block,
+        regular_finish_block,
         "cat1 edge peek before drag-end event",
         "if (moved) {",
         "const finalLeft = parseFloat(container.style.left);",
@@ -1522,7 +1526,8 @@ def test_cat1_edge_peek_only_applies_after_drag_release():
         "_clearNekoIdleCat1EdgePeek(container);",
         "if (!wasEdgePeekActive) return;",
         "const w = container.offsetWidth || 64;",
-        "const viewportW = Math.max(w, window.innerWidth || 0);",
+        "const virtualViewport = _getNekoDesktopVirtualViewportSize();",
+        "const viewportW = Math.max(w, virtualViewport.width || 0);",
         "container.style.left = `${Math.round(_clampNekoIdleCat1EdgePeekCoordinate(currentLeft, 0, viewportW - w))}px`;",
         "container.style.top = `${Math.round(_clampNekoIdleCat1EdgePeekCoordinate(currentTop, 0, viewportH - h))}px`;",
     )
@@ -1935,9 +1940,86 @@ def test_return_button_crop_ack_listener_is_removed_on_rebuild_and_cleanup():
     assert event_name in return_source
     assert "this._returnButtonDragHandlers.cropStateApplied" in return_source
     for source in (setup_source, cleanup_source):
-        assert event_name in source
-        assert "this._returnButtonDragHandlers.cropStateApplied" in source
-        assert "window.removeEventListener(" in source
+        assert (
+            "window.removeEventListener(\n"
+            "                    'neko:niri-pet-physical-crop-state-applied',\n"
+            "                    this._returnButtonDragHandlers.cropStateApplied\n"
+            "                );"
+        ) in source
+
+
+def test_return_button_drag_publishes_token_before_synchronous_start_hooks_and_always_cleans():
+    source = _read_avatar_ui_buttons_source()
+    handle_start = _source_slice_between(
+        source,
+        "const handleStart = (clientX, clientY, pointerType = 'mouse', sourceEvent = null, startPoint = null) => {",
+        "const handleEnd = () => {",
+        "return button drag start handler",
+    )
+    _assert_source_order(
+        handle_start,
+        "return button drag publishes the token before synchronous start hooks",
+        "const safetyToken = dragSafetyToken + 1;",
+        "dragSafetyToken = safetyToken;",
+        "startDragActivity(safetyToken, rect.left, rect.top);",
+        "_restoreNekoIdleCat1EdgePeekBeforeDrag(container);",
+        "_dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-start'",
+    )
+
+    finish_state = _source_slice_between(
+        source,
+        "const finishDragState = (moved, safetyToken, suppressClick = moved) => {",
+        "const resetDragStateAfterMissingEnd = (safetyToken) => {",
+        "return button drag finish state",
+    )
+    missing_activity_cleanup = _source_slice_between(
+        finish_state,
+        "if (!dragActivityFacts) {",
+        "if (moved) {",
+        "return button missing activity cleanup",
+    )
+    _assert_source_order(
+        missing_activity_cleanup,
+        "return button duplicate finish still clears blocking attributes",
+        "if (!dragActivityFacts) {",
+        "container.setAttribute('data-dragging', 'false');",
+        "setReturnClickSuppressed(false);",
+        "return;",
+    )
+
+
+def test_cat1_walk_cancels_when_virtual_container_rect_is_unavailable():
+    source = _read_avatar_ui_buttons_source()
+    step_walk = _source_slice_between(
+        source,
+        "function _stepNekoIdleCat1Walk(button, timestamp)",
+        "function _startNekoIdleCat1Walk(button, target)",
+        "cat1 walk step",
+    )
+    start_walk = _source_slice_between(
+        source,
+        "function _startNekoIdleCat1Walk(button, target)",
+        "function _scheduleNekoIdleCat1WalkStart(button, target)",
+        "cat1 walk start",
+    )
+    for block, name, rect_name in (
+        (step_walk, "cat1 walk step", "rect"),
+        (start_walk, "cat1 walk start", "currentRect"),
+    ):
+        rect_guard = _source_slice_between(
+            block,
+            f"const {rect_name} = _getNekoDesktopVirtualElementRect(",
+            "state.facingRight = _resolveNekoIdleCat1TargetFacing(",
+            f"{name} virtual rect guard",
+        )
+        _assert_source_order(
+            rect_guard,
+            name,
+            f"const {rect_name} = _getNekoDesktopVirtualElementRect(",
+            f"if (!{rect_name}) {{",
+            "_cancelNekoIdleCat1Journey(button, { resetArt: true, preserveObservers: true });",
+            "return;",
+        )
 
 
 def test_return_button_drag_reports_one_terminal_physical_activity_summary():
@@ -2596,7 +2678,7 @@ def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
     crop_state_applied_block = _source_slice_between(
         local_drag_setup,
         "cropStateApplied: (event) => {",
-        "}\n            };",
+        "document.addEventListener('mousemove'",
         "return button verified crop state handler",
     )
     _assert_source_order(
@@ -2609,6 +2691,17 @@ def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
         "const point = getDragPointFromScreenPoint(screenPoint);",
         "flushPoint(isUsableDragPoint(point) ? point : fallbackPoint);",
     )
+    _assert_source_order(
+        crop_state_applied_block,
+        "verified niri crop state releases a pending drag without requiring a final point",
+        "clearDragCropHoldPending();",
+        "if (isUsableDragPoint(point)) {",
+        "handleMove(point.localX, point.localY, null, point);",
+        "if (dragReleasePending && !dragCropHoldPending) {",
+        "clearDragReleasePending();",
+        "finishDragState(true, safetyToken);",
+    )
+    assert "if (!isUsableDragPoint(point)) return;" not in crop_state_applied_block
     _assert_source_contains(
         local_drag_setup,
         "cropApi.getEventCoordinates(sourceEvent)",
@@ -3766,18 +3859,6 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
         "local return-ball mousemove ends released drag without moving",
     )
 
-    floating_controls_source = (
-        APP_UI_PATH / "surface-floating-controls.js"
-    ).read_text(encoding="utf-8")
-    _assert_source_order(
-        floating_controls_source,
-        "desktop welcome-back toast routes through the host bridge instead of the cropped Pet DOM",
-        "const showWelcomeBackToast = typeof window.showStatusToast === 'function'",
-        "? window.showStatusToast",
-        ": I.showStatusToast;",
-        "showWelcomeBackToast(",
-    )
-    assert "I.showStatusToast(window.t ? window.t('app.welcomeBack'" not in floating_controls_source
     finish_drag_state_block = _source_slice_between(
         drag_setup,
         "const finishDragState = (moved, safetyToken, suppressClick = moved) => {",
@@ -3847,6 +3928,27 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
         "if (_isNekoIdleReturnDragActionActive(button)) return",
         "const profile = state.profile",
     )
+
+
+def test_desktop_welcome_back_toast_routes_through_host_bridge():
+    source = (APP_UI_PATH / "surface-floating-controls.js").read_text(encoding="utf-8")
+    welcome_toast = _source_slice_between(
+        source,
+        "const welcomeBackText = window.t",
+        "// 恢复主动搭话与主动视觉调度",
+        "desktop welcome-back toast",
+    )
+
+    _assert_source_order(
+        welcome_toast,
+        "desktop welcome-back toast routes through the host bridge instead of the cropped Pet DOM",
+        "const welcomeBackText = window.t",
+        "if (typeof window.showStatusToast === 'function') {",
+        "window.showStatusToast(welcomeBackText, 3000);",
+        "} else if (typeof I.showStatusToast === 'function') {",
+        "I.showStatusToast(welcomeBackText, 3000);",
+    )
+    assert "const showWelcomeBackToast" not in source
 
 
 def test_return_button_local_no_move_release_clears_pending_drag_state():

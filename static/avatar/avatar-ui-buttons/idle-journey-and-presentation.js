@@ -1268,6 +1268,10 @@ function _stepNekoIdleCat1Walk(button, timestamp) {
     state.target = target;
     state.targetKind = target.kind || '';
     const rect = _getNekoDesktopVirtualElementRect(container);
+    if (!rect) {
+        _cancelNekoIdleCat1Journey(button, { resetArt: true, preserveObservers: true });
+        return;
+    }
     state.facingRight = _resolveNekoIdleCat1TargetFacing(rect, target);
     _setNekoIdleCat1Classes(button, state);
     const speedRate = _updateNekoIdleCat1WalkSpeedRate(button, state, target.distance);
@@ -1315,6 +1319,10 @@ function _startNekoIdleCat1Walk(button, target) {
     if (walkDragging && walkDragging !== 'false') return;
     const profile = state.profile;
     const currentRect = _getNekoDesktopVirtualElementRect(walkContainer);
+    if (!currentRect) {
+        _cancelNekoIdleCat1Journey(button, { resetArt: true, preserveObservers: true });
+        return;
+    }
     state.target = target;
     state.targetKind = target && target.kind ? target.kind : '';
     state.facingRight = _resolveNekoIdleCat1TargetFacing(currentRect, target);
