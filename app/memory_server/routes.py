@@ -39,7 +39,13 @@ from config.prompts.prompts_memory import (
     RECENT_HISTORY_INTRO, NO_RECENT_HISTORY,
 )
 from utils.frontend_utils import get_timestamp
-from utils.language_utils import get_global_language
+from utils.language_utils import (
+    get_global_language,
+    get_global_language_full,
+    is_supported_language_code,
+    language_context,
+    normalize_language_code,
+)
 from utils.llm_client import convert_to_messages
 from utils.time_format import format_elapsed as _format_elapsed
 from utils.cloudsave_runtime import assert_cloudsave_writable
@@ -54,6 +60,14 @@ from .runtime import app
 
 class HistoryRequest(BaseModel):
     input_history: str
+    language: str | None = None
+
+
+def _activate_request_language(language: str | None) -> str:
+    """Select a replay-safe request locale without changing the process default."""
+    if is_supported_language_code(language):
+        return normalize_language_code(language, format='full')
+    return get_global_language_full()
 
 
 class ExternalMemoryImportRequest(BaseModel):
@@ -501,111 +515,132 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
     LLM waste is fully gone.
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
-    gates._touch_activity()
-    try:
-        input_history = convert_to_messages(json.loads(request.input_history))
-        if not input_history:
-            return {"status": "cached", "count": 0}
-        if _has_human_messages(input_history):
-            await gates._aclear_review_clean(lanlan_name)
-        logger.info(f"[MemoryServer] cache: {lanlan_name} +{len(input_history)} 条消息")
-        uid = str(uuid4())
-        async with runtime._get_settle_lock(lanlan_name):
-            await runtime.recent_history_manager.update_history(input_history, lanlan_name, compress=False)
-            # store_conversation 必须在 lock 内、与 update_history 串行：和
-            # /process / /renew 路径对偶，确保单角色 db 写顺序一致。
-            await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
-        # outbox 登记走锁外——它会 spawn background task 跑 LLM，长持锁会
-        # 阻塞下一轮 /cache 写盘。
-        await post_turn._spawn_outbox_post_turn_signals(lanlan_name, input_history)
-        return {"status": "cached", "count": len(input_history)}
-    except Exception as e:
-        logger.error(f"[MemoryServer] cache 失败: {e}", exc_info=True)
-        return {"status": "error", "message": str(e)}
+    memory_language = _activate_request_language(request.language)
+    with language_context(memory_language):
+        gates._touch_activity()
+        try:
+            input_history = convert_to_messages(json.loads(request.input_history))
+            if not input_history:
+                return {"status": "cached", "count": 0}
+            if _has_human_messages(input_history):
+                await gates._aclear_review_clean(lanlan_name)
+            logger.info(f"[MemoryServer] cache: {lanlan_name} +{len(input_history)} 条消息")
+            uid = str(uuid4())
+            async with runtime._get_settle_lock(lanlan_name):
+                await runtime.recent_history_manager.update_history(input_history, lanlan_name, compress=False)
+                # store_conversation 必须在 lock 内、与 update_history 串行：和
+                # /process / /renew 路径对偶，确保单角色 db 写顺序一致。
+                await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
+            # outbox 登记走锁外——它会 spawn background task 跑 LLM，长持锁会
+            # 阻塞下一轮 /cache 写盘。
+            await post_turn._spawn_outbox_post_turn_signals(
+                lanlan_name, input_history, language=memory_language,
+            )
+            return {"status": "cached", "count": len(input_history)}
+        except Exception as e:
+            logger.error(f"[MemoryServer] cache 失败: {e}", exc_info=True)
+            return {"status": "error", "message": str(e)}
 
 
 @app.post("/process/{lanlan_name}")
 async def process_conversation(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
-    gates._touch_activity()
-    # P2 vector warmup: first /process is the cheapest "frontend ready"
-    # signal we have — by the time the user sends a real conversation
-    # turn, greeting and prominent drain are over. notify_first_process
-    # is a setflag, not async, so it doesn't add latency to /process.
-    if runtime.embedding_warmup_worker is not None:
-        runtime.embedding_warmup_worker.notify_first_process()
-    try:
-        # 检查角色是否存在于配置中，如果不存在则记录信息但继续处理（允许新角色）
+    memory_language = _activate_request_language(request.language)
+    with language_context(memory_language):
+        gates._touch_activity()
+        # P2 vector warmup: first /process is the cheapest "frontend ready"
+        # signal we have — by the time the user sends a real conversation
+        # turn, greeting and prominent drain are over. notify_first_process
+        # is a setflag, not async, so it doesn't add latency to /process.
+        if runtime.embedding_warmup_worker is not None:
+            runtime.embedding_warmup_worker.notify_first_process()
         try:
-            character_data = await runtime._config_manager.aload_characters()
-            catgirl_names = list(character_data.get('猫娘', {}).keys())
-            if lanlan_name not in catgirl_names:
-                logger.info(f"[MemoryServer] 角色 '{lanlan_name}' 不在配置中，但继续处理（可能是新创建的角色）")
+            # 检查角色是否存在于配置中，如果不存在则记录信息但继续处理（允许新角色）
+            try:
+                character_data = await runtime._config_manager.aload_characters()
+                catgirl_names = list(character_data.get('猫娘', {}).keys())
+                if lanlan_name not in catgirl_names:
+                    logger.info(f"[MemoryServer] 角色 '{lanlan_name}' 不在配置中，但继续处理（可能是新创建的角色）")
+            except Exception as e:
+                logger.warning(f"检查角色配置失败: {e}，继续处理")
+
+            uid = str(uuid4())
+            input_history = convert_to_messages(json.loads(request.input_history))
+            if _has_human_messages(input_history):
+                await gates._aclear_review_clean(lanlan_name)
+            logger.info(f"[MemoryServer] 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}")
+            await runtime.recent_history_manager.update_history(
+                input_history,
+                lanlan_name,
+                on_compress_done=review._on_compress_done,
+            )
+            # 旧模块已禁用（性能不足）：
+            # await settings_manager.extract_and_update_settings(input_history, lanlan_name)
+            # await semantic_manager.store_conversation(uid, input_history, lanlan_name)
+            await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
+
+            # 异步事实提取（不阻塞返回，失败静默跳过）
+            await post_turn._spawn_outbox_post_turn_signals(
+                lanlan_name, input_history, language=memory_language,
+            )
+
+            # Phase C: 不再 cancel-and-restart review；让 maybe_spawn_review 在新消息
+            # 门 + min_interval + in-flight 多重 gate 后决定起或不起。在跑的 review
+            # 跑完会自行 patch 当前 history 末尾的可改区，新消息保留不动。
+            await review.maybe_spawn_review(lanlan_name)
+
+            return {"status": "processed"}
         except Exception as e:
-            logger.warning(f"检查角色配置失败: {e}，继续处理")
-
-        uid = str(uuid4())
-        input_history = convert_to_messages(json.loads(request.input_history))
-        if _has_human_messages(input_history):
-            await gates._aclear_review_clean(lanlan_name)
-        logger.info(f"[MemoryServer] 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}")
-        await runtime.recent_history_manager.update_history(input_history, lanlan_name, on_compress_done=review._on_compress_done)
-        # 旧模块已禁用（性能不足）：
-        # await settings_manager.extract_and_update_settings(input_history, lanlan_name)
-        # await semantic_manager.store_conversation(uid, input_history, lanlan_name)
-        await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
-
-        # 异步事实提取（不阻塞返回，失败静默跳过）
-        await post_turn._spawn_outbox_post_turn_signals(lanlan_name, input_history)
-
-        # Phase C: 不再 cancel-and-restart review；让 maybe_spawn_review 在新消息
-        # 门 + min_interval + in-flight 多重 gate 后决定起或不起。在跑的 review
-        # 跑完会自行 patch 当前 history 末尾的可改区，新消息保留不动。
-        await review.maybe_spawn_review(lanlan_name)
-
-        return {"status": "processed"}
-    except Exception as e:
-        logger.error(f"处理对话历史失败: {e}")
-        return {"status": "error", "message": str(e)}
+            logger.error(f"处理对话历史失败: {e}")
+            return {"status": "error", "message": str(e)}
 
 @app.post("/renew/{lanlan_name}")
 async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
-    gates._touch_activity()
-    # Same warmup hint as /process: /renew is also a "user actively
-    # using the app" signal, so it counts as the unblock event.
-    if runtime.embedding_warmup_worker is not None:
-        runtime.embedding_warmup_worker.notify_first_process()
-    try:
-        # 检查角色是否存在于配置中，如果不存在则记录信息但继续处理（允许新角色）
+    memory_language = _activate_request_language(request.language)
+    with language_context(memory_language):
+        gates._touch_activity()
+        # Same warmup hint as /process: /renew is also a "user actively
+        # using the app" signal, so it counts as the unblock event.
+        if runtime.embedding_warmup_worker is not None:
+            runtime.embedding_warmup_worker.notify_first_process()
         try:
-            character_data = await runtime._config_manager.aload_characters()
-            catgirl_names = list(character_data.get('猫娘', {}).keys())
-            if lanlan_name not in catgirl_names:
-                logger.info(f"[MemoryServer] renew: 角色 '{lanlan_name}' 不在配置中，但继续处理（可能是新创建的角色）")
+            # 检查角色是否存在于配置中，如果不存在则记录信息但继续处理（允许新角色）
+            try:
+                character_data = await runtime._config_manager.aload_characters()
+                catgirl_names = list(character_data.get('猫娘', {}).keys())
+                if lanlan_name not in catgirl_names:
+                    logger.info(f"[MemoryServer] renew: 角色 '{lanlan_name}' 不在配置中，但继续处理（可能是新创建的角色）")
+            except Exception as e:
+                logger.warning(f"检查角色配置失败: {e}，继续处理")
+
+            uid = str(uuid4())
+            input_history = convert_to_messages(json.loads(request.input_history))
+            if _has_human_messages(input_history):
+                await gates._aclear_review_clean(lanlan_name)
+            logger.info(f"[MemoryServer] renew: 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}")
+            # 首轮摘要带锁：阻塞 /new_dialog 直到摘要+时间戳写入完成
+            async with runtime._get_settle_lock(lanlan_name):
+                await runtime.recent_history_manager.update_history(
+                    input_history,
+                    lanlan_name,
+                    detailed=True,
+                    on_compress_done=review._on_compress_done,
+                )
+                await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
+
+            # 以下操作在锁外执行，不阻塞 /new_dialog
+            # 异步事实提取
+            await post_turn._spawn_outbox_post_turn_signals(
+                lanlan_name, input_history, language=memory_language,
+            )
+
+            # Phase C: 见 /process 的注释——不再 cancel-and-restart。
+            await review.maybe_spawn_review(lanlan_name)
+
+            return {"status": "processed"}
         except Exception as e:
-            logger.warning(f"检查角色配置失败: {e}，继续处理")
-
-        uid = str(uuid4())
-        input_history = convert_to_messages(json.loads(request.input_history))
-        if _has_human_messages(input_history):
-            await gates._aclear_review_clean(lanlan_name)
-        logger.info(f"[MemoryServer] renew: 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}")
-        # 首轮摘要带锁：阻塞 /new_dialog 直到摘要+时间戳写入完成
-        async with runtime._get_settle_lock(lanlan_name):
-            await runtime.recent_history_manager.update_history(input_history, lanlan_name, detailed=True, on_compress_done=review._on_compress_done)
-            await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
-
-        # 以下操作在锁外执行，不阻塞 /new_dialog
-        # 异步事实提取
-        await post_turn._spawn_outbox_post_turn_signals(lanlan_name, input_history)
-
-        # Phase C: 见 /process 的注释——不再 cancel-and-restart。
-        await review.maybe_spawn_review(lanlan_name)
-
-        return {"status": "processed"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+            return {"status": "error", "message": str(e)}
 
 
 @app.post("/settle/{lanlan_name}")
@@ -618,29 +653,38 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
     completes those operations.
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
-    gates._touch_activity()
-    try:
-        uid = str(uuid4())
-        input_history = convert_to_messages(json.loads(request.input_history))
-        if _has_human_messages(input_history):
-            await gates._aclear_review_clean(lanlan_name)
-        logger.info(f"[MemoryServer] settle: 收到 {lanlan_name} 的结算请求，消息数: {len(input_history)}")
+    memory_language = _activate_request_language(request.language)
+    with language_context(memory_language):
+        gates._touch_activity()
+        try:
+            uid = str(uuid4())
+            input_history = convert_to_messages(json.loads(request.input_history))
+            if _has_human_messages(input_history):
+                await gates._aclear_review_clean(lanlan_name)
+            logger.info(f"[MemoryServer] settle: 收到 {lanlan_name} 的结算请求，消息数: {len(input_history)}")
 
-        async with runtime._get_settle_lock(lanlan_name):
+            async with runtime._get_settle_lock(lanlan_name):
+                if input_history:
+                    await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
+                await runtime.recent_history_manager.update_history(
+                    [],
+                    lanlan_name,
+                    detailed=True,
+                    on_compress_done=review._on_compress_done,
+                )
+
             if input_history:
-                await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
-            await runtime.recent_history_manager.update_history([], lanlan_name, detailed=True, on_compress_done=review._on_compress_done)
+                await post_turn._spawn_outbox_post_turn_signals(
+                    lanlan_name, input_history, language=memory_language,
+                )
 
-        if input_history:
-            await post_turn._spawn_outbox_post_turn_signals(lanlan_name, input_history)
+            # Phase C: 见 /process 的注释——不再 cancel-and-restart。
+            await review.maybe_spawn_review(lanlan_name)
 
-        # Phase C: 见 /process 的注释——不再 cancel-and-restart。
-        await review.maybe_spawn_review(lanlan_name)
-
-        return {"status": "settled"}
-    except Exception as e:
-        logger.error(f"[MemoryServer] settle 失败: {e}", exc_info=True)
-        return {"status": "error", "message": str(e)}
+            return {"status": "settled"}
+        except Exception as e:
+            logger.error(f"[MemoryServer] settle 失败: {e}", exc_info=True)
+            return {"status": "error", "message": str(e)}
 
 
 @app.get("/get_recent_history/{lanlan_name}")

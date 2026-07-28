@@ -23,7 +23,7 @@ from typing import Any, Optional
 
 from config import MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS
 from main_logic import core, cross_server
-from main_logic.agent_event_bus import notify_analyze_ack
+from main_logic.agent_event_bus import notify_analyze_ack, register_ws_broadcaster
 from utils.config_manager import get_reserved
 
 from ._shared import runtime
@@ -282,6 +282,12 @@ async def _broadcast_to_all_connected(event_payload: dict) -> int:
         *(_send_one(n, ws) for n, ws in targets), return_exceptions=False
     )
     return sum(1 for r in results if r is True)
+
+
+# Wire the app-owned WebSocket fan-out into the lower-layer event-bus seam.
+# Consumers such as quota dropper and card-drop routes can then broadcast
+# without importing ``app.main_server`` and inverting the module layering.
+register_ws_broadcaster(_broadcast_to_all_connected)
 
 
 async def _handle_agent_event(event: dict):
@@ -627,9 +633,6 @@ async def _handle_agent_event(event: dict):
                             "[EventBus] direct task_result reply delivered (detail_len=%d)",
                             len(detail_text),
                         )
-                        print(
-                            f"[EventBus] direct task_result reply: {detail_text[:60]}"
-                        )
                         return
 
                 # Build structured callback and enqueue for LLM injection
@@ -882,7 +885,6 @@ async def _handle_agent_event(event: dict):
                             "[EventBus] agent_notification sent to frontend (text_len=%d)",
                             len(text),
                         )
-                        print(f"[EventBus] agent_notification text: {text[:60]}")
                     except Exception as e:
                         logger.warning(
                             "[EventBus] agent_notification WS send failed: %s", e
@@ -932,8 +934,11 @@ async def _handle_agent_event(event: dict):
                     "[EventBus] task_update dropped: WebSocket not connected for lanlan=%s",
                     lanlan,
                 )
-    except Exception as e:
-        logger.debug(f"handle_agent_event error: {e}")
+    except Exception as exc:
+        logger.warning(
+            "[EventBus] handle_agent_event failed (error_type=%s)",
+            type(exc).__name__,
+        )
 
 
 async def _refresh_character_globals():

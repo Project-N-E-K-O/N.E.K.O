@@ -28,11 +28,16 @@ import threading
 import asyncio
 import os
 import hashlib
+import platform
+import subprocess
 from collections import OrderedDict
-from typing import Optional, Tuple, List, Any, Dict
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Optional, Tuple, List, Any, Dict, Iterator
 from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm_async
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
+from utils.source_locale import source_region_from_locale
 from utils.token_tracker import set_call_type
 from utils.steam_state import get_steamworks
 
@@ -50,6 +55,18 @@ _global_language_initialized = False
 
 # 全局区域标识（中文区/非中文区）
 _global_region: Optional[str] = None  # 'china' 或 'non-china'
+
+# Background work may carry a conversation-specific locale while other
+# conversations run concurrently. ContextVars keep that override task-local;
+# process-wide language remains the fallback for ordinary callers.
+_language_context_short: ContextVar[Optional[str]] = ContextVar(
+    "neko_language_context_short",
+    default=None,
+)
+_language_context_full: ContextVar[Optional[str]] = ContextVar(
+    "neko_language_context_full",
+    default=None,
+)
 
 
 def _get_language_env_override() -> Optional[str]:
@@ -116,6 +133,14 @@ def is_supported_language_code(raw: Any) -> bool:
     return any(_matches_lang_code(s, code) for code in _SUPPORTED_LANGUAGE_CODES)
 
 
+def _locale_is_mainland_china(raw: Any) -> bool:
+    """Match a system locale against the shared mainland source-region contract."""
+    if not raw:
+        return False
+    normalized = str(raw).strip().split('@', 1)[0].split('.', 1)[0]
+    return source_region_from_locale(normalized) == 'china'
+
+
 def _is_china_region() -> bool:
     """
     Decide whether the current system is in the Chinese region
@@ -140,22 +165,60 @@ def _is_china_region() -> bool:
         )
 
     try:
+        macos_locale = _get_macos_locale()
+        if macos_locale:
+            return _locale_is_mainland_china(macos_locale)
+
         system_locale = locale.getlocale()[0]
         if system_locale:
             system_locale_lower = system_locale.lower()
-            if system_locale_lower.startswith('zh'):
+            if _locale_is_mainland_china(system_locale_lower):
                 return True
             if 'chinese' in system_locale_lower and 'china' in system_locale_lower:
                 return True
         
         lang_env = os.environ.get('LANG', '').lower()
-        if lang_env.startswith('zh'):
+        if _locale_is_mainland_china(lang_env):
             return True
         
         return False
     except Exception as e:
         logger.warning(f"判断系统区域失败: {e}，默认使用非中文区")
         return False
+
+
+def _get_macos_locale() -> Optional[str]:
+    """Read the user's real macOS locale even when the process inherits ``C.UTF-8``.
+
+    Electron/launcher child processes commonly receive a neutral POSIX locale,
+    so ``locale.getlocale()`` and ``LANG`` do not reflect System Settings.  The
+    ``defaults`` database is the authoritative per-user fallback on macOS.
+    """
+    if platform.system() != 'Darwin':
+        return None
+
+    for key in ('AppleLocale', 'AppleLanguages'):
+        try:
+            result = subprocess.run(
+                ['/usr/bin/defaults', 'read', '-g', key],
+                capture_output=True,
+                text=True,
+                timeout=1.0,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if result.returncode != 0:
+            continue
+        raw = result.stdout.strip()
+        if not raw:
+            continue
+        if key == 'AppleLocale':
+            return raw.strip('"').split('@', 1)[0]
+        match = re.search(r'"([^"\n]+)"', raw)
+        if match:
+            return match.group(1)
+    return None
 
 
 def _get_windows_locale() -> Optional[str]:
@@ -187,8 +250,10 @@ def _get_system_language() -> str:
         Language code ('zh', 'en', 'ja', 'ko', 'ru'), defaults to 'zh'
     """
     def _parse_locale(s: str) -> Optional[str]:
-        s = s.lower()
+        s = s.lower().replace('_', '-')
         if s.startswith('zh') or 'chinese' in s:
+            if any(marker in s for marker in ('-tw', '-hk', 'hant', 'traditional')):
+                return 'zh-TW'
             return 'zh'
         if s.startswith('ja') or 'japanese' in s:
             return 'ja'
@@ -209,6 +274,15 @@ def _get_system_language() -> str:
         windows_locale = _get_windows_locale()
         if windows_locale:
             lang = _parse_locale(windows_locale)
+            if lang:
+                return lang
+
+        # macOS GUI apps often inherit LANG=C.UTF-8 even when System Settings
+        # is Chinese/Japanese/etc. Read Apple's locale database before the
+        # process locale so standalone memory_server chooses the real language.
+        macos_locale = _get_macos_locale()
+        if macos_locale:
+            lang = _parse_locale(macos_locale)
             if lang:
                 return lang
 
@@ -339,6 +413,10 @@ def get_global_language() -> str:
     Returns:
         Language code ('zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt'), defaults to 'zh'
     """
+    contextual = _language_context_short.get()
+    if contextual:
+        return contextual
+
     global _global_language
     
     with _global_language_lock:
@@ -358,11 +436,36 @@ def get_global_language_full() -> str:
     Returns:
         Language code ('zh', 'zh-TW', 'en', 'ja', 'ko', 'ru'), defaults to 'zh'
     """
+    contextual = _language_context_full.get()
+    if contextual:
+        return contextual
+
     with _global_language_lock:
         if not _global_language_initialized:
             initialize_global_language()
         
         return _global_language_full or _global_language or 'en'
+
+
+@contextmanager
+def language_context(language: Any) -> Iterator[None]:
+    """Temporarily override language getters within the current async task."""
+    selected = _get_language_env_override() or language
+    if not is_supported_language_code(selected):
+        yield
+        return
+
+    short_token = _language_context_short.set(
+        normalize_language_code(str(selected), format='short')
+    )
+    full_token = _language_context_full.set(
+        normalize_language_code(str(selected), format='full')
+    )
+    try:
+        yield
+    finally:
+        _language_context_full.reset(full_token)
+        _language_context_short.reset(short_token)
 
 
 def set_global_language(language: str) -> None:

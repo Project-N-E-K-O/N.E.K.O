@@ -1,0 +1,72 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-neko-darker text-white font-display;
+    overflow: hidden;
+  }
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { @apply bg-purple-700/60 rounded-full; }
+}
+
+@keyframes neon-spin {
+  0%   { --neon-angle: 0deg; }
+  100% { --neon-angle: 360deg; }
+}
+
+@property --neon-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
+.forge-card-wrapper {
+  position: relative;
+  border-radius: 1rem;
+  transition: transform 0.2s ease, box-shadow 0.3s ease;
+}
+.forge-card-wrapper::before,
+.forge-card-wrapper::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 1.1rem;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.forge-card-wrapper::before {
+  background: conic-gradient(
+    from var(--neon-angle),
+    transparent 0deg,
+    #8b5cf6 60deg,
+    #ec4899 120deg,
+    #f59e0b 180deg,
+    transparent 240deg,
+    transparent 360deg
+  );
+  z-index: -1;
+}
+.forge-card-wrapper::after {
+  inset: 0;
+  border-radius: 1rem;
+  background: #0f172a;
+  z-index: -1;
+}
+.forge-card-wrapper:hover::before {
+  opacity: 1;
+  animation: neon-spin 2.5s linear infinite;
+}
+.forge-card-wrapper:hover::after {
+  opacity: 1;
+}
+.forge-card-wrapper:hover {
+  transform: translateY(-4px);
+  border-color: transparent !important;
+  box-shadow: 0 0 16px rgba(139,92,246,0.25), 0 0 32px rgba(236,72,153,0.1);
+}
