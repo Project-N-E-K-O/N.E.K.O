@@ -104,6 +104,20 @@ class QQMessageDispatcher:
             try:
                 message = await self.plugin.qq_client.receive_message()
                 if message:
+                    if isinstance(message, dict):
+                        # 接收时刻的群记忆政策快照：handler 在全局并发闸/
+                        # 会话锁上可能排队数秒，处理侧任何晚读都会把 OFF
+                        # 时代收到的消息标成已授权。真正的接收边界在这里
+                        # （task 创建之前），随消息本体传递。
+                        settings_now = getattr(self.plugin, "_qq_settings", {}) or {}
+                        message["_group_memory_at_receipt"] = bool(
+                            settings_now.get("group_memory_enabled", False)
+                        )
+                        # 成员记忆是群记忆的子开关：两个都开才算收到时有
+                        # 授权（后端已钳制，这里是收口处的对偶判据）。
+                        message["_member_memory_at_receipt"] = bool(
+                            settings_now.get("group_member_memory_enabled", False)
+                        ) and bool(settings_now.get("group_memory_enabled", False))
                     task = __import__("asyncio").create_task(self.plugin._run_message_handler(message))
                     self.plugin.handler_runtime_service.track_handler_task(task)
             except __import__("asyncio").CancelledError:
@@ -184,6 +198,9 @@ class QQMessageDispatcher:
                 message["content"] = f"[系统] 新成员 {user_id} 加入了群聊，你可以欢迎一下。注意：要像真人一样自然地欢迎，不要用模板化的欢迎语。"
                 message["raw_message"] = message["content"]
                 message["message_id"] = f"welcome_{group_id}_{user_id}_{int(__import__('time').time())}"
+                # 合成控制指令，不是入群成员的发言：标记 source 让成员
+                # bucket 排除、prompt 行进 digest 排除名单。
+                message["_synthetic_source"] = "group_join_notice"
             # 不 return，走正常 pipeline
         # 黑名单优先：命中负优先级标签 → 不记录、不处理
         label_defs = list((self.plugin._qq_settings or {}).get("backlog_labels") or [])
@@ -238,6 +255,18 @@ class QQMessageDispatcher:
                 sender_id,
                 message_text,
                 is_at_bot,
+                group_memory_at_receipt=(
+                    message.get("_group_memory_at_receipt")
+                    if isinstance(message, dict) else None
+                ),
+                member_memory_at_receipt=(
+                    message.get("_member_memory_at_receipt")
+                    if isinstance(message, dict) else None
+                ),
+                synthetic_source=(
+                    str(message.get("_synthetic_source") or "")
+                    if isinstance(message, dict) else ""
+                ),
                 attachments=attachments,
                 user_nickname=user_nickname,
                 current_message_id=current_message_id,
@@ -296,7 +325,23 @@ class QQMessageDispatcher:
         mentions_all: bool = False,
         message_timestamp: int = 0,
         forward_sub_count: int = 0,
+        group_memory_at_receipt: bool | None = None,
+        member_memory_at_receipt: bool | None = None,
+        synthetic_source: str = "",
     ):
+        # 群记忆政策快照优先取消息接收边界（process_messages 在 task 创建
+        # 前打在消息上——handler 可能在全局并发闸/会话锁上排队数秒）；旁路
+        # 调用者无消息级快照时至少在本函数第一个 await 前定格。OFF 时代
+        # 收到的发言不得因处理期间切 ON 获得入库授权——对偶 backlog 行的
+        # group_memory_enabled_at_receipt。反向（处理期间切 OFF）由 prime
+        # 门控与读点复检兜住。
+        if group_memory_at_receipt is None:
+            group_memory_at_receipt = bool(
+                (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                    "group_memory_enabled", False,
+                )
+            )
+        group_memory_at_receipt = bool(group_memory_at_receipt)
         strategy_mode = getattr(self.plugin, "_strategy_mode", "neko_dynamic")
         force_reply = False
         if strategy_mode == "neko_dynamic" and hasattr(self.plugin, "attention_gate_service") and self.plugin.attention_gate_service is not None:
@@ -331,6 +376,7 @@ class QQMessageDispatcher:
                 mentions_other_user=mentions_other_user,
                 message_timestamp=message_timestamp,
             )
+        group_memory_enabled = group_memory_at_receipt
         request = QQReplyRequest(
             message_text=message_text,
             sender_id=sender_id,
@@ -339,7 +385,7 @@ class QQMessageDispatcher:
             group_id=group_id,
             user_nickname=user_nickname,
             is_at_bot=is_at_bot,
-            source_kind="incoming_group",
+            source_kind=synthetic_source or "incoming_group",
             forward_sub_count=forward_sub_count,
             group_scene_mode=group_scene_mode,
             current_message_id=current_message_id,
@@ -352,8 +398,22 @@ class QQMessageDispatcher:
             fallback_to_text_on_voice_failure=True,
             suppression_reason=suppression_reason,
             force_reply=force_reply,
+            use_memory_context=group_memory_enabled,
+            persist_memory=group_memory_enabled,
+            member_memory_at_receipt=member_memory_at_receipt,
         )
-        outcome = await self.plugin.reply_pipeline.run(request)
+        if synthetic_source:
+            # 合成控制轮（入群欢迎等）：prompt 行不是任何参与者的发言，
+            # pipeline 跑完后记入排除名单（对偶 proactive/rapid-fire；
+            # 本 handler 已持会话锁，before 在锁内取）。
+            svc = self.plugin.session_memory_service
+            hist_before = svc.session_history_len(f"group:{group_id}")
+            try:
+                outcome = await self.plugin.reply_pipeline.run(request)
+            finally:
+                svc.record_synthetic_prompt_rows(f"group:{group_id}", hist_before)
+        else:
+            outcome = await self.plugin.reply_pipeline.run(request)
         # 回复后即时标 reviewed，统一 backlog 管道
         if outcome.action == "reply" and outcome.reply_text and current_message_id:
             if hasattr(self.plugin, "backlog_service") and self.plugin.backlog_service:
@@ -388,6 +448,27 @@ class QQMessageDispatcher:
             shift = await self.plugin.attention_gate_service.check_focus_shift()
             if shift and shift.new_focus_group:
                 import asyncio
-                asyncio.create_task(
-                    self.plugin.attention_gate_service.run_retroactive_review(shift.new_focus_group)
+                gate = self.plugin.attention_gate_service
+                retro_tasks = getattr(gate, "_retro_tasks", None)
+                if retro_tasks is None:
+                    retro_tasks = set()
+                    gate._retro_tasks = retro_tasks
+                retro_task = asyncio.create_task(
+                    gate.run_retroactive_review(shift.new_focus_group)
                 )
+                # 强引用+关机 join：回溯任务在会话锁内改历史/排除名单，
+                # stop 清锁表前必须等它收尾。完成回调消费异常——否则失败
+                # 静默丢弃，只留延迟的未取回异常告警。
+                retro_tasks.add(retro_task)
+
+                def _on_retro_done(task: "asyncio.Task") -> None:
+                    retro_tasks.discard(task)
+                    if task.cancelled():
+                        return
+                    exc = task.exception()
+                    if exc is not None:
+                        self.plugin.logger.warning(
+                            f"[RetroReview] 回溯补回任务失败: {exc}"
+                        )
+
+                retro_task.add_done_callback(_on_retro_done)

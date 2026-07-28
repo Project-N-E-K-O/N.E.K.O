@@ -508,6 +508,7 @@ _main_runtime_limited_mode_enabled = False
 _main_runtime_limited_mode_reason = ""
 _MAIN_LIMITED_MODE_ALLOWED_EXACT_PATHS = {
     "/",
+    "/card-forge/active-character",
     "/health",
     "/favicon.ico",
     "/api/beacon/shutdown",
@@ -584,7 +585,7 @@ async def main_storage_limited_mode_guard(request: Request, call_next):
 
     blocking_reason = _main_runtime_limited_mode_reason or "runtime_initializing"
     logger.info(
-        "[Main] limited-mode blocks request path=%s reason=%s",
+        "[Main] limited-mode blocks request path=%r reason=%s",
         request.url.path,
         blocking_reason,
     )
@@ -615,12 +616,16 @@ async def handle_maintenance_mode_error(_request, exc: MaintenanceModeError):
 
 from .web_app import (  # noqa: F401
     CustomStaticFiles,
+    _active_character_cors_headers,
+    _card_forge_active_character,
     _start_debug_health_watchdog,
+    active_character_options,
     agent_router,
     avatar_drop_router,
     beacon_shutdown,
     capture_router,
     card_assist_router,
+    card_drop_router,
     characters_router,
     cloudsave_router,
     config_router,
@@ -628,6 +633,7 @@ from .web_app import (  # noqa: F401
     debug_router,
     galgame_router,
     game_router,
+    get_card_forge_active_character,
     health,
     icebreaker_router,
     init_shared_state,
@@ -641,6 +647,7 @@ from .web_app import (  # noqa: F401
     proactive_router,
     proxy_user_plugin_market_bridge,
     set_steamworks_initializer,
+    set_card_forge_active_character,
     static_dir,
     storage_location_router,
     system_router,
@@ -652,6 +659,8 @@ from .web_app import (  # noqa: F401
 
 _preload_task: asyncio.Task = None
 _game_cleanup_task: asyncio.Task = None
+_facts_sync_worker_task: asyncio.Task = None
+_card_cache_worker_task: asyncio.Task = None
 _runtime_startup_init_lock = asyncio.Lock()
 _runtime_startup_init_completed = False
 
@@ -678,6 +687,45 @@ async def _sync_memory_server_after_startup_import(import_result):
         logger.warning(
             f"Steam Auto-Cloud startup import could not sync memory_server: {e}"
         )
+
+
+def _start_neko_servers_integration_workers() -> None:
+    """Start storage-backed integration workers after the startup barrier clears."""
+    global _facts_sync_worker_task, _card_cache_worker_task
+
+    if _facts_sync_worker_task is None or _facts_sync_worker_task.done():
+        try:
+            from main_logic.facts_sync import start_facts_sync_worker
+
+            _facts_sync_worker_task = asyncio.create_task(start_facts_sync_worker())
+        except Exception as exc:
+            logger.warning("[facts_sync] start worker failed: %s", exc)
+
+    if _card_cache_worker_task is None or _card_cache_worker_task.done():
+        try:
+            from main_logic.card_cache import start_card_cache_puller
+
+            _card_cache_worker_task = asyncio.create_task(start_card_cache_puller())
+        except Exception as exc:
+            logger.warning("[card_cache] start puller failed: %s", exc)
+
+
+async def _stop_neko_servers_integration_workers() -> None:
+    """Cancel storage-backed integration workers during graceful shutdown."""
+    global _facts_sync_worker_task, _card_cache_worker_task
+
+    await _cancel_task_if_running(
+        _facts_sync_worker_task,
+        name="facts sync worker",
+        timeout=1.0,
+    )
+    _facts_sync_worker_task = None
+    await _cancel_task_if_running(
+        _card_cache_worker_task,
+        name="card cache worker",
+        timeout=1.0,
+    )
+    _card_cache_worker_task = None
 
 
 async def _cancel_task_if_running(
@@ -974,6 +1022,7 @@ async def release_storage_startup_barrier(
             )
         raise
     _disable_main_storage_limited_mode()
+    _start_neko_servers_integration_workers()
     return {
         "ok": True,
         "initialized": bool(initialized),
@@ -1060,6 +1109,7 @@ async def on_startup():
             return
 
         await _ensure_main_server_runtime_initialized(reason="startup")
+        _start_neko_servers_integration_workers()
 
 
 @app.on_event("shutdown")
@@ -1097,6 +1147,7 @@ async def on_shutdown():
             _game_cleanup_task, name="game cleanup", timeout=1.0
         )
         _game_cleanup_task = None
+        await _stop_neko_servers_integration_workers()
 
         # Clean up agent_event_bridge (ZMQ context/sockets/recv thread)
         if agent_event_bridge is not None:

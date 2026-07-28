@@ -29,6 +29,19 @@ Electron 的 `port_config.json` 位于平台配置目录；显式环境变量优
 
 可用内存门槛目前是固定的运行时常量 `VECTORS_MIN_RAM_GB = 4.0`，没有对应的环境变量覆盖项。
 
+## 进程模型与单实例
+
+launcher 是前台进程：绝不守护化脱管，属主进程一消失就把整套服务拓扑拆掉；同时用
+操作系统文件锁自证唯一，并在锁旁边写出权威运行时记录（pid、实例 ID、协商后的端口）。
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `NEKO_OWNER_PID` | 本进程的父进程 | 父死守卫要盯的 pid。属主**不是**直接父进程时才需要设置——例如存储迁移交接产生的下一代 launcher，它的 spawn 者是故意退出的。 若属主打算靠读取 `launcher.json` 来认领运行时，应当设置本变量：它会成为记录里的 `owner_pid`，那才是该比对的字段。不要比对 `parent_pid`——Windows 开发态下 `Popen(sys.executable)` 启动的是一个再拉起真解释器的壳，`parent_pid` 指的是那个壳而不是属主（CI 实测；macOS 与 Linux 直接匹配，打包态没有这个壳）。 |
+| `NEKO_OWNER_RELAUNCH` | 未设置 | `1` 表示属主会自己负责重启运行时。此时存储迁移重启只干净退出、等待属主拉起，不再自旋出下一代。 Windows 上强烈建议设置：不设时 launcher 会自旋下一代，为了不连带杀死替身必须解除旧 Job 的管理，于是任何活过 cleanup 的进程（插件、MCP、Chromium）都不会被回收。 |
+| `NEKO_PARENT_DEATH_GUARD` | `1` | 设为 `0` 完全关闭父死守卫。仅用于会重挂父进程的调试器/性能分析工具；关掉之后运行时可能活得比属主久。 |
+| `NEKO_LAUNCHER_RESTART_HANDOFF` | 未设置 | 由上一代 launcher 设在下一代身上，让它等待单实例锁释放，而不是判定"已有实例在跑"。不需要手工设置。 |
+| `NEKO_RUNTIME_STATE_DIR` | 按用户的运行时目录 | 覆盖 `launcher.lock` 与 `launcher.json` 的位置。默认 Windows `%LOCALAPPDATA%\N.E.K.O\runtime`、macOS `~/Library/Application Support/N.E.K.O/runtime`、Linux `~/.local/state/N.E.K.O/runtime`。Linux 路径刻意不看 `XDG_RUNTIME_DIR`：该变量在桌面会话里有、在 cron / 裸 SSH / `su` / system unit / 多数容器里没有，据它推导锁路径会让同一个用户持有两把不同的锁、同时跑起两个运行时。覆盖值会被原样使用、不追加用户后缀，所以必须指向当前用户私有的目录。POSIX 上该目录仍会被校验：属于其他 uid 的目录（或指向它的软链）以 EPERM 拒绝，带 group/world 权限位的目录会被就地 chmod 成 0700；Windows 上两项都不做。被拒绝时按 unknown 处理——launcher 会带告警继续启动，但没有唯一性证明。指到多用户共享目录会破坏单实例证明：Windows 上两个用户会争同一把锁，POSIX 上第二个用户打不开第一个用户的锁文件，会在没有唯一性证明的情况下启动。 |
+
 ## 运行拓扑
 
 | 变量 | 默认值 | 说明 |

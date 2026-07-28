@@ -38,7 +38,9 @@ from .mini_game_invite import _mini_game_invite_count_post_response_chat
 from .music_recommendation import _append_music_recommendations
 from .state import (
     _increment_proactive_chat_total,
+    _proactive_feed_rejected_for_takeover,
     _proactive_material_key,
+    _proactive_turn_still_owned,
     _record_proactive_chat,
     _record_proactive_material,
     _record_reminiscence_usage,
@@ -241,23 +243,21 @@ async def _commit_proactive_delivery(
         if not music_already_appended:
             _append_music_recommendations(source_links, music_content)
 
-    if is_music_used or primary_channel == "music":
+    delivered_music_link = selected_music_link or next(
+        (
+            link
+            for link in (source_links or [])
+            if isinstance(link, dict) and link.get("source") == "音乐推荐"
+        ),
+        None,
+    )
+    if (is_music_used or primary_channel == "music") and delivered_music_link:
         delivered_tag = "MUSIC"
     elif primary_channel == "meme" and selected_meme_link is not None:
         delivered_tag = "MEME"
     else:
         delivered_tag = "CHAT"
-
-    delivered_music_link = selected_music_link
-    if delivered_tag == "MUSIC" and not delivered_music_link:
-        delivered_music_link = next(
-            (
-                link
-                for link in (source_links or [])
-                if isinstance(link, dict) and link.get("source") == "音乐推荐"
-            ),
-            None,
-        )
+        is_music_used = False
 
     action_note = build_proactive_action_note(
         primary_channel=primary_channel,
@@ -266,14 +266,48 @@ async def _commit_proactive_delivery(
         master_name=master_name,
     )
     staged_screenshot = screenshot_b64 if phase2_use_vision else None
+    expected_user_engagement_time = getattr(
+        mgr,
+        "last_user_engagement_time",
+        None,
+    )
     try:
-        await mgr.feed_tts_chunk(
+        tts_accepted = await mgr.feed_tts_chunk(
             response_text,
             expected_speech_id=proactive_sid,
+            expected_user_engagement_time=expected_user_engagement_time,
         )
+        if tts_accepted is False and _proactive_feed_rejected_for_takeover(
+            mgr,
+            proactive_sid,
+            expected_user_engagement_time,
+        ):
+            active_logger.info(
+                "[%s] buffered proactive TTS dropped after user interaction or takeover",
+                lanlan_name,
+            )
+            if _proactive_turn_still_owned(mgr, proactive_sid):
+                await mgr.handle_new_message()
+            return DeliveryCommit(
+                result=ProactiveChatResult(
+                    body=_proactive_pass_body(
+                        PROACTIVE_REASON_DELIVERY_PREEMPTED,
+                        message="proactive TTS skipped: user became active",
+                        lanlan_name=lanlan_name,
+                        turn_id=mgr.current_speech_id,
+                    )
+                ),
+                delivery=None,
+            )
+        if tts_accepted is False:
+            active_logger.warning(
+                "[%s] proactive TTS enqueue failed; committing text without audio",
+                lanlan_name,
+            )
         committed = await mgr.finish_proactive_delivery(
             response_text,
             expected_speech_id=proactive_sid,
+            expected_user_engagement_time=expected_user_engagement_time,
             action_note=action_note,
             source_tag=delivered_tag,
             vision_screenshot_b64=staged_screenshot,
@@ -284,7 +318,7 @@ async def _commit_proactive_delivery(
             lanlan_name,
             exc,
         )
-        if not mgr.state.is_proactive_preempted(proactive_sid):
+        if _proactive_turn_still_owned(mgr, proactive_sid):
             await mgr.handle_new_message()
         else:
             active_logger.info(
@@ -306,6 +340,10 @@ async def _commit_proactive_delivery(
             "[%s] 主动搭话被用户接管，短路下游写入（topic/memory/response）",
             lanlan_name,
         )
+        if _proactive_turn_still_owned(mgr, proactive_sid):
+            # The TTS chunk was accepted before the final engagement check.
+            # Retract it when UI-only engagement invalidates the commit.
+            await mgr.handle_new_message()
         return DeliveryCommit(
             result=ProactiveChatResult(
                 body=_proactive_pass_body(

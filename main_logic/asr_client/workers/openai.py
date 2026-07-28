@@ -392,10 +392,13 @@ async def openai_asr_worker(
         )
     finally:
         shutdown_requested.set()
+        tasks = []
         for task in (sender_task, receiver_task):
-            if task is not None and not task.done():
+            if task is None:
+                continue
+            if not task.done():
                 task.cancel()
-        tasks = [task for task in (sender_task, receiver_task) if task is not None]
+            tasks.append(task)
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         if websocket is not None:

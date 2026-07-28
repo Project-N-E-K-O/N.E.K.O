@@ -23,11 +23,12 @@ import asyncio
 import json
 import re
 from datetime import datetime, timedelta
+from typing import Literal
 from uuid import uuid4
 
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from config.prompts.prompts_sys import _loc
 from config.prompts.prompts_memory import (
@@ -39,7 +40,13 @@ from config.prompts.prompts_memory import (
     RECENT_HISTORY_INTRO, NO_RECENT_HISTORY,
 )
 from utils.frontend_utils import get_timestamp
-from utils.language_utils import get_global_language
+from utils.language_utils import (
+    get_global_language,
+    get_global_language_full,
+    is_supported_language_code,
+    language_context,
+    normalize_language_code,
+)
 from utils.llm_client import convert_to_messages
 from utils.time_format import format_elapsed as _format_elapsed
 from utils.cloudsave_runtime import assert_cloudsave_writable
@@ -54,6 +61,20 @@ from .runtime import app
 
 class HistoryRequest(BaseModel):
     input_history: str
+    language: str | None = None
+
+
+def _activate_request_language(language: str | None) -> str:
+    """Resolve the locale for this request without changing the process default.
+
+    Falls back to the process-wide language when the request does not carry a
+    usable one. That fallback is fine for the in-flight request, but it must not
+    be persisted — see the ``language=request.language`` argument at each
+    ``_spawn_outbox_post_turn_signals`` call site.
+    """
+    if is_supported_language_code(language):
+        return normalize_language_code(language, format='full')
+    return get_global_language_full()
 
 
 class ExternalMemoryImportRequest(BaseModel):
@@ -501,111 +522,132 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
     LLM waste is fully gone.
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
-    gates._touch_activity()
-    try:
-        input_history = convert_to_messages(json.loads(request.input_history))
-        if not input_history:
-            return {"status": "cached", "count": 0}
-        if _has_human_messages(input_history):
-            await gates._aclear_review_clean(lanlan_name)
-        logger.info(f"[MemoryServer] cache: {lanlan_name} +{len(input_history)} 条消息")
-        uid = str(uuid4())
-        async with runtime._get_settle_lock(lanlan_name):
-            await runtime.recent_history_manager.update_history(input_history, lanlan_name, compress=False)
-            # store_conversation 必须在 lock 内、与 update_history 串行：和
-            # /process / /renew 路径对偶，确保单角色 db 写顺序一致。
-            await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
-        # outbox 登记走锁外——它会 spawn background task 跑 LLM，长持锁会
-        # 阻塞下一轮 /cache 写盘。
-        await post_turn._spawn_outbox_post_turn_signals(lanlan_name, input_history)
-        return {"status": "cached", "count": len(input_history)}
-    except Exception as e:
-        logger.error(f"[MemoryServer] cache 失败: {e}", exc_info=True)
-        return {"status": "error", "message": str(e)}
+    memory_language = _activate_request_language(request.language)
+    with language_context(memory_language):
+        gates._touch_activity()
+        try:
+            input_history = convert_to_messages(json.loads(request.input_history))
+            if not input_history:
+                return {"status": "cached", "count": 0}
+            if _has_human_messages(input_history):
+                await gates._aclear_review_clean(lanlan_name)
+            logger.info(f"[MemoryServer] cache: {lanlan_name} +{len(input_history)} 条消息")
+            uid = str(uuid4())
+            async with runtime._get_settle_lock(lanlan_name):
+                await runtime.recent_history_manager.update_history(input_history, lanlan_name, compress=False)
+                # store_conversation 必须在 lock 内、与 update_history 串行：和
+                # /process / /renew 路径对偶，确保单角色 db 写顺序一致。
+                await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
+            # outbox 登记走锁外——它会 spawn background task 跑 LLM，长持锁会
+            # 阻塞下一轮 /cache 写盘。
+            await post_turn._spawn_outbox_post_turn_signals(
+                lanlan_name, input_history, language=request.language,
+            )
+            return {"status": "cached", "count": len(input_history)}
+        except Exception as e:
+            logger.error(f"[MemoryServer] cache 失败: {e}", exc_info=True)
+            return {"status": "error", "message": str(e)}
 
 
 @app.post("/process/{lanlan_name}")
 async def process_conversation(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
-    gates._touch_activity()
-    # P2 vector warmup: first /process is the cheapest "frontend ready"
-    # signal we have — by the time the user sends a real conversation
-    # turn, greeting and prominent drain are over. notify_first_process
-    # is a setflag, not async, so it doesn't add latency to /process.
-    if runtime.embedding_warmup_worker is not None:
-        runtime.embedding_warmup_worker.notify_first_process()
-    try:
-        # 检查角色是否存在于配置中，如果不存在则记录信息但继续处理（允许新角色）
+    memory_language = _activate_request_language(request.language)
+    with language_context(memory_language):
+        gates._touch_activity()
+        # P2 vector warmup: first /process is the cheapest "frontend ready"
+        # signal we have — by the time the user sends a real conversation
+        # turn, greeting and prominent drain are over. notify_first_process
+        # is a setflag, not async, so it doesn't add latency to /process.
+        if runtime.embedding_warmup_worker is not None:
+            runtime.embedding_warmup_worker.notify_first_process()
         try:
-            character_data = await runtime._config_manager.aload_characters()
-            catgirl_names = list(character_data.get('猫娘', {}).keys())
-            if lanlan_name not in catgirl_names:
-                logger.info(f"[MemoryServer] 角色 '{lanlan_name}' 不在配置中，但继续处理（可能是新创建的角色）")
+            # 检查角色是否存在于配置中，如果不存在则记录信息但继续处理（允许新角色）
+            try:
+                character_data = await runtime._config_manager.aload_characters()
+                catgirl_names = list(character_data.get('猫娘', {}).keys())
+                if lanlan_name not in catgirl_names:
+                    logger.info(f"[MemoryServer] 角色 '{lanlan_name}' 不在配置中，但继续处理（可能是新创建的角色）")
+            except Exception as e:
+                logger.warning(f"检查角色配置失败: {e}，继续处理")
+
+            uid = str(uuid4())
+            input_history = convert_to_messages(json.loads(request.input_history))
+            if _has_human_messages(input_history):
+                await gates._aclear_review_clean(lanlan_name)
+            logger.info(f"[MemoryServer] 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}")
+            await runtime.recent_history_manager.update_history(
+                input_history,
+                lanlan_name,
+                on_compress_done=review._on_compress_done,
+            )
+            # 旧模块已禁用（性能不足）：
+            # await settings_manager.extract_and_update_settings(input_history, lanlan_name)
+            # await semantic_manager.store_conversation(uid, input_history, lanlan_name)
+            await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
+
+            # 异步事实提取（不阻塞返回，失败静默跳过）
+            await post_turn._spawn_outbox_post_turn_signals(
+                lanlan_name, input_history, language=request.language,
+            )
+
+            # Phase C: 不再 cancel-and-restart review；让 maybe_spawn_review 在新消息
+            # 门 + min_interval + in-flight 多重 gate 后决定起或不起。在跑的 review
+            # 跑完会自行 patch 当前 history 末尾的可改区，新消息保留不动。
+            await review.maybe_spawn_review(lanlan_name)
+
+            return {"status": "processed"}
         except Exception as e:
-            logger.warning(f"检查角色配置失败: {e}，继续处理")
-
-        uid = str(uuid4())
-        input_history = convert_to_messages(json.loads(request.input_history))
-        if _has_human_messages(input_history):
-            await gates._aclear_review_clean(lanlan_name)
-        logger.info(f"[MemoryServer] 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}")
-        await runtime.recent_history_manager.update_history(input_history, lanlan_name, on_compress_done=review._on_compress_done)
-        # 旧模块已禁用（性能不足）：
-        # await settings_manager.extract_and_update_settings(input_history, lanlan_name)
-        # await semantic_manager.store_conversation(uid, input_history, lanlan_name)
-        await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
-
-        # 异步事实提取（不阻塞返回，失败静默跳过）
-        await post_turn._spawn_outbox_post_turn_signals(lanlan_name, input_history)
-
-        # Phase C: 不再 cancel-and-restart review；让 maybe_spawn_review 在新消息
-        # 门 + min_interval + in-flight 多重 gate 后决定起或不起。在跑的 review
-        # 跑完会自行 patch 当前 history 末尾的可改区，新消息保留不动。
-        await review.maybe_spawn_review(lanlan_name)
-
-        return {"status": "processed"}
-    except Exception as e:
-        logger.error(f"处理对话历史失败: {e}")
-        return {"status": "error", "message": str(e)}
+            logger.error(f"处理对话历史失败: {e}")
+            return {"status": "error", "message": str(e)}
 
 @app.post("/renew/{lanlan_name}")
 async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
-    gates._touch_activity()
-    # Same warmup hint as /process: /renew is also a "user actively
-    # using the app" signal, so it counts as the unblock event.
-    if runtime.embedding_warmup_worker is not None:
-        runtime.embedding_warmup_worker.notify_first_process()
-    try:
-        # 检查角色是否存在于配置中，如果不存在则记录信息但继续处理（允许新角色）
+    memory_language = _activate_request_language(request.language)
+    with language_context(memory_language):
+        gates._touch_activity()
+        # Same warmup hint as /process: /renew is also a "user actively
+        # using the app" signal, so it counts as the unblock event.
+        if runtime.embedding_warmup_worker is not None:
+            runtime.embedding_warmup_worker.notify_first_process()
         try:
-            character_data = await runtime._config_manager.aload_characters()
-            catgirl_names = list(character_data.get('猫娘', {}).keys())
-            if lanlan_name not in catgirl_names:
-                logger.info(f"[MemoryServer] renew: 角色 '{lanlan_name}' 不在配置中，但继续处理（可能是新创建的角色）")
+            # 检查角色是否存在于配置中，如果不存在则记录信息但继续处理（允许新角色）
+            try:
+                character_data = await runtime._config_manager.aload_characters()
+                catgirl_names = list(character_data.get('猫娘', {}).keys())
+                if lanlan_name not in catgirl_names:
+                    logger.info(f"[MemoryServer] renew: 角色 '{lanlan_name}' 不在配置中，但继续处理（可能是新创建的角色）")
+            except Exception as e:
+                logger.warning(f"检查角色配置失败: {e}，继续处理")
+
+            uid = str(uuid4())
+            input_history = convert_to_messages(json.loads(request.input_history))
+            if _has_human_messages(input_history):
+                await gates._aclear_review_clean(lanlan_name)
+            logger.info(f"[MemoryServer] renew: 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}")
+            # 首轮摘要带锁：阻塞 /new_dialog 直到摘要+时间戳写入完成
+            async with runtime._get_settle_lock(lanlan_name):
+                await runtime.recent_history_manager.update_history(
+                    input_history,
+                    lanlan_name,
+                    detailed=True,
+                    on_compress_done=review._on_compress_done,
+                )
+                await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
+
+            # 以下操作在锁外执行，不阻塞 /new_dialog
+            # 异步事实提取
+            await post_turn._spawn_outbox_post_turn_signals(
+                lanlan_name, input_history, language=request.language,
+            )
+
+            # Phase C: 见 /process 的注释——不再 cancel-and-restart。
+            await review.maybe_spawn_review(lanlan_name)
+
+            return {"status": "processed"}
         except Exception as e:
-            logger.warning(f"检查角色配置失败: {e}，继续处理")
-
-        uid = str(uuid4())
-        input_history = convert_to_messages(json.loads(request.input_history))
-        if _has_human_messages(input_history):
-            await gates._aclear_review_clean(lanlan_name)
-        logger.info(f"[MemoryServer] renew: 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}")
-        # 首轮摘要带锁：阻塞 /new_dialog 直到摘要+时间戳写入完成
-        async with runtime._get_settle_lock(lanlan_name):
-            await runtime.recent_history_manager.update_history(input_history, lanlan_name, detailed=True, on_compress_done=review._on_compress_done)
-            await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
-
-        # 以下操作在锁外执行，不阻塞 /new_dialog
-        # 异步事实提取
-        await post_turn._spawn_outbox_post_turn_signals(lanlan_name, input_history)
-
-        # Phase C: 见 /process 的注释——不再 cancel-and-restart。
-        await review.maybe_spawn_review(lanlan_name)
-
-        return {"status": "processed"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+            return {"status": "error", "message": str(e)}
 
 
 @app.post("/settle/{lanlan_name}")
@@ -618,29 +660,38 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
     completes those operations.
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
-    gates._touch_activity()
-    try:
-        uid = str(uuid4())
-        input_history = convert_to_messages(json.loads(request.input_history))
-        if _has_human_messages(input_history):
-            await gates._aclear_review_clean(lanlan_name)
-        logger.info(f"[MemoryServer] settle: 收到 {lanlan_name} 的结算请求，消息数: {len(input_history)}")
+    memory_language = _activate_request_language(request.language)
+    with language_context(memory_language):
+        gates._touch_activity()
+        try:
+            uid = str(uuid4())
+            input_history = convert_to_messages(json.loads(request.input_history))
+            if _has_human_messages(input_history):
+                await gates._aclear_review_clean(lanlan_name)
+            logger.info(f"[MemoryServer] settle: 收到 {lanlan_name} 的结算请求，消息数: {len(input_history)}")
 
-        async with runtime._get_settle_lock(lanlan_name):
+            async with runtime._get_settle_lock(lanlan_name):
+                if input_history:
+                    await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
+                await runtime.recent_history_manager.update_history(
+                    [],
+                    lanlan_name,
+                    detailed=True,
+                    on_compress_done=review._on_compress_done,
+                )
+
             if input_history:
-                await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
-            await runtime.recent_history_manager.update_history([], lanlan_name, detailed=True, on_compress_done=review._on_compress_done)
+                await post_turn._spawn_outbox_post_turn_signals(
+                    lanlan_name, input_history, language=request.language,
+                )
 
-        if input_history:
-            await post_turn._spawn_outbox_post_turn_signals(lanlan_name, input_history)
+            # Phase C: 见 /process 的注释——不再 cancel-and-restart。
+            await review.maybe_spawn_review(lanlan_name)
 
-        # Phase C: 见 /process 的注释——不再 cancel-and-restart。
-        await review.maybe_spawn_review(lanlan_name)
-
-        return {"status": "settled"}
-    except Exception as e:
-        logger.error(f"[MemoryServer] settle 失败: {e}", exc_info=True)
-        return {"status": "error", "message": str(e)}
+            return {"status": "settled"}
+        except Exception as e:
+            logger.error(f"[MemoryServer] settle 失败: {e}", exc_info=True)
+            return {"status": "error", "message": str(e)}
 
 
 @app.get("/get_recent_history/{lanlan_name}")
@@ -693,6 +744,52 @@ async def get_memory(query: str, lanlan_name: str):
     )
 
 
+class MemorySubjectRequest(BaseModel):
+    subject_kind: Literal["group_chat", "participant", "group_participant"]
+    subject_id: str
+    scope: str | None = None
+
+    def to_domain(self):
+        from memory.scopes import MemoryScopeError, MemorySubject
+        try:
+            return MemorySubject.create(
+                self.subject_kind, self.subject_id, scope=self.scope,
+            )
+        except MemoryScopeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+class ScopedFactInput(BaseModel):
+    text: str
+    importance: int = Field(default=5, ge=1, le=10)
+    source: Literal["user_observation", "ai_disclosure"] = "user_observation"
+
+
+class ScopedFactsWriteRequest(BaseModel):
+    subject: MemorySubjectRequest
+    facts: list[ScopedFactInput]
+
+
+class ScopedHistoryRequest(BaseModel):
+    input_history: str
+    subject: MemorySubjectRequest
+    # Optional speaker identity for single-speaker batches (group-member
+    # buckets). The extraction prompt otherwise renders every 'user' turn as
+    # the configured private-chat master and extracts facts about the master,
+    # misattributing member statements. Group digests omit it — their turns
+    # already carry per-message speaker headers in the content.
+    speaker_label: str | None = None
+
+
+class ScopedContextRequest(BaseModel):
+    subjects: list[MemorySubjectRequest]
+
+
+class ScopedMentionsRequest(BaseModel):
+    response_text: str
+    subjects: list[MemorySubjectRequest]
+
+
 class QueryMemoryRequest(BaseModel):
     # query / time 都可选，至少给一个有效值即可（time-only 是新支持的用法）。
     # 两者都空时不报错，hybrid_recall 对空 query 短路返回空 results，调用方
@@ -705,6 +802,188 @@ class QueryMemoryRequest(BaseModel):
     # （整点小时 / 单日 / 整月 / 整年 / 区间）。不填或解析失败则走常规全量
     # 语义检索。
     time: str | None = None
+    # Explicit read boundary for group-chat callers. Omitting the field keeps
+    # the pre-upgrade legacy-private behaviour. Supplying one or more subjects
+    # excludes every unscoped legacy row; there is intentionally no request
+    # flag that lets a plugin turn legacy-private into a wildcard corpus.
+    # An explicit empty list is a caller contract bug and is rejected 422 at
+    # the endpoint (fail-closed) — it must never fall back to legacy private.
+    subjects: list[MemorySubjectRequest] | None = None
+
+
+@app.post("/internal/memory/{lanlan_name}/scoped_facts")
+async def append_scoped_facts(lanlan_name: str, req: ScopedFactsWriteRequest):
+    """Append already-extracted facts to one explicit group/member subject.
+
+    This is the low-cost group-chat write path: adapters submit a small batch of
+    stable facts instead of forcing the full private-chat post-turn pipeline on
+    every busy group message. The memory core owns subject stamping, exact and
+    semantic deduplication, and persistence.
+    """
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    if runtime.fact_store is None:
+        raise HTTPException(
+            status_code=503,
+            detail="memory_server not fully initialized (limited mode or startup incomplete)",
+        )
+    if not req.facts or len(req.facts) > 32:
+        raise HTTPException(status_code=422, detail="facts must contain 1..32 items")
+    extracted: list[dict] = []
+    for item in req.facts:
+        text = item.text.strip()
+        if not text or len(text) > 2000:
+            raise HTTPException(
+                status_code=422,
+                detail="each fact text must contain 1..2000 characters",
+            )
+        extracted.append({
+            "text": text,
+            "importance": item.importance,
+            "source": item.source,
+        })
+    subject = req.subject.to_domain()
+    created = await runtime.fact_store.apersist_scoped_facts(
+        lanlan_name,
+        extracted,
+        subject=subject,
+    )
+    return {
+        "status": "stored",
+        "subject": subject.as_entry_fields(),
+        "created": len(created),
+        "fact_ids": [fact.get("id") for fact in created if fact.get("id")],
+    }
+
+
+@app.post("/internal/memory/{lanlan_name}/scoped_history")
+async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
+    """Extract scoped facts from a bounded group-chat digest/history batch."""
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    if runtime.fact_store is None:
+        raise HTTPException(
+            status_code=503,
+            detail="memory_server not fully initialized (limited mode or startup incomplete)",
+        )
+    try:
+        input_history = convert_to_messages(json.loads(req.input_history))
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="invalid input_history") from exc
+    if not input_history or len(input_history) > 200:
+        raise HTTPException(
+            status_code=422,
+            detail="input_history must contain 1..200 messages",
+        )
+    speaker_label = (req.speaker_label or "").strip() or None
+    if speaker_label and len(speaker_label) > 64:
+        raise HTTPException(
+            status_code=422,
+            detail="speaker_label must contain at most 64 characters",
+        )
+    subject = req.subject.to_domain()
+    if speaker_label is None and subject.kind == "group_chat":
+        # 群 digest 无单一发言人：不给 label 时 legacy prompt 会把提取
+        # 框定为"只找关于私聊主人的事实"，成员自述被当空提取 checkpoint
+        # 掉。用集体描述符重定 {MASTER_NAME} 槽位，配合内容里每条消息的
+        # 发言人头。
+        from config.prompts.prompts_memory import get_group_digest_speaker_label
+        from utils.language_utils import get_global_language
+        speaker_label = get_group_digest_speaker_label(get_global_language())
+    from memory.facts import FactExtractionFailed
+
+    # fail_closed：调用方（QQ 插件 finalize/focus-shift）在成功响应后会推进
+    # 游标、丢弃 member bucket——这些历史只存在于调用方内存里，没有像 legacy
+    # /process 那样先落 time_indexed.db。抽取失败必须以 HTTP 错误暴露出去
+    # 让调用方保留缓冲下轮重试；真·空抽取仍然 200 正常 checkpoint。
+    try:
+        created = await runtime.fact_store.extract_facts(
+            input_history,
+            lanlan_name,
+            subject=subject,
+            fail_closed=True,
+            speaker_label=speaker_label,
+        )
+    except FactExtractionFailed as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="scoped fact extraction failed; retry later",
+        ) from exc
+    return {
+        "status": "processed",
+        "subject": subject.as_entry_fields(),
+        "created": len(created),
+        "fact_ids": [fact.get("id") for fact in created if fact.get("id")],
+    }
+
+
+@app.post("/internal/memory/{lanlan_name}/scoped_context")
+async def get_scoped_context(lanlan_name: str, req: ScopedContextRequest):
+    """Render only explicitly authorized persona/reflection subjects."""
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    if runtime.persona_manager is None or runtime.reflection_engine is None:
+        raise HTTPException(
+            status_code=503,
+            detail="memory_server not fully initialized (limited mode or startup incomplete)",
+        )
+    if not req.subjects or len(req.subjects) > 8:
+        raise HTTPException(status_code=422, detail="subjects must contain 1..8 items")
+    subjects = [subject.to_domain() for subject in req.subjects]
+    # suppress 的到期解除只发生在 aupdate_suppressions 里，而它此前只被
+    # legacy 的 /get_settings、/new_dialog 调用——纯群聊部署永远走不到
+    # 那两条路径，scoped reflection 第一次被 suppress 后就永久隐身。
+    try:
+        await runtime.reflection_engine.aupdate_suppressions(lanlan_name)
+    except Exception as exc:
+        logger.warning(f"[scoped] 刷新 reflection suppression 失败: {exc}")
+    pending_reflections = await runtime.reflection_engine.aget_pending_reflections(
+        lanlan_name,
+        subjects=subjects,
+        include_legacy_private=False,
+    )
+    confirmed_reflections = await runtime.reflection_engine.aget_confirmed_reflections(
+        lanlan_name,
+        subjects=subjects,
+        include_legacy_private=False,
+    )
+    rendered = await runtime.persona_manager.arender_persona_markdown(
+        lanlan_name,
+        pending_reflections,
+        confirmed_reflections,
+        subjects=subjects,
+        include_legacy_private=False,
+    )
+    return PlainTextResponse(rendered)
+
+
+@app.post("/internal/memory/{lanlan_name}/scoped_mentions")
+async def record_scoped_mentions(lanlan_name: str, req: ScopedMentionsRequest):
+    """Bump mention counters for scoped persona/reflection entries.
+
+    Group replies bypass the legacy post-turn flow, so without this the
+    anti-repeat suppression never engages for scoped entries and the model
+    keeps volunteering the same scoped fact on every group reply. Zero LLM
+    cost: mention scanning is a local token-overlap pass. Legacy-private
+    entries are explicitly excluded (fail-closed)."""
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    if runtime.persona_manager is None or runtime.reflection_engine is None:
+        raise HTTPException(
+            status_code=503,
+            detail="memory_server not fully initialized (limited mode or startup incomplete)",
+        )
+    if not req.subjects or len(req.subjects) > 8:
+        raise HTTPException(status_code=422, detail="subjects must contain 1..8 items")
+    response_text = (req.response_text or "").strip()
+    if not response_text:
+        return {"status": "skipped"}
+    subjects = [subject.to_domain() for subject in req.subjects]
+    await runtime.persona_manager.arecord_mentions(
+        lanlan_name, response_text,
+        subjects=subjects, include_legacy_private=False,
+    )
+    await runtime.reflection_engine.arecord_mentions(
+        lanlan_name, response_text,
+        subjects=subjects, include_legacy_private=False,
+    )
+    return {"status": "recorded"}
 
 
 @app.post("/query_memory/{lanlan_name}")
@@ -743,6 +1022,17 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
         )
     time_spec = (req.time or "").strip()
     query_text = (req.query or "").strip()
+    # Fail-closed on an explicit empty subjects list (mirror scoped_context):
+    # a group-chat caller that has no authorized subject must get zero rows,
+    # never the legacy-private corpus. Omitting the field (None) keeps the
+    # pre-upgrade legacy behaviour — downstream filter_entries_for_subjects
+    # treats () and None alike, so the distinction must be enforced here.
+    if req.subjects is not None and not (1 <= len(req.subjects) <= 8):
+        raise HTTPException(
+            status_code=422,
+            detail="subjects must be omitted (legacy private) or contain 1..8 items",
+        )
+    subjects = [subject.to_domain() for subject in (req.subjects or [])]
     try:
         # Import 移进 try：若 memory.hybrid_recall 自身 import 失败（循环
         # import / 依赖缺失），仍然走下面的兜底返回空 results，避免端点
@@ -764,6 +1054,7 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
                     time_spec=time_spec,
                     fact_store=runtime.fact_store,
                     reflection_engine=runtime.reflection_engine,
+                    subjects=subjects,
                 )
         # query（+ 可选 time_window）→ 语义检索；time_window 非空即"语义 +
         # 时间"联合检索（窗口内按 query 排序）。
@@ -775,6 +1066,7 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
             reflection_engine=runtime.reflection_engine,
             config_manager=runtime._config_manager,
             time_window=time_window,
+            subjects=subjects,
         )
     except Exception as exc:
         # 永不让一次召回失败把 tool call 整死——返回空 results，main_server

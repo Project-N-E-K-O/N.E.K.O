@@ -164,7 +164,7 @@ class ConfigManager(
     _quota_notify_last_monotonic = 0.0
     _quota_exceeded_notifier = None
     ROOT_STATE_VERSION = 1
-    CLOUDSAVE_LOCAL_STATE_VERSION = 1
+    CLOUDSAVE_LOCAL_STATE_VERSION = 2
     CHARACTER_TOMBSTONES_STATE_VERSION = 1
 
     # 区域判定的三个缓存（None=未定，True=非大陆，False=大陆）：

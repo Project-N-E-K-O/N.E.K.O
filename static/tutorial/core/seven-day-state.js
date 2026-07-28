@@ -24,6 +24,7 @@
     let dirtyServerState = null;
     let dirtyServerGeneration = 0;
     let lastServerSyncError = null;
+    let cachedMutationToken = '';
 
     function getTodayLocalDate(now) {
         const value = now instanceof Date ? now : new Date();
@@ -213,15 +214,44 @@
         );
     }
 
-    async function getMutationHeaders() {
+    async function getMutationHeaders(options) {
         const headers = { 'Content-Type': 'application/json' };
         const helper = host.nekoLocalMutationSecurity;
-        if (helper && typeof helper.getMutationHeaders === 'function') {
+        const forceRefresh = !!(options && options.forceRefresh);
+        // page_config waits for this module's authoritative ready barrier. On a brand-new
+        // profile the initial server state must be created with PUT, so awaiting the shared
+        // helper here can form a cycle:
+        // seven-day ready -> mutation headers -> pageConfigReady -> seven-day ready.
+        // Reuse only an already-cached token; otherwise fetch the token directly.
+        if (forceRefresh && helper && typeof helper.refreshToken === 'function') {
             try {
-                return Object.assign(headers, await helper.getMutationHeaders());
+                const refreshedToken = String(await helper.refreshToken() || '').trim();
+                if (refreshedToken) {
+                    cachedMutationToken = refreshedToken;
+                    headers['X-CSRF-Token'] = refreshedToken;
+                    return headers;
+                }
             } catch (error) {
-                console.warn('[SevenDayTutorialState] 获取写入安全头失败，尝试页面配置:', error);
+                console.warn('[SevenDayTutorialState] 刷新共享写入令牌失败，尝试页面配置:', error);
             }
+        }
+
+        if (!forceRefresh && helper && typeof helper.peekCachedToken === 'function') {
+            try {
+                const cachedToken = String(helper.peekCachedToken() || '').trim();
+                if (cachedToken) {
+                    cachedMutationToken = cachedToken;
+                    headers['X-CSRF-Token'] = cachedToken;
+                    return headers;
+                }
+            } catch (error) {
+                console.warn('[SevenDayTutorialState] 读取已缓存写入令牌失败，尝试页面配置:', error);
+            }
+        }
+
+        if (!forceRefresh && cachedMutationToken) {
+            headers['X-CSRF-Token'] = cachedMutationToken;
+            return headers;
         }
 
         try {
@@ -229,7 +259,10 @@
             if (!response.ok) return headers;
             const payload = await response.json();
             if (payload && typeof payload.autostart_csrf_token === 'string' && payload.autostart_csrf_token) {
-                headers['X-CSRF-Token'] = payload.autostart_csrf_token;
+                cachedMutationToken = payload.autostart_csrf_token.trim();
+                if (cachedMutationToken) {
+                    headers['X-CSRF-Token'] = cachedMutationToken;
+                }
             }
         } catch (error) {
             console.warn('[SevenDayTutorialState] 读取页面配置失败，保留本地进度:', error);
@@ -338,10 +371,10 @@
         });
     }
 
-    async function writeServerState(state, expectedRevision) {
+    async function writeServerState(state, expectedRevision, isCsrfRetry) {
         const response = await host.fetch(SERVER_STATE_ENDPOINT, {
             method: 'PUT',
-            headers: await getMutationHeaders(),
+            headers: await getMutationHeaders({ forceRefresh: isCsrfRetry === true }),
             body: JSON.stringify({
                 state,
                 expectedRevision,
@@ -349,6 +382,12 @@
             keepalive: true,
         });
         const payload = await response.json().catch(() => null);
+        if (response.status === 403 && payload && payload.error_code === 'csrf_validation_failed') {
+            cachedMutationToken = '';
+            if (isCsrfRetry !== true) {
+                return writeServerState(state, expectedRevision, true);
+            }
+        }
         if (response.status === 409 && payload) {
             const conflict = new Error('seven-day tutorial state revision conflict');
             conflict.code = 'seven_day_tutorial_revision_conflict';

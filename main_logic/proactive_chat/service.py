@@ -55,6 +55,7 @@ from main_logic.proactive_chat.contracts import (
     PROACTIVE_REASON_PASS_ACTIVITY_BUSY,
     PROACTIVE_REASON_PASS_BUSY,
     PROACTIVE_REASON_PASS_DISABLED,
+    PROACTIVE_REASON_PASS_DUPLICATE,
     ProactiveChatCommand,
     ProactiveChatResult,
     _proactive_chat_body,
@@ -82,6 +83,11 @@ from main_logic.proactive_chat.delivery import (
     _commit_proactive_delivery,
     _record_committed_delivery,
 )
+from main_logic.proactive_chat.candidate_selection import (
+    _format_phase1_link_candidate,
+    _phase1_linkless_modes,
+    _round_robin_phase1_links,
+)
 from main_logic.proactive_chat.generation import (
     Phase2PromptContext,
     ProactiveModelConfig,
@@ -107,6 +113,7 @@ from main_logic.proactive_chat.music_recommendation import (
     _select_music_recommendation,
 )
 from main_logic.proactive_chat.state import (
+    _enter_proactive_phase2,
     _ensure_source_history_loaded,
     _format_recent_proactive_chats,
     _increment_proactive_chat_total,
@@ -115,6 +122,10 @@ from main_logic.proactive_chat.state import (
     _source_hash,
 )
 from main_logic.proactive_chat.sources import collect_proactive_sources
+from utils.web_scraper.proactive_candidate import (
+    SelectedWebCandidatePreempted,
+    prepare_selected_web_candidate,
+)
 from utils.language_utils import (
     get_global_language,
     get_global_language_full,
@@ -142,6 +153,29 @@ __all__ = [
 
 
 logger = get_module_logger(__name__, "Main")
+
+
+def _consume_repeat_suppressed_break_reminder(
+    mgr,
+    *,
+    lanlan_name: str,
+    channel: str,
+) -> None:
+    """Consume a must-fire source that the repeat guard deliberately dropped."""
+    marker_name = (
+        "mark_anti_slack_used"
+        if channel == "anti_slack"
+        else "mark_work_break_used"
+    )
+    try:
+        getattr(mgr._activity_tracker, marker_name)()
+    except Exception as mark_err:
+        logger.warning(
+            "[%s] %s after repeat suppression failed: %s",
+            lanlan_name,
+            marker_name,
+            mark_err,
+        )
 
 
 _MEME_PROXY_CANDIDATE_CHECK_LIMIT = 3
@@ -694,10 +728,7 @@ async def handle_proactive_chat(
                     master_name=master_name_current,
                     lang=_break_lang,
                 )
-                (
-                    delivered_text,
-                    _proactive_sid_unused,
-                ) = await _deliver_break_reminder_via_llm(
+                reminder_delivery = await _deliver_break_reminder_via_llm(
                     lanlan_name=lanlan_name,
                     mgr=mgr,
                     config_manager=break_config_manager_provider(),
@@ -708,6 +739,23 @@ async def handle_proactive_chat(
                     channel="anti_slack",
                     lang=_break_lang,
                 )
+                delivered_text = reminder_delivery.delivered_text
+                if reminder_delivery.repeat_suppressed:
+                    _consume_repeat_suppressed_break_reminder(
+                        mgr,
+                        lanlan_name=lanlan_name,
+                        channel="anti_slack",
+                    )
+                    return await _end_proactive(
+                        ProactiveChatResult(
+                            body={
+                                "success": True,
+                                "action": "pass",
+                                "reason_code": PROACTIVE_REASON_PASS_DUPLICATE,
+                                "message": "anti-slack reminder suppressed as repeated",
+                            }
+                        )
+                    )
                 if delivered_text:
                     try:
                         mgr._activity_tracker.mark_anti_slack_used()
@@ -789,10 +837,7 @@ async def handle_proactive_chat(
                 and chosen_game_type is not None
                 and gi_prompt is not None
             ):
-                (
-                    delivered_text,
-                    _proactive_sid_unused,
-                ) = await _deliver_break_reminder_via_llm(
+                reminder_delivery = await _deliver_break_reminder_via_llm(
                     lanlan_name=lanlan_name,
                     mgr=mgr,
                     config_manager=break_config_manager_provider(),
@@ -803,6 +848,23 @@ async def handle_proactive_chat(
                     channel="work_break_game_invite",
                     lang=_break_lang,
                 )
+                delivered_text = reminder_delivery.delivered_text
+                if reminder_delivery.repeat_suppressed:
+                    _consume_repeat_suppressed_break_reminder(
+                        mgr,
+                        lanlan_name=lanlan_name,
+                        channel="work_break_game_invite",
+                    )
+                    return await _end_proactive(
+                        ProactiveChatResult(
+                            body={
+                                "success": True,
+                                "action": "pass",
+                                "reason_code": PROACTIVE_REASON_PASS_DUPLICATE,
+                                "message": "work-break game invite suppressed as repeated",
+                            }
+                        )
+                    )
                 if delivered_text:
                     invite_session_id = str(uuid4())
                     _mini_game_invite_record_delivered(lanlan_name, invite_session_id)
@@ -902,10 +964,7 @@ async def handle_proactive_chat(
                 master_name=master_name_current,
                 lang=_break_lang,
             )
-            (
-                delivered_text,
-                _proactive_sid_unused,
-            ) = await _deliver_break_reminder_via_llm(
+            reminder_delivery = await _deliver_break_reminder_via_llm(
                 lanlan_name=lanlan_name,
                 mgr=mgr,
                 config_manager=break_config_manager_provider(),
@@ -916,6 +975,23 @@ async def handle_proactive_chat(
                 channel="work_break",
                 lang=_break_lang,
             )
+            delivered_text = reminder_delivery.delivered_text
+            if reminder_delivery.repeat_suppressed:
+                _consume_repeat_suppressed_break_reminder(
+                    mgr,
+                    lanlan_name=lanlan_name,
+                    channel="work_break",
+                )
+                return await _end_proactive(
+                    ProactiveChatResult(
+                        body={
+                            "success": True,
+                            "action": "pass",
+                            "reason_code": PROACTIVE_REASON_PASS_DUPLICATE,
+                            "message": "work-break reminder suppressed as repeated",
+                        }
+                    )
+                )
             if delivered_text:
                 try:
                     mgr._activity_tracker.mark_work_break_used()
@@ -1354,92 +1430,10 @@ async def handle_proactive_chat(
         # 收集音乐链接（在 Phase 1 Web 筛选完成后）
         # meme 也不经过 Phase 1 LLM 筛选，直接添加话题
         web_modes = [m for m in sources if m not in ("vision", "music", "meme")]
+        # Personal-feed context wins when the same URL also appears elsewhere.
+        web_modes.sort(key=lambda mode: 0 if mode == "personal" else 1)
 
         merged_web_content = ""
-        if web_modes:
-            parts = []
-            seen_topic_keys: set[str] = set()
-            remaining_total = _PHASE1_TOTAL_TOPIC_TARGET
-            for m in web_modes:
-                if remaining_total <= 0:
-                    break
-                src = sources[m]
-                label_map = PROACTIVE_SOURCE_LABELS.get(
-                    proactive_lang, PROACTIVE_SOURCE_LABELS["en"]
-                )
-                label = label_map.get(m, m)
-                links = src.get("links", []) or []
-
-                selected_links: list[dict] = []
-                for link in links:
-                    title = link.get("title", "")
-                    url = link.get("url", "")
-                    key = _source_hash(url, title)
-                    if key:
-                        # 跨会话衰减 skip：5h 硬窗口，之后按 web 半衰期概率瞬移到下一条
-                        if key in seen_topic_keys or _should_skip_source(key):
-                            continue
-                        seen_topic_keys.add(key)
-                    # 给 link 打上来源 mode 标记，用于细粒度 channel 记录
-                    if "mode" not in link:
-                        link["mode"] = m
-                    selected_links.append(link)
-                    if len(selected_links) >= remaining_total:
-                        break
-
-                if selected_links:
-                    all_web_links.extend(selected_links)
-                    remaining_total -= len(selected_links)
-                    lines = []
-                    for idx, item in enumerate(selected_links, start=1):
-                        from utils.tokenize import truncate_to_tokens as _ttt
-
-                        title = item.get("title", "").strip()
-                        if not title:
-                            continue
-                        source = item.get("source", "").strip()
-                        url = item.get("url", "").strip()
-                        suffix = []
-                        if source:
-                            suffix.append(f"来源: {source}")
-                        if url:
-                            suffix.append(f"URL: {url}")
-                        ext = (" | " + " | ".join(suffix)) if suffix else ""
-                        # 单条外部内容截到 PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS，
-                        # 防止个别 title/url 异常长撑爆 prompt。
-                        item_line = _ttt(
-                            f"{idx}. {title}{ext}",
-                            PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS,
-                        )
-                        lines.append(item_line)
-                    if lines:
-                        parts.append(f"--- {label} ---\n" + "\n".join(lines))
-                        continue
-
-                content_text = src.get("formatted_content", "")
-                if content_text:
-                    compact_lines = [
-                        ln.strip() for ln in content_text.splitlines() if ln.strip()
-                    ]
-                    if compact_lines:
-                        fallback_lines = compact_lines[:remaining_total]
-                        if fallback_lines:
-                            from utils.tokenize import truncate_to_tokens as _ttt
-
-                            fallback_lines = [
-                                _ttt(ln, PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS)
-                                for ln in fallback_lines
-                            ]
-                            parts.append(
-                                f"--- {label} ---\n" + "\n".join(fallback_lines)
-                            )
-                            remaining_total -= len(fallback_lines)
-            from utils.tokenize import truncate_to_tokens as _ttt
-
-            # 兜底总和截断：防止 20 source × 200 token = 4k 超过 2k 总预算
-            merged_web_content = _ttt(
-                "\n\n".join(parts), PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS
-            )
 
         # Phase 1 结果收集
         phase1_topics: list[tuple[str, str]] = []  # [(channel, topic_summary), ...]
@@ -1501,78 +1495,79 @@ async def handle_proactive_chat(
                 _surfaced_reflection_ids = []
                 followup_topics_prompt = ""
 
-            # 被剔除的 web 子通道不参与 merged_web_content（sources 已弹出，
-            # 但 merged_web_content 已经构建完毕，需要重新构建）
-            if suppressed & set(web_modes):
-                # 重新构建 merged_web_content，排除被剔除的通道
-                remaining_web_modes = [m for m in web_modes if m not in suppressed]
-                if remaining_web_modes:
-                    # 先从 all_web_links 中移除被剔除通道的链接
-                    all_web_links = [
-                        lk for lk in all_web_links if lk.get("mode") not in suppressed
-                    ]
-                    parts = []
-                    seen_topic_keys_2: set[str] = set()
-                    remaining_total_2 = _PHASE1_TOTAL_TOPIC_TARGET
-                    for m in remaining_web_modes:
-                        if remaining_total_2 <= 0:
-                            break
-                        src = sources.get(m)
-                        if not src:
-                            continue
-                        label_map = PROACTIVE_SOURCE_LABELS.get(
-                            proactive_lang, PROACTIVE_SOURCE_LABELS["en"]
+
+        # Build once after source suppression so candidates are decayed only once.
+        web_modes = [mode for mode in web_modes if mode in sources]
+        if web_modes:
+            from utils.tokenize import truncate_to_tokens as _ttt
+
+            parts = []
+            fallback_modes = _phase1_linkless_modes(web_modes, sources)
+            selected_by_mode = _round_robin_phase1_links(
+                web_modes,
+                sources,
+                total=max(
+                    0, _PHASE1_TOTAL_TOPIC_TARGET - len(fallback_modes)
+                ),
+            )
+            remaining_total = _PHASE1_TOTAL_TOPIC_TARGET - sum(
+                len(items) for items in selected_by_mode.values()
+            )
+            remaining_fallback_modes = len(fallback_modes)
+            for mode in web_modes:
+                src = sources[mode]
+                label_map = PROACTIVE_SOURCE_LABELS.get(
+                    proactive_lang, PROACTIVE_SOURCE_LABELS["en"]
+                )
+                label = label_map.get(mode, mode)
+                selected_links = selected_by_mode.get(mode, [])
+
+                if selected_links:
+                    all_web_links.extend(selected_links)
+                    lines = [
+                        _ttt(
+                            _format_phase1_link_candidate(index, item),
+                            PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS,
                         )
-                        label = label_map.get(m, m)
-                        links = src.get("links", []) or []
-                        selected_links_2: list[dict] = []
-                        for link in links:
-                            title = link.get("title", "")
-                            url = link.get("url", "")
-                            key = _source_hash(url, title)
-                            if key:
-                                if key in seen_topic_keys_2 or _should_skip_source(key):
-                                    continue
-                                seen_topic_keys_2.add(key)
-                            if "mode" not in link:
-                                link["mode"] = m
-                            selected_links_2.append(link)
-                            if len(selected_links_2) >= remaining_total_2:
-                                break
-                        if selected_links_2:
-                            remaining_total_2 -= len(selected_links_2)
-                            lines = []
-                            from utils.tokenize import truncate_to_tokens as _ttt2
+                        for index, item in enumerate(selected_links, start=1)
+                        if item.get("title", "").strip()
+                    ]
+                    if lines:
+                        parts.append(f"--- {label} ---\n" + "\n".join(lines))
+                        continue
 
-                            for idx, item in enumerate(selected_links_2, start=1):
-                                t = item.get("title", "").strip()
-                                if not t:
-                                    continue
-                                s = item.get("source", "").strip()
-                                u = item.get("url", "").strip()
-                                suffix = []
-                                if s:
-                                    suffix.append(f"来源: {s}")
-                                if u:
-                                    suffix.append(f"URL: {u}")
-                                ext = (" | " + " | ".join(suffix)) if suffix else ""
-                                # 同上路径，单条 cap
-                                lines.append(
-                                    _ttt2(
-                                        f"{idx}. {t}{ext}",
-                                        PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS,
-                                    )
-                                )
-                            if lines:
-                                parts.append(f"--- {label} ---\n" + "\n".join(lines))
-                    from utils.tokenize import truncate_to_tokens as _ttt3
+                content_text = src.get("formatted_content", "")
+                if content_text and remaining_total > 0:
+                    compact_lines = [
+                        line.strip()
+                        for line in content_text.splitlines()
+                        if line.strip()
+                    ]
+                    if compact_lines:
+                        is_reserved_fallback = mode in fallback_modes
+                        reserve_for_later = max(
+                            0,
+                            remaining_fallback_modes
+                            - (1 if is_reserved_fallback else 0),
+                        )
+                        fallback_limit = remaining_total - reserve_for_later
+                        if fallback_limit <= 0:
+                            continue
+                        fallback_lines = [
+                            _ttt(line, PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS)
+                            for line in compact_lines[:fallback_limit]
+                        ]
+                        parts.append(
+                            f"--- {label} ---\n" + "\n".join(fallback_lines)
+                        )
+                        remaining_total -= len(fallback_lines)
+                        if is_reserved_fallback:
+                            remaining_fallback_modes -= 1
 
-                    merged_web_content = _ttt3(
-                        "\n\n".join(parts), PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS
-                    )
-                else:
-                    merged_web_content = ""
-                    all_web_links = []
+            # 兜底总和截断：防止 20 source × 200 token = 4k 超过 2k 总预算
+            merged_web_content = _ttt(
+                "\n\n".join(parts), PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS
+            )
 
         # ============================================================
         # 合并 Phase 1 LLM 调用：web 筛选 + music 关键词 + meme 关键词
@@ -1628,12 +1623,19 @@ async def handle_proactive_chat(
                 )
             else:
                 if matched:
-                    selected_web_link = {
-                        "title": web_parsed.get("title", matched.get("title", "")),
-                        "url": matched["url"],
-                        "source": web_parsed.get("source", matched.get("source", "")),
-                        "mode": matched.get("mode", "web"),  # 保留细粒度 mode
-                    }
+                    selected_web_link = dict(matched)
+                    selected_web_link.update(
+                        {
+                            "title": web_parsed.get(
+                                "title", matched.get("title", "")
+                            ),
+                            "url": matched["url"],
+                            "source": web_parsed.get(
+                                "source", matched.get("source", "")
+                            ),
+                            "mode": matched.get("mode", "web"),
+                        }
+                    )
                     print(
                         f"[{lanlan_name}] Phase 1 链接预匹配成功: {matched.get('title', '')[:60]}"
                     )
@@ -1859,6 +1861,38 @@ async def handle_proactive_chat(
         web_topic = phase1_decision.web_topic
         music_topic = phase1_decision.music_topic
         primary_channel = phase1_decision.primary_channel
+        if selected_web_link:
+            if mgr.state.is_proactive_preempted():
+                return await _end_proactive(
+                    ProactiveChatResult(
+                        body=_proactive_preempted_json(
+                            "phase1_pre_candidate_preparation"
+                        )
+                    )
+                )
+            try:
+                selected_web_link, web_topic = await prepare_selected_web_candidate(
+                    selected_web_link,
+                    fallback_topic=web_topic,
+                    language=proactive_lang,
+                    is_preempted=mgr.state.is_proactive_preempted,
+                )
+            except SelectedWebCandidatePreempted:
+                return await _end_proactive(
+                    ProactiveChatResult(
+                        body=_proactive_preempted_json(
+                            "phase1_candidate_preparation"
+                        )
+                    )
+                )
+            if mgr.state.is_proactive_preempted():
+                return await _end_proactive(
+                    ProactiveChatResult(
+                        body=_proactive_preempted_json(
+                            "phase1_post_candidate_preparation"
+                        )
+                    )
+                )
         print(
             f"[{lanlan_name}] Phase 1 可用通道: {active_channels}，主通道: {primary_channel}"
         )
@@ -2110,7 +2144,19 @@ async def handle_proactive_chat(
         # prepare_proactive_delivery 已经 fire(PROACTIVE_CLAIM, sid=...)；这里把
         # 状态机翻到 PHASE2，后续 astream 循环的抢占检查基于此阶段。
         proactive_sid = mgr.current_speech_id
-        await mgr.state.fire(_SE.PROACTIVE_PHASE2)
+        if not await _enter_proactive_phase2(
+            mgr,
+            proactive_sid,
+            log=logger,
+        ):
+            return await _end_proactive(
+                ProactiveChatResult(
+                    body=_proactive_pass_body(
+                        PROACTIVE_REASON_DELIVERY_PREEMPTED,
+                        message="用户在 Phase 2 状态切换期间恢复互动",
+                    )
+                )
+            )
 
         # Path B (idle) Focus 凝神：this round is now committed to speaking
         # (PHASE2 fired). Read-only: does this proactive reply run thinking-on?

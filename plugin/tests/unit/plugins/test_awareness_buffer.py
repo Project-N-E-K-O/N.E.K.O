@@ -4,7 +4,9 @@ import asyncio
 
 import pytest
 
+from plugin.plugins.study_companion import awareness_buffer as awareness_buffer_module
 from plugin.plugins.study_companion.awareness_buffer import ActivityBuffer
+from tests.fake_clock import patch_module_clock
 from plugin.plugins.study_companion.models import ActivitySnapshot, build_config
 from plugin.plugins.study_companion.screen_classifier import classify_app_from_title
 
@@ -149,9 +151,8 @@ async def test_activity_buffer_focus_minutes_uses_deduplicated_duration() -> Non
 @pytest.mark.asyncio
 async def test_activity_buffer_is_active_states(monkeypatch: pytest.MonkeyPatch) -> None:
     buffer = ActivityBuffer(window_seconds=60, snapshot_interval=5)
-    monkeypatch.setattr(
-        "plugin.plugins.study_companion.awareness_buffer.time.time", lambda: 10.0
-    )
+    # 打到 awareness_buffer 上：is_active() 与 _prune() 的 time.time() 都在这个模块里
+    patch_module_clock(monkeypatch, awareness_buffer_module, time=lambda: 10.0)
 
     assert await buffer.is_active() is False
 
