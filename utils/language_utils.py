@@ -30,6 +30,7 @@ import os
 import hashlib
 import platform
 import subprocess
+import time
 from collections import OrderedDict
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -55,6 +56,15 @@ _global_language_initialized = False
 
 # 全局区域标识（中文区/非中文区）
 _global_region: Optional[str] = None  # 'china' 或 'non-china'
+_global_region_initialized = False
+
+# 系统探测没有拿到确定信号时，仍允许当前调用使用安全默认值，但不把默认值
+# 当成进程级真值。重试使用单调时钟与指数退避，避免每个 getter 都重新触发
+# Windows API / macOS defaults 等系统调用。
+_GLOBAL_PROBE_RETRY_INITIAL_SECONDS = 5.0
+_GLOBAL_PROBE_RETRY_MAX_SECONDS = 300.0
+_global_probe_next_retry_monotonic = 0.0
+_global_probe_retry_delay_seconds = _GLOBAL_PROBE_RETRY_INITIAL_SECONDS
 
 # Background work may carry a conversation-specific locale while other
 # conversations run concurrently. ContextVars keep that override task-local;
@@ -141,9 +151,37 @@ def _locale_is_mainland_china(raw: Any) -> bool:
     return source_region_from_locale(normalized) == 'china'
 
 
-def _is_china_region() -> bool:
+def _locale_region_signal(raw: Any) -> Optional[bool]:
+    """Return a conclusive region verdict for a real locale, or ``None``.
+
+    ``C`` / ``POSIX`` locales are process defaults rather than user settings, so
+    they must not permanently classify the user as non-China.
     """
-    Decide whether the current system is in the Chinese region
+    if not raw:
+        return None
+    normalized = str(raw).strip().split('@', 1)[0].split('.', 1)[0]
+    if not normalized or normalized.lower() in {'c', 'posix'}:
+        return None
+    if _locale_is_mainland_china(normalized):
+        return True
+    normalized_lower = normalized.lower()
+    if 'chinese' in normalized_lower and 'china' in normalized_lower:
+        return True
+    if _parse_system_language(normalized) is not None:
+        return False
+    if normalized_lower in {'global', 'international', 'non-china', 'non_china'}:
+        return False
+    if re.fullmatch(
+        r'[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8})*',
+        normalized,
+    ):
+        return False
+    return None
+
+
+def _detect_china_region() -> Optional[bool]:
+    """
+    Detect whether the current system is in the Chinese region.
 
     ``NEKO_IS_CHINA_REGION`` can explicitly override auto detection:
     truthy values (1/true/yes/on) force the Chinese region, while falsy
@@ -151,7 +189,8 @@ def _is_china_region() -> bool:
     or invalid value falls back to locale-based detection.
     
     Returns:
-        True for the Chinese region, False otherwise
+        ``True`` / ``False`` for a conclusive signal, or ``None`` when all
+        probes are unavailable or only expose a neutral process locale.
     """
     region_override = os.environ.get('NEKO_IS_CHINA_REGION', '').strip().lower()
     if region_override in {'1', 'true', 'yes', 'on'}:
@@ -165,9 +204,15 @@ def _is_china_region() -> bool:
         )
 
     try:
+        windows_locale = _get_windows_locale()
+        verdict = _locale_region_signal(windows_locale)
+        if verdict is not None:
+            return verdict
+
         macos_locale = _get_macos_locale()
-        if macos_locale:
-            return _locale_is_mainland_china(macos_locale)
+        verdict = _locale_region_signal(macos_locale)
+        if verdict is not None:
+            return verdict
 
         system_locale = locale.getlocale()[0]
         if system_locale:
@@ -176,15 +221,23 @@ def _is_china_region() -> bool:
                 return True
             if 'chinese' in system_locale_lower and 'china' in system_locale_lower:
                 return True
+            verdict = _locale_region_signal(system_locale_lower)
+            if verdict is not None:
+                return verdict
         
-        lang_env = os.environ.get('LANG', '').lower()
-        if _locale_is_mainland_china(lang_env):
-            return True
+        verdict = _locale_region_signal(os.environ.get('LANG', ''))
+        if verdict is not None:
+            return verdict
         
-        return False
+        return None
     except Exception as e:
-        logger.warning(f"判断系统区域失败: {e}，默认使用非中文区")
-        return False
+        logger.warning(f"判断系统区域失败: {e}，本次使用非中文区并稍后重试")
+        return None
+
+
+def _is_china_region() -> bool:
+    """Return the current region verdict, defaulting provisionally to non-China."""
+    return _detect_china_region() is True
 
 
 _MACOS_LOCALE_UNSET = object()
@@ -292,38 +345,75 @@ def _get_windows_locale() -> Optional[str]:
         return None
 
 
-def _get_system_language() -> str:
+def _parse_system_language(raw: Any) -> Optional[str]:
+    """Map one OS locale signal to a supported language."""
+    if not raw:
+        return None
+    s = str(raw).lower().replace('_', '-')
+    if s.split('@', 1)[0].split('.', 1)[0] in {'c', 'posix'}:
+        return None
+    chinese_name = (
+        s == 'chinese'
+        or s.startswith('chinese (')
+        or s.startswith('simplified chinese')
+        or s.startswith('traditional chinese')
+    )
+    if _matches_lang_code(s, 'zh') or chinese_name:
+        if any(marker in s for marker in ('-tw', '-hk', 'hant', 'traditional')):
+            return 'zh-TW'
+        return 'zh'
+    if _matches_lang_code(s, 'ja') or s == 'japanese':
+        return 'ja'
+    if (
+        _matches_lang_code(s, 'ko')
+        or s == 'korean'
+        or s == 'koreana'
+    ):
+        return 'ko'
+    if _matches_lang_code(s, 'ru') or s == 'russian':
+        return 'ru'
+    if _matches_lang_code(s, 'es', {'spanish', 'latam'}):
+        return 'es'
+    if _matches_lang_code(s, 'pt', {'portuguese', 'brazilian'}):
+        return 'pt'
+    if _matches_lang_code(s, 'en') or s == 'english':
+        return 'en'
+    return None
+
+
+def _system_language_signal(raw: Any) -> Optional[str]:
+    """Map a conclusive OS locale to a supported language or English.
+
+    A valid but unsupported locale (for example ``fr_FR``) is still a real
+    user-setting signal. The application's supported-language fallback for
+    that signal is English; only missing, neutral, or malformed values remain
+    provisional.
     """
-    Get the language from system settings
+    parsed = _parse_system_language(raw)
+    if parsed:
+        return parsed
+    if not raw:
+        return None
+    base = str(raw).strip().split('@', 1)[0].split('.', 1)[0]
+    if base.lower() in {'c', 'posix'}:
+        return None
+    if re.fullmatch(r'[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8})*', base):
+        return 'en'
+    return None
+
+
+def _detect_system_language() -> Optional[str]:
+    """
+    Detect the language from system settings without inventing a fallback.
 
     Returns:
-        Language code ('zh', 'en', 'ja', 'ko', 'ru'), defaults to 'en'
+        A supported language code, or ``None`` when no probe is conclusive.
     """
-    def _parse_locale(s: str) -> Optional[str]:
-        s = s.lower().replace('_', '-')
-        if s.startswith('zh') or 'chinese' in s:
-            if any(marker in s for marker in ('-tw', '-hk', 'hant', 'traditional')):
-                return 'zh-TW'
-            return 'zh'
-        if s.startswith('ja') or 'japanese' in s:
-            return 'ja'
-        if s.startswith('ko') or 'korean' in s:
-            return 'ko'
-        if s.startswith('ru') or 'russian' in s:
-            return 'ru'
-        if _matches_lang_code(s, 'es', {'spanish', 'latam'}):
-            return 'es'
-        if _matches_lang_code(s, 'pt', {'portuguese', 'brazilian'}):
-            return 'pt'
-        if s.startswith('en') or 'english' in s:
-            return 'en'
-        return None
-
     try:
         # 优先：Windows API（locale.getlocale() 在 Windows 上几乎总是 (None, None)）
         windows_locale = _get_windows_locale()
         if windows_locale:
-            lang = _parse_locale(windows_locale)
+            lang = _system_language_signal(windows_locale)
             if lang:
                 return lang
 
@@ -332,28 +422,33 @@ def _get_system_language() -> str:
         # process locale so standalone memory_server chooses the real language.
         macos_locale = _get_macos_locale()
         if macos_locale:
-            lang = _parse_locale(macos_locale)
+            lang = _system_language_signal(macos_locale)
             if lang:
                 return lang
 
         # 次选：Python locale（Unix / 少数 Windows 场景有效）
         system_locale = locale.getlocale()[0]
         if system_locale:
-            lang = _parse_locale(system_locale)
+            lang = _system_language_signal(system_locale)
             if lang:
                 return lang
 
         # 末选：LANG 环境变量（Unix 常见）
         lang_env = os.environ.get('LANG', '')
         if lang_env:
-            lang = _parse_locale(lang_env)
+            lang = _system_language_signal(lang_env)
             if lang:
                 return lang
 
-        return 'en'  # 默认英文
+        return None
     except Exception as e:
-        logger.warning(f"获取系统语言失败: {e}，使用默认英文")
-        return 'en'
+        logger.warning(f"获取系统语言失败: {e}，本次使用默认英文并稍后重试")
+        return None
+
+
+def _get_system_language() -> str:
+    """Compatibility wrapper returning the outward-facing English default."""
+    return _detect_system_language() or 'en'
 
 
 def _get_steam_language() -> Optional[str]:
@@ -404,6 +499,27 @@ def _get_steam_language() -> Optional[str]:
         return None
 
 
+def _reset_global_probe_backoff_locked() -> None:
+    """Reset provisional-probe retry state while holding the global lock."""
+    global _global_probe_next_retry_monotonic, _global_probe_retry_delay_seconds
+    _global_probe_next_retry_monotonic = 0.0
+    _global_probe_retry_delay_seconds = _GLOBAL_PROBE_RETRY_INITIAL_SECONDS
+
+
+def _schedule_global_probe_retry_locked(now: float) -> None:
+    """Schedule the next provisional-probe attempt with bounded backoff."""
+    global _global_probe_next_retry_monotonic, _global_probe_retry_delay_seconds
+    delay = max(
+        _GLOBAL_PROBE_RETRY_INITIAL_SECONDS,
+        float(_global_probe_retry_delay_seconds),
+    )
+    _global_probe_next_retry_monotonic = now + delay
+    _global_probe_retry_delay_seconds = min(
+        _GLOBAL_PROBE_RETRY_MAX_SECONDS,
+        delay * 2.0,
+    )
+
+
 def initialize_global_language() -> str:
     """
     Initialize the global language variable (priority: Steam settings > system settings)
@@ -411,48 +527,73 @@ def initialize_global_language() -> str:
     Returns:
         The initialized language code ('zh', 'en', 'ja', 'ko')
     """
-    global _global_language, _global_language_full, _global_region, _global_language_initialized
+    global _global_language, _global_language_full, _global_language_initialized
+    global _global_region, _global_region_initialized
     
     with _global_language_lock:
-        if _global_language_initialized:
+        if _global_language_initialized and _global_region_initialized:
             return _global_language or 'en'
-        
-        # 判断区域
-        if _is_china_region():
-            _global_region = 'china'
-        else:
-            _global_region = 'non-china'
-        logger.info(f"系统区域判断: {_global_region}")
 
-        # 显式环境变量覆盖优先于 Steam 和系统语言，主要用于启动/集成测试。
-        language_override = _get_language_env_override()
-        if language_override:
-            _global_language = normalize_language_code(language_override, format='short')
-            _global_language_full = normalize_language_code(language_override, format='full')
-            _global_language_initialized = True
-            logger.info(
-                "全局语言已由 NEKO_LANGUAGE 强制设置为: %s (full: %s)",
-                _global_language,
-                _global_language_full,
-            )
-            return _global_language
-        
-        # 优先级1：尝试从 Steam 获取
-        steam_lang = _get_steam_language()
-        if steam_lang:
-            # 归一化 Steam 语言代码为短格式
-            _global_language = normalize_language_code(steam_lang, format='short')
-            _global_language_full = normalize_language_code(steam_lang, format='full')
-            logger.info(f"全局语言已初始化（来自Steam）: {_global_language} (full: {_global_language_full})")
-            _global_language_initialized = True
-            return _global_language
-        
-        # 优先级2：从系统设置获取
-        system_lang = _get_system_language()
-        _global_language = normalize_language_code(system_lang, format='short')
-        _global_language_full = normalize_language_code(system_lang, format='full')
-        logger.info(f"全局语言已初始化（来自系统设置）: {_global_language}")
-        _global_language_initialized = True
+        now = time.monotonic()
+        if now < _global_probe_next_retry_monotonic:
+            return _global_language or 'en'
+
+        # 语言与区域分别记录置信状态：Steam 可能已经给出确定语言，但 OS
+        # 区域仍处于瞬时探测失败，反之亦然。只重试没有结论的部分。
+        if not _global_region_initialized:
+            region_verdict = _detect_china_region()
+            if region_verdict is None:
+                _global_region = _global_region or 'non-china'
+                logger.info("系统区域暂未探测到确定信号，本次使用 non-china")
+            else:
+                _global_region = 'china' if region_verdict else 'non-china'
+                _global_region_initialized = True
+                logger.info(f"系统区域判断: {_global_region}")
+
+        if not _global_language_initialized:
+            # 显式环境变量覆盖优先于 Steam 和系统语言，主要用于启动/集成测试。
+            language_override = _get_language_env_override()
+            if language_override:
+                _global_language = normalize_language_code(language_override, format='short')
+                _global_language_full = normalize_language_code(language_override, format='full')
+                _global_language_initialized = True
+                logger.info(
+                    "全局语言已由 NEKO_LANGUAGE 强制设置为: %s (full: %s)",
+                    _global_language,
+                    _global_language_full,
+                )
+            else:
+                # 优先级1：尝试从 Steam 获取
+                steam_lang = _get_steam_language()
+                if steam_lang:
+                    _global_language = normalize_language_code(steam_lang, format='short')
+                    _global_language_full = normalize_language_code(steam_lang, format='full')
+                    _global_language_initialized = True
+                    logger.info(
+                        "全局语言已初始化（来自Steam）: %s (full: %s)",
+                        _global_language,
+                        _global_language_full,
+                    )
+                else:
+                    # 优先级2：从系统设置获取。None 表示没有确定信号；
+                    # 对外仍返回 en，但不把这个 fallback 永久钉进缓存。
+                    system_lang = _detect_system_language()
+                    if system_lang:
+                        _global_language = normalize_language_code(system_lang, format='short')
+                        _global_language_full = normalize_language_code(system_lang, format='full')
+                        _global_language_initialized = True
+                        logger.info(f"全局语言已初始化（来自系统设置）: {_global_language}")
+                    else:
+                        _global_language = _global_language or 'en'
+                        _global_language_full = _global_language_full or 'en'
+                        logger.info("全局语言暂未探测到确定信号，本次使用 en")
+
+        if _global_language_initialized and _global_region_initialized:
+            _reset_global_probe_backoff_locked()
+        else:
+            # Slow system probes (notably macOS defaults timeouts) must not eat
+            # into the cooldown itself.
+            _schedule_global_probe_retry_locked(time.monotonic())
         return _global_language
 
 
@@ -553,6 +694,9 @@ def set_global_language(language: str) -> None:
         _global_language = normalized_lang
         _global_language_full = full_lang
         _global_language_initialized = True
+        # 手动真值到达后，若区域仍是 provisional，允许下一次 region getter
+        # 立即重试，而不是继承旧失败留下的退避窗口。
+        _reset_global_probe_backoff_locked()
         logger.info(f"全局语言已手动设置为: {_global_language} (full: {_global_language_full})")
 
 
@@ -566,19 +710,17 @@ def refresh_global_language(language: str) -> bool:
       shouldn't spam each time).
     - only overwrites and logs when the value differs / the cache is uninitialized.
 
-    Motivation: ``initialize_global_language`` runs only once at process startup; if the
-    Steam SDK isn't ready it degrades to the system locale and **caches it for life**;
-    the frontend's ``/api/config/steam_language`` endpoint re-reads Steam every time and
-    gets the right value, but had no path to write it back to the global cache — so all
-    downstream consumers of ``get_global_language()`` (memory / reflection / tts /
-    soccer fallback, etc.) kept using the wrong English. This function is that
-    write-back path.
+    Motivation: a late Steam verdict should replace either a conclusive OS language or
+    a provisional English fallback immediately. Automatic probes use bounded backoff,
+    while the frontend's ``/api/config/steam_language`` endpoint can provide the truth
+    as soon as Steam becomes ready.
 
     Returns:
         ``True`` when a real change happened; ``False`` when already current or the
         argument is invalid.
     """
-    global _global_language, _global_language_full, _global_region, _global_language_initialized
+    global _global_language, _global_language_full, _global_language_initialized
+    global _global_region, _global_region_initialized
 
     # NEKO_LANGUAGE 是进程级强制覆盖；前端冷启动随后读取到 Steam 语言时，
     # 不允许该晚到值把显式环境配置覆盖回去。
@@ -609,30 +751,51 @@ def refresh_global_language(language: str) -> bool:
         if (_global_language_initialized
                 and _global_language == short
                 and _global_language_full == full
-                and _global_region is not None):
+                and _global_region_initialized):
             return False
+        language_changed = (
+            not _global_language_initialized
+            or _global_language != short
+            or _global_language_full != full
+        )
+        region_was_initialized = _global_region_initialized
         prev_short = _global_language
         prev_full = _global_language_full
         _global_language = short
         _global_language_full = full
-        # _global_region 必须和 _global_language_initialized 同时建立：``get_global_region``
-        # 看到 region 为 None 才会再调 ``initialize_global_language``，但后者一旦看到
-        # initialized=True 就 early-return，会把 region 永久卡在 None → 'non-china'
-        # fallback。startup 路径正常会先初始化 region；但 startup 异常 / 测试 / 子进程
-        # 等场景下若 refresh 先于 init 跑到这里，必须自补 region 来维持不变量。
-        if _global_region is None:
+        # Language and region keep separate confidence flags. A refresh can settle the
+        # language while the region remains provisional, so opportunistically probe a
+        # due region without postponing an existing retry deadline.
+        probe_now = time.monotonic()
+        if (
+            not _global_region_initialized
+            and probe_now >= _global_probe_next_retry_monotonic
+        ):
             try:
-                _global_region = 'china' if _is_china_region() else 'non-china'
+                region_verdict = _detect_china_region()
+                if region_verdict is None:
+                    _global_region = _global_region or 'non-china'
+                else:
+                    _global_region = 'china' if region_verdict else 'non-china'
+                    _global_region_initialized = True
                 logger.info(f"系统区域判断（refresh 路径补齐）: {_global_region}")
             except Exception:
                 _global_region = 'non-china'
                 logger.debug("refresh_global_language 补齐 region 失败，回落 non-china", exc_info=True)
         _global_language_initialized = True
-        logger.info(
-            f"全局语言已刷新（晚到真值覆盖）: {prev_short} -> {short} "
-            f"(full: {prev_full} -> {full})"
+        if _global_region_initialized:
+            _reset_global_probe_backoff_locked()
+        elif _global_probe_next_retry_monotonic <= probe_now:
+            _schedule_global_probe_retry_locked(time.monotonic())
+        if language_changed:
+            logger.info(
+                f"全局语言已刷新（晚到真值覆盖）: {prev_short} -> {short} "
+                f"(full: {prev_full} -> {full})"
+            )
+        state_changed = language_changed or (
+            not region_was_initialized and _global_region_initialized
         )
-    return True
+    return state_changed
 
 
 def get_global_region() -> str:
@@ -645,7 +808,7 @@ def get_global_region() -> str:
     global _global_region
     
     with _global_language_lock:
-        if _global_region is None:
+        if not _global_region_initialized:
             # 如果区域未初始化，先初始化语言（会同时初始化区域）
             initialize_global_language()
         
@@ -666,13 +829,16 @@ def reset_global_language() -> None:
     """
     Reset the global language variable (re-initialize)
     """
-    global _global_language, _global_language_full, _global_region, _global_language_initialized
+    global _global_language, _global_language_full, _global_language_initialized
+    global _global_region, _global_region_initialized
     
     with _global_language_lock:
         _global_language = None
         _global_language_full = None
         _global_region = None
         _global_language_initialized = False
+        _global_region_initialized = False
+        _reset_global_probe_backoff_locked()
         logger.info("全局语言变量已重置")
 
 
