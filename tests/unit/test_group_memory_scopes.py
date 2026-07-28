@@ -10952,6 +10952,14 @@ def test_member_memory_never_outlives_its_parent_switch():
         "group_memory_enabled": True, "group_member_memory_enabled": True,
     }
 
+    # A deferred parent on its own does not carry a stale child along: that
+    # request never asked for member memory.
+    settings["group_member_memory_enabled"] = True
+    deferred = {"group_memory_enabled": True}
+    service._clamp_member_to_group(deferred)
+    assert deferred == {"group_memory_enabled": True}
+    assert settings["group_member_memory_enabled"] is False
+
     # The write gate refuses collection even if the flag is forced on.
     memory = QQSessionMemoryService(SimpleNamespace(_qq_settings={
         "group_memory_enabled": False, "group_member_memory_enabled": True,
@@ -11021,6 +11029,30 @@ async def test_first_time_setup_publishes_both_memory_opt_ins():
     await service.save_settings(group_member_memory_enabled=True)
     assert written[-1] == {}
     assert plugin._qq_settings["group_member_memory_enabled"] is False
+
+    # A stale child left over from a hand-edited config (or an older build)
+    # must not ride along on a parent-only save — that request never asked
+    # for member memory.
+    settings["group_memory_enabled"] = False
+    settings["group_member_memory_enabled"] = True
+    await service.save_settings(group_memory_enabled=True)
+    assert written[-1] == {"group_memory_enabled": True}
+    assert plugin._qq_settings["group_memory_enabled"] is True
+    assert plugin._qq_settings["group_member_memory_enabled"] is False
+
+    # ...but when the same stale state is saved from a dashboard, which
+    # always submits both checkboxes, the requested child still lands. The
+    # stale flag grants nothing while its parent is off, so "already true"
+    # must not be read as "no change to publish".
+    settings["group_memory_enabled"] = False
+    settings["group_member_memory_enabled"] = True
+    await service.save_settings(
+        group_memory_enabled=True, group_member_memory_enabled=True,
+    )
+    assert written[-1] == {
+        "group_memory_enabled": True, "group_member_memory_enabled": True,
+    }
+    assert plugin._qq_settings["group_member_memory_enabled"] is True
 
 
 @pytest.mark.asyncio

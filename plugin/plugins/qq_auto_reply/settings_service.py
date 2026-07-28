@@ -110,12 +110,15 @@ class QQSettingsService:
             return
         if deferred_opt_ins is not None and deferred_opt_ins.get(
             "group_memory_enabled"
-        ):
-            # 父开关也在同一次扣发队列里：两个键会在写盘成功后一起发布，
+        ) and deferred_opt_ins.get("group_member_memory_enabled"):
+            # 父子都在同一次扣发队列里：两个键会在写盘成功后一起发布，
             # 此刻"父还没生效"是延迟发布的中间态，不是没授权。首次开箱
             # 正走这条路（两个面板每次保存都同时提交两个复选框），按未
             # 授权砍掉 member 会连磁盘一起写成关闭——用户看着勾上了，
             # 回来一刷新又是关的，得再存一次才算数。
+            # 只有父开关在队列里则不放行：那条请求根本没要开成员记忆，
+            # 残留的 group_member_memory_enabled=true（手改配置/更早的
+            # 版本写下的）必须在这里清掉，不能随父开关一起被发布出去。
             return
         if deferred_opt_ins is not None:
             deferred_opt_ins.pop("group_member_memory_enabled", None)
@@ -514,7 +517,17 @@ class QQSettingsService:
             value = kwargs.get(key)
             if value is None:
                 continue
-            if bool(value) and not bool(self.plugin._qq_settings.get(key, False)):
+            live = bool(self.plugin._qq_settings.get(key, False))
+            if key == "group_member_memory_enabled":
+                # 子开关在父开关关着时授权不了任何采集（收集侧与接收边界
+                # 读的都是 member and group），所以"是否已经生效"要与父
+                # 开关取与。否则一条残留的 group_member_memory_enabled=
+                # true 会让"这次真的在开成员记忆"看起来像没变化，跳过延迟
+                # 发布、也跳过与父开关同批发布。
+                live = live and bool(
+                    self.plugin._qq_settings.get("group_memory_enabled", False)
+                )
+            if bool(value) and not live:
                 deferred_opt_ins[key] = True
                 continue
             self.plugin._qq_settings[key] = bool(value)
