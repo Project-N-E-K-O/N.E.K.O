@@ -36,7 +36,18 @@ from tests.fake_clock import patch_module_clock
 
 TESTS_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = TESTS_ROOT.parent
-_SKIP_DIRS = {".venv", "node_modules", ".git", "dist", "build", "__pycache__"}
+# 与 pytest.ini 的 norecursedirs 对齐（含无点的 venv）：漏掉它的话，用
+# `venv/` 而不是 `.venv/` 的 checkout 会让 rglob 一路走进 site-packages，
+# 扫到第三方包自带的 tests 树。
+_SKIP_DIRS = {
+    "venv", "node_modules", "dist", "build", "__pycache__",
+    "site-packages", "local_server", "N.E.K.O", "*.egg",
+}
+
+
+def _is_skipped(path: Path) -> bool:
+    # pytest 的 norecursedirs 以 `.*` 开头一条把所有点开头目录排除掉，这里同样处理
+    return any(part in _SKIP_DIRS or part.startswith(".") for part in path.parts)
 
 
 def _test_roots() -> list[Path]:
@@ -51,7 +62,7 @@ def _test_roots() -> list[Path]:
     for candidate in REPO_ROOT.rglob("tests"):
         if not candidate.is_dir():
             continue
-        if any(part in _SKIP_DIRS for part in candidate.parts):
+        if _is_skipped(candidate.relative_to(REPO_ROOT)):
             continue
         # 已被更外层的 root 覆盖就不重复扫
         if any(candidate != other and other in candidate.parents for other in roots):
@@ -150,11 +161,26 @@ def test_no_test_installs_a_mutating_fake_on_the_stdlib_time_module():
                 if getattr(node.func, "attr", None) != "setattr":
                     continue
 
-                # pytest 的两种写法都要认：
+                # pytest 的写法都要认：
                 #   setattr(mod.time, "monotonic", fake)        —— 属性形态
                 #   setattr("pkg.mod.time.monotonic", fake)     —— 点号字符串形态
-                if len(node.args) >= 3:
-                    target = node.args[0]
+                #   setattr(target=mod.time, name=..., value=…) —— 关键字形态
+                kwargs = {kw.arg: kw.value for kw in node.keywords if kw.arg}
+                positional = list(node.args)
+
+                def _arg(index: int, keyword: str):
+                    if len(positional) > index:
+                        return positional[index]
+                    return kwargs.get(keyword)
+
+                arg_target = _arg(0, "target")
+                arg_name = _arg(1, "name")
+                arg_value = _arg(2, "value")
+                if arg_target is None:
+                    continue
+
+                if arg_value is not None:
+                    target = arg_target
                     # `mod.time`、裸 `time`、以及 `import time as real_time` 的
                     # 别名，指向的都是同一个 stdlib 模块
                     hits_stdlib_time = (
@@ -163,12 +189,12 @@ def test_no_test_installs_a_mutating_fake_on_the_stdlib_time_module():
                     )
                     if not hits_stdlib_time:
                         continue
-                    replacement = node.args[2]
-                elif len(node.args) == 2 and isinstance(node.args[0], ast.Constant):
-                    dotted = node.args[0].value
+                    replacement = arg_value
+                elif isinstance(arg_target, ast.Constant) and arg_name is not None:
+                    dotted = arg_target.value
                     if not isinstance(dotted, str) or ".time." not in f"{dotted}.":
                         continue
-                    replacement = node.args[1]
+                    replacement = arg_name
                 else:
                     continue
 
