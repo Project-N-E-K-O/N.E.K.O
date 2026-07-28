@@ -33,6 +33,7 @@
 
     var nativeCaptureGeneration = 0;
     var activeNativeCaptureSourceId = null;
+    var NATIVE_FRAME_CAPTURE_TIMEOUT_MS = 3000;
 
     // ======================== DOM refs (lazy, filled on first use) ========================
     function dom(id) {
@@ -830,10 +831,23 @@
                 stopScreening();
                 return false;
             }
-            var result = await provider.captureSourceAsDataUrl(sourceId, {
-                maxWidth: C.MAX_SCREENSHOT_WIDTH || 1280,
-                quality: 80
-            });
+            var captureTimeoutId = null;
+            var result;
+            try {
+                result = await Promise.race([
+                    provider.captureSourceAsDataUrl(sourceId, {
+                        maxWidth: C.MAX_SCREENSHOT_WIDTH || 1280,
+                        quality: 80
+                    }),
+                    new Promise(function (_, reject) {
+                        captureTimeoutId = setTimeout(function () {
+                            reject(new Error('Native screen capture timeout'));
+                        }, NATIVE_FRAME_CAPTURE_TIMEOUT_MS);
+                    })
+                ]);
+            } finally {
+                if (captureTimeoutId) clearTimeout(captureTimeoutId);
+            }
             // stop/restart/source-switch may happen while native capture awaits.
             // Never let that obsolete frame reach the replacement session.
             if (!isCurrentNativeCapture()) return false;
