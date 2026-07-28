@@ -2107,6 +2107,13 @@
                     S.sessionStartedResolver = resolve;
                     S.sessionStartedRejecter = reject;
                     S._pendingSessionStartMode = 'audio';
+                    // Re-arm the fail-closed voice latch on user intent, strictly
+                    // before start_session goes out and therefore before any route
+                    // verdict for this session can arrive. Residual, tracked
+                    // separately: the start_session dedupe path (lifecycle.py
+                    // _start_session_activate re-sends session_started for a
+                    // same-mode concurrent start WITHOUT re-running the route
+                    // decision) can still clear a latch whose verdict still holds.
 
                     if (window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);
@@ -2163,6 +2170,16 @@
                         window.sessionTimeoutId = null;
                     }
 
+                    if (S.voiceInputRouteBlocked === true) {
+                        // The route came back fail-closed (independent ASR was
+                        // enabled and failed to start). Do not open the mic;
+                        // unwind the starting-voice UI so the button is usable
+                        // again, and let the ASR failure toast stand.
+                        if (typeof window.abortVoiceStartForBlockedRoute === 'function') {
+                            window.abortVoiceStartForBlockedRoute();
+                        }
+                        return;
+                    }
                     await window.startMicCapture();
                     ensureVoiceStartCurrent();
                 } catch (error) {

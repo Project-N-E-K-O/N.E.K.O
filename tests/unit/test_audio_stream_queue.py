@@ -3,7 +3,7 @@ import json
 import os
 import struct
 import sys
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -29,6 +29,7 @@ from main_logic.asr_client.lifecycle import (
 from main_logic.voice_turn.contracts import VoicePartialEvent, VoiceTranscriptEvent
 from main_logic.asr_client.lifecycle import VoiceInputLifecycleController
 from main_logic.asr_client.provider_policy import resolve_provider_policy
+from main_logic.asr_client.runtime import AsrStartResult, AsrStartStatus
 
 
 async def test_starting_session_audio_does_not_enter_pending_input_data():
@@ -2064,3 +2065,83 @@ async def test_deliberate_revoke_does_not_ask_the_client_to_resync():
     # A live route re-arms it.
     mgr._set_microphone_route("native")
     assert mgr._voice_lease_resync_suppressed is False
+
+
+@pytest.mark.parametrize("owner, revoked", [("core", True), ("game", False)])
+async def test_startup_failure_revokes_the_lease_except_for_the_game_owner(
+    owner: str,
+    revoked: bool,
+):
+    # Codex P2. A startup failure (provider connect, credentials, config) pins
+    # the route blocked but can never emit a BLOCKED lifecycle event, so the
+    # backstop is the only server-side stop. The galgame route holds the lease
+    # through its own consumer binding and must not be collaterally revoked.
+    mgr = _make_routable_audio_manager(True)
+    _authorize_core_lease(mgr)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._voice_lease_owner = owner
+    mgr._set_microphone_route("blocked")
+    mgr._asr_runtime.abort = AsyncMock()
+
+    result = await mgr._revoke_lease_for_blocked_route("asr_start_failed")
+
+    assert result is revoked
+    assert (mgr._voice_lease_connection_id == "") is revoked
+    if revoked:
+        # And it must not immediately ask the client to re-establish it.
+        assert mgr._voice_lease_resync_suppressed is True
+
+
+async def test_healthy_native_route_is_never_revoked():
+    # independentAsrEnabled == false is a HEALTHY native route, not a failure.
+    mgr = _make_routable_audio_manager(True)
+    _authorize_core_lease(mgr)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_microphone_route("native")
+    mgr._asr_runtime.abort = AsyncMock()
+
+    assert await mgr._revoke_lease_for_blocked_route("should_not_fire") is False
+    assert mgr._voice_lease_connection_id == "socket-a"
+    mgr._asr_runtime.abort.assert_not_awaited()
+
+
+async def test_enabled_but_failed_startup_stops_accepting_microphone_pcm():
+    # End-to-end pin for the wiring, not just the helper: independent ASR is
+    # ENABLED and start() comes back not-READY, so the route is blocked for the
+    # whole session. Ingress must stop accepting PCM. Without the revoke at
+    # that exit the lease stays live and every frame is decoded, denoised and
+    # VAD'd before being dropped at the router.
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._asr_runtime.abort = AsyncMock()
+    async def _failed_start(**_kwargs):
+        # Read the epoch at call time: _start_independent_asr_if_enabled closes
+        # the previous runtime first, which bumps it.
+        return AsrStartResult(
+            AsrStartStatus.FAILED,
+            provider="qwen",
+            failure_code="ASR_INDEPENDENT_FAILED",
+            session_epoch=mgr._capture_ingress_token().session_epoch,
+        )
+
+    mgr._asr_runtime.start = _failed_start
+    mgr.core_api_type = "qwen"
+    mgr.user_language = None
+    mgr.send_status = AsyncMock()
+
+    async def _settings():
+        return {"independentAsrEnabled": True}
+
+    with patch.object(
+        core_asr_runtime_module._core_facade,
+        "aload_global_conversation_settings",
+        _settings,
+    ):
+        await LLMSessionManager._start_independent_asr_if_enabled(mgr, "audio")
+
+    assert mgr._asr_route_mode == "blocked"
+    assert mgr._voice_lease_connection_id == ""
+    assert mgr._voice_input_accepts_pcm() is False

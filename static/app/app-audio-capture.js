@@ -1348,7 +1348,57 @@
     // ======================== 录音开始/停止 ========================
 
     // 开麦，按钮on click
+    function abortVoiceStartForBlockedRoute() {
+        // Unwind the "starting voice" UI after startMicCapture refused a
+        // fail-closed route. Deliberately NOT a thrown error: the generic
+        // catch would replace the accurate ASR failure toast with a generic
+        // "session start failed".
+        const _mic = micButton();
+        const _mute = muteButton();
+        const _screen = screenButton();
+        if (_mic) {
+            _mic.classList.remove('recording');
+            _mic.classList.remove('active');
+            _mic.disabled = false;
+        }
+        if (_mute) _mute.disabled = true;
+        if (_screen) _screen.disabled = true;
+        S.isRecording = false;
+        window.isRecording = false;
+        S.voiceChatActive = false;
+        S.voiceStartPending = false;
+        window.isMicStarting = false;
+        if (typeof window.hideVoicePreparingToast === 'function') {
+            window.hideVoicePreparingToast();
+        }
+        const textInputArea = document.getElementById('text-input-area');
+        if (textInputArea) textInputArea.classList.remove('hidden');
+        if (typeof window.syncVoiceChatComposerHidden === 'function') {
+            window.syncVoiceChatComposerHidden(false);
+        }
+        if (typeof window.syncFloatingMicButtonState === 'function') {
+            window.syncFloatingMicButtonState(false);
+        }
+        refreshMicLease();
+    }
+
     async function startMicCapture() {
+        // Refuse to open the hardware microphone onto a route the backend has
+        // already fail-closed. This is THE guard that closes the startup-failure
+        // hole: on a cold voice start the mic is opened only AFTER
+        // session_started, i.e. after the ASR_INDEPENDENT_* failure status, so a
+        // server-side lease revoke has nothing to revoke yet -- and this
+        // function's own refreshMicLease() would re-claim the lease from
+        // scratch anyway (_handle_voice_input_control enforces only generation
+        // monotonicity, and the revoke reset the generation to -1, so the next
+        // client snapshot wins unconditionally). Placed at the top rather than
+        // at the two await-sessionStartPromise call sites because three more
+        // callers -- the device-change restore paths below -- can also reopen
+        // the mic on a dead route, and one guard covers all five.
+        if (S.voiceInputRouteBlocked === true) {
+            console.log('[App] voice route is fail-closed; refusing to open the microphone');
+            return;
+        }
         const _mic = micButton();
         const _mute = muteButton();
         const _screen = screenButton();
@@ -1827,6 +1877,7 @@
     // ======================== 暴露到 window（向后兼容） ========================
     window.startMicCapture = startMicCapture;
     window.stopMicCapture = stopMicCapture;
+    window.abortVoiceStartForBlockedRoute = abortVoiceStartForBlockedRoute;
     window.stopRecording = stopRecording;
     window.startSilenceDetection = startSilenceDetection;
     window.stopSilenceDetection = stopSilenceDetection;

@@ -526,11 +526,7 @@ class AsrRuntimeMixin:
             # Same fail-safe as the failure path: a text session blocks the
             # route for its whole life, so revoke the lease rather than let a
             # client that missed session_started keep uploading into it.
-            if self._voice_lease_owner != "game":
-                self._voice_lease_resync_suppressed = True
-                await self._revoke_voice_input_connection(
-                    self._voice_lease_connection_id
-                )
+            await self._revoke_lease_for_blocked_route("text_session_active")
             return
         try:
             settings = await _core_facade.aload_global_conversation_settings()
@@ -544,6 +540,7 @@ class AsrRuntimeMixin:
                     session_epoch=session_epoch,
                 )
             )
+            await self._revoke_lease_for_blocked_route("asr_settings_unreadable")
             return
         if not core_start_is_current():
             return
@@ -631,7 +628,15 @@ class AsrRuntimeMixin:
         if result.status is AsrStartStatus.READY:
             self._set_microphone_route("independent")
         else:
+            # Independent ASR was ENABLED and failed to start (provider connect,
+            # credentials, config). Unlike a runtime failure this emits no
+            # BLOCKED lifecycle event -- IndependentAsrRuntime.start can never
+            # reach _handle_independent_asr_error, the only emitter -- so the
+            # client sees a toast and nothing else. Revoke after the route is
+            # pinned: _set_microphone_route re-arms the resync suppression for
+            # every non-blocked mode.
             self._set_microphone_route("blocked")
+            await self._revoke_lease_for_blocked_route("asr_start_failed")
 
     def _abandon_core_voice_turn(
         self,
@@ -1690,6 +1695,37 @@ class AsrRuntimeMixin:
         self._invalidate_voice_pcm_sync("websocket_reconnect")
         return True
 
+    async def _revoke_lease_for_blocked_route(self, reason: str) -> bool:
+        """Fail-closed fail-safe for an enabled-but-blocked microphone route.
+
+        Clients that never receive or never honour the teardown notice (older
+        builds, third-party clients, throttled background tabs) keep uploading
+        PCM into a route that discards it. Stop accepting it at ingress too.
+        The game owner is exempt: the galgame route holds the lease through its
+        own consumer binding and must not be collaterally revoked.
+
+        NEVER hoist this above the stale/competing-start exits.
+        ``_revoke_voice_input_connection`` calls ``_invalidate_asr_start()``
+        first, so revoking on a stale exit cancels a concurrent NEWER start --
+        verified: an over-broad "revoke whenever the route ends blocked"
+        reddens test_stale_start_abort_does_not_clobber_newer_start_placeholder.
+
+        This is a backstop, not the primary defence. A frontend that later runs
+        startMicCapture re-claims the lease from scratch via refreshMicLease,
+        and ``_handle_voice_input_control`` enforces only generation
+        monotonicity -- the revoke resets the generation to -1, so the next
+        client snapshot wins unconditionally. The latch that gates capture
+        start on the client is what actually closes the hole.
+        """
+
+        del reason
+        if self._asr_route_mode != "blocked" or self._voice_lease_owner == "game":
+            return False
+        self._voice_lease_resync_suppressed = True
+        return await self._revoke_voice_input_connection(
+            self._voice_lease_connection_id
+        )
+
     async def _revoke_voice_input_connection(self, connection_id: str) -> bool:
         """Release the voice lease held by a websocket that just disconnected.
 
@@ -2123,11 +2159,7 @@ class AsrRuntimeMixin:
             # of the session, so stop accepting the PCM at ingress too. The
             # game owner is exempt: the galgame route holds the lease through
             # its own consumer binding and must not be collaterally revoked.
-            if self._voice_lease_owner != "game":
-                self._voice_lease_resync_suppressed = True
-                await self._revoke_voice_input_connection(
-                    self._voice_lease_connection_id
-                )
+            await self._revoke_lease_for_blocked_route("independent_asr_failure")
 
     async def _send_core_asr_status(self, event: AsrStatusEvent) -> None:
         source_identity = self._capture_core_asr_operation_identity()

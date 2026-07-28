@@ -15,6 +15,16 @@ APP_STATE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-s
 APP_SETTINGS_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-settings.js"
 APP_AUDIO_CAPTURE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-audio-capture.js"
 APP_BUTTONS_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-buttons.js"
+
+
+def _code_only(js: str) -> str:
+    """Strip // line comments so 'does not do X' assertions test code, not prose.
+
+    Several pins in this file assert that a block does NOT call something; a
+    comment explaining why it must not would otherwise trip them.
+    """
+
+    return "\n".join(line.split("//", 1)[0] for line in js.splitlines())
 LOCALES_PATH = Path(__file__).resolve().parents[2] / "static" / "locales"
 WEBSOCKET_ROUTER_PATH = Path(__file__).resolve().parents[2] / "main_routers" / "websocket_router.py"
 ASR_REGISTRY_META_PATH = Path(__file__).resolve().parents[2] / "main_logic" / "asr_client" / "_registry_meta.py"
@@ -30,7 +40,7 @@ def test_independent_asr_injection_failure_does_not_show_fallback_toast():
     injection_branch = status_block.split(
         "if (statusCode === 'ASR_INDEPENDENT_INJECTION_FAILED')",
         1,
-    )[1].split("S.independentAsrActive = false;", 1)[0]
+    )[1].split("tearDownBlockedVoiceRoute();", 1)[0]
 
     assert "return;" in injection_branch
     assert "independentAsrFallback" not in injection_branch
@@ -65,9 +75,18 @@ def test_independent_asr_terminal_status_clears_partial_preview():
         1,
     )[1]
 
-    assert terminal_branch.index("removeExternalAsrPreview();") < terminal_branch.index(
-        "S.independentAsrActive = false;"
+    # The preview clear and the route-flag reset now live in the shared
+    # teardown helper (it is also used by the startup-failure path, which can
+    # never emit a BLOCKED lifecycle event). The terminal tail must call it
+    # before showing its per-code toast.
+    assert terminal_branch.index("tearDownBlockedVoiceRoute();") < terminal_branch.index(
+        "showStatusToast"
     )
+    teardown_fn = source.split("function tearDownBlockedVoiceRoute() {", 1)[1].split(
+        "\n    }", 1
+    )[0]
+    assert "removeExternalAsrPreview();" in teardown_fn
+    assert "S.independentAsrActive = false;" in teardown_fn
 
 
 def test_independent_asr_terminal_status_reports_stopped_voice_input():
@@ -117,12 +136,21 @@ def test_lifecycle_blocked_clears_independent_asr_and_shows_failure_toast():
     )
 
     blocked_branch = lifecycle_block.split("if (lifecycleState === 'blocked')", 1)[1]
-    assert "removeExternalAsrPreview();" in blocked_branch
-    assert "S.independentAsrActive = false;" in blocked_branch
-    assert blocked_branch.index("removeExternalAsrPreview();") < blocked_branch.index(
+    # Performed by the shared teardown helper the branch calls.
+    assert "tearDownBlockedVoiceRoute();" in blocked_branch
+    teardown_fn = source.split("function tearDownBlockedVoiceRoute() {", 1)[1].split(
+        "\n    }", 1
+    )[0]
+    assert "removeExternalAsrPreview();" in teardown_fn
+    assert "S.independentAsrActive = false;" in teardown_fn
+    assert teardown_fn.index("removeExternalAsrPreview();") < teardown_fn.index(
         "S.independentAsrActive = false;"
     )
-    assert "microphone.independentAsrFallback" in blocked_branch
+    # The teardown runs before the toast, so the failure message is what stays
+    # on screen.
+    assert blocked_branch.index("tearDownBlockedVoiceRoute();") < blocked_branch.index(
+        "microphone.independentAsrFallback"
+    )
 
     # Cross-reference comment so backend changes to the failure path get
     # traced back here.
@@ -2810,17 +2838,22 @@ def test_blocked_lifecycle_stops_microphone_capture():
     # the very next line says voice input has stopped.
     websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
 
-    blocked = websocket_source.split("if (lifecycleState === 'blocked') {", 1)[1].split(
-        "if (typeof window.showStatusToast === 'function') {", 1
-    )[0]
+    # The teardown is shared with the STARTUP-failure path, which can never
+    # emit a BLOCKED lifecycle event, so it lives in a helper now.
+    teardown = websocket_source.split(
+        "function tearDownBlockedVoiceRoute() {", 1
+    )[1].split("\n    }", 1)[0]
+    assert "tearDownBlockedVoiceRoute();" in websocket_source.split(
+        "if (lifecycleState === 'blocked') {", 1
+    )[1].split("}", 1)[0]
 
     # Only the capturing window acts, and never while the game STT gate owns
     # the hardware (there the ordinary uplink is already released).
-    assert "S.isRecording === true" in blocked
-    assert "S.gameVoiceSttGateActive !== true" in blocked
+    assert "S.isRecording === true" in teardown
+    assert "S.gameVoiceSttGateActive !== true" in teardown
     # stopMicCapture, not bare stopRecording: only it restores the whole
     # non-recording UI rather than leaving it claiming a live voice session.
-    assert "window.stopMicCapture" in blocked
+    assert "window.stopMicCapture" in teardown
     # Teardown precedes the toast so the 5s failure message stays on screen.
     assert websocket_source.index("window.stopMicCapture") < websocket_source.index(
         "microphone.independentAsrFallback"
@@ -2847,18 +2880,26 @@ def test_blocked_route_latch_blocks_game_exit_microphone_resume():
 
     assert "voiceInputRouteBlocked: false," in state_source
 
-    blocked = websocket_source.split("if (lifecycleState === 'blocked') {", 1)[1].split(
-        "if (typeof window.showStatusToast === 'function') {", 1
-    )[0]
-    assert "S.voiceInputRouteBlocked = true;" in blocked
+    teardown = websocket_source.split(
+        "function tearDownBlockedVoiceRoute() {", 1
+    )[1].split("\n    }", 1)[0]
+    assert "S.voiceInputRouteBlocked = true;" in teardown
 
     resume = websocket_source.split("if (shouldResumeAudio && wasRecording", 1)[1].split(
         ")", 1
     )[0]
     assert "S.voiceInputRouteBlocked !== true" in resume
 
-    # Cleared on a fresh route: a new session, or a provider that came READY.
-    assert websocket_source.count("S.voiceInputRouteBlocked = false;") == 2
+    # Cleared only where a fresh or healthy route really exists: a provider
+    # that came READY, the DISABLED (native) route, and user intent to start a
+    # new voice session. Deliberately NOT in the session_started handler --
+    # lifecycle.py runs the route decision BEFORE sending that ack, so clearing
+    # there would wipe the current session's own verdict.
+    assert websocket_source.count("S.voiceInputRouteBlocked = false;") == 3
+    started_handler = websocket_source.split(
+        "S.isTextSessionActive = response.input_mode === 'text';", 1
+    )[1].split("var _tiaStarted", 1)[0]
+    assert "S.voiceInputRouteBlocked = false;" not in started_handler
 
 
 def test_shared_write_metadata_carries_per_key_asr_authority():
@@ -3030,3 +3071,61 @@ def test_concurrent_asr_toggles_are_totally_ordered_not_swapped():
         "window.addEventListener('storage', function (event) {", 1
     )[1].split("});", 1)[0]
     assert "!asrOutranksLocalChoice" in listener_block.split("asrValueIsStale", 1)[1]
+
+
+def test_startup_failure_runs_the_same_teardown_as_a_runtime_failure():
+    # Codex P2. A startup failure (provider connect, credentials, config)
+    # leaves the route blocked but can NEVER emit a BLOCKED lifecycle event --
+    # IndependentAsrRuntime.start cannot reach _handle_independent_asr_error,
+    # the only emitter. So the terminal ASR_INDEPENDENT_* codes used to show a
+    # toast and nothing else, while the browser kept the hardware microphone
+    # open for the rest of the session.
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    status_block = source.split(
+        "if (statusCode && statusCode.indexOf('ASR_INDEPENDENT_') === 0)", 1
+    )[1].split("if (statusCode === 'TTS_CONNECTION_FAILED')", 1)[0]
+    terminal = status_block.split(
+        "if (statusCode === 'ASR_INDEPENDENT_INJECTION_FAILED')", 1
+    )[1]
+
+    # Both failure kinds go through one teardown, so they cannot drift.
+    assert "tearDownBlockedVoiceRoute();" in terminal
+    lifecycle_block = source.split("if (statusCode === 'ASR_LIFECYCLE_STATE')", 1)[
+        1
+    ].split("if (statusCode === 'VOICE_INPUT_LEASE_RESYNC_REQUIRED')", 1)[0]
+    assert "tearDownBlockedVoiceRoute();" in lifecycle_block
+    assert source.count("function tearDownBlockedVoiceRoute()") == 1
+
+
+def test_blocked_route_refuses_to_open_the_microphone():
+    # THE guard that closes the cold-start hole. On a cold voice start the mic
+    # is opened only AFTER session_started -- i.e. after the failure status --
+    # so a server-side lease revoke has nothing to revoke yet, and
+    # startMicCapture's own refreshMicLease would re-claim the lease anyway
+    # (_handle_voice_input_control enforces only generation monotonicity, and
+    # the revoke reset the generation to -1). Placed at the top of
+    # startMicCapture so it also covers the device-change restore callers.
+    capture_source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
+
+    start_fn = capture_source.split("async function startMicCapture() {", 1)[1]
+    head = start_fn.split("const _mic = micButton();", 1)[0]
+    assert "S.voiceInputRouteBlocked === true" in head
+    assert "return;" in head
+
+    # A refused start must unwind the starting-voice UI rather than throw --
+    # throwing would replace the accurate ASR toast with a generic failure.
+    assert "function abortVoiceStartForBlockedRoute()" in capture_source
+    unwind = capture_source.split("function abortVoiceStartForBlockedRoute() {", 1)[
+        1
+    ].split("\n    }", 1)[0]
+    for expected in (
+        "S.isRecording = false;",
+        "S.voiceStartPending = false;",
+        "window.isMicStarting = false;",
+    ):
+        assert expected in unwind
+    assert "throw" not in _code_only(unwind)
+
+    buttons_source = APP_BUTTONS_PATH.read_text(encoding="utf-8")
+    assert "window.abortVoiceStartForBlockedRoute();" in buttons_source

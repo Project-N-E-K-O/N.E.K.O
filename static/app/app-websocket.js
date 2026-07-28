@@ -808,6 +808,72 @@
     }
     window.removeExternalAsrPreview = removeExternalAsrPreview;
 
+    // Fail-closed voice-route teardown, shared by the two ways a route dies:
+    // a runtime failure (ASR_LIFECYCLE_STATE blocked) and a STARTUP failure
+    // (terminal ASR_INDEPENDENT_* codes). Startup failures can never emit
+    // BLOCKED -- IndependentAsrRuntime.start cannot reach the only emitter --
+    // so before this was shared they showed a toast and left the hardware
+    // microphone running for the whole session.
+    function tearDownBlockedVoiceRoute() {
+
+    removeExternalAsrPreview();
+    S.independentAsrActive = false;
+    // Sticky: the teardown below is skipped while
+    // the game STT gate owns the hardware, and
+    // BLOCKED is never re-sent, so the game-exit
+    // resume path would otherwise reopen the mic
+    // onto a route that is still fail-closed.
+    S.voiceInputRouteBlocked = true;
+    // The route is now fail-closed. _handle_core_asr_failure
+    // (main_logic/core/asr_runtime.py) pins the microphone
+    // route to "blocked" and nothing re-arms it inside this
+    // session -- only a new start_session, or a hot swap that
+    // also changes core_api_type. canUploadOrdinaryMicFrame()
+    // consults the mic lease and mute/focus only, never the
+    // lifecycle state, so without this the browser keeps the
+    // hardware microphone (and its OS indicator) open and
+    // keeps uploading PCM that the backend decodes, denoises
+    // and VADs before dropping it -- while this very toast
+    // says voice input has stopped. An audio session never
+    // gets VOICE_INPUT_BLOCKED_TEXT_SESSION either, so this
+    // event is the only signal that exists.
+    //
+    // stopMicCapture rather than bare stopRecording: it is
+    // the only path that restores the whole non-recording UI
+    // (mic/mute/screen buttons, floating button state, the
+    // text input area, the volume readout). The user is not
+    // otherwise stranded -- the 闭麦 button is bound to
+    // stopMicCapture -- but leaving that UI claiming a live
+    // voice session is the same lie as the open mic.
+    //
+    // Guarded twice: only the capturing window acts, and
+    // never while the game STT gate holds the microphone,
+    // where the ordinary uplink is already released and a
+    // teardown would kill working game voice.
+    //
+    // Delivery contract, corrected: an earlier version of
+    // this comment claimed a per-window broadcast that does
+    // not exist. send_status targets the CURRENT socket,
+    // and sync_message_queue feeds the monitor process over a
+    // separate port that no app window connects to. Mic
+    // control-plane codes are therefore additionally pushed to
+    // the socket holding the voice lease (notify.py
+    // _send_to_voice_owner), which is how a recorder
+    // superseded by a newer chat window receives this at all.
+    if (S.isRecording === true
+        && S.gameVoiceSttGateActive !== true) {
+        console.log('[App] independent ASR blocked; stopping the microphone');
+        if (typeof window.stopMicCapture === 'function') {
+            Promise.resolve(window.stopMicCapture()).catch(function (micTeardownErr) {
+                console.warn('[App] blocked-ASR microphone teardown failed:', micTeardownErr);
+            });
+        } else if (typeof window.stopRecording === 'function') {
+            window.stopRecording();
+        }
+    }
+    }
+
+
     function websocketTraceEnabled() {
         return window.NEKO_DEBUG_BUBBLE_LIFECYCLE === true;
     }
@@ -2292,61 +2358,7 @@
                             // prefixed fatal code after BLOCKED re-shows the same
                             // fallback text, which the toast renders as one message.
                             if (lifecycleState === 'blocked') {
-                                removeExternalAsrPreview();
-                                S.independentAsrActive = false;
-                                // Sticky: the teardown below is skipped while
-                                // the game STT gate owns the hardware, and
-                                // BLOCKED is never re-sent, so the game-exit
-                                // resume path would otherwise reopen the mic
-                                // onto a route that is still fail-closed.
-                                S.voiceInputRouteBlocked = true;
-                                // The route is now fail-closed. _handle_core_asr_failure
-                                // (main_logic/core/asr_runtime.py) pins the microphone
-                                // route to "blocked" and nothing re-arms it inside this
-                                // session -- only a new start_session, or a hot swap that
-                                // also changes core_api_type. canUploadOrdinaryMicFrame()
-                                // consults the mic lease and mute/focus only, never the
-                                // lifecycle state, so without this the browser keeps the
-                                // hardware microphone (and its OS indicator) open and
-                                // keeps uploading PCM that the backend decodes, denoises
-                                // and VADs before dropping it -- while this very toast
-                                // says voice input has stopped. An audio session never
-                                // gets VOICE_INPUT_BLOCKED_TEXT_SESSION either, so this
-                                // event is the only signal that exists.
-                                //
-                                // stopMicCapture rather than bare stopRecording: it is
-                                // the only path that restores the whole non-recording UI
-                                // (mic/mute/screen buttons, floating button state, the
-                                // text input area, the volume readout). The user is not
-                                // otherwise stranded -- the 闭麦 button is bound to
-                                // stopMicCapture -- but leaving that UI claiming a live
-                                // voice session is the same lie as the open mic.
-                                //
-                                // Guarded twice: only the capturing window acts, and
-                                // never while the game STT gate holds the microphone,
-                                // where the ordinary uplink is already released and a
-                                // teardown would kill working game voice.
-                                //
-                                // Delivery contract, corrected: an earlier version of
-                                // this comment claimed a per-window broadcast that does
-                                // not exist. send_status targets the CURRENT socket,
-                                // and sync_message_queue feeds the monitor process over a
-                                // separate port that no app window connects to. Mic
-                                // control-plane codes are therefore additionally pushed to
-                                // the socket holding the voice lease (notify.py
-                                // _send_to_voice_owner), which is how a recorder
-                                // superseded by a newer chat window receives this at all.
-                                if (S.isRecording === true
-                                    && S.gameVoiceSttGateActive !== true) {
-                                    console.log('[App] independent ASR blocked; stopping the microphone');
-                                    if (typeof window.stopMicCapture === 'function') {
-                                        Promise.resolve(window.stopMicCapture()).catch(function (micTeardownErr) {
-                                            console.warn('[App] blocked-ASR microphone teardown failed:', micTeardownErr);
-                                        });
-                                    } else if (typeof window.stopRecording === 'function') {
-                                        window.stopRecording();
-                                    }
-                                }
+                                tearDownBlockedVoiceRoute();
                                 if (typeof window.showStatusToast === 'function') {
                                     window.showStatusToast(
                                         window.t ? window.t('microphone.independentAsrFallback') : 'Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.',
@@ -2385,13 +2397,18 @@
                         if (statusCode === 'ASR_INDEPENDENT_DISABLED') {
                             removeExternalAsrPreview();
                             S.independentAsrActive = false;
+                            // Healthy native route: nothing is fail-closed.
+                            S.voiceInputRouteBlocked = false;
                             return;
                         }
                         if (statusCode === 'ASR_INDEPENDENT_INJECTION_FAILED') {
                             return;
                         }
-                        removeExternalAsrPreview();
-                        S.independentAsrActive = false;
+                        // Terminal startup failure. Same fail-closed state as a
+                        // runtime BLOCKED, but no lifecycle event is ever emitted
+                        // for it, so run the same teardown here. The per-code
+                        // toasts below already say the right thing.
+                        tearDownBlockedVoiceRoute();
                         if (typeof window.showStatusToast === 'function') {
                             if (statusCode === 'ASR_INDEPENDENT_PROVIDER_UNAVAILABLE') {
                                 window.showStatusToast(
@@ -2573,6 +2590,11 @@
                                         S.sessionStartedResolver = resolve;
                                         S.sessionStartedRejecter = reject;
                                         S._pendingSessionStartMode = 'audio';
+                                        // Re-arm the fail-closed latch on user
+                                        // intent, strictly before start_session
+                                        // goes out and therefore before any
+                                        // route verdict for it can arrive.
+                                        S.voiceInputRouteBlocked = false;
                                         if (window.sessionTimeoutId) {
                                             clearTimeout(window.sessionTimeoutId);
                                             window.sessionTimeoutId = null;
@@ -3193,9 +3215,13 @@
                     S.isTextSessionActive = response.input_mode === 'text';
                     S.voiceChatActive = response.input_mode !== 'text';
                     S.voiceStartPending = false;
-                    // A new session re-runs the route decision, so the
-                    // fail-closed latch from a previous one must not survive.
-                    S.voiceInputRouteBlocked = false;
+                    // NOTE: the fail-closed latch is deliberately NOT cleared
+                    // here. lifecycle.py runs _start_independent_asr_if_enabled
+                    // BEFORE send_session_started, so this ack always arrives
+                    // AFTER the current session's route verdict -- clearing
+                    // here would wipe a latch that verdict just set. It is
+                    // re-armed on user intent instead, next to
+                    // _pendingSessionStartMode = 'audio'.
 
                     // 文本 session 装好后麦克风必须停：mic lease 只由前端持有，
                     // 后端任何 session 生命周期路径都不会重置它，而文本 session
