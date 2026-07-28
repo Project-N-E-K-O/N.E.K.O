@@ -1344,7 +1344,12 @@ def test_day1_intro_externalized_chat_suppresses_home_pc_cursor_before_hiding_it
 def test_day1_return_control_declares_externalized_cursor_preservation():
     source = DAY1_GUIDE_PATH.read_text(encoding="utf-8")
     round_block = extract_day1_round_block(source)
-    return_control_scene = round_block.split("id: 'day1_takeover_return_control'", 1)[1]
+    scene_id_index = round_block.index("id: 'day1_takeover_return_control'")
+    scene_start = round_block.rfind("\n                {", 0, scene_id_index)
+    scene_end = round_block.find("\n                }", scene_id_index)
+    assert scene_start != -1
+    assert scene_end != -1
+    return_control_scene = round_block[scene_start:scene_end]
 
     assert "preserveExternalizedChatGuideTarget: true" in return_control_scene
 
