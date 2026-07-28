@@ -1,15 +1,23 @@
 from __future__ import annotations
 
-# 仓库根必须在**任何项目 import 之前**钉进 sys.path：plugin/tests 有自己的
-# rootdir，而 venv 的 editable .pth 指向主仓库根。若在 conftest 中途才插入，
-# 前半段 import 会从主仓库解析、后半段从本副本解析，混出 ImportError
-# （实测炸在 main_logic.agent_event_bus）。放在最前面则整份统一。
+# 这一段与 plugin/conftest.py 重复是有意的：plugin/tests 自带 pytest.ini，跑
+# `pytest plugin/tests` 时 rootdir 就是它，confcutdir 会把上层的 plugin/conftest.py
+# 切掉；而直接跑 plugin/plugins/<name>/tests 时又只有上层那份生效。两处都留才能
+# 让八棵测试树都被守卫覆盖。重复注册无害：先跑的那份还原并判红，后跑的看到无漂移。
+#
+# sys.path 必须在**任何项目 import 之前**钉好：这些树各有各的 rootdir，而 venv 的
+# editable .pth 指向主仓库根。中途插入会让前半段 import 从主仓库解析、后半段从本
+# 副本解析（实测炸在 main_logic.agent_event_bus）。
 import sys as _sys
 from pathlib import Path as _Path
 
 _REPO_ROOT = str(_Path(__file__).resolve().parents[2])
 if _sys.path[:1] != [_REPO_ROOT]:
     _sys.path.insert(0, _REPO_ROOT)
+
+# pytest 按名字在 conftest 命名空间里发现 hook，所以这个导入没有显式调用点
+# ——它不是死代码：把它删掉，全进程时钟守卫就整个失效。
+from tests.clock_guard import pytest_runtest_call  # noqa: F401,E402
 
 import asyncio.events as _events
 from collections.abc import AsyncIterator
@@ -18,11 +26,6 @@ from pathlib import Path
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-
-# 全进程时钟守卫（与 tests/ 共用同一份实现）
-# pytest 按名字在 conftest 命名空间里发现 hook，所以这个导入没有显式调用点
-# ——它不是死代码：把它删掉，全进程时钟守卫就整个失效（改回全局 patch 也不再转红）。
-from tests.clock_guard import pytest_runtest_call  # noqa: F401
 
 from plugin.server.infrastructure.auth import verify_admin_code
 from plugin.server.infrastructure.exceptions import register_exception_handlers
