@@ -45,16 +45,14 @@ def oauth_app(tmp_path, monkeypatch):
 
 @pytest.mark.unit
 def test_desktop_client_id_is_owned_here_and_rejects_plugin_market_client(monkeypatch):
-    """社区 PKCE 的 client id 只由本模块解析，且拒绝复用插件市场的 neko-desktop。
-
-    `plugin/settings.py` 的 `NEKO_AUTH_CLIENT_ID`（默认 neko-desktop）是插件市场
-    的 public client，在 neko-auth-platform 上与社区桌面端是两个不同的注册。误把
-    它配到 NEKO_SERVERS_DESKTOP_CLIENT_ID 上会让授权请求指向错误的 client，
-    所以这里必须回落到 servers-desktop 默认值而不是照用。
-
-    单一真相源：main_routers 是 L3、plugin 是 L4，前者不能 import 后者，所以这个
-    值不在 plugin/settings.py 里另立常量（那份曾经存在但无人消费）。
-    """
+    """This module owns the community PKCE client id and rejects the Market one."""
+    # plugin/settings.py 的 NEKO_AUTH_CLIENT_ID（默认 neko-desktop）是插件市场的
+    # public client，在 neko-auth-platform 上与社区桌面端是两个不同的注册。误把它
+    # 配到 NEKO_SERVERS_DESKTOP_CLIENT_ID 上会让授权请求指向错误的 client，所以
+    # 这里必须回落到 servers-desktop 默认值而不是照用。
+    #
+    # 单一真相源：main_routers 是 L3、plugin 是 L4，前者不能 import 后者，所以这个
+    # 值不在 plugin/settings.py 里另立常量（那份曾经存在但无人消费）。
     monkeypatch.setenv("NEKO_SERVERS_DESKTOP_CLIENT_ID", "neko-desktop")
     assert O._desktop_client_id() == "neko-servers-desktop-dev"
 
