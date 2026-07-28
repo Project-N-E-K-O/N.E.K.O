@@ -1042,6 +1042,42 @@ test('core model input regions keep per-drawable mapped geometry when direct ver
     ]);
 });
 
+test('core model input regions enumerate legacy Cubism 2 draw data', () => {
+    const harness = createCoreHarness();
+    const manager = new harness.Live2DManager();
+    manager.currentModel = {
+        internalModel: {
+            coreModel: {},
+            drawDataCount: 2
+        }
+    };
+    manager.getModelScreenBounds = () => ({ left: 0, right: 100, top: 0, bottom: 100 });
+    manager._getModelLogicalRect = () => ({ x: -1, y: -1, width: 2, height: 2 });
+    manager._ensureModelWorldTransform = () => {};
+    manager._getDrawableScreenRect = (index) => ({
+        left: index * 10,
+        right: index * 10 + 5,
+        top: 0,
+        bottom: 5,
+        width: 5,
+        height: 5
+    });
+
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(manager._getRenderableDrawableScreenRects(null, null, true))),
+        [
+            {
+                index: 0,
+                rect: { left: 0, right: 5, top: 0, bottom: 5, width: 5, height: 5 }
+            },
+            {
+                index: 1,
+                rect: { left: 10, right: 15, top: 0, bottom: 5, width: 5, height: 5 }
+            }
+        ]
+    );
+});
+
 test('core drawable fallback transforms logical corners through a rotated model', () => {
     const harness = createCoreHarness();
     const manager = new harness.Live2DManager();

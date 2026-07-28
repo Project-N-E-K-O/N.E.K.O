@@ -1563,7 +1563,10 @@ class Live2DManager {
     _getRenderableDrawableScreenRects(modelBounds = null, modelLogicalRect = null, includeIndex = false) {
         const internalModel = this.currentModel?.internalModel;
         const coreModel = internalModel?.coreModel;
-        const drawableCount = coreModel?.getDrawableCount?.();
+        const coreDrawableCount = coreModel?.getDrawableCount?.();
+        const drawableCount = Number.isInteger(coreDrawableCount)
+            ? coreDrawableCount
+            : internalModel?.drawDataCount;
         const resolvedModelBounds = modelBounds || this.getModelScreenBounds();
         const resolvedModelLogicalRect = modelLogicalRect || this._getModelLogicalRect();
         if (!internalModel || !coreModel || !Number.isInteger(drawableCount) || drawableCount <= 0 ||
