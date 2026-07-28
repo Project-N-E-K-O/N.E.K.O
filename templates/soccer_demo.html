@@ -7,7 +7,6 @@
 <!-- VRM 光照默认值：从后端注入（vrm-core.js 依赖） -->
 <script id="soccer-runtime-config" type="application/json">{{ {"vrm_defaults": vrm_defaults} | tojson }}</script>
 <link rel="stylesheet" href="/static/game/games/soccer/soccer-demo.css?v={{ static_asset_version }}">
-<script src="/static/game/games/soccer/soccer-demo.js?v={{ static_asset_version }}"></script>
 
 </head>
 <body>
@@ -174,6 +173,8 @@
     }
 }
 </script>
+
+<script src="/static/game/games/soccer/soccer-demo.js?v={{ static_asset_version }}"></script>
 
 <!-- VRM init（监听 three-ready，再并行加载 vrm-*.js） -->
 <script src="/static/vrm/vrm-init.js"></script>

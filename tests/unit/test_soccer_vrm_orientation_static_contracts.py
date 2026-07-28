@@ -38,7 +38,7 @@ def test_soccer_vrm0_fixed_camera_facing_fix_runs_on_both_soccer_load_paths():
     helper_section = source.split(
         "window.__SoccerLoadVrmIntoManager = async function loadVrmIntoManager",
         1,
-    )[1].split("return vrm;", 1)[0]
+    )[1].split("return manager.currentModel;", 1)[0]
     assert "applySoccerVrm0FixedCameraFacingFix(gltf, vrm, manager);" in helper_section
     assert "fitVrmManagerCamera(manager, containerId, label);" in helper_section
 
