@@ -51,6 +51,32 @@ describe('hosted ui runtime', () => {
     document.body.appendChild(root)
   })
 
+  it('marks hosted action calls triggered by an iframe click as user initiated', () => {
+    let requestMessage: any
+    Object.defineProperty(window, 'parent', {
+      value: {
+        postMessage(message: any) {
+          requestMessage = message
+          window.dispatchEvent(new MessageEvent('message', {
+            data: { type: 'neko-hosted-surface-response', requestId: message.requestId, ok: true, result: {} },
+          }))
+        },
+      },
+      configurable: true,
+    })
+    const button = document.createElement('button')
+    button.addEventListener('click', () => { void ui.api.call('save') })
+    document.body.appendChild(button)
+
+    fireEvent.click(button)
+
+    expect(requestMessage).toMatchObject({
+      type: 'neko-hosted-surface-request',
+      method: 'call',
+      userInitiated: true,
+    })
+  })
+
   it('runs hooks inside function components', async () => {
     function Counter() {
       const [count, setCount] = ui.useState(0)

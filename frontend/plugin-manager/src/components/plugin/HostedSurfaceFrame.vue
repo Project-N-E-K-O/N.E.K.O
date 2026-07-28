@@ -496,6 +496,7 @@ async function handleHostedRequest(data: any) {
   const requestId = typeof data.requestId === 'string' ? data.requestId : ''
   const method = typeof data.method === 'string' ? data.method : ''
   const actionId = method === 'call' ? String(data.payload?.actionId || '') : ''
+  const userInitiated = method === 'call' && data.userInitiated === true
   const respond = (payload: Record<string, any>) => {
     // PR #1480 review-fix 1.30: target the trusted origin instead of '*'.
     // For srcdoc iframes (opaque origin, reported as 'null'), the postMessage
@@ -518,6 +519,7 @@ async function handleHostedRequest(data: any) {
         id: props.surface.id,
         locale: String(locale.value),
         timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : undefined,
+        userInitiated,
       })
       respond({ ok: true, result })
       return

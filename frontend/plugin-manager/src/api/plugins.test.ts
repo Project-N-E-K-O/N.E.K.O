@@ -14,7 +14,7 @@ describe('plugin hosted UI API', () => {
     getMock.mockReset()
   })
 
-  it('passes hosted action timeout to the request body and axios config', async () => {
+  it('silences initial hosted action errors while passing its timeout', async () => {
     postMock.mockResolvedValue({ ok: true })
     const { callPluginHostedSurfaceAction } = await import('./plugins')
 
@@ -34,7 +34,24 @@ describe('plugin hosted UI API', () => {
         locale: 'zh-CN',
         timeout_ms: 80000,
       },
-      { timeout: 80000 },
+      { suppressErrorMessage: true, timeout: 80000 },
+    )
+  })
+
+  it('keeps the global error message for a user-initiated hosted action', async () => {
+    postMock.mockResolvedValue({ ok: true })
+    const { callPluginHostedSurfaceAction } = await import('./plugins')
+
+    await callPluginHostedSurfaceAction('demo', 'save', {}, {
+      kind: 'panel',
+      id: 'main',
+      userInitiated: true,
+    })
+
+    expect(postMock).toHaveBeenCalledWith(
+      '/plugin/demo/hosted-ui/action/save',
+      expect.objectContaining({ timeout_ms: undefined }),
+      { suppressErrorMessage: false },
     )
   })
 })

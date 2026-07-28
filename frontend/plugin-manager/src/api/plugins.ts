@@ -257,6 +257,8 @@ export function callPluginHostedSurfaceAction(pluginId: string, actionId: string
   id: string
   locale?: string
   timeoutMs?: number
+  /** True only when the request originates from a user action in the hosted iframe. */
+  userInitiated?: boolean
 }): Promise<{
   plugin_id: string
   action_id: string
@@ -266,13 +268,20 @@ export function callPluginHostedSurfaceAction(pluginId: string, actionId: string
   const safeActionId = encodeURIComponent(actionId)
   const requestedTimeoutMs = Number(surface?.timeoutMs)
   const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : undefined
+  // Initial hosted-panel calls are expected to fail while a manual-start
+  // plugin is stopped. Let the panel render that state silently. Calls made
+  // after a real iframe interaction keep the standard global error message.
+  const requestConfig = {
+    suppressErrorMessage: !surface?.userInitiated,
+    ...(timeoutMs ? { timeout: timeoutMs } : {}),
+  }
   return post(`/plugin/${safeId}/hosted-ui/action/${safeActionId}`, {
     args: args || {},
     kind: surface?.kind,
     surface_id: surface?.id,
     locale: surface?.locale,
     timeout_ms: timeoutMs,
-  }, timeoutMs ? { timeout: timeoutMs } : undefined)
+  }, requestConfig)
 }
 
 /**

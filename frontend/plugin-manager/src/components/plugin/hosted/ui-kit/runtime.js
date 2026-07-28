@@ -1911,6 +1911,16 @@ function refreshHostedPayload(context) {
 }
 
 const __pendingRequests = new Map();
+let __lastUserInteractionAt = 0;
+// Hosted surfaces make background calls during their initial render.  The
+// parent uses this marker to keep those expected failures quiet, while still
+// surfacing an error caused by an actual click or keyboard submission.
+function markHostedUserInteraction() {
+  __lastUserInteractionAt = Date.now();
+}
+document.addEventListener('click', markHostedUserInteraction, true);
+document.addEventListener('submit', markHostedUserInteraction, true);
+document.addEventListener('keydown', markHostedUserInteraction, true);
 window.addEventListener('message', (event) => {
   const data = event.data;
   if (!data || typeof data !== 'object' || data.type !== 'neko-hosted-surface-response') return;
@@ -1926,7 +1936,8 @@ function requestHost(method, payload, options) {
   const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : 30000;
   return new Promise((resolve, reject) => {
     __pendingRequests.set(requestId, { resolve, reject });
-    parent.postMessage({ type: 'neko-hosted-surface-request', requestId, method, payload, timeoutMs }, hostedTargetOrigin());
+    const userInitiated = method === 'call' && Date.now() - __lastUserInteractionAt < 1000;
+    parent.postMessage({ type: 'neko-hosted-surface-request', requestId, method, payload, timeoutMs, userInitiated }, hostedTargetOrigin());
     window.setTimeout(() => {
       if (!__pendingRequests.has(requestId)) return;
       __pendingRequests.delete(requestId);
