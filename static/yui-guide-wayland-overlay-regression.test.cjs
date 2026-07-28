@@ -103,10 +103,39 @@ x11Result = getYuiGuideChatSpotlightSourceRect(
 test('PC overlay skip mirrors localized state and relays only through the active lifecycle', () => {
   assert.match(managerSource, /setYuiGuidePcOverlaySkipControl\(true, label\)/);
   assert.match(managerSource, /setYuiGuidePcOverlaySkipControl\(false, ''\)/);
-  assert.match(
-    interpageSource,
-    /setYuiGuidePcOverlaySkipControl = function[\s\S]*allowCreateRun: visible !== false/,
+  const functionStart = interpageSource.indexOf(
+    'I.setYuiGuidePcOverlaySkipControl = function setYuiGuidePcOverlaySkipControl'
   );
+  const functionEnd = interpageSource.indexOf(
+    'I.mod.setYuiGuidePcOverlaySkipControl',
+    functionStart,
+  );
+  assert.notEqual(functionStart, -1);
+  assert.notEqual(functionEnd, -1);
+  const functionSource = interpageSource.slice(functionStart, functionEnd);
+  const calls = [];
+  const context = {
+    I: {
+      sendYuiGuidePcOverlayPatch(...args) {
+        calls.push(args);
+        return true;
+      },
+    },
+    document: {
+      documentElement: {
+        getAttribute: () => 'light',
+        classList: { contains: () => false },
+      },
+    },
+  };
+  vm.runInNewContext(`${functionSource}
+I.setYuiGuidePcOverlaySkipControl(false, '');
+I.setYuiGuidePcOverlaySkipControl(true, '跳过');`, context);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0][0].skipControl, null);
+  assert.equal(calls[0][2].allowCreateRun, false);
+  assert.equal(calls[1][0].skipControl.label, '跳过');
+  assert.equal(calls[1][2].allowCreateRun, true);
   assert.match(managerSource, /capabilities\.waylandOverlaySkipInput === true/);
   assert.match(managerSource, /skipButton\.style\.visibility = overlayOwnsSkipInput \? 'hidden' : ''/);
   assert.match(interpageSource, /case 'yui_guide_overlay_skip_request':/);
