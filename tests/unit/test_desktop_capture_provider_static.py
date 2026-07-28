@@ -162,6 +162,10 @@ def test_native_frame_stream_lifecycle_preserves_source_and_cancels_stale_frames
         screen.index("async function startNativeScreenStreaming"):
         screen.index("// ======================== getMobileCameraStream")
     ]
+    select_source = screen[
+        screen.index("async function selectScreenSource"):
+        screen.index("// ======================== updateScreenSourceListSelection")
+    ]
 
     assert "activeNativeCaptureSourceId = sourceId" in native_stream
     assert native_stream.count("if (!isCurrentNativeCapture()) return false;") >= 3
@@ -173,6 +177,11 @@ def test_native_frame_stream_lifecycle_preserves_source_and_cancels_stale_frames
     assert "window.captureDesktopSourceWithTimeout(" in native_stream
     assert "'captureSourceAsDataUrl'" in native_stream
     assert "(S.screenCaptureStream || activeNativeCaptureSourceId)" in screen
+    assert "var isNativeCaptureActive = activeNativeCaptureSourceId !== null;" in select_source
+    assert (
+        "var isScreenSharingActive = isNativeCaptureActive || "
+        "!!(stopBtn && !stopBtn.disabled);"
+    ) in select_source
 
 
 def test_capture_consumers_handle_late_bridges_and_native_failures() -> None:
@@ -188,6 +197,10 @@ def test_capture_consumers_handle_late_bridges_and_native_failures() -> None:
     assert "var proactiveVisionFrameInFlight = false;" in proactive
     assert "if (proactiveVisionFrameInFlight) return;" in proactive
     assert "proactiveVisionFrameInFlight = false;" in proactive
+    assert screen.count("!isNativeFrameProvider(desktopProvider)") >= 2
+    assert (
+        "opts.allowPrompt && !isNativeFrameProvider(desktopProvider)"
+    ) in screen
     assert "resetScreenSharingControls();" in screen
     assert "if (stop) stop.disabled = true;" in screen
 

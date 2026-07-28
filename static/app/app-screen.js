@@ -446,8 +446,9 @@
             }
         }
 
-        // 3. getDisplayMedia（仅 allowPrompt && !screenCaptureAutoPromptFailed）
-        if (opts.allowPrompt && !S.screenCaptureAutoPromptFailed &&
+        // 3. getDisplayMedia（仅 web/Electron 流 provider；Tauri 原生帧不支持 Chromium picker）
+        if (opts.allowPrompt && !isNativeFrameProvider(desktopProvider)
+            && !S.screenCaptureAutoPromptFailed &&
             navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
             try {
                 var displayStream = await navigator.mediaDevices.getDisplayMedia({
@@ -1442,7 +1443,12 @@
 
         // 智能刷新：如果当前正在屏幕分享中，自动重启以应用新的屏幕源
         var stopBtn = document.getElementById('stopButton');
-        var isScreenSharingActive = stopBtn && !stopBtn.disabled;
+        // Native first-frame startup has already claimed a source, but the Stop
+        // button is enabled only after that awaited frame returns. Treat this
+        // pending interval as active so switching sources invalidates the old
+        // generation before its late frame can be accepted.
+        var isNativeCaptureActive = activeNativeCaptureSourceId !== null;
+        var isScreenSharingActive = isNativeCaptureActive || !!(stopBtn && !stopBtn.disabled);
 
         if (isScreenSharingActive && window.switchScreenSharing) {
             console.log('[屏幕源] 检测到正在屏幕分享中，将自动重启以应用新源');
