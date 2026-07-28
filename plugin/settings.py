@@ -268,17 +268,10 @@ NEKO_AUTH_URL = _validate_http_url(
 
 # 桌面端 OAuth public client id。必须是无 client secret 的 public client。
 # Env: NEKO_AUTH_CLIENT_ID, default="neko-desktop"
-# NOTE: This is the Plugin Market client. Community / Servers Desktop PKCE must
-# use NEKO_SERVERS_DESKTOP_CLIENT_ID instead — never reuse neko-desktop there.
+# NOTE: This is the Plugin Market client. The community / Servers Desktop PKCE
+# flow uses a different client id (env NEKO_SERVERS_DESKTOP_CLIENT_ID) and owns
+# it in main_routers/community_oauth.py — never reuse neko-desktop there.
 NEKO_AUTH_CLIENT_ID = os.getenv("NEKO_AUTH_CLIENT_ID", "neko-desktop").strip() or "neko-desktop"
-
-# N.E.K.O.Servers Desktop community OAuth public client id (neko-auth-platform).
-# Env: NEKO_SERVERS_DESKTOP_CLIENT_ID, default="neko-servers-desktop-dev"
-# Must stay on the neko-servers-desktop-{env} family; never default to neko-desktop.
-NEKO_SERVERS_DESKTOP_CLIENT_ID = (
-    os.getenv("NEKO_SERVERS_DESKTOP_CLIENT_ID", "neko-servers-desktop-dev").strip()
-    or "neko-servers-desktop-dev"
-)
 
 # 插件市场 API URL。配置后插件管理面板会显示"插件市场"入口。
 # Env: NEKO_MARKET_API_URL, default="https://market.project-neko.cn"
@@ -690,7 +683,6 @@ __all__ = [
     "PLUGIN_CONFIG_ROOTS",
     "NEKO_AUTH_URL",
     "NEKO_AUTH_CLIENT_ID",
-    "NEKO_SERVERS_DESKTOP_CLIENT_ID",
     "MARKET_API_URL",
     "MARKET_URL",
     "MARKET_WEB_URL",
@@ -785,7 +777,6 @@ PUBLIC_SYSTEM_CONFIG_KEYS = (
     "PLUGIN_CONFIG_ROOTS",
     "NEKO_AUTH_URL",
     "NEKO_AUTH_CLIENT_ID",
-    "NEKO_SERVERS_DESKTOP_CLIENT_ID",
     "MARKET_API_URL",
     "MARKET_URL",
     "MARKET_WEB_URL",

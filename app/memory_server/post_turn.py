@@ -72,6 +72,13 @@ async def _spawn_outbox_post_turn_signals(
         # Persist the locale with the work item: after a memory_server restart,
         # replay must not re-resolve from a neutral process locale and switch
         # the same conversation window back to English.
+        #
+        # Callers must pass the locale the client actually declared, NOT the
+        # value resolved for the in-flight request. Persisting a locale this
+        # process merely *guessed* would freeze that guess into outbox.ndjson:
+        # replay would keep reusing it even after the detection itself is fixed,
+        # whereas omitting the key lets replay re-resolve against the then-current
+        # process language (the pre-outbox behaviour).
         payload['language'] = language
     try:
         op_id = await runtime.outbox.aappend_pending(lanlan_name, OP_POST_TURN_SIGNALS, payload)

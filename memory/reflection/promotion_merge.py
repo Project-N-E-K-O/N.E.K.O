@@ -506,17 +506,32 @@ class PromotionMergeMixin:
         # suboptimal merge decision, not correctness.
         persona_view = await self._persona_manager.aget_persona(lanlan_name)
         target_entity = R.get('entity')
+        from memory.scopes import entry_matches_subject, subject_from_entry
+        memory_subject = subject_from_entry(R)
+        target_section = (
+            memory_subject.persona_section_key
+            if memory_subject is not None else target_entity
+        )
         same_entity_persona: list[tuple[str, dict]] = []
-        if target_entity and isinstance(persona_view, dict):
-            section = persona_view.get(target_entity)
+        if target_section and isinstance(persona_view, dict):
+            section = persona_view.get(target_section)
             if isinstance(section, dict):
                 for e in section.get('facts', []):
-                    if isinstance(e, dict) and not e.get('protected'):
-                        same_entity_persona.append((target_entity, e))
+                    if (
+                        isinstance(e, dict)
+                        and not e.get('protected')
+                        and entry_matches_subject(e, memory_subject)
+                    ):
+                        # 同 section 可能混不同 scope 的条目（section key 不含
+                        # scope）：候选只取本 subject 域，跨域条目不得进
+                        # merge prompt。legacy（memory_subject=None）只匹配
+                        # 无戳的 legacy 条目，双向 fail-closed。
+                        same_entity_persona.append((target_section, e))
         all_reflections = await self._aload_reflections_full(lanlan_name)
         same_entity_reflections = [
             r for r in all_reflections
             if r.get('entity') == target_entity
+            and entry_matches_subject(r, memory_subject)
             and r.get('status') in ('confirmed', 'promoted')
             and r.get('id') != R.get('id')
         ]
@@ -576,10 +591,17 @@ class PromotionMergeMixin:
             R = current2
 
         if action == 'promote_fresh':
+            from memory.scopes import subject_from_entry
+            promote_subject = subject_from_entry(R)
+            promote_kwargs = (
+                {'subject': promote_subject}
+                if promote_subject is not None else {}
+            )
             result = await self._persona_manager.aadd_fact(
                 lanlan_name, R.get('text', ''),
                 entity=target_entity or 'master',
                 source='reflection', source_id=R['id'],
+                **promote_kwargs,
             )
             if result == self._persona_manager.FACT_ADDED:
                 await self._arecord_state_change(
@@ -658,6 +680,15 @@ class PromotionMergeMixin:
                 logger.warning(
                     f"[Promote] {lanlan_name}/{R['id']}: merge target "
                     f"{target_entry_id} not found in persona; skip"
+                )
+                return 'invalid_target'
+            if not entry_matches_subject(target_entry, memory_subject):
+                # LLM 可能幻觉出他域 entry id（全局 id 查找不设界）：合并
+                # 会用本域文本覆写他域条目，跨隔离边界——复验后拒绝。
+                logger.warning(
+                    f"[Promote] {lanlan_name}/{R['id']}: merge target "
+                    f"{target_entry_id} belongs to a different isolation "
+                    f"domain; refuse"
                 )
                 return 'invalid_target'
 

@@ -17,6 +17,7 @@ from config._runtime import register_truncate_to_tokens
 from config.prompts.prompts_icebreaker import build_icebreaker_free_text_prompts
 from main_routers import icebreaker_router, system_router
 from main_routers.system_router import AUTOSTART_CSRF_TOKEN
+from tests.fake_clock import patch_module_clock
 from utils.icebreaker_free_text import parse_icebreaker_free_text_decision
 from utils import icebreaker_route_state
 from utils.game_route_state import _get_active_game_route_state
@@ -257,7 +258,8 @@ async def test_icebreaker_context_preserves_user_request_ingress_time(monkeypatc
 
     monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
     monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
-    monkeypatch.setattr(icebreaker_router.time, "time", lambda: clock["now"])
+    # 取入口时刻的 request_arrival_time = time.time() 就写在 icebreaker_context 里。
+    patch_module_clock(monkeypatch, icebreaker_router, time=lambda: clock["now"])
 
     async def fake_cache_memory(**_kwargs):
         return True, ""
@@ -296,11 +298,8 @@ async def test_icebreaker_choice_records_user_engagement(monkeypatch):
 
     monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
     monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
-    monkeypatch.setattr(
-        icebreaker_router.time,
-        "time",
-        lambda: clock["now"],
-    )
+    # choice_arrival_time = time.time() 同样在 icebreaker_choice 函数体内。
+    patch_module_clock(monkeypatch, icebreaker_router, time=lambda: clock["now"])
 
     def record_choice(payload):
         clock["now"] = 200.0
@@ -343,7 +342,8 @@ async def test_icebreaker_choice_write_failure_still_records_user_engagement(
 
     monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
     monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
-    monkeypatch.setattr(icebreaker_router.time, "time", lambda: 123.0)
+    # 同上：读时钟的是 icebreaker_choice 自己。
+    patch_module_clock(monkeypatch, icebreaker_router, time=lambda: 123.0)
 
     def fail_record_choice(_payload):
         raise OSError("state unavailable")
