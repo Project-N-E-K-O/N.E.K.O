@@ -6099,8 +6099,9 @@ function CompactChatApp({
                           }}
                           onCompositionEnd={() => {
                             composerIsComposingRef.current = false;
-                            composerImeCommitPendingRef.current = true;
-                            if (composerEnterCycleActiveRef.current) {
+                            const endedDuringEnterCycle = composerEnterCycleActiveRef.current;
+                            composerImeCommitPendingRef.current = endedDuringEnterCycle;
+                            if (endedDuringEnterCycle) {
                               composerEnterCycleImeRef.current = true;
                             }
                           }}

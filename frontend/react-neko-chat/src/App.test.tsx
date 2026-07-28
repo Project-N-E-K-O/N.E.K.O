@@ -9083,6 +9083,19 @@ describe('App', () => {
     expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好' });
   });
 
+  it('submits on the first Enter after an IME commit completed without Enter', () => {
+    const onComposerSubmit = vi.fn();
+    renderInputApp({ onComposerSubmit });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.compositionStart(input);
+    fireEvent.change(input, { target: { value: '你好' } });
+    fireEvent.compositionEnd(input);
+
+    pressEnter(input);
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好' });
+  });
+
   it('does not submit an ASCII candidate committed without composition metadata', () => {
     const onComposerSubmit = vi.fn();
     renderInputApp({ onComposerSubmit });

@@ -1895,12 +1895,21 @@
                 if (desktopProvider
                     && desktopProvider.nativeFrameCapture
                     && typeof desktopProvider.captureSourceAsDataUrl === 'function') {
-                    var direct = await desktopProvider.captureSourceAsDataUrl(S.selectedScreenSourceId);
-                    if (direct && direct.success && direct.dataUrl) {
-                        dataUrl = direct.dataUrl;
-                    } else if (direct && direct.error === 'Source not found'
-                        && typeof window.clearSelectedScreenSource === 'function') {
-                        window.clearSelectedScreenSource('主动视觉原生捕获源已失效');
+                    try {
+                        var direct = await desktopProvider.captureSourceAsDataUrl(S.selectedScreenSourceId);
+                        if (direct && direct.success && direct.dataUrl) {
+                            dataUrl = direct.dataUrl;
+                        } else if (typeof window.maybeClearSourceOnNotFound === 'function') {
+                            window.maybeClearSourceOnNotFound(direct, '主动视觉原生捕获源已失效');
+                        }
+                    } catch (directError) {
+                        if (typeof window.maybeClearSourceOnNotFound === 'function') {
+                            window.maybeClearSourceOnNotFound(
+                                { error: directError && directError.message },
+                                '主动视觉原生捕获源已失效'
+                            );
+                        }
+                        console.warn('[ProactiveVision] 原生捕获失败，尝试后端兜底:', directError);
                     }
                 }
             }

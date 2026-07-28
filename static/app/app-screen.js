@@ -156,15 +156,8 @@
                 clearTimeout(S.screenCaptureStreamIdleTimer);
                 S.screenCaptureStreamIdleTimer = null;
             }
-            // 若本窗口正显示"分享中"状态，按钮/悬浮按钮需要同步回未分享态，
-            // 否则用户看到的是激活样式但实际已经停止推流。
-            try {
-                var sbtn = screenButton();
-                if (sbtn && sbtn.classList.contains('active')) {
-                    sbtn.classList.remove('active');
-                    syncFloatingScreenButtonState(false);
-                }
-            } catch (_) { }
+            // 旧源已停止推流，所有分享控件也必须回到未分享状态。
+            resetScreenSharingControls();
         }
         console.log('[屏幕源] 从其它窗口同步了新选择:', newId);
         // 不要再写 localStorage 或 pushSelectedSourceToMain —— 源窗口已经做过了，
@@ -689,6 +682,24 @@
         }
     }
     mod.syncFloatingScreenButtonState = syncFloatingScreenButtonState;
+
+    function resetScreenSharingControls() {
+        var mic = micButton();
+        var mute = muteButton();
+        var screen = screenButton();
+        var stop = stopButton();
+        var reset = resetSessionButton();
+
+        if (S.isRecording) {
+            if (mic) mic.disabled = true;
+            if (mute) mute.disabled = false;
+            if (screen) screen.disabled = false;
+            if (stop) stop.disabled = true;
+            if (reset) reset.disabled = false;
+        }
+        if (screen) screen.classList.remove('active');
+        syncFloatingScreenButtonState(false);
+    }
 
     // ======================== buildStreamDataMessage ========================
     /**
@@ -1318,22 +1329,8 @@
             console.log('[屏幕分享] 主动视觉仍活跃，保留缓存流');
         }
 
-        // 仅在主动录像/语音连接分享时更新 UI 状态，防止闲置释放导致 UI 错误锁定
-        if (S.isRecording) {
-            micButton().disabled = true;
-            muteButton().disabled = false;
-            screenButton().disabled = false;
-            stopButton().disabled = true;
-            resetSessionButton().disabled = false;
-
-            // 移除active类
-            screenButton().classList.remove('active');
-            syncFloatingScreenButtonState(false);
-        } else {
-            // 即使未录音，也确保按钮重置为正常状态
-            screenButton().classList.remove('active');
-            syncFloatingScreenButtonState(false);
-        }
+        // 仅在主动录像/语音连接分享时更新禁用状态；任何情况下都移除分享样式。
+        resetScreenSharingControls();
 
         // 停止手动屏幕共享后，如果满足条件则恢复语音期间主动视觉定时
         try {

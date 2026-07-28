@@ -80,6 +80,20 @@ def test_native_frame_stream_lifecycle_preserves_source_and_cancels_stale_frames
     assert "(S.screenCaptureStream || activeNativeCaptureSourceId)" in screen
 
 
+def test_capture_consumers_handle_late_bridges_and_native_failures() -> None:
+    websocket = read_text("static/app/app-websocket.js")
+    proactive = read_text("static/app/app-proactive.js")
+    screen = read_text("static/app/app-screen.js")
+
+    assert "reannounceCaptureBridgeWhenReady(_thisSocket, 0)" in websocket
+    assert "socket !== S.socket" in websocket
+    assert "CAPTURE_BRIDGE_REANNOUNCE_MAX_ATTEMPTS" in websocket
+    assert "catch (directError)" in proactive
+    assert "原生捕获失败，尝试后端兜底" in proactive
+    assert "resetScreenSharingControls();" in screen
+    assert "if (stop) stop.disabled = true;" in screen
+
+
 def test_capture_failure_copy_exists_in_all_supported_locales() -> None:
     for locale in LOCALES:
         payload = json.loads(read_text(f"static/locales/{locale}.json"))
