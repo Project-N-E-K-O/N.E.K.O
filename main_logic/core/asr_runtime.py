@@ -205,6 +205,9 @@ class AsrRuntimeMixin:
     def _init_asr_runtime_state(self) -> None:
         self._voice_lease_generation = -1
         self._voice_lease_connection_id = ""
+        # Socket holding the voice lease; see _set_voice_input_websocket.
+        self._voice_input_websocket = None
+        self._voice_lease_resync_suppressed = False
         self._voice_lease_synchronized = False
         self._voice_lease_control_seen = False
         self._voice_input_transition_generation = 0
@@ -292,6 +295,10 @@ class AsrRuntimeMixin:
             self._core_asr_preview_text = ""
         if not hasattr(self, "_blocked_text_mode_microphone_signalled"):
             self._blocked_text_mode_microphone_signalled = False
+        if not hasattr(self, "_voice_input_websocket"):
+            self._voice_input_websocket = None
+        if not hasattr(self, "_voice_lease_resync_suppressed"):
+            self._voice_lease_resync_suppressed = False
 
     def _begin_asr_route_operation(self) -> int:
         self._asr_route_operation_generation += 1
@@ -309,8 +316,10 @@ class AsrRuntimeMixin:
         if mode != self._asr_route_mode:
             self._microphone_route_generation += 1
         if mode != "blocked":
-            # Re-arm the one-shot text-mode notice for the next episode.
+            # Re-arm the one-shot text-mode notice for the next episode, and
+            # the lease-resync signal now that a live route exists again.
             self._blocked_text_mode_microphone_signalled = False
+            self._voice_lease_resync_suppressed = False
         self._asr_route_mode = mode
 
     def _capture_ingress_token(self, _lifecycle=None) -> VoiceIngressToken:
@@ -514,6 +523,14 @@ class AsrRuntimeMixin:
 
         if input_mode != "audio":
             self._set_microphone_route("blocked")
+            # Same fail-safe as the failure path: a text session blocks the
+            # route for its whole life, so revoke the lease rather than let a
+            # client that missed session_started keep uploading into it.
+            if self._voice_lease_owner != "game":
+                self._voice_lease_resync_suppressed = True
+                await self._revoke_voice_input_connection(
+                    self._voice_lease_connection_id
+                )
             return
         try:
             settings = await _core_facade.aload_global_conversation_settings()
@@ -814,6 +831,25 @@ class AsrRuntimeMixin:
             reason,
         )
 
+    async def _send_voice_control_status(self, message: str) -> None:
+        """Send a mic control-plane status to the current AND voice sockets.
+
+        ``self.websocket`` is the newest socket, which is not necessarily the
+        one holding the hardware microphone: this PR deliberately supports a
+        recorder superseded by a newer chat window. Lifecycle transitions,
+        lease resync requests and blocked-route notices act on the microphone,
+        so they must also reach its owner or the teardown never runs there.
+
+        The extra delivery is getattr-guarded rather than folded into
+        ``send_status``: that signature is doubled by a large number of focused
+        tests, and narrow manager doubles do not carry the notify mixin at all.
+        """
+
+        await self.send_status(message)
+        send_to_voice_owner = getattr(self, "_send_to_voice_owner", None)
+        if callable(send_to_voice_owner):
+            await send_to_voice_owner({"type": "status", "message": message})
+
     async def _maybe_signal_voice_lease_resync(self) -> None:
         """Nudge a client whose PCM is dropped only because no lease is set.
 
@@ -824,6 +860,14 @@ class AsrRuntimeMixin:
         quiet while every later lease change re-arms it.
         """
 
+        if self._voice_lease_resync_suppressed:
+            # The backend revoked this lease on purpose (fail-closed route, or
+            # a text session took over). Asking the client to resync would make
+            # a still-recording window re-send its snapshot and re-establish
+            # exactly the lease we just dropped -- a revoke/resync ping-pong.
+            # Deliberately not keyed on route == "blocked": blocked is also the
+            # legitimate cold-start placeholder, where the signal IS wanted.
+            return
         if (
             self._voice_lease_hard_muted
             or self._voice_lease_focus_suppressed
@@ -841,7 +885,7 @@ class AsrRuntimeMixin:
         if signal_state == self._voice_lease_resync_signal_state:
             return
         self._voice_lease_resync_signal_state = signal_state
-        await self.send_status(
+        await self._send_voice_control_status(
             json.dumps(
                 {
                     "code": "VOICE_INPUT_LEASE_RESYNC_REQUIRED",
@@ -853,7 +897,7 @@ class AsrRuntimeMixin:
                         ),
                     },
                 }
-            )
+            ),
         )
 
     async def _maybe_signal_blocked_text_mode_microphone(self) -> None:
@@ -875,13 +919,13 @@ class AsrRuntimeMixin:
         if self._blocked_text_mode_microphone_signalled:
             return
         self._blocked_text_mode_microphone_signalled = True
-        await self.send_status(
+        await self._send_voice_control_status(
             json.dumps(
                 {
                     "code": "VOICE_INPUT_BLOCKED_TEXT_SESSION",
                     "details": {"reason": "text_session_active"},
                 }
-            )
+            ),
         )
 
     async def _enqueue_audio_stream_data(self, message: dict) -> None:
@@ -1601,6 +1645,27 @@ class AsrRuntimeMixin:
             force_abort=False,
         )
 
+    def _set_voice_input_websocket(self, connection_id: str, websocket) -> bool:
+        """Remember which socket holds the voice lease, for mic control-plane pushes.
+
+        ``self.websocket`` is the NEWEST socket (it is reassigned at accept
+        time), which is not necessarily the one recording: this PR deliberately
+        supports a recorder that has been superseded by a newer chat window.
+        Microphone teardown notices must follow the lease, not the display
+        plane, or the window holding the hardware never hears about them.
+        Only the current lease holder may install a socket, so a stale claim
+        cannot redirect the control plane.
+        """
+
+        normalized = str(connection_id or "").strip()
+        if not normalized or normalized != self._voice_lease_connection_id:
+            return False
+        self._voice_input_websocket = websocket
+        return True
+
+    def _clear_voice_input_websocket(self) -> None:
+        self._voice_input_websocket = None
+
     def _begin_voice_input_connection(self, connection_id: str) -> bool:
         normalized = str(connection_id or "").strip()
         if not normalized or normalized == self._voice_lease_connection_id:
@@ -1608,6 +1673,10 @@ class AsrRuntimeMixin:
         invalidate_start = getattr(self._asr_runtime, "_invalidate_asr_start", None)
         if callable(invalidate_start):
             invalidate_start()
+        # A new claim must not inherit the previous holder's socket, and a
+        # fresh connection re-arms the resync signal.
+        self._clear_voice_input_websocket()
+        self._voice_lease_resync_suppressed = False
         self._voice_lease_connection_id = normalized
         self._voice_lease_generation = -1
         self._voice_lease_synchronized = False
@@ -1639,6 +1708,7 @@ class AsrRuntimeMixin:
         invalidate_start = getattr(self._asr_runtime, "_invalidate_asr_start", None)
         if callable(invalidate_start):
             invalidate_start()
+        self._clear_voice_input_websocket()
         self._voice_lease_connection_id = ""
         self._voice_lease_generation = -1
         self._voice_lease_synchronized = False
@@ -2047,6 +2117,17 @@ class AsrRuntimeMixin:
             self._set_microphone_route("blocked")
             self._clear_audio_stream_queue("independent_asr_failure")
             self.hot_swap_audio_cache.clear()
+            # Fail-safe for clients that never receive or never honour the
+            # teardown notice (an older build, a third-party client, a
+            # throttled background tab). The route is fail-closed for the rest
+            # of the session, so stop accepting the PCM at ingress too. The
+            # game owner is exempt: the galgame route holds the lease through
+            # its own consumer binding and must not be collaterally revoked.
+            if self._voice_lease_owner != "game":
+                self._voice_lease_resync_suppressed = True
+                await self._revoke_voice_input_connection(
+                    self._voice_lease_connection_id
+                )
 
     async def _send_core_asr_status(self, event: AsrStatusEvent) -> None:
         source_identity = self._capture_core_asr_operation_identity()
@@ -2057,7 +2138,7 @@ class AsrRuntimeMixin:
                 != self._core_asr_identity_ingress_token(source_identity).session_epoch
             ):
                 return
-            await self.send_status(
+            await self._send_voice_control_status(
                 json.dumps(
                     {
                         "code": event.code,
@@ -2066,7 +2147,7 @@ class AsrRuntimeMixin:
                             "session_epoch": event.session_epoch,
                         },
                     }
-                )
+                ),
             )
 
     async def _send_core_asr_lifecycle(
@@ -2081,7 +2162,7 @@ class AsrRuntimeMixin:
                 != self._core_asr_identity_ingress_token(source_identity).session_epoch
             ):
                 return
-            await self.send_status(
+            await self._send_voice_control_status(
                 json.dumps(
                     {
                         "code": "ASR_LIFECYCLE_STATE",
@@ -2092,7 +2173,7 @@ class AsrRuntimeMixin:
                             "session_epoch": event.session_epoch,
                         },
                     }
-                )
+                ),
             )
 
     async def _wait_asr_transcript_dispatch_idle(self) -> None:

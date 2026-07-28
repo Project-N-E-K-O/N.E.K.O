@@ -1975,3 +1975,92 @@ async def test_overflow_abort_prefix_lands_before_ingress_accepts_another_frame(
             )
 
     await asyncio.gather(*list(mgr._bg_tasks))
+
+
+async def test_voice_control_status_reaches_the_lease_holding_socket():
+    # Codex P2. send_status targets the manager's CURRENT socket, and
+    # sync_message_queue feeds the monitor process on a separate port that no
+    # app window connects to -- there is no fan-out. So when a recorder is
+    # superseded by a newer chat window, mic control-plane notices (lifecycle
+    # BLOCKED, blocked-route notices, lease resync) reached only the window
+    # holding no microphone, and the teardown never ran where the hardware was.
+    class _LiveState:
+        CONNECTED = "connected"
+
+        def __eq__(self, other) -> bool:
+            return other == "connected"
+
+    class _Socket:
+        def __init__(self) -> None:
+            self.client_state = _LiveState()
+            self.sent: list[str] = []
+
+        async def send_text(self, data: str) -> None:
+            self.sent.append(data)
+
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.lanlan_name = "Test"
+    mgr._init_asr_runtime_state()
+    mgr._begin_voice_input_connection("socket-a")
+
+    recorder = _Socket()
+    mgr.websocket = _Socket()
+    assert mgr._set_voice_input_websocket("socket-a", recorder) is True
+
+    mgr.send_status = AsyncMock()
+    await LLMSessionManager._send_voice_control_status(mgr, '{"code": "X"}')
+
+    # Display plane still goes through send_status (the current socket).
+    mgr.send_status.assert_awaited_once()
+    # And the mic control plane additionally reaches the recorder.
+    assert len(recorder.sent) == 1
+    delivered = json.loads(recorder.sent[0])
+    assert delivered["type"] == "status"
+    assert json.loads(delivered["message"])["code"] == "X"
+
+    # When the lease holder IS the current socket, there is no second send:
+    # single-window behaviour must stay bit-identical.
+    mgr.websocket = recorder
+    mgr.send_status.reset_mock()
+    recorder.sent.clear()
+    await LLMSessionManager._send_voice_control_status(mgr, '{"code": "Y"}')
+    mgr.send_status.assert_awaited_once()
+    assert recorder.sent == []
+
+
+async def test_voice_socket_setter_rejects_a_stale_claim():
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.lanlan_name = "Test"
+    mgr._init_asr_runtime_state()
+    mgr._begin_voice_input_connection("socket-a")
+    mgr._begin_voice_input_connection("socket-b")
+
+    assert mgr._set_voice_input_websocket("socket-a", object()) is False
+    assert mgr._voice_input_websocket is None
+    assert mgr._set_voice_input_websocket("socket-b", "ws-b") is True
+    assert mgr._voice_input_websocket == "ws-b"
+    # A later claim must not inherit the previous holder's socket.
+    mgr._begin_voice_input_connection("socket-c")
+    assert mgr._voice_input_websocket is None
+
+
+async def test_deliberate_revoke_does_not_ask_the_client_to_resync():
+    # The revoke fail-safe stops ingress for clients that never honour the
+    # teardown. Without suppression it immediately emits
+    # VOICE_INPUT_LEASE_RESYNC_REQUIRED, whose handler makes a still-recording
+    # window re-send its lease snapshot and re-establish exactly the lease that
+    # was just dropped -- a revoke/resync ping-pong.
+    mgr = _make_routable_audio_manager(True)
+    _authorize_core_lease(mgr)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._voice_lease_resync_suppressed = True
+    mgr._voice_lease_synchronized = False
+    mgr.send_status = AsyncMock()
+
+    await LLMSessionManager._maybe_signal_voice_lease_resync(mgr)
+    mgr.send_status.assert_not_awaited()
+
+    # A live route re-arms it.
+    mgr._set_microphone_route("native")
+    assert mgr._voice_lease_resync_suppressed is False

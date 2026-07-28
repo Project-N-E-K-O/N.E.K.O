@@ -501,6 +501,19 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         if callable(begin_voice_input):
             begin_voice_input(str(this_session_id))
             _voice_connection_sockets[lanlan_name] = (this_session_id, websocket)
+            # Hand the socket to the manager too. mgr.websocket is reassigned
+            # to every newly accepted socket, so it is the DISPLAY plane; the
+            # microphone control plane (lifecycle/blocked/lease-resync notices,
+            # and a text session_started) has to follow the lease instead, or a
+            # recorder superseded by a newer chat window never hears that its
+            # route died and keeps the hardware mic open.
+            set_voice_ws = getattr(
+                session_manager[lanlan_name],
+                "_set_voice_input_websocket",
+                None,
+            )
+            if callable(set_voice_ws):
+                set_voice_ws(str(this_session_id), websocket)
 
     def _owns_voice_connection() -> bool:
         """True while this socket still holds the manager voice identity.
@@ -518,6 +531,22 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             None,
         )
         return lease_connection_id == str(this_session_id)
+
+    def _voice_identity_vacated() -> bool:
+        """True when this socket held voice and the lease is now unowned.
+
+        Distinct from losing the identity to a NEWER claim, where
+        newest-wins and closing this socket is the intended behaviour: here
+        the lease id is empty because the backend revoked it on purpose.
+        """
+        if not voice_input_claimed:
+            return False
+        lease_connection_id = getattr(
+            session_manager[lanlan_name],
+            "_voice_lease_connection_id",
+            None,
+        )
+        return lease_connection_id == ""
 
     async def _dispatch_voice_message_while_superseded(message: dict) -> None:
         """Dispatch one voice-path message for the superseded voice socket.
@@ -626,6 +655,16 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 # socket re-claims voice, closes it exactly as before.
                 if _is_voice_path_message(message) and _owns_voice_connection():
                     await _dispatch_voice_message_while_superseded(message)
+                    continue
+                if _is_voice_path_message(message) and _voice_identity_vacated():
+                    # This socket held voice and the backend deliberately
+                    # revoked the lease (fail-closed route, or a text session
+                    # took over). One PCM frame already in flight across that
+                    # teardown must not be treated as a character switch: the
+                    # close below would amputate the socket, and its 3 s
+                    # auto-reconnect would then re-steal currency from the
+                    # window that legitimately owns it. Drop the frame; the
+                    # teardown notice is already on its way to this socket.
                     continue
                 if lanlan_name not in session_id:
                     logger.info(f"角色 {lanlan_name} 已被重命名或删除，关闭旧连接")
@@ -1059,6 +1098,14 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 _voice_connection_sockets.pop(lanlan_name, None)
                 registered_voice = None
                 departed_voice_owner = True
+                if lanlan_name in session_manager:
+                    clear_voice_ws = getattr(
+                        session_manager[lanlan_name],
+                        "_clear_voice_input_websocket",
+                        None,
+                    )
+                    if callable(clear_voice_ws):
+                        clear_voice_ws()
             # Current-socket disconnect while a DIFFERENT still-open socket
             # owns the manager voice connection (closing the chat window while
             # the pet window records): the manager-wide cleanup below would

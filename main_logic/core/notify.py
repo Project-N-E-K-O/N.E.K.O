@@ -311,6 +311,44 @@ class NotifyMixin:
         self._register_builtin_tools()
         self._fire_task(self._sync_tools_to_active_session())
     
+    def _voice_owner_socket(self):
+        """Return the socket holding the voice lease, when it is not the current one.
+
+        ``self.websocket`` is reassigned to every newly accepted socket, so the
+        window that is actually recording can be superseded by a newer chat
+        window while keeping the microphone. Mic control-plane messages have to
+        reach that window or its teardown never runs. Returns None whenever the
+        lease holder IS the current socket, so single-window behaviour is
+        bit-identical.
+
+        Note ``sync_message_queue`` is NOT an alternative: it feeds the monitor
+        process (desktop pet / subtitle viewers) over a separate port, and no
+        app window ever connects there.
+        """
+
+        socket = getattr(self, "_voice_input_websocket", None)
+        if socket is None or socket is self.websocket:
+            return None
+        if not getattr(self, "_voice_lease_connection_id", ""):
+            return None
+        state = getattr(socket, "client_state", None)
+        if state is None or state != socket.client_state.CONNECTED:
+            return None
+        return socket
+
+    async def _send_to_voice_owner(self, payload: dict) -> None:
+        """Best-effort push to the voice-lease holder; never raises."""
+
+        socket = self._voice_owner_socket()
+        if socket is None:
+            return
+        try:
+            await socket.send_text(json.dumps(payload))
+        except WebSocketDisconnect:
+            pass
+        except Exception as e:
+            logger.error(f"💥 WS Send To Voice Owner Error: {e}")
+
     async def send_status(self, message: str):
         """Send a status message to the frontend. message should be a JSON string {"code": "XXX", "details": {...}}, translated by the frontend via i18next."""
         try:
@@ -395,6 +433,15 @@ class NotifyMixin:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 data = json.dumps({"type": "session_started", "input_mode": input_mode})
                 await self.websocket.send_text(data)
+            if input_mode == "text":
+                # A text session pins the microphone route to "blocked", so the
+                # window still holding the mic has to hear about it or it keeps
+                # uploading into a route that discards everything. Only for
+                # text: fanning out an audio session_started would flip
+                # voiceChatActive and hide the composer in an unrelated window.
+                await self._send_to_voice_owner(
+                    {"type": "session_started", "input_mode": input_mode}
+                )
         except WebSocketDisconnect:
             # Client disconnected mid-send; this push is best-effort.
             pass

@@ -2769,13 +2769,26 @@ def test_text_session_start_stops_an_active_microphone():
         1,
     )[1].split("var _tiaStarted", 1)[0]
 
-    assert "response.input_mode === 'text'" in started
-    assert "S.isRecording === true" in started
+    # CodeRabbit: assert the ENCLOSURE, not three independent substrings. Bare
+    # existence checks over the whole block would still pass if the stop call
+    # were moved out of the text branch, or if the S.isRecording check belonged
+    # to some unrelated path -- exactly the contract this test exists to hold.
+    # So slice the smallest guard body and assert the call lives inside it.
+    guard_open = "if (response.input_mode === 'text'\n"
+    assert guard_open in started, "the teardown must be gated on a text session"
+    guard_body = started.split(guard_open, 1)[1].split("\n                    }", 1)[0]
+
+    # Both conditions belong to that one guard, not to separate statements.
+    assert "S.isRecording === true" in guard_body
+    assert "typeof window.stopRecording === 'function'" in guard_body
+
     # notifyServer:false is load-bearing, not cosmetic: the default path sends
     # pause_session, which websocket_router.py maps to an ungated end_session()
     # against the text session this very ack just installed, 500 ms before
     # app-buttons.js sends the queued user text.
-    assert "window.stopRecording({ notifyServer: false });" in started
+    assert "window.stopRecording({ notifyServer: false });" in guard_body
+    # And the call appears nowhere else in the handler, guarded or not.
+    assert started.count("window.stopRecording(") == 1
     assert "window.stopRecording();" not in started
     # stopMicCapture would reject the in-flight text-start promise outright.
     # Match the CALL form: the comment above deliberately names the function.
@@ -2930,3 +2943,34 @@ def test_write_id_doc_does_not_claim_global_uniqueness():
     assert "already OBSERVED" in id_fn
     assert "cannot be broken at mint" in id_fn
     assert "the listener resolves it on explicit intent" in id_fn
+
+
+def test_cross_mode_session_started_still_stops_the_microphone():
+    # The cross-mode ack guard returns early when this window has its own start
+    # in flight. In the multi-window sequence "user clicks the mic in A while B
+    # sends text", A receives the text session_started with an audio start
+    # pending and would return before the teardown -- leaving the hardware mic
+    # open and uploading into a route the text session pinned to blocked.
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    guard = websocket_source.split(
+        "console.log('[App] ignore cross-mode session_started', response.input_mode,", 1
+    )[1].split("return;", 1)[0]
+
+    assert "response.input_mode === 'text'" in guard
+    assert "S.isRecording === true" in guard
+    # Same notifyServer:false reasoning as the main branch: pause_session would
+    # end the text session that this very ack just announced.
+    assert "window.stopRecording({ notifyServer: false });" in guard
+
+
+def test_status_fanout_comment_states_the_real_delivery_contract():
+    # An earlier round shipped a comment claiming status "fans out to every
+    # window". It does not: send_status targets the manager's current socket,
+    # and sync_message_queue feeds the monitor process on a port no app window
+    # connects to. The fix routes mic control-plane codes to the lease holder
+    # instead, and the comment must say so or the next reader repeats the
+    # mistake.
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    assert "fans out to every window" not in websocket_source
+    assert "_send_to_voice_owner" in websocket_source

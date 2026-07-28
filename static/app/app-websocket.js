@@ -2322,11 +2322,20 @@
                                 // stopMicCapture -- but leaving that UI claiming a live
                                 // voice session is the same lie as the open mic.
                                 //
-                                // Guarded twice: only the capturing window acts (status
-                                // fans out to every window), and never while the game STT
-                                // gate holds the microphone, where the ordinary uplink is
-                                // already released and a teardown would kill working game
-                                // voice.
+                                // Guarded twice: only the capturing window acts, and
+                                // never while the game STT gate holds the microphone,
+                                // where the ordinary uplink is already released and a
+                                // teardown would kill working game voice.
+                                //
+                                // Delivery contract, corrected: an earlier version of
+                                // this comment claimed a per-window broadcast that does
+                                // not exist. send_status targets the CURRENT socket,
+                                // and sync_message_queue feeds the monitor process over a
+                                // separate port that no app window connects to. Mic
+                                // control-plane codes are therefore additionally pushed to
+                                // the socket holding the voice lease (notify.py
+                                // _send_to_voice_owner), which is how a recorder
+                                // superseded by a newer chat window receives this at all.
                                 if (S.isRecording === true
                                     && S.gameVoiceSttGateActive !== true) {
                                     console.log('[App] independent ASR blocked; stopping the microphone');
@@ -3166,6 +3175,17 @@
                             && response.input_mode !== S._pendingSessionStartMode) {
                         console.log('[App] ignore cross-mode session_started', response.input_mode,
                             'while pending', S._pendingSessionStartMode);
+                        // 但麦克风必须先停。text session 把麦克风路由钉成 blocked，
+                        // 而这条早退原本会让"用户在 A 点麦、B 同时发文本"这种多窗口
+                        // 时序里，A 明明收到了 text session_started 却因为自己有
+                        // audio 启动在途而直接 return，麦克风一直开着往一条已死的
+                        // 路由上传。停麦是幂等的，且只在本窗口确实在录音时才做。
+                        if (response.input_mode === 'text'
+                            && S.isRecording === true
+                            && typeof window.stopRecording === 'function') {
+                            console.log('[App] text session installed; stopping the microphone (cross-mode)');
+                            window.stopRecording({ notifyServer: false });
+                        }
                         return;
                     }
                     console.log(window.t('console.sessionStartedReceived'), response.input_mode);
