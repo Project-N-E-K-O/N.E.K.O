@@ -1118,9 +1118,8 @@ def run_merged_servers() -> int:
         # budgets as multi-process cleanup. Keep the watchdog as a final escape,
         # not as a shorter competing deadline.
         watchdog_timeout = 60 if reason == "storage_location_restart" else 45
-        print(
-            f"\n[Merged] Shutting down... (reason={reason}, watchdog={watchdog_timeout}s)",
-            flush=True,
+        _teardown_print(
+            f"\n[Merged] Shutting down... (reason={reason}, watchdog={watchdog_timeout}s)"
         )
         # Main must finish release/cloudsave work while Memory is still alive.
         # The async coordinator advances Memory and Agent in order afterwards.
@@ -2056,94 +2055,97 @@ def cleanup_servers():
             return
         _cleanup_done = True
 
-    print("\n正在关闭服务器...", flush=True)
-    for server in _iter_servers_for_shutdown():
-        proc = server.get('process')
-        if not proc:
-            continue
+    try:
+        _teardown_print("\n正在关闭服务器...")
+        for server in _iter_servers_for_shutdown():
+            proc = server.get('process')
+            if not proc:
+                continue
 
-        try:
-            shutdown_evt = server.get('shutdown_event')
-            shutdown_complete_evt = server.get('shutdown_complete_event')
-            graceful_timeout = float(server.get('graceful_shutdown_timeout') or 8)
+            try:
+                shutdown_evt = server.get('shutdown_event')
+                shutdown_complete_evt = server.get('shutdown_complete_event')
+                graceful_timeout = float(server.get('graceful_shutdown_timeout') or 8)
 
-            # 先请求子进程优雅退出
-            if proc.is_alive():
-                if shutdown_evt is not None:
-                    shutdown_evt.set()
-                if shutdown_complete_evt is not None:
+                # 先请求子进程优雅退出
+                if proc.is_alive():
+                    if shutdown_evt is not None:
+                        shutdown_evt.set()
+                    if shutdown_complete_evt is not None:
+                        try:
+                            shutdown_complete_evt.wait(timeout=graceful_timeout)
+                        except KeyboardInterrupt:
+                            _teardown_print(f"[Launcher] {server['name']} shutdown wait interrupted, continuing cleanup")
+                        try:
+                            proc.join(timeout=2)
+                        except KeyboardInterrupt:
+                            _teardown_print(f"[Launcher] {server['name']} join interrupted, escalating shutdown")
+                    else:
+                        try:
+                            proc.join(timeout=graceful_timeout)
+                        except KeyboardInterrupt:
+                            _teardown_print(f"[Launcher] {server['name']} join interrupted, escalating shutdown")
+
+                # 第二步：仍存活则发送终止信号
+                if proc.is_alive():
+                    proc.terminate()
                     try:
-                        shutdown_complete_evt.wait(timeout=graceful_timeout)
+                        proc.join(timeout=5)
                     except KeyboardInterrupt:
-                        print(f"[Launcher] {server['name']} shutdown wait interrupted, continuing cleanup", flush=True)
+                        _teardown_print(f"[Launcher] {server['name']} terminate wait interrupted, forcing shutdown")
+
+                # 第三步：仍存活则 kill
+                if proc.is_alive():
+                    proc.kill()
                     try:
                         proc.join(timeout=2)
                     except KeyboardInterrupt:
-                        print(f"[Launcher] {server['name']} join interrupted, escalating shutdown", flush=True)
-                else:
-                    try:
-                        proc.join(timeout=graceful_timeout)
-                    except KeyboardInterrupt:
-                        print(f"[Launcher] {server['name']} join interrupted, escalating shutdown", flush=True)
+                        _teardown_print(f"[Launcher] {server['name']} kill wait interrupted, moving on")
 
-            # 第二步：仍存活则发送终止信号
-            if proc.is_alive():
-                proc.terminate()
-                try:
-                    proc.join(timeout=5)
-                except KeyboardInterrupt:
-                    print(f"[Launcher] {server['name']} terminate wait interrupted, forcing shutdown", flush=True)
-
-            # 第三步：仍存活则 kill
-            if proc.is_alive():
-                proc.kill()
-                try:
-                    proc.join(timeout=2)
-                except KeyboardInterrupt:
-                    print(f"[Launcher] {server['name']} kill wait interrupted, moving on", flush=True)
-
-            # 第四步：仅在父进程仍存活时兜底强杀整个进程树，避免 PID 复用误杀
-            if proc.is_alive():
-                pid = proc.pid
-                if pid:
-                    if sys.platform == 'win32':
-                        subprocess.run(
-                            ["taskkill", "/PID", str(pid), "/T", "/F"],
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                            check=False
-                        )
-                    else:
-                        # macOS / Linux 下兜底强杀整个进程树
-                        try:
-                            import psutil
+                # 第四步：仅在父进程仍存活时兜底强杀整个进程树，避免 PID 复用误杀
+                if proc.is_alive():
+                    pid = proc.pid
+                    if pid:
+                        if sys.platform == 'win32':
+                            subprocess.run(
+                                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                check=False
+                            )
+                        else:
+                            # macOS / Linux 下兜底强杀整个进程树
                             try:
-                                parent = psutil.Process(pid)
-                                for child in parent.children(recursive=True):
-                                    child.kill()
-                                parent.kill()
-                            except psutil.NoSuchProcess:
-                                pass
-                        except ImportError:
-                            try:
-                                # 尽力而为的 pkill 兜底
-                                subprocess.run(
-                                    ["pkill", "-9", "-P", str(pid)],
-                                    stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL,
-                                    check=False
-                                )
-                            except Exception:
-                                pass
+                                import psutil
+                                try:
+                                    parent = psutil.Process(pid)
+                                    for child in parent.children(recursive=True):
+                                        child.kill()
+                                    parent.kill()
+                                except psutil.NoSuchProcess:
+                                    pass
+                            except ImportError:
+                                try:
+                                    # 尽力而为的 pkill 兜底
+                                    subprocess.run(
+                                        ["pkill", "-9", "-P", str(pid)],
+                                        stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL,
+                                        check=False
+                                    )
+                                except Exception:
+                                    pass
 
-            print(f"✓ {server['name']} 已关闭", flush=True)
-        except Exception as e:
-            print(f"✗ {server['name']} 关闭失败: {e}", flush=True)
+                _teardown_print(f"✓ {server['name']} 已关闭")
+            except Exception as e:
+                _teardown_print(f"✗ {server['name']} 关闭失败: {e}")
 
-    # 不在这里关闭 Job handle。这个 Job 带 KILL_ON_JOB_CLOSE 且 launcher 自己
-    # 就是成员，关掉最后一个句柄会连本进程一起终止——cleanup_servers 之后的
-    # 一切（存储重启调度、单实例锁释放、退出码）都会变成死代码。句柄在进程
-    # 退出时由内核关闭，那时终止整个 Job 正是我们要的语义。
+        # 不在这里关闭 Job handle。这个 Job 带 KILL_ON_JOB_CLOSE 且 launcher 自己
+        # 就是成员，关掉最后一个句柄会连本进程一起终止——cleanup_servers 之后的
+        # 一切（存储重启调度、单实例锁释放、退出码）都会变成死代码。句柄在进程
+        # 退出时由内核关闭，那时终止整个 Job 正是我们要的语义。
+    finally:
+        _cleanup_complete.set()
 
 
 def _safe_getppid_for_owner_check() -> int:
@@ -2198,17 +2200,29 @@ _single_instance_handle = None
 #: escalation short.
 _owner_death_in_progress = False
 
+#: The thread running _finish_owner_death, so main() can wait for it. Making it
+#: non-daemon is not enough on its own: merged mode ends at os._exit(), which
+#: bypasses interpreter shutdown and therefore joins nothing.
+_owner_death_finisher = None
+
+#: Set when cleanup_servers() has run to completion. ``_cleanup_done`` only says
+#: it *started*, so an owner death arriving mid-cleanup would otherwise sail past
+#: an in-flight ordered shutdown and group-KILL Main during its release sequence.
+_cleanup_complete = threading.Event()
+
 #: Bounded grace between the group TERM and the group KILL on owner death.
 OWNER_DEATH_GROUP_GRACE_SECONDS = 0.5
 
 
-def _owner_death_print(message: str) -> None:
+def _teardown_print(message: str) -> None:
     """print() that cannot abort the teardown it is narrating.
 
-    The owner is gone, and an owner that read our stdout took the read end of
-    that pipe with it — so every print on this path is a live BrokenPipeError
-    risk. Raising here would skip the group sweep and strand the grandchildren,
-    i.e. lose the guarantee in order to log about it.
+    Once the owner is gone the read end of our stdout pipe went with it, so every
+    print on a shutdown path is a live BrokenPipeError risk — and raising there
+    skips the rest of the teardown, i.e. loses the guarantee in order to log
+    about it. Used by every function reachable from owner death, not only the
+    owner-death functions themselves: the first unguarded print in a callee ends
+    the sequence just as effectively.
     """
     try:
         print(message, flush=True)
@@ -2225,11 +2239,11 @@ def _handle_owner_death(mechanism: str) -> None:
     process group, no externally owned Job holder, and no persistent lease to
     replay after a crash, because there is never anything left to recover.
     """
-    global _owner_death_in_progress
+    global _owner_death_in_progress, _owner_death_finisher
 
     _owner_death_in_progress = True
     _mark_expected_launcher_shutdown()
-    _owner_death_print(f"[Launcher] Owner process is gone ({mechanism}); shutting down runtime")
+    _teardown_print(f"[Launcher] Owner process is gone ({mechanism}); shutting down runtime")
     try:
         emit_frontend_event("owner_exit", {"mechanism": mechanism})
     except Exception:
@@ -2247,19 +2261,20 @@ def _handle_owner_death(mechanism: str) -> None:
         try:
             requester(reason=f"owner_death:{mechanism}")
         except Exception as exc:
-            _owner_death_print(f"[Launcher] Warning: merged shutdown request failed: {exc}")
+            _teardown_print(f"[Launcher] Warning: merged shutdown request failed: {exc}")
         # Deliberately NOT a daemon thread. run_merged_servers() returns as soon
         # as the ordered shutdown completes and main() then walks to its own
         # exit; a daemon would be cut off mid-teardown, losing the group sweep
         # and the very grandchildren it exists to reap. Non-daemon makes the
         # interpreter wait for it — and it ends in os._exit(0) regardless, so
         # the wait is bounded by the merged-shutdown budget above.
-        threading.Thread(
+        _owner_death_finisher = threading.Thread(
             target=_finish_owner_death,
             args=(mechanism, True),
             name="neko-owner-death-finish",
             daemon=False,
-        ).start()
+        )
+        _owner_death_finisher.start()
         return
 
     _finish_owner_death(mechanism, False)
@@ -2271,15 +2286,29 @@ def _finish_owner_death(mechanism: str, wait_for_merged: bool) -> None:
         # 有界等待：超时后照常收尾。_begin_merged_shutdown 自带的看门狗也会在
         # 同样的预算后 os._exit(1)，两道保险都不会让这里无限期挂住。
         if not _merged_shutdown_complete.wait(OWNER_DEATH_MERGED_SHUTDOWN_BUDGET):
-            _owner_death_print(
+            _teardown_print(
                 "[Launcher] Warning: merged shutdown did not finish within "
                 f"{OWNER_DEATH_MERGED_SHUTDOWN_BUDGET}s; continuing owner-death teardown"
             )
 
     try:
         cleanup_servers()
+        # _cleanup_done only means "started". If another thread got there first,
+        # returning now would group-KILL Main 0.5s later, mid release/cloudsave.
+        # Bounded, and the event is set from a finally, so the sweep and the
+        # os._exit(0) below stay reachable even if cleanup raises.
+        # If our own call did the work its finally already set this, so the wait
+        # below is skipped. Only an in-flight cleanup owned by another thread
+        # leaves it clear, and that is exactly the case worth waiting out.
+        if not _cleanup_complete.is_set() and not _cleanup_complete.wait(
+            OWNER_DEATH_MERGED_SHUTDOWN_BUDGET
+        ):
+            _teardown_print(
+                "[Launcher] Warning: in-flight cleanup did not finish within "
+                f"{OWNER_DEATH_MERGED_SHUTDOWN_BUDGET}s; continuing owner-death teardown"
+            )
     except Exception as exc:
-        _owner_death_print(f"[Launcher] Warning: cleanup after owner death failed: {exc}")
+        _teardown_print(f"[Launcher] Warning: cleanup after owner death failed: {exc}")
 
     try:
         single_instance.release_single_instance()
@@ -2384,6 +2413,22 @@ def _acquire_single_instance_ownership() -> bool:
 
     if handle is None:
         owner = single_instance.read_owner_record() or {}
+        if not owner and single_instance.owner_status()[0] == single_instance.OWNER_FREE:
+            # The holder let go between our failed attempt and this read — it was
+            # on its way out. There is no instance to attach to, so exiting as a
+            # duplicate would leave the user with nothing running. Try once more;
+            # arbitration is still the kernel lock alone, and losing again falls
+            # through to the duplicate branch exactly as before.
+            try:
+                handle = single_instance.acquire_single_instance(
+                    instance_id=INSTANCE_ID,
+                    launch_id=LAUNCH_ID,
+                    extra=_single_instance_extra_fields(),
+                )
+            except OSError:
+                handle = None
+
+    if handle is None:
         msg = "Another N.E.K.O runtime already holds the single-instance lock"
         print(
             f"[Launcher] {msg} (pid={owner.get('pid')}, instance_id={owner.get('instance_id')})",
@@ -2961,6 +3006,17 @@ def main():
         print("\n所有服务器已关闭", flush=True)
         print("再见！\n", flush=True)
         if os.environ.get("NEKO_LAUNCH_MODE", "").strip().lower() == "merged":
+            # os._exit bypasses interpreter shutdown, so a non-daemon finisher
+            # thread is not joined by it. Without this wait the main thread gets
+            # here in milliseconds while the finisher is still inside its
+            # TERM -> grace -> group KILL escalation, and the KILL never lands.
+            #
+            # Bounded on purpose: an unbounded join would let a stuck finisher
+            # keep the runtime alive past its owner, which is the guarantee this
+            # branch exists to provide. Worst case we exit a few seconds later.
+            finisher = _owner_death_finisher
+            if finisher is not None:
+                finisher.join(OWNER_DEATH_GROUP_GRACE_SECONDS + 5.0)
             os._exit(exit_code)
     return exit_code
 

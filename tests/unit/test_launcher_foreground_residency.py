@@ -30,6 +30,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LAUNCHER_CORE = PROJECT_ROOT / "launcher_core"
 
 
+
+def _preset_event() -> threading.Event:
+    """An Event that is already set — stands in for a cleanup that has finished."""
+    event = threading.Event()
+    event.set()
+    return event
+
 @pytest.fixture
 def preserved_signal_handlers():
     """Restore dispositions the child-policy helper deliberately overwrites."""
@@ -645,6 +652,10 @@ def test_owner_death_cleans_up_then_exits(monkeypatch):
     monkeypatch.setattr(launcher, "emit_frontend_event",
                         lambda event, payload=None: order.append(("event", event)))
     monkeypatch.setattr(launcher, "cleanup_servers", lambda: order.append("cleanup"))
+    # The stub replaces the function whose finally publishes completion, so say
+    # so explicitly rather than letting the teardown wait out a cleanup that no
+    # longer exists.
+    monkeypatch.setattr(launcher, "_cleanup_complete", _preset_event())
     monkeypatch.setattr(launcher.single_instance, "release_single_instance",
                         lambda: order.append("release"))
     monkeypatch.setattr(launcher, "_own_process_group_id", lambda: None)
@@ -684,6 +695,7 @@ def test_plain_sigterm_in_a_handoff_generation_is_not_read_as_owner_death(monkey
                         lambda mechanism: died.append(mechanism))
     monkeypatch.setattr(launcher, "_mark_expected_launcher_shutdown", lambda: None)
     monkeypatch.setattr(launcher, "cleanup_servers", lambda: None)
+    monkeypatch.setattr(launcher, "_cleanup_complete", _preset_event())
 
     with pytest.raises(SystemExit):
         launcher._handle_termination_signal(signal.SIGTERM, None)
@@ -711,6 +723,10 @@ def test_owner_death_drives_the_merged_ordered_shutdown_first(monkeypatch):
     monkeypatch.setattr(launcher, "_mark_expected_launcher_shutdown", lambda: None)
     monkeypatch.setattr(launcher, "emit_frontend_event", lambda *_a, **_k: None)
     monkeypatch.setattr(launcher, "cleanup_servers", lambda: order.append("cleanup"))
+    # The stub replaces the function whose finally publishes completion, so say
+    # so explicitly rather than letting the teardown wait out a cleanup that no
+    # longer exists.
+    monkeypatch.setattr(launcher, "_cleanup_complete", _preset_event())
     monkeypatch.setattr(launcher.single_instance, "release_single_instance",
                         lambda: order.append("release"))
     monkeypatch.setattr(launcher, "_own_process_group_id", lambda: None)
@@ -746,6 +762,7 @@ def test_owner_death_escalates_term_then_kill_across_the_group(monkeypatch):
     monkeypatch.setattr(launcher, "_mark_expected_launcher_shutdown", lambda: None)
     monkeypatch.setattr(launcher, "emit_frontend_event", lambda *_a, **_k: None)
     monkeypatch.setattr(launcher, "cleanup_servers", lambda: None)
+    monkeypatch.setattr(launcher, "_cleanup_complete", _preset_event())
     monkeypatch.setattr(launcher.single_instance, "release_single_instance", lambda: None)
     monkeypatch.setattr(launcher, "_own_process_group_id", lambda: os.getpid())
     monkeypatch.setattr(launcher.os, "getpgid", lambda _pid: os.getpid())
