@@ -352,3 +352,13 @@ async def test_main_server_event_failure_logs_only_exception_type(monkeypatch):
         test_logger.warning.call_args.args[0] % test_logger.warning.call_args.args[1:]
     )
     assert private_error not in rendered
+
+    # 分级规则：私密文本不得进 info 及以上，可以进 debug。完整 traceback（其末行
+    # 就是异常消息，可能含用户对话文本）因此只走 DEBUG——否则线上排查时只剩一个
+    # 异常类型名，连哪个 key 出错都不知道。
+    test_logger.debug.assert_called_once()
+    assert test_logger.debug.call_args.kwargs.get("exc_info") is True
+    for forbidden in ("info", "error", "critical", "exception"):
+        assert not getattr(test_logger, forbidden).called, (
+            f"异常详情不得进 {forbidden} 级别（会落进生产日志）"
+        )
