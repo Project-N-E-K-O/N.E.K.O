@@ -77,6 +77,11 @@ class LLMSessionManager(
         self.tts_response_queue = Queue()  # TTS response (线程队列)
         self.tts_thread = None  # TTS线程
         self._tts_runtime_key = None
+        # Runtime fallback excludes only providers that failed in this session;
+        # the remaining dispatcher order is never rewritten.
+        # 运行时保底只排除本场失败的 provider，其余调度顺序保持不变。
+        self._tts_active_provider_key: Optional[str] = None
+        self._tts_excluded_provider_keys: frozenset[str] = frozenset()
         # 跨 chunk 规范化器：Gemini Live 输出转录会在中文 token 之间插入 ASCII
         # 空格，让 MiniMax / CosyVoice 等 streaming TTS 把中文读断。normalizer
         # 按 replace_blank 的语义剔除空格，同时延后处理 chunk 尾部空格以保证边界正确。

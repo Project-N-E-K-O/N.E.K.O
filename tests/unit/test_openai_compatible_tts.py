@@ -1,3 +1,4 @@
+import asyncio
 import json
 import queue
 import threading
@@ -10,7 +11,10 @@ import numpy as np
 import pytest
 
 from main_logic import tts_client
+from main_logic.core import LLMSessionManager
+from main_logic.core import tts_runtime as tts_runtime_module
 from main_logic.tts_client.workers import openai as openai_worker_module
+from main_logic.tts_client.workers import vllm_omni as vllm_worker_module
 from main_routers.characters_router import voice_preview as voice_preview_module
 from main_routers.config_router.connectivity import _test_connectivity_candidates
 from utils.openai_tts import (
@@ -141,6 +145,7 @@ def test_custom_openai_tts_dispatch_binds_config(monkeypatch):
         "base_url": "https://speech.example.com/v1",
         "model": "vendor-tts",
         "voice": "vendor-voice",
+        "label": "自定义 TTS API (Custom OpenAI-compatible TTS)",
     }
     assert api_key == "sk-custom"
     assert provider_key == "custom"
@@ -169,6 +174,19 @@ def test_custom_openai_tts_does_not_override_stored_clone():
         voice_meta_loader=lambda: {"provider": "cosyvoice", "source": "clone"},
     )
     assert openai_worker_module._custom_openai_tts_is_selected(ctx) is False
+
+
+def test_exact_configured_custom_voice_wins_over_same_id_clone():
+    cm = _CustomTtsConfigManager()
+    ctx = provider_registry.DispatchContext(
+        core_config=cm.snapshot,
+        cm=cm,
+        voice_id="vendor-voice",
+        has_custom_voice=True,
+        voice_meta_loader=lambda: {"provider": "cosyvoice", "source": "clone"},
+    )
+
+    assert openai_worker_module._custom_openai_tts_is_selected(ctx) is True
 
 
 def test_custom_openai_tts_uses_character_voice_without_configured_fallback():
@@ -225,6 +243,33 @@ async def test_voices_endpoint_maps_configured_custom_voice_to_character_catalog
     assert result["voice_owners"] == {}
 
 
+@pytest.mark.asyncio
+async def test_voices_endpoint_maps_vllm_default_to_custom_api_catalog(monkeypatch):
+    cm = _CustomTtsConfigManager()
+    cm.raw.update(
+        {
+            "ttsModelProvider": "vllm_omni",
+            "ttsModelUrl": "wss://speech.example.com/v1",
+            "ttsVoiceId": "",
+        }
+    )
+    cm.snapshot.update(cm.raw)
+    monkeypatch.setattr(voice_preview_module, "get_config_manager", lambda: cm)
+
+    result = await voice_preview_module.get_voices()
+
+    # The catalog source is Custom API, but the runtime owner stays vllm_omni.
+    # 目录显示“自定义 API”，实际保存与调度仍归属 vllm_omni。
+    assert result["native_voices"]["default"] == {
+        "prefix": "default",
+        "provider": "vllm_omni",
+        "provider_label": "custom",
+        "gender": "",
+        "display_name": "default",
+        "builtin": True,
+    }
+
+
 def test_configured_custom_voice_is_saveable_for_character():
     cm = _CustomTtsConfigManager()
 
@@ -238,6 +283,159 @@ def test_configured_custom_voice_is_saveable_for_character():
         cm,
         "another-voice",
     )
+
+
+def test_custom_config_read_failure_uses_existing_default_route(monkeypatch):
+    cm = _CustomTtsConfigManager()
+    errors = []
+
+    def broken_load(*_args, **_kwargs):
+        raise OSError("config unavailable")
+
+    cm.load_json_config = broken_load
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(
+        provider_registry.logger,
+        "error",
+        lambda message, *args, **_kwargs: errors.append(message % args),
+    )
+
+    _worker, _api_key, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen",
+        has_custom_voice=True,
+        voice_id="vendor-voice",
+    )
+
+    # The legacy dispatch sends a custom character voice to CosyVoice before
+    # reaching core-native Qwen. Fallback must preserve that exact order.
+    # 这里验证沿用旧保底顺序，不能为了自定义 API 另造一条 Qwen 快捷路径。
+    assert provider_key == "cosyvoice"
+    assert any("既有顺序尝试保底 provider" in message for message in errors)
+
+
+def test_excluding_failed_custom_provider_preserves_default_route(monkeypatch):
+    cm = _CustomTtsConfigManager()
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: cm)
+
+    _worker, _api_key, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen",
+        has_custom_voice=True,
+        voice_id="vendor-voice",
+        excluded_provider_keys={"custom"},
+    )
+
+    assert provider_key == "cosyvoice"
+
+
+def test_vllm_config_read_failure_logs_and_uses_existing_default_route(monkeypatch):
+    cm = _CustomTtsConfigManager()
+    cm.raw["ttsModelProvider"] = "vllm_omni"
+    cm.snapshot.update(cm.raw)
+    errors = []
+
+    def broken_load(*_args, **_kwargs):
+        raise OSError("config unavailable")
+
+    cm.load_json_config = broken_load
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(
+        vllm_worker_module.logger,
+        "error",
+        lambda message, *args, **_kwargs: errors.append(message % args),
+    )
+
+    _worker, _api_key, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen",
+        has_custom_voice=False,
+        voice_id="default",
+    )
+
+    assert provider_key == "qwen"
+    assert any("既有保底流程" in message for message in errors)
+
+
+def test_unconfigured_custom_tts_keeps_existing_native_route(monkeypatch):
+    cm = _CustomTtsConfigManager()
+    cm.snapshot["ENABLE_CUSTOM_API"] = False
+    cm.snapshot["enableCustomApi"] = False
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: cm)
+
+    _worker, _api_key, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen",
+        has_custom_voice=False,
+        voice_id="",
+    )
+
+    assert provider_key == "qwen"
+
+
+def test_configured_tts_failure_switches_to_existing_dispatch_order(monkeypatch):
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr._tts_active_provider_key = "custom"
+    mgr._tts_excluded_provider_keys = frozenset()
+    mgr.tts_request_queue = queue.Queue()
+    starts = []
+    warnings = []
+
+    def start_fallback(*, preserve_provider_exclusions=False):
+        starts.append(preserve_provider_exclusions)
+        mgr._tts_active_provider_key = "qwen"
+
+    mgr._start_tts_thread = start_fallback
+    monkeypatch.setattr(
+        tts_runtime_module.logger,
+        "warning",
+        lambda message, *args, **_kwargs: warnings.append(message % args),
+    )
+
+    assert LLMSessionManager._activate_configured_tts_fallback(mgr, "测试") is True
+    assert mgr._tts_excluded_provider_keys == frozenset({"custom"})
+    assert mgr.tts_request_queue.get_nowait() == ("__shutdown__", None)
+    assert starts == [True]
+    assert any("fallback_provider=qwen" in message for message in warnings)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure_message", "expected_stage"),
+    [
+        (("__ready__", False), "初始化"),
+        (("__error__", "upstream connection failed"), "运行时"),
+    ],
+)
+async def test_tts_handler_follows_fallback_worker_queue(failure_message, expected_stage):
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    old_queue = queue.Queue()
+    new_queue = queue.Queue()
+    old_queue.put(failure_message)
+    new_queue.put(("__ready__", True))
+    mgr.tts_response_queue = old_queue
+    mgr.tts_cache_lock = asyncio.Lock()
+    mgr.tts_ready = False
+    mgr._last_tts_error_code = ""
+    mgr._tts_retry_notify_count = 0
+    stages = []
+    ready_seen = asyncio.Event()
+
+    def activate(stage):
+        stages.append(stage)
+        mgr.tts_response_queue = new_queue
+        return True
+
+    async def flush_pending():
+        ready_seen.set()
+
+    mgr._activate_configured_tts_fallback = activate
+    mgr._flush_tts_pending_chunks = flush_pending
+
+    task = asyncio.create_task(LLMSessionManager.tts_response_handler(mgr))
+    await asyncio.wait_for(ready_seen.wait(), timeout=1)
+    task.cancel()
+    result = await asyncio.gather(task, return_exceptions=True)
+
+    assert isinstance(result[0], asyncio.CancelledError)
+    assert stages == [expected_stage]
+    assert mgr.tts_ready is True
 
 
 def _wait_for_item(q, predicate, timeout=5.0):

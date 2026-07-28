@@ -308,6 +308,9 @@ class TtsRuntimeMixin:
                 core_api_type=self.core_api_type,
                 has_custom_voice=has_custom,
                 voice_id=self.voice_id or '',
+                excluded_provider_keys=getattr(
+                    self, "_tts_excluded_provider_keys", frozenset()
+                ),
             )
             tts_config = self._config_manager.get_model_api_config(
                 'tts_custom' if has_custom else 'tts_default'
@@ -323,6 +326,7 @@ class TtsRuntimeMixin:
                 tts_config.get('model', ''),
                 self._resolve_vllm_omni_runtime_config(core_config),
                 api_key,
+                tuple(sorted(getattr(self, "_tts_excluded_provider_keys", frozenset()))),
             )
         except Exception:
             return (
@@ -386,7 +390,11 @@ class TtsRuntimeMixin:
         ``tts_ready`` flips).
         """
         if not (self.tts_thread and self.tts_thread.is_alive()):
-            self._start_tts_thread()
+            self._start_tts_thread(
+                preserve_provider_exclusions=bool(
+                    getattr(self, "_tts_excluded_provider_keys", frozenset())
+                )
+            )
         if self.tts_handler_task is None or self.tts_handler_task.done():
             self.tts_handler_task = asyncio.create_task(self.tts_response_handler())
 
@@ -421,7 +429,7 @@ class TtsRuntimeMixin:
             return True
         return False
 
-    def _start_tts_thread(self):
+    def _start_tts_thread(self, *, preserve_provider_exclusions: bool = False):
         """Create and start the TTS worker thread.
 
         Selects the worker by voice_id / core_api_type, resolves the api_key,
@@ -432,6 +440,8 @@ class TtsRuntimeMixin:
         # 重置就绪状态，新 worker 需重新握手
         self.tts_ready = False
         self._tts_runtime_key = None
+        if not preserve_provider_exclusions:
+            self._tts_excluded_provider_keys = frozenset()
 
         # 检查是否禁用了 TTS
         core_config = self._config_manager.get_core_config()
@@ -447,6 +457,7 @@ class TtsRuntimeMixin:
                 core_api_type=self.core_api_type,
                 has_custom_voice=has_custom,
                 voice_id=self.voice_id or '',
+                excluded_provider_keys=self._tts_excluded_provider_keys,
             )
             tts_config = self._config_manager.get_model_api_config(
                 'tts_custom' if has_custom else 'tts_default'
@@ -471,8 +482,42 @@ class TtsRuntimeMixin:
             args=(self.tts_request_queue, self.tts_response_queue, api_key, self.voice_id),
             daemon=True,
         )
+        self._tts_active_provider_key = provider_key
         self._tts_runtime_key = self._build_tts_runtime_key()
         self.tts_thread.start()
+
+    def _activate_configured_tts_fallback(self, failure_stage: str) -> bool:
+        """Exclude a failed configured provider and restart with existing order."""
+        failed_provider = getattr(self, "_tts_active_provider_key", None)
+        if not _core_facade.tts_provider_falls_back_on_failure(failed_provider):
+            return False
+
+        excluded = frozenset(getattr(self, "_tts_excluded_provider_keys", frozenset()))
+        if failed_provider in excluded:
+            return False
+
+        # Excluding one failed provider lets get_tts_worker reuse every existing
+        # fallback rule below it; no fallback provider or priority is hardcoded.
+        # 这里只排除失败项，再调用原 dispatcher；不新增、不重排任何保底方案。
+        self._tts_excluded_provider_keys = excluded | {failed_provider}
+        old_request_queue = self.tts_request_queue
+        try:
+            old_request_queue.put(("__shutdown__", None))
+        except Exception:
+            logger.debug("关闭故障 TTS worker 失败，继续启动保底 worker", exc_info=True)
+
+        logger.warning(
+            "自定义 TTS API provider=%s 在%s阶段失败；开始按既有顺序选择保底 provider",
+            failed_provider,
+            failure_stage,
+        )
+        self._start_tts_thread(preserve_provider_exclusions=True)
+        logger.warning(
+            "自定义 TTS API 已回退: failed_provider=%s fallback_provider=%s",
+            failed_provider,
+            self._tts_active_provider_key or "default",
+        )
+        return True
 
     def _reset_tts_retry_state(self):
         """Cancel pending TTS respawn task and clear error/cooldown state.
@@ -490,6 +535,8 @@ class TtsRuntimeMixin:
         self._tts_retry_notify_count = 0
         self._tts_done_queued_for_turn = False
         self._tts_done_pending_until_ready = False
+        self._tts_active_provider_key = None
+        self._tts_excluded_provider_keys = frozenset()
 
     async def _teardown_tts_runtime(self, handler_task_ref, thread_ref,
                                      req_queue_ref, resp_queue_ref):
@@ -576,7 +623,11 @@ class TtsRuntimeMixin:
         self._last_tts_respawn_time = now
 
         logger.info("🔄 TTS Worker 已死亡，尝试重新拉起...")
-        self._start_tts_thread()
+        self._start_tts_thread(
+            preserve_provider_exclusions=bool(
+                getattr(self, "_tts_excluded_provider_keys", frozenset())
+            )
+        )
 
         # 重新启动 tts_response_handler 以监听新队列
         if self.tts_handler_task and not self.tts_handler_task.done():
@@ -865,6 +916,12 @@ class TtsRuntimeMixin:
                             logger.info("✅ 收到TTS运行时就绪信号，开始刷新缓存文本")
                             await self._flush_tts_pending_chunks()
                         else:
+                            # Configured endpoints fall back once; the handler
+                            # then follows the replacement worker's new queue.
+                            # 自定义端点未就绪时立即切到保底 worker，并改听新队列。
+                            if self._activate_configured_tts_fallback("初始化"):
+                                q = self.tts_response_queue
+                                continue
                             # 复用 __error__ 分支记录的 code 判断是否重试
                             _last_code = self._last_tts_error_code
                             if _last_code in NO_RETRY_TTS_CODES:
@@ -912,6 +969,14 @@ class TtsRuntimeMixin:
                         error_msg = data[1]
                         error_msg_text = str(error_msg)
                         logger.error(f"TTS Worker Error: {error_msg}")
+
+                        # A configured endpoint failure is observable in the
+                        # backend log above, then redispatched through the exact
+                        # pre-existing fallback chain for subsequent audio.
+                        # 自定义 API 运行时出错后，仅切换 provider；现有保底顺序不变。
+                        if self._activate_configured_tts_fallback("运行时"):
+                            q = self.tts_response_queue
+                            continue
 
                         # 优先尝试从结构化 JSON 中提取明确的 code 字段
                         _known_codes = {

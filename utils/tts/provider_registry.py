@@ -271,6 +271,10 @@ class TTSProvider:
     # User-configured providers can expose the single value stored in
     # ``voice_field`` as a preset voice without maintaining a static catalog.
     configured_preset_voice: bool = False
+    # User-pointed endpoints may fall back to the unchanged downstream dispatch
+    # order after configuration, startup, or synthesis failures.
+    # 用户自填端点失败时，仅排除当前 provider，后续仍严格沿用既有调度顺序。
+    fallback_on_failure: bool = False
 
     # Alternate provider ids that share this provider's implementation and
     # capabilities while retaining provider-specific runtime configuration.
@@ -360,6 +364,8 @@ def selected_provider(ctx: "DispatchContext") -> "TTSProvider | None":
 
 def resolve_selected(
     ctx: "DispatchContext",
+    *,
+    excluded_provider_keys: "frozenset[str]" = frozenset(),
 ) -> "tuple[Callable[..., Any], str | None, str] | None":
     """Return the dispatch tuple for the first provider selected for ``ctx``, in
     priority order, or ``None`` when none apply.
@@ -369,8 +375,32 @@ def resolve_selected(
     pick or an implied clone-voice provider — wins over native / core default
     routing in the original hand-written precedence (priority order).
     """
-    provider = selected_provider(ctx)
-    return provider.resolve(ctx) if provider is not None else None
+    # Opted-in configured endpoints may be unreadable while the existing
+    # fallback providers remain usable. Other providers retain their original
+    # exception behavior, so this issue does not broaden unrelated fallback.
+    # 仅允许声明过的自定义 provider 在解析失败时跳过；其他 provider 维持旧异常语义。
+    for provider in all_providers():
+        if provider.key in excluded_provider_keys:
+            continue
+        if not provider.is_selected(ctx):
+            continue
+        try:
+            return provider.resolve(ctx)
+        except Exception:
+            if not provider.fallback_on_failure:
+                raise
+            logger.error(
+                "TTS provider %r 配置读取或解析失败，按既有顺序尝试保底 provider",
+                provider.key,
+                exc_info=True,
+            )
+    return None
+
+
+def falls_back_on_failure(provider_key: str | None) -> bool:
+    """Whether runtime failures should exclude this provider and redispatch."""
+    provider = get(provider_key)
+    return bool(provider and provider.fallback_on_failure)
 
 
 # ── Preset-catalog queries (single source of truth for built-in voices) ──────
@@ -403,7 +433,10 @@ def preset_catalog_for_ui(
         voice_id: {
             "prefix": voice_id,
             "provider": provider.key,
-            "provider_label": provider.key,
+            # Configured voices are shown under the generic Custom API source,
+            # while ``provider`` retains the real runtime owner for dispatch.
+            # 配置音色统一显示为“自定义 API”，但 provider 字段仍保留真实路由身份。
+            "provider_label": "custom",
             "gender": "",
             "display_name": voice_id,
             "builtin": True,

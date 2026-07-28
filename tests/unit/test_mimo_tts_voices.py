@@ -106,7 +106,7 @@ def test_mimo_preset_catalog_for_ui_shape_matches_native():
 def _selected_catalog(core_config, cm):
     # 模拟 /voices 取目录的两步：先拿赢家 key，再按 key 取其静态预制目录
     key = tts_provider_registry.selected_provider_key(core_config, cm)
-    return tts_provider_registry.preset_catalog_for_ui(key) if key else None
+    return tts_provider_registry.preset_catalog_for_ui(key, core_config) if key else None
 
 
 @pytest.mark.unit
@@ -143,14 +143,28 @@ def test_mimo_catalog_hidden_when_gptsovits_custom_tts_wins():
 
 
 @pytest.mark.unit
-def test_no_catalog_winner_suppresses_native_voices():
-    # vLLM-Omni（无静态目录）赢得 dispatch：selected_provider_key 返回 vllm_omni、
-    # 目录为 None → /voices 的三路分支既不出目录、也不回退 core-native。
-    core_config = {"CORE_API_TYPE": "gemini", "ENABLE_CUSTOM_API": True}
+def test_vllm_winner_exposes_configured_default_voice():
+    # WSS 自定义 TTS 与 HTTPS custom 对偶：配置音色为空时展示 provider 默认音色，
+    # 并归入“自定义 API”来源，同时保留 vllm_omni 作为真实路由 owner。
+    core_config = {
+        "CORE_API_TYPE": "gemini",
+        "ENABLE_CUSTOM_API": True,
+        "ttsModelProvider": "vllm_omni",
+        "ttsVoiceId": "",
+    }
     cm = _CM(core_config, raw_core_config={"ttsModelProvider": "vllm_omni"})
     key = tts_provider_registry.selected_provider_key(core_config, cm)
     assert key == "vllm_omni"
-    assert tts_provider_registry.preset_catalog_for_ui(key) is None
+    assert tts_provider_registry.preset_catalog_for_ui(key, core_config) == {
+        "default": {
+            "prefix": "default",
+            "provider": "vllm_omni",
+            "provider_label": "custom",
+            "gender": "",
+            "display_name": "default",
+            "builtin": True,
+        }
+    }
 
 
 @pytest.mark.unit
@@ -234,3 +248,43 @@ def test_normalize_mimo_preset_unresolved_when_not_selected(config_manager):
     stored = config_manager.voice_id_to_storage_value("Milo")
     assert stored == "Milo"
     assert read_legacy_voice_id(stored) == "Milo"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("provider", "voice_id"),
+    [
+        ("custom", "vendor-voice"),
+        ("vllm_omni", "default"),
+    ],
+)
+def test_configured_custom_tts_voice_saves_with_runtime_owner(
+    config_manager,
+    provider,
+    voice_id,
+):
+    # Both HTTPS and WSS configured voices use the same preset storage schema,
+    # while provider keeps the real worker owner for runtime dispatch.
+    # HTTPS 与 WSS 配置音色都按预制音色保存，provider 必须保留真实路由归属。
+    _write_core_config(
+        config_manager,
+        {
+            "coreApi": "qwen",
+            "enableCustomApi": True,
+            "ttsModelProvider": provider,
+            "ttsModelUrl": "https://speech.example.com/v1"
+            if provider == "custom"
+            else "wss://speech.example.com/v1",
+            "ttsModelId": "vendor-tts",
+            "ttsVoiceId": voice_id,
+        },
+    )
+
+    stored = config_manager.voice_id_to_storage_value(voice_id)
+
+    assert stored == {
+        "source": "preset",
+        "provider": provider,
+        "ref": voice_id,
+    }
+    assert read_legacy_voice_id(stored) == voice_id
