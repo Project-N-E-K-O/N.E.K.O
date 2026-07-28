@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from _galgame_test_support import *
 
+from tests.fake_clock import patch_module_clock
+
 @pytest.mark.plugin_unit
 def test_game_llm_agent_menu_stage_without_choices_is_choice_menu(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
@@ -3102,7 +3104,11 @@ async def test_game_llm_agent_focus_retry_backoff_pushes_once_after_three_failur
     focus_attempts: list[float] = []
     clock = {"now": 1000.0}
 
-    monkeypatch.setattr(game_llm_agent_module.time, "monotonic", lambda: clock["now"])
+    # 真正读时钟的不是 game_llm_agent 本身：它是门面模块，tick 的
+    # ``now = time.monotonic()`` 在 agent_core，重试/状态计时还散在 agent_status、
+    # agent_observation 等 mixin 里。门面的 __setattr__ 会把 time 传播到所有
+    # agent_* 子模块，所以假时钟打在门面上就落到这些真正读时钟的模块里。
+    patch_module_clock(monkeypatch, game_llm_agent_module, monotonic=lambda: clock["now"])
     monkeypatch.setattr(
         game_llm_agent_module,
         "try_focus_target_window",
@@ -3174,7 +3180,9 @@ async def test_game_llm_agent_focus_restore_advances_without_waiting_existing_de
     local_calls: list[dict[str, Any]] = []
     clock = {"now": 2000.0}
 
-    monkeypatch.setattr(game_llm_agent_module.time, "monotonic", lambda: clock["now"])
+    # 同上：门面模块自己不读时钟，agent_core.tick / agent_status 这些 mixin 才读；
+    # 门面的 __setattr__ 会把 time 传播过去。
+    patch_module_clock(monkeypatch, game_llm_agent_module, monotonic=lambda: clock["now"])
     monkeypatch.setattr(
         game_llm_agent_module,
         "try_focus_target_window",

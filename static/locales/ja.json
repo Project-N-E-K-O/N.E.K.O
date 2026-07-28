@@ -1778,7 +1778,6 @@
         "close": "閉じる",
         "catgirlMemory": "キャラクター",
         "compactLibraryLabel": "キャラクター一覧",
-        "currentRole": "現在のキャラクター:",
         "autoReview": "自動メモリレビュー",
         "globalActionsAria": "メモリアクション",
         "openTutorialManager": "ガイド",
@@ -1804,6 +1803,7 @@
         "autoReviewTooltipLabel": "自動メモリレビューについて",
         "strongMemoryTooltipLabel": "強力なメモリについて",
         "externalImportTooltipLabel": "外部メモリのインポートについて",
+        "roleSourceTooltip": "由来：{{source}}",
         "loading": "読み込み中...",
         "externalImportTitle": "外部メモリをインポート",
         "externalImportNote": "OpenClaw または Hermes の USER.md、SOUL.md、MEMORY.md、日次メモ、ワークスペース ZIP を選択中のキャラクターにインポートします。",
@@ -1840,7 +1840,6 @@
         "olderSection": "以前",
         "me": "私:",
         "memoNone": "なし。",
-        "delete": "削除",
         "deleteEntryAria": "{{speaker}}の{{position}}件目の記憶を削除",
         "pleaseSelectFile": "まずファイルを選択してください",
         "saveFailed": "保存失敗: {{error}}",
@@ -2700,9 +2699,11 @@
             "visionInterval": "感知間隔"
         },
         "widgetMode": {
-            "enabledNotice": "エッジドックモード Beta を有効にしました。",
-            "disabledNotice": "エッジドックモード Beta を無効にしました。Live2D は通常の端スナップに戻ります。",
-            "toggleFailed": "エッジドックモード Beta を切り替えられませんでした。しばらくしてから再試行してください。"
+            "enabledNotice": "エッジ覗きを有効にしました。",
+            "disabledNotice": "エッジ覗きを無効にしました。Live2D は再び表示され、ドラッグできます。",
+            "stealthEnabledNotice": "ステルスモードを有効にしました。",
+            "stealthDisabledNotice": "ステルスモードを無効にしました。Yui はエッジから覗いた状態を保ちます。",
+            "toggleFailed": "エッジ覗きを切り替えられませんでした。しばらくしてから再試行してください。"
         },
         "toggles": {
             "allowInterrupt": "割り込み許可",
@@ -2710,8 +2711,6 @@
             "avatarReactionBubble": "表情バブル",
             "focusCognition": "集中モード",
             "focusCognitionTooltip": "オンにすると、あなたが弱音を吐いたり複雑な話題のときに集中して深く考えます。オフにすると集中モードに入りません。",
-            "widgetMode": "エッジドックモード Beta",
-            "widgetModeTooltip": "エッジドックモードを手動で有効にすると、Live2D が画面端の 6 つのアンカーから覗けます。",
             "slopFilter": "自然な表現",
             "slopFilterTooltip": "過去の返答にある繰り返しや型にはまった言い回しを減らし、より自然に話せるようにします。",
             "autoCat": "自動ねこ化",

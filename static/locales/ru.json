@@ -1778,7 +1778,6 @@
         "close": "Закрыть",
         "catgirlMemory": "Персонажи",
         "compactLibraryLabel": "Список персонажей",
-        "currentRole": "Текущий персонаж:",
         "autoReview": "Автоматическая ревизия памяти",
         "globalActionsAria": "Действия с памятью",
         "openTutorialManager": "Справка",
@@ -1804,6 +1803,7 @@
         "autoReviewTooltipLabel": "Об автоматической ревизии памяти",
         "strongMemoryTooltipLabel": "Об усиленной памяти",
         "externalImportTooltipLabel": "Об импорте внешней памяти",
+        "roleSourceTooltip": "Источник: {{source}}",
         "loading": "Загрузка...",
         "externalImportTitle": "Импорт внешней памяти",
         "externalImportNote": "Импортируйте USER.md, SOUL.md, MEMORY.md, дневные заметки или ZIP рабочего пространства OpenClaw/Hermes в выбранного персонажа.",
@@ -1840,7 +1840,6 @@
         "olderSection": "Ранее",
         "me": "Я:",
         "memoNone": "Нет.",
-        "delete": "Удалить",
         "deleteEntryAria": "Удалить запись памяти {{position}} от {{speaker}}",
         "pleaseSelectFile": "Сначала выберите файл",
         "saveFailed": "Ошибка сохранения: {{error}}",
@@ -2700,9 +2699,11 @@
             "visionInterval": "Интервал восприятия"
         },
         "widgetMode": {
-            "enabledNotice": "Режим крепления к краю Beta включён.",
-            "disabledNotice": "Режим крепления к краю Beta выключен. Live2D снова использует обычное прилипание к краям.",
-            "toggleFailed": "Не удалось переключить Режим крепления к краю Beta. Повторите попытку позже."
+            "enabledNotice": "Выглядывание из-за края включено.",
+            "disabledNotice": "Выглядывание из-за края выключено. Live2D снова видим и доступен для перетаскивания.",
+            "stealthEnabledNotice": "Скрытый режим включён.",
+            "stealthDisabledNotice": "Скрытый режим выключен. Yui останется выглядывать из-за края.",
+            "toggleFailed": "Не удалось переключить выглядывание из-за края. Повторите попытку позже."
         },
         "toggles": {
             "allowInterrupt": "Разрешить прерывание",
@@ -2710,8 +2711,6 @@
             "avatarReactionBubble": "Пузырек эмоций",
             "focusCognition": "Режим сосредоточения",
             "focusCognitionTooltip": "Когда включено, она сосредотачивается и думает глубже, когда вы откровенничаете или задаёте сложный вопрос; выключено полностью отключает сосредоточение.",
-            "widgetMode": "Режим крепления к краю Beta",
-            "widgetModeTooltip": "Включите режим крепления вручную, чтобы Live2D мог выглядывать из шести точек у края экрана.",
             "slopFilter": "Естественная речь",
             "slopFilterTooltip": "Уменьшает повторяющиеся и шаблонные обороты в прошлых ответах, чтобы её речь звучала естественнее.",
             "autoCat": "Авторежим кота",

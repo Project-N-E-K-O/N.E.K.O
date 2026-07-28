@@ -1893,6 +1893,36 @@ async def test_stream_text_notifies_discarded_when_partial_text_then_error(monke
 
 
 @pytest.mark.asyncio
+async def test_notify_response_discarded_prefers_request_bound_callback():
+    """Per-stream callbacks must not fall back to the shared session callback."""
+    from main_logic.omni_offline_client import OmniOfflineClient
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    shared_calls = []
+    bound_calls = []
+
+    async def shared_callback(*args):
+        shared_calls.append(args)
+
+    async def bound_callback(*args):
+        bound_calls.append(args)
+
+    client.on_response_discarded = shared_callback
+
+    await client._notify_response_discarded(
+        "guard",
+        1,
+        3,
+        False,
+        None,
+        callback=bound_callback,
+    )
+
+    assert len(bound_calls) == 1
+    assert shared_calls == []
+
+
+@pytest.mark.asyncio
 async def test_stream_text_maps_incorrect_api_key_keyword_to_structured_status(monkeypatch):
     """Raw provider auth errors should not leak the full exception into UI text."""
     from main_logic.omni_offline_client import OmniOfflineClient

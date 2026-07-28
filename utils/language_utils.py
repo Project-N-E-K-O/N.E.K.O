@@ -187,13 +187,63 @@ def _is_china_region() -> bool:
         return False
 
 
+_MACOS_LOCALE_UNSET = object()
+_macos_locale_cache: Any = _MACOS_LOCALE_UNSET
+_macos_locale_lock = threading.Lock()
+
+
 def _get_macos_locale() -> Optional[str]:
     """Read the user's real macOS locale even when the process inherits ``C.UTF-8``.
 
     Electron/launcher child processes commonly receive a neutral POSIX locale,
     so ``locale.getlocale()`` and ``LANG`` do not reflect System Settings.  The
     ``defaults`` database is the authoritative per-user fallback on macOS.
+
+    Only *conclusive* answers are cached — a resolved locale, or "not macOS".
+    Each miss costs a ``subprocess.run`` with a 1s timeout, and
+    ``initialize_global_language()`` calls this twice (once via
+    ``_is_china_region``, once via ``_get_system_language``) while holding
+    ``_global_language_lock``; without caching, a cold start could spend ~4s
+    spawning ``defaults`` while both global getters are reachable from async
+    request paths. A failed probe is deliberately NOT cached: a single timeout
+    must not pin the whole process to the wrong locale, which is exactly the
+    situation this helper exists to rescue.
     """
+    global _macos_locale_cache
+
+    cached = _macos_locale_cache
+    if cached is not _MACOS_LOCALE_UNSET:
+        return cached
+
+    with _macos_locale_lock:
+        # 双检：等锁期间可能已被另一线程填好。
+        cached = _macos_locale_cache
+        if cached is not _MACOS_LOCALE_UNSET:
+            return cached
+
+        if platform.system() != 'Darwin':
+            # 非 macOS 是确定性结论，缓存住，省掉后续每次的 platform 判断。
+            _macos_locale_cache = None
+            return None
+
+        resolved = _read_macos_locale_uncached()
+        if resolved:
+            _macos_locale_cache = resolved
+        # 探测失败（defaults 超时 / 非零退出 / 输出为空）不写缓存：那是瞬时故障，
+        # 下次调用重试。缓存住等于让一次超时把整个进程钉死在错误的 locale 上，
+        # 而「其它信号都不可靠」正是本函数要兜的场景。
+        return resolved
+
+
+def _reset_macos_locale_cache() -> None:
+    """Drop the cached macOS locale (tests only)."""
+    global _macos_locale_cache
+    with _macos_locale_lock:
+        _macos_locale_cache = _MACOS_LOCALE_UNSET
+
+
+def _read_macos_locale_uncached() -> Optional[str]:
+    """Query the macOS ``defaults`` database; see ``_get_macos_locale``."""
     if platform.system() != 'Darwin':
         return None
 

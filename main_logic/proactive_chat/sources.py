@@ -70,6 +70,23 @@ def _interleave_link_groups(candidate_groups: list[list[dict]]) -> list[dict]:
     return links
 
 
+def _link_from_item(
+    item: dict,
+    *,
+    title: str,
+    url: str,
+    source: str,
+) -> dict:
+    # Candidate metadata stays internal until decisions.py emits a public link.
+    # Only adapters that explicitly mark their platform opt into carrying
+    # private metadata. Legacy sources such as YouTube must retain the old
+    # title/url/source-only contract instead of leaking feed-only fields into
+    # link extraction results.
+    link = dict(item) if item.get("platform") else {}
+    link.update({"title": title, "url": url, "source": source})
+    return link
+
+
 def _extract_links_from_raw(
     mode: str,
     raw_data: dict,
@@ -143,11 +160,12 @@ def _extract_links_from_raw(
                         else "YouTube"
                     )
                     links.append(
-                        {
-                            "title": title,
-                            "url": url,
-                            "source": item.get("source") or default_source,
-                        }
+                        _link_from_item(
+                            item,
+                            title=title,
+                            url=url,
+                            source=item.get("source") or default_source,
+                        )
                     )
 
         elif mode == "home":
@@ -155,11 +173,12 @@ def _extract_links_from_raw(
             for item in bilibili.get("videos", []) or []:
                 if item.get("title") and item.get("url"):
                     links.append(
-                        {
-                            "title": item["title"],
-                            "url": item["url"],
-                            "source": "B站",
-                        }
+                        _link_from_item(
+                            item,
+                            title=item["title"],
+                            url=item["url"],
+                            source="B站",
+                        )
                     )
             weibo = raw_data.get("weibo", {})
             for item in weibo.get("trending", []) or []:
@@ -212,14 +231,19 @@ def _extract_links_from_raw(
             for data_key, items_key, title_keys, source_name in platform_specs:
                 group: list[dict] = []
                 for item in raw_data.get(data_key, {}).get(items_key, []) or []:
-                    title = next(
+                    title = item.get("title", "") or next(
                         (item.get(key, "") for key in title_keys if item.get(key)),
                         "",
                     )
                     url = item.get("url", "")
                     if title and url:
                         group.append(
-                            {"title": title, "url": url, "source": source_name}
+                            _link_from_item(
+                                item,
+                                title=title,
+                                url=url,
+                                source=source_name,
+                            )
                         )
                 if group:
                     platform_links.append(group)

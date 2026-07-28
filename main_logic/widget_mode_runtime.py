@@ -17,13 +17,22 @@ class WidgetModeCoordinator:
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
         self._enabled = False
+        self._stealth_enabled = False
 
     def snapshot(self) -> dict[str, Any]:
-        return {"enabled": self._enabled}
+        return {
+            "enabled": self._enabled,
+            "stealthEnabled": self._stealth_enabled,
+        }
 
     async def set_enabled(self, enabled: bool) -> dict[str, Any]:
         async with self._lock:
             self._enabled = enabled is True
+            return self.snapshot()
+
+    async def set_stealth_enabled(self, enabled: bool) -> dict[str, Any]:
+        async with self._lock:
+            self._stealth_enabled = enabled is True
             return self.snapshot()
 
 

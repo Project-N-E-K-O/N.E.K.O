@@ -12,15 +12,17 @@
     const S = window.appState;
     const C = window.appConst;
     const U = window.appUtils;
-    // 待发送图片编码后的字节上限：1MB。720p 截图通常 150~400KB，普通上传图压到
-    // 长边 1920 后也基本在此之下；超标才逐步降采样/降质。
-    const PENDING_IMAGE_MAX_ENCODED_BYTES = 1 * 1024 * 1024;
+    // 免费服务器实测在 Base64 约 1MiB（JPEG 约 768KiB）附近会拒绝请求。
+    // 统一把待发送 JPEG 控制在 700KiB，并显式约束实际传输的 Base64 字符数，
+    // 为 Data URL、JSON 包装和会话上下文留出余量。
+    const PENDING_IMAGE_MAX_JPEG_BYTES = 700 * 1024;
+    const PENDING_IMAGE_MAX_BASE64_CHARS = Math.ceil(PENDING_IMAGE_MAX_JPEG_BYTES / 3) * 4;
     const PENDING_IMAGE_MIN_LONG_SIDE = 320;
     // 手动上传图首次超出字节上限时，一步到位把长边压到 ≤1920px，再走后续逐步降采样。
     const PENDING_IMAGE_FIRST_STEP_LONG_SIDE = 1920;
     const PENDING_IMAGE_JPEG_QUALITIES = [0.92, 0.86, 0.78, 0.7, 0.62, 0.52, 0.42, 0.32];
     // 手动截图入列前压缩用的质量阶梯：主质量 0.8（与屏幕分享、后端 vision 分析一致），
-    // 720p 下若仍超 1MB 再逐步降质兜底。
+    // 720p 下若仍超出运输预算再逐步降质兜底。
     const SCREENSHOT_JPEG_QUALITIES = [0.8, 0.72, 0.64, 0.56, 0.48];
 
     let compactHistoryDropPayloadQueue = Promise.resolve();
@@ -271,7 +273,27 @@
         return dataUrl;
     }
 
-    function getDataUrlEncodedBytes(dataUrl) {
+    function getDataUrlBase64Chars(dataUrl) {
+        var text = String(dataUrl || '');
+        var commaIndex = text.indexOf(',');
+        if (commaIndex < 0) {
+            return 0;
+        }
+
+        return text.slice(commaIndex + 1).length;
+    }
+
+    function canonicalizeBase64DataUrl(dataUrl) {
+        var text = String(dataUrl || '');
+        var commaIndex = text.indexOf(',');
+        if (commaIndex < 0) {
+            return text;
+        }
+
+        return text.slice(0, commaIndex + 1) + text.slice(commaIndex + 1).replace(/\s/g, '');
+    }
+
+    function getDataUrlBinaryBytes(dataUrl) {
         var text = String(dataUrl || '');
         var commaIndex = text.indexOf(',');
         if (commaIndex < 0) {
@@ -281,6 +303,13 @@
         var base64Text = text.slice(commaIndex + 1).replace(/\s/g, '');
         var padding = base64Text.endsWith('==') ? 2 : (base64Text.endsWith('=') ? 1 : 0);
         return Math.max(0, Math.floor(base64Text.length * 3 / 4) - padding);
+    }
+
+    function isPendingImageWithinTransportBudget(dataUrl) {
+        var base64Chars = getDataUrlBase64Chars(dataUrl);
+        return base64Chars > 0
+            && base64Chars <= PENDING_IMAGE_MAX_BASE64_CHARS
+            && getDataUrlBinaryBytes(dataUrl) <= PENDING_IMAGE_MAX_JPEG_BYTES;
     }
 
     function compressLoadedImageToPendingDataUrl(image) {
@@ -298,7 +327,7 @@
             for (var i = 0; i < PENDING_IMAGE_JPEG_QUALITIES.length; i += 1) {
                 var dataUrl = drawImageToJpegDataUrl(image, width, height, PENDING_IMAGE_JPEG_QUALITIES[i]);
                 bestDataUrl = dataUrl;
-                if (getDataUrlEncodedBytes(dataUrl) <= PENDING_IMAGE_MAX_ENCODED_BYTES) {
+                if (isPendingImageWithinTransportBudget(dataUrl)) {
                     return dataUrl;
                 }
             }
@@ -315,7 +344,7 @@
                 }
             }
 
-            var ratio = Math.sqrt(PENDING_IMAGE_MAX_ENCODED_BYTES / Math.max(getDataUrlEncodedBytes(bestDataUrl), 1)) * 0.92;
+            var ratio = Math.sqrt(PENDING_IMAGE_MAX_JPEG_BYTES / Math.max(getDataUrlBinaryBytes(bestDataUrl), 1)) * 0.92;
             var longSide = Math.max(width, height);
             var nextLongSide = Math.max(PENDING_IMAGE_MIN_LONG_SIDE, Math.floor(longSide * ratio));
             var nextScale = nextLongSide / Math.max(longSide, 1);
@@ -328,7 +357,7 @@
             height = nextHeight;
         }
 
-        if (getDataUrlEncodedBytes(bestDataUrl) > PENDING_IMAGE_MAX_ENCODED_BYTES) {
+        if (!isPendingImageWithinTransportBudget(bestDataUrl)) {
             throw new Error('IMAGE_TOO_LARGE');
         }
         return bestDataUrl;
@@ -524,10 +553,13 @@
             throw new Error('INVALID_FILE');
         }
 
-        if (isLikelyJpegBlob(blob) && blob.size <= PENDING_IMAGE_MAX_ENCODED_BYTES) {
+        if (isLikelyJpegBlob(blob) && blob.size <= PENDING_IMAGE_MAX_JPEG_BYTES) {
             var originalDataUrl = await readBlobAsDataUrl(blob, 'image/jpeg');
-            await loadImageFromSource(originalDataUrl);
-            return originalDataUrl;
+            var originalImage = await loadImageFromSource(originalDataUrl);
+            if (isPendingImageWithinTransportBudget(originalDataUrl)) {
+                return originalDataUrl;
+            }
+            return compressLoadedImageToPendingDataUrl(originalImage);
         }
 
         var image = await loadImageFromBlob(blob);
@@ -540,16 +572,19 @@
             throw new Error('INVALID_IMAGE_DATA_URL');
         }
 
+        var isBase64Jpeg = /^data:image\/jpe?g;base64,/i.test(src);
+        if (isBase64Jpeg) {
+            src = canonicalizeBase64DataUrl(src);
+        }
         var image = await loadImageFromSource(src);
-        if (/^data:image\/jpe?g;base64,/i.test(src)
-                && getDataUrlEncodedBytes(src) <= PENDING_IMAGE_MAX_ENCODED_BYTES) {
+        if (isBase64Jpeg && isPendingImageWithinTransportBudget(src)) {
             return src;
         }
         return compressLoadedImageToPendingDataUrl(image);
     };
 
     // 手动截图入列前的压缩：捕获/裁剪叠层保留全分辨率（清晰），裁剪结束后调用这里统一
-    // 压成 720p / 0.8 JPEG，并保证编码字节 ≤ 1MB（与屏幕分享、后端 vision 分析口径一致）。
+    // 压成 720p / 0.8 JPEG，并保证二进制与 Base64 均不超过待发送运输预算。
     mod.compressScreenshotDataUrlTo720p = async function compressScreenshotDataUrlTo720p(dataUrl) {
         var src = String(dataUrl || '');
         if (!/^data:image\//i.test(src)) {
@@ -572,17 +607,16 @@
         for (var i = 0; i < SCREENSHOT_JPEG_QUALITIES.length; i += 1) {
             var encoded = drawImageToJpegDataUrl(image, width, height, SCREENSHOT_JPEG_QUALITIES[i]);
             bestDataUrl = encoded;
-            if (getDataUrlEncodedBytes(encoded) <= PENDING_IMAGE_MAX_ENCODED_BYTES) {
+            if (isPendingImageWithinTransportBudget(encoded)) {
                 return encoded;
             }
         }
-        // 720p 下极少触达这里；兜底返回最低质量结果，不再硬抛错以免阻塞发送。
-        // 真触达说明这张图异常难压，加条 warn 记录尺寸，方便事后发现"列表混入超 1MB"的个例。
+        // 720p 下极少触达这里；但不能把已知超预算图片继续入列，否则发送时仍会失败。
         console.warn(
-            '[截图] 720p 最低质量仍超出 1MB 上限（' +
-            Math.round(getDataUrlEncodedBytes(bestDataUrl) / 1024) + 'KB），仍按兜底入列'
+            '[截图] 720p 最低质量仍超出 ' + Math.round(PENDING_IMAGE_MAX_JPEG_BYTES / 1024) + 'KB 上限（' +
+            Math.round(getDataUrlBinaryBytes(bestDataUrl) / 1024) + 'KB），取消入列'
         );
-        return bestDataUrl;
+        throw new Error('IMAGE_TOO_LARGE');
     };
 
     mod.normalizePendingAttachmentItem = async function normalizePendingAttachmentItem(item) {
@@ -595,7 +629,7 @@
             throw new Error('INVALID_ATTACHMENT_IMAGE');
         }
 
-        // 截图入列前已压到 720p JPEG（≤1MB），这里会原样透传；上传图按字节上限压缩。
+        // 截图入列前已压到 720p JPEG 并满足运输预算，这里会原样透传；上传图按同一预算压缩。
         var normalized = await mod.normalizeImageDataUrlForPendingList(img.src);
         if (normalized && normalized !== img.src) {
             img.src = normalized;
@@ -1740,6 +1774,13 @@
                 throw new Error('WEBSOCKET_NOT_CONNECTED');
             }
             S.socket.send(JSON.stringify(normalized));
+            window.dispatchEvent(new CustomEvent('neko:avatar-interaction-sent', {
+                detail: {
+                    requestId: normalized.interaction_id,
+                    interactionId: normalized.interaction_id,
+                    source: 'avatar-tool'
+                }
+            }));
             setActiveAvatarInteractionDispatch(normalized.interaction_id, Date.now());
             return true;
         } catch (error) {
@@ -2633,6 +2674,21 @@
                 return false;
             }
 
+            if (hasExtraImages) {
+                try {
+                    extraImageDataUrls = await Promise.all(extraImageDataUrls.map(function (dataUrl) {
+                        return mod.normalizeImageDataUrlForPendingList(dataUrl);
+                    }));
+                } catch (error) {
+                    console.error('[Chat] 额外图片处理失败:', error);
+                    window.showStatusToast(
+                        window.t ? window.t('app.importImageFailed') : '导入图片失败',
+                        4000
+                    );
+                    return false;
+                }
+            }
+
             if (hasScreenshots) {
                 try {
                     await mod.normalizeAllPendingComposerAttachments();
@@ -2827,11 +2883,9 @@
                                 var msg = {
                                     action: 'stream_data',
                                     data: img.src,
-                                    input_type: getPendingAttachmentInputType(screenshotItems[i])
+                                    input_type: getPendingAttachmentInputType(screenshotItems[i]),
+                                    request_id: requestId
                                 };
-                                if (text) {
-                                    msg.request_id = requestId;
-                                }
                                 // Attach paired avatar position metadata (captured at screenshot time)
                                 var storedPos = screenshotItems[i].dataset.avatarPosition;
                                 if (storedPos) {
@@ -2950,7 +3004,12 @@
                     if (sentUserContent) {
                         // 覆盖纯截图/图片首轮输入：没有 text 分支时也要标记用户已交互
                         markFirstUserInputForAchievement();
-                        window.dispatchEvent(new CustomEvent('neko:user-content-sent'));
+                        window.dispatchEvent(new CustomEvent('neko:user-content-sent', {
+                            detail: {
+                                requestId: requestId,
+                                source: messageSource || 'text'
+                            }
+                        }));
                         // 标记"WS 已发、还没收到首 chunk"窗口，给 isAssistantTextResponseInFlight 用。
                         // 首 chunk 进来后会被 clearPendingAssistantTurnStart 在 turn-end 路径清零；
                         // 同时有 15s freshness ceiling 防止漏清永远卡 true。
@@ -3689,11 +3748,9 @@
                 try {
                     await mod.enqueueCapturedScreenshotResult(result);
                 } catch (compressErr) {
-                    // Compression only throws when the image can't be decoded/encoded (the 720p
-                    // canvas is small enough that size limits never apply). Don't fall back to the
-                    // full-res original -- that would break the "list holds only compressed <=1MB"
-                    // invariant and pin a huge dataUrl in memory, and a broken image would fail at
-                    // send anyway. Abort queueing and surface an error toast instead.
+                    // Don't fall back to the full-res original: decode/encode failures and the rare
+                    // 720p image that still exceeds the transport budget must not enter the pending
+                    // list, otherwise it would either pin a huge dataUrl or fail during send.
                     console.warn('[\u622A\u56FE] 720p \u538B\u7F29\u5931\u8D25\uFF0C\u53D6\u6D88\u5165\u5217:', compressErr);
                     window.showStatusToast(window.t ? window.t('app.screenshotFailed') : '\u622A\u56FE\u5931\u8D25', 4000);
                     return false;

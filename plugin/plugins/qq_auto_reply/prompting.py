@@ -58,10 +58,11 @@ class QQAutoReplyPromptingMixin:
             requested=requested,
         )
 
-    def _should_persist_memory(self, *, should_use_memory_context: bool, requested: Optional[bool]) -> bool:
+    def _should_persist_memory(self, *, should_use_memory_context: bool, requested: Optional[bool], is_group: bool = False) -> bool:
         return self.prompt_builder.should_persist_memory(
             should_use_memory_context=should_use_memory_context,
             requested=requested,
+            is_group=is_group,
         )
 
     def _build_prompt_message(
@@ -251,6 +252,7 @@ class QQAutoReplyPromptingMixin:
         permission_level: str,
         sender_id: str,
         user_title: str,
+        memory_sender_id: str | None = None,
         is_group: bool = False,
         group_id: Optional[str] = None,
         use_memory_context: Optional[bool] = None,
@@ -269,6 +271,7 @@ class QQAutoReplyPromptingMixin:
             character_card_fields=character_card_fields,
             permission_level=permission_level,
             sender_id=sender_id,
+            memory_sender_id=memory_sender_id,
             user_title=user_title,
             is_group=is_group,
             group_id=group_id,
