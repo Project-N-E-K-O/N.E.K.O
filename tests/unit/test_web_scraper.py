@@ -304,7 +304,9 @@ async def test_bilibili_hot_uses_recent_stale_cache_after_failure(monkeypatch):
         }
 
     patch_module_clock(
-        monkeypatch, bilibili_content, monotonic=lambda: clock["now"]
+        monkeypatch,
+        bilibili_content,
+        monotonic=lambda: clock["now"],
     )
     monkeypatch.setattr(hot, "get_hot_videos", fake_get_hot_videos)
 
@@ -335,7 +337,9 @@ async def test_bilibili_hot_rejects_stale_cache_older_than_limit(monkeypatch):
         return {"list": [{"bvid": "BVexpired", "title": "即将过期"}]}
 
     patch_module_clock(
-        monkeypatch, bilibili_content, monotonic=lambda: clock["now"]
+        monkeypatch,
+        bilibili_content,
+        monotonic=lambda: clock["now"],
     )
     monkeypatch.setattr(hot, "get_hot_videos", fake_get_hot_videos)
 
@@ -841,7 +845,9 @@ async def test_bilibili_following_uses_two_minute_cache(monkeypatch):
         fake_fetch,
     )
     patch_module_clock(
-        monkeypatch, personal_dynamics, monotonic=lambda: clock["now"]
+        monkeypatch,
+        personal_dynamics,
+        monotonic=lambda: clock["now"],
     )
 
     first = await personal_dynamics.fetch_bilibili_personal_dynamic(10)
