@@ -111,9 +111,16 @@ def runtime_state_dir() -> Path:
         except Exception:
             pass
     else:
-        xdg_runtime = os.environ.get("XDG_RUNTIME_DIR", "").strip()
-        if xdg_runtime:
-            return Path(xdg_runtime) / "neko"
+        # Deliberately *not* XDG_RUNTIME_DIR. It is ambient: a desktop session has
+        # it, a cron job, a plain SSH login, `su`, a system unit or a container
+        # often does not. The same uid would then resolve two different
+        # directories, take two unrelated locks, and both launchers would declare
+        # themselves the owner — the uniqueness proof silently degrading back into
+        # the port probing this module exists to replace. The lock path has to
+        # come from something that does not vary with how the process was started.
+        home = _stable_home_dir()
+        if home:
+            return Path(home) / ".local" / "state" / "N.E.K.O" / "runtime"
 
     suffix = ""
     getuid = getattr(os, "getuid", None)
@@ -123,6 +130,56 @@ def runtime_state_dir() -> Path:
         except Exception:
             suffix = ""
     return Path(tempfile.gettempdir()) / f"neko-runtime{suffix}"
+
+
+def _stable_home_dir() -> str:
+    """This user's home from the passwd database, falling back to ``$HOME``.
+
+    ``pwd`` first on purpose: ``Path.home()`` consults ``$HOME``, which ``sudo``
+    without ``-H`` and many container images leave pointing somewhere else — a
+    weaker version of the very drift this exists to avoid.
+    """
+    try:
+        import pwd
+
+        return pwd.getpwuid(os.getuid()).pw_dir or ""
+    except Exception:
+        pass
+    try:
+        return str(Path.home())
+    except Exception:
+        return ""
+
+
+def legacy_state_dirs() -> list[Path]:
+    """Directories older builds of this launcher may still hold a lock in.
+
+    Only meaningful during an upgrade: a running old-generation runtime holds
+    ``$XDG_RUNTIME_DIR/neko`` or the shared-temp fallback, and a new launcher
+    resolving the stable path would find it free and start a second runtime.
+    Probing these keeps that from happening exactly once per upgrade, and can be
+    deleted once no build that uses them can still be running.
+    """
+    if sys.platform == "win32" or sys.platform == "darwin":
+        return []
+    dirs: list[Path] = []
+    xdg_runtime = os.environ.get(RUNTIME_STATE_DIR_ENV, "").strip()
+    if xdg_runtime:
+        # An explicit override is the current path, never a legacy one.
+        return []
+    ambient = os.environ.get("XDG_RUNTIME_DIR", "").strip()
+    if ambient:
+        dirs.append(Path(ambient) / "neko")
+    suffix = ""
+    getuid = getattr(os, "getuid", None)
+    if callable(getuid):
+        try:
+            suffix = f"-{getuid()}"
+        except Exception:
+            suffix = ""
+    dirs.append(Path(tempfile.gettempdir()) / f"neko-runtime{suffix}")
+    current = runtime_state_dir()
+    return [d for d in dirs if d != current]
 
 
 def lock_path() -> Path:
@@ -208,6 +265,9 @@ def _open_lock_file(path: Path) -> int:
     _ensure_private_dir(path.parent)
     flags = os.O_RDWR | os.O_CREAT
     flags |= getattr(os, "O_BINARY", 0)
+    # Defence in depth: the lock file itself must not be a symlink somebody
+    # pre-created for us to follow.
+    flags |= getattr(os, "O_NOFOLLOW", 0)
     return os.open(str(path), flags, 0o600)
 
 
@@ -224,12 +284,32 @@ def _ensure_private_dir(directory: Path) -> None:
     if os.name != "posix":
         # Windows inherits ACLs from %LOCALAPPDATA%, which is already per-user.
         return
+    # lstat, not stat. mkdir(exist_ok=True) happily accepts a symlink that points
+    # at a directory, and stat would then validate the *target* — so a symlink
+    # planted by another local user at the predictable fallback path passes the
+    # ownership check whenever it points somewhere we own, after which the chmod
+    # below and every lock/record write follow it out of the directory we meant.
     try:
-        info = os.stat(str(directory))
+        info = os.lstat(str(directory))
     except OSError:
         return
     getuid = getattr(os, "getuid", None)
-    if callable(getuid) and info.st_uid != getuid():
+    uid = getuid() if callable(getuid) else None
+    if stat.S_ISLNK(info.st_mode):
+        if uid is not None and info.st_uid != uid:
+            raise OSError(
+                errno.EPERM,
+                f"runtime state directory {directory} is a symlink owned by "
+                f"uid {info.st_uid}, not us",
+            )
+        # Our own symlink is a legitimate way to move state onto another volume,
+        # so fall back to validating what it points at. This is the same rule the
+        # kernel's protected_symlinks applies.
+        try:
+            info = os.stat(str(directory))
+        except OSError:
+            return
+    if uid is not None and info.st_uid != uid:
         raise OSError(
             errno.EPERM,
             f"runtime state directory {directory} is owned by uid {info.st_uid}, not us",
@@ -532,6 +612,42 @@ def _safe_getppid() -> int:
         return int(getppid())
     except Exception:
         return 0
+
+
+def legacy_owner_status() -> tuple[str, Optional[dict]]:
+    """Is an older-generation runtime still holding a lock at a retired path?
+
+    ``owned`` only when we positively took contention on one of them. ``unknown``
+    stays ``unknown`` — a directory we cannot consult is not evidence that
+    somebody is running there, and collapsing it would refuse to start for a
+    reason the user cannot see or clear.
+    """
+    saw_unknown = False
+    for directory in legacy_state_dirs():
+        lock_file = directory / LOCK_FILE_NAME
+        if not lock_file.exists():
+            continue
+        try:
+            fd = _open_lock_file(lock_file)
+        except OSError:
+            saw_unknown = True
+            continue
+        try:
+            try:
+                _try_lock_fd(fd)
+            except LockHeldByAnother:
+                return OWNER_OWNED, _read_record(directory / RECORD_FILE_NAME)
+            except OSError:
+                saw_unknown = True
+                continue
+            _unlock_fd(fd)
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                # Probe only; the lock was released above and the fd dies with us.
+                pass
+    return (OWNER_UNKNOWN if saw_unknown else OWNER_FREE), None
 
 
 def owner_status() -> tuple[str, Optional[dict]]:

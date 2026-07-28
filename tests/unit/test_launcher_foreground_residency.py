@@ -817,9 +817,12 @@ def test_losing_the_lock_hands_the_frontend_the_winner_instead_of_a_hint(monkeyp
                         lambda event, payload=None: events.append((event, payload)))
     monkeypatch.setattr(launcher.single_instance, "acquire_single_instance",
                         lambda **_kwargs: None)
-    monkeypatch.setattr(launcher.single_instance, "read_owner_record",
-                        lambda: {"instance_id": "winner", "pid": 99,
-                                 "ports": {"MAIN_SERVER_PORT": 48911}})
+    winner = {"instance_id": "winner", "pid": 99, "ports": {"MAIN_SERVER_PORT": 48911}}
+    # Status and record come from one probe, so the loser cannot read a status
+    # that disagrees with the record it reports.
+    monkeypatch.setattr(launcher.single_instance, "owner_status",
+                        lambda: (launcher.single_instance.OWNER_OWNED, winner))
+    monkeypatch.setattr(launcher.single_instance, "read_owner_record", lambda: winner)
     monkeypatch.setattr(launcher, "_parent_death_guard", None)
 
     assert launcher._acquire_single_instance_ownership() is False

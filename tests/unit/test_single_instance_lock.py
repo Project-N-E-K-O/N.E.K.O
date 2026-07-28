@@ -313,3 +313,27 @@ def test_forked_child_dropping_its_reference_does_not_free_the_parent_lock(runti
     assert child_view == single_instance.OWNER_OWNED
     assert handle.record_file.exists()
     assert single_instance.active_handle() is handle
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name != "posix" or sys.platform == "darwin",
+                    reason="the ambient-directory drift was Linux-specific")
+def test_lock_path_does_not_drift_with_the_ambient_environment(monkeypatch, tmp_path):
+    """Two launches by one user must resolve one lock, however they were started.
+
+    XDG_RUNTIME_DIR is present in a desktop session and absent under cron, plain
+    SSH, `su`, a system unit or a container. Deriving the lock path from it meant
+    the same uid took two unrelated locks and both launchers called themselves
+    the owner — the uniqueness proof degrading back into port probing.
+    """
+    monkeypatch.delenv(single_instance.RUNTIME_STATE_DIR_ENV, raising=False)
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run-user"))
+    desktop = single_instance.lock_path()
+
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    headless = single_instance.lock_path()
+
+    assert desktop == headless, (
+        f"lock path drifted with the environment: {desktop} vs {headless}"
+    )

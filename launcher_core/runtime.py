@@ -337,6 +337,11 @@ OWNER_RELAUNCH_ENV = "NEKO_OWNER_RELAUNCH"
 #: outgoing launcher's single-instance lock instead of concluding "already running".
 RESTART_HANDOFF_ENV = "NEKO_LAUNCHER_RESTART_HANDOFF"
 
+#: How long a losing launcher waits for the winner to publish its record before
+#: reporting the duplicate with an empty owner. Bounded: a winner whose record
+#: write failed would otherwise hang us indefinitely.
+DUPLICATE_RECORD_READ_BUDGET = 0.25
+
 RESTART_HANDOFF_LOCK_RETRIES = 40
 RESTART_HANDOFF_LOCK_RETRY_INTERVAL = 0.25
 
@@ -623,12 +628,19 @@ def _handle_child_termination_signal(signum, _frame):
     server's own shutdown lifecycle here preserves the release/cleanup ordering
     that the launcher would otherwise have driven.
     """
-    print(f"[Launcher] Child server received signal {signum}; stopping gracefully", flush=True)
+    # Guarded, and it matters here more than anywhere: this line runs *before* the
+    # hooks that set uvicorn's should_exit, and every path that reaches this
+    # handler — the group TERM after owner death, cleanup's terminate(), Linux
+    # pdeathsig — is a path on which the owner has already closed the read end of
+    # this pipe. A raise here would skip Main's release/cloudsave lifecycle
+    # entirely, and on the pdeathsig path nothing else would come along to finish
+    # the job.
+    _teardown_print(f"[Launcher] Child server received signal {signum}; stopping gracefully")
     for hook in list(_child_graceful_stop_hooks):
         try:
             hook()
         except Exception as exc:
-            print(f"[Launcher] Warning: child graceful stop hook failed: {exc}", flush=True)
+            _teardown_print(f"[Launcher] Warning: child graceful stop hook failed: {exc}")
     if not _child_graceful_stop_hooks:
         raise SystemExit(0)
 
@@ -2412,7 +2424,21 @@ def _acquire_single_instance_ownership() -> bool:
         return True
 
     if handle is None:
-        owner = single_instance.read_owner_record() or {}
+        # The winner takes the lock a moment before it publishes, so an immediate
+        # read can legitimately come back empty. Give it a bounded moment rather
+        # than telling the frontend "somebody else owns this" with no idea who.
+        owner = {}
+        deadline = time.monotonic() + DUPLICATE_RECORD_READ_BUDGET
+        while True:
+            status, record = single_instance.owner_status()
+            if status == single_instance.OWNER_OWNED and record:
+                owner = record
+                break
+            if status != single_instance.OWNER_OWNED or time.monotonic() >= deadline:
+                # FREE is handled below; UNKNOWN cannot be improved by waiting;
+                # and a winner that never publishes must not hang us forever.
+                break
+            time.sleep(0.02)
         if not owner and single_instance.owner_status()[0] == single_instance.OWNER_FREE:
             # The holder let go between our failed attempt and this read — it was
             # on its way out. There is no instance to attach to, so exiting as a
@@ -2440,6 +2466,23 @@ def _acquire_single_instance_ownership() -> bool:
         )
         # 保留既有事件名，老版本前端仍能识别"已有实例在启动"这一场景。
         emit_frontend_event("startup_in_progress", {"message": msg, "owner": owner})
+        return False
+
+    # Upgrade window. An older build resolved its lock path from XDG_RUNTIME_DIR
+    # or the shared temp dir; this one resolves a stable per-user path, so a
+    # runtime still holding one of those is invisible to the lock we just took.
+    # Probing them can only make us refuse to start — it can never make us
+    # wrongly claim uniqueness — and UNKNOWN deliberately does not block.
+    legacy_status, legacy_owner = single_instance.legacy_owner_status()
+    if legacy_status == single_instance.OWNER_OWNED:
+        msg = "An older N.E.K.O runtime is still running from a previous state directory"
+        print(f"[Launcher] {msg}", flush=True)
+        handle.release()
+        emit_frontend_event(
+            "single_instance",
+            {"role": "duplicate", "owner": legacy_owner or {}, "legacy": True},
+        )
+        emit_frontend_event("startup_in_progress", {"message": msg, "owner": legacy_owner or {}})
         return False
 
     _single_instance_handle = handle
