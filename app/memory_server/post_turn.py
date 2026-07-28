@@ -20,6 +20,7 @@ handler at import time.
 """
 
 import asyncio
+from functools import wraps
 
 from config import (
     IGNORED_REINFORCEMENT_DELTA,
@@ -38,7 +39,25 @@ from ._shared import logger
 from .rows import _extract_ai_response, _extract_user_messages
 
 
-async def _spawn_outbox_post_turn_signals(lanlan_name: str, messages: list) -> asyncio.Task:
+def _with_language_context(func):
+    """Run one post-turn operation with its persisted task-local locale."""
+
+    @wraps(func)
+    async def wrapped(*args, language: str | None = None, **kwargs):
+        from utils.language_utils import language_context
+
+        with language_context(language):
+            return await func(*args, language=language, **kwargs)
+
+    return wrapped
+
+
+async def _spawn_outbox_post_turn_signals(
+    lanlan_name: str,
+    messages: list,
+    *,
+    language: str | None = None,
+) -> asyncio.Task:
     """Register the per-turn signals background task in the outbox and spawn it.
 
     "per-turn signals" = counter bump (for the batch loop's counting) + repetition
@@ -49,6 +68,18 @@ async def _spawn_outbox_post_turn_signals(lanlan_name: str, messages: list) -> a
     from utils.llm_client import messages_to_dict
 
     payload = {'messages': messages_to_dict(messages)}
+    if language:
+        # Persist the locale with the work item: after a memory_server restart,
+        # replay must not re-resolve from a neutral process locale and switch
+        # the same conversation window back to English.
+        #
+        # Callers must pass the locale the client actually declared, NOT the
+        # value resolved for the in-flight request. Persisting a locale this
+        # process merely *guessed* would freeze that guess into outbox.ndjson:
+        # replay would keep reusing it even after the detection itself is fixed,
+        # whereas omitting the key lets replay re-resolve against the then-current
+        # process language (the pre-outbox behaviour).
+        payload['language'] = language
     try:
         op_id = await runtime.outbox.aappend_pending(lanlan_name, OP_POST_TURN_SIGNALS, payload)
     except Exception as e:
@@ -58,13 +89,19 @@ async def _spawn_outbox_post_turn_signals(lanlan_name: str, messages: list) -> a
             f"{type(e).__name__}: {e}"
         )
         return runtime._spawn_background_task(
-            _run_post_turn_signals(messages, lanlan_name)
+            _run_post_turn_signals(messages, lanlan_name, language=language)
         )
     op = {'op_id': op_id, 'type': OP_POST_TURN_SIGNALS, 'payload': payload}
     return runtime._spawn_background_task(outbox_infra._run_outbox_op(lanlan_name, op))
 
 
-async def _run_post_turn_signals(messages: list, lanlan_name: str):
+@_with_language_context
+async def _run_post_turn_signals(
+    messages: list,
+    lanlan_name: str,
+    *,
+    language: str | None = None,
+):
     """Background async: per-turn signals at every turn end. Failures are skipped silently.
 
     Responsibilities (in step order):
@@ -263,8 +300,11 @@ async def _outbox_post_turn_signals_handler(lanlan_name: str, payload: dict) -> 
     messages = messages_from_dict(raw)
     if not messages:
         return
-    await _run_post_turn_signals(messages, lanlan_name)
+    await _run_post_turn_signals(
+        messages,
+        lanlan_name,
+        language=payload.get('language'),
+    )
 
 
 outbox_infra.register_outbox_handler(OP_POST_TURN_SIGNALS, _outbox_post_turn_signals_handler)
-

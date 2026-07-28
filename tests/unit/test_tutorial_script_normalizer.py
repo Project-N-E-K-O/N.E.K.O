@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.node_harness import run_node_stdin
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -15,12 +17,11 @@ def _run_node_harness(script: str) -> subprocess.CompletedProcess[str]:
     if not node_path:
         pytest.skip("node not found")
     try:
-        return subprocess.run(
-            [node_path, "-"],
-            input=script,
+        return run_node_stdin(
+            node_path,
+            script,
             cwd=PROJECT_ROOT,
             capture_output=True,
-            text=True,
             check=False,
             timeout=10,
         )

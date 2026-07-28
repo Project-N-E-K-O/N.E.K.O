@@ -56,7 +56,7 @@ async def test_cache_endpoint_writes_time_indexed_db():
         {"role": "human", "content": "你好"},
         {"role": "ai", "content": "你好喵~"},
     ])
-    request = memory_server.HistoryRequest(input_history=payload)
+    request = memory_server.HistoryRequest(input_history=payload, language="zh-CN")
 
     with patch.object(memory_server.runtime, "time_manager", fake_time_manager), \
          patch.object(memory_server.runtime, "recent_history_manager", fake_recent_history_manager), \
@@ -99,7 +99,7 @@ async def test_cache_endpoint_spawns_outbox_post_turn_signals():
         {"role": "human", "content": "我喜欢吃草莓"},
         {"role": "ai", "content": "记下来啦~"},
     ])
-    request = memory_server.HistoryRequest(input_history=payload)
+    request = memory_server.HistoryRequest(input_history=payload, language="zh-CN")
 
     with patch.object(memory_server.runtime, "time_manager", fake_time_manager), \
          patch.object(memory_server.runtime, "recent_history_manager", fake_recent_history_manager), \
@@ -111,6 +111,7 @@ async def test_cache_endpoint_spawns_outbox_post_turn_signals():
     spawn_args = fake_spawn_outbox.await_args
     assert spawn_args.args[0] == "测试角色"
     assert len(spawn_args.args[1]) == 2
+    assert spawn_args.kwargs["language"] == "zh-CN"
 
 
 @pytest.mark.unit

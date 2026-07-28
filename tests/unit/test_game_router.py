@@ -26,6 +26,7 @@ from main_routers.game_router import runtime as gr_runtime
 from main_routers.game_router import visible_events as gr_visible_events
 from main_routers.system_router import AUTOSTART_CSRF_TOKEN
 from main_logic.core import LLMSessionManager
+from tests.fake_clock import patch_module_clock
 from utils import game_log
 from utils.llm_client import AIMessage, HumanMessage
 
@@ -4209,7 +4210,10 @@ async def test_route_external_voice_transcript_dedup_ttl_evicts(monkeypatch):
     _gr_patch_all(monkeypatch, "_run_game_chat", fake_run_game_chat)
 
     fake_now = {"t": 10_000.0}
-    monkeypatch.setattr(gr_runtime.time, "time", lambda: fake_now["t"])
+    # The dedup TTL bookkeeping this test drives lives in
+    # main_routers.game_router.runtime (_route_external_transcript_to_game), so
+    # the fake clock belongs on that module.
+    patch_module_clock(monkeypatch, gr_runtime, time=lambda: fake_now["t"])
 
     h1 = await gr_runtime.route_external_voice_transcript(
         "Lan", "射门", request_id="voice-x", game_type="soccer", session_id="match_1",
@@ -4288,7 +4292,10 @@ async def test_route_external_voice_transcript_dedup_no_request_id_fallback_wind
     _gr_patch_all(monkeypatch, "_run_game_chat", fake_run_game_chat)
 
     fake_now = {"t": 1000.95}
-    monkeypatch.setattr(gr_runtime.time, "time", lambda: fake_now["t"])
+    # Same as the TTL test above: the no-request_id 1.0s window is computed in
+    # main_routers.game_router.runtime (_route_external_transcript_to_game), so
+    # scope the fake clock there.
+    patch_module_clock(monkeypatch, gr_runtime, time=lambda: fake_now["t"])
 
     h1 = await gr_runtime.route_external_voice_transcript(
         "Lan", "再来", request_id=None,

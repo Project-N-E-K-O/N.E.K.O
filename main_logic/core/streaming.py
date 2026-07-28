@@ -47,6 +47,41 @@ from main_logic import core as _core_facade
 class StreamingMixin:
     """Live input streaming methods (see module docstring)."""
 
+    @staticmethod
+    def _user_input_ingress_time(message: dict) -> float:
+        """Return the server-captured ingress time, or sample a safe fallback."""
+        captured_at = message.get("_user_input_ingress_time")
+        if isinstance(captured_at, (int, float)):
+            return float(captured_at)
+        return time.time()
+
+    def note_stream_input_ingress(self, message: dict) -> bool:
+        """Record nonblank text/image input before fallible staging."""
+        input_type = message.get("input_type")
+        if input_type == "text":
+            memory_text = self._clean_frontend_memory_text(
+                message.get("memory_text")
+            )
+            content = memory_text or message.get("data")
+        elif input_type in {"avatar_drop_image", "user_image"}:
+            content = message.get("data")
+        else:
+            return False
+
+        if isinstance(content, str):
+            has_content = bool(content.strip())
+        elif isinstance(content, (bytes, bytearray)):
+            has_content = bool(content)
+        else:
+            has_content = False
+        if not has_content:
+            return False
+
+        self.note_user_engagement(
+            at=self._user_input_ingress_time(message)
+        )
+        return True
+
     def _emit_cooldown_turn_end_if_needed(self):
         """Deduplicated turn_end emission during cooldown, at most once per second. Returns True when currently cooling down."""
         if not self._memory_error_retry_after or time.time() >= self._memory_error_retry_after:
@@ -93,6 +128,7 @@ class StreamingMixin:
                             await self._enqueue_audio_stream_data(message)
                         else:
                             if is_voice_session and msg_input_type in _TEXT_SESSION_INPUT_TYPES:
+                                self.note_stream_input_ingress(message)
                                 dropped_text_for_voice += 1
                                 continue
                             await self._process_stream_data_internal(message)
@@ -196,6 +232,20 @@ class StreamingMixin:
         input_type = message.get("input_type")
         if self._should_drop_live_vision_stream(input_type):
             return
+        if input_type in _TEXT_SESSION_INPUT_TYPES:
+            # Preserve when the user action reached the server. Session startup,
+            # router task scheduling, mode rebuilds, and pending-input flushes
+            # may delay actual handling. Preserve a router-provided timestamp;
+            # direct/internal callers get a safe fallback sampled here.
+            # Copy so callers cannot observe this internal transport metadata.
+            message = {
+                **message,
+                "_user_input_ingress_time": self._user_input_ingress_time(message),
+            }
+            # Genuine one-shot input must reset unanswered evidence even if a
+            # circuit breaker, failed startup, or final voice-mode flush drops
+            # it before the normal text/image processing branches are reached.
+            self.note_stream_input_ingress(message)
         # 检查session是否就绪
         async with self.input_cache_lock:
             if not self.session_ready:
@@ -349,14 +399,34 @@ class StreamingMixin:
                     # 更新用户活动时间戳（与 handle_input_transcript / _record_external_user_input
                     # 对偶）。idle reset loop 依赖该字段判断静默时长，文本路径不补的话
                     # 纯文本会话永远满足"静默 ≥ 30 min"被误重置。
-                    self.last_user_activity_time = time.time()
+                    _user_input_time = self._user_input_ingress_time(message)
+                    _last_activity_time = getattr(
+                        self,
+                        "last_user_activity_time",
+                        None,
+                    )
+                    self.last_user_activity_time = (
+                        max(float(_last_activity_time), _user_input_time)
+                        if isinstance(_last_activity_time, (int, float))
+                        else _user_input_time
+                    )
                     # 「真消息」时间戳：strip 后非空才刷，与语音路径
                     # `if transcript_text:` 对偶——空白输入不算真实回应，否则会误
                     # 推进 mini-game 邀请隐式 dismiss 判定（CodeRabbit）。注意
                     # last_user_activity_time 仍无条件刷（服务 idle reset，语义是
                     # 「有没有发请求」，与「是不是真消息」不同）。
                     if record_data.strip():
-                        self.last_user_message_time = time.time()
+                        _last_message_time = getattr(
+                            self,
+                            "last_user_message_time",
+                            None,
+                        )
+                        self.last_user_message_time = (
+                            max(float(_last_message_time), _user_input_time)
+                            if isinstance(_last_message_time, (int, float))
+                            else _user_input_time
+                        )
+                        self.note_user_engagement(at=_user_input_time)
 
                     # 更新字数限制（可能用户在对话期间修改了设置）
                     if hasattr(self.session, 'update_max_response_length'):
@@ -666,10 +736,16 @@ class StreamingMixin:
                 try:
                     if self._should_drop_magic_command_image(message.get("request_id")):
                         return
+                    image_arrival_time = (
+                        self._user_input_ingress_time(message)
+                        if input_type in {"avatar_drop_image", "user_image"}
+                        else None
+                    )
                     # 使用统一的图像工具处理数据（只验证，不缩放）
                     image_b64 = await _core_facade.process_screen_data(data)
 
                     if image_b64:
+                        image_accepted = False
                         # 叠加 Avatar 文字注解（仅当本条消息携带了位置元数据时）
                         # 不回退到 self._avatar_position：前端未附带位置说明该截图不应叠加
                         # （如窗口截图、手机相机等场景）
@@ -689,6 +765,7 @@ class StreamingMixin:
                         if isinstance(self.session, OmniOfflineClient):
                             # 只添加到待发送队列，等待与文本一起发送
                             await self.session.stream_image(image_b64)
+                            image_accepted = True
                             image_data = (
                                 ""
                                 if input_type in {"avatar_drop_image", "user_image"}
@@ -719,6 +796,12 @@ class StreamingMixin:
 
                             # 语音模式直接发送图片
                             await self.session.stream_image(image_b64)
+                            image_accepted = True
+                        if (
+                            image_accepted
+                            and image_arrival_time is not None
+                        ):
+                            self.note_user_engagement(at=image_arrival_time)
                     else:
                         logger.error("💥 Stream: 图像数据验证失败")
                         return

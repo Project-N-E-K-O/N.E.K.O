@@ -15,13 +15,14 @@ Object.assign(AvatarButtonMixin.methods, {
                     iconOn: `/static/icons/mic_icon_on.png${iconVersion}`
                 },
                 {
+                    // 手机布局不渲染麦克风设置 trigger，因此保留一个可直接触发
+                    // 屏幕分享的入口；桌面仍通过语音设置里的开关控制。
                     id: 'screen',
-                    emoji: '🖥️',
                     title: window.t ? window.t('buttons.screenShare') : '屏幕分享',
                     titleKey: 'buttons.screenShare',
-                    hasPopup: true,
+                    hasPopup: false,
                     toggle: true,
-                    separatePopupTrigger: true,
+                    mobileOnly: true,
                     iconOff: `/static/icons/screen_icon_off.png${iconVersion}`,
                     iconOn: `/static/icons/screen_icon_on.png${iconVersion}`
                 },
@@ -35,6 +36,16 @@ Object.assign(AvatarButtonMixin.methods, {
                     exclusive: 'settings',
                     iconOff: `/static/icons/Agent_off.png${iconVersion}`,
                     iconOn: `/static/icons/Agent_on.png${iconVersion}`
+                },
+                {
+                    // N.E.K.O.Servers 社交平台入口（替代桌面 screen 槽位）。
+                    id: 'social',
+                    title: window.t ? window.t('buttons.social') : '猫娘社区',
+                    titleKey: 'buttons.social',
+                    hasPopup: false,
+                    iconOff: `/static/icons/neko_community_off.png${iconVersion}`,
+                    iconOn: `/static/icons/neko_community_on.png${iconVersion}`,
+                    imageRendering: 'auto'
                 },
                 {
                     id: 'settings',
@@ -68,6 +79,9 @@ Object.assign(AvatarButtonMixin.methods, {
 
             // 创建包装器
             const btnWrapper = document.createElement('div');
+            if (config.mobileOnly) {
+                btnWrapper.dataset.mobileOnly = 'true';
+            }
             Object.assign(btnWrapper.style, {
                 position: 'relative',
                 display: 'flex',
@@ -126,7 +140,7 @@ Object.assign(AvatarButtonMixin.methods, {
                     transition: 'opacity 0.3s ease',
                     transform: 'translate(-50%, -50%)',
                     transformOrigin: 'center center',
-                    imageRendering: 'crisp-edges'
+                    imageRendering: config.imageRendering || 'crisp-edges'
                 });
 
                 imgOn = document.createElement('img');
@@ -145,7 +159,7 @@ Object.assign(AvatarButtonMixin.methods, {
                     transition: 'opacity 0.3s ease',
                     transform: 'translate(-50%, -50%)',
                     transformOrigin: 'center center',
-                    imageRendering: 'crisp-edges'
+                    imageRendering: config.imageRendering || 'crisp-edges'
                 });
 
                 imgContainer.appendChild(imgOff);
@@ -220,6 +234,15 @@ Object.assign(AvatarButtonMixin.methods, {
             });
 
             return { btnWrapper, btn, imgOff, imgOn };
+        };
+
+        ManagerPrototype.syncResponsiveButtonVisibility = function(buttonsContainer) {
+            const isMobile = typeof window.isMobileWidth === 'function'
+                ? window.isMobileWidth()
+                : window.innerWidth <= 768;
+            buttonsContainer.querySelectorAll('[data-mobile-only="true"]').forEach((wrapper) => {
+                wrapper.style.display = isMobile ? 'flex' : 'none';
+            });
         };
 
         /**

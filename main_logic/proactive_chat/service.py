@@ -55,6 +55,7 @@ from main_logic.proactive_chat.contracts import (
     PROACTIVE_REASON_PASS_ACTIVITY_BUSY,
     PROACTIVE_REASON_PASS_BUSY,
     PROACTIVE_REASON_PASS_DISABLED,
+    PROACTIVE_REASON_PASS_DUPLICATE,
     ProactiveChatCommand,
     ProactiveChatResult,
     _proactive_chat_body,
@@ -107,6 +108,7 @@ from main_logic.proactive_chat.music_recommendation import (
     _select_music_recommendation,
 )
 from main_logic.proactive_chat.state import (
+    _enter_proactive_phase2,
     _ensure_source_history_loaded,
     _format_recent_proactive_chats,
     _increment_proactive_chat_total,
@@ -142,6 +144,29 @@ __all__ = [
 
 
 logger = get_module_logger(__name__, "Main")
+
+
+def _consume_repeat_suppressed_break_reminder(
+    mgr,
+    *,
+    lanlan_name: str,
+    channel: str,
+) -> None:
+    """Consume a must-fire source that the repeat guard deliberately dropped."""
+    marker_name = (
+        "mark_anti_slack_used"
+        if channel == "anti_slack"
+        else "mark_work_break_used"
+    )
+    try:
+        getattr(mgr._activity_tracker, marker_name)()
+    except Exception as mark_err:
+        logger.warning(
+            "[%s] %s after repeat suppression failed: %s",
+            lanlan_name,
+            marker_name,
+            mark_err,
+        )
 
 
 _MEME_PROXY_CANDIDATE_CHECK_LIMIT = 3
@@ -694,10 +719,7 @@ async def handle_proactive_chat(
                     master_name=master_name_current,
                     lang=_break_lang,
                 )
-                (
-                    delivered_text,
-                    _proactive_sid_unused,
-                ) = await _deliver_break_reminder_via_llm(
+                reminder_delivery = await _deliver_break_reminder_via_llm(
                     lanlan_name=lanlan_name,
                     mgr=mgr,
                     config_manager=break_config_manager_provider(),
@@ -708,6 +730,23 @@ async def handle_proactive_chat(
                     channel="anti_slack",
                     lang=_break_lang,
                 )
+                delivered_text = reminder_delivery.delivered_text
+                if reminder_delivery.repeat_suppressed:
+                    _consume_repeat_suppressed_break_reminder(
+                        mgr,
+                        lanlan_name=lanlan_name,
+                        channel="anti_slack",
+                    )
+                    return await _end_proactive(
+                        ProactiveChatResult(
+                            body={
+                                "success": True,
+                                "action": "pass",
+                                "reason_code": PROACTIVE_REASON_PASS_DUPLICATE,
+                                "message": "anti-slack reminder suppressed as repeated",
+                            }
+                        )
+                    )
                 if delivered_text:
                     try:
                         mgr._activity_tracker.mark_anti_slack_used()
@@ -789,10 +828,7 @@ async def handle_proactive_chat(
                 and chosen_game_type is not None
                 and gi_prompt is not None
             ):
-                (
-                    delivered_text,
-                    _proactive_sid_unused,
-                ) = await _deliver_break_reminder_via_llm(
+                reminder_delivery = await _deliver_break_reminder_via_llm(
                     lanlan_name=lanlan_name,
                     mgr=mgr,
                     config_manager=break_config_manager_provider(),
@@ -803,6 +839,23 @@ async def handle_proactive_chat(
                     channel="work_break_game_invite",
                     lang=_break_lang,
                 )
+                delivered_text = reminder_delivery.delivered_text
+                if reminder_delivery.repeat_suppressed:
+                    _consume_repeat_suppressed_break_reminder(
+                        mgr,
+                        lanlan_name=lanlan_name,
+                        channel="work_break_game_invite",
+                    )
+                    return await _end_proactive(
+                        ProactiveChatResult(
+                            body={
+                                "success": True,
+                                "action": "pass",
+                                "reason_code": PROACTIVE_REASON_PASS_DUPLICATE,
+                                "message": "work-break game invite suppressed as repeated",
+                            }
+                        )
+                    )
                 if delivered_text:
                     invite_session_id = str(uuid4())
                     _mini_game_invite_record_delivered(lanlan_name, invite_session_id)
@@ -902,10 +955,7 @@ async def handle_proactive_chat(
                 master_name=master_name_current,
                 lang=_break_lang,
             )
-            (
-                delivered_text,
-                _proactive_sid_unused,
-            ) = await _deliver_break_reminder_via_llm(
+            reminder_delivery = await _deliver_break_reminder_via_llm(
                 lanlan_name=lanlan_name,
                 mgr=mgr,
                 config_manager=break_config_manager_provider(),
@@ -916,6 +966,23 @@ async def handle_proactive_chat(
                 channel="work_break",
                 lang=_break_lang,
             )
+            delivered_text = reminder_delivery.delivered_text
+            if reminder_delivery.repeat_suppressed:
+                _consume_repeat_suppressed_break_reminder(
+                    mgr,
+                    lanlan_name=lanlan_name,
+                    channel="work_break",
+                )
+                return await _end_proactive(
+                    ProactiveChatResult(
+                        body={
+                            "success": True,
+                            "action": "pass",
+                            "reason_code": PROACTIVE_REASON_PASS_DUPLICATE,
+                            "message": "work-break reminder suppressed as repeated",
+                        }
+                    )
+                )
             if delivered_text:
                 try:
                     mgr._activity_tracker.mark_work_break_used()
@@ -2110,7 +2177,19 @@ async def handle_proactive_chat(
         # prepare_proactive_delivery 已经 fire(PROACTIVE_CLAIM, sid=...)；这里把
         # 状态机翻到 PHASE2，后续 astream 循环的抢占检查基于此阶段。
         proactive_sid = mgr.current_speech_id
-        await mgr.state.fire(_SE.PROACTIVE_PHASE2)
+        if not await _enter_proactive_phase2(
+            mgr,
+            proactive_sid,
+            log=logger,
+        ):
+            return await _end_proactive(
+                ProactiveChatResult(
+                    body=_proactive_pass_body(
+                        PROACTIVE_REASON_DELIVERY_PREEMPTED,
+                        message="用户在 Phase 2 状态切换期间恢复互动",
+                    )
+                )
+            )
 
         # Path B (idle) Focus 凝神：this round is now committed to speaking
         # (PHASE2 fired). Read-only: does this proactive reply run thinking-on?

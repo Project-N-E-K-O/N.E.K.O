@@ -47,11 +47,19 @@ class QQRelayService:
             "relay_preview": relay_plan.relay_text,
             "timestamp": int(time.time()),
         }] + list(self.plugin._relay_backlog_items))[:50]
-        await self.plugin._deliver_private_reply(
+        delivered = await self.plugin._deliver_private_reply(
             relay_plan.target_admin_qq,
             relay_plan.relay_text,
             fallback_to_text_on_voice_failure=True,
         )
+        if not delivered:
+            # 回执未确认（NapCat echo 超时 / 开放平台没返回 message id）：
+            # 转达没到管理员手上，照实报 False——上面那条 backlog 条目**留
+            # 着**，面板是这条消息此刻唯一的去处。
+            self.plugin._emit_log(
+                "WARN", f"[Relay] 转达未确认送达: target={relay_plan.target_admin_qq}",
+            )
+            return False
         return True
 
     async def send_backlog_reply_direct(
@@ -76,26 +84,34 @@ class QQRelayService:
             if not normalized_target_id:
                 return Err(SdkError("INVALID_TARGET: target_id 不能为空"))
             if normalized_source_type == "group":
-                await self.plugin._deliver_group_reply(
+                delivered = await self.plugin._deliver_group_reply(
                     normalized_target_id,
                     normalized_reply_text,
                     reply_message_id=normalized_message_id,
                     at_user_id=str(sender_id or ""),
                     fallback_to_text_on_voice_failure=False,
                 )
-                self._remove_relay_backlog_item(
-                    source_type=normalized_source_type,
-                    target_id=normalized_target_id,
-                    sender_id=str(sender_id or ""),
-                    original_message=normalized_original_message,
-                )
-                await self.plugin.backlog_store.mark_group_reviewed(normalized_target_id)
             else:
-                await self.plugin._deliver_private_reply(
+                delivered = await self.plugin._deliver_private_reply(
                     normalized_target_id,
                     normalized_reply_text,
                     fallback_to_text_on_voice_failure=False,
                 )
+            if not delivered:
+                # 回执未确认：这条是操作员手写的回复，条目一摘就没有第二
+                # 份——原样留在待办里并如实报错，让人自己决定要不要重发。
+                self.plugin._emit_log(
+                    "WARN",
+                    f"[Backlog] 手动回复未确认送达: {normalized_source_type}:{normalized_target_id}",
+                )
+                return Err(SdkError(
+                    "SEND_FAILED: " + self.plugin.i18n.t(
+                        "errors.send_unconfirmed",
+                        default="消息已发出但未收到发送回执，请确认后重试",
+                    )
+                ))
+            if normalized_source_type == "group":
+                await self.plugin.backlog_store.mark_group_reviewed(normalized_target_id)
             self._remove_relay_backlog_item(
                 source_type=normalized_source_type,
                 target_id=normalized_target_id,

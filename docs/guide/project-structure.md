@@ -20,7 +20,8 @@ N.E.K.O/
 │   └── config_manager/       # Writable config/storage package
 ├── frontend/
 │   ├── react-neko-chat/      # Shared React chat implementation
-│   └── plugin-manager/       # Vue plugin-manager UI
+│   ├── plugin-manager/       # Vue plugin-manager UI
+│   └── card-forge/           # Local development-only React memory-forge UI
 ├── static/                   # Runtime assets and eight JSON locales
 ├── templates/                # Main/chat/subtitle/settings/feature pages
 ├── docker/                   # Dockerfiles, Compose, entrypoint

@@ -1,0 +1,86 @@
+name: Unit Tests
+
+# Repo-wide pytest gate for tests/unit.
+#
+# Until now nothing in CI ran this directory: plugin-tests.yml covered
+# plugin/tests plus two hand-listed root files, and everything else in
+# tests/unit only ever ran when someone happened to run it locally. A PR could
+# therefore add thousands of lines of tests that never executed in CI, and an
+# existing test could go red for weeks without anyone noticing — both happened.
+# #2454 shipped a crash that made every voice session fail on start while the
+# suite guarding that file was green-by-omission, and the sweep that followed
+# found 18 pre-existing failures on main, two of them real product bugs.
+#
+# No paths filter on purpose. tests/unit reads Python packages, static/,
+# templates/ and frontend sources, so any useful filter would approximate
+# "everything"; an over-narrow one reintroduces exactly the failure mode above
+# — the one PR that needed the gate is the one that does not trigger it.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unit-tests-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  unit-pytest:
+    name: Unit pytest (Windows)
+    # windows-latest for the same reason as plugin-tests.yml: parts of the
+    # suite exercise win32 paths, and Windows is the product's primary desktop
+    # platform. It is also where the command-line length limit that silently
+    # broke the cat-mind harness lives, so the guard against it stays honest.
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        # Plain `uv sync` = main deps + dev group. Deliberately no extras:
+        # the galgame group (rapidocr + cv2, ~130 MB) is not needed — the OCR
+        # teardown tests drive pure-Python paths and the rest self-skip. node
+        # comes preinstalled on the runner image; the frontend harness suites
+        # need it and fail loudly rather than silently skipping if it is gone.
+        run: uv sync
+
+      - name: Install pyclipper (in-tree rapidocr fork)
+        # tests/unit/test_galgame_dependency_slimming.py exercises the in-tree
+        # deps/rapidocr_pillow fork, whose det post-processing imports pyclipper
+        # at module scope. It ships with the galgame group, but that group also
+        # drags in opencv (~130 MB) which nothing else here needs. The wheel is
+        # ~260 KB on its own, so install just that and keep the four fork tests
+        # running instead of letting them skip in the one environment that
+        # would otherwise never exercise them.
+        #
+        # Pinned to the version uv.lock already resolved for the galgame group,
+        # so an index update cannot make an unchanged commit install a different
+        # release and turn this workflow red (Greptile P2). uv.lock stays the
+        # single source of truth: test_unit_tests_workflow_pins_locked_pyclipper
+        # fails if this pin and the lock ever drift apart.
+        run: uv pip install pyclipper==1.4.0
+
+      - name: Run unit test suite
+        # Separate pytest process from plugin/tests, which carries its own
+        # pytest.ini.
+        #
+        # Not built here: static/react/ is a gitignored vite output, so the one
+        # assertion that reads the built bundle skips. build-desktop.yml
+        # rebuilds and verifies that artifact on every run, which is the right
+        # place for it — a stale local bundle would only produce a false green.
+        run: uv run pytest tests/unit -q

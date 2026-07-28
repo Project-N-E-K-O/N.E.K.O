@@ -301,13 +301,30 @@ async def _periodic_reflection_synthesis_loop():
             continue
         for name in catgirl_names:
             try:
-                results = await runtime.reflection_engine.synthesize_reflections(name)
+                results = []
+                try:
+                    results += await runtime.reflection_engine.synthesize_reflections(name)
+                except Exception as legacy_error:
+                    # 两遍隔离：legacy 侧的持久失败（例如手改出的无 id
+                    # 事实让 sorted(f['id']) 抛错）不得饿死 scoped 侧——
+                    # 否则该角色的群/成员反思永远不产出。
+                    logger.warning(
+                        f"[ReflectionSynth] {name} legacy 合成异常: {legacy_error}"
+                    )
+                # Cost-bounded scoped pass: at most one ready group/member
+                # subject per maintenance tick. Legacy-private synthesis above
+                # keeps its original behaviour and cadence.
+                scoped_synth = getattr(
+                    runtime.reflection_engine, 'synthesize_scoped_reflections', None,
+                )
+                if callable(scoped_synth):
+                    results += await scoped_synth(name, max_subjects=1)
                 if results:
                     logger.info(
-                        f"[ReflectionSynth] {name}: 合成 {len(results)} 条新 pending reflection"
+                        f"[ReflectionSynth] {name}: 合成 {len(results)} 条新 reflection"
+                        "（legacy=pending / scoped=confirmed）"
                     )
             except Exception as e:
                 # 单角色合成失败不阻塞其他角色 / 下轮重试
                 logger.warning(f"[ReflectionSynth] {name} 合成异常: {e}")
         await asyncio.sleep(interval)
-
