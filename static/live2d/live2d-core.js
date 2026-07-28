@@ -581,6 +581,9 @@ class Live2DManager {
 
         const container = document.getElementById('live2d-container');
         const canvas = this.pixi_app?.view || document.getElementById('live2d-canvas');
+        if (window._nekoModelReturnEnterContainer === container) {
+            return false;
+        }
         // The Electron pet root intentionally stays pointer-transparent in normal
         // operation, so only canvas pointer-events are an interaction signal.
         return !isVisuallyHidden(container) && !isVisuallyHidden(canvas, true);
@@ -1146,6 +1149,38 @@ class Live2DManager {
             : null;
     }
 
+    _getCubism2DrawableOpacity(internalModel, drawableIndex) {
+        if (!Number.isInteger(internalModel?.drawDataCount)) {
+            return null;
+        }
+
+        try {
+            const modelContext = internalModel.coreModel?.getModelContext?.();
+            const drawData = modelContext?.getDrawData?.(drawableIndex);
+            // Cubism 2 stores the evaluated draw contexts in this runtime-owned
+            // array. The bundled renderer composes these same three factors.
+            const drawContext = modelContext?._$8b?.[drawableIndex];
+            if (!drawData || !drawContext || typeof drawData.getOpacity !== 'function') {
+                return null;
+            }
+
+            const drawableOpacity = drawData.getOpacity(modelContext, drawContext);
+            const partContext = modelContext?._$Hr?.[drawContext._$IP];
+            const parentOpacity = typeof partContext?.getPartsOpacity === 'function'
+                ? partContext.getPartsOpacity()
+                : drawContext._$VS;
+            const baseOpacity = drawContext.baseOpacity;
+            if (!Number.isFinite(drawableOpacity) ||
+                !Number.isFinite(parentOpacity) ||
+                !Number.isFinite(baseOpacity)) {
+                return null;
+            }
+            return drawableOpacity * parentOpacity * baseOpacity;
+        } catch (_) {
+            return null;
+        }
+    }
+
     _isDrawableRenderable(coreModel, drawableIndex) {
         if (!coreModel || !Number.isInteger(drawableIndex) || drawableIndex < 0) {
             return false;
@@ -1158,12 +1193,19 @@ class Live2DManager {
             }
         } catch (_) {}
 
+        let opacity = null;
         try {
-            const opacity = coreModel.getDrawableOpacity?.(drawableIndex);
-            if (Number.isFinite(opacity) && opacity <= 0.01) {
-                return false;
-            }
+            opacity = coreModel.getDrawableOpacity?.(drawableIndex);
         } catch (_) {}
+        if (!Number.isFinite(opacity)) {
+            opacity = this._getCubism2DrawableOpacity(
+                this.currentModel?.internalModel,
+                drawableIndex
+            );
+        }
+        if (Number.isFinite(opacity) && opacity <= 0.01) {
+            return false;
+        }
 
         return true;
     }

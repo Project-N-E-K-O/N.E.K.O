@@ -223,7 +223,8 @@ function createCoreHarness({
     vm.runInNewContext(source, context, { filename: corePath });
 
     return {
-        Live2DManager: context.window.Live2DManager
+        Live2DManager: context.window.Live2DManager,
+        window: context.window
     };
 }
 
@@ -924,6 +925,9 @@ test('core model input regions stay empty when the model surface is hidden or no
         bodyClasses.add(bodyClass);
         assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects())), []);
     }
+    bodyClasses.clear();
+    harness.window._nekoModelReturnEnterContainer = container;
+    assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects())), []);
 });
 
 test('core model input regions clamp padding to the supported 0-32 range', () => {
@@ -1061,13 +1065,34 @@ test('core model input regions keep per-drawable mapped geometry when direct ver
     ]);
 });
 
-test('core model input regions enumerate legacy Cubism 2 draw data', () => {
+test('core model input regions enumerate visible legacy Cubism 2 draw data', () => {
     const harness = createCoreHarness();
     const manager = new harness.Live2DManager();
+    const drawContexts = [
+        { _$IP: 0, _$VS: 1, baseOpacity: 1 },
+        { _$IP: 1, _$VS: 1, baseOpacity: 1 },
+        { _$IP: 2, _$VS: 1, baseOpacity: 1 }
+    ];
+    const drawData = [
+        { getOpacity: () => 1 },
+        { getOpacity: () => 0 },
+        { getOpacity: () => 1 }
+    ];
+    const modelContext = {
+        _$8b: drawContexts,
+        _$Hr: [
+            { getPartsOpacity: () => 1 },
+            { getPartsOpacity: () => 1 },
+            { getPartsOpacity: () => 0 }
+        ],
+        getDrawData: (index) => drawData[index]
+    };
     manager.currentModel = {
         internalModel: {
-            coreModel: {},
-            drawDataCount: 2,
+            coreModel: {
+                getModelContext: () => modelContext
+            },
+            drawDataCount: 3,
             getDrawableBounds: (index) => index === 0
                 ? { x: -1, y: -2, width: 1, height: 2 }
                 : { x: 0, y: 0, width: 2, height: 3 }
@@ -1094,10 +1119,6 @@ test('core model input regions enumerate legacy Cubism 2 draw data', () => {
             {
                 index: 0,
                 rect: { left: 0, right: 5, top: 0, bottom: 5, width: 5, height: 5 }
-            },
-            {
-                index: 1,
-                rect: { left: 10, right: 15, top: 0, bottom: 5, width: 5, height: 5 }
             }
         ]
     );
