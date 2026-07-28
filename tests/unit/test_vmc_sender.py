@@ -14,6 +14,7 @@ from main_logic import vmc_sender as vmc_sender_module
 from main_logic.vmc_sender import VmcSender
 from main_routers import vmc_router
 from main_routers.system_router import _shared as system_router_shared
+from tests.fake_clock import patch_module_clock
 
 
 class _RecordingOscClient:
@@ -249,7 +250,7 @@ def test_sender_token_bucket_preserves_average_rate_under_jitter(monkeypatch):
     sender._send_tokens = 0.0
     sender._last_token_refill_ts = 0.0
     timestamps = iter(index / 144 for index in range(145))
-    monkeypatch.setattr(vmc_sender_module.time, "monotonic", lambda: next(timestamps))
+    patch_module_clock(monkeypatch, vmc_sender_module, monotonic=lambda: next(timestamps))
 
     sent_count = sum(
         sender.send_frame({"bones": [], "expressions": []})

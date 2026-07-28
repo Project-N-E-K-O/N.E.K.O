@@ -12,6 +12,7 @@ from fastapi import WebSocketDisconnect
 
 from main_logic.core.lifecycle import LifecycleMixin
 from main_routers.websocket_router import _normalize_cat_greeting_check
+from tests.fake_clock import patch_module_clock
 
 
 def test_text_ingress_is_stamped_before_async_dispatch(monkeypatch):
@@ -100,7 +101,7 @@ class _GoodbyeCycleState(LifecycleMixin):
 
 def test_goodbye_cycle_duration_is_server_timed_and_consumed_once(monkeypatch):
     monotonic_values = iter((100.0, 112.0))
-    monkeypatch.setattr(lifecycle_module.time, "monotonic", lambda: next(monotonic_values))
+    patch_module_clock(monkeypatch, lifecycle_module, monotonic=lambda: next(monotonic_values))
     state = _GoodbyeCycleState()
 
     state.set_goodbye_silent(True, "goodbye")
