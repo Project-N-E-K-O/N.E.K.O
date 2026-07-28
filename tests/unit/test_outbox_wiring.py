@@ -58,7 +58,9 @@ async def test_spawn_outbox_happy_path_marks_done(tmp_path):
         clear=False,
     ):
         msgs = [HumanMessage(content="喵"), AIMessage(content="mrrp")]
-        task = await memory_server._spawn_outbox_post_turn_signals("小天", msgs)
+        task = await memory_server._spawn_outbox_post_turn_signals(
+            "小天", msgs, language="zh-TW",
+        )
         await task
 
     assert len(calls) == 1
@@ -67,10 +69,135 @@ async def test_spawn_outbox_happy_path_marks_done(tmp_path):
     # payload serialized via messages_to_dict → round-trippable
     assert isinstance(payload.get("messages"), list)
     assert len(payload["messages"]) == 2
+    assert payload["language"] == "zh-TW"
 
     # Outbox should show no pending ops after success
     pending = await ob.apending_ops("小天")
     assert pending == []
+
+
+@pytest.mark.asyncio
+async def test_spawn_outbox_omits_language_when_request_declared_none(tmp_path):
+    """请求未声明 locale 时不得把本进程的探测值写进 payload。
+
+    _activate_request_language 在请求没带 language 时会回落到
+    get_global_language_full()。那个回落值用于处理本次请求没问题，但一旦被
+    持久化进 outbox.ndjson，重启 replay 就会一直复用这个「猜测」——即使探测
+    本身后来修好了也不会自愈。省掉这个键才能让 replay 按当时的进程语言重新解析
+    （即 outbox 引入之前的行为）。
+    """
+    ob, _ = _install_fresh_memory_state(str(tmp_path))
+    from app import memory_server
+    from memory.outbox import OP_POST_TURN_SIGNALS
+
+    calls: list[tuple[str, dict]] = []
+
+    async def _fake_handler(name: str, payload: dict):
+        calls.append((name, payload))
+
+    with patch.dict(
+        memory_server._OUTBOX_HANDLERS,
+        {OP_POST_TURN_SIGNALS: _fake_handler},
+        clear=False,
+    ):
+        task = await memory_server._spawn_outbox_post_turn_signals(
+            "小天", [HumanMessage(content="喵")], language=None,
+        )
+        await task
+
+    assert len(calls) == 1
+    _name, payload = calls[0]
+    assert "language" not in payload
+
+
+@pytest.mark.asyncio
+async def test_replay_without_recorded_language_falls_back_to_process_locale():
+    """存量 outbox 条目（无 language 键）replay 时回落进程语言，而不是报错或冻结旧值。
+
+    这是升级用户唯一会走的路径：#1542 之前入队的条目都没有这个键。
+    """
+    from app import memory_server
+    from utils.llm_client import messages_to_dict
+
+    runner = AsyncMock(return_value=None)
+    payload = {"messages": messages_to_dict([HumanMessage(content="旧条目")])}
+
+    with patch("app.memory_server.post_turn._run_post_turn_signals", runner):
+        await memory_server._outbox_post_turn_signals_handler("小天", payload)
+
+    runner.assert_awaited_once()
+    assert runner.await_args.kwargs["language"] is None
+
+
+@pytest.mark.asyncio
+async def test_post_turn_outbox_replay_restores_recorded_language():
+    """Replay the language recorded at enqueue time instead of the server locale."""
+    from app import memory_server
+    from utils.llm_client import messages_to_dict
+
+    runner = AsyncMock(return_value=None)
+    payload = {
+        "messages": messages_to_dict([HumanMessage(content="请记住我喜欢草莓")]),
+        "language": "zh-CN",
+    }
+
+    with patch("app.memory_server.post_turn._run_post_turn_signals", runner):
+        await memory_server._outbox_post_turn_signals_handler("小天", payload)
+
+    runner.assert_awaited_once()
+    assert runner.await_args.args[1] == "小天"
+    assert runner.await_args.kwargs["language"] == "zh-CN"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_post_turn_tasks_keep_their_recorded_language():
+    """Per-conversation locales must not overwrite one another while awaiting."""
+    from app import memory_server
+    from utils.language_utils import get_global_language_full
+
+    baseline = get_global_language_full()
+    both_entered = asyncio.Event()
+    observed: dict[str, list[str]] = {}
+
+    async def extract_facts(_messages, lanlan_name):
+        observed[lanlan_name] = [get_global_language_full()]
+        if len(observed) == 2:
+            both_entered.set()
+        await both_entered.wait()
+        await asyncio.sleep(0)
+        observed[lanlan_name].append(get_global_language_full())
+
+    fact_store = MagicMock()
+    fact_store.extract_facts = extract_facts
+    reflection_engine = MagicMock()
+    reflection_engine.aload_surfaced = AsyncMock(return_value=[])
+
+    with (
+        patch.object(memory_server.post_turn, "_extract_user_messages", return_value=["hi"]),
+        patch.object(memory_server.post_turn, "_extract_ai_response", return_value=""),
+        patch.object(
+            memory_server.gates,
+            "_ais_powerful_memory_enabled",
+            AsyncMock(return_value=False),
+        ),
+        patch.object(
+            memory_server.signal_extraction,
+            "_signal_check_record_turn",
+            MagicMock(),
+        ),
+        patch.object(memory_server.runtime, "fact_store", fact_store),
+        patch.object(memory_server.runtime, "reflection_engine", reflection_engine),
+    ):
+        await asyncio.gather(
+            memory_server._run_post_turn_signals([], "繁中", language="zh-TW"),
+            memory_server._run_post_turn_signals([], "日本語", language="ja"),
+        )
+
+    assert observed == {
+        "繁中": ["zh-TW", "zh-TW"],
+        "日本語": ["ja", "ja"],
+    }
+    assert get_global_language_full() == baseline
 
 
 @pytest.mark.asyncio

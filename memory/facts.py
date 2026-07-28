@@ -51,7 +51,7 @@ from config.prompts.prompts_memory import (
 )
 from memory.evidence import evidence_score
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
-from utils.language_utils import get_global_language
+from utils.language_utils import get_global_language, get_global_language_full
 from utils.config_manager import get_config_manager
 from utils.file_utils import (
     atomic_write_json,
@@ -124,6 +124,34 @@ class FactExtractionFailed(RuntimeError):
     cursor, while the former must leave the cursor untouched so the next
     idle cycle retries the same message window.
     """
+
+
+def _readable_fact_id(entry: dict):
+    """The fact's id when it can be used as a lookup key, else ``None``.
+
+    Ids are written as strings (``fact_<timestamp>_<hash>``), but facts.json is
+    a plain file users and older versions have edited: a row can arrive with no
+    id at all, or with a list/dict where the id should be. Indexing those
+    directly raises ``KeyError`` / ``TypeError: unhashable``, neither of which
+    the read-merge's ``except (json.JSONDecodeError, OSError)`` catches, so one
+    malformed row would abort every future save instead of being overwritten.
+
+    Only genuinely unusable ids are dropped. A legacy scalar id such as
+    ``12345`` still matches between cache and disk exactly as it did before, so
+    excluding it would silently stop preserving that row's ``absorbed`` /
+    ``signal_processed`` flags — trading the crash for quiet data loss.
+    """
+    fact_id = entry.get('id')
+    # 只排除「没有 id」这一类：None / 缺失 / 空串（空串会让所有没有真 id 的行
+    # 互相撞上）。不能写成 `not fact_id`——那会把老库里 id 为 0 的行也一并丢掉，
+    # 它是个完全可用的键，丢了就是又一次「崩溃换静默丢标记」。
+    if fact_id is None or fact_id == '':
+        return None
+    try:
+        hash(fact_id)
+    except TypeError:  # list / dict 之类，进不了集合
+        return None
+    return fact_id
 
 
 class FactStore:
@@ -253,6 +281,15 @@ class FactStore:
                 )
                 facts = self._facts.get(name, [])
                 path = self._facts_path(name)
+                # 先统一摘纸条（见 _SIGNAL_RESET_PENDING）：摘的动作必须无条件
+                # 发生，不能挂在下面 read-merge 的任何一层分支里——文件还不存在
+                # 或这一批没有 monotonic 标记时那些分支都不进，纸条就会跟着落盘。
+                just_unsealed_ids = {
+                    _readable_fact_id(f) for f in facts
+                    if isinstance(f, dict)
+                    and f.pop(self._SIGNAL_RESET_PENDING, False)
+                    and _readable_fact_id(f) is not None
+                }
                 # Read-merge-write: 保护其他进程/路径写入的 monotonic 标记
                 # （只能从 False → True 单向翻的字段：absorbed、signal_processed）。
                 # 否则旧 cache 的写路径会用 False 覆盖磁盘上的 True，让同一批
@@ -262,19 +299,66 @@ class FactStore:
                         with open(path, encoding='utf-8') as f:
                             disk_facts = json.load(f)
                         if isinstance(disk_facts, list):
+                            # 索引键统一走 _readable_fact_id：手改/半损坏的 legacy 行
+                            # 可能没有 id（f['id'] 抛 KeyError），也可能 id 是 list/dict
+                            # （放进 set 抛 TypeError: unhashable）。内层只接 JSON/OS
+                            # 错误，这两种异常都会冒到外层把缓存清掉并重抛，此后每次存盘
+                            # 都死在同一行、新 fact 再也落不了盘——正好是 read-merge 想
+                            # 兜的「坏数据也要能覆盖写掉」的反面。
                             absorbed_ids = {
-                                f['id'] for f in disk_facts
+                                _readable_fact_id(f) for f in disk_facts
                                 if isinstance(f, dict) and f.get('absorbed')
+                                and _readable_fact_id(f) is not None
                             }
                             signal_processed_ids = {
-                                f['id'] for f in disk_facts
+                                _readable_fact_id(f) for f in disk_facts
                                 if isinstance(f, dict) and f.get('signal_processed')
+                                and _readable_fact_id(f) is not None
                             }
+                            # ⚠残留窗口：这次读盘与下面的 atomic_write_json 之间没有
+                            # 跨进程锁（self._get_lock 只挡同进程的线程），所以理论上
+                            # 仍能被「读到 ai_disclosure → 别人升级并消费 → 我方写回
+                            # False」插进来。这不是本次豁免引入的新race：整段 read-merge
+                            # 从 #976 起就是「读盘-合并-覆盖写」的尽力而为，任何并发写
+                            # 者都能在同一窗口里丢掉合并结果。真要关掉它得给 facts.json
+                            # 加一把覆盖读+写全程的跨进程文件锁（portalocker，本仓库目前
+                            # 只在 galgame store 里用过）并让所有写者都走它——那是独立的
+                            # 架构改动，不在本次范围。豁免面已经收到「磁盘上那条仍是
+                            # ai_disclosure」这一个条件里，窗口比原来的整段合并更窄。
+                            #
+                            # 纸条只在磁盘上那条**还没被别人升级过**时算数：另一个
+                            # 进程可能已经用它自己的缓存升级完、Stage-2 也消费过了
+                            # （磁盘上是 user_observation + True）。此时本进程拿着
+                            # 旧缓存再升一次并放行回写，等于把一条已消费的 fact 重新
+                            # 排回 Stage-2——正是这段 read-merge 要挡的跨进程回归。
+                            # 重复 id 按保守口径：只有当磁盘上带这个 id 的行**全部**
+                            # 还是 ai_disclosure 时才算「没人升过」。手改或对账后的
+                            # 文件里可能同一个 id 有两行——一行还是 ai_disclosure、
+                            # 另一行已升级且 signal_processed=True。两个集合各自都会
+                            # 包含它，只判「在 disclosure 集合里」就会放行回写，把已
+                            # 消费状态盖回 False。
+                            disk_disclosure_ids: set = set()
+                            disk_other_source_ids: set = set()
+                            for f in disk_facts:
+                                if not isinstance(f, dict):
+                                    continue
+                                disk_id = _readable_fact_id(f)
+                                if disk_id is None:
+                                    continue
+                                if f.get('source', self._SOURCE_DEFAULT) == 'ai_disclosure':
+                                    disk_disclosure_ids.add(disk_id)
+                                else:
+                                    disk_other_source_ids.add(disk_id)
+                            disk_ai_disclosure_ids = disk_disclosure_ids - disk_other_source_ids
                             if absorbed_ids or signal_processed_ids:
                                 for f in facts:
                                     if f.get('id') in absorbed_ids:
                                         f['absorbed'] = True
-                                    if f.get('id') in signal_processed_ids:
+                                    unsealed = (
+                                        f.get('id') in just_unsealed_ids
+                                        and f.get('id') in disk_ai_disclosure_ids
+                                    )
+                                    if f.get('id') in signal_processed_ids and not unsealed:
                                         f['signal_processed'] = True
                     except (json.JSONDecodeError, OSError):
                         # Read-merge is best-effort: if the on-disk
@@ -506,10 +590,12 @@ class FactStore:
         name_mapping['ai'] = lanlan_name
         conversation_text = self._format_conversation(messages, name_mapping)
 
-        prompt = get_fact_extraction_prompt(get_global_language()) \
-            .replace('{CONVERSATION}', conversation_text) \
-            .replace('{LANLAN_NAME}', lanlan_name) \
+        prompt = (
+            get_fact_extraction_prompt(get_global_language_full())
+            .replace('{CONVERSATION}', conversation_text)
+            .replace('{LANLAN_NAME}', lanlan_name)
             .replace('{MASTER_NAME}', name_mapping.get('human', '主人'))
+        )
 
         extracted = await self._allm_call_with_retries(
             prompt, lanlan_name,
@@ -538,6 +624,18 @@ class FactStore:
     # 时代所有 fact 都源自 user msg）。
     _SOURCE_VALUES = frozenset({'user_observation', 'ai_disclosure'})
     _SOURCE_DEFAULT = 'user_observation'
+
+    # 内存内纸条，由 source 升级分支挂上、由 save_facts 摘下并放行一次
+    # signal_processed 的单调回写。下划线前缀与 '_external_import' 同约定：
+    # 只在一次 persist 流程内活着，save_facts 写盘前一律剥掉，不进磁盘。
+    #
+    # 存在的理由：save_facts 的 read-merge 把 signal_processed 当成只能
+    # False→True 的字段（#976，防旧缓存用 False 覆盖磁盘上的 True 让同一批
+    # fact 被 drain loop 重复消费），而升级分支恰恰要把它翻回 False（#1408，
+    # 用户印证过的 AI 披露要重进 Stage-2）。两条规则正面撞车、存盘那条跑在
+    # 后面永远赢，于是"升级后重进 Stage-2"在盘上从来没成立过。让解封方留一
+    # 张显式纸条，比让 save_facts 去倒推"这条是不是刚被解封"更不容易看走眼。
+    _SIGNAL_RESET_PENDING = '_signal_reset_pending'
 
     @staticmethod
     def _apply_external_import_provenance(entry: dict, external_import: dict) -> None:
@@ -680,6 +778,12 @@ class FactStore:
                     # signal_processed 置回 True，不进 Stage-2）(Codex P2)。
                     if external_import is not None:
                         self._apply_external_import_provenance(existing, external_import)
+                    # 给 save_facts 的单调 read-merge 留纸条：这次的 False 是故意
+                    # 翻回来的，别按"只能 False→True"把它顶回 True。放在 provenance
+                    # 之后并复查一次实际值——外部导入会把它重新封回 True，那种情况
+                    # 下不该留纸条，否则纸条与 entry 的真实状态对不上。
+                    if existing.get('signal_processed') is False:
+                        existing[self._SIGNAL_RESET_PENDING] = True
                     upgraded_count += 1
                 continue
 
@@ -1786,11 +1890,13 @@ class FactStore:
             known_lines.append(f"- {text} (importance: {imp})")
         known_block = "\n".join(known_lines) if known_lines else "(none)"
 
-        prompt = get_fact_extraction_ai_aware_prompt(get_global_language()) \
-            .replace('{CONVERSATION}', conversation_text) \
-            .replace('{KNOWN_POOL}', known_block) \
-            .replace('{LANLAN_NAME}', lanlan_name) \
+        prompt = (
+            get_fact_extraction_ai_aware_prompt(get_global_language_full())
+            .replace('{CONVERSATION}', conversation_text)
+            .replace('{KNOWN_POOL}', known_block)
+            .replace('{LANLAN_NAME}', lanlan_name)
             .replace('{MASTER_NAME}', name_mapping.get('human', '主人'))
+        )
 
         extracted = await self._allm_call_with_retries(
             prompt, lanlan_name,
