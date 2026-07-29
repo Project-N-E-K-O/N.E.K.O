@@ -699,6 +699,20 @@ class _TransportMixin:
                 await self._analyze_image_with_vision_model(image_b64)
                 return
 
+            if (
+                cache_latest
+                and not self._supports_native_image
+                and self._image_recognized_this_turn
+                and self._latest_image_b64 is not None
+                and not self._proactive_image_consumed
+            ):
+                # The completed Step annotation is bound to the still-pending
+                # cached frame. Do not replace that generation with a newer
+                # frame carrying no matching analysis; once the annotated
+                # frame is consumed, prompt_ephemeral rearms analysis and the
+                # next streamed frame can become the new snapshot.
+                return
+
             if cache_latest:
                 # A monotonic generation distinguishes separately captured frames
                 # even when their JPEG payloads are byte-for-byte identical.

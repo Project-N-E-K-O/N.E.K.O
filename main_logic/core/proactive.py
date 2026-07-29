@@ -836,6 +836,49 @@ class ProactiveMixin:
                 self._purge_retracted_agent_callbacks()
                 if not voice_snapshot:
                     return False
+                # Callback delivery bypasses prompt_ephemeral(), so it owns the
+                # same external-TTS turn boundary. Rotate before persisting any
+                # callback media, then re-check activity: a server-VAD turn can
+                # start while the rotation callback is suspended, and that
+                # user turn must keep priority over this proactive callback.
+                rotation_started_at = time.time()
+                if voice_sess.on_sid_rotate is not None:
+                    try:
+                        await voice_sess.on_sid_rotate()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        logger.warning(
+                            "[%s] trigger_agent_callbacks: SID rotation failed before callback media: %s",
+                            self.lanlan_name,
+                            exc,
+                        )
+                        return False
+                if (
+                    voice_sess.is_active_response()
+                    or getattr(voice_sess, "_client_vad_active", False)
+                    or getattr(voice_sess, "_user_recent_activity_time", 0.0)
+                    > rotation_started_at
+                    or getattr(voice_sess, "_ai_recent_activity_time", 0.0)
+                    > rotation_started_at
+                ):
+                    logger.info(
+                        "[%s] trigger_agent_callbacks: activity started during SID rotation; deferring callback delivery",
+                        self.lanlan_name,
+                    )
+                    return False
+                # Rotation awaited outside the media-commit boundary. A newer
+                # same-key callback may have retracted this snapshot while the
+                # await yielded, so re-filter once more before making any media
+                # irreversible.
+                self._retract_stale_coalesced(voice_snapshot)
+                voice_snapshot[:] = [
+                    cb for cb in voice_snapshot
+                    if not cb.get(DELIVERY_RETRACTED_KEY)
+                ]
+                self._purge_retracted_agent_callbacks()
+                if not voice_snapshot:
+                    return False
                 self._mark_voice_delivery_committed(voice_snapshot)
                 voice_commit_snapshot = tuple(voice_snapshot)
                 voice_media_events: list[tuple[dict, dict]] = []
@@ -936,13 +979,6 @@ class ProactiveMixin:
                     }
                     if events_before_text:
                         inject_kwargs["events_before_text"] = events_before_text
-                    # Callback responses bypass prompt_ephemeral(), so rotate
-                    # the external-TTS lane explicitly at this delivery
-                    # boundary. The preceding response has already closed its
-                    # speech id; reusing it makes Step-shaped workers drop the
-                    # callback audio after their terminal marker.
-                    if voice_sess.on_sid_rotate is not None:
-                        await voice_sess.on_sid_rotate()
                     await voice_sess.inject_text_and_request_response(
                         instruction,
                         **inject_kwargs,

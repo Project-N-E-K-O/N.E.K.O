@@ -234,3 +234,14 @@ def test_realtime_workers_flush_tail_before_normal_receiver_cancel():
     normal_cancel_block = close_block[normal_cancel_start:]
     assert normal_cancel_block.index("if not interrupt:") < normal_cancel_block.index("audio_jitter.flush()")
     assert normal_cancel_block.index("audio_jitter.flush()") < normal_cancel_block.index("receive_task.cancel()")
+
+
+def test_step_terminal_send_invalidation_flushes_before_receiver_cancel():
+    source = REALTIME_WORKERS["step"].read_text(encoding="utf-8")
+    start = source.index("async def _invalidate_current_socket")
+    end = source.index("async def _flush_deferred_create", start)
+    invalidation = source[start:end]
+
+    assert invalidation.index("audio_jitter.flush()") < invalidation.index(
+        "receive_task.cancel()"
+    )

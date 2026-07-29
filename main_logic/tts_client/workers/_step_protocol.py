@@ -280,6 +280,12 @@ def run_step_protocol_tts_worker(
             """Retire a socket after a synchronous send failure."""
             nonlocal ws, session_id, receive_task, session_created
             if receive_task and not receive_task.done():
+                # A terminal send failure invalidates the socket but is not a
+                # user interrupt. Release already-generated audio below the
+                # jitter threshold before cancellation; receiver cancellation
+                # intentionally skips its finally-flush to preserve explicit
+                # interrupt discard semantics.
+                audio_jitter.flush()
                 receive_task.cancel()
                 try:
                     await receive_task

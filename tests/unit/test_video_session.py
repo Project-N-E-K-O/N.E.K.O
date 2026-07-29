@@ -268,6 +268,29 @@ async def test_concurrent_non_native_frame_does_not_replace_analyzed_snapshot():
 
 
 @pytest.mark.unit
+async def test_completed_non_native_annotation_pins_its_unconsumed_frame():
+    client = _make_client("step-realtime", supports_native_image=False)
+    first_frame = DUMMY_IMAGE_B64
+    second_frame = DUMMY_IMAGE_B64 + "second"
+    generation = client._latest_image_generation + 1
+    client._latest_image_b64 = first_frame
+    client._latest_image_generation = generation
+    client._proactive_image_consumed = False
+    client._image_recognized_this_turn = True
+    client._image_description = "[实时屏幕截图或相机画面]: 一只猫"
+    client._analyze_image_with_vision_model = AsyncMock()
+
+    await client.stream_image(second_frame)
+
+    assert client._latest_image_b64 == first_frame
+    assert client._latest_image_generation == generation
+    assert client._proactive_image_consumed is False
+    assert client._image_description == "[实时屏幕截图或相机画面]: 一只猫"
+    client._analyze_image_with_vision_model.assert_not_awaited()
+    await client.close()
+
+
+@pytest.mark.unit
 async def test_non_native_failed_vision_clears_cached_frame(monkeypatch):
     client = _make_client("step-realtime", supports_native_image=False)
     client._image_description = "实时屏幕截图或相机画面正在分析中"

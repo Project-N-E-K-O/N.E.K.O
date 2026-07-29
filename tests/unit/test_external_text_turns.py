@@ -790,6 +790,149 @@ async def test_matching_item_event_error_fails_current_item_ack():
 
 
 @pytest.mark.asyncio
+async def test_vad_pending_interrupts_pre_owner_item_ack_before_create():
+    sent = []
+    item_sent = asyncio.Event()
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "conversation.item.create":
+            item_sent.set()
+
+    arbiter = RealtimeResponseArbiter(send)
+    interrupted = await arbiter.enqueue(
+        source="proactive",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "event_id": "item-pre-owner",
+                "item": {"id": "item-pre-owner", "role": "user"},
+            },
+        ),
+        response_event={
+            "type": "response.create",
+            "event_id": "response-pre-owner",
+        },
+        ack_expected=True,
+        expected_item_id="item-pre-owner",
+        expected_item_role="user",
+    )
+    await asyncio.wait_for(item_sent.wait(), 0.2)
+
+    arbiter.notify_server_vad_response_pending()
+    follow_up = await arbiter.enqueue(source="follow-up")
+
+    with pytest.raises(RuntimeError, match="pending server VAD"):
+        await asyncio.wait_for(interrupted.done, 0.2)
+    await asyncio.sleep(0)
+    assert [event["type"] for event in sent] == [
+        "conversation.item.create"
+    ]
+    assert follow_up.sent.done() is False
+    assert arbiter.is_busy is True
+
+    arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-vad"}}
+    )
+    arbiter.notify_response_terminal(
+        {
+            "type": "response.done",
+            "response": {"id": "resp-vad", "status": "completed"},
+        }
+    )
+    await asyncio.wait_for(follow_up.sent, 0.2)
+    arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-follow-up"}}
+    )
+    arbiter.notify_response_terminal(
+        {
+            "type": "response.done",
+            "response": {
+                "id": "resp-follow-up",
+                "status": "completed",
+            },
+        }
+    )
+    await asyncio.wait_for(follow_up.done, 0.2)
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_pre_response_error_during_create_send_retains_owner():
+    sent = []
+    create_started = asyncio.Event()
+    release_create = asyncio.Event()
+    aborted = []
+
+    async def send(event):
+        sent.append(dict(event))
+        if event.get("event_id") == "response-create-race":
+            create_started.set()
+            await release_create.wait()
+
+    async def abort(reason):
+        aborted.append(reason)
+
+    arbiter = RealtimeResponseArbiter(send, abort_transport=abort)
+    raced = await arbiter.enqueue(
+        source="proactive",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "event_id": "item-create-race",
+                "item": {"id": "item-create-race", "role": "user"},
+            },
+        ),
+        response_event={
+            "type": "response.create",
+            "event_id": "response-create-race",
+        },
+    )
+    await asyncio.wait_for(create_started.wait(), 0.2)
+    follow_up = await arbiter.enqueue(source="follow-up")
+
+    arbiter.notify_error(
+        "item-create-race",
+        "late pre-response item rejection",
+    )
+    with pytest.raises(RuntimeError, match="late pre-response"):
+        await asyncio.wait_for(raced.done, 0.2)
+
+    release_create.set()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert arbiter._response_owner is not None
+    assert follow_up.sent.done() is False
+    assert any(event["type"] == "response.cancel" for event in sent)
+
+    arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-raced"}}
+    )
+    arbiter.notify_response_terminal(
+        {
+            "type": "response.done",
+            "response": {"id": "resp-raced", "status": "cancelled"},
+        }
+    )
+    await asyncio.wait_for(follow_up.sent, 0.2)
+    arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-follow-up"}}
+    )
+    arbiter.notify_response_terminal(
+        {
+            "type": "response.done",
+            "response": {
+                "id": "resp-follow-up",
+                "status": "completed",
+            },
+        }
+    )
+    await asyncio.wait_for(follow_up.done, 0.2)
+    assert aborted == []
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_response_conflict_is_terminal_and_not_retried():
     sent = []
     arbiter = None

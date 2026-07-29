@@ -106,6 +106,7 @@ class _QueuedResponse:
     event_ids: frozenset[str] = field(default_factory=frozenset, compare=False)
     completed: asyncio.Future[None] | None = field(default=None, compare=False)
     bypass_count: int = field(default=0, compare=False)
+    response_send_started: bool = field(default=False, compare=False)
     interrupted: bool = field(default=False, compare=False)
     interrupt_event: asyncio.Event = field(
         default_factory=asyncio.Event,
@@ -535,6 +536,21 @@ class RealtimeResponseArbiter:
             # utterance ended. Its response.created echo can still be next;
             # do not let the later VAD boundary steal that owner.
             return
+        current = self._current
+        if owner is None and current is not None:
+            # The automatic user response won while an explicit request was
+            # still persisting its pre-response item or waiting for its ack.
+            # Stop that request before it can emit response.create; otherwise
+            # its first response.created echo is indistinguishable from the
+            # pending VAD response and can be credited to the wrong turn.
+            current.interrupted = True
+            current.interrupt_event.set()
+            if current.item_ack is not None and not current.item_ack.done():
+                current.item_ack.set_exception(
+                    RuntimeError(
+                        "response dispatch interrupted by pending server VAD response"
+                    )
+                )
         self._server_vad_response_pending = True
         self._server_response_active = True
         self._idle.clear()
@@ -651,7 +667,10 @@ class RealtimeResponseArbiter:
         create, so the lane must not reopen on it.
         """
 
-        if not target.ticket.sent.done() or not event_id:
+        if (
+            not target.response_send_started
+            and not target.ticket.sent.done()
+        ) or not event_id:
             return False
         create_event_id = target.response_event.get("event_id")
         return event_id != (str(create_event_id) if create_event_id else None)
@@ -929,6 +948,7 @@ class RealtimeResponseArbiter:
                 raise RuntimeError("response owner is already assigned")
             queued.terminal = loop.create_future()
             self._response_owner = queued
+            queued.response_send_started = True
             try:
                 await self._send_event(queued.response_event)
             except Exception:

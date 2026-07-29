@@ -185,6 +185,9 @@ def _make_voice_sess(*, is_responding=False, inject=None):
     sess.inject_calls = 0
     sess.is_active_response = lambda: sess._is_responding
     sess.on_sid_rotate = AsyncMock()
+    sess._client_vad_active = False
+    sess._user_recent_activity_time = 0.0
+    sess._ai_recent_activity_time = 0.0
 
     if inject is None:
         async def _default_inject(
@@ -254,6 +257,38 @@ async def test_voice_mode_idle_injects_and_drops_paired_cbs_and_extras():
     assert mgr.pending_extra_replies == []
     assert mgr.state.phase is ProactivePhase.IDLE
     assert events == []
+
+
+async def test_voice_mode_sid_rotation_rechecks_user_activity_before_media():
+    sess = _make_voice_sess()
+
+    async def _rotate_while_user_starts_speaking():
+        await asyncio.sleep(0)
+        sess._client_vad_active = True
+
+    sess.on_sid_rotate = AsyncMock(
+        side_effect=_rotate_while_user_starts_speaking
+    )
+    sess.stream_image = AsyncMock()
+    mgr = _make_mgr(session=sess)
+    cb = {
+        "_callback_delivery_id": "id-vad-during-rotation",
+        "status": "completed",
+        "summary": "defer this callback",
+        "media_images": ["callback-image"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(
+        mgr
+    )
+
+    assert delivered is False
+    sess.on_sid_rotate.assert_awaited_once_with()
+    sess.stream_image.assert_not_awaited()
+    assert sess.inject_calls == 0
+    assert mgr.pending_agent_callbacks == [cb]
+    assert cb.get("_voice_delivery_committed") is None
 
 
 async def test_voice_mode_inject_preserves_passive_cb_without_extra():
