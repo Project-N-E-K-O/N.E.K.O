@@ -298,6 +298,24 @@ async def test_configured_custom_voice_hides_same_id_clone_from_character_catalo
 
 
 @pytest.mark.asyncio
+async def test_configured_voice_keeps_case_distinct_clone_in_character_catalog(
+    monkeypatch,
+):
+    cm = _CustomTtsConfigManager()
+    cm.voices["Vendor-Voice"] = {
+        "voice_id": "Vendor-Voice",
+        "provider": "cosyvoice",
+        "source": "clone",
+    }
+    monkeypatch.setattr(voice_preview_module, "get_config_manager", lambda: cm)
+
+    result = await voice_preview_module.get_voices()
+
+    assert result["voices"]["Vendor-Voice"]["provider"] == "cosyvoice"
+    assert result["native_voices"]["vendor-voice"]["provider"] == "custom"
+
+
+@pytest.mark.asyncio
 async def test_voices_endpoint_maps_vllm_default_to_custom_api_catalog(monkeypatch):
     cm = _CustomTtsConfigManager()
     cm.raw.update(
@@ -322,6 +340,46 @@ async def test_voices_endpoint_maps_vllm_default_to_custom_api_catalog(monkeypat
         "display_name": "default",
         "builtin": True,
     }
+
+
+def test_exact_configured_vllm_voice_wins_over_same_id_clone(monkeypatch):
+    cm = _CustomTtsConfigManager()
+    cm.raw.update(
+        {
+            "ttsModelProvider": "vllm_omni",
+            "ttsModelUrl": "wss://speech.example.com/v1",
+            "ttsModelId": "vendor-tts",
+            "ttsVoiceId": "default",
+        }
+    )
+    cm.snapshot.update(cm.raw)
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(
+        tts_client,
+        "_get_voice_meta",
+        lambda _voice_id: {
+            "provider": "vllm_omni",
+            "source": "clone",
+            "clone_sample_b64": "QUJDRA==",
+            "clone_sample_mime": "audio/wav",
+        },
+    )
+
+    worker, api_key, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen",
+        has_custom_voice=True,
+        voice_id="default",
+    )
+
+    assert isinstance(worker, partial)
+    assert worker.func is tts_client.vllm_omni_tts_worker
+    assert worker.keywords == {
+        "base_url": "wss://speech.example.com/v1",
+        "model": "vendor-tts",
+        "voice": "default",
+    }
+    assert api_key == "sk-custom"
+    assert provider_key == "vllm_omni"
 
 
 def test_configured_custom_voice_is_saveable_for_character():

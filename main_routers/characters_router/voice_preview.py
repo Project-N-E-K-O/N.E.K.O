@@ -405,13 +405,13 @@ async def get_voices():
             # Remove colliding clone rows so every frontend keeps the winning owner.
             # 配置型 preset 对精确 Voice ID 拥有显式所有权。目录中移除同名历史
             # 克隆，避免前端去重逻辑把真正会命中的 Custom API 条目隐藏掉。
-            configured_ids = {
-                str(voice_id).casefold() for voice_id in selected_preset_catalog
-            }
+            # Runtime configured-preset ownership is exact and case-sensitive.
+            # 目录去重必须与运行时精确 ID 语义一致；大小写不同的克隆仍可选择。
+            configured_ids = {str(voice_id) for voice_id in selected_preset_catalog}
             result["voices"] = {
                 voice_id: voice_data
                 for voice_id, voice_data in (result["voices"] or {}).items()
-                if str(voice_id).casefold() not in configured_ids
+                if str(voice_id) not in configured_ids
             }
         result["native_voices"] = selected_preset_catalog
     elif active_native_provider:

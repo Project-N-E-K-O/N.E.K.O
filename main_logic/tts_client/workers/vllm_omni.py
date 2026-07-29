@@ -715,8 +715,27 @@ def _vllm_omni_resolve(ctx):
         # WSS 与 HTTPS 配置读取失败都先回报原 provider，再进入同一保底接缝。
         return configured_tts_unavailable_worker, "", "vllm_omni"
 
-    # 克隆音色始终优先于配置默认（preset）：用户选了克隆音色 = 明确意图用克隆，
-    # 无论是否配置了 vllm_omni 作为默认 provider 都应走 clone resolve。之前的
+    configured_voice = (raw.get('ttsVoiceId') or '').strip() or 'default'
+    configured_provider = str(
+        raw.get('ttsModelProvider')
+        or ctx.core_config.get('ttsModelProvider')
+        or ''
+    ).strip()
+    config_selected = (
+        _as_bool(ctx.core_config.get('ENABLE_CUSTOM_API'), False)
+        and configured_provider == 'vllm_omni'
+    )
+    # The exact configured preset owns a same-ID collision; a different clone
+    # still keeps the historical clone-first behavior.
+    # 仅当角色音色与配置 Voice ID 精确相同时，显式配置才压过同名克隆；
+    # 其他克隆仍沿用原有优先级。
+    configured_preset_selected = (
+        config_selected
+        and str(ctx.voice_id or '').strip() == configured_voice
+    )
+
+    # 克隆音色通常优先于配置默认（preset）：用户选了不同的克隆音色 = 明确意图用克隆，
+    # 即使配置了 vllm_omni 作为默认 provider 也应走 clone resolve。之前的
     # `not config_selected` 守卫导致"配置选了 vllm_omni + 用户选了克隆音色"时走
     # preset 路径，把克隆音色的内部 ID（如 vllm-omni-clone-ch-xxx）当作 voice
     # 发给 vLLM-Omni 服务端，服务端报 Invalid Voice（该 ID 是 N.E.K.O. 本地
@@ -724,11 +743,14 @@ def _vllm_omni_resolve(ctx):
     # 避免触发 voice_meta 惰性加载（短路契约），但 _vllm_omni_is_selected 已在
     # config-selected 后惰性检查 voice_meta，resolve 到达时 is_selected 已返回
     # True，voice_meta 已加载完毕，不存在短路问题。
-    if _vllm_omni_voice_meta_is_clone(ctx.voice_meta):
+    if (
+        _vllm_omni_voice_meta_is_clone(ctx.voice_meta)
+        and not configured_preset_selected
+    ):
         return _vllm_omni_clone_resolve(ctx)
     vllm_url = (raw.get('ttsModelUrl') or '').strip() or VLLM_OMNI_DEFAULT_BASE_URL
     vllm_model = (raw.get('ttsModelId') or '').strip() or VLLM_OMNI_DEFAULT_MODEL
-    vllm_voice = (raw.get('ttsVoiceId') or '').strip() or 'default'
+    vllm_voice = configured_voice
     # 凭证防泄漏：无 key 时返回空字符串而非 None，配合 core.resolve_tts_api_key
     # 的 provider_key=='vllm_omni' 特判，禁止 fallback 到别家 provider 的 key
     # （见 get_tts_worker 原注释 / PR #1764 review 第三轮 #3）。
