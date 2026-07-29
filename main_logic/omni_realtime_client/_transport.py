@@ -1141,12 +1141,17 @@ class _TransportMixin:
                     # 确保 buffer 被清空
                     self._output_transcript_buffer = ""
                     self._print_input_transcript = False
-                    self._image_recognized_this_turn = False
-                    if not self._supports_native_image:
+                    if self._supports_native_image:
+                        self._image_recognized_this_turn = False
+                    elif (
+                        self._latest_image_b64 is None
+                        or self._proactive_image_consumed
+                    ):
                         # Standard StepFun analyzes only while this sentinel is
-                        # present. Rearm it at the turn boundary so the next
-                        # cached frame can start a fresh VISION_MODEL analysis
-                        # instead of leaving proactive visual nudges disabled.
+                        # present. Rearm after a consumed/absent frame, but keep
+                        # a completed annotation generation-bound to an
+                        # unconsumed cached frame across unrelated responses.
+                        self._image_recognized_this_turn = False
                         self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
                     self._image_sent_this_turn = False
                     if self.on_response_done:

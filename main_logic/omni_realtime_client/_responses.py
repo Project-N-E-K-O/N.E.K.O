@@ -14,6 +14,7 @@
 # limitations under the License.
 
 from ._shared import (
+    _IMAGE_ANALYSIS_PENDING_DESCRIPTION,
     Any,
     Callable,
     Dict,
@@ -973,6 +974,13 @@ class _ResponseMixin:
                 == snapshot_image_generation
             ):
                 self._proactive_image_consumed = True
+                if not self._supports_native_image:
+                    # The completed Step annotation belongs to the consumed
+                    # generation. Rearm analysis only here; response.done may
+                    # belong to an unrelated response while this frame is
+                    # still waiting for its proactive delivery.
+                    self._image_recognized_this_turn = False
+                    self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
 
         # Text-triggered turns do not produce the server-VAD speech_stopped
         # event that normally starts a fresh external-TTS turn. Rotate before

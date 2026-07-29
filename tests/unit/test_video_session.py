@@ -181,6 +181,34 @@ async def test_step_response_done_rearms_next_frame_analysis():
 
 
 @pytest.mark.unit
+async def test_step_response_done_preserves_unconsumed_frame_annotation():
+    client = _make_client("step-realtime", supports_native_image=False)
+    annotation = "[实时屏幕截图或相机画面]: 一只猫"
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+    client._image_description = annotation
+    client._image_recognized_this_turn = True
+    client._current_response_id = "resp-unrelated"
+    client._is_responding = True
+    client._close_failed_transport = AsyncMock()
+    client.ws.__aiter__.return_value = [
+        json.dumps(
+            {
+                "type": "response.done",
+                "response": {"id": "resp-unrelated", "status": "completed"},
+            }
+        )
+    ]
+
+    await client.handle_messages()
+
+    assert client._image_recognized_this_turn is True
+    assert client._image_description == annotation
+    assert client._proactive_image_consumed is False
+    await client.close()
+
+
+@pytest.mark.unit
 async def test_non_native_callback_analysis_does_not_replace_ambient_snapshot():
     client = _make_client("step-realtime", supports_native_image=False)
     client._latest_image_b64 = "ambient-frame"

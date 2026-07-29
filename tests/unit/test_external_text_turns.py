@@ -993,6 +993,37 @@ async def test_vad_pending_response_holds_lane_before_created_event():
 
 
 @pytest.mark.asyncio
+async def test_vad_pending_response_timeout_reopens_lane():
+    sent = []
+
+    async def send(event):
+        sent.append(dict(event))
+
+    arbiter = RealtimeResponseArbiter(send)
+    arbiter.notify_server_vad_response_pending()
+    follow_up = await arbiter.enqueue(source="follow-up")
+
+    await asyncio.sleep(0.01)
+    assert follow_up.sent.done() is False
+    assert arbiter._server_vad_pending_handle is not None
+
+    arbiter._server_vad_pending_expired()
+
+    await asyncio.wait_for(follow_up.sent, 0.2)
+    arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-follow-up"}}
+    )
+    arbiter.notify_response_terminal(
+        {
+            "type": "response.done",
+            "response": {"id": "resp-follow-up", "status": "completed"},
+        }
+    )
+    await asyncio.wait_for(follow_up.done, 0.2)
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_speech_started_after_explicit_send_does_not_steal_owner():
     sent = []
 

@@ -936,6 +936,13 @@ class ProactiveMixin:
                     }
                     if events_before_text:
                         inject_kwargs["events_before_text"] = events_before_text
+                    # Callback responses bypass prompt_ephemeral(), so rotate
+                    # the external-TTS lane explicitly at this delivery
+                    # boundary. The preceding response has already closed its
+                    # speech id; reusing it makes Step-shaped workers drop the
+                    # callback audio after their terminal marker.
+                    if voice_sess.on_sid_rotate is not None:
+                        await voice_sess.on_sid_rotate()
                     await voice_sess.inject_text_and_request_response(
                         instruction,
                         **inject_kwargs,

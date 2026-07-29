@@ -52,6 +52,11 @@ _SERVER_RESPONSE_ID_LIMIT = 32
 # idle-wait fail-close, which tears the connection down cleanly instead of
 # racing a known-live response.
 _DEFAULT_RESPONSE_DONE_TIMEOUT = 60.0
+# An automatic server-VAD response normally announces response.created almost
+# immediately after speech_stopped. Bound the id-less correlation gap so a
+# provider-side pre-creation failure cannot wedge the lane until the much
+# longer running-response timeout tears down an otherwise healthy connection.
+_SERVER_VAD_RESPONSE_STARTED_TIMEOUT = 5.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +143,7 @@ class RealtimeResponseArbiter:
         # is not sufficient: an already-sent explicit create can still emit
         # the next response.created while the user is only beginning to speak.
         self._server_vad_response_pending = False
+        self._server_vad_pending_handle: asyncio.TimerHandle | None = None
         # Bounded insertion-ordered map of live server-initiated response ids
         # to their creation loop time; see _SERVER_RESPONSE_ID_LIMIT and
         # _server_response_max_age. Created adds, terminal removes.
@@ -391,6 +397,34 @@ class RealtimeResponseArbiter:
         if handle is not None:
             handle.cancel()
 
+    def _cancel_server_vad_pending_timer(self) -> None:
+        handle, self._server_vad_pending_handle = (
+            self._server_vad_pending_handle,
+            None,
+        )
+        if handle is not None:
+            handle.cancel()
+
+    def _arm_server_vad_pending_timer(self) -> None:
+        self._cancel_server_vad_pending_timer()
+        self._server_vad_pending_handle = asyncio.get_running_loop().call_later(
+            _SERVER_VAD_RESPONSE_STARTED_TIMEOUT,
+            self._server_vad_pending_expired,
+        )
+
+    def _server_vad_pending_expired(self) -> None:
+        self._server_vad_pending_handle = None
+        if not self._server_vad_response_pending:
+            return
+        self._server_vad_response_pending = False
+        logger.warning(
+            "released pending server-VAD response with no response.created "
+            "after %.1fs",
+            _SERVER_VAD_RESPONSE_STARTED_TIMEOUT,
+        )
+        if self._response_owner is None:
+            self._release_lane_if_clear()
+
     def _arm_stale_release_timer(self) -> None:
         """(Re)start the timer that re-checks the lane at the next staleness deadline."""
 
@@ -462,6 +496,7 @@ class RealtimeResponseArbiter:
         self._server_response_active = True
         self._idle.clear()
         if self._server_vad_response_pending:
+            self._cancel_server_vad_pending_timer()
             self._server_vad_response_pending = False
             response_id = self._event_response_id(event)
             if response_id is not None:
@@ -503,6 +538,7 @@ class RealtimeResponseArbiter:
         self._server_vad_response_pending = True
         self._server_response_active = True
         self._idle.clear()
+        self._arm_server_vad_pending_timer()
 
     def notify_response_terminal(self, event: dict[str, Any] | None = None) -> None:
         owner = self._response_owner
@@ -692,6 +728,7 @@ class RealtimeResponseArbiter:
         self._server_vad_speech_active = False
         self._server_vad_response_pending = False
         self._server_response_ids.clear()
+        self._cancel_server_vad_pending_timer()
         self._cancel_stale_release_timer()
         exc = ConnectionError(reason)
         owner = self._response_owner
@@ -719,6 +756,7 @@ class RealtimeResponseArbiter:
         self._server_response_ids.clear()
         self._server_vad_speech_active = False
         self._server_vad_response_pending = False
+        self._cancel_server_vad_pending_timer()
         self._cancel_stale_release_timer()
         if self._current is None and self._response_owner is None:
             self._server_response_active = False

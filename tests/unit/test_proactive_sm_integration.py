@@ -184,6 +184,7 @@ def _make_voice_sess(*, is_responding=False, inject=None):
     sess.injected_events = []
     sess.inject_calls = 0
     sess.is_active_response = lambda: sess._is_responding
+    sess.on_sid_rotate = AsyncMock()
 
     if inject is None:
         async def _default_inject(
@@ -247,6 +248,7 @@ async def test_voice_mode_idle_injects_and_drops_paired_cbs_and_extras():
     await asyncio.sleep(0)
 
     assert len(sess.injected) == 1
+    sess.on_sid_rotate.assert_awaited_once_with()
     assert mgr.pending_agent_callbacks == []
     # 关键回归：matching extras 同步剔除
     assert mgr.pending_extra_replies == []
