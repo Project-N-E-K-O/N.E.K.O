@@ -9,23 +9,94 @@ async function readWorkflow() {
   )
 }
 
-test('scheduled DataForSEO calls are gated and use the low-cost baseline settings', async () => {
+async function readDeployWorkflow() {
+  return readFile(
+    new URL('../../../.github/workflows/docs.yml', import.meta.url),
+    'utf8',
+  )
+}
+
+async function readMaintainerGuide() {
+  return readFile(
+    new URL('../../contributing/dataforseo-seo-monitoring.md', import.meta.url),
+    'utf8',
+  )
+}
+
+test('daily schedule always runs a paid depth-100 AIO baseline', async () => {
   const workflow = await readWorkflow()
 
-  assert.match(workflow, /cron: '30 23 \* \* \*'/)
-  assert.match(workflow, /vars\.ENABLE_PAID_DATAFORSEO_SCHEDULE == 'true'/)
-  assert.match(workflow, /github\.event_name == 'schedule' && 'serp'/)
-  assert.match(workflow, /github\.event_name == 'schedule' && '10'/)
-  assert.match(workflow, /github\.event_name == 'schedule' && 'false'/)
-  assert.doesNotMatch(workflow, /schedule[\s\S]{0,300}include_ai_overview:\s*true/)
+  assert.match(workflow, /cron: '15 0 \* \* \*'/)
+  assert.match(workflow, /github\.event_name == 'schedule' && 'paid'/)
+  assert.match(workflow, /github\.event_name == 'schedule' && '100'/)
+  assert.match(workflow, /github\.event_name == 'schedule' && 'true'/)
+  assert.doesNotMatch(workflow, /ENABLE_PAID_DATAFORSEO_SCHEDULE/)
 })
 
-test('the same artifact includes optional read-only GSC and GA4 summaries', async () => {
+test('maintainer documentation cannot revive the obsolete paid-schedule kill switch', async () => {
+  const guide = await readMaintainerGuide()
+
+  assert.match(guide, /08:15 Asia\/Shanghai schedule always runs the paid baseline/)
+  assert.match(guide, /fixed-name `seo-geo-daily-report` artifact/)
+  assert.match(guide, /obsolete `ENABLE_PAID_DATAFORSEO_SCHEDULE` variable/)
+  assert.doesNotMatch(guide, /set `ENABLE_PAID_DATAFORSEO_SCHEDULE=true`/)
+  assert.doesNotMatch(guide, /schedule is skipped unless/)
+})
+
+test('one run collects independent CN, online-English, and online-Chinese segments', async () => {
+  const workflow = await readWorkflow()
+
+  assert.match(workflow, /dataforseo\.config\.json --mode all/)
+  assert.match(workflow, /dataforseo\.cn\.config\.json --mode all --skip-keyword-difficulty/)
+  assert.match(workflow, /dataforseo\.online-zh\.config\.json --mode all --skip-keyword-difficulty/)
+  assert.match(workflow, /--segment online-en/)
+  assert.match(workflow, /--segment cn/)
+  assert.match(workflow, /--segment online-zh/)
+  assert.match(workflow, /startswith\("dataforseo-cn-report"\)/)
+  assert.match(workflow, /CN_EXTERNAL_REPORT/)
+  assert.match(workflow, /ranking_status.*complete/)
+  assert.match(workflow, /artifact_date.*today/)
+})
+
+test('the unified artifact contains source statuses, raw reports, Markdown, and JSON', async () => {
   const workflow = await readWorkflow()
 
   assert.match(workflow, /secrets\.GOOGLE_SERVICE_ACCOUNT_JSON/)
   assert.match(workflow, /vars\.GA4_PROPERTY_ID/)
+  assert.match(workflow, /vars\.GA4_CN_PROPERTY_ID/)
   assert.match(workflow, /vars\.GSC_SITE_URL/)
+  assert.match(workflow, /vars\.GSC_CN_SITE_URL/)
+  assert.match(workflow, /actions\/artifacts\?name=indexnow-online-submission/)
+  assert.match(workflow, /--name "indexnow-online-submission"/)
+  assert.match(workflow, /secrets\.SEO_REPORTS_TOKEN/)
+  assert.match(workflow, /Project-N-E-K-O\/N\.E\.K\.O\.OfficialWebsite/)
+  assert.match(workflow, /actions\/artifacts\?name=indexnow-cn-submission/)
+  assert.match(workflow, /--name "indexnow-cn-submission"/)
+  assert.equal((workflow.match(/sort_by\(\.created_at\) \| last/gu) ?? []).length, 4)
+  assert.match(workflow, /--indexnow "cn=/)
+  assert.match(workflow, /--indexnow "online=/)
+  assert.match(workflow, /startswith\("seo-geo-daily-"\)/)
+  assert.match(workflow, /--previous-report "\$PREVIOUS_REPORT"/)
+  assert.match(workflow, /PREVIOUS_REPORT_EVIDENCE=https:\/\/github\.com/)
   assert.match(workflow, /npm run seo:report/)
+  assert.match(workflow, /assert-report\.mjs --input "\$report" --level daily/)
+  assert.match(workflow, /env\.COLLECTION_KIND == 'paid'/)
+  assert.match(workflow, /name: Enforce the zero-cost planning contract/)
+  assert.match(workflow, /env\.COLLECTION_KIND == 'dry-run'/)
+  assert.match(workflow, /\.runStatus == "planned"/)
+  assert.match(workflow, /include-hidden-files: true/)
+  assert.match(workflow, /if-no-files-found: error/)
   assert.match(workflow, /docs\/\.seo-reports\/\*\*/)
+  assert.match(workflow, /!docs\/\.seo-reports\/previous\/\*\*/)
+  assert.match(workflow, /name: seo-geo-daily-report/)
+})
+
+test('documentation deployment retains a fixed-name .online IndexNow status artifact', async () => {
+  const workflow = await readDeployWorkflow()
+
+  assert.match(workflow, /--output docs\/\.seo-reports\/indexnow-online\.json/)
+  assert.match(workflow, /name: indexnow-online-submission/)
+  assert.match(workflow, /if: always\(\)/)
+  assert.match(workflow, /if-no-files-found: error/)
+  assert.match(workflow, /retention-days: 90/)
 })

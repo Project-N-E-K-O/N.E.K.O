@@ -1,33 +1,103 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "timezone": "Asia/Shanghai",
-  "site": {
-    "origin": "https://project-neko.online",
-    "hostname": "project-neko.online",
-    "sitemapUrl": "https://project-neko.online/sitemap.xml"
+  "northStar": "进入 Google Top 10 的跟踪关键词数量",
+  "automationOwner": "SEO 自动化维护者",
+  "cta": {
+    "label": "Steam 商店访问",
+    "url": "https://store.steampowered.com/app/4099310/__NEKO/",
+    "event": "steam_cta_click"
   },
-  "gsc": {
-    "siteUrlEnv": "GSC_SITE_URL",
-    "defaultSiteUrl": "https://project-neko.online/",
-    "categoryQueryRegex": "(?:ai\\s+desktop\\s+pet|desktop\\s+ai\\s+companion|ai\\s+desktop\\s+companion|desktop\\s+companion|desktop\\s+pet|ai桌宠|开源ai桌宠|ai桌面伴侣|桌面ai伴侣)"
-  },
-  "ga4": {
-    "propertyIdEnv": "GA4_PROPERTY_ID",
-    "ctaEvent": "steam_cta_click",
-    "aiReferralRegex": ".*(chatgpt|openai|perplexity|claude|anthropic|copilot|gemini).*"
-  },
-  "desktopPetKeywords": [
-    "local ai desktop companion",
-    "ai desktop pet",
-    "open source ai desktop pet",
-    "virtual ai desktop pet",
-    "desktop ai companion",
-    "ai desktop companion",
-    "proactive desktop companion",
-    "open source desktop companion",
-    "desktop companion app",
-    "interactive ai desktop pet",
-    "customizable ai desktop pet",
-    "live2d ai desktop pet"
+  "sites": [
+    {
+      "id": "cn",
+      "label": ".cn 产品主页",
+      "owner": ".cn 站点维护者",
+      "origin": "https://project-neko.cn",
+      "hostname": "project-neko.cn",
+      "sitemapUrl": "https://project-neko.cn/sitemap.xml",
+      "robotsUrl": "https://project-neko.cn/robots.txt",
+      "bingSiteAuthUrl": "https://project-neko.cn/BingSiteAuth.xml",
+      "indexNowKeyUrl": "https://project-neko.cn/f9f8637d61bc993c56926de9e529404e22e901af83b794d3f0e0cefd78b0f7b0.txt",
+      "measurementId": "G-2D1RSKSR72",
+      "gsc": {
+        "siteUrlEnv": "GSC_CN_SITE_URL",
+        "defaultSiteUrl": "sc-domain:project-neko.cn",
+        "categoryQueryRegex": "(?:喵可智能|AI\\s*桌面助手|人工智能桌面助手|开源\\s*AI\\s*助手|AI\\s*虚拟伴侣|本地\\s*AI\\s*助手|Live2D\\s*AI\\s*助手|长期记忆\\s*AI\\s*助手)",
+        "lowCtrThreshold": 0.03,
+        "lowCtrMinImpressions": 10
+      },
+      "ga4": {
+        "propertyIdEnv": "GA4_CN_PROPERTY_ID",
+        "ctaEvent": "steam_cta_click",
+        "aiReferralRegex": ".*(chatgpt\\.com|openai\\.com|openai|perplexity\\.ai|perplexity|copilot\\.microsoft\\.com|copilot\\.com|(business\\.)?gemini\\.google|bard\\.google\\.com|chat\\.deepseek\\.com|deepseek\\.com|chat\\.qwen\\.ai|doubao\\.com|poe\\.com|anthropic\\.com|claude\\.ai|edgeservices\\.bing\\.com).*"
+      },
+      "indexNow": {
+        "statusPathEnv": "INDEXNOW_CN_STATUS_PATH"
+      },
+      "trackedSetChange": "2026-07-28 起 .cn 固定追踪 8 个中文产品/功能词；其中 3 个词同时在 .online zh-CN 段按文档落地页独立追踪，两域排名不合并。"
+    },
+    {
+      "id": "online",
+      "label": ".online 文档站",
+      "owner": ".online 文档维护者",
+      "origin": "https://project-neko.online",
+      "hostname": "project-neko.online",
+      "sitemapUrl": "https://project-neko.online/sitemap.xml",
+      "robotsUrl": "https://project-neko.online/robots.txt",
+      "bingSiteAuthUrl": "https://project-neko.online/BingSiteAuth.xml",
+      "indexNowKeyUrl": "https://project-neko.online/8968441f0c1047fbb91a39f7099beaff.txt",
+      "measurementId": "G-N4QZK4PHE3",
+      "gsc": {
+        "siteUrlEnv": "GSC_SITE_URL",
+        "defaultSiteUrl": "https://project-neko.online/",
+        "categoryQueryRegex": "(?:ai\\s+desktop\\s+pet|desktop\\s+ai\\s+companion|ai\\s+desktop\\s+companion|desktop\\s+companion|desktop\\s+pet|ai桌宠|开源ai桌宠|ai桌面伴侣|桌面ai伴侣|本地\\s*AI\\s*助手|Live2D\\s*AI\\s*助手|长期记忆\\s*AI\\s*助手)",
+        "lowCtrThreshold": 0.03,
+        "lowCtrMinImpressions": 10
+      },
+      "ga4": {
+        "propertyIdEnv": "GA4_PROPERTY_ID",
+        "ctaEvent": "steam_cta_click",
+        "docsToHomeEvent": "docs_home_click",
+        "aiReferralRegex": ".*(chatgpt\\.com|openai\\.com|openai|perplexity\\.ai|perplexity|copilot\\.microsoft\\.com|copilot\\.com|(business\\.)?gemini\\.google|bard\\.google\\.com|chat\\.deepseek\\.com|deepseek\\.com|chat\\.qwen\\.ai|doubao\\.com|poe\\.com|anthropic\\.com|claude\\.ai|edgeservices\\.bing\\.com).*"
+      },
+      "indexNow": {
+        "statusPathEnv": "INDEXNOW_ONLINE_STATUS_PATH"
+      }
+    }
+  ],
+  "dataForSeoSegments": [
+    {
+      "id": "cn",
+      "siteId": "cn",
+      "label": ".cn zh-CN / China",
+      "configPath": "seo/dataforseo.cn.config.json",
+      "reportPathEnv": "DATAFORSEO_CN_REPORT_PATH",
+      "statusPathEnv": "DATAFORSEO_CN_STATUS_PATH",
+      "keywordDifficulty": "unsupported",
+      "keywordDifficultyReason": "DataForSEO Labs locations_and_languages does not support China (2156).",
+      "defaultCta": "Steam 商店访问"
+    },
+    {
+      "id": "online-en",
+      "siteId": "online",
+      "label": ".online en / United States",
+      "configPath": "seo/dataforseo.config.json",
+      "reportPathEnv": "DATAFORSEO_ONLINE_REPORT_PATH",
+      "statusPathEnv": "DATAFORSEO_ONLINE_STATUS_PATH",
+      "keywordDifficulty": "supported",
+      "defaultCta": "文档 → Steam"
+    },
+    {
+      "id": "online-zh",
+      "siteId": "online",
+      "label": ".online zh-CN / China",
+      "configPath": "seo/dataforseo.online-zh.config.json",
+      "reportPathEnv": "DATAFORSEO_ONLINE_ZH_REPORT_PATH",
+      "statusPathEnv": "DATAFORSEO_ONLINE_ZH_STATUS_PATH",
+      "keywordDifficulty": "unsupported",
+      "keywordDifficultyReason": "DataForSEO Labs locations_and_languages does not support China (2156).",
+      "defaultCta": "中文文档 → Steam"
+    }
   ]
 }

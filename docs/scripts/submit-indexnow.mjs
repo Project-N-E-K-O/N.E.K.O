@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync } from 'node:child_process'
-import { readFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { isNoindexRoute } from '../.vitepress/indexing-policy.mjs'
@@ -304,17 +304,19 @@ function parseArguments(argv) {
     head: process.env.INDEXNOW_HEAD_SHA || process.env.GITHUB_SHA || 'HEAD',
     dryRun: false,
     explicitUrls: [],
+    output: process.env.INDEXNOW_STATUS_OUTPUT || '',
   }
 
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]
-    if (argument === '--base' || argument === '--head' || argument === '--url') {
+    if (argument === '--base' || argument === '--head' || argument === '--url' || argument === '--output') {
       const value = argv[++index]
       if (!value) throw new Error(`${argument} requires a value`)
 
       if (argument === '--base') options.base = value
       if (argument === '--head') options.head = value
       if (argument === '--url') options.explicitUrls.push(value)
+      if (argument === '--output') options.output = value
       continue
     }
     if (argument === '--dry-run') {
@@ -338,6 +340,7 @@ Options:
   --base <sha>  Diff base revision used to find changed documentation pages
   --head <sha>  Diff head revision (default: GITHUB_SHA or HEAD)
   --url <url>   Submit an explicit project-neko.online URL; may be repeated
+  --output <file>  Write a machine-readable submission status artifact
   --dry-run     Print the resolved URLs without contacting IndexNow
   --help        Show this help
 
@@ -345,7 +348,47 @@ Environment:
   INDEXNOW_BASE_SHA     Same as --base
   INDEXNOW_HEAD_SHA     Same as --head
   INDEXNOW_ENDPOINT     Override the API endpoint (intended for testing)
+  INDEXNOW_STATUS_OUTPUT  Same as --output
 `)
+}
+
+function githubEvidence() {
+  const repository = process.env.GITHUB_REPOSITORY
+  const runId = process.env.GITHUB_RUN_ID
+  return repository && runId
+    ? `https://github.com/${repository}/actions/runs/${runId}`
+    : null
+}
+
+export function createIndexNowStatus({
+  runStatus,
+  urls = [],
+  result = null,
+  reason = null,
+  submittedAt = null,
+} = {}) {
+  return {
+    schemaVersion: 1,
+    provider: 'IndexNow',
+    site: SITE_ORIGIN,
+    runStatus,
+    submittedAt,
+    submitted: runStatus === 'complete'
+      ? (Number.isFinite(result?.submitted) ? result.submitted : urls.length)
+      : null,
+    httpStatus: Number.isFinite(result?.status) ? result.status : null,
+    attempts: Number.isFinite(result?.attempts) ? result.attempts : 0,
+    urls,
+    reason,
+    evidence: githubEvidence(),
+  }
+}
+
+async function writeStatus(path, status) {
+  if (!path) return
+  const outputPath = resolve(path)
+  await mkdir(dirname(outputPath), { recursive: true })
+  await writeFile(outputPath, `${JSON.stringify(status, null, 2)}\n`, 'utf8')
 }
 
 async function main() {
@@ -355,51 +398,79 @@ async function main() {
     return
   }
 
-  const key = await readIndexNowKey()
-  let changedPaths = []
-  let bootstrap = process.env.GITHUB_EVENT_NAME === 'workflow_dispatch'
+  let urls = []
+  try {
+    const key = await readIndexNowKey()
+    let changedPaths = []
+    let bootstrap = process.env.GITHUB_EVENT_NAME === 'workflow_dispatch'
 
-  if (options.base) {
-    try {
-      changedPaths = changedPathsFromGit(options.base, options.head)
-    } catch (error) {
-      if (/^0+$/.test(options.base)) {
-        console.warn('IndexNow received an all-zero before SHA; submitting the home page.')
-        bootstrap = true
-      } else {
-        throw error
+    if (options.base) {
+      try {
+        changedPaths = changedPathsFromGit(options.base, options.head)
+      } catch (error) {
+        if (/^0+$/.test(options.base)) {
+          console.warn('IndexNow received an all-zero before SHA; submitting the home page.')
+          bootstrap = true
+        } else {
+          throw error
+        }
       }
+    } else if (options.explicitUrls.length === 0) {
+      bootstrap = true
     }
-  } else if (options.explicitUrls.length === 0) {
-    bootstrap = true
+
+    urls = collectIndexNowUrls({
+      changedPaths,
+      explicitUrls: options.explicitUrls,
+      bootstrap,
+    })
+
+    if (urls.length === 0) {
+      console.log('IndexNow: no changed documentation URLs to submit.')
+      await writeStatus(options.output, createIndexNowStatus({
+        runStatus: 'complete',
+        urls,
+        reason: 'no_changed_urls',
+        submittedAt: new Date().toISOString(),
+      }))
+      return
+    }
+
+    console.log(`IndexNow: resolved ${urls.length} URL(s):`)
+    for (const url of urls) console.log(`- ${url}`)
+
+    if (options.dryRun) {
+      console.log('IndexNow: dry run complete; no request was sent.')
+      await writeStatus(options.output, createIndexNowStatus({
+        runStatus: 'not_run',
+        urls,
+        reason: 'dry_run',
+      }))
+      return
+    }
+
+    const result = await submitIndexNow(urls, {
+      key,
+      endpoint: process.env.INDEXNOW_ENDPOINT || INDEXNOW_ENDPOINT,
+    })
+    const submittedAt = new Date().toISOString()
+    await writeStatus(options.output, createIndexNowStatus({
+      runStatus: 'complete',
+      urls,
+      result,
+      submittedAt,
+    }))
+    console.log(
+      `IndexNow: accepted ${result.submitted} URL(s) with HTTP ${result.status} after ${result.attempts} attempt(s).`,
+    )
+  } catch (error) {
+    await writeStatus(options.output, createIndexNowStatus({
+      runStatus: 'failed',
+      urls,
+      reason: error.message,
+    }))
+    throw error
   }
-
-  const urls = collectIndexNowUrls({
-    changedPaths,
-    explicitUrls: options.explicitUrls,
-    bootstrap,
-  })
-
-  if (urls.length === 0) {
-    console.log('IndexNow: no changed documentation URLs to submit.')
-    return
-  }
-
-  console.log(`IndexNow: resolved ${urls.length} URL(s):`)
-  for (const url of urls) console.log(`- ${url}`)
-
-  if (options.dryRun) {
-    console.log('IndexNow: dry run complete; no request was sent.')
-    return
-  }
-
-  const result = await submitIndexNow(urls, {
-    key,
-    endpoint: process.env.INDEXNOW_ENDPOINT || INDEXNOW_ENDPOINT,
-  })
-  console.log(
-    `IndexNow: accepted ${result.submitted} URL(s) with HTTP ${result.status} after ${result.attempts} attempt(s).`,
-  )
 }
 
 const isEntryPoint =

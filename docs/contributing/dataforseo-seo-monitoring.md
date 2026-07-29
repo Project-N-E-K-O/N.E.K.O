@@ -9,23 +9,25 @@ This maintainer-only tool turns the documentation site's tracked keyword list in
 
 It is not browser code and is never bundled into VitePress. DataForSEO credentials must stay in a local environment or GitHub Actions secrets.
 
-## Safety contract
+## Safety and evidence contract
 
-DataForSEO bills by request. The repository therefore keeps scheduled billing behind an explicit repository variable:
+DataForSEO bills by request, but the daily baseline is deliberately **not** hidden behind a cost-saving kill switch. A skipped run and a real zero are different facts:
 
-- `dry-run` is the default workflow mode and sends no request;
-- the 07:30 Asia/Shanghai schedule is skipped unless `ENABLE_PAID_DATAFORSEO_SCHEDULE` is exactly `true`;
-- the scheduled mode is fixed to SERP depth 10 with AI Overview loading disabled;
-- SERP depth defaults to 10; increasing it may bill another result page per 10 results;
+- pull requests run tests and three `dry-run` plans only; they receive no billing credentials;
+- manual workflow dispatch defaults to `dry-run` and sends no paid request;
+- the 08:15 Asia/Shanghai schedule always runs the paid baseline at SERP depth 100 with AI Overview loading enabled;
+- there is no `ENABLE_PAID_DATAFORSEO_SCHEDULE` variable; an old variable with that name has no effect and should be removed from repository settings;
+- SERP depth 100 may bill up to ten result pages per query;
 - each SERP request sets `max_crawl_pages` from that depth, making the displayed page count a hard crawl limit;
-- asynchronous AI Overview loading is disabled by default and can add a charge to every SERP request;
-- Live SERP allows one task per request, so the committed 19-keyword set means 19 paid SERP requests per SERP run;
+- asynchronous AI Overview loading can add a charge to every SERP request and is intentionally included in the scheduled visibility baseline;
+- one scheduled run tracks 19 `.online` English queries, 8 `.cn` Chinese queries, and 3 `.online` Chinese documentation queries;
 - explicit transient SERP API failures that report zero cost retry only the failed keyword, at most three attempts with backoff;
 - ambiguous network, response-body, or JSON failures are never retried automatically because the completed request may already have been billed;
 - a failed response reporting any nonzero cost is never retried automatically, preventing an accidental duplicate charge;
 - recoverable keyword failures do not discard successful results; the artifact records `partial` or `failed` status and per-keyword diagnostics;
 - account-wide fatal failures stop the run immediately and do not produce an artifact; the sanitized fatal diagnostic includes attempts and any cost reported for the current keyword;
-- generated reports live under `docs/.seo-reports/`, are ignored by Git, and are retained as workflow artifacts for 14 days.
+- generated reports live under `docs/.seo-reports/`, are ignored by Git, and are retained as workflow artifacts for 30 days;
+- every segment writes an execution-status manifest even when collection fails; a missing expected report makes the workflow fail instead of silently producing a green empty run.
 
 The request plan always states the request count, maximum SERP pages, and number of AIO-enabled calls before execution. A completed paid report records the costs returned by DataForSEO.
 
@@ -35,7 +37,15 @@ Never add credentials to `docs/public`, Markdown, tracked JSON, browser code, or
 
 ## Tracked keywords
 
-Edit `docs/seo/dataforseo.config.json`. The committed starter set is derived from existing English documentation pages and targets `project-neko.online` in US English (`locationCode` 2840).
+The baseline uses three independent configs:
+
+| Config | Target | Query count | Paid mode | KD |
+| --- | --- | ---: | --- | --- |
+| `docs/seo/dataforseo.config.json` | `.online`, US English | 19 | metrics + SERP + AIO | supported |
+| `docs/seo/dataforseo.cn.config.json` | `.cn`, China zh-CN | 8 | Volume + SERP + AIO | unsupported for China |
+| `docs/seo/dataforseo.online-zh.config.json` | `.online`, China zh-CN | 3 | Volume + SERP + AIO | unsupported for China |
+
+The English config is derived from existing documentation pages and targets `project-neko.online` in US English (`locationCode` 2840).
 
 ```json
 {
@@ -43,7 +53,7 @@ Edit `docs/seo/dataforseo.config.json`. The committed starter set is derived fro
   "locationCode": 2840,
   "languageCode": "en",
   "device": "desktop",
-  "serpDepth": 10,
+  "serpDepth": 100,
   "keywords": [
     {
       "keyword": "live2d ai assistant",
@@ -56,7 +66,9 @@ Edit `docs/seo/dataforseo.config.json`. The committed starter set is derived fro
 
 Keep each keyword unique and mapped to one primary landing page. Missing Volume or KD remains `null`; the tool does not invent a replacement value.
 
-The committed US/English baseline contains 19 phrases. Twelve are strict AI desktop-pet or desktop-companion category terms; the remaining seven measure supporting capabilities such as memory, plugins, and self-hosting. Chinese and Japanese phrases remain locale content targets and are not mixed into this US/English API request.
+The committed US/English baseline contains 19 phrases. Twelve are strict AI desktop-pet or desktop-companion category terms; the remaining seven measure supporting capabilities such as memory, plugins, and self-hosting. The three Chinese documentation queries are kept in their own segment and point to concrete `.online` pages. The same phrases may also appear in the `.cn` segment because the two domains are measured independently.
+
+DataForSEO Labs does not list China location `2156` for organic keyword difficulty. China KD is therefore `UNSUPPORTED`, never `0` and never borrowed from another market. Google Ads Search Volume uses Google geographical targets, so the China segments still collect Volume; SERP rank, matched URL and AIO also remain available.
 
 Because the default `all` and `keywords` modes call Google Ads Search Volume, each tracked phrase is validated against that endpoint's limit of 80 characters and 10 words before any paid request is sent.
 
@@ -85,17 +97,18 @@ export DATAFORSEO_PASSWORD='api-password-from-dataforseo'
 # Two paid requests: one Volume request and one bulk KD request.
 npm run seo:dataforseo -- --mode keywords
 
-# One paid Live SERP request per tracked keyword, depth 10.
-npm run seo:dataforseo -- --mode serp
+# One paid Live SERP request per tracked keyword, depth 100.
+npm run seo:dataforseo -- --mode serp --depth 100 --include-ai-overview
 
 # Volume + KD + SERP.
 npm run seo:dataforseo -- --mode all
 ```
 
-Explicitly opt in to more SERP results or asynchronous AIO data only after reviewing account balance and current DataForSEO pricing:
+Use an alternate segment config explicitly when running outside Actions:
 
 ```bash
-npm run seo:dataforseo -- --mode serp --depth 30 --include-ai-overview
+npm run seo:dataforseo -- --config seo/dataforseo.cn.config.json --mode all --skip-keyword-difficulty --depth 100 --include-ai-overview
+npm run seo:dataforseo -- --config seo/dataforseo.online-zh.config.json --mode all --skip-keyword-difficulty --depth 100 --include-ai-overview
 ```
 
 Use `--output <path>` for a different report path and `--config <path>` for an alternate untracked keyword set.
@@ -104,12 +117,12 @@ Use `--output <path>` for a different report path and `--config <path>` for an a
 
 1. In the target repository, open **Settings → Secrets and variables → Actions**.
 2. Add `DATAFORSEO_LOGIN` and `DATAFORSEO_PASSWORD` as secrets. Do not combine them into one public variable.
-3. Keep the repository variable `ENABLE_PAID_DATAFORSEO_SCHEDULE` set to `false` while validating manually.
-4. Open **Actions → DataForSEO SEO Report → Run workflow**.
-5. Run `dry-run` first and inspect the plan artifact.
-6. Choose `keywords`, `serp`, or `all`; leave depth at 10 and AIO disabled unless the extra paid data is required.
-7. Download the `dataforseo-report-<run-id>` artifact.
-8. Only after a successful manual SERP baseline, set `ENABLE_PAID_DATAFORSEO_SCHEDULE=true` to enable the daily paid run.
+3. Remove the obsolete `ENABLE_PAID_DATAFORSEO_SCHEDULE` variable if it still exists; the current workflow does not read it.
+4. Open **Actions → SEO GEO Daily Report → Run workflow**.
+5. Run `dry-run` first and inspect all three request plans.
+6. Run `paid` with depth 100 and AIO enabled for an acceptance baseline.
+7. Download the fixed-name `seo-geo-daily-report` artifact. It contains raw reports, all execution manifests, the unified JSON and the unified Markdown.
+8. The daily 08:15 schedule is automatic after merge. Missing credentials or a missing core report makes the run fail after the diagnostic artifact has been uploaded.
 
 Pull requests run the unit tests and committed-config dry-run only. They never receive DataForSEO secrets and never execute a paid request.
 
@@ -125,7 +138,8 @@ The workflow also writes a unified GSC/GA4 Markdown and JSON summary. See [SEO/G
 | `serp[].absoluteRank` | Absolute position among all SERP elements (`rank_absolute`) |
 | `serp[].landingPageMatched` | Whether Google ranked the configured primary page |
 | `serp[].aiOverviewTriggered` | Whether an AIO item appeared |
-| `serp[].aiOverviewCitedTarget` | Whether AIO referenced `project-neko.online` or a subdomain |
+| `serp[].matchedUrl` | The real URL that ranked for the configured target domain |
+| `serp[].aiOverviewCitedTarget` | Whether AIO referenced the segment's target domain or a subdomain |
 | `status` | `planned`, `complete`, `partial`, or `failed` |
 | `errors[]` | Sanitized per-keyword error, attempts, incurred cost, and cost-guard decisions, including uncertain billing |
 | `costs.totalUsd` | Sum of costs returned by the API responses |

@@ -4,23 +4,8 @@ import test from 'node:test'
 
 import { validateConfig } from './report.mjs'
 
-const DIRECT_DESKTOP_PET_KEYWORDS = new Map([
-  ['local ai desktop companion', '/guide'],
-  ['ai desktop pet', '/'],
-  ['open source ai desktop pet', '/'],
-  ['virtual ai desktop pet', '/'],
-  ['desktop ai companion', '/'],
-  ['ai desktop companion', '/'],
-  ['proactive desktop companion', '/'],
-  ['open source desktop companion', '/'],
-  ['desktop companion app', '/'],
-  ['interactive ai desktop pet', '/'],
-  ['customizable ai desktop pet', '/'],
-  ['live2d ai desktop pet', '/frontend/live2d'],
-])
-
-async function readCommittedConfig() {
-  const source = await readFile(new URL('../../seo/dataforseo.config.json', import.meta.url), 'utf8')
+async function readConfig(name) {
+  const source = await readFile(new URL(`../../seo/${name}`, import.meta.url), 'utf8')
   return validateConfig(JSON.parse(source))
 }
 
@@ -29,43 +14,74 @@ async function readMonitoringConfig() {
   return JSON.parse(source)
 }
 
-test('committed config tracks the US English desktop-pet category baseline', async () => {
-  const config = await readCommittedConfig()
-  const tracked = new Map(config.keywords.map(item => [item.keyword, item.landingPage]))
+test('committed configs keep each location/language/domain segment fixed', async () => {
+  const [onlineEn, cn, onlineZh] = await Promise.all([
+    readConfig('dataforseo.config.json'),
+    readConfig('dataforseo.cn.config.json'),
+    readConfig('dataforseo.online-zh.config.json'),
+  ])
 
-  assert.equal(config.locationCode, 2840)
-  assert.equal(config.languageCode, 'en')
-  assert.equal(config.serpDepth, 10)
-  assert.equal(config.keywords.length, 19)
-  assert.equal(DIRECT_DESKTOP_PET_KEYWORDS.size, 12)
-
-  for (const [keyword, landingPage] of DIRECT_DESKTOP_PET_KEYWORDS) {
-    assert.equal(tracked.get(keyword), landingPage, `${keyword} must map to ${landingPage}`)
-  }
-})
-
-test('daily monitoring uses the exact same 12-keyword desktop-pet segment', async () => {
-  const config = await readMonitoringConfig()
   assert.deepEqual(
-    new Set(config.desktopPetKeywords),
-    new Set(DIRECT_DESKTOP_PET_KEYWORDS.keys()),
+    [onlineEn.targetDomain, onlineEn.locationCode, onlineEn.languageCode, onlineEn.serpDepth, onlineEn.keywords.length],
+    ['project-neko.online', 2840, 'en', 100, 19],
+  )
+  assert.deepEqual(
+    [cn.targetDomain, cn.locationCode, cn.languageCode, cn.serpDepth, cn.keywords.length],
+    ['project-neko.cn', 2156, 'zh-CN', 100, 8],
+  )
+  assert.deepEqual(
+    [onlineZh.targetDomain, onlineZh.locationCode, onlineZh.languageCode, onlineZh.serpDepth, onlineZh.keywords.length],
+    ['project-neko.online', 2156, 'zh-CN', 100, 3],
   )
 })
 
-test('GSC category matching retains English and Chinese desktop-pet terms', async () => {
+test('three feature queries track both the .cn homepage and their concrete documentation pages', async () => {
+  const [cn, onlineZh] = await Promise.all([
+    readConfig('dataforseo.cn.config.json'),
+    readConfig('dataforseo.online-zh.config.json'),
+  ])
+  const cnKeywords = new Set(cn.keywords.map(item => item.keyword))
+  const mappings = new Map(onlineZh.keywords.map(item => [item.keyword, item.landingPage]))
+
+  assert.equal(cnKeywords.has('本地 AI 助手'), true)
+  assert.equal(cnKeywords.has('Live2D AI 助手'), true)
+  assert.equal(cnKeywords.has('长期记忆 AI 助手'), true)
+  assert.equal(mappings.get('本地 AI 助手'), '/zh-CN/guide/local-and-offline')
+  assert.equal(mappings.get('Live2D AI 助手'), '/zh-CN/frontend/live2d')
+  assert.equal(mappings.get('长期记忆 AI 助手'), '/zh-CN/architecture/memory-system')
+  assert.ok(onlineZh.keywords.every(item => item.cta))
+  assert.ok(cn.keywords.every(item => item.landingPage === '/'))
+})
+
+test('monitoring config binds both sites and all three DataForSEO segments', async () => {
   const config = await readMonitoringConfig()
-  const categoryPattern = new RegExp(config.gsc.categoryQueryRegex, 'iu')
-
-  for (const query of [
-    'best AI desktop pet',
-    'open source desktop companion',
-    'AI桌宠',
-    '开源AI桌宠',
-    'AI桌面伴侣',
-    '桌面AI伴侣',
-  ]) {
-    assert.equal(categoryPattern.test(query), true, `${query} must match the GSC category`)
+  assert.equal(config.schemaVersion, 2)
+  assert.deepEqual(config.sites.map(site => site.id), ['cn', 'online'])
+  assert.deepEqual(config.dataForSeoSegments.map(segment => segment.id), [
+    'cn',
+    'online-en',
+    'online-zh',
+  ])
+  assert.equal(config.sites.find(site => site.id === 'cn').ga4.propertyIdEnv, 'GA4_CN_PROPERTY_ID')
+  assert.equal(config.sites.find(site => site.id === 'online').ga4.propertyIdEnv, 'GA4_PROPERTY_ID')
+  assert.equal(config.sites.find(site => site.id === 'cn').ga4.docsToHomeEvent, undefined)
+  assert.equal(config.sites.find(site => site.id === 'online').ga4.docsToHomeEvent, 'docs_home_click')
+  for (const site of config.sites) {
+    assert.match(site.ga4.aiReferralRegex, /chatgpt/u)
+    assert.match(site.ga4.aiReferralRegex, /deepseek/u)
+    assert.match(site.ga4.aiReferralRegex, /qwen/u)
+    assert.match(site.ga4.aiReferralRegex, /doubao/u)
+    assert.match(site.ga4.aiReferralRegex, /poe/u)
   }
+  assert.equal(config.dataForSeoSegments.find(segment => segment.id === 'cn').keywordDifficulty, 'unsupported')
+  assert.equal(config.dataForSeoSegments.find(segment => segment.id === 'online-en').keywordDifficulty, 'supported')
+})
 
-  assert.equal(categoryPattern.test('python api framework'), false)
+test('GSC category matching retains English and Chinese product terms', async () => {
+  const config = await readMonitoringConfig()
+  const patterns = config.sites.map(site => new RegExp(site.gsc.categoryQueryRegex, 'iu'))
+  for (const query of ['best AI desktop pet', 'AI桌宠', 'AI 桌面助手', '长期记忆 AI 助手']) {
+    assert.equal(patterns.some(pattern => pattern.test(query)), true, `${query} must match a site segment`)
+  }
+  assert.equal(patterns.some(pattern => pattern.test('python api framework')), false)
 })

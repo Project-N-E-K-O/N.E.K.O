@@ -18,6 +18,7 @@ Options:
   --output <path>             JSON report path (default: ${DEFAULT_OUTPUT})
   --depth <1-100>             Override SERP depth; every 10 results may add cost
   --include-ai-overview       Load asynchronous AI Overview data (extra charge)
+  --skip-keyword-difficulty   Collect Google Ads Volume without the unsupported Labs KD call
   --dry-run                   Validate config and write a request plan without API calls
   --help                      Show this help
 
@@ -38,6 +39,7 @@ function parseArgs(argv) {
     output: DEFAULT_OUTPUT,
     depth: undefined,
     includeAiOverview: false,
+    includeKeywordDifficulty: true,
     dryRun: false,
     help: false,
   }
@@ -47,6 +49,7 @@ function parseArgs(argv) {
     if (argument === '--help') options.help = true
     else if (argument === '--dry-run') options.dryRun = true
     else if (argument === '--include-ai-overview') options.includeAiOverview = true
+    else if (argument === '--skip-keyword-difficulty') options.includeKeywordDifficulty = false
     else if (argument === '--mode') options.mode = valueAfter(argv, index++, '--mode')
     else if (argument === '--config') options.config = valueAfter(argv, index++, '--config')
     else if (argument === '--output') options.output = valueAfter(argv, index++, '--output')
@@ -139,6 +142,7 @@ async function main() {
     config,
     mode: options.mode,
     includeAiOverview: options.includeAiOverview,
+    includeKeywordDifficulty: options.includeKeywordDifficulty,
     depth: options.depth,
     dryRun: options.dryRun,
   })

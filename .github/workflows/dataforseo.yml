@@ -1,52 +1,52 @@
-name: DataForSEO SEO Report
+name: SEO GEO Daily Report
+
+run-name: >-
+  SEO/GEO - ${{ github.event_name == 'schedule' && 'daily-paid-depth-100-aio' || inputs.run_mode || 'validation' }}
 
 on:
   schedule:
-    # 07:30 Asia/Shanghai (GitHub Actions cron uses UTC).
-    - cron: '30 23 * * *'
+    # 08:15 Asia/Shanghai, after the .cn source repository's 07:45 baseline.
+    - cron: '15 0 * * *'
   pull_request:
     paths:
       - 'docs/scripts/dataforseo/**'
       - 'docs/scripts/seo-monitoring/**'
-      - 'docs/seo/dataforseo.config.json'
-      - 'docs/seo/monitoring.config.json'
+      - 'docs/seo/**'
       - 'docs/package.json'
       - '.github/workflows/dataforseo.yml'
   workflow_dispatch:
     inputs:
-      mode:
-        description: 'dry-run spends nothing; other modes call paid DataForSEO endpoints'
+      run_mode:
+        description: 'dry-run costs $0; paid collects the full daily baseline'
         required: true
         type: choice
         default: dry-run
         options:
           - dry-run
-          - keywords
-          - serp
-          - all
+          - paid
       serp_depth:
-        description: 'Organic results per keyword (1-100; each 10 results may add cost)'
+        description: 'Organic results per keyword (1-100)'
         required: true
         type: string
-        default: '10'
+        default: '100'
       include_ai_overview:
-        description: 'Load asynchronous AI Overview results (extra charge per SERP request)'
+        description: 'Load asynchronous AI Overview results'
         required: true
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
-  group: dataforseo-${{ github.ref }}
+  group: seo-geo-daily-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   test:
-    if: github.event_name != 'schedule' || vars.ENABLE_PAID_DATAFORSEO_SCHEDULE == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -62,29 +62,27 @@ jobs:
         run: npm ci
         working-directory: docs
 
-      - name: Test DataForSEO tooling
-        run: npm run test:dataforseo
+      - name: Test documentation integrations
+        run: npm test
         working-directory: docs
 
-      - name: Test unified SEO/GEO reporting
-        run: npm run test:seo-monitoring
+      - name: Validate all three committed ranking plans without charge
+        shell: bash
         working-directory: docs
-
-      - name: Validate the committed request plan
-        run: npm run seo:dataforseo -- --dry-run --output .seo-reports/dry-run.json
-        working-directory: docs
+        run: |
+          npm run seo:dataforseo -- --config seo/dataforseo.config.json --mode all --depth 100 --include-ai-overview --dry-run --output .seo-reports/dry-run-online-en.json
+          npm run seo:dataforseo -- --config seo/dataforseo.cn.config.json --mode all --skip-keyword-difficulty --depth 100 --include-ai-overview --dry-run --output .seo-reports/dry-run-cn.json
+          npm run seo:dataforseo -- --config seo/dataforseo.online-zh.config.json --mode all --skip-keyword-difficulty --depth 100 --include-ai-overview --dry-run --output .seo-reports/dry-run-online-zh.json
 
   report:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'schedule' && vars.ENABLE_PAID_DATAFORSEO_SCHEDULE == 'true')
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     needs: test
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     env:
-      REPORT_MODE: ${{ github.event_name == 'schedule' && 'serp' || inputs.mode }}
-      SERP_DEPTH: ${{ github.event_name == 'schedule' && '10' || inputs.serp_depth }}
-      INCLUDE_AI_OVERVIEW: ${{ github.event_name == 'schedule' && 'false' || inputs.include_ai_overview }}
+      COLLECTION_KIND: ${{ github.event_name == 'schedule' && 'paid' || inputs.run_mode }}
+      SERP_DEPTH: ${{ github.event_name == 'schedule' && '100' || inputs.serp_depth }}
+      INCLUDE_AI_OVERVIEW: ${{ github.event_name == 'schedule' && 'true' || inputs.include_ai_overview }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -100,70 +98,282 @@ jobs:
         run: npm ci
         working-directory: docs
 
-      - name: Require credentials for paid modes
-        if: env.REPORT_MODE != 'dry-run'
+      - name: Download latest .online IndexNow submission evidence
+        continue-on-error: true
+        shell: bash
+        working-directory: docs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=indexnow-online-submission&per_page=100" --jq '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | last | .workflow_run.id // empty')"
+          if [[ -n "$run_id" ]]; then
+            gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name "indexnow-online-submission" --dir .seo-reports/indexnow-online
+          else
+            echo "No unexpired .online IndexNow execution artifact exists yet."
+          fi
+
+      - name: Download latest .cn IndexNow submission evidence
+        continue-on-error: true
+        shell: bash
+        working-directory: docs
+        env:
+          GH_TOKEN: ${{ secrets.SEO_REPORTS_TOKEN }}
+        run: |
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "SEO_REPORTS_TOKEN is not configured; .cn IndexNow remains NOT_RUN."
+            exit 0
+          fi
+          repository="Project-N-E-K-O/N.E.K.O.OfficialWebsite"
+          run_id="$(gh api "repos/${repository}/actions/artifacts?name=indexnow-cn-submission&per_page=100" --jq '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | last | .workflow_run.id // empty')"
+          if [[ -n "$run_id" ]]; then
+            gh run download "$run_id" --repo "$repository" --name "indexnow-cn-submission" --dir .seo-reports/indexnow-cn
+          else
+            echo "No unexpired .cn IndexNow execution artifact exists yet."
+          fi
+
+      - name: Download the latest previous unified report
+        continue-on-error: true
+        shell: bash
+        working-directory: docs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          record="$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" --jq '.artifacts | map(select(.expired == false and (.name | startswith("seo-geo-daily-")))) | sort_by(.created_at) | last | select(. != null) | [.workflow_run.id, .name] | @tsv')"
+          if [[ -z "$record" ]]; then
+            echo "No previous unified report artifact exists yet."
+            exit 0
+          fi
+          IFS=$'\t' read -r run_id artifact_name <<< "$record"
+          gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name "$artifact_name" --dir .seo-reports/previous
+          previous_report="$(find .seo-reports/previous -type f -name 'seo-monitoring-*.json' | sort | tail -n 1)"
+          if [[ -n "$previous_report" ]]; then
+            echo "PREVIOUS_REPORT=$previous_report" >> "$GITHUB_ENV"
+            echo "PREVIOUS_REPORT_EVIDENCE=https://github.com/${GITHUB_REPOSITORY}/actions/runs/${run_id}" >> "$GITHUB_ENV"
+          else
+            echo "The previous artifact has no unified JSON report."
+          fi
+
+      - name: Reuse today's authoritative .cn ranking artifact
+        if: env.COLLECTION_KIND == 'paid'
+        continue-on-error: true
+        shell: bash
+        working-directory: docs
+        env:
+          GH_TOKEN: ${{ secrets.SEO_REPORTS_TOKEN }}
+        run: |
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "SEO_REPORTS_TOKEN is not configured; this run will collect the .cn fallback locally."
+            exit 0
+          fi
+          repository="Project-N-E-K-O/N.E.K.O.OfficialWebsite"
+          record="$(gh api "repos/${repository}/actions/artifacts?per_page=100" --jq '.artifacts | map(select(.expired == false and (.name | startswith("dataforseo-cn-report")))) | sort_by(.created_at) | last | select(. != null) | [.workflow_run.id, .name] | @tsv')"
+          if [[ -z "$record" ]]; then
+            echo "No .cn ranking artifact exists; this run will collect the fallback locally."
+            exit 0
+          fi
+          IFS=$'\t' read -r run_id artifact_name <<< "$record"
+          gh run download "$run_id" --repo "$repository" --name "$artifact_name" --dir .seo-reports/external-cn
+          cn_report="$(find .seo-reports/external-cn -type f -name 'dataforseo-cn-*.json' ! -name '*execution*' | sort | tail -n 1)"
+          cn_status="$(find .seo-reports/external-cn -type f -name 'dataforseo-cn-execution-*.json' | sort | tail -n 1)"
+          if [[ -z "$cn_report" || -z "$cn_status" ]]; then
+            echo "The .cn artifact is incomplete; this run will collect the fallback locally."
+            exit 0
+          fi
+          ranking_status="$(jq -r '.rankingStatus // empty' "$cn_status")"
+          generated_at="$(jq -r '.generatedAt // empty' "$cn_status")"
+          artifact_date="$(node -e 'console.log(new Intl.DateTimeFormat("en-CA", {timeZone:"Asia/Shanghai",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date(process.argv[1])))' "$generated_at")"
+          today="$(TZ=Asia/Shanghai date +%F)"
+          if [[ "$ranking_status" != "complete" || "$artifact_date" != "$today" ]]; then
+            echo "The latest .cn artifact is not today's complete baseline; this run will collect the fallback locally."
+            exit 0
+          fi
+          echo "CN_EXTERNAL_REPORT=$cn_report" >> "$GITHUB_ENV"
+          echo "CN_EXTERNAL_STATUS=$cn_status" >> "$GITHUB_ENV"
+          echo "Using .cn ranking evidence from https://github.com/${repository}/actions/runs/${run_id}"
+
+      - name: Require credentials for paid collection
+        id: credentials
+        if: env.COLLECTION_KIND == 'paid'
+        continue-on-error: true
         shell: bash
         env:
           DATAFORSEO_LOGIN: ${{ secrets.DATAFORSEO_LOGIN }}
           DATAFORSEO_PASSWORD: ${{ secrets.DATAFORSEO_PASSWORD }}
         run: |
           if [[ -z "$DATAFORSEO_LOGIN" || -z "$DATAFORSEO_PASSWORD" ]]; then
-            echo "Set DATAFORSEO_LOGIN and DATAFORSEO_PASSWORD as repository or environment secrets." >&2
+            echo "Set DATAFORSEO_LOGIN and DATAFORSEO_PASSWORD as repository secrets." >&2
             exit 1
           fi
 
-      - name: Generate dry-run report
-        if: env.REPORT_MODE == 'dry-run'
-        shell: bash
-        working-directory: docs
-        run: |
-          args=(--mode all --dry-run --depth "$SERP_DEPTH" --output ".seo-reports/dataforseo-${GITHUB_RUN_ID}.json")
-          if [[ "$INCLUDE_AI_OVERVIEW" == "true" ]]; then
-            args+=(--include-ai-overview)
-          fi
-          npm run seo:dataforseo -- "${args[@]}"
-
-      - name: Generate paid report
-        if: env.REPORT_MODE != 'dry-run'
+      - name: Collect .online English rankings, metrics, and AIO
+        id: online_en
+        if: env.COLLECTION_KIND == 'dry-run' || steps.credentials.outcome == 'success'
+        continue-on-error: true
         shell: bash
         working-directory: docs
         env:
           DATAFORSEO_LOGIN: ${{ secrets.DATAFORSEO_LOGIN }}
           DATAFORSEO_PASSWORD: ${{ secrets.DATAFORSEO_PASSWORD }}
         run: |
-          args=(--mode "$REPORT_MODE" --depth "$SERP_DEPTH" --output ".seo-reports/dataforseo-${GITHUB_RUN_ID}.json")
-          if [[ "$INCLUDE_AI_OVERVIEW" == "true" ]]; then
-            args+=(--include-ai-overview)
-          fi
+          args=(--config seo/dataforseo.config.json --mode all --depth "$SERP_DEPTH" --output ".seo-reports/dataforseo-online-en-${GITHUB_RUN_ID}.json")
+          if [[ "$INCLUDE_AI_OVERVIEW" == "true" ]]; then args+=(--include-ai-overview); fi
+          if [[ "$COLLECTION_KIND" == "dry-run" ]]; then args+=(--dry-run); fi
           npm run seo:dataforseo -- "${args[@]}"
 
-      - name: Generate unified DataForSEO, GSC, and GA4 summary
+      - name: Collect .cn product rankings and AIO
+        id: cn
+        if: env.COLLECTION_KIND == 'dry-run' || steps.credentials.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        working-directory: docs
+        env:
+          DATAFORSEO_LOGIN: ${{ secrets.DATAFORSEO_LOGIN }}
+          DATAFORSEO_PASSWORD: ${{ secrets.DATAFORSEO_PASSWORD }}
+        run: |
+          if [[ -n "${CN_EXTERNAL_REPORT:-}" ]]; then
+            echo "Reusing today's authoritative .cn source-repository artifact."
+            exit 0
+          fi
+          args=(--config seo/dataforseo.cn.config.json --mode all --skip-keyword-difficulty --depth "$SERP_DEPTH" --output ".seo-reports/dataforseo-cn-${GITHUB_RUN_ID}.json")
+          if [[ "$INCLUDE_AI_OVERVIEW" == "true" ]]; then args+=(--include-ai-overview); fi
+          if [[ "$COLLECTION_KIND" == "dry-run" ]]; then args+=(--dry-run); fi
+          npm run seo:dataforseo -- "${args[@]}"
+
+      - name: Collect .online Chinese documentation rankings and AIO
+        id: online_zh
+        if: env.COLLECTION_KIND == 'dry-run' || steps.credentials.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        working-directory: docs
+        env:
+          DATAFORSEO_LOGIN: ${{ secrets.DATAFORSEO_LOGIN }}
+          DATAFORSEO_PASSWORD: ${{ secrets.DATAFORSEO_PASSWORD }}
+        run: |
+          args=(--config seo/dataforseo.online-zh.config.json --mode all --skip-keyword-difficulty --depth "$SERP_DEPTH" --output ".seo-reports/dataforseo-online-zh-${GITHUB_RUN_ID}.json")
+          if [[ "$INCLUDE_AI_OVERVIEW" == "true" ]]; then args+=(--include-ai-overview); fi
+          if [[ "$COLLECTION_KIND" == "dry-run" ]]; then args+=(--dry-run); fi
+          npm run seo:dataforseo -- "${args[@]}"
+
+      - name: Record .online English collection status
         if: always()
+        continue-on-error: true
+        shell: bash
+        working-directory: docs
+        env:
+          CREDENTIALS_OUTCOME: ${{ steps.credentials.outcome }}
+          COLLECTION_OUTCOME: ${{ steps.online_en.outcome }}
+        run: |
+          mode="all"
+          if [[ "$COLLECTION_KIND" == "dry-run" ]]; then mode="dry-run"; fi
+          node scripts/dataforseo/run-status.mjs --segment online-en --mode "$mode" --credentials-outcome "$CREDENTIALS_OUTCOME" --dry-run-outcome "$COLLECTION_OUTCOME" --paid-outcome "$COLLECTION_OUTCOME" --include-ai-overview "$INCLUDE_AI_OVERVIEW" --report ".seo-reports/dataforseo-online-en-${GITHUB_RUN_ID}.json" --output ".seo-reports/dataforseo-online-en-execution-${GITHUB_RUN_ID}.json"
+
+      - name: Record .cn collection status
+        if: always()
+        continue-on-error: true
+        shell: bash
+        working-directory: docs
+        env:
+          CREDENTIALS_OUTCOME: ${{ steps.credentials.outcome }}
+          COLLECTION_OUTCOME: ${{ steps.cn.outcome }}
+        run: |
+          if [[ -n "${CN_EXTERNAL_STATUS:-}" ]]; then
+            echo "The source-repository status manifest is authoritative; no fallback status is needed."
+            exit 0
+          fi
+          mode="all"
+          if [[ "$COLLECTION_KIND" == "dry-run" ]]; then mode="dry-run"; fi
+          node scripts/dataforseo/run-status.mjs --segment cn --mode "$mode" --credentials-outcome "$CREDENTIALS_OUTCOME" --dry-run-outcome "$COLLECTION_OUTCOME" --paid-outcome "$COLLECTION_OUTCOME" --include-ai-overview "$INCLUDE_AI_OVERVIEW" --report ".seo-reports/dataforseo-cn-${GITHUB_RUN_ID}.json" --output ".seo-reports/dataforseo-cn-execution-${GITHUB_RUN_ID}.json"
+
+      - name: Record .online Chinese collection status
+        if: always()
+        continue-on-error: true
+        shell: bash
+        working-directory: docs
+        env:
+          CREDENTIALS_OUTCOME: ${{ steps.credentials.outcome }}
+          COLLECTION_OUTCOME: ${{ steps.online_zh.outcome }}
+        run: |
+          mode="all"
+          if [[ "$COLLECTION_KIND" == "dry-run" ]]; then mode="dry-run"; fi
+          node scripts/dataforseo/run-status.mjs --segment online-zh --mode "$mode" --credentials-outcome "$CREDENTIALS_OUTCOME" --dry-run-outcome "$COLLECTION_OUTCOME" --paid-outcome "$COLLECTION_OUTCOME" --include-ai-overview "$INCLUDE_AI_OVERVIEW" --report ".seo-reports/dataforseo-online-zh-${GITHUB_RUN_ID}.json" --output ".seo-reports/dataforseo-online-zh-execution-${GITHUB_RUN_ID}.json"
+
+      - name: Generate the dual-site SEO/GEO report
+        id: unified
+        if: always()
+        continue-on-error: true
         shell: bash
         working-directory: docs
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GA4_PROPERTY_ID: ${{ vars.GA4_PROPERTY_ID }}
+          GA4_CN_PROPERTY_ID: ${{ vars.GA4_CN_PROPERTY_ID }}
           GSC_SITE_URL: ${{ vars.GSC_SITE_URL }}
-        run: >-
-          npm run seo:report --
-          --dataforseo ".seo-reports/dataforseo-${GITHUB_RUN_ID}.json"
-          --output-json ".seo-reports/seo-monitoring-${GITHUB_RUN_ID}.json"
-          --output-markdown ".seo-reports/seo-monitoring-${GITHUB_RUN_ID}.md"
+          GSC_CN_SITE_URL: ${{ vars.GSC_CN_SITE_URL }}
+        run: |
+          cn_report="${CN_EXTERNAL_REPORT:-.seo-reports/dataforseo-cn-${GITHUB_RUN_ID}.json}"
+          cn_status="${CN_EXTERNAL_STATUS:-.seo-reports/dataforseo-cn-execution-${GITHUB_RUN_ID}.json}"
+          args=(
+            --dataforseo "online-en=.seo-reports/dataforseo-online-en-${GITHUB_RUN_ID}.json"
+            --dataforseo-status "online-en=.seo-reports/dataforseo-online-en-execution-${GITHUB_RUN_ID}.json"
+            --dataforseo "cn=${cn_report}"
+            --dataforseo-status "cn=${cn_status}"
+            --dataforseo "online-zh=.seo-reports/dataforseo-online-zh-${GITHUB_RUN_ID}.json"
+            --dataforseo-status "online-zh=.seo-reports/dataforseo-online-zh-execution-${GITHUB_RUN_ID}.json"
+            --indexnow "cn=.seo-reports/indexnow-cn/indexnow-execution.json"
+            --indexnow "online=.seo-reports/indexnow-online/indexnow-online.json"
+            --output-json ".seo-reports/seo-monitoring-${GITHUB_RUN_ID}.json"
+            --output-markdown ".seo-reports/seo-monitoring-${GITHUB_RUN_ID}.md"
+          )
+          if [[ -n "${PREVIOUS_REPORT:-}" ]]; then args+=(--previous-report "$PREVIOUS_REPORT"); fi
+          npm run seo:report -- "${args[@]}"
 
-      - name: Publish unified report in the run summary
+      - name: Publish report in the run summary
         if: always()
         shell: bash
         run: |
           report="docs/.seo-reports/seo-monitoring-${GITHUB_RUN_ID}.md"
           if [[ -f "$report" ]]; then cat "$report" >> "$GITHUB_STEP_SUMMARY"; fi
 
-      - name: Upload report artifact
+      - name: Upload raw evidence, status manifests, JSON, and Markdown
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: dataforseo-report-${{ github.run_id }}
-          path: docs/.seo-reports/**
+          name: seo-geo-daily-report
+          path: |
+            docs/.seo-reports/**
+            !docs/.seo-reports/previous/**
           if-no-files-found: error
           include-hidden-files: true
-          retention-days: 14
+          retention-days: 30
+
+      - name: Enforce the complete daily-source contract
+        if: always() && env.COLLECTION_KIND == 'paid'
+        shell: bash
+        working-directory: docs
+        run: |
+          report=".seo-reports/seo-monitoring-${GITHUB_RUN_ID}.json"
+          if [[ "${{ steps.unified.outcome }}" != "success" || ! -f "$report" ]]; then
+            echo "The unified JSON report was not generated." >&2
+            exit 1
+          fi
+          node scripts/seo-monitoring/assert-report.mjs --input "$report" --level daily
+
+      - name: Enforce the zero-cost planning contract
+        if: always() && env.COLLECTION_KIND == 'dry-run'
+        shell: bash
+        working-directory: docs
+        run: |
+          for segment in online-en cn online-zh; do
+            status=".seo-reports/dataforseo-${segment}-execution-${GITHUB_RUN_ID}.json"
+            if [[ ! -f "$status" ]]; then
+              echo "Missing dry-run execution status for ${segment}." >&2
+              exit 1
+            fi
+            jq -e --arg segment "$segment" '
+              .segment == $segment
+              and .mode == "dry-run"
+              and .runStatus == "planned"
+              and .dataReportPresent == true
+              and .rankingStatus == "not_run"
+            ' "$status" >/dev/null
+          done
