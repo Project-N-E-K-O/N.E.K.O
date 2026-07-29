@@ -883,12 +883,16 @@ def test_custom_worker_uses_openai_sdk_and_siliconflow_extensions(monkeypatch):
     assert clients[0].closed is True
 
 
-def test_custom_worker_keeps_auth_header_disabled_when_api_key_is_empty(monkeypatch):
+@pytest.mark.parametrize("audio_api_key", ["", "  \t "])
+def test_custom_worker_keeps_auth_header_disabled_when_api_key_is_blank(
+    monkeypatch,
+    audio_api_key,
+):
     clients, request_queue, response_queue, thread = _run_worker_once(
         monkeypatch,
         [b"\x00\x00"],
         base_url="http://127.0.0.1:8000/v1",
-        audio_api_key="",
+        audio_api_key=audio_api_key,
     )
     _wait_for_item(response_queue, lambda item: isinstance(item, bytes))
     request_queue.put((tts_client.TTS_SHUTDOWN_SENTINEL, None))

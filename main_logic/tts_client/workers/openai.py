@@ -55,6 +55,11 @@ def openai_tts_worker(
 ):
     """OpenAI-compatible TTS: sentence input with a streamed PCM response."""
 
+    # Normalize once so whitespace-only credentials use the auth-free path.
+    # 配置文件或环境变量里只含空白字符的 key 等同于未填写；否则 SDK 会误发
+    # ``Authorization: Bearer <空白>``，与连接测试的免鉴权行为不一致。
+    audio_api_key = str(audio_api_key or "").strip()
+
     try:
         from openai import AsyncOpenAI
     except ImportError:
@@ -74,9 +79,8 @@ def openai_tts_worker(
 
     async def setup(response_queue):
         # The SDK omits Authorization for an empty key, matching connectivity probes.
-        # 空字符串可让新版 OpenAI SDK 不生成 Authorization 头；自托管免鉴权
-        # 服务不应收到伪造的 Bearer 凭证，行为也要与连通性探测保持一致。
-        client_kwargs = {"api_key": audio_api_key or ""}
+        # 自托管免鉴权服务不应收到伪造的 Bearer 凭证，运行时行为要与探测一致。
+        client_kwargs = {"api_key": audio_api_key}
         if base_url:
             # Validate/normalize inside setup so configuration failures travel
             # through the shared worker skeleton's normal __ready__ channel.
