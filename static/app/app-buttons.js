@@ -2148,9 +2148,26 @@
                             && S._pendingSessionStartMode !== 'audio')) {
                     return false;
                 }
-                if (!window.supersededByAudioStart(micStartOwner)
-                        && typeof window.abortVoiceStartForBlockedRoute === 'function') {
-                    window.abortVoiceStartForBlockedRoute();
+                if (!window.supersededByAudioStart(micStartOwner)) {
+                    // If capture already COMMITTED, the unwind alone leaks the
+                    // hardware microphone: abortVoiceStartForBlockedRoute sets
+                    // S.isRecording = false without stopping the stream, closing
+                    // the audio context or disconnecting the worklet, and the
+                    // text session_started handler only runs that teardown while
+                    // S.isRecording is still true -- so aborting first makes it
+                    // skip the sole pipeline teardown and the mic stays live
+                    // after the user switched to text (codex P1). Stop first,
+                    // while the flag still says there is something to stop.
+                    //
+                    // notifyServer:false: the newer start owns the socket now,
+                    // and a pause_session from a superseded flow is read as a
+                    // character switch, closing the socket out from under it.
+                    if (S.isRecording === true && typeof window.stopRecording === 'function') {
+                        window.stopRecording({ notifyServer: false });
+                    }
+                    if (typeof window.abortVoiceStartForBlockedRoute === 'function') {
+                        window.abortVoiceStartForBlockedRoute();
+                    }
                 }
                 return true;
             }
@@ -2205,6 +2222,16 @@
                 // Send start session (ensure WS open)
                 await window.ensureWebSocketOpen();
                 ensureVoiceStartCurrent();
+
+                // The reconnect is an await like any other, and a text send
+                // inside it displaces this flow's claim. Sending anyway is the
+                // worst outcome available: the backend gets a stale audio
+                // start_session, and this flow then waits forever on a promise
+                // whose resolver has been replaced -- its own timeout returns
+                // early because it is no longer current, so none of the
+                // stand-downs further down are ever reached (codex P2).
+                if (micStartMustStandDown()) return;
+
                 S.socket.send(JSON.stringify({
                     action: 'start_session',
                     input_type: 'audio'
@@ -2348,6 +2375,13 @@
                 // vision started, ready-to-speak scheduled and
                 // neko:voice-session-started dispatched over its session
                 // (codex P2).
+                //
+                // BOTH questions here. A goodbye or reset inside that same
+                // window goes through cancelPendingSessionStart, which moves the
+                // epoch and clears isMicStarting WITHOUT claiming anything, so
+                // the stand-down alone cannot see it and this handler would
+                // announce a voice session the user just ended (codex P2).
+                ensureVoiceStartCurrent();
                 if (micStartMustStandDown()) return;
 
                 // Success — hide preparing toast, show ready

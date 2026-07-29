@@ -257,13 +257,15 @@ _MODE_TEST = "_pendingSessionStartMode !== 'audio'"
 
 # file -> (stand-down check, how many points in that flow must call it)
 #
-# app-buttons.js:   after the start promise, after getUserMedia, after the
-#                   proactive-vision acquisition, and in the outer catch.
-# app-websocket.js: before the claim, after the start promise, after
-#                   showCurrentModel, after the capture awaits, and in the catch.
+# app-buttons.js:   after ensureWebSocketOpen, after the start promise, after
+#                   getUserMedia, after the proactive-vision acquisition, and in
+#                   the outer catch.
+# app-websocket.js: before the claim, after ensureWebSocketOpen, after the start
+#                   promise, after showCurrentModel, after the capture awaits,
+#                   and in the catch.
 STAND_DOWN_CHECKS = {
-    "app-buttons.js": ("micStartMustStandDown", 4),
-    "app-websocket.js": ("restartMustStandDown", 5),
+    "app-buttons.js": ("micStartMustStandDown", 5),
+    "app-websocket.js": ("restartMustStandDown", 6),
 }
 
 
@@ -364,6 +366,66 @@ def test_every_point_a_flow_resumes_from_an_await_stands_down():
             f"{path.name}: {name} is called at {calls} of the {expected} points this "
             "flow can resume or fail at -- the uncovered one is where a takeover walks "
             "into the microphone or into a foreign session's teardown."
+        )
+
+
+@pytest.mark.unit
+def test_standing_down_stops_committed_capture_before_it_unwinds():
+    """The unwind on its own leaks the hardware microphone.
+
+    ``abortVoiceStartForBlockedRoute`` clears ``S.isRecording`` without stopping
+    the stream, closing the audio context or disconnecting the worklet -- it was
+    written for a route that was refused before the mic ever opened. But the
+    text ``session_started`` teardown is gated on ``S.isRecording`` being true,
+    so unwinding first makes it skip the only pipeline teardown there is, and
+    the microphone stays live after the user switched to text.
+
+    Mutation-verified: drop the stopRecording call, or move it after the unwind,
+    and this reddens naming that file.
+    """
+    for path in START_FLOW_PATHS:
+        source = path.read_text(encoding="utf-8")
+        name = STAND_DOWN_CHECKS[path.name][0]
+        body = _region(source, f"function {name}()", "try {", path.name)
+
+        stop = body.find("stopRecording({ notifyServer: false })")
+        assert stop != -1, (
+            f"{path.name}: {name} unwinds without stopping capture that already "
+            f"committed -- the microphone survives the takeover.\n{body}"
+        )
+        assert "S.isRecording === true" in body, (
+            f"{path.name}: the capture teardown in {name} must be gated on there being "
+            f"capture to tear down.\n{body}"
+        )
+        abort = body.find("abortVoiceStartForBlockedRoute()")
+        assert abort != -1, f"{path.name}: {name} no longer unwinds at all"
+        assert stop < abort, (
+            f"{path.name}: {name} unwinds before it stops capture, and the unwind "
+            "clears the very flag stopRecording needs -- order matters here."
+        )
+
+
+@pytest.mark.unit
+def test_the_mic_flow_rechecks_cancellation_after_proactive_vision():
+    """That await needs BOTH questions asked on the other side.
+
+    Proactive vision acquisition spans a backend request and a display-capture
+    prompt. A takeover inside it is a new claim, which the stand-down sees; a
+    goodbye or reset is not -- cancelPendingSessionStart moves the epoch and
+    clears isMicStarting without claiming anything, and only
+    ensureVoiceStartCurrent looks at those.
+
+    Mutation-verified: drop either call and this reddens.
+    """
+    source = (_STATIC_APP / "app-buttons.js").read_text(encoding="utf-8")
+    region = _region(
+        source, "acquireProactiveVisionStream", "hideVoicePreparingToast", "app-buttons.js"
+    )
+    for signal in ("ensureVoiceStartCurrent()", "micStartMustStandDown()"):
+        assert signal in region, (
+            f"app-buttons.js: nothing asks `{signal}` between the proactive-vision await "
+            "and the success path, so a voice session the user already ended still gets "
+            f"announced.\n{region}"
         )
 
 

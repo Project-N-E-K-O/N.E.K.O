@@ -2737,9 +2737,21 @@
                                         var byAudio = owned
                                             ? window.supersededByAudioStart(restartStartOwner)
                                             : window.audioStartsSince(restartClaimSeq);
-                                        if (!byAudio
-                                                && typeof window.abortVoiceStartForBlockedRoute === 'function') {
-                                            window.abortVoiceStartForBlockedRoute();
+                                        if (!byAudio) {
+                                            // Committed capture must be stopped BEFORE the
+                                            // unwind: the unwind clears S.isRecording without
+                                            // touching the stream, and the text
+                                            // session_started teardown is gated on that very
+                                            // flag, so the hardware microphone would stay
+                                            // live (codex P1). notifyServer:false -- the
+                                            // newer start owns the socket.
+                                            if (S.isRecording === true
+                                                    && typeof window.stopRecording === 'function') {
+                                                window.stopRecording({ notifyServer: false });
+                                            }
+                                            if (typeof window.abortVoiceStartForBlockedRoute === 'function') {
+                                                window.abortVoiceStartForBlockedRoute();
+                                            }
                                         }
                                         return true;
                                     }
@@ -2774,6 +2786,17 @@
                                     });
 
                                     await ensureWebSocketOpen();
+
+                                    // The pre-claim check does not cover the reconnect: a
+                                    // text send or a mic press inside it takes the slot, and
+                                    // sending anyway hands the backend a stale audio
+                                    // start_session, overwrites the shared timeout handle
+                                    // and leaves this flow awaiting a promise whose resolver
+                                    // is no longer installed -- its own owner-gated timeout
+                                    // returns early, so nothing settles it and no later
+                                    // stand-down runs (codex P2).
+                                    if (restartMustStandDown()) return;
+
                                     S.socket.send(JSON.stringify({ action: 'start_session', input_type: 'audio' }));
 
                                     window.sessionTimeoutId = setTimeout(function () {
