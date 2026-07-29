@@ -2725,6 +2725,17 @@
                                     if (takenOver
                                             || (S._pendingSessionStartMode
                                                 && S._pendingSessionStartMode !== 'audio')) {
+                                        // Cancellation outranks the takeover: goodbye, avatar
+                                        // drop and character switch are the later intent and
+                                        // have already unwound and re-dressed the UI, so
+                                        // unwinding again would re-enable the mic button and
+                                        // unhide the composer on top of theirs (codex P2).
+                                        // The claim sequence cannot see it -- a cancellation
+                                        // clears the slot without claiming -- so it is asked
+                                        // here, ahead of the unwind, rather than at the end.
+                                        if (!window.voiceStartEpochIsCurrent(restartVoiceEpoch)) {
+                                            return true;
+                                        }
                                         // The unwind is global -- it bumps the mic
                                         // generation and clears window.isMicStarting -- so
                                         // running it while the newer AUDIO start (a mic

@@ -433,6 +433,40 @@ def test_standing_down_stops_committed_capture_before_it_unwinds():
 
 
 @pytest.mark.unit
+def test_a_cancelled_start_does_not_unwind_over_the_goodbye_ui():
+    """Goodbye outranks a takeover, and the claim sequence cannot see it.
+
+    A cancellation clears the slot without claiming anything, so a start
+    superseded before the goodbye stays superseded after it -- and unwinding
+    then re-enables the mic button and unhides the composer on top of the
+    goodbye UI, while the early return skips the catch's preserveGoodbyeUi
+    handling that would have restored it.
+
+    Mutation-verified: move the cancellation check after the unwind, or drop it,
+    and this reddens naming that file.
+    """
+    for path, signals in (
+        ("app-buttons.js", ("isNekoGoodbyeModeActive", "voiceStartEpochIsCurrent")),
+        ("app-websocket.js", ("voiceStartEpochIsCurrent",)),
+    ):
+        source = (_STATIC_APP / path).read_text(encoding="utf-8")
+        name = STAND_DOWN_CHECKS[path][0]
+        body = _region(source, f"function {name}()", "try {", path)
+        unwind = body.find("abortVoiceStartForBlockedRoute()")
+        assert unwind != -1, f"{path}: {name} no longer unwinds at all"
+        for signal in signals:
+            at = body.find(signal)
+            assert at != -1, (
+                f"{path}: {name} never asks `{signal}`, so a cancellation after a takeover "
+                f"is invisible to it.\n{body}"
+            )
+            assert at < unwind, (
+                f"{path}: {name} unwinds before it checks `{signal}` -- a goodbye after a "
+                "takeover would have its UI overwritten by the unwind."
+            )
+
+
+@pytest.mark.unit
 def test_the_mic_flow_rechecks_cancellation_after_proactive_vision():
     """That await needs BOTH questions asked on the other side.
 

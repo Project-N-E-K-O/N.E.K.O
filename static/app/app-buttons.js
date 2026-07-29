@@ -2157,6 +2157,22 @@
                     // P2). Only in this branch -- a newer audio start clears it
                     // through its own success or failure path.
                     S.isSwitchingMode = false;
+
+                    // Cancellation outranks the takeover. If the user hit
+                    // goodbye or reset after the takeover, that is the LATER
+                    // intent and it has already put its own UI on screen --
+                    // unwinding now would re-enable the mic button and unhide
+                    // the composer on top of it, and returning skips the
+                    // catch's preserveGoodbyeUi handling that would have put it
+                    // back (codex P2). The claim sequence cannot see this: a
+                    // cancellation clears the slot without claiming, so we stay
+                    // superseded by whoever came before it.
+                    if ((typeof window.isNekoGoodbyeModeActive === 'function'
+                            && window.isNekoGoodbyeModeActive())
+                            || !window.voiceStartEpochIsCurrent(voiceStartEpoch)) {
+                        return true;
+                    }
+
                     // If capture already COMMITTED, the unwind alone leaks the
                     // hardware microphone: abortVoiceStartForBlockedRoute sets
                     // S.isRecording = false without stopping the stream, closing
