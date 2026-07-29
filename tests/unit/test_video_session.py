@@ -176,7 +176,7 @@ async def test_concurrent_non_native_frame_does_not_replace_analyzed_snapshot():
     assert client._latest_image_generation == generation + 1
     assert analyzed == [first_frame]
     release_analysis.set()
-    await first_task
+    assert await first_task is None
     await client.close()
 
 
