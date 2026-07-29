@@ -766,3 +766,21 @@ async def test_standard_stepfun_uses_annotation_text_before_trigger():
         for event in events
     )
     await client.close()
+
+
+@pytest.mark.unit
+async def test_standard_stepfun_defers_prompt_until_annotation_is_ready():
+    client = _make_client(api_type="step", model="step-realtime")
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+    client._image_being_analyzed = True
+    client._image_recognized_this_turn = False
+    client.inject_text_and_request_response = AsyncMock()
+
+    delivered = await client.prompt_ephemeral(language="zh")
+
+    assert delivered is False
+    assert client._proactive_image_consumed is False
+    client.inject_text_and_request_response.assert_not_awaited()
+    assert _sent_events(client) == []
+    await client.close()

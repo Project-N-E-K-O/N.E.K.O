@@ -798,11 +798,27 @@ class _ResponseMixin:
                 return False
 
         # ── Resolve pending visual context ────────────────────────────
-        # Vision context exists if an image was analyzed this turn (via
-        # VISION_MODEL text description OR native image input) or we have
-        # an unconsumed frame from stream_image().
+        # Native providers can consume an unconsumed raw frame immediately.
+        # Standard StepFun cannot: stream_image() caches the frame before its
+        # external VISION_MODEL analysis finishes. Defer that proactive
+        # attempt until the matching description exists, or we would select a
+        # screen-aware prompt without injecting any visual context and then
+        # incorrectly mark the frame consumed.
+        has_pending_frame = (
+            self._latest_image_b64 is not None
+            and not self._proactive_image_consumed
+        )
+        if (
+            has_pending_frame
+            and not self._supports_native_image
+            and not self._image_recognized_this_turn
+        ):
+            logger.debug(
+                "prompt_ephemeral: skipped — StepFun visual analysis is pending"
+            )
+            return False
         has_vision = self._image_recognized_this_turn or (
-            self._latest_image_b64 is not None and not self._proactive_image_consumed
+            self._supports_native_image and has_pending_frame
         )
         # Snapshot the current image so concurrent stream_image() calls don't
         # cause us to mark a newer frame as consumed.
