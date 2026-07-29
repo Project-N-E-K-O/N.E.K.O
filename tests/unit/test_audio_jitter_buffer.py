@@ -215,7 +215,12 @@ def test_realtime_workers_flush_jitter_on_non_cancelled_receiver_exit():
 def test_realtime_workers_flush_tail_before_normal_receiver_cancel():
     for provider in ("step", "free", "qwen", "grok"):
         source = REALTIME_WORKERS[provider].read_text(encoding="utf-8")
-        start = source.index("if current_speech_id != sid:")
+        branch_marker = (
+            "is_new_speech = current_speech_id != sid"
+            if provider in {"step", "free"}
+            else "if current_speech_id != sid:"
+        )
+        start = source.index(branch_marker)
         end = source.index("receive_task = asyncio.create_task", start)
         block = source[start:end]
         flush_call = "qwen_audio_jitter.flush()" if provider == "qwen" else "audio_jitter.flush()"
