@@ -466,3 +466,40 @@ async def test_concurrent_flush_does_not_clear_the_other_flushs_in_flight_mark()
     assert "member_flush_in_progress" not in user_data
     assert "member_snapshot_due" not in user_data
     assert not (user_data.get("pending_settle_buckets") or {})
+
+
+@pytest.mark.asyncio
+async def test_session_settled_mid_drain_reports_what_it_lost():
+    """A session finalized and popped mid-flight strands the drain's data.
+
+    That is the standing cost of not holding the lock, so it must be
+    loud rather than silent — and the orphaned mapping must not leave a
+    flush counter behind for a dict that could be rebound later.
+    """
+    released = asyncio.Event()
+    in_flight = asyncio.Event()
+
+    async def _post_scoped(her_name, messages, **kwargs):
+        in_flight.set()
+        await released.wait()
+        return {"status": "error", "message": "memory server down"}
+
+    service, plugin, user_data, _locks = _group_drain_harness(_post_scoped)
+    drain = asyncio.create_task(service._drain_member_buckets("group:7788"))
+    await asyncio.wait_for(in_flight.wait(), timeout=2.0)
+
+    # finalize 在飞行期间结算并弹出会话；此后到达的一代滞留在孤儿 dict 上。
+    user_data.setdefault("group_member_memory_messages", {})["3057"] = [
+        {"role": "user", "content": [{"type": "text", "text": "滞留"}]},
+    ]
+    plugin._user_sessions.pop("group:7788")
+
+    released.set()
+    await asyncio.wait_for(drain, timeout=2.0)
+
+    logged = " ".join(str(call) for call in plugin.logger.error.call_args_list)
+    assert "会话已结算并弹出" in logged
+    assert "1 个未冲成功的成员队列" in logged
+    assert "1 个滞留队列" in logged
+    # 计数放掉了，孤儿 dict 不会永远看起来"冲刷中"。
+    assert "member_flush_in_progress" not in user_data
