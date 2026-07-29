@@ -778,13 +778,25 @@ class ProactiveMixin:
                     # queued above, so the retry is not lost — just deferred to
                     # the loop-free turn-end hook.
 
+                def _on_voice_media_rejected(error_msg: str) -> None:
+                    _on_voice_inject_rejected(error_msg)
+                    # Unlike response_already_active, a rejected image may
+                    # arrive after the following text response has already
+                    # completed. Its response.done hook may also run before
+                    # the arbiter releases the ticket, so it cannot reliably
+                    # re-drive the restored callback. Use the delayed retry
+                    # path for media-event rejection specifically.
+                    self._schedule_proactive_retry(
+                        self.proactive_manager.min_gap_s
+                    )
+
                 # Stream any images carried by these cues into the (guaranteed)
                 # voice session right before inject, so the proactive response
                 # sees the matching visual context (Codex P2).
                 if not await self._stream_cb_media(
                     voice_snapshot,
                     voice_sess,
-                    on_rejected=_on_voice_inject_rejected,
+                    on_rejected=_on_voice_media_rejected,
                 ):
                     # A media stream failed — DEFER the whole inject so this cb
                     # retries WITH its image rather than being delivered
@@ -806,9 +818,6 @@ class ProactiveMixin:
                     logger.info(
                         "[%s] trigger_agent_callbacks: proactive media rejected before text inject; keeping %d cb(s) queued for retry",
                         self.lanlan_name, len(voice_snapshot),
-                    )
-                    self._schedule_proactive_retry(
-                        self.proactive_manager.min_gap_s
                     )
                     return False
                 # Pull-model staleness: a newer same-coalesce_key cue may have

@@ -893,8 +893,26 @@ class RealtimeResponseArbiter:
         finally:
             if self._current is queued:
                 self._current = None
-            if self._response_owner is queued and not self._server_response_active:
-                self._response_owner = None
+            if self._response_owner is queued:
+                started_failed = (
+                    queued.ticket.started.done()
+                    and not queued.ticket.started.cancelled()
+                    and queued.ticket.started.exception() is not None
+                )
+                if not self._server_response_active or (
+                    started_failed and self._server_response_ids
+                ):
+                    # A response.create rejected before response.created owns
+                    # no live response. Detach it even when a server-VAD
+                    # response started during the preceding item-ack wait.
+                    # The separately remembered server response id continues
+                    # holding the lane until its own terminal event. For an
+                    # id-less server response, retain the owner as the only
+                    # safe terminal correlation instead of reopening early.
+                    self._response_owner = None
+                    if queued.terminal is not None and not queued.terminal.done():
+                        queued.terminal.cancel()
+                    self._release_lane_if_clear()
             if (
                 not requeued
                 and queued.completed is not None

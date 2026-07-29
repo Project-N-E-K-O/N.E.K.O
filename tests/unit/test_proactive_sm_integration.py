@@ -1021,6 +1021,52 @@ async def test_voice_mode_callback_image_rejection_before_inject_keeps_cb():
     )
 
 
+async def test_voice_mode_callback_image_rejection_after_inject_rearms_retry():
+    sess = _make_voice_sess()
+    image_rejections = []
+
+    async def _stream_image(
+        _image_b64,
+        *,
+        bypass_rate_limit=False,
+        on_rejected=None,
+    ):
+        assert bypass_rate_limit is True
+        assert on_rejected is not None
+        image_rejections.append(on_rejected)
+
+    sess.stream_image = _stream_image
+    mgr = _make_mgr(session=sess)
+    cb = {
+        "_callback_delivery_id": "id-image-late-rejected",
+        "status": "completed",
+        "summary": "inspect this image",
+        "media_images": ["image-b64"],
+    }
+    extra = {
+        "_callback_delivery_id": "id-image-late-rejected",
+        "summary": "inspect this image",
+    }
+    mgr.pending_agent_callbacks = [cb]
+    mgr.pending_extra_replies = [extra]
+    mgr._schedule_proactive_retry = MagicMock()
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert mgr.pending_agent_callbacks == []
+    assert mgr.pending_extra_replies == []
+    assert len(image_rejections) == 1
+
+    image_rejections[0]("callback image rejected")
+
+    assert mgr.pending_agent_callbacks == [cb]
+    assert mgr.pending_extra_replies == [extra]
+    mgr._schedule_proactive_retry.assert_called_once_with(
+        mgr.proactive_manager.min_gap_s
+    )
+
+
 async def test_voice_mode_unstamped_cb_still_pruned_via_object_id_fallback():
     """Defense in depth：production 路径都过 ``enqueue_agent_callback`` 标
     ``_callback_delivery_id``，但 voice 成功 inject 的 pac 清理还有一条
