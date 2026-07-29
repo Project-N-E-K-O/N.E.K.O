@@ -36,15 +36,22 @@ class QQSessionMemoryService:
     # 系统消息，此前未落盘的轮次当场消失；在它之前主动落盘，能把损失从
     # "整场会话"压到最多这么多轮。
     GROUP_DIGEST_BACKLOG_TRIGGER = 40
-    # 结算前等待该会话在途排空的上限。排空的 scoped POST 单发最长 30s、
-    # 一趟两波，等满会把关机拖成不可接受的时长；等不到就按原样继续（排空
-    # 自己会把丢掉的量记进 error 日志）。
+    # 结算前等待该会话在途排空的上限，两条路径不同价：
+    # · idle 等不到就跳过整轮、下次 sweep 重来，短一点零代价。
+    # · 关机等不到就只能带着损失继续，短一点直接换成丢数据。而 scoped
+    #   history 端点跑的是一次 LLM 抽取（单发 timeout 就是 30s），5 秒
+    #   没回来是常态而不是故障——按 5 秒判它"卡住"是误判。改前这里其实
+    #   是**无界**的（整趟排空持会话锁，关机的 flush 只能干等），所以放宽
+    #   到覆盖单发请求仍比 main 的现状更短。
     SETTLE_JOIN_TIMEOUT_SECONDS = 5.0
+    SHUTDOWN_SETTLE_JOIN_TIMEOUT_SECONDS = 30.0
 
     def __init__(self, plugin: Any):
         self.plugin = plugin
 
-    async def _await_pending_session_settlement(self, session_key: str) -> bool:
+    async def _await_pending_session_settlement(
+        self, session_key: str, *, timeout: float | None = None,
+    ) -> bool:
         """Let this session's registered settlement work finish first.
 
         Returns False when it is still outstanding after the bound — the
@@ -67,7 +74,10 @@ class QQSessionMemoryService:
         if not tasks:
             return True
         _done, still_pending = await asyncio.wait(
-            tasks, timeout=self.SETTLE_JOIN_TIMEOUT_SECONDS,
+            tasks,
+            timeout=(
+                self.SETTLE_JOIN_TIMEOUT_SECONDS if timeout is None else timeout
+            ),
         )
         if not still_pending:
             return True
@@ -164,7 +174,10 @@ class QQSessionMemoryService:
             # 与 idle 不同的是**等不到也照样结算**：这是最后一次机会，跳过
             # 意味着这个会话的群 digest 也一起没了（那通常比成员桶大得多）。
             # 两种损失里选小的，排空自己会把丢掉的量记进 error 日志。
-            if not await self._await_pending_session_settlement(session_key):
+            if not await self._await_pending_session_settlement(
+                session_key,
+                timeout=self.SHUTDOWN_SETTLE_JOIN_TIMEOUT_SECONDS,
+            ):
                 self.plugin.logger.warning(
                     f"排空仍在途但已是最后一次结算机会（{session_key}, "
                     f"reason={reason}），继续结算群侧数据"

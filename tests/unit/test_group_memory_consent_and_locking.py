@@ -766,3 +766,23 @@ async def test_opt_out_settlement_waits_for_the_generation_the_drain_promotes():
     )
     assert not (user_data.get("pending_settle_buckets") or {})
     assert "pending_member_settle" not in user_data
+
+
+def test_shutdown_waits_longer_for_a_drain_than_the_idle_sweep():
+    """The two bounds are not the same price, so they are not the same number.
+
+    An idle sweep that gives up costs one more sweep interval; a shutdown
+    that gives up costs the drain's failed buckets outright. And the scoped
+    history endpoint runs an LLM extraction (its own request timeout is
+    30s), so "no answer in five seconds" is routine there rather than a
+    sign of a wedged drain.
+    """
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService as Service,
+    )
+
+    assert Service.SHUTDOWN_SETTLE_JOIN_TIMEOUT_SECONDS > (
+        Service.SETTLE_JOIN_TIMEOUT_SECONDS
+    )
+    # 至少覆盖一次 scoped history 请求，否则健康但慢的排空会被误判成卡住。
+    assert Service.SHUTDOWN_SETTLE_JOIN_TIMEOUT_SECONDS >= 30.0
