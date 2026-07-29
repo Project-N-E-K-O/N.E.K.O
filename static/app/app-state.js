@@ -199,6 +199,7 @@
         // next_schedule_fixed_mode 字段控制开关；默认 false（即走常规退避）。
         proactiveFixedScheduleMode: false,
         _voiceProactiveNoResponseCount: 0,
+        _voiceProactiveBackoffResetVersion: 0,
         _voiceSessionInitialTimer: null,
         isProactiveChatRunning: false,
         _proactiveSchedulerInitialized: false,

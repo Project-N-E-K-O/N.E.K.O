@@ -737,6 +737,7 @@
                 }
                 S.isProactiveChatRunning = true;
                 var voiceTriggered = false;
+                var voiceResetVersion = S._voiceProactiveBackoffResetVersion || 0;
                 try {
                     voiceTriggered = await triggerProactiveChat();
                 } finally {
@@ -747,8 +748,11 @@
                 // 409 会按 >=10 阈值熔断语音 nudge 直到下次 user 触发 reset。等同
                 // _isAssistantSpeaking / _isUserRecentlySpeaking 这两个 frontend
                 // guard 走的"跳过不计数"分支。Codex review on PR #1401。
-                if (voiceTriggered) {
+                if (voiceTriggered
+                    && (S._voiceProactiveBackoffResetVersion || 0) === voiceResetVersion) {
                     S._voiceProactiveNoResponseCount = (S._voiceProactiveNoResponseCount || 0) + 1;
+                } else if (voiceTriggered) {
+                    console.log('[ProactiveChat] 用户在本轮等待期间已回复，保留无回复计数 reset');
                 }
                 // 文本注入会一直 await 到 response.done；对应 turn end 可能在
                 // isProactiveChatRunning 仍为 true 时先到，导致调度调用被抑制。
@@ -1849,6 +1853,8 @@
         S.proactiveChatBackoffLevel = 0;
         // 语音模式：用户说话了，重置无回复计数
         S._voiceProactiveNoResponseCount = 0;
+        S._voiceProactiveBackoffResetVersion =
+            (S._voiceProactiveBackoffResetVersion || 0) + 1;
         // 重新安排定时器
         scheduleProactiveChat();
         // 跨窗口同步：分发环境下 chat.html 输入只会 reset 它自己这份无用的 state，

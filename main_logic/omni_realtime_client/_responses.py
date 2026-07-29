@@ -545,7 +545,8 @@ class _ResponseMixin:
         try:
             create_event: Dict[str, Any] = {"type": "response.create"}
             create_event["event_id"] = create_event_id
-            ticket = await self._ensure_response_arbiter().enqueue(
+            arbiter = self._ensure_response_arbiter()
+            ticket = await arbiter.enqueue(
                 source="proactive",
                 events_before_response=(item_event,),
                 response_event=create_event,
@@ -554,7 +555,7 @@ class _ResponseMixin:
                 expected_item_role="user",
                 priority=20,
             )
-            await ticket.sent
+            await asyncio.shield(ticket.sent)
             if self._fatal_error_occurred or self.ws is None:
                 raise RuntimeError(
                     "realtime connection lost after proactive response.create"
@@ -570,6 +571,18 @@ class _ResponseMixin:
                         _complete_once()
 
                 self._fire_task(_observe_ticket_outcome())
+        except asyncio.CancelledError:
+            self._inject_rejection_handlers.pop(item_event_id, None)
+            self._inject_rejection_handlers.pop(create_event_id, None)
+            _close_outcome_window()
+            try:
+                await asyncio.shield(arbiter.cancel_ticket(ticket))
+            except Exception as cancel_exc:
+                logger.warning(
+                    "proactive inject cancellation cleanup failed: %s",
+                    cancel_exc,
+                )
+            raise
         except Exception:
             self._inject_rejection_handlers.pop(item_event_id, None)
             self._inject_rejection_handlers.pop(create_event_id, None)
@@ -824,7 +837,7 @@ class _ResponseMixin:
         # Re-check activity after any image await. A user or AI turn that won
         # during the visual send must preempt this proactive response.create.
         if (
-            self._is_responding
+            self.is_active_response()
             or self._user_recent_activity_time > _now
             or self._ai_recent_activity_time > _now
         ):
@@ -909,6 +922,17 @@ class _ResponseMixin:
 
     async def cancel_response(self, *, wait: bool = False, timeout: float = 3.0) -> None:
         """Cancel the current response."""
+        if self._is_gemini:
+            if self._gemini_session is None:
+                return
+            # Gemini Live has no response.cancel event. Any client_content
+            # interrupts current generation; leaving turn_complete false avoids
+            # immediately starting a replacement model turn.
+            await self._gemini_session.send_client_content(
+                turns=None,
+                turn_complete=False,
+            )
+            return
         if wait:
             await self._ensure_response_arbiter().cancel_current(timeout)
             return

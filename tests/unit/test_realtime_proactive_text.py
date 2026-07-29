@@ -317,6 +317,40 @@ async def test_prompt_defers_sid_rotation_while_response_arbiter_is_busy():
 
 
 @pytest.mark.unit
+async def test_prompt_rechecks_arbiter_after_visual_await_before_sid_rotation():
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+    client.on_sid_rotate = AsyncMock()
+    visual_started = asyncio.Event()
+    release_visual = asyncio.Event()
+
+    async def delayed_stream_image(*_args, **_kwargs):
+        visual_started.set()
+        await release_visual.wait()
+
+    client.stream_image = delayed_stream_image
+    task = asyncio.create_task(client.prompt_ephemeral("do not rotate this SID"))
+    await visual_started.wait()
+    earlier = await client._response_arbiter.enqueue(source="user-turn", priority=0)
+    release_visual.set()
+
+    assert await task is False
+    client.on_sid_rotate.assert_not_awaited()
+    client._response_arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-user"}}
+    )
+    client._response_arbiter.notify_response_terminal(
+        {
+            "type": "response.done",
+            "response": {"id": "resp-user", "status": "completed"},
+        }
+    )
+    await earlier.done
+    await client.close()
+
+
+@pytest.mark.unit
 async def test_delivery_timeout_cancels_and_quarantines_until_lifecycle(monkeypatch):
     client = _make_client()
     monkeypatch.setattr(
@@ -412,6 +446,78 @@ async def test_gemini_prompt_rejects_interrupted_lifecycle():
 
     assert await task is False
     assert client._proactive_inject_awaiting_outcome is False
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_gemini_delivery_timeout_uses_native_client_content_interrupt(monkeypatch):
+    client = _make_client(api_type="gemini", model="gemini-live")
+    client._gemini_session = AsyncMock()
+    monkeypatch.setattr(
+        responses_module,
+        "_PROACTIVE_INJECT_DELIVERY_TIMEOUT_SECONDS",
+        0.01,
+    )
+
+    delivered = await client.prompt_ephemeral("time out Gemini")
+
+    assert delivered is False
+    assert client._gemini_session.send_client_content.await_count == 2
+    cancel_call = client._gemini_session.send_client_content.await_args_list[-1]
+    assert cancel_call.kwargs == {"turns": None, "turn_complete": False}
+    assert client._proactive_inject_awaiting_outcome is True
+    await client._process_gemini_response(
+        _gemini_lifecycle_response(interrupted=True)
+    )
+    assert client._proactive_inject_awaiting_outcome is False
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_cancelled_queued_inject_cleans_gate_and_never_dispatches():
+    client = _make_client()
+    earlier = await client._response_arbiter.enqueue(source="user-turn", priority=0)
+    await earlier.sent
+    task = asyncio.create_task(
+        client.inject_text_and_request_response(
+            "cancel this queued proactive",
+            on_rejected=lambda _message: None,
+            on_completed=lambda: None,
+        )
+    )
+    for _ in range(20):
+        if client._proactive_inject_awaiting_outcome:
+            break
+        await asyncio.sleep(0)
+    assert client._proactive_inject_awaiting_outcome is True
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert client._proactive_inject_awaiting_outcome is False
+    assert client._inject_rejection_handlers == {}
+    client._response_arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-user"}}
+    )
+    client._response_arbiter.notify_response_terminal(
+        {
+            "type": "response.done",
+            "response": {"id": "resp-user", "status": "completed"},
+        }
+    )
+    await earlier.done
+    for _ in range(20):
+        if not client._response_arbiter.is_busy:
+            break
+        await asyncio.sleep(0)
+    assert len(
+        [
+            event
+            for event in _sent_events(client)
+            if event.get("type") == "response.create"
+        ]
+    ) == 1
     await client.close()
 
 

@@ -125,6 +125,7 @@ class RealtimeResponseArbiter:
         self._send_event = send_event
         self._abort_transport = abort_transport
         self._queue: asyncio.PriorityQueue[_QueuedResponse] = asyncio.PriorityQueue()
+        self._queued_by_ticket: dict[int, _QueuedResponse] = {}
         self._sequence = itertools.count()
         self._worker: asyncio.Task[None] | None = None
         self._current: _QueuedResponse | None = None
@@ -239,6 +240,7 @@ class RealtimeResponseArbiter:
             event_ids=frozenset(ids),
             completed=loop.create_future(),
         )
+        self._queued_by_ticket[id(ticket)] = queued
         await self._queue.put(queued)
         self._ensure_worker()
         return ticket
@@ -285,6 +287,35 @@ class RealtimeResponseArbiter:
             await asyncio.wait_for(asyncio.shield(current.completed), timeout)
         except asyncio.TimeoutError as original_timeout:
             await self._fail_closed("response cancellation terminal event timed out")
+            raise original_timeout
+
+    async def cancel_ticket(
+        self,
+        ticket: ResponseTicket,
+        timeout: float = 3.0,
+    ) -> None:
+        """Cancel one exact queued/in-flight request without touching its peers."""
+
+        queued = self._queued_by_ticket.get(id(ticket))
+        if queued is None:
+            return
+        queued.interrupted = True
+        queued.interrupt_event.set()
+        # A ticket still waiting in the priority queue will observe the
+        # interrupt before dispatch. Do not cancel the unrelated current owner.
+        if queued is not self._current:
+            return
+        if (
+            ticket.sent.done()
+            and not ticket.sent.cancelled()
+            and ticket.sent.exception() is None
+        ):
+            await self._send_event({"type": "response.cancel"})
+        assert queued.completed is not None
+        try:
+            await asyncio.wait_for(asyncio.shield(queued.completed), timeout)
+        except asyncio.TimeoutError as original_timeout:
+            await self._fail_closed("targeted response cancellation timed out")
             raise original_timeout
 
     async def wait_until_idle(self, timeout: float | None = None) -> None:
@@ -650,6 +681,7 @@ class RealtimeResponseArbiter:
             except asyncio.QueueEmpty:
                 return
             self._fail_ticket(queued.ticket, exc)
+            self._queued_by_ticket.pop(id(queued.ticket), None)
             if queued.completed is not None and not queued.completed.done():
                 queued.completed.set_result(None)
             self._queue.task_done()
@@ -798,6 +830,19 @@ class RealtimeResponseArbiter:
                 if not queued.terminal.done():
                     queued.terminal.cancel()
                 raise
+            if queued.interrupted:
+                await self._send_event({"type": "response.cancel"})
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(queued.terminal), queued.cancel_timeout
+                    )
+                except Exception:
+                    if not queued.terminal.done():
+                        queued.terminal.cancel()
+                    await self._fail_closed(
+                        "interrupted response could not reach a terminal state"
+                    )
+                raise RuntimeError("response dispatch interrupted")
             if not queued.ticket.sent.done():
                 queued.ticket.sent.set_result(None)
 
@@ -837,6 +882,8 @@ class RealtimeResponseArbiter:
                 and not queued.completed.done()
             ):
                 queued.completed.set_result(None)
+            if not requeued:
+                self._queued_by_ticket.pop(id(queued.ticket), None)
             if not self._server_response_active:
                 self._idle.set()
 
