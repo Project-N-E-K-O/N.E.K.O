@@ -906,6 +906,12 @@ class QQSessionMemoryService:
                 current.pop("pending_settle_labels", None)
                 current.pop("pending_member_settle", None)
 
+            # 锁外先等在途排空：会话锁不再是屏障，这个结算可能抢在排空
+            # 之前拿到锁，看到还没提升的空 pending_settle_buckets，什么都
+            # 没做就收尾——随后排空提升出来的那一代就没有消费者了，会一直
+            # 滞留到某次 idle/finalize（活跃群可能永远等不到）。等它落地，
+            # 提升出来的一代正好被下面的 _settle_one 冲掉。
+            await self._await_pending_session_settlement(session_key)
             await self.plugin._run_with_session_lock(session_key, _settle_one)
 
     async def finalize_user_memory_session(

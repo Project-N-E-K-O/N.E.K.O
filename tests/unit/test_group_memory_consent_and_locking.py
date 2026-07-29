@@ -714,3 +714,55 @@ async def test_idle_sweep_skips_instead_of_ejecting_a_draining_session():
     # 排空落地之后，下一轮 sweep 照常结算。
     await asyncio.wait_for(service.flush_idle_memory_sessions(), timeout=3.0)
     assert finalized == ["idle_timeout"]
+
+
+@pytest.mark.asyncio
+async def test_opt_out_settlement_waits_for_the_generation_the_drain_promotes():
+    """The opt-out settlement must not run ahead of an in-flight drain.
+
+    The session lock is no longer a barrier, so the settlement can grab it
+    first, see a `pending_settle_buckets` that has not been promoted yet,
+    and finish having done nothing. The generation the drain promotes
+    afterwards then has no consumer left and lingers past the opt-out
+    until some unrelated idle/finalize — which an always-busy group may
+    never reach.
+    """
+    posted: list[str] = []
+    released = asyncio.Event()
+    in_flight = asyncio.Event()
+
+    async def _post_scoped(her_name, messages, **kwargs):
+        subject_id = (kwargs.get("subject") or {}).get("subject_id", "")
+        posted.append(subject_id)
+        if subject_id.endswith(":2046"):
+            in_flight.set()
+            await released.wait()
+        return {"status": "ok"}
+
+    service, plugin, user_data, _locks = _group_drain_harness(_post_scoped)
+    plugin._session_settle_tasks = {}
+
+    drain = asyncio.create_task(service._drain_member_buckets("group:7788"))
+    plugin._session_settle_tasks["group:7788"] = {drain}
+    await asyncio.wait_for(in_flight.wait(), timeout=2.0)
+
+    # 冲刷期间又攒了一代，然后用户关掉成员记忆（设置侧看到有冲刷在飞，
+    # 只记待办，不动活映射）。
+    user_data.setdefault("group_member_memory_messages", {})["3057"] = [
+        {"role": "user", "content": [{"type": "text", "text": "关开关前说的"}]},
+    ]
+    user_data["member_snapshot_due"] = True
+    user_data["pending_member_settle"] = True
+    plugin._qq_settings["group_member_memory_enabled"] = False
+
+    settle = asyncio.create_task(service.settle_member_buckets_on_disable())
+    await asyncio.sleep(0)
+    released.set()
+    await asyncio.wait_for(settle, timeout=3.0)
+    await asyncio.wait_for(drain, timeout=2.0)
+
+    assert "qq:7788:3057" in posted, (
+        "排空提升出来的那一代没人消费，opt-out 之后一直滞留"
+    )
+    assert not (user_data.get("pending_settle_buckets") or {})
+    assert "pending_member_settle" not in user_data
