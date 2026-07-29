@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -263,7 +264,7 @@ async def test_inject_completion_waits_for_its_own_queued_response_done():
     else:
         raise AssertionError("queued proactive response.create was not sent")
 
-    await task
+    assert await task is None
     assert completed.is_set() is False
     assert rejected == []
     client._response_arbiter.notify_response_created(
@@ -337,6 +338,7 @@ async def test_delivery_timeout_cancels_and_quarantines_until_lifecycle(monkeypa
     client._response_arbiter.notify_response_created(
         {"type": "response.created", "response": {"id": "resp-timeout"}}
     )
+    assert client._proactive_inject_awaiting_outcome is True
     client._response_arbiter.notify_response_terminal(
         {
             "type": "response.done",
@@ -349,6 +351,67 @@ async def test_delivery_timeout_cancels_and_quarantines_until_lifecycle(monkeypa
         await asyncio.sleep(0)
     assert client._proactive_inject_awaiting_outcome is False
     assert client._inject_rejection_handlers == {}
+    await client.close()
+
+
+def _gemini_lifecycle_response(*, turn_complete=False, interrupted=False):
+    return SimpleNamespace(
+        tool_call=None,
+        server_content=SimpleNamespace(
+            input_transcription=None,
+            model_turn=None,
+            output_transcription=None,
+            turn_complete=turn_complete,
+            interrupted=interrupted,
+        ),
+    )
+
+
+@pytest.mark.unit
+async def test_gemini_prompt_waits_for_turn_complete():
+    client = _make_client(api_type="gemini", model="gemini-live")
+    client._gemini_session = AsyncMock()
+    client.on_response_done = AsyncMock()
+
+    task = asyncio.create_task(client.prompt_ephemeral("wait for Gemini"))
+    for _ in range(20):
+        if client._gemini_session.send_client_content.await_count:
+            break
+        await asyncio.sleep(0)
+    else:
+        raise AssertionError("Gemini proactive turn was not sent")
+
+    assert task.done() is False
+    assert client._proactive_inject_awaiting_outcome is True
+    await client._process_gemini_response(
+        _gemini_lifecycle_response(turn_complete=True)
+    )
+
+    assert await task is True
+    assert client._proactive_inject_awaiting_outcome is False
+    client.on_response_done.assert_awaited_once_with()
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_gemini_prompt_rejects_interrupted_lifecycle():
+    client = _make_client(api_type="gemini", model="gemini-live")
+    client._gemini_session = AsyncMock()
+
+    task = asyncio.create_task(client.prompt_ephemeral("interrupt Gemini"))
+    for _ in range(20):
+        if client._gemini_session.send_client_content.await_count:
+            break
+        await asyncio.sleep(0)
+    else:
+        raise AssertionError("Gemini proactive turn was not sent")
+
+    await client._process_gemini_response(
+        _gemini_lifecycle_response(interrupted=True)
+    )
+
+    assert await task is False
+    assert client._proactive_inject_awaiting_outcome is False
     await client.close()
 
 

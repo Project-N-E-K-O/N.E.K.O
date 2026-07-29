@@ -1085,12 +1085,6 @@ class _TransportMixin:
                     self._response_arbiter.notify_response_created(event)
                     self._response_created_total += 1
                     self._last_response_created_time = time.time()
-                    # A response started — our proactive inject's response.create
-                    # was either accepted (this IS its response) or a different
-                    # response is now active; either way close the no-id
-                    # content-fallback window so a later unrelated no-id
-                    # conflict can't fire a lingering (accepted) inject handler.
-                    self._proactive_inject_awaiting_outcome = False
                     self._current_response_id = event.get("response", {}).get("id")
                     self._is_responding = True
                     self._interrupted = False  # Clear interruption flag on new response

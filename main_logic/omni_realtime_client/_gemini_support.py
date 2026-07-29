@@ -462,6 +462,10 @@ class _GeminiMixin:
                         break
         except Exception as e:
             logger.error(f"Gemini message handler error: {e}")
+        finally:
+            self._settle_gemini_proactive_inject(
+                error_msg="Gemini realtime message loop ended"
+            )
 
     async def _process_gemini_response(self, response) -> None:
         """Process a single Gemini response event."""
@@ -598,6 +602,9 @@ class _GeminiMixin:
                                     await self.on_audio_delta(part.inline_data.data)
 
                 # 检查是否 turn 完成（用 getattr 防止 SDK 无该字段时抛错）
+                was_interrupted = bool(
+                    getattr(server_content, 'interrupted', False)
+                )
                 if getattr(server_content, 'turn_complete', False):
                     # Gemini Live API 不返回 token 数，仅记录调用次数
                     try:
@@ -611,6 +618,8 @@ class _GeminiMixin:
                     except Exception:
                         pass
                     self._is_responding = False
+                    if not was_interrupted:
+                        self._settle_gemini_proactive_inject()
                     if self._skip_until_next_response:
                         self._skip_until_next_response = False
                         logger.info("Gemini: skipped response (prime_context priming)")
@@ -618,7 +627,10 @@ class _GeminiMixin:
                         await self.on_response_done()
 
                 # 检查是否被中断
-                if hasattr(server_content, 'interrupted') and server_content.interrupted:
+                if was_interrupted:
+                    self._settle_gemini_proactive_inject(
+                        error_msg="Gemini proactive response interrupted"
+                    )
                     if self._skip_until_next_response:
                         self._skip_until_next_response = False
                         logger.info("Gemini: skipped response interrupted, reset skip flag")

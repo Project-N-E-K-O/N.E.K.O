@@ -392,9 +392,8 @@ class _ResponseMixin:
             qwen3.5-omni-flash-realtime; verified live.)
           - **Gemini Live**: ``send_client_content(turn_complete=True)`` via
             the shared ``_gemini_send_user_turn`` helper — Gemini's idiomatic
-            inject+trigger. No ``on_rejected`` async ack (Gemini has no
-            ``response.create`` error-event channel); failures raise
-            synchronously here so the caller's ``except`` branch re-queues.
+            inject+trigger. Synchronous send failures raise; successful sends
+            remain pending until ``turn_complete`` or ``interrupted``.
         """
         if self._fatal_error_occurred:
             raise RuntimeError("realtime session has fatal_error_occurred set")
@@ -404,16 +403,31 @@ class _ResponseMixin:
         if self._is_gemini:
             # Symmetric with create_response → _create_response_gemini.
             # send_client_content(turn_complete=True) injects a user turn and
-            # triggers a response. Errors propagate (unlike the swallowing
-            # _create_response_gemini wrapper) so the caller keeps the cb.
+            # triggers a response. Delivery remains pending until Gemini's
+            # turn_complete/interrupted lifecycle settles this exact inject;
+            # SDK-send success alone is not response completion.
             if self._gemini_session is None:
                 raise RuntimeError("Gemini session not available for proactive inject")
-            await self._gemini_send_user_turn(text)
-            # Gemini has no response.create/error-event acknowledgement
-            # channel. A successful SDK send is its delivery boundary; send
-            # failures raise synchronously above.
-            if on_completed is not None:
-                on_completed()
+            outcome_token = f"gemini_inject_{uuid.uuid4().hex}"
+            if on_rejected is not None or on_completed is not None:
+                if getattr(self, "_gemini_proactive_outcome", None) is not None:
+                    raise RuntimeError("another Gemini proactive inject is pending")
+                self._gemini_proactive_outcome = (
+                    outcome_token,
+                    on_rejected,
+                    on_completed,
+                )
+                self._proactive_inject_outcome_token = outcome_token
+                self._proactive_inject_awaiting_outcome = True
+            try:
+                await self._gemini_send_user_turn(text)
+            except Exception:
+                self._settle_gemini_proactive_inject(notify=False)
+                raise
+            if on_rejected is not None or on_completed is not None:
+                self._fire_task(
+                    self._expire_gemini_proactive_outcome(outcome_token, 60.0)
+                )
             return
         # NOTE on Qwen: the Aliyun realtime doc states conversation.item.create
         # "currently only supports function_call_output items". That is stale
@@ -561,6 +575,48 @@ class _ResponseMixin:
             self._inject_rejection_handlers.pop(create_event_id, None)
             _close_outcome_window()
             raise
+
+    def _settle_gemini_proactive_inject(
+        self,
+        *,
+        error_msg: Optional[str] = None,
+        notify: bool = True,
+    ) -> None:
+        """Settle the one pending Gemini proactive turn at its lifecycle edge."""
+        outcome = getattr(self, "_gemini_proactive_outcome", None)
+        if outcome is None:
+            return
+        token, on_rejected, on_completed = outcome
+        self._gemini_proactive_outcome = None
+        if getattr(self, "_proactive_inject_outcome_token", None) == token:
+            self._proactive_inject_outcome_token = None
+            self._proactive_inject_awaiting_outcome = False
+        if not notify:
+            return
+        try:
+            if error_msg is not None:
+                if on_rejected is not None:
+                    on_rejected(error_msg)
+            elif on_completed is not None:
+                on_completed()
+        except Exception as cb_exc:
+            logger.warning("Gemini proactive outcome handler raised: %s", cb_exc)
+
+    async def _expire_gemini_proactive_outcome(
+        self,
+        token: str,
+        ttl: float,
+    ) -> None:
+        """Fail closed if Gemini never emits turn_complete/interrupted."""
+        try:
+            await asyncio.sleep(ttl)
+        except asyncio.CancelledError:
+            return
+        outcome = getattr(self, "_gemini_proactive_outcome", None)
+        if outcome is not None and outcome[0] == token:
+            self._settle_gemini_proactive_inject(
+                error_msg="Gemini proactive response lifecycle timed out"
+            )
 
     async def _expire_inject_rejection_handler(self, event_id: str, ttl: float) -> None:
         """TTL backstop for a ticket whose terminal lifecycle never arrives."""
