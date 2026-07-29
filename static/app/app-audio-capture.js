@@ -1285,6 +1285,12 @@
 
         // 创建音频上下文，强制使用 48kHz 采样率
         S.audioContext = new AudioContext({ sampleRate: 48000 });
+        // This attempt's OWN context, remembered before the awaits below. The
+        // unwind path must tear down only what this attempt created: S.* are
+        // module globals shared by every concurrent attempt, and a superseded
+        // attempt that resets them blindly kills the hardware of the attempt
+        // that superseded it. See the unwind for the failure it produced.
+        const ownContext = S.audioContext;
         console.log("音频上下文采样率 (强制48kHz):", S.audioContext.sampleRate);
 
         // 创建媒体流源
@@ -1376,6 +1382,19 @@
             // lease the backend just revoked and feeds a blocked route.
             if (startToken !== micStartGeneration || S.voiceInputRouteBlocked === true) {
                 console.log('[App] microphone start was superseded while opening; unwinding');
+                // Attempt-scoped teardown ONLY. This unwind runs on the LOSING
+                // attempt, and by the time it runs a newer startMicCapture may
+                // already have published its own stream and context into the
+                // same S.* fields -- it assigns S.stream before it ever calls
+                // in here, there is no re-entrancy guard on startMicCapture,
+                // and several of its callers are fire-and-forget (the two
+                // game-STT restore paths above, and app-websocket.js's
+                // mic-pipeline repair).
+                // Resetting them unconditionally stopped the WINNER's tracks
+                // and nulled S.audioContext out from under it, so the winner
+                // then threw on S.audioContext.sampleRate and the user ended up
+                // with no microphone at all -- from two overlapping starts,
+                // which is precisely the case this token exists for.
                 try {
                     if (mediaStream && typeof mediaStream.getTracks === 'function') {
                         mediaStream.getTracks().forEach(track => track.stop());
@@ -1383,24 +1402,21 @@
                 } catch (_) {
                     // best-effort teardown
                 }
-                if (S.stream) {
-                    try {
-                        S.stream.getTracks().forEach(track => track.stop());
-                    } catch (_) {
-                        // best-effort teardown
-                    }
+                if (S.stream && S.stream === mediaStream) {
+                    // Already stopped above; only drop the reference, and only
+                    // while it is still OUR stream.
                     S.stream = null;
                 }
-                if (S.audioContext) {
-                    if (S.audioContext.state !== 'closed') {
-                        S.audioContext.close();
-                    }
-                    S.audioContext = null;
+                if (ownContext && ownContext.state !== 'closed') {
+                    ownContext.close();
                 }
-                S.workletNode = null;
-                S.micGainNode = null;
-                S.inputAnalyser = null;
-                stopSilenceDetection();
+                if (S.audioContext === ownContext) {
+                    S.audioContext = null;
+                    S.workletNode = null;
+                    S.micGainNode = null;
+                    S.inputAnalyser = null;
+                    stopSilenceDetection();
+                }
                 // Deliberately NOT refreshMicLease(): the lease is the
                 // backend's now, and re-emitting a snapshot from a window that
                 // never started recording is exactly the re-claim being
@@ -1563,6 +1579,14 @@
                 // already torn down, so restore the pre-start UI and leave
                 // WITHOUT the success path below. Not an error -- no toast, and
                 // nothing to throw at a caller who did nothing wrong.
+                //
+                // Skipped when a newer attempt has since COMMITTED: this UI is
+                // global, same as the S.* fields the unwind is careful about,
+                // and painting "not recording" over a window that is recording
+                // is the display-plane half of the same bug.
+                if (S.isRecording === true) {
+                    return;
+                }
                 if (_mic) {
                     _mic.classList.remove('recording');
                     _mic.classList.remove('active');

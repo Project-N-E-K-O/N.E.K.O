@@ -37,6 +37,8 @@ and would hit every user.
 
 import asyncio
 import json
+import tomllib
+from pathlib import Path
 
 import pytest
 
@@ -57,11 +59,19 @@ def _native_client(api_type: str = "qwen", model: str = "qwen-omni-turbo-realtim
 
 
 class _RecordingSocket:
-    """Socket double that records what the arbiter actually put on the wire."""
+    """Socket double that records what the arbiter actually put on the wire.
+
+    Also plays the server side: ``feed()`` pushes an event that
+    ``handle_messages()`` will read out of its ``async for``, and ``finish()``
+    ends the loop. That is what lets a test drive one whole native turn
+    through the REAL receive loop rather than poking the arbiter's notify_*
+    methods directly.
+    """
 
     def __init__(self) -> None:
         self.sent: list[dict] = []
         self.closed = False
+        self._inbound: asyncio.Queue = asyncio.Queue()
 
     async def send(self, payload) -> None:
         self.sent.append(json.loads(payload) if isinstance(payload, str) else payload)
@@ -72,6 +82,19 @@ class _RecordingSocket:
     @property
     def types(self) -> list[str]:
         return [event.get("type") for event in self.sent]
+
+    def feed(self, event: dict) -> None:
+        self._inbound.put_nowait(json.dumps(event))
+
+    def finish(self) -> None:
+        self._inbound.put_nowait(None)
+
+    async def __aiter__(self):
+        while True:
+            message = await self._inbound.get()
+            if message is None:
+                return
+            yield message
 
 
 async def _settle(times: int = 50) -> None:
@@ -233,6 +256,15 @@ async def test_interruption_clears_the_lane_for_the_next_native_turn():
     # has to be driven concurrently -- exactly how the real receive loop does it.
     cancel_task = asyncio.create_task(arbiter.cancel_current(timeout=1))
     await _settle()
+    # CodeRabbit: assert the cancel actually reached the wire BEFORE injecting
+    # the terminal. Injecting response.cancelled by hand and only checking that
+    # the lane reopened would stay green with the response.cancel send deleted
+    # -- the barge-in would silently stop telling the server to stop talking,
+    # and she would keep speaking over the user.
+    assert [event["type"] for event in sent] == [
+        "response.create",
+        "response.cancel",
+    ]
     arbiter.notify_response_terminal(
         {"type": "response.cancelled", "response": {"id": "resp-1"}}
     )
@@ -280,3 +312,111 @@ async def test_the_client_wires_an_arbiter_for_every_native_user():
     client = _native_client()
     assert isinstance(client._response_arbiter, RealtimeResponseArbiter)
     assert client._ensure_response_arbiter() is client._response_arbiter
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_native_create_response_runs_through_the_arbiter_end_to_end():
+    # CodeRabbit: holding an arbiter reference proves nothing. If
+    # create_response ever wrote to the socket directly, every test above
+    # would stay green because they all drive the arbiter by hand.
+    #
+    # So drive the REAL entry point against a recording socket and the REAL
+    # receive loop, and assert the two things only an arbitrated path can
+    # produce: the item-ack barrier (response.create is withheld until the
+    # server acknowledges the conversation item) and lane serialization (a
+    # second create_response puts nothing on the wire while the first is
+    # still live). A direct-to-socket bypass fails both.
+    client = _native_client()
+    socket = _RecordingSocket()
+    client.ws = socket
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    first = asyncio.create_task(client.create_response("hello"))
+    await _settle()
+
+    # Barrier: the item is out, the response.create is NOT.
+    assert socket.types == ["conversation.item.create"]
+    item_id = socket.sent[0]["item"]["id"]
+
+    socket.feed(
+        {
+            "type": "conversation.item.created",
+            "item": {"id": item_id, "role": "user", "type": "message"},
+        }
+    )
+    await _settle()
+    assert socket.types == ["conversation.item.create", "response.create"]
+    await asyncio.wait_for(first, timeout=1)
+
+    socket.feed({"type": "response.created", "response": {"id": "resp-native-1"}})
+    await _settle()
+    arbiter = client._response_arbiter
+    assert arbiter.is_busy is True
+
+    # Serialization: a second turn submitted while the first is live must not
+    # reach the wire at all.
+    second = asyncio.create_task(client.create_response("and again"))
+    await _settle()
+    assert socket.types == ["conversation.item.create", "response.create"], (
+        "a second native turn must queue behind the live one, not bypass the lane"
+    )
+
+    socket.feed({"type": "response.done", "response": {"id": "resp-native-1"}})
+    await _settle()
+    # The lane reopened, so the queued turn dispatched its own item.
+    assert socket.types[2] == "conversation.item.create"
+    second_item_id = socket.sent[2]["item"]["id"]
+    assert second_item_id != item_id
+
+    socket.feed(
+        {
+            "type": "conversation.item.created",
+            "item": {"id": second_item_id, "role": "user", "type": "message"},
+        }
+    )
+    await _settle()
+    await asyncio.wait_for(second, timeout=1)
+    assert socket.types == [
+        "conversation.item.create",
+        "response.create",
+        "conversation.item.create",
+        "response.create",
+    ]
+
+    socket.feed({"type": "response.created", "response": {"id": "resp-native-2"}})
+    socket.feed({"type": "response.done", "response": {"id": "resp-native-2"}})
+    await _settle()
+    await arbiter.wait_until_idle(timeout=1)
+    assert arbiter.is_busy is False
+    assert arbiter.current_source is None
+
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+def test_the_python_pin_that_this_arbiter_depends_on_stays_gated():
+    # ``requires-python = "==3.11.*"`` is not a routine bump: the arbiter's
+    # resume -> await -> re-pause hand-off relies on 3.11 task-yield ordering
+    # and #2516 is still open. The pyproject comment says raising it is a
+    # "gated change" -- this is the gate, so that claim is true rather than
+    # aspirational.
+    #
+    # CodeRabbit asked instead for a `sys.version_info >= (3, 12): sys.exit()`
+    # kill switch in launcher.py / launcher_core / the main_server entry
+    # points. Declined here on blast radius: #2516 is a response-ORDERING
+    # defect (proactive chat can jump ahead of user speech), not a crash, and
+    # hard-exiting every entry point would brick the whole application for
+    # anyone already running 3.12 over a bug most of them will never hit.
+    # Shipping that is a release decision, not a review fix. Widening the pin
+    # is what needs stopping, and that is what this stops.
+    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    with pyproject.open("rb") as handle:
+        config = tomllib.load(handle)
+
+    assert config["project"]["requires-python"] == "==3.11.*", (
+        "requires-python was widened while #2516 (RealtimeResponseArbiter "
+        "dispatch ordering on 3.12+) is still open. Fix the dequeue gate "
+        "first -- see the comment above requires-python in pyproject.toml."
+    )

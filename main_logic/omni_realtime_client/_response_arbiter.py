@@ -1,4 +1,15 @@
-"""Serialize client-initiated realtime responses across their full lifecycle."""
+"""Serialize client-initiated realtime responses across their full lifecycle.
+
+CPython 3.11 only, and this module is why. The queue worker dequeues
+BEFORE re-checking ``_dispatch_allowed``, so a ``pause_dispatch()`` landing
+between those two points is only honored because of 3.11's task-yield
+ordering. On 3.12+ that ordering changes and proactive chat can jump the
+queue ahead of user speech. ``pyproject.toml`` pins ``requires-python`` to
+``==3.11.*`` for this reason and
+``tests/unit/test_realtime_arbiter_native_path.py`` fails if the pin is
+widened. The real fix is #2516: gate the dequeue on ``_dispatch_allowed``
+AFTER ``_next_queued`` and requeue. Do that before touching the pin.
+"""
 
 from __future__ import annotations
 
