@@ -38,6 +38,9 @@ from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Main")
 
+_FINISH_RETRY_SENTINEL = "__step_finish_retry__"
+
+
 def _adjust_free_tts_url(url: str) -> str:
     """Region substitution for the free TTS URL: delegates to ConfigManager._adjust_free_api_url."""
     try:
@@ -269,6 +272,33 @@ def run_step_protocol_tts_worker(
                 session_created = False
                 return False
 
+        async def _invalidate_current_socket(reason: str) -> None:
+            """Retire a socket after a synchronous send failure."""
+            nonlocal ws, session_id, receive_task, session_created
+            if receive_task and not receive_task.done():
+                receive_task.cancel()
+                try:
+                    await receive_task
+                except asyncio.CancelledError:
+                    # Expected after the explicit cancellation above.
+                    pass
+                receive_task = None
+            if ws:
+                try:
+                    await ws.close()
+                except Exception as close_exc:
+                    logger.debug("%s WebSocket 关闭失败: %s", reason, close_exc)
+            ws = None
+            session_id = None
+            session_created = False
+
+        async def _queue_finish_retry(speech_id) -> None:
+            """Retry a failed terminal send without busy-spinning."""
+            if speech_id is None:
+                return
+            await asyncio.sleep(1.0)
+            request_queue.put((_FINISH_RETRY_SENTINEL, speech_id))
+
         async def _flush_deferred_create(
             force: bool = False,
             *,
@@ -295,6 +325,7 @@ def run_step_protocol_tts_worker(
                 await ws.send(json.dumps({"type": "tts.create", "data": create_data}))
             except Exception as e:
                 logger.error(f"发送 tts.create 失败: {e}")
+                await _invalidate_current_socket("发送 tts.create 失败后的")
                 return False
             session_created = True
             if pending_text_buffer.strip():
@@ -323,21 +354,7 @@ def run_step_protocol_tts_worker(
                     # A second failure means the replacement connection is also
                     # unusable. Invalidate it so the next speech id reconnects;
                     # keep pending_text_buffer intact for diagnostics/retry.
-                    if receive_task and not receive_task.done():
-                        receive_task.cancel()
-                        try:
-                            await receive_task
-                        except asyncio.CancelledError:
-                            # Expected after the explicit cancellation above.
-                            pass
-                        receive_task = None
-                    if ws:
-                        try:
-                            await ws.close()
-                        except Exception as close_exc:
-                            logger.debug("关闭二次失败的 TTS socket 失败: %s", close_exc)
-                    ws = None
-                    session_id = None
+                    await _invalidate_current_socket("二次发送失败后的")
                     return False
             pending_text_buffer = ""
             return True
@@ -358,6 +375,7 @@ def run_step_protocol_tts_worker(
                 text_done_sent = True
             except Exception as e:
                 logger.warning(f"发送TTS完成信号失败: {e}")
+                await _invalidate_current_socket("发送 tts.text.done 失败后的")
                 return False
             return True
 
@@ -502,6 +520,18 @@ def run_step_protocol_tts_worker(
                 if sid == TTS_SHUTDOWN_SENTINEL:
                     break
 
+                if sid == _FINISH_RETRY_SENTINEL:
+                    finish_speech_id = tts_text
+                    if (
+                        finish_speech_id is None
+                        or finish_speech_id != current_speech_id
+                        or text_done_sent
+                        or not pending_text_buffer.strip()
+                    ):
+                        continue
+                    finish_requested = True
+                    sid = finish_speech_id
+
                 if sid == "__interrupt__":
                     # 打断：立即关闭连接，不发 tts.text.done、不等服务器确认
                     audio_jitter.begin_interrupt()
@@ -539,7 +569,7 @@ def run_step_protocol_tts_worker(
                     # 连接由下次 speech_id 切换 / __interrupt__ 关闭
                     if ws and session_id and current_speech_id is not None and not text_done_sent:
                         if not await _finish_current_speech() and pending_text_buffer.strip():
-                            request_queue.put((None, None))
+                            await _queue_finish_retry(current_speech_id)
                         continue
                     if (
                         current_speech_id is None
@@ -613,12 +643,12 @@ def run_step_protocol_tts_worker(
                         except asyncio.TimeoutError:
                             logger.warning("新连接超时")
                             if finish_requested:
-                                request_queue.put((None, None))
+                                await _queue_finish_retry(current_speech_id)
                             continue
 
                         if not session_id:
                             if finish_requested:
-                                request_queue.put((None, None))
+                                await _queue_finish_retry(current_speech_id)
                             continue
 
                         # 延迟 tts.create 到首批文本到达后，由 _flush_deferred_create
@@ -685,12 +715,14 @@ def run_step_protocol_tts_worker(
                         response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
                         await asyncio.sleep(1.0)
                         if finish_requested:
-                            request_queue.put((None, None))
+                            request_queue.put(
+                                (_FINISH_RETRY_SENTINEL, current_speech_id)
+                            )
                         continue
 
                 if finish_requested:
                     if not await _finish_current_speech() and pending_text_buffer.strip():
-                        request_queue.put((None, None))
+                        await _queue_finish_retry(current_speech_id)
                     continue
 
                 # 检查文本有效性

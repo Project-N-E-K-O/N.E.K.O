@@ -48,6 +48,21 @@ class _FakeTtsSocket:
         self._events.put(None)
 
 
+class _AutoShutdownQueue:
+    """Return shutdown once all dynamically queued retry work is consumed."""
+
+    def __init__(self):
+        self._items = []
+
+    def put(self, item):
+        self._items.append(item)
+
+    def get(self):
+        if self._items:
+            return self._items.pop(0)
+        return (TTS_SHUTDOWN_SENTINEL, None)
+
+
 def test_buffered_delta_failure_reconnects_and_replays_text(monkeypatch):
     initial = _FakeTtsSocket([
         {"type": "tts.connection.done", "data": {"session_id": "warmup"}},
@@ -185,3 +200,105 @@ def test_turn_end_reconnects_retained_prefix_after_replay_create_failure(monkeyp
     ]
     assert recovered.sent[1]["data"]["text"] == text
     assert replacement._closed is True
+
+
+def test_turn_end_create_failure_retries_on_fresh_socket_with_backoff(monkeypatch):
+    initial = _FakeTtsSocket([
+        {"type": "tts.connection.done", "data": {"session_id": "warmup"}},
+        {"type": "tts.response.created"},
+    ])
+    broken = _FakeTtsSocket(
+        [{"type": "tts.connection.done", "data": {"session_id": "broken"}}],
+        fail_send_at=2,
+    )
+    replacement = _FakeTtsSocket(
+        [{"type": "tts.connection.done", "data": {"session_id": "replacement"}}],
+        fail_send_from=1,
+    )
+    terminal_broken = _FakeTtsSocket(
+        [{"type": "tts.connection.done", "data": {"session_id": "terminal-broken"}}],
+        fail_send_from=1,
+    )
+    recovered = _FakeTtsSocket([
+        {"type": "tts.connection.done", "data": {"session_id": "recovered"}},
+    ])
+    sockets = iter([initial, broken, replacement, terminal_broken, recovered])
+
+    async def connect(*_args, **_kwargs):
+        return next(sockets)
+
+    real_sleep = _step_protocol.asyncio.sleep
+
+    async def no_delay(_seconds):
+        await real_sleep(0)
+
+    monkeypatch.setattr(_step_protocol.websockets, "connect", connect)
+    monkeypatch.setattr(_step_protocol.asyncio, "sleep", no_delay)
+
+    requests = _AutoShutdownQueue()
+    responses = queue.Queue()
+    text = "The terminal retry must reconnect instead of spinning on a dead socket."
+    requests.put(("speech-1", text))
+    requests.put((None, None))
+
+    _step_protocol.run_step_protocol_tts_worker(
+        requests,
+        responses,
+        "test-key",
+        "test-voice",
+        provider_key="step",
+    )
+
+    assert terminal_broken._closed is True
+    assert [event["type"] for event in recovered.sent] == [
+        "tts.create",
+        "tts.text.delta",
+        "tts.text.done",
+    ]
+    assert recovered.sent[1]["data"]["text"] == text
+
+
+def test_stale_finish_retry_does_not_end_new_speech(monkeypatch):
+    initial = _FakeTtsSocket([
+        {"type": "tts.connection.done", "data": {"session_id": "warmup"}},
+        {"type": "tts.response.created"},
+    ])
+    old_broken = _FakeTtsSocket(
+        [{"type": "tts.connection.done", "data": {"session_id": "old-broken"}}],
+        fail_send_from=1,
+    )
+    new_socket = _FakeTtsSocket([
+        {"type": "tts.connection.done", "data": {"session_id": "new"}},
+    ])
+    sockets = iter([initial, old_broken, new_socket])
+
+    async def connect(*_args, **_kwargs):
+        return next(sockets)
+
+    real_sleep = _step_protocol.asyncio.sleep
+
+    async def no_delay(_seconds):
+        await real_sleep(0)
+
+    monkeypatch.setattr(_step_protocol.websockets, "connect", connect)
+    monkeypatch.setattr(_step_protocol.asyncio, "sleep", no_delay)
+
+    requests = _AutoShutdownQueue()
+    responses = queue.Queue()
+    requests.put(("speech-old", "old"))
+    requests.put((None, None))
+    requests.put(("speech-new", "new text remains open"))
+
+    _step_protocol.run_step_protocol_tts_worker(
+        requests,
+        responses,
+        "test-key",
+        "test-voice",
+        provider_key="step",
+    )
+
+    assert [event["type"] for event in new_socket.sent] == [
+        "tts.create",
+        "tts.text.delta",
+    ]
+    assert new_socket.sent[1]["data"]["text"] == "new text remains open"
