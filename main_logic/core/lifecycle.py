@@ -1016,9 +1016,6 @@ class LifecycleMixin:
         async with self.tts_cache_lock:
             self.tts_ready = preserve_tts_ready
             self.tts_pending_chunks.clear()
-            # Session replacement invalidates the previous utterance replay ledger.
-            # 新会话不得继承上一轮的 TTS 回放文本或结束信号。
-            self._reset_tts_replay_state()
 
         # 重置输入缓存状态
         async with self.input_cache_lock:
@@ -1132,12 +1129,6 @@ class LifecycleMixin:
                     logger.warning(f"[语音会话诊断] TTS 在 {timeout} 秒内未就绪，可能为 TTS 服务慢或网络问题")
                 else:
                     logger.error("❌ TTS进程初始化失败，但继续执行...")
-
-                # The replacement worker writes readiness to a fresh queue;
-                # the handler created below will consume it and flush pending text.
-                # 自定义端点启动失败时先切保底，下面的新 handler 会接管新队列。
-                if self._activate_configured_tts_fallback("会话启动"):
-                    logger.info("🔄 自定义 TTS API 启动失败，已启动既有保底 worker")
         else:
             # TTS线程已存活，复用现有线程；保留上次的就绪状态（避免失败的 worker 被误标为就绪）
             tts_ready = self.tts_ready

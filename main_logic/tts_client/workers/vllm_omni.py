@@ -25,12 +25,7 @@ from urllib.parse import urlparse, urlunparse
 from utils.config_manager import _as_bool
 from utils.gptsovits_config import redact_url_for_log
 
-from .._infra import (
-    TTS_SHUTDOWN_SENTINEL,
-    _enqueue_error,
-    _resample_audio,
-    configured_tts_unavailable_worker,
-)
+from .._infra import TTS_SHUTDOWN_SENTINEL, _resample_audio, _enqueue_error
 from .._telemetry import _record_tts_telemetry
 from .dummy import dummy_tts_worker
 from utils.logger_config import get_module_logger
@@ -631,22 +626,13 @@ def _vllm_omni_is_selected(ctx) -> bool:
     # 显式选中 vllm_omni（下拉默认）时不能触发 voice_meta 加载，否则违反
     # test_get_tts_worker_routes_explicit_vllm_before_cloned_voice 的短路契约（对偶 _mimo_is_selected
     # 的顺序：config-selected 先判，clone-meta 后判）。
-    core_config = ctx.core_config
+    core_config, cm = ctx.core_config, ctx.cm
     if _as_bool(core_config.get('ENABLE_CUSTOM_API'), False):
-        # Selection uses the existing sanitized snapshot; sensitive credentials
-        # remain a resolver-only disk read.
-        # 选中判断只读现有快照，API Key 仍只在 resolve 阶段读取原始配置。
-        configured_provider = str(core_config.get('ttsModelProvider') or '').strip()
-        if not configured_provider:
-            try:
-                raw = ctx.cm.load_json_config('core_config.json', {}) or {}
-                configured_provider = str(raw.get('ttsModelProvider') or '').strip()
-            except Exception:
-                logger.warning(
-                    "读取自定义 WebSocket TTS provider 配置失败，按未选中处理",
-                    exc_info=True,
-                )
-        if configured_provider == 'vllm_omni':
+        try:
+            raw = cm.load_json_config('core_config.json', {})
+        except Exception:
+            raw = {}
+        if (raw.get('ttsModelProvider') or '').strip() == 'vllm_omni':
             return True
     # 克隆音色选中：按所选音色的 voice_meta.provider 路由（惰性，命中前面 config-selected
     # provider / 本 provider 的 config 分支时不会触发 voice_meta 加载）。
@@ -706,16 +692,8 @@ def _vllm_omni_resolve(ctx):
     cm = ctx.cm
     try:
         raw = cm.load_json_config('core_config.json', {})
-    except Exception as exc:
-        logger.error(
-            "无法读取自定义 WebSocket TTS API 配置，将进入既有保底流程",
-            exc_info=True,
-        )
-        # Preserve WSS/HTTPS provider symmetry: both report setup failure through
-        # the same ready channel before core activates the existing fallback.
-        # WSS 与 HTTPS 配置读取失败都先回报原 provider，再进入同一保底接缝。
-        _ = exc
-        return configured_tts_unavailable_worker, "", "vllm_omni"
+    except Exception:
+        raw = {}
 
     # 克隆音色始终优先于配置默认（preset）：用户选了克隆音色 = 明确意图用克隆，
     # 无论是否配置了 vllm_omni 作为默认 provider 都应走 clone resolve。之前的

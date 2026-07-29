@@ -479,38 +479,6 @@ def test_explicit_vllm_tts_uses_external_tts_before_native_voice():
     )
 
 
-def test_explicit_custom_tts_owns_configured_voice_before_native_voice():
-    core_config = {
-        "ENABLE_CUSTOM_API": True,
-        "ttsModelProvider": "custom",
-        "ttsModelUrl": "https://speech.example.com/v1",
-        "ttsModelId": "vendor-model",
-        "ttsVoiceId": "Puck",
-        "GPTSOVITS_ENABLED": False,
-    }
-    mgr = _make_mgr("Puck", core_config=core_config)
-
-    assert (
-        LLMSessionManager._resolve_session_use_tts(
-            mgr,
-            "audio",
-            {"base_url": "https://generativelanguage.googleapis.com"},
-            core_config,
-        )
-        is True
-    )
-    disabled_config = {**core_config, "ENABLE_CUSTOM_API": False}
-    assert (
-        LLMSessionManager._resolve_session_use_tts(
-            mgr,
-            "audio",
-            {"base_url": "https://generativelanguage.googleapis.com"},
-            disabled_config,
-        )
-        is False
-    )
-
-
 def test_vllm_runtime_key_tracks_raw_runtime_config(monkeypatch):
     class _CM:
         def __init__(self, url, model, voice_id, tts_model=""):

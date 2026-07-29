@@ -62,9 +62,6 @@ from main_logic.omni_offline_client import OmniOfflineClient, _is_safety_violati
 from main_logic.tts_client import (
     get_tts_worker,
     dummy_tts_worker,
-    selected_configured_tts_preset_provider_key,
-    tts_provider_falls_back_on_failure,
-    tts_provider_uses_configured_preset_voice,
     TTS_PROVIDER_REGISTRY,
     VLLM_OMNI_DEFAULT_BASE_URL,
     VLLM_OMNI_DEFAULT_MODEL,

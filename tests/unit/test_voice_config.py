@@ -101,16 +101,6 @@ def test_normalize_bare_clone_voice():
     assert vc == VoiceConfig(source=SOURCE_CLONE, provider="cosyvoice_intl", ref="cosyvoice-clone-123")
 
 
-def test_normalize_preferred_configured_preset_before_same_id_clone():
-    vc = normalize_voice_id(
-        "vendor-voice",
-        preferred_preset_provider=lambda ref: "custom" if ref == "vendor-voice" else None,
-        clone_provider_lookup=lambda _ref: "cosyvoice",
-    )
-
-    assert vc == VoiceConfig(source=SOURCE_PRESET, provider="custom", ref="vendor-voice")
-
-
 def test_normalize_native_preset():
     vc = normalize_voice_id(
         "qingchunshaonv",

@@ -19,12 +19,7 @@ from functools import partial
 import numpy as np
 import soxr
 
-from .._infra import (
-    TTS_SHUTDOWN_SENTINEL,
-    _resample_audio,
-    _run_sentence_tts_worker,
-    configured_tts_unavailable_worker,
-)
+from .._infra import TTS_SHUTDOWN_SENTINEL, _resample_audio, _run_sentence_tts_worker
 from .._telemetry import _record_tts_telemetry
 from utils.config_manager import _as_bool
 from utils.logger_config import get_module_logger
@@ -33,17 +28,11 @@ from utils.openai_tts import (
     OPENAI_TTS_DEFAULT_MODEL,
     OPENAI_TTS_DEFAULT_VOICE,
     OPENAI_TTS_PCM_SAMPLE_RATE,
-    build_openai_tts_payload,
     openai_tts_base_url,
     openai_tts_extra_body,
-    openai_tts_sdk_options,
 )
 
 logger = get_module_logger(__name__, "Main")
-
-# 新版 SDK 会在初始化时拒绝空 key。免鉴权端点使用仅存在于客户端内存中的
-# 占位值通过校验，并在每次请求上显式删除 Authorization 头；占位值不会发往服务端。
-_AUTH_FREE_API_KEY_PLACEHOLDER = "sk-auth-free-not-sent"
 
 
 def openai_tts_worker(
@@ -55,17 +44,11 @@ def openai_tts_worker(
     base_url=None,
     model=OPENAI_TTS_DEFAULT_MODEL,
     voice=OPENAI_TTS_DEFAULT_VOICE,
-    label="OpenAI TTS",
 ):
     """OpenAI-compatible TTS: sentence input with a streamed PCM response."""
 
-    # Normalize once so whitespace-only credentials use the auth-free path.
-    # 配置文件或环境变量里只含空白字符的 key 等同于未填写；否则 SDK 会误发
-    # ``Authorization: Bearer <空白>``，与连接测试的免鉴权行为不一致。
-    audio_api_key = str(audio_api_key or "").strip()
-
     try:
-        from openai import AsyncOpenAI, omit as openai_omit
+        from openai import AsyncOpenAI
     except ImportError:
         logger.error("❌ 无法导入 openai 库，OpenAI TTS 不可用")
         response_queue.put(("__ready__", False))
@@ -82,31 +65,25 @@ def openai_tts_worker(
     effective_voice = str(voice_id or "").strip() or str(voice or "").strip()
 
     async def setup(response_queue):
-        # 免鉴权服务仍需兼容会拒绝空 key 的新版 SDK；占位值只用于客户端初始化，
-        # synthesize 会用 Omit 删除实际请求头，运行时行为与连接测试保持一致。
         client_kwargs = {
-            "api_key": audio_api_key or _AUTH_FREE_API_KEY_PLACEHOLDER,
+            "api_key": audio_api_key or ("sk-placeholder" if base_url else audio_api_key),
         }
         if base_url:
             # Validate/normalize inside setup so configuration failures travel
             # through the shared worker skeleton's normal __ready__ channel.
-            # 配置错误必须走统一的未就绪信号，不能在线程外静默退出。
-            sdk_base_url, default_query = openai_tts_sdk_options(base_url)
-            client_kwargs["base_url"] = sdk_base_url
-            if default_query:
-                client_kwargs["default_query"] = default_query
+            client_kwargs["base_url"] = openai_tts_base_url(base_url)
         client = AsyncOpenAI(**client_kwargs)
         extra_body = openai_tts_extra_body(base_url or OPENAI_TTS_DEFAULT_BASE_URL)
-        base_payload = build_openai_tts_payload("", effective_model, effective_voice)
 
         async def synthesize(text: str, speech_id: str) -> None:
-            request_kwargs = {**base_payload, "input": text}
+            request_kwargs = {
+                "model": effective_model,
+                "voice": effective_voice,
+                "input": text,
+                "response_format": "pcm",
+            }
             if extra_body:
                 request_kwargs["extra_body"] = extra_body
-            if not audio_api_key:
-                request_kwargs["extra_headers"] = {
-                    "Authorization": openai_omit,
-                }
             async with client.audio.speech.with_streaming_response.create(
                 **request_kwargs,
             ) as response:
@@ -154,7 +131,7 @@ def openai_tts_worker(
 
         return synthesize, client.close
 
-    _run_sentence_tts_worker(request_queue, response_queue, setup, label=label)
+    _run_sentence_tts_worker(request_queue, response_queue, setup, label="OpenAI TTS")
 
 
 def _custom_openai_tts_is_selected(ctx) -> bool:
@@ -166,23 +143,13 @@ def _custom_openai_tts_is_selected(ctx) -> bool:
         return False
 
     configured_voice = str(ctx.core_config.get("ttsVoiceId") or "").strip()
-    selected_voice = str(ctx.voice_id or "").strip()
-    if selected_voice and configured_voice and selected_voice != configured_voice:
+    # A saved clone/design voice owns its provider route. The custom endpoint is
+    # the configured fallback, not a blanket override of existing voice vendors.
+    if ctx.voice_id and ctx.has_custom_voice and ctx.voice_meta:
         return False
-
-    # The exact configured voice is an explicit Custom API selection and wins
-    # even if an old clone with the same ID still exists in voice storage.
-    # 角色选中的音色与配置音色一致时，自定义 API 必须优先于同名历史克隆记录。
-    exact_configured_voice = bool(selected_voice and selected_voice == configured_voice)
-    if (
-        not exact_configured_voice
-        and selected_voice
-        and ctx.has_custom_voice
-        and ctx.voice_meta
-    ):
+    if ctx.voice_id and configured_voice and str(ctx.voice_id).strip() != configured_voice:
         return False
-
-    effective_voice = selected_voice or configured_voice
+    effective_voice = str(ctx.voice_id or "").strip() or configured_voice
     return bool(
         str(ctx.core_config.get("ttsModelUrl") or "").strip()
         and str(ctx.core_config.get("ttsModelId") or "").strip()
@@ -193,28 +160,12 @@ def _custom_openai_tts_is_selected(ctx) -> bool:
 def _custom_openai_tts_resolve(ctx):
     try:
         raw = ctx.cm.load_json_config("core_config.json", {}) or {}
-        base_url = str(raw.get("ttsModelUrl") or "").strip()
-        model = str(raw.get("ttsModelId") or "").strip()
-        configured_voice = str(raw.get("ttsVoiceId") or "").strip()
-        effective_voice = str(ctx.voice_id or "").strip() or configured_voice
-
-        # Validate before spawning the network worker, but retain the provider
-        # identity so the shared supervisor can sanitize and replay on fallback.
-        # 在线程启动前校验配置；失败时仍保留 provider 身份，交给监管层安全回退。
-        openai_tts_base_url(base_url)
-        build_openai_tts_payload("", model, effective_voice)
     except Exception:
-        logger.error(
-            "自定义 TTS API 配置读取或校验失败，将进入既有保底流程",
-            exc_info=True,
-        )
-        return configured_tts_unavailable_worker, "", "custom"
-
+        raw = {}
     worker = partial(
         openai_tts_worker,
-        base_url=base_url,
-        model=model,
-        voice=configured_voice,
-        label="自定义 TTS API (Custom OpenAI-compatible TTS)",
+        base_url=str(raw.get("ttsModelUrl") or "").strip(),
+        model=str(raw.get("ttsModelId") or "").strip(),
+        voice=str(raw.get("ttsVoiceId") or "").strip(),
     )
     return worker, str(raw.get("ttsModelApiKey") or "").strip(), "custom"

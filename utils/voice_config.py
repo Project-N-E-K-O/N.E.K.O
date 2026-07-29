@@ -154,7 +154,6 @@ def normalize_voice_id(
     voice_id: Any,
     *,
     vllm_selected: bool = False,
-    preferred_preset_provider: "Any" = None,
     clone_provider_lookup: "Any" = None,
     is_native: "Any" = None,
     native_provider: str = "",
@@ -170,21 +169,17 @@ def normalize_voice_id(
     1. unambiguous prefix (``eleven:`` / ``gsv:`` / disabled placeholder / empty) —
        handled by :func:`parse_legacy_voice_id`.
     2. ``vllm_selected`` → ``{preset, vllm_omni, ref}`` (vLLM-Omni uses preset ids).
-    3. ``preferred_preset_provider(ref)`` returns a provider for an explicitly
-       configured preset that owns this exact ID.
-    4. ``clone_provider_lookup(ref)`` returns a provider (the ref is a cloned voice
+    3. ``clone_provider_lookup(ref)`` returns a provider (the ref is a cloned voice
        in the current API's voice_storage) → ``{clone, <provider>, ref}``.
-    5. ``is_native(ref)`` → ``{preset, <native_provider>, ref}``.
-    6. ``hosted_preset_provider(ref)`` returns a provider key (the ref is a built-in
+    4. ``is_native(ref)`` → ``{preset, <native_provider>, ref}``.
+    5. ``hosted_preset_provider(ref)`` returns a provider key (the ref is a built-in
        preset of the currently selected hosted/local provider, e.g. MiMo's "Milo")
        → ``{preset, <provider key>, ref}``.
-    7. ``ref in free_voice_ids`` → ``{preset, free, ref}``.
-    8. otherwise unresolved → ``{ref}`` only (provider/source unknown; carried through
+    6. ``ref in free_voice_ids`` → ``{preset, free, ref}``.
+    7. otherwise unresolved → ``{ref}`` only (provider/source unknown; carried through
        so nothing is lost — callers treat an unresolved ref as "leave as-is").
 
     Args:
-        preferred_preset_provider: ``ref -> provider|None`` for configured presets
-            that intentionally take precedence over a stored clone with the same ID.
         clone_provider_lookup: ``ref -> provider|None`` (None = not a known clone).
         is_native: ``ref -> bool``.
         hosted_preset_provider: ``ref -> provider key|None`` — the selected
@@ -202,13 +197,6 @@ def normalize_voice_id(
 
     if vllm_selected:
         return VoiceConfig(source=SOURCE_PRESET, provider="vllm_omni", ref=ref)
-
-    # Explicit configured presets own an exact collision before clone lookup.
-    # 显式配置的预制音色在同名冲突时先于历史克隆记录确定归属。
-    if preferred_preset_provider is not None:
-        provider = preferred_preset_provider(ref)
-        if provider:
-            return VoiceConfig(source=SOURCE_PRESET, provider=str(provider), ref=ref)
 
     if clone_provider_lookup is not None:
         provider = clone_provider_lookup(ref)

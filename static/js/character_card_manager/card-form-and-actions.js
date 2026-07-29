@@ -763,20 +763,13 @@ function _panelGetNativeVoiceProviderLabel(nativeEntries) {
     if (!Array.isArray(nativeEntries)) return '';
     for (const [, voiceData] of nativeEntries) {
         const provider = voiceData && String(voiceData.provider || '').trim();
-        const configuredLabel = voiceData && String(voiceData.provider_label || '').trim();
-        // A configured preset is grouped under Custom API while its real
-        // provider identity remains available for save and runtime routing.
-        // 配置音色展示为“自定义 API”，保存与运行时仍使用真实 provider。
-        if (VoiceDisplayUtils.isKnownProvider(configuredLabel, { includeFree: false })) {
-            return _panelVoiceProviderShortName(configuredLabel);
-        }
         if (provider === 'free') {
             return _panelVoiceI18n('voice.providerFreeApi', 'Free API');
         }
         if (VoiceDisplayUtils.isKnownProvider(provider, { includeFree: false })) {
             return _panelVoiceProviderShortName(provider);
         }
-        const label = configuredLabel || provider;
+        const label = voiceData && (voiceData.provider_label || provider);
         if (label) return String(label);
     }
     return '';
