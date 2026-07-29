@@ -3365,6 +3365,26 @@
                     // here would wipe a latch that verdict just set. It is
                     // re-armed on user intent instead, next to
                     // _pendingSessionStartMode = 'audio'.
+                    //
+                    // The ack now carries the SETTLED route, which covers the
+                    // case the status-driven latch structurally cannot: a
+                    // window that never received the ASR_INDEPENDENT_* verdict
+                    // at all -- either because it went to a different socket,
+                    // or because a competing lease claim fenced the failing
+                    // start so no status was ever emitted. Without this, such a
+                    // window opens the microphone onto a route that discards
+                    // every frame, with no status and no recovery path.
+                    //
+                    // SET-ONLY, never cleared, on purpose: the latch is
+                    // deliberately sticky (see tearDownBlockedVoiceRoute --
+                    // BLOCKED is never re-sent, so the game-exit resume path
+                    // relies on it surviving), and clearing it from an ack
+                    // would undo that. Guarded on the field being present so an
+                    // older backend keeps exactly today's behaviour.
+                    if (response.input_mode !== 'text'
+                            && response.microphone_route === 'blocked') {
+                        S.voiceInputRouteBlocked = true;
+                    }
 
                     // 文本 session 装好后麦克风必须停：mic lease 只由前端持有，
                     // 后端任何 session 生命周期路径都不会重置它，而文本 session

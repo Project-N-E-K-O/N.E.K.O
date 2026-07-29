@@ -689,3 +689,44 @@ def test_manual_screen_stop_clears_voice_share_ownership():
     assert result["startScreenCalls"] == ["start"]
     assert result["stopScreenCalls"] == ["stop"]
     assert result["screenClasses"] == []
+
+
+def test_voice_start_bails_when_another_start_took_over_the_pending_slot():
+    # Codex P2. On mobile the composer stays visible during an audio session, so
+    # the user can send text inside the 500ms settle window after an audio ack.
+    # app-websocket.js leaves _pendingSessionStartMode owned by that newer text
+    # start but settles the audio promise anyway (its timeout is already gone,
+    # so nothing else ever would). The audio flow then resumes -- and none of
+    # the guards after the await can see what happened: the text ack changes
+    # neither voiceSessionStartEpoch nor isMicStarting, so ensureVoiceStartCurrent
+    # passes, and it never sets voiceInputRouteBlocked either. The microphone
+    # opens and reclaims a lease onto the text session's blocked route.
+    source = _read(APP_BUTTONS_PATH)
+    start_flow = _mic_button_start_flow(source)
+
+    await_index = start_flow.index("await sessionStartPromise;")
+    guard = "S._pendingSessionStartMode !== 'audio'"
+    assert guard in start_flow, (
+        "the resumed voice start must notice that another start owns the slot"
+    )
+    guard_index = start_flow.index(guard)
+    assert await_index < guard_index, "the check belongs after the await, not before"
+
+    # It has to come before BOTH downstream guards, because neither can see a
+    # takeover -- that is the whole finding.
+    assert guard_index < start_flow.index("ensureVoiceStartCurrent();", await_index)
+    assert guard_index < start_flow.index("S.voiceInputRouteBlocked === true")
+    assert guard_index < start_flow.index("await window.startMicCapture();")
+
+    # And it must unwind via the non-throwing helper: the generic catch clears
+    # S.sessionStartedResolver / Rejecter / _pendingSessionStartMode
+    # unconditionally, which would tear down the start that superseded us.
+    bail = start_flow[guard_index:start_flow.index("ensureVoiceStartCurrent();", await_index)]
+    bail_code = " ".join(
+        line for line in bail.splitlines() if not line.strip().startswith("//")
+    )
+    assert "abortVoiceStartForBlockedRoute" in bail_code
+    assert "throw" not in bail_code
+    # The newer start owns the shared timeout now; cancelling it is the same
+    # cross-start damage this guard exists to prevent.
+    assert "clearTimeout" not in bail_code

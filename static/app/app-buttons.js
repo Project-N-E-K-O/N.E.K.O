@@ -2210,6 +2210,36 @@
                     // 之后才 settle、把 UI 写回录音中"的竞态，也就不需要 token / 补充
                     // teardown 去追平它。
                     await sessionStartPromise;
+
+                    // A DIFFERENT start took over while this one was waiting.
+                    // On mobile the composer stays visible during an audio
+                    // session, so the user can send text inside the ack's 500ms
+                    // settle window; app-websocket.js then leaves
+                    // _pendingSessionStartMode owned by that newer text start
+                    // and settles this promise anyway (it has no timeout left,
+                    // so nothing else ever would). Opening the microphone now
+                    // would reclaim a lease onto the text session's blocked
+                    // route -- and NONE of the guards below can see it: the
+                    // text ack changes neither voiceSessionStartEpoch nor
+                    // isMicStarting, so ensureVoiceStartCurrent passes, and it
+                    // never sets voiceInputRouteBlocked either (Codex P2).
+                    //
+                    // abortVoiceStartForBlockedRoute rather than throwing: the
+                    // generic catch clears S.sessionStartedResolver /
+                    // Rejecter / _pendingSessionStartMode unconditionally,
+                    // which would tear down the very start that superseded us.
+                    if (S._pendingSessionStartMode
+                            && S._pendingSessionStartMode !== 'audio') {
+                        // Deliberately NOT clearing window.sessionTimeoutId:
+                        // that timer belongs to the newer start now, and
+                        // cancelling it is the same cross-start damage in
+                        // miniature.
+                        if (typeof window.abortVoiceStartForBlockedRoute === 'function') {
+                            window.abortVoiceStartForBlockedRoute();
+                        }
+                        return;
+                    }
+
                     ensureVoiceStartCurrent();
 
                     if (window.sessionTimeoutId) {

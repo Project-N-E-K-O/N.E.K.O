@@ -467,9 +467,37 @@ class NotifyMixin:
             logger.error(f"💥 WS Send Session Preparing Error: {e}")
     
     async def send_session_started(self, input_mode: str): # 通知前端session已启动
+        # Carry the SETTLED microphone route on the ack itself (Codex P2).
+        #
+        # The route verdict otherwise travels only as an ASR_INDEPENDENT_*
+        # status on the mic control plane, which reaches the lease holder and
+        # the current display socket -- and there are paths where it reaches
+        # neither. The load-bearing one: a second window claiming the voice
+        # lease while _asr_runtime.start() is still running bumps the ASR start
+        # generation, so the failing start's own terminal status is fenced off
+        # and NEVER EMITTED, leaving the route pinned "blocked" with no verdict
+        # delivered anywhere. Both windows' fail-closed latches stay false, the
+        # ack below says "started", and the microphone opens onto a route that
+        # discards every frame -- no status, no recovery, the user just talks
+        # into nothing.
+        #
+        # Qualifying the ack fixes every emitter at once: the ordinary one in
+        # _start_session_activate, the in-flight dedupe re-ack in
+        # _start_session_handle_inflight (which re-acks WITHOUT re-running the
+        # route decision), and the stale-start case above that no status-based
+        # fix can reach. Suppressing the ack instead would be worse -- the
+        # dedupe re-ack exists precisely so the requester is not stranded on its
+        # 15s timeout, whose end_session tears down the session that did start.
+        payload = {"type": "session_started", "input_mode": input_mode}
+        route_mode = str(getattr(self, "_asr_route_mode", "") or "")
+        if route_mode:
+            # Omitted when unknown rather than defaulted: a manager without the
+            # ASR mixin should keep today's behaviour, not have every audio
+            # start refuse the microphone.
+            payload["microphone_route"] = route_mode
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                data = json.dumps({"type": "session_started", "input_mode": input_mode})
+                data = json.dumps(payload)
                 try:
                     await self.websocket.send_text(data)
                 except WebSocketDisconnect:
@@ -523,9 +551,7 @@ class NotifyMixin:
                 # isRecording true (which a game STT gate requires), releasing
                 # the game lease and closing hardware the text entry never
                 # meant to touch.
-                await self._send_to_voice_owner(
-                    {"type": "session_started", "input_mode": input_mode}
-                )
+                await self._send_to_voice_owner(dict(payload))
         except WebSocketDisconnect:
             # Client disconnected mid-send; this push is best-effort.
             pass

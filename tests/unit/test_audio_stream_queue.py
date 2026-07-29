@@ -2276,12 +2276,12 @@ async def test_fail_closed_chokepoint_notifies_then_revokes():
         mgr,
         "text_session_active",
         operation_generation=generation,
-        voice_owner_notice={"type": "session_started", "input_mode": "text"},
+        voice_owner_notice={"type": "session_started", "input_mode": "text", "microphone_route": "native"},
     )
 
     assert revoked is True
     assert [json.loads(x) for x in recorder.sent] == [
-        {"type": "session_started", "input_mode": "text"}
+        {"type": "session_started", "input_mode": "text", "microphone_route": "native"}
     ]
     assert mgr._voice_lease_connection_id == ""
 
@@ -2310,7 +2310,7 @@ async def test_fail_closed_chokepoint_refuses_to_revoke_a_competing_newer_start(
         mgr,
         "text_session_active",
         operation_generation=generation,
-        voice_owner_notice={"type": "session_started", "input_mode": "text"},
+        voice_owner_notice={"type": "session_started", "input_mode": "text", "microphone_route": "native"},
     )
 
     assert revoked is False
@@ -2318,7 +2318,7 @@ async def test_fail_closed_chokepoint_refuses_to_revoke_a_competing_newer_start(
     assert mgr._voice_lease_connection_id == "socket-a"
     # Fencing protects the newer start; it does not silence the recorder.
     assert [json.loads(x) for x in recorder.sent] == [
-        {"type": "session_started", "input_mode": "text"}
+        {"type": "session_started", "input_mode": "text", "microphone_route": "native"}
     ]
 
 
@@ -2751,7 +2751,7 @@ async def test_fail_closed_chokepoint_honours_the_callers_own_predicate():
         "asr_settings_unreadable",
         operation_generation=generation,
         still_current=lambda: False,
-        voice_owner_notice={"type": "session_started", "input_mode": "text"},
+        voice_owner_notice={"type": "session_started", "input_mode": "text", "microphone_route": "native"},
     )
 
     assert revoked is False
@@ -2770,7 +2770,7 @@ async def test_fail_closed_chokepoint_exempts_the_game_owner():
         mgr,
         "text_session_active",
         operation_generation=generation,
-        voice_owner_notice={"type": "session_started", "input_mode": "text"},
+        voice_owner_notice={"type": "session_started", "input_mode": "text", "microphone_route": "native"},
     )
 
     assert revoked is False
@@ -2854,7 +2854,7 @@ async def test_dead_display_socket_does_not_swallow_the_text_takeover(
 
     assert attempted, "display send never reached -- the case proves nothing"
     assert [json.loads(x) for x in recorder.sent] == [
-        {"type": "session_started", "input_mode": "text"}
+        {"type": "session_started", "input_mode": "text", "microphone_route": "native"}
     ]
 
 
@@ -2878,12 +2878,47 @@ async def test_audio_start_ack_reaches_the_window_that_asked_for_it():
     await LLMSessionManager.send_session_started(mgr, "audio")
 
     assert [json.loads(x) for x in recorder.sent] == [
-        {"type": "session_started", "input_mode": "audio"}
+        {"type": "session_started", "input_mode": "audio", "microphone_route": "native"}
     ], "the requesting window (the lease holder) must receive its own start ack"
     # The display plane still gets its copy; the two planes are independent.
     assert [json.loads(x) for x in chat.sent] == [
-        {"type": "session_started", "input_mode": "audio"}
+        {"type": "session_started", "input_mode": "audio", "microphone_route": "native"}
     ]
+
+
+async def test_audio_start_ack_carries_the_settled_blocked_route():
+    # Codex P2. The route verdict otherwise travels only as an ASR_INDEPENDENT_*
+    # status on the mic control plane, and there are paths where it reaches
+    # nobody: a second window claiming the voice lease while _asr_runtime.start()
+    # is running bumps the ASR start generation, so the failing start's own
+    # terminal status is fenced off and never emitted at all. The route stays
+    # pinned "blocked", every window's fail-closed latch stays false, and the
+    # ack says "started" -- so the microphone opens onto a route that discards
+    # every frame, with no status and no recovery path.
+    #
+    # Qualifying the ack covers that, and covers the in-flight dedupe re-ack
+    # (_start_session_handle_inflight) which re-acks without re-running the
+    # route decision at all.
+    recorder, chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", recorder)
+    mgr.websocket = chat
+    mgr._set_microphone_route("blocked")
+
+    await LLMSessionManager.send_session_started(mgr, "audio")
+
+    expected = {
+        "type": "session_started",
+        "input_mode": "audio",
+        "microphone_route": "blocked",
+    }
+    # Both planes carry it: the window that asked is on the lease plane, and a
+    # window that merely opened is on the display plane -- either could be the
+    # one with no verdict.
+    assert [json.loads(x) for x in recorder.sent] == [expected]
+    assert [json.loads(x) for x in chat.sent] == [expected]
 
 
 async def test_audio_start_ack_is_not_duplicated_for_a_single_window():
@@ -2900,7 +2935,7 @@ async def test_audio_start_ack_is_not_duplicated_for_a_single_window():
     await LLMSessionManager.send_session_started(mgr, "audio")
 
     assert [json.loads(x) for x in recorder.sent] == [
-        {"type": "session_started", "input_mode": "audio"}
+        {"type": "session_started", "input_mode": "audio", "microphone_route": "native"}
     ], "a single window must be acked exactly once"
 
 
@@ -2920,7 +2955,7 @@ async def test_audio_start_ack_does_not_reach_the_game_microphone():
 
     assert recorder.sent == []
     assert [json.loads(x) for x in chat.sent] == [
-        {"type": "session_started", "input_mode": "audio"}
+        {"type": "session_started", "input_mode": "audio", "microphone_route": "native"}
     ]
 
 
@@ -2948,7 +2983,7 @@ async def test_text_takeover_does_not_stop_the_game_microphone():
     assert recorder.sent == []
     # The display socket still gets its ordinary ack.
     assert [json.loads(x) for x in chat.sent] == [
-        {"type": "session_started", "input_mode": "text"}
+        {"type": "session_started", "input_mode": "text", "microphone_route": "native"}
     ]
 
 
