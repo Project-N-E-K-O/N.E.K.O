@@ -21,6 +21,7 @@
     I.yuiGuideChatSpotlightTimer = 0;
     I.YUI_GUIDE_EXTERNAL_CHAT_CURSOR_SCREEN_POINT_KEY = 'neko_yui_guide_external_chat_cursor_screen_point_v1';
     var YUI_GUIDE_PC_OVERLAY_SEQUENCE_KEY = 'yuiGuidePcOverlaySequence';
+    var YUI_GUIDE_PC_OVERLAY_SKIP_CONTROL_KEY = 'yuiGuidePcOverlaySkipControl';
     var YUI_GUIDE_PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES = 3;
     var YUI_GUIDE_PC_OVERLAY_MAX_TOTAL_STALE_RETRIES = 6;
     var YUI_GUIDE_PC_OVERLAY_DEFERRED_RECONCILIATION_DELAY_MS = 48;
@@ -35,6 +36,7 @@
     var yuiGuidePcOverlayDeferredReconciliationTimer = 0;
     I.yuiGuidePcOverlaySpotlights = [];
     I.yuiGuidePcOverlayCursor = null;
+    I.yuiGuidePcOverlaySkipControl = null;
     I.yuiGuidePcOverlaySkipControl = null;
     I.yuiGuideChatSpotlightLastPcKind = '';
     I.yuiGuideChatSpotlightLastPcVariant = '';
@@ -801,6 +803,38 @@
         return nextCursor;
     }
 
+    function normalizeYuiGuidePcOverlaySkipControl(skipControl) {
+        return skipControl && skipControl.visible !== false
+            ? {
+                visible: true,
+                label: String(skipControl.label || ''),
+                dark: skipControl.dark === true
+            }
+            : null;
+    }
+
+    function readYuiGuidePcOverlaySkipControl() {
+        try {
+            var raw = window.localStorage.getItem(YUI_GUIDE_PC_OVERLAY_SKIP_CONTROL_KEY);
+            return raw ? normalizeYuiGuidePcOverlaySkipControl(JSON.parse(raw)) : null;
+        } catch (_) {
+            return I.yuiGuidePcOverlaySkipControl;
+        }
+    }
+
+    function persistYuiGuidePcOverlaySkipControl(skipControl) {
+        try {
+            if (skipControl) {
+                window.localStorage.setItem(
+                    YUI_GUIDE_PC_OVERLAY_SKIP_CONTROL_KEY,
+                    JSON.stringify(skipControl)
+                );
+            } else {
+                window.localStorage.removeItem(YUI_GUIDE_PC_OVERLAY_SKIP_CONTROL_KEY);
+            }
+        } catch (_) {}
+    }
+
     I.sendYuiGuidePcOverlayPatch = function sendYuiGuidePcOverlayPatch(patch, retried, options) {
         var host = getYuiGuidePcOverlayHost();
         if (!host || I.yuiGuidePcOverlayLifecycleClosed) {
@@ -822,13 +856,10 @@
             I.yuiGuidePcOverlayCursor = withoutTransientYuiGuideCursorEffect(patch.cursor);
         }
         if (patch && Object.prototype.hasOwnProperty.call(patch, 'skipControl')) {
-            I.yuiGuidePcOverlaySkipControl = patch.skipControl && patch.skipControl.visible !== false
-                ? {
-                    visible: true,
-                    label: String(patch.skipControl.label || ''),
-                    dark: patch.skipControl.dark === true
-                }
-                : null;
+            I.yuiGuidePcOverlaySkipControl = normalizeYuiGuidePcOverlaySkipControl(patch.skipControl);
+            persistYuiGuidePcOverlaySkipControl(I.yuiGuidePcOverlaySkipControl);
+        } else {
+            I.yuiGuidePcOverlaySkipControl = readYuiGuidePcOverlaySkipControl();
         }
         var payload = {
             spotlights: I.yuiGuidePcOverlaySpotlights
@@ -838,11 +869,7 @@
         } else if (I.yuiGuidePcOverlayCursor) {
             payload.cursor = I.yuiGuidePcOverlayCursor;
         }
-        if (patch && Object.prototype.hasOwnProperty.call(patch, 'skipControl')) {
-            payload.skipControl = I.yuiGuidePcOverlaySkipControl;
-        } else if (I.yuiGuidePcOverlaySkipControl) {
-            payload.skipControl = I.yuiGuidePcOverlaySkipControl;
-        }
+        payload.skipControl = I.yuiGuidePcOverlaySkipControl;
         var runId = resolveYuiGuidePcOverlayRunIdForSend(
             sendOptions.tutorialRunId,
             sendOptions.allowCreateRun

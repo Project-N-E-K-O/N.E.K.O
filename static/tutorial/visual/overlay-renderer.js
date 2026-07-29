@@ -14,6 +14,7 @@
     'use strict';
 
     const DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420;
+    const PC_OVERLAY_SKIP_CONTROL_STORAGE_KEY = 'yuiGuidePcOverlaySkipControl';
     const PC_OVERLAY_CURSOR_EASE = Object.freeze([0.22, 1, 0.36, 1]);
 
     function sampleCubicBezier(progress, x1, y1, x2, y2) {
@@ -86,11 +87,13 @@
         const defaultCursorClickVisibleMs = Number.isFinite(Number(normalizedOptions.defaultCursorClickVisibleMs))
             ? Math.max(0, Math.floor(Number(normalizedOptions.defaultCursorClickVisibleMs)))
             : DEFAULT_CURSOR_CLICK_VISIBLE_MS;
+        const storage = normalizedOptions.storage || null;
         let currentSpotlights = [];
         let currentCursor = null;
         let currentCursorEffectPayload = null;
         let currentCursorEffectSuppressUntil = 0;
         let currentPetal = null;
+        let currentSkipControl = null;
 
         function hasOwn(value, key) {
             return !!value && Object.prototype.hasOwnProperty.call(value, key);
@@ -100,9 +103,46 @@
             return currentCursorEffectSuppressUntil > 0 && now() < currentCursorEffectSuppressUntil;
         }
 
+        function normalizeSkipControl(skipControl) {
+            if (!skipControl || skipControl.visible === false) {
+                return null;
+            }
+            return {
+                visible: true,
+                label: String(skipControl.label || ''),
+                dark: skipControl.dark === true
+            };
+        }
+
+        function readSharedSkipControl() {
+            if (!storage || typeof storage.getItem !== 'function') {
+                return currentSkipControl;
+            }
+            try {
+                const raw = storage.getItem(PC_OVERLAY_SKIP_CONTROL_STORAGE_KEY);
+                return raw ? normalizeSkipControl(JSON.parse(raw)) : null;
+            } catch (_) {
+                return currentSkipControl;
+            }
+        }
+
+        function writeSharedSkipControl(skipControl) {
+            if (!storage) {
+                return;
+            }
+            try {
+                if (skipControl && typeof storage.setItem === 'function') {
+                    storage.setItem(PC_OVERLAY_SKIP_CONTROL_STORAGE_KEY, JSON.stringify(skipControl));
+                } else if (typeof storage.removeItem === 'function') {
+                    storage.removeItem(PC_OVERLAY_SKIP_CONTROL_STORAGE_KEY);
+                }
+            } catch (_) {}
+        }
+
         function applyPatch(patch) {
             const hasCursor = hasOwn(patch, 'cursor');
             const hasPetal = hasOwn(patch, 'petal');
+            const hasSkipControl = hasOwn(patch, 'skipControl');
             if (hasOwn(patch, 'spotlights')) {
                 currentSpotlights = Array.isArray(patch.spotlights) ? patch.spotlights : [];
             }
@@ -120,6 +160,12 @@
             if (hasPetal) {
                 currentPetal = patch.petal || null;
             }
+            if (hasSkipControl) {
+                currentSkipControl = normalizeSkipControl(patch.skipControl);
+                writeSharedSkipControl(currentSkipControl);
+            } else {
+                currentSkipControl = readSharedSkipControl();
+            }
             const payload = {};
             if (hasOwn(patch, 'spotlights') || currentSpotlights.length > 0) {
                 payload.spotlights = currentSpotlights;
@@ -134,6 +180,9 @@
             if (currentPetal || hasPetal) {
                 payload.petal = currentPetal;
             }
+            if (storage || hasSkipControl || currentSkipControl) {
+                payload.skipControl = currentSkipControl;
+            }
             return payload;
         }
 
@@ -143,6 +192,7 @@
             currentCursorEffectPayload = null;
             currentCursorEffectSuppressUntil = 0;
             currentPetal = null;
+            currentSkipControl = null;
         }
 
         return {
