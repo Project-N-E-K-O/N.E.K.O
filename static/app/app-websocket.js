@@ -2681,13 +2681,53 @@
                             var _rs = resetSessionButton(); if (_rs) _rs.disabled = true;
                             var _rt = returnSessionButton(); if (_rt) _rt.disabled = true;
 
+                            // Snapshot the voice-start intent this restart is acting on --
+                            // HERE, where the restart is decided, not inside the callback
+                            // 7.5s later. A goodbye or avatar drop during the delay goes
+                            // through cancelPendingSessionStart and bumps the epoch, and a
+                            // snapshot taken afterwards would read that cancellation as its
+                            // own starting point and restart anyway (codex P2). Nothing
+                            // between here and the callback moves the epoch on its own: the
+                            // three cancelPendingSessionStart callers are all user actions.
+                            //
+                            // Unlike the mic-button flow this path has no
+                            // ensureVoiceStartCurrent, and ownership alone cannot see an
+                            // ABA -- see voiceStartEpochIsCurrent.
+                            var restartVoiceEpoch = S.voiceSessionStartEpoch;
+
                             setTimeout(async function () {
                                 var restartStartOwner = null;
-                                // Snapshot the voice-start intent this restart is acting
-                                // on. Unlike the mic-button flow there is no
-                                // ensureVoiceStartCurrent here, and ownership alone cannot
-                                // see an ABA -- see voiceStartEpochIsCurrent.
-                                var restartVoiceEpoch = S.voiceSessionStartEpoch;
+
+                                // Both points where this flow resumes from an await ask the
+                                // same question, and asking only half of it is how the last
+                                // two rounds of this bug survived: ownership cannot see a
+                                // cancel-and-clear (the slot is back to empty), and the
+                                // epoch cannot see a TEXT takeover (text starts never mint
+                                // one). Returns true when this restart must stand down.
+                                function restartMustStandDown() {
+                                    if (window.sessionStartSuperseded(restartStartOwner)
+                                            || (S._pendingSessionStartMode
+                                                && S._pendingSessionStartMode !== 'audio')) {
+                                        // The unwind is global -- it bumps the mic
+                                        // generation and clears window.isMicStarting -- so
+                                        // running it while the newer AUDIO start (a mic
+                                        // press inside the ack window) is still acquiring
+                                        // media makes that start abandon capture and fail
+                                        // its own ensureVoiceStartCurrent, leaving a
+                                        // backend-accepted session with the mic closed
+                                        // (greptile P1). That start is already driving this
+                                        // UI; a text start is not, so there it still runs.
+                                        if (!window.supersededByAudioStart(restartStartOwner)
+                                                && typeof window.abortVoiceStartForBlockedRoute === 'function') {
+                                            window.abortVoiceStartForBlockedRoute();
+                                        }
+                                        return true;
+                                    }
+                                    // Quietly: the cancel lever has already unwound the UI,
+                                    // and a newer mic start is driving it.
+                                    return !window.voiceStartEpochIsCurrent(restartVoiceEpoch);
+                                }
+
                                 try {
                                     var sessionStartPromise = new Promise(function (resolve, reject) {
                                         // Owner token for every release in this
@@ -2745,41 +2785,22 @@
                                     // inside the ack window) passes `mode !== 'audio'`, and
                                     // this restart would then open the microphone on top of
                                     // it. Neither test subsumes the other -- the disconnect
-                                    // cleanup nulls the resolver but leaves the mode set.
-                                    if (window.sessionStartSuperseded(restartStartOwner)
-                                            || (S._pendingSessionStartMode
-                                                && S._pendingSessionStartMode !== 'audio')) {
-                                        // The unwind is global -- it bumps the mic
-                                        // generation and clears window.isMicStarting -- so
-                                        // running it while the newer AUDIO start (a mic
-                                        // press inside the ack window) is still acquiring
-                                        // media makes that start abandon capture and fail
-                                        // its own ensureVoiceStartCurrent, leaving a
-                                        // backend-accepted session with the mic closed
-                                        // (greptile P1). That start is already driving this
-                                        // UI; a text start is not, so there it still runs.
-                                        if (!window.supersededByAudioStart(restartStartOwner)
-                                                && typeof window.abortVoiceStartForBlockedRoute === 'function') {
-                                            window.abortVoiceStartForBlockedRoute();
-                                        }
-                                        return;
-                                    }
-
-                                    // The slot can be back at EMPTY without this restart ever
-                                    // having owned it again: a newer start may claim inside
-                                    // the ack's 500ms window and then be cancelled (goodbye,
-                                    // avatar drop, character switch) or complete, and
-                                    // ownership cannot tell that apart from "my own ack
-                                    // released it". The epoch can -- both a mic press and
-                                    // cancelPendingSessionStart move it -- and without the
-                                    // check this path reopens the microphone after the user
-                                    // has already walked away (codex P2). Quietly: the
-                                    // cancel lever has already unwound the UI, and a newer
-                                    // mic start is driving it.
-                                    if (!window.voiceStartEpochIsCurrent(restartVoiceEpoch)) return;
+                                    // cleanup nulls the resolver but leaves the mode set --
+                                    // and neither sees a cancel-and-clear, which is why
+                                    // restartMustStandDown also asks the epoch.
+                                    if (restartMustStandDown()) return;
 
                                     if (typeof window.showCurrentModel === 'function') await window.showCurrentModel();
-                                    if (!window.voiceStartEpochIsCurrent(restartVoiceEpoch)) return;
+
+                                    // The SAME full question again, not just the epoch: this
+                                    // await is wide open, the disconnect path never disabled
+                                    // the mobile composer, and a text send inside it claims
+                                    // the slot without minting a voice epoch. An epoch-only
+                                    // recheck passes and this stale restart then opens the
+                                    // microphone on top of the text session and reports
+                                    // "restart complete" (codex P2).
+                                    if (restartMustStandDown()) return;
+
                                     if (S.voiceInputRouteBlocked === true) {
                                         // The rebuilt session came back fail-closed (independent
                                         // ASR was enabled and failed to start). Its status ALWAYS

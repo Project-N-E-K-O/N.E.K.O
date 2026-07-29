@@ -283,7 +283,7 @@ def test_takeover_branches_do_not_unwind_under_a_newer_audio_start():
     for path in START_FLOW_PATHS:
         source = path.read_text(encoding="utf-8")
         for match in re.finditer(re.escape(_MODE_TEST), source):
-            branch_end = source.find("return;", match.end())
+            branch_end = source.find("return", match.end())
             assert branch_end != -1, f"{path.name}: takeover branch has no return"
             branch = source[match.end():branch_end]
             if "abortVoiceStartForBlockedRoute" not in branch:
@@ -325,25 +325,62 @@ def test_a_superseded_mic_start_does_not_run_its_failure_cleanup():
 
 
 @pytest.mark.unit
-def test_the_automatic_restart_rechecks_the_voice_start_epoch():
-    """The restart flow needs the epoch, because ownership cannot see an ABA.
+def test_the_automatic_restart_stands_down_at_every_resumption_point():
+    """Each await this flow resumes from must ask the WHOLE question.
 
-    A newer start can claim inside the ack's 500ms window and then be cancelled,
-    putting the slot back to EMPTY -- which ownership reads as "mine was
-    released normally". This flow has no ensureVoiceStartCurrent, so the epoch
-    is the only thing left between it and reopening the mic after a goodbye.
+    Neither half is sufficient alone, and asking only one is how this bug kept
+    coming back: ownership cannot see a cancel-and-clear (the slot is back to
+    empty, exactly like a normal release), and the epoch cannot see a TEXT
+    takeover (text starts never mint one, and the disconnect path leaves the
+    mobile composer live throughout the showCurrentModel await).
 
-    Mutation-verified: drop either epoch check and this reddens.
+    Mutation-verified: drop either stand-down call, or either half of the
+    predicate, and this reddens.
     """
     source = (_STATIC_APP / "app-websocket.js").read_text(encoding="utf-8")
-    resumed = source.find("await sessionStartPromise;")
+    helper = source.find("function restartMustStandDown()")
+    assert helper != -1, "the automatic restart's stand-down check has been renamed"
+    helper_body = source[helper:source.find("try {", helper)]
+    for signal in ("sessionStartSuperseded", "voiceStartEpochIsCurrent"):
+        assert signal in helper_body, (
+            f"app-websocket.js: the restart's stand-down check ignores {signal}, so a "
+            f"takeover it cannot see reaches the microphone.\n{helper_body}"
+        )
+
+    resumed = source.find("await sessionStartPromise;", helper)
     assert resumed != -1, "the automatic restart no longer awaits its start promise"
     opens_mic = source.find("window.startMicCapture()", resumed)
     assert opens_mic != -1, "the automatic restart no longer opens the mic"
 
     resumption = source[resumed:opens_mic]
-    assert resumption.count("voiceStartEpochIsCurrent") >= 2, (
-        "app-websocket.js: the automatic restart resumes and opens the microphone "
-        "without re-checking the voice-start intent epoch on both sides of its "
-        f"showCurrentModel await.\n{resumption}"
+    assert resumption.count("restartMustStandDown()") >= 2, (
+        "app-websocket.js: the automatic restart resumes twice before opening the "
+        "microphone -- from its start promise and from showCurrentModel -- and must "
+        f"stand down at both.\n{resumption}"
+    )
+
+
+@pytest.mark.unit
+def test_the_restart_snapshots_its_epoch_before_the_delay():
+    """Snapshot when the restart is DECIDED, not 7.5s later inside the callback.
+
+    A goodbye or avatar drop during the delay bumps the epoch through
+    cancelPendingSessionStart. A snapshot taken inside the callback reads that
+    cancellation as its own starting point, so every check against it passes and
+    the restart proceeds against a user who has already walked away.
+
+    Mutation-verified: move the snapshot inside the callback and this reddens.
+    """
+    source = (_STATIC_APP / "app-websocket.js").read_text(encoding="utf-8")
+    snapshot = source.find("var restartVoiceEpoch = S.voiceSessionStartEpoch;")
+    assert snapshot != -1, "the automatic restart no longer snapshots the intent epoch"
+    helper = source.find("function restartMustStandDown()")
+    assert helper != -1, "the automatic restart's stand-down check has been renamed"
+    scheduled = source.rfind("setTimeout(async function ()", 0, helper)
+    assert scheduled != -1, "the automatic restart is no longer scheduled on a timer"
+
+    assert snapshot < scheduled, (
+        "app-websocket.js: the epoch snapshot sits inside the delayed callback, so a "
+        "cancellation during the delay becomes its own baseline and every check "
+        "against it passes."
     )
