@@ -15,6 +15,7 @@
 """OpenAI TTS worker."""
 
 from functools import partial
+from inspect import signature
 
 import numpy as np
 import soxr
@@ -30,9 +31,27 @@ from utils.openai_tts import (
     OPENAI_TTS_PCM_SAMPLE_RATE,
     openai_tts_base_url,
     openai_tts_extra_body,
+    openai_tts_sdk_options,
 )
 
 logger = get_module_logger(__name__, "Main")
+
+
+def _openai_auth_client_kwargs(client_type, audio_api_key):
+    """为需要鉴权和免鉴权的 endpoint 构造 SDK 凭证参数。"""
+    client_kwargs = {"api_key": audio_api_key or ""}
+    if audio_api_key:
+        return client_kwargs
+
+    # OpenAI SDK 2.34+ 默认拒绝空 key，但提供免凭证兼容开关；旧版没有该参数。
+    # 仅在当前 SDK 明确支持时关闭初始化校验，请求层仍显式删除 Authorization。
+    try:
+        supports_auth_free = "_enforce_credentials" in signature(client_type).parameters
+    except (TypeError, ValueError):
+        supports_auth_free = False
+    if supports_auth_free:
+        client_kwargs["_enforce_credentials"] = False
+    return client_kwargs
 
 
 def openai_tts_worker(
@@ -47,8 +66,11 @@ def openai_tts_worker(
 ):
     """OpenAI-compatible TTS: sentence input with a streamed PCM response."""
 
+    # 纯空白 key 等同未填写，避免误发 ``Bearer <空白>``。
+    audio_api_key = str(audio_api_key or "").strip()
+
     try:
-        from openai import AsyncOpenAI
+        from openai import AsyncOpenAI, omit as openai_omit
     except ImportError:
         logger.error("❌ 无法导入 openai 库，OpenAI TTS 不可用")
         response_queue.put(("__ready__", False))
@@ -65,13 +87,14 @@ def openai_tts_worker(
     effective_voice = str(voice_id or "").strip() or str(voice or "").strip()
 
     async def setup(response_queue):
-        client_kwargs = {
-            "api_key": audio_api_key or ("sk-placeholder" if base_url else audio_api_key),
-        }
+        client_kwargs = _openai_auth_client_kwargs(AsyncOpenAI, audio_api_key)
         if base_url:
             # Validate/normalize inside setup so configuration failures travel
             # through the shared worker skeleton's normal __ready__ channel.
-            client_kwargs["base_url"] = openai_tts_base_url(base_url)
+            sdk_base_url, default_query = openai_tts_sdk_options(base_url)
+            client_kwargs["base_url"] = sdk_base_url
+            if default_query:
+                client_kwargs["default_query"] = default_query
         client = AsyncOpenAI(**client_kwargs)
         extra_body = openai_tts_extra_body(base_url or OPENAI_TTS_DEFAULT_BASE_URL)
 
@@ -84,6 +107,12 @@ def openai_tts_worker(
             }
             if extra_body:
                 request_kwargs["extra_body"] = extra_body
+            if not audio_api_key:
+                # 新版 SDK 还会在发请求前检查鉴权方式；Omit 保证免鉴权服务
+                # 不会收到占位或空白 Bearer 头。
+                request_kwargs["extra_headers"] = {
+                    "Authorization": openai_omit,
+                }
             async with client.audio.speech.with_streaming_response.create(
                 **request_kwargs,
             ) as response:
