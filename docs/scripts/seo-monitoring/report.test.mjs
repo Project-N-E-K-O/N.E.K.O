@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   buildMonitoringReport,
   notRun,
+  normalizedIndexNow,
   rankBuckets,
   renderMarkdown,
   summarizeDataForSeoSegment,
@@ -68,7 +69,7 @@ function report(keyword, overrides = {}) {
     generatedAt: '2026-07-28T00:00:00.000Z',
     plan: { serpDepth: 100, includeAiOverview: true },
     costs: { totalUsd: 0.01 },
-    keywordMetrics: [],
+    keywordMetrics: [{ keyword, searchVolume: 0, keywordDifficulty: 20 }],
     serp: [{ keyword, landingPage: '/', intent: 'BOFU', organicRank: 15, error: null }],
     errors: [],
     ...overrides,
@@ -205,6 +206,26 @@ test('rank buckets never count unknown rows as observed or off-100', () => {
   assert.equal(summary.observed, 1)
   assert.equal(summary.off100, 1)
   assert.equal(summary.unknown, 1)
+})
+
+test('IndexNow keeps unreadable evidence distinct from a missing execution', () => {
+  assert.deepEqual(normalizedIndexNow(unavailable('invalid JSON')), {
+    status: 'unavailable',
+    reason: 'invalid JSON',
+  })
+  assert.equal(normalizedIndexNow(notRun('file not found')).status, 'not_run')
+})
+
+test('missing keyword metric rows cannot inherit a complete execution label', () => {
+  const summarized = summarizeDataForSeoSegment(
+    cnDefinition,
+    report('AI 桌面助手', { keywordMetrics: [] }),
+    execution(),
+  )
+
+  assert.equal(summarized.keywordRows[0].searchVolumeStatus, 'unknown')
+  assert.equal(summarized.keywordRows[0].searchVolume, null)
+  assert.equal(summarized.keywordMetricsStatus, 'unknown')
 })
 
 test('segment summary preserves UNSUPPORTED KD and distinguishes a real zero from NOT_RUN', () => {

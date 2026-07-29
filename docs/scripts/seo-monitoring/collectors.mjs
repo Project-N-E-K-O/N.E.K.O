@@ -657,6 +657,14 @@ async function fetchProbe(url, { fetchImpl, timeoutMs }) {
   }
 }
 
+function safeUrl(value, base) {
+  try {
+    return new URL(value, base).href
+  } catch {
+    return null
+  }
+}
+
 export async function collectTechnicalSeo(site, {
   fetchImpl = globalThis.fetch,
   timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
@@ -679,7 +687,8 @@ export async function collectTechnicalSeo(site, {
     ...home.source.matchAll(/<script\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/giu),
     ...home.source.matchAll(/<link\b(?=[^>]*\brel=["']modulepreload["'])[^>]*\bhref=["']([^"']+)["'][^>]*>/giu),
   ]
-    .map(match => new URL(match[1], home.finalUrl || `${site.origin}/`).href)
+    .map(match => safeUrl(match[1], home.finalUrl || `${site.origin}/`))
+    .filter(Boolean)
     .filter(url => new URL(url).origin === site.origin)
     .filter((url, index, urls) => urls.indexOf(url) === index)
     .slice(0, 10)

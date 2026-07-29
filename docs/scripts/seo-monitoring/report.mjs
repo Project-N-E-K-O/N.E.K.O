@@ -74,8 +74,8 @@ function inferExecution(report, execution) {
       aiOverviewStatus: 'not_run',
     }
   }
-  const hasSerp = Array.isArray(report?.serp)
-  const hasMetrics = Array.isArray(report?.keywordMetrics)
+  const hasSerp = Array.isArray(report?.serp) && report.serp.length > 0
+  const hasMetrics = Array.isArray(report?.keywordMetrics) && report.keywordMetrics.length > 0
   return {
     runStatus: report?.status ?? 'unknown',
     rankingStatus: hasSerp ? report.status : 'not_run',
@@ -100,6 +100,11 @@ export function summarizeDataForSeoSegment(definition, report, execution) {
   const run = inferExecution(report, execution)
   const metrics = metricMap(report)
   const planned = definition.keywordConfig?.keywords ?? []
+  const reportedMetricCount = planned.filter(item => metrics.has(canonicalKeyword(item.keyword))).length
+  const keywordMetricsStatus = run.keywordMetricsStatus === 'complete'
+    && (metrics.size === 0 || (planned.length > 0 && reportedMetricCount !== planned.length))
+    ? 'unknown'
+    : run.keywordMetricsStatus
   const reportedRows = new Map(
     (report?.serp ?? []).map(item => [canonicalKeyword(item.keyword), item]),
   )
@@ -126,7 +131,11 @@ export function summarizeDataForSeoSegment(definition, report, execution) {
     : report?.serp ?? []
   const maxRank = Number(report?.plan?.serpDepth ?? definition.keywordConfig?.serpDepth ?? 0)
   const rows = sourceRows.map(item => {
-    const metric = metrics.get(canonicalKeyword(item.keyword))
+    const keywordKey = canonicalKeyword(item.keyword)
+    const metric = metrics.get(keywordKey)
+    const metricStatus = run.keywordMetricsStatus === 'complete' && !metrics.has(keywordKey)
+      ? 'unknown'
+      : run.keywordMetricsStatus
     const collectionStatus = statusForRow(item, run.rankingStatus)
     return {
       siteId: definition.siteId,
@@ -141,7 +150,7 @@ export function summarizeDataForSeoSegment(definition, report, execution) {
       matchedUrl: item.matchedUrl ?? null,
       landingPageMatched: item.landingPageMatched ?? null,
       searchVolume: Number.isFinite(metric?.searchVolume) ? metric.searchVolume : null,
-      searchVolumeStatus: run.keywordMetricsStatus,
+      searchVolumeStatus: metricStatus,
       keywordDifficulty: definition.keywordDifficulty === 'unsupported'
         ? null
         : Number.isFinite(metric?.keywordDifficulty)
@@ -149,7 +158,7 @@ export function summarizeDataForSeoSegment(definition, report, execution) {
           : null,
       keywordDifficultyStatus: definition.keywordDifficulty === 'unsupported'
         ? 'unsupported'
-        : run.keywordMetricsStatus,
+        : metricStatus,
       keywordDifficultyReason: definition.keywordDifficultyReason ?? null,
       aiOverviewStatus: run.aiOverviewStatus,
       aiOverviewTriggered: run.aiOverviewStatus === 'not_run' || run.aiOverviewStatus === 'unknown'
@@ -173,7 +182,7 @@ export function summarizeDataForSeoSegment(definition, report, execution) {
     label: definition.label,
     status: run.runStatus,
     rankingStatus: run.rankingStatus,
-    keywordMetricsStatus: run.keywordMetricsStatus,
+    keywordMetricsStatus,
     aiOverviewStatus: run.aiOverviewStatus,
     reason: run.failureReason ?? run.reason ?? report?.reason ?? null,
     dryRun: report?.dryRun === true,
@@ -489,10 +498,10 @@ function buildAiCitationFrequency(segments) {
   }
 }
 
-function normalizedIndexNow(value) {
+export function normalizedIndexNow(value) {
   if (!value) return notRun('status artifact not available')
   const runStatus = value.runStatus ?? value.status
-  if (runStatus === 'unavailable') return notRun(value.reason ?? 'status artifact not available')
+  if (runStatus === 'unavailable') return unavailable(value.reason ?? 'status artifact is unreadable')
   const payload = value.payload ?? {}
   const urls = value.urls ?? payload.urlList ?? []
   if (runStatus === 'not_run') {

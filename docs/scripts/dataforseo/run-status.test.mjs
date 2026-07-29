@@ -6,6 +6,7 @@ import { buildRunStatus } from './run-status.mjs'
 const successfulReport = {
   plan: { requests: { total: 8 }, includeAiOverview: true },
   costs: { totalUsd: 0.072 },
+  keywordMetrics: [{ keyword: 'AI 桌面助手', searchVolume: 10 }],
   serp: [
     { organicRank: 4, aiOverviewCitedTarget: false },
     { organicRank: null, aiOverviewCitedTarget: true },
@@ -85,4 +86,28 @@ test('partial DataForSEO artifacts remain partial instead of becoming false comp
   assert.equal(status.rankingStatus, 'partial')
   assert.equal(status.aiOverviewStatus, 'partial')
   assert.equal(status.failureReason, null)
+})
+
+test('missing or empty paid evidence fails closed instead of becoming complete', () => {
+  const missingMetrics = buildRunStatus({
+    mode: 'all',
+    credentialsOutcome: 'success',
+    paidOutcome: 'success',
+    includeAiOverview: true,
+    report: { ...successfulReport, keywordMetrics: [] },
+  })
+  const missingRanks = buildRunStatus({
+    mode: 'all',
+    credentialsOutcome: 'success',
+    paidOutcome: 'success',
+    includeAiOverview: true,
+    report: { ...successfulReport, serp: [] },
+  })
+
+  assert.equal(missingMetrics.runStatus, 'failed')
+  assert.equal(missingMetrics.keywordMetricsStatus, 'failed')
+  assert.match(missingMetrics.failureReason, /no keyword metric rows/u)
+  assert.equal(missingRanks.runStatus, 'failed')
+  assert.equal(missingRanks.rankingStatus, 'failed')
+  assert.match(missingRanks.failureReason, /no ranking rows/u)
 })

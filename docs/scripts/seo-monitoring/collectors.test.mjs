@@ -272,6 +272,7 @@ test('technical collector checks HTTP, discovery files, canonical, hreflang, sch
         return new Response(`<!doctype html><html lang="zh-CN"><head>
           <link rel="canonical" href="${origin}/">
           <link rel="alternate" hreflang="en" href="${origin}/en/">
+          <script src="http://[::1"></script>
           <link rel="modulepreload" href="/assets/theme.js">
           <script type="application/ld+json">{"@type":"SoftwareApplication"}</script>
         </head></html>`, { status: 200 })

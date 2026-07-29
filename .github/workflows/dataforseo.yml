@@ -166,7 +166,7 @@ jobs:
             exit 0
           fi
           repository="Project-N-E-K-O/N.E.K.O.OfficialWebsite"
-          record="$(gh api "repos/${repository}/actions/artifacts?per_page=100" --jq '.artifacts | map(select(.expired == false and (.name | startswith("dataforseo-cn-report")))) | sort_by(.created_at) | last | select(. != null) | [.workflow_run.id, .name] | @tsv')"
+          record="$(gh api "repos/${repository}/actions/artifacts?name=dataforseo-cn-report&per_page=100" --jq '.artifacts | map(select(.expired == false and .name == "dataforseo-cn-report" and .workflow_run.head_branch == "main")) | sort_by(.created_at) | last | select(. != null) | [.workflow_run.id, .name] | @tsv')"
           if [[ -z "$record" ]]; then
             echo "No .cn ranking artifact exists; this run will collect the fallback locally."
             exit 0

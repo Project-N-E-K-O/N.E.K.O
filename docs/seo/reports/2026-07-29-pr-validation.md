@@ -10,7 +10,7 @@
 
 | 范围 | 验证 | 结果 |
 |---|---|---|
-| `Project-N-E-K-O/N.E.K.O` | 完整单元测试 | **94/94 PASS** |
+| `Project-N-E-K-O/N.E.K.O` | 完整单元测试 | **99/99 PASS** |
 | `Project-N-E-K-O/N.E.K.O` | VitePress 生产构建 + SEO 产物检查 | **PASS**：299 个 indexable、37 个 noindex、1140 条 hreflang |
 | `Project-N-E-K-O/N.E.K.O.OfficialWebsite` | 完整单元测试 | **19/19 PASS** |
 | 两仓 | GitHub Actions YAML 解析 | **PASS** |
@@ -63,16 +63,16 @@
 
 ## 3. 完整测试结果
 
-### 3.1 主仓：94/94
+### 3.1 主仓：99/99
 
 | 测试组 | 数量 | 结果 | 覆盖重点 |
 |---|---:|---|---|
 | IndexNow | 10 | PASS | URL 规范化、key 文件、超时/限流重试、状态 artifact |
 | GA4 consent / tracking | 11 | PASS | 同意前不加载、撤回、跨标签同步、Steam 与文档→主页事件 |
 | Steam CTA | 4 | PASS | 所有已发布 Steam 链接的 UTM 与归因 |
-| DataForSEO | 41 | PASS | 三段配置、Volume/KD、depth 100、AIO、成本、重试、workflow/artifact |
-| SEO monitoring | 28 | PASS | GSC/GA4 窗口、技术探针、日报渲染、严格门禁、搜索/引用频率 |
-| **合计** | **94** | **PASS** | 0 fail / 0 skipped |
+| DataForSEO | 42 | PASS | 三段配置、Volume/KD、depth 100、AIO、成本、重试、workflow/artifact、空证据 fail-closed |
+| SEO monitoring | 32 | PASS | GSC/GA4 窗口、技术探针、IndexNow 证据分类、日报渲染、严格门禁、搜索/引用频率 |
+| **合计** | **99** | **PASS** | 0 fail / 0 skipped |
 
 执行命令：
 
@@ -102,8 +102,11 @@ SEO validation: PASS
 - 所有运行继续上传 `seo-geo-daily-report` 诊断 artifact，但趋势比较只读取 `main` 上通过完整付费门禁后发布的 `seo-geo-daily-paid-baseline`；
 - `docs_home_click` 只计算具体文档页到任一语言首页的导航，语言首页互跳不再误报；
 - 技术探针的 HTTP 与内容不变量共同决定顶层状态，`daily` 门禁还会独立复核 robots sitemap 声明、sitemap URL、验证/key 文件、`lang`、canonical、hreflang、GA4 Measurement ID 和 AI crawler 策略。
+- 主仓与 `.cn` 源仓 artifact 均通过服务端精确 `name=` 查询，并只复用 `main` 证据，避免仓库 artifact 增长后静默漏掉历史数据；
+- keyword metrics 缺失/空数组、三段全部无数值 Volume 均 fail-closed；证据文件缺失与 JSON 损坏被分别标记为 `NOT_RUN` 与 `UNKNOWN/unavailable`；
+- 首页中的畸形 script/modulepreload URL 会被隔离丢弃，不再让已采集的 canonical、robots、sitemap 等整段证据一起丢失；历史样本已明确不定义当前字段契约。
 
-上述修复后重新执行 `npm test` 为 **94/94 PASS**，`npm run build:check`、workflow YAML 解析、Markdown 路径检查及 `git diff --check` 均通过。
+上述修复后重新执行 `npm test` 为 **99/99 PASS**，`npm run build:check`、workflow YAML 解析、Markdown 路径检查及 `git diff --check` 均通过。
 
 ### 3.3 `.cn` 源仓：19/19
 

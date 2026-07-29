@@ -72,6 +72,10 @@ export function buildRunStatus({
     failureReason = 'The collection step succeeded but the expected JSON report is missing.'
   } else if (report?.status === 'failed') {
     failureReason = 'The generated DataForSEO report has failed status.'
+  } else if (expectsRanking && (!Array.isArray(report?.serp) || report.serp.length === 0)) {
+    failureReason = 'The generated DataForSEO report has no ranking rows.'
+  } else if (expectsKeywordMetrics && (!Array.isArray(report?.keywordMetrics) || report.keywordMetrics.length === 0)) {
+    failureReason = 'The generated DataForSEO report has no keyword metric rows.'
   }
 
   const failed = failureReason !== null
@@ -96,11 +100,11 @@ export function buildRunStatus({
     keywordMetricsStatus: expectsKeywordMetrics
       ? failed
         ? 'failed'
-        : Array.isArray(report?.keywordMetrics)
-          ? 'complete'
-          : partial
-            ? 'partial'
-            : 'complete'
+        : partial
+          ? 'partial'
+          : Array.isArray(report?.keywordMetrics) && report.keywordMetrics.length > 0
+            ? 'complete'
+            : 'unknown'
       : 'not_run',
     aiOverviewStatus: expectsAiOverview ? (failed ? 'failed' : partial ? 'partial' : 'complete') : 'not_run',
     dataReportPresent: Boolean(report),

@@ -442,6 +442,20 @@ test('frequency contracts reject missing search demand and inconsistent AI citat
   assert.ok(failures.includes('AI citation current.citationRate is inconsistent'))
 })
 
+test('daily contract rejects complete labels backed by empty Volume evidence', () => {
+  const report = validReport()
+  const segment = report.dataForSeoSegments.find(item => item.id === 'cn')
+  segment.keywordRows.forEach(row => { row.searchVolume = null })
+  const demand = report.searchFrequency.demandBySegment.find(item => item.segmentId === 'cn')
+  demand.reportedQueries = 0
+  demand.totalMonthlySearchVolume = null
+  demand.averageMonthlySearchVolume = null
+
+  const failures = requiredFailures(report, 'daily')
+  assert.ok(failures.includes('DataForSEO cn has no reported search volume'))
+  assert.ok(failures.includes('Search demand cn has no reported queries'))
+})
+
 test('action validation blocks mixed-priority queues and duplicate page work', () => {
   const duplicate = validReport()
   duplicate.actions.selected.push({ ...duplicate.actions.selected[0] })

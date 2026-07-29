@@ -2,6 +2,7 @@
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 import {
   collectGa4,
@@ -71,12 +72,13 @@ async function readJson(path) {
   return JSON.parse(await readFile(resolve(path), 'utf8'))
 }
 
-async function readOptionalJson(path, missingReason) {
-  if (!path) return unavailable(missingReason)
+export async function readOptionalJson(path, missingReason, { missingStatus = 'unavailable' } = {}) {
+  const missing = reason => missingStatus === 'not_run' ? notRun(reason) : unavailable(reason)
+  if (!path) return missing(missingReason)
   try {
     return await readJson(path)
   } catch (error) {
-    if (error?.code === 'ENOENT') return unavailable(`${missingReason}; file not found: ${path}`)
+    if (error?.code === 'ENOENT') return missing(`${missingReason}; file not found: ${path}`)
     return unavailable(`${missingReason}; ${error.message}`)
   }
 }
@@ -177,9 +179,13 @@ async function main() {
             : `${definition.ga4.propertyIdEnv} is not configured`),
         ),
       safely(() => collectTechnicalSeo(definition)),
-      readOptionalJson(indexNowPath, `${definition.indexNow.statusPathEnv} is not configured`),
+      readOptionalJson(
+        indexNowPath,
+        `${definition.indexNow.statusPathEnv} is not configured`,
+        { missingStatus: 'not_run' },
+      ),
     ])
-    return { definition, gsc, ga4, technical, indexNow: indexNow.status === 'unavailable' ? notRun(indexNow.reason) : indexNow }
+    return { definition, gsc, ga4, technical, indexNow }
   }))
 
   const report = buildMonitoringReport({
@@ -204,7 +210,9 @@ async function main() {
   if (options.requireComplete && report.overallStatus !== 'complete') process.exitCode = 1
 }
 
-main().catch(error => {
-  console.error(`SEO/GEO report failed: ${error.message}`)
-  process.exitCode = 1
-})
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch(error => {
+    console.error(`SEO/GEO report failed: ${error.message}`)
+    process.exitCode = 1
+  })
+}

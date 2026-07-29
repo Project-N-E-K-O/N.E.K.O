@@ -6,7 +6,7 @@ so their UNKNOWN/NOT_RUN states are evidence, not zero values.
 # N.E.K.O SEO / GEO 日报 — 2026-07-28
 
 > 历史预检样本：当时 `.cn` 临时按 5 词生成；现行配置已恢复固定 8 词，并另外保留 `.online zh-CN` 的 3 个文档落地页词。本文件不作为下一次生产日报的分母依据。
-
+>
 > 生成时间：2026-07-28T04:13:07.367Z（Asia/Shanghai）  
 > 总体状态：PARTIAL  
 > 北极星指标：进入 Google Top 10 的跟踪关键词数量 → Steam 商店访问

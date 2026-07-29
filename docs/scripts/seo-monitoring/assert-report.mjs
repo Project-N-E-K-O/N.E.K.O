@@ -311,6 +311,11 @@ function validateDataForSeo(report, failures) {
       }
     })
     add(failures, keywords.size === rows.length, `DataForSEO ${id} contains duplicate keywords`)
+    add(
+      failures,
+      rows.some(row => isNonNegative(row?.searchVolume)),
+      `DataForSEO ${id} has no reported search volume`,
+    )
     add(failures, segment.ranks?.tracked === expected.keywords, `DataForSEO ${id} tracked count is wrong`)
     add(failures, segment.ranks?.observed === expected.keywords, `DataForSEO ${id} observed count is wrong`)
     add(failures, segment.ranks?.failed === 0, `DataForSEO ${id} has failed keyword rows`)
@@ -343,6 +348,7 @@ function validateSearchFrequency(report, failures) {
     add(failures, item.status === 'complete', `Search demand ${item.segmentId} is ${item.status ?? 'missing'}`)
     add(failures, item.trackedQueries === rows.length, `Search demand ${item.segmentId} tracked count is inconsistent`)
     add(failures, item.reportedQueries === volumes.length, `Search demand ${item.segmentId} reported count is inconsistent`)
+    add(failures, item.reportedQueries > 0, `Search demand ${item.segmentId} has no reported queries`)
     add(failures, sameNullableNumber(item.totalMonthlySearchVolume, total), `Search demand ${item.segmentId} total is inconsistent`)
     add(
       failures,
