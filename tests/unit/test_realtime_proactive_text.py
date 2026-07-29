@@ -232,6 +232,35 @@ async def test_native_image_async_rejection_preserves_snapshot_and_cancels_respo
 
 
 @pytest.mark.unit
+async def test_callback_image_registers_rejection_before_free_provider_send():
+    client = _make_client()
+    rejected = []
+
+    await client.stream_image(
+        DUMMY_IMAGE_B64,
+        bypass_rate_limit=True,
+        on_rejected=rejected.append,
+    )
+
+    image_event = next(
+        event
+        for event in _sent_events(client)
+        if event.get("type") == "input_image_buffer.append"
+    )
+    assert image_event.get("event_id")
+    assert image_event["event_id"] in client._inject_rejection_handlers
+
+    client._route_inject_rejection(
+        image_event["event_id"],
+        "callback image rejected",
+    )
+
+    assert rejected == ["callback image rejected"]
+    assert image_event["event_id"] not in client._inject_rejection_handlers
+    await client.close()
+
+
+@pytest.mark.unit
 async def test_server_vad_prompt_rotates_tts_sid_before_text_response():
     client = _make_client()
     client.on_sid_rotate = AsyncMock()

@@ -452,7 +452,13 @@ async def test_voice_mode_rechecks_retracted_callbacks_before_inject():
         {"_callback_delivery_id": "id-retracted", "origin": "task_result", "summary": "cancelled"}
     ]
 
-    async def _stream_then_retract(callbacks, session):
+    async def _stream_then_retract(
+        callbacks,
+        session,
+        *,
+        on_rejected=None,
+    ):
+        assert on_rejected is not None
         cb[DELIVERY_RETRACTED_KEY] = True
         return True
     mgr._stream_cb_media = _stream_then_retract
@@ -971,6 +977,44 @@ async def test_voice_mode_inject_exception_keeps_cbs_for_retry():
     # inject 确实被调用过一次（证明走的是 inject-异常分支，而非更早的 guard 早退）
     assert sess.inject_calls == 1
     assert mgr.pending_agent_callbacks == original
+
+
+async def test_voice_mode_callback_image_rejection_before_inject_keeps_cb():
+    """A native callback image rejection that arrives during stream_image must
+    keep the callback queued and prevent a text-only response from starting."""
+    sess = _make_voice_sess()
+
+    async def _reject_image(
+        _image_b64,
+        *,
+        bypass_rate_limit=False,
+        on_rejected=None,
+    ):
+        assert bypass_rate_limit is True
+        assert on_rejected is not None
+        on_rejected("callback image rejected")
+
+    sess.stream_image = _reject_image
+    mgr = _make_mgr(session=sess)
+    cb = {
+        "_callback_delivery_id": "id-image-rejected",
+        "status": "completed",
+        "summary": "inspect this image",
+        "media_images": ["image-b64"],
+    }
+    extra = {
+        "_callback_delivery_id": "id-image-rejected",
+        "summary": "inspect this image",
+    }
+    mgr.pending_agent_callbacks = [cb]
+    mgr.pending_extra_replies = [extra]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is False
+    assert sess.inject_calls == 0
+    assert mgr.pending_agent_callbacks == [cb]
+    assert mgr.pending_extra_replies == [extra]
 
 
 async def test_voice_mode_unstamped_cb_still_pruned_via_object_id_fallback():

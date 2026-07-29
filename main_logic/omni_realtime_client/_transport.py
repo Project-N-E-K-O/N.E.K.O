@@ -15,6 +15,7 @@
 
 from ._shared import (
     Any,
+    Callable,
     Dict,
     IMAGE_IDLE_RATE_MULTIPLIER,
     List,
@@ -35,6 +36,7 @@ from ._shared import (
     np,
     parse_arguments_json,
     time,
+    uuid,
     websockets,
 )
 
@@ -631,6 +633,7 @@ class _TransportMixin:
         *,
         bypass_rate_limit: bool = False,
         event_id: str | None = None,
+        on_rejected: Optional[Callable[[str], None]] = None,
     ) -> None:
         """Stream raw image data to the API.
 
@@ -639,11 +642,17 @@ class _TransportMixin:
         screenshot) so it isn't silently dropped just because a high-frequency
         screen/camera frame was streamed within NATIVE_IMAGE_MIN_INTERVAL
         (Codex P2). It's one intentional image, not a stream, so it won't flood.
+
+        WebSocket-native callback images may pass ``on_rejected`` to correlate
+        a later provider ``error.event_id`` with the callback delivery that
+        owns the image. The handler is registered before send so an immediate
+        asynchronous rejection cannot outrun it.
         """
         # Cache latest frame for proactive injection
         self._latest_image_b64 = image_b64
         self._proactive_image_consumed = False
 
+        rejection_event_id: str | None = None
         try:
             # Standard StepFun is the only realtime provider without native
             # vision; its first frame triggers VISION_MODEL analysis.
@@ -688,6 +697,14 @@ class _TransportMixin:
                             self._fatal_error_occurred = True
                         raise
                 return
+
+            if on_rejected is not None and self._supports_native_image:
+                event_id = event_id or f"event_callback_image_{uuid.uuid4().hex}"
+                rejection_event_id = event_id
+                self._inject_rejection_handlers[event_id] = on_rejected
+                self._fire_task(
+                    self._expire_inject_rejection_handler(event_id, 60.0)
+                )
 
             if self._is_free_provider:
                 append_event = {
@@ -775,7 +792,13 @@ class _TransportMixin:
                     append_event,
                     raise_on_oversize=bypass_rate_limit,
                 )
+        except asyncio.CancelledError:
+            if rejection_event_id is not None:
+                self._inject_rejection_handlers.pop(rejection_event_id, None)
+            raise
         except Exception as e:
+            if rejection_event_id is not None:
+                self._inject_rejection_handlers.pop(rejection_event_id, None)
             logger.error(f"Error streaming image: {e}")
             raise e
 

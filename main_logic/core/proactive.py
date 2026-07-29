@@ -781,7 +781,11 @@ class ProactiveMixin:
                 # Stream any images carried by these cues into the (guaranteed)
                 # voice session right before inject, so the proactive response
                 # sees the matching visual context (Codex P2).
-                if not await self._stream_cb_media(voice_snapshot, voice_sess):
+                if not await self._stream_cb_media(
+                    voice_snapshot,
+                    voice_sess,
+                    on_rejected=_on_voice_inject_rejected,
+                ):
                     # A media stream failed — DEFER the whole inject so this cb
                     # retries WITH its image rather than being delivered
                     # text-only and pruned (which would lose the retained
@@ -797,6 +801,12 @@ class ProactiveMixin:
                         self.lanlan_name, len(voice_snapshot),
                     )
                     self._schedule_proactive_retry(self.proactive_manager.min_gap_s)
+                    return False
+                if _reject_state["rejected"]:
+                    logger.info(
+                        "[%s] trigger_agent_callbacks: proactive media rejected before text inject; keeping %d cb(s) queued for retry",
+                        self.lanlan_name, len(voice_snapshot),
+                    )
                     return False
                 # Pull-model staleness: a newer same-coalesce_key cue may have
                 # been submitted during the media await above (possibly still
@@ -1502,7 +1512,13 @@ class ProactiveMixin:
         # session at release time (Codex P2).
         await self.trigger_agent_callbacks()
 
-    async def _stream_cb_media(self, callbacks: list, session) -> bool:
+    async def _stream_cb_media(
+        self,
+        callbacks: list,
+        session,
+        *,
+        on_rejected=None,
+    ) -> bool:
         """Stream images carried by proactive callbacks (push_message
         media_parts with ai_behavior="respond") into ``session`` right before
         delivery, so the proactive response sees matching visual context.
@@ -1549,7 +1565,11 @@ class ProactiveMixin:
                     # Deliberate cue image: bypass the native-vision frame-rate
                     # throttle so it isn't silently dropped behind a recent
                     # high-frequency screen/camera frame (Codex P2).
-                    await si(b64, bypass_rate_limit=True)
+                    await si(
+                        b64,
+                        bypass_rate_limit=True,
+                        on_rejected=on_rejected,
+                    )
                     streamed += 1
                 except Exception as e:
                     # Keep the FULL media set (do NOT trim already-streamed
