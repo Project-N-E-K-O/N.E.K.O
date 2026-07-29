@@ -162,9 +162,9 @@ class ScenarioResolver:
 
 
 def _owned_combat_feed_items(state: BattleState):
-    """combat.feed 中归属本机的条目（我方击杀 / 本人阵亡）。
+    """combat.feed 中归属本机的条目（致命与非致命交火）。
 
-    身份未确定时数据层不会置 is_my_*，此时不产生 damage 压力——宁可少压制，
+    身份未确定时数据层不会置 involves_me，此时不产生 damage 压力——宁可少压制，
     也不要把全场活跃度误判成本机在交火。
     """
     feed = state.combat.get("feed") if isinstance(state.combat, dict) else None
@@ -173,7 +173,12 @@ def _owned_combat_feed_items(state: BattleState):
     return [
         item
         for item in feed
-        if isinstance(item, dict) and (item.get("is_my_kill") is True or item.get("is_my_death") is True)
+        if isinstance(item, dict)
+        and (
+            item.get("involves_me") is True
+            or item.get("is_my_kill") is True
+            or item.get("is_my_death") is True
+        )
     ]
 
 

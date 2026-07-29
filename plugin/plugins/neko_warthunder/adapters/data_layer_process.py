@@ -373,6 +373,10 @@ class DataLayerProcessManager:
         }
 
     def _spawn(self):
+        # `_python_cmd` describes the runner selected for this spawn attempt.
+        # Clear the previous attempt before any validation can raise; otherwise
+        # an invalid URL can repeatedly blacklist a stale runner forever.
+        self._python_cmd = []
         data_process_dir = self.plugin_root / "data_layer" / "data process"
         script = data_process_dir / "wt_server.py"
         if not script.exists():

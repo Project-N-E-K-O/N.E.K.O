@@ -81,6 +81,7 @@ class ConditionDetector:
         self._count = 0
         self._level = "warning"
         self._last_emit_ts: float = 0.0
+        self._delivered = False
 
     @property
     def active(self) -> bool:
@@ -91,18 +92,20 @@ class ConditionDetector:
         self._count = 0
         self._level = "warning"
         self._last_emit_ts = 0.0
+        self._delivered = False
 
     def reset_transient(self) -> None:
         """Clear life/mode-local state without forgetting a per-battle emission."""
-        consumed = self.once_per_battle and self._phase in (
-            _ACTIVE,
-            _CONFIRMING_EXIT,
-            _SPENT,
-        )
+        consumed = self.once_per_battle and self._delivered
         self._phase = _SPENT if consumed else _ARMED
         self._count = 0
         self._level = "warning"
         self._last_emit_ts = 0.0
+
+    def mark_delivered(self) -> None:
+        """Commit once-per-battle state only after the host accepted output."""
+        if self.once_per_battle:
+            self._delivered = True
 
     def configure_critical_heartbeat(self, seconds: float) -> None:
         """Update heartbeat cadence without resetting the detector FSM."""
@@ -149,7 +152,7 @@ class ConditionDetector:
             return None
         self._count = self._count + 1 if self._phase == _CONFIRMING_EXIT else 1
         if self._count >= self.confirm_exit:
-            self._phase = _SPENT if self.once_per_battle else _ARMED
+            self._phase = _SPENT if self.once_per_battle and self._delivered else _ARMED
             self._count = 0
             if self.wants_recovery:
                 return self._make_event(cur, edge="recovery")
@@ -222,6 +225,15 @@ class DetectorEngine:
             configure = getattr(detector, "configure_critical_heartbeat", None)
             if callable(configure):
                 configure(seconds)
+
+    def mark_delivered(self, event_id: str) -> None:
+        """Tell matching detectors that an emitted candidate was committed."""
+        for detector in self.detectors:
+            if getattr(detector, "id", "") != event_id:
+                continue
+            mark_delivered = getattr(detector, "mark_delivered", None)
+            if callable(mark_delivered):
+                mark_delivered()
 
     def feed(self, prev: BattleState, cur: BattleState) -> list[BattleEvent]:
         if cur.replay:

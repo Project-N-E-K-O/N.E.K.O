@@ -592,6 +592,10 @@ class NekoWarthunderPlugin(NekoPluginBase):
                 if not result.startswith(COMMITTED_RESULT_PREFIXES):
                     self.arbiter.restore(arbiter_checkpoint)
                     self.safety.restore_output_clock(output_clock_checkpoint)
+                else:
+                    mark_delivered = getattr(self.engine, "mark_delivered", None)
+                    if callable(mark_delivered):
+                        mark_delivered(chosen.event_id)
                 self.logger.info(f"[output] {result}")
             except Exception as exc:  # noqa: BLE001 — 投递失败计入安全门，不杀循环
                 self.arbiter.restore(arbiter_checkpoint)

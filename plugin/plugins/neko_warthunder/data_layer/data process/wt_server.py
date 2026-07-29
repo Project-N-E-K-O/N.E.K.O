@@ -105,8 +105,10 @@ _SPAWN_SUPPRESS_SEC = 10.0
 #   1) game_time_sec 在同一局内明显倒退（时间轴往回跳）——回放独有，实战恒单调递增；
 #   2) 进局 grace 秒后 mission_status 始终未出现 'running'，却已是终局/未定义态。
 _REPLAY_TIME_BACK_SEC = 5.0
-# 超过半天的"倒退"按座舱时钟午夜回绕处理，不判回放（见 _detect_replay_locked）。
-_MIDNIGHT_WRAP_MIN_BACK_SEC = 43200.0
+# 只有旧值在午夜前一小时、且新值在午夜后一小时，才按座舱时钟回绕处理。
+# 单凭“大幅倒退”会把回放从晚间拖到凌晨（例如 20:00 -> 01:00）误判为正常跨日。
+_SECONDS_PER_DAY = 86400.0
+_MIDNIGHT_WRAP_EDGE_SEC = 3600.0
 _REPLAY_MISSION_GRACE_SEC = 8.0
 _WORKER_JOIN_TIMEOUT_SECONDS = 2.0
 _TERMINAL_MISSION_STATUSES = frozenset({
@@ -631,10 +633,14 @@ class TelemetryService:
         gt = getattr(ind, "game_time_sec", None)
         if gt is not None and self._last_game_time is not None:
             # game_time_sec 是座舱时钟换算的"当日秒数"(0~86399)，不是单调计时器：
-            # 夜战跨越 00:00 时它会从 ~86399 跳回 0。只有"半天以内的倒退"才可能是
-            # 回放拖时间轴；接近一整天的倒退是午夜回绕，等价于正常前进。
+            # 夜战跨越 00:00 时它会从 ~86399 跳回 0；只有跳变两端都接近午夜，
+            # 才是正常回绕。其他明显倒退（即使超过半天）仍属于回放拖动。
             backwards = self._last_game_time - gt
-            if _REPLAY_TIME_BACK_SEC < backwards < _MIDNIGHT_WRAP_MIN_BACK_SEC:
+            midnight_wrap = (
+                self._last_game_time >= _SECONDS_PER_DAY - _MIDNIGHT_WRAP_EDGE_SEC
+                and gt <= _MIDNIGHT_WRAP_EDGE_SEC
+            )
+            if backwards > _REPLAY_TIME_BACK_SEC and not midnight_wrap:
                 self._replay = True
         if gt is not None:
             self._last_game_time = gt
