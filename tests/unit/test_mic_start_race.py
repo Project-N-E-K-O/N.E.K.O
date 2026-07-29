@@ -20,20 +20,33 @@ STATIC test (``test_mic_lease_static.py``, ``test_app_websocket_static.py``)
 -- source-level assertions that can pin which calls exist, but not what two
 concurrent attempts do to each other.
 
-They could not: the unwind ran on the LOSING attempt but reset the module
-globals (``S.stream`` / ``S.audioContext`` / ``S.workletNode`` ...) shared by
-every attempt. ``startMicCapture`` publishes ``S.stream`` before it ever calls
-``startAudioWorklet``, has no re-entrancy guard, and several of its callers
-are fire-and-forget -- so by the time the loser
-unwound, those fields belonged to the WINNER: its tracks were stopped and its
-context nulled, it then threw on ``S.audioContext.sampleRate``, and the user
-was left with no microphone at all -- from exactly the overlap the token was
-added to survive.
+They could not. ``startMicCapture`` has no re-entrancy guard and several of
+its callers are fire-and-forget, so two attempts genuinely overlap -- and
+every stage of the open window used to run through the module globals
+(``S.stream`` / ``S.audioContext`` / ``S.micGainNode`` / ``S.inputAnalyser`` /
+``S.workletNode``), which by then could belong to the OTHER attempt. Four
+distinct defects came out of that one shape:
 
-So this drives the real module under a stubbed browser and asserts the
-outcome. The control case (one attempt, same harness) is asserted alongside,
-because a harness that cannot commit a microphone would report the race as
-"fixed" for the wrong reason.
+* the unwind reset the globals blindly, so a loser stopped the WINNER's
+  tracks and nulled its context; the winner then threw on
+  ``S.audioContext.sampleRate`` and the user had no microphone at all;
+* the loser's post-await SETUP also ran through them: it built its worklet on
+  the winner's context and spliced it into the winner's gain node -- two live
+  worklets on one microphone, both uploading;
+* ``S.stream`` was written before the token gate, so when the loser's
+  ``getUserMedia`` settled last it took the slot and its unwind then nulled
+  it, leaving the winner recording with ``S.stream === null`` -- nothing could
+  stop those tracks again;
+* the old-pipeline teardown at the top of ``startAudioWorklet`` was not
+  token-gated, so an attempt superseded while still in ``getUserMedia`` came
+  back and closed the winner's freshly published context.
+
+The shape is now: build everything attempt-local, publish all five fields at
+ONE point past the token gate, and tear down only what this attempt made.
+These cases drive the real module under a stubbed browser and assert that.
+The control case (one attempt, same harness) is asserted alongside, because a
+harness that cannot commit a microphone would report the race as "fixed" for
+the wrong reason.
 """
 
 import json
@@ -66,9 +79,12 @@ function assert(cond, msg) {
 function loadModule() {
   const streams = [];
   const contexts = [];
-  // Gate for attempt #1's audioWorklet.addModule(), so it can be parked
-  // mid-open exactly where the real one awaits a network fetch.
+  const workletNodes = [];
+  // Gates for the two real await points inside the open window, so an attempt
+  // can be parked at either one: audioWorklet.addModule() (a network fetch)
+  // and getUserMedia() (device open / permission).
   let addModuleGate = Promise.resolve();
+  let getUserMediaGate = Promise.resolve();
 
   function makeStream() {
     const track = {
@@ -84,6 +100,17 @@ function loadModule() {
     return stream;
   }
 
+  // Nodes remember the context they were built on and what they were wired
+  // into, so a test can ask "whose graph is this node in?" -- the question the
+  // duplicate-worklet defect turns on.
+  function makeNode(context, extra) {
+    const node = Object.assign(
+      { context, connected: [], connect(target) { this.connected.push(target); }, disconnect() {} },
+      extra || {},
+    );
+    return node;
+  }
+
   class FakeAudioContext {
     constructor() {
       this.state = 'running';
@@ -93,9 +120,11 @@ function loadModule() {
       this.audioWorklet = { addModule: () => addModuleGate };
     }
     close() { this.state = 'closed'; return Promise.resolve(); }
-    createMediaStreamSource() { return { connect() {} }; }
-    createGain() { return { gain: { value: 0 }, connect() {} }; }
-    createAnalyser() { return { fftSize: 0, smoothingTimeConstant: 0, connect() {} }; }
+    createMediaStreamSource() { return makeNode(this, { __kind: 'source' }); }
+    createGain() { return makeNode(this, { __kind: 'gain', gain: { value: 0 } }); }
+    createAnalyser() {
+      return makeNode(this, { __kind: 'analyser', fftSize: 0, smoothingTimeConstant: 0 });
+    }
     resume() { return Promise.resolve(); }
   }
 
@@ -131,15 +160,24 @@ function loadModule() {
     requestAnimationFrame: () => 0,
     cancelAnimationFrame: () => {},
     AudioContext: FakeAudioContext,
-    AudioWorkletNode: class { constructor() { this.port = { onmessage: null, postMessage() {} }; }
-                              connect() {} disconnect() {} },
+    AudioWorkletNode: class {
+      constructor(context) {
+        this.context = context;
+        this.__kind = 'worklet';
+        this.connected = [];
+        this.port = { onmessage: null, postMessage() {} };
+        workletNodes.push(this);
+      }
+      connect(target) { this.connected.push(target); }
+      disconnect() {}
+    },
     MediaStream: class {},
     WebSocket: { OPEN: 1 },
     CustomEvent: class { constructor(type, init) { this.type = type; Object.assign(this, init || {}); } },
     localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
     navigator: {
       mediaDevices: {
-        getUserMedia: async () => makeStream(),
+        getUserMedia: async () => { await getUserMediaGate; return makeStream(); },
         enumerateDevices: async () => [],
         addEventListener() {},
       },
@@ -162,7 +200,8 @@ function loadModule() {
   sandbox.window = {
     appState,
     appConst: {},
-    appUtils: { isMobile: () => false, dbToLinear: () => 1 },
+    // Identity so a test can read back which dB the publish actually applied.
+    appUtils: { isMobile: () => false, dbToLinear: (db) => db },
     AudioContext: FakeAudioContext,
     addEventListener() {}, dispatchEvent() {},
     showStatusToast() {}, t: (key) => key,
@@ -180,6 +219,7 @@ function loadModule() {
     S: appState,
     streams,
     contexts,
+    workletNodes,
     micButtonStates,
     // `addModule: () => addModuleGate` reads the gate at CALL time, so an
     // attempt already parked keeps awaiting the promise it captured even
@@ -195,6 +235,21 @@ function loadModule() {
     unparkAddModule() {
       addModuleGate = Promise.resolve();
     },
+    parkGetUserMedia() {
+      let release;
+      const parked = new Promise((resolve) => { release = resolve; });
+      getUserMediaGate = parked;
+      return release;
+    },
+    unparkGetUserMedia() {
+      getUserMediaGate = Promise.resolve();
+    },
+    failAddModule(error) {
+      addModuleGate = Promise.reject(error || new Error('addModule failed'));
+      // Nothing awaits this rejection until the module does; keep node from
+      // reporting it as unhandled in the meantime.
+      addModuleGate.catch(() => {});
+    },
   };
 }
 
@@ -209,7 +264,9 @@ async function raceCase() {
   const releaseFirst = env.parkAddModule();
   const first = env.mod.startMicCapture();
   await settle();
-  assert(env.S.stream === env.streams[0], 'attempt #1 should have published its stream');
+  assert(env.streams.length === 1, 'attempt #1 should have opened a device');
+  assert(env.S.stream === null,
+         'an in-flight attempt must stay invisible in S.stream until it wins');
 
   // #2 overlaps -- a device-change restore, or the session_started auto-start.
   // It does NOT park, so it runs all the way to its commit while #1 is still
@@ -219,10 +276,23 @@ async function raceCase() {
   const second = env.mod.startMicCapture();
   await settle();
   await second;
-  assert(env.S.stream === env.streams[1], 'attempt #2 should have taken over S.stream');
+  assert(env.S.stream === env.streams[1], 'attempt #2 should have published its stream');
   assert(env.S.isRecording === true, 'attempt #2 should have committed');
   assert(env.micButtonStates[env.micButtonStates.length - 1] === true,
          'attempt #2 should have lit the floating mic button');
+  // The publish is all-or-nothing: a field left out of it is a live pipeline
+  // the rest of the module cannot see. S.inputAnalyser in particular drives
+  // silence detection and the volume meter, so dropping it yields a working
+  // mic with a frozen meter -- silent, and exactly the symptom this module
+  // works hard elsewhere to avoid.
+  assert(env.S.audioContext !== null && env.S.micGainNode !== null
+         && env.S.inputAnalyser !== null && env.S.workletNode !== null,
+         'the winning publish must include every graph field');
+  assert(env.S.micGainNode.context === env.S.audioContext
+         && env.S.inputAnalyser.context === env.S.audioContext,
+         'every published node must belong to the published context');
+  assert(env.S.isPlaying === false,
+         'committing releases the focus-mode playback guard');
 
   // Only now let the superseded attempt resume and unwind.
   releaseFirst();
@@ -242,6 +312,80 @@ async function raceCase() {
          "the winner's graph nodes must not be cleared by the loser");
   assert(env.micButtonStates[env.micButtonStates.length - 1] === true,
          'the loser must not paint "not recording" over the recording winner');
+
+  // Codex P2. Scoping only the TEARDOWN is not enough: the loser resumes from
+  // addModule() and does all its post-await graph SETUP through the shared
+  // globals too, which by then are the winner's. It built its worklet on the
+  // winner's context, overwrote S.workletNode, and spliced itself into the
+  // winner's gain node -- two live worklets on one microphone, both uploading,
+  // and the winner's own node orphaned where no teardown would ever find it.
+  assert(env.S.workletNode.context === env.S.audioContext,
+         "S.workletNode must belong to the winner's own AudioContext");
+  const winnerWorklets = env.S.micGainNode.connected.filter((t) => t && t.__kind === 'worklet');
+  assert(winnerWorklets.length === 1,
+         'exactly one worklet may hang off the winning gain node, found ' + winnerWorklets.length);
+  assert(winnerWorklets[0] === env.S.workletNode,
+         'the worklet in the winning graph must be the one S.workletNode names');
+  env.workletNodes.forEach((node) => {
+    assert(node === env.S.workletNode || node.context !== env.S.audioContext,
+           "no abandoned worklet may be left alive on the winner's context");
+  });
+
+  // The loser's own node must be silenced, not merely left out of S.*: its
+  // processor can already have a frame in flight, and the handler closes over
+  // S.socket / S.isRecording, both of which the WINNER has now made live. An
+  // unsilenced loser therefore uploads duplicate PCM into the winner's turn.
+  const loserWorklets = env.workletNodes.filter((n) => n !== env.S.workletNode);
+  assert(loserWorklets.length === 1, 'the superseded attempt should have built one worklet');
+  assert(loserWorklets[0].port.onmessage === null,
+         "the superseded worklet's port handler must be cleared, not left armed");
+  assert(env.contexts.some((c) => c !== env.S.audioContext && c.state === 'closed'),
+         "the superseded attempt must close its own context");
+}
+
+async function streamPublishOrderCase() {
+  // The stream used to be written by startMicCapture BEFORE the token gate,
+  // i.e. outside the publish point -- and that write lands after an await, so
+  // it was unordered with respect to the token. When the loser's getUserMedia
+  // settles LAST it wrote S.stream last, and its unwind then legitimately saw
+  // `S.stream === mediaStream` and nulled it, leaving the winner recording
+  // with S.stream === null: stopRecording's `if (S.stream)` never stops those
+  // tracks (OS mic indicator lit for the life of the page) and the
+  // `S.stream && S.audioContext && S.workletNode` liveness probes read dead
+  // against a live pipeline and open a second microphone on top of it.
+  const env = loadModule();
+
+  // #1 (older token) parks in getUserMedia -- a cold device open.
+  const releaseGum = env.parkGetUserMedia();
+  const first = env.mod.startMicCapture();
+  await settle();
+  assert(env.streams.length === 0, 'attempt #1 should still be waiting on the device');
+
+  // #2 (newer token) opens against a now-warm device and commits.
+  env.unparkGetUserMedia();
+  const second = env.mod.startMicCapture();
+  await settle();
+  await second;
+  assert(env.S.isRecording === true, 'attempt #2 should have committed');
+  const winnerStream = env.S.stream;
+  const winnerContext = env.S.audioContext;
+  assert(winnerStream !== null, 'the winner published its stream');
+
+  // Only NOW does the loser's device open finish -- so its stream write, if
+  // there were one, would land last.
+  releaseGum();
+  await first;
+
+  assert(env.S.stream === winnerStream,
+         "a loser whose getUserMedia settles last must not take over S.stream");
+  assert(winnerStream.getTracks()[0].stopped === false,
+         "the winner's tracks must survive the late loser");
+  assert(env.S.audioContext === winnerContext,
+         "the winner's context must survive the late loser");
+  assert(env.S.isRecording === true, 'the winner must still be recording');
+  const loserStream = env.streams.find((s) => s !== winnerStream);
+  assert(loserStream && loserStream.getTracks()[0].stopped === true,
+         'the late loser must still stop its own device');
 }
 
 async function controlCase() {
@@ -270,22 +414,118 @@ async function failClosedCase() {
   const only = env.mod.startMicCapture();
   await settle();
   env.S.voiceInputRouteBlocked = true;
+  // S.isPlaying is the focus-mode playback guard. Clearing it is part of
+  // COMMITTING ("the user opened the mic, let their voice through"), so an
+  // attempt that never commits must leave it alone -- otherwise a superseded
+  // or fail-closed start silences the guard mid-TTS for whoever does own the
+  // microphone.
+  env.S.isPlaying = true;
   release();
   await only;
 
+  assert(env.S.isPlaying === true,
+         'an attempt that never commits must not clear the playback guard');
+
+  // Asserted on work the attempt actually DID, not on fields that were never
+  // written: with the pipeline attempt-local, `S.stream === null` and
+  // `S.audioContext === null` are the harness's own starting state, so on
+  // their own they would restate the fixture rather than cover the unwind.
+  // contexts[] also holds S.audioPlayerContext (the TTS playback context that
+  // startMicCapture creates on first use), so select the capture ones.
+  const captureContexts = env.contexts.filter((c) => c !== env.S.audioPlayerContext);
+  assert(captureContexts.length === 1, 'the attempt should have created one capture context');
+  assert(captureContexts[0].state === 'closed',
+         'a fail-closed unwind must close the context it created');
+  assert(env.streams.length === 1 && env.streams[0].getTracks()[0].stopped === true,
+         'a fail-closed unwind must stop the device it opened');
   assert(env.S.isRecording === false, 'a fail-closed route must not commit');
-  assert(env.S.stream === null, 'a fail-closed unwind must drop its own stream');
-  assert(env.streams[0].getTracks()[0].stopped === true,
-         'a fail-closed unwind must stop its own tracks');
-  assert(env.S.audioContext === null, 'a fail-closed unwind must clear its own context');
+  assert(env.S.stream === null && env.S.audioContext === null,
+         'a fail-closed attempt must never publish');
   assert(env.micButtonStates[env.micButtonStates.length - 1] === false,
          'a fail-closed unwind must restore the pre-start mic button');
 }
 
+async function restartThenFailClosedCase() {
+  // The `S.audioContext === null` branch in discardOwnPipeline only does work
+  // when a PREVIOUS pipeline was published and then torn down by the top of
+  // startAudioWorklet -- which is the case a cold fail-closed start cannot
+  // reach, and the reason the case above cannot cover it.
+  const env = loadModule();
+  await env.mod.startMicCapture();
+  assert(env.S.isRecording === true, 'the first start should commit');
+  const firstContext = env.S.audioContext;
+  assert(env.S.inputAnalyser !== null, 'the first start published its analyser');
+
+  const release = env.parkAddModule();
+  const restart = env.mod.startMicCapture();
+  await settle();
+  assert(firstContext.state === 'closed',
+         'the restart should have closed the previous context on entry');
+  assert(env.S.audioContext === null && env.S.inputAnalyser === null
+         && env.S.micGainNode === null && env.S.workletNode === null,
+         'closing the previous pipeline must clear every handle to it, not just two');
+
+  env.S.voiceInputRouteBlocked = true;
+  release();
+  await restart;
+
+  assert(env.S.audioContext === null && env.S.micGainNode === null
+         && env.S.inputAnalyser === null && env.S.workletNode === null,
+         'after a fail-closed restart no stale graph handle may remain');
+  const restartContext = env.contexts.filter((c) => c !== env.S.audioPlayerContext).pop();
+  assert(restartContext !== firstContext && restartContext.state === 'closed',
+         'the fail-closed restart must close its own context too');
+}
+
+async function addModuleFailureCase() {
+  // The other way out of the try: addModule() rejects (worklet script 404s,
+  // offline, CSP). Nothing was published, so this graph is unreachable from
+  // S.* -- if the catch does not discard it, the AudioContext and the
+  // microphone track leak with no later attempt able to find them.
+  const env = loadModule();
+  env.failAddModule(new Error('boom'));
+  const only = await env.mod.startMicCapture();
+
+  assert(only === undefined, 'startMicCapture resolves without a value');
+  assert(env.S.isRecording === false, 'a failed addModule must not commit');
+  const own = env.contexts.filter((c) => c !== env.S.audioPlayerContext).pop();
+  assert(own, 'the attempt should have created a capture context');
+  assert(own.state === 'closed', "a failed attempt must close its own AudioContext");
+  assert(env.streams[0].getTracks()[0].stopped === true,
+         'a failed attempt must stop its own microphone track');
+  assert(env.S.stream === null, 'a failed attempt must drop its own stream reference');
+  assert(env.S.audioContext === null, 'a failed attempt must not publish its context');
+}
+
+async function gainChangedDuringOpenCase() {
+  // The published gain node is created before addModule() awaits, and the
+  // attempt is deliberately absent from S.micGainNode for that whole window --
+  // so setMicrophoneGain's poke at S.micGainNode lands on nothing. Unless the
+  // publish re-reads S.microphoneGainDb, the slider and localStorage would show
+  // the new dB while the live microphone stayed at the old one until the next
+  // restart.
+  const env = loadModule();
+  const release = env.parkAddModule();
+  const only = env.mod.startMicCapture();
+  await settle();
+  env.S.microphoneGainDb = 7;
+  release();
+  await only;
+
+  assert(env.S.isRecording === true, 'the attempt should have committed');
+  assert(env.S.micGainNode.gain.value === 7,
+         'the committed graph must carry the gain set during the open window, got '
+         + env.S.micGainNode.gain.value);
+}
+
 (async () => {
   await raceCase();
+  await gainChangedDuringOpenCase();
+  await streamPublishOrderCase();
   await controlCase();
   await failClosedCase();
+  await restartThenFailClosedCase();
+  await addModuleFailureCase();
   console.log('HARNESS_OK');
 })().catch((error) => {
   console.log('HARNESS_FAILED: ' + (error && error.message ? error.message : error));

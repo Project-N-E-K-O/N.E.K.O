@@ -3315,11 +3315,26 @@ def test_in_flight_microphone_start_is_cancellable():
     )
     assert "startToken !== micStartGeneration" in worklet
     assert "S.voiceInputRouteBlocked === true" in worklet
-    assert worklet.index("startToken !== micStartGeneration") < worklet.index(
+    # TWO gates on that token, and both are load-bearing. The entry gate stops
+    # an attempt that was superseded while still in getUserMedia from running
+    # the old-pipeline teardown below it, which would close the WINNER's
+    # freshly published AudioContext. The commit gate stops it from publishing.
+    assert worklet.count("startToken !== micStartGeneration") == 2, (
+        "expected an entry gate and a commit gate on the start token"
+    )
+    assert worklet.index("superseded before opening") < worklet.index(
+        "await previousContext.close()"
+    ), "the entry gate must precede the old-pipeline teardown it protects"
+    assert worklet.index("superseded while opening") < worklet.index(
         "S.isRecording = true;"
     )
     # The unwind must NOT re-emit a lease snapshot -- that re-claim is the bug.
-    unwind = worklet.split("startToken !== micStartGeneration", 1)[1].split(
+    #
+    # Sliced from the COMMIT gate's own log line, not from the first
+    # occurrence of the token comparison: the entry gate added a second one,
+    # and anchoring on the first silently widened this slice to the whole
+    # function body, where both assertions below pass for free.
+    unwind = worklet.split("superseded while opening", 1)[1].split(
         "S.isRecording = true;", 1
     )[0]
     assert "refreshMicLease()" not in _code_only(unwind)
@@ -3331,8 +3346,12 @@ def test_in_flight_microphone_start_is_cancellable():
     assert "return false;" in _code_only(unwind)
     assert "return true;" in _code_only(worklet)
     start_code_only = _code_only(start_fn)
+    # The stream is attempt-local now (it used to be published into S.stream
+    # before the token gate, where a loser whose getUserMedia settled last
+    # could take the slot and then null it out from under the winner), so the
+    # handoff goes through the local binding.
     assert (
-        "const micStartCommitted = await startAudioWorklet(S.stream, micStartToken);"
+        "const micStartCommitted = await startAudioWorklet(ownStream, micStartToken);"
         in start_code_only
     )
     assert "if (!micStartCommitted) {" in start_code_only

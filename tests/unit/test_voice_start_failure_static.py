@@ -120,13 +120,28 @@ def _balanced_js_block_end(source: str, brace: int) -> int:
     raise AssertionError("unterminated JS block")
 
 
-def _catch_block_after(source: str, marker: str) -> str:
+def _catch_block_after(source: str, marker: str, binding: str | None = None) -> str:
+    """The first ``catch`` block after ``marker``, optionally by its binding.
+
+    Without ``binding`` this returns whatever catch comes first, which silently
+    retargets the moment a best-effort ``catch (_)`` teardown is added in
+    between -- the assertions then run against three lines of cleanup and fail
+    for a reason that has nothing to do with what they check. Name the binding
+    when the intent is a specific handler.
+    """
     start = source.find(marker)
     if start < 0:
         raise AssertionError(f"missing marker {marker!r}")
-    match = re.search(r"\bcatch\s*\([^)]*\)\s*\{", source[start:])
+    pattern = (
+        rf"\bcatch\s*\(\s*{re.escape(binding)}\s*\)\s*\{{"
+        if binding
+        else r"\bcatch\s*\([^)]*\)\s*\{"
+    )
+    match = re.search(pattern, source[start:])
     if not match:
-        raise AssertionError(f"missing catch block after {marker!r}")
+        raise AssertionError(
+            f"missing catch block{f' (binding {binding!r})' if binding else ''} after {marker!r}"
+        )
     catch_start = start + match.start()
     brace = source.find("{", catch_start)
     return source[catch_start : _balanced_js_block_end(source, brace) + 1]
@@ -300,7 +315,11 @@ runScenario()
 def test_mic_capture_failure_restores_composer_without_outer_voice_start_lifecycle():
     source = _read(APP_AUDIO_CAPTURE_PATH)
     start_mic = _js_function_block(source, "startMicCapture")
-    failure = _catch_block_after(start_mic, "S.stream = await navigator.mediaDevices.getUserMedia(constraints);")
+    failure = _catch_block_after(
+        start_mic,
+        "const ownStream = await navigator.mediaDevices.getUserMedia(constraints);",
+        binding="err",
+    )
 
     assert "S.voiceStartPending = false;" not in failure
     assert "window.isMicStarting = false;" not in failure

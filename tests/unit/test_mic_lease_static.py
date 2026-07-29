@@ -37,7 +37,9 @@ def test_refresh_mic_lease_delegates_snapshot_send_to_owner_setter() -> None:
 
 def test_worklet_upload_is_governed_by_one_mic_lease_gate() -> None:
     source = CAPTURE.read_text(encoding="utf-8")
-    handler = source.split("S.workletNode.port.onmessage = (event) => {", 1)[1].split(
+    # The node is built attempt-local and published into S.workletNode only
+    # after the start wins, so the handler is installed on the local binding.
+    handler = source.split("ownWorkletNode.port.onmessage = (event) => {", 1)[1].split(
         "};", 1
     )[0]
     upload_gate = source.split("function canUploadOrdinaryMicFrame()", 1)[1].split(
@@ -99,7 +101,9 @@ def test_mic_lease_changes_are_sent_to_backend_with_generation() -> None:
 
 def test_worklet_uses_binary_pcm_frame_instead_of_json_sample_array() -> None:
     source = CAPTURE.read_text(encoding="utf-8")
-    handler = source.split("S.workletNode.port.onmessage = (event) => {", 1)[1].split(
+    # The node is built attempt-local and published into S.workletNode only
+    # after the start wins, so the handler is installed on the local binding.
+    handler = source.split("ownWorkletNode.port.onmessage = (event) => {", 1)[1].split(
         "};", 1
     )[0]
 

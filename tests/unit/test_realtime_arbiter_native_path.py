@@ -37,10 +37,13 @@ and would hit every user.
 
 import asyncio
 import json
+import re
 import tomllib
 from pathlib import Path
 
 import pytest
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_realtime_client._response_arbiter import RealtimeResponseArbiter
@@ -411,7 +414,7 @@ def test_the_python_pin_that_this_arbiter_depends_on_stays_gated():
     # anyone already running 3.12 over a bug most of them will never hit.
     # Shipping that is a release decision, not a review fix. Widening the pin
     # is what needs stopping, and that is what this stops.
-    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    pyproject = _REPO_ROOT / "pyproject.toml"
     with pyproject.open("rb") as handle:
         config = tomllib.load(handle)
 
@@ -419,4 +422,49 @@ def test_the_python_pin_that_this_arbiter_depends_on_stays_gated():
         "requires-python was widened while #2516 (RealtimeResponseArbiter "
         "dispatch ordering on 3.12+) is still open. Fix the dequeue gate "
         "first -- see the comment above requires-python in pyproject.toml."
+    )
+
+
+@pytest.mark.unit
+def test_every_runtime_that_actually_executes_this_code_is_pinned_to_311():
+    # CodeRabbit, correctly: the assertion above guards the PIN, not the
+    # INTERPRETER. requires-python only binds at install resolution, so
+    # `python3.12 launcher.py`, a CI matrix bump, or a Docker base image that
+    # quietly moves on would all hit #2516 without touching a character of
+    # pyproject.toml -- a paper gate.
+    #
+    # Auto-discovered rather than a hand-kept list: a new workflow, or a new
+    # docker/Dockerfile.*, is covered the moment it is added. A hardcoded
+    # roster is the failure mode this whole class of gate keeps dying of.
+    offenders: list[str] = []
+
+    version_decl = re.compile(r"^\s*(python-version|PYTHON_VERSION):\s*(\S.*?)\s*$")
+    workflows = sorted((_REPO_ROOT / ".github" / "workflows").glob("*.yml"))
+    assert workflows, "no workflows found -- the discovery glob is broken, not the pin"
+    for workflow in workflows:
+        for number, line in enumerate(workflow.read_text(encoding="utf-8").splitlines(), 1):
+            match = version_decl.match(line)
+            if not match:
+                continue
+            value = match.group(2).strip().strip("'\"")
+            # An `${{ env.PYTHON_VERSION }}` indirection is fine: the
+            # PYTHON_VERSION declaration it resolves to is itself matched here.
+            if value == "3.11" or value.startswith("${{"):
+                continue
+            offenders.append(f"{workflow.name}:{number} -> {value}")
+
+    dockerfiles = sorted((_REPO_ROOT / "docker").glob("Dockerfile*"))
+    assert dockerfiles, "no Dockerfiles found -- the discovery glob is broken, not the pin"
+    for dockerfile in dockerfiles:
+        minors = set(re.findall(r"python3\.(\d+)", dockerfile.read_text(encoding="utf-8")))
+        stray = minors - {"11"}
+        if stray:
+            offenders.append(f"{dockerfile.name} -> python3.{', python3.'.join(sorted(stray))}")
+
+    assert not offenders, (
+        "a runtime that executes RealtimeResponseArbiter moved off Python 3.11 "
+        "while #2516 (dispatch ordering on 3.12+) is still open:\n  "
+        + "\n  ".join(offenders)
+        + "\nFix the dequeue gate first -- see the module docstring in "
+        "main_logic/omni_realtime_client/_response_arbiter.py."
     )

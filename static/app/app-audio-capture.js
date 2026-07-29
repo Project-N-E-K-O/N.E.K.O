@@ -1252,11 +1252,40 @@
      * consumer is startMicCapture below (the module export exists for tests).
      */
     async function startAudioWorklet(mediaStream, startToken) {
+        // Entry gate, before ANY shared state is touched. An attempt can be
+        // superseded while it is still in startMicCapture's getUserMedia (a
+        // cold device open is slow; the newer attempt hits a warm one and
+        // commits first), and it then arrives here already having lost. The
+        // teardown immediately below is not otherwise token-aware, so it would
+        // close the WINNER's freshly published AudioContext -- verified: the
+        // winner is left recording with a closed context, S.audioContext null
+        // and a microphone that has stopped producing, while the UI still says
+        // recording. Nothing has been allocated yet at this point, so bailing
+        // costs only this attempt's own device handle.
+        if (startToken !== micStartGeneration || S.voiceInputRouteBlocked === true) {
+            console.log('[App] microphone start was superseded before opening; unwinding');
+            try {
+                if (mediaStream && typeof mediaStream.getTracks === 'function') {
+                    mediaStream.getTracks().forEach(track => track.stop());
+                }
+            } catch (_) {
+                // best-effort teardown
+            }
+            return false;
+        }
+
         // 先清理旧的音频上下文，防止多个 worklet 同时发送数据导致 QPS 超限
-        if (S.audioContext) {
-            if (S.audioContext.state !== 'closed') {
+        //
+        // Pinned to a local across the await: `await S.audioContext.close()`
+        // yields, and another attempt can publish a NEW pipeline during it.
+        // Nulling the shared fields afterwards without re-checking would then
+        // erase the handles to that live pipeline while its worklet keeps
+        // uploading -- an unstoppable microphone with every handle null.
+        const previousContext = S.audioContext;
+        if (previousContext) {
+            if (previousContext.state !== 'closed') {
                 try {
-                    await S.audioContext.close();
+                    await previousContext.close();
                 } catch (e) {
                     console.warn('关闭旧音频上下文时出错:', e);
                     // 强制复位所有状态，防止状态不一致
@@ -1279,57 +1308,130 @@
                     throw e;
                 }
             }
-            S.audioContext = null;
-            S.workletNode = null;
+            if (S.audioContext === previousContext) {
+                // Still the pipeline we just closed. Clear ALL of it: leaving
+                // micGainNode / inputAnalyser behind kept nodes from a closed
+                // context addressable, so the volume meter and the gain slider
+                // went on reading and poking a graph that no longer exists.
+                S.audioContext = null;
+                S.workletNode = null;
+                S.micGainNode = null;
+                S.inputAnalyser = null;
+            }
         }
 
         // 创建音频上下文，强制使用 48kHz 采样率
-        S.audioContext = new AudioContext({ sampleRate: 48000 });
-        // This attempt's OWN context, remembered before the awaits below. The
-        // unwind path must tear down only what this attempt created: S.* are
-        // module globals shared by every concurrent attempt, and a superseded
-        // attempt that resets them blindly kills the hardware of the attempt
-        // that superseded it. See the unwind for the failure it produced.
-        const ownContext = S.audioContext;
-        console.log("音频上下文采样率 (强制48kHz):", S.audioContext.sampleRate);
+        //
+        // Everything this attempt builds stays ATTEMPT-LOCAL until the token
+        // gate below says it won; only then is it published into S.*. Those
+        // fields are module globals shared by every concurrent attempt, and
+        // building through them directly cost two separate defects:
+        //
+        //   * the unwind reset them blindly, so a loser stopped the WINNER's
+        //     tracks and nulled its context, and the winner then threw on
+        //     S.audioContext.sampleRate -- no microphone at all;
+        //   * even with the teardown scoped, the loser's post-await SETUP
+        //     still ran through them (Codex P2): resuming from addModule() it
+        //     built its worklet on the winner's context, overwrote
+        //     S.workletNode and spliced itself into the winner's gain node --
+        //     two live worklets on one microphone, both uploading duplicate
+        //     PCM, with the winner's own node orphaned where no later
+        //     teardown could reach it.
+        //
+        // One publish point at the end removes the whole class: before the
+        // gate this attempt is invisible, after it the four fields describe
+        // exactly one pipeline.
+        const ownContext = new AudioContext({ sampleRate: 48000 });
+        console.log("音频上下文采样率 (强制48kHz):", ownContext.sampleRate);
 
         // 创建媒体流源
-        const source = S.audioContext.createMediaStreamSource(mediaStream);
+        const source = ownContext.createMediaStreamSource(mediaStream);
 
         // 创建增益节点用于麦克风音量放大
-        S.micGainNode = S.audioContext.createGain();
+        const ownGainNode = ownContext.createGain();
         const linearGain = window.appUtils.dbToLinear(S.microphoneGainDb);
-        S.micGainNode.gain.value = linearGain;
+        ownGainNode.gain.value = linearGain;
         console.log(`麦克风增益已设置: ${S.microphoneGainDb}dB (${linearGain.toFixed(2)}x)`);
 
         // 创建analyser节点用于监测输入音量
-        S.inputAnalyser = S.audioContext.createAnalyser();
-        S.inputAnalyser.fftSize = 2048;
-        S.inputAnalyser.smoothingTimeConstant = 0.8;
+        const ownAnalyser = ownContext.createAnalyser();
+        ownAnalyser.fftSize = 2048;
+        ownAnalyser.smoothingTimeConstant = 0.8;
 
         // 连接 source → gainNode → analyser（用于音量检测，检测增益后的音量）
-        source.connect(S.micGainNode);
-        S.micGainNode.connect(S.inputAnalyser);
+        source.connect(ownGainNode);
+        ownGainNode.connect(ownAnalyser);
+
+        let ownWorkletNode = null;
+
+        // Dispose of everything this attempt built. Shared by the supersede /
+        // fail-closed gate and by the catch below: an attempt that never
+        // publishes is unreachable from S.*, so nothing else can ever close
+        // its AudioContext or stop its microphone track. Touches the shared
+        // fields only where they provably still describe THIS attempt.
+        const discardOwnPipeline = () => {
+            try {
+                if (mediaStream && typeof mediaStream.getTracks === 'function') {
+                    mediaStream.getTracks().forEach(track => track.stop());
+                }
+            } catch (_) {
+                // best-effort teardown
+            }
+            if (S.stream && S.stream === mediaStream) {
+                // Already stopped above; only drop the reference, and only
+                // while it is still OUR stream.
+                S.stream = null;
+            }
+            try {
+                if (ownWorkletNode) {
+                    // Kill the handler before disconnecting: an in-flight port
+                    // message must not upload a frame from a pipeline that
+                    // just lost.
+                    ownWorkletNode.port.onmessage = null;
+                    ownWorkletNode.disconnect();
+                }
+                ownGainNode.disconnect();
+                ownAnalyser.disconnect();
+                source.disconnect();
+            } catch (_) {
+                // best-effort teardown
+            }
+            if (ownContext.state !== 'closed') {
+                ownContext.close();
+            }
+            if (S.audioContext === null) {
+                // No pipeline is live at all (the fail-closed route case, or a
+                // supersede with nothing committed since). The graph fields
+                // still name the pipeline the top of this function tore down,
+                // so clear them rather than leave nodes from a closed context
+                // addressable. When a winner IS live, S.audioContext is its
+                // context and none of this runs.
+                S.workletNode = null;
+                S.micGainNode = null;
+                S.inputAnalyser = null;
+                stopSilenceDetection();
+            }
+        };
 
         try {
             // 加载AudioWorklet处理器
-            await S.audioContext.audioWorklet.addModule('/static/audio-processor.js');
+            await ownContext.audioWorklet.addModule('/static/audio-processor.js');
 
             // 根据连接类型确定目标采样率
             const isMobile = window.appUtils.isMobile;
             const targetSampleRate = isMobile() ? 16000 : 48000;
-            console.log(`音频采样率配置: 原始=${S.audioContext.sampleRate}Hz, 目标=${targetSampleRate}Hz, 移动端=${isMobile()}`);
+            console.log(`音频采样率配置: 原始=${ownContext.sampleRate}Hz, 目标=${targetSampleRate}Hz, 移动端=${isMobile()}`);
 
             // 创建AudioWorkletNode
-            S.workletNode = new AudioWorkletNode(S.audioContext, 'audio-processor', {
+            ownWorkletNode = new AudioWorkletNode(ownContext, 'audio-processor', {
                 processorOptions: {
-                    originalSampleRate: S.audioContext.sampleRate,
+                    originalSampleRate: ownContext.sampleRate,
                     targetSampleRate: targetSampleRate
                 }
             });
 
             // 监听处理器发送的消息
-            S.workletNode.port.onmessage = (event) => {
+            ownWorkletNode.port.onmessage = (event) => {
                 const audioData = event.data;
 
                 if (!canUploadOrdinaryMicFrame()) {
@@ -1363,14 +1465,7 @@
             };
 
             // 连接节点：gainNode → workletNode（音频经过增益处理后发送）
-            S.micGainNode.connect(S.workletNode);
-
-            // 用户主动开麦，意味着要讲话；focus mode 的 isPlaying guard 此刻必须让路。
-            // 切档案后自动触发的 greeting 音频播完如果没把 isPlaying 复位（finalize
-            // 路径的前置条件没兜住就会粘住），下一次开麦每一帧都会被 focus 拦掉，
-            // 表现为"Electron 显示可以说话但 STT 无反应"。用户此刻的意图是明确的，
-            // 不管 flag 是粘住还是真在播 AI 音频，都应该让位给用户输入。
-            S.isPlaying = false;
+            ownGainNode.connect(ownWorkletNode);
 
             // Last gate before the commit. Everything above only awaited; this
             // is where the microphone actually becomes live and where
@@ -1382,41 +1477,13 @@
             // lease the backend just revoked and feeds a blocked route.
             if (startToken !== micStartGeneration || S.voiceInputRouteBlocked === true) {
                 console.log('[App] microphone start was superseded while opening; unwinding');
-                // Attempt-scoped teardown ONLY. This unwind runs on the LOSING
-                // attempt, and by the time it runs a newer startMicCapture may
-                // already have published its own stream and context into the
-                // same S.* fields -- it assigns S.stream before it ever calls
-                // in here, there is no re-entrancy guard on startMicCapture,
-                // and several of its callers are fire-and-forget (the two
-                // game-STT restore paths above, and app-websocket.js's
-                // mic-pipeline repair).
-                // Resetting them unconditionally stopped the WINNER's tracks
-                // and nulled S.audioContext out from under it, so the winner
-                // then threw on S.audioContext.sampleRate and the user ended up
-                // with no microphone at all -- from two overlapping starts,
-                // which is precisely the case this token exists for.
-                try {
-                    if (mediaStream && typeof mediaStream.getTracks === 'function') {
-                        mediaStream.getTracks().forEach(track => track.stop());
-                    }
-                } catch (_) {
-                    // best-effort teardown
-                }
-                if (S.stream && S.stream === mediaStream) {
-                    // Already stopped above; only drop the reference, and only
-                    // while it is still OUR stream.
-                    S.stream = null;
-                }
-                if (ownContext && ownContext.state !== 'closed') {
-                    ownContext.close();
-                }
-                if (S.audioContext === ownContext) {
-                    S.audioContext = null;
-                    S.workletNode = null;
-                    S.micGainNode = null;
-                    S.inputAnalyser = null;
-                    stopSilenceDetection();
-                }
+                // Nothing above was published, so this tears down ONLY what
+                // this attempt built. There is no re-entrancy guard on
+                // startMicCapture and several callers are fire-and-forget (the
+                // two game-STT restore paths above, and app-websocket.js's
+                // mic-pipeline repair), so a winner may well be live in S.*
+                // right now -- and it must not be touched here.
+                discardOwnPipeline();
                 // Deliberately NOT refreshMicLease(): the lease is the
                 // backend's now, and re-emitting a snapshot from a window that
                 // never started recording is exactly the re-claim being
@@ -1430,6 +1497,32 @@
                 return false;
             }
 
+            // This attempt won. Publish the pipeline as one unit -- the only
+            // place S.* learns about it, so the five fields are always the
+            // same live graph and never a mix of two attempts.
+            //
+            // The gain is re-read here rather than trusted from construction
+            // time: setMicrophoneGain writes S.microphoneGainDb and then pokes
+            // S.micGainNode, which this attempt was deliberately absent from
+            // for the whole open window, so a slider move during it would
+            // otherwise persist and display the new dB while the live
+            // microphone stayed at the old one until the next restart.
+            ownGainNode.gain.value = window.appUtils.dbToLinear(S.microphoneGainDb);
+            S.stream = mediaStream;
+            S.audioContext = ownContext;
+            S.micGainNode = ownGainNode;
+            S.inputAnalyser = ownAnalyser;
+            S.workletNode = ownWorkletNode;
+
+            // 用户主动开麦，意味着要讲话；focus mode 的 isPlaying guard 此刻必须让路。
+            // 切档案后自动触发的 greeting 音频播完如果没把 isPlaying 复位（finalize
+            // 路径的前置条件没兜住就会粘住），下一次开麦每一帧都会被 focus 拦掉，
+            // 表现为"Electron 显示可以说话但 STT 无反应"。用户此刻的意图是明确的，
+            // 不管 flag 是粘住还是真在播 AI 音频，都应该让位给用户输入。
+            // Moved below the gate with the publish: a superseded attempt has
+            // no business clearing the winner's playback guard.
+            S.isPlaying = false;
+
             // 所有初始化成功后，才标记为录音状态
             S.isRecording = true;
             window.isRecording = true;
@@ -1440,7 +1533,15 @@
             console.error('加载AudioWorklet失败:', err);
             console.dir(err);
             window.showStatusToast(window.t ? window.t('app.audioWorkletFailed') : 'AudioWorklet加载失败', 5000);
-            stopSilenceDetection();
+            // Nothing was published, so this graph is unreachable from S.* --
+            // without an explicit discard its AudioContext and the microphone
+            // track would leak on every failed addModule(), with no later
+            // attempt able to find and close them. (The old code leaked the
+            // stream too, and reached stopSilenceDetection() unconditionally,
+            // which would stop a concurrent WINNER's detection; discard only
+            // does that when no pipeline is live.)
+            discardOwnPipeline();
+            return false;
         }
     }
 
@@ -1551,10 +1652,22 @@
                     : baseAudioConstraints
             };
 
-            S.stream = await navigator.mediaDevices.getUserMedia(constraints);
+            // Attempt-local, for the same reason the audio graph is: publishing
+            // the stream here put it OUTSIDE the single publish point in
+            // startAudioWorklet, and this write lands after an await, so it is
+            // unordered with respect to the token. Two overlapping starts whose
+            // getUserMedia settle out of token order let the LOSER write
+            // S.stream last; its unwind then legitimately sees
+            // `S.stream === mediaStream` and nulls it, leaving the winner
+            // recording with S.stream === null -- stopRecording's `if (S.stream)`
+            // never stops those tracks, so the OS microphone indicator stays lit
+            // for the life of the page, and the `S.stream && S.audioContext &&
+            // S.workletNode` liveness probes read dead against a live pipeline
+            // and open a second microphone on top of it.
+            const ownStream = await navigator.mediaDevices.getUserMedia(constraints);
 
             // 检查音频轨道状态
-            const audioTracks = S.stream.getAudioTracks();
+            const audioTracks = ownStream.getAudioTracks();
             console.log(window.t('console.audioTrackCount'), audioTracks.length);
             console.log(window.t('console.audioTrackStatus'), audioTracks.map(track => ({
                 label: track.label,
@@ -1570,10 +1683,16 @@
                     _mic.classList.remove('recording');
                     _mic.classList.remove('active');
                 }
+                // Never published, so nothing else can reach it to release it.
+                try {
+                    ownStream.getTracks().forEach(track => track.stop());
+                } catch (_) {
+                    // best-effort teardown
+                }
                 throw new Error('没有可用的音频轨道');
             }
 
-            const micStartCommitted = await startAudioWorklet(S.stream, micStartToken);
+            const micStartCommitted = await startAudioWorklet(ownStream, micStartToken);
             if (!micStartCommitted) {
                 // Superseded or fail-closed while opening: the hardware is
                 // already torn down, so restore the pre-start UI and leave
