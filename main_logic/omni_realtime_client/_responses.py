@@ -851,12 +851,14 @@ class _ResponseMixin:
         if (
             has_vision
             and self._supports_native_image
-            and self._is_free_provider
+            and not self._is_gemini
             and snapshot_image_b64
         ):
-            # Lanlan's native image event can be rejected asynchronously after
-            # the WebSocket write succeeds. Correlate that exact error with
-            # this proactive delivery before deciding the frame was consumed.
+            # WebSocket-native image events can be rejected asynchronously
+            # after the write succeeds. Correlate that exact error with this
+            # proactive delivery before deciding the frame was consumed.
+            # Gemini uses its SDK instead of client event IDs, so synchronous
+            # SDK send failures are handled by stream_image() directly.
             visual_event_id = f"event_inject_image_{uuid.uuid4().hex}"
             self._inject_rejection_handlers[visual_event_id] = _on_visual_rejected
 

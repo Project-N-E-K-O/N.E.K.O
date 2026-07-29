@@ -150,8 +150,21 @@ async def test_free_prompt_sends_native_image_before_text():
 
 
 @pytest.mark.unit
-async def test_free_image_async_rejection_preserves_snapshot_and_cancels_response():
-    client = _make_client()
+@pytest.mark.parametrize(
+    ("api_type", "model", "image_event_type"),
+    [
+        ("free", "free-model", "input_image_buffer.append"),
+        ("qwen", "qwen-omni-turbo-realtime", "input_image_buffer.append"),
+        ("glm", "glm-realtime", "input_audio_buffer.append_video_frame"),
+        ("openai", "gpt-4o-realtime", "conversation.item.create"),
+    ],
+)
+async def test_native_image_async_rejection_preserves_snapshot_and_cancels_response(
+    api_type,
+    model,
+    image_event_type,
+):
+    client = _make_client(api_type=api_type, model=model)
     client._latest_image_b64 = DUMMY_IMAGE_B64
     client._proactive_image_consumed = False
     task = asyncio.create_task(
@@ -165,7 +178,14 @@ async def test_free_image_async_rejection_preserves_snapshot_and_cancels_respons
             (
                 event
                 for event in events
-                if event.get("type") == "input_image_buffer.append"
+                if event.get("type") == image_event_type
+                and (
+                    image_event_type != "conversation.item.create"
+                    or any(
+                        content.get("type") == "input_image"
+                        for content in event.get("item", {}).get("content", [])
+                    )
+                )
             ),
             None,
         )

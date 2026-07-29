@@ -58,7 +58,6 @@ def test_legacy_step_worker_free_mode_delegates_to_free_worker(monkeypatch):
 
     def fake_free_worker(*args):
         calls.append(args)
-        return "free-worker-result"
 
     monkeypatch.setattr(
         free_worker_module,
@@ -74,7 +73,7 @@ def test_legacy_step_worker_free_mode_delegates_to_free_worker(monkeypatch):
         free_mode=True,
     )
 
-    assert result == "free-worker-result"
+    assert result is None
     assert calls == [("requests", "responses", "api-key", "voice-id")]
 
 

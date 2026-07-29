@@ -769,6 +769,8 @@ class _TransportMixin:
                             await self.send_event(text_event)
                     return
 
+                if event_id is not None:
+                    append_event["event_id"] = event_id
                 await self.send_event(
                     append_event,
                     raise_on_oversize=bypass_rate_limit,

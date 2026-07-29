@@ -36,13 +36,14 @@ def step_realtime_tts_worker(
     if free_mode:
         from .free import free_realtime_tts_worker
 
-        return free_realtime_tts_worker(
+        free_realtime_tts_worker(
             request_queue,
             response_queue,
             audio_api_key,
             voice_id,
         )
-    return run_step_protocol_tts_worker(
+        return
+    run_step_protocol_tts_worker(
         request_queue,
         response_queue,
         audio_api_key,
