@@ -303,6 +303,41 @@
         return !!S.sessionStartedResolver && S.sessionStartedResolver !== owner;
     };
 
+    /**
+     * True when the start that superseded ``owner`` is itself an AUDIO start.
+     *
+     * It matters because the superseded flow's unwind --
+     * abortVoiceStartForBlockedRoute -- is GLOBAL: it bumps the mic generation
+     * (invalidatePendingMicStart) and clears window.isMicStarting, which is
+     * exactly the state a newer AUDIO start is relying on while it sits in
+     * getUserMedia / addModule. Running it there makes that start abandon
+     * capture and then fail its own ensureVoiceStartCurrent, leaving a session
+     * the backend accepted with the microphone closed. A newer TEXT start
+     * touches none of that state and leaves the voice-start UI stranded
+     * instead, so there the unwind must still run.
+     */
+    window.supersededByAudioStart = function (owner) {
+        return window.sessionStartSuperseded(owner)
+            && S._pendingSessionStartMode === 'audio';
+    };
+
+    /**
+     * True while ``epoch`` is still the newest voice-start intent.
+     *
+     * Ownership cannot see an ABA: a newer start may claim the slot inside the
+     * ack's 500ms deferred-resolution window and then be cancelled or complete,
+     * leaving the slot back at EMPTY -- indistinguishable, to
+     * sessionStartSuperseded, from "my own ack released it". The epoch can tell
+     * them apart, because it only ever moves forward and only on a NEWER voice
+     * intent: every mic-button press mints one, and cancelPendingSessionStart
+     * -- the global abandon lever behind goodbye, avatar drop and character
+     * switch -- bumps it. A flow that snapshots it when it claims can check
+     * after its await whether the user has moved on.
+     */
+    window.voiceStartEpochIsCurrent = function (epoch) {
+        return S.voiceSessionStartEpoch === epoch;
+    };
+
     window.cancelPendingSessionStart = function (reason) {
         if (window.sessionTimeoutId) {
             clearTimeout(window.sessionTimeoutId);

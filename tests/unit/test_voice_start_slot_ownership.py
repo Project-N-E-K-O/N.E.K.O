@@ -49,18 +49,28 @@ function assert(cond, msg) {
 }
 
 // app-state.js is a large IIFE with browser dependencies; the ownership helpers
-// are self-contained, so lift just those out and run them against a stub S.
+// and the cancel lever they are defined against are self-contained, so lift
+// just that section out and run it against a stub S. cancelPendingSessionStart
+// comes along deliberately: the epoch property below is about how the two
+// interact, and reimplementing the lever here would test nothing.
 const source = fs.readFileSync(__APP_STATE_PATH__, 'utf8');
 const start = source.indexOf('window.claimSessionStart = function');
-const end = source.indexOf('window.cancelPendingSessionStart = function');
+const end = source.indexOf('// ======================== 工具函数');
 assert(start > 0 && end > start, 'could not locate the ownership helpers');
 
 const S = {
   sessionStartedResolver: null,
   sessionStartedRejecter: null,
   _pendingSessionStartMode: null,
+  voiceSessionStartEpoch: 0,
+  voiceStartPending: false,
 };
-const sandbox = { S, window: {}, console: { log() {}, warn() {} } };
+const sandbox = {
+  S,
+  window: { makeNekoSessionAbortError: (reason) => new Error(reason) },
+  clearTimeout: () => {},
+  console: { log() {}, warn() {} },
+};
 vm.createContext(sandbox);
 vm.runInContext(source.slice(start, end), sandbox, { filename: 'app-state-helpers.js' });
 const W = sandbox.window;
@@ -135,6 +145,53 @@ assert(W.sessionStartSuperseded(ownerB) === false,
 assert(W.sessionStartIsCurrent(ownerB) === false,
        'and the released owner is no longer current -- the two differ here');
 
+// --- who superseded us decides whether the GLOBAL unwind may run -----------
+// abortVoiceStartForBlockedRoute bumps the mic generation and clears
+// window.isMicStarting. A newer AUDIO start is sitting on exactly that state
+// inside getUserMedia, so unwinding there makes it abandon capture and fail
+// its own ensureVoiceStartCurrent -- a session the backend accepted, with the
+// microphone closed. A newer TEXT start touches none of it and would instead
+// be left with a stranded voice-start UI, so there the unwind must still run.
+const audioC = () => {};
+const ownerC = W.claimSessionStart('audio', audioC, () => {});
+assert(W.supersededByAudioStart(ownerC) === false,
+       'the start holding the slot was superseded by nobody');
+
+W.claimSessionStart('audio', () => {}, () => {});
+assert(W.supersededByAudioStart(ownerC) === true,
+       'an audio takeover must suppress the global voice-start unwind');
+
+W.claimSessionStart('text', () => {}, () => {});
+assert(W.supersededByAudioStart(ownerC) === false,
+       'a TEXT takeover leaves the voice-start UI to us -- the unwind must still run');
+
+const ownerD = S.sessionStartedResolver;
+W.releaseSessionStart(ownerD);
+assert(W.supersededByAudioStart(ownerC) === false,
+       'an empty slot means nobody is driving the UI -- the unwind must still run');
+
+// --- the epoch sees the ABA that ownership cannot --------------------------
+// The automatic restart has no ensureVoiceStartCurrent of its own, so this is
+// the only signal standing between it and reopening the microphone after the
+// user has walked away.
+S.voiceSessionStartEpoch = 7;
+const restartEpoch = S.voiceSessionStartEpoch;
+const ownerR = W.claimSessionStart('audio', () => {}, () => {});
+assert(W.voiceStartEpochIsCurrent(restartEpoch) === true,
+       'claiming the slot does not by itself move the intent epoch');
+
+// A newer start claims inside the ack's deferred window, and then the user
+// walks away: goodbye / avatar drop / character switch go through
+// cancelPendingSessionStart, which clears the slot outright. Ownership is back
+// to EMPTY -- byte for byte what "my own ack released it" looks like.
+W.claimSessionStart('audio', () => {}, () => {});
+W.cancelPendingSessionStart('goodbye');
+assert(S.sessionStartedResolver === null, 'the cancel lever cleared the slot');
+assert(W.sessionStartSuperseded(ownerR) === false,
+       'ownership alone cannot see the ABA -- that blind spot is the point');
+assert(W.voiceStartEpochIsCurrent(restartEpoch) === false,
+       'the epoch must still know the user moved on');
+
 console.log('HARNESS_OK');
 """
 
@@ -204,4 +261,89 @@ def test_takeover_guards_ask_ownership_not_only_mode():
     assert checked >= 2, (
         "expected the mic-button and automatic-restart takeover guards to be found; "
         f"only {checked} matched -- has the guard been rewritten?"
+    )
+
+
+@pytest.mark.unit
+def test_takeover_branches_do_not_unwind_under_a_newer_audio_start():
+    """The global voice-start unwind must be gated on WHO took the slot.
+
+    ``abortVoiceStartForBlockedRoute`` bumps the mic generation and clears
+    ``window.isMicStarting``. Making the takeover branches ownership-aware is
+    what made "a newer AUDIO start took over" reachable at all, and that is
+    precisely the case where the unwind lands on a start still inside
+    getUserMedia: it abandons capture and then fails its own
+    ``ensureVoiceStartCurrent``, leaving a session the backend accepted with no
+    microphone.
+
+    Mutation-verified: drop the ``supersededByAudioStart`` gate from either
+    branch and this reddens naming that file.
+    """
+    checked = 0
+    for path in START_FLOW_PATHS:
+        source = path.read_text(encoding="utf-8")
+        for match in re.finditer(re.escape(_MODE_TEST), source):
+            branch_end = source.find("return;", match.end())
+            assert branch_end != -1, f"{path.name}: takeover branch has no return"
+            branch = source[match.end():branch_end]
+            if "abortVoiceStartForBlockedRoute" not in branch:
+                continue
+            assert "supersededByAudioStart" in branch, (
+                f"{path.name}: the takeover branch runs the global voice-start unwind "
+                "without checking whether a newer AUDIO start is driving that very "
+                f"state.\n{branch}"
+            )
+            checked += 1
+    assert checked >= 2, (
+        "expected both takeover branches to reach the unwind; "
+        f"only {checked} matched -- has the branch been rewritten?"
+    )
+
+
+@pytest.mark.unit
+def test_a_superseded_mic_start_does_not_run_its_failure_cleanup():
+    """A failed start that no longer owns the slot must not end the session.
+
+    Gating the slot was never enough: the mic handler's failure cleanup also
+    sends ``end_session``, calls ``stopRecording`` and rewrites the button row,
+    and by then those land on whichever start took over.
+
+    Mutation-verified: remove the superseded early-return and this reddens.
+    """
+    source = (_STATIC_APP / "app-buttons.js").read_text(encoding="utf-8")
+    anchor = source.find("var micStartStillOurs")
+    assert anchor != -1, "the mic handler's failure cleanup has been rewritten"
+    end_session = source.find("action: 'end_session'", anchor)
+    assert end_session != -1, "expected the failure cleanup to send end_session"
+
+    guard_region = source[anchor:end_session]
+    assert "sessionStartSuperseded" in guard_region and "return;" in guard_region, (
+        "app-buttons.js: the mic start's failure cleanup reaches end_session without "
+        "first bailing out when a newer start owns the slot -- it would tear down "
+        f"that start's session.\n{guard_region}"
+    )
+
+
+@pytest.mark.unit
+def test_the_automatic_restart_rechecks_the_voice_start_epoch():
+    """The restart flow needs the epoch, because ownership cannot see an ABA.
+
+    A newer start can claim inside the ack's 500ms window and then be cancelled,
+    putting the slot back to EMPTY -- which ownership reads as "mine was
+    released normally". This flow has no ensureVoiceStartCurrent, so the epoch
+    is the only thing left between it and reopening the mic after a goodbye.
+
+    Mutation-verified: drop either epoch check and this reddens.
+    """
+    source = (_STATIC_APP / "app-websocket.js").read_text(encoding="utf-8")
+    resumed = source.find("await sessionStartPromise;")
+    assert resumed != -1, "the automatic restart no longer awaits its start promise"
+    opens_mic = source.find("window.startMicCapture()", resumed)
+    assert opens_mic != -1, "the automatic restart no longer opens the mic"
+
+    resumption = source[resumed:opens_mic]
+    assert resumption.count("voiceStartEpochIsCurrent") >= 2, (
+        "app-websocket.js: the automatic restart resumes and opens the microphone "
+        "without re-checking the voice-start intent epoch on both sides of its "
+        f"showCurrentModel await.\n{resumption}"
     )

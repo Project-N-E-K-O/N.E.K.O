@@ -2257,7 +2257,17 @@
                         // that timer belongs to the newer start now, and
                         // cancelling it is the same cross-start damage in
                         // miniature.
-                        if (typeof window.abortVoiceStartForBlockedRoute === 'function') {
+                        //
+                        // And the unwind itself is global: it bumps the mic
+                        // generation and clears window.isMicStarting, so
+                        // running it while a newer AUDIO start is inside
+                        // getUserMedia makes THAT start abandon capture and
+                        // fail its own ensureVoiceStartCurrent -- a session the
+                        // backend accepted, with the mic closed. A newer audio
+                        // start is already driving this UI; leave it alone. A
+                        // text start is not, so there the unwind still runs.
+                        if (!window.supersededByAudioStart(micStartOwner)
+                                && typeof window.abortVoiceStartForBlockedRoute === 'function') {
                             window.abortVoiceStartForBlockedRoute();
                         }
                         return;
@@ -2348,6 +2358,26 @@
                     }
                     rejectPendingTextSessionStart(error);
                     window.releaseSessionStart(micStartOwner);
+                }
+
+                // Gating the slot was not enough: everything below is just as
+                // cross-start destructive. A newer start owns the session by
+                // now, so the end_session send would tear ITS session down, and
+                // stopRecording / the button row / the failure toast would
+                // rewrite the UI it is driving -- all to report a failure the
+                // user has already moved on from (codex P2).
+                //
+                // A newer AUDIO start is driving the voice UI and must be left
+                // strictly alone. A newer TEXT start is not, so the mic button
+                // still has to be handed back -- the same asymmetry as the
+                // takeover branch above, and the same reason
+                // abortVoiceStartForBlockedRoute may not run in the audio case.
+                if (window.sessionStartSuperseded(micStartOwner)) {
+                    if (!window.supersededByAudioStart(micStartOwner)
+                            && typeof window.abortVoiceStartForBlockedRoute === 'function') {
+                        window.abortVoiceStartForBlockedRoute();
+                    }
+                    return;
                 }
 
                 if (!isVoiceStartCancelled && !(error && error.voiceConfigSwitchTimedOut) && S.socket && S.socket.readyState === WebSocket.OPEN) {
