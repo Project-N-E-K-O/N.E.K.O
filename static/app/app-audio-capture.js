@@ -1614,6 +1614,15 @@
         const _stop = stopButton();
         const _reset = resetSessionButton();
 
+        // Declared OUTSIDE the try so the catch below can still reach it.
+        // `const` inside the try block is invisible to `catch (err)` -- a
+        // separate block scope -- and the stream is deliberately not published
+        // to S.stream until the attempt wins, so on any throw between
+        // acquisition and the commit (a failing `new AudioContext()`, which
+        // Blink caps at ~6 per document, the source/gain/analyser setup, or
+        // the previous context's close()) NOTHING could stop its tracks: the
+        // UI reported a failed start while the browser microphone stayed live.
+        let ownStream = null;
         try {
             // 开始录音前添加录音状态类到两个按钮
             if (_mic) _mic.classList.add('recording');
@@ -1664,7 +1673,7 @@
             // for the life of the page, and the `S.stream && S.audioContext &&
             // S.workletNode` liveness probes read dead against a live pipeline
             // and open a second microphone on top of it.
-            const ownStream = await navigator.mediaDevices.getUserMedia(constraints);
+            ownStream = await navigator.mediaDevices.getUserMedia(constraints);
 
             // 检查音频轨道状态
             const audioTracks = ownStream.getAudioTracks();
@@ -1751,6 +1760,18 @@
         } catch (err) {
             console.error(window.t('console.getMicrophonePermissionFailed'), err);
             window.showStatusToast(window.t ? window.t('app.micAccessDenied') : '无法访问麦克风', 4000);
+
+            // Release a device this attempt opened but never published. Guarded
+            // on `S.stream !== ownStream` so a throw from the SUCCESS path (the
+            // UI updates and startGameVoiceSttGate() below the commit) cannot
+            // stop the microphone of a pipeline that is now live and owned.
+            if (ownStream && S.stream !== ownStream) {
+                try {
+                    ownStream.getTracks().forEach(track => track.stop());
+                } catch (_) {
+                    // best-effort teardown
+                }
+            }
 
             const hasOuterVoiceStartLifecycle = !!(S.voiceStartPending || window.isMicStarting);
 

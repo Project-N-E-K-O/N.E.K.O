@@ -86,6 +86,9 @@ function loadModule() {
   // and getUserMedia() (device open / permission).
   let addModuleGate = Promise.resolve();
   let getUserMediaGate = Promise.resolve();
+  // Blink caps hardware AudioContexts per document (~6), so `new AudioContext()`
+  // genuinely throws in the field once starts have leaked.
+  let captureContextThrows = false;
 
   function makeStream() {
     const track = {
@@ -132,7 +135,13 @@ function loadModule() {
   }
 
   class FakeAudioContext {
-    constructor() {
+    constructor(options) {
+      // Only the CAPTURE context takes options ({sampleRate: 48000}); the TTS
+      // playback context is constructed bare, so this fails just the one the
+      // scenario is about.
+      if (options && captureContextThrows) {
+        throw new Error('AudioContext construction failed');
+      }
       this.state = 'running';
       this.sampleRate = 48000;
       contexts.push(this);
@@ -269,6 +278,16 @@ function loadModule() {
     },
     unparkGetUserMedia() {
       getUserMediaGate = Promise.resolve();
+    },
+    failCaptureContext() {
+      captureContextThrows = true;
+    },
+    // stopProactiveChatSchedule is the LAST thing on the success path, so this
+    // throws only after the pipeline has committed and published.
+    failAfterCommit() {
+      sandbox.window.stopProactiveChatSchedule = () => {
+        throw new Error('post-commit failure');
+      };
     },
     failAddModule(error) {
       addModuleGate = Promise.reject(error || new Error('addModule failed'));
@@ -554,8 +573,60 @@ async function gainChangedDuringOpenCase() {
          + env.S.micGainNode.gain.value);
 }
 
+async function preWorkletSetupFailureCase() {
+  // Codex P2. getUserMedia() succeeds, then `new AudioContext()` (or the
+  // source/gain/analyser wiring) throws -- all of it BEFORE the try whose
+  // catch runs discardOwnPipeline(). The stream is attempt-local and not yet
+  // published, and `const ownStream` inside the try block is invisible to
+  // `catch (err)`, so nothing could stop its tracks: the UI reported a failed
+  // start while the browser microphone stayed live.
+  const env = loadModule();
+  env.failCaptureContext();
+
+  let threw = false;
+  try {
+    await env.mod.startMicCapture();
+  } catch (_) {
+    threw = true;
+  }
+
+  assert(threw, 'startMicCapture should rethrow the setup failure');
+  assert(env.streams.length === 1, 'the device was opened before the failure');
+  assert(env.streams[0].getTracks()[0].stopped === true,
+         'a start that fails before the worklet must still release the device it opened');
+  assert(env.S.stream === null, 'a failed start must not publish its stream');
+  assert(env.S.isRecording === false, 'a failed start must not commit');
+}
+
+async function postCommitFailureCase() {
+  // The other side of releasing the stream on failure: once the attempt has
+  // COMMITTED, its stream is the live microphone and belongs to the pipeline,
+  // so a throw from the success path below the commit must not stop it. This
+  // is what the `S.stream !== ownStream` guard on that release buys.
+  const env = loadModule();
+  env.failAfterCommit();
+
+  let threw = false;
+  try {
+    await env.mod.startMicCapture();
+  } catch (_) {
+    threw = true;
+  }
+
+  assert(threw, 'the post-commit failure should propagate');
+  // The catch clears S.isRecording for its own reasons, so the commit is
+  // evidenced by the published pipeline rather than by that flag.
+  assert(env.S.audioContext !== null && env.S.workletNode !== null,
+         'the pipeline committed and published before the failure');
+  assert(env.S.stream !== null, 'the committed stream stays published');
+  assert(env.S.stream.getTracks()[0].stopped === false,
+         'a failure AFTER the commit must not stop the live microphone');
+}
+
 (async () => {
   await raceCase();
+  await preWorkletSetupFailureCase();
+  await postCommitFailureCase();
   await gainChangedDuringOpenCase();
   await streamPublishOrderCase();
   await controlCase();

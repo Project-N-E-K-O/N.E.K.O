@@ -317,7 +317,7 @@ def test_mic_capture_failure_restores_composer_without_outer_voice_start_lifecyc
     start_mic = _js_function_block(source, "startMicCapture")
     failure = _catch_block_after(
         start_mic,
-        "const ownStream = await navigator.mediaDevices.getUserMedia(constraints);",
+        "ownStream = await navigator.mediaDevices.getUserMedia(constraints);",
         binding="err",
     )
 
