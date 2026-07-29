@@ -70,7 +70,7 @@
 | IndexNow | 10 | PASS | URL 规范化、key 文件、超时/限流重试、状态 artifact |
 | GA4 consent / tracking | 11 | PASS | 同意前不加载、撤回、跨标签同步、Steam 与文档→主页事件 |
 | Steam CTA | 4 | PASS | 所有已发布 Steam 链接的 UTM 与归因 |
-| DataForSEO | 42 | PASS | 三段配置、Volume/KD、depth 100、AIO、成本、重试、workflow/artifact、空证据 fail-closed |
+| DataForSEO | 42 | PASS | 完整 DataForSEO 测试组：三段配置、Volume/KD、depth 100、AIO、成本、重试、workflow/artifact、空证据 fail-closed |
 | SEO monitoring | 34 | PASS | GSC/GA4 窗口、技术探针、IndexNow 证据分类、日报渲染、严格门禁、搜索/引用频率 |
 | **合计** | **101** | **PASS** | 0 fail / 0 skipped |
 
@@ -105,7 +105,7 @@ SEO validation: PASS
 - 主仓与 `.cn` 源仓 artifact 均通过服务端精确 `name=` 查询，并只复用 `main` 证据，避免仓库 artifact 增长后静默漏掉历史数据；
 - keyword metrics 缺失/空数组、三段全部无数值 Volume 均 fail-closed；证据文件缺失与 JSON 损坏被分别标记为 `NOT_RUN` 与 `UNKNOWN/unavailable`；
 - 首页中的畸形 script/modulepreload URL 会被隔离丢弃，不再让已采集的 canonical、robots、sitemap 等整段证据一起丢失；历史样本已明确不定义当前字段契约。
-- 旧版 artifact 缺少 AI comparison 时安全显示 `NOT_RUN`；两站 AI referral 正则由 `defaults.ga4` 单点维护且仍允许站点覆盖；GSC finalized 完整日超过 1–4 天容差即判为陈旧证据。
+- 旧版 artifact 缺少 AI comparison 时安全显示 `NOT_RUN`；两站 AI referral 正则由 `defaults.ga4` 单点维护且仍允许站点覆盖；`.cn` 与 `.online` 使用同一条 GSC 新鲜度规则：`reportDate - dataThrough` 必须为 1–4 天，差值 ≥ 5 天或 ≤ 0 天均判为陈旧/无效证据。
 
 上述修复后重新执行 `npm test` 为 **101/101 PASS**，`npm run build:check`、workflow YAML 解析、Markdown 路径检查及 `git diff --check` 均通过。
 
