@@ -34,6 +34,9 @@ from ._shared import _VOICE_PROACTIVE_ACK_GRACE_S, logger, _proactive_expected_s
 from .callback_render import _build_callback_instruction, _select_callbacks_within_token_budget
 
 
+_VOICE_DELIVERY_COMMITTED_KEY = "_voice_delivery_committed"
+
+
 class ProactiveMixin:
     """Proactive delivery methods (see module docstring)."""
 
@@ -692,6 +695,7 @@ class ProactiveMixin:
                     extra for extra in self.pending_extra_replies
                     if extra.get("_callback_delivery_id") in delivered_ids
                 ]
+                voice_commit_snapshot: tuple[dict, ...] = ()
 
                 # Server-side rejection of ``response.create`` (e.g.
                 # ``response_already_active`` from a VAD race winning between
@@ -726,6 +730,7 @@ class ProactiveMixin:
                 ) -> bool:
                     if _state["rejected"] or _state["acknowledged"]:
                         return False
+                    self._clear_voice_delivery_committed(voice_commit_snapshot)
                     # A newer cue with the same coalesce key can supersede a
                     # callback after this local delivery snapshot was checked
                     # out. Do not restore that obsolete cue (or retry its
@@ -821,13 +826,34 @@ class ProactiveMixin:
                 # Stream any images carried by these cues into the (guaranteed)
                 # voice session right before inject, so the proactive response
                 # sees the matching visual context (Codex P2).
+                # Once media delivery begins, coalescing may queue a newer
+                # same-key cue for the next turn but must not retract this
+                # snapshot: native media can already be persisted in provider
+                # context before stream_image returns.  Keep media + callback
+                # text committed as one delivery window.
+                self._retract_stale_coalesced(voice_snapshot)
+                voice_snapshot[:] = [
+                    cb for cb in voice_snapshot
+                    if not cb.get(DELIVERY_RETRACTED_KEY)
+                ]
+                self._purge_retracted_agent_callbacks()
+                if not voice_snapshot:
+                    return False
+                self._mark_voice_delivery_committed(voice_snapshot)
+                voice_commit_snapshot = tuple(voice_snapshot)
                 voice_media_events: list[tuple[dict, dict]] = []
-                if not await self._stream_cb_media(
-                    voice_snapshot,
-                    voice_sess,
-                    on_rejected=_on_voice_media_rejected,
-                    events_before_text=voice_media_events,
-                ):
+                try:
+                    media_ok = await self._stream_cb_media(
+                        voice_snapshot,
+                        voice_sess,
+                        on_rejected=_on_voice_media_rejected,
+                        events_before_text=voice_media_events,
+                    )
+                except BaseException:
+                    self._clear_voice_delivery_committed(voice_commit_snapshot)
+                    raise
+                if not media_ok:
+                    self._clear_voice_delivery_committed(voice_commit_snapshot)
                     # A media stream failed — DEFER the whole inject so this cb
                     # retries WITH its image rather than being delivered
                     # text-only and pruned (which would lose the retained
@@ -845,16 +871,15 @@ class ProactiveMixin:
                     self._schedule_proactive_retry(self.proactive_manager.min_gap_s)
                     return False
                 if _reject_state["rejected"]:
+                    self._clear_voice_delivery_committed(voice_commit_snapshot)
                     logger.info(
                         "[%s] trigger_agent_callbacks: proactive media rejected before text inject; keeping %d cb(s) queued for retry",
                         self.lanlan_name, len(voice_snapshot),
                     )
                     return False
-                # Pull-model staleness: a newer same-coalesce_key cue may have
-                # been submitted during the media await above (possibly still
-                # held by the manager, so the enqueue-time push scan never saw
-                # this snapshot). Retract the superseded cues so the re-filter
-                # below drops them and the purge sweeps both queues.
+                # Re-filter explicit retractions. Same-key callbacks submitted
+                # after the commit boundary remain queued for the next turn;
+                # they do not invalidate media already persisted for this one.
                 self._retract_stale_coalesced(voice_snapshot)
                 voice_snapshot[:] = [
                     cb for cb in voice_snapshot
@@ -862,6 +887,7 @@ class ProactiveMixin:
                 ]
                 self._purge_retracted_agent_callbacks()
                 if not voice_snapshot:
+                    self._clear_voice_delivery_committed(voice_commit_snapshot)
                     logger.info(
                         "[%s] trigger_agent_callbacks: voice proactive callbacks retracted before inject",
                         self.lanlan_name,
@@ -937,6 +963,8 @@ class ProactiveMixin:
                         self.lanlan_name, exc,
                     )
                     return False
+                finally:
+                    self._clear_voice_delivery_committed(voice_commit_snapshot)
 
                 # If the server rejected asynchronously DURING the await above
                 # (case a — ``_on_voice_inject_rejected`` already fired while
@@ -1451,12 +1479,30 @@ class ProactiveMixin:
         stale — coalescing stays strictly opt-in."""
         if not isinstance(entry, dict):
             return False
+        if entry.get(_VOICE_DELIVERY_COMMITTED_KEY):
+            # Once provider media delivery has begun, the matching callback
+            # text must complete the same turn. A newer same-key cue remains
+            # queued for the following turn instead of orphaning media that
+            # may already be persisted in provider context.
+            return False
         key = str(entry.get("coalesce_key") or "").strip()
         seq = entry.get("_coalesce_submit_seq")
         if not key or not isinstance(seq, int):
             return False
         latest = getattr(self, "_coalesce_latest", {}).get(key)
         return isinstance(latest, int) and latest > seq
+
+    @staticmethod
+    def _mark_voice_delivery_committed(callbacks: list) -> None:
+        for callback in callbacks:
+            if isinstance(callback, dict):
+                callback[_VOICE_DELIVERY_COMMITTED_KEY] = True
+
+    @staticmethod
+    def _clear_voice_delivery_committed(callbacks: list) -> None:
+        for callback in callbacks:
+            if isinstance(callback, dict):
+                callback.pop(_VOICE_DELIVERY_COMMITTED_KEY, None)
 
     def _retract_stale_coalesced(self, callbacks: list) -> bool:
         """Pull-model staleness sweep for a delivery-point snapshot.
@@ -2086,6 +2132,12 @@ class ProactiveMixin:
                     # silently drop the whole enqueue and lose this callback).
                     if not (isinstance(_cb, dict)
                             and str(_cb.get("coalesce_key") or "").strip() == new_key):
+                        surviving.append(_cb)
+                        continue
+                    if _cb.get(_VOICE_DELIVERY_COMMITTED_KEY):
+                        # This cue has crossed the media-delivery commit
+                        # boundary. Keep it; the new cue queues for the next
+                        # turn instead of retracting already-persisted media.
                         surviving.append(_cb)
                         continue
                     _old_seq = _cb.get("_coalesce_submit_seq")

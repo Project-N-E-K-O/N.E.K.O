@@ -1194,6 +1194,11 @@ class _TransportMixin:
                 elif event_type == "input_audio_buffer.speech_stopped":
                     self._speech_stopped_total += 1
                     logger.info("Speech ended")
+                    # Only an ended utterance can causally create the automatic
+                    # server-VAD response.  Marking this at speech_started can
+                    # steal an explicit response.created whose create was
+                    # already accepted but whose echo is still in flight.
+                    self._response_arbiter.notify_server_vad_response_pending()
                     if self.on_new_message:
                         await self.on_new_message()
                     self._audio_in_buffer = False

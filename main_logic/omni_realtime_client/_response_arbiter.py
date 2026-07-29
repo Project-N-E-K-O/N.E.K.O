@@ -132,9 +132,11 @@ class RealtimeResponseArbiter:
         self._current: _QueuedResponse | None = None
         self._response_owner: _QueuedResponse | None = None
         self._server_response_active = False
-        # A server-VAD speech_started event causally identifies the next
-        # response.created as server-initiated even if it races an owner's
-        # response.create send.
+        self._server_vad_speech_active = False
+        # An ended server-VAD utterance identifies an automatic response that
+        # may race an explicit owner's response.create.  speech_started alone
+        # is not sufficient: an already-sent explicit create can still emit
+        # the next response.created while the user is only beginning to speak.
         self._server_vad_response_pending = False
         # Bounded insertion-ordered map of live server-initiated response ids
         # to their creation loop time; see _SERVER_RESPONSE_ID_LIMIT and
@@ -475,8 +477,20 @@ class RealtimeResponseArbiter:
             self._remember_server_response_id(response_id)
 
     def notify_server_vad_started(self) -> None:
-        """Mark the next response.created as belonging to server VAD."""
+        """Record speech activity without assigning response ownership."""
 
+        self._server_vad_speech_active = True
+
+    def notify_server_vad_response_pending(self) -> None:
+        """Mark a VAD response pending unless an explicit create won the race."""
+
+        self._server_vad_speech_active = False
+        owner = self._response_owner
+        if owner is not None and owner.ticket.sent.done():
+            # The explicit response.create finished sending before this
+            # utterance ended. Its response.created echo can still be next;
+            # do not let the later VAD boundary steal that owner.
+            return
         self._server_vad_response_pending = True
 
     def notify_response_terminal(self, event: dict[str, Any] | None = None) -> None:
@@ -664,6 +678,7 @@ class RealtimeResponseArbiter:
         # the failed connection and complete its selected ticket.
         self._dispatch_allowed.set()
         self._server_response_active = False
+        self._server_vad_speech_active = False
         self._server_vad_response_pending = False
         self._server_response_ids.clear()
         self._cancel_stale_release_timer()
@@ -691,6 +706,7 @@ class RealtimeResponseArbiter:
         self._connection_available = True
         self._dispatch_allowed.set()
         self._server_response_ids.clear()
+        self._server_vad_speech_active = False
         self._server_vad_response_pending = False
         self._cancel_stale_release_timer()
         if self._current is None and self._response_owner is None:

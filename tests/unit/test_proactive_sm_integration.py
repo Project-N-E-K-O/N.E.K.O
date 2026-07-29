@@ -1242,6 +1242,72 @@ async def test_voice_mode_rejected_media_does_not_restore_superseded_callback():
     mgr._schedule_proactive_retry.assert_not_called()
 
 
+async def test_voice_mode_coalescing_queues_newer_cue_after_media_commit():
+    sess = _make_voice_sess()
+    stream_started = asyncio.Event()
+    release_stream = asyncio.Event()
+    streamed = []
+
+    async def _stream_image(
+        image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        on_rejected=None,
+    ):
+        assert bypass_rate_limit is True
+        assert cache_latest is False
+        assert on_rejected is not None
+        streamed.append(image_b64)
+        stream_started.set()
+        await release_stream.wait()
+
+    sess.stream_image = _stream_image
+    mgr = _make_mgr(session=sess)
+    old_cb = {
+        "_callback_delivery_id": "id-old-weather",
+        "status": "completed",
+        "summary": "old weather",
+        "media_images": ["old-weather-image"],
+        "coalesce_key": "weather",
+        "_coalesce_submit_seq": 1,
+    }
+    old_extra = {
+        "_callback_delivery_id": "id-old-weather",
+        "summary": "old weather",
+        "coalesce_key": "weather",
+        "_coalesce_submit_seq": 1,
+    }
+    mgr.pending_agent_callbacks = [old_cb]
+    mgr.pending_extra_replies = [old_extra]
+    mgr._coalesce_latest = {"weather": 1}
+
+    delivery = asyncio.create_task(
+        core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+    )
+    await stream_started.wait()
+
+    newer_cb = {
+        "status": "completed",
+        "summary": "new weather",
+        "coalesce_key": "weather",
+        "_coalesce_submit_seq": 2,
+    }
+    core_module.LLMSessionManager.enqueue_agent_callback(mgr, newer_cb)
+    assert old_cb.get(DELIVERY_RETRACTED_KEY) is not True
+
+    release_stream.set()
+    assert await delivery is True
+
+    assert streamed == ["old-weather-image"]
+    assert len(sess.injected) == 1
+    assert "old weather" in sess.injected[0]
+    assert "new weather" not in sess.injected[0]
+    assert old_cb.get("_voice_delivery_committed") is None
+    assert mgr.pending_agent_callbacks == [newer_cb]
+    assert mgr.pending_extra_replies[0]["summary"] == "new weather"
+
+
 async def test_voice_mode_unstamped_cb_still_pruned_via_object_id_fallback():
     """Prune unstamped callbacks through the object-ID fallback after delivery."""
     sess = _make_voice_sess()

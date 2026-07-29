@@ -913,9 +913,9 @@ async def test_vad_created_during_create_send_is_not_credited_to_owner():
         sent.append(dict(event))
         if event.get("event_id") != "response-proactive":
             return
-        # The transport has already observed speech_started when this
-        # server-created VAD response races the explicit create send.
-        arbiter.notify_server_vad_started()
+        # The VAD utterance ended before this explicit create finished sending,
+        # so its automatic response owns the response.created race.
+        arbiter.notify_server_vad_response_pending()
         arbiter.notify_response_created(
             {
                 "type": "response.created",
@@ -950,6 +950,49 @@ async def test_vad_created_during_create_send_is_not_credited_to_owner():
     assert proactive.started.exception() is not None
     assert arbiter._response_owner is None
     assert arbiter._server_response_ids == {}
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_speech_started_after_explicit_send_does_not_steal_owner():
+    sent = []
+
+    async def send(event):
+        sent.append(dict(event))
+
+    arbiter = RealtimeResponseArbiter(send)
+    proactive = await arbiter.enqueue(
+        source="proactive",
+        response_event={
+            "type": "response.create",
+            "event_id": "response-proactive",
+        },
+    )
+
+    await asyncio.wait_for(proactive.sent, 0.2)
+    # The explicit create has reached the server, but its response.created echo
+    # has not. Even if a VAD utterance starts and ends in that echo window, the
+    # already-sent explicit create still owns the next created event.
+    arbiter.notify_server_vad_started()
+    arbiter.notify_server_vad_response_pending()
+    arbiter.notify_response_created(
+        {
+            "type": "response.created",
+            "response": {"id": "resp-proactive"},
+        }
+    )
+    arbiter.notify_response_terminal(
+        {
+            "type": "response.done",
+            "response": {"id": "resp-proactive", "status": "completed"},
+        }
+    )
+
+    await asyncio.wait_for(proactive.done, 0.2)
+    await arbiter.wait_until_idle(0.2)
+    assert proactive.started.exception() is None
+    assert arbiter._server_response_ids == {}
+    assert [event["type"] for event in sent] == ["response.create"]
     await arbiter.shutdown()
 
 
