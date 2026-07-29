@@ -493,7 +493,7 @@ async def test_cancelled_queued_inject_cleans_gate_and_never_dispatches():
 
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await task
+        assert await task is None
 
     assert client._proactive_inject_awaiting_outcome is False
     assert client._inject_rejection_handlers == {}
