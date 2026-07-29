@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import sys
 import time
@@ -196,9 +197,31 @@ def test_once_per_battle_detector_spends_only_after_committed_delivery() -> None
     assert engine.feed(clear, low) == []
 
 
+def test_once_per_battle_detector_rearms_after_dry_run_mode_switch() -> None:
+    detector = ConditionDetector(
+        "low_fuel",
+        [("fuel_low", "fuel_critical")],
+        confirm_enter=1,
+        confirm_exit=2,
+        once_per_battle=True,
+    )
+    engine = DetectorEngine([detector])
+    low = BattleState(flags={"fuel_low": True})
+
+    assert [event.event_id for event in engine.feed(BattleState(), low)] == ["low_fuel"]
+
+    engine.rearm_uncommitted_once_per_battle()
+
+    assert [event.event_id for event in engine.feed(low, low)] == ["low_fuel"]
+    engine.mark_delivered("low_fuel")
+    engine.rearm_uncommitted_once_per_battle()
+    assert engine.feed(low, low) == []
+
+
 def test_dry_run_does_not_mark_once_per_battle_event_delivered() -> None:
     event = BattleEvent("low_fuel", ts=time.time())
     marked: list[str] = []
+    pushed: list[tuple[BattleEvent, bool]] = []
     plugin = object.__new__(NekoWarthunderPlugin)
     plugin.cfg = WtConfig(dry_run=True, global_rate_limit_seconds=0)
     plugin.engine = SimpleNamespace(
@@ -227,11 +250,13 @@ def test_dry_run_does_not_mark_once_per_battle_event_delivered() -> None:
         record_stage=lambda **_kwargs: None,
         record_decision=lambda **_kwargs: None,
     )
-    plugin.dispatcher = SimpleNamespace(
-        push_event=lambda _event, *, dry_run: (
+    def push_event(selected: BattleEvent, *, dry_run: bool) -> str:
+        pushed.append((selected, dry_run))
+        return (
             "dry_run(event=low_fuel/enter/warning)" if dry_run else "pushed()"
         )
-    )
+
+    plugin.dispatcher = SimpleNamespace(push_event=push_event)
     plugin.logger = SimpleNamespace(
         info=lambda *_args, **_kwargs: None,
         warning=lambda *_args, **_kwargs: None,
@@ -244,4 +269,20 @@ def test_dry_run_does_not_mark_once_per_battle_event_delivered() -> None:
 
     plugin._evaluate(BattleState(), BattleState(connected=True, in_battle=True))
 
+    assert pushed == [(event, True)]
     assert marked == []
+
+
+def test_enabling_real_output_rearms_uncommitted_once_per_battle_event() -> None:
+    rearmed: list[bool] = []
+    plugin = object.__new__(NekoWarthunderPlugin)
+    plugin.cfg = WtConfig(dry_run=True)
+    plugin._session_dry_run_override = None
+    plugin.engine = SimpleNamespace(
+        rearm_uncommitted_once_per_battle=lambda: rearmed.append(True)
+    )
+
+    asyncio.run(plugin.set_dry_run(False))
+
+    assert plugin.cfg.dry_run is False
+    assert rearmed == [True]

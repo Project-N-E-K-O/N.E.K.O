@@ -183,6 +183,7 @@ class NekoWarthunderPlugin(NekoPluginBase):
 
     def _apply_config(self, cfg: WtConfig) -> None:
         prev_player = self.cfg.player_name
+        prev_dry_run = bool(self.cfg.dry_run)
         # getattr 防御：测试用 object.__new__ 构造部分实例，不走 __init__。
         session_dry_run = getattr(self, "_session_dry_run_override", None)
         if session_dry_run is not None:
@@ -210,6 +211,8 @@ class NekoWarthunderPlugin(NekoPluginBase):
             )
             if callable(configure_heartbeat):
                 configure_heartbeat(cfg.critical_preempt_cooldown_seconds)
+        if prev_dry_run and not cfg.dry_run:
+            self._rearm_uncommitted_once_per_battle_events()
 
     def _build_engine(self) -> DetectorEngine:
         # 危急心跳对齐抢占冷却：低于冷却的重发会落在冷却窗内被 Arbiter 丢弃，
@@ -220,6 +223,15 @@ class NekoWarthunderPlugin(NekoPluginBase):
             build_discrete_detectors(self.cfg.player_name)
         )
         return DetectorEngine(detectors)
+
+    def _rearm_uncommitted_once_per_battle_events(self) -> None:
+        rearm_uncommitted = getattr(
+            getattr(self, "engine", None),
+            "rearm_uncommitted_once_per_battle",
+            None,
+        )
+        if callable(rearm_uncommitted):
+            rearm_uncommitted()
 
     # --------------------------------------------------------------- 生命周期
     @lifecycle(id="startup")
@@ -1035,8 +1047,11 @@ class NekoWarthunderPlugin(NekoPluginBase):
         input_schema={"type": "object", "properties": {"value": {"type": "boolean", "default": True}}},
     )
     async def set_dry_run(self, value: bool = True, **_):
+        prev_dry_run = bool(self.cfg.dry_run)
         self.cfg.dry_run = bool(value)
         self._session_dry_run_override = self.cfg.dry_run
+        if prev_dry_run and not self.cfg.dry_run:
+            self._rearm_uncommitted_once_per_battle_events()
         # session_only 是产品决定，不是遗漏，不要"修"成持久化：
         # 开启战斗播报被当作每次启动插件时的一次显式启用动作（面板底栏"开启战斗播报"），
         # 所以它只在本次会话内稳定（不被无关 config_change 回滚），重启后回到 dry_run=true。

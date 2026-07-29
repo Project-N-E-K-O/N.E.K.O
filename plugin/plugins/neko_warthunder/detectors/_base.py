@@ -107,6 +107,15 @@ class ConditionDetector:
         if self.once_per_battle:
             self._delivered = True
 
+    def rearm_uncommitted(self) -> None:
+        """Retry an observed once-per-battle condition when real output is enabled."""
+        if not self.once_per_battle or self._delivered:
+            return
+        self._phase = _ARMED
+        self._count = 0
+        self._level = "warning"
+        self._last_emit_ts = 0.0
+
     def configure_critical_heartbeat(self, seconds: float) -> None:
         """Update heartbeat cadence without resetting the detector FSM."""
         if self._critical_heartbeat_configurable:
@@ -234,6 +243,13 @@ class DetectorEngine:
             mark_delivered = getattr(detector, "mark_delivered", None)
             if callable(mark_delivered):
                 mark_delivered()
+
+    def rearm_uncommitted_once_per_battle(self) -> None:
+        """Rearm dry-run-only condition events without resetting discrete cursors."""
+        for detector in self.detectors:
+            rearm = getattr(detector, "rearm_uncommitted", None)
+            if callable(rearm):
+                rearm()
 
     def feed(self, prev: BattleState, cur: BattleState) -> list[BattleEvent]:
         if cur.replay:
