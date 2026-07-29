@@ -23,7 +23,7 @@ should receive the standard OpenAI body unless it is explicitly recognized by
 
 from __future__ import annotations
 
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import parse_qsl, urlparse, urlunparse
 
 
 OPENAI_TTS_DEFAULT_BASE_URL = "https://api.openai.com/v1"

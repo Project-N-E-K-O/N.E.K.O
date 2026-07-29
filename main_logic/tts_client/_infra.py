@@ -32,6 +32,26 @@ logger = get_module_logger(__name__, "Main")
 # worker 的 sid is None 分支）。两种语义必须分开。
 TTS_SHUTDOWN_SENTINEL = "__shutdown__"
 
+# Stable diagnostic code for user-configured endpoints. Never attach the raw
+# exception because SDK/network errors may echo API keys, signed queries, or text.
+# 用户自填端点的异常可能回显密钥、签名 query 或原文；后端日志只记录稳定错误码、
+# provider 和阶段，详细原始异常不得进入 logger。
+CONFIGURED_TTS_FAILURE_CODE = "TTS_CONFIGURED_API_FAILURE"
+
+
+def configured_tts_unavailable_worker(
+    request_queue,
+    response_queue,
+    _audio_api_key,
+    _voice_id,
+):
+    """Report a configured-provider setup failure through the normal ready channel."""
+    # Keep the failed provider as the active owner until core observes readiness;
+    # this prevents legacy clone fallthrough from reusing its voice ID or API key.
+    # 配置解析失败也要先归属原 provider，再由统一监管层清空音色和凭证后回退。
+    _ = request_queue
+    response_queue.put(("__ready__", False))
+
 def _parse_env_float(env_name: str, default: float, min_value: float) -> float:
     raw = os.getenv(env_name)
     if raw is None or raw == "":
@@ -179,6 +199,31 @@ def _enqueue_error(response_queue, error_value):
     logger.error(f"TTS错误: {formatted_msg}")
     response_queue.put(("__error__", formatted_msg))
 
+
+def configured_tts_failure_payload(provider_key: str, stage: str) -> dict[str, str]:
+    """Build the non-sensitive error payload for a configured TTS endpoint."""
+    return {
+        "code": CONFIGURED_TTS_FAILURE_CODE,
+        "provider": str(provider_key or "configured"),
+        "stage": str(stage or "unknown"),
+        "message": "Configured TTS API unavailable; using existing fallback order",
+    }
+
+
+def log_configured_tts_failure(provider_key: str, stage: str) -> None:
+    """Log a configured-endpoint failure without serializing its exception."""
+    logger.error(
+        "code=%s provider=%s stage=%s",
+        CONFIGURED_TTS_FAILURE_CODE,
+        str(provider_key or "configured"),
+        str(stage or "unknown"),
+    )
+
+
+def enqueue_configured_tts_failure(response_queue, provider_key: str, stage: str) -> None:
+    """Enqueue and log the stable configured-endpoint failure payload."""
+    _enqueue_error(response_queue, configured_tts_failure_payload(provider_key, stage))
+
 try:
     from websockets.connection import State as _WsState
 except (ImportError, AttributeError):
@@ -281,6 +326,7 @@ async def _non_bistream_tts_main_loop(
     label: str = "TTS",
     max_concurrent: int = 3,
     sentence_trace_fn=None,
+    safe_error_provider: str | None = None,
 ):
     """Generic main loop for non-bistream-input TTS (sentence splitting + parallel synthesis + in-order delivery).
 
@@ -340,6 +386,7 @@ async def _non_bistream_tts_main_loop(
     _slot_new_data: dict[int, asyncio.Event] = {}       # seq_id → 有新数据通知
     _tasks: dict[int, asyncio.Task] = {}                # seq_id → synth task
     _sentence_enqueued_at: dict[int, float] = {}        # seq_id → enqueue monotonic time
+    _slot_sentences: dict[int, tuple[str, str]] = {}    # seq_id → (speech_id, sentence)
     _sem = asyncio.Semaphore(max_concurrent)
     _drain_seq: int = 0                                 # drain 当前正在投递的序号
     _drain_task: asyncio.Task | None = None
@@ -368,6 +415,7 @@ async def _non_bistream_tts_main_loop(
         _slot_new_data.pop(seq, None)
         _tasks.pop(seq, None)
         _sentence_enqueued_at.pop(seq, None)
+        _slot_sentences.pop(seq, None)
 
     def _slot_put(seq: int, gen_id: int, item) -> None:
         """Write one chunk into the given slot's buffer (called back by the proxy)."""
@@ -402,9 +450,27 @@ async def _non_bistream_tts_main_loop(
                 raise
             except Exception as exc:
                 if gen_id == _generation_id:
-                    _trace_sentence("error", seq, sid, text, error=str(exc))
-                    _slot_put(seq, gen_id,
-                              ("__synth_error__", f"{label} 合成失败: {exc}"))
+                    if safe_error_provider:
+                        # Do not pass the raw exception or sentence into traces.
+                        # 配置型 API 的追踪与队列都只能使用脱敏错误载荷。
+                        safe_error = configured_tts_failure_payload(
+                            safe_error_provider, "synthesis"
+                        )
+                        _trace_sentence(
+                            "error",
+                            seq,
+                            sid,
+                            "",
+                            error=CONFIGURED_TTS_FAILURE_CODE,
+                        )
+                        _slot_put(seq, gen_id, ("__synth_error__", safe_error))
+                    else:
+                        _trace_sentence("error", seq, sid, text, error=str(exc))
+                        _slot_put(
+                            seq,
+                            gen_id,
+                            ("__synth_error__", f"{label} 合成失败: {exc}"),
+                        )
             finally:
                 total_ms = int((time.perf_counter() - started_at) * 1000)
                 _trace_sentence("done", seq, sid, text, total_ms=total_ms)
@@ -431,6 +497,7 @@ async def _non_bistream_tts_main_loop(
                 continue
 
             cursor = 0
+            had_error = False
             while gen_id == _generation_id:
                 # 转发已有的 chunk
                 while cursor < len(buf):
@@ -438,7 +505,10 @@ async def _non_bistream_tts_main_loop(
                     cursor += 1
                     if (isinstance(item, tuple) and len(item) >= 2
                             and item[0] == "__synth_error__"):
+                        sid, sentence = _slot_sentences.get(seq, ("", ""))
+                        real_queue.put(("__tts_sentence_failed__", sid, sentence))
                         _enqueue_error(real_queue, item[1])
+                        had_error = True
                     else:
                         real_queue.put(item)
 
@@ -449,9 +519,15 @@ async def _non_bistream_tts_main_loop(
                         cursor += 1
                         if (isinstance(item, tuple) and len(item) >= 2
                                 and item[0] == "__synth_error__"):
+                            sid, sentence = _slot_sentences.get(seq, ("", ""))
+                            real_queue.put(("__tts_sentence_failed__", sid, sentence))
                             _enqueue_error(real_queue, item[1])
+                            had_error = True
                         else:
                             real_queue.put(item)
+                    if not had_error:
+                        sid, sentence = _slot_sentences.get(seq, ("", ""))
+                        real_queue.put(("__tts_sentence_done__", sid, sentence))
                     _free_slot(seq)
                     _drain_seq = seq + 1
                     break
@@ -473,6 +549,7 @@ async def _non_bistream_tts_main_loop(
     def _enqueue_sentence(text: str, sid: str) -> None:
         seq = _alloc_slot()
         _sentence_enqueued_at[seq] = time.perf_counter()
+        _slot_sentences[seq] = (sid, text)
         _trace_sentence("enqueue", seq, sid, text)
         task = asyncio.create_task(_synth_one(seq, text, sid, _generation_id))
         _tasks[seq] = task
@@ -515,6 +592,7 @@ async def _non_bistream_tts_main_loop(
         _slot_new_data.clear()
         _tasks.clear()
         _sentence_enqueued_at.clear()
+        _slot_sentences.clear()
         _next_seq = 0
         _drain_seq = 0
         if proxy is not None:
@@ -564,6 +642,7 @@ def _run_sentence_tts_worker(
     *,
     label: str,
     sentence_trace_fn=None,
+    safe_error_provider: str | None = None,
 ):
     """Generic skeleton for HTTP per-sentence synthesis TTS workers.
 
@@ -599,7 +678,10 @@ def _run_sentence_tts_worker(
         try:
             synthesize_fn, cleanup_fn = await async_setup_fn(proxy)
         except Exception as exc:
-            logger.error(f"{label} 初始化失败: {exc}")
+            if safe_error_provider:
+                log_configured_tts_failure(safe_error_provider, "initialization")
+            else:
+                logger.error(f"{label} 初始化失败: {exc}")
             try:
                 response_queue.put(("__ready__", False))
             except Exception:
@@ -614,9 +696,15 @@ def _run_sentence_tts_worker(
                 request_queue, proxy, synthesize_fn,
                 label=label,
                 sentence_trace_fn=sentence_trace_fn,
+                safe_error_provider=safe_error_provider,
             )
         except Exception as exc:
-            _enqueue_error(response_queue, f"{label} Worker 错误: {exc}")
+            if safe_error_provider:
+                enqueue_configured_tts_failure(
+                    response_queue, safe_error_provider, "worker_runtime"
+                )
+            else:
+                _enqueue_error(response_queue, f"{label} Worker 错误: {exc}")
             response_queue.put(("__ready__", False))
         finally:
             if cleanup_fn:
@@ -628,5 +716,8 @@ def _run_sentence_tts_worker(
     try:
         asyncio.run(_worker())
     except Exception as e:
-        logger.error(f"{label} Worker 启动失败: {e}")
+        if safe_error_provider:
+            log_configured_tts_failure(safe_error_provider, "worker_start")
+        else:
+            logger.error(f"{label} Worker 启动失败: {e}")
         response_queue.put(("__ready__", False))

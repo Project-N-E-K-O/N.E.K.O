@@ -268,6 +268,13 @@ class TTSProvider:
     # ``/voices`` endpoint and ``validate_voice_id`` query it instead of restating
     # the catalog elsewhere (see design doc §3 ``preset_catalog``).
     preset_catalog: "PresetCatalog | None" = None
+    # User-configured providers can expose the single value stored in
+    # ``voice_field`` as a preset voice without maintaining a static catalog.
+    configured_preset_voice: bool = False
+    # User-pointed endpoints may fall back to the unchanged downstream dispatch
+    # order after configuration, startup, or synthesis failures.
+    # 用户自填端点失败时，仅排除当前 provider，后续仍严格沿用既有调度顺序。
+    fallback_on_failure: bool = False
 
     # Alternate provider ids that share this provider's implementation and
     # capabilities while retaining provider-specific runtime configuration.
@@ -330,6 +337,24 @@ def all_providers() -> list[TTSProvider]:
     return sorted(_REGISTRY.values(), key=lambda p: p.priority)
 
 
+def _log_provider_predicate_failure(provider: TTSProvider) -> None:
+    """Log selection failures while protecting configured-endpoint secrets."""
+    if getattr(provider, "fallback_on_failure", False):
+        # Configured predicates may read signed URLs or credentials. Their raw
+        # exceptions must not enter backend logs; provider and stage are enough.
+        # 配置型 provider 的异常可能携带签名 query/密钥，仅记录错误码、归属和阶段。
+        logger.error(
+            "code=TTS_CONFIGURED_API_FAILURE provider=%s stage=selection",
+            provider.key,
+        )
+        return
+    logger.warning(
+        "TTS provider %r is_selected 判定异常，跳过该 provider",
+        provider.key,
+        exc_info=True,
+    )
+
+
 def selected_provider(ctx: "DispatchContext") -> "TTSProvider | None":
     """Return the first provider selected for ``ctx`` in priority order, or None.
 
@@ -345,10 +370,7 @@ def selected_provider(ctx: "DispatchContext") -> "TTSProvider | None":
         except Exception:
             # is_selected 判定异常不应连带打挂整个 dispatch，跳过该 provider 继续；
             # 但静默会掩盖配置/适配器 bug，至少留一条带堆栈的可观测日志。
-            logger.warning(
-                "TTS provider %r is_selected 判定异常，跳过该 provider", provider.key,
-                exc_info=True,
-            )
+            _log_provider_predicate_failure(provider)
             selected = False
         if selected:
             return provider
@@ -357,6 +379,8 @@ def selected_provider(ctx: "DispatchContext") -> "TTSProvider | None":
 
 def resolve_selected(
     ctx: "DispatchContext",
+    *,
+    excluded_provider_keys: "frozenset[str]" = frozenset(),
 ) -> "tuple[Callable[..., Any], str | None, str] | None":
     """Return the dispatch tuple for the first provider selected for ``ctx``, in
     priority order, or ``None`` when none apply.
@@ -366,8 +390,47 @@ def resolve_selected(
     pick or an implied clone-voice provider — wins over native / core default
     routing in the original hand-written precedence (priority order).
     """
-    provider = selected_provider(ctx)
-    return provider.resolve(ctx) if provider is not None else None
+    # Opted-in configured endpoints may be unreadable while the existing
+    # fallback providers remain usable. Other providers retain their original
+    # exception behavior, so this issue does not broaden unrelated fallback.
+    # 仅允许声明过的自定义 provider 在解析失败时跳过；其他 provider 维持旧异常语义。
+    for provider in all_providers():
+        if provider.key in excluded_provider_keys:
+            continue
+        try:
+            selected = provider.is_selected(ctx)
+        except Exception:
+            # Match selected_provider's established fault isolation so runtime
+            # dispatch and the /voices catalog cannot disagree after one bad predicate.
+            # 与 selected_provider 复用旧容错语义，单个判定异常不能打断后续 provider。
+            _log_provider_predicate_failure(provider)
+            selected = False
+        if not selected:
+            continue
+        try:
+            return provider.resolve(ctx)
+        except Exception:
+            if not provider.fallback_on_failure:
+                raise
+            logger.error(
+                "code=TTS_CONFIGURED_API_FAILURE provider=%s stage=resolve",
+                provider.key,
+            )
+    return None
+
+
+def falls_back_on_failure(provider_key: str | None) -> bool:
+    """Whether runtime failures should exclude this provider and redispatch."""
+    provider = get(provider_key)
+    return bool(provider and provider.fallback_on_failure)
+
+
+def uses_configured_preset_voice(provider_key: str | None) -> bool:
+    """Whether the provider owns the configured voice field as its preset."""
+    # Core and storage query metadata here instead of hardcoding custom/vllm keys.
+    # core 与存储层统一查元数据，避免写死 custom/vllm provider 名称。
+    provider = get(provider_key)
+    return bool(provider and provider.configured_preset_voice)
 
 
 # ── Preset-catalog queries (single source of truth for built-in voices) ──────
@@ -380,20 +443,54 @@ def resolve_selected(
 # ``config_router``'s ``ui_metadata`` call site.
 
 
-def preset_catalog_for_ui(provider_key: str | None) -> "dict[str, dict[str, str | bool]] | None":
+def preset_catalog_for_ui(
+    provider_key: str | None,
+    core_config: Mapping[str, Any] | None = None,
+) -> "dict[str, dict[str, str | bool]] | None":
     """The UI voice catalog for ``provider_key``'s preset_catalog, or None."""
     provider = get(provider_key)
-    if provider is None or provider.preset_catalog is None:
+    if provider is None:
         return None
-    return provider.preset_catalog.catalog_for_ui(provider.key)
+    if provider.preset_catalog is not None:
+        return provider.preset_catalog.catalog_for_ui(provider.key)
+    if not provider.configured_preset_voice:
+        return None
+    config = core_config or {}
+    voice_id = str(config.get(provider.voice_field) or provider.default_voice or "").strip()
+    if not voice_id:
+        return {}
+    return {
+        voice_id: {
+            "prefix": voice_id,
+            "provider": provider.key,
+            # Configured voices are shown under the generic Custom API source,
+            # while ``provider`` retains the real runtime owner for dispatch.
+            # 配置音色统一显示为“自定义 API”，但 provider 字段仍保留真实路由身份。
+            "provider_label": "custom",
+            "gender": "",
+            "display_name": voice_id,
+            "builtin": True,
+        }
+    }
 
 
-def is_preset_voice(provider_key: str | None, voice_id: str | None) -> bool:
+def is_preset_voice(
+    provider_key: str | None,
+    voice_id: str | None,
+    core_config: Mapping[str, Any] | None = None,
+) -> bool:
     """Whether ``voice_id`` is a built-in voice of ``provider_key``'s catalog."""
     provider = get(provider_key)
-    if provider is None or provider.preset_catalog is None:
+    if provider is None:
         return False
-    return provider.preset_catalog.is_voice(voice_id)
+    if provider.preset_catalog is not None:
+        return provider.preset_catalog.is_voice(voice_id)
+    if not provider.configured_preset_voice:
+        return False
+    configured_voice = str(
+        (core_config or {}).get(provider.voice_field) or provider.default_voice or ""
+    ).strip()
+    return bool(configured_voice and configured_voice == str(voice_id or "").strip())
 
 
 def selected_provider_key(
@@ -431,7 +528,7 @@ def selected_preset_provider_key(
     provider = selected_provider(
         DispatchContext(core_config=core_config, cm=cm, voice_id=voice_id or "")
     )
-    if provider is None or not is_preset_voice(provider.key, voice_id):
+    if provider is None or not is_preset_voice(provider.key, voice_id, core_config):
         return None
     return provider.key
 
