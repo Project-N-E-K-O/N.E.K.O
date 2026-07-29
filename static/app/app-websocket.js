@@ -2734,8 +2734,16 @@
                                     // sets voiceInputRouteBlocked. This automatic restart
                                     // would otherwise reclaim a lease onto the text
                                     // session's blocked route (Codex P2).
-                                    if (S._pendingSessionStartMode
-                                            && S._pendingSessionStartMode !== 'audio') {
+                                    //
+                                    // Ownership first, mode second, for the same reason as
+                                    // app-buttons.js: a newer AUDIO start (a mic press
+                                    // inside the ack window) passes `mode !== 'audio'`, and
+                                    // this restart would then open the microphone on top of
+                                    // it. Neither test subsumes the other -- the disconnect
+                                    // cleanup nulls the resolver but leaves the mode set.
+                                    if (window.sessionStartSuperseded(restartStartOwner)
+                                            || (S._pendingSessionStartMode
+                                                && S._pendingSessionStartMode !== 'audio')) {
                                         if (typeof window.abortVoiceStartForBlockedRoute === 'function') {
                                             window.abortVoiceStartForBlockedRoute();
                                         }

@@ -288,6 +288,21 @@
         return !!owner && S.sessionStartedResolver === owner;
     };
 
+    /**
+     * True when some OTHER start now holds the slot, i.e. ``owner`` has been
+     * superseded. Note this is not the negation of sessionStartIsCurrent: an
+     * EMPTY slot is not superseded, and that distinction is the whole point.
+     * The normal success path releases the slot inside the ack handler and
+     * only then settles the promise, so a flow that resumes after its own ack
+     * legitimately finds the slot empty and must still run its own cleanup --
+     * including clearing the start timeout it armed. Asking
+     * `!sessionStartIsCurrent(owner)` there would make every successful start
+     * think it had been superseded.
+     */
+    window.sessionStartSuperseded = function (owner) {
+        return !!S.sessionStartedResolver && S.sessionStartedResolver !== owner;
+    };
+
     window.cancelPendingSessionStart = function (reason) {
         if (window.sessionTimeoutId) {
             clearTimeout(window.sessionTimeoutId);

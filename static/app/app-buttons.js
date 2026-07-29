@@ -2239,8 +2239,20 @@
                     // generic catch clears S.sessionStartedResolver /
                     // Rejecter / _pendingSessionStartMode unconditionally,
                     // which would tear down the very start that superseded us.
-                    if (S._pendingSessionStartMode
-                            && S._pendingSessionStartMode !== 'audio') {
+                    //
+                    // The test is OWNERSHIP, not mode. A newer AUDIO start --
+                    // the CHARACTER_DISCONNECTED automatic restart in
+                    // app-websocket.js claims 'audio' too -- passes a
+                    // `mode !== 'audio'` test, falls through to the timeout
+                    // clear below and cancels the 15s timer that newer start
+                    // is relying on; with its ack lost as well, it then stays
+                    // pending forever. The mode check is kept as an OR because
+                    // the disconnect cleanup nulls the resolver but leaves
+                    // _pendingSessionStartMode set, so neither test subsumes
+                    // the other.
+                    if (window.sessionStartSuperseded(micStartOwner)
+                            || (S._pendingSessionStartMode
+                                && S._pendingSessionStartMode !== 'audio')) {
                         // Deliberately NOT clearing window.sessionTimeoutId:
                         // that timer belongs to the newer start now, and
                         // cancelling it is the same cross-start damage in
@@ -2271,7 +2283,15 @@
                     await window.startMicCapture();
                     ensureVoiceStartCurrent();
                 } catch (error) {
-                    if (window.sessionTimeoutId) {
+                    // Same ownership gate as the success path above: this
+                    // failure can arrive after a newer start has claimed the
+                    // slot and armed its own timer (startMicCapture rejecting
+                    // on a denied getUserMedia is the easy way in), and the
+                    // timer would then be the newer start's. Refuse only in
+                    // that case -- an empty slot still means the timer is ours
+                    // to clear.
+                    if (window.sessionTimeoutId
+                            && !window.sessionStartSuperseded(micStartOwner)) {
                         clearTimeout(window.sessionTimeoutId);
                         window.sessionTimeoutId = null;
                     }
