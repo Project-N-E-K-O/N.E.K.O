@@ -1113,6 +1113,45 @@ async def test_voice_mode_callback_image_rejection_before_inject_keeps_cb():
     )
 
 
+async def test_voice_mode_drops_permanently_oversized_image_and_delivers_text():
+    from main_logic.omni_realtime_client import RealtimeImagePayloadTooLargeError
+
+    sess = _make_voice_sess()
+    streamed = []
+
+    async def _stream_image(
+        image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        on_rejected=None,
+    ):
+        assert bypass_rate_limit is True
+        assert cache_latest is False
+        assert on_rejected is not None
+        streamed.append(image_b64)
+        if image_b64 == "oversized-image":
+            raise RealtimeImagePayloadTooLargeError("permanent oversize")
+
+    sess.stream_image = _stream_image
+    mgr = _make_mgr(session=sess)
+    cb = {
+        "_callback_delivery_id": "id-oversized-image",
+        "status": "completed",
+        "summary": "deliver despite oversized media",
+        "media_images": ["valid-prefix", "oversized-image", "valid-tail"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert streamed == ["valid-prefix", "oversized-image", "valid-tail"]
+    assert sess.inject_calls == 1
+    assert cb["media_images"] == ["valid-prefix", "valid-tail"]
+    assert mgr.pending_agent_callbacks == []
+
+
 async def test_standard_step_callback_image_description_shares_inject_ticket():
     sess = _make_voice_sess()
     sess._supports_native_image = False

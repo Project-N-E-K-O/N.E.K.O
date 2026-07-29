@@ -794,15 +794,16 @@ async def test_gemini_cancelled_wait_observes_boundary_completion(monkeypatch):
 
 
 @pytest.mark.unit
-async def test_gemini_cancelled_send_clears_pending_outcome():
+async def test_gemini_cancelled_send_quarantines_until_terminal():
     client = _make_client(api_type="gemini", model="gemini-live")
     client._gemini_session = AsyncMock()
     send_started = asyncio.Event()
     hold_send = asyncio.Event()
 
-    async def blocked_send(*_args, **_kwargs):
-        send_started.set()
-        await hold_send.wait()
+    async def blocked_send(*_args, **kwargs):
+        if kwargs.get("turns") is not None:
+            send_started.set()
+            await hold_send.wait()
 
     client._gemini_session.send_client_content.side_effect = blocked_send
     task = asyncio.create_task(
@@ -818,6 +819,25 @@ async def test_gemini_cancelled_send_clears_pending_outcome():
     with pytest.raises(asyncio.CancelledError):
         assert await task is None
 
+    for _ in range(20):
+        if client._gemini_session.send_client_content.await_count >= 2:
+            break
+        await asyncio.sleep(0)
+    else:
+        raise AssertionError("Gemini cancelled turn was not interrupted")
+
+    token = client._proactive_inject_outcome_token
+    assert token is not None
+    assert client._gemini_proactive_outcome == (token, None, None)
+    assert client._proactive_inject_awaiting_outcome is True
+    assert client._gemini_session.send_client_content.await_args_list[-1].kwargs == {
+        "turns": None,
+        "turn_complete": False,
+    }
+
+    await client._process_gemini_response(
+        _gemini_lifecycle_response(interrupted=True)
+    )
     assert client._gemini_proactive_outcome is None
     assert client._proactive_inject_outcome_token is None
     assert client._proactive_inject_awaiting_outcome is False

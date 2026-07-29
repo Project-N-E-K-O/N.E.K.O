@@ -532,7 +532,11 @@ class RealtimeResponseArbiter:
         response; only the ended utterance below may arm that correlation.
         """
 
-    def notify_server_vad_response_pending(self) -> None:
+    def notify_server_vad_response_pending(
+        self,
+        *,
+        arm_timeout: bool = True,
+    ) -> None:
         """Mark a VAD response pending unless an explicit create won the race."""
 
         owner = self._response_owner
@@ -571,7 +575,17 @@ class RealtimeResponseArbiter:
         self._server_vad_response_pending = True
         self._server_response_active = True
         self._idle.clear()
-        self._arm_server_vad_pending_timer()
+        if arm_timeout:
+            self._arm_server_vad_pending_timer()
+
+    def arm_server_vad_response_pending_timeout(self) -> None:
+        """Start the missing-created backstop after receive handling resumes."""
+
+        if (
+            self._server_vad_response_pending
+            and self._server_vad_pending_handle is None
+        ):
+            self._arm_server_vad_pending_timer()
 
     def notify_response_terminal(self, event: dict[str, Any] | None = None) -> None:
         owner = self._response_owner

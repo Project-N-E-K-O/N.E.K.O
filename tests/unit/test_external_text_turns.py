@@ -7,12 +7,11 @@ import pytest
 
 from main_logic.omni_realtime_client import OmniRealtimeClient
 import main_logic.omni_realtime_client._response_arbiter as arbiter_module
-from main_logic.omni_realtime_client._response_arbiter import (
-    _DEFAULT_RESPONSE_DONE_TIMEOUT,
-    _SERVER_RESPONSE_ID_LIMIT,
-    RealtimeResponseArbiter,
-)
 from main_logic.tool_calling import ToolResult
+
+_DEFAULT_RESPONSE_DONE_TIMEOUT = arbiter_module._DEFAULT_RESPONSE_DONE_TIMEOUT
+_SERVER_RESPONSE_ID_LIMIT = arbiter_module._SERVER_RESPONSE_ID_LIMIT
+RealtimeResponseArbiter = arbiter_module.RealtimeResponseArbiter
 
 
 async def _wait_for_arbiter_source(
@@ -1262,6 +1261,71 @@ async def test_vad_pending_response_timeout_reopens_lane(monkeypatch):
     )
     await asyncio.wait_for(follow_up.done, 0.2)
     await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_vad_pending_timeout_starts_after_blocked_receive_callback(monkeypatch):
+    callback_started = asyncio.Event()
+    release_callback = asyncio.Event()
+
+    async def on_new_message():
+        callback_started.set()
+        await release_callback.wait()
+
+    monkeypatch.setattr(
+        arbiter_module,
+        "_SERVER_VAD_RESPONSE_STARTED_TIMEOUT",
+        0.01,
+    )
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="gpt-4o-realtime-preview",
+        api_type="openai",
+        on_new_message=on_new_message,
+    )
+    socket = AsyncMock()
+    client.ws = socket
+    finish_stream = asyncio.Event()
+
+    async def message_stream():
+        yield json.dumps({"type": "input_audio_buffer.speech_stopped"})
+        yield json.dumps(
+            {"type": "response.created", "response": {"id": "resp-vad"}}
+        )
+        yield json.dumps(
+            {
+                "type": "response.done",
+                "response": {"id": "resp-vad", "status": "completed"},
+            }
+        )
+        await finish_stream.wait()
+
+    socket.__aiter__.side_effect = message_stream
+
+    receive_task = asyncio.create_task(client.handle_messages())
+    await callback_started.wait()
+    follow_up = await client._response_arbiter.enqueue(source="follow-up")
+
+    await asyncio.sleep(0.03)
+    assert follow_up.sent.done() is False
+    assert client._response_arbiter._server_vad_pending_handle is None
+
+    release_callback.set()
+    await asyncio.wait_for(follow_up.sent, 0.2)
+    client._response_arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-follow-up"}}
+    )
+    client._response_arbiter.notify_response_terminal(
+        {
+            "type": "response.done",
+            "response": {"id": "resp-follow-up", "status": "completed"},
+        }
+    )
+    await asyncio.wait_for(follow_up.done, 0.2)
+    finish_stream.set()
+    await receive_task
+    await client.close()
 
 
 @pytest.mark.asyncio

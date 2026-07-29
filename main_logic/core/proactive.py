@@ -22,7 +22,10 @@ Method-only mixin: every instance attribute is assigned in
 import asyncio
 import time
 from typing import Any, Optional
-from main_logic.omni_realtime_client import OmniRealtimeClient
+from main_logic.omni_realtime_client import (
+    OmniRealtimeClient,
+    RealtimeImagePayloadTooLargeError,
+)
 from main_logic.omni_offline_client import OmniOfflineClient
 from utils.llm_client import AIMessage
 from main_logic.session_state import SessionEvent, ProactivePhase
@@ -1721,7 +1724,11 @@ class ProactiveMixin:
         losing the visual context. On a PARTIAL stream failure the FULL set is
         kept (not just the tail): a stream failure usually means the session is
         closing, so the retry lands on a new session that has none of the
-        earlier images — re-streaming everything is correct (Codex P2)."""
+        earlier images — re-streaming everything is correct (Codex P2).
+        A payload proven permanently too large after recompression is the sole
+        exception: that exact image is dropped so it cannot wedge callback text
+        delivery in an endless retry loop.
+        """
         si = getattr(session, "stream_image", None)
         if si is None:
             return True
@@ -1734,7 +1741,7 @@ class ProactiveMixin:
             if not images:
                 continue
             streamed = 0
-            for b64 in images:
+            for b64 in list(images):
                 try:
                     # Deliberate cue image: bypass the native-vision frame-rate
                     # throttle so it isn't silently dropped behind a recent
@@ -1789,6 +1796,20 @@ class ProactiveMixin:
                             },
                         ))
                     streamed += 1
+                except RealtimeImagePayloadTooLargeError as e:
+                    # Recompression already proved this exact payload can never
+                    # fit the provider frame limit. Drop only that image and
+                    # continue so callback text and any remaining valid images
+                    # can still be delivered instead of retrying forever.
+                    images.remove(b64)
+                    if not images:
+                        cb.pop("media_images", None)
+                    logger.warning(
+                        "[%s] dropping permanently oversized proactive image: %s",
+                        self.lanlan_name,
+                        e,
+                    )
+                    continue
                 except Exception as e:
                     # Keep the FULL media set (do NOT trim already-streamed
                     # ones): a voice stream_image failure almost always means

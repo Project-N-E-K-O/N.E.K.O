@@ -44,6 +44,10 @@ from ._shared import (
 _ATTACHED_TRANSPORT = object()
 
 
+class RealtimeImagePayloadTooLargeError(RuntimeError):
+    """A callback image cannot fit the provider's WebSocket frame limit."""
+
+
 
 class _TransportMixin:
     _WS_FRAME_LIMIT = OMNI_WS_FRAME_LIMIT_BYTES  # safe threshold below 256KB server cap
@@ -432,7 +436,7 @@ class _TransportMixin:
                     )
                     if payload is None:
                         if raise_on_oversize:
-                            raise RuntimeError(
+                            raise RealtimeImagePayloadTooLargeError(
                                 "image payload exceeds realtime WebSocket frame limit"
                             )
                         return
@@ -1222,9 +1226,18 @@ class _TransportMixin:
                     # server-VAD response.  Marking this at speech_started can
                     # steal an explicit response.created whose create was
                     # already accepted but whose echo is still in flight.
-                    self._response_arbiter.notify_server_vad_response_pending()
-                    if self.on_new_message:
-                        await self.on_new_message()
+                    self._response_arbiter.notify_server_vad_response_pending(
+                        arm_timeout=False
+                    )
+                    try:
+                        if self.on_new_message:
+                            await self.on_new_message()
+                    finally:
+                        # response.created cannot be observed while this receive
+                        # loop is blocked in on_new_message. Start the missing-
+                        # created backstop only after the loop can read again,
+                        # so a slow callback cannot release a real VAD response.
+                        self._response_arbiter.arm_server_vad_response_pending_timeout()
                     self._audio_in_buffer = False
                     # Update timestamp so grace period starts from speech end
                     _now = time.time()

@@ -64,6 +64,7 @@ from ._gemini_support import (  # noqa: F401 - preserve the legacy module namesp
     types,
 )
 
+from ._transport import RealtimeImagePayloadTooLargeError  # noqa: F401
 from ._client import OmniRealtimeClient  # noqa: F401
 
 __import__(

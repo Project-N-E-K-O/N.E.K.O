@@ -430,7 +430,25 @@ class _ResponseMixin:
             try:
                 await self._gemini_send_user_turn(text)
             except asyncio.CancelledError:
-                self._settle_gemini_proactive_inject(notify=False)
+                outcome = getattr(self, "_gemini_proactive_outcome", None)
+                if outcome is not None and outcome[0] == outcome_token:
+                    # Cancellation can arrive after the SDK accepted the
+                    # unscoped turn but before its await resumes. Suppress the
+                    # abandoned caller's callbacks, retain its token, and
+                    # interrupt/quarantine the generation until a terminal (or
+                    # fail-closed session retirement) makes retry correlation
+                    # safe again.
+                    self._gemini_proactive_outcome = (
+                        outcome_token,
+                        None,
+                        None,
+                    )
+                    self._fire_task(
+                        self._interrupt_and_quarantine_gemini_proactive_outcome(
+                            outcome_token,
+                            error_msg="Gemini proactive SDK send was cancelled",
+                        )
+                    )
                 raise
             except Exception:
                 self._settle_gemini_proactive_inject(notify=False)
@@ -677,39 +695,51 @@ class _ResponseMixin:
             return
         outcome = getattr(self, "_gemini_proactive_outcome", None)
         if outcome is not None and outcome[0] == token:
-            # Gemini lifecycle events are not tagged with a response id. Do
-            # not release this token while the original generation can still
-            # emit a late terminal: that terminal could otherwise settle a
-            # newer retry. Interrupt first and keep the inject quarantined
-            # until ``interrupted``/``turn_complete`` arrives.
-            try:
-                await self.cancel_response()
-            except Exception as exc:
-                logger.warning(
-                    "Gemini proactive lifecycle timeout interrupt failed: %s",
-                    exc,
-                )
-            await asyncio.sleep(_GEMINI_PROACTIVE_CANCEL_GRACE_SECONDS)
-            outcome = getattr(self, "_gemini_proactive_outcome", None)
-            if outcome is None or outcome[0] != token:
-                return
+            await self._interrupt_and_quarantine_gemini_proactive_outcome(
+                token,
+                error_msg="Gemini proactive response lifecycle timed out",
+            )
 
-            # No terminal followed the interrupt. Retire the whole Gemini
-            # session before releasing the unscoped token so no event from the
-            # expired turn can cross-talk with a future reconnect/retry.
-            self._fatal_error_occurred = True
-            try:
-                await self._close_gemini()
-            except Exception as exc:
-                logger.warning(
-                    "Gemini proactive lifecycle timeout close failed: %s",
-                    exc,
-                )
-            outcome = getattr(self, "_gemini_proactive_outcome", None)
-            if outcome is not None and outcome[0] == token:
-                self._settle_gemini_proactive_inject(
-                    error_msg="Gemini proactive response lifecycle timed out"
-                )
+    async def _interrupt_and_quarantine_gemini_proactive_outcome(
+        self,
+        token: str,
+        *,
+        error_msg: str,
+    ) -> None:
+        """Interrupt an unscoped Gemini turn and retain its token until safe."""
+
+        outcome = getattr(self, "_gemini_proactive_outcome", None)
+        if outcome is None or outcome[0] != token:
+            return
+        # Gemini lifecycle events are not tagged with a response id. Do not
+        # release this token while the original generation can still emit a
+        # late terminal: that terminal could otherwise settle a newer retry.
+        try:
+            await self.cancel_response()
+        except Exception as exc:
+            logger.warning(
+                "Gemini proactive interrupt failed while quarantining outcome: %s",
+                exc,
+            )
+        await asyncio.sleep(_GEMINI_PROACTIVE_CANCEL_GRACE_SECONDS)
+        outcome = getattr(self, "_gemini_proactive_outcome", None)
+        if outcome is None or outcome[0] != token:
+            return
+
+        # No terminal followed the interrupt. Retire the whole Gemini session
+        # before releasing the token so no event from the abandoned turn can
+        # cross-talk with a future reconnect/retry.
+        self._fatal_error_occurred = True
+        try:
+            await self._close_gemini()
+        except Exception as exc:
+            logger.warning(
+                "Gemini proactive quarantine close failed: %s",
+                exc,
+            )
+        outcome = getattr(self, "_gemini_proactive_outcome", None)
+        if outcome is not None and outcome[0] == token:
+            self._settle_gemini_proactive_inject(error_msg=error_msg)
 
     async def _expire_inject_rejection_handler(
         self,
