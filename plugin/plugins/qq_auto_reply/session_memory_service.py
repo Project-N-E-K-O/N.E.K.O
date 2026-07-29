@@ -36,15 +36,23 @@ class QQSessionMemoryService:
     # 系统消息，此前未落盘的轮次当场消失；在它之前主动落盘，能把损失从
     # "整场会话"压到最多这么多轮。
     GROUP_DIGEST_BACKLOG_TRIGGER = 40
+    # 一趟排空的形状：最多 GROUP_MEMBER_MAX_PARTICIPANTS 个桶，并发
+    # MEMBER_FLUSH_CONCURRENCY，每发一次 scoped history（那是一次 LLM
+    # 抽取，所以超时给得很宽）。下面的等待上限由它们算出来，别写死——
+    # 三个数任何一个改了，等待上限必须跟着走。
+    MEMBER_FLUSH_CONCURRENCY = 4
+    SCOPED_HISTORY_TIMEOUT_SECONDS = 30.0
     # 结算前等待该会话在途排空的上限。分两档，判据是"放弃等待要付什么"：
     # · 短档（idle sweep）：放弃只是多等一个 sweep 周期，下轮自然重来。
     # · 长档（关机 / opt-out 结算）：放弃就换成丢数据或让已提升的一代
-    #   失去消费者，没有便宜的下一轮。而 scoped history 端点跑的是一次
-    #   LLM 抽取（单发 timeout 就是 30s），5 秒没回来是**常态**不是故障，
-    #   拿短档去判它"卡住"属于误判。改前这里其实是无界的（整趟排空持会话
-    #   锁，这些路径只能干等），所以长档到 30s 仍比 main 的现状更短。
+    #   失去消费者，没有便宜的下一轮。所以长档按**整趟**排空的最坏用时
+    #   算（波数 × 单发超时），而不是一次请求——只覆盖一次请求的话，第二
+    #   波还攥着快照时等待就到点了。这正好是改前的实际行为（整趟排空持
+    #   会话锁，这些路径只能干等到它结束），因此不构成关机变慢的回归。
     SETTLE_JOIN_TIMEOUT_SECONDS = 5.0
-    SETTLE_JOIN_TIMEOUT_LONG_SECONDS = 30.0
+    SETTLE_JOIN_TIMEOUT_LONG_SECONDS = SCOPED_HISTORY_TIMEOUT_SECONDS * (
+        -(-GROUP_MEMBER_MAX_PARTICIPANTS // MEMBER_FLUSH_CONCURRENCY)
+    )
 
     def __init__(self, plugin: Any):
         self.plugin = plugin
@@ -692,12 +700,31 @@ class QQSessionMemoryService:
                 labels = user_data.setdefault("group_member_memory_labels", {})
                 for sender_id, messages in snapshot.items():
                     # 失败的旧发言排在冲刷期间新到的之前，保持时间顺序。
-                    buckets[sender_id] = messages + list(
-                        buckets.get(sender_id) or []
-                    )
+                    merged = messages + list(buckets.get(sender_id) or [])
+                    if len(merged) > self.GROUP_MEMBER_HARD_LIMIT:
+                        # 硬顶要重新压：快照与新一代各自有界，拼起来没有。
+                        # 服务端持续挂掉时，每轮失败都把上一轮整批加回来，
+                        # 队列会无界增长——硬顶正是为这个场景存在的。
+                        self.plugin.logger.warning(
+                            f"[member_bucket_cap] 成员 {sender_id} 的队列归还后"
+                            f"超过硬顶（{len(merged)}），丢弃最早的 "
+                            f"{len(merged) - self.GROUP_MEMBER_HARD_LIMIT} 条"
+                        )
+                        del merged[:-self.GROUP_MEMBER_HARD_LIMIT]
+                    buckets[sender_id] = merged
                     if sender_id in snapshot_labels:
                         # 冲刷期间又发言的人可能带来更新的展示名，不覆盖。
                         labels.setdefault(sender_id, snapshot_labels[sender_id])
+                if len(buckets) > self.GROUP_MEMBER_MAX_PARTICIPANTS:
+                    # 名额只在 record_group_member_turn 的入口把关，归还会
+                    # 暂时越线（上限 2 倍：活映射自己进不了新人）。不在这里
+                    # 丢人——丢掉的是已授权的整个发言人，比暂时超额更糟——
+                    # 但要留痕，并且下一轮排空会把它压回去。
+                    self.plugin.logger.warning(
+                        f"[member_bucket_cap] 群 {flush_target.get('group_id')} "
+                        f"归还后参与者数 {len(buckets)} 超过名额 "
+                        f"{self.GROUP_MEMBER_MAX_PARTICIPANTS}，待下轮排空压回"
+                    )
                 # due 标已被调度器消费掉：不重新置起来的话，要等这些成员各自
                 # 再攒满一轮才会重试（硬顶兜底防无界增长）。
                 user_data["member_flush_due"] = True
@@ -750,7 +777,7 @@ class QQSessionMemoryService:
             labels if labels is not None
             else user_data.get("group_member_memory_labels") or {}
         )
-        member_flush_sem = asyncio.Semaphore(4)
+        member_flush_sem = asyncio.Semaphore(self.MEMBER_FLUSH_CONCURRENCY)
 
         async def _flush_one_member(
             sender_id: str, member_messages: list,
@@ -766,7 +793,7 @@ class QQSessionMemoryService:
                         speaker_label=(
                             str(member_labels.get(sender_id) or sender_id)[:64]
                         ),
-                        timeout=30.0,
+                        timeout=self.SCOPED_HISTORY_TIMEOUT_SECONDS,
                     )
                     if result.get("status") == "error":
                         raise RuntimeError(

@@ -784,8 +784,16 @@ def test_shutdown_waits_longer_for_a_drain_than_the_idle_sweep():
     assert Service.SETTLE_JOIN_TIMEOUT_LONG_SECONDS > (
         Service.SETTLE_JOIN_TIMEOUT_SECONDS
     )
-    # 至少覆盖一次 scoped history 请求，否则健康但慢的排空会被误判成卡住。
-    assert Service.SETTLE_JOIN_TIMEOUT_LONG_SECONDS >= 30.0
+    # 必须覆盖**整趟**排空（波数 x 单发超时），不是一次请求：只覆盖一次的
+    # 话，第二波还攥着快照时等待就到点了。派生而不是写死，三个参数任何一个
+    # 改了这里都跟着走。
+    waves = -(
+        -Service.GROUP_MEMBER_MAX_PARTICIPANTS // Service.MEMBER_FLUSH_CONCURRENCY
+    )
+    assert waves >= 2
+    assert Service.SETTLE_JOIN_TIMEOUT_LONG_SECONDS == (
+        Service.SCOPED_HISTORY_TIMEOUT_SECONDS * waves
+    )
 
 
 @pytest.mark.asyncio
@@ -834,3 +842,47 @@ async def test_opt_out_settlement_skips_rather_than_clearing_its_own_marker():
     # 排空落地后那一代被提升出来，标记仍在，后续结算还能消费它。
     assert user_data.get("pending_settle_buckets", {}).get("3057")
     assert user_data.get("pending_member_settle") is True
+
+
+@pytest.mark.asyncio
+async def test_returning_a_failed_snapshot_reapplies_the_hard_limit():
+    """The snapshot and the fresh generation are each bounded; their
+    concatenation is not.
+
+    With the memory server down and messages still arriving, every failed
+    round hands the previous batch back on top of the new one. Without
+    re-trimming, the queue the hard limit exists to bound grows without
+    limit — which is exactly the server-is-down scenario it was written
+    for.
+    """
+    released = asyncio.Event()
+    in_flight = asyncio.Event()
+
+    async def _post_scoped(her_name, messages, **kwargs):
+        in_flight.set()
+        await released.wait()
+        return {"status": "error", "message": "memory server down"}
+
+    service, plugin, user_data, _locks = _group_drain_harness(_post_scoped)
+    limit = service.GROUP_MEMBER_HARD_LIMIT
+    user_data["group_member_memory_messages"]["2046"] = [
+        {"role": "user", "content": [{"type": "text", "text": f"旧-{i}"}]}
+        for i in range(limit)
+    ]
+
+    drain = asyncio.create_task(service._drain_member_buckets("group:7788"))
+    await asyncio.wait_for(in_flight.wait(), timeout=2.0)
+    user_data.setdefault("group_member_memory_messages", {})["2046"] = [
+        {"role": "user", "content": [{"type": "text", "text": f"新-{i}"}]}
+        for i in range(limit)
+    ]
+    released.set()
+    await asyncio.wait_for(drain, timeout=2.0)
+
+    merged = user_data["group_member_memory_messages"]["2046"]
+    assert len(merged) == limit, "归还没有重新压硬顶，队列会无界增长"
+    # 丢的是最早的，留下的尾部是冲刷期间新到的那一批。
+    assert merged[-1]["content"][0]["text"] == f"新-{limit - 1}"
+    assert any(
+        "超过硬顶" in str(call) for call in plugin.logger.warning.call_args_list
+    )
