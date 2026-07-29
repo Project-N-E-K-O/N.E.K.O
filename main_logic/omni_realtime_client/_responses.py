@@ -706,12 +706,10 @@ class _ResponseMixin:
           2. **By content (fallback)** — ONLY when the provider omits a
              client-correlation id entirely (``err_event_id`` falsy): if the
              error looks like a response-conflict
-             (``_looks_like_response_conflict``) and handlers are pending, fire
-             them all. Injects are serialized by
-             ``_voice_proactive_inject_lock`` so there's effectively one logical
-             pending inject; ``_reject_once`` + the caller's delivery-id dedup
-             make a spurious fire cost at most a bounded duplicate re-add, which
-             is strictly better than a silent drop (Codex P1).
+             (``_looks_like_response_conflict``), fire only the handler keyed
+             by the current proactive outcome token. Standalone callback-image
+             handlers may remain in the shared map after an earlier successful
+             text turn and must never be swept by a later no-id conflict.
 
         Critically, the content fallback is gated on ``err_event_id`` being
         absent. If the error DOES carry a client event_id that simply isn't
@@ -736,7 +734,9 @@ class _ResponseMixin:
             # belongs to some other request's rejection — not ours.
             handler = self._inject_rejection_handlers.pop(err_event_id, None)
             if handler is not None:
-                self._proactive_inject_awaiting_outcome = False
+                # Outcome-bound handlers close their own token window.
+                # Standalone image handlers do not own that shared gate and
+                # must not clear a newer text inject's state.
                 _fire(handler)
             return
 
@@ -750,10 +750,19 @@ class _ResponseMixin:
             self._proactive_inject_awaiting_outcome
             and self._looks_like_response_conflict(error_msg)
         ):
-            self._proactive_inject_awaiting_outcome = False
-            for handler in list(self._inject_rejection_handlers.values()):
+            outcome_event_id = getattr(
+                self,
+                "_proactive_inject_outcome_token",
+                None,
+            )
+            handler = (
+                self._inject_rejection_handlers.pop(outcome_event_id, None)
+                if outcome_event_id
+                else None
+            )
+            if handler is not None:
+                self._proactive_inject_awaiting_outcome = False
                 _fire(handler)
-            self._inject_rejection_handlers.clear()
 
     async def prompt_ephemeral(
         self,

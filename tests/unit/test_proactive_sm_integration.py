@@ -895,18 +895,41 @@ async def test_route_inject_rejection_id_match():
 async def test_route_inject_rejection_content_fallback_no_id():
     """fallback 路径（Codex P1）：provider 拒绝 response.create 但 error 不带
     client event_id。proactive inject 正等待 outcome（flag True）且内容像
-    response-conflict 时 fire 所有 pending handler，避免静默丢失。"""
+    response-conflict 时只 fire 当前 outcome token 对应的 handler。"""
     from main_logic.omni_realtime_client import OmniRealtimeClient
 
     fired = []
     sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
     sess._inject_rejection_handlers = {"k1": lambda msg: fired.append(msg)}
     sess._proactive_inject_awaiting_outcome = True  # inject 刚发出，正等 outcome
+    sess._proactive_inject_outcome_token = "k1"
     # err_event_id 缺失，但消息是 response-conflict
     sess._route_inject_rejection(None, "Conversation already has an active response")
     assert len(fired) == 1
     assert sess._inject_rejection_handlers == {}
     assert sess._proactive_inject_awaiting_outcome is False  # 窗口已消费
+
+
+async def test_route_inject_rejection_no_id_excludes_old_image_handler():
+    """Codex P2：旧回调图片的精确 rejection handler 可在成功 text turn 后
+    留存 60 秒；下一轮 no-id response conflict 只能拒绝当前 text inject，
+    不能把旧回调重新入队造成重复播报。"""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    fired = []
+    sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    sess._inject_rejection_handlers = {
+        "event_old_callback_image": lambda msg: fired.append(("old", msg)),
+        "event_current_response": lambda msg: fired.append(("current", msg)),
+    }
+    sess._proactive_inject_awaiting_outcome = True
+    sess._proactive_inject_outcome_token = "event_current_response"
+
+    sess._route_inject_rejection(None, "response_already_active")
+
+    assert fired == [("current", "response_already_active")]
+    assert "event_old_callback_image" in sess._inject_rejection_handlers
+    assert "event_current_response" not in sess._inject_rejection_handlers
 
 
 async def test_route_inject_rejection_no_id_but_not_awaiting_does_not_fire():
