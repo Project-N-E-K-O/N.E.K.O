@@ -601,7 +601,9 @@ class NekoWarthunderPlugin(NekoPluginBase):
         if chosen is not None:
             try:
                 result = self.dispatcher.push_event(chosen, dry_run=self.cfg.dry_run)
-                if not result.startswith(COMMITTED_RESULT_PREFIXES):
+                if result.startswith("dry_run(") or not result.startswith(
+                    COMMITTED_RESULT_PREFIXES
+                ):
                     self.arbiter.restore(arbiter_checkpoint)
                     self.safety.restore_output_clock(output_clock_checkpoint)
                 elif result.startswith("pushed("):

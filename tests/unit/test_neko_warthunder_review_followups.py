@@ -215,13 +215,20 @@ def test_once_per_battle_detector_rearms_after_dry_run_mode_switch() -> None:
     assert [event.event_id for event in engine.feed(low, low)] == ["low_fuel"]
     engine.mark_delivered("low_fuel")
     engine.rearm_uncommitted_once_per_battle()
-    assert engine.feed(low, low) == []
+    clear = BattleState(flags={})
+    assert engine.feed(low, clear) == []
+    assert engine.feed(clear, clear) == []
+    assert engine.feed(clear, low) == []
 
 
 def test_dry_run_does_not_mark_once_per_battle_event_delivered() -> None:
     event = BattleEvent("low_fuel", ts=time.time())
     marked: list[str] = []
     pushed: list[tuple[BattleEvent, bool]] = []
+    restored_arbiter: list[object] = []
+    restored_output_clock: list[object] = []
+    arbiter_checkpoint = object()
+    output_clock_checkpoint = object()
     plugin = object.__new__(NekoWarthunderPlugin)
     plugin.cfg = WtConfig(dry_run=True, global_rate_limit_seconds=0)
     plugin.engine = SimpleNamespace(
@@ -235,14 +242,14 @@ def test_dry_run_does_not_mark_once_per_battle_event_delivered() -> None:
         current_stress_reasons=lambda _now: frozenset(),
     )
     plugin.arbiter = SimpleNamespace(
-        checkpoint=lambda: None,
+        checkpoint=lambda: arbiter_checkpoint,
         decide=lambda _candidates, _scenario, _now: (event, []),
-        restore=lambda _checkpoint: None,
+        restore=restored_arbiter.append,
         reset=lambda: None,
     )
     plugin.safety = SimpleNamespace(
-        output_clock_checkpoint=lambda: None,
-        restore_output_clock=lambda _checkpoint: None,
+        output_clock_checkpoint=lambda: output_clock_checkpoint,
+        restore_output_clock=restored_output_clock.append,
         status=lambda: {},
         record_failure=lambda _now: None,
     )
@@ -271,6 +278,8 @@ def test_dry_run_does_not_mark_once_per_battle_event_delivered() -> None:
 
     assert pushed == [(event, True)]
     assert marked == []
+    assert restored_arbiter == [arbiter_checkpoint]
+    assert restored_output_clock == [output_clock_checkpoint]
 
 
 def test_enabling_real_output_rearms_uncommitted_once_per_battle_event() -> None:
