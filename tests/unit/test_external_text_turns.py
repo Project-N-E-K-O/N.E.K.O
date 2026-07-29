@@ -112,6 +112,43 @@ async def test_response_arbiter_holds_lane_until_response_done():
 
 
 @pytest.mark.asyncio
+async def test_cancel_ticket_after_terminal_does_not_cancel_new_server_response():
+    sent = []
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+
+    arbiter = RealtimeResponseArbiter(send)
+    ticket = await arbiter.enqueue(source="completed-owner")
+    while not sent:
+        await asyncio.sleep(0)
+    arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-owner"}}
+    )
+    await asyncio.wait_for(ticket.started, 0.2)
+
+    # The terminal future resolves synchronously, but the worker does not
+    # remove the ticket mapping until it resumes. A server-VAD response can
+    # start in that gap; cancelling the completed ticket must not send the
+    # unscoped response.cancel into the newer response.
+    arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-owner"}}
+    )
+    arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-server"}}
+    )
+    await arbiter.cancel_ticket(ticket, wait=False)
+
+    assert [event["type"] for event in sent] == ["response.create"]
+    await asyncio.wait_for(ticket.done, 0.2)
+    arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-server"}}
+    )
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_orphan_response_done_wakes_waiting_ticket_without_terminating_it():
     sent = []
     arbiter = None

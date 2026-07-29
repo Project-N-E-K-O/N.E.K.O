@@ -301,6 +301,14 @@ class RealtimeResponseArbiter:
         queued = self._queued_by_ticket.get(id(ticket))
         if queued is None:
             return
+        # The receive loop resolves ``terminal`` synchronously, while the
+        # worker removes the ticket on its next turn.  Cancellation in that
+        # narrow window must be a no-op: an unscoped response.cancel could
+        # otherwise hit a newer server-initiated response, and marking the
+        # completed ticket interrupted would turn its successful result into
+        # a cancellation error.
+        if queued.terminal is not None and queued.terminal.done():
+            return
         queued.interrupted = True
         queued.interrupt_event.set()
         # A ticket still waiting in the priority queue will observe the
