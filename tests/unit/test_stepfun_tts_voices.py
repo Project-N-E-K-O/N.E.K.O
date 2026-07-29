@@ -24,6 +24,7 @@ from utils.stepfun_tts_voices import (
     normalize_stepfun_tts_voice,
 )
 from utils.tts.providers import stepfun as stepfun_provider
+import main_logic.tts_client as tts_client
 from main_logic.tts_client import (
     free_realtime_tts_worker,
     get_tts_worker,
@@ -42,7 +43,17 @@ def test_stepfun_and_free_catalogs_are_registered():
     assert is_native_voice("中文男", provider_key="free") is True
 
 
-def test_stepfun_and_free_dispatch_to_dedicated_workers():
+def test_stepfun_and_free_dispatch_to_dedicated_workers(monkeypatch):
+    class EmptyConfigManager:
+        def get_core_config(self):
+            return {}
+
+    monkeypatch.setattr(
+        tts_client,
+        "get_config_manager",
+        lambda: EmptyConfigManager(),
+    )
+
     free_worker, free_key, free_provider = get_tts_worker(core_api_type="free")
     step_worker, step_key, step_provider = get_tts_worker(core_api_type="step")
 
