@@ -853,6 +853,49 @@ class AsrRuntimeMixin:
                 omni_audio_bytes,
             )
 
+    async def apply_voice_input_noise_reduction(self, enabled: bool) -> bool:
+        """Make a mid-session noise-reduction toggle reach the live microphone.
+
+        The settings endpoint used to update only
+        ``OmniRealtimeClient._audio_processor``, but every microphone frame now
+        passes through this Core-owned :class:`VoiceInputAudioPipeline` FIRST,
+        and that pipeline is built once per session start. It also downsamples
+        PC audio to 16 kHz, so the Omni processor downstream sees 16 kHz and
+        skips RNNoise entirely -- and independent-ASR routes never reach the
+        Omni processor at all. The toggle therefore did nothing at all until
+        some later session rebuilt this pipeline, while the endpoint reported
+        success (Codex P2).
+
+        Replacing rather than mutating is deliberate and already the house
+        pattern here: session start does exactly this when the persisted value
+        differs, and the PCM ingress paths guard on
+        ``self._voice_input_audio_pipeline is not pipeline_ref``, so frames
+        in flight against the old processor are discarded instead of being
+        mixed with the new one. A DSP stage being switched on or off mid-stream
+        is precisely when dropping the in-flight frame is what you want.
+
+        Returns True when the pipeline was actually rebuilt.
+        """
+
+        self._ensure_asr_runtime_state()
+        nr_enabled = bool(enabled)
+        self._voice_input_noise_reduction_enabled = nr_enabled
+        if self._voice_input_audio_pipeline.nr_enabled == nr_enabled:
+            return False
+        stale_pipeline = self._voice_input_audio_pipeline
+        self._voice_input_audio_pipeline = VoiceInputAudioPipeline(
+            nr_enabled=nr_enabled,
+        )
+        self._voice_input_pipeline_failed = False
+        try:
+            await stale_pipeline.close()
+        except Exception:
+            logger.warning(
+                "[%s] voice input audio pipeline close failed",
+                self.lanlan_name,
+            )
+        return True
+
     async def _reconcile_independent_asr_after_core_change(self) -> None:
         self._ensure_asr_runtime_state()
         core_type = str(getattr(self, "core_api_type", "") or "").strip().lower()

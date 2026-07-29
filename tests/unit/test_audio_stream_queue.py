@@ -2858,6 +2858,72 @@ async def test_dead_display_socket_does_not_swallow_the_text_takeover(
     ]
 
 
+async def test_audio_start_ack_reaches_the_window_that_asked_for_it():
+    # Codex P2. `self.websocket` is reassigned to EVERY newly accepted socket,
+    # and a whole session start (TTS + LLM + independent ASR) sits between that
+    # reassignment and this ack. A second window opening in that interval took
+    # the ack, and the window that actually asked -- still the voice-lease
+    # holder, because the router claims the lease for the requesting socket
+    # synchronously before firing start_session -- sat on sessionStartPromise
+    # until its 15s deadline and never called startMicCapture. The user clicks
+    # the mic and simply never gets a microphone.
+    recorder, chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", recorder)
+    # The second window opened mid-start and took the display plane.
+    mgr.websocket = chat
+
+    await LLMSessionManager.send_session_started(mgr, "audio")
+
+    assert [json.loads(x) for x in recorder.sent] == [
+        {"type": "session_started", "input_mode": "audio"}
+    ], "the requesting window (the lease holder) must receive its own start ack"
+    # The display plane still gets its copy; the two planes are independent.
+    assert [json.loads(x) for x in chat.sent] == [
+        {"type": "session_started", "input_mode": "audio"}
+    ]
+
+
+async def test_audio_start_ack_is_not_duplicated_for_a_single_window():
+    # The fan-out must stay a no-op when the lease holder IS the current
+    # socket, or an ordinary single-window start would deliver session_started
+    # twice. _voice_owner_socket returns None in that case; this pins it.
+    recorder, _chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", recorder)
+    mgr.websocket = recorder
+
+    await LLMSessionManager.send_session_started(mgr, "audio")
+
+    assert [json.loads(x) for x in recorder.sent] == [
+        {"type": "session_started", "input_mode": "audio"}
+    ], "a single window must be acked exactly once"
+
+
+async def test_audio_start_ack_does_not_reach_the_game_microphone():
+    # Same exemption the text path carries: the galgame gate owns the mic
+    # through its own consumer binding, and a session_started handler that
+    # calls stopRecording would release a lease this ack never meant to touch.
+    recorder, chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", recorder)
+    mgr.websocket = chat
+    mgr._voice_lease_owner = "game"
+
+    await LLMSessionManager.send_session_started(mgr, "audio")
+
+    assert recorder.sent == []
+    assert [json.loads(x) for x in chat.sent] == [
+        {"type": "session_started", "input_mode": "audio"}
+    ]
+
+
 async def test_text_takeover_does_not_stop_the_game_microphone():
     # Codex P2. websocket_router acknowledges a text entry made DURING an active
     # game route with a bare send_session_started("text") -- no ordinary text

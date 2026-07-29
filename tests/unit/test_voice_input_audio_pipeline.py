@@ -113,3 +113,71 @@ async def test_pipeline_close_waits_for_cancelled_processing_thread() -> None:
     await close_task
 
     assert processor.closed is True
+
+
+# A 48 kHz PCM16 frame: 960 bytes = 480 samples. Written as an ASCII literal on
+# purpose -- the byte values are irrelevant to these cases and escaped ones only
+# invite an encoding accident.
+_PC_FRAME = b"ab" * 480
+
+
+class _NoiseReductionManager:
+    """Minimal stand-in carrying just the state the toggle path touches."""
+
+    lanlan_name = "test"
+
+    def __init__(self, *, nr_enabled: bool) -> None:
+        self._voice_input_noise_reduction_enabled = nr_enabled
+        self._voice_input_audio_pipeline = VoiceInputAudioPipeline(
+            nr_enabled=nr_enabled
+        )
+        self._voice_input_pipeline_failed = True
+
+    def _ensure_asr_runtime_state(self) -> None:  # pragma: no cover - trivial
+        return None
+
+
+async def test_noise_reduction_toggle_rebuilds_the_core_microphone_pipeline() -> None:
+    # Codex P2. The settings endpoint updated only the Omni processor, but every
+    # microphone frame passes through this Core-owned pipeline first -- and it
+    # downsamples PC audio to 16 kHz, so the Omni processor downstream skips
+    # RNNoise on what it receives, while independent-ASR routes never reach the
+    # Omni processor at all. The toggle was a no-op for the rest of the session
+    # on every route, while the endpoint reported success.
+    from main_logic.core.asr_runtime import AsrRuntimeMixin
+
+    manager = _NoiseReductionManager(nr_enabled=True)
+    original = manager._voice_input_audio_pipeline
+
+    rebuilt = await AsrRuntimeMixin.apply_voice_input_noise_reduction(manager, False)
+
+    assert rebuilt is True
+    assert manager._voice_input_audio_pipeline is not original, (
+        "the live pipeline must be replaced, or the toggle never reaches the mic"
+    )
+    assert manager._voice_input_audio_pipeline.nr_enabled is False
+    assert manager._voice_input_noise_reduction_enabled is False
+    assert manager._voice_input_pipeline_failed is False
+    # Replacing is what lets the ingress staleness guards
+    # (`self._voice_input_audio_pipeline is not pipeline_ref`) drop frames still
+    # in flight against the old processor, so the stale one must be closed.
+    # Asserted behaviourally rather than on private state.
+    with pytest.raises(RuntimeError, match="VOICE_AUDIO_PIPELINE_CLOSED"):
+        await original.process(_PC_FRAME, sample_rate_hz=48_000)
+
+
+async def test_noise_reduction_toggle_to_the_same_value_is_a_no_op() -> None:
+    # A settings POST that does not change the value must not tear down a live
+    # pipeline: every rebuild drops the frame in flight.
+    from main_logic.core.asr_runtime import AsrRuntimeMixin
+
+    manager = _NoiseReductionManager(nr_enabled=True)
+    original = manager._voice_input_audio_pipeline
+
+    rebuilt = await AsrRuntimeMixin.apply_voice_input_noise_reduction(manager, True)
+
+    assert rebuilt is False
+    assert manager._voice_input_audio_pipeline is original
+    # Still usable: nothing was torn down.
+    frame = await original.process(_PC_FRAME, sample_rate_hz=48_000)
+    assert frame.sample_rate_hz == 16_000

@@ -484,12 +484,32 @@ class NotifyMixin:
                     pass
                 except Exception as e:
                     logger.error(f"💥 WS Send Session Started Error: {e}")
-            if input_mode == "text" and getattr(self, "_voice_lease_owner", "none") != "game":
+            if getattr(self, "_voice_lease_owner", "none") != "game":
                 # A text session pins the microphone route to "blocked", so the
                 # window still holding the mic has to hear about it or it keeps
-                # uploading into a route that discards everything. Only for
-                # text: fanning out an audio session_started would flip
-                # voiceChatActive and hide the composer in an unrelated window.
+                # uploading into a route that discards everything.
+                #
+                # Audio is here too, and the "would flip voiceChatActive in an
+                # unrelated window" reasoning this used to carry does not hold
+                # for it (Codex P2). The lease holder is not an unrelated
+                # window: for a user-initiated audio start the router claims the
+                # lease for the REQUESTING socket synchronously
+                # (_claim_voice_input_connection) BEFORE firing start_session,
+                # so the lease holder IS the window that asked. Meanwhile
+                # ``self.websocket`` is reassigned to every newly accepted
+                # socket, and a whole session start (TTS + LLM + independent
+                # ASR) sits between that reassignment and this ack -- seconds,
+                # against a 15s frontend deadline. Any second window opening in
+                # that interval used to take the ack, and the window that
+                # actually asked sat on ``sessionStartPromise`` until it timed
+                # out and never called startMicCapture: the user clicks the mic
+                # and simply never gets a microphone, while the backend audio
+                # session stays up with no recording client.
+                #
+                # This is a no-op for the single-window case:
+                # ``_voice_owner_socket`` returns None whenever the lease holder
+                # IS the current socket, so the fan-out fires only in exactly
+                # that race.
                 #
                 # Game owner exempt, matching send_session_ended_by_server and
                 # _fail_closed_voice_route. The galgame gate owns the mic
