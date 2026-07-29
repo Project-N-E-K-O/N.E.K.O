@@ -352,17 +352,19 @@ async def test_memory_bridge_keeps_per_endpoint_timeouts_on_shared_client(
     monkeypatch.setattr(QQMemoryBridge, "_client", staticmethod(lambda: recorder))
     await _drive_every_endpoint(QQMemoryBridge(SimpleNamespace(logger=MagicMock())))
 
-    assert len(recorder.calls) == 6
-    assert all(kwargs.get("timeout") for _m, _u, kwargs in recorder.calls)
-    by_endpoint = {
-        url.rsplit("/", 1)[-1]: kwargs.get("timeout")
+    # 按完整路径建 key：三条 /xxx/{name} 端点的最后一段都是角色名，用
+    # 末段做 key 会让它们相互覆盖，只剩最后写入的那条真被断言到。
+    assert {
+        url.split("/", 3)[3]: kwargs.get("timeout")
         for _method, url, kwargs in recorder.calls
+    } == {
+        "new_dialog/Neko": 5.0,
+        "query_memory/Neko": 5.0,
+        "cache/Neko": 5.0,
+        "internal/memory/Neko/scoped_context": 5.0,
+        "internal/memory/Neko/scoped_mentions": 5.0,
+        "internal/memory/Neko/scoped_history": 30.0,
     }
-    assert by_endpoint["scoped_history"] == 30.0
-    assert by_endpoint["scoped_context"] == 5.0
-    assert by_endpoint["scoped_mentions"] == 5.0
-    # /new_dialog/{name}、/query_memory/{name}、/cache/{name} 都以角色名结尾
-    assert by_endpoint["Neko"] == 5.0
 
 
 @pytest.mark.asyncio
@@ -619,3 +621,48 @@ async def test_failed_buckets_never_land_in_a_replacement_session():
     assert not replacement.get("member_flush_due")
     logged = " ".join(str(call) for call in plugin.logger.error.call_args_list)
     assert "并已被新会话顶替" in logged
+
+
+@pytest.mark.asyncio
+async def test_shutdown_flush_waits_for_an_in_flight_drain():
+    """The shutdown/idle finalizer pops the session, so it has to let a
+    registered drain land first.
+
+    Shutdown joins the sync tasks for one second and then proceeds on
+    purpose; a scoped member POST runs up to 30s, so the drain routinely
+    survives that join. discard_session has its own deferral, this path
+    does not — and the drain holds the only copy of the buckets it popped
+    out of the live mapping.
+    """
+    order: list[str] = []
+    released = asyncio.Event()
+    in_flight = asyncio.Event()
+
+    async def _post_scoped(her_name, messages, **kwargs):
+        in_flight.set()
+        await released.wait()
+        order.append("drain-done")
+        return {"status": "ok"}
+
+    service, plugin, user_data, _locks = _group_drain_harness(_post_scoped)
+    plugin._session_settle_tasks = {}
+
+    async def _finalize(session_key, reason):
+        order.append(f"finalize:{reason}")
+        plugin._user_sessions.pop(session_key, None)
+        return True
+
+    service.finalize_user_memory_session = _finalize
+
+    drain = asyncio.create_task(service._drain_member_buckets("group:7788"))
+    plugin._session_settle_tasks["group:7788"] = {drain}
+    await asyncio.wait_for(in_flight.wait(), timeout=2.0)
+
+    flush = asyncio.create_task(service.flush_all_memory_sessions("shutdown"))
+    await asyncio.sleep(0)
+    assert order == [], "结算不能在排空还攥着快照时就把会话弹掉"
+
+    released.set()
+    await asyncio.wait_for(flush, timeout=3.0)
+    await asyncio.wait_for(drain, timeout=2.0)
+    assert order == ["drain-done", "finalize:shutdown"]

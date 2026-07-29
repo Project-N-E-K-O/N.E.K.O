@@ -36,9 +36,43 @@ class QQSessionMemoryService:
     # 系统消息，此前未落盘的轮次当场消失；在它之前主动落盘，能把损失从
     # "整场会话"压到最多这么多轮。
     GROUP_DIGEST_BACKLOG_TRIGGER = 40
+    # 结算前等待该会话在途排空的上限。排空的 scoped POST 单发最长 30s、
+    # 一趟两波，等满会把关机拖成不可接受的时长；等不到就按原样继续（排空
+    # 自己会把丢掉的量记进 error 日志）。
+    SETTLE_JOIN_TIMEOUT_SECONDS = 5.0
 
     def __init__(self, plugin: Any):
         self.plugin = plugin
+
+    async def _await_pending_session_settlement(self, session_key: str) -> None:
+        """Let this session's registered settlement work finish first.
+
+        finalize pops the session, and the member drain holds the only
+        copy of the buckets it popped out of the live mapping — pop first
+        and the drain has nowhere to hand its failures back to. Bounded:
+        a wedged drain must not hold shutdown open forever.
+
+        Must run OUTSIDE the session lock. The drain takes that lock again
+        to return its snapshot, so waiting while holding it deadlocks."""
+        tasks = [
+            task
+            for task in (
+                (getattr(self.plugin, "_session_settle_tasks", None) or {})
+                .get(session_key) or ()
+            )
+            if not task.done()
+        ]
+        if not tasks:
+            return
+        _done, still_pending = await asyncio.wait(
+            tasks, timeout=self.SETTLE_JOIN_TIMEOUT_SECONDS,
+        )
+        if still_pending:
+            # 不取消：取消一趟排空等于丢掉它攥着的那批已授权发言。
+            self.plugin.logger.warning(
+                f"等待会话结算工作超时（{session_key}），仍有 "
+                f"{len(still_pending)} 项在途，继续结算"
+            )
 
     async def wait_session_response_complete(self, session: Any, timeout: float = 30.0) -> bool:
         deadline = time.monotonic() + timeout
@@ -68,6 +102,10 @@ class QQSessionMemoryService:
                     return False
                 return await self.finalize_user_memory_session(session_key, reason="idle_timeout")
 
+            # 锁外先等在途排空：finalize 会弹出会话，而排空攥着从活映射
+            # 里 pop 出来的唯一副本（discard_session 有自己的推迟判据，
+            # 这条路径没有）。
+            await self._await_pending_session_settlement(session_key)
             await self.plugin._run_with_session_lock(session_key, _finalize_if_still_idle)
 
     async def flush_all_memory_sessions(self, reason: str):
@@ -109,6 +147,10 @@ class QQSessionMemoryService:
                         return finalized
                     prev_progress = progress
 
+            # 同 idle 路径：关机时 shutdown 只 join 1s 就放行，30s 的
+            # scoped POST 完全可能还在飞——这里再给一次有界的等待，别在
+            # 排空还攥着快照时把会话弹掉（弹掉即销毁唯一副本）。
+            await self._await_pending_session_settlement(session_key)
             await self.plugin._run_with_session_lock(session_key, _finalize_existing)
 
     @staticmethod
