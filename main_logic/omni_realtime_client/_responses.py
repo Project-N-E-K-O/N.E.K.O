@@ -38,6 +38,7 @@ from ._response_arbiter import RealtimeResponseArbiter, ResponseTicket
 # finish well inside this backstop; it primarily prevents a dead connection
 # from leaving the scheduler request open forever.
 _PROACTIVE_INJECT_DELIVERY_TIMEOUT_SECONDS = 30.0
+_GEMINI_PROACTIVE_CANCEL_GRACE_SECONDS = 3.0
 
 
 def _proactive_text_instruction(language: str, *, has_vision: bool) -> str:
@@ -352,6 +353,7 @@ class _ResponseMixin:
         self,
         text: str,
         *,
+        events_before_text: tuple[Dict[str, Any], ...] = (),
         on_rejected: Optional[Callable[[str], None]] = None,
         on_completed: Optional[Callable[[], None]] = None,
     ) -> Optional[ResponseTicket]:
@@ -568,7 +570,7 @@ class _ResponseMixin:
             create_event["event_id"] = create_event_id
             ticket = await arbiter.enqueue(
                 source="proactive",
-                events_before_response=(item_event,),
+                events_before_response=(*events_before_text, item_event),
                 response_event=create_event,
                 ack_expected=True,
                 expected_item_id=expected_item_id,
@@ -649,9 +651,39 @@ class _ResponseMixin:
             return
         outcome = getattr(self, "_gemini_proactive_outcome", None)
         if outcome is not None and outcome[0] == token:
-            self._settle_gemini_proactive_inject(
-                error_msg="Gemini proactive response lifecycle timed out"
-            )
+            # Gemini lifecycle events are not tagged with a response id. Do
+            # not release this token while the original generation can still
+            # emit a late terminal: that terminal could otherwise settle a
+            # newer retry. Interrupt first and keep the inject quarantined
+            # until ``interrupted``/``turn_complete`` arrives.
+            try:
+                await self.cancel_response()
+            except Exception as exc:
+                logger.warning(
+                    "Gemini proactive lifecycle timeout interrupt failed: %s",
+                    exc,
+                )
+            await asyncio.sleep(_GEMINI_PROACTIVE_CANCEL_GRACE_SECONDS)
+            outcome = getattr(self, "_gemini_proactive_outcome", None)
+            if outcome is None or outcome[0] != token:
+                return
+
+            # No terminal followed the interrupt. Retire the whole Gemini
+            # session before releasing the unscoped token so no event from the
+            # expired turn can cross-talk with a future reconnect/retry.
+            self._fatal_error_occurred = True
+            try:
+                await self._close_gemini()
+            except Exception as exc:
+                logger.warning(
+                    "Gemini proactive lifecycle timeout close failed: %s",
+                    exc,
+                )
+            outcome = getattr(self, "_gemini_proactive_outcome", None)
+            if outcome is not None and outcome[0] == token:
+                self._settle_gemini_proactive_inject(
+                    error_msg="Gemini proactive response lifecycle timed out"
+                )
 
     async def _expire_inject_rejection_handler(
         self,
@@ -841,6 +873,7 @@ class _ResponseMixin:
         visual_delivery_rejected = False
         rejection_message = ""
         visual_event_id: str | None = None
+        events_before_text: tuple[Dict[str, Any], ...] = ()
 
         def _on_rejected(error_msg: str) -> None:
             nonlocal delivery_rejected, rejection_message
@@ -896,6 +929,14 @@ class _ResponseMixin:
             getattr(self, "_latest_image_generation", 0) if has_vision else None
         )
 
+        def _mark_snapshot_consumed_if_current() -> None:
+            if (
+                has_vision
+                and getattr(self, "_latest_image_generation", 0)
+                == snapshot_image_generation
+            ):
+                self._proactive_image_consumed = True
+
         # Text-triggered turns do not produce the server-VAD speech_stopped
         # event that normally starts a fresh external-TTS turn. Rotate before
         # persisting visual context so activity that wins while the callback
@@ -924,9 +965,15 @@ class _ResponseMixin:
 
         if (
             has_vision
-            and self._supports_native_image
             and not self._is_gemini
-            and snapshot_image_b64
+            and (
+                (self._supports_native_image and snapshot_image_b64)
+                or (
+                    not self._supports_native_image
+                    and self._image_recognized_this_turn
+                    and self._image_description
+                )
+            )
         ):
             # WebSocket-native image events can be rejected asynchronously
             # after the write succeeds. Correlate that exact error with this
@@ -971,18 +1018,19 @@ class _ResponseMixin:
             and self._image_recognized_this_turn
             and self._image_description
         ):
-            # Only standard StepFun reaches this path.
-            await self.send_event({
+            # Only standard StepFun reaches this path. Queue the description
+            # in the same arbiter ticket as the proactive text/response so its
+            # event id participates in the delivery outcome instead of being
+            # an uncorrelated fire-and-forget conversation item.
+            events_before_text = ({
                 "type": "conversation.item.create",
+                "event_id": visual_event_id,
                 "item": {
                     "type": "message",
                     "role": "user",
                     "content": [{"type": "input_text", "text": self._image_description}],
                 },
-            })
-            logger.info(
-                "prompt_ephemeral: injected StepFun vision-model description"
-            )
+            },)
 
         # Re-check activity after any image await. A user or AI turn that won
         # during the visual send must preempt this proactive response.create.
@@ -991,7 +1039,17 @@ class _ResponseMixin:
             or self._user_recent_activity_time > _now
             or self._ai_recent_activity_time > _now
         ):
-            _remove_visual_rejection_handler()
+            if has_vision and self._supports_native_image and snapshot_image_b64:
+                # The raw frame is already persistent provider context and may
+                # be consumed by the turn that won this race. Account for it
+                # now to avoid resending duplicate/stale visual context. Keep
+                # the exact rejection handler alive so a late provider error
+                # can re-arm the snapshot.
+                _mark_snapshot_consumed_if_current()
+            else:
+                # Step's description is only queued below, so no visual event
+                # was sent when activity won this pre-inject gate.
+                _remove_visual_rejection_handler()
             logger.info("prompt_ephemeral: skipped — activity started during visual inject")
             return False
 
@@ -1002,10 +1060,15 @@ class _ResponseMixin:
 
         proactive_ticket = None
         try:
+            inject_kwargs = {
+                "on_rejected": _on_rejected,
+                "on_completed": _on_completed,
+            }
+            if events_before_text:
+                inject_kwargs["events_before_text"] = events_before_text
             proactive_ticket = await self.inject_text_and_request_response(
                 text,
-                on_rejected=_on_rejected,
-                on_completed=_on_completed,
+                **inject_kwargs,
             )
         except asyncio.CancelledError:
             _remove_visual_rejection_handler()
@@ -1146,12 +1209,7 @@ class _ResponseMixin:
                 rejection_message,
             )
             return False
-        if (
-            has_vision
-            and getattr(self, "_latest_image_generation", 0)
-            == snapshot_image_generation
-        ):
-            self._proactive_image_consumed = True
+        _mark_snapshot_consumed_if_current()
         # Native image validation/filtering errors may arrive after the text
         # response has completed. Keep the exact image handler until rejection
         # or its TTL so a late error can re-arm this snapshot for retry.

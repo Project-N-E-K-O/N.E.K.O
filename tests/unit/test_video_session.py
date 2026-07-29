@@ -8,6 +8,7 @@ for different model providers (qwen, glm, gpt), including:
 - Rate limiting behavior for native image input
 - Vision model fallback for models without native vision support
 """
+import asyncio
 import pytest
 import json
 from unittest.mock import AsyncMock
@@ -146,6 +147,36 @@ async def test_non_native_vision_fallback():
     assert client._analyze_image_with_vision_model.called
     assert client._analyze_image_with_vision_model.call_args[0][0] == DUMMY_IMAGE_B64
 
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_concurrent_non_native_frame_does_not_replace_analyzed_snapshot():
+    client = _make_client("step-realtime", supports_native_image=False)
+    client._image_description = "实时屏幕截图或相机画面正在分析中"
+    first_frame = DUMMY_IMAGE_B64
+    second_frame = DUMMY_IMAGE_B64 + "second"
+    analysis_started = asyncio.Event()
+    release_analysis = asyncio.Event()
+    analyzed = []
+
+    async def analyze(image_b64):
+        analyzed.append(image_b64)
+        analysis_started.set()
+        await release_analysis.wait()
+
+    client._analyze_image_with_vision_model = analyze
+    generation = client._latest_image_generation
+    first_task = asyncio.create_task(client.stream_image(first_frame))
+    await analysis_started.wait()
+
+    await client.stream_image(second_frame)
+
+    assert client._latest_image_b64 == first_frame
+    assert client._latest_image_generation == generation + 1
+    assert analyzed == [first_frame]
+    release_analysis.set()
+    await first_task
     await client.close()
 
 

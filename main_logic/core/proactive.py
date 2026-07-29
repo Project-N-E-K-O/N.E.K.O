@@ -712,7 +712,10 @@ class ProactiveMixin:
                 # The dedup-by-presence check distinguishes the two: present →
                 # case (a) (skip re-add, rely on skip-prune); absent → case (b).
                 lanlan_name_snapshot = self.lanlan_name
-                _reject_state = {"rejected": False}
+                _reject_state = {
+                    "rejected": False,
+                    "acknowledged": False,
+                }
 
                 def _on_voice_inject_rejected(
                     error_msg: str,
@@ -721,7 +724,7 @@ class ProactiveMixin:
                     _lanlan=lanlan_name_snapshot,
                     _state=_reject_state,
                 ) -> bool:
-                    if _state["rejected"]:
+                    if _state["rejected"] or _state["acknowledged"]:
                         return False
                     _state["rejected"] = True
                     logger.warning(
@@ -948,6 +951,7 @@ class ProactiveMixin:
                 ) -> None:
                     if _state["rejected"]:
                         return
+                    _state["acknowledged"] = True
                     for cb in _snapshot:
                         if cb.get(DELIVERY_RETRACTED_KEY):
                             continue

@@ -1084,6 +1084,50 @@ async def test_voice_mode_callback_image_rejection_after_inject_rearms_retry():
     )
 
 
+async def test_voice_mode_callback_image_rejection_after_ack_is_ignored():
+    sess = _make_voice_sess()
+    image_rejections = []
+
+    async def _stream_image(
+        _image_b64,
+        *,
+        bypass_rate_limit=False,
+        on_rejected=None,
+    ):
+        assert bypass_rate_limit is True
+        image_rejections.append(on_rejected)
+
+    sess.stream_image = _stream_image
+    mgr = _make_mgr(session=sess)
+    future = asyncio.get_running_loop().create_future()
+    cb = {
+        "_callback_delivery_id": "id-image-after-ack",
+        "status": "completed",
+        "summary": "inspect acknowledged image",
+        "media_images": ["image-b64"],
+        DELIVERY_ACK_FUTURE_KEY: future,
+    }
+    extra = {
+        "_callback_delivery_id": "id-image-after-ack",
+        "summary": "inspect acknowledged image",
+    }
+    mgr.pending_agent_callbacks = [cb]
+    mgr.pending_extra_replies = [extra]
+    mgr._schedule_proactive_retry = MagicMock()
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.sleep(core_module._VOICE_PROACTIVE_ACK_GRACE_S + 0.02)
+
+    assert delivered is True
+    assert future.result() is True
+    assert mgr.pending_agent_callbacks == []
+    assert mgr.pending_extra_replies == []
+    image_rejections[0]("late callback image rejection")
+    assert mgr.pending_agent_callbacks == []
+    assert mgr.pending_extra_replies == []
+    mgr._schedule_proactive_retry.assert_not_called()
+
+
 async def test_voice_mode_unstamped_cb_still_pruned_via_object_id_fallback():
     """Prune unstamped callbacks through the object-ID fallback after delivery."""
     sess = _make_voice_sess()

@@ -519,6 +519,18 @@ async def test_prompt_rechecks_arbiter_after_visual_await():
     release_visual.set()
 
     assert await task is False
+    assert client._proactive_image_consumed is True
+    visual_handler_ids = {
+        event_id
+        for event_id in client._inject_rejection_handlers
+        if event_id.startswith("event_inject_image_")
+    }
+    assert len(visual_handler_ids) == 1
+    client._route_inject_rejection(
+        visual_handler_ids.pop(),
+        "late image rejection after activity won",
+    )
+    assert client._proactive_image_consumed is False
     client.on_sid_rotate.assert_awaited_once_with()
     client._response_arbiter.notify_response_created(
         {"type": "response.created", "response": {"id": "resp-user"}}
@@ -685,6 +697,45 @@ async def test_gemini_delivery_timeout_uses_native_client_content_interrupt(monk
         _gemini_lifecycle_response(interrupted=True)
     )
     assert client._proactive_inject_awaiting_outcome is False
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_gemini_outcome_ttl_closes_session_before_releasing_token(monkeypatch):
+    client = _make_client(api_type="gemini", model="gemini-live")
+    client._gemini_session = AsyncMock()
+    gemini_session = client._gemini_session
+    context_manager = AsyncMock()
+    client._gemini_context_manager = context_manager
+    client.ws = client._gemini_session
+    rejected = []
+    token = "expired-gemini-turn"
+    client._gemini_proactive_outcome = (
+        token,
+        rejected.append,
+        lambda: None,
+    )
+    client._proactive_inject_outcome_token = token
+    client._proactive_inject_awaiting_outcome = True
+    monkeypatch.setattr(
+        responses_module,
+        "_GEMINI_PROACTIVE_CANCEL_GRACE_SECONDS",
+        0,
+    )
+
+    await client._expire_gemini_proactive_outcome(token, 0)
+
+    context_manager.__aexit__.assert_awaited_once_with(None, None, None)
+    assert client._gemini_session is None
+    assert client._gemini_context_manager is None
+    assert client.ws is None
+    assert client._fatal_error_occurred is True
+    assert rejected == ["Gemini proactive response lifecycle timed out"]
+    assert client._proactive_inject_awaiting_outcome is False
+    assert gemini_session.send_client_content.await_args_list[-1].kwargs == {
+        "turns": None,
+        "turn_complete": False,
+    }
     await client.close()
 
 
@@ -1087,6 +1138,71 @@ async def test_standard_stepfun_uses_annotation_text_before_trigger():
         event.get("type") == "input_image_buffer.append"
         for event in events
     )
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_standard_stepfun_annotation_rejection_cancels_matching_response():
+    client = _make_client(api_type="step", model="step-realtime")
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+    client._image_recognized_this_turn = True
+    client._image_description = "画面里有一只猫。"
+    task = asyncio.create_task(client.prompt_ephemeral("start a conversation"))
+
+    annotation_event = None
+    for _ in range(30):
+        events = _sent_events(client)
+        _ack_pending_input_item(client, events)
+        annotation_event = next(
+            (
+                event
+                for event in events
+                if event.get("type") == "conversation.item.create"
+                and _input_texts([event]) == ["画面里有一只猫。"]
+            ),
+            None,
+        )
+        if annotation_event is not None and any(
+            event.get("type") == "response.create"
+            for event in events
+        ):
+            break
+        await asyncio.sleep(0)
+    else:
+        raise AssertionError("Step annotation and proactive response were not sent")
+
+    annotation_event_id = annotation_event["event_id"]
+    assert annotation_event_id in client._inject_rejection_handlers
+    client._response_arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-step-rejected"}}
+    )
+    client._route_inject_rejection(
+        annotation_event_id,
+        "Step annotation rejected",
+    )
+    for _ in range(30):
+        if any(
+            event.get("type") == "response.cancel"
+            for event in _sent_events(client)
+        ):
+            break
+        await asyncio.sleep(0)
+    else:
+        raise AssertionError("rejected Step annotation response was not cancelled")
+    client._response_arbiter.notify_response_terminal(
+        {
+            "type": "response.done",
+            "response": {
+                "id": "resp-step-rejected",
+                "status": "cancelled",
+            },
+        }
+    )
+
+    assert await task is False
+    assert client._proactive_image_consumed is False
+    assert client._inject_rejection_handlers == {}
     await client.close()
 
 

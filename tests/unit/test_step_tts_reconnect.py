@@ -138,3 +138,50 @@ def test_replay_create_failure_invalidates_replacement_socket(monkeypatch):
     ]
     assert recovered.sent[1]["data"]["text"] == first + second
     assert replacement._closed is True
+
+
+def test_turn_end_reconnects_retained_prefix_after_replay_create_failure(monkeypatch):
+    initial = _FakeTtsSocket([
+        {"type": "tts.connection.done", "data": {"session_id": "warmup"}},
+        {"type": "tts.response.created"},
+    ])
+    broken = _FakeTtsSocket(
+        [{"type": "tts.connection.done", "data": {"session_id": "broken"}}],
+        fail_send_at=2,
+    )
+    replacement = _FakeTtsSocket(
+        [{"type": "tts.connection.done", "data": {"session_id": "replacement"}}],
+        fail_send_from=1,
+    )
+    recovered = _FakeTtsSocket([
+        {"type": "tts.connection.done", "data": {"session_id": "recovered"}},
+    ])
+    sockets = iter([initial, broken, replacement, recovered])
+
+    async def connect(*_args, **_kwargs):
+        return next(sockets)
+
+    monkeypatch.setattr(_step_protocol.websockets, "connect", connect)
+
+    requests = queue.Queue()
+    responses = queue.Queue()
+    text = "The only buffered chunk must survive through the turn boundary."
+    requests.put(("speech-1", text))
+    requests.put((None, None))
+    requests.put((TTS_SHUTDOWN_SENTINEL, None))
+
+    _step_protocol.run_step_protocol_tts_worker(
+        requests,
+        responses,
+        "test-key",
+        "test-voice",
+        provider_key="step",
+    )
+
+    assert [event["type"] for event in recovered.sent] == [
+        "tts.create",
+        "tts.text.delta",
+        "tts.text.done",
+    ]
+    assert recovered.sent[1]["data"]["text"] == text
+    assert replacement._closed is True

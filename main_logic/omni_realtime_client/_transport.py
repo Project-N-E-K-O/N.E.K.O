@@ -652,15 +652,6 @@ class _TransportMixin:
         ``cache_latest=False`` sends an already-cached proactive snapshot
         without treating that resend as a newly captured frame generation.
         """
-        if cache_latest:
-            # A monotonic generation distinguishes separately captured frames
-            # even when their JPEG payloads are byte-for-byte identical.
-            self._latest_image_generation = (
-                getattr(self, "_latest_image_generation", 0) + 1
-            )
-            self._latest_image_b64 = image_b64
-            self._proactive_image_consumed = False
-
         rejection_event_id: str | None = None
         try:
             # Standard StepFun is the only realtime provider without native
@@ -671,8 +662,27 @@ class _TransportMixin:
                     if self._image_recognized_this_turn or self._image_being_analyzed:
                         return
                     self._image_being_analyzed = True
+                if cache_latest:
+                    # Bind the cached generation to the frame that actually
+                    # owns this analysis. Concurrent frames rejected by the
+                    # gate above must not replace it and later receive the
+                    # first frame's description.
+                    self._latest_image_generation = (
+                        getattr(self, "_latest_image_generation", 0) + 1
+                    )
+                    self._latest_image_b64 = image_b64
+                    self._proactive_image_consumed = False
                 await self._analyze_image_with_vision_model(image_b64)
                 return
+
+            if cache_latest:
+                # A monotonic generation distinguishes separately captured frames
+                # even when their JPEG payloads are byte-for-byte identical.
+                self._latest_image_generation = (
+                    getattr(self, "_latest_image_generation", 0) + 1
+                )
+                self._latest_image_b64 = image_b64
+                self._proactive_image_consumed = False
 
             # Rate limiting for native image input (with VAD-based throttling).
             # A deliberate cue image (bypass_rate_limit) skips the interval check

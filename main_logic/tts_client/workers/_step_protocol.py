@@ -342,6 +342,25 @@ def run_step_protocol_tts_worker(
             pending_text_buffer = ""
             return True
 
+        async def _finish_current_speech() -> bool:
+            nonlocal text_done_sent
+            if not ws or not session_id or current_speech_id is None or text_done_sent:
+                return False
+            # 若缓冲中还有不足 MIN_CHARS 的文本，强制刷出以保证短句也能合成。
+            if not session_created and not await _flush_deferred_create(force=True):
+                return False
+            try:
+                done_event = {
+                    "type": "tts.text.done",
+                    "data": {"session_id": session_id},
+                }
+                await ws.send(json.dumps(done_event))
+                text_done_sent = True
+            except Exception as e:
+                logger.warning(f"发送TTS完成信号失败: {e}")
+                return False
+            return True
+
         try:
             # 连接WebSocket
             headers = {"Authorization": f"Bearer {audio_api_key}"}
@@ -478,6 +497,7 @@ def run_step_protocol_tts_worker(
                     sid, tts_text = await loop.run_in_executor(None, request_queue.get)
                 except Exception:
                     break
+                finish_requested = False
 
                 if sid == TTS_SHUTDOWN_SENTINEL:
                     break
@@ -518,22 +538,21 @@ def run_step_protocol_tts_worker(
                     # 音频继续通过 receive_task 流入 response_queue，
                     # 连接由下次 speech_id 切换 / __interrupt__ 关闭
                     if ws and session_id and current_speech_id is not None and not text_done_sent:
-                        # 若缓冲中还有不足 MIN_CHARS 的文本，强制刷出以保证短句也能合成
-                        if not session_created:
-                            if not await _flush_deferred_create(force=True):
-                                # flush 失败（tts.create 或 delta 发失败），连接已死，
-                                # 跳过 tts.text.done，等待下一个 speech_id 触发重连
-                                continue
-                        try:
-                            done_event = {
-                                "type": "tts.text.done",
-                                "data": {"session_id": session_id}
-                            }
-                            await ws.send(json.dumps(done_event))
-                            text_done_sent = True
-                        except Exception as e:
-                            logger.warning(f"发送TTS完成信号失败: {e}")
-                    continue
+                        if not await _finish_current_speech() and pending_text_buffer.strip():
+                            request_queue.put((None, None))
+                        continue
+                    if (
+                        current_speech_id is None
+                        or text_done_sent
+                        or not pending_text_buffer.strip()
+                    ):
+                        continue
+                    # A failed create/replay deliberately retains the original
+                    # prefix while invalidating the socket. Reconnect the same
+                    # speech for this terminal queue entry instead of waiting
+                    # for another text chunk that may never arrive.
+                    finish_requested = True
+                    sid = current_speech_id
 
                 # 新语音，或当前语音的 socket 已失效：重新建立连接。
                 # 同一语音的恢复重连必须保留尚未发送成功的文本前缀。
@@ -593,9 +612,13 @@ def run_step_protocol_tts_worker(
                             await asyncio.wait_for(wait_conn(), timeout=1.0)
                         except asyncio.TimeoutError:
                             logger.warning("新连接超时")
+                            if finish_requested:
+                                request_queue.put((None, None))
                             continue
 
                         if not session_id:
+                            if finish_requested:
+                                request_queue.put((None, None))
                             continue
 
                         # 延迟 tts.create 到首批文本到达后，由 _flush_deferred_create
@@ -661,7 +684,14 @@ def run_step_protocol_tts_worker(
                             _enqueue_error(response_queue, json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
                         response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
                         await asyncio.sleep(1.0)
+                        if finish_requested:
+                            request_queue.put((None, None))
                         continue
+
+                if finish_requested:
+                    if not await _finish_current_speech() and pending_text_buffer.strip():
+                        request_queue.put((None, None))
+                    continue
 
                 # 检查文本有效性
                 if not tts_text or not tts_text.strip():
