@@ -2319,7 +2319,7 @@ def test_return_button_drag_randomizes_asset_once_per_drag_action():
     )
 
 
-def test_local_return_button_drag_safety_timer_does_not_end_active_drag():
+def test_local_return_button_drag_safety_timer_waits_for_active_drag_inactivity():
     source = _read_avatar_ui_buttons_source()
 
     safety_block = _source_slice_between(
@@ -2332,8 +2332,12 @@ def test_local_return_button_drag_safety_timer_does_not_end_active_drag():
         safety_block,
         "local return-ball drag safety timer",
         "const moved = container.getAttribute('data-dragging') === 'true';",
-        "if (moved && !dragCropHoldPending) return;",
-        "finishDragState(false, safetyToken, moved);",
+        "const finishAsMoved = moved && !dragCropHoldPending;",
+        "if (finishAsMoved) {",
+        "const inactiveMs = Math.max(0, Date.now() - lastMovedAt);",
+        "if (inactiveMs < ACTIVE_DRAG_STALE_MS) {",
+        "resetDragStateAfterMissingEnd(safetyToken);",
+        "finishDragState(finishAsMoved, safetyToken, moved);",
     )
 
 
@@ -2406,8 +2410,8 @@ def test_local_return_button_drag_recovers_lost_release_without_active_timeout()
         "return;",
         "cancelDragState();",
     )
-    assert "_NEKO_IDLE_RETURN_BALL_ACTIVE_DRAG_STALE_MS" not in source
-    assert "scheduleActiveDragStaleRecovery" not in source
+    assert "const ACTIVE_DRAG_STALE_MS = 30000;" in source
+    assert "dragActivity.lastMovedAt = Date.now();" in source
 
 
 def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
@@ -3724,7 +3728,7 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
         "return button drag setup helpers",
         "const finishDragState = (moved, safetyToken, suppressClick = moved) => {",
         "const resetDragStateAfterMissingEnd = (safetyToken) => {",
-        "finishDragState(false, safetyToken, moved);",
+        "finishDragState(finishAsMoved, safetyToken, moved);",
     )
     assert "const scheduleLongPressDrag" not in drag_setup
     assert "const updatePendingLongPressDrag" not in drag_setup

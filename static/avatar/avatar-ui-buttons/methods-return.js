@@ -296,6 +296,7 @@ Object.assign(AvatarButtonMixin.methods, {
             let dragReleaseTimer = 0;
             let dragUsesGlobalCursor = false;
             let dragContinuousVirtualPoint = null;
+            const ACTIVE_DRAG_STALE_MS = 30000;
 
             const getDragCropState = () => {
                 try {
@@ -597,6 +598,7 @@ Object.assign(AvatarButtonMixin.methods, {
                     startY: top,
                     lastX: left,
                     lastY: top,
+                    lastMovedAt: startedAt,
                     pathDistancePx: 0,
                     terminalReported: false
                 };
@@ -615,6 +617,7 @@ Object.assign(AvatarButtonMixin.methods, {
                 }
                 dragActivity.lastX = left;
                 dragActivity.lastY = top;
+                dragActivity.lastMovedAt = Date.now();
             };
 
             const finishDragActivity = (safetyToken) => {
@@ -686,12 +689,23 @@ Object.assign(AvatarButtonMixin.methods, {
             const resetDragStateAfterMissingEnd = (safetyToken) => {
                 if (dragSafetyToken !== safetyToken || !isDragging) return;
                 const moved = container.getAttribute('data-dragging') === 'true';
-                if (moved && !dragCropHoldPending) return;
+                const finishAsMoved = moved && !dragCropHoldPending;
+                if (finishAsMoved) {
+                    const lastMovedAt = Number(dragActivity && dragActivity.lastMovedAt) || Date.now();
+                    const inactiveMs = Math.max(0, Date.now() - lastMovedAt);
+                    if (inactiveMs < ACTIVE_DRAG_STALE_MS) {
+                        dragSafetyTimer = setTimeout(() => {
+                            dragSafetyTimer = 0;
+                            resetDragStateAfterMissingEnd(safetyToken);
+                        }, Math.max(1, ACTIVE_DRAG_STALE_MS - inactiveMs));
+                        return;
+                    }
+                }
                 isDragging = false;
                 dragActiveDispatched = false;
                 dragPointerType = '';
                 container.style.cursor = 'grab';
-                finishDragState(false, safetyToken, moved);
+                finishDragState(finishAsMoved, safetyToken, moved);
             };
 
             const cancelDragState = () => {

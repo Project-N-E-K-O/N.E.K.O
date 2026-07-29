@@ -133,6 +133,10 @@ def test_live2d_widget_mode_show_buttons_clears_hide_timer_before_peek_suppressi
     assert "clearTimeout(this._hideButtonsTimer);" in peek_guard
     assert "this._hideButtonsTimer = null;" in peek_guard
     assert "this._setLive2DPeekControlsSuppressed(true);" in peek_guard
+    clear_index = peek_guard.index("clearTimeout(this._hideButtonsTimer);")
+    null_index = peek_guard.index("this._hideButtonsTimer = null;")
+    suppress_index = peek_guard.index("_setLive2DPeekControlsSuppressed(true);")
+    assert clear_index < null_index < suppress_index
 
 
 def test_live2d_widget_mode_edge_peek_click_keeps_anchor_and_explicit_drag_exits():
