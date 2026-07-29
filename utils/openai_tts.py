@@ -90,7 +90,7 @@ def openai_tts_speech_url(base_url: str) -> str:
 
 
 def openai_tts_sdk_options(base_url: str) -> tuple[str, dict[str, str]]:
-    """拆分 SDK 使用的基础地址和需要随请求发送的 query 参数。"""
+    """Split the SDK base URL from query parameters sent with each request."""
 
     parsed = urlparse(openai_tts_base_url(base_url))
     sdk_base_url = urlunparse(

@@ -38,7 +38,7 @@ logger = get_module_logger(__name__, "Main")
 
 
 def _openai_auth_client_kwargs(client_type, audio_api_key):
-    """为需要鉴权和免鉴权的 endpoint 构造 SDK 凭证参数。"""
+    """Build SDK credentials for authenticated and auth-free endpoints."""
     client_kwargs = {"api_key": audio_api_key or ""}
     if audio_api_key:
         return client_kwargs
