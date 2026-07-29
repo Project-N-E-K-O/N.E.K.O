@@ -2729,6 +2729,14 @@
                                 }
 
                                 try {
+                                    // BEFORE claiming anything. The first check used to sit
+                                    // after claim + start_session + ack, so a goodbye, an
+                                    // avatar drop or a mic press during the 7.5s delay was
+                                    // answered by taking the slot from whoever it belonged
+                                    // to, asking the backend for a session, and only then
+                                    // walking away -- without ending it (codex P2).
+                                    if (restartMustStandDown()) return;
+
                                     var sessionStartPromise = new Promise(function (resolve, reject) {
                                         // Owner token for every release in this
                                         // flow; see claimSessionStart in
@@ -2856,6 +2864,16 @@
                                         }
                                         window.releaseSessionStart(restartStartOwner);
                                     }
+
+                                    // A takeover during any await above -- including one
+                                    // that caused this very error, and including
+                                    // ensureWebSocketOpen rejecting before the claim -- means
+                                    // everything below lands on somebody else: end_session
+                                    // would kill their session, and the failure toast plus
+                                    // the global recording/UI teardown would rewrite the
+                                    // state they are driving (codex P2). Gating the slot
+                                    // release alone left all of that unguarded.
+                                    if (restartMustStandDown()) return;
 
                                     if (S.socket && S.socket.readyState === WebSocket.OPEN) {
                                         S.socket.send(JSON.stringify({ action: 'end_session' }));

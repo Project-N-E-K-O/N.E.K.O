@@ -2129,6 +2129,32 @@
             window.showStatusToast(window.t ? window.t('app.initializingVoice') : '\u6B63\u5728\u521D\u59CB\u5316\u8BED\u97F3\u5BF9\u8BDD...', 3000);
             window.showVoicePreparingToast(window.t ? window.t('app.connectingToServer') : '\u6B63\u5728\u8FDE\u63A5\u670D\u52A1\u5668...');
 
+            var micStartOwner = null;
+
+            // Every point this handler resumes from an await asks the same
+            // question, and each await is wide open: on mobile the composer
+            // stays visible during an audio session, so a text send can claim
+            // the slot inside the ack's 500ms settle window, inside
+            // showCurrentModel, or inside getUserMedia. Returns true when this
+            // start must stand down -- and unwinds the shared voice-start UI on
+            // its way out UNLESS a newer audio start is driving that very state,
+            // because the unwind is global (it bumps the mic generation and
+            // clears window.isMicStarting) and would make that start abandon
+            // capture. A text start touches none of it and would instead leave
+            // the mic button stranded, so there the unwind must run.
+            function micStartMustStandDown() {
+                if (!window.sessionStartSuperseded(micStartOwner)
+                        && !(S._pendingSessionStartMode
+                            && S._pendingSessionStartMode !== 'audio')) {
+                    return false;
+                }
+                if (!window.supersededByAudioStart(micStartOwner)
+                        && typeof window.abortVoiceStartForBlockedRoute === 'function') {
+                    window.abortVoiceStartForBlockedRoute();
+                }
+                return true;
+            }
+
             try {
                 if (typeof window.waitForVoiceConfigSwitchReady === 'function') {
                     var voiceConfigWaitResult = await window.waitForVoiceConfigSwitchReady({
@@ -2150,7 +2176,6 @@
                 }
 
                 // Create a promise for session_started
-                var micStartOwner = null;
                 var sessionStartPromise = new Promise(function (resolve, reject) {
                     // Claim the shared slot and keep the owner token (the
                     // resolver itself). Every release below is gated on it, so
@@ -2246,32 +2271,17 @@
                     // `mode !== 'audio'` test, falls through to the timeout
                     // clear below and cancels the 15s timer that newer start
                     // is relying on; with its ack lost as well, it then stays
-                    // pending forever. The mode check is kept as an OR because
-                    // the disconnect cleanup nulls the resolver but leaves
+                    // pending forever. The mode check survives inside
+                    // micStartMustStandDown as an OR because the disconnect
+                    // cleanup nulls the resolver but leaves
                     // _pendingSessionStartMode set, so neither test subsumes
                     // the other.
-                    if (window.sessionStartSuperseded(micStartOwner)
-                            || (S._pendingSessionStartMode
-                                && S._pendingSessionStartMode !== 'audio')) {
-                        // Deliberately NOT clearing window.sessionTimeoutId:
-                        // that timer belongs to the newer start now, and
-                        // cancelling it is the same cross-start damage in
-                        // miniature.
-                        //
-                        // And the unwind itself is global: it bumps the mic
-                        // generation and clears window.isMicStarting, so
-                        // running it while a newer AUDIO start is inside
-                        // getUserMedia makes THAT start abandon capture and
-                        // fail its own ensureVoiceStartCurrent -- a session the
-                        // backend accepted, with the mic closed. A newer audio
-                        // start is already driving this UI; leave it alone. A
-                        // text start is not, so there the unwind still runs.
-                        if (!window.supersededByAudioStart(micStartOwner)
-                                && typeof window.abortVoiceStartForBlockedRoute === 'function') {
-                            window.abortVoiceStartForBlockedRoute();
-                        }
-                        return;
-                    }
+                    //
+                    // Standing down here deliberately does NOT clear
+                    // window.sessionTimeoutId: that timer belongs to the newer
+                    // start now, and cancelling it is the same cross-start
+                    // damage in miniature.
+                    if (micStartMustStandDown()) return;
 
                     ensureVoiceStartCurrent();
 
@@ -2292,6 +2302,17 @@
                     }
                     await window.startMicCapture();
                     ensureVoiceStartCurrent();
+
+                    // getUserMedia and the worklet setup are another wide-open
+                    // await, and a text takeover inside it is invisible to
+                    // everything above: startMicCapture's own cancellation path
+                    // returns normally rather than throwing, and a text ack
+                    // moves neither voiceSessionStartEpoch nor isMicStarting, so
+                    // ensureVoiceStartCurrent passes. Without this the handler
+                    // walks into its success path -- neko:voice-session-started,
+                    // silence detection, "ready to speak" -- on top of the text
+                    // session that took over (codex P2).
+                    if (micStartMustStandDown()) return;
                 } catch (error) {
                     // Same ownership gate as the success path above: this
                     // failure can arrive after a newer start has claimed the
@@ -2365,20 +2386,12 @@
                 // now, so the end_session send would tear ITS session down, and
                 // stopRecording / the button row / the failure toast would
                 // rewrite the UI it is driving -- all to report a failure the
-                // user has already moved on from (codex P2).
-                //
-                // A newer AUDIO start is driving the voice UI and must be left
-                // strictly alone. A newer TEXT start is not, so the mic button
-                // still has to be handed back -- the same asymmetry as the
-                // takeover branch above, and the same reason
-                // abortVoiceStartForBlockedRoute may not run in the audio case.
-                if (window.sessionStartSuperseded(micStartOwner)) {
-                    if (!window.supersededByAudioStart(micStartOwner)
-                            && typeof window.abortVoiceStartForBlockedRoute === 'function') {
-                        window.abortVoiceStartForBlockedRoute();
-                    }
-                    return;
-                }
+                // user has already moved on from (codex P2). Note the takeover
+                // is frequently what CAUSED this error, and just as frequently
+                // has finished by the time we get here: the text ack that
+                // invalidated our getUserMedia also released the slot, which is
+                // why this asks the claim sequence and not who holds it now.
+                if (micStartMustStandDown()) return;
 
                 if (!isVoiceStartCancelled && !(error && error.voiceConfigSwitchTimedOut) && S.socket && S.socket.readyState === WebSocket.OPEN) {
                     S.socket.send(JSON.stringify({ action: 'end_session' }));

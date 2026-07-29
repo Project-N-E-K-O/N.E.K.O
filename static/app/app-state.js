@@ -139,6 +139,10 @@
         // 不一致（典型是 proactive/greeting 并发自起的 text 会话发来的 ack）时
         // 忽略，避免错误模式的 ack 收口用户的启动 promise / 翻转会话状态。
         _pendingSessionStartMode: null,
+        // 上一次 claim 的模式，释放后依然保留（_pendingSessionStartMode 会被清空）。
+        // 用于判断"抢走槽位的那个启动是不是语音启动"——它可能已经 ack 完并释放，
+        // 但仍然活着且正在驱动语音 UI，见 supersededByAudioStart。
+        _lastSessionStartMode: null,
         voiceSessionStartEpoch: 0,
         assistantTurnId: null,
         assistantTurnStartedAt: 0,
@@ -267,10 +271,27 @@
     // cancelPendingSessionStart stays deliberately unconditional because it is
     // the global "abandon whatever is pending" lever (goodbye, avatar drop,
     // character switch), where killing a foreign start is the intent.
+    // An owner token answers "who holds the slot RIGHT NOW", and that is not
+    // enough on its own: a start that claimed after us and has since finished
+    // or been cancelled leaves the slot empty again -- byte for byte what our
+    // own release looks like. Three separate review findings reduced to that
+    // one blind spot. A claim sequence closes it, because it only ever moves
+    // forward: "somebody claimed after me" survives their departure. The
+    // WeakMap keeps it off the tokens themselves and out of GC's way.
+    var startClaimSeq = 0;
+    var startClaimSeqByOwner = new WeakMap();
+
     window.claimSessionStart = function (mode, resolve, reject) {
         S.sessionStartedResolver = resolve;
         S.sessionStartedRejecter = reject;
         S._pendingSessionStartMode = mode;
+        startClaimSeq += 1;
+        startClaimSeqByOwner.set(resolve, startClaimSeq);
+        // Sticky twin of _pendingSessionStartMode: which KIND of start claimed
+        // last, still readable after it has released. supersededByAudioStart
+        // needs it to decide whether the global voice-start unwind would land
+        // on a live voice start, and by then the pending mode may be gone.
+        S._lastSessionStartMode = mode;
         return resolve;
     };
 
@@ -289,18 +310,28 @@
     };
 
     /**
-     * True when some OTHER start now holds the slot, i.e. ``owner`` has been
-     * superseded. Note this is not the negation of sessionStartIsCurrent: an
-     * EMPTY slot is not superseded, and that distinction is the whole point.
-     * The normal success path releases the slot inside the ack handler and
-     * only then settles the promise, so a flow that resumes after its own ack
-     * legitimately finds the slot empty and must still run its own cleanup --
-     * including clearing the start timeout it armed. Asking
-     * `!sessionStartIsCurrent(owner)` there would make every successful start
-     * think it had been superseded.
+     * True when ANY start claimed after ``owner`` did -- whether it still holds
+     * the slot, has completed, or was cancelled.
+     *
+     * Not "somebody else holds the slot now", which misses a completed takeover:
+     * a text send can claim and be acknowledged inside an audio start's
+     * getUserMedia await, releasing the slot before that start resumes, and the
+     * stale start would then read an empty slot and go on to end the session and
+     * rewrite the UI the text session is using. Not
+     * `!sessionStartIsCurrent(owner)` either, which misses nothing but flags
+     * everything: the normal success path releases the slot inside the ack
+     * handler before settling the promise, so a start that simply succeeded also
+     * resumes to an empty slot, and it must still clear the timeout it armed.
+     * The claim sequence separates the two: it moved iff somebody else started.
      */
     window.sessionStartSuperseded = function (owner) {
-        return !!S.sessionStartedResolver && S.sessionStartedResolver !== owner;
+        var seq = owner ? startClaimSeqByOwner.get(owner) : undefined;
+        // An owner we never minted (or none at all): all we can say is whether
+        // somebody is pending right now.
+        if (seq === undefined) {
+            return !!S.sessionStartedResolver && S.sessionStartedResolver !== owner;
+        }
+        return startClaimSeq > seq;
     };
 
     /**
@@ -317,8 +348,11 @@
      * instead, so there the unwind must still run.
      */
     window.supersededByAudioStart = function (owner) {
+        // The STICKY mode, not the pending one: the start that took over may
+        // already have been acknowledged and released the slot, and it is just
+        // as alive -- more so -- than one still pending.
         return window.sessionStartSuperseded(owner)
-            && S._pendingSessionStartMode === 'audio';
+            && S._lastSessionStartMode === 'audio';
     };
 
     /**

@@ -54,7 +54,7 @@ function assert(cond, msg) {
 // comes along deliberately: the epoch property below is about how the two
 // interact, and reimplementing the lever here would test nothing.
 const source = fs.readFileSync(__APP_STATE_PATH__, 'utf8');
-const start = source.indexOf('window.claimSessionStart = function');
+const start = source.indexOf('// ---- voice-start slot ownership');
 const end = source.indexOf('// ======================== 工具函数');
 assert(start > 0 && end > start, 'could not locate the ownership helpers');
 
@@ -145,6 +145,14 @@ assert(W.sessionStartSuperseded(ownerB) === false,
 assert(W.sessionStartIsCurrent(ownerB) === false,
        'and the released owner is no longer current -- the two differ here');
 
+// ...but a COMPLETED takeover is still a takeover. B has claimed and released,
+// so the slot is empty again and, to anything that only looks at who holds it,
+// indistinguishable from A's own release. That is the blind spot that let a
+// stale mic start send end_session and reset the UI for the text session which
+// had just succeeded inside its getUserMedia await.
+assert(W.sessionStartSuperseded(ownerA) === true,
+       'a takeover that has already finished must still supersede the start it took over from');
+
 // --- who superseded us decides whether the GLOBAL unwind may run -----------
 // abortVoiceStartForBlockedRoute bumps the mic generation and clears
 // window.isMicStarting. A newer AUDIO start is sitting on exactly that state
@@ -168,37 +176,53 @@ assert(W.supersededByAudioStart(ownerC) === false,
 const ownerD = S.sessionStartedResolver;
 W.releaseSessionStart(ownerD);
 assert(W.supersededByAudioStart(ownerC) === false,
-       'an empty slot means nobody is driving the UI -- the unwind must still run');
+       'a text takeover that has completed is still a text takeover -- unwind');
 
-// --- the epoch sees the ABA that ownership cannot --------------------------
-// The automatic restart has no ensureVoiceStartCurrent of its own, so this is
-// the only signal standing between it and reopening the microphone after the
-// user has walked away.
+// The mirror case, and the one the pending mode gets wrong: an AUDIO takeover
+// that has already been acknowledged and released the slot is MORE alive than a
+// pending one, not less. Reading _pendingSessionStartMode here would find null
+// and unwind the mic generation out from under a session that is recording.
+W.claimSessionStart('audio', () => {}, () => {});
+W.releaseSessionStart(S.sessionStartedResolver);
+assert(S._pendingSessionStartMode === null, 'the pending mode is gone once released');
+assert(W.supersededByAudioStart(ownerC) === true,
+       'a completed AUDIO takeover must still suppress the global unwind');
+
+// --- the two signals abandon-detect different things -----------------------
+// A cancellation claims nothing, so the claim sequence never moves for it: a
+// goodbye, avatar drop or character switch during the restart's 7.5s delay
+// leaves the slot untouched and every start's sequence intact. The epoch is
+// what sees those -- and it is the automatic restart's only guard, since that
+// flow has no ensureVoiceStartCurrent of its own. The mirror hole is above: a
+// takeover that claimed and finished moves the sequence and never the epoch,
+// which is minted by voice starts only. Neither signal subsumes the other,
+// which is why both stand-down checks ask both.
 S.voiceSessionStartEpoch = 7;
 const restartEpoch = S.voiceSessionStartEpoch;
 const ownerR = W.claimSessionStart('audio', () => {}, () => {});
 assert(W.voiceStartEpochIsCurrent(restartEpoch) === true,
        'claiming the slot does not by itself move the intent epoch');
 
-// A newer start claims inside the ack's deferred window, and then the user
-// walks away: goodbye / avatar drop / character switch go through
-// cancelPendingSessionStart, which clears the slot outright. Ownership is back
-// to EMPTY -- byte for byte what "my own ack released it" looks like.
-W.claimSessionStart('audio', () => {}, () => {});
 W.cancelPendingSessionStart('goodbye');
 assert(S.sessionStartedResolver === null, 'the cancel lever cleared the slot');
 assert(W.sessionStartSuperseded(ownerR) === false,
-       'ownership alone cannot see the ABA -- that blind spot is the point');
+       'a cancellation claims nothing, so the claim sequence cannot see it');
 assert(W.voiceStartEpochIsCurrent(restartEpoch) === false,
-       'the epoch must still know the user moved on');
+       'the epoch must know the user walked away');
 
 console.log('HARNESS_OK');
 """
 
-# Both takeover guards resume from `await sessionStartPromise` and must decide
-# whether a newer start has taken the slot. Mode alone cannot tell: the
-# automatic restart claims 'audio' exactly like the mic button does.
+# Both flows funnel every "has someone taken over?" decision through one check.
+# Mode alone cannot tell: the automatic restart claims 'audio' exactly like the
+# mic button does, and a completed takeover leaves no pending mode at all.
 _MODE_TEST = "_pendingSessionStartMode !== 'audio'"
+
+# file -> (stand-down check, how many points in that flow must call it)
+STAND_DOWN_CHECKS = {
+    "app-buttons.js": ("micStartMustStandDown", 3),
+    "app-websocket.js": ("restartMustStandDown", 4),
+}
 
 
 def _run(script: str):
@@ -232,83 +256,72 @@ def test_a_superseded_flow_cannot_release_the_newer_starts_slot():
 
 
 @pytest.mark.unit
-def test_takeover_guards_ask_ownership_not_only_mode():
-    """Every "did someone take the slot?" guard must consult the owner token.
+def test_each_flow_decides_takeovers_in_exactly_one_place():
+    """Both stand-down checks must ask the whole question.
 
-    The harness above proves the predicate; this pins the call sites, which is
-    where the bug actually lived: both flows resumed from
-    ``await sessionStartPromise`` and tested only
-    ``_pendingSessionStartMode !== 'audio'``, so a newer AUDIO start (the
-    automatic reconnect restart claims 'audio' too) sailed through and the
-    superseded flow went on to cancel the newer start's 15s timeout.
+    Each signal is blind to something the others see, and every round of this
+    bug was one await covered by only the blind half: ownership misses a
+    takeover that has already finished, the pending mode is null by then, and
+    the epoch never moves for a text start at all. The checks also decide
+    whether the GLOBAL unwind may run -- it bumps the mic generation and clears
+    ``window.isMicStarting``, which is exactly the state a newer audio start is
+    sitting on inside getUserMedia.
 
-    Mutation-verified: drop ``sessionStartSuperseded`` from either guard and
-    this reddens naming that file and the surviving mode-only condition.
+    Mutation-verified: drop any one signal from either check and this reddens
+    naming that file and that signal.
     """
-    checked = 0
+    required = (
+        "sessionStartSuperseded",
+        _MODE_TEST,
+        "supersededByAudioStart",
+        "abortVoiceStartForBlockedRoute",
+    )
     for path in START_FLOW_PATHS:
         source = path.read_text(encoding="utf-8")
-        for match in re.finditer(re.escape(_MODE_TEST), source):
-            head = source[:match.start()]
-            condition_start = head.rfind("if (")
-            assert condition_start != -1, f"{path.name}: mode test outside any if()"
-            condition = source[condition_start:match.end()]
-            assert "sessionStartSuperseded" in condition, (
-                f"{path.name}: a takeover guard tests the pending mode without asking "
-                f"who owns the slot -- a newer AUDIO start passes it.\n{condition}"
+        name = STAND_DOWN_CHECKS[path.name][0]
+        start = source.find(f"function {name}()")
+        assert start != -1, f"{path.name}: the stand-down check {name} has been renamed"
+        body = source[start:source.find("try {", start)]
+        for signal in required:
+            assert signal in body, (
+                f"{path.name}: {name} ignores `{signal}`, so a takeover it cannot see "
+                f"reaches the microphone or tears down the start that took over.\n{body}"
             )
-            checked += 1
-    assert checked >= 2, (
-        "expected the mic-button and automatic-restart takeover guards to be found; "
-        f"only {checked} matched -- has the guard been rewritten?"
-    )
 
 
 @pytest.mark.unit
-def test_takeover_branches_do_not_unwind_under_a_newer_audio_start():
-    """The global voice-start unwind must be gated on WHO took the slot.
+def test_every_point_a_flow_resumes_from_an_await_stands_down():
+    """One check is worth nothing at the one await that skips it.
 
-    ``abortVoiceStartForBlockedRoute`` bumps the mic generation and clears
-    ``window.isMicStarting``. Making the takeover branches ownership-aware is
-    what made "a newer AUDIO start took over" reachable at all, and that is
-    precisely the case where the unwind lands on a start still inside
-    getUserMedia: it abandons capture and then fails its own
-    ``ensureVoiceStartCurrent``, leaving a session the backend accepted with no
-    microphone.
+    The counts are the awaits each flow resumes from, plus its failure path:
+    the mic handler after its start promise, after getUserMedia, and in its
+    outer catch; the restart before it claims at all, after its start promise,
+    after showCurrentModel, and in its catch. Every one of those was reported
+    separately, in three rounds, as its own bug.
 
-    Mutation-verified: drop the ``supersededByAudioStart`` gate from either
-    branch and this reddens naming that file.
+    Mutation-verified: delete any single call and this reddens with the count.
     """
-    checked = 0
     for path in START_FLOW_PATHS:
         source = path.read_text(encoding="utf-8")
-        for match in re.finditer(re.escape(_MODE_TEST), source):
-            branch_end = source.find("return", match.end())
-            assert branch_end != -1, f"{path.name}: takeover branch has no return"
-            branch = source[match.end():branch_end]
-            if "abortVoiceStartForBlockedRoute" not in branch:
-                continue
-            assert "supersededByAudioStart" in branch, (
-                f"{path.name}: the takeover branch runs the global voice-start unwind "
-                "without checking whether a newer AUDIO start is driving that very "
-                f"state.\n{branch}"
-            )
-            checked += 1
-    assert checked >= 2, (
-        "expected both takeover branches to reach the unwind; "
-        f"only {checked} matched -- has the branch been rewritten?"
-    )
+        name, expected = STAND_DOWN_CHECKS[path.name]
+        calls = source.count(f"{name}()") - 1  # minus the definition
+        assert calls >= expected, (
+            f"{path.name}: {name} is called at {calls} of the {expected} points this "
+            "flow can resume or fail at -- the uncovered one is where a takeover walks "
+            "into the microphone or into a foreign session's teardown."
+        )
 
 
 @pytest.mark.unit
-def test_a_superseded_mic_start_does_not_run_its_failure_cleanup():
-    """A failed start that no longer owns the slot must not end the session.
+def test_the_mic_failure_cleanup_stands_down_before_ending_the_session():
+    """A failed start that was superseded must not end the winner's session.
 
-    Gating the slot was never enough: the mic handler's failure cleanup also
-    sends ``end_session``, calls ``stopRecording`` and rewrites the button row,
-    and by then those land on whichever start took over.
+    Gating the slot was never enough: the cleanup also sends ``end_session``,
+    calls ``stopRecording`` and rewrites the button row, and after a takeover
+    those all land on the start that took over -- frequently the very start
+    whose acknowledgement caused this failure.
 
-    Mutation-verified: remove the superseded early-return and this reddens.
+    Mutation-verified: remove the stand-down call and this reddens.
     """
     source = (_STATIC_APP / "app-buttons.js").read_text(encoding="utf-8")
     anchor = source.find("var micStartStillOurs")
@@ -317,10 +330,10 @@ def test_a_superseded_mic_start_does_not_run_its_failure_cleanup():
     assert end_session != -1, "expected the failure cleanup to send end_session"
 
     guard_region = source[anchor:end_session]
-    assert "sessionStartSuperseded" in guard_region and "return;" in guard_region, (
+    assert "micStartMustStandDown()" in guard_region, (
         "app-buttons.js: the mic start's failure cleanup reaches end_session without "
-        "first bailing out when a newer start owns the slot -- it would tear down "
-        f"that start's session.\n{guard_region}"
+        "standing down first -- it would tear down the session of whoever took over.\n"
+        f"{guard_region}"
     )
 
 

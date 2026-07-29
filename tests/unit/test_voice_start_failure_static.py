@@ -704,13 +704,16 @@ def test_voice_start_bails_when_another_start_took_over_the_pending_slot():
     source = _read(APP_BUTTONS_PATH)
     start_flow = _mic_button_start_flow(source)
 
+    # The takeover decision now lives in one micStartMustStandDown() check --
+    # see tests/unit/test_voice_start_slot_ownership.py for what that check has
+    # to consider, which grew well past the pending mode. What this case pins is
+    # WHERE the resumed flow consults it.
     await_index = start_flow.index("await sessionStartPromise;")
-    guard = "S._pendingSessionStartMode !== 'audio'"
+    guard = "micStartMustStandDown()"
     assert guard in start_flow, (
-        "the resumed voice start must notice that another start owns the slot"
+        "the resumed voice start must notice that another start took the slot"
     )
-    guard_index = start_flow.index(guard)
-    assert await_index < guard_index, "the check belongs after the await, not before"
+    guard_index = start_flow.index(guard, await_index)
 
     # It has to come before BOTH downstream guards, because neither can see a
     # takeover -- that is the whole finding.
@@ -718,15 +721,21 @@ def test_voice_start_bails_when_another_start_took_over_the_pending_slot():
     assert guard_index < start_flow.index("S.voiceInputRouteBlocked === true")
     assert guard_index < start_flow.index("await window.startMicCapture();")
 
-    # And it must unwind via the non-throwing helper: the generic catch clears
+    # And it must unwind without throwing: the generic catch used to clear
     # S.sessionStartedResolver / Rejecter / _pendingSessionStartMode
     # unconditionally, which would tear down the start that superseded us.
     bail = start_flow[guard_index:start_flow.index("ensureVoiceStartCurrent();", await_index)]
     bail_code = " ".join(
         line for line in bail.splitlines() if not line.strip().startswith("//")
     )
-    assert "abortVoiceStartForBlockedRoute" in bail_code
     assert "throw" not in bail_code
     # The newer start owns the shared timeout now; cancelling it is the same
     # cross-start damage this guard exists to prevent.
     assert "clearTimeout" not in bail_code
+
+    # The unwind itself sits inside the check, and is gated there: it is global
+    # (mic generation + isMicStarting), so it may not run while a newer AUDIO
+    # start is driving that state.
+    check = start_flow[start_flow.index("function micStartMustStandDown()"):await_index]
+    assert "abortVoiceStartForBlockedRoute" in check
+    assert "supersededByAudioStart" in check
