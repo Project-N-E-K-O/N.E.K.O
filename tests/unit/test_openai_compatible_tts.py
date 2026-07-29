@@ -641,6 +641,8 @@ def test_http_fallback_replays_only_unconfirmed_sentence_suffix(monkeypatch):
     assert LLMSessionManager._activate_configured_tts_fallback(mgr, "运行时") is True
     assert mgr.tts_pending_chunks == [("speech-1", "unheard suffix.")]
     assert mgr._tts_done_pending_until_ready is True
+    assert mgr._last_tts_error_code == ""
+    assert mgr._tts_retry_notify_count == 0
 
 
 def test_sentence_progress_prunes_only_the_confirmed_prefix():
