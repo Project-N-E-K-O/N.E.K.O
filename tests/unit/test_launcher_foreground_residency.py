@@ -312,16 +312,29 @@ _GUARDED_CHILD = textwrap.dedent(
 
     marker = {marker!r}
 
+    def _write_marker(path, text):
+        # Write-then-rename, because the test side waits on path.exists() and
+        # then reads immediately. `open(path, "w")` publishes a ZERO-LENGTH
+        # file first and fills it afterwards, so the reader could win that gap
+        # and read "" -- which is exactly how this suite failed on CI:
+        #   AssertionError: assert '' in ('stdin_eof', 'pdeathsig')
+        # POSIX rename is atomic within a filesystem (these tests are
+        # POSIX-only), so the marker becomes visible already complete.
+        temp_path = path + ".partial"
+        with open(temp_path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+
     def _on_death(mechanism):
-        with open(marker, "w", encoding="utf-8") as handle:
-            handle.write(mechanism)
+        _write_marker(marker, mechanism)
         os._exit(0)
 
     guard = parent_guard.install(
         _on_death, poll_interval={poll_interval}, watch_stdin={watch_stdin}
     )
-    with open({armed!r}, "w", encoding="utf-8") as handle:
-        handle.write(",".join(guard.mechanisms))
+    _write_marker({armed!r}, ",".join(guard.mechanisms))
     while True:
         time.sleep(0.05)
     """
@@ -329,6 +342,15 @@ _GUARDED_CHILD = textwrap.dedent(
 
 
 def _wait_for(path: Path, timeout: float = 15.0) -> bool:
+    """Wait for ``path`` to appear.
+
+    Callers read the file immediately afterwards, so anything that writes one
+    of these markers must publish it ATOMICALLY -- see ``_write_marker`` in
+    ``_GUARDED_CHILD``. A plain ``open(path, "w")`` creates the file empty and
+    fills it after, and this returns on the create, so the reader can win that
+    gap and see "". That is not hypothetical: it is what made this suite flake
+    on CI as ``assert '' in ('stdin_eof', 'pdeathsig')``.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if path.exists():
