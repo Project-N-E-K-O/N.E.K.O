@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 import re
 import time
 from typing import Any, Awaitable, Callable
@@ -36,6 +37,7 @@ _ENRICHMENT_TTL_SECONDS = 24 * 60 * 60
 _SUBTITLE_MAX_CHARS = 8_000
 _SUMMARY_MAX_CHARS = 120
 _PREEMPT_POLL_SECONDS = 0.1
+_BILIBILI_TIMEZONE = timezone(timedelta(hours=8))
 
 _RESULT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _ENRICHMENT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
@@ -635,10 +637,16 @@ def format_bilibili_phase2_context(candidate: dict[str, Any]) -> str:
     else:
         lines.append("内容摘要：无可靠摘要；只能把标题描述为“看起来在聊……”，不得断言具体内容。")
     if candidate.get("published_at"):
-        lines.append(f"发布时间戳：{candidate['published_at']}")
+        try:
+            published_at = int(candidate["published_at"])
+            published_text = datetime.fromtimestamp(
+                published_at, tz=_BILIBILI_TIMEZONE
+            ).strftime("%Y-%m-%d %H:%M")
+            lines.append(f"发布时间：{published_text}")
+        except (TypeError, ValueError, OverflowError, OSError):
+            logger.debug("Invalid Bilibili published_at: %r", candidate["published_at"])
     lines.extend(
         [
-            f"链接：{candidate.get('url', '')}",
             "表达约束：热门只能说“最近热门/挺火/热门榜靠前”；首页只能说“可能感兴趣”；"
             "只有“登录态确认：是”的关注更新才能说“你关注的UP主更新了”。",
             "请自然说1至2句，不朗读统计数据，不补充资料中不存在的情节。",
