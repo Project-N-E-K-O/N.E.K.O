@@ -2768,10 +2768,25 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             asrToggle.appendChild(asrInput);
             asrToggle.appendChild(asrSlider);
 
+            function renderAsrHint() {
+                if (!asrHint) return;
+                var hintKey = S.independentAsrActive
+                    ? 'microphone.independentAsrActive'
+                    : (S.independentAsrEnabled ? 'microphone.independentAsrNextSession' : 'microphone.independentAsrNative');
+                var hintParams = { providerKey: S.independentAsrProvider || 'unknown' };
+                asrHint.setAttribute('data-i18n', hintKey);
+                asrHint.setAttribute('data-i18n-params', JSON.stringify(hintParams));
+                asrHint.textContent = window.t
+                    ? window.t(hintKey, hintParams)
+                    : (S.independentAsrActive ? 'Independent ASR active' : (S.independentAsrEnabled ? 'Takes effect next voice session' : 'Using Omni native recognition'));
+            }
+
             asrInput.addEventListener('change', function () {
                 S.independentAsrEnabled = asrInput.checked;
                 asrSlider.style.backgroundColor = asrInput.checked ? '#4f8cff' : '#ccc';
                 asrKnob.style.left = asrInput.checked ? '18px' : '2px';
+                // The confirmation text has to follow the switch it confirms.
+                renderAsrHint();
                 if (window.appSettings && typeof window.appSettings.saveSettings === 'function') {
                     if (typeof window.appSettings.syncSettingsToServer === 'function') {
                         // Session start reads the SERVER-persisted value (asr_runtime.py
@@ -2810,15 +2825,15 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             asrContainer.appendChild(asrRow);
 
             var asrHint = document.createElement('div');
-            var asrHintKey = S.independentAsrActive
-                ? 'microphone.independentAsrActive'
-                : (S.independentAsrEnabled ? 'microphone.independentAsrNextSession' : 'microphone.independentAsrNative');
-            var asrHintParams = { providerKey: S.independentAsrProvider || 'unknown' };
-            asrHint.setAttribute('data-i18n', asrHintKey);
-            asrHint.setAttribute('data-i18n-params', JSON.stringify(asrHintParams));
-            asrHint.textContent = window.t
-                ? window.t(asrHintKey, asrHintParams)
-                : (S.independentAsrActive ? 'Independent ASR active' : (S.independentAsrEnabled ? 'Takes effect next voice session' : 'Using Omni native recognition'));
+            // Single renderer, called at build time AND from the toggle's change
+            // handler above (function declarations hoist, so it is reachable
+            // there). The hint used to be computed once here, so flipping the
+            // switch with the popup open left "Using Omni native speech
+            // recognition" on screen after enabling -- and the inverse stale
+            // text after disabling -- until the popup was rebuilt: the
+            // confirmation contradicted the choice the user had just made
+            // (Codex P2).
+            renderAsrHint();
             Object.assign(asrHint.style, { fontSize: '11px', color: 'var(--neko-popup-text-sub)', marginTop: '6px' });
             asrContainer.appendChild(asrHint);
             leftColumn.appendChild(asrContainer);

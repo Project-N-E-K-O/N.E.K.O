@@ -256,16 +256,28 @@ def test_independent_asr_provider_copy_resolves_via_provider_names():
     assert "window.t('microphone.independentAsrActive', { providerKey: asrProvider || 'unknown' })" in ready_branch
     assert "window.t('microphone.independentAsrProviderUnavailable', { providerKey: asrProvider || 'unknown' })" in source
 
-    hint_block = capture_source.split("var asrHintKey = ", 1)[1].split(
-        "leftColumn.appendChild(asrContainer);",
+    # The hint is rendered by one function now, called both at build time and
+    # from the toggle's change handler -- it used to be computed once, so
+    # flipping the switch with the popup open left the previous text standing
+    # and the confirmation contradicted the choice just made.
+    hint_block = capture_source.split("function renderAsrHint() {", 1)[1].split(
+        "asrInput.addEventListener('change'",
         1,
     )[0]
     assert "{ providerKey: S.independentAsrProvider || 'unknown' }" in hint_block
-    assert "asrHint.setAttribute('data-i18n-params', JSON.stringify(asrHintParams));" in hint_block
-    assert hint_block.index("asrHint.setAttribute('data-i18n-params', JSON.stringify(asrHintParams));") < hint_block.index(
-        "window.t(asrHintKey, asrHintParams)"
+    assert "asrHint.setAttribute('data-i18n-params', JSON.stringify(hintParams));" in hint_block
+    assert hint_block.index("asrHint.setAttribute('data-i18n-params', JSON.stringify(hintParams));") < hint_block.index(
+        "window.t(hintKey, hintParams)"
     )
     assert "provider: S.independentAsrProvider" not in hint_block
+
+    # ...and the change handler actually re-renders it.
+    change_handler = capture_source.split(
+        "asrInput.addEventListener('change', function () {", 1
+    )[1].split("window.appSettings.saveSettings", 1)[0]
+    assert "renderAsrHint();" in change_handler, (
+        "flipping the toggle must refresh the hint it confirms"
+    )
 
 
 def test_provider_names_cover_asr_registry_keys_in_all_locales():

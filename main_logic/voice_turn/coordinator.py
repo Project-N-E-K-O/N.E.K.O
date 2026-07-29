@@ -205,19 +205,30 @@ class TurnCoordinator:
         """Keep the inference lane owned until a cancelled thread call exits."""
 
         task = asyncio.create_task(asyncio.to_thread(call, *args))
-        cancelled = False
-        while not task.done():
+        cancellation: asyncio.CancelledError | None = None
+        while True:
             try:
-                await asyncio.shield(task)
-            except asyncio.CancelledError:
-                cancelled = True
-        if cancelled:
-            try:
-                task.result()
-            except BaseException:
-                pass
-            raise asyncio.CancelledError
-        return task.result()
+                result = await asyncio.shield(task)
+            except asyncio.CancelledError as exc:
+                if task.cancelled():
+                    raise
+                if cancellation is None:
+                    cancellation = exc
+                continue
+            except Exception:
+                # The worker thread failed AFTER we were cancelled. The old
+                # loop caught only CancelledError, so this exception escaped
+                # immediately and skipped the cancelled branch entirely: the
+                # caller saw an inference/runtime error instead of the
+                # cancellation it asked for, which misclassifies reset and
+                # teardown work -- a cancelled idle unload surfaced as a
+                # runtime failure (Codex P2). A recorded cancellation wins.
+                if cancellation is not None:
+                    raise cancellation
+                raise
+            if cancellation is not None:
+                raise cancellation
+            return result
 
     async def reset(self) -> None:
         async with self._state_lock:

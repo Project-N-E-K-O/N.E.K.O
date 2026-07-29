@@ -2637,3 +2637,45 @@ async def test_stale_final_lease_unwind_uses_old_dispatcher_only() -> None:
     lifecycle_callback.assert_not_awaited()
     assert failures == []
     assert statuses == []
+
+
+def test_asr_connect_retry_budget_cannot_outlive_the_frontend_start_deadline():
+    # Codex P1. Each connect attempt can burn _READY_TIMEOUT_SECONDS before
+    # ASR_CONNECT_TIMEOUT, and _start_session_activate awaits the WHOLE retry
+    # loop before sending session_started -- while the frontend cancels the
+    # start and fires end_session at its deadline. With Soniox's three attempts
+    # a sustained outage always had the frontend tear the session down mid-retry,
+    # so the user saw a generic start timeout instead of the fail-closed ASR
+    # verdict the backend was busy producing.
+    #
+    # Constants-and-structure, deliberately: driving the start loop to a real
+    # timeout would need a multi-second test. What this pins is that the budget
+    # stays tight enough to matter, and that the check gates the retry.
+    import inspect
+
+    from main_logic.asr_client import runtime as runtime_module
+    from main_logic.asr_client._infra import _READY_TIMEOUT_SECONDS
+
+    assert (
+        runtime_module._CONNECT_TOTAL_BUDGET_SECONDS
+        < runtime_module._FRONTEND_START_DEADLINE_SECONDS
+    ), "the ASR connect phase must finish before the client stops listening"
+
+    # One timed-out attempt already consumes _READY_TIMEOUT_SECONDS, so a second
+    # full-timeout attempt must not fit -- otherwise the budget is decorative.
+    worst_case_second_attempt = _READY_TIMEOUT_SECONDS + _READY_TIMEOUT_SECONDS
+    assert worst_case_second_attempt > runtime_module._CONNECT_TOTAL_BUDGET_SECONDS, (
+        "the budget must refuse a second attempt that could not finish in time"
+    )
+
+    # The guard has to sit before the backoff sleep, not after it.
+    source = inspect.getsource(runtime_module)
+    start_loop = source.split("connect_started_at = time.monotonic()", 1)[1].split(
+        "if asr_session is None:", 1
+    )[0]
+    assert "_CONNECT_TOTAL_BUDGET_SECONDS" in start_loop, (
+        "the start connect loop must consult the aggregate budget"
+    )
+    assert start_loop.index("_CONNECT_TOTAL_BUDGET_SECONDS") < start_loop.index(
+        "await asyncio.sleep(backoff)"
+    ), "the budget check must refuse the retry before sleeping for it"

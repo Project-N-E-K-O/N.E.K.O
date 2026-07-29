@@ -28,7 +28,7 @@ from main_logic.voice_turn.contracts import (
 )
 from main_logic.voice_turn.audio_input import ProcessedVoiceFrame
 
-from ._infra import logger
+from ._infra import logger, _READY_TIMEOUT_SECONDS
 from .audio import AsrAudioDispatcher
 from ._registry_meta import AsrProviderAvailability
 from .detector import (
@@ -55,6 +55,21 @@ from .transcript import (
     TranscriptDispatcher,
     TranscriptEnvelope,
 )
+
+
+# The frontend gives a voice start this long before it cancels and fires
+# end_session (app-buttons.js, and the automatic-restart path in
+# app-websocket.js use the same value). Mirrored here because
+# _start_session_activate awaits the ASR connect loop BEFORE sending
+# session_started: any retry budget that outlives this deadline cannot produce
+# a verdict the client will still be listening for.
+_FRONTEND_START_DEADLINE_SECONDS = 15.0
+
+# Aggregate ceiling for the whole connect-and-retry phase. Deliberately under
+# the deadline above, leaving room for the rest of the start (the ack send and
+# the pending-input flush that follow it) so the fail-closed verdict lands
+# BEFORE the client gives up rather than a second after.
+_CONNECT_TOTAL_BUDGET_SECONDS = 12.0
 
 
 class AsrStartStatus(Enum):
@@ -1074,12 +1089,38 @@ class IndependentAsrRuntime:
                         return stale_result(provider)
                     if attempt + 1 >= max_attempts:
                         raise
-                    await asyncio.sleep(
-                        min(
-                            policy.connect_retry_cap_seconds,
-                            policy.connect_retry_base_seconds * (2**attempt),
-                        )
+                    backoff = min(
+                        policy.connect_retry_cap_seconds,
+                        policy.connect_retry_base_seconds * (2**attempt),
                     )
+                    # Aggregate retry budget (Codex P1). Each attempt can burn
+                    # _READY_TIMEOUT_SECONDS before ASR_CONNECT_TIMEOUT, and
+                    # _start_session_activate awaits this whole loop before it
+                    # sends session_started -- while the frontend cancels the
+                    # start and fires end_session at
+                    # _FRONTEND_START_DEADLINE_SECONDS. So on a sustained
+                    # provider outage a second attempt could not finish in time
+                    # no matter what: the frontend always tore the session down
+                    # mid-retry, and the user saw a generic start timeout
+                    # instead of the fail-closed ASR verdict this code exists to
+                    # produce. Only start another attempt when its worst case
+                    # still fits.
+                    elapsed = time.monotonic() - connect_started_at
+                    if (
+                        elapsed + backoff + _READY_TIMEOUT_SECONDS
+                        > _CONNECT_TOTAL_BUDGET_SECONDS
+                    ):
+                        logger.warning(
+                            "[asr] connect retry budget exhausted after %.1fs "
+                            "(provider=%s attempt=%d/%d); failing closed so the "
+                            "verdict reaches the client before its start deadline",
+                            elapsed,
+                            provider,
+                            attempt + 1,
+                            max_attempts,
+                        )
+                        raise
+                    await asyncio.sleep(backoff)
                     if not operation_is_current():
                         return stale_result(provider)
             if asr_session is None:

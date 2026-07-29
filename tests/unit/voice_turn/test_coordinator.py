@@ -242,3 +242,42 @@ async def test_close_is_idempotent():
     await coordinator.close()
     assert coordinator.state is CoordinatorState.CLOSED
     assert predictor.closed is True
+
+
+async def test_cancelled_predictor_call_reports_cancellation_not_the_worker_error():
+    # Codex P2. The loop caught only CancelledError, so a worker thread that
+    # raised AFTER the call was cancelled propagated its own exception straight
+    # out and skipped the cancelled branch entirely: the caller saw an
+    # inference/runtime error instead of the cancellation it asked for, which
+    # misclassifies reset and teardown work -- a cancelled idle unload surfaced
+    # as a runtime failure.
+
+    started = asyncio.Event()
+    release = threading.Event()
+
+    def _worker():
+        started.set()
+        # Block until the test has cancelled the awaiting task, then fail.
+        release.wait(5)
+        raise RuntimeError("predictor blew up after cancellation")
+
+    task = asyncio.create_task(TurnCoordinator._run_predictor_call(_worker))
+    await asyncio.wait_for(started.wait(), timeout=5)
+    task.cancel()
+    # Let the cancellation land while the thread is still running...
+    await asyncio.sleep(0)
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_uncancelled_predictor_failure_still_reports_the_worker_error():
+    # The other side: with no cancellation recorded, the worker's own exception
+    # must reach the caller unchanged.
+
+    def _worker():
+        raise RuntimeError("plain predictor failure")
+
+    with pytest.raises(RuntimeError, match="plain predictor failure"):
+        await TurnCoordinator._run_predictor_call(_worker)
