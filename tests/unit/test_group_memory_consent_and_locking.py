@@ -1175,3 +1175,46 @@ async def test_per_request_consent_check_is_opt_in():
         timeout=2.0,
     )
     assert attempts == ["qq:7788:2046"]
+
+
+@pytest.mark.asyncio
+async def test_second_drain_wave_sees_an_opt_out_from_the_first():
+    """A sweep is two waves; the second must not outrun the switch.
+
+    Up to eight buckets pass through a four-slot semaphore, so the later
+    wave starts after the earlier requests returned — long enough for an
+    opt-out to land. Those buckets come back as failures and the snapshot
+    return then discards them fail-closed.
+    """
+    posted: list[str] = []
+    first_wave_done = 0
+
+    service, plugin, user_data, _locks = _group_drain_harness(None)
+    quota = service.GROUP_MEMBER_MAX_PARTICIPANTS
+    concurrency = service.MEMBER_FLUSH_CONCURRENCY
+    user_data["group_member_memory_messages"] = {
+        str(7000 + i): [{"role": "user", "content": [{"type": "text", "text": "x"}]}]
+        for i in range(quota)
+    }
+    user_data["group_member_memory_labels"] = {}
+
+    async def _post_scoped(her_name, messages, **kwargs):
+        nonlocal first_wave_done
+        posted.append((kwargs.get("subject") or {}).get("subject_id", ""))
+        first_wave_done += 1
+        if first_wave_done == concurrency:
+            # 第一波刚跑完，用户关掉了成员记忆。
+            plugin._qq_settings["group_member_memory_enabled"] = False
+        return {"status": "ok"}
+
+    plugin.memory_bridge.post_scoped_memory_history = _post_scoped
+
+    await asyncio.wait_for(
+        service._drain_member_buckets("group:7788"), timeout=3.0,
+    )
+
+    assert len(posted) == concurrency, (
+        "第二波在 opt-out 之后照样发了出去"
+    )
+    # 撤销之后剩下的按 fail-closed 丢弃，没有回到队列。
+    assert not (user_data.get("group_member_memory_messages") or {})

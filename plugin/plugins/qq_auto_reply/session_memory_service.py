@@ -808,6 +808,13 @@ class QQSessionMemoryService:
                 reason="member_bucket_cap",
                 buckets=snapshot,
                 labels=snapshot_labels,
+                # 一趟最多两波：第一波在飞时落下的 opt-out，第二波必须看见。
+                # 剩下的桶会以"失败"回到 snapshot，再由 _return_snapshot 按
+                # fail-closed 丢弃。
+                # 注意只有这条"在实时授权下收集"的路径该开它——finalize 与
+                # settle_member_buckets_on_disable 冲的是 opt-out 之前收集、
+                # 等着结算的那批，开了等于把它们连同结算一起废掉。
+                require_consent=True,
             )
         finally:
             await self.plugin._run_with_session_lock(
