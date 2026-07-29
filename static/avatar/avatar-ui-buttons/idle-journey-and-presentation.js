@@ -759,12 +759,14 @@ function _dispatchNekoIdleDesktopChatPairMoveBounds(screenRect, options = {}) {
 function _getNekoIdleCat1PairMoveChatTarget() {
     const shell = _getNekoIdleReactChatMinimizedShell();
     if (shell) {
-        const rect = _getNekoIdleReactChatMinimizedRect();
+        const localRect = _getNekoIdleReactChatMinimizedRect();
+        const rect = _getNekoDesktopVirtualRect(localRect);
         if (rect && rect.width > 0 && rect.height > 0) {
             return {
                 mode: 'dom',
                 shell: shell,
-                rect: rect
+                rect: rect,
+                localRect: localRect
             };
         }
     }
@@ -875,8 +877,8 @@ function _getNekoIdleCat1PairMovePlan(button) {
         container: container,
         catStartLeft: catRect.left,
         catStartTop: catRect.top,
-        chatStartLeft: chatRect ? chatRect.left : null,
-        chatStartTop: chatRect ? chatRect.top : null,
+        chatStartLeft: chatTarget && chatTarget.localRect ? chatTarget.localRect.left : (chatRect ? chatRect.left : null),
+        chatStartTop: chatTarget && chatTarget.localRect ? chatTarget.localRect.top : (chatRect ? chatRect.top : null),
         chatStartScreenLeft: chatTarget && chatTarget.screenRect ? chatTarget.screenRect.left : null,
         chatStartScreenTop: chatTarget && chatTarget.screenRect ? chatTarget.screenRect.top : null,
         chatWidth: chatRect ? chatRect.width : null,

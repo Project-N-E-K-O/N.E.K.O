@@ -257,6 +257,41 @@ test('CAT1 pair movement clamps vectors against the virtual desktop instead of t
     );
 });
 
+test('CAT1 React pair movement compares both actors in virtual crop coordinates', () => {
+    const shell = { id: 'react-chat-window-shell' };
+    const localRect = { left: 24, top: 36, width: 56, height: 56, right: 80, bottom: 92 };
+    const context = {
+        _getNekoIdleReactChatMinimizedShell: () => shell,
+        _getNekoIdleReactChatMinimizedRect: () => localRect,
+        _getNekoDesktopVirtualRect: (rect) => ({
+            left: rect.left + 640,
+            top: rect.top + 280,
+            width: rect.width,
+            height: rect.height,
+            right: rect.right + 640,
+            bottom: rect.bottom + 280
+        }),
+        _getNekoIdleDesktopChatMinimizedRect: () => null
+    };
+    vm.createContext(context);
+    vm.runInContext(
+        readFunction(
+            'static/avatar/avatar-ui-buttons/idle-journey-and-presentation.js',
+            '_getNekoIdleCat1PairMoveChatTarget'
+        ),
+        context
+    );
+
+    const target = context._getNekoIdleCat1PairMoveChatTarget();
+    assert.equal(target.mode, 'dom');
+    assert.equal(target.shell, shell);
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(target.rect)),
+        { left: 664, top: 316, width: 56, height: 56, right: 720, bottom: 372 }
+    );
+    assert.deepEqual(JSON.parse(JSON.stringify(target.localRect)), localRect);
+});
+
 test('model-to-cat anchor converts client managers once but keeps Live2D virtual bounds unchanged', () => {
     const context = {
         I: {

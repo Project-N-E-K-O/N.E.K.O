@@ -443,6 +443,17 @@ def test_cat1_desktop_pair_move_skips_linux_runtime_native_bounds_sync():
         "function _easeNekoIdleCat1PairMove(progress) {",
     )
     assert "chatTarget && chatTarget.mode === 'desktop' && _isNekoDesktopLinuxRuntime()" in plan_block
+    assert "chatTarget && chatTarget.localRect ? chatTarget.localRect.left" in plan_block
+    assert "chatTarget && chatTarget.localRect ? chatTarget.localRect.top" in plan_block
+
+    target_block = _between(
+        source,
+        "function _getNekoIdleCat1PairMoveChatTarget() {",
+        "function _clampNekoIdleCat1MoveVector",
+    )
+    assert "const localRect = _getNekoIdleReactChatMinimizedRect();" in target_block
+    assert "const rect = _getNekoDesktopVirtualRect(localRect);" in target_block
+    assert "localRect: localRect" in target_block
 
     schedule_guard_block = _between(
         source,
