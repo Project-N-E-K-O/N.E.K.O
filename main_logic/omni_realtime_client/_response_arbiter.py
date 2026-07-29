@@ -176,6 +176,7 @@ class RealtimeResponseArbiter:
             self._current is not None
             or self._response_owner is not None
             or self._server_response_active
+            or self._server_vad_response_pending
             or not self._queue.empty()
         )
 
@@ -418,6 +419,14 @@ class RealtimeResponseArbiter:
         healthy connection, so past that bound its id stops holding the lane.
         """
 
+        if self._server_vad_response_pending:
+            # speech_stopped announces an automatic response before its
+            # response.created event supplies an id. Keep dispatch closed in
+            # that correlation gap; otherwise an explicit response.create can
+            # steal the next created event and leave its own ticket unresolved.
+            self._server_response_active = True
+            self._idle.clear()
+            return
         now = asyncio.get_running_loop().time()
         stale = [
             response_id
@@ -492,6 +501,8 @@ class RealtimeResponseArbiter:
             # do not let the later VAD boundary steal that owner.
             return
         self._server_vad_response_pending = True
+        self._server_response_active = True
+        self._idle.clear()
 
     def notify_response_terminal(self, event: dict[str, Any] | None = None) -> None:
         owner = self._response_owner

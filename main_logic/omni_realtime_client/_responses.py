@@ -595,17 +595,41 @@ class _ResponseMixin:
 
                 self._fire_task(_observe_ticket_outcome())
         except asyncio.CancelledError:
-            self._inject_rejection_handlers.pop(item_event_id, None)
-            self._inject_rejection_handlers.pop(create_event_id, None)
-            _close_outcome_window()
+            ticket_completed = False
             if ticket is not None:
                 try:
-                    await asyncio.shield(arbiter.cancel_ticket(ticket))
+                    cancellation_requested = await asyncio.shield(
+                        arbiter.cancel_ticket(ticket)
+                    )
                 except Exception as cancel_exc:
                     logger.warning(
                         "proactive inject cancellation cleanup failed: %s",
                         cancel_exc,
                     )
+                else:
+                    if not cancellation_requested:
+                        try:
+                            await asyncio.wait_for(
+                                asyncio.shield(ticket.done),
+                                timeout=(
+                                    _PROACTIVE_TICKET_CANCEL_OBSERVE_TIMEOUT_SECONDS
+                                ),
+                            )
+                        except (asyncio.CancelledError, asyncio.TimeoutError):
+                            pass
+                        except Exception:
+                            pass
+                        else:
+                            ticket_completed = True
+                            if (
+                                on_rejected is not None
+                                or on_completed is not None
+                            ):
+                                _complete_once()
+            if not ticket_completed:
+                self._inject_rejection_handlers.pop(item_event_id, None)
+                self._inject_rejection_handlers.pop(create_event_id, None)
+                _close_outcome_window()
             raise
         except Exception:
             self._inject_rejection_handlers.pop(item_event_id, None)
@@ -1084,7 +1108,14 @@ class _ResponseMixin:
                 **inject_kwargs,
             )
         except asyncio.CancelledError:
-            _remove_visual_rejection_handler()
+            # inject_text_and_request_response may discover that cancellation
+            # lost to this exact ticket's successful terminal state while it
+            # was still awaiting ticket.sent. Its completion callback is the
+            # authoritative signal that the snapshot was delivered.
+            if outcome_observed.is_set() and not delivery_rejected:
+                _mark_snapshot_consumed_if_current()
+            else:
+                _remove_visual_rejection_handler()
             raise
         except Exception as exc:
             _remove_visual_rejection_handler()

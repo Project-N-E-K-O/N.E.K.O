@@ -1105,6 +1105,81 @@ async def test_cancelled_enqueue_preserves_original_cancellation():
 
 
 @pytest.mark.unit
+async def test_cancelled_inject_reports_completion_when_ticket_already_finished():
+    client = _make_client()
+    real_arbiter = client._response_arbiter
+    loop = asyncio.get_running_loop()
+    ticket = SimpleNamespace(
+        sent=loop.create_future(),
+        done=loop.create_future(),
+    )
+
+    async def terminal_cancel_noop(*_args, **_kwargs):
+        ticket.done.set_result(SimpleNamespace())
+        return False
+
+    completed = []
+    client._response_arbiter = SimpleNamespace(
+        enqueue=AsyncMock(return_value=ticket),
+        cancel_ticket=AsyncMock(side_effect=terminal_cancel_noop),
+    )
+    task = asyncio.create_task(
+        client.inject_text_and_request_response(
+            "complete during inject cancellation",
+            on_rejected=lambda _message: None,
+            on_completed=lambda: completed.append(True),
+        )
+    )
+    for _ in range(20):
+        if client._proactive_inject_awaiting_outcome:
+            break
+        await asyncio.sleep(0)
+    else:
+        raise AssertionError("proactive inject did not open its outcome window")
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert completed == [True]
+    assert client._proactive_inject_awaiting_outcome is False
+    assert client._inject_rejection_handlers == {}
+
+    client._response_arbiter = real_arbiter
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_cancelled_prompt_consumes_snapshot_if_inject_completed():
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+    inject_started = asyncio.Event()
+
+    async def complete_during_cancel(_text, *, on_rejected, on_completed):
+        inject_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            on_completed()
+            raise
+
+    client.inject_text_and_request_response = complete_during_cancel
+    task = asyncio.create_task(
+        client.prompt_ephemeral("complete during inject cancellation")
+    )
+    await inject_started.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert client._proactive_image_consumed is True
+    assert client._inject_rejection_handlers
+    await client.close()
+
+
+@pytest.mark.unit
 async def test_old_inject_ttl_does_not_clear_new_outcome_window():
     client = _make_client()
     client._proactive_inject_awaiting_outcome = True

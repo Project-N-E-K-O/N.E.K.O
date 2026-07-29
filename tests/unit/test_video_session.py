@@ -151,6 +151,36 @@ async def test_non_native_vision_fallback():
 
 
 @pytest.mark.unit
+async def test_step_response_done_rearms_next_frame_analysis():
+    client = _make_client("step-realtime", supports_native_image=False)
+    client._image_description = "[实时屏幕截图或相机画面]: 一只猫"
+    client._image_recognized_this_turn = True
+    client._current_response_id = "resp-step"
+    client._is_responding = True
+    client._close_failed_transport = AsyncMock()
+    client.ws.__aiter__.return_value = [
+        json.dumps(
+            {
+                "type": "response.done",
+                "response": {"id": "resp-step", "status": "completed"},
+            }
+        )
+    ]
+
+    await client.handle_messages()
+
+    assert client._image_recognized_this_turn is False
+    assert "正在分析中" in client._image_description
+
+    client._analyze_image_with_vision_model = AsyncMock()
+    await client.stream_image(DUMMY_IMAGE_B64)
+    client._analyze_image_with_vision_model.assert_awaited_once_with(
+        DUMMY_IMAGE_B64
+    )
+    await client.close()
+
+
+@pytest.mark.unit
 async def test_non_native_callback_analysis_does_not_replace_ambient_snapshot():
     client = _make_client("step-realtime", supports_native_image=False)
     client._latest_image_b64 = "ambient-frame"

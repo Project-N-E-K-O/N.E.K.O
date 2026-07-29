@@ -1142,6 +1142,12 @@ class _TransportMixin:
                     self._output_transcript_buffer = ""
                     self._print_input_transcript = False
                     self._image_recognized_this_turn = False
+                    if not self._supports_native_image:
+                        # Standard StepFun analyzes only while this sentinel is
+                        # present. Rearm it at the turn boundary so the next
+                        # cached frame can start a fresh VISION_MODEL analysis
+                        # instead of leaving proactive visual nudges disabled.
+                        self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
                     self._image_sent_this_turn = False
                     if self.on_response_done:
                         await self.on_response_done()
