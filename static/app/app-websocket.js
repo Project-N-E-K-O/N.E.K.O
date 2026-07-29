@@ -2682,11 +2682,13 @@
                             var _rt = returnSessionButton(); if (_rt) _rt.disabled = true;
 
                             setTimeout(async function () {
+                                var restartStartOwner = null;
                                 try {
                                     var sessionStartPromise = new Promise(function (resolve, reject) {
-                                        S.sessionStartedResolver = resolve;
-                                        S.sessionStartedRejecter = reject;
-                                        S._pendingSessionStartMode = 'audio';
+                                        // Owner token for every release in this
+                                        // flow; see claimSessionStart in
+                                        // app-state.js.
+                                        restartStartOwner = window.claimSessionStart('audio', resolve, reject);
                                         // Re-arm the fail-closed latch on user
                                         // intent, strictly before start_session
                                         // goes out and therefore before any
@@ -2702,10 +2704,11 @@
                                     S.socket.send(JSON.stringify({ action: 'start_session', input_type: 'audio' }));
 
                                     window.sessionTimeoutId = setTimeout(function () {
+                                        // Only for the start this timer was armed for.
+                                        if (!window.sessionStartIsCurrent(restartStartOwner)) return;
                                         if (S.sessionStartedRejecter) {
                                             var rejecter = S.sessionStartedRejecter;
-                                            S.sessionStartedResolver = null;
-                                            S.sessionStartedRejecter = null;
+                                            window.releaseSessionStart(restartStartOwner);
                                             window.sessionTimeoutId = null;
 
                                             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
@@ -2787,12 +2790,14 @@
                                 } catch (error) {
                                     console.error(window.t('console.restartError'), error);
 
-                                    if (window.sessionTimeoutId) {
-                                        clearTimeout(window.sessionTimeoutId);
-                                        window.sessionTimeoutId = null;
+                                    // Only tear down THIS restart's slot.
+                                    if (window.sessionStartIsCurrent(restartStartOwner)) {
+                                        if (window.sessionTimeoutId) {
+                                            clearTimeout(window.sessionTimeoutId);
+                                            window.sessionTimeoutId = null;
+                                        }
+                                        window.releaseSessionStart(restartStartOwner);
                                     }
-                                    S.sessionStartedResolver = null;
-                                    S.sessionStartedRejecter = null;
 
                                     if (S.socket && S.socket.readyState === WebSocket.OPEN) {
                                         S.socket.send(JSON.stringify({ action: 'end_session' }));

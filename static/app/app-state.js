@@ -250,6 +250,44 @@
         return error;
     };
 
+    // ---- voice-start slot ownership -------------------------------------
+    //
+    // S.sessionStartedResolver / Rejecter / _pendingSessionStartMode are ONE
+    // shared slot, and concurrent starts genuinely exist: the mic button, the
+    // composer's text send, the avatar-drop text entry and the automatic
+    // reconnect restart can all be in flight together. Every flow used to
+    // clear the slot unconditionally on its own way out, so whichever finished
+    // first wiped whoever currently owned it -- the newer start then hung on a
+    // promise nobody would ever settle, or had its timeout cancelled out from
+    // under it.
+    //
+    // The owner token is the resolver function itself: it is already unique
+    // per start and already in scope at every site that needs to check.
+    // claim/release below are the only way a FLOW should touch the slot;
+    // cancelPendingSessionStart stays deliberately unconditional because it is
+    // the global "abandon whatever is pending" lever (goodbye, avatar drop,
+    // character switch), where killing a foreign start is the intent.
+    window.claimSessionStart = function (mode, resolve, reject) {
+        S.sessionStartedResolver = resolve;
+        S.sessionStartedRejecter = reject;
+        S._pendingSessionStartMode = mode;
+        return resolve;
+    };
+
+    /** Release the slot only while ``owner`` still holds it. */
+    window.releaseSessionStart = function (owner) {
+        if (!owner || S.sessionStartedResolver !== owner) return false;
+        S.sessionStartedResolver = null;
+        S.sessionStartedRejecter = null;
+        S._pendingSessionStartMode = null;
+        return true;
+    };
+
+    /** True while ``owner`` is still the pending start. */
+    window.sessionStartIsCurrent = function (owner) {
+        return !!owner && S.sessionStartedResolver === owner;
+    };
+
     window.cancelPendingSessionStart = function (reason) {
         if (window.sessionTimeoutId) {
             clearTimeout(window.sessionTimeoutId);

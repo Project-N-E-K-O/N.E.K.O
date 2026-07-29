@@ -2150,10 +2150,12 @@
                 }
 
                 // Create a promise for session_started
+                var micStartOwner = null;
                 var sessionStartPromise = new Promise(function (resolve, reject) {
-                    S.sessionStartedResolver = resolve;
-                    S.sessionStartedRejecter = reject;
-                    S._pendingSessionStartMode = 'audio';
+                    // Claim the shared slot and keep the owner token (the
+                    // resolver itself). Every release below is gated on it, so
+                    // this flow can never clear a slot that a newer start owns.
+                    micStartOwner = window.claimSessionStart('audio', resolve, reject);
                     // Re-arm the fail-closed voice latch on user intent, strictly
                     // before start_session goes out and therefore before any route
                     // verdict for this session can arrive.
@@ -2185,11 +2187,13 @@
 
                 // Timeout (15s)
                 window.sessionTimeoutId = setTimeout(function () {
+                    // Only fire for the start this timer was armed for: a newer
+                    // start may own the slot by now, and rejecting/clearing it
+                    // here would strand the promise its awaiter is holding.
+                    if (!window.sessionStartIsCurrent(micStartOwner)) return;
                     if (S.sessionStartedRejecter) {
                         var rejecter = S.sessionStartedRejecter;
-                        S.sessionStartedResolver = null;
-                        S.sessionStartedRejecter = null;
-                        S._pendingSessionStartMode = null;
+                        window.releaseSessionStart(micStartOwner);
                         window.sessionTimeoutId = null;
 
                         if (S.socket && S.socket.readyState === WebSocket.OPEN) {
@@ -2311,15 +2315,20 @@
                     console.error(window.t('console.startVoiceSessionFailed'), error);
                 }
 
-                // Cleanup
-                if (window.sessionTimeoutId) {
-                    clearTimeout(window.sessionTimeoutId);
-                    window.sessionTimeoutId = null;
+                // Cleanup -- but only of THIS start. This handler is the most
+                // damaging of the unconditional clears: it wiped the shared
+                // resolver/rejecter/mode and rejected the pending text start,
+                // so a mic start failing while the user had already switched to
+                // typing tore down the text session that had superseded it.
+                var micStartStillOurs = window.sessionStartIsCurrent(micStartOwner);
+                if (micStartStillOurs) {
+                    if (window.sessionTimeoutId) {
+                        clearTimeout(window.sessionTimeoutId);
+                        window.sessionTimeoutId = null;
+                    }
+                    rejectPendingTextSessionStart(error);
+                    window.releaseSessionStart(micStartOwner);
                 }
-                rejectPendingTextSessionStart(error);
-                S.sessionStartedResolver = null;
-                S.sessionStartedRejecter = null;
-                S._pendingSessionStartMode = null;
 
                 if (!isVoiceStartCancelled && !(error && error.voiceConfigSwitchTimedOut) && S.socket && S.socket.readyState === WebSocket.OPEN) {
                     S.socket.send(JSON.stringify({ action: 'end_session' }));
@@ -2574,10 +2583,11 @@
                 window.showStatusToast(window.t ? window.t('app.initializingText') : '\u6B63\u5728\u521D\u59CB\u5316\u6587\u672C\u5BF9\u8BDD...', initToastMs1);
 
                 // Wait for session_started
+                var textStartOwner = null;
                 var sessionStartPromise = new Promise(function (resolve, reject) {
-                    S.sessionStartedResolver = resolve;
-                    S.sessionStartedRejecter = reject;
-                    S._pendingSessionStartMode = 'text';
+                    // Owner token for every release in this flow; see
+                    // window.claimSessionStart in app-state.js.
+                    textStartOwner = window.claimSessionStart('text', resolve, reject);
 
                     if (window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);
@@ -2585,11 +2595,11 @@
                     }
 
                     window.sessionTimeoutId = setTimeout(function () {
+                        // Only for the start this timer was armed for.
+                        if (!window.sessionStartIsCurrent(textStartOwner)) return;
                         if (S.sessionStartedRejecter) {
                             var rejecter = S.sessionStartedRejecter;
-                            S.sessionStartedResolver = null;
-                            S.sessionStartedRejecter = null;
-                            S._pendingSessionStartMode = null;
+                            window.releaseSessionStart(textStartOwner);
                             window.sessionTimeoutId = null;
 
                             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
@@ -2681,13 +2691,16 @@
                     5000
                 );
 
-                if (window.sessionTimeoutId) {
-                    clearTimeout(window.sessionTimeoutId);
-                    window.sessionTimeoutId = null;
+                // Only tear down THIS start: a newer one may own the slot by
+                // now, and clearing it would strand its awaiter.
+                if (window.sessionStartIsCurrent(textStartOwner)) {
+                    if (window.sessionTimeoutId) {
+                        clearTimeout(window.sessionTimeoutId);
+                        window.sessionTimeoutId = null;
+                    }
+                    rejectPendingTextSessionStart(error);
+                    window.releaseSessionStart(textStartOwner);
                 }
-                rejectPendingTextSessionStart(error);
-                S.sessionStartedResolver = null;
-                S.sessionStartedRejecter = null;
 
                 returnSessionButton.disabled = false;
             } finally {
@@ -2814,6 +2827,7 @@
                 screenshotButton.disabled = true;
                 resetSessionButton.disabled = false;
 
+                var composerStartOwner = null;
                 try {
                     if (!mod._textSessionStartPromise) {
                         mod._textSessionStartPromise = (async function () {
@@ -2822,9 +2836,8 @@
                             window.showStatusToast(window.t ? window.t('app.initializingText') : '\u6B63\u5728\u521D\u59CB\u5316\u6587\u672C\u5BF9\u8BDD...', initToastMs2);
 
                             var sessionStartPromise = new Promise(function (resolve, reject) {
-                                S.sessionStartedResolver = resolve;
-                                S.sessionStartedRejecter = reject;
-                                S._pendingSessionStartMode = 'text';
+                                // Owner token for every release in this flow.
+                                composerStartOwner = window.claimSessionStart('text', resolve, reject);
                                 mod._textSessionStartRejecter = reject;
 
                                 if (window.sessionTimeoutId) {
@@ -2842,11 +2855,11 @@
 
                             // Timeout after WebSocket confirms connection
                             window.sessionTimeoutId = setTimeout(function () {
+                                // Only for the start this timer was armed for.
+                                if (!window.sessionStartIsCurrent(composerStartOwner)) return;
                                 if (S.sessionStartedRejecter) {
                                     var rejecter = S.sessionStartedRejecter;
-                                    S.sessionStartedResolver = null;
-                                    S.sessionStartedRejecter = null;
-                                    S._pendingSessionStartMode = null;
+                                    window.releaseSessionStart(composerStartOwner);
                                     mod._textSessionStartRejecter = null;
                                     window.sessionTimeoutId = null;
 
@@ -2878,12 +2891,13 @@
                     }
 
                     await mod._textSessionStartPromise;
-                    if (window.sessionTimeoutId) {
-                        clearTimeout(window.sessionTimeoutId);
-                        window.sessionTimeoutId = null;
+                    if (window.sessionStartIsCurrent(composerStartOwner)) {
+                        if (window.sessionTimeoutId) {
+                            clearTimeout(window.sessionTimeoutId);
+                            window.sessionTimeoutId = null;
+                        }
+                        window.releaseSessionStart(composerStartOwner);
                     }
-                    S.sessionStartedResolver = null;
-                    S.sessionStartedRejecter = null;
                 } catch (error) {
                     console.error(window.t('console.startTextSessionFailed'), error);
                     window.hideVoicePreparingToast();
@@ -2894,12 +2908,13 @@
                         5000
                     );
 
-                    if (window.sessionTimeoutId) {
-                        clearTimeout(window.sessionTimeoutId);
-                        window.sessionTimeoutId = null;
+                    if (window.sessionStartIsCurrent(composerStartOwner)) {
+                        if (window.sessionTimeoutId) {
+                            clearTimeout(window.sessionTimeoutId);
+                            window.sessionTimeoutId = null;
+                        }
+                        window.releaseSessionStart(composerStartOwner);
                     }
-                    S.sessionStartedResolver = null;
-                    S.sessionStartedRejecter = null;
 
                     textSendButton.disabled = false;
                     textInputBox.disabled = false;
