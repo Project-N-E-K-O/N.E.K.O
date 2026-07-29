@@ -852,6 +852,8 @@ class _ResponseMixin:
         def _on_visual_rejected(error_msg: str) -> None:
             nonlocal visual_delivery_rejected
             visual_delivery_rejected = True
+            if self._latest_image_b64 == snapshot_image_b64:
+                self._proactive_image_consumed = False
             _on_rejected(error_msg)
 
         def _on_completed() -> None:
@@ -900,6 +902,9 @@ class _ResponseMixin:
             # SDK send failures are handled by stream_image() directly.
             visual_event_id = f"event_inject_image_{uuid.uuid4().hex}"
             self._inject_rejection_handlers[visual_event_id] = _on_visual_rejected
+            self._fire_task(
+                self._expire_inject_rejection_handler(visual_event_id, 60.0)
+            )
 
         if has_vision and self._supports_native_image and snapshot_image_b64:
             # ``bypass_rate_limit`` identifies this as one deliberate cue image.
@@ -1015,7 +1020,7 @@ class _ResponseMixin:
                             proactive_ticket
                         )
                     )
-                else:
+                elif not outcome_observed.is_set():
                     await asyncio.shield(self.cancel_response())
             except Exception as cancel_exc:
                 logger.warning(
@@ -1130,7 +1135,9 @@ class _ResponseMixin:
             return False
         if has_vision and self._latest_image_b64 == snapshot_image_b64:
             self._proactive_image_consumed = True
-        _remove_visual_rejection_handler()
+        # Native image validation/filtering errors may arrive after the text
+        # response has completed. Keep the exact image handler until rejection
+        # or its TTL so a late error can re-arm this snapshot for retry.
         logger.info(
             "prompt_ephemeral: proactive text injected (%s)",
             "vision" if has_vision else "general",

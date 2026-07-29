@@ -150,6 +150,35 @@ async def test_free_prompt_sends_native_image_before_text():
 
 
 @pytest.mark.unit
+async def test_native_image_rejection_after_text_completion_rearms_snapshot():
+    """Retain the image handler for provider errors that follow response.done."""
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+
+    delivered = await _prompt_and_complete(client, "describe what you notice")
+
+    image_event = next(
+        event
+        for event in _sent_events(client)
+        if event.get("type") == "input_image_buffer.append"
+    )
+    image_event_id = image_event["event_id"]
+    assert delivered is True
+    assert client._proactive_image_consumed is True
+    assert image_event_id in client._inject_rejection_handlers
+
+    client._route_inject_rejection(
+        image_event_id,
+        "late input image rejection",
+    )
+
+    assert client._proactive_image_consumed is False
+    assert image_event_id not in client._inject_rejection_handlers
+    await client.close()
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("api_type", "model", "image_event_type"),
     [
@@ -631,6 +660,33 @@ async def test_gemini_delivery_timeout_observes_boundary_completion(monkeypatch)
     delivered = await client.prompt_ephemeral("complete at timeout boundary")
 
     assert delivered is True
+    assert client._gemini_session.send_client_content.await_count == 1
+    assert client._gemini_proactive_outcome is None
+    assert client._proactive_inject_awaiting_outcome is False
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_gemini_cancelled_wait_observes_boundary_completion(monkeypatch):
+    """Do not interrupt Gemini when cancellation loses to turn completion."""
+    client = _make_client(api_type="gemini", model="gemini-live")
+    client._gemini_session = AsyncMock()
+
+    async def cancel_after_completion(awaitable, *, timeout):
+        del timeout
+        awaitable.close()
+        client._settle_gemini_proactive_inject()
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(
+        responses_module.asyncio,
+        "wait_for",
+        cancel_after_completion,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await client.prompt_ephemeral("complete before cancellation")
+
     assert client._gemini_session.send_client_content.await_count == 1
     assert client._gemini_proactive_outcome is None
     assert client._proactive_inject_awaiting_outcome is False
