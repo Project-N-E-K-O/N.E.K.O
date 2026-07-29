@@ -821,10 +821,12 @@ class ProactiveMixin:
                 # Stream any images carried by these cues into the (guaranteed)
                 # voice session right before inject, so the proactive response
                 # sees the matching visual context (Codex P2).
+                voice_media_events: list[tuple[dict, dict]] = []
                 if not await self._stream_cb_media(
                     voice_snapshot,
                     voice_sess,
                     on_rejected=_on_voice_media_rejected,
+                    events_before_text=voice_media_events,
                 ):
                     # A media stream failed — DEFER the whole inject so this cb
                     # retries WITH its image rather than being delivered
@@ -881,9 +883,31 @@ class ProactiveMixin:
                     extra for extra in voice_extra_snapshot
                     if extra.get("_callback_delivery_id") in delivered_ids
                 ]
+                delivered_obj_ids = {id(cb) for cb in voice_snapshot}
+                selected_media_events = []
+                for owner_cb, event in voice_media_events:
+                    if (
+                        id(owner_cb) in delivered_obj_ids
+                        and not owner_cb.get(DELIVERY_RETRACTED_KEY)
+                    ):
+                        selected_media_events.append(event)
+                        continue
+                    # This description was analyzed locally but will not be
+                    # sent after its callback was superseded/retracted.
+                    voice_sess._inject_rejection_handlers.pop(
+                        event.get("event_id"),
+                        None,
+                    )
+                events_before_text = tuple(selected_media_events)
                 try:
+                    inject_kwargs = {
+                        "on_rejected": _on_voice_inject_rejected,
+                    }
+                    if events_before_text:
+                        inject_kwargs["events_before_text"] = events_before_text
                     await voice_sess.inject_text_and_request_response(
-                        instruction, on_rejected=_on_voice_inject_rejected
+                        instruction,
+                        **inject_kwargs,
                     )
                 except NotImplementedError:
                     # Defensive fallback. As of now every realtime provider
@@ -1559,6 +1583,7 @@ class ProactiveMixin:
         session,
         *,
         on_rejected=None,
+        events_before_text: list[tuple[dict, dict]] | None = None,
     ) -> bool:
         """Stream images carried by proactive callbacks (push_message
         media_parts with ai_behavior="respond") into ``session`` right before
@@ -1578,11 +1603,15 @@ class ProactiveMixin:
         VOICE path only: OmniRealtimeClient.stream_image() persists the image
         as a conversation.item the immediately-following proactive
         response.create sees (same-turn), but callback-owned media is excluded
-        from the ambient latest-frame cache. Otherwise a successfully delivered
-        callback image could be selected again by the next scheduled proactive
-        prompt. TEXT mode does NOT go through here — its proactive images are
-        passed explicitly to prompt_ephemeral() (separate from the user's
-        _pending_images staging queue); see _deliver_agent_callbacks_text.
+        from the ambient latest-frame cache. Standard StepFun instead returns
+        a callback-owned VISION_MODEL description; this method queues that
+        description in ``events_before_text`` so it shares the callback text's
+        exact arbiter ticket. Otherwise a successfully delivered callback image
+        could be selected again by the next scheduled proactive prompt, or its
+        analysis could be lost before the callback text. TEXT mode does NOT go
+        through here — its proactive images are passed explicitly to
+        prompt_ephemeral() (separate from the user's _pending_images staging
+        queue); see _deliver_agent_callbacks_text.
 
         Media is LEFT on the cb (NOT popped) until the cb is delivered &
         pruned, so a deferred / failed-and-retried cb re-streams it instead of
@@ -1594,6 +1623,7 @@ class ProactiveMixin:
         if si is None:
             return True
         all_ok = True
+        registered_description_event_ids: list[str] = []
         for cb in callbacks:
             if not isinstance(cb, dict):
                 continue
@@ -1606,12 +1636,55 @@ class ProactiveMixin:
                     # Deliberate cue image: bypass the native-vision frame-rate
                     # throttle so it isn't silently dropped behind a recent
                     # high-frequency screen/camera frame (Codex P2).
-                    await si(
+                    description = await si(
                         b64,
                         bypass_rate_limit=True,
                         cache_latest=False,
                         on_rejected=on_rejected,
                     )
+                    if not getattr(session, "_supports_native_image", True):
+                        if not isinstance(description, str) or not description.strip():
+                            raise RuntimeError(
+                                "callback image analysis produced no description"
+                            )
+                        if events_before_text is None:
+                            raise RuntimeError(
+                                "Step callback image requires ticket-bound description events"
+                            )
+                        description_event_id = (
+                            f"event_callback_image_description_{uuid4().hex}"
+                        )
+                        if on_rejected is not None:
+                            session._inject_rejection_handlers[
+                                description_event_id
+                            ] = on_rejected
+                            session._fire_task(
+                                session._expire_inject_rejection_handler(
+                                    description_event_id,
+                                    60.0,
+                                )
+                            )
+                            registered_description_event_ids.append(
+                                description_event_id
+                            )
+                        events_before_text.append((
+                            cb,
+                            {
+                                "type": "conversation.item.create",
+                                "event_id": description_event_id,
+                                "item": {
+                                    "type": "message",
+                                    "role": "user",
+                                    "content": [{
+                                        "type": "input_text",
+                                        "text": (
+                                            "[实时屏幕截图或相机画面]: "
+                                            f"{description.strip()}"
+                                        ),
+                                    }],
+                                },
+                            },
+                        ))
                     streamed += 1
                 except Exception as e:
                     # Keep the FULL media set (do NOT trim already-streamed
@@ -1634,6 +1707,9 @@ class ProactiveMixin:
             # All streamed: keep media_images on the cb until it's delivered+
             # pruned (preserve-until-success) so an inject/prompt failure retry
             # re-streams it. Successful delivery removes the cb (and its media).
+        if not all_ok:
+            for event_id in registered_description_event_ids:
+                session._inject_rejection_handlers.pop(event_id, None)
         return all_ok
 
     def on_voice_playback_signal(self, *, playing: bool, **meta) -> None:

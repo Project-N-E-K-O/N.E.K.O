@@ -957,6 +957,44 @@ async def test_cancelled_completion_wait_cancels_exact_proactive_ticket():
 
 
 @pytest.mark.unit
+async def test_cancelled_wait_accounts_for_exact_ticket_already_completed():
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+    ticket_done = asyncio.get_running_loop().create_future()
+    ticket = SimpleNamespace(done=ticket_done)
+    client.inject_text_and_request_response = AsyncMock(return_value=ticket)
+
+    async def terminal_cancel_noop(*_args, **_kwargs):
+        ticket_done.set_result(SimpleNamespace())
+        return False
+
+    client._response_arbiter.cancel_ticket = AsyncMock(
+        side_effect=terminal_cancel_noop
+    )
+    task = asyncio.create_task(
+        client.prompt_ephemeral("complete before cancellation cleanup")
+    )
+    for _ in range(20):
+        if client.inject_text_and_request_response.await_count:
+            break
+        await asyncio.sleep(0)
+    else:
+        raise AssertionError("proactive inject was not reached")
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert client._proactive_image_consumed is True
+    client._response_arbiter.cancel_ticket.assert_awaited_once_with(ticket)
+    # Match the normal success path: a late exact visual-event rejection can
+    # still re-arm this generation until its handler TTL expires.
+    assert client._inject_rejection_handlers
+    await client.close()
+
+
+@pytest.mark.unit
 async def test_cancelled_queued_inject_cleans_gate_and_never_dispatches():
     client = _make_client()
     earlier = await client._response_arbiter.enqueue(source="user-turn", priority=0)

@@ -905,6 +905,55 @@ async def test_vad_during_item_ack_keeps_only_server_response_owner():
 
 
 @pytest.mark.asyncio
+async def test_vad_created_during_create_send_is_not_credited_to_owner():
+    sent = []
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+        if event.get("event_id") != "response-proactive":
+            return
+        # The transport has already observed speech_started when this
+        # server-created VAD response races the explicit create send.
+        arbiter.notify_server_vad_started()
+        arbiter.notify_response_created(
+            {
+                "type": "response.created",
+                "response": {"id": "resp-vad"},
+            }
+        )
+        arbiter.notify_response_terminal(
+            {
+                "type": "response.done",
+                "response": {"id": "resp-vad", "status": "completed"},
+            }
+        )
+        arbiter.notify_error(
+            "response-proactive",
+            "invalid_request_error: Conversation already has an active response",
+        )
+
+    arbiter = RealtimeResponseArbiter(send)
+    proactive = await arbiter.enqueue(
+        source="proactive",
+        response_event={
+            "type": "response.create",
+            "event_id": "response-proactive",
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="active response"):
+        await asyncio.wait_for(proactive.done, 0.2)
+    await arbiter.wait_until_idle(0.2)
+
+    assert proactive.started.done()
+    assert proactive.started.exception() is not None
+    assert arbiter._response_owner is None
+    assert arbiter._server_response_ids == {}
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_vad_terminal_before_create_rejection_releases_failed_owner():
     sent = []
     aborted = []

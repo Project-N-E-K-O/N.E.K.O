@@ -1101,9 +1101,11 @@ class _ResponseMixin:
             # The inject itself has already returned, so cancellation here
             # must target the retained ticket rather than leaving a response
             # alive whose visual snapshot this coroutine can no longer consume.
+            cancellation_requested = True
+            ticket_completed = False
             try:
                 if proactive_ticket is not None:
-                    await asyncio.shield(
+                    cancellation_requested = await asyncio.shield(
                         self._ensure_response_arbiter().cancel_ticket(
                             proactive_ticket
                         )
@@ -1115,7 +1117,24 @@ class _ResponseMixin:
                     "prompt_ephemeral: cancellation cleanup failed: %s",
                     cancel_exc,
                 )
-            _remove_visual_rejection_handler()
+            # The receive loop may have resolved this exact ticket just before
+            # cancellation reached cancel_ticket(). Its terminal no-op is
+            # authoritative: consume a successful delivery instead of
+            # re-offering the same visual context to the scheduler.
+            if proactive_ticket is not None and not cancellation_requested:
+                ticket_done = getattr(proactive_ticket, "done", None)
+                if ticket_done is not None:
+                    try:
+                        await asyncio.shield(ticket_done)
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        pass
+                    else:
+                        ticket_completed = True
+                        _mark_snapshot_consumed_if_current()
+            if not ticket_completed:
+                _remove_visual_rejection_handler()
             raise
         except asyncio.TimeoutError:
             # Gemini has no exact response ticket. Its turn_complete callback

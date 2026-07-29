@@ -151,6 +151,35 @@ async def test_non_native_vision_fallback():
 
 
 @pytest.mark.unit
+async def test_non_native_callback_analysis_does_not_replace_ambient_snapshot():
+    client = _make_client("step-realtime", supports_native_image=False)
+    client._latest_image_b64 = "ambient-frame"
+    client._proactive_image_consumed = False
+    client._image_description = "ambient description"
+    client._image_recognized_this_turn = True
+
+    async def analyze_callback(image_b64, *, update_turn_state=True):
+        assert image_b64 == DUMMY_IMAGE_B64
+        assert update_turn_state is False
+        return "callback description"
+
+    client._analyze_image_with_vision_model = analyze_callback
+
+    description = await client.stream_image(
+        DUMMY_IMAGE_B64,
+        bypass_rate_limit=True,
+        cache_latest=False,
+    )
+
+    assert description == "callback description"
+    assert client._latest_image_b64 == "ambient-frame"
+    assert client._proactive_image_consumed is False
+    assert client._image_description == "ambient description"
+    assert client._image_recognized_this_turn is True
+    await client.close()
+
+
+@pytest.mark.unit
 async def test_concurrent_non_native_frame_does_not_replace_analyzed_snapshot():
     client = _make_client("step-realtime", supports_native_image=False)
     client._image_description = "实时屏幕截图或相机画面正在分析中"

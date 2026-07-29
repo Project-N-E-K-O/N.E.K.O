@@ -132,6 +132,10 @@ class RealtimeResponseArbiter:
         self._current: _QueuedResponse | None = None
         self._response_owner: _QueuedResponse | None = None
         self._server_response_active = False
+        # A server-VAD speech_started event causally identifies the next
+        # response.created as server-initiated even if it races an owner's
+        # response.create send.
+        self._server_vad_response_pending = False
         # Bounded insertion-ordered map of live server-initiated response ids
         # to their creation loop time; see _SERVER_RESPONSE_ID_LIMIT and
         # _server_response_max_age. Created adds, terminal removes.
@@ -446,6 +450,12 @@ class RealtimeResponseArbiter:
     def notify_response_created(self, event: dict[str, Any]) -> None:
         self._server_response_active = True
         self._idle.clear()
+        if self._server_vad_response_pending:
+            self._server_vad_response_pending = False
+            response_id = self._event_response_id(event)
+            if response_id is not None:
+                self._remember_server_response_id(response_id)
+            return
         owner = self._response_owner
         if owner is not None and not owner.ticket.started.done():
             # The first response.created after the owner's response.create is
@@ -463,6 +473,11 @@ class RealtimeResponseArbiter:
         response_id = self._event_response_id(event)
         if response_id is not None:
             self._remember_server_response_id(response_id)
+
+    def notify_server_vad_started(self) -> None:
+        """Mark the next response.created as belonging to server VAD."""
+
+        self._server_vad_response_pending = True
 
     def notify_response_terminal(self, event: dict[str, Any] | None = None) -> None:
         owner = self._response_owner
@@ -649,6 +664,7 @@ class RealtimeResponseArbiter:
         # the failed connection and complete its selected ticket.
         self._dispatch_allowed.set()
         self._server_response_active = False
+        self._server_vad_response_pending = False
         self._server_response_ids.clear()
         self._cancel_stale_release_timer()
         exc = ConnectionError(reason)
@@ -675,6 +691,7 @@ class RealtimeResponseArbiter:
         self._connection_available = True
         self._dispatch_allowed.set()
         self._server_response_ids.clear()
+        self._server_vad_response_pending = False
         self._cancel_stale_release_timer()
         if self._current is None and self._response_owner is None:
             self._server_response_active = False

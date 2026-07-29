@@ -588,8 +588,18 @@ class _TransportMixin:
         }
         await self.send_event(append_event)
 
-    async def _analyze_image_with_vision_model(self, image_b64: str) -> str:
-        """Use VISION_MODEL to analyze image and return description."""
+    async def _analyze_image_with_vision_model(
+        self,
+        image_b64: str,
+        *,
+        update_turn_state: bool = True,
+    ) -> str:
+        """Use VISION_MODEL to analyze an image and return its description.
+
+        Callback-owned images pass ``update_turn_state=False`` because their
+        description is delivered in the callback's exact arbiter ticket. They
+        must not overwrite or consume the ambient screen/camera snapshot state.
+        """
         try:
             # 使用统一的视觉分析函数
             from utils.screenshot_utils import analyze_image_with_vision_model
@@ -600,24 +610,29 @@ class _TransportMixin:
             )
 
             if description:
-                self._image_description = f"[实时屏幕截图或相机画面]: {description}"
+                if update_turn_state:
+                    self._image_description = (
+                        f"[实时屏幕截图或相机画面]: {description}"
+                    )
+                    self._image_recognized_this_turn = True
                 logger.info("✅ Image analysis complete.")
-                self._image_recognized_this_turn = True
                 return description
             else:
                 logger.warning("VISION_MODEL not configured or analysis failed")
-                self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
-                self._image_recognized_this_turn = False
-                self._latest_image_b64 = None
-                self._proactive_image_consumed = True
+                if update_turn_state:
+                    self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
+                    self._image_recognized_this_turn = False
+                    self._latest_image_b64 = None
+                    self._proactive_image_consumed = True
                 return ""
 
         except Exception as e:
             logger.error(f"Error analyzing image with vision model: {e}")
-            self._image_recognized_this_turn = False
-            self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
-            self._latest_image_b64 = None
-            self._proactive_image_consumed = True
+            if update_turn_state:
+                self._image_recognized_this_turn = False
+                self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
+                self._latest_image_b64 = None
+                self._proactive_image_consumed = True
             # 检测内容审查错误并发送中文提示到前端（不关闭session）
             error_str = str(e)
             if 'censorship' in error_str:
@@ -625,7 +640,8 @@ class _TransportMixin:
                     await self.on_status_message(json.dumps({"code": "IMAGE_BLOCKED"}))
             return ""
         finally:
-            self._image_being_analyzed = False
+            if update_turn_state:
+                self._image_being_analyzed = False
 
     async def stream_image(
         self,
@@ -635,7 +651,7 @@ class _TransportMixin:
         cache_latest: bool = True,
         event_id: str | None = None,
         on_rejected: Optional[Callable[[str], None]] = None,
-    ) -> None:
+    ) -> str | None:
         """Stream raw image data to the API.
 
         ``bypass_rate_limit=True`` skips the native-vision frame-rate throttle
@@ -651,9 +667,17 @@ class _TransportMixin:
 
         ``cache_latest=False`` sends an already-cached proactive snapshot
         without treating that resend as a newly captured frame generation.
+        For a non-native callback image it returns the callback-owned
+        VISION_MODEL description instead, without changing ambient frame state.
         """
         rejection_event_id: str | None = None
         try:
+            if not self._supports_native_image and not cache_latest:
+                return await self._analyze_image_with_vision_model(
+                    image_b64,
+                    update_turn_state=False,
+                )
+
             # Standard StepFun is the only realtime provider without native
             # vision; its first frame triggers VISION_MODEL analysis.
             if '实时屏幕截图或相机画面正在分析中' in self._image_description and not self._supports_native_image:
@@ -1154,6 +1178,7 @@ class _TransportMixin:
                 elif event_type == "input_audio_buffer.speech_started":
                     self._speech_started_total += 1
                     logger.info("Speech detected")
+                    self._response_arbiter.notify_server_vad_started()
                     self._audio_in_buffer = True
                     # 重置静默计时器
                     self._last_speech_time = time.time()

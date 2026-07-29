@@ -181,13 +181,20 @@ def _make_voice_sess(*, is_responding=False, inject=None):
     sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
     sess._is_responding = is_responding
     sess.injected = []
+    sess.injected_events = []
     sess.inject_calls = 0
     sess.is_active_response = lambda: sess._is_responding
 
     if inject is None:
-        async def _default_inject(text, *, on_rejected=None):
+        async def _default_inject(
+            text,
+            *,
+            events_before_text=(),
+            on_rejected=None,
+        ):
             sess.inject_calls += 1
             sess.injected.append(text)
+            sess.injected_events.append(events_before_text)
         sess.inject_text_and_request_response = _default_inject
     else:
         sess.inject_text_and_request_response = inject
@@ -457,8 +464,10 @@ async def test_voice_mode_rechecks_retracted_callbacks_before_inject():
         session,
         *,
         on_rejected=None,
+        events_before_text=None,
     ):
         assert on_rejected is not None
+        assert events_before_text == []
         cb[DELIVERY_RETRACTED_KEY] = True
         return True
     mgr._stream_cb_media = _stream_then_retract
@@ -1037,6 +1046,57 @@ async def test_voice_mode_callback_image_rejection_before_inject_keeps_cb():
     mgr._schedule_proactive_retry.assert_called_once_with(
         mgr.proactive_manager.min_gap_s
     )
+
+
+async def test_standard_step_callback_image_description_shares_inject_ticket():
+    sess = _make_voice_sess()
+    sess._supports_native_image = False
+    sess._inject_rejection_handlers = {}
+    expired = []
+
+    async def _stream_image(
+        _image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        on_rejected=None,
+    ):
+        assert bypass_rate_limit is True
+        assert cache_latest is False
+        assert on_rejected is not None
+        return "画面里有一只猫。"
+
+    async def _expire(event_id, _timeout):
+        expired.append(event_id)
+
+    def _fire_task(coro):
+        asyncio.create_task(coro)
+
+    sess.stream_image = _stream_image
+    sess._expire_inject_rejection_handler = _expire
+    sess._fire_task = _fire_task
+    mgr = _make_mgr(session=sess)
+    cb = {
+        "_callback_delivery_id": "id-step-image",
+        "status": "completed",
+        "summary": "inspect this image",
+        "media_images": ["image-b64"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.sleep(0)
+
+    assert delivered is True
+    assert len(sess.injected_events) == 1
+    assert len(sess.injected_events[0]) == 1
+    description_event = sess.injected_events[0][0]
+    assert description_event["item"]["content"] == [{
+        "type": "input_text",
+        "text": "[实时屏幕截图或相机画面]: 画面里有一只猫。",
+    }]
+    assert description_event["event_id"] in sess._inject_rejection_handlers
+    assert expired == [description_event["event_id"]]
 
 
 async def test_voice_mode_callback_image_rejection_after_inject_rearms_retry():
