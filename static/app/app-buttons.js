@@ -2130,7 +2130,6 @@
             window.showVoicePreparingToast(window.t ? window.t('app.connectingToServer') : '\u6B63\u5728\u8FDE\u63A5\u670D\u52A1\u5668...');
 
             var micStartOwner = null;
-            var micStartRejecter = null;
 
             // Every point this handler resumes from an await asks the same
             // question, and each await is wide open: on mobile the composer
@@ -2150,6 +2149,14 @@
                     return false;
                 }
                 if (!window.supersededByAudioStart(micStartOwner)) {
+                    // This flow may have set S.isSwitchingMode when it began
+                    // from a live text session, and standing down returns past
+                    // both places that normally clear it. Left true it is
+                    // permanent: CHARACTER_LEFT handling stays suppressed and
+                    // auto-goodbye keeps treating the app as mid-switch (codex
+                    // P2). Only in this branch -- a newer audio start clears it
+                    // through its own success or failure path.
+                    S.isSwitchingMode = false;
                     // If capture already COMMITTED, the unwind alone leaks the
                     // hardware microphone: abortVoiceStartForBlockedRoute sets
                     // S.isRecording = false without stopping the stream, closing
@@ -2199,10 +2206,6 @@
                     // resolver itself). Every release below is gated on it, so
                     // this flow can never clear a slot that a newer start owns.
                     micStartOwner = window.claimSessionStart('audio', resolve, reject);
-                    // Kept separately from the slot: once a newer start claims,
-                    // S.sessionStartedRejecter is THEIRS, and this is the only
-                    // remaining handle on our own promise.
-                    micStartRejecter = reject;
                     // Re-arm the fail-closed voice latch on user intent, strictly
                     // before start_session goes out and therefore before any route
                     // verdict for this session can arrive.
@@ -2247,26 +2250,11 @@
                     // Only fire for the start this timer was armed for: a newer
                     // start may own the slot by now, and rejecting/clearing it
                     // here would strand the promise its awaiter is holding.
-                    if (!window.sessionStartIsCurrent(micStartOwner)) {
-                        // But settle OUR OWN promise on the way out, or this
-                        // flow never resumes at all: once displaced, our ack is
-                        // dropped by the cross-mode guard in app-websocket.js
-                        // and this timer was the only other thing that could
-                        // have settled us. Suspended forever means suspended
-                        // holding window.isMicStarting and an active/disabled
-                        // mic button, straight through the session that took
-                        // over (codex P2). Nothing shared is touched here --
-                        // not the slot, not window.sessionTimeoutId, not the
-                        // socket; they belong to the newer start. Rejecting
-                        // hands control to the outer catch, which stands down
-                        // and unwinds exactly as much as it is allowed to.
-                        if (micStartRejecter) {
-                            micStartRejecter(typeof window.makeNekoSessionAbortError === 'function'
-                                ? window.makeNekoSessionAbortError('Voice start superseded')
-                                : new Error('Voice start superseded'));
-                        }
-                        return;
-                    }
+                    // Settling a displaced start is claimSessionStart's job, not
+                    // this timer's: the flow that displaces us clears the shared
+                    // window.sessionTimeoutId in its own claim setup, so by the
+                    // time it matters this callback no longer runs at all.
+                    if (!window.sessionStartIsCurrent(micStartOwner)) return;
                     if (S.sessionStartedRejecter) {
                         var rejecter = S.sessionStartedRejecter;
                         window.releaseSessionStart(micStartOwner);
@@ -2812,6 +2800,17 @@
                 );
 
             } catch (error) {
+                // Displaced by a newer start rather than failed: claimSessionStart
+                // settles the start it takes over from, and reporting that as
+                // "\u56DE\u6765\u5931\u8D25" would blame the user's own next action -- with an
+                // internal English reason string, at that.
+                if (error && error.sessionStartCancelled
+                        && !window.sessionStartIsCurrent(textStartOwner)) {
+                    window.hideVoicePreparingToast();
+                    returnSessionButton.disabled = false;
+                    return;
+                }
+
                 console.error(window.t('console.askHerBackFailed'), error);
                 window.hideVoicePreparingToast();
                 window.showStatusToast(
@@ -3029,14 +3028,24 @@
                         window.releaseSessionStart(composerStartOwner);
                     }
                 } catch (error) {
-                    console.error(window.t('console.startTextSessionFailed'), error);
+                    // Displaced rather than failed. The message still cannot go
+                    // out -- the session it was waiting for never started, so
+                    // the optimistic bubble is still marked failed below and the
+                    // composer still comes back -- but the toast would report a
+                    // start failure, in internal English, for what was really
+                    // the user's own newer action taking over.
+                    var composerDisplaced = !!(error && error.sessionStartCancelled)
+                        && !window.sessionStartIsCurrent(composerStartOwner);
+                    if (!composerDisplaced) {
+                        console.error(window.t('console.startTextSessionFailed'), error);
+                        window.showStatusToast(
+                            window.t
+                                ? window.t('app.startFailed', { error: error.message })
+                                : '\u542F\u52A8\u5931\u8D25: ' + error.message,
+                            5000
+                        );
+                    }
                     window.hideVoicePreparingToast();
-                    window.showStatusToast(
-                        window.t
-                            ? window.t('app.startFailed', { error: error.message })
-                            : '\u542F\u52A8\u5931\u8D25: ' + error.message,
-                        5000
-                    );
 
                     if (window.sessionStartIsCurrent(composerStartOwner)) {
                         if (window.sessionTimeoutId) {

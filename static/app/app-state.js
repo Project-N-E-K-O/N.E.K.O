@@ -289,12 +289,32 @@
     var lastAudioClaimSeq = 0;
 
     window.claimSessionStart = function (mode, resolve, reject) {
+        // Whoever we are about to displace can no longer be settled by anything
+        // else, so settle them HERE. Their acknowledgement is dropped by the
+        // cross-mode guard in the session_started handler once our mode is the
+        // pending one, and their 15s timeout is cancelled a few lines later by
+        // the very flow that is claiming -- every claim setup clears the shared
+        // window.sessionTimeoutId. A displaced start that nobody settles sits on
+        // `await sessionStartPromise` forever, holding window.isMicStarting and
+        // an active/disabled mic button straight through OUR session.
+        //
+        // A cancellation, not a failure: makeNekoSessionAbortError marks it so
+        // the flows treat it as "abandoned", not "start failed".
+        var displaced = S.sessionStartedRejecter;
+
         S.sessionStartedResolver = resolve;
         S.sessionStartedRejecter = reject;
         S._pendingSessionStartMode = mode;
         startClaimSeq += 1;
         startClaimSeqByOwner.set(resolve, startClaimSeq);
         if (mode === 'audio') lastAudioClaimSeq = startClaimSeq;
+        // After the slot is ours, so anything the displaced flow does on its way
+        // out already sees the new owner and stands down against it.
+        if (displaced) {
+            try {
+                displaced(window.makeNekoSessionAbortError('Session start superseded by a newer start'));
+            } catch (_) { }
+        }
         // Sticky twin of _pendingSessionStartMode: which KIND of start claimed
         // last, still readable after it has released. supersededByAudioStart
         // needs it to decide whether the global voice-start unwind would land

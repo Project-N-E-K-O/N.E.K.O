@@ -53,7 +53,10 @@ function assert(cond, msg) {
 // comes along deliberately: the epoch property below is about how the two
 // interact, and reimplementing the lever here would test nothing.
 const source = fs.readFileSync(__APP_STATE_PATH__, 'utf8');
-const start = source.indexOf('// ---- voice-start slot ownership');
+// makeNekoSessionAbortError comes along because claimSessionStart settles the
+// start it displaces with it, and "is that a cancellation or a failure" is the
+// property the flows branch on -- stubbing it here would test the stub.
+const start = source.indexOf('window.makeNekoSessionAbortError = function');
 const end = source.indexOf('// ======================== 工具函数');
 assert(start > 0 && end > start, 'could not locate the ownership helpers');
 
@@ -64,15 +67,31 @@ const S = {
   voiceSessionStartEpoch: 0,
   voiceStartPending: false,
 };
-const sandbox = {
-  S,
-  window: { makeNekoSessionAbortError: (reason) => new Error(reason) },
-  clearTimeout: () => {},
-  console: { log() {}, warn() {} },
-};
+const sandbox = { S, window: {}, clearTimeout: () => {}, console: { log() {}, warn() {} } };
 vm.createContext(sandbox);
 vm.runInContext(source.slice(start, end), sandbox, { filename: 'app-state-helpers.js' });
 const W = sandbox.window;
+
+// --- displacing a start settles it ----------------------------------------
+// Nothing else can, once it has been displaced: its acknowledgement is dropped
+// by the cross-mode guard in the session_started handler, and its 15s timeout
+// is cancelled by the claim setup of the very flow that displaced it. Left
+// unsettled it sits on `await sessionStartPromise` forever, holding
+// window.isMicStarting and an active/disabled mic button through OUR session.
+let displacedWith = 'not settled';
+W.claimSessionStart('audio', () => {}, (e) => { displacedWith = e; });
+W.claimSessionStart('text', () => {}, () => {});
+assert(displacedWith !== 'not settled', 'displacing a start must settle it');
+assert(displacedWith.sessionStartCancelled === true,
+       'settled as a cancellation, so the flows abandon quietly instead of reporting a failure');
+assert(displacedWith.voiceStartCancelled === true, 'and the voice flows see the same');
+
+// Claiming an EMPTY slot settles nobody.
+W.releaseSessionStart(S.sessionStartedResolver);
+let settledFromEmpty = false;
+W.claimSessionStart('audio', () => {}, () => { settledFromEmpty = true; });
+assert(settledFromEmpty === false, 'claiming an empty slot must not settle anything');
+W.releaseSessionStart(S.sessionStartedResolver);
 
 // --- a superseded flow must not release the newer start's slot -------------
 const firstResolve = () => {};
@@ -388,6 +407,14 @@ def test_standing_down_stops_committed_capture_before_it_unwinds():
         name = STAND_DOWN_CHECKS[path.name][0]
         body = _region(source, f"function {name}()", "try {", path.name)
 
+        if path.name == "app-buttons.js":
+            assert "S.isSwitchingMode = false" in body, (
+                "app-buttons.js: standing down returns past both places that clear "
+                "S.isSwitchingMode, and this flow may have set it when it began from a "
+                "live text session -- left true it suppresses CHARACTER_LEFT handling and "
+                f"keeps auto-goodbye treating the app as mid-switch.\n{body}"
+            )
+
         stop = body.find("stopRecording({ notifyServer: false })")
         assert stop != -1, (
             f"{path.name}: {name} unwinds without stopping capture that already "
@@ -430,34 +457,30 @@ def test_the_mic_flow_rechecks_cancellation_after_proactive_vision():
 
 
 @pytest.mark.unit
-def test_a_displaced_start_still_settles_its_own_promise():
-    """Refusing to fire is not the same as having nothing to do.
+def test_a_displaced_start_is_abandoned_quietly_not_reported_as_a_failure():
+    """Being taken over is the user's own next action, not a failure.
 
-    A start that loses the slot has its acknowledgement dropped by the
-    cross-mode guard in the session_started handler, so its own timeout is the
-    only thing left that can settle it. Returning early there -- correct about
-    the shared state -- left the flow suspended forever at
-    ``await sessionStartPromise``, holding ``window.isMicStarting`` and an
-    active/disabled mic button straight through the session that took over. It
-    keeps its own rejecter precisely because ``S.sessionStartedRejecter`` is the
-    newer start's by then.
+    Now that claimSessionStart settles the start it displaces, every flow that
+    awaits a start promise can be rejected by a takeover -- and the text flows
+    reported that as "启动失败 / 回来失败", carrying the internal English reason
+    string into a toast.
 
-    Mutation-verified: drop the rejecter call from either timeout and this
-    reddens naming that file.
+    Mutation-verified: remove either quiet-abandon branch and this reddens.
     """
-    for path in START_FLOW_PATHS:
-        source = path.read_text(encoding="utf-8")
-        branch = _region(
-            source, "if (!window.sessionStartIsCurrent(", "return;", path.name
-        )
-        assert "Rejecter(" in branch, (
-            f"{path.name}: the timeout of a displaced start returns without settling its "
-            "own promise, so that flow never resumes and never releases the voice-start "
-            f"UI.\n{branch}"
-        )
-        assert "window.sessionTimeoutId = null" not in branch, (
-            f"{path.name}: a displaced start must not clear the shared timer handle -- it "
-            f"belongs to the start that displaced it.\n{branch}"
+    source = (_STATIC_APP / "app-buttons.js").read_text(encoding="utf-8")
+    catches = [
+        ("console.askHerBackFailed", "textStartOwner"),
+        ("console.startTextSessionFailed", "composerStartOwner"),
+    ]
+    for marker, owner in catches:
+        where = source.find(marker)
+        assert where != -1, f"the catch logging {marker} has been rewritten"
+        # The decision has to be made before the toast, so look at the window
+        # just ahead of it.
+        head = source[max(0, where - 900):where]
+        assert "sessionStartCancelled" in head and owner in head, (
+            f"app-buttons.js: the catch at {marker} reports a takeover as a start failure "
+            f"-- with the internal reason string in the toast.\n{head}"
         )
 
 

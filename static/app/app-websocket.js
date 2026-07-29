@@ -2703,7 +2703,6 @@
 
                             setTimeout(async function () {
                                 var restartStartOwner = null;
-                                var restartStartRejecter = null;
 
                                 // Every point where this flow resumes from an await asks the
                                 // same question, and asking only part of it is how round
@@ -2775,9 +2774,6 @@
                                         // flow; see claimSessionStart in
                                         // app-state.js.
                                         restartStartOwner = window.claimSessionStart('audio', resolve, reject);
-                                        // The only handle on our own promise once a newer
-                                        // start owns S.sessionStartedRejecter.
-                                        restartStartRejecter = reject;
                                         // Re-arm the fail-closed latch on user
                                         // intent, strictly before start_session
                                         // goes out and therefore before any
@@ -2804,21 +2800,11 @@
 
                                     window.sessionTimeoutId = setTimeout(function () {
                                         // Only for the start this timer was armed for.
-                                        if (!window.sessionStartIsCurrent(restartStartOwner)) {
-                                            // Settling our own promise is still ours to do,
-                                            // and the last chance: a displaced start's ack is
-                                            // dropped by the cross-mode guard, so nothing
-                                            // else would ever resume this flow (codex P2).
-                                            // Nothing shared is touched -- slot, timer handle
-                                            // and socket belong to the newer start; the catch
-                                            // below stands down before it cleans anything up.
-                                            if (restartStartRejecter) {
-                                                restartStartRejecter(typeof window.makeNekoSessionAbortError === 'function'
-                                                    ? window.makeNekoSessionAbortError('Restart superseded')
-                                                    : new Error('Restart superseded'));
-                                            }
-                                            return;
-                                        }
+                                        // A displaced start is settled by claimSessionStart:
+                                        // the flow that displaces us clears the shared
+                                        // window.sessionTimeoutId in its own claim setup, so
+                                        // this callback would not run to do it anyway.
+                                        if (!window.sessionStartIsCurrent(restartStartOwner)) return;
                                         if (S.sessionStartedRejecter) {
                                             var rejecter = S.sessionStartedRejecter;
                                             window.releaseSessionStart(restartStartOwner);
