@@ -70,16 +70,12 @@ class MigrationsMixin:
             Path | None: localized file path, or None when language detection fails or the file does not exist (fall back to default)
         """
         try:
-            from utils.language_utils import (
-                _detect_system_language,
-                _get_steam_language,
-                normalize_language_code,
-            )
+            from utils.language_utils import _get_steam_language, _get_system_language, normalize_language_code
             
             # 优先使用 Steam 语言，其次系统语言
             raw_lang = _get_steam_language()
             if not raw_lang:
-                raw_lang = _detect_system_language()
+                raw_lang = _get_system_language()
             if not raw_lang:
                 return None
             

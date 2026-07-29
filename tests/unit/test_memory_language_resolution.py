@@ -112,9 +112,17 @@ def test_global_language_still_prefers_steam_over_system_locale(monkeypatch):
     monkeypatch.setattr(language_utils, "_global_language_initialized", False)
     monkeypatch.setattr(language_utils, "_global_region_initialized", False)
     monkeypatch.setattr(language_utils, "_global_probe_next_retry_monotonic", 0.0)
-    monkeypatch.setattr(language_utils, "_detect_china_region", lambda: True)
+    monkeypatch.setattr(
+        language_utils,
+        "_probe_china_region",
+        lambda: language_utils._LocaleProbeResult(True, True),
+    )
     monkeypatch.setattr(language_utils, "_get_steam_language", lambda: "japanese")
-    monkeypatch.setattr(language_utils, "_detect_system_language", lambda: "zh")
+    monkeypatch.setattr(
+        language_utils,
+        "_probe_system_language",
+        lambda: language_utils._LocaleProbeResult("zh", True),
+    )
 
     assert language_utils.initialize_global_language() == "ja"
     assert language_utils.get_global_language_full() == "ja"
